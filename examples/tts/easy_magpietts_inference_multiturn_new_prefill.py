@@ -436,9 +436,6 @@ def main():
 
     args = parser.parse_args()
 
-    if args.profile_multiturn_inference and args.batch_size != 1:
-        raise RuntimeError("--profile_multiturn_inference currently requires --batch_size=1.")
-
     if args.profile_pad_max_sec < args.profile_pad_min_sec:
         raise RuntimeError("--profile_pad_max_sec must be >= --profile_pad_min_sec.")
 
@@ -557,7 +554,9 @@ def main():
             inputs["context_audio"] = speaker_wav.repeat(B, 1).detach()
             inputs["context_audio_lengths"] = torch.full((B,), speaker_wav.size(-1), dtype=torch.long, device=device)
 
-        profile_turn_frame_ranges = []
+        B = inputs["context_audio"].size(0)
+        profile_turn_frame_ranges = [[] for _ in range(B)]
+        profile_decode_start_frame = None
         with torch.inference_mode():
             wav = inputs["context_audio"]
             wav_len = inputs["context_audio_lengths"]
@@ -680,131 +679,372 @@ def main():
                         state, _, _ = model.streaming_step(state=state, text_tokens=current_tokens, use_inference_mode=True)
 
             # ---------------------------------------------------------
-            # MODE 3: PROFILE MULTI-TURN
+            # MODE 3: PROFILE MULTI-TURN, BATCHED
             # ---------------------------------------------------------
             elif inputs["profile_multiturn"]:
-                if B != 1:
-                    raise RuntimeError(
-                        "--profile_multiturn_inference currently supports only batch_size=1. "
-                        "Use --batch_size=1 for this mode."
-                    )
-
                 batched_turns = inputs["batched_turns"]
                 batched_turn_lens = inputs["batched_turn_lens"]
                 valid_turn_masks = inputs["valid_turn_masks"]
 
                 max_turns = len(batched_turns)
-                prev_turn_ended_with_audio_eos = True  # profile before turn 0
-                for t in range(max_turns):
-                    turn_ended_with_audio_eos = False
-                    turn_text = batched_turns[t].to(device)
-                    turn_lens = batched_turn_lens[t].to(device)
-                    valid_mask = valid_turn_masks[t].to(device)
 
-                    if not bool(valid_mask[0].item()):
+                # Per-sample debug/save metadata.
+                # profile_turn_frame_ranges[b] = [(turn_id, start_frame, end_frame), ...]
+                profile_turn_frame_ranges = [[] for _ in range(B)]
+
+                # First decoded frame per sample. Used by streaming_finalize and by per-turn saving.
+                profile_decode_start_frame = torch.full(
+                    (B,),
+                    -1,
+                    dtype=torch.long,
+                    device=device,
+                )
+
+                # Last meaningful decoded frame per sample. This avoids keeping trailing batch-idle silence.
+                profile_final_end_frame = torch.full(
+                    (B,),
+                    -1,
+                    dtype=torch.long,
+                    device=device,
+                )
+
+                arange_B = torch.arange(B, device=device)
+
+                for t in range(max_turns):
+                    turn_text = batched_turns[t].to(device)          # (B, T_text_t)
+                    turn_lens = batched_turn_lens[t].to(device)     # (B,)
+                    valid_mask = valid_turn_masks[t].to(device)     # (B,)
+
+                    if not valid_mask.any():
                         continue
 
-                    # Re-open stream for this turn.
-                    state.finished.zero_()
-                    state.text_finished.zero_()
-                    state.audio_prediction_end_idx.fill_(-1)
+                    # Re-open only rows that have this turn.
+                    state.finished = state.finished & (~valid_mask)
+                    state.text_finished = state.text_finished & (~valid_mask)
+
+                    # Let this turn detect its own EOS, but keep audio_prediction_start_idx
+                    # as the first start of the full generated conversation.
+                    state.audio_prediction_end_idx = torch.where(
+                        valid_mask,
+                        torch.full_like(state.audio_prediction_end_idx, -1),
+                        state.audio_prediction_end_idx,
+                    )
 
                     if hasattr(state, "phoneme_stream_ended"):
-                        state.phoneme_stream_ended.zero_()
+                        state.phoneme_stream_ended = state.phoneme_stream_ended & (~valid_mask)
                     if hasattr(state, "phoneme_eos_detected"):
-                        state.phoneme_eos_detected.zero_()
+                        state.phoneme_eos_detected = state.phoneme_eos_detected & (~valid_mask)
 
-                    # Prefill on the begining of each turn
+                    # Optional but usually cleaner for turn-level phoneme generation.
+                    if hasattr(state, "phoneme_steps"):
+                        state.phoneme_steps = torch.where(
+                            valid_mask,
+                            torch.zeros_like(state.phoneme_steps),
+                            state.phoneme_steps,
+                        )
+
+                    # Optional but cleaner for turn-local audio step accounting.
+                    # Profile steps below will immediately set last_audio_codes and increment audio_steps.
+                    state.audio_steps = torch.where(
+                        valid_mask,
+                        torch.zeros_like(state.audio_steps),
+                        state.audio_steps,
+                    )
+
+                    # -----------------------------
+                    # 1. Batched per-row profiling
+                    # -----------------------------
                     profile_seconds = (
                         args.profile_pad_min_sec
-                        + torch.rand((), device=device).item()
+                        + torch.rand((B,), device=device)
                         * (args.profile_pad_max_sec - args.profile_pad_min_sec)
                     )
 
-                    profile_T = max(
-                        1,
-                        int(round(profile_seconds * model.sample_rate / model.input_samples_per_frame)),
+                    profile_T = torch.round(
+                        profile_seconds * model.sample_rate / model.input_samples_per_frame
+                    ).to(torch.long)
+                    profile_T = torch.clamp(profile_T, min=1)
+
+                    profile_T = torch.where(
+                        valid_mask,
+                        profile_T,
+                        torch.zeros_like(profile_T),
                     )
 
-                    profile_tokens = torch.full(
-                        (1, profile_T),
-                        model.pad_id,
+                    profile_remaining = profile_T.clone()
+                    profile_step_idx = torch.zeros(B, dtype=torch.long, device=device)
+
+                    # Old behavior: put the first streaming_speech_delay BPE tokens into
+                    # the last profile positions, then do normal generation after that.
+                    #
+                    # This keeps your current working behavior, but now per batch row.
+                    if model.cfg.get("agent_mask_include_transition_prefix", False):
+                        delay_tokens = torch.zeros(B, dtype=torch.long, device=device)
+                    else:
+                        delay_tokens = torch.full(
+                            (B,),
+                            int(state.config.training_mode.streaming_speech_delay),
+                            dtype=torch.long,
+                            device=device,
+                        )
+
+                        # Safer version: keep at least one token, normally EOS, outside profile.
+                        # If you want exact old behavior, replace `turn_lens - 1` with `turn_lens`.
+                        max_consumable_text = torch.clamp(turn_lens - 1, min=0)
+
+                        delay_tokens = torch.minimum(delay_tokens, max_consumable_text)
+                        delay_tokens = torch.minimum(delay_tokens, profile_T)
+                        delay_tokens = torch.where(valid_mask, delay_tokens, torch.zeros_like(delay_tokens))
+
+                    profile_text_consumed = torch.zeros(B, dtype=torch.long, device=device)
+
+                    while profile_remaining.max().item() > 0:
+                        profile_mask = valid_mask & (profile_remaining > 0)
+                        profile_end_mask = profile_mask & (profile_remaining == 1)
+
+                        # Default profile text is PAD. Rows in the last delay_tokens profile
+                        # positions receive real BPE text tokens.
+                        profile_text_tokens = torch.full(
+                            (B,),
+                            model.pad_id,
+                            dtype=torch.long,
+                            device=device,
+                        )
+
+                        if (delay_tokens > 0).any():
+                            # step_in_profile: 0, 1, ..., profile_T[b]-1
+                            step_in_profile = profile_step_idx
+
+                            # Emit text only in the final delay_tokens[b] profile steps.
+                            emit_profile_text = (
+                                profile_mask
+                                & (delay_tokens > 0)
+                                & (step_in_profile >= (profile_T - delay_tokens))
+                                & (profile_text_consumed < delay_tokens)
+                            )
+
+                            if emit_profile_text.any():
+                                text_pos = profile_text_consumed.clamp(
+                                    min=0,
+                                    max=turn_text.size(1) - 1,
+                                )
+
+                                gathered_profile_text = turn_text[arange_B, text_pos]
+                                profile_text_tokens = torch.where(
+                                    emit_profile_text,
+                                    gathered_profile_text,
+                                    profile_text_tokens,
+                                )
+
+                                profile_text_consumed = profile_text_consumed + emit_profile_text.long()
+
+                        # Only rows with profile_mask=True are active in this step.
+                        # Other rows receive silence in the rectangular all_predictions tensor,
+                        # but their logical counters do not advance.
+                        state, _, _ = model.streaming_step_profiled(
+                            state=state,
+                            text_tokens=torch.full(
+                                (B,),
+                                model.eos_id,
+                                dtype=torch.long,
+                                device=device,
+                            ),
+                            profile_mask=profile_mask,
+                            profile_text_tokens=profile_text_tokens,
+                            profile_end_mask=profile_end_mask,
+                            active_mask=profile_mask,
+                            use_inference_mode=True,
+                        )
+
+                        profile_remaining = torch.where(
+                            profile_mask,
+                            profile_remaining - 1,
+                            profile_remaining,
+                        )
+                        profile_step_idx = torch.where(
+                            profile_mask,
+                            profile_step_idx + 1,
+                            profile_step_idx,
+                        )
+
+                    logging.info(
+                        f"[profile_multiturn] turn={t} profile_steps="
+                        f"{profile_T.detach().cpu().tolist()} "
+                        f"profile_seconds={profile_seconds.detach().cpu().tolist()}"
+                    )
+
+                    # We start the turn after all rows have finished the profile phase.
+                    # This excludes profile/user-speaking silence from each turn segment.
+                    turn_start_frame_global = sum(p.size(-1) for p in state.all_predictions)
+                    turn_start_frames = torch.full(
+                        (B,),
+                        turn_start_frame_global,
                         dtype=torch.long,
                         device=device,
                     )
-                    # add text tokens needed for profilling
-                    if not model.cfg.get("agent_mask_include_transition_prefix", False):
-                        delay_tokens = int(state.config.training_mode.streaming_speech_delay)
-                        delay_tokens = min(delay_tokens, int(turn_lens[0].item()), profile_T)
-                        profile_tokens[:, -delay_tokens:] = turn_text[:, :delay_tokens]
-                        turn_text = turn_text[:, delay_tokens:]
-                        turn_lens = torch.clamp(turn_lens - delay_tokens, min=0)
 
-                    state = model.streaming_prefill_profile(
-                        state=state,
-                        text_tokens=profile_tokens,
-                        use_inference_mode=True,
+                    first_profile_turn = valid_mask & (profile_decode_start_frame < 0)
+                    profile_decode_start_frame = torch.where(
+                        first_profile_turn,
+                        turn_start_frames,
+                        profile_decode_start_frame,
                     )
 
-                    logging.info(
-                        f"[profile_multiturn] turn={t} prefilled {profile_T} steps "
-                        f"({profile_seconds:.2f}s)"
+                    # Make streaming_finalize start from the first generated turn frame.
+                    state.audio_prediction_start_idx = torch.where(
+                        first_profile_turn,
+                        turn_start_frames,
+                        state.audio_prediction_start_idx,
                     )
 
-                    turn_start_frame = sum(p.size(-1) for p in state.all_predictions)
-                    if t == 0:
-                        state.audio_prediction_start_idx.fill_(turn_start_frame)
-                        profile_decode_start_frame = turn_start_frame
+                    # The profile phase already consumed `delay_tokens` text tokens for each row.
+                    # Do not slice turn_text because delay_tokens differs per row; use a per-row base offset.
+                    turn_text_base = delay_tokens
+                    turn_remaining_lens = torch.clamp(turn_lens - turn_text_base, min=0)
 
                     turn_offset = state.text_tokens_seen.clone()
+                    turn_done = ~valid_mask
                     turn_steps = 0
-                    saw_audio = False
-                    first_audio_step_finished = False
 
-                    turn_text_done = False
+                    saw_audio = torch.zeros(B, dtype=torch.bool, device=device)
+                    first_audio_step_finished = torch.zeros(B, dtype=torch.bool, device=device)
 
-                    while turn_steps < args.max_tts_steps:
+                    # -----------------------------
+                    # 2. Batched turn generation
+                    # -----------------------------
+                    while (not turn_done.all()) and turn_steps < args.max_tts_steps:
                         turn_steps += 1
 
-                        state.finished.zero_()
+                        gen_mask = valid_mask & (~turn_done)
+
+                        # Old single-sample behavior cleared state.finished every generation step.
+                        # Do it only for active rows. This prevents an early audio EOS from ending
+                        # the turn before text is exhausted.
+                        state.finished = state.finished & (~gen_mask)
 
                         relative_position = state.text_tokens_seen - turn_offset
-                        text_exhausted = relative_position >= turn_lens
+                        text_exhausted = relative_position >= turn_remaining_lens
 
-                        position = relative_position.clamp(min=0, max=turn_text.size(1) - 1)
-                        current_tokens = turn_text[torch.arange(B, device=device), position]
+                        # Current token index in original turn_text, accounting for tokens consumed
+                        # during profile.
+                        position = turn_text_base + relative_position
+                        position = position.clamp(min=0, max=turn_text.size(1) - 1)
+
+                        current_tokens = turn_text[arange_B, position]
                         current_tokens = torch.where(
                             text_exhausted,
                             torch.full_like(current_tokens, model.eos_id),
                             current_tokens,
                         )
 
-                        state, audio_codes, _ = model.streaming_step(
+                        state, audio_codes, _ = model.streaming_step_profiled(
                             state=state,
                             text_tokens=current_tokens,
+                            profile_mask=torch.zeros(B, dtype=torch.bool, device=device),
+                            profile_text_tokens=torch.full(
+                                (B,),
+                                model.pad_id,
+                                dtype=torch.long,
+                                device=device,
+                            ),
+                            profile_end_mask=torch.zeros(B, dtype=torch.bool, device=device),
+                            active_mask=gen_mask,
                             use_inference_mode=True,
                         )
 
-                        if audio_codes is not None and not saw_audio:
-                            saw_audio = True
-                            first_audio_step_finished = bool(state.finished[0].item())
+                        if audio_codes is not None:
+                            newly_saw_audio = gen_mask & (~saw_audio)
+                            saw_audio = saw_audio | gen_mask
+                            first_audio_step_finished = torch.where(
+                                newly_saw_audio,
+                                state.finished,
+                                first_audio_step_finished,
+                            )
 
-                        if bool(text_exhausted[0].item()) and bool(state.finished[0].item()):
-                            turn_ended_with_audio_eos = True
-                            break
+                        # Match old stopping condition:
+                        # a turn is done only when its text is exhausted AND audio EOS is detected.
+                        done_now = gen_mask & text_exhausted & state.finished
 
-                    prev_turn_ended_with_audio_eos = turn_ended_with_audio_eos
+                        if done_now.any():
+                            current_end_frame_global = sum(p.size(-1) for p in state.all_predictions)
 
-                    # keep generated codes, but don't let this turn's EOS crop finalize output
-                    state.audio_prediction_end_idx.fill_(-1)
-                    state.finished.zero_()
+                            # Prefer precise EOS frame if _process_predictions_profiled populated it.
+                            eos_end_frames = torch.where(
+                                state.audio_prediction_end_idx >= 0,
+                                state.audio_prediction_end_idx,
+                                torch.full_like(
+                                    state.audio_prediction_end_idx,
+                                    current_end_frame_global,
+                                ),
+                            )
+
+                            profile_final_end_frame = torch.where(
+                                done_now,
+                                eos_end_frames,
+                                profile_final_end_frame,
+                            )
+
+                            for b in done_now.nonzero(as_tuple=False).flatten().detach().cpu().tolist():
+                                profile_turn_frame_ranges[b].append(
+                                    (
+                                        int(t),
+                                        int(turn_start_frames[b].detach().cpu().item()),
+                                        int(eos_end_frames[b].detach().cpu().item()),
+                                    )
+                                )
+
+                        turn_done = turn_done | done_now
+
+                    # Max-step fallback for rows that did not finish by EOS.
+                    still_running = valid_mask & (~turn_done)
+                    if still_running.any():
+                        current_end_frame_global = sum(p.size(-1) for p in state.all_predictions)
+                        fallback_end_frames = torch.full(
+                            (B,),
+                            current_end_frame_global,
+                            dtype=torch.long,
+                            device=device,
+                        )
+
+                        profile_final_end_frame = torch.where(
+                            still_running,
+                            fallback_end_frames,
+                            profile_final_end_frame,
+                        )
+
+                        for b in still_running.nonzero(as_tuple=False).flatten().detach().cpu().tolist():
+                            profile_turn_frame_ranges[b].append(
+                                (
+                                    int(t),
+                                    int(turn_start_frames[b].detach().cpu().item()),
+                                    int(fallback_end_frames[b].detach().cpu().item()),
+                                )
+                            )
+
+                    # Do not let this turn's EOS crop the full conversation before later turns.
+                    state.audio_prediction_end_idx = torch.where(
+                        valid_mask,
+                        torch.full_like(state.audio_prediction_end_idx, -1),
+                        state.audio_prediction_end_idx,
+                    )
+                    state.finished = state.finished & (~valid_mask)
 
                     logging.info(
                         f"[profile_multiturn] turn={t} steps={turn_steps} "
-                        f"saw_audio={saw_audio} immediate_eos={prev_turn_ended_with_audio_eos}"
+                        f"saw_audio={saw_audio.detach().cpu().tolist()} "
+                        f"first_audio_step_finished={first_audio_step_finished.detach().cpu().tolist()}"
                     )
-                    turn_end_frame = sum(p.size(-1) for p in state.all_predictions)
-                    profile_turn_frame_ranges.append((t, turn_start_frame, turn_end_frame))
+
+                # After all turns, crop each row at its own last meaningful frame.
+                # This prevents rows that finished early from keeping trailing batch-idle silence.
+                total_frames = sum(p.size(-1) for p in state.all_predictions)
+                profile_final_end_frame = torch.where(
+                    profile_final_end_frame >= 0,
+                    profile_final_end_frame,
+                    torch.full_like(profile_final_end_frame, total_frames),
+                )
+
+                state.audio_prediction_end_idx.copy_(profile_final_end_frame)
 
             # if state.audio_prediction_end_idx[0].item() >= 0:
             #     last_audio_prediction_end_idx.copy_(state.audio_prediction_end_idx)
@@ -837,8 +1077,6 @@ def main():
                 # decodes the entire physical sequence!
                 state.audio_prediction_end_idx.fill_(-1)
             
-            if inputs["profile_multiturn"]:
-                state.audio_prediction_end_idx.fill_(-1)
 
             # Finalize decodes the collected Codec states globally regardless of which loop was run
             finalize_output = model.streaming_finalize(state, use_inference_mode=True)
@@ -898,27 +1136,35 @@ def main():
                     out_path = os.path.join(args.out_dir, base_name)
                     sf.write(out_path, wav, samplerate=model.output_sample_rate)
                     logging.info(f"Full Audio Saved: {out_path}")
-    
+
                     full_wav = audio_f32[i].numpy()
                     full_len = int(audio_len[i].item())
-                    print(profile_turn_frame_ranges)
-                    for turn_id, start_frame, end_frame in profile_turn_frame_ranges:
-                        samples_per_prediction_frame = (
-                            model.codec_model_samples_per_frame / (model.sample_rate / model.output_sample_rate)
-                        )
-                        rel_start_frame = start_frame - profile_decode_start_frame
-                        rel_end_frame = end_frame - profile_decode_start_frame
+
+                    samples_per_prediction_frame = (
+                        model.codec_model_samples_per_frame
+                        / (model.sample_rate / model.output_sample_rate)
+                    )
+
+                    decode_start_i = int(profile_decode_start_frame[i].detach().cpu().item())
+                    if decode_start_i < 0:
+                        decode_start_i = 0
+
+                    for turn_id, start_frame, end_frame in profile_turn_frame_ranges[i]:
+                        rel_start_frame = start_frame - decode_start_i
+                        rel_end_frame = end_frame - decode_start_i
 
                         start_sample = int(round(rel_start_frame * samples_per_prediction_frame))
                         end_sample = int(round(rel_end_frame * samples_per_prediction_frame))
+
                         start_sample = max(0, min(start_sample, full_len))
                         end_sample = max(start_sample, min(end_sample, full_len))
-                        print("Turn:", turn_id, "Start:", start_sample, "End:", end_sample,  "Start S:", start_sample/model.output_sample_rate, "End S:", end_sample/model.output_sample_rate, )
+
                         turn_wav = full_wav[start_sample:end_sample]
 
                         out_path = os.path.join(args.out_dir, f"{stem}_turn_{turn_id}{ext}")
                         sf.write(out_path, turn_wav, samplerate=model.output_sample_rate)
                         logging.info(f"Saved: {out_path}")
+
                 else:
                     wav = audio_f32[i, : audio_len[i]].numpy()
                     out_path = os.path.join(args.out_dir, base_name)

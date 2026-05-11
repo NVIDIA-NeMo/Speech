@@ -160,9 +160,7 @@ def get_s3_client(s3cfg):
         boto3.client or AISClient
     """
     if not _S3_AVAILABLE:
-        raise ImportError(
-            "S3 support requires 'boto3' and 'botocore'. " "Install with: pip install boto3"
-        )
+        raise ImportError("S3 support requires 'boto3' and 'botocore'. " "Install with: pip install boto3")
     global _s3_client
     if _s3_client is not None:
         return _s3_client
@@ -267,10 +265,7 @@ def expand_sharded_path_without_braceexpand(path_pattern):
     end = int(end_str)
     step = 1 if end >= start else -1
     width = max(len(start_str.lstrip('-')), len(end_str.lstrip('-')))
-    zero_pad = (
-        width > 1
-        and (start_str.lstrip('-').startswith('0') or end_str.lstrip('-').startswith('0'))
-    )
+    zero_pad = width > 1 and (start_str.lstrip('-').startswith('0') or end_str.lstrip('-').startswith('0'))
 
     prefix = path_pattern[:op]
     suffix = path_pattern[cl + len('_CL_') :]
@@ -665,8 +660,7 @@ def find_tar_index_entry(index, audio_filename, tar_path):
     if target_key is None:
         available = list(index.keys())[:10]
         raise FileNotFoundError(
-            f"Audio file '{audio_filename}' not found in tar archive {tar_path}. "
-            f"Available files: {available}..."
+            f"Audio file '{audio_filename}' not found in tar archive {tar_path}. " f"Available files: {available}..."
         )
 
     return target_key, index[target_key]

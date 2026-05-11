@@ -313,10 +313,13 @@ class NvidiaUserContextAggregator(OpenAIUserContextAggregator):
                     context_messages[-1]["content"] = self._last_final_transcript + " " + self._aggregation
                 else:
                     context_messages[-1]["content"] = self._aggregation
+                logger.debug(f"Updated existing message in NvidiaUserContextAggregator: {context_messages[-1]}")
                 self.context.set_messages(context_messages)
             else:
                 self._last_final_transcript = ""
-                self.context.add_message({"role": self._role, "content": self._aggregation})
+                new_message = {"role": self._role, "content": self._aggregation}
+                self.context.add_message(new_message)
+                logger.debug(f"Added new message to NvidiaUserContextAggregator: {new_message}")
 
             self._aggregation = ""
             # Get truncated context and send downstream

@@ -143,14 +143,9 @@ class NeMoSpeechLMForConditionalGeneration(
         audio_lengths = audio_input.audio_signal_length.to(device=device)
 
         with torch.no_grad():
-            processed_signal, processed_signal_length = self.perception.preprocessor(
-                input_signal=audio_signal,
-                length=audio_lengths,
-            )
-            processed_signal = processed_signal.to(dtype=_PERCEPTION_DTYPE)
             audio_embeds, audio_embed_lens = self.perception(
-                processed_signal=processed_signal,
-                processed_signal_length=processed_signal_length,
+                input_signal=audio_signal,
+                input_signal_length=audio_lengths,
             )
 
         return tuple(audio_embeds[i, : audio_embed_lens[i]] for i in range(audio_embeds.shape[0]))

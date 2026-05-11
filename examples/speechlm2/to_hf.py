@@ -107,11 +107,13 @@ def save_hf_checkpoint(model: torch.nn.Module, state_dict: dict, cfg: HfExportCo
         json.dump(config, f, indent=2)
 
 
-_HYBRID_ARCHITECTURES = {"NemotronHForCausalLM", "NemotronHybridForCausalLM"}
-
-
 def _detect_vllm_architecture(model_cfg: dict) -> str:
-    """Determine the vLLM plugin model class from the pretrained LLM backbone.
+    """Determine the vLLM plugin model class for the checkpoint.
+
+    The SALM plugin registers a single architecture name and selects between
+    transformer and hybrid backends at instantiation time, so this function
+    just verifies the backbone config is reachable and returns the unified
+    name; the hybrid-vs-transformer split is handled inside the plugin.
 
     Raises:
         ValueError: if the HF config can't be loaded or has no 'architectures'.
@@ -131,8 +133,6 @@ def _detect_vllm_architecture(model_cfg: dict) -> str:
     if not archs:
         raise ValueError(f"HF config for {pretrained_llm!r} has empty 'architectures'.")
 
-    if set(archs) & _HYBRID_ARCHITECTURES:
-        return "NeMoSpeechLMHybridForConditionalGeneration"
     return "NeMoSpeechLMForConditionalGeneration"
 
 

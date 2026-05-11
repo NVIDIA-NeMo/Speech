@@ -18,12 +18,12 @@ import argparse
 import json
 import os
 import pprint
-import string
 import tempfile
 import time
 from collections import Counter
 from functools import partial
-from typing import Union
+from pathlib import Path
+from typing import Optional, Union
 
 import librosa
 import numpy as np
@@ -35,6 +35,7 @@ import nemo.collections.asr as nemo_asr
 from nemo.collections.asr.metrics.wer import word_error_rate_detail
 from nemo.collections.tts.metrics.eou_classifier import EoUClassification, EoUClassifier, EoUType
 from nemo.collections.tts.metrics.frechet_codec_distance import FrechetCodecDistance
+from nemo.collections.tts.parts.utils.tts_dataset_utils import get_text_processor
 from nemo.utils import logging
 
 # Optional import for UTMOSv2 (audio quality metric)
@@ -67,13 +68,37 @@ FILEWISE_METRICS_TO_SAVE = [
 ]
 
 
-def load_evalset_config(config_path: str = None) -> dict:
+def load_evalset_config(config_path: Optional[str] = None, dataset_base_path: Optional[Path] = None) -> dict:
     """Load dataset meta info from JSON config file."""
     if config_path is None or not os.path.exists(config_path):
         raise ValueError("No dataset_json_path provided, please provide a valid path to the evalset config file.")
+
     logging.info(f"Loading evalset config from {config_path}")
     with open(config_path, 'r') as f:
-        return json.load(f)
+        dataset_meta_info = json.load(f)
+
+    # Validate that all evaluation datasets exist
+    for dataset_name, info in dataset_meta_info.items():
+        manifest_path = Path(info["manifest_path"])
+        audio_dir = Path(info["audio_dir"])
+
+        if dataset_base_path:
+            # Replace relative paths with absolute paths where appropriate
+            if not manifest_path.is_absolute():
+                manifest_path = dataset_base_path / manifest_path
+                info["manifest_path"] = str(manifest_path)
+
+            if not audio_dir.is_absolute():
+                audio_dir = dataset_base_path / audio_dir
+                info["audio_dir"] = str(audio_dir)
+
+        if not manifest_path.exists():
+            raise ValueError(f"Manifest does not exist for dataset {dataset_name}: {manifest_path}")
+
+        if not audio_dir.exists():
+            raise ValueError(f"Audio directory does not exist for dataset {dataset_name}: {audio_dir}")
+
+    return dataset_meta_info
 
 
 def _resolve_path(audio_dir, path):
@@ -125,24 +150,6 @@ def read_manifest(manifest_path):
     return records
 
 
-def process_text(input_text):
-    # Convert text to lowercase
-    lower_case_text = input_text.lower()
-
-    # Remove commas from text
-    no_comma_text = lower_case_text.replace(",", "")
-
-    # Replace "-" with spaces
-    no_dash_text = no_comma_text.replace("-", " ")
-
-    # Replace double spaces with single space
-    single_space_text = " ".join(no_dash_text.split())
-
-    single_space_text = single_space_text.translate(str.maketrans('', '', string.punctuation))
-
-    return single_space_text
-
-
 def transcribe_with_nemo_asr_batched(asr_model, audio_paths, batch_size=8, label=""):
     """Transcribe multiple audio files with a NeMo ASR model in batches. Returns list of transcriptions (one per path)."""
     all_transcriptions = []
@@ -152,7 +159,7 @@ def transcribe_with_nemo_asr_batched(asr_model, audio_paths, batch_size=8, label
             with torch.inference_mode():
                 batch_results = asr_model.transcribe(batch_paths, batch_size=len(batch_paths), use_lhotse=False)
             for r in batch_results:
-                all_transcriptions.append(process_text(r.text))
+                all_transcriptions.append(r.text)
         except Exception as e:
             logging.info("Error during batched ASR ({} audio): {}".format(label, e))
             all_transcriptions.extend([""] * len(batch_paths))
@@ -178,7 +185,7 @@ def transcribe_with_whisper_batched(
             with torch.inference_mode():
                 predicted_ids = whisper_model.generate(inputs, forced_decoder_ids=forced_decoder_ids)
             transcriptions = whisper_processor.batch_decode(predicted_ids, skip_special_tokens=True)
-            all_transcriptions.extend(process_text(t) for t in transcriptions)
+            all_transcriptions.extend(transcriptions)
         except Exception as e:
             logging.info("Error during batched Whisper ASR ({} audio): {}".format(label, e))
             all_transcriptions.extend([""] * len(batch_paths))
@@ -253,6 +260,7 @@ def transcribed_batched(
         texts = transcribe_with_whisper_batched(
             whisper_model, whisper_processor, audio_paths, language, device, batch_size=asr_batch_size, label=label
         )
+
     return texts
 
 
@@ -399,7 +407,9 @@ def evaluate_dir(
 
     # 5. ASR transcription in batches
     logging.info(f"Doing batched ASR transcription with batch size {asr_batch_size}...")
+
     # Transcribe predicted audios
+    text_processor = get_text_processor(language)
     pred_texts = transcribed_batched(
         audio_file_lists,
         language,
@@ -410,6 +420,7 @@ def evaluate_dir(
         asr_batch_size,
         label="predicted",
     )
+    pred_texts = [text_processor.process_text_for_wer(text) for text in pred_texts]
     # Transcribe ground truth audios
     if len(gt_audio_paths) > 0:
         gt_audio_texts = transcribed_batched(
@@ -422,6 +433,7 @@ def evaluate_dir(
             asr_batch_size,
             label="ground truth",
         )
+        gt_audio_texts = [text_processor.process_text_for_wer(text) for text in gt_audio_texts]
     else:
         gt_audio_texts = [None] * len(records)
 
@@ -429,11 +441,13 @@ def evaluate_dir(
     gt_texts_processed = []
     for record in records:
         if "original_text" in record:
-            gt_texts_processed.append(process_text(record['original_text']))
+            text_field = 'original_text'
         elif 'normalized_text' in record:
-            gt_texts_processed.append(process_text(record['normalized_text']))
+            text_field = 'normalized_text'
         else:
-            gt_texts_processed.append(process_text(record['text']))
+            text_field = 'text'
+        processed_text = text_processor.process_text_for_wer(record[text_field])
+        gt_texts_processed.append(processed_text)
 
     # 7. Batched EoU classification
     eou_results = None
@@ -467,8 +481,6 @@ def evaluate_dir(
         # Format cer and wer to 2 decimal places
         logging.info(f"CER: {detailed_cer[0]:.4f} | WER: {detailed_wer[0]:.4f}")
 
-        pred_context_ssim = 0.0
-        gt_context_ssim = 0.0
         with torch.inference_mode():
             extract_embedding_fn = partial(
                 extract_embedding,

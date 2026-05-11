@@ -1,41 +1,25 @@
-name: Isort and Black Formatting
-# Incrementally reformat only changed files with black, all files with isort
-#
-# Replaces pre-commit.ci, since it reformats all the files.
-# See issue https://github.com/pre-commit-ci/issues/issues/90
-#
-# The action requires a custom token to trigger workflow after pushing reformatted files back to the branch.
-# `secrets.GITHUB_TOKEN` can be used instead, but this will result
-# in not running necessary checks after reformatting, which is undesirable.
-# For details see https://github.com/orgs/community/discussions/25702
+name: Isort and Black Formatting Check
+# Check that changed files are formatted with black and isort.
+# Fails if any file needs reformatting — run `pre-commit run --all-files` locally to fix.
 
 on:
-  pull_request_target:
+  pull_request:
     paths:
       - "**.py"
-    types: [opened, synchronize, reopened, labeled, unlabeled]
+    types: [opened, synchronize, reopened]
 
 defaults:
   run:
     shell: bash -x -e -u -o pipefail {0}
 
 jobs:
-  reformat_with_isort_and_black:
+  check_isort_and_black:
     runs-on: ubuntu-latest
     permissions:
-      # write permissions required to commit changes
-      contents: write
+      contents: read
     steps:
       - name: Checkout branch
         uses: actions/checkout@v6
-        with:
-          # setup repository and ref for PRs, see
-          # https://github.com/EndBug/add-and-commit?tab=readme-ov-file#working-with-prs
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.ref }}
-          # custom token is required to trigger actions after reformatting + pushing
-          token: ${{ secrets.NEMO_REFORMAT_TOKEN }}
-          fetch-depth: 0
 
       - name: Get changed files
         id: changed-files
@@ -53,8 +37,8 @@ jobs:
         uses: psf/black@stable
         if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
         with:
-          options: "--verbose"
-          # apply only to changed files (pass explicitly the files)
+          options: "--check --verbose"
+          # check only changed files (pass explicitly the files)
           src: "${{ steps.changed-files.outputs.all_changed_files }}"
           version: "~= 24.3"
 
@@ -63,11 +47,4 @@ jobs:
         if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
         with:
           isort-version: "5.13.2"
-          # reformat all files with isort – safe since the whole repo is already reformatted
-          configuration: ""
-
-      - uses: EndBug/add-and-commit@v9
-        # Commit changes. Nothing is committed if no changes.
-        with:
-          message: Apply isort and black reformatting
-          commit: --signoff
+          configuration: "--check-only --diff"

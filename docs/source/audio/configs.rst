@@ -221,6 +221,28 @@ The maximum nesting depth is calculated as the maximum depth of ``input_cfg`` ke
         input_cfg:                      # Level 2 (same as above)
           - type: lhotse_shar
 
+When ``input_cfg`` is overridden via CLI to a YAML file path (e.g.
+``model.train_ds.input_cfg=train_all.yaml``), the depth calculation loads the
+referenced file and traverses its contents to count nested ``input_cfg`` keys.
+This also works with multi-level file references:
+
+.. code-block:: yaml
+
+    # train_all.yaml (referenced via input_cfg=train_all.yaml)
+    - type: group
+      weight: 100
+      input_cfg: ${oc.env:MANIFEST_ROOT}/train_en.yaml   # resolved at runtime
+    - type: group
+      weight: 200
+      input_cfg: ${oc.env:MANIFEST_ROOT}/train_de.yaml
+
+.. note::
+
+    Paths containing OmegaConf interpolations (e.g. ``${oc.env:MANIFEST_ROOT}``)
+    cannot be resolved during depth counting -- they are resolved later at runtime
+    by ``OmegaConf.create()``. Such paths are treated as a single additional
+    nesting level.
+
 **Example: Balancing Multiple Task Groups**
 
 .. code-block:: yaml

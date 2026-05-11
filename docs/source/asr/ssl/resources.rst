@@ -9,7 +9,7 @@ notebooks' GitHub pages on Colab.
 
 If you are looking for information about a particular ASR model, or would like to find out more 
 about the model architectures available in the ``nemo_asr`` collection, refer to the 
-:doc:`ASR Models <../models>` page.
+:doc:`ASR Featured Models <../featured_models>` page.
 
 NeMo includes preprocessing scripts for several common ASR datasets. The :doc:`ASR Datasets <../datasets>` 
 page contains instructions on running those scripts. It also includes guidance for creating your 

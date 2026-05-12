@@ -279,7 +279,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         self.disable_subword_embedding = cfg.get('disable_subword_embedding', False)
         # If True, remove the decoder LM head over text tokens to save parameters when the model does not train or
         # infer text-token logits from the decoder output.
-        self.disable_lm_text_head = cfg.get('disable_lm_text_head', False)
+        self.disable_lm_text_head = cfg.get('disable_lm_text_head', True)
         # Legacy checkpoints may have trained context text with decoder embeddings only, even when CAS is enabled for
         # regular text tokens. This flag skips adding CAS embeddings for context text to match those checkpoints.
         self.disable_cas_for_context_text = cfg.get('disable_cas_for_context_text', False)

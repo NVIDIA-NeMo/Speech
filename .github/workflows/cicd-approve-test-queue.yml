@@ -117,14 +117,38 @@ jobs:
               return all_results
 
 
+          def filter_cicd_runs(workflow_runs):
+              """Keep only CICD workflow runs."""
+              return [run for run in workflow_runs if run.get("name") == "CICD NeMo"]
+
+
+          def print_workflow_run_details(label, workflow_runs):
+              """Print the runs that are counted against concurrency."""
+              if not workflow_runs:
+                  print(f"{label}: none")
+                  return
+
+              print(f"{label}:")
+              for run in workflow_runs:
+                  print(
+                      "  "
+                      f"id={run.get('id')} "
+                      f"status={run.get('status')} "
+                      f"branch={run.get('head_branch')} "
+                      f"title={run.get('display_title')}"
+                  )
+
+
           # Get current running and queued workflows
           print("Fetching workflow runs...")
-          queued_workflow_runs = get_workflow_runs("queued")
-          in_progress_workflow_runs = get_workflow_runs("in_progress")
+          queued_workflow_runs = filter_cicd_runs(get_workflow_runs("queued"))
+          in_progress_workflow_runs = filter_cicd_runs(get_workflow_runs("in_progress"))
+          print_workflow_run_details("Queued CICD workflows counted against concurrency", queued_workflow_runs)
+          print_workflow_run_details("Running CICD workflows counted against concurrency", in_progress_workflow_runs)
 
           # Count running and queued workflows
-          queued_workflows = sum(1 for run in queued_workflow_runs if run.get("name") == "CICD NeMo")
-          in_progress_workflows = sum(1 for run in in_progress_workflow_runs if run.get("name") == "CICD NeMo")
+          queued_workflows = len(queued_workflow_runs)
+          in_progress_workflows = len(in_progress_workflow_runs)
 
           total_workflows = queued_workflows + in_progress_workflows
           print(f"Current queued workflows: {queued_workflows}")
@@ -138,8 +162,7 @@ jobs:
 
           # Get waiting CI workflows for test environment
           print("Fetching deployments...")
-          pending_workflows = get_workflow_runs("waiting")
-          pending_workflows = [run for run in pending_workflows if run.get("name") == "CICD NeMo"]
+          pending_workflows = filter_cicd_runs(get_workflow_runs("waiting"))
 
           # Sort deployments by creation date (oldest first)
           print("Sorting workflows...")
@@ -174,16 +197,13 @@ jobs:
                   if not environment_id:
                       print(f"Skipping deployment without an environment id for workflow {workflow_name}")
                       continue
-                  if deployment.get("current_user_can_approve") is False:
-                      print(f"Skipping environment {environment_name}; token cannot approve it")
-                      continue
 
                   environment_ids.append(environment_id)
                   environment_names.append(environment_name)
 
               if not environment_ids:
-                  print(f"No approvable pending deployments found for workflow {workflow_name}; skipping")
-                  continue
+                  print(f"No pending deployments with environment ids found for workflow {workflow_name}")
+                  exit(1)
 
               # Approve the deployment
               status_data = {

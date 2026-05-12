@@ -42,6 +42,7 @@ from nemo.collections.tts.parts.utils.helpers import get_mask_from_lengths
 from nemo.core.classes import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.utils import logging
+from nemo.utils.exceptions import NeMoBaseException
 
 
 @dataclass
@@ -373,7 +374,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             if speaker_encoder_cfg is not None:
                 speaker_encoder_cfg = dict(speaker_encoder_cfg)
                 if speaker_encoder_cfg.get('use_moe', False):
-                    raise Exception(
+                    raise NeMoBaseException(
                         "MoE is not recommended for the speaker encoder. "
                         "Please set speaker_encoder.use_moe to False."
                     )

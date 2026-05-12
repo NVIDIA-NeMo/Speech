@@ -72,6 +72,7 @@ from nemo.collections.tts.parts.utils.tts_dataset_utils import (
 from nemo.core.classes import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.utils import logging
+from nemo.utils.exceptions import NeMoBaseException
 
 
 @dataclass
@@ -596,7 +597,7 @@ class MagpieTTSModel(ModelPT):
             # Note: router_* loss coefficients are model-level config, not consumed by the Transformer module.
             context_encoder_cfg = dict(cfg.context_encoder)
             if context_encoder_cfg.get('use_moe', False):
-                raise Exception(
+                raise NeMoBaseException(
                     "MoE is not recommended for the context encoder. Please set context_encoder.use_moe to False."
                 )
             if 'router_load_balancing_loss_coeff' in context_encoder_cfg:
@@ -621,7 +622,7 @@ class MagpieTTSModel(ModelPT):
             # Note: router_* loss coefficients are model-level config, not consumed by the Transformer module.
             context_encoder_cfg = dict(cfg.context_encoder)
             if context_encoder_cfg.get('use_moe', False):
-                raise Exception(
+                raise NeMoBaseException(
                     "MoE is not recommended for the context encoder. Please set context_encoder.use_moe to False."
                 )
             if 'router_load_balancing_loss_coeff' in context_encoder_cfg:

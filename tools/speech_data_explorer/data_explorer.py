@@ -27,6 +27,7 @@ import operator
 import os
 import tarfile
 import tempfile
+import types
 from collections import defaultdict
 from os.path import expanduser
 from pathlib import Path
@@ -37,7 +38,6 @@ import dash_bootstrap_components as dbc
 import diff_match_patch
 import editdistance
 import jiwer
-import librosa
 import numpy as np
 import pandas as pd
 import soundfile as sf
@@ -48,6 +48,49 @@ from dash.exceptions import PreventUpdate
 from plotly import express as px
 from plotly import graph_objects as go
 from plotly.subplots import make_subplots
+
+
+def _ensure_numba_coverage_compatibility():
+    """Patch coverage API differences that break older numba imports."""
+    try:
+        import coverage
+    except ImportError:
+        return
+
+    try:
+        coverage_types = coverage.types
+    except AttributeError:
+        try:
+            import coverage.types as coverage_types
+        except ImportError:
+            coverage_types = types.SimpleNamespace()
+            coverage.types = coverage_types
+
+    if coverage_types is None:
+        return
+
+    if not hasattr(coverage_types, 'Tracer'):
+        tracer_type = getattr(coverage_types, 'TTracer', object)
+        if not isinstance(tracer_type, type):
+            tracer_type = object
+        coverage_types.Tracer = tracer_type
+
+    for type_name in (
+        'TTraceData',
+        'TShouldTraceFn',
+        'TFileDisposition',
+        'TShouldStartContextFn',
+        'TWarnFn',
+        'TTraceFn',
+    ):
+        if not hasattr(coverage_types, type_name):
+            setattr(coverage_types, type_name, object)
+
+
+# Keep this immediately before importing librosa; librosa can import numba,
+# and older numba releases expect coverage.types.Tracer to exist.
+_ensure_numba_coverage_compatibility()
+import librosa  # noqa: E402
 
 # S3/cloud dependencies — only required when using --s3cfg
 try:
@@ -81,7 +124,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # number of items in a table per page
 DATA_PAGE_SIZE = 10
 # key in the manifest file that contains the text
-TEXT_KEY = 'text'
+TEXT_KEY = 'transcript_edited'
 
 # Global S3 client (initialized lazily)
 _s3_client = None

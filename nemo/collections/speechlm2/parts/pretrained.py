@@ -42,7 +42,11 @@ def load_pretrained_nemo(cls, model_path_or_name: str):
 
 
 def load_pretrained_hf(
-    model_path_or_name: str, pretrained_weights: bool = True, dtype=torch.float32, trust_remote_code: bool = False
+    model_path_or_name: str,
+    pretrained_weights: bool = True,
+    dtype=torch.float32,
+    trust_remote_code: bool = False,
+    config_dict: dict = None,
 ):
     """
     Load pretrained HuggingFace AutoModelForCausalLM.
@@ -55,14 +59,19 @@ def load_pretrained_hf(
         pretrained_weights: Whether to load pretrained weights (True) or random init (False)
         dtype: Data type for the model
         trust_remote_code: Whether to trust remote code when loading model (needed for some models like Nemotron)
+        config_dict: Optional pre-serialized HF config. When provided with ``pretrained_weights=False``,
+            the architecture is built from this dict and ``model_path_or_name`` is never resolved
+            (so offline loading works even if the original LLM repo is unreachable).
     """
     if pretrained_weights:
         return AutoModelForCausalLM.from_pretrained(
-            model_path_or_name, torch_dtype=dtype, trust_remote_code=trust_remote_code
+            model_path_or_name, dtype=dtype, trust_remote_code=trust_remote_code
         )
+    if config_dict is not None:
+        config = AutoConfig.for_model(**config_dict)
     else:
         config = AutoConfig.from_pretrained(model_path_or_name, trust_remote_code=trust_remote_code)
-        return AutoModelForCausalLM.from_config(config, torch_dtype=dtype, trust_remote_code=trust_remote_code)
+    return AutoModelForCausalLM.from_config(config, dtype=dtype, trust_remote_code=trust_remote_code)
 
 
 def load_pretrained_automodel_llm(

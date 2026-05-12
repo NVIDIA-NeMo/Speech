@@ -20,7 +20,7 @@ from typing import Any, Optional
 import torch
 from lhotse import CutSet
 from lightning import LightningModule
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from peft import PeftModel
 from torch import Tensor
 from torch.distributed.fsdp import fully_shard
@@ -69,10 +69,14 @@ class SALM(LightningModule, HFHubMixin):
         )
         if self.audio_locator_tag not in self.tokenizer.tokenizer.get_vocab():
             self.tokenizer.add_special_tokens({"additional_special_tokens": [self.audio_locator_tag]})
+        llm_config = self.cfg.get("llm_config", None)
+        if llm_config is not None and not isinstance(llm_config, dict):
+            llm_config = OmegaConf.to_container(llm_config, resolve=True)
         self.llm = load_pretrained_hf(
             self.cfg.pretrained_llm,
             pretrained_weights=self.cfg.pretrained_weights,
             trust_remote_code=self.cfg.get("trust_remote_code", False),
+            config_dict=llm_config,
         )
         # Note: we have to "move out" the token embedding outside of LLM to avoid
         #       messing up FSDP/TP hooks.

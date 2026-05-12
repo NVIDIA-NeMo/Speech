@@ -92,6 +92,68 @@ python evaluation/run_evaluation.py --domain restaurant
 
 Scenario classes live under `nemo/agents/voice_agent/evaluation/scenarios/data/` (one file per domain: `restaurant.py`, `customer_service.py`, `qa.py`, …) and tools under `nemo/agents/voice_agent/evaluation/tools/`. Adding a scenario: subclass the domain's `*BaseScenario`, decorate with `@register_eval_scenario`, override only what differs.
 
+### Eval framework key concepts (read before editing)
+
+The eval framework has evolved beyond a simple `<final_response>` capture. The pieces below are easy to miss if you only read `run_evaluation.py`.
+
+**Shared state via RTVI.** Each side (user / agent) holds a per-scenario `shared_state` dict that the bridge seeds at scenario start. The handle is a `SharedStateRef` dataclass (mirrors `TaskRef`) published by `create_update_system_prompt_action(...)` in `nemo/agents/voice_agent/pipecat/processors/frameworks/rtvi_actions.py` — it gives later RTVI actions a mutable view of the same dict. The bridge passes initial state via the `shared_state_init` JSON-string argument of `update_system_prompt`. Scenarios populate state by overriding `Scenario.setup_shared_state(self, state, side)` (in `scenarios/classes.py`) — same method called twice with `side="user"` / `side="agent"`.
+
+**Bridge-pull summary (not LLM-callable).** End-of-scenario state is **pulled** by the bridge after `<exit>`, not pushed by an LLM tool call. The bridge calls `_retrieve_scenario_summary(ws)` in `nemo/agents/voice_agent/evaluation/bridge.py`, which sends an RTVI `get_scenario_summary` action; the handler (`create_get_scenario_summary_action`) returns `{"actions": [...], "db": {...}}` read straight from `shared_state`. This eliminates the previous double-emit / forgot-to-call / mid-conversation-call class of bugs. **Don't reintroduce a `SubmitTransactionSummaryTool`-style LLM-callable summary.**
+
+**DB-state hash matching (primary signal).** When a scenario sets `expected_scenario_db` (a `cached_property` on the class), the runner ignores the action-list comparator and instead hashes the agent's final `shared_state["db"]` via `get_dict_hash` (`nemo/agents/voice_agent/evaluation/db_hash.py`, adapted from eva 0.1.3 / tau-2-bench style). The hash normalizes floats (`1.0 → 1`), `"none" → None`, and uses `ORDER_INDEPENDENT_LIST_FIELDS` for set-like fields; `HASH_EXCLUDED_KEYS = {"session"}` skips per-run noise. On mismatch the runner writes a structured `db_state_diff` (tables → records → fields) via `compute_db_diff` for debugging. The action-list (`reference_answer`) remains as a secondary signal. Aggregate: `db_state_success_rate` printed by the runner.
+
+**Auto-aggregated action records.** Each write tool extends `WriteAirlineTool` (in `nemo/agents/voice_agent/evaluation/tools/eva_airline_tools.py`) and calls `self._record_action({...})` on success — the record is appended to `shared_state["actions"]` so the bridge picks it up via the pull. The action `type` must come from the locked `AIRLINE_ACTION_TYPES` vocabulary (1:1 with eva tool names). Read tools don't record.
+
+**Symmetric DB transfer.** The bridge sends the full original DB content (not a path) to the agent via `shared_state_init`. The agent mutates its in-memory copy through tools; the bridge pulls the full mutated DB back at end-of-scenario. There is also a `db_path` fallback for legacy paths — see the `state["db_path"]` branch in the action handler.
+
+### `eva_airline` domain layout
+
+```
+nemo/agents/voice_agent/evaluation/
+├── scenarios/data/eva_airline/      # package, not a single file
+│   ├── __init__.py                  # re-exports EvaAirlineBaseScenario; imports group_Nx
+│   ├── base.py                      # EvaAirlineBaseScenario + 5 hand-authored seeds
+│   │                                # (1.1.2, 2.1.1, 3.1.3, 5.1.1, 7.2.1)
+│   └── group_{1..7}x.py             # auto-scaffolded scenarios per eva sub-flow
+├── tools/eva_airline_tools.py       # 15 ported tools + WriteAirlineTool base
+├── tools/eva_airline_params.py      # Pydantic schemas for tool args
+└── db_hash.py                       # eva-compatible normalize + hash
+```
+
+`EvaAirlineBaseScenario` derives everything from a single class attribute `eva_id` (e.g. `"1.1.2"`) via `cached_property`: `current_date`, `_scenario_db`, `expected_scenario_db`. The dataset metadata is read once per process via `_load_eva_airline_dataset_index()` (cached at module level). Subclasses only declare `name`, `eva_id`, `description`, `user_persona`, `user_task`, `user_actions`.
+
+Voice-readability rule on `EvaAirlineBaseScenario.VOICE_ALPHANUMERIC_RULE`: alphanumerics are spelled **canonical-first**: `EPXYEK (spelled out as E, P, X, Y, E, K)`. Use this constant in both agent and user guidelines.
+
+Fixtures live in `examples/voice_agent/evaluation/data/` (resolved by `get_eval_data_root()`, override via `EVAL_DATA_ROOT`). The directory has a `README.md` recording upstream source + license for each domain — append a section when adding a new source. The `get_eval_data_root()` helper is at `nemo/agents/voice_agent/evaluation/__init__.py` and uses `parents[4]` to walk from `nemo/agents/voice_agent/evaluation/__init__.py` to the repo root.
+
+### Scaffolding more eva scenarios
+
+The 5 seed scenarios in `base.py` are hand-authored; the rest are scaffolded from `eva_airline_dataset.jsonl` via:
+
+```bash
+python examples/voice_agent/nemo_experiments/generate_eva_airline_scaffolds.py --major 4 \
+    >> nemo/agents/voice_agent/evaluation/scenarios/data/eva_airline/group_4x.py
+```
+
+The generator (in `nemo_experiments/`, gitignored personal-scratch dir) emits one `@register_eval_scenario` class per dataset entry, applies the alphanumeric voice rule, and reads `must_have_criteria` / `negotiation_behavior` / `edge_cases` into guidelines. **The output is a starting point, not final** — hand-review prose and prune negotiation/edge-case bullets before committing.
+
+### Running a single eva_airline scenario
+
+```bash
+# After both bots are running (see Quick Start above):
+python evaluation/run_evaluation.py \
+    --scenarios eva_airline__1_1_2 \
+    --duration 900                    # bump from default 600s — voice round-trips are ~10× slower than text
+```
+
+Scenario names map from eva ids: `"1.1.2" → "eva_airline__1_1_2"`, class names `"1.1.2" → "EvaAirline112"`.
+
+### Known limitations
+
+- **Parakeet STT misrecognizes spelled alphanumerics.** Letter sequences and digit-words (`"for"` vs `"four"`, `"B Z I W"`) frequently get mangled. Diagnose by checking `bot_logs_user/llm_context.json` to confirm the user simulator emitted the correct text before blaming the user-side LLM.
+- **Action list lookups are case-sensitive.** Tool action `type` strings must match `AIRLINE_ACTION_TYPES` exactly.
+- **DB diff isn't shown unless `expected_scenario_db` is set.** Scenarios without a ground-truth DB fall back to action-list comparison only.
+
 ## Code style
 
 The parent repo's style rules (line length 119, black with `skip_string_normalization`, isort `profile=black`) apply. Most of this directory is **excluded from black's auto-format scope** in the parent `pyproject.toml`'s `extend-exclude` — only reformat files you're actively changing, and don't bulk-reformat unrelated code. Run lint via the repo-root command: `python setup.py style --scope examples/voice_agent --fix`.

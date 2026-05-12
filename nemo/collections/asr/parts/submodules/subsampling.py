@@ -46,6 +46,18 @@ class StackingSubsampling(torch.nn.Module):
     def get_streaming_cache_size(self):
         return 0
 
+    def get_streaming_drop_size(self, cache_size: int) -> int:
+        """Number of subsampled output frames produced from `cache_size` input frames.
+
+        Used by streaming encoders to know how many leading frames of the encoder output
+        correspond to the pre-encode left-context cache, so they can be dropped after
+        subsampling. For StackingSubsampling the relation is exact: subsampling_factor
+        consecutive frames stack into one output frame.
+        """
+        if cache_size <= 0:
+            return 0
+        return cache_size // self.subsampling_factor
+
     def forward(self, x, lengths):
         b, t, h = x.size()
         pad_size = (self.subsampling_factor - (t % self.subsampling_factor)) % self.subsampling_factor
@@ -381,6 +393,30 @@ class ConvSubsampling(torch.nn.Module):
 
     def get_streaming_cache_size(self):
         return [0, self.subsampling_factor + 1]
+
+    def get_streaming_drop_size(self, cache_size: int) -> int:
+        """Number of subsampled output frames produced from `cache_size` input frames.
+
+        For convolutional subsampling with stride > 1, the length transformation through
+        each layer is not a simple floor division: it follows the recurrence
+        `L_next = floor((L + all_paddings - kernel_size) / stride) + 1` (or `ceil` when
+        `_ceil_mode` is set). Composed over `_sampling_num` layers, the result is what
+        `calc_length` already computes for the actual forward pass. Using the same helper
+        here keeps the streaming-drop count consistent with the encoder's own length
+        bookkeeping for arbitrary `cache_size`, instead of a divisor approximation that
+        only happens to match the default `subsampling_factor + 1` cache size.
+        """
+        if cache_size <= 0:
+            return 0
+        out = calc_length(
+            torch.tensor(cache_size, dtype=torch.float),
+            all_paddings=self._left_padding + self._right_padding,
+            kernel_size=self._kernel_size,
+            stride=self._stride,
+            ceil_mode=self._ceil_mode,
+            repeat_num=self._sampling_num,
+        )
+        return int(out.item())
 
     def forward(self, x, lengths):
         out_lengths = calc_length(

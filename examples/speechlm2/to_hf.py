@@ -109,7 +109,7 @@ def save_hf_checkpoint(model: torch.nn.Module, state_dict: dict, cfg: HfExportCo
     # NeMo stores training ``dtype`` as shorthand (e.g. "bf16") that transformers can't parse
     # (``getattr(torch, "bf16")`` fails). ``torch_dtype`` already carries the HF-canonical name, mirror it.
     if "torch_dtype" in config:
-        config["dtype"] = config["torch_dtype"]
+        config["dtype"] = config.pop("torch_dtype")
     with open(output_dir / "config.json", "w") as f:
         json.dump(config, f, indent=2)
 

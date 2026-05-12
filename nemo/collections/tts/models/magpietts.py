@@ -597,8 +597,7 @@ class MagpieTTSModel(ModelPT):
             context_encoder_cfg = dict(cfg.context_encoder)
             if context_encoder_cfg.get('use_moe', False):
                 raise Exception(
-                    "MoE is not recommended for the context encoder. "
-                    "Please set context_encoder.use_moe to False."
+                    "MoE is not recommended for the context encoder. Please set context_encoder.use_moe to False."
                 )
             if 'router_load_balancing_loss_coeff' in context_encoder_cfg:
                 logging.warning(
@@ -623,8 +622,7 @@ class MagpieTTSModel(ModelPT):
             context_encoder_cfg = dict(cfg.context_encoder)
             if context_encoder_cfg.get('use_moe', False):
                 raise Exception(
-                    "MoE is not recommended for the context encoder. "
-                    "Please set context_encoder.use_moe to False."
+                    "MoE is not recommended for the context encoder. Please set context_encoder.use_moe to False."
                 )
             if 'router_load_balancing_loss_coeff' in context_encoder_cfg:
                 logging.warning(

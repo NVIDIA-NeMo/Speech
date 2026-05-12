@@ -103,11 +103,10 @@ def save_hf_checkpoint(model: torch.nn.Module, state_dict: dict, cfg: HfExportCo
     save_file(state_dict, output_dir / "model.safetensors")
 
     config = OmegaConf.to_container(model.cfg) if isinstance(model.cfg, DictConfig) else model.cfg
-    # Embed the LLM's HF config so offline reloads don't need to fetch ``pretrained_llm``.
+    # Save the LLM config alongside so offline reloads don't need to fetch ``pretrained_llm``.
     if hasattr(model, "llm") and hasattr(model.llm, "config"):
         config["llm_config"] = model.llm.config.to_dict()
-    # NeMo stores training ``dtype`` as shorthand (e.g. "bf16") that transformers can't parse
-    # (``getattr(torch, "bf16")`` fails). ``torch_dtype`` already carries the HF-canonical name, mirror it.
+    # NeMo stores training ``dtype`` as shorthand (e.g. "bf16"), transformers needs bfloat16 which is torch.dtype forma
     if "torch_dtype" in config:
         config["dtype"] = config.pop("torch_dtype")
     with open(output_dir / "config.json", "w") as f:

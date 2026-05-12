@@ -69,6 +69,7 @@ class SALM(LightningModule, HFHubMixin):
         )
         if self.audio_locator_tag not in self.tokenizer.tokenizer.get_vocab():
             self.tokenizer.add_special_tokens({"additional_special_tokens": [self.audio_locator_tag]})
+        # Check if llm_config key exists in config.json and use it if exist
         llm_config = self.cfg.get("llm_config", None)
         if llm_config is not None and not isinstance(llm_config, dict):
             llm_config = OmegaConf.to_container(llm_config, resolve=True)

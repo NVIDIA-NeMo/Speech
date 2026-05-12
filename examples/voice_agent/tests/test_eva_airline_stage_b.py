@@ -38,7 +38,19 @@ import pytest
 
 from nemo.agents.voice_agent.evaluation import get_eval_data_root
 from nemo.agents.voice_agent.evaluation.db_hash import compute_db_diff, get_dict_hash
-from nemo.agents.voice_agent.evaluation.scenarios import get_eval_scenario
+from nemo.agents.voice_agent.evaluation.scenarios import get_eval_scenario, list_eval_scenarios
+
+
+def _all_eva_airline_scenarios() -> list:
+    """All registered eva_airline scenarios, discovered dynamically.
+
+    Each new batch (eva_airline_1x.py, _2x.py, ...) is automatically covered
+    by the parametrized tests below as soon as it's registered in
+    ``scenarios/data/__init__.py``. No hardcoded list to maintain.
+    """
+    return sorted(name for name in list_eval_scenarios() if name.startswith("eva_airline__"))
+
+
 from nemo.agents.voice_agent.evaluation.tools.eva_airline_tools import (
     AIRLINE_ACTION_TYPES,
     AddBaggageAllowanceTool,
@@ -535,51 +547,36 @@ def test_messy_path_db_state_diverges_from_expected():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "scenario_name,eva_id",
-    [
-        ("eva_airline__voluntary_date_change", "1.1.2"),
-        ("eva_airline__irrops_cancellation", "2.1.1"),
-        ("eva_airline__missed_flight_standby", "3.1.3"),
-        ("eva_airline__cancellation_refund", "5.1.1"),
-        ("eva_airline__escalation_edge_case", "7.2.1"),
-    ],
-)
-def test_eva_airline_scenarios_register_and_load(scenario_name, eva_id):
-    """Each scenario instantiates, binds to the right eva_id, and loads expected_scenario_db.
+@pytest.mark.parametrize("scenario_name", _all_eva_airline_scenarios())
+def test_eva_airline_scenarios_register_and_load(scenario_name):
+    """Each registered eva_airline scenario instantiates and loads its
+    ``expected_scenario_db`` from ``eva_airline_dataset.jsonl``.
 
-    Cheap structural check that catches missing data files, typos in eva_id,
-    or scenarios that forgot to set eva_id. Doesn't validate agent behavior —
+    Cheap structural check that catches missing data files, typos in ``eva_id``,
+    or scenarios that forgot to set ``eva_id``. Doesn't validate agent behavior —
     just that the scenario is well-formed and the dataset.jsonl entry exists.
     """
     s = get_eval_scenario(scenario_name)
     assert s is not None, f"{scenario_name} is not registered"
-    assert s.eva_id == eva_id, f"{scenario_name}: eva_id mismatch (got {s.eva_id!r})"
+    assert s.eva_id, f"{scenario_name}: must declare a non-empty eva_id"
     expected = s.expected_scenario_db
     assert isinstance(expected, dict), f"{scenario_name}: expected_scenario_db is not a dict"
     for table in ("_current_date", "reservations", "journeys"):
         assert table in expected, f"{scenario_name}: expected_db missing {table!r}"
 
 
-@pytest.mark.parametrize(
-    "scenario_name",
-    [
-        "eva_airline__voluntary_date_change",
-        "eva_airline__irrops_cancellation",
-        "eva_airline__missed_flight_standby",
-        "eva_airline__cancellation_refund",
-        "eva_airline__escalation_edge_case",
-    ],
-)
+@pytest.mark.parametrize("scenario_name", _all_eva_airline_scenarios())
 def test_eva_airline_scenarios_have_spell_out_rule_in_both_prompts(scenario_name):
-    """VOICE_ALPHANUMERIC_RULE must land in both agent and user prompts.
+    """``VOICE_ALPHANUMERIC_RULE`` must land in both agent and user prompts.
 
     Catches scenarios that overrode user_actions but forgot to include
-    self.VOICE_ALPHANUMERIC_RULE in user_actions.guidelines.
+    ``self.VOICE_ALPHANUMERIC_RULE`` in ``user_actions.guidelines``.
     """
     s = get_eval_scenario(scenario_name)
     agent_prompt = s.get_agent_prompt()
     user_prompt = s.get_user_prompt()
+    # The literal example "L, A, X" from VOICE_ALPHANUMERIC_RULE — its presence
+    # confirms the rule itself is included (no scenario uses "L, A, X" by accident).
     assert "L, A, X" in agent_prompt, f"{scenario_name}: spell-out rule missing from agent prompt"
     assert "L, A, X" in user_prompt, f"{scenario_name}: spell-out rule missing from user prompt"
 

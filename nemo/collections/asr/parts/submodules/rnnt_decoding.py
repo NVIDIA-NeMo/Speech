@@ -685,6 +685,11 @@ class AbstractRNNTDecoding(ConfidenceMixin):
 
         # Update the joint fused batch size or disable it entirely if needed.
         self.update_joint_fused_batch_size()
+    
+    def set_strip_lang_tags(self, strip_lang_tags: bool):
+        if strip_lang_tags:
+            logging.info("Setting strip_lang_tags to True and defined lang_tag_pattern to <xx-XX>")
+            self.lang_tag_pattern = re.compile(r'\s*<[a-z]{2}-[A-Z]{2}>')
 
     @abstractproperty
     def tokenizer_type(self):
@@ -1864,7 +1869,7 @@ class RNNTDecodingConfig:
 
     # Strip language-ID tags (e.g. <en-US>) from decoded output.
     # Enable for prompt-conditioned models that emit locale tags after punctuation.
-    strip_lang_tags: bool = True
+    strip_lang_tags: bool = False
 
 
 @dataclass

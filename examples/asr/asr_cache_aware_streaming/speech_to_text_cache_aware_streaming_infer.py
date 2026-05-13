@@ -190,6 +190,9 @@ class TranscriptionConfig:
     # Set to a language key from the model's prompt_dictionary (e.g. "en-US", "auto").
     # Ignored for models without prompt support.
     target_lang: Optional[str] = None
+    # whether to strip the language tags from the transcriptions
+    # Ignored for model without prompt support
+    strip_lang_tags: bool = False
 
 
 def extract_transcriptions(hyps):
@@ -372,6 +375,8 @@ def main(cfg: TranscriptionConfig):
     if hasattr(asr_model, 'set_inference_prompt'):
         lang = cfg.target_lang if cfg.target_lang is not None else "auto"
         asr_model.set_inference_prompt(lang)
+        asr_model.decoding.strip_lang_tags = cfg.strip_lang_tags
+        asr_model.decoding.set_strip_lang_tags(cfg.strip_lang_tags)
 
     asr_model = asr_model.to(device=device, dtype=compute_dtype)
     asr_model.eval()

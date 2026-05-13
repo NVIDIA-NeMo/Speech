@@ -54,8 +54,12 @@ def main(cfg):
         model = EasyMagpieTTSModel(cfg=cfg.model, trainer=trainer)
     else:
         raise NotImplementedError(f"Only train, onlinepo_train and test modes are supported. Got {mode}")
+    
+    if cfg.get("pretrained_model", None):
+        model.restore_from_pretrained_checkpoint(cfg.pretrained_model)
 
     model.maybe_init_from_pretrained_checkpoint(cfg=cfg)
+
 
     if mode in ['train', 'onlinepo_train']:
         trainer.fit(model)

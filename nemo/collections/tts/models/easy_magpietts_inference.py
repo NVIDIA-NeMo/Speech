@@ -15,6 +15,7 @@ import random
 import time
 import random
 import time
+import tempfile
 from dataclasses import dataclass, fields
 from functools import partial
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -28,6 +29,7 @@ from omegaconf import DictConfig
 from torch import nn
 from transformers import AutoConfig, AutoModelForCausalLM
 
+from nemo.core.connectors.save_restore_connector import SaveRestoreConnector
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse import setup_tokenizers
 from nemo.collections.tts.models import AudioCodecModel
 from nemo.collections.tts.modules import transformer_2501
@@ -622,6 +624,29 @@ class EasyMagpieTTSInferenceModel(ModelPT):
     def codec_sil_codes_unconverted(self):
         return self._codec_sil_codes_buffer_unconverted
 
+    def restore_from_pretrained_checkpoint(self, checkpoint_path):
+        """
+        Loads model weights a pretrained checkpoint file, supporting partial loading from safetensor and PyTorch formats.
+
+        Args:
+            checkpoint_path (str): Path to checkpoint file.
+
+        Returns:
+            None. The model is updated in-place.
+        """
+        if checkpoint_path is not None:
+            if '.nemo' in checkpoint_path:
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    SaveRestoreConnector._unpack_nemo_file(checkpoint_path, tmpdir)
+                    checkpoint_path = f"{tmpdir}/model_weights.ckpt"
+                    checkpoint_state = torch.load(checkpoint_path, map_location='cpu')
+            else:
+                checkpoint_state = torch.load(checkpoint_path, map_location='cpu')
+            checkpoint_state = set_model_dict_for_partial_init(checkpoint_state, self.state_dict())
+
+            self.load_state_dict(checkpoint_state, strict=True)
+            logging.info(f"Model restored from the checkpoint: {checkpoint_path} !")
+
     def _generate_codec_silence_buffer(self):
         codec_device = next(self._codec_model.parameters()).device
 
@@ -803,7 +828,6 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         return state_dict
 
     def load_state_dict(self, state_dict, strict=True):
-        state_dict = set_model_dict_for_partial_init(state_dict, self.state_dict())
         if not strict:
             super().load_state_dict(state_dict, strict=False)
         modules_to_skip = self._get_state_dict_keys_to_exclude()

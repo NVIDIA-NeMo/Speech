@@ -118,11 +118,12 @@ def any_locale_text_preprocessing(text: str) -> str:
 
 
 def normalize_unicode_text(text: str) -> str:
-    """
-    TODO @xueyang: Apply NFC form may be too aggressive since it would ignore some accented characters
-      that do not exist in the predefined German alphabet,
-      such as 'é'. This is not expected. A better solution is to add an extra normalization with NFD to discard the
-      diacritics and consider 'é' and 'e' produce similar pronunciations.
+    r"""Normalize unicode text to NFC.
+
+    TODO @xueyang: Applying NFC form may be too aggressive since it would ignore some accented characters
+         that do not exist in the predefined German alphabet (.ipa_lexicon.IPA_CHARACTER_SETS), such as 'é'.
+         This is not expected. A better solution is to add an extra normalization with NFD to discard the
+         diacritics and consider 'é' and 'e' produce similar pronunciations.
 
     Note that the tokenizer needs to run `unicodedata.normalize("NFC", x)` before calling `encode` function,
     especially for the characters that have diacritics, such as 'ö' in the German alphabet. 'ö' can be encoded as

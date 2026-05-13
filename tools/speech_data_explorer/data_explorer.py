@@ -338,6 +338,17 @@ def parse_s3_path(s3_path):
     return bucket, key
 
 
+def require_s3_client(s3_path):
+    """Return the configured S3 client or fail with an actionable message."""
+    if _s3_client is None:
+        raise RuntimeError(
+            f"S3 path requires S3 configuration: {s3_path}. "
+            "Run with --s3cfg ~/.s3cfg[default] when using s3:// paths, "
+            "or use --s3cfg AIS with AIS_ENDPOINT and AIS_AUTHN_TOKEN set."
+        )
+    return _s3_client
+
+
 def read_s3_file(s3_path):
     """Read a file from S3 and return its contents as a string.
 
@@ -346,10 +357,10 @@ def read_s3_file(s3_path):
     Returns:
         str: File contents
     """
-    global _s3_client
     try:
         bucket, key = parse_s3_path(s3_path)
-        response = _s3_client.get_object(Bucket=bucket, Key=key)
+        s3_client = require_s3_client(s3_path)
+        response = s3_client.get_object(Bucket=bucket, Key=key)
         return response['Body'].read().decode('utf-8')
     except ClientError as e:
         logging.error(f"Error reading S3 file {s3_path}: {e}")
@@ -365,10 +376,10 @@ def read_s3_file_bytes(s3_path):
     Returns:
         bytes: File contents
     """
-    global _s3_client
     try:
         bucket, key = parse_s3_path(s3_path)
-        response = _s3_client.get_object(Bucket=bucket, Key=key)
+        s3_client = require_s3_client(s3_path)
+        response = s3_client.get_object(Bucket=bucket, Key=key)
         return response['Body'].read()
     except ClientError as e:
         logging.error(f"Error reading S3 file {s3_path}: {e}")
@@ -523,12 +534,12 @@ def read_s3_range(s3_path, start_byte, end_byte):
     Returns:
         bytes: The requested byte range
     """
-    global _s3_client
     try:
         bucket, key = parse_s3_path(s3_path)
+        s3_client = require_s3_client(s3_path)
         range_size = end_byte - start_byte + 1
         logging.info(f"S3 Range request: bytes={start_byte}-{end_byte} (size: {range_size} bytes) from {s3_path}")
-        response = _s3_client.get_object(Bucket=bucket, Key=key, Range=f'bytes={start_byte}-{end_byte}')
+        response = s3_client.get_object(Bucket=bucket, Key=key, Range=f'bytes={start_byte}-{end_byte}')
         data = response['Body'].read()
         logging.info(f"S3 Range request completed: received {len(data)} bytes")
         return data
@@ -926,6 +937,18 @@ def parse_args():
         parser.error('At most two manifest files can be provided.')
     if len(args.manifest) == 2 and args.names_compared is None:
         parser.error('When two manifest files are provided, -nc/--names_compared is required.')
+
+    s3_cli_paths = [
+        path
+        for path in [*args.manifest, args.audio_base_path, args.tar_base_path, args.dali_index_base]
+        if is_s3_path(path)
+    ]
+    if s3_cli_paths and not args.s3cfg:
+        parser.error(
+            f"S3 paths require --s3cfg, but it was not provided. First S3 path: {s3_cli_paths[0]}. "
+            "Example: --s3cfg ~/.s3cfg[default]. "
+            "For AIS, use --s3cfg AIS with AIS_ENDPOINT and AIS_AUTHN_TOKEN set."
+        )
 
     dual_manifest_mode = len(args.manifest) == 2
 

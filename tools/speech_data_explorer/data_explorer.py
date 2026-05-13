@@ -124,7 +124,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # number of items in a table per page
 DATA_PAGE_SIZE = 10
 # key in the manifest file that contains the text
-TEXT_KEY = 'transcript_edited'
+TEXT_KEY = 'text'
 
 # Global S3 client (initialized lazily)
 _s3_client = None

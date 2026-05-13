@@ -1,2 +1,0 @@
-nemo_automodel
-flashoptim

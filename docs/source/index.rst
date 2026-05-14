@@ -1,58 +1,94 @@
-NVIDIA NeMo Framework Developer Docs
-====================================
+NVIDIA NeMo Speech Developer Docs
+=================================
 
-NVIDIA NeMo Framework is an end-to-end, cloud-native framework designed to build, customize, and deploy generative AI models anywhere.
+`NVIDIA NeMo Speech <https://github.com/NVIDIA/NeMo>`_ is an open-source toolkit for speech, audio, and multimodal language model research, with a clear path from experimentation to production deployment.
 
-`NVIDIA NeMo Framework <https://github.com/NVIDIA/NeMo>`_ supports large-scale training features, including:
+.. raw:: html
 
-- Mixed Precision Training
-- Parallelism
-- Distributed Optimizer
-- Fully Sharded Data Parallel (FSDP)
-- Flash Attention
-- Activation Recomputation
-- Positional Embeddings and Positional Interpolation
-- Post-Training Quantization (PTQ) and Quantization Aware Training (QAT) with `Model Optimizer <https://github.com/NVIDIA/Model-Optimizer>`_
-- Knowledge Distillation-based training with `Model Optimizer <https://github.com/NVIDIA/Model-Optimizer>`_
-- Sequence Packing
+   <style>
+   .task-card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px; margin: 24px 0; }
+   .task-card { border: 1px solid #e0e0e0; border-radius: 8px; padding: 20px; text-decoration: none !important; color: inherit !important; transition: box-shadow 0.2s; }
+   .task-card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+   .task-card h3 { margin-top: 0; }
+   .task-card p { color: #555; font-size: 0.95em; }
+   </style>
 
-`NVIDIA NeMo Framework <https://github.com/NVIDIA/NeMo>`_ has separate collections for:
+   <div class="task-card-grid">
+     <a class="task-card" href="asr/intro.html">
+       <h3>🎙️ Transcribe Speech (ASR)</h3>
+       <p>Convert audio to text with state-of-the-art accuracy. Supports 14+ languages, streaming, and timestamps.</p>
+       <strong>Quick Start →</strong>
+     </a>
+     <a class="task-card" href="tts/intro.html">
+       <h3>🔊 Synthesize Speech (TTS)</h3>
+       <p>Generate natural human speech from text. Multi-language, multi-speaker, with controllable prosody.</p>
+       <strong>Quick Start →</strong>
+     </a>
+     <a class="task-card" href="asr/speaker_diarization/intro.html">
+       <h3>👥 Identify Speakers</h3>
+       <p>Determine "who spoke when" in multi-speaker audio. Speaker diarization, recognition, and verification.</p>
+       <strong>Quick Start →</strong>
+     </a>
+     <a class="task-card" href="speechlm2/intro.html">
+       <h3>🧠 Speech Language Models</h3>
+       <p>Audio-aware LLMs that understand and generate speech. Use HuggingFace Transformers, or NeMo Automodel for efficient MoE and model parallelism. Speech-to-text, speech-to-speech, and more.</p>
+       <strong>Quick Start →</strong>
+     </a>
+     <a class="task-card" href="audio/intro.html">
+       <h3>🎧 Process Audio</h3>
+       <p>Enhance, restore, and separate audio signals. Improve audio quality for downstream tasks.</p>
+       <strong>Quick Start →</strong>
+     </a>
+     <a class="task-card" href="tools/intro.html">
+       <h3>🛠️ Speech AI Tools</h3>
+       <p>Forced alignment, data exploration, CTC segmentation, and evaluation utilities for speech workflows.</p>
+       <strong>Explore Tools →</strong>
+     </a>
+   </div>
 
-* :doc:`Large Language Models (LLMs) <nlp/nemo_megatron/intro>`
 
-* :doc:`Automatic Speech Recognition (ASR) <asr/intro>`
+What is NeMo?
+--------------
 
-* :doc:`Text-to-Speech (TTS) <tts/intro>`
+`NVIDIA NeMo <https://github.com/NVIDIA/NeMo>`_ is an open-source toolkit for building, customizing, and deploying speech, audio, and multimodal language models. It provides:
 
-Each collection consists of prebuilt modules that include everything needed to train on your data.
-Every module can easily be customized, extended, and composed to create new generative AI
-model architectures.
+- **Pretrained models** — production-ready checkpoints on `NGC <https://catalog.ngc.nvidia.com/models?query=nemo&orderBy=weightPopularDESC>`__ and `HuggingFace Hub <https://huggingface.co/nvidia>`__
+- **Modular architecture** — neural modules you can mix, match, and extend
+- **Scalable training** — multi-GPU/multi-node via PyTorch Lightning with mixed-precision support
+- **Simple configuration** — YAML-based experiment configs with `Hydra <https://hydra.cc/>`__
 
-For quick guides and tutorials, see the "Getting started" section below.
+Get started in 30 seconds:
 
+.. code-block:: bash
 
-.. toctree::
-   :maxdepth: 2
-   :caption: Getting Started
-   :name: starthere
-   :titlesonly:
+   pip install nemo_toolkit[asr,tts]
 
-   starthere/intro
-   starthere/fundamentals
-   starthere/tutorials
+.. code-block:: python
 
-For more information, browse the developer docs for your area of interest in the contents section below or on the left sidebar.
+   import nemo.collections.asr as nemo_asr
+   model = nemo_asr.models.ASRModel.from_pretrained("nvidia/parakeet-tdt-0.6b-v2")
+   print(model.transcribe(["audio.wav"])[0].text)
 
 
 .. toctree::
    :maxdepth: 1
-   :caption: Key Optimizations
-   :name: Key Optimizations
+   :caption: Getting Started
+   :name: starthere
 
-   features/mixed_precision
+   starthere/install
+   starthere/ten_minutes
+   starthere/key_concepts
+   starthere/choosing_a_model
+   starthere/tutorials
+
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Training
+   :name: Training
+
    features/parallelisms
-   features/moe
-   features/optimizations/index
+   features/mixed_precision
 
 .. toctree::
    :maxdepth: 1
@@ -60,15 +96,6 @@ For more information, browse the developer docs for your area of interest in the
    :name: Checkpoints
 
    checkpoints/intro
-
-.. toctree::
-   :maxdepth: 2
-   :caption: Evaluation
-   :name: evaluation
-   :titlesonly:
-
-   evaluation/evaluation-doc
-   evaluation/evaluation-adapters
 
 .. toctree::
    :maxdepth: 1

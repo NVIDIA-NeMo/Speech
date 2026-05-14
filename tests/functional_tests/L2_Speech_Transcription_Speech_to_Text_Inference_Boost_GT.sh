@@ -23,7 +23,6 @@ coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     asr.model_name="stt_en_fastconformer_transducer_large" \
     streaming.batch_size=5 \
     lang=en \
-    enable_pnc=False \
     enable_itn=False \
     enable_nmt=False \
     asr_output_granularity=segment
@@ -38,7 +37,20 @@ coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     asr.model_name="nvidia/stt_en_fastconformer_tdt_large" \
     streaming.batch_size=5 \
     lang=en \
-    enable_pnc=False \
+    enable_itn=False \
+    enable_nmt=False \
+    asr_output_granularity=segment
+
+# Cache-Aware RNN-T model
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
+    examples/asr/asr_streaming_inference/asr_streaming_infer.py \
+    --config-path="../conf/asr_streaming_inference/" \
+    --config-name=cache_aware_rnnt.yaml \
+    audio_file="/home/TestData/asr/canary/dev-other-wav-10-boost-gt.json" \
+    output_filename="/tmp/stt_inference_boost_gt_res_ca_rnnt.json" \
+    asr.model_name="nvidia/nemotron-speech-streaming-en-0.6b" \
+    streaming.batch_size=5 \
+    lang=en \
     enable_itn=False \
     enable_nmt=False \
     asr_output_granularity=segment

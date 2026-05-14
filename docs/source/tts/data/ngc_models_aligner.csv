@@ -1,3 +1,2 @@
-Locale,Model Name,Dataset,Sampling Rate,#Spk,Phoneme Unit,Model Class,Overview,Checkpoint
-en-US,tts_en_radtts_aligner,LJSpeech,22050Hz,1,ARPABET,nemo.collections.tts.models.aligner.AlignerModel,`tts_en_radtts_aligner <https://ngc.nvidia.com/catalog/models/nvidia:nemo:tts_en_radtts_aligner>`_,``https://api.ngc.nvidia.com/v2/models/nvidia/nemo/tts_en_radtts_aligner/versions/ARPABET_1.11.0/files/Aligner.nemo``
-en-US,tts_en_radtts_aligner_ipa,LJSpeech,22050Hz,1,IPA,nemo.collections.tts.models.aligner.AlignerModel,`tts_en_radtts_aligner <https://ngc.nvidia.com/catalog/models/nvidia:nemo:tts_en_radtts_aligner>`_,``https://api.ngc.nvidia.com/v2/models/nvidia/nemo/tts_en_radtts_aligner/versions/IPA_1.13.0/files/Aligner.nemo``
+Locale,Model Name,Dataset,Sampling Rate,Model Class,Overview,Checkpoint
+en-US,tts_en_fastpitch_align,LJSpeech,22050Hz,nemo.collections.tts.models.fastpitch.FastPitchModel,`tts_en_fastpitch (aligner) <https://ngc.nvidia.com/catalog/models/nvidia:nemo:tts_en_fastpitch>`_,``https://api.ngc.nvidia.com/v2/models/nvidia/nemo/tts_en_fastpitch/versions/1.8.1/files/tts_en_fastpitch_align.nemo``

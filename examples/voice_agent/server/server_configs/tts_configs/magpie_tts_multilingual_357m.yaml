@@ -1,0 +1,17 @@
+# This is an example config for setting up a nvidia/magpie_tts_multilingual_357m TTS model for a NeMo Voice Agent server.
+# Please refer to https://huggingface.co/nvidia/magpie_tts_multilingual_357m for more details
+
+main_model_id: "nvidia/magpie_tts_multilingual_357m"
+sub_model_id: null
+language: "en"
+speaker: "Sofia"  # choices in ["Sofia", "Aria", "John", "Jason", "Leo"]
+apply_TN: false  # whether to apply text normalization
+device: "cuda"
+extra_separator:  # a list of additional punctuations to chunk LLM response into segments for faster TTS output, e.g., ",". Set to `null` to use default behavior 
+  - ','
+  - '\n'
+  - "."
+  - "?"
+  - "!"
+  - ";"
+think_tokens: ["<think>", "</think>"]  # specify them to avoid TTS for thinking process, set to `null` to allow thinking out loud

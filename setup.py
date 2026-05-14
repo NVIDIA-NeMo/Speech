@@ -17,7 +17,6 @@
 
 """Setup for pip package."""
 
-import codecs
 import importlib.util
 import os
 import subprocess
@@ -75,15 +74,18 @@ extras_require = {
     'common-only': req_file('requirements_common.txt'),
     # domain packages
     'asr-only': req_file("requirements_asr.txt"),
-    'nlp-only': req_file("requirements_nlp.txt"),
     'tts': req_file("requirements_tts.txt"),
     'slu': req_file("requirements_slu.txt"),
-    'multimodal-only': req_file("requirements_multimodal.txt"),
     'audio': req_file("requirements_audio.txt"),
+    'speechlm2-only': req_file("requirements_speechlm2.txt"),
 }
 
 
 extras_require['all'] = list(chain(val for key, val in extras_require.items()))
+
+# CUDA version extras (not included in 'all' - user must explicitly select)
+extras_require['cu12'] = req_file("requirements_cu12.txt")
+extras_require['cu13'] = req_file("requirements_cu13.txt")
 
 # Add lightning requirements as needed
 extras_require['common'] = extras_require['common-only']
@@ -108,26 +110,10 @@ extras_require['asr'] = list(
         extras_require['common'],
     )
 )
-extras_require['nlp'] = extras_require['nlp-only']
-extras_require['nlp'] = list(
-    chain(
-        extras_require['nlp'],
-        extras_require['common'],
-    )
-)
-extras_require['llm'] = extras_require['nlp']
 extras_require['tts'] = list(
     chain(
         extras_require['tts'],
         extras_require['asr'],
-        extras_require['common'],
-    )
-)
-extras_require['multimodal'] = extras_require['multimodal-only']
-extras_require['multimodal'] = list(
-    chain(
-        extras_require['multimodal'],
-        extras_require['nlp'],
         extras_require['common'],
     )
 )
@@ -141,6 +127,13 @@ extras_require['slu'] = list(
     chain(
         extras_require['slu'],
         extras_require['asr'],
+    )
+)
+extras_require['speechlm2'] = list(
+    chain(
+        extras_require['speechlm2-only'],
+        extras_require['asr'],
+        extras_require['tts'],
     )
 )
 
@@ -287,9 +280,4 @@ setuptools.setup(
     keywords=__keywords__,
     # Custom commands.
     cmdclass={'style': StyleCommand},
-    entry_points={
-        "nemo_run.cli": [
-            "llm = nemo.collections.llm",
-        ],
-    },
 )

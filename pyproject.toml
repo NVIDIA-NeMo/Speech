@@ -66,6 +66,9 @@ py-modules = ["nemo"]
 [project.entry-points."nemo_run.cli"]
 llm = "nemo.collections.llm"
 
+[project.entry-points."vllm.general_plugins"]
+nemo_speechlm = "nemo.collections.speechlm2.vllm.salm:register"
+
 [project.urls]
 Download = "https://github.com/NVIDIA/NeMo/releases"
 Homepage = "https://github.com/nvidia/nemo"
@@ -120,6 +123,7 @@ extend-exclude = '''
 # -vv will also display tests with durration = 0.00s
 addopts = "--verbose --pyargs --durations=0 --strict-markers"  # always add these arguments to pytest
 testpaths = ["tests"]
+pythonpath = ["tests/e2e_nightly"]
 # directories to ignore when discovering tests
 norecursedirs = [
     "nemo",
@@ -137,7 +141,8 @@ norecursedirs = [
     "CVS",
     "dist",
     "venv",
-    "{arch}"
+    "{arch}",
+    "e2e_nightly"
 ]
 # markers to select tests, use `pytest --markers` to see all available markers, `pytest -m "<marker>"` to select tests
 markers = [
@@ -148,4 +153,52 @@ markers = [
     "docs: mark tests related to documentation (deselect with '-m \"not docs\"')",
     "skipduringci: marks tests that are skipped ci as they are addressed by Jenkins jobs but should be run to test user setups",
     "pleasefixme: marks tests that are broken and need fixing",
+]
+
+
+[tool.uv]
+conflicts = [
+    [
+        { extra = "cu12" },
+        { extra = "cu13" },
+    ],
+]
+
+# --- uv configuration ---
+# Match nemo_automodel's torch index sources so uv doesn't see conflicting
+# indexes when resolving the speechlm2 extra (which pulls nemo_automodel
+# from git as a source dependency — uv treats these as workspace members).
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cpu", marker = "sys_platform != 'linux' and sys_platform != 'darwin'" },
+  { index = "pytorch-cu129", marker = "sys_platform == 'linux'" },
+  { index = "pypi", marker = "sys_platform == 'darwin'" },
+]
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu129"
+url = "https://download.pytorch.org/whl/cu129"
+explicit = true
+
+[dependency-groups]
+docs = [
+    "myst-parser>=4.0.1",
+    "nvidia-sphinx-theme>=0.0.8",
+    "sphinx>=8.1.3",
+    "sphinx-autobuild>=2024.10.3",
+    "sphinx-autodoc2>=0.5.0",
+    "sphinx-copybutton>=0.5.2",
+    "sphinxcontrib-mermaid",
+    "sphinxcontrib-bibtex",
+    "sphinxext-opengraph"
 ]

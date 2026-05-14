@@ -13,9 +13,13 @@
 # limitations under the License.
 
 import functools
+import logging
 import os
 import random
+import re
 import traceback
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -27,6 +31,16 @@ from scipy import ndimage
 from torch.special import gammaln
 
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
+from nemo.collections.audio.parts.utils.transforms import resample
+from nemo.collections.common.parts.utils import mask_sequence_tensor
+
+try:
+    from nemo_text_processing.text_normalization.normalize import Normalizer
+
+    PYNINI_AVAILABLE = True
+except (ImportError, ModuleNotFoundError):
+    Normalizer = None
+    PYNINI_AVAILABLE = False
 
 
 def get_abs_rel_paths(input_path: Path, base_path: Path) -> Tuple[Path, Path]:
@@ -360,21 +374,59 @@ def sample_audio(
     return audio, audio_filepath_abs, audio_filepath_rel
 
 
+# Titles that should NEVER cause sentence splits (always followed by names)
+_TITLE_ABBREVIATIONS = {
+    'mr',
+    'mrs',
+    'ms',
+    'dr',
+    'prof',
+    'sr',
+    'jr',
+    'rev',
+    'gov',
+    'gen',
+    'col',
+    'lt',
+    'sgt',
+    'capt',
+}
+
+# =============================================================================
+# Sentence separator definitions
+# =============================================================================
+
+# Default sentence endings (used for all languages)
+_DEFAULT_SENTENCE_ENDINGS = ['.', '?', '!']
+
+# Language-specific sentence endings (includes default endings)
+# Languages in this dict (ja, zh, hi) have special punctuation that splits
+# regardless of following whitespace (since these languages don't use spaces between sentences)
+_SENTENCE_ENDINGS = {
+    "ja": ['。', '？', '！', '…', '.', '?', '!'],  # Japanese + Western
+    "zh": ['。', '？', '！', '…', '.', '?', '!'],  # Chinese + Western
+    "hi": ['।', '॥', '.', '?', '!'],  # Hindi Danda + Western
+}
+
+
 def split_by_sentence(
     paragraph: str,
-    sentence_separators: Optional[List[str]] = None,
+    language: str = "en",
 ) -> List[str]:
     """
     Split a paragraph into sentences based on sentence-ending punctuation.
 
-    Handles edge cases like abbreviations (e.g., "Dr.", "Mr.", "a.m.") by checking
-    if the separator is followed by a space before splitting. Sentence-ending
-    punctuation is preserved with each sentence.
+    Sentence separators are chosen from the given language (e.g. ".", "?", "!"
+    for English; "。", "？", "！" plus Western punctuation for Japanese/Chinese).
+    Handles edge cases like abbreviations (e.g., "Dr.", "Mr.", "a.m.") by
+    requiring a space after the separator before splitting for Western punctuation;
+    for languages like ja/zh/hi, native punctuation splits without requiring a space.
+    Sentence-ending punctuation is preserved with each sentence.
 
     Args:
         paragraph: The input text paragraph to split into sentences.
-        sentence_separators: A list of strings representing sentence-ending
-            punctuation marks. Defaults to ['.', '?', '!', '...'].
+        language: Language code (e.g. "en", "ja", "zh", "hi"). Determines which
+            sentence-ending characters are used. Defaults to "en".
 
     Returns:
         List of sentence strings with punctuation preserved.
@@ -385,9 +437,19 @@ def split_by_sentence(
 
         >>> split_by_sentence("Dr. Smith is here. Good morning!")
         ["Dr. Smith is here.", "Good morning!"]
+
+        >>> split_by_sentence("こんにちは。元気ですか？", language="ja")
+        ["こんにちは。", "元気ですか？"]
     """
-    if sentence_separators is None:
-        sentence_separators = ['.', '?', '!', '...']
+    # Get sentence separators for this language
+    sentence_separators = _get_sentence_separators_for_language(language)
+
+    # For special languages (ja, zh, hi), their native punctuation splits without whitespace
+    # Special endings are those unique to the language (not in default)
+    if language in _SENTENCE_ENDINGS:
+        special_endings = set(sentence_separators) - set(_DEFAULT_SENTENCE_ENDINGS)
+    else:
+        special_endings = set()
 
     if not paragraph or not paragraph.strip():
         return []
@@ -400,16 +462,49 @@ def split_by_sentence(
     last_sep_idx = -1
 
     for i, char in enumerate(paragraph):
+        if char not in sentence_separators:
+            continue
         # Check if current char is a separator and next char is a space
         # This avoids splitting abbreviations like "Dr." or "a.m."
         next_char = paragraph[i + 1] if i + 1 < len(paragraph) else ""
-        if char in sentence_separators and next_char == " ":
-            sentences.append(paragraph[last_sep_idx + 1 : i + 1].strip())
-            last_sep_idx = i + 1
+        # Determine if we should split at this position
+        # Special language punctuation: split regardless of following character (no spaces in these languages)
+        # Western punctuation: require whitespace or end-of-string
+        if char in special_endings:
+            should_split = True
+        else:
+            should_split = next_char == "" or next_char.isspace()
+
+        if not should_split:
+            continue
+
+        # Check if this is a title abbreviation - never split on titles (Dr., Mr., etc.)
+        if char == '.':
+            # Get the word before the period
+            word_start = last_sep_idx + 1 if last_sep_idx >= 0 else 0
+            word_before = (
+                paragraph[word_start:i].strip().split()[-1].lower() if paragraph[word_start:i].strip() else ""
+            )
+
+            # Never split on title abbreviations (they're always followed by names)
+            if word_before in _TITLE_ABBREVIATIONS:
+                continue
+
+        # Extract the sentence (from after last separator to current separator inclusive)
+        start_idx = last_sep_idx + 1 if last_sep_idx >= 0 else 0
+        sentences.append(paragraph[start_idx : i + 1].strip())
+
+        # Update last_sep_idx: if next char is whitespace, point to it (so +1 skips it)
+        # If no whitespace (CJK), point to separator (so +1 gives us the next char)
+        if next_char.isspace():
+            last_sep_idx = i + 1  # Point to the whitespace, will be skipped
+        else:
+            last_sep_idx = i  # Point to separator, next sentence starts at i+1
 
     # Add remaining text as the last sentence
-    if last_sep_idx < len(paragraph):
-        remaining = paragraph[last_sep_idx + 1 :].strip()
+    if last_sep_idx < len(paragraph) - 1:
+        start_idx = last_sep_idx + 1 if last_sep_idx >= 0 else 0
+        remaining = paragraph[start_idx:].strip()
         if remaining:
             sentences.append(remaining)
 
@@ -420,11 +515,29 @@ def split_by_sentence(
     return sentences
 
 
+def _get_sentence_separators_for_language(language: str) -> List[str]:
+    """
+    Get language-specific sentence separators.
+
+    For special languages (ja, zh, hi), returns their full punctuation set.
+    For all other languages, returns the default sentence endings.
+
+    Args:
+        language: Language code (e.g., "en", "ja", "hi").
+
+    Returns:
+        List of sentence separator characters for the given language.
+        Defaults to ['.', '?', '!'] for unlisted languages.
+    """
+    return _SENTENCE_ENDINGS.get(language, _DEFAULT_SENTENCE_ENDINGS)
+
+
 def chunk_and_tokenize_text_by_sentence(
     text: str,
     tokenizer_name: str,
     text_tokenizer: Any,
     eos_token_id: int,
+    language: str = "en",
 ) -> Tuple[List[torch.Tensor], List[int], List[str]]:
     """
     Tokenize text split by sentences, adding EOS token after each sentence.
@@ -434,6 +547,9 @@ def chunk_and_tokenize_text_by_sentence(
         tokenizer_name: Name of the tokenizer to use (e.g., "english_phoneme").
         text_tokenizer: The tokenizer instance.
         eos_token_id: End-of-sequence token ID to append.
+        language: Language code for selecting appropriate sentence separators.
+            Supported: "en", "ja", "hi", "zh", "es", "fr", "it", "de", "vi".
+            Defaults to "en".
 
     Returns:
         Tuple of:
@@ -441,7 +557,7 @@ def chunk_and_tokenize_text_by_sentence(
             - chunked_tokens_len: List of token lengths.
             - chunked_text: List of sentence strings.
     """
-    split_sentences = split_by_sentence(text)
+    split_sentences = split_by_sentence(text, language=language)
 
     chunked_tokens = []
     chunked_tokens_len = []
@@ -457,3 +573,339 @@ def chunk_and_tokenize_text_by_sentence(
         chunked_tokens_len.append(tokens_len)
 
     return chunked_tokens, chunked_tokens_len, chunked_text
+
+
+@dataclass
+class LanguageThresholds:
+    """Language-specific word/character thresholds for determining when to split text.
+
+    Text exceeding the threshold for its language will be split into sentences.
+    Text below the threshold will be processed as a single chunk.
+
+    The thresholds approximate ~20 seconds of audio per language.
+
+    Attributes:
+        thresholds: Dict mapping language code to word count threshold.
+            For character-based languages (like Chinese, Japanese), this is character count;
+            see get_word_count() for which languages use character vs word count.
+    """
+
+    thresholds: Dict[str, int] = field(
+        default_factory=lambda: {
+            "en": 45,  # English: ~20 seconds of audio
+            "es": 73,  # Spanish
+            "fr": 69,  # French
+            "de": 50,  # German
+            "it": 53,  # Italian
+            "vi": 50,  # Vietnamese
+            "zh": 100,  # Chinese (character count)
+            "hi": 50,  # Hindi
+            "ja": 80,  # Japanese (character count)
+        }
+    )
+
+    def get_word_count(self, text: str, language: str) -> int:
+        """Get word/character count for text based on language.
+
+        Args:
+            text: Input text to count.
+            language: Language code (e.g., "en", "zh").
+
+        Returns:
+            Word count for most languages, character count for character-based languages.
+        """
+        if not text or not text.strip():
+            return 0
+
+        if language == "zh":
+            # Chinese: count characters (no word boundaries)
+            return len([c for c in text if not c.isspace()])
+
+        if language == "ja":
+            try:
+                import pyopenjtalk
+
+                # run_frontend returns list of word dictionaries (NJD format)
+                njd = pyopenjtalk.run_frontend(text)
+                # Filter out None/invalid entries and count words
+                word_count = sum(1 for word in njd if isinstance(word, dict) and word.get('string', '').strip())
+                return word_count if word_count > 0 else len([c for c in text if not c.isspace()])
+            except ImportError:
+                # Fallback: use character count for Japanese if pyopenjtalk not available
+                return len([c for c in text if not c.isspace()])
+
+        # Default: whitespace splitting for English, Hindi, and other languages
+        return len(text.split())
+
+    def exceeds_threshold(self, text: str, language: str) -> bool:
+        """Check if text exceeds the threshold for the given language.
+
+        Args:
+            text: Input text to check.
+            language: Language code.
+
+        Returns:
+            True if text should be split into sentences, False for single chunk.
+        """
+        threshold = self.thresholds.get(language, self.thresholds.get("en", 45))
+        count = self.get_word_count(text, language)
+        return count >= threshold
+
+
+# Default language thresholds instance
+DEFAULT_LANGUAGE_THRESHOLDS = LanguageThresholds()
+
+
+# Centralized mapping from language codes to tokenizer name candidates
+# Used by both do_tts() and ChunkedTTSInferenceDataset
+LANGUAGE_TOKENIZER_MAP: Dict[str, List[str]] = {
+    "en": ["english_phoneme", "english"],
+    "de": ["german_phoneme", "german"],
+    "es": ["spanish_phoneme", "spanish"],
+    "fr": ["french_chartokenizer", "french"],
+    "it": ["italian_phoneme", "italian"],
+    "vi": ["vietnamese_phoneme", "vietnamese"],
+    "zh": ["mandarin_phoneme", "mandarin", "chinese"],
+    "hi": ["hindi_chartokenizer", "hindi"],
+    "ja": ["japanese_phoneme", "japanese"],
+}
+
+
+def get_tokenizer_for_language(
+    language: str,
+    available_tokenizers: List[str],
+    default_tokenizer: str = "english_phoneme",
+) -> str:
+    """Get the appropriate tokenizer name for a language.
+
+    Searches LANGUAGE_TOKENIZER_MAP for candidate tokenizers and returns
+    the first one available. Falls back to default if no match found.
+
+    Args:
+        language: Language code (e.g., "en", "de", "zh").
+        available_tokenizers: List of tokenizer names available in the model.
+        default_tokenizer: Fallback tokenizer if no match found.
+
+    Returns:
+        Tokenizer name to use.
+    """
+    if language in LANGUAGE_TOKENIZER_MAP:
+        for candidate in LANGUAGE_TOKENIZER_MAP[language]:
+            if candidate in available_tokenizers:
+                return candidate
+
+    # Fallback to default if available, else first available
+    if default_tokenizer in available_tokenizers:
+        return default_tokenizer
+    return available_tokenizers[0] if available_tokenizers else default_tokenizer
+
+
+def chunk_text_for_inference(
+    text: str,
+    language: str,
+    tokenizer_name: str,
+    text_tokenizer: Any,
+    eos_token_id: int,
+    language_thresholds: Optional[LanguageThresholds] = None,
+) -> Tuple[List[torch.Tensor], List[int], List[str]]:
+    """
+    Unified text chunking for inference: returns single chunk if below threshold,
+    multiple sentence chunks if above threshold.
+
+    This function unifies the standard and chunked inference paths by automatically
+    determining whether to split text based on language-specific thresholds.
+
+    Args:
+        text: Input text to tokenize and potentially split.
+        language: Language code (e.g., "en", "de", "zh").
+        tokenizer_name: Name of the tokenizer to use (e.g., "english_phoneme").
+        text_tokenizer: The tokenizer instance.
+        eos_token_id: End-of-sequence token ID to append.
+        language_thresholds: Optional custom thresholds. Uses defaults if None.
+
+    Returns:
+        Tuple of:
+            - chunked_tokens: List of token tensors. Single element for short text,
+              multiple elements (one per sentence) for long text.
+            - chunked_tokens_len: List of token lengths.
+            - chunked_text: List of text strings (original or split sentences).
+
+    Examples:
+        >>> # Short text - returns single chunk
+        >>> tokens, lens, texts = chunk_text_for_inference(
+        ...     "Hello world.", "en", "english_phoneme", tokenizer, eos_id
+        ... )
+        >>> len(tokens)
+        1
+
+        >>> # Long text - returns multiple chunks (sentences)
+        >>> long_text = "First sentence. " * 50  # ~50 sentences
+        >>> tokens, lens, texts = chunk_text_for_inference(
+        ...     long_text, "en", "english_phoneme", tokenizer, eos_id
+        ... )
+        >>> len(tokens) > 1
+        True
+    """
+    if language_thresholds is None:
+        language_thresholds = DEFAULT_LANGUAGE_THRESHOLDS
+
+    # Check if text exceeds threshold for this language
+    should_split = language_thresholds.exceeds_threshold(text, language)
+
+    if should_split:
+        # Long text: split by sentences
+        return chunk_and_tokenize_text_by_sentence(
+            text=text,
+            tokenizer_name=tokenizer_name,
+            text_tokenizer=text_tokenizer,
+            eos_token_id=eos_token_id,
+            language=language,
+        )
+    else:
+        # Short text: return as single chunk
+        tokens = text_tokenizer.encode(text=text, tokenizer_name=tokenizer_name)
+        tokens = tokens + [eos_token_id]
+        tokens_tensor = torch.tensor(tokens, dtype=torch.int32)
+        tokens_len = tokens_tensor.shape[0]
+
+        return [tokens_tensor], [tokens_len], [text]
+
+
+def resample_batch(audio, audio_len, input_sample_rate, output_sample_rate):
+    audio = resample(waveform=audio, orig_freq=input_sample_rate, new_freq=output_sample_rate)
+    audio_len_scaled = audio_len.long() * output_sample_rate
+    new_audio_len = audio_len_scaled / input_sample_rate
+    # To avoid rounding issues at lower precisions, do not call torch.ceil when the length is divisible by the sample rate
+    audio_len = torch.where(audio_len_scaled % input_sample_rate == 0, new_audio_len, torch.ceil(new_audio_len))
+    audio_len = audio_len.int()
+    audio = mask_sequence_tensor(audio, audio_len)
+    return audio, audio_len
+
+
+def normalize_text_by_pattern(text: str, pattern: str, replacement: str) -> str:
+    """Normalize input text using a regular expression.
+
+    This function will search for and replace any string matching the input 'pattern' surrounded by any punctuation.
+
+    Example:
+        >>> text = "Mr holmes told mr. watson to be careful."
+        >>> normalized_text = normalize_text_by_pattern(text=text, pattern="[mM]r\.?", replacement="mister")
+        >>> normalized_text
+        "mister holmes told mister watson to be careful."
+
+    Args:
+        text: Text to normalize
+        pattern: Text pattern to find and replace
+        replacement: Text to substitute for the input pattern
+
+    Returns:
+        The normalized text string
+
+    """
+    # Finds all occurrences of the pattern, capturing any punctuation before and after it (including start and end of sentence).
+    regex = re.compile(f"(^|[^A-Za-zÀ-ÖØ-öø-ÿ]){pattern}($|[^A-Za-zÀ-ÖØ-öø-ÿ])")
+    match = regex.findall(string=text)
+
+    output = text
+    for surrounding_punct in match:
+        repl = f"{surrounding_punct[0]}{replacement}{surrounding_punct[1]}"
+        output = regex.sub(string=output, repl=repl, count=1)
+
+    return output
+
+
+class TextProcessor(ABC):
+    """Interface for preprocessing text for TTS training, inference, and evaluation"""
+
+    @abstractmethod
+    def normalize_text(self, text: str) -> str:
+        """
+        Preprocess text for model training and inference.
+            Usually this involves language-specific rules for converting written text to spoken form.
+
+        Args:
+            text: Raw text string
+
+        Returns:
+            Normalized text string
+        """
+        pass
+
+    @abstractmethod
+    def process_text_for_wer(self, text: str) -> str:
+        """
+        Preprocess text for calculating word error rate and character error rate.
+            This should include conversion of text to lower case, removal of punctuation, normalization,
+            and possible post-processing steps for ASR model output.
+
+        Args:
+            text: Raw text string
+
+        Returns:
+            Processed text string
+        """
+        pass
+
+
+class DefaultTextProcessor(TextProcessor):
+    """Default text processing behavior, if language-specific processing is not yet implemented."""
+
+    def normalize_text(self, text: str) -> str:
+        return text
+
+    def process_text_for_wer(self, text: str) -> str:
+        text = text.lower()
+        # Replace dash with a single space
+        text = text.replace("-", " ")
+        # Replace whitespace with a single space
+        text = re.sub(pattern=r"\s\s+", string=text, repl=" ")
+        # Remove all non-alphanumeric characters, making sure to keep accented and foreign characters
+        text = "".join([c for c in text if c == " " or c.isalnum()])
+        # Fix common ASR transcript artifacts
+        text = text.replace("h t t p", "http")
+        text = text.replace("w w w", "www")
+        text = text.strip()
+        return text
+
+
+class EnglishTextProcessor(TextProcessor):
+    """English text processing, which catches some edge cases not covered by normal text normalization.
+
+    English TN does not work on abbreviations when a period is missing. For example, "mr." will be normalized to "mister",
+    but "mr" will not be. This class manually normalizes abbreviations commonly found in public datasets and ASR transcriptions.
+    """
+
+    def __init__(self, input_case: str = "cased"):
+        super().__init__()
+        self.default_processor = DefaultTextProcessor()
+
+        if not PYNINI_AVAILABLE:
+            logging.warning("`nemo_text_processing` is not installed, will skip default text normalization")
+            self.normalizer = None
+        else:
+            self.normalizer = Normalizer(lang="en", input_case=input_case)
+
+    def normalize_text(self, text: str) -> str:
+        if self.normalizer is not None:
+            text = self.normalizer.normalize(text)
+
+        text = normalize_text_by_pattern(text=text, pattern="[mM]r\.?", replacement="mister")
+        text = normalize_text_by_pattern(text=text, pattern="[mM]s\.?", replacement="miss")
+        text = normalize_text_by_pattern(text=text, pattern="[mM]rs\.?", replacement="missus")
+        text = normalize_text_by_pattern(text=text, pattern="[mM]me\.?", replacement="madame")
+        text = normalize_text_by_pattern(text=text, pattern="[dD]r\.?", replacement="doctor")
+        text = normalize_text_by_pattern(text=text, pattern="[eE]tc\.?", replacement="et cetera")
+        return text
+
+    def process_text_for_wer(self, text: str) -> str:
+        text = self.normalize_text(text)
+        text = self.default_processor.process_text_for_wer(text)
+        return text
+
+
+def get_text_processor(language: str) -> TextProcessor:
+    if language == "en":
+        return EnglishTextProcessor()
+    else:
+        logging.info(f"Text processing not implemented for language {language}; using default processor")
+        return DefaultTextProcessor()

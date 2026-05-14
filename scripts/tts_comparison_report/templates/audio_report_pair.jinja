@@ -1,0 +1,22 @@
+<div class="audio-pair-card">
+  <div class="audio-pair-row">
+    <div class="audio-cell">
+      <audio controls preload="metadata">
+      <source src="{{ context_url }}" type="audio/wav">
+      </audio>
+    </div>
+    <div class="audio-cell">
+      <audio controls preload="metadata">
+      <source src="{{ baseline_url }}" type="audio/wav">
+      </audio>
+    </div>
+    <div class="audio-cell">
+      <audio controls preload="metadata">
+      <source src="{{ candidate_url }}" type="audio/wav">
+      </audio>
+    </div>
+  </div>
+  <p class="pair-comment">
+    Text: {{ text }}
+  </p>
+</div>

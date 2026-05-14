@@ -56,9 +56,6 @@ def teardown(trainer: Trainer, model: Optional[nn.Module] = None) -> None:
     """Destroys distributed environment and cleans up cache / collects garbage"""
     # Destroy torch distributed
     if torch.distributed.is_initialized():
-        from megatron.core import parallel_state
-
-        parallel_state.destroy_model_parallel()
         torch.distributed.destroy_process_group()
 
     trainer._teardown()  # noqa: SLF001

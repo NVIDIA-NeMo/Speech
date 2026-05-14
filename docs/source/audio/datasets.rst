@@ -24,7 +24,7 @@ Each entry in the manifest (describing one audio file) should be bordered by ``"
 
 Once there is a manifest that describes each audio file in the dataset, assign the ``JSON`` manifest file path in the experiment config file, for example, ``training_ds.manifest_filepath=<path/to/manifest.json>``.
 
-For more information about the individual tarred datasets and the parameters available, including shuffling options, see the corresponding class APIs in the `Datasets <./api.html#Datasets>`_ section.
+For more information about the individual tarred datasets and the parameters available, including shuffling options, see the corresponding class APIs in the `Datasets <./api.html#datasets>`_ section.
 
 
 Lhotse Format

@@ -71,7 +71,7 @@ class NemoSTTService(STTService):
     def __init__(
         self,
         *,
-        model: Optional[str] = "nvidia/stt_en_fastconformer_hybrid_large_streaming_multi",
+        model: Optional[str] = "nnvidia/parakeet_realtime_eou_120m-v1",
         device: Optional[str] = "cuda:0",
         sample_rate: Optional[int] = 16000,
         params: Optional[NeMoSTTInputParams] = None,
@@ -84,8 +84,7 @@ class NemoSTTService(STTService):
         super().__init__(**kwargs)
         self._queue = asyncio.Queue()
         self._sample_rate = sample_rate
-        params.buffer_size = params.frame_len_in_secs // params.raw_audio_frame_len_in_secs
-        self._params = params
+        self._params = params or NeMoSTTInputParams()
         self._model_name = model
         if has_turn_taking is None:
             has_turn_taking = True if model in ASR_EOU_MODELS else False
@@ -95,8 +94,7 @@ class NemoSTTService(STTService):
         self._decoder_type = decoder_type
         self._audio_logger = audio_logger
         self._is_vad_active = False
-        if not params:
-            raise ValueError("params is required")
+        logger.info(f"NeMoSTTInputParams: {self._params}")
 
         self._device = device
 
@@ -237,7 +235,7 @@ class NemoSTTService(STTService):
                     frame_type = InterimTranscriptionFrame
                 else:
                     # otherwise, we use the is_final flag to determine the frame type
-                    frame_type = TranscriptionFrame if not is_final else InterimTranscriptionFrame
+                    frame_type = TranscriptionFrame if is_final else InterimTranscriptionFrame
                 await self.push_frame(
                     frame_type(
                         transcription,

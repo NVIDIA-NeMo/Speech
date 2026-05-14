@@ -1,2 +1,0 @@
-Model Name,Language,Call Home Dev Test (es),Call Home Eval Test (es),Call Home Train (es),Fisher Dev Set (es),Fisher Test Set (es),MCV Dev-Set (v??) (es),MCV Dev-Set v12.0 (es),MCV Dev-Set v7.0 (es),MCV Test-Set (v??) (es),MCV Test-Set v12.0 (es),MCV Test-Set v7.0 (es),MLS Dev (en),MLS Test (en),VoxPopuli Dev (es),VoxPopuli Test (es)
-stt_es_contextnet_1024,es,19.1 %,20.7 %,18.2 %,15.3 %,15.1 %,,,4.8 %,,,5.2 %,3.1 %,3.5 %,5.1 %,6.2 %

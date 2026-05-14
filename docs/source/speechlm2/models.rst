@@ -4,7 +4,7 @@ Models
 The Duplex Speech-to-Speech (S2S) collection consists of several model architectures designed to enable conversational AI systems with speech understanding and generation capabilities. These models combine audio perception components with language models and speech synthesis to create end-to-end speech-to-speech systems.
 
 Core Model Architectures
------------------------
+------------------------
 
 The collection includes the following core model architectures:
 
@@ -14,7 +14,7 @@ DuplexEARTTS
 
 DuplexEARTTS is a streaming text-to-speech model designed for duplex speech-to-speech systems. It focuses on low-latency, fully streamable speech generation by converting text tokens into audio representations in real time.
 
-The architecture is based on the Streaming TTS model proposed in `Audio Flamingo 3<https://arxiv.org/abs/2507.08128>`_, with several extensions for duplex interaction:
+The architecture is based on the Streaming TTS model proposed in `Audio Flamingo 3 <https://arxiv.org/abs/2507.08128>`_, with several extensions for duplex interaction:
 
 * **Gated fusion of text and audio representations**: (`GatedProjectedSumRMSNorm`), enabling better multimodal integration.
 * **Subword-aware embeddings**: (`SubwordFlagEmbedding`) to improve pronunciation for words composed of multiple text tokens.
@@ -33,10 +33,10 @@ DuplexEARTTS is particularly useful for:
 
 
 SALM (Speech-Augmented Language Model)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 SALM is a speech-augmented language model that integrates an audio perception module with a pre-trained LLM. The model is designed to understand speech input and generate text responses.
-This is an implementation of the `SALM paper<https://arxiv.org/abs/2310.09424>`_.
+This is an implementation of the `SALM paper <https://arxiv.org/abs/2310.09424>`_.
 
 Key components:
 
@@ -49,8 +49,51 @@ SALM is particularly useful for:
 * Speech understanding tasks that benefit from the contextual understanding of an LLM
 * Applications that need to handle mixed text and speech inputs
 
+SALMAutomodel (NeMo Automodel variant)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+SALMAutomodel is a variant of SALM that replaces HuggingFace Transformers with
+`NeMo Automodel <https://github.com/NVIDIA-NeMo/Automodel>`_ for the LLM backbone.
+It provides the same speech-augmented language model capabilities with additional
+benefits for distributed training and inference — especially with Mixture-of-Experts
+(MoE) models like `NVIDIA Nemotron Nano V3 <https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16>`_.
+
+Key differences from SALM:
+
+* **Deferred initialization**: The LLM and perception module are not loaded until
+  ``configure_model()`` is called, enabling memory-efficient distributed loading
+  where each GPU only loads its own shard.
+* **Native LoRA**: Uses NeMo Automodel's built-in LoRA instead of HuggingFace PEFT.
+  LoRA is applied before FSDP2 sharding for correct meta-device handling.
+* **AutomodelParallelStrategy**: Integrates with a custom Lightning strategy that
+  delegates device mesh creation to NeMo Automodel, supporting FSDP2, TP, PP, CP,
+  EP (MoE), and HSDP.
+* **MoE optimizations**: NeMo Automodel provides first-class support for
+  Mixture-of-Experts architectures with **Grouped GEMM** (fused expert computation
+  for higher throughput) and **DeepEP** (Deep Expert Parallelism for efficient
+  all-to-all expert routing across GPUs). This makes it possible to efficiently
+  train Speech LLMs using MoE backbones like NVIDIA Nemotron Nano V3 (30B total,
+  3B active parameters).
+* **Embedding stays in LLM**: Unlike SALM (which moves ``embed_tokens`` out of the
+  LLM to avoid FSDP/TP hook issues), SALMAutomodel keeps embeddings inside the LLM
+  and uses ``F.embedding`` with explicit DTensor handling.
+* **Encoder chunking**: Long audio inputs can be split into fixed-duration chunks
+  for the speech encoder, batched through the perception forward, and concatenated
+  back into one embedding sequence before the LLM forward. This is controlled by
+  ``model.encoder_chunk_size_seconds`` in ``salm_automodel.yaml``; set it to
+  ``null`` to encode each audio row directly. The same knob is also available in
+  ``SALM`` via ``model.encoder_chunk_size_seconds`` in ``salm.yaml`` (defaults to
+  ``null`` there to preserve existing behavior).
+
+SALMAutomodel is particularly useful for:
+
+* Efficient training of Speech LLMs with MoE backbones (e.g., Nemotron Nano V3)
+* Large-scale distributed training with advanced parallelism strategies (FSDP2 with EP for MoE, TP)
+* Models that benefit from native Automodel LoRA integration
+* Inference with model parallelism (TP/EP)
+
 DuplexS2SModel
-^^^^^^^^^^^^^
+^^^^^^^^^^^^^^
 
 The DuplexS2SModel extends the SALM architecture to enable full speech-to-speech capabilities, adding the ability to generate speech output.
 
@@ -68,7 +111,7 @@ This model is particularly useful for:
 * Applications requiring natural-sounding spoken responses
 
 DuplexS2SSpeechDecoderModel
-^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 This model focuses on the speech generation aspect of the duplex system, optimizing the decoder for high-quality speech output.
 
@@ -83,11 +126,45 @@ This model is particularly useful for:
 * Systems where speech generation quality is the primary concern
 * Specialized voice output applications
 
+DuplexSTTModel
+^^^^^^^^^^^^^^
+
+This model focuses on speech-to-text conversion in duplex conversations, processing both user speech and generating agent text responses.
+
+Key components:
+
+* **Audio Perception Module**: Processes audio inputs into embeddings for the LLM.
+* **LLM**: Processes audio embeddings and generates text responses.
+* **Tokenizer**: Converts LLM outputs into readable text.
+
+This model is particularly useful for:
+* Speech-to-text applications in conversational settings
+* Duplex systems where text responses are needed instead of speech
+* Applications requiring transcript generation from spoken dialogue
+
+
+NemotronVoiceChat
+^^^^^^^^^^^^^^^^^
+
+NemotronVoiceChat is an **inference-only**, end-to-end Duplex Speech-to-Speech pipeline. It achieves full-duplex conversational capabilities by seamlessly merging the `DuplexSTTModel` with the `DuplexEARTTS` model. 
+
+Because it is designed exclusively for evaluation, offline inference, and validation workflows (no training step is implemented), it is highly optimized for executing the full perception-generation-synthesis loop.
+
+Key components:
+
+* **DuplexSTTModel**: Handles the streaming audio perception and text response generation.
+* **DuplexEARTTS**: Serves as the autoregressive speech decoder, generating high-fidelity audio from the STT model's text tokens in a streamable fashion.
+
+This model is particularly useful for:
+* End-to-end evaluation of the complete speech-to-speech pipeline.
+* Offline speech-to-speech inference workflows.
+
+
 Model Components
---------------
+----------------
 
 Audio Perception Module
-^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^
 
 The audio perception module is responsible for converting speech signals into embeddings that can be processed by language models. It typically consists of:
 
@@ -96,7 +173,7 @@ The audio perception module is responsible for converting speech signals into em
 3. **Modality Adapter**: Adapts the encoder outputs to be compatible with the LLM's input space
 
 Speech Generation
-^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^
 
 Speech generation components convert text or token representations back into speech. The collection offers:
 
@@ -105,12 +182,12 @@ Speech generation components convert text or token representations back into spe
 3. **DuplexEARTTS**: A ready-to-use duplex text-to-speech model that supports user interruption via a special text interruption token. The model integrates an RVQ-based audio codec with a streaming speech generation module to enable low-latency, real-time synthesis.
 
 Implementation Details
---------------------
+----------------------
 
 The DuplexS2SModel implementation contains several key methods that handle different aspects of the model's functionality:
 
 Model Initialization
-^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^
 
 The constructor (`__init__`) initializes the following components:
 
@@ -120,7 +197,7 @@ The constructor (`__init__`) initializes the following components:
 4. **Token prediction heads**: Adds separate heads for text token and audio token prediction
 
 Forward Method
-^^^^^^^^^^^^
+^^^^^^^^^^^^^^
 
 The `forward` method:
 
@@ -130,7 +207,7 @@ The `forward` method:
 4. Returns these logits for loss computation
 
 Training Step
-^^^^^^^^^^^
+^^^^^^^^^^^^^
 
 The `training_step` method:
 
@@ -141,7 +218,7 @@ The `training_step` method:
 5. Returns the loss for backpropagation
 
 Prepare Inputs
-^^^^^^^^^^^^
+^^^^^^^^^^^^^^
 
 The `prepare_inputs` method:
 
@@ -180,7 +257,7 @@ The `prepare_inputs` method:
         }
 
 Validation
-^^^^^^^^^
+^^^^^^^^^^
 
 The validation process:
 
@@ -192,7 +269,7 @@ The validation process:
 6. Logs and clears metrics after validation is complete
 
 Scaling Support
--------------
+---------------
 
 The DuplexS2SModel includes a `configure_model` method that sets up model parallelism for large-scale training. This method:
 
@@ -208,7 +285,7 @@ The scaling approach supports:
 * 2D parallelism combining both approaches
 
 Pretrained Model Usage
---------------------
+----------------------
 
 All models in the speechlm2 collection can be instantiated from pretrained checkpoints:
 
@@ -219,18 +296,46 @@ All models in the speechlm2 collection can be instantiated from pretrained check
     # Load SALM model
     salm_model = slm.models.SALM.from_pretrained("path/to/checkpoint")
     
+    # Load SALMAutomodel
+    salm_automodel = slm.models.SALMAutomodel.from_pretrained("path/to/checkpoint")
+
     # Load DuplexS2SModel
     duplex_model = slm.models.DuplexS2SModel.from_pretrained("path/to/checkpoint")
-    
+
     # Load DuplexS2SSpeechDecoderModel
-    decoder_model = slm.models.DuplexS2SSpeechDecoderModel.from_pretrained("path/to/checkpoint")
+    speech_decoder_model = slm.models.DuplexS2SSpeechDecoderModel.from_pretrained("path/to/checkpoint")
+
+    # Load DuplexSTTModel
+    stt_model = slm.models.DuplexSTTModel.from_pretrained("path/to/checkpoint")
 
     # Load DuplexEARTTS
-    decoder_model = slm.models.DuplexEARTTS.from_pretrained("path/to/checkpoint")
+    ear_tts_model = slm.models.DuplexEARTTS.from_pretrained("path/to/checkpoint")
+
+    # Load NemotronVoiceChat (Inference Only)
+    voicechat_model = slm.models.NemotronVoiceChat.from_pretrained("path/to/checkpoint")
+
+Fine-Tuning from a Checkpoint
+------------------------------
+
+To fine-tune a model starting from a previous training checkpoint (with a fresh
+optimizer and step counter), set ``model.init_from_checkpoint`` in the config:
+
+.. code-block:: python
+
+    # Via Hydra override:
+    # ++model.init_from_checkpoint=/path/to/step=6375.ckpt
+
+This loads only model weights from the checkpoint — optimizer state, LR scheduler,
+and training step are discarded. Supports DCP directories (from FSDP2/TP training),
+HuggingFace directories, and single-file ``.ckpt`` files. Works with both ``SALM``
+and ``SALMAutomodel``.
+
+See :ref:`fine-tuning-from-checkpoint` in the configuration documentation for full
+details.
 
 Model Configuration
------------------
+-------------------
 
 All models in this collection use a configuration-based approach, where a YAML configuration file specifies the model architecture, components, and training parameters. See the :doc:`configurations documentation <configs>` for details on these configuration files.
 
-For information about scaling and training these models at scale, see the :doc:`training and scaling documentation <training_and_scaling>`. 
+For information about scaling and training these models at scale, see the :doc:`training and scaling documentation <training_and_scaling>`.

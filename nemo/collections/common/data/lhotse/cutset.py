@@ -1001,6 +1001,7 @@ def read_lhotse_magpietts_data_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
     
     def convert_cut_fn(cut: Cut) -> Cut:
         """Convert a single cut into the continuation format."""
+
         orig_agent_sup = fastcopy(cut.supervisions[0])
         target_audio_orig_dur = cut.target_audio.duration
 
@@ -1081,9 +1082,9 @@ def read_lhotse_magpietts_data_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
         if cut.has_custom("target_codes"):
             cut_source.target_codes = cut.target_codes
         if cut.has_custom("lang"):
-            cut_source.lang = cut_source.lang
+            cut_source.lang = cut.lang
         if cut.has_custom("ipa"):
-            cut_source.ipa = cut_source.ipa
+            cut_source.ipa = cut.ipa
         cut_source.formatter = "lhotse_magpietts_data_as_continuation"
 
         return cut_source

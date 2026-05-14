@@ -84,9 +84,7 @@ async def run_bot_websocket(host: str, port: int):
         user_audio_buffer = UserAudioBuffer(
             context=context,
             user_context_aggregator=user_agg,
-            pre_cache_duration_secs=server_config.llm.get(
-                "pre_cache_duration_secs", 0.3
-            ),  # add additional lookback time
+            pre_cache_duration_secs=server_config.llm.get("pre_cache_duration_secs", 0.3),
             use_transcript=server_config.llm.get("use_stt_transcript", False),
         )
     else:

@@ -176,7 +176,6 @@ class TestEncDecMultiTalkerRNNTBPEModel:
         diff = torch.max(torch.abs(logits_instance - logprobs_batch))
         assert diff <= 1e-5
 
-    @pytest.mark.pleasefixme
     @pytest.mark.unit
     def test_speaker_target_setting(self, asr_model):
         """Test speaker target setting functionality."""

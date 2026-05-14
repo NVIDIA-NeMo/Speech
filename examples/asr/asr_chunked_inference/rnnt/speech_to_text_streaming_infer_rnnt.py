@@ -547,16 +547,27 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
                 encoder_output = encoder_output[:, encoder_context.left :]
 
                 # decode only chunk frames
-                chunk_batched_hyps, _, state = decoding_computer(
-                    x=encoder_output,
-                    out_len=torch.where(
-                        is_last_chunk_batch,
-                        encoder_output_len - encoder_context_batch.left,
-                        encoder_context_batch.chunk,
-                    ),
-                    prev_batched_state=state,
-                    multi_biasing_ids=multi_biasing_ids,
-                )
+                if isinstance(decoding_computer, ModifiedALSDBatchedTDTComputer) or isinstance(decoding_computer, ModifiedAESBatchedRNNTComputer) or isinstance(decoding_computer, ModifiedALSDBatchedRNNTComputer):
+                    chunk_batched_hyps, _, state = decoding_computer(
+                        x=encoder_output,
+                        out_len=torch.where(
+                            is_last_chunk_batch,
+                            encoder_output_len - encoder_context_batch.left,
+                            encoder_context_batch.chunk,
+                        ),
+                        prev_batched_state=state,
+                    )
+                else:
+                    chunk_batched_hyps, _, state = decoding_computer(
+                        x=encoder_output,
+                        out_len=torch.where(
+                            is_last_chunk_batch,
+                            encoder_output_len - encoder_context_batch.left,
+                            encoder_context_batch.chunk,
+                        ),
+                        prev_batched_state=state,
+                        multi_biasing_ids=multi_biasing_ids,
+                    )
                 # ========================================================================
 
                 # Handle hypothesis accumulation differently for beam search vs greedy

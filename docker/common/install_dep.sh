@@ -300,10 +300,13 @@ vllm() {
 
 extra() {
   local mode="$1"
+  local AUTOMODEL_REPO=${AUTOMODEL_REPO:-$(cat "$CURR/requirements/manifest.json" | jq -r '."vcs-dependencies"."nemo_automodel".repo')}
+  local AUTOMODEL_TAG=${AUTOMODEL_TAG:-$(cat "$CURR/requirements/manifest.json" | jq -r '."vcs-dependencies"."nemo_automodel".ref')}
   DEPS=(
     "llama-index==0.10.43"                                                                     # incompatible with nvidia-pytriton
     "nemo_run"
     "nvidia-modelopt==0.37.0"                                                                  # We want a specific version of nvidia-modelopt
+    "nemo_automodel @ git+${AUTOMODEL_REPO}@${AUTOMODEL_TAG}"                                  # speechlm2 runtime dep; pinned via manifest.json (kept out of wheel metadata so PyPI publish accepts the wheel)
   )
   if [[ "${NVIDIA_PYTORCH_VERSION}" != "" ]]; then
     DEPS+=(

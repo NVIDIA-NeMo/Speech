@@ -66,6 +66,9 @@ py-modules = ["nemo"]
 [project.entry-points."nemo_run.cli"]
 llm = "nemo.collections.llm"
 
+[project.entry-points."vllm.general_plugins"]
+nemo_speechlm = "nemo.collections.speechlm2.vllm.salm:register"
+
 [project.urls]
 Download = "https://github.com/NVIDIA/NeMo/releases"
 Homepage = "https://github.com/nvidia/nemo"

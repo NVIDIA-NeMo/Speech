@@ -19,6 +19,7 @@ on:
     branches:
       - main
       - "r[0-9]*"
+  workflow_dispatch:
 
 defaults:
   run:
@@ -26,7 +27,7 @@ defaults:
 
 jobs:
   build-test-publish-wheel:
-    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_build_test_publish_wheel.yml@v0.22.3
+    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_build_test_publish_wheel.yml@v0.94.1
     with:
       dry-run: true
       python-package: nemo

@@ -1,0 +1,6 @@
+.github/ @nvidia-nemo/automation
+docker/ @nvidia-nemo/automation
+requirements/ @nvidia-nemo/automation
+pyproject.toml @nvidia-nemo/automation
+setup.py @nvidia-nemo/automation
+uv.lock @nvidia-nemo/automation

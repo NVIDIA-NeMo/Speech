@@ -180,6 +180,8 @@ jobs:
           - runner: ${{ inputs.runner }}
             script: L2_Speech_Estimate_Duration_Bins
           - runner: ${{ inputs.runner }}
+            script: L2_Speech_Estimate_Token_Bins
+          - runner: ${{ inputs.runner }}
             script: L2_Speech_Batch_Size_OOMptimizer
           - runner: ${{ inputs.runner }}
             script: Optional_L2_Speech_Batch_Size_OOMptimizer_Canary

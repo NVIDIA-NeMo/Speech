@@ -75,7 +75,7 @@ SERVER_HOST = os.getenv("SERVER_HOST", "0.0.0.0")
 WEBSOCKET_PORT = int(os.getenv("WEBSOCKET_PORT", 8765))
 FASTAPI_PORT = int(os.getenv("FASTAPI_PORT", 7860))
 TALK_FIRST = os.getenv("TALK_FIRST", "true").lower() == "true"
-LOG_FILE = os.getenv("LOG_FILE", "bot_agent_nemotron.log")
+LOG_FILE = os.getenv("LOG_FILE", "bot_server_nemotron.log")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "DEBUG")
 
 
@@ -106,7 +106,7 @@ ASR_CLOUD_FUNCTION_ID = os.getenv("ASR_CLOUD_FUNCTION_ID", "1598d209-5e27-4d3c-8
 
 ENABLE_TTS_TEXT_FILTER = os.getenv("ENABLE_TTS_TEXT_FILTER", "true").lower() == "true"
 TTS_SERVER_URL = os.getenv("TTS_SERVER_URL", "grpc.nvcf.nvidia.com:443")
-TTS_VOICE_ID = os.getenv("TTS_VOICE_ID", "Magpie-Multilingual.EN-US.Aria")  # default to Aria for agent, Leo for user
+TTS_VOICE_ID = os.getenv("TTS_VOICE_ID", "Magpie-Multilingual.EN-US.Aria")
 TTS_MODEL_NAME = os.getenv("TTS_MODEL_NAME", "magpie_tts_ensemble-Magpie-Multilingual")
 TTS_LANGUAGE = os.getenv("TTS_LANGUAGE", "en-US")
 ZERO_SHOT_AUDIO_PROMPT = os.getenv("ZERO_SHOT_AUDIO_PROMPT")

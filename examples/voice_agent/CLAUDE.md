@@ -85,8 +85,9 @@ A separate two-bot system: a **simulated user bot** talks to the **agent under t
 
 ```bash
 # Three terminals: user bot (8766), agent bot (8765), bridge
-python evaluation/bot_websocket_user.py     # WEBSOCKET_PORT=8766, SERVER_CONFIG_PATH=server_configs/user.yaml
-python evaluation/bot_websocket_agent.py    # WEBSOCKET_PORT=8765, SERVER_CONFIG_PATH=server_configs/agent.yaml
+# bot_server.py is the same script for both roles — SERVER_CONFIG_PATH picks the role.
+WEBSOCKET_PORT=8766 SERVER_CONFIG_PATH=server_configs/user.yaml  python evaluation/bot_server.py
+WEBSOCKET_PORT=8765 SERVER_CONFIG_PATH=server_configs/agent.yaml python evaluation/bot_server.py
 python evaluation/run_evaluation.py --domain restaurant
 ```
 

@@ -42,7 +42,7 @@ export PYTHONPATH=/path/to/NeMo:$PYTHONPATH
 export SERVER_CONFIG_PATH=server_configs/user.yaml
 export WEBSOCKET_PORT=8766
 export CUDA_VISIBLE_DEVICES=0
-python bot_websocket_user.py
+python bot_server.py
 ```
 
 **Terminal 2 — Agent Under Test**
@@ -53,7 +53,7 @@ export PYTHONPATH=/path/to/NeMo:$PYTHONPATH
 export SERVER_CONFIG_PATH=server_configs/agent.yaml
 export WEBSOCKET_PORT=8765
 export CUDA_VISIBLE_DEVICES=1
-python bot_websocket_agent.py
+python bot_server.py
 ```
 
 ### 2. Run an evaluation

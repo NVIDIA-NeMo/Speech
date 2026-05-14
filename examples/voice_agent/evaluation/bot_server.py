@@ -20,6 +20,7 @@ from dotenv import load_dotenv
 from loguru import logger
 from omegaconf import OmegaConf
 from pipecat.frames.frames import LLMRunFrame
+from pipecat.observers.loggers.user_bot_latency_log_observer import UserBotLatencyLogObserver
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.frameworks.rtvi import RTVIConfig, RTVIProcessor
@@ -58,18 +59,18 @@ from nemo.agents.voice_agent.utils.tool_calling import register_schema_tools_to_
 
 load_dotenv(override=True)
 SERVER_HOST = os.getenv("SERVER_HOST", "0.0.0.0")
-WEBSOCKET_PORT = int(os.getenv("WEBSOCKET_PORT", 8766))
-FASTAPI_PORT = int(os.getenv("FASTAPI_PORT", 7861))
-SERVER_CONFIG_PATH = os.getenv("SERVER_CONFIG_PATH", "server_configs/user.yaml")
+WEBSOCKET_PORT = int(os.getenv("WEBSOCKET_PORT", 8765))
+FASTAPI_PORT = int(os.getenv("FASTAPI_PORT", 7860))
+SERVER_CONFIG_PATH = os.getenv("SERVER_CONFIG_PATH", "server_configs/agent.yaml")
 
 
 async def run_bot_websocket(
     server_base_path: str = os.path.dirname(__file__),
-    server_config_path: str = "server_configs/user.yaml",
+    server_config_path: str = "server_configs/agent.yaml",
     host: str = "0.0.0.0",
-    port: int = 8766,
+    port: int = 8765,
 ):
-    """Start the evaluation user websocket server; runs until Ctrl+C."""
+    """Start the evaluation bot websocket server (agent or user role, selected by SERVER_CONFIG_PATH); runs until Ctrl+C."""
     logger.info(f"Starting websocket server on {host}:{port} with server config path: {server_config_path}")
 
     config_manager = ConfigManager(server_base_path=server_base_path, server_config_path=server_config_path)
@@ -93,9 +94,10 @@ async def run_bot_websocket(
     ws_transport = build_ws_transport(config_manager, vad_analyzer, host, port)
     stt = build_stt(config_manager, audio_logger)
     diar = build_diar(config_manager, audio_logger)
-    turn_taking = build_turn_taking(config_manager, audio_logger, use_diar=False)
+    turn_taking = build_turn_taking(config_manager, audio_logger)
     tts = build_tts(config_manager, audio_logger)
 
+    # Re-setup logging so the service initialization does not clobber loguru config.
     setup_rotating_log(log_file=log_file, log_level=log_level)
 
     llm = build_llm(config_manager)
@@ -130,7 +132,7 @@ async def run_bot_websocket(
     pipeline_list.extend([user_agg, llm, tts, ws_transport.output(), assistant_agg])
     pipeline = Pipeline(pipeline_list)
 
-    resettable = [stt, tts, turn_taking]
+    resettable = [stt, tts, turn_taking, diar, user_audio_buffer]
     task_ref = TaskRef()
     shared_state_ref = SharedStateRef()
     rtvi.register_action(create_reset_context_action(task_ref, user_agg, assistant_agg, original_messages, resettable))
@@ -143,7 +145,7 @@ async def run_bot_websocket(
             resettable,
             system_role=config_manager.SYSTEM_ROLE,
             system_prompt_suffix=config_manager.SYSTEM_PROMPT_SUFFIX,
-            enable_tool_calling=server_config.llm.get("enable_tool_calling", False),
+            enable_tool_calling=llm_enable_tool_calling,
             llm=llm,
             context=context,
             rtvi=rtvi,
@@ -158,11 +160,15 @@ async def run_bot_websocket(
     task = PipelineTask(
         pipeline,
         params=PipelineParams(
-            enable_metrics=False,
-            enable_usage_metrics=False,
+            enable_metrics=True,
+            enable_usage_metrics=True,
             idle_timeout=None,
         ),
-        observers=[RTVIObserver(rtvi), RTVIAudioLoggerObserver(audio_logger=audio_logger)],
+        observers=[
+            RTVIObserver(rtvi),
+            RTVIAudioLoggerObserver(audio_logger=audio_logger),
+            UserBotLatencyLogObserver(),
+        ],
         idle_timeout_secs=None,
         cancel_on_idle_timeout=False,
     )

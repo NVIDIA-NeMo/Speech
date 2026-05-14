@@ -141,10 +141,31 @@ Most LLMs from HuggingFace are supported. A few examples are:
         vllm serve nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16 \
             --trust-remote-code --max-num-seqs 1 --gpu-memory-utilization 0.8 --max-model-len 8192 \
             --tensor-parallel-size 2 --enable-auto-tool-choice --tool-call-parser qwen3_coder --enable-prefix-caching \
-            --reasoning-parser-plugin server/parsers/nano_v3_reasoning_parser.py --reasoning-parser nano_v3
+            --reasoning-parser nemotron_v3
     ```
     - If you have a GPU with FP8 support, the VRAM requirement is reduced to about 30GB. You can switch to [nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8) by modifying the llm config accordingly.
     - Tool calling is enabled for this model.
+- [nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4](https://huggingface.co/nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-BF16)
+    - Please use `server/server_configs/llm_configs/nemotron_nano_v3_omni.yaml` as the server config. To better monitor the vllm status, `start_vllm_on_init` is set to `false`, so that you can manually start the vllm server in another terminal via: 
+    ```bash
+        # vllm serve nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-BF16 \
+        # vllm serve nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-FP8 \
+        vllm serve nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4 \
+            --host 0.0.0.0 \
+            --max-model-len 131072 \
+            --tensor-parallel-size 1 \
+            --trust-remote-code \
+            --video-pruning-rate 0.5 \
+            --max-num-seqs 384 \
+            --allowed-local-media-path / \
+            --media-io-kwargs '{"video": {"fps": 2, "num_frames": 256}}' \
+            --reasoning-parser nemotron_v3 \
+            --enable-auto-tool-choice \
+            --tool-call-parser qwen3_coder \
+            --kv-cache-dtype fp8 # Omit this for BF16
+    ```
+    - Tool calling is enabled for this model.
+    - See [here](https://huggingface.co/nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-BF16#vllm) for more details on the vllm deployment.
 - [Qwen/Qwen2.5-7B-Instruct](https://huggingface.co/Qwen/Qwen2.5-7B-Instruct)
     - Please use `server/server_configs/llm_configs/qwen2.5-7B.yaml` as the server config.
 - [Qwen/Qwen3-8B](https://huggingface.co/Qwen/Qwen3-8B)

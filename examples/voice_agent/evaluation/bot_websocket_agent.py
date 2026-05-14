@@ -41,6 +41,7 @@ from nemo.agents.voice_agent.pipecat.processors.frameworks.rtvi_actions import (
     create_reset_context_action,
     create_update_system_prompt_action,
 )
+from nemo.agents.voice_agent.pipecat.services.common import UserAudioBuffer
 from nemo.agents.voice_agent.pipecat.services.nemo.audio_logger import RTVIAudioLoggerObserver
 from nemo.agents.voice_agent.pipecat.services.nemo.builders import (
     build_audio_logger,
@@ -109,6 +110,18 @@ async def run_bot_websocket(
     else:
         logger.info("Tool calling disabled; skipping initial tool registration.")
 
+    if server_config.llm.get("is_omni_model", False):
+        user_audio_buffer = UserAudioBuffer(
+            context=context,
+            user_context_aggregator=user_agg,
+            pre_cache_duration_secs=server_config.llm.get(
+                "pre_cache_duration_secs", 0.3
+            ),  # add additional lookback time
+            use_transcript=server_config.llm.get("use_stt_transcript", False),
+        )
+    else:
+        user_audio_buffer = None
+
     rtvi = RTVIProcessor(config=RTVIConfig(config=[]))
 
     pipeline_list = [ws_transport.input(), rtvi, stt]
@@ -116,10 +129,12 @@ async def run_bot_websocket(
         pipeline_list.append(diar)
     if turn_taking is not None:
         pipeline_list.append(turn_taking)
+    if user_audio_buffer is not None:
+        pipeline_list.append(user_audio_buffer)
     pipeline_list.extend([user_agg, llm, tts, ws_transport.output(), assistant_agg])
     pipeline = Pipeline(pipeline_list)
 
-    resettable = [stt, tts, turn_taking, diar]
+    resettable = [stt, tts, turn_taking, diar, user_audio_buffer]
     task_ref = TaskRef()
     shared_state_ref = SharedStateRef()
     rtvi.register_action(create_reset_context_action(task_ref, user_agg, assistant_agg, original_messages, resettable))

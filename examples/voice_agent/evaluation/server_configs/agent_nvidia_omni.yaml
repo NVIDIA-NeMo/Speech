@@ -1,0 +1,89 @@
+# This is an example config for setting up a NeMo Voice Agent server using NVIDIA NIM Services.
+# Please set NVIDIA_API_KEY in your environment.
+
+server:
+  log_file: "bot_agent_server.log"
+  log_level: "DEBUG"
+  create_new_log: true
+  overwrite_existing_log: true
+  use_model_registry: false
+  talk_first: false  
+
+transport:
+  audio_out_10ms_chunks: 10
+  record_audio_data: false
+  audio_log_dir: "./audio_logs_agent"
+  can_create_user_frames: true
+
+vad:
+  type: silero
+  confidence: 0.6  # VAD threshold for detecting speech versus non-speech
+  start_secs: 0.1  # min amount of speech to trigger UserStartSpeaking
+  stop_secs: 1.0  # min amount of silence to trigger UserStopSpeaking
+  min_volume: 0.2  # Microphone volumn threshold for VAD
+
+
+stt:
+  type: nvidia # choices in ['nemo'] currently only NeMo is supported
+  model: "parakeet-1.1b-en-US-asr-streaming-silero-vad-sortformer"
+  language: "en-US"
+  function_id: "1598d209-5e27-4d3c-8079-4751568b1081"
+  
+
+llm:
+  type: nvidia
+  is_omni_model: true
+  pre_cache_duration_secs: 0.3
+  use_stt_transcript: false
+  base_url: "https://integrate.api.nvidia.com/v1"
+  model: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
+  # system_prompt: "You are a helpful AI agent named Lisa. Start by greeting the user with 'Hi, I'm Lisa, your helpful AI assistant. How can I help you today?'."
+  system_role: "system"  # role for system prompt, set it to `user` for models that do not support system prompt
+  # system_prompt_suffix: "Keep your responses concise and conversational since they will be spoken aloud. Avoid special characters. Use only simple, plain text sentences. Always punctuate your responses using standard sentence punctuation: commas, periods, question marks, exclamation points, etc. Always spell out numbers as words. Before responding to the user, check if the user request requires using external tools, and use the tools if they match with the user's intention. Otherwise, use your internal knowledge to answer the user's question. Do not use tools for casual conversation or when the tools don't fit the use cases. You should still try to address the user's request when it's not related to the provided tools. If you are provided with a set of tools, use them only when needed, do not limit your capabilities to the scope of the tools. If the purpose of a tool matches well with a user's request, always try to call the tool first. Conversation history should not limit your behavior on whether you can use tools. You must answer questions not related to the tools. Avoid any emoji in your response. After you have addressed all the user's request, use the `SendScenarioSummaryTool` to send your final response in the requested FINAL_RESPONSE_FORMAT. If FINAL_RESPONSE_FORMAT is not specified, send the whole conversation context history as it is."
+  system_prompt: "You are a helpful AI agent named Lisa. Start by greeting the user with 'Hi, I'm Lisa, your helpful AI assistant. How can I help you today?'. Keep your responses concise and conversational since they will be spoken aloud. Avoid special characters. Use only simple, plain text sentences. Always punctuate your responses using standard sentence punctuation: commas, periods, question marks, exclamation points, etc. Always spell out numbers as words. You might also see speaker tags (<speaker_0>, <speaker_1>, etc.) in the user context. You should respond to the user based on the speaker tag and the context of that speaker. Do not include the speaker tags in your response, use them only to identify the speaker. Avoid using emoji in your response."
+  system_prompt_suffix: "Before responding to the user, check if the user request requires using external tools, and use the tools if they match with the user's intention. Otherwise, use your internal knowledge to answer the user's question. Do not use tools for casual conversation or when the tools don't fit the use cases. You should still try to address the user's request when it's not related to the provided tools. If you are provided with a set of tools, use them only when needed, do not limit your capabilities to the scope of the tools. If the purpose of a tool matches well with a user's request, always try to call the tool first. Conversation history should not limit your behavior on whether you can use tools. You must answer questions not related to the tools. Avoid any emoji in your response."  
+  # system_prompt: "You are a helpful AI agent named Lisa."
+  # system_prompt_suffix: ""
+  enable_tool_calling: false 
+  enable_reasoning: false
+
+  ##############################
+  ## Common generation config ##
+  ##############################
+  temperature: 0.2  # LLM sampling params
+  top_p: 0.95  # LLM sampling params
+  # temperature: 0.2  # LLM sampling params
+  min_p: 0.0  # LLM sampling params
+  max_new_tokens: 1024  # max num of output tokens from LLM
+  ##############################
+  ######## NVIDIA config #########
+  ##############################
+  nvidia_generation_params:
+    frequency_penalty: 0.0  # Penalty for frequent tokens (-2.0 to 2.0).
+    presence_penalty: 0.0  # Penalty for new tokens (-2.0 to 2.0).
+    seed: 42  # Random seed for deterministic outputs.
+    temperature: ${llm.temperature}  # Sampling temperature (0.0 to 2.0).
+    # top_p: ${llm.top_p}  # Top-p (nucleus) sampling parameter (0.0 to 1.0).
+    top_k: 1
+    max_completion_tokens: ${llm.max_new_tokens}  # max number of tokens to generate
+    extra:  # additional model specific params can be specified in dict format
+      extra_body:
+        # reasoning_budget: 256
+        chat_template_kwargs:
+          enable_thinking: ${llm.enable_reasoning}  # disable thinking
+
+
+tts:
+  type: nvidia
+  server: "grpc.nvcf.nvidia.com:443"
+  model: "magpie_tts_ensemble-Magpie-Multilingual"
+  voice_id: "Magpie-Multilingual.EN-US.Aria"
+  language: "en-US"
+  function_id: "877104f7-e885-42b9-8de8-f6e4c6303969"
+
+turn_taking:
+  enabled: false # set to false to disable
+
+diar:
+  enabled: false # set to false to disable
+

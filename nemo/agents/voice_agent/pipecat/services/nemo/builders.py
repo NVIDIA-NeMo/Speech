@@ -26,13 +26,13 @@ from typing import Optional
 
 from loguru import logger
 from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
 from pipecat.services.llm_service import LLMService
 from pipecat.services.openai import BaseOpenAILLMService
 from pipecat.services.stt_service import STTService
 from pipecat.services.tts_service import TTSService
 
+from nemo.agents.voice_agent.pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
 from nemo.agents.voice_agent.pipecat.services.nemo.audio_logger import AudioLogger
 from nemo.agents.voice_agent.pipecat.services.nemo.diar import NemoDiarService
 from nemo.agents.voice_agent.pipecat.services.nemo.llm import get_llm_service_from_config

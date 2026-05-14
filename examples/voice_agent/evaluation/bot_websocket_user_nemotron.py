@@ -29,7 +29,6 @@ from pipecat.frames.frames import LLMRunFrame
 from pipecat.observers.loggers.user_bot_latency_log_observer import UserBotLatencyLogObserver
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.task import PipelineParams, PipelineTask
-from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
 from pipecat.processors.frameworks.rtvi import RTVIConfig, RTVIProcessor
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
 from pipecat.services.nvidia.llm import NvidiaLLMService
@@ -44,6 +43,7 @@ from nemo.agents.voice_agent.pipecat.bot_server import (
     run_bot_websocket_server,
     run_bot_with_fastapi,
 )
+from nemo.agents.voice_agent.pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
 from nemo.agents.voice_agent.pipecat.processors.frameworks.rtvi import RTVIObserver
 from nemo.agents.voice_agent.pipecat.processors.frameworks.rtvi_actions import (
     SharedStateRef,

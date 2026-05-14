@@ -116,6 +116,7 @@ async def run_bot_websocket(
             user_context_aggregator=user_agg,
             pre_cache_duration_secs=server_config.llm.get("pre_cache_duration_secs", 0.3),
             use_transcript=server_config.llm.get("use_stt_transcript", False),
+            keep_only_last_audio_turn=server_config.llm.get("keep_only_last_audio_turn", True),
         )
     else:
         user_audio_buffer = None

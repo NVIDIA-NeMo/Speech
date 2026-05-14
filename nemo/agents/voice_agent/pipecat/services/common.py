@@ -38,6 +38,7 @@ class UserAudioBuffer(FrameProcessor):
         text_prompt: str = "Follow instructions or answer questions in the audio.",
         text_prompt_for_transcript: str = "Here is the pseudo-transcript of the audio for reference: ",
         raw_audio_frame_len_in_secs: float = 0.016,
+        keep_only_last_audio_turn: bool = True,
     ) -> None:
         """
         Args:
@@ -47,6 +48,8 @@ class UserAudioBuffer(FrameProcessor):
             use_transcript: Whether to add the transcript as auxiliary user text input to the LLM context.
             text_prompt: The prompt to add to the LLM context when the user starts speaking.
             text_prompt_for_transcript: The prompt to add to the LLM context when the user stops speaking and the transcript is available.
+            raw_audio_frame_len_in_secs: The length of the audio frame in seconds.
+            keep_only_last_audio_turn: Whether to keep only the last audio turn.
         """
         super().__init__()
         self._context = context
@@ -60,6 +63,7 @@ class UserAudioBuffer(FrameProcessor):
         self._text_prompt_for_transcript = text_prompt_for_transcript
         self._raw_audio_frame_len_in_secs = raw_audio_frame_len_in_secs
         self._previsous_user_text = ""
+        self._keep_only_last_audio_turn = keep_only_last_audio_turn
 
     @property
     def buffer_duration(self) -> float:
@@ -70,13 +74,13 @@ class UserAudioBuffer(FrameProcessor):
             return 0.0
         return self._raw_audio_frame_len_in_secs * len(self._audio_frames)
 
-    def finalize_transcript(self) -> str:
+    def _finalize_transcript(self) -> str:
         """
         Finalize the transcript.
         """
         return ' '.join(self._transcript_buffer).strip()
 
-    def replace_old_audio_turns(self) -> None:
+    def _replace_previous_audio_turns(self) -> None:
         """
         Replace the old audio turns with the `_previsous_user_text`.
         """
@@ -111,9 +115,10 @@ class UserAudioBuffer(FrameProcessor):
         elif isinstance(frame, UserStoppedSpeakingFrame):
             self._user_speaking = False
             logger.debug(f"User stopped speaking")
-            self.replace_old_audio_turns()
+            if self._keep_only_last_audio_turn:
+                self._replace_previous_audio_turns()
             text = self._text_prompt
-            current_transcript = self.finalize_transcript()
+            current_transcript = self._finalize_transcript()
             if self._use_transcript and self._transcript_buffer:
                 text += f"\n{self._text_prompt_for_transcript}\n{current_transcript}"
             self._previsous_user_text = (

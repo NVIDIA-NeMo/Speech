@@ -18,6 +18,7 @@ inject_dummy_user_message: true
 is_omni_model: true
 pre_cache_duration_secs: 0.3
 use_stt_transcript: false
+keep_only_last_audio_turn: false
 
 ##############################
 ## Common generation config ##

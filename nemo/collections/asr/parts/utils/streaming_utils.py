@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import copy
-import logging
+from nemo.utils import logging
 import math
 import os
 from dataclasses import dataclass
@@ -55,11 +55,8 @@ def print_alignment(alignment):
     if m > 0:
         n = len(alignment[0])
         for i in range(m):
-            for j in range(n):
-                if j == 0:
-                    print(f"{i:4d} |", end=" ")
-                print(f"{alignment[i][j]}", end=" ")
-            print()
+            row = f"{i:4d} | " + " ".join(str(alignment[i][j]) for j in range(n))
+            logging.debug(row)
 
 
 def write_lcs_alignment_to_pickle(alignment, filepath, extras=None):
@@ -292,7 +289,7 @@ def longest_common_subsequence_merge(X, Y, filepath=None):
             "slice_idx": result_idx,
         }
         write_lcs_alignment_to_pickle(LCSuff, filepath=filepath, extras=extras)
-        print("Wrote alignemnt to :", filepath)
+        logging.debug("Wrote alignemnt to : " + filepath)
 
     return result_idx, LCSuff
 
@@ -1066,7 +1063,7 @@ class BatchedFrameASRRNNT(FrameBatchASR):
         except Exception:
             self.eos_id = -1
 
-        print("Performing Stateful decoding :", self.stateful_decoding)
+        logging.info(f"Performing Stateful decoding : {self.stateful_decoding}")
 
         if self.target_lang_id is not None:
             logging.info("Using target language ID")
@@ -1962,7 +1959,7 @@ class FrameBatchMultiTaskAED(FrameBatchASR):
         if not keep_logits:
             return hypothesis
 
-        print("keep_logits=True is not supported for MultiTaskAEDFrameBatchInfer. Returning empty logits.")
+        logging.warning("keep_logits=True is not supported for MultiTaskAEDFrameBatchInfer. Returning empty logits.")
         return hypothesis, []
 
     def _join_hypotheses(self, hypotheses, timestamps=False):
@@ -2102,7 +2099,7 @@ class FrameBatchChunkedRNNT(FrameBatchASR):
         if not keep_logits:
             return hypothesis
 
-        print("keep_logits=True is not supported for FrameBatchChunkedRNNT. Returning empty logits.")
+        logging.warning("keep_logits=True is not supported for FrameBatchChunkedRNNT. Returning empty logits.")
         return hypothesis, []
 
 
@@ -2159,7 +2156,7 @@ class FrameBatchChunkedCTC(FrameBatchASR):
         if not keep_logits:
             return hypothesis
 
-        print("keep_logits=True is not supported for FrameBatchChunkedCTC. Returning empty logits.")
+        logging.warning("keep_logits=True is not supported for FrameBatchChunkedCTC. Returning empty logits.")
         return hypothesis, []
 
 

@@ -954,12 +954,12 @@ def vad_tune_threshold_on_dev(
                 best_threshold = param
                 optimal_scores = all_perf[str(param)]
                 min_score = score
-            print("Current best", best_threshold, optimal_scores)
+            logging.info(f"Current best {best_threshold} {optimal_scores}")
 
         except RuntimeError as e:
-            print(f"Pass {param}, with error {e}")
+            logging.warning(f"Pass {param}, with error {e}")
         except pd.errors.EmptyDataError as e1:
-            print(f"Pass {param}, with error {e1}")
+            logging.warning(f"Pass {param}, with error {e1}")
 
     return best_threshold, optimal_scores
 

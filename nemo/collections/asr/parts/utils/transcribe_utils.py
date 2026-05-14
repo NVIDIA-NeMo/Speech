@@ -127,7 +127,7 @@ def get_buffered_pred_feat_rnnt(
     if manifest:
         filepaths = []
         with open(manifest, "r", encoding='utf_8') as mfst_f:
-            print("Parsing manifest files...")
+            logging.info("Parsing manifest files...")
             for L in mfst_f:
                 L = L.strip()
                 if not L:
@@ -202,13 +202,13 @@ def get_buffered_pred_feat_rnnt(
 
     if os.environ.get('DEBUG', '0') in ('1', 'y', 't'):
         if len(refs) == 0:
-            print("ground-truth text does not present!")
+            logging.warning("ground-truth text does not present!")
             for hyp in hyps:
-                print("hyp:", hyp)
+                logging.debug("hyp: " + str(hyp))
         else:
             for hyp, ref in zip(hyps, refs):
-                print("hyp:", hyp)
-                print("ref:", ref)
+                logging.debug("hyp: " + str(hyp))
+                logging.debug("ref: " + str(ref))
 
     wrapped_hyps = wrap_transcription(hyps)
     return wrapped_hyps

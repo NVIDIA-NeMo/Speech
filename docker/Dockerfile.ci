@@ -42,13 +42,13 @@ curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh
 uv --version
 EOF
 
-WORKDIR /tmp/NeMo
-COPY pyproject.toml uv.lock /tmp/NeMo/
+WORKDIR /workspace
+COPY pyproject.toml uv.lock /workspace/
+COPY nemo/__init__.py nemo/package_info.py /workspace/nemo/
 RUN <<"EOF" bash -ex
-uv sync --link-mode copy --locked --no-install-project --extra all --extra cu13 --group test
+uv sync --link-mode copy --locked --extra all --extra cu13 --group test
 EOF
 
-WORKDIR /workspace
 ENV NEMO_HOME="/home/TestData/nemo_home"
 
 ARG IMAGE_LABEL

@@ -591,6 +591,8 @@ markers = [
     "pleasefixme: marks tests that are broken and need fixing",
 ]
 
+[tool.setuptools.dynamic]
+version = { attr = "nemo.package_info.__version__" }
 
 [tool.uv]
 conflicts = [

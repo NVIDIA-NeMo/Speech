@@ -1107,7 +1107,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
 
             # Get audio output directory
             audio_dir = self.trainer.log_dir
-            audio_dir = os.path.join(audio_dir, 'val_audios', f'epoch_{self.trainer.current_epoch}')
+            audio_dir = os.path.join(audio_dir, 'val_audios')
             os.makedirs(audio_dir, exist_ok=True)
 
             # Save predicted and context audio, collect paths for metrics

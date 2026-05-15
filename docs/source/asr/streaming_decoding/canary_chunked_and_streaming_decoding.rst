@@ -1,3 +1,5 @@
+:orphan:
+
 .. _canary_streaming:
 
 Canary Chunked and Streaming Decoding

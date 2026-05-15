@@ -478,17 +478,9 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
 
                 # Accumulate hypotheses across chunks.
                 if is_beam_search:
-                    # ``flatten_`` resolves the chunk-local prefix tree without sorting and
-                    # returns ``root_ptrs``: for each chunk-end beam ``i``, the beam index
-                    # at the chunk's start it descends from. The loop body permutes beams
-                    # via top-K, so beam ``i`` at the end of chunk ``N`` is generally a
-                    # different logical hypothesis from beam ``i`` at the end of chunk
-                    # ``N-1`` - it descends from beam ``root_ptrs[i]``. Threading these
-                    # pointers via ``boundary_prev_ptr`` encodes the redirection so the
-                    # final ``flatten_sort_`` in ``to_hyps_list`` walks back through the
-                    # right beam history. ``is_chunk_continuation=True`` makes ``merge_``
-                    # replace (not sum) the cumulative per-beam fields (``scores``,
-                    # ``current_lengths_nb``, ...).
+                    # Flatten this chunk's prefix tree and thread the cross-chunk beam
+                    # permutation (``root_ptrs``) into the accumulator so the final
+                    # ``flatten_sort_`` walks back through the right beam history.
                     chunk_root_ptrs = state.batched_hyps.flatten_()
                     if current_batched_hyps is None:
                         current_batched_hyps = state.batched_hyps

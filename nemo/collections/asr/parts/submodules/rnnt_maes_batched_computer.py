@@ -166,16 +166,9 @@ class ModifiedAESBatchedRNNTComputer(ConfidenceMethodMixin):
             .clone()
         )  # size: batch_size x beam_size x (beam_size + maes_expansion_beta)
 
-        # On continuation, work on a fresh clone of the previous chunk's hypotheses so we
-        # don't mutate the state object the caller may also be using as its streaming
-        # accumulator (``current_batched_hyps`` in the streaming script aliases
-        # ``state.batched_hyps`` on the first chunk - mutating it here would corrupt the
-        # accumulator). Cross-chunk per-beam fields (``scores``, ``last_label``,
-        # ``transcript_hash``, ``current_lengths_nb``, ``last_timestamp_lasts``) are
-        # preserved by ``clone()``; the chunk-local prefix-tree cursor and buffers are
-        # reset by ``clear_chunk_local_()`` so this chunk's ``add_results_`` scatters
-        # start at offset zero (cf. ``_before_loop_continuation`` /
-        # ``_create_decoding_state`` clone in :class:`ModifiedALSDBatchedRNNTComputer`).
+        # On continuation, clone the previous chunk's hypotheses (the caller may alias
+        # them as its streaming accumulator) and reset chunk-local buffers; cross-chunk
+        # per-beam state is preserved by the clone.
         if prev_batched_state is not None and prev_batched_state.batched_hyps is not None:
             batched_hyps = prev_batched_state.batched_hyps.clone()
             batched_hyps.clear_chunk_local_()

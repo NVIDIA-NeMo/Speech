@@ -396,18 +396,6 @@ class BatchedBeamHyps:
         extended_with_blank = next_labels == self.blank_index
         extended_with_label = (is_extended) & (~extended_with_blank)
         
-        # TODO: uncomment                
-        # last_labels = torch.gather(self.last_label, dim=-1, index=next_indices)
-        # self.transcript_wb.scatter_(
-        #     dim=-1,
-        #     index=self.current_lengths_wb.unsqueeze(-1),
-        #     src=torch.where(is_extended, next_labels, NON_EXISTENT_LABEL_VALUE).unsqueeze(-1)
-        # )
-        # self.transcript_wb_prev_ptr.scatter_(
-        #     dim=-1,
-        #     index=self.current_lengths_wb.unsqueeze(-1),
-        #     src=torch.where(is_extended, next_indices, INIT_POINTER_VALUE).unsqueeze(-1)
-        # )
         if self.model_type == ASRModelTypeEnum.CTC:
             # for CTC last non-blank and non-repeated label
             extended_with_label = (extended_with_label) & (next_labels != last_labels)  # non-repeated non-blank label
@@ -447,12 +435,6 @@ class BatchedBeamHyps:
         )
         torch.add(self.current_lengths_wb, 1, out=self.current_lengths_wb)
         self.scores.copy_(next_hyps_prob)
-        
-        # TODO: uncomment
-        # self.current_lengths_wb.copy_(
-        #     torch.gather(self.current_lengths_wb, dim=-1, index=next_indices) + is_extended
-        # )
-        # self.scores.copy_(torch.where(is_extended, next_hyps_prob, torch.gather(self.scores, dim=-1, index=next_indices)))
 
         prev_transcript_hash = torch.gather(self.transcript_hash, dim=-1, index=next_indices)
         # update hashes and prefix hashes
@@ -487,14 +469,8 @@ class BatchedBeamHyps:
             Note: The method modifies the `self.scores` tensor in place to reflect the recombined hypotheses.
         """
 
-        # print(f"DEBUG: Entering recombine_hyps_. batch_size={self.batch_size}, beam_size={self.beam_size}")
-
         if self.beam_size <= 1:
             return
-
-        # print(f"DEBUG: transcript_hash shape: {self.transcript_hash.shape}")
-        # print(f"DEBUG: last_label shape: {self.last_label.shape}")
-        # print(f"DEBUG: current_lengths_nb shape: {self.current_lengths_nb.shape}")
 
         hyps_equal = (
             (self.transcript_hash[:, :, None] == self.transcript_hash[:, None, :])
@@ -503,24 +479,15 @@ class BatchedBeamHyps:
         )
 
         if self.model_type == ASRModelTypeEnum.TDT:
-            # print(f"DEBUG: TDT model type. next_timestamp shape: {self.next_timestamp.shape}")
             hyps_equal &= self.next_timestamp[:, :, None] == self.next_timestamp[:, None, :]
-
-        # print(f"DEBUG: hyps_equal shape: {hyps_equal.shape}")
-        
-        # print(f"DEBUG: self.scores : {self.scores}")
 
         scores_matrix = torch.where(
             hyps_equal,
             self.scores[:, None, :].expand(self.batch_size, self.beam_size, self.beam_size),
             self.INACTIVE_SCORE_TENSOR,
         )
-        # print(f"DEBUG: scores_matrix : {scores_matrix}")
-        # print(f"DEBUG: scores_matrix shape: {scores_matrix.shape}")
-        # print(f"DEBUG: scores_matrix : {scores_matrix}")
 
         scores_argmax = scores_matrix.argmax(-1, keepdim=False)
-        # print(f"DEBUG: scores_argmax shape: {scores_argmax.shape}, min: {scores_argmax.min()}, max: {scores_argmax.max()}")
         scores_to_keep = (
             torch.arange(self.beam_size, device=scores_argmax.device, dtype=torch.long)[None, :] == scores_argmax
         )
@@ -529,13 +496,7 @@ class BatchedBeamHyps:
         else:
             new_scores = torch.logsumexp(scores_matrix, dim=-1, keepdim=False)
 
-        # print(f"DEBUG: new_scores shape: {new_scores.shape}")
-        # print(f"DEBUG: scores_to_keep shape: {scores_to_keep.shape}")
-        # print(f"DEBUG: self.scores shape: {self.scores.shape}")
-
         torch.where(scores_to_keep, new_scores.to(self.scores.dtype), self.INACTIVE_SCORE_TENSOR, out=self.scores)
-
-        # print("DEBUG: Exiting recombine_hyps_")
 
     def remove_duplicates(self, labels: torch.Tensor, total_logps: torch.Tensor):
         """
@@ -690,86 +651,6 @@ class BatchedBeamHyps:
             for batch_idx in range(self.batch_size)
         ]
         return hypotheses
-
-    # def flatten_sort_(self, score_norm: bool = True):
-    #     """
-    #     Sorts and flattens the tree structure of hypotheses in a batched beam search decoding process.
-    #     This is a SERIALIZED version that processes each batch element sequentially to avoid
-    #     issues with pointer chasing in the batched version.
-        
-    #     Args:
-    #         score_norm (bool, optional): If True, normalizes the scores by dividing
-    #             them by the current lengths of the hypotheses plus one. Defaults to True.
-    #     This method performs the following steps:
-    #     1. Normalizes the scores if `score_norm` is True.
-    #     2. Sorts the normalized scores in descending order and retrieves the corresponding indices.
-    #     3. Iteratively reconstructs the tokens and timestamps for each hypothesis in reverse order.
-    #     4. Updates the internal state of the object, including transcripts, timestamps, scores,
-    #        lengths, labels, and other metadata, based on the sorted order.
-    #     """
-
-    #     # add one for consistency with non-batched decodings, that use SOS.
-    #     normalized_scores = (
-    #         self.scores / (self.current_lengths_nb.to(self.scores.dtype) + 1) if score_norm else self.scores
-    #     )
-    #     normalized_scores, indices = torch.sort(normalized_scores, dim=-1, descending=True)
-
-    #     # Create temporary buffers to hold the sorted results
-    #     new_transcript_wb = self.transcript_wb.clone()
-    #     new_timestamps = self.timestamps.clone() if (self.model_type == ASRModelTypeEnum.TDT or self.model_type == ASRModelTypeEnum.RNNT) else None
-        
-    #     # Process each batch element sequentially
-    #     for batch_idx in range(self.batch_size):
-    #         max_idx = self.current_lengths_wb[batch_idx].max() - 1
-    #         if max_idx < 0:
-    #             continue
-                
-    #         batch_indices_local = indices[batch_idx]  # [beam_size]
-            
-    #         # For each beam in the sorted order, reconstruct the path by following pointers
-    #         for beam_idx in range(self.beam_size):
-    #             src_beam = batch_indices_local[beam_idx].item()
-    #             ptr = src_beam
-                
-    #             # Reconstruct the path from max_idx down to 0
-    #             for idx in range(max_idx, -1, -1):
-    #                 # Copy the token at this position
-    #                 new_transcript_wb[batch_idx, beam_idx, idx] = self.transcript_wb[batch_idx, ptr, idx]
-                    
-    #                 # Copy timestamp if applicable
-    #                 if new_timestamps is not None:
-    #                     new_timestamps[batch_idx, beam_idx, idx] = self.timestamps[batch_idx, ptr, idx]
-                    
-    #                 # Follow the pointer to the previous beam
-    #                 next_ptr = self.transcript_wb_prev_ptr[batch_idx, ptr, idx].item()
-    #                 if next_ptr != INIT_POINTER_VALUE:
-    #                     # Only update pointer if it's valid; otherwise keep current ptr
-    #                     ptr = next_ptr
-        
-    #     # Copy reconstructed paths back to main buffers
-    #     self.transcript_wb.copy_(new_transcript_wb)
-    #     if new_timestamps is not None:
-    #         self.timestamps.copy_(new_timestamps)
-        
-    #     # Reset pointers to simple sequential structure
-    #     max_idx = self.current_lengths_wb.max() - 1
-    #     if max_idx >= 0:
-    #         self.transcript_wb_prev_ptr[..., : max_idx + 1].copy_(self.beam_indices.unsqueeze(0).unsqueeze(-1))
-
-    #     # Sort all other state tensors according to indices
-    #     self.scores.copy_(torch.gather(self.scores, dim=-1, index=indices))
-    #     self.current_lengths_nb.copy_(torch.gather(self.current_lengths_nb, dim=-1, index=indices))
-    #     self.current_lengths_wb.copy_(torch.gather(self.current_lengths_wb, dim=-1, index=indices))
-
-    #     self.last_label.copy_(torch.gather(self.last_label, dim=-1, index=indices))
-
-    #     if self.model_type == ASRModelTypeEnum.TDT or self.model_type == ASRModelTypeEnum.RNNT:
-    #         self.next_timestamp.copy_(torch.gather(self.next_timestamp, dim=-1, index=indices))
-    #         self.last_timestamp_lasts.copy_(torch.gather(self.last_timestamp_lasts, dim=-1, index=indices))
-
-    #     self.transcript_hash.copy_(torch.gather(self.transcript_hash, dim=-1, index=indices))
-    #     if self.store_prefix_hashes:
-    #         self.transcript_prefix_hash.copy_(torch.gather(self.transcript_prefix_hash, dim=-1, index=indices))
 
     def flatten_sort_(self, score_norm: bool = True):
         """

@@ -588,6 +588,11 @@ class ASRModuleMixin(ASRAdapterModelMixin):
         if update_config:
             with open_dict(self.cfg):
                 self.cfg.encoder.subsampling_conv_chunking_factor = subsampling_conv_chunking_factor
+    
+    def _apply_prompt_to_encoded(self, encoded: Tensor) -> Tensor:
+        """Hook for prompt-conditioned subclasses to inject a language prompt
+        into the encoder output. Default: no-op."""
+        return encoded
 
     def conformer_stream_step(
         self,
@@ -660,6 +665,8 @@ class ASRModuleMixin(ASRAdapterModelMixin):
             drop_extra_pre_encoded=drop_extra_pre_encoded,
             bypass_pre_encode=bypass_pre_encode,
         )
+
+        encoded = self._apply_prompt_to_encoded(encoded)
 
         if isinstance(self, asr_models.EncDecCTCModel) or (
             isinstance(self, asr_models.EncDecHybridRNNTCTCModel) and self.cur_decoder == "ctc"

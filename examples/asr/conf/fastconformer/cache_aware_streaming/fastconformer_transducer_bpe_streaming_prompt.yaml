@@ -147,7 +147,6 @@ model:
     manifest_filepath: ???
     sample_rate: ${model.sample_rate}
     use_lhotse: true
-    shard_manifests: true
     batch_duration: 400
     quadratic_duration: 15
     num_buckets: 30
@@ -158,9 +157,7 @@ model:
     min_duration: 0.1
     is_tarred: true
     tarred_audio_filepaths: null
-    shuffle_n: 2048
     slice_length: 100
-    bucketing_strategy: "fully_randomized"
     bucketing_batch_size: null
     bucket_buffer_size: 10000
     shuffle_buffer_size: 10000
@@ -196,7 +193,6 @@ model:
     batch_duration: null
     use_lhotse: true
     use_bucketing: false
-    max_cuts: 8
     prompt_field: target_lang
     prompt_dictionary: ${model.model_defaults.prompt_dictionary}
     num_prompts: ${model.model_defaults.num_prompts}

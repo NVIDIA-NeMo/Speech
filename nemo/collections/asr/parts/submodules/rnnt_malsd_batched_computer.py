@@ -1133,32 +1133,18 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
 
     def _before_loop_continuation(self):
         """
-        Prepares state for continuation chunk without clearing the cross-chunk per-beam
-        state of ``batched_hyps``.
+        Prologue for a continuation chunk: preserves cross-chunk per-beam state on
+        ``batched_hyps`` (scores, last_label, transcript_hash, current_lengths_nb,
+        last_timestamp_lasts) and resets only the chunk-local prefix-tree buffers
+        (transcript_wb / transcript_wb_prev_ptr / timestamps / current_lengths_wb)
+        that the captured loop body would otherwise overflow.
 
-        Decoder state and fusion states are already restored from the previous chunk via
-        ``_restore_state_from_prev`` before this method is called. ``batched_hyps`` is
-        likewise restored from the previous chunk so that ``scores``, ``last_label``,
-        ``transcript_hash``, ``current_lengths_nb`` and ``last_timestamp_lasts`` continue
-        the beam search across the chunk boundary.
-
-        However, the per-chunk transcript prefix tree (``transcript_wb`` /
-        ``transcript_wb_prev_ptr`` / ``timestamps``) and the write cursor into it
-        (``current_lengths_wb``) must be reset for the new chunk: their buffers are sized
-        for one chunk's worth of decoding only, and the captured ``add_results_no_checks_``
-        scatters into them at ``current_lengths_wb`` without bounds checking. If we kept
-        the previous chunk's cursor we would index out of bounds within a few chunks,
-        producing a CUDA illegal-memory-access from inside the captured graph. The caller
-        is responsible for snapshotting / merging the per-chunk transcripts before this
-        method runs at the start of the next chunk (see :meth:`BatchedBeamHyps.merge_`
-        with ``is_chunk_continuation=True``).
+        Decoder and fusion states are already restored by ``_restore_state_from_prev``.
+        The caller is responsible for snapshotting / merging the chunk-local transcripts
+        before the next chunk (see :meth:`BatchedBeamHyps.merge_` with
+        ``is_chunk_continuation=True``).
         """
-        # Reset chunk-local storage so the captured loop body writes into freshly zeroed
-        # buffers; cross-chunk per-beam state is preserved.
         self.state.batched_hyps.clear_chunk_local_()
-
-        # Decoder state and fusion states are already restored from previous state.
-
         self._before_loop_common()
 
     def _before_loop_common(self):

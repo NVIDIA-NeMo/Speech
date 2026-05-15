@@ -122,10 +122,10 @@ class LazyNeMoIterator:
         paths = expand_sharded_filepaths(path)
 
         if len(paths) == 1:
-            self.source = LhotseLazyJsonlIterator(paths[0])
+            self.source = LazyJsonlIterator(paths[0])
         else:
             self.source = LazyIteratorChain(
-                *(LhotseLazyJsonlIterator(p) for p in paths), shuffle_iters=self.shuffle_shards, seed=self.shard_seed
+                *(LazyJsonlIterator(p) for p in paths), shuffle_iters=self.shuffle_shards, seed=self.shard_seed
             )
         self.text_field = text_field
         self.lang_field = lang_field

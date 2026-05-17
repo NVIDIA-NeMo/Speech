@@ -823,6 +823,8 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         training_mode: Optional[TrainingMode] = None,
         task: Optional[List[str]] = None,
         agent_mask: Optional[torch.Tensor] = None,
+        user_audio_embedded: Optional[torch.Tensor] = None,
+        user_mask: Optional[torch.Tensor] = None,
     ) -> ProcessBatchOutput:
         """
         Simplified batch processing using channel-based embedding architecture.
@@ -958,6 +960,11 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 dropout_complete_phoneme_channel=dropout_complete_phoneme_channel,
             )
 
+        """
+        if agent_mask is not None:
+            debug_agent_mask = agent_mask.clone()
+        """
+
         # 5. Prepare audio channel embeddings
         (
             audio_channel_embedding,
@@ -1016,6 +1023,190 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 )
                 phoneme_channel_embedding = torch.cat([phoneme_channel_embedding, padding], dim=1)
             combined_channel_embedding = combined_channel_embedding + phoneme_channel_embedding
+
+        if user_audio_embedded is not None:
+            bos_user_pad = torch.zeros(
+                user_audio_embedded.size(0),
+                1,
+                user_audio_embedded.size(2),
+                device=user_audio_embedded.device,
+                dtype=user_audio_embedded.dtype,
+            )
+            user_audio_embedded = torch.cat([bos_user_pad, user_audio_embedded], dim=1)
+
+            if user_mask is not None:
+                bos_user_mask = torch.zeros(
+                    user_mask.size(0),
+                    1,
+                    device=user_mask.device,
+                    dtype=torch.bool,
+                )
+                user_mask = torch.cat([bos_user_mask, user_mask], dim=1)
+
+            # Align user conditioning to audio_codes_target timeline,
+            # same as agent_mask from prepare_audio_channel_embeddings().
+            target_T = audio_codes_target.size(2)
+
+            if user_audio_embedded.size(1) < target_T:
+                pad_len = target_T - user_audio_embedded.size(1)
+
+                user_audio_embedded = torch.cat(
+                    [
+                        user_audio_embedded,
+                        torch.zeros(
+                            user_audio_embedded.size(0),
+                            pad_len,
+                            user_audio_embedded.size(2),
+                            device=user_audio_embedded.device,
+                            dtype=user_audio_embedded.dtype,
+                        ),
+                    ],
+                    dim=1,
+                )
+
+                if user_mask is not None:
+                    user_mask = torch.cat(
+                        [
+                            user_mask,
+                            torch.zeros(
+                                user_mask.size(0),
+                                pad_len,
+                                device=user_mask.device,
+                                dtype=torch.bool,
+                            ),
+                        ],
+                        dim=1,
+                    )
+            else:
+                user_audio_embedded = user_audio_embedded[:, :target_T]
+                if user_mask is not None:
+                    user_mask = user_mask[:, :target_T]
+
+            """
+            if user_mask is not None and debug_agent_mask is not None:
+                valid = get_mask_from_lengths(audio_codes_lens_target).bool().to(debug_agent_mask.device)
+                target_T = valid.size(1)
+
+                raw_agent = debug_agent_mask.to(valid.device).bool()
+                if raw_agent.size(1) < target_T:
+                    raw_agent = torch.cat(
+                        [
+                            raw_agent,
+                            torch.zeros(
+                                raw_agent.size(0),
+                                target_T - raw_agent.size(1),
+                                device=raw_agent.device,
+                                dtype=torch.bool,
+                            ),
+                        ],
+                        dim=1,
+                    )
+                else:
+                    raw_agent = raw_agent[:, :target_T]
+
+                raw_agent = raw_agent & valid
+
+                raw_input_agent_mask = torch.zeros_like(raw_agent)
+                raw_input_agent_mask[:, 1:] = raw_agent[:, :-1]
+                raw_input_agent_mask[:, 0] = False
+
+                user_mask_cmp = user_mask.to(raw_input_agent_mask.device).bool()
+
+                T_cmp = min(user_mask_cmp.size(1), raw_input_agent_mask.size(1))
+                user_mask_cmp = user_mask_cmp[:, :T_cmp]
+                raw_input_agent_mask = raw_input_agent_mask[:, :T_cmp]
+
+                overlap = user_mask_cmp & raw_input_agent_mask
+
+                # Classify overlap location relative to contiguous user spans.
+                B, T = user_mask_cmp.shape
+                left_overlap = torch.zeros(B, device=user_mask_cmp.device, dtype=torch.long)
+                right_overlap = torch.zeros(B, device=user_mask_cmp.device, dtype=torch.long)
+                middle_overlap = torch.zeros(B, device=user_mask_cmp.device, dtype=torch.long)
+
+                for b in range(B):
+                    user_idx = user_mask_cmp[b].nonzero(as_tuple=False).flatten()
+                    if user_idx.numel() == 0:
+                        continue
+
+                    breaks = torch.where(user_idx[1:] != user_idx[:-1] + 1)[0] + 1
+                    spans = torch.tensor_split(user_idx, breaks.cpu().tolist())
+
+                    for span in spans:
+                        s = int(span[0].item())
+                        e = int(span[-1].item()) + 1
+
+                        overlap_span = overlap[b, s:e]
+                        if not overlap_span.any():
+                            continue
+
+                        ov_idx = overlap_span.nonzero(as_tuple=False).flatten()
+                        ov_abs = ov_idx + s
+
+                        # Count overlap frames close to boundaries.
+                        boundary_width = int(self.cfg.get("user_agent_overlap_boundary_width", 10))
+
+                        left_region_end = min(e, s + boundary_width)
+                        right_region_start = max(s, e - boundary_width)
+
+                        left_overlap[b] += overlap[b, s:left_region_end].sum()
+                        right_overlap[b] += overlap[b, right_region_start:e].sum()
+
+                        boundary_mask = torch.zeros_like(overlap[b, s:e])
+                        boundary_mask[: left_region_end - s] = True
+                        boundary_mask[right_region_start - s :] = True
+
+                        middle_overlap[b] += (overlap_span & ~boundary_mask).sum()
+
+                logging.info(
+                    "[user/raw-agent input-overlap side debug] "
+                    f"overlap_frames={overlap.sum(dim=1).detach().cpu().tolist()} "
+                    f"left_overlap={left_overlap.detach().cpu().tolist()} "
+                    f"right_overlap={right_overlap.detach().cpu().tolist()} "
+                    f"middle_overlap={middle_overlap.detach().cpu().tolist()} "
+                    f"user_frames={user_mask_cmp.sum(dim=1).detach().cpu().tolist()} "
+                    f"raw_agent_input_frames={raw_input_agent_mask.sum(dim=1).detach().cpu().tolist()}"
+                )
+                """
+            batch_size = user_audio_embedded.size(0)
+            device = user_audio_embedded.device
+
+            max_delay = audio_delay.max().item()
+            zero_delay_tensor = torch.zeros(
+                batch_size,
+                max_delay,
+                self.cfg.embedding_dim,
+                device=device,
+                dtype=user_audio_embedded.dtype,
+            )
+
+            user_audio_lens = audio_codes_lens_target.to(audio_delay.device)
+
+            user_audio_channel_embedding, _ = self.join_embeddings_temporally(
+                embeddings=[zero_delay_tensor, user_audio_embedded],
+                lengths=[audio_delay, user_audio_lens],
+            )
+
+            if user_audio_channel_embedding.size(1) < max_channel_len:
+                pad_len = max_channel_len - user_audio_channel_embedding.size(1)
+                user_audio_channel_embedding = torch.cat(
+                    [
+                        user_audio_channel_embedding,
+                        torch.zeros(
+                            batch_size,
+                            pad_len,
+                            user_audio_channel_embedding.size(2),
+                            device=user_audio_channel_embedding.device,
+                            dtype=user_audio_channel_embedding.dtype,
+                        ),
+                    ],
+                    dim=1,
+                )
+            else:
+                user_audio_channel_embedding = user_audio_channel_embedding[:, :max_channel_len]
+
+            combined_channel_embedding = combined_channel_embedding + user_audio_channel_embedding
+
 
         # 7. Join context with combined channel embeddings
         # The combined_channel_lens is the max of all channel lens for each batch item
@@ -1142,7 +1333,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             audio = batch['audio']
             audio_lens = batch['audio_lens']
             audio_codes, audio_codes_lens = self._codec_helper.audio_to_codes(audio, audio_lens)
-        
+
         # augment tts data to looks more like multiturn data by adding pad on the begining and emulating user speaking.
         if self.cfg.get("use_multiturn_dataset", False) and "tts" in batch['task']:
             prob = self.cfg.get("add_tts_sil_begining_prob", 0.0)
@@ -1242,6 +1433,85 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                             torch.zeros_like(gathered_agent_mask),
                         )
 
+        if self.cfg.get("use_multiturn_dataset", False) and batch["user_audio_turn_splitted"] is not None and self.cfg.get("condition_on_user_speech", False):
+            input_samples_per_frame = self.codec_model_samples_per_frame * self.frame_stacking_factor
+
+            user_audio_codes, user_audio_codes_lens = self._codec_helper.audio_to_codes(
+                batch["user_audio_turn_splitted"],
+                batch["user_audio_turn_splitted_lens"],
+            )
+
+            if self._codec_converter is not None:
+                user_audio_codes = self._codec_converter.convert_original_to_new(
+                    audio_tokens=user_audio_codes, audio_lens=user_audio_codes_lens
+                ).long()
+
+            user_audio_codes, user_audio_codes_lens = self.stack_codes(
+                user_audio_codes,
+                user_audio_codes_lens,
+                self.audio_bos_id,
+                self.audio_eos_id,
+                self.frame_stacking_factor,
+                self.num_audio_codebooks,
+            )
+
+            user_audio_embedded = self.embed_audio_tokens(user_audio_codes)
+            # user_audio_embedded: [N_turns, T_turn_max, D]
+            # user_audio_codes_lens includes BOS/EOS from stack_codes
+
+            B = batch["text"].shape[0]
+            T = batch["text"].shape[1]
+            D = user_audio_embedded.shape[-1]
+
+            user_audio_embedded_restored = user_audio_embedded.new_zeros(B, T, D)
+            user_audio_embedded_mask = torch.zeros(B, T, device=user_audio_embedded.device, dtype=torch.bool)
+
+            indices = batch["user_audio_turn_splitted_indices"].to(user_audio_embedded.device)
+            for turn_idx, (b, start_sample, end_sample) in enumerate(indices):
+                b = int(b.item())
+                if b < 0:
+                    continue
+
+                start_frame = int(torch.ceil(start_sample.float() / input_samples_per_frame).item())
+                end_frame = int(end_sample.item()) // input_samples_per_frame
+
+                start_frame = max(0, min(start_frame, T))
+                end_frame = max(start_frame, min(end_frame, T))
+
+                seq_len = end_frame - start_frame
+                if seq_len <= 0:
+                    continue
+
+                # Remove BOS/EOS from user turn embedding.
+                # stack_codes added special tokens, so timeline frames should use only real user audio frames.
+                turn_len_with_special = int(user_audio_codes_lens[turn_idx].item())
+                real_start = 1
+                real_end = max(real_start, turn_len_with_special - 1)
+
+                turn_emb = user_audio_embedded[turn_idx, real_start:real_end]
+
+                copy_len = min(seq_len, turn_emb.size(0))
+                if copy_len <= 0:
+                    continue
+
+                dst_start = start_frame
+                dst_end = start_frame + copy_len
+                user_audio_embedded_restored[b, dst_start:dst_end] = turn_emb[:copy_len]
+                user_audio_embedded_mask[b, dst_start:dst_end] = True
+                boundary_trim = int(self.cfg.get("user_audio_boundary_trim", 4))
+                trim = min(boundary_trim, copy_len // 2)
+                if trim > 0:
+                    user_audio_embedded_restored[b, dst_start:dst_start + trim] = 0.0
+                    user_audio_embedded_restored[b, dst_end - trim:dst_end] = 0.0
+                    user_audio_embedded_mask[b, dst_start:dst_start + trim] = False
+                    user_audio_embedded_mask[b, dst_end - trim:dst_end] = False
+
+            user_audio_embedded = user_audio_embedded_restored
+            user_audio_mask = user_audio_embedded_mask
+        else:
+            user_audio_embedded = None
+            user_audio_mask = None
+
         batch_output = self.process_batch(
             text=batch['text'],
             text_lens=batch['text_lens'],
@@ -1256,6 +1526,8 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             mode="train",
             task=batch["task"] if self.cfg.get("use_multiturn_dataset", False) else None,
             agent_mask=batch["agent_mask"] if self.cfg.get("use_multiturn_dataset", False) else None,
+            user_audio_embedded=user_audio_embedded,
+            user_mask=user_audio_mask,
         )
         loss = batch_output.loss
         codebook_loss = batch_output.codebook_loss

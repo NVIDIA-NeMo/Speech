@@ -320,7 +320,14 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             
             source_audio = collate_vectors(source_audio_list, padding_value=0.0)
             source_audio_lens = torch.tensor([len(a) for a in source_audio_list], dtype=torch.long)
-        
+
+            user_audio_turn_splitted, user_audio_turn_splitted_lens, user_audio_turn_splitted_indices = extract_turn_audio_channel(
+                cuts=cuts,
+                source_audio_list=source_audio_list,
+                source_sample_rate=self.source_sample_rate,
+                roles=self.input_roles,
+            )
+
         target_text_tokens, target_token_lens = collate_token_channel(
             cuts, self.text_tokenizer, self.frame_length, roles=self.output_roles,
             add_text_bos=self.add_text_bos, tokenizer_names=batch_tokenizer_names,
@@ -560,6 +567,9 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             "text_lens": target_token_lens,
             "raw_texts": [" ".join(s.text for s in cut.supervisions if s.speaker in self.output_roles) for cut in cuts],
             "task": [getattr(cut, "task", "tts") for cut in cuts],
+            "user_audio_turn_splitted": user_audio_turn_splitted,
+            "user_audio_turn_splitted_lens": user_audio_turn_splitted_lens,
+            "user_audio_turn_splitted_indices": user_audio_turn_splitted_indices,
         }
 
         if target_codes_list:
@@ -766,6 +776,58 @@ def build_token_channel(
                 tokens[interruption_pos] = interruption_token_id
 
     return tokens
+
+
+def extract_turn_audio_channel(
+    cuts: CutSet,
+    source_audio_list: list[torch.Tensor],
+    source_sample_rate: int,
+    roles: set[str],
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Packs role-specific speech turns into batch dimension.
+
+    Returns:
+        user_audio: [N_turns, T_max]
+        user_audio_lens: [N_turns]
+        user_audio_indices: [N_turns, 3]
+            columns = [original_batch_idx, start_sample, end_sample]
+            in the original source_audio timeline.
+    """
+    turn_audio = []
+    turn_lens = []
+    turn_indices = []
+
+    for batch_idx, cut in enumerate(cuts):
+        audio = source_audio_list[batch_idx]
+        audio_len = audio.shape[0]
+
+        for sup in cut.supervisions:
+            if sup.speaker not in roles:
+                continue
+
+            start = int(round(max(0.0, sup.start) * source_sample_rate))
+            end = int(round(max(0.0, sup.end) * source_sample_rate))
+
+            start = min(max(start, 0), audio_len)
+            end = min(max(end, 0), audio_len)
+
+            if end <= start:
+                continue
+
+            chunk = audio[start:end]
+            turn_audio.append(chunk)
+            turn_lens.append(chunk.shape[0])
+            turn_indices.append([batch_idx, start, end])
+
+    if len(turn_audio) == 0:
+        return None, None, None
+    else:
+        user_audio = collate_vectors(turn_audio, padding_value=0.0)
+        user_audio_lens = torch.tensor(turn_lens, dtype=torch.long)
+        user_audio_indices = torch.tensor(turn_indices, dtype=torch.long)
+
+    return user_audio, user_audio_lens, user_audio_indices
 
 
 def collate_phoneme_channel(

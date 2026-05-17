@@ -1243,58 +1243,6 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
         return context_embedding, context_lens, context_audio_codes, context_audio_codes_lens
 
-    def _embed_context_text_tokens(self, context_text_tokens: torch.Tensor) -> torch.Tensor:
-        """
-        Embed context text tokens.
-
-        Default behavior is preserved:
-        - disable_subword_embedding_on_context=False: decoder text embedding only
-
-        New behavior:
-        - disable_subword_embedding_on_context=True: CAS encoder replaces decoder text embedding
-        """
-        if self.cfg.get("disable_subword_embedding_on_context", False):
-            if not self.cfg.get("use_bpe_char_tokenizer", False):
-                raise ValueError(
-                    "`disable_subword_embedding_on_context=True` requires "
-                    "`use_bpe_char_tokenizer=True`, because CAS must replace text_embedding."
-                )
-
-            if self.cfg.get("use_multiturn_dataset", False):
-                context_text_mask = context_text_tokens != self.pad_id
-            else:
-                context_text_mask = torch.ones_like(context_text_tokens, dtype=torch.bool)
-
-            return self.cas_encoder(
-                context_text_tokens,
-                subword_mask=context_text_mask,
-            )
-
-        return self.decoder.get_input_embeddings()(context_text_tokens)
-
-    def _get_context_cfg_embedding(self, batch_size: int, device: torch.device) -> torch.Tensor:
-        """
-        Returns the unconditional context embedding used for CFG dropout.
-        Shape: (B, 1, E)
-        """
-        cfg_token = torch.full(
-            (batch_size, 1),
-            self.cfg_unk_token_id,
-            dtype=torch.long,
-            device=device,
-        )
-
-        if self.cfg.get("disable_subword_embedding_on_context", False):
-            if not self.cfg.get("use_bpe_char_tokenizer", False):
-                raise ValueError(
-                    "`disable_subword_embedding_on_context=True` requires "
-                    "`use_bpe_char_tokenizer=True` for CFG context embedding."
-                )
-
-            cfg_mask = torch.ones_like(cfg_token, dtype=torch.bool)
-            return self.cas_encoder(cfg_token, subword_mask=cfg_mask)
-
-        return self.decoder.get_input_embeddings()(cfg_token)
 
     def stack_codes(self, codes, codes_lens, bos_id, eos_id, stacking_factor, num_codebooks):
         """

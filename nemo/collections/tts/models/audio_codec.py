@@ -854,24 +854,29 @@ class AudioCodecModel(ModelPT):
         # manually in the dataset class.
         loader_cfg.sample_rate = self.output_sample_rate
 
-        # Set up cut truncation, filtering, and random selection:
-        # `truncate_duration` and `truncate_offset_type` are interpreted by Lhotse.
-        # Together, they configure Lhotse to choose a random segment of this length
-        # from each cut.
-        if loader_cfg.truncate_duration is None:
-            raise ValueError("`truncate_duration` must be set in the config")
-        loader_cfg.truncate_offset_type = "random"
-        # Also filter examples to be at least this long to avoid zero-padding
+        # Random windowing is done in AudioCodecLhotseDataset on `target_audio`, not via
+        # Lhotse's cuts.truncate (which operates on the parent recording coordinates).
+        truncate_duration = dataset_args.get("truncate_duration")
+        if truncate_duration is None:
+            raise ValueError("`truncate_duration` must be set in `train_ds.dataset_args` ")
+        if cfg.dataloader_params.get("truncate_duration") is not None:
+            raise ValueError(
+                "`truncate_duration` must not be set in `train_ds.dataloader_params`; "
+                "set it in `train_ds.dataset_args` instead."
+            )
+        loader_cfg.truncate_duration = None
+        # Pre-filter cuts whose parent recording is shorter than the training window.
         if loader_cfg.min_duration is None:
-            loader_cfg.min_duration = loader_cfg.truncate_duration
+            loader_cfg.min_duration = truncate_duration
 
         # --- Create the dataset ---
 
         # Error out if the audio is suspiciously short (half the expected length)
-        min_samples_for_sanity = loader_cfg.truncate_duration * self.output_sample_rate // 2
-        # Create the dataset
+        min_samples_for_sanity = truncate_duration * self.output_sample_rate // 2
         dataset = AudioCodecLhotseDataset(
-            sample_rate=self.output_sample_rate, min_samples_for_sanity=min_samples_for_sanity, **dataset_args
+            sample_rate=self.output_sample_rate,
+            min_samples_for_sanity=min_samples_for_sanity,
+            **dataset_args,
         )
 
         # Create the dataloader

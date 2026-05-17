@@ -12,14 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import random
 import re
 from pathlib import Path
 from typing import Dict, Optional, Union
 
+import numpy as np
 import soundfile as sf
 import torch
 from lhotse import CutSet
-from lhotse.dataset.collation import collate_audio
 
 from nemo.utils import logging
 
@@ -34,18 +35,20 @@ class AudioCodecLhotseDataset(torch.utils.data.Dataset):
     It is a simple dataset that mostly just loads the audio samples.
     In addition, it performs the following operations:
     * Resampling to the target sample rate
+    * Random truncation of each cut's `target_audio` to a fixed duration
     * Sanity checks on the audio
 
     The operations below are handled directly by Lhotse according to the configuration
     applied in `AudioCodecModel._get_lhotse_dataloader()`:
     * Duration filtering
     * Any additional transformations configured in Lhotse during its construction are
-      applied to the audio as it is loaded in `collate_audio()`.
+      applied to the audio as it is loaded in `load_audio()`.
     """
 
     def __init__(
         self,
         sample_rate: int,
+        truncate_duration: float,
         sanity_check_audio: bool = False,
         min_samples_for_sanity: Optional[int] = None,
         log_audio: bool = False,
@@ -55,6 +58,9 @@ class AudioCodecLhotseDataset(torch.utils.data.Dataset):
         """
         Args:
             sample_rate: The sample rate to resample the audio to.
+            truncate_duration: Length of each training window in seconds. A random
+                window of this length is taken from each cut's `target_audio` field
+                (not from the parent `recording`, which may span a much longer file).
             sanity_check_audio: If True, perform sanity checks on the loaded audio.
             min_samples_for_sanity: cuts should have at least this many samples or an
                                     error will be raised. Only used when
@@ -67,6 +73,8 @@ class AudioCodecLhotseDataset(torch.utils.data.Dataset):
         """
         super().__init__()
         self.sample_rate = sample_rate
+        self.truncate_duration = truncate_duration
+        self.truncate_samples = int(truncate_duration * sample_rate)
         self.sanity_check_audio = sanity_check_audio
         self.min_samples_for_sanity = min_samples_for_sanity
         self.log_audio = log_audio
@@ -152,6 +160,31 @@ class AudioCodecLhotseDataset(torch.utils.data.Dataset):
             return audio[0]
         return audio.T
 
+    def _load_and_truncate_target_audio(self, cut) -> torch.Tensor:
+        """
+        Load `target_audio`, resample, and return a random segmentof length `truncate_duration`.
+        """
+        if not cut.has_custom("target_audio"):
+            raise ValueError(f"Cut {cut.id} is missing custom field 'target_audio'")
+
+        target_audio_recording = cut.target_audio.resample(self.sample_rate)
+        audio = target_audio_recording.load_audio()
+        if audio.ndim > 1:
+            audio = audio.squeeze(0)
+
+        num_samples = audio.shape[-1]
+        if num_samples < self.truncate_samples:
+            raise ValueError(
+                f"target_audio is shorter than truncate_duration: "
+                f"cut_id={cut.id}, target_audio_id={target_audio_recording.id}, "
+                f"num_samples={num_samples}, required={self.truncate_samples}, "
+                f"truncate_duration={self.truncate_duration}s"
+            )
+
+        start = random.randint(0, num_samples - self.truncate_samples)
+        window = audio[start : start + self.truncate_samples]
+        return torch.from_numpy(np.ascontiguousarray(window, dtype=np.float32))
+
     def __getitem__(self, cuts: CutSet) -> Dict[str, torch.Tensor]:
         """
         Loads the specified cuts and performs the operations listed above.
@@ -162,19 +195,15 @@ class AudioCodecLhotseDataset(torch.utils.data.Dataset):
             A dictionary with the `audio` and `audio_lens` tensors.
         """
         self._maybe_log_audio(cuts)
-        # Resample the audio to the target sample rate. We need to do this manually
-        # because Lhotse only resamples its standard `recording` field automatically,
-        # not custom fields like `target_audio`.
-        for cut in cuts:
-            cut.target_audio = cut.target_audio.resample(self.sample_rate)
+        # Load, resample and truncate the audio
+        audio_list = [self._load_and_truncate_target_audio(cut) for cut in cuts]
+        batch_audio = torch.stack(audio_list, dim=0)
+        batch_audio_len = torch.full(
+            (len(audio_list),),
+            self.truncate_samples,
+            dtype=torch.int32,
+        )
 
-        # Load and collate the audio, applying any transformations that were
-        # configured in Lhotse in the process.
-        # Note: fault_tolerant=False for now to avoid masking errors until we are more
-        # confident in the new loader.
-        batch_audio, batch_audio_len = collate_audio(cuts, recording_field="target_audio", fault_tolerant=False)
-
-        # Sanity checks on the audio and its length
         if self.sanity_check_audio:
             self._sanity_check_audio(batch_audio, batch_audio_len, cuts)
 

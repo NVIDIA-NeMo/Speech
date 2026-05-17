@@ -866,8 +866,13 @@ class AudioCodecModel(ModelPT):
             )
         loader_cfg.truncate_duration = None
         # Pre-filter cuts whose parent recording is shorter than the training window.
-        if loader_cfg.min_duration is None:
-            loader_cfg.min_duration = truncate_duration
+        existing_min_duration = cfg.dataloader_params.get("min_duration")
+        if existing_min_duration is not None and existing_min_duration != -1:
+            raise ValueError(
+                "`min_duration` must not be set in `train_ds.dataloader_params` "
+                "it is set automatically from `train_ds.dataset_args.truncate_duration`."
+            )
+        loader_cfg.min_duration = truncate_duration + 0.01  # add a bit to allow for resampling length mismatch
 
         # --- Create the dataset ---
 

@@ -14,8 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-ARG BASE_IMAGE=nvcr.io/nvidia/cuda:13.1.2-devel-ubuntu24.04
-
+ARG BASE_IMAGE=nvcr.io/nvidia/cuda-dl-base:26.04-cuda13.2-devel-ubuntu24.04
 FROM ${BASE_IMAGE} AS base-image
 ARG UV_VERSION=0.11.14
 

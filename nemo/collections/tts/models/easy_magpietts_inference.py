@@ -683,6 +683,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         self,
         state: StreamingState,
         text_tokens: torch.Tensor,  # (B, T) or (B,)
+        user_audio_channel_embedding: torch.Tensor = None,
         use_inference_mode: bool = True,
         # ToDo: implement audio direct support instead of use silence tokens
     ) -> StreamingState:
@@ -736,6 +737,9 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
             # Match training channel sum: text + audio profile-token/silence input.
             combined_emb = text_emb + audio_emb
+            
+            if self.cfg.get("condition_on_user_speech", False):
+                combined_emb = combined_emb + user_audio_channel_embedding
 
             # -----------------------
             # CFG handling

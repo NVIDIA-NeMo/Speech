@@ -618,8 +618,16 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             self.output_roles,
         )
 
+        user_mask, user_mask_lens = collate_speaker_mask_channel(
+            cuts,
+            self.frame_length,
+            self.input_roles,
+        )
+
         batch_dict["agent_mask"] = agent_mask
         batch_dict["agent_mask_lens"] = agent_mask_lens
+        batch_dict["user_mask"] = user_mask
+        batch_dict["user_mask_lens"] = user_mask_lens
         return batch_dict
 
 

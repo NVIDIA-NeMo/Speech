@@ -183,6 +183,35 @@ class EvalJSONLDataset(Dataset):
         return self.samples[idx]
 
 
+def _resolve_audio_path(path, root_path):
+    if path is None:
+        return None
+    if root_path is not None and not os.path.isabs(path):
+        return os.path.join(root_path, path)
+    return path
+
+
+def _load_audio(path, sample_rate, normalize=True, use_librosa=False):
+    if path is None or not os.path.exists(path):
+        return torch.zeros(1, dtype=torch.float32)
+
+    if use_librosa:
+        wav, sr = librosa.load(path, sr=sample_rate, mono=True)
+        if normalize:
+            wav = normalize_volume(wav)
+        return torch.as_tensor(wav, dtype=torch.float32)
+
+    wav, sr = sf.read(path, dtype="float32")
+    if wav.ndim > 1:
+        wav = wav.mean(axis=1)
+
+    if normalize:
+        wav = normalize_volume(wav)
+
+    wav = torch.as_tensor(wav, dtype=torch.float32).unsqueeze(0)
+    return resample(wav, sr, sample_rate).squeeze(0)
+
+
 def collate_and_tokenize_custom(
     batch,
     model,
@@ -193,11 +222,31 @@ def collate_and_tokenize_custom(
     add_interruption_token=False,
     pad_factor_text_speech=10,
     force_interruption=False,
-    normalize_context_audio_volume=True,
+    normalize_audio_volume=True,
     use_librosa=False,
     profile_multiturn_inference=False,
+    max_eval_turns=None,
 ):
     main_tokenizer_name = list(model.cfg.text_tokenizers.keys())[0]
+    
+    if max_eval_turns is not None:
+        max_eval_turns = int(max_eval_turns)
+        if max_eval_turns <= 0:
+            raise ValueError("--max_eval_turns must be > 0 when provided.")
+
+        truncated_batch = []
+        for s in batch:
+            s = dict(s)
+
+            if isinstance(s["text"], list):
+                s["text"] = s["text"][:max_eval_turns]
+
+                if isinstance(s.get("user_audio_file_path"), list):
+                    s["user_audio_file_path"] = s["user_audio_file_path"][:max_eval_turns]
+
+            truncated_batch.append(s)
+
+        batch = truncated_batch
 
     # --- MULTI-TURN MODE DECISION ---
     is_profile = profile_multiturn_inference
@@ -324,41 +373,63 @@ def collate_and_tokenize_custom(
     audio_lengths = []
     target_num_frames = []
 
+    max_turns_for_user_audio = len(batched_turns) if (not is_duplex) else 0
+
+    if is_profile and max_turns_for_user_audio > 0:
+        user_audio_by_turn = [[] for _ in range(max_turns_for_user_audio)]
+        user_audio_lens_by_turn = [[] for _ in range(max_turns_for_user_audio)]
+    else:
+        user_audio_by_turn = []
+        user_audio_lens_by_turn = []
+
     for i, s in enumerate(batch):
-        audio_path = s["context_audio_filepath"]
-        if root_path is not None:
-            audio_path = os.path.join(root_path, audio_path)
-
-        if os.path.exists(audio_path):
-            if use_librosa:
-                wav, sr = librosa.load(audio_path, sr=sample_rate, mono=True)
-                if normalize_context_audio_volume:
-                    wav = normalize_volume(wav)
-                wav = torch.as_tensor(wav, dtype=torch.float32)
-            else:
-                wav, sr = sf.read(audio_path, dtype='float32')
-                # Force Mono
-                if wav.ndim > 1:
-                    wav = wav.mean(axis=1)
-
-                if normalize_context_audio_volume:
-                    wav = normalize_volume(wav)
-
-                # Convert to tensor, add batch dim for resampler, then remove it
-                wav_tensor = torch.as_tensor(wav, dtype=torch.float32).unsqueeze(0)
-                wav = resample(wav_tensor, sr, sample_rate).squeeze(0)
-        else:
-            wav = torch.zeros(1, dtype=torch.float32)
+        audio_path = _resolve_audio_path(s.get("context_audio_filepath"), root_path)
+        wav = _load_audio(
+            audio_path,
+            sample_rate,
+            normalize=normalize_audio_volume,
+            use_librosa=use_librosa,
+        )
 
         audio_list.append(wav)
         audio_lengths.append(len(wav))
 
-        tdur_audio_path = s["audio_filepath"]
-        if root_path is not None:
-            tdur_audio_path = os.path.join(root_path, tdur_audio_path)
+        # Optional per-turn user audio.
+        # Expected JSONL field:
+        #   "user_audio": ["turn0_user.wav", "turn1_user.wav", ...]
+        if is_profile and max_turns_for_user_audio > 0:
+            user_audio_paths = s.get("user_audio_file_path", None)
+
+            for t in range(max_turns_for_user_audio):
+                has_valid_text_turn = (
+                    isinstance(s["text"], list) and t < len(s["text"])
+                ) or (
+                    not isinstance(s["text"], list) and t == 0
+                )
+
+                if (
+                    isinstance(user_audio_paths, list)
+                    and t < len(user_audio_paths)
+                    and user_audio_paths[t]
+                    and has_valid_text_turn
+                ):
+                    ua_path = _resolve_audio_path(user_audio_paths[t], root_path)
+                    ua_wav = _load_audio(
+                        ua_path,
+                        sample_rate=sample_rate,
+                        normalize=normalize_audio_volume,
+                        use_librosa=use_librosa,
+                    )
+                else:
+                    ua_wav = torch.zeros(1, dtype=torch.float32)
+
+                user_audio_by_turn[t].append(ua_wav)
+                user_audio_lens_by_turn[t].append(len(ua_wav))
+
+        tdur_audio_path = _resolve_audio_path(s["audio_filepath"], root_path)
 
         if tdur_audio_path and os.path.exists(tdur_audio_path):
-            wav_dur, sr_ = librosa.load(tdur_audio_path, sr=sample_rate, mono=True)
+            wav_dur = _load_audio(tdur_audio_path, sample_rate, normalize=normalize_audio_volume, use_librosa=use_librosa)
             tdur = wav_dur.shape[0] // model.input_samples_per_frame
             target_num_frames.append(tdur * extra_duration_thrshould)
         else:
@@ -378,6 +449,25 @@ def collate_and_tokenize_custom(
 
     for i, wav in enumerate(audio_list):
         padded_audio[i, : len(wav)] = wav
+
+
+    if is_profile and max_turns_for_user_audio > 0:
+        padded_user_audio_turns = []
+        padded_user_audio_turns_lens = []
+
+        for t in range(max_turns_for_user_audio):
+            turn_lens = user_audio_lens_by_turn[t]
+            max_turn_audio_len = max(turn_lens)
+            padded_turn_audio = torch.zeros((B, max_turn_audio_len), dtype=torch.float32)
+
+            for i, wav in enumerate(user_audio_by_turn[t]):
+                padded_turn_audio[i, : len(wav)] = wav
+
+            padded_user_audio_turns.append(padded_turn_audio)
+            padded_user_audio_turns_lens.append(torch.tensor(turn_lens, dtype=torch.long))
+
+        out_dict["user_audio_turns"] = padded_user_audio_turns
+        out_dict["user_audio_turns_lens"] = padded_user_audio_turns_lens
 
     out_dict["context_audio"] = padded_audio
     out_dict["context_audio_lengths"] = torch.tensor(audio_lengths, dtype=torch.long)
@@ -418,6 +508,12 @@ def main():
     parser.add_argument("--profile_multiturn_inference", action="store_true")
     parser.add_argument("--profile_pad_min_sec", type=float, default=2.0)
     parser.add_argument("--profile_pad_max_sec", type=float, default=2.0)
+    parser.add_argument(
+        "--max_eval_turns",
+            type=int,
+            default=6,
+            help="Maximum number of turns to evaluate per sample. None means use all turns.",
+    )
 
 
     # Speaker & Prompt Configurations
@@ -432,7 +528,7 @@ def main():
     parser.add_argument("--topk", type=int, default=80)
     parser.add_argument("--max_tts_steps", type=int, default=2000)
     parser.add_argument("--force_speech_sil_codes", action="store_true")
-    parser.add_argument("--normalize_volume", type=lambda x: (str(x).lower() in ['true', '1', 'yes']), default=False)
+    parser.add_argument("--normalize_volume", type=lambda x: (str(x).lower() in ['true', '1', 'yes']), default=True)
 
     args = parser.parse_args()
 
@@ -518,9 +614,10 @@ def main():
         add_interruption_token=args.add_interruption_token,
         pad_factor_text_speech=args.pad_factor_text_speech,
         force_interruption=args.force_interruption,
-        normalize_context_audio_volume=args.normalize_volume,
+        normalize_audio_volume=args.normalize_volume,
         use_librosa=args.use_librosa,
-        profile_multiturn_inference=args.profile_multiturn_inference
+        profile_multiturn_inference=args.profile_multiturn_inference,
+        max_eval_turns=args.max_eval_turns,
     )
 
     dataloader = DataLoader(
@@ -529,22 +626,12 @@ def main():
     )
 
     if args.user_custom_speaker_reference and args.inference_speaker_reference:
-        if args.use_librosa:
-            wav, sr = librosa.load(args.inference_speaker_reference, sr=model.sample_rate, mono=True)
-            if args.normalize_volume:
-                wav = normalize_volume(wav)
-            speaker_wav = torch.as_tensor(wav, dtype=target_dtype).unsqueeze(0).to(model.device)
-        else:
-            wav, sr = sf.read(args.inference_speaker_reference, dtype='float32')
-            # Force Mono
-            if wav.ndim > 1:
-                wav = wav.mean(axis=1)
-
-            if args.normalize_volume:
-                wav = normalize_volume(wav)
-
-            speaker_wav = torch.as_tensor(wav).unsqueeze(0)
-            speaker_wav = resample(speaker_wav.float(), sr, model.sample_rate).to(target_dtype).to(model.device)
+        speaker_wav = _load_audio(
+            args.inference_speaker_reference,
+            model.sample_rate,
+            normalize=args.normalize_volume,
+            use_librosa=args.use_librosa,
+        ).unsqueeze(0).to(model.device, dtype=target_dtype)
 
     for batch_id, inputs in enumerate(dataloader):
         B = inputs["context_audio"].size(0)
@@ -556,6 +643,14 @@ def main():
         if args.user_custom_speaker_reference and args.inference_speaker_reference:
             inputs["context_audio"] = speaker_wav.repeat(B, 1).detach()
             inputs["context_audio_lengths"] = torch.full((B,), speaker_wav.size(-1), dtype=torch.long, device=device)
+
+        if "user_audio_turns" in inputs:
+            inputs["user_audio_turns"] = [
+                x.to(device, dtype=target_dtype) for x in inputs["user_audio_turns"]
+            ]
+            inputs["user_audio_turns_lens"] = [
+                x.to(device) for x in inputs["user_audio_turns_lens"]
+            ]
 
         profile_turn_frame_ranges = []
         with torch.inference_mode():
@@ -714,24 +809,101 @@ def main():
                     if hasattr(state, "phoneme_eos_detected"):
                         state.phoneme_eos_detected.zero_()
 
-                    # Prefill on the begining of each turn
-                    profile_seconds = (
-                        args.profile_pad_min_sec
-                        + torch.rand((), device=device).item()
-                        * (args.profile_pad_max_sec - args.profile_pad_min_sec)
-                    )
+                    if not model.cfg.get("condition_on_user_speech", False): 
+                        # Prefill on the begining of each turn
+                        profile_seconds = (
+                            args.profile_pad_min_sec
+                            + torch.rand((), device=device).item()
+                            * (args.profile_pad_max_sec - args.profile_pad_min_sec)
+                        )
 
-                    profile_T = max(
-                        1,
-                        int(round(profile_seconds * model.sample_rate / model.input_samples_per_frame)),
-                    )
+                        profile_T = max(
+                            1,
+                            int(round(profile_seconds * model.sample_rate / model.input_samples_per_frame)),
+                        )
 
-                    profile_tokens = torch.full(
-                        (1, profile_T),
-                        model.pad_id,
-                        dtype=torch.long,
-                        device=device,
-                    )
+                        profile_tokens = torch.full(
+                            (1, profile_T),
+                            model.pad_id,
+                            dtype=torch.long,
+                            device=device,
+                        )
+                        user_audio_channel_embedding = None
+                    else:
+                        user_audio_channel_embedding = None
+                        if "user_audio_turns" in inputs:
+                            user_audio = inputs["user_audio_turns"][t]
+                            user_audio_lens = inputs["user_audio_turns_lens"][t]
+                        else:
+                            print("Warning!! USING CONTEXT AUDIO AS USER AUDIO FOR TESTING !!")
+                            user_audio = inputs["context_audio"]
+                            user_audio_lens = inputs["context_audio_lengths"]
+
+                        user_audio_codes, user_audio_codes_lens = model._codec_helper.audio_to_codes(
+                            user_audio,
+                            user_audio_lens,
+                        )
+
+                        if model._codec_converter is not None:
+                            user_audio_codes = model._codec_converter.convert_original_to_new(
+                                audio_tokens=user_audio_codes, audio_lens=user_audio_codes_lens
+                            ).long()
+
+                        user_audio_codes, user_audio_codes_lens = model.stack_codes(
+                            user_audio_codes,
+                            user_audio_codes_lens,
+                            model.audio_bos_id,
+                            model.audio_eos_id,
+                            model.frame_stacking_factor,
+                            model.num_audio_codebooks,
+                        )
+                        user_audio_embedded = model.embed_audio_tokens(user_audio_codes)
+
+                        boundary_trim = model.cfg.get("user_audio_boundary_trim", 4)
+                        boundary_trim = 0 if boundary_trim is None else int(boundary_trim)
+
+                        # Remove BOS/EOS from the user-audio turn, same as training.
+                        if boundary_trim == 0:
+                            real_start = 0
+                            real_end = int(user_audio_codes_lens[0].item())
+                        else:
+                            turn_len_with_special = int(user_audio_codes_lens[0].item())
+                            real_start = 1
+                            real_end = max(real_start, turn_len_with_special - 1)
+
+                        user_audio_embedded = user_audio_embedded[:, real_start:real_end]
+
+                        # Optional: trim boundaries exactly like training.
+                        copy_len = user_audio_embedded.size(1)
+
+                        if boundary_trim > 0:
+                            trim = min(boundary_trim, copy_len // 2)
+
+                            if trim > 0:
+                                user_audio_embedded[:, :trim] = 0.0
+                                user_audio_embedded[:, copy_len - trim:] = 0.0
+
+                        # Add BOS-aligned zero frame, because audio input timeline has BOS at t=0.
+                        bos_user_pad = torch.zeros(
+                            user_audio_embedded.size(0),
+                            1,
+                            user_audio_embedded.size(2),
+                            device=user_audio_embedded.device,
+                            dtype=user_audio_embedded.dtype,
+                        )
+                        user_audio_embedded = torch.cat([bos_user_pad, user_audio_embedded], dim=1)
+
+                        profile_T = user_audio_embedded.size(1)
+                        profile_tokens = torch.full(
+                            (B, profile_T),
+                            model.pad_id,
+                            dtype=torch.long,
+                            device=device,
+                        )
+
+                        user_audio_channel_embedding = user_audio_embedded
+                        profile_seconds = profile_T * model.input_samples_per_frame / model.sample_rate
+
                     # add text tokens needed for profilling
                     if not model.cfg.get("agent_mask_include_transition_prefix", False):
                         delay_tokens = int(state.config.training_mode.streaming_speech_delay)
@@ -739,11 +911,15 @@ def main():
                         profile_tokens[:, -delay_tokens:] = turn_text[:, :delay_tokens]
                         turn_text = turn_text[:, delay_tokens:]
                         turn_lens = torch.clamp(turn_lens - delay_tokens, min=0)
+                        if user_audio_channel_embedding is not None and delay_tokens > 0:
+                            user_audio_channel_embedding = user_audio_channel_embedding.clone()
+                            user_audio_channel_embedding[:, -delay_tokens:] = 0.0
 
                     state = model.streaming_prefill_profile(
                         state=state,
                         text_tokens=profile_tokens,
                         use_inference_mode=True,
+                        user_audio_channel_embedding=user_audio_channel_embedding
                     )
 
                     logging.info(
@@ -771,13 +947,16 @@ def main():
                         relative_position = state.text_tokens_seen - turn_offset
                         text_exhausted = relative_position >= turn_lens
 
-                        position = relative_position.clamp(min=0, max=turn_text.size(1) - 1)
-                        current_tokens = turn_text[torch.arange(B, device=device), position]
-                        current_tokens = torch.where(
-                            text_exhausted,
-                            torch.full_like(current_tokens, model.eos_id),
-                            current_tokens,
-                        )
+                        if turn_text.size(1) == 0:
+                            current_tokens = torch.full((B,), model.eos_id, dtype=torch.long, device=device)
+                        else:
+                            position = relative_position.clamp(min=0, max=turn_text.size(1) - 1)
+                            current_tokens = turn_text[torch.arange(B, device=device), position]
+                            current_tokens = torch.where(
+                                text_exhausted,
+                                torch.full_like(current_tokens, model.eos_id),
+                                current_tokens,
+                            )
 
                         state, audio_codes, _ = model.streaming_step(
                             state=state,

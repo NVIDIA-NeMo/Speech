@@ -8,6 +8,7 @@ lhotse>=1.32.2
 # Align with upstream PyTorch requirements
 librosa>=0.10.1
 marshmallow
+megatron-core
 optuna
 packaging
 pyannote.core

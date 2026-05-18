@@ -106,9 +106,9 @@ def save_hf_checkpoint(model: torch.nn.Module, state_dict: dict, cfg: HfExportCo
     # Save the LLM config alongside so offline reloads don't need to fetch ``pretrained_llm``.
     if hasattr(model, "llm") and hasattr(model.llm, "config"):
         config["llm_config"] = model.llm.config.to_dict()
-    # NeMo stores training ``dtype`` as shorthand (e.g. "bf16"), transformers needs bfloat16 which is torch.dtype forma
-    if "torch_dtype" in config:
-        config["dtype"] = config.pop("torch_dtype")
+    # Recent transformers renamed ``torch_dtype`` to ``dtype``
+    config["dtype"] = cfg.dtype
+    config.pop("torch_dtype", None)
     with open(output_dir / "config.json", "w") as f:
         json.dump(config, f, indent=2)
 
@@ -328,9 +328,9 @@ def main(cfg: HfExportConfig) -> None:
         # Embed the LLM's HF config so offline reloads don't need to fetch ``pretrained_llm``.
         if hasattr(model, "llm") and hasattr(model.llm, "config"):
             model.cfg["llm_config"] = model.llm.config.to_dict()
-        # See ``save_hf_checkpoint``: align ``dtype`` with the HF-canonical ``torch_dtype``.
-        if "torch_dtype" in model.cfg:
-            model.cfg["dtype"] = model.cfg["torch_dtype"]
+        # # Recent transformers renamed ``torch_dtype`` to ``dtype``
+        model.cfg["dtype"] = cfg.dtype
+        model.cfg.pop("torch_dtype", None)
         model.save_pretrained(cfg.output_dir)
         _try_prepare_for_vllm(cfg.output_dir, model_cfg)
 

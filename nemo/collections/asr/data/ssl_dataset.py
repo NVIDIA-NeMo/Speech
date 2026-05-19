@@ -479,9 +479,6 @@ def maybe_convert_cuts_to_mono(cuts: CutSet) -> CutSet:
         the converted cuts
     """
     resolved_cuts = []
-    import pdb
-
-    pdb.set_trace()
     for cut in cuts:
         try:
             resolved_cuts.append(cut.move_to_memory())

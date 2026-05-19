@@ -168,6 +168,7 @@ class LazyNeMoIterator:
                     language=data.get(self.lang_field),
                 )
             )
+            cut = cut.move_to_memory()
             cut.custom = data
             for extra_field in extra_fields:
                 extra_field.attach_to(cut)

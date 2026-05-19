@@ -1314,17 +1314,36 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                             torch.zeros_like(gathered_agent_mask),
                         )
 
-        if self.cfg.get("use_multiturn_dataset", False) and batch["user_audio_turn_splitted"] is not None and self.cfg.get("condition_on_user_speech", False):
+        if (
+            self.cfg.get("use_multiturn_dataset", False)
+            and batch["user_audio_turn_splitted"] is not None
+            and self.cfg.get("condition_on_user_speech", False)
+        ):
             input_samples_per_frame = self.codec_model_samples_per_frame * self.frame_stacking_factor
 
+            user_audio = batch["user_audio_turn_splitted"]
+            user_audio_lens = batch["user_audio_turn_splitted_lens"]
+
+            silence_prob = float(self.cfg.get("user_cond_silence_augmentation_prob", 0.0) or 0.0)
+            if self.training and silence_prob > 0.0:
+                silence_mask = torch.rand(
+                    user_audio.size(0),
+                    device=user_audio.device,
+                ) < silence_prob
+
+                if silence_mask.any():
+                    user_audio = user_audio.clone()
+                    user_audio[silence_mask] = 0.0
+
             user_audio_codes, user_audio_codes_lens = self._codec_helper.audio_to_codes(
-                batch["user_audio_turn_splitted"],
-                batch["user_audio_turn_splitted_lens"],
+                user_audio,
+                user_audio_lens,
             )
 
             if self._codec_converter is not None:
                 user_audio_codes = self._codec_converter.convert_original_to_new(
-                    audio_tokens=user_audio_codes, audio_lens=user_audio_codes_lens
+                    audio_tokens=user_audio_codes,
+                    audio_lens=user_audio_codes_lens,
                 ).long()
 
             user_audio_codes, user_audio_codes_lens = self.stack_codes(
@@ -1337,8 +1356,6 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             )
 
             user_audio_embedded = self.embed_audio_tokens(user_audio_codes)
-            # user_audio_embedded: [N_turns, T_turn_max, D]
-            # user_audio_codes_lens includes BOS/EOS from stack_codes
 
             B = batch["text"].shape[0]
             T = batch["text"].shape[1]
@@ -1347,7 +1364,17 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             user_audio_embedded_restored = user_audio_embedded.new_zeros(B, T, D)
             user_audio_embedded_mask = torch.zeros(B, T, device=user_audio_embedded.device, dtype=torch.bool)
 
+            sample_prob = float(self.cfg.get("user_cond_trim_augmentation_sample_prob", 0.0) or 0.0)
+            turn_prob = float(self.cfg.get("user_cond_trim_augmentation_turn_prob", 0.0) or 0.0)
+            base_trim = int(self.cfg.get("user_cond_trim_augmentation_base", 0) or 0)
+
+            if self.training and sample_prob > 0.0 and turn_prob > 0.0 and base_trim > 0:
+                sample_trim_aug = torch.rand(B, device=user_audio_embedded.device) < sample_prob
+            else:
+                sample_trim_aug = torch.zeros(B, device=user_audio_embedded.device, dtype=torch.bool)
+
             indices = batch["user_audio_turn_splitted_indices"].to(user_audio_embedded.device)
+
             for turn_idx, (b, start_sample, end_sample) in enumerate(indices):
                 b = int(b.item())
                 if b < 0:
@@ -1362,16 +1389,14 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 seq_len = end_frame - start_frame
                 if seq_len <= 0:
                     continue
-                
+
                 boundary_trim = self.cfg.get("user_audio_boundary_trim", 4)
                 boundary_trim = 0 if boundary_trim is None else int(boundary_trim)
 
                 if boundary_trim == 0:
-                    # Keep the whole stacked user-audio sequence, including BOS/EOS.
                     real_start = 0
                     real_end = int(user_audio_codes_lens[turn_idx].item())
                 else:
-                    # Remove BOS/EOS, then trim boundaries.
                     turn_len_with_special = int(user_audio_codes_lens[turn_idx].item())
                     real_start = 1
                     real_end = max(real_start, turn_len_with_special - 1)
@@ -1382,21 +1407,55 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 if copy_len <= 0:
                     continue
 
-                dst_start = start_frame
-                dst_end = start_frame + copy_len
-                user_audio_embedded_restored[b, dst_start:dst_end] = turn_emb[:copy_len]
-                user_audio_embedded_mask[b, dst_start:dst_end] = True
+                turn_emb = turn_emb[:copy_len].clone()
+                turn_mask = torch.ones(copy_len, device=user_audio_embedded.device, dtype=torch.bool)
 
                 if boundary_trim > 0:
                     trim = min(boundary_trim, copy_len // 2)
                     if trim > 0:
-                        user_audio_embedded_restored[b, dst_start:dst_start + trim] = 0.0
-                        user_audio_embedded_restored[b, dst_end - trim:dst_end] = 0.0
-                        user_audio_embedded_mask[b, dst_start:dst_start + trim] = False
-                        user_audio_embedded_mask[b, dst_end - trim:dst_end] = False
+                        turn_emb[:trim] = 0.0
+                        turn_emb[copy_len - trim:] = 0.0
+                        turn_mask[:trim] = False
+                        turn_mask[copy_len - trim:] = False
+
+                if bool(sample_trim_aug[b].item()):
+                    do_turn_aug = torch.rand((), device=user_audio_embedded.device).item() < turn_prob
+
+                    if do_turn_aug:
+                        trim_delta = int(torch.randint(
+                            low=-1,
+                            high=2,
+                            size=(),
+                            device=user_audio_embedded.device,
+                        ).item())
+                        trim_amount = max(1, base_trim + trim_delta)
+                        trim_amount = min(trim_amount, copy_len)
+
+                        aug_choice = random.choices(
+                            ["left", "right", "full"],
+                            weights=[0.45, 0.45, 0.10],
+                            k=1,
+                        )[0]
+
+                        if aug_choice == "left":
+                            turn_emb[:trim_amount] = 0.0
+                            turn_mask[:trim_amount] = False
+                        elif aug_choice == "right":
+                            turn_emb[copy_len - trim_amount:] = 0.0
+                            turn_mask[copy_len - trim_amount:] = False
+                        else:
+                            turn_emb.zero_()
+                            turn_mask[:] = True
+
+                dst_start = start_frame
+                dst_end = start_frame + copy_len
+
+                user_audio_embedded_restored[b, dst_start:dst_end] = turn_emb
+                user_audio_embedded_mask[b, dst_start:dst_end] = turn_mask
 
             user_audio_embedded = user_audio_embedded_restored
             user_audio_mask = user_audio_embedded_mask
+
             # compare these two masks showing count batch level overlaps, left and right overlap per item batch. Consider only where both are ones.
             """
             if "agent_mask" in batch and batch["agent_mask"] is not None:

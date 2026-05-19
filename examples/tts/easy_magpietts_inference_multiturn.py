@@ -421,7 +421,8 @@ def collate_and_tokenize_custom(
                         use_librosa=use_librosa,
                     )
                 else:
-                    ua_wav = torch.zeros(1, dtype=torch.float32)
+                    print("User audio not founded, using silence two seconds audio")
+                    ua_wav = torch.zeros(int(2 * sample_rate), dtype=torch.float32)
 
                 user_audio_by_turn[t].append(ua_wav)
                 user_audio_lens_by_turn[t].append(len(ua_wav))

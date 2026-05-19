@@ -470,11 +470,27 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
                 device=device,
                 float_dtype=float_dtype,
             )
-        
+
+        # Streaming safety: when we reuse `batched_hyps` from a previous chunk and the per-step path
+        # is `add_results_no_checks_` (i.e. `self.max_symbols is not None`), that path does NOT grow
+        # the internal buffers. With long utterances / many chunks the buffer can overflow.
+        # Pre-grow here, mirroring the safety check inside `add_results_`.
+        if self.max_symbols is not None:
+            worst_case_writes = max_time * (self.max_symbols + 1)
+            needed = int(batched_hyps.current_lengths_wb.max().item()) + worst_case_writes + 1
+            while batched_hyps._max_length < needed:
+                batched_hyps._allocate_more()
+
         time_indices = torch.zeros_like(batch_beam_indices)
         safe_time_indices = torch.zeros_like(time_indices)  # time indices, guaranteed to be < out_len
-        last_timesteps = (encoder_output_length - 1)[:, None].expand_as(batch_beam_indices)
-        active_mask = time_indices <= last_timesteps
+        # Streaming safety: in mixed batches some rows may have `encoder_output_length == 0`
+        # (e.g. the right-context pass for a stream whose chunk has 0 RC frames). Without clamping
+        # `last_timesteps` becomes -1 and any indexing into `encoder_output_projected` triggers a
+        # device-side assert. Mirrors greedy `loop_labels_torch`.
+        last_timesteps = torch.clamp_min(encoder_output_length - 1, 0)[:, None].expand_as(batch_beam_indices)
+        active_mask = (encoder_output_length > 0)[:, None].expand_as(batch_beam_indices) & (
+            time_indices <= last_timesteps
+        )
 
         # setup fusion models and/or biasing multi-model
         if self.per_stream_biasing_enabled:

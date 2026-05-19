@@ -265,23 +265,14 @@ class TestSchroedingerBridgeModelNCSN:
     def test_training_step(self, schroedinger_bridge_model_ncsn_with_trainer_and_mock_dataset):
         model, _ = schroedinger_bridge_model_ncsn_with_trainer_and_mock_dataset
         model = model.train()
+        # _step calls self.log for component losses, which requires a Lightning loop context.
+        # Disable logging since we're calling _step directly outside the training loop.
+        model.log = lambda *args, **kwargs: None
 
         for batch in itertools.islice(model._train_dl, 2):
-            # start boilerplate from SchroedingerBridgeAudioToAudioModel.training_step
-            if isinstance(batch, dict):
-                # lhotse batches are dictionaries
-                input_signal = batch['input_signal']
-                input_length = batch['input_length']
-                target_signal = batch.get('target_signal', input_signal)
-            else:
-                input_signal, input_length, target_signal, _ = batch
-            if input_signal.ndim == 2:
-                input_signal = einops.rearrange(input_signal, 'B T -> B 1 T')
-            if target_signal.ndim == 2:
-                target_signal = einops.rearrange(target_signal, 'B T -> B 1 T')
-            # end boilerplate
+            input_signal, target_signal, input_length = model._parse_batch(batch)
 
-            loss, _, _ = model._step(target_signal=target_signal, input_signal=input_signal, input_length=input_length)
+            loss = model._step(target_signal=target_signal, input_signal=input_signal, input_length=input_length)
             loss.backward()
 
     def test_model_training(self, schroedinger_bridge_model_ncsn_with_trainer_and_mock_dataset):

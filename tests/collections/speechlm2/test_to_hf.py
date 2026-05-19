@@ -136,14 +136,10 @@ def _run_prepare(tmp_path, fake_tok, arch="NeMoSpeechLMForConditionalGeneration"
 
 def test_prepare_for_vllm_patches_config_json(tmp_path):
     """config.json gets model_type, architectures, and audio_locator_tag."""
-    output_dir = _run_prepare(
-        tmp_path,
-        _FakeTokenizer(),
-        arch="NeMoSpeechLMHybridForConditionalGeneration",
-    )
+    output_dir = _run_prepare(tmp_path, _FakeTokenizer())
     cfg = json.loads((output_dir / "config.json").read_text())
     assert cfg["model_type"] == "nemo_speechlm"
-    assert cfg["architectures"] == ["NeMoSpeechLMHybridForConditionalGeneration"]
+    assert cfg["architectures"] == ["NeMoSpeechLMForConditionalGeneration"]
     assert cfg["audio_locator_tag"] == AUDIO_TOKEN
     # Original LLM fields are preserved.
     assert cfg["hidden_size"] == 2048

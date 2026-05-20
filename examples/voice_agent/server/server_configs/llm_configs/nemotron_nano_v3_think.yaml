@@ -17,7 +17,8 @@ temperature: 0.6  # LLM sampling params
 top_k: 20  # LLM sampling params
 top_p: 0.95  # LLM sampling params
 min_p: 0.0  # LLM sampling params
-max_new_tokens: 1024  # max num of output tokens from LLM
+max_new_tokens: 4096  # max num of output tokens from LLM
+thinking_budget: 2048
 
 ##############################
 ######## vLLM config #########
@@ -44,4 +45,6 @@ vllm_generation_params:
   extra:  # additional model specific params can be specified in dict format
     extra_body:
       chat_template_kwargs:
-        enable_thinking: False  # disable thinking
+        enable_thinking: True  # disable thinking
+      thinking_token_budget: ${llm.thinking_budget}
+

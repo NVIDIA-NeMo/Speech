@@ -19,7 +19,7 @@ vad:
   type: silero
   confidence: 0.6  # VAD threshold for detecting speech versus non-speech
   start_secs: 0.1  # min amount of speech to trigger UserStartSpeaking
-  stop_secs: 1.0  # min amount of silence to trigger UserStopSpeaking
+  stop_secs: 0.8  # min amount of silence to trigger UserStopSpeaking
   min_volume: 0.2  # Microphone volumn threshold for VAD
 
 
@@ -35,10 +35,16 @@ llm:
   is_omni_model: true
   pre_cache_duration_secs: 0.3
   use_stt_transcript: false
-  keep_only_last_audio_turn: true  # nvidia inference endpoint doesn't support multiple audio turns
+  # nvidia inference endpoint doesn't support multiple audio turns so we only keep the last audio turn
+  # set keep_only_last_audio_turn=false when using vllm server as it supports multiple audio turns
+  keep_only_last_audio_turn: false  
 
   base_url: "https://integrate.api.nvidia.com/v1"
   model: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
+
+  # base_url: "http://localhost:8000/v1"
+  # model: "nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4"
+
   # system_prompt: "You are a helpful AI agent named Lisa. Start by greeting the user with 'Hi, I'm Lisa, your helpful AI assistant. How can I help you today?'."
   system_role: "system"  # role for system prompt, set it to `user` for models that do not support system prompt
   # system_prompt_suffix: "Keep your responses concise and conversational since they will be spoken aloud. Avoid special characters. Use only simple, plain text sentences. Always punctuate your responses using standard sentence punctuation: commas, periods, question marks, exclamation points, etc. Always spell out numbers as words. Before responding to the user, check if the user request requires using external tools, and use the tools if they match with the user's intention. Otherwise, use your internal knowledge to answer the user's question. Do not use tools for casual conversation or when the tools don't fit the use cases. You should still try to address the user's request when it's not related to the provided tools. If you are provided with a set of tools, use them only when needed, do not limit your capabilities to the scope of the tools. If the purpose of a tool matches well with a user's request, always try to call the tool first. Conversation history should not limit your behavior on whether you can use tools. You must answer questions not related to the tools. Avoid any emoji in your response. After you have addressed all the user's request, use the `SendScenarioSummaryTool` to send your final response in the requested FINAL_RESPONSE_FORMAT. If FINAL_RESPONSE_FORMAT is not specified, send the whole conversation context history as it is."
@@ -82,6 +88,17 @@ tts:
   voice_id: "Magpie-Multilingual.EN-US.Aria"
   language: "en-US"
   function_id: "877104f7-e885-42b9-8de8-f6e4c6303969"
+  extra_separator:  # a list of additional punctuations to chunk LLM response into segments for faster TTS output, e.g., ",". Set to `null` to use default behavior 
+    - ','
+    - '\n'
+    - "."
+    - "?"
+    - "!"
+    - ";"
+  think_tokens: ["<think>", "</think>"]  # specify them to avoid TTS for thinking process, set to `null` to allow thinking out loud
+  ignore_strings:  # strings/characters to ignore in TTS
+    - "*"
+    - "<unk>"
 
 turn_taking:
   enabled: false # set to false to disable

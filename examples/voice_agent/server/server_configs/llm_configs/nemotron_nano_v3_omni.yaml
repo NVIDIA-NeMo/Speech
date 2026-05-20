@@ -1,8 +1,8 @@
 # This is an example config for setting up nemotron_nano_v3 model for a NeMo Voice Agent server.
 # Please refer to https://github.com/NVIDIA-NeMo/NeMo/tree/main/examples/voice_agent/README.md for more details
 
-# see https://huggingface.co/nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-BF16 for model details
-# model: "nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-BF16"  # model name for HF models, will be used via `AutoModelForCausalLM.from_pretrained()`
+# see https://huggingface.co/nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4 for model details
+# model: "nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4"  # model name for HF models, will be used via `AutoModelForCausalLM.from_pretrained()`
 type: vllm  # Overwrite to vllm to enable tool calling, the HF backend currently doesn't support tools
 dtype: auto  # torch.dtype for LLM, `auto` is only available for vllm
 device: "cuda"
@@ -20,12 +20,15 @@ pre_cache_duration_secs: 0.3  # additional audio to cache before user starts spe
 use_stt_transcript: false  # whether to add ASR transcript to user's turn
 text_prompt_for_audio: "Follow instructions or answer questions in the audio."  # user's text message for each audio turn
 text_prompt_for_transcript: "Here is the pseudo-transcript of the audio for reference:"  # additional text prompt before the ASR transcript, only used if `use_stt_transcript=true`
+# nvidia inference endpoint doesn't support multiple audio turns so we only keep the last audio turn
+# set keep_only_last_audio_turn=false when using vllm server as it supports multiple audio turns
+keep_only_last_audio_turn: false  
 
 ##############################
 ## Common generation config ##
 ##############################
 temperature: 0.2  # LLM sampling params
-top_k: 1  # LLM sampling params, NO effect for vllm
+top_k: 1  # LLM sampling params
 top_p: null  # LLM sampling params
 min_p: 0.0  # LLM sampling params
 max_new_tokens: 1024  # max num of output tokens from LLM

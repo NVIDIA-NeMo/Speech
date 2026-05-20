@@ -86,7 +86,7 @@ async def run_bot_websocket(host: str, port: int):
             user_context_aggregator=user_agg,
             pre_cache_duration_secs=server_config.llm.get("pre_cache_duration_secs", 0.3),
             use_transcript=server_config.llm.get("use_stt_transcript", False),
-            keep_only_last_audio_turn=server_config.llm.get("keep_only_last_audio_turn", True),
+            keep_only_last_audio_turn=server_config.llm.get("keep_only_last_audio_turn", False),
             text_prompt_for_audio=server_config.llm.get("text_prompt_for_audio", None),
             text_prompt_for_transcript=server_config.llm.get("text_prompt_for_transcript", None),
         )
@@ -97,9 +97,11 @@ async def run_bot_websocket(host: str, port: int):
     pipeline_list = [ws_transport.input(), rtvi, stt]
     if diar is not None:
         pipeline_list.append(diar)
+    if turn_taking is not None:
+        pipeline_list.append(turn_taking)
     if user_audio_buffer is not None:
         pipeline_list.append(user_audio_buffer)
-    pipeline_list.extend([turn_taking, user_agg, llm, tts, ws_transport.output(), assistant_agg])
+    pipeline_list.extend([user_agg, llm, tts, ws_transport.output(), assistant_agg])
     pipeline = Pipeline(pipeline_list)
 
     resettable = [stt, tts, turn_taking, diar, user_audio_buffer]

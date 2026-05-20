@@ -479,6 +479,17 @@ def collate_and_tokenize_custom(
 
     return out_dict
 
+def _mix_user_turns_on_timeline(user_audio_turns, user_audio_turns_lens, sample_rate):
+    total_len = int(sum(x.item() for x in user_audio_turns_lens))
+    mixed = torch.zeros(total_len, dtype=torch.float32)
+
+    offset = 0
+    for wav, wav_len in zip(user_audio_turns, user_audio_turns_lens):
+        wav_len = int(wav_len.item())
+        mixed[offset : offset + wav_len] = wav[:wav_len]
+        offset += wav_len
+
+    return mixed
 
 def main():
     parser = argparse.ArgumentParser(description="EasyMagpieTTS Inference Evaluation")
@@ -812,16 +823,19 @@ def main():
 
                     if not model.cfg.get("condition_on_user_speech", False): 
                         # Prefill on the begining of each turn
-                        profile_seconds = (
-                            args.profile_pad_min_sec
-                            + torch.rand((), device=device).item()
-                            * (args.profile_pad_max_sec - args.profile_pad_min_sec)
-                        )
-
-                        profile_T = max(
-                            1,
-                            int(round(profile_seconds * model.sample_rate / model.input_samples_per_frame)),
-                        )
+                        if "user_audio_turns" in inputs:
+                            profile_T = int(round(inputs["user_audio_turns"][t].size(-1) / model.input_samples_per_frame))
+                            profile_seconds = profile_T * model.input_samples_per_frame / model.sample_rate
+                        else:
+                            profile_seconds = (
+                                args.profile_pad_min_sec
+                                + torch.rand((), device=device).item()
+                                * (args.profile_pad_max_sec - args.profile_pad_min_sec)
+                            )
+                            profile_T = max(
+                                1,
+                                int(round(profile_seconds * model.sample_rate / model.input_samples_per_frame)),
+                            )
 
                         profile_tokens = torch.full(
                             (1, profile_T),
@@ -1099,6 +1113,90 @@ def main():
                         out_path = os.path.join(args.out_dir, f"{stem}_turn_{turn_id}{ext}")
                         sf.write(out_path, turn_wav, samplerate=model.output_sample_rate)
                         logging.info(f"Saved: {out_path}")
+
+                    # ---------------------------------------------------------
+                    # Save aligned stereo conversation:
+                    # channel 0 = user conditioning audio
+                    # channel 1 = generated agent audio
+                    # ---------------------------------------------------------
+                    if "user_audio_turns" in inputs:
+                        user_segments = []
+
+                        samples_per_prediction_frame = (
+                            model.codec_model_samples_per_frame
+                            / (model.sample_rate / model.output_sample_rate)
+                        )
+
+                        first_user_len_in = int(inputs["user_audio_turns_lens"][0][i].item())
+                        first_user_delay_out = int(
+                            round(first_user_len_in * model.output_sample_rate / model.sample_rate)
+                        )
+
+                        for turn_id, start_frame, end_frame in profile_turn_frame_ranges:
+                            if turn_id >= len(inputs["user_audio_turns"]):
+                                continue
+
+                            turn_audio = inputs["user_audio_turns"][turn_id][i].detach().cpu().float()
+                            turn_audio_len = int(inputs["user_audio_turns_lens"][turn_id][i].item())
+                            turn_audio = turn_audio[:turn_audio_len]
+
+                            turn_audio_out = resample(
+                                turn_audio.unsqueeze(0),
+                                model.sample_rate,
+                                model.output_sample_rate,
+                            ).squeeze(0)
+
+                            if turn_id == 0:
+                                user_start_sample = 0
+                            else:
+                                prev_turn_end_frame = profile_turn_frame_ranges[turn_id - 1][2]
+                                rel_prev_end_frame = prev_turn_end_frame - profile_decode_start_frame
+                                user_start_sample = first_user_delay_out + int(
+                                    round(rel_prev_end_frame * samples_per_prediction_frame)
+                                )
+
+                            user_segments.append((user_start_sample, turn_audio_out))
+
+                        total_user_len = 0
+                        for s, wav_seg in user_segments:
+                            total_user_len = max(total_user_len, s + wav_seg.numel())
+
+                        user_ch = torch.zeros(total_user_len)
+
+                        for s, wav_seg in user_segments:
+                            e = s + wav_seg.numel()
+                            user_ch[s:e] += wav_seg
+
+                        agent_pred = torch.from_numpy(wav).float()
+                        agent_ch = torch.cat(
+                            [
+                                torch.zeros(first_user_delay_out, dtype=agent_pred.dtype),
+                                agent_pred,
+                            ]
+                        )
+
+                        stereo_len = max(user_ch.numel(), agent_ch.numel())
+
+                        user_pad = torch.zeros(stereo_len)
+                        agent_pad = torch.zeros(stereo_len)
+
+                        user_pad[: user_ch.numel()] = user_ch
+                        agent_pad[: agent_ch.numel()] = agent_ch
+
+                        stereo = torch.stack([user_pad, agent_pad], dim=1).numpy()
+
+                        aligned_path = os.path.join(
+                            args.out_dir,
+                            f"{stem}_user_agent_aligned{ext}",
+                        )
+
+                        sf.write(
+                            aligned_path,
+                            stereo,
+                            samplerate=model.output_sample_rate,
+                        )
+
+                        logging.info(f"Aligned user/agent stereo audio saved: {aligned_path}")
                 else:
                     wav = audio_f32[i, : audio_len[i]].numpy()
                     out_path = os.path.join(args.out_dir, base_name)

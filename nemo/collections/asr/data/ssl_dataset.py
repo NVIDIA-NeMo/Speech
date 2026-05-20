@@ -566,16 +566,19 @@ class LhotseAudioNoiseDataset(torch.utils.data.Dataset):
 
         self.batch_augmentor = batch_augmentor
         self.noise_data = load_noise_manifest(noise_manifest)
-        self.load_audio = AudioSamples(fault_tolerant=True, use_batch_loader=True, mono_downmix=True)
+        self.use_ais_get_batch = cfg.get("use_ais_get_batch", False)
+        self.load_audio = AudioSamples(fault_tolerant=True, use_batch_loader=self.use_ais_get_batch, mono_downmix=True)
         self.return_noise = return_noise
         self.cfg = cfg
 
     def __getitem__(self, cuts: CutSet) -> AudioNoiseBatch:
-        if self.cfg.get("use_ais_get_batch", False):
-            cuts = cuts.to_eager()
-            audios, audio_lens, cuts = self.load_audio(cuts)
-        else:
-            audios, audio_lens, cuts = safe_collate_audios(cuts)
+        # if self.use_ais_get_batch:
+        #     cuts = cuts.to_eager()
+        #     audios, audio_lens, cuts = self.load_audio(cuts)
+        # else:
+        #     audios, audio_lens, cuts = safe_collate_audios(cuts)
+
+        audios, audio_lens, cuts = self.load_audio(cuts)
 
         if audios is None:
             return None

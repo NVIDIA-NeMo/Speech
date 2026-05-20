@@ -299,9 +299,9 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
     if cfg.decoding.strategy == "greedy_batch":
         decoding_computer: GreedyBatchedLabelLoopingComputerBase = asr_model.decoding.decoding.decoding_computer
     elif cfg.decoding.strategy == "malsd_batch":
-        decoding_computer = asr_model.decoding.decoding._decoding_computer
+        decoding_computer = asr_model.decoding.decoding.decoding_computer
     elif cfg.decoding.strategy == "maes_batch":
-        decoding_computer: ModifiedAESBatchedRNNTComputer = asr_model.decoding.decoding._decoding_computer
+        decoding_computer: ModifiedAESBatchedRNNTComputer = asr_model.decoding.decoding.decoding_computer
     else:
         raise ValueError(f"Unsupported decoding strategy: {cfg.decoding.strategy}")
 

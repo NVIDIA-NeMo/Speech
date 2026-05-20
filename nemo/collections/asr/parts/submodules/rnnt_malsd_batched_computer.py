@@ -223,6 +223,27 @@ class SeparateGraphsMALSD:
     loop_update_decoder: torch.cuda.CUDAGraph = field(default_factory=torch.cuda.CUDAGraph)
 
 
+@dataclass
+class MALSDStateItem:
+    """
+    Per-stream decoding state for ``ModifiedALSDBatchedRNNTComputer``.
+
+    Used by streaming pipelines that maintain per-stream state. Mirrors
+    ``LabelLoopingStateItem`` (greedy), with two beam-search specifics:
+
+    - tensors are shaped ``[beam_size, ...]`` instead of scalar/``[D]``;
+    - ``batched_hyps_item`` carries the per-stream prefix tree as a
+      ``batch_size == 1`` ``BatchedBeamHyps``.
+    """
+
+    predictor_state: Any  # opaque per-stream predictor state of size beam_size
+    predictor_output: torch.Tensor  # [beam_size, 1, D]
+    label: torch.Tensor  # [beam_size]
+    decoded_length: torch.Tensor  # scalar
+    fusion_state_list: list[torch.Tensor] = field(default_factory=list)  # each [beam_size, ...]
+    batched_hyps_item: Any = None  # BatchedBeamHyps with batch_size == 1
+
+
 class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMixin):
     """
     Batched Alignment-Length Synchronous Decoding implementation. Callable.
@@ -458,28 +479,23 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             .clone()
         )  # size: batch_size x beam_size x beam_size
 
-        # Reuse batched beam hypotheses from state if continuing, otherwise create new
+        # Always create a fresh ``BatchedBeamHyps`` for this chunk so the returned
+        # transcripts / timestamps are chunk-local (and can then be shifted to global
+        # before returning). Cross-chunk per-beam state (scores, last_label,
+        # transcript_hash, current_lengths_nb, last_timestamp_lasts) is inherited from
+        # ``prev_batched_state.batched_hyps`` via ``copy_from_`` + ``clear_chunk_local_``,
+        # mirroring greedy ``loop_labels_torch`` which also returns a fresh BatchedHyps per call.
+        batched_hyps = BatchedBeamHyps(
+            batch_size=batch_size,
+            beam_size=self.beam_size,
+            blank_index=self._blank_index,
+            init_length=max_time * (self.max_symbols + 1) if self.max_symbols is not None else max_time,
+            device=device,
+            float_dtype=float_dtype,
+        )
         if prev_batched_state is not None and prev_batched_state.batched_hyps is not None:
-            batched_hyps = prev_batched_state.batched_hyps
-        else:
-            batched_hyps = BatchedBeamHyps(
-                batch_size=batch_size,
-                beam_size=self.beam_size,
-                blank_index=self._blank_index,
-                init_length=max_time * (self.max_symbols + 1) if self.max_symbols is not None else max_time,
-                device=device,
-                float_dtype=float_dtype,
-            )
-
-        # Streaming safety: when we reuse `batched_hyps` from a previous chunk and the per-step path
-        # is `add_results_no_checks_` (i.e. `self.max_symbols is not None`), that path does NOT grow
-        # the internal buffers. With long utterances / many chunks the buffer can overflow.
-        # Pre-grow here, mirroring the safety check inside `add_results_`.
-        if self.max_symbols is not None:
-            worst_case_writes = max_time * (self.max_symbols + 1)
-            needed = int(batched_hyps.current_lengths_wb.max().item()) + worst_case_writes + 1
-            while batched_hyps._max_length < needed:
-                batched_hyps._allocate_more()
+            batched_hyps.copy_from_(prev_batched_state.batched_hyps)
+            batched_hyps.clear_chunk_local_()
 
         time_indices = torch.zeros_like(batch_beam_indices)
         safe_time_indices = torch.zeros_like(time_indices)  # time indices, guaranteed to be < out_len
@@ -547,7 +563,6 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             # Continuing from previous chunk - batched_hyps already contains all state
             decoder_output = prev_batched_state.predictor_outputs
             decoder_state = prev_batched_state.predictor_states
-            
         step1=0
         while active_mask.any():
             # step 1: get joint output + fuse with fusion models (if present)
@@ -704,6 +719,14 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         # return the last labels from the previous state in this case
         last_labels = batched_hyps.get_last_labels(pad_id=self._SOS)
         batched_hyps.next_timestamp.fill_(0)
+
+        # Make ``batched_hyps.timestamps`` global by adding the cumulative encoder frame
+        # offset (number of frames already consumed by previous chunks) to this chunk's
+        # writes. Mirrors greedy ``loop_labels_torch`` (see
+        # ``rnnt_label_looping.py::loop_labels_torch`` line 523).
+        if prev_batched_state is not None:
+            batched_hyps.timestamps += prev_batched_state.decoded_lengths.unsqueeze(1).unsqueeze(2)
+
         decoding_state = BatchedLabelLoopingState(
             predictor_states=decoder_state,
             predictor_outputs=decoder_output,
@@ -722,7 +745,6 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             batched_hyps=batched_hyps,  # Save batched_hyps object for next chunk
         )
 
-        # import pdb; pdb.set_trace()
         return batched_hyps, None, decoding_state
 
     def topk_fusion_model(self, fusion_scores_list, log_probs, eps=1e-2):
@@ -884,10 +906,18 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         else:
             raise NotImplementedError(f"Unknown graph mode: {self.cuda_graphs_mode}")
 
-        # Create and return decoding state for next chunk
+        if prev_batched_state is not None:
+            self.state.batched_hyps.timestamps[:current_batch_size] += (
+                prev_batched_state.decoded_lengths[:current_batch_size].unsqueeze(-1).unsqueeze(-1)
+            )
+
+        # Create decoding state for next chunk (already a clone of ``self.state.batched_hyps``).
         decoding_state = self._create_decoding_state(encoder_output_length, prev_batched_state)
-        
-        return self.state.batched_hyps, None, decoding_state
+
+        # IMPORTANT: return a clone, not the live captured-graph buffer. The caller
+        # (streaming pipeline) may keep a reference and convert to hypotheses *after*
+        # the next chunk's loop has already mutated ``self.state.batched_hyps``.
+        return self.state.batched_hyps.clone(), None, decoding_state
 
     @classmethod
     def _create_loop_body_kernel(cls):
@@ -1249,6 +1279,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         self.state.safe_time_indices.fill_(0)  # safe time indices: guaranteed to be < encoder_output_length
 
         torch.sub(self.state.encoder_output_length, 1, out=self.state.last_timesteps)
+        torch.clamp_min_(self.state.last_timesteps, 0)
 
         # masks for utterances in batch
         # same as: active_mask = self.encoder_output_length > 0
@@ -1523,13 +1554,16 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             BatchedLabelLoopingState containing current decoding state
         """
         current_batch_size = encoder_output_length.shape[0]
-        
-        # Get last labels from batched_hyps
-        last_labels = self.state.batched_hyps.get_last_labels(pad_id=self._SOS)
-        
+
+        # Get last labels from batched_hyps. ``self.state.batched_hyps`` has the capture-time
+        # batch dim (>= ``current_batch_size``); slice to the real batch so the returned
+        # state matches the rest of the pipeline (and ``predictor_states`` / ``decoded_lengths``
+        # which we already slice below).
+        last_labels = self.state.batched_hyps.get_last_labels(pad_id=self._SOS)[:current_batch_size]
+
         # Reset next_timestamp for next chunk
         self.state.batched_hyps.next_timestamp.fill_(0)
-        
+
         # Calculate accumulated decoded lengths
         if prev_batched_state is None:
             decoded_lengths = encoder_output_length.clone()
@@ -1540,8 +1574,8 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         if prev_batched_state is not None:
             last_labels = torch.where(
                 last_labels == self._SOS,
-                prev_batched_state.labels,
-                last_labels
+                prev_batched_state.labels[:current_batch_size],
+                last_labels,
             )
         
         # Get fusion states (including biasing) if present
@@ -1563,6 +1597,221 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             time_jumps=None,
             batched_hyps=self.state.batched_hyps.clone(),
         )
+
+    def split_batched_state(self, state: BatchedLabelLoopingState) -> list[MALSDStateItem]:
+        """
+        Split a batched MALSD state into per-stream ``MALSDStateItem``s.
+
+        Mirrors ``GreedyBatchedLabelLoopingComputerBase.split_batched_state`` but on
+        beam-search shapes:
+
+        - the predictor state was created with batch dimension ``B * beam_size``;
+          we slice it into ``B`` groups of ``beam_size`` consecutive rows and
+          re-batch each group with ``decoder.batch_unsplit_states``.
+        - ``labels`` / ``decoded_lengths`` are split along the batch axis.
+        - ``fusion_states_list`` has each element as ``[B, beam_size, ...]``.
+        - ``batched_hyps`` is sliced row-by-row via :meth:`BatchedBeamHyps.slice_row`.
+        """
+        if state is None:
+            return []
+        batch_size = state.labels.shape[0]
+        beam_size = self.beam_size
+
+        # `predictor_states` was created for batch_size * beam_size. Split into per-row items
+        # then re-batch each `beam_size` contiguous chunk.
+        per_row_states = self.decoder.batch_split_states(state.predictor_states)
+        assert len(per_row_states) == batch_size * beam_size, (
+            f"Expected predictor states with batch dim {batch_size * beam_size}, "
+            f"got {len(per_row_states)} per-row items"
+        )
+
+        items: list[MALSDStateItem] = []
+        for i in range(batch_size):
+            stream_predictor_state = self.decoder.batch_unsplit_states(
+                per_row_states[i * beam_size : (i + 1) * beam_size]
+            )
+            items.append(
+                MALSDStateItem(
+                    # Clone tensors so the per-stream snapshot is independent of any further
+                    # in-place mutations to the source batched tensors (e.g. by the
+                    # right-context decoding pass that reuses the same ``BatchedLabelLoopingState``).
+                    predictor_state=stream_predictor_state,
+                    predictor_output=state.predictor_outputs[i * beam_size : (i + 1) * beam_size].clone(),
+                    label=state.labels[i].clone(),
+                    decoded_length=state.decoded_lengths[i].clone(),
+                    fusion_state_list=(
+                        [fs[i * beam_size : (i + 1) * beam_size].clone() for fs in state.fusion_states_list]
+                        if state.fusion_states_list
+                        else []
+                    ),
+                    batched_hyps_item=(
+                        state.batched_hyps.slice_row(i) if state.batched_hyps is not None else None
+                    ),
+                )
+            )
+        return items
+
+    def merge_to_batched_state(
+        self, state_items: list[Optional[MALSDStateItem]]
+    ) -> BatchedLabelLoopingState:
+        """
+        Merge a list of per-stream ``MALSDStateItem``s into a single batched MALSD state.
+
+        ``None`` entries (e.g. fresh streams that joined a batch mid-flight) are
+        replaced with a freshly-initialised after-SOS state.
+
+        Mirrors ``GreedyBatchedLabelLoopingComputerBase.merge_to_batched_state``.
+        """
+        if any(item is None for item in state_items):
+            not_none_item = next(item for item in state_items if item is not None)
+            assert not_none_item is not None, "merge_to_batched_state needs at least one non-None item"
+            device = not_none_item.predictor_output.device
+            start_item = self._get_state_item_after_sos(device=device)
+            state_items = [item if item is not None else start_item for item in state_items]
+
+        batch_size = len(state_items)
+        beam_size = self.beam_size
+
+        # Re-batch predictor state. Each `item.predictor_state` was built for `beam_size` rows;
+        # we split it back to per-row items and then re-batch all `batch_size * beam_size`.
+        per_row_states: list[Any] = []
+        for item in state_items:
+            per_row_states.extend(self.decoder.batch_split_states(item.predictor_state))
+        batched_predictor_state = self.decoder.batch_unsplit_states(per_row_states)
+
+        predictor_outputs = torch.cat([item.predictor_output for item in state_items], dim=0)
+        labels = torch.stack([item.label for item in state_items], dim=0)
+        decoded_lengths = torch.stack([item.decoded_length for item in state_items], dim=0)
+
+        num_fusion = len(state_items[0].fusion_state_list)
+        fusion_states_list = []
+        for fusion_idx in range(num_fusion):
+            fusion_states_list.append(
+                torch.cat([item.fusion_state_list[fusion_idx] for item in state_items], dim=0)
+            )
+
+        batched_hyps_items = [item.batched_hyps_item for item in state_items]
+        if all(bh is not None for bh in batched_hyps_items):
+            batched_hyps = BatchedBeamHyps.stack_rows(batched_hyps_items)
+        else:
+            batched_hyps = None
+
+        return BatchedLabelLoopingState(
+            predictor_states=batched_predictor_state,
+            predictor_outputs=predictor_outputs,
+            labels=labels,
+            decoded_lengths=decoded_lengths,
+            fusion_states_list=fusion_states_list,
+            time_jumps=None,
+            batched_hyps=batched_hyps,
+        )
+
+    def _get_state_item_after_sos(self, device: torch.device | str) -> MALSDStateItem:
+        """
+        Build a fresh per-stream state corresponding to an after-SOS hypothesis.
+        Used by :meth:`merge_to_batched_state` to fill in ``None`` items.
+        """
+        beam_size = self.beam_size
+        # Predictor for a single stream needs `beam_size` rows (mirrors the init path
+        # in `modified_alsd_torch` with batch_size=1).
+        sos_labels = torch.full([beam_size], fill_value=self._SOS, dtype=torch.long, device=device)
+        decoder_output, predictor_state, *_ = self.decoder.predict(
+            sos_labels.unsqueeze(1), None, add_sos=False, batch_size=beam_size
+        )
+        decoder_output = self.joint.project_prednet(decoder_output)  # [beam_size, 1, D]
+
+        fusion_state_list: list[torch.Tensor] = []
+        for fusion_model in self._all_fusion_models():
+            fusion_state_list.append(
+                fusion_model.get_init_states(batch_size=beam_size, bos=True).to(device)
+            )
+
+        return MALSDStateItem(
+            predictor_state=predictor_state,
+            predictor_output=decoder_output,
+            label=torch.full([beam_size], fill_value=self._SOS, dtype=torch.long, device=device),
+            decoded_length=torch.zeros([], dtype=torch.long, device=device),
+            fusion_state_list=fusion_state_list,
+            batched_hyps_item=None,
+        )
+
+    def collapse_batched_state_to_beams_(
+        self,
+        state: BatchedLabelLoopingState,
+        batched_hyps: BatchedBeamHyps,
+        beam_indices: torch.Tensor,
+    ) -> None:
+        """
+        In-place: collapse each row of a batched MALSD state and its associated
+        :class:`BatchedBeamHyps` to a single surviving beam, replicated across all
+        ``beam_size`` slots.
+
+        After the call, every per-beam tensor on ``state``, on ``state.batched_hyps``
+        and on ``batched_hyps`` carries the chosen beam's value at slot 0 and identical
+        clones at slots 1..beam_size-1; ``scores[:, 1:]`` is set to ``INACTIVE_SCORE``
+        on the prefix-tree buffers so the next chunk's top-k repopulates the slots
+        through normal expansion of the surviving beam, mirroring the SOS-time init in
+        :meth:`modified_alsd_torch`.
+
+        Used by streaming pipelines after each chunk to commit the per-chunk raw-score
+        best beam as the definitive history before the next chunk - this keeps the
+        emitted transcript, the EOU decision, and the carried predictor/decoder state
+        all derived from the same hypothesis (no inconsistency between "what we
+        published" and "what we conditioned the next chunk on").
+
+        Args:
+            state: batched MALSD state to collapse in place. ``state.predictor_states``
+                is replaced; ``predictor_outputs`` / ``labels`` / ``fusion_states_list``
+                are replaced with permuted views/copies. ``state.batched_hyps`` is
+                mutated in place via :meth:`BatchedBeamHyps.keep_beam_`.
+            batched_hyps: the prefix-tree object returned alongside ``state`` from the
+                computer call. Mutated in place via :meth:`BatchedBeamHyps.keep_beam_`.
+                Note: in the torch path this aliases ``state.batched_hyps`` (same
+                object), in which case ``keep_beam_`` is invoked only once.
+            beam_indices: ``[batch_size]`` long tensor giving the beam to keep per row,
+                computed from raw scores **before** this method is called (any
+                in-place mutation here would invalidate the indices).
+        """
+        batch_size = state.labels.shape[0]
+        beam_size = self.beam_size
+        if beam_indices.shape != (batch_size,):
+            raise ValueError(
+                f"beam_indices must have shape [batch_size={batch_size}], got {tuple(beam_indices.shape)}"
+            )
+
+        device = state.labels.device
+        beam_indices = beam_indices.to(dtype=torch.long, device=device)
+
+        # Flat row indices into the [B*K]-batched buffers: for batch row b we want all
+        # K target slots to point at row (b*K + beam_indices[b]).
+        row_offsets = torch.arange(batch_size, device=device, dtype=torch.long) * beam_size
+        chosen_flat_idx = row_offsets + beam_indices  # [B]
+        flat_perm = chosen_flat_idx.unsqueeze(-1).expand(batch_size, beam_size).reshape(-1)  # [B*K]
+
+        per_row = self.decoder.batch_split_states(state.predictor_states)
+        if len(per_row) != batch_size * beam_size:
+            raise AssertionError(
+                f"Expected predictor states with batch dim {batch_size * beam_size}, "
+                f"got {len(per_row)} per-row items"
+            )
+        replicated_per_row = [per_row[int(idx)] for idx in flat_perm.tolist()]
+        state.predictor_states = self.decoder.batch_unsplit_states(replicated_per_row)
+
+        state.predictor_outputs = state.predictor_outputs.index_select(0, flat_perm).contiguous()
+
+        beam_perm = beam_indices.unsqueeze(-1).expand(batch_size, beam_size)
+        state.labels = torch.gather(state.labels, dim=1, index=beam_perm).contiguous()
+
+        if state.fusion_states_list:
+            state.fusion_states_list = [
+                fs.index_select(0, flat_perm).contiguous() for fs in state.fusion_states_list
+            ]
+
+        # `keep_beam_` on the prefix tree. In the torch path `state.batched_hyps is
+        # batched_hyps`, so we only collapse once to avoid double-permuting.
+        batched_hyps.keep_beam_(beam_indices)
+        if state.batched_hyps is not None and state.batched_hyps is not batched_hyps:
+            state.batched_hyps.keep_beam_(beam_indices)
 
     def __call__(
         self,

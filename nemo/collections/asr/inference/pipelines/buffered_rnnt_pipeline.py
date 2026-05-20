@@ -39,6 +39,10 @@ from nemo.collections.asr.inference.utils.pipeline_utils import (
     normalize_features,
     update_punctuation_and_language_tokens_timestamps,
 )
+from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import (
+    BatchedBeamHyps,
+    batched_beam_hyps_to_hypotheses,
+)
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis as NemoHypothesis
 from nemo.collections.asr.parts.utils.rnnt_utils import batched_hyps_to_hypotheses
 from nemo.utils import logging
@@ -562,6 +566,12 @@ class BufferedRNNTPipeline(BasePipeline):
             multi_biasing_ids = torch.from_numpy(multi_biasing_ids).to(device=enc_lens_chunk.device)
 
         encs_dim_last = encs.transpose(1, 2)
+
+        def _to_hypotheses(out):
+            if isinstance(out, BatchedBeamHyps):
+                return batched_beam_hyps_to_hypotheses(out, batch_size=enc_lens.shape[0])
+            return batched_hyps_to_hypotheses(out, batch_size=enc_lens.shape[0])
+
         # decode chunk
         with torch.inference_mode(), torch.no_grad():
             best_batched_hyps_chunk, _, batched_state = self.decoding_computer(
@@ -570,7 +580,22 @@ class BufferedRNNTPipeline(BasePipeline):
                 batched_rnnt_states,
                 multi_biasing_ids=multi_biasing_ids,
             )
-        best_hyps = batched_hyps_to_hypotheses(best_batched_hyps_chunk, batch_size=enc_lens.shape[0])
+
+            # Beam-search per-chunk collapse: pick the raw-cumulative-log-prob best beam
+            # per stream and replicate it across all beam_size slots (other slots' scores
+            # set to -inf). After this point the prefix tree, the predictor / decoder
+            # state, the labels and the fusion states all describe a single hypothesis
+            # per stream - so what we publish, what we use to decide EOU, and what we
+            # carry into the next chunk are the same hypothesis. Inside a chunk the beam
+            # is reborn through normal top-k expansion of the surviving beam, mirroring
+            # the SOS-time init in ``modified_alsd_torch``.
+            if isinstance(best_batched_hyps_chunk, BatchedBeamHyps):
+                beam_indices = best_batched_hyps_chunk.scores.argmax(dim=-1)
+                self.decoding_computer.collapse_batched_state_to_beams_(
+                    batched_state, best_batched_hyps_chunk, beam_indices
+                )
+
+        best_hyps = _to_hypotheses(best_batched_hyps_chunk)
 
         # save state (after chunk)
         for state, rnnt_state in zip(states, self.decoding_computer.split_batched_state(batched_state)):
@@ -593,7 +618,14 @@ class BufferedRNNTPipeline(BasePipeline):
                     batched_state,
                     multi_biasing_ids=multi_biasing_ids,
                 )
-                best_hyps_rc = batched_hyps_to_hypotheses(best_batched_hyps_rc, batch_size=enc_lens.shape[0])
+                # Collapse the right-context beam too, so the merged published transcript
+                # and timestamps come from a single hypothesis per stream. Right-context
+                # state is not carried forward (it's a lookahead-only decode), so we only
+                # need to collapse the prefix tree itself.
+                if isinstance(best_batched_hyps_rc, BatchedBeamHyps):
+                    rc_beam_indices = best_batched_hyps_rc.scores.argmax(dim=-1)
+                    best_batched_hyps_rc.keep_beam_(rc_beam_indices)
+                best_hyps_rc = _to_hypotheses(best_batched_hyps_rc)
             # merge right context to chunk hypothesis
             for hyp, hyp_rc in zip(best_hyps, best_hyps_rc):
                 hyp.merge_(hyp_rc)

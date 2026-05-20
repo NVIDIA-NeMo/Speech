@@ -1,0 +1,151 @@
+# Streaming inference config for RNN-T with MALSD beam search decoding.
+# Mirrors ``buffered_rnnt.yaml`` but switches the decoding strategy to ``malsd_batch``.
+
+# ================================
+# ASR Configuration
+# ================================
+asr:
+  model_name: nvidia/stt_en_fastconformer_transducer_large        # Pre-trained RNN-T model
+  device: cuda
+  device_id: 0
+  compute_dtype: bfloat16
+  use_amp: false
+  decoding:
+    strategy: "malsd_batch"
+    preserve_alignments: false
+    fused_batch_size: -1
+    beam:
+      beam_size: 4
+      return_best_hypothesis: true
+      score_norm: true
+      # The streaming pipeline reads `current_lengths_wb` from the returned BatchedBeamHyps
+      # directly. The torch path keeps it cross-chunk (consistent with `current_lengths_nb`);
+      # the cuda-graph path keeps it chunk-local (the legacy chunked script calls
+      # `flatten_()` per chunk to consolidate). For now, disable cuda-graphs for the
+      # streaming pipeline.
+      allow_cuda_graphs: true
+      ngram_lm_model: null
+      ngram_lm_alpha: 0.0
+      boosting_tree:
+        model_path: null
+        key_phrases_file: null
+        key_phrases_list: null
+        key_phrase_items_list: null
+        source_lang: "en"
+      boosting_tree_alpha: 0.0
+
+
+# ==========================================
+# Inverse Text Normalization Configuration
+# ==========================================
+itn:
+  input_case: lower_cased
+  whitelist: null
+  overwrite_cache: false
+  max_number_of_permutations_per_split: 729
+  left_padding_size: 4
+  batch_size: 32
+  n_jobs: 16
+
+
+# ================================
+# Neural Machine Translation Configuration
+# ================================
+nmt:
+  model_name: "utter-project/EuroLLM-1.7B-Instruct"
+  source_language: "English"
+  target_language: "Russian"
+  waitk: -1
+  device: cuda
+  device_id: 1
+  batch_size: 16
+  llm_params:
+    dtype: "auto"
+    seed: 42
+  sampling_params:
+    max_tokens: 100
+    temperature: 0.0
+    top_p: 0.9
+    seed: 42
+
+
+# ========================
+# Confidence estimation
+# ========================
+confidence:
+  exclude_blank: true
+  aggregation: mean
+  method_cfg:
+    name: entropy
+    entropy_type: tsallis
+    alpha: 0.5
+    entropy_norm: exp
+
+
+# ========================
+# Endpointing settings
+# ========================
+endpointing:
+  stop_history_eou: 800
+  residue_tokens_at_end: 2
+
+
+# ========================
+# Streaming configuration
+# ========================
+streaming:
+  sample_rate: 16000
+  batch_size: 256
+  left_padding_size: 1.6
+  right_padding_size: 1.6
+  chunk_size: 4.8
+  word_boundary_tolerance: 4
+  request_type: feature_buffer
+  stateful: true
+  padding_mode: right
+
+
+# ========================
+# Pipeline settings
+# ========================
+matmul_precision: high
+log_level: 20
+pipeline_type: buffered
+asr_decoding_type: rnnt
+
+
+# ========================
+# Runtime arguments defined at runtime via command line
+# ========================
+audio_file: null
+output_filename: null
+output_dir: null
+enable_itn: false
+enable_nmt: false
+asr_output_granularity: segment
+cache_dir: null
+lang: null
+return_tail_result: false
+calculate_wer: true
+calculate_bleu: true
+warmup_steps: 0
+run_steps: 1
+
+
+# ========================
+# Metrics
+# ========================
+metrics:
+  asr:
+    gt_text_attr_name: text
+    clean_groundtruth_text: false
+    langid: en
+    use_cer: false
+    ignore_capitalization: true
+    ignore_punctuation: true
+    strip_punc_space: false
+  nmt:
+    gt_text_attr_name: answer
+    ignore_capitalization: false
+    ignore_punctuation: false
+    strip_punc_space: false

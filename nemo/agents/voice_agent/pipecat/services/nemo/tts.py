@@ -861,8 +861,19 @@ def get_tts_service_from_config(config: DictConfig, audio_logger: Optional[Audio
         "nvidia",
     ], f"Invalid TTS type: {config.get('type')}, only 'nemo' and 'nvidia' are supported"
 
+    logger.debug(f"Getting TTS service from config: {config}")
     model = config.get("model", None)
     device = config.get("device", "cuda")
+    if config.get("use_text_aggregator", True):
+        text_aggregator = SimpleSegmentedTextAggregator(
+            punctuation_marks=config.get("extra_separator", None),
+            ignore_marks=config.get("ignore_strings", None),
+            min_sentence_length=config.get("min_sentence_length", 5),
+            use_legacy_eos_detection=config.get("use_legacy_eos_detection", False),
+        )
+    else:
+        text_aggregator = None
+
     if config.get("type", None) == "nvidia":
         api_key = os.getenv("NVIDIA_API_KEY", config.get("api_key", "None"))
         model_name = config.get("model", "magpie_tts_ensemble-Magpie-Multilingual")
@@ -876,18 +887,11 @@ def get_tts_service_from_config(config: DictConfig, audio_logger: Optional[Audio
             model_function_map={"function_id": function_id, "model_name": model_name},
             language=language,
             sample_rate=22050,
+            text_aggregator=text_aggregator,
         )
 
     if model is None:
         raise ValueError("Model is required for NeMo TTS service")
-
-    logger.debug(f"Getting TTS service from config: {config}")
-    text_aggregator = SimpleSegmentedTextAggregator(
-        punctuation_marks=config.get("extra_separator", None),
-        ignore_marks=config.get("ignore_strings", None),
-        min_sentence_length=config.get("min_sentence_length", 5),
-        use_legacy_eos_detection=config.get("use_legacy_eos_detection", False),
-    )
 
     if model == "fastpitch-hifigan":
         return NeMoFastPitchHiFiGANTTSService(

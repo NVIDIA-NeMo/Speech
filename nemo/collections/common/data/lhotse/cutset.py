@@ -39,6 +39,7 @@ from nemo.collections.common.data.lhotse.nemo_adapters import (
     LazyNeMoIterator,
     LazyNeMoTarredIterator,
     LazyParquetIterator,
+    LazySSLLongformIterator,
     expand_sharded_filepaths,
 )
 from nemo.collections.common.data.lhotse.text_adapters import (
@@ -388,6 +389,26 @@ def read_nemo_sft_jsonl(config: DictConfig) -> tuple[CutSet, bool]:
     )
     if not config.get("force_finite", False):
         cuts = cuts.repeat(preserve_id=True)
+    return cuts, True
+
+
+@data_type_parser("ssl_longform")
+def read_ssl_longform(config: DictConfig) -> tuple[CutSet, bool]:
+    """Read paths to multimodal conversation JSONL files and create a CutSet."""
+    cuts = CutSet(
+        LazySSLLongformIterator(
+            path=config.manifest_filepath,
+            text_field=config.text_field,
+            lang_field=config.lang_field,
+            metadata_only=config.metadata_only,
+            shuffle_shards=config.shuffle,
+            shard_seed=config.shard_seed,
+            extra_fields=config.extra_fields,
+            window_duration=config.window_duration,
+        )
+    )
+    if not config.get("force_finite", False):
+        cuts = cuts.repeat()
     return cuts, True
 
 

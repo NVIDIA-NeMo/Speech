@@ -22,6 +22,8 @@ from io import BytesIO
 from pathlib import Path
 from typing import Generator, Iterable, List, Literal
 
+import lhotse.audio
+
 try:
     import pyarrow.parquet as pq
 
@@ -208,6 +210,83 @@ class LazyNeMoIterator:
             )
         else:
             return Recording.from_file(audio_path)
+
+
+class LazySSLLongformIterator:
+    def __init__(
+        self,
+        path: str | Path | list[str],
+        text_field: str = "text",
+        lang_field: str = "lang",
+        metadata_only: bool = False,
+        shuffle_shards: bool = False,
+        shard_seed: int | Literal["randomized", "trng"] = "trng",
+        extra_fields: list[dict[str, str]] | None = None,
+        window_duration: float = 40.0,
+    ) -> None:
+        self.path = path
+        self.shuffle_shards = shuffle_shards
+        self.shard_seed = shard_seed
+        self.window_duration = window_duration
+        paths = expand_sharded_filepaths(path)
+
+        if len(paths) == 1:
+            self.source = LazyJsonlIterator(paths[0])
+        else:
+            self.source = LazyIteratorChain(
+                *(LazyJsonlIterator(p) for p in paths), shuffle_iters=self.shuffle_shards, seed=self.shard_seed
+            )
+        self.text_field = text_field
+        self.lang_field = lang_field
+        self.metadata_only = metadata_only
+        self.extra_fields = extra_fields
+        validate_extra_fields(self.extra_fields)
+
+    def __iter__(self) -> Generator[Cut, None, None]:
+        seed = resolve_seed(self.shard_seed)
+        # Propagate the random seed
+        extra_fields = [ExtraField.from_dict({"seed": seed, **field_cfg}) for field_cfg in self.extra_fields or ()]
+        for data in self.source:
+            # filter out entries with valid "_skipme" values.
+            if data.get("_skipme", False):
+                continue
+            audio_path = get_full_path(str(data.pop("audio_filepath")), str(self.path), force_cache=False)
+            duration = data.pop("duration")
+            offset = data.pop("offset", None)
+            cut = self._create_cut(
+                audio_path=audio_path, offset=offset, duration=duration, sampling_rate=data.pop("sampling_rate", None)
+            )
+            # Note that start=0 and not start=offset because supervision's start if relative to the
+            # start of the cut; and cut.start is already set to offset
+            cut.supervisions.append(
+                SupervisionSegment(
+                    id=cut.id,
+                    recording_id=cut.recording_id,
+                    start=0,
+                    duration=cut.duration,
+                    channel=cut.channel,
+                    text=data.get(self.text_field),
+                    language=data.get(self.lang_field),
+                )
+            )
+            cut.custom = data
+            for extra_field in extra_fields:
+                extra_field.attach_to(cut)
+            yield cut
+
+    def __len__(self) -> int:
+        return len(self.source)
+
+    def __add__(self, other):
+        return LazyIteratorChain(self, other)
+
+    def _create_cut(
+        self,
+        audio_path: str,
+    ) -> Cut:
+        recording = Recording.from_bytes(open_best(audio_path), recording_id=audio_path)
+        cut = recording.to_cut()
+        return cut.cut_into_windows(duration=self.window_duration)
 
 
 class LazyNeMoTarredIterator:

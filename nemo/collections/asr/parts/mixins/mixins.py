@@ -517,7 +517,12 @@ class ASRModuleMixin(ASRAdapterModelMixin):
         )
 
     def change_attention_model(
-        self, self_attention_model: str = None, att_context_size: List[int] = None, update_config: bool = True
+        self,
+        self_attention_model: str = None,
+        att_context_size: List[int] = None,
+        update_config: bool = True,
+        rope_base: float = None,
+        rotary_fraction: float = None,
     ):
         """
         Update the self_attention_model if function is available in encoder.
@@ -535,13 +540,20 @@ class ASRModuleMixin(ASRAdapterModelMixin):
                 'abs_pos':
                     absolute positional embedding and Transformer
 
+                'rope':
+                    rotary position embedding
+
                 If None is provided, the self_attention_model isn't changed. Defauts to None.
             att_context_size (List[int]): List of 2 ints corresponding to left and right attention context sizes,
                 or None to keep as it is. Defauts to None.
             update_config (bool): Whether to update the config or not with the new attention model.
                 Defaults to True.
+            rope_base (float): Theta base for rotary position embedding. Only used when
+                ``self_attention_model='rope'``. If None, the existing value is kept.
+            rotary_fraction (float): Fraction of the per-head dim to rotate. Only used when
+                ``self_attention_model='rope'``. If None, the existing value is kept.
         """
-        if self_attention_model is None and att_context_size is None:
+        if self_attention_model is None and att_context_size is None and rope_base is None and rotary_fraction is None:
             return
 
         if not hasattr(self, 'encoder'):
@@ -555,11 +567,21 @@ class ASRModuleMixin(ASRAdapterModelMixin):
             logging.info("Model encoder doesn't have a change_attention_model method ")
             return
 
-        self.encoder.change_attention_model(self_attention_model, att_context_size, update_config, self.device)
+        self.encoder.change_attention_model(
+            self_attention_model=self_attention_model,
+            att_context_size=att_context_size,
+            update_config=update_config,
+            device=self.device,
+            rope_base=rope_base,
+            rotary_fraction=rotary_fraction,
+        )
         if update_config:
             with open_dict(self.cfg):
                 self.cfg.encoder.self_attention_model = self_attention_model
                 self.cfg.encoder.att_context_size = att_context_size
+                if self_attention_model == 'rope':
+                    self.cfg.encoder.rope_base = self.encoder._cfg.rope_base
+                    self.cfg.encoder.rotary_fraction = self.encoder._cfg.rotary_fraction
 
     def change_subsampling_conv_chunking_factor(
         self, subsampling_conv_chunking_factor: int, update_config: bool = True

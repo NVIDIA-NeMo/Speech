@@ -319,6 +319,8 @@ def setup_model(cfg: DictConfig, map_location: torch.device) -> Tuple[ASRModel, 
         asr_model.change_attention_model(
             self_attention_model=cfg.model_change.conformer.get("self_attention_model", None),
             att_context_size=cfg.model_change.conformer.get("att_context_size", None),
+            rope_base=cfg.model_change.conformer.get("rope_base", None),
+            rotary_fraction=cfg.model_change.conformer.get("rotary_fraction", None),
         )
 
     return asr_model, model_name

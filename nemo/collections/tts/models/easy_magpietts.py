@@ -1446,7 +1446,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 if seq_len <= 0:
                     continue
 
-                boundary_trim = self.cfg.get("user_audio_boundary_trim", 5)
+                boundary_trim = self.cfg.get("user_audio_boundary_trim", 0)
                 boundary_trim = 0 if boundary_trim is None else int(boundary_trim)
 
                 if boundary_trim == 0:

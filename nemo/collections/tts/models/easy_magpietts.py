@@ -1446,7 +1446,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 if seq_len <= 0:
                     continue
 
-                boundary_trim = self.cfg.get("user_audio_boundary_trim", 4)
+                boundary_trim = self.cfg.get("user_audio_boundary_trim", 5)
                 boundary_trim = 0 if boundary_trim is None else int(boundary_trim)
 
                 if boundary_trim == 0:
@@ -1478,30 +1478,61 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                     do_turn_aug = torch.rand((), device=user_audio_embedded.device).item() < turn_prob
 
                     if do_turn_aug:
-                        trim_delta = int(torch.randint(
-                            low=-1,
-                            high=2,
-                            size=(),
-                            device=user_audio_embedded.device,
-                        ).item())
+                        trim_delta = int(
+                            torch.randint(
+                                low=-1,
+                                high=2,  # {-1, 0, 1}
+                                size=(),
+                                device=user_audio_embedded.device,
+                            ).item()
+                        )
+
                         trim_amount = max(1, base_trim + trim_delta)
-                        trim_amount = min(trim_amount, copy_len)
+                        trim_amount = min(trim_amount, max(1, copy_len - 1))
 
                         aug_choice = random.choices(
-                            ["left", "right", "full"],
-                            weights=[0.45, 0.45, 0.10],
+                            ["left", "right", "both"],
+                            weights=[0.3, 0.3, 0.4],
                             k=1,
                         )[0]
 
+                        zero_emb_pad = turn_emb.new_zeros(trim_amount, turn_emb.size(-1))
+                        zero_mask_pad = torch.zeros(trim_amount, device=turn_mask.device, dtype=turn_mask.dtype)
+
                         if aug_choice == "left":
-                            turn_emb[:trim_amount] = 0.0
-                            turn_mask[:trim_amount] = False
+                            # Remove tokens from the left, then right-pad zeros.
+                            kept_emb = turn_emb[trim_amount:]
+                            kept_mask = turn_mask[trim_amount:]
+                            turn_emb = torch.cat([kept_emb, zero_emb_pad], dim=0)
+                            turn_mask = torch.cat([kept_mask, zero_mask_pad], dim=0)
+
                         elif aug_choice == "right":
-                            turn_emb[copy_len - trim_amount:] = 0.0
-                            turn_mask[copy_len - trim_amount:] = False
-                        else:
-                            turn_emb.zero_()
-                            turn_mask[:] = True
+                            # Remove tokens from the right, then right-pad zeros.
+                            # This preserves timing of the left side and removes the transition/right edge.
+                            kept_emb = turn_emb[: copy_len - trim_amount]
+                            kept_mask = turn_mask[: copy_len - trim_amount]
+
+                            turn_emb = torch.cat([kept_emb, zero_emb_pad], dim=0)
+                            turn_mask = torch.cat([kept_mask, zero_mask_pad], dim=0)
+
+                        else:  # "both"
+                            # Remove trim_amount total tokens split across left and right.
+                            left_trim = trim_amount // 2
+                            right_trim = trim_amount - left_trim
+
+                            # If trim_amount is odd, randomly decide which side loses the extra token.
+                            if trim_amount % 2 == 1 and torch.rand((), device=user_audio_embedded.device).item() < 0.5:
+                                left_trim, right_trim = right_trim, left_trim
+
+                            kept_emb = turn_emb[left_trim : copy_len - right_trim]
+                            kept_mask = turn_mask[left_trim : copy_len - right_trim]
+
+                            turn_emb = torch.cat([kept_emb, zero_emb_pad], dim=0)
+                            turn_mask = torch.cat([kept_mask, zero_mask_pad], dim=0)
+
+                        # Safety: keep exact same length for restore assignment.
+                        turn_emb = turn_emb[:copy_len]
+                        turn_mask = turn_mask[:copy_len]
 
                 dst_start = start_frame
                 dst_end = start_frame + copy_len

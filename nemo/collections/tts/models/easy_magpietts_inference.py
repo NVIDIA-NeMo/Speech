@@ -1672,6 +1672,9 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         streaming_speech_delay = state.config.training_mode.streaming_speech_delay
         streaming_phonemes_delay = state.config.training_mode.streaming_phonemes_delay
 
+        if self.cfg.get("use_explicit_silence_for_streaming_audio_delay", False):
+            streaming_speech_delay = 0
+
         # Determine phases per batch item
         needs_context = state.context_position < state.full_context_lens  # (B,) bool
         needs_text = (~needs_context) & (~state.text_finished)

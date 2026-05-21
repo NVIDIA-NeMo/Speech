@@ -920,7 +920,10 @@ def main():
                         profile_seconds = profile_T * model.input_samples_per_frame / model.sample_rate
 
                     # add text tokens needed for profilling
-                    if not model.cfg.get("agent_mask_include_transition_prefix", False):
+                    if (
+                        not model.cfg.get("agent_mask_include_transition_prefix", False)
+                        and not model.cfg.get("use_explicit_silence_for_streaming_audio_delay", False)
+                    ):
                         delay_tokens = int(state.config.training_mode.streaming_speech_delay)
                         delay_tokens = min(delay_tokens, int(turn_lens[0].item()), profile_T)
                         profile_tokens[:, -delay_tokens:] = turn_text[:, :delay_tokens]

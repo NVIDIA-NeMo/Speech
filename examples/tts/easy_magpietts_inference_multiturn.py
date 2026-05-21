@@ -49,6 +49,10 @@ torch.backends.cuda.matmul.allow_tf32 = True
 if torch.cuda.is_available():
     torch.cuda.set_device(int(os.environ.get("LOCAL_RANK", 0)))
 
+def torch_rms_norm(wav, db_level=-27.0):
+    r = 10 ** (db_level / 20)
+    a = torch.sqrt((wav.size(-1) * (r**2)) / torch.sum(wav**2))
+    return wav * a
 
 def attach_dtype_counter(model):
     handles = []
@@ -920,23 +924,41 @@ def main():
                         profile_seconds = profile_T * model.input_samples_per_frame / model.sample_rate
 
                     # add text tokens needed for profilling
-                    if not model.cfg.get("agent_mask_include_transition_prefix", False):
-                        delay_tokens = int(state.config.training_mode.streaming_speech_delay)
-                        delay_tokens = min(delay_tokens, int(turn_lens[0].item()), profile_T)
-                        profile_tokens[:, -delay_tokens:] = turn_text[:, :delay_tokens]
-                        turn_text = turn_text[:, delay_tokens:]
-                        turn_lens = torch.clamp(turn_lens - delay_tokens, min=0)
-                        # ToDo: Check if it is really necessary (probably not)
-                        if user_audio_channel_embedding is not None and delay_tokens > 0:
-                            user_audio_channel_embedding = user_audio_channel_embedding.clone()
-                            user_audio_channel_embedding[:, -delay_tokens:] = 0.0
+                    delay_tokens = int(state.config.training_mode.streaming_speech_delay)
+                    delay_tokens = min(delay_tokens, int(turn_lens[0].item()), profile_T)
 
-                    state = model.streaming_prefill_profile(
-                        state=state,
-                        text_tokens=profile_tokens,
-                        use_inference_mode=True,
-                        user_audio_channel_embedding=user_audio_channel_embedding
-                    )
+                    warmup_tokens = turn_text[:, :delay_tokens]
+                    turn_text = turn_text[:, delay_tokens:]
+                    turn_lens = torch.clamp(turn_lens - delay_tokens, min=0)
+
+                    if user_audio_channel_embedding is not None and delay_tokens > 0:
+                        warmup_user_audio = user_audio_channel_embedding[:, -delay_tokens:]
+                        user_audio_channel_embedding = user_audio_channel_embedding[:, :-delay_tokens]
+                        profile_tokens = profile_tokens[:, :-delay_tokens]
+                    else:
+                        warmup_user_audio = None
+
+                    if profile_tokens.size(1) > 0:
+                        state = model.streaming_prefill_profile(
+                            state=state,
+                            text_tokens=profile_tokens,
+                            use_inference_mode=True,
+                            user_audio_channel_embedding=user_audio_channel_embedding
+                        )
+
+                    for i in range(delay_tokens):
+                        user_step_emb = warmup_user_audio[:, i] if warmup_user_audio is not None else None
+
+                        state.finished.zero_()
+
+                        state, _, _ = model.streaming_step(
+                            state=state,
+                            text_tokens=warmup_tokens[:, i],
+                            user_audio_channel_embedding=user_step_emb,
+                            prefill_like_step=not bool(model.cfg.get("agent_mask_include_transition_prefix", False)),
+                            prefill_like_is_last_step=(i == delay_tokens - 1),
+                            use_inference_mode=True,
+                        )
 
                     logging.info(
                         f"[profile_multiturn] turn={t} prefilled {profile_T} steps "
@@ -1061,6 +1083,13 @@ def main():
             metric_audio_pred = resample(audio_f32, model.output_sample_rate, 16000)
             metric_audio_pred_lens = (audio_len / model.output_sample_rate * 16000).to(torch.long)
 
+            context_audio = resample(inputs["context_audio"].float(), model.sample_rate, 16000)
+            context_audio_lens = (inputs["context_audio_lengths"] / model.sample_rate * 16000).to(torch.long)
+
+            # normalize volume
+            metric_audio_pred = torch_rms_norm(metric_audio_pred)
+            context_audio = torch_rms_norm(context_audio)
+
             intelligibility.update(
                 name="dataset",
                 refs=inputs["raw_text"],
@@ -1071,8 +1100,8 @@ def main():
 
             secs_metric.update(
                 name="dataset",
-                target_audio=resample(inputs["context_audio"].float(), model.sample_rate, 16000),
-                target_audio_lens=(inputs["context_audio_lengths"] / model.sample_rate * 16000).to(torch.long),
+                target_audio=context_audio,
+                target_audio_lens=context_audio_lens,
                 pred_audio=metric_audio_pred,
                 pred_audio_lens=metric_audio_pred_lens,
             )

@@ -800,14 +800,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
             # Make the next normal streaming_step continue from silence, not AUDIO_BOS.
             state.all_predictions.append(sil_codes_unstacked) # keep silence so that in the target audio user will be silence
-            if self.cfg.get("use_user_speaking_end_token", False) and not self.cfg.get("agent_mask_include_transition_prefix", False) and self.phoneme_tokenizer is None:
-                state.last_audio_codes = torch.full(
-                    (B, C * S),
-                    self.audio_user_speaking_end_id,
-                    dtype=torch.long,
-                    device=device,
-                )
-            elif self.cfg.get("use_user_speaking_token", False):
+            if self.cfg.get("use_user_speaking_token", False):
                 state.last_audio_codes = torch.full(
                     (B, C * S),
                     self.audio_user_speaking_id,
@@ -1595,7 +1588,10 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         state: StreamingState,
         text_tokens: Optional[torch.Tensor] = None,
         force_dropout_text: bool = False,
+        user_audio_channel_embedding: Optional[torch.Tensor] = None,
+        prefill_like_step: bool = False,
         use_inference_mode: bool = True,
+        prefill_like_is_last_step: bool = False,
     ) -> Tuple[StreamingState, Optional[torch.Tensor], Optional[torch.Tensor]]:
         """
         Perform one streaming inference step with batch support.
@@ -1626,7 +1622,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
             # Phase 1: Prepare input embedding and determine per-item phase masks
             next_input, needs_context, needs_phoneme, needs_audio = self._prepare_streaming_input(
-                state, text_tokens, force_dropout_text
+                state, text_tokens, force_dropout_text, user_audio_channel_embedding=user_audio_channel_embedding,
             )
 
             # Phase 2: Transformer forward pass
@@ -1643,6 +1639,51 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             state.past_key_values = transformer_out.past_key_values
             state.cache_seq_len += 1
 
+            if prefill_like_step:
+                # Advance logical streams, but do not predict phoneme/audio logits.
+                state.context_position += needs_context.long()
+                state.text_tokens_seen += (~needs_context).long()
+                state.phoneme_steps += needs_phoneme.long()
+                state.audio_steps += needs_audio.long()
+
+                C = self.num_audio_codebooks
+                S = self.frame_stacking_factor
+                B = state.config.batch_size
+
+                sil = self.codec_sil_codes.to(device=device, dtype=torch.long)
+                sil = sil.view(1, C, 1).expand(B, C, S).contiguous()
+
+                # Keep decoded profile/warmup region silent.
+                state.all_predictions.append(sil)
+
+                # Only the final prefill-like step should expose USER_SPEAKING_END.
+                use_end_token = (
+                    prefill_like_is_last_step
+                    and self.cfg.get("use_user_speaking_end_token", False)
+                    and not self.cfg.get("agent_mask_include_transition_prefix", False)
+                    and self.phoneme_tokenizer is None
+                )
+
+                if use_end_token:
+                    state.last_audio_codes = torch.full(
+                        (B, C * S),
+                        self.audio_user_speaking_end_id,
+                        dtype=torch.long,
+                        device=device,
+                    )
+                elif self.cfg.get("use_user_speaking_token", False):
+                    state.last_audio_codes = torch.full(
+                        (B, C * S),
+                        self.audio_user_speaking_id,
+                        dtype=torch.long,
+                        device=device,
+                    )
+                else:
+                    state.last_audio_codes = sil.reshape(B, C * S)
+
+                return state, None, None
+
+
             # Phase 3: Update counters and extract predictions
             audio_codes_next, pred_phoneme_tokens = self._process_predictions(
                 state, needs_context, needs_phoneme, needs_audio
@@ -1655,6 +1696,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         state: StreamingState,
         text_tokens: Optional[torch.Tensor],
         force_dropout_text: bool,
+        user_audio_channel_embedding: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Build the input embedding for one streaming step.
@@ -1793,6 +1835,15 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
             next_input = next_input + audio_emb
 
+        if user_audio_channel_embedding is not None:
+            if user_audio_channel_embedding.dim() == 2:
+                user_audio_channel_embedding = user_audio_channel_embedding.unsqueeze(1)
+
+            next_input = next_input + user_audio_channel_embedding.to(
+                device=next_input.device,
+                dtype=next_input.dtype,
+            )
+            
         # --- Handle CFG ---
         if state.config.use_cfg:
             next_input_unconditional_context = state.config.dummy_context_embedding_unconditional.expand(

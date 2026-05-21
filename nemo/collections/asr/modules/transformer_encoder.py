@@ -212,7 +212,7 @@ class MultiHeadAttention(nn.Module):
         matrix_bd = torch.matmul(q_with_bias_v, p.transpose(-2, -1))  # (B, H, T, 2T - 1)
         # rel_shift converts absolute-relative-position columns into (query, key) columns;
         # keep the first T to land in (B, H, T, T) bias space.
-        self._rel_pos_bias = self._rel_shift(matrix_bd)[..., :T] * (D ** -0.5)
+        self._rel_pos_bias = self._rel_shift(matrix_bd)[..., :T] * (D**-0.5)
         # Matrix c: fold u @ K^T into FlexAttention by rewriting Q as (Q + u).
         return self._rel_pos_score_mod, q + bias_u
 

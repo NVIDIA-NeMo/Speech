@@ -517,17 +517,13 @@ class TestSelfAttentionModel:
     @pytest.mark.unit
     @pytest.mark.parametrize("mode", ["abs_pos", "rel_pos", "no_pos"])
     def test_valid_modes_are_accepted(self, mode):
-        model = TransformerEncoder(
-            feat_in=128, d_model=64, n_heads=4, n_layers=2, self_attention_model=mode
-        )
+        model = TransformerEncoder(feat_in=128, d_model=64, n_heads=4, n_layers=2, self_attention_model=mode)
         assert model.self_attention_model == mode
 
     @pytest.mark.unit
     def test_none_aliases_no_pos(self):
         """Passing ``self_attention_model=None`` must be equivalent to ``"no_pos"``."""
-        model = TransformerEncoder(
-            feat_in=128, d_model=64, n_heads=4, n_layers=2, self_attention_model=None
-        )
+        model = TransformerEncoder(feat_in=128, d_model=64, n_heads=4, n_layers=2, self_attention_model=None)
         assert model.self_attention_model == "no_pos"
         assert model.pos_enc is None
 
@@ -559,9 +555,7 @@ class TestSelfAttentionModel:
     @pytest.mark.parametrize("mode", ["abs_pos", "no_pos"])
     def test_non_rel_pos_modes_have_no_rel_params(self, mode):
         """abs_pos and no_pos modes must not allocate the rel-pos parameters."""
-        model = TransformerEncoder(
-            feat_in=128, d_model=64, n_heads=4, n_layers=2, self_attention_model=mode
-        )
+        model = TransformerEncoder(feat_in=128, d_model=64, n_heads=4, n_layers=2, self_attention_model=mode)
         for layer in model.layers:
             attn = layer.attn
             assert attn.linear_pos is None
@@ -570,9 +564,7 @@ class TestSelfAttentionModel:
 
     @pytest.mark.unit
     def test_no_pos_has_no_positional_encoding_module(self):
-        model = TransformerEncoder(
-            feat_in=128, d_model=64, n_heads=4, n_layers=2, self_attention_model="no_pos"
-        )
+        model = TransformerEncoder(feat_in=128, d_model=64, n_heads=4, n_layers=2, self_attention_model="no_pos")
         assert model.pos_enc is None
         # set_max_audio_length is invoked in __init__; it must not crash for no_pos and must
         # still record the requested max length so update_max_seq_length works normally.

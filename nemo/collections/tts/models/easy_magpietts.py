@@ -749,10 +749,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             # Note that consider the current_streaming_speech_delay tokens/user speaking tokens on the loss,
             # allowing to predict them in autoregressive way
             transition_prefix = int(current_streaming_speech_delay or 0)
-            if (
-                self.cfg.get("agent_mask_include_transition_prefix", False)
-                or self.cfg.get("use_explicit_silence_for_streaming_audio_delay", False)
-            ) and transition_prefix > 0:
+            if self.cfg.get("agent_mask_include_transition_prefix", False) and transition_prefix > 0:
                 agent_i = target_agent_mask.float().unsqueeze(1)
 
                 agent_i = torch.nn.functional.pad(agent_i, (0, transition_prefix))
@@ -869,12 +866,6 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         current_text_input_mode = selected_training_mode.text_input_mode
         current_streaming_speech_delay = selected_training_mode.streaming_speech_delay
         current_streaming_phonemes_delay = selected_training_mode.streaming_phonemes_delay
-        # Optional: realize streaming speech delay as explicit silence-prefix
-        # in the audio tokens instead of temporal embedding delay.
-        audio_silence_prefix_frames = 0
-        if self.cfg.get("use_explicit_silence_for_streaming_audio_delay", False):
-            audio_silence_prefix_frames = int(current_streaming_speech_delay)
-            current_streaming_speech_delay = 0
 
         # Determine dropout flags
         dropout_text_input = (random.random() < self.dropout_text_input_prob) if mode == 'train' else False
@@ -919,54 +910,6 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             if not task or "interruption" not in str(task[0]):
                 text[speech_eos_mask] = self.tokenizer.pad  # Clean up the text channel
             # else: # ToDo: move self.interruption_token_id forward by  audio_delay so that soon it saw the interruption token it is forced to stop instead of await audio_delay tokens
-
-        if audio_silence_prefix_frames > 0:
-            # audio_codes here are still unstacked: [B, C, T]
-            prefix_raw_frames = (
-                audio_silence_prefix_frames * self.frame_stacking_factor
-            )
-
-            B_audio, C_audio, _ = audio_codes.shape
-
-            sil = self.codec_sil_codes_unconverted.to(
-                device=audio_codes.device,
-                dtype=audio_codes.dtype,
-            ).view(1, C_audio, 1)
-
-            sil_prefix = sil.expand(B_audio, C_audio, prefix_raw_frames)
-
-            audio_codes = torch.cat([sil_prefix, audio_codes], dim=2)
-            audio_codes_lens = audio_codes_lens + prefix_raw_frames
-
-            # agent_mask is in stacked/text frame units
-            if agent_mask is not None:
-                agent_mask = agent_mask.bool()
-                prefix_value = agent_mask[:, :1] if agent_mask.size(1) > 0 else torch.zeros(
-                    agent_mask.size(0), 1, device=agent_mask.device, dtype=torch.bool
-                )
-
-                prefix_agent_mask = prefix_value.expand(
-                    -1,
-                    audio_silence_prefix_frames,
-                )
-
-                agent_mask = torch.cat(
-                    [prefix_agent_mask, agent_mask],
-                    dim=1,
-                )
-
-            # speech_eos_mask is also in stacked/text frame units
-            if speech_eos_mask is not None:
-                prefix_speech_eos = torch.zeros(
-                    speech_eos_mask.size(0),
-                    audio_silence_prefix_frames,
-                    device=speech_eos_mask.device,
-                    dtype=speech_eos_mask.dtype,
-                )
-                speech_eos_mask = torch.cat(
-                    [prefix_speech_eos, speech_eos_mask],
-                    dim=1,
-                )
 
         # 3. Prepare text channel embeddings
         text_channel_embedding, text_channel_lens = self.prepare_text_channel_embeddings(
@@ -1028,7 +971,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             delay=audio_delay,
             speech_eos_mask=speech_eos_mask,
             agent_mask=agent_mask,
-            current_streaming_speech_delay=current_streaming_speech_delay if not self.cfg.get("use_explicit_silence_for_streaming_audio_delay", False) else audio_silence_prefix_frames,
+            current_streaming_speech_delay=current_streaming_speech_delay,
         )
 
         # 6. Sum the channel embeddings element-wise
@@ -1430,7 +1373,6 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 sample_trim_aug = torch.zeros(B, device=user_audio_embedded.device, dtype=torch.bool)
 
             indices = batch["user_audio_turn_splitted_indices"].to(user_audio_embedded.device)
-
             for turn_idx, (b, start_sample, end_sample) in enumerate(indices):
                 b = int(b.item())
                 if b < 0:

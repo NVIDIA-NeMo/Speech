@@ -920,15 +920,13 @@ def main():
                         profile_seconds = profile_T * model.input_samples_per_frame / model.sample_rate
 
                     # add text tokens needed for profilling
-                    if (
-                        not model.cfg.get("agent_mask_include_transition_prefix", False)
-                        and not model.cfg.get("use_explicit_silence_for_streaming_audio_delay", False)
-                    ):
+                    if not model.cfg.get("agent_mask_include_transition_prefix", False):
                         delay_tokens = int(state.config.training_mode.streaming_speech_delay)
                         delay_tokens = min(delay_tokens, int(turn_lens[0].item()), profile_T)
                         profile_tokens[:, -delay_tokens:] = turn_text[:, :delay_tokens]
                         turn_text = turn_text[:, delay_tokens:]
                         turn_lens = torch.clamp(turn_lens - delay_tokens, min=0)
+                        # ToDo: Check if it is really necessary (probably not)
                         if user_audio_channel_embedding is not None and delay_tokens > 0:
                             user_audio_channel_embedding = user_audio_channel_embedding.clone()
                             user_audio_channel_embedding[:, -delay_tokens:] = 0.0

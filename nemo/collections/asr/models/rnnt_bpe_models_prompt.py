@@ -52,7 +52,6 @@ class RNNTPromptTranscribeConfig(TranscribeConfig):
     """Transcription configuration for RNNT BPE Model with Prompt conditioning."""
 
     target_lang: str = "auto"
-    prompt_field: str = "target_lang"
 
 
 class EncDecRNNTBPEModelWithPrompt(PromptStreamingMixin, EncDecRNNTBPEModel, ASRTranscriptionMixin):
@@ -262,7 +261,6 @@ class EncDecRNNTBPEModelWithPrompt(PromptStreamingMixin, EncDecRNNTBPEModel, ASR
             'use_lhotse': config.get('use_lhotse', True),
             'use_bucketing': False,
             'drop_last': False,
-            'prompt_field': config.get('prompt_field', 'target_lang'),
             'initialize_prompt_feature': True,
             'prompt_dictionary': self.cfg.model_defaults.get('prompt_dictionary'),
             'num_prompts': self.cfg.model_defaults.get('num_prompts', 128),
@@ -621,7 +619,6 @@ class EncDecRNNTBPEModelWithPrompt(PromptStreamingMixin, EncDecRNNTBPEModel, ASR
 
         if override_config is None:
             target_lang = prompt.get('target_lang', 'auto')
-            prompt_field = prompt.get('prompt_field', 'target_lang')
 
             trcfg = RNNTPromptTranscribeConfig(
                 batch_size=batch_size,
@@ -632,7 +629,6 @@ class EncDecRNNTBPEModelWithPrompt(PromptStreamingMixin, EncDecRNNTBPEModel, ASR
                 verbose=verbose,
                 timestamps=timestamps,
                 target_lang=target_lang,
-                prompt_field=prompt_field,
             )
         else:
             if not isinstance(override_config, RNNTPromptTranscribeConfig):

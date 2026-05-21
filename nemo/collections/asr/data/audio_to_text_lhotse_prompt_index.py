@@ -70,9 +70,6 @@ class LhotseSpeechToTextBpeDatasetWithPromptIndex(torch.utils.data.Dataset):
 
         self.num_prompts = cfg.get('num_prompts', 128)
 
-        # Field to use for prompt key (default to 'target_lang')
-        self.prompt_field = cfg.get('prompt_field', 'target_lang')
-
         # Per-dataset prompt mode is read from cut.custom["prompt_mode"] at runtime.
         # Supported values:
         #   "langID"  — always pass the real language ID

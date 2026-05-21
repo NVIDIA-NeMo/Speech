@@ -56,7 +56,6 @@ class HybridRNNTCTCPromptTranscribeConfig(TranscribeConfig):
     """
 
     target_lang: str = "auto"
-    prompt_field: str = "target_lang"
 
 
 class EncDecHybridRNNTCTCBPEModelWithPrompt(PromptStreamingMixin, EncDecHybridRNNTCTCBPEModel, ASRTranscriptionMixin):
@@ -299,7 +298,6 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(PromptStreamingMixin, EncDecHybridRN
             'use_lhotse': config.get('use_lhotse', True),
             'use_bucketing': False,
             'drop_last': False,
-            'prompt_field': config.get('prompt_field', 'target_lang'),
             'initialize_prompt_feature': True,
             'prompt_dictionary': self.cfg.model_defaults.get('prompt_dictionary'),
             'num_prompts': self.cfg.model_defaults.get('num_prompts', 128),
@@ -411,7 +409,6 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(PromptStreamingMixin, EncDecHybridRN
             override_config: (Optional[HybridRNNTCTCPromptTranscribeConfig]) override transcription config pre-defined by the user.
             **prompt: Optional input to construct the prompts for the model. Accepted formats include:
                 target_lang: (str) target language ID for transcription (e.g., "en-US", "de-DE")
-                prompt_field: (str) field name to use for prompt extraction from manifest
                 Additional prompt parameters can be passed and will be forwarded to the transcription config.
 
         Returns:
@@ -449,7 +446,6 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(PromptStreamingMixin, EncDecHybridRN
         if override_config is None:
             # Extract target_lang from prompt or use default
             target_lang = prompt.get('target_lang', 'auto')
-            prompt_field = prompt.get('prompt_field', 'target_lang')
 
             trcfg = HybridRNNTCTCPromptTranscribeConfig(
                 batch_size=batch_size,
@@ -460,7 +456,6 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(PromptStreamingMixin, EncDecHybridRN
                 verbose=verbose,
                 timestamps=timestamps,
                 target_lang=target_lang,
-                prompt_field=prompt_field,
             )
 
         else:

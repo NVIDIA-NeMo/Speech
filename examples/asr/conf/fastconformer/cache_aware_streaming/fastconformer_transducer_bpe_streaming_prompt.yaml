@@ -161,7 +161,6 @@ model:
     bucketing_batch_size: null
     bucket_buffer_size: 10000
     shuffle_buffer_size: 10000
-    prompt_field: target_lang
     prompt_dictionary: ${model.model_defaults.prompt_dictionary}
     num_prompts: ${model.model_defaults.num_prompts}
     subsampling_factor: ${model.encoder.subsampling_factor}
@@ -192,10 +191,10 @@ model:
     batch_duration: null
     use_lhotse: true
     use_bucketing: false
-    prompt_field: target_lang
     prompt_dictionary: ${model.model_defaults.prompt_dictionary}
     num_prompts: ${model.model_defaults.num_prompts}
     subsampling_factor: ${model.encoder.subsampling_factor}
+    lang_field: target_lang
 
   test_ds:
     manifest_filepath: null
@@ -207,10 +206,10 @@ model:
     pin_memory: true
     use_lhotse: true
     use_bucketing: false
-    prompt_field: target_lang
     prompt_dictionary: ${model.model_defaults.prompt_dictionary}
     num_prompts: ${model.model_defaults.num_prompts}
     subsampling_factor: ${model.encoder.subsampling_factor}
+    lang_field: target_lang
     default_prompt_mode: langID
 
   tokenizer:

@@ -80,3 +80,55 @@ def test_estimator_matches_calc_length(samples: int) -> None:
 def test_estimator_min_one() -> None:
     """Even for very short audio the estimator must return at least 1."""
     assert NeMoSpeechLMProcessingInfo._estimate_audio_tokens(1) >= 1
+
+
+def test_estimator_chunking_disabled_matches_single_pass() -> None:
+    """``chunk_size_seconds=None`` must match the legacy single-pass estimate."""
+    samples = 30 * 16_000
+    assert NeMoSpeechLMProcessingInfo._estimate_audio_tokens(
+        samples, chunk_size_seconds=None
+    ) == NeMoSpeechLMProcessingInfo._estimate_audio_tokens_single_pass(samples)
+
+
+def test_estimator_short_audio_falls_back_to_single_pass() -> None:
+    """Audio shorter than the chunk size collapses to a single forward."""
+    samples = 5 * 16_000
+    assert NeMoSpeechLMProcessingInfo._estimate_audio_tokens(
+        samples, chunk_size_seconds=30.0
+    ) == NeMoSpeechLMProcessingInfo._estimate_audio_tokens_single_pass(samples)
+
+
+def test_estimator_chunked_sums_per_chunk_frames() -> None:
+    """Long audio is split into chunks and per-chunk frame counts are summed,
+    matching ``encode_audio_with_optional_chunking``'s concat behavior."""
+    samples = 90 * 16_000
+    chunk_size_seconds = 30.0
+    chunk_samples = int(round(chunk_size_seconds * 16_000))
+    expected = sum(
+        NeMoSpeechLMProcessingInfo._estimate_audio_tokens_single_pass(min(chunk_samples, samples - i))
+        for i in range(0, samples, chunk_samples)
+    )
+    assert (
+        NeMoSpeechLMProcessingInfo._estimate_audio_tokens(samples, chunk_size_seconds=chunk_size_seconds)
+        == expected
+    )
+
+
+def test_estimator_chunked_tail_folded_into_previous_chunk() -> None:
+    """A tiny tail (< min chunk size) is folded into the previous chunk so
+    the total token count matches the runtime helper instead of producing a
+    spurious single-frame chunk that the audio preprocessor would reject."""
+    chunk_size_seconds = 30.0
+    chunk_samples = int(round(chunk_size_seconds * 16_000))
+    samples = chunk_samples + 100  # 100 sample tail < min_chunk_size_samples (320)
+    # Folded: one chunk of `samples` samples (no split).
+    expected = NeMoSpeechLMProcessingInfo._estimate_audio_tokens_single_pass(samples)
+    assert (
+        NeMoSpeechLMProcessingInfo._estimate_audio_tokens(samples, chunk_size_seconds=chunk_size_seconds)
+        == expected
+    )
+
+
+def test_estimator_negative_chunk_size_raises() -> None:
+    with pytest.raises(ValueError, match="encoder_chunk_size_seconds"):
+        NeMoSpeechLMProcessingInfo._estimate_audio_tokens(16_000, chunk_size_seconds=-1.0)

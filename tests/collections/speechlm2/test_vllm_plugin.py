@@ -209,6 +209,26 @@ class TestNeMoSpeechLMConfig:
         with pytest.raises(AttributeError):
             _ = cfg.nonexistent_attribute_xyz
 
+    def test_encoder_chunk_size_seconds_default_none(self):
+        """Legacy checkpoints without a chunk size keep the single-pass encoder path."""
+        cfg = NeMoSpeechLMConfig(**_DEFAULT_CONFIG_KWARGS)
+        assert cfg.encoder_chunk_size_seconds is None
+
+    def test_encoder_chunk_size_seconds_round_trips(self):
+        """Chunk size set in config.json (e.g. SALMAutomodel default 30 s) survives load."""
+        cfg = NeMoSpeechLMConfig(
+            **{
+                **_DEFAULT_CONFIG_KWARGS,
+                "encoder_chunk_size_seconds": 30.0,
+            }
+        )
+        assert cfg.encoder_chunk_size_seconds == 30.0
+
+    def test_encoder_chunk_size_seconds_default_init_inert(self):
+        """No-arg default init must still expose ``encoder_chunk_size_seconds=None``."""
+        cfg = NeMoSpeechLMConfig()
+        assert cfg.encoder_chunk_size_seconds is None
+
 
 @pytest.mark.skipif(not (_HAS_CONFIG and _HAS_VLLM), reason="NeMoSpeechLMConfig or vLLM not available")
 class TestBackendSelection:
@@ -332,7 +352,8 @@ class TestAudioProcessing:
         processor = object.__new__(NeMoSpeechLMMultiModalProcessor)
         processor.info = SimpleNamespace(
             get_tokenizer=_FakeTokenizer,
-            _estimate_audio_tokens=lambda samples: 2,
+            _estimate_audio_tokens=lambda samples, chunk_size_seconds=None: 2,
+            _get_encoder_chunk_size_seconds=lambda: None,
         )
 
         with pytest.raises(ValueError, match="placeholders"):
@@ -351,7 +372,8 @@ class TestAudioProcessing:
         processor = object.__new__(NeMoSpeechLMMultiModalProcessor)
         processor.info = SimpleNamespace(
             get_tokenizer=_FakeTokenizer,
-            _estimate_audio_tokens=lambda samples: 2,
+            _estimate_audio_tokens=lambda samples, chunk_size_seconds=None: 2,
+            _get_encoder_chunk_size_seconds=lambda: None,
         )
 
         result = processor._call_hf_processor(

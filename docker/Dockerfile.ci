@@ -38,7 +38,7 @@ apt-get install -y \
     git \
     libsndfile1 \
     libsox-fmt-all \
-    sox \
+    sox
 apt-get clean
 EOF
 

@@ -93,7 +93,7 @@ class NemoDiarService(STTService):
         self._audio_buffer = []
         self._current_speaker_id = None
         self._processing_running = False
-
+        self._has_generated_metrics = False
         if not self._use_vad:
             self._vad_user_speaking = True
 
@@ -114,12 +114,10 @@ class NemoDiarService(STTService):
         logger.info(f"Diarization service initialized on device: {self._device}")
 
     def can_generate_metrics(self) -> bool:
-        """Indicates whether this service can generate metrics.
-
-        Returns:
-            bool: True, as this service supports metric generation.
         """
-        return True
+        Only report initial metrics, no need to spam metrics every 80ms
+        """
+        return True and not self._has_generated_metrics
 
     async def start(self, frame: StartFrame):
         """Handle service start."""
@@ -173,7 +171,6 @@ class NemoDiarService(STTService):
 
                     # Process diarization
                     diar_result = self._model.diarize(audio)
-
                     # Send result back to async loop
                     asyncio.run_coroutine_threadsafe(self._response_queue.put(diar_result), self.get_event_loop())
 
@@ -227,6 +224,9 @@ class NemoDiarService(STTService):
             while True:
                 try:
                     result = await self._response_queue.get()
+                    await self.stop_ttfb_metrics()
+                    await self.stop_processing_metrics()
+                    self._has_generated_metrics = True  # prevent future metrics generation
 
                     if isinstance(result, tuple) and result[0] == 'error':
                         # Handle error from background processing

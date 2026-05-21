@@ -119,10 +119,8 @@ async def run_bot_websocket(host: str, port: int):
         pipeline,
         params=PipelineParams(
             allow_interruptions=True,
-            enable_metrics=False,
-            enable_usage_metrics=False,
-            send_initial_empty_metrics=True,
-            report_only_initial_ttfb=True,
+            enable_metrics=True,
+            enable_usage_metrics=True,
             idle_timeout=None,
         ),
         observers=[

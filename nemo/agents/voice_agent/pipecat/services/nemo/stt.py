@@ -113,6 +113,7 @@ class NemoSTTService(STTService):
         self.user_is_speaking = False
         self._has_logged_audio_chunk = False
         self._audio_timestamps = []
+        self._has_generated_metrics = False
         logger.info(f"Initialized NeMo STT service with model `{model}` and params `{self._params}`")
 
     def _load_model(self):
@@ -129,12 +130,10 @@ class NemoSTTService(STTService):
             raise ValueError(f"Invalid ASR backend: {self._backend}")
 
     def can_generate_metrics(self) -> bool:
-        """Indicates whether this service can generate metrics.
-
-        Returns:
-            bool: True, as this service supports metric generation.
         """
-        return False
+        Only report initial metrics, no need to spam metrics every 80ms
+        """
+        return True and not self._has_generated_metrics
 
     def _reset_stt_state(self):
         """Reset the state of the STT service."""
@@ -314,6 +313,7 @@ class NemoSTTService(STTService):
                     user_has_finished = True
                 await self.stop_ttfb_metrics()
                 await self.stop_processing_metrics()
+                self._has_generated_metrics = True  # prevent future metrics generation
 
             if transcription:
                 logger.debug(f"Transcription (is_final={is_final}): `{transcription}`")

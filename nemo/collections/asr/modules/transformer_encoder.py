@@ -15,12 +15,17 @@
 import math
 from collections import OrderedDict
 from dataclasses import dataclass
+from typing import Optional
 
 import torch
 import torch.nn as nn
 from torch.nn.attention.flex_attention import create_block_mask, flex_attention
 
-from nemo.collections.asr.parts.submodules.multi_head_attention import PositionalEncoding
+from nemo.collections.asr.parts.submodules.multi_head_attention import (
+    PositionalEncoding,
+    RelPositionalEncoding,
+    RelPositionMultiHeadAttention,
+)
 from nemo.collections.asr.parts.submodules.subsampling import ConvSubsampling, FeatureStacking, StackingSubsampling
 from nemo.collections.asr.parts.utils.regularization_utils import compute_stochastic_depth_drop_probs
 from nemo.core.classes.common import typecheck
@@ -63,6 +68,18 @@ class TransformerEncoderConfig:
         subsampling_factor: Frame-level subsampling factor performed by the pre-encoder.
         attn_mode: Attention pattern. Currently only ``"full"`` (bidirectional) is supported.
             Future modes: ``"causal"``, ``"lookahead"``, ``"local"``, ``"sliding_window"``.
+        self_attention_model: Positional encoding / attention scoring scheme.
+
+            - ``"rel_pos"`` (default): Transformer-XL relative positional encoding
+              (https://arxiv.org/abs/1901.02860). The (b)+(d) cross/positional bias is computed
+              from the relative-position embedding and injected into FlexAttention via a
+              ``score_mod`` closure; the (c) global-content bias is folded into the query as
+              ``Q + pos_bias_u``.
+            - ``"abs_pos"``: sinusoidal absolute positional encoding added to embeddings
+              before the first block; standard scaled dot-product attention.
+            - ``"no_pos"`` (or ``None``): no positional encoding at all. The pre-encoder output
+              is consumed directly by the Transformer blocks. ``xscaling``, ``pos_emb_max_len``,
+              ``dropout_pre_encoder`` and ``dropout_emb`` are unused in this mode.
     """
 
     feat_in: int = 128
@@ -76,6 +93,7 @@ class TransformerEncoderConfig:
     pre_block_norm: bool = True
     subsampling_factor: int = 4
     attn_mode: str = "full"
+    self_attention_model: str = "rel_pos"
 
 
 def _make_padding_mod(lengths):
@@ -109,6 +127,7 @@ class MultiHeadAttention(nn.Module):
         self.n_heads = cfg.n_heads
         self.head_dim = cfg.d_model // cfg.n_heads
         self.d_model = cfg.d_model
+        self.self_attention_model = cfg.self_attention_model
 
         self.w_qkv = nn.Linear(cfg.d_model, 3 * cfg.d_model, bias=cfg.qkv_bias)
         self.out_proj = nn.Linear(cfg.d_model, cfg.d_model)
@@ -118,7 +137,86 @@ class MultiHeadAttention(nn.Module):
             self.q_norm = nn.LayerNorm(self.head_dim)
             self.k_norm = nn.LayerNorm(self.head_dim)
 
-    def forward(self, x, block_mask=None):
+        # Transformer-XL relative-position parameters (matrix b and matrix d from
+        # https://arxiv.org/abs/1901.02860 Section 3.3). The "matrix c" term `u @ K^T` is
+        # absorbed by passing `Q + pos_bias_u` as the query to FlexAttention.
+        if self.self_attention_model == "rel_pos":
+            self.linear_pos = nn.Linear(cfg.d_model, cfg.d_model, bias=False)
+            self.pos_bias_u = nn.Parameter(torch.zeros(self.n_heads, self.head_dim))
+            self.pos_bias_v = nn.Parameter(torch.zeros(self.n_heads, self.head_dim))
+        else:
+            self.linear_pos = None
+            self.pos_bias_u = None
+            self.pos_bias_v = None
+
+        # Per-forward Transformer-XL (b)+(d) bias of shape (B, H, T, T), set by ``forward`` and
+        # read by ``_rel_pos_score_mod`` while FlexAttention is executing.
+        self._rel_pos_bias = None
+
+    def _rel_pos_score_mod(self, score, b, h, q_idx, kv_idx):
+        """FlexAttention ``score_mod`` adding the Transformer-XL (b)+(d) bias.
+
+        FlexAttention's ``score_mod`` API expects a callable with a fixed signature, so the
+        per-forward bias tensor is passed in via ``self._rel_pos_bias`` rather than as an
+        explicit argument; ``forward`` populates that attribute immediately before invoking
+        ``flex_attention``.
+        """
+        return score + self._rel_pos_bias[b, h, q_idx, kv_idx]
+
+    def _rel_shift(self, x):
+        """Transformer-XL relative-position shift.
+
+        Delegates to ``RelPositionMultiHeadAttention.rel_shift`` (which does not reference
+        ``self``) so the logic lives in a single place — NeMo's existing reference
+        implementation in ``parts/submodules/multi_head_attention.py``.
+        """
+        return RelPositionMultiHeadAttention.rel_shift(None, x)
+
+    def _build_rel_pos_score_mod(self, q, pos_emb):
+        """Build the FlexAttention inputs that realize Transformer-XL relative attention.
+
+        Implements the (b), (c), (d) terms of Transformer-XL Section 3.3
+        (https://arxiv.org/abs/1901.02860) on top of FlexAttention:
+
+        - Matrices (b) + (d) — the position-dependent score bias ``(Q + v) @ R^T`` rel-
+          shifted into ``(q_idx, kv_idx)`` coordinates — are precomputed into a
+          ``(B, H, T, T)`` tensor, scaled by ``1/sqrt(D)`` (to match FlexAttention's
+          already-scaled ``QK^T`` scores), and stashed on ``self._rel_pos_bias``. The
+          bound closure ``self._rel_pos_score_mod`` reads that buffer while FlexAttention
+          is executing. The state-passing detour is necessary because FlexAttention's
+          ``score_mod`` API fixes the callable signature, so the per-forward tensor
+          cannot be threaded through as an explicit argument.
+        - Matrix (c) — the global-content bias ``u @ K^T`` — is folded into FlexAttention
+          by rewriting the query as ``Q + pos_bias_u``, which is returned.
+
+        Args:
+            q: Query tensor with shape ``(B, H, T, D)``.
+            pos_emb: Relative positional embedding ``(1, 2T - 1, d_model)`` produced by
+                ``RelPositionalEncoding``.
+
+        Returns:
+            score_mod: Callable to pass as ``flex_attention(..., score_mod=...)``.
+            q_with_bias_u: ``Q + pos_bias_u`` — the (c) "matrix c" query rewrite.
+        """
+        H, D = self.n_heads, self.head_dim
+        T = q.size(-2)
+        # pos_emb: (1, 2T - 1, d_model) -> p: (1, H, 2T - 1, D)
+        p = self.linear_pos(pos_emb).view(pos_emb.size(0), -1, H, D).transpose(1, 2)
+        # pos_bias_{u,v}: (H, D) -> (1, H, 1, D) so they broadcast over the (B, H, T, D)
+        # Q tensor against the head/depth axes rather than (incorrectly) against time.
+        bias_u = self.pos_bias_u.view(1, H, 1, D)
+        bias_v = self.pos_bias_v.view(1, H, 1, D)
+        # Matrix b + d: ((Q + v) @ R^T) shifted into (q_idx, kv_idx) space, then scaled
+        # by 1/sqrt(D) so it can be added directly to FlexAttention's already-scaled scores.
+        q_with_bias_v = q + bias_v
+        matrix_bd = torch.matmul(q_with_bias_v, p.transpose(-2, -1))  # (B, H, T, 2T - 1)
+        # rel_shift converts absolute-relative-position columns into (query, key) columns;
+        # keep the first T to land in (B, H, T, T) bias space.
+        self._rel_pos_bias = self._rel_shift(matrix_bd)[..., :T] * (D ** -0.5)
+        # Matrix c: fold u @ K^T into FlexAttention by rewriting Q as (Q + u).
+        return self._rel_pos_score_mod, q + bias_u
+
+    def forward(self, x, block_mask=None, pos_emb=None):
         B, T, _ = x.shape
         H, D = self.n_heads, self.head_dim
 
@@ -129,9 +227,20 @@ class MultiHeadAttention(nn.Module):
             q = self.q_norm(q).to(v.dtype)
             k = self.k_norm(k).to(v.dtype)
 
-        # Use compiled FlexAttention for CUDA, fallback to unfused for CPU.
+        score_mod = None
+        if self.self_attention_model == "rel_pos":
+            if pos_emb is None:
+                raise ValueError("MultiHeadAttention with self_attention_model='rel_pos' requires pos_emb.")
+            score_mod, q = self._build_rel_pos_score_mod(q, pos_emb)
+
+        if q.is_cuda and D < 16:
+            raise ValueError(
+                "PyTorch FlexAttention CUDA backend requires per-head embedding dimension >= 16, "
+                f"but got head_dim={D} from d_model={self.d_model}, n_heads={self.n_heads}."
+            )
+
         attn_fn = flex_attention_compiled if q.is_cuda else flex_attention
-        out = attn_fn(q, k, v, block_mask=block_mask)
+        out = attn_fn(q, k, v, block_mask=block_mask, score_mod=score_mod)
         out = out.transpose(1, 2).contiguous().view(B, T, self.d_model)
         return self.out_proj(out)
 
@@ -145,8 +254,8 @@ class TransformerBlock(nn.Module):
         self.norm2 = nn.LayerNorm(cfg.d_model)
         self.ffn = FeedForward(cfg)
 
-    def forward(self, x, block_mask=None):
-        x = x + self.drop(self.attn(self.norm1(x), block_mask=block_mask))
+    def forward(self, x, block_mask=None, pos_emb=None):
+        x = x + self.drop(self.attn(self.norm1(x), block_mask=block_mask, pos_emb=pos_emb))
         x = x + self.drop(self.ffn(self.norm2(x)))
         return x
 
@@ -167,6 +276,7 @@ class TransformerEncoder(NeuralModule, Exportable, AccessMixin):
             feed-forward input/output size). Also known as ``hidden_size`` in HuggingFace
             ``transformers`` configs and ``embed_dim``/``d_model`` in PyTorch's
             ``nn.TransformerEncoderLayer``.
+
         n_heads: Number of attention heads.
         n_layers: Number of Transformer blocks.
         feat_out: Output feature dimension. Defaults to ``d_model``.
@@ -197,6 +307,23 @@ class TransformerEncoder(NeuralModule, Exportable, AccessMixin):
             Transformer block (BERT/ViT-style). Set False to match pre-norm Transformers
             such as Whisper or GPT-2 — required when loading pretrained weights from those
             checkpoints.
+        self_attention_model: Type of positional encoding and attention scoring scheme. Mirrors
+            the Conformer encoder's ``self_attention_model`` choices, plus a ``"no_pos"`` option:
+
+            - ``"rel_pos"`` (default): Transformer-XL relative positional encoding
+              (https://arxiv.org/abs/1901.02860). The relative-position bias is computed in each
+              layer and injected into FlexAttention via a ``score_mod`` closure (the (b)+(d)
+              terms) plus a ``Q + pos_bias_u`` query rewrite (the (c) term), so the kernel stays
+              FlexAttention.
+            - ``"abs_pos"``: sinusoidal absolute positional encoding added to the embeddings
+              before the first block; standard ``Q @ K^T`` attention via FlexAttention.
+            - ``"no_pos"`` (or ``None``): no positional encoding at all — pre-encoder output
+              flows straight into ``embed_norm`` and the Transformer blocks. ``xscaling``,
+              ``pos_emb_max_len``, ``dropout_pre_encoder`` and ``dropout_emb`` have no effect
+              in this mode. ``None`` is accepted as a YAML-friendly alias for ``"no_pos"``
+              (an unset field in a config maps to ``None``).
+
+            ``"rel_pos_local_attn"`` is not implemented yet.
         pos_emb_max_len: Initial maximum length for sinusoidal positional embeddings.
         xscaling: If True, scale embeddings by ``sqrt(d_model)`` before adding positional encodings,
             following "Attention Is All You Need" article. Originally intended to balance the magnitude
@@ -277,6 +404,7 @@ class TransformerEncoder(NeuralModule, Exportable, AccessMixin):
         qk_norm: bool = False,
         ff_expansion: float = 4.0,
         pre_block_norm: bool = True,
+        self_attention_model: Optional[str] = "rel_pos",
         pos_emb_max_len: int = 5000,
         xscaling: bool = False,
         stochastic_depth_drop_prob: float = 0.0,
@@ -290,6 +418,16 @@ class TransformerEncoder(NeuralModule, Exportable, AccessMixin):
             raise ValueError(f"d_model ({d_model}) must be divisible by n_heads ({n_heads}).")
         if attn_mode != "full":
             raise ValueError(f"attn_mode='{attn_mode}' is not yet supported. Currently only 'full' is available.")
+        # ``None`` is accepted as a YAML-friendly alias for ``"no_pos"`` (an unset field in a
+        # config simply maps to None) — normalize here so the rest of the module only deals with
+        # the string form.
+        if self_attention_model is None:
+            self_attention_model = "no_pos"
+        if self_attention_model not in ("abs_pos", "rel_pos", "no_pos"):
+            raise ValueError(
+                f"self_attention_model='{self_attention_model}' is not supported. "
+                "Currently only 'abs_pos', 'rel_pos', and 'no_pos' (or None) are available."
+            )
         if dropout_pre_encoder is None:
             dropout_pre_encoder = drop_rate
         if subsampling == 'feature-stacking':
@@ -309,6 +447,7 @@ class TransformerEncoder(NeuralModule, Exportable, AccessMixin):
             pre_block_norm=pre_block_norm,
             subsampling_factor=subsampling_factor,
             attn_mode=attn_mode,
+            self_attention_model=self_attention_model,
         )
         self.d_model = d_model
         self.n_layers = n_layers
@@ -317,6 +456,7 @@ class TransformerEncoder(NeuralModule, Exportable, AccessMixin):
         self.subsampling_factor = subsampling_factor
         self.subsampling_conv_chunking_factor = subsampling_conv_chunking_factor
         self.sync_max_audio_length = sync_max_audio_length
+        self.self_attention_model = self_attention_model
 
         if subsampling_conv_channels == -1:
             subsampling_conv_channels = d_model
@@ -350,13 +490,24 @@ class TransformerEncoder(NeuralModule, Exportable, AccessMixin):
         else:
             self.xscale = None
         self.pos_emb_max_len = pos_emb_max_len
-        self.pos_enc = PositionalEncoding(
-            d_model=d_model,
-            dropout_rate=dropout_pre_encoder,
-            max_len=pos_emb_max_len,
-            xscale=self.xscale,
-            dropout_rate_emb=dropout_emb,
-        )
+        if self_attention_model == "rel_pos":
+            self.pos_enc = RelPositionalEncoding(
+                d_model=d_model,
+                dropout_rate=dropout_pre_encoder,
+                max_len=pos_emb_max_len,
+                xscale=self.xscale,
+                dropout_rate_emb=dropout_emb,
+            )
+        elif self_attention_model == "abs_pos":
+            self.pos_enc = PositionalEncoding(
+                d_model=d_model,
+                dropout_rate=dropout_pre_encoder,
+                max_len=pos_emb_max_len,
+                xscale=self.xscale,
+                dropout_rate_emb=dropout_emb,
+            )
+        else:  # "no_pos"
+            self.pos_enc = None
         self.embed_norm = nn.LayerNorm(d_model) if pre_block_norm else nn.Identity()
         self.layers = nn.ModuleList([TransformerBlock(cfg) for _ in range(n_layers)])
         self.final_norm = nn.LayerNorm(d_model)
@@ -430,7 +581,10 @@ class TransformerEncoder(NeuralModule, Exportable, AccessMixin):
             x = audio_signal
             length = length.to(torch.int64)
 
-        x, _ = self.pos_enc(x=x)
+        if self.pos_enc is not None:
+            x, pos_emb = self.pos_enc(x=x)
+        else:  # "no_pos": pre-encoder output flows in unchanged
+            pos_emb = None
         x = self.embed_norm(x)
 
         B, T, _ = x.shape
@@ -439,9 +593,13 @@ class TransformerEncoder(NeuralModule, Exportable, AccessMixin):
         else:
             block_mask = None
 
+        # For ``abs_pos`` the positional information is already baked into ``x``, so we don't
+        # need to thread ``pos_emb`` through each layer; only ``rel_pos`` consumes it.
+        layer_pos_emb = pos_emb if self.self_attention_model == "rel_pos" else None
+
         for lth, (drop_prob, layer) in enumerate(zip(self.layer_drop_probs, self.layers)):
             original_signal = x
-            x = layer(x, block_mask=block_mask)
+            x = layer(x, block_mask=block_mask, pos_emb=layer_pos_emb)
 
             if self.training and drop_prob > 0.0:
                 should_drop = torch.rand(1, device=x.device) < drop_prob
@@ -488,6 +646,8 @@ class TransformerEncoder(NeuralModule, Exportable, AccessMixin):
     def set_max_audio_length(self, max_audio_length):
         """Sets maximum input length and extends positional encodings if needed."""
         self.max_audio_length = max_audio_length
+        if self.pos_enc is None:  # "no_pos" mode has no buffer to extend
+            return
         device = next(self.parameters()).device
         dtype = next(self.parameters()).dtype
         self.pos_enc.extend_pe(max_audio_length, device, dtype)

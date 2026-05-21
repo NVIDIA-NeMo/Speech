@@ -38,15 +38,19 @@ class TestTransformerEncoderConfig:
         assert cfg.pre_block_norm is True
         assert cfg.subsampling_factor == 4
         assert cfg.attn_mode == "full"
+        assert cfg.self_attention_model == "rel_pos"
 
     @pytest.mark.unit
     def test_custom_config(self):
-        cfg = TransformerEncoderConfig(feat_in=128, d_model=1280, n_heads=16, n_layers=32, qk_norm=True)
+        cfg = TransformerEncoderConfig(
+            feat_in=128, d_model=1280, n_heads=16, n_layers=32, qk_norm=True, self_attention_model="abs_pos"
+        )
         assert cfg.feat_in == 128
         assert cfg.d_model == 1280
         assert cfg.n_heads == 16
         assert cfg.n_layers == 32
         assert cfg.qk_norm is True
+        assert cfg.self_attention_model == "abs_pos"
 
 
 class TestFeatureStacking:
@@ -171,9 +175,14 @@ class TestStochasticDepth:
                     stochastic_depth_start_layer=start_layer,
                 )
 
-    @pytest.mark.pleasefixme
     def test_stochastic_depth_forward(self):
-        """Testing that forward works and we get randomness during training, but not during eval."""
+        """Testing that forward works and we get randomness during training, but not during eval.
+
+        The forwards are wrapped in ``torch.no_grad()`` because FlexAttention's CPU path raises
+        ``NotImplementedError`` if any input requires gradients. ``torch.no_grad()`` does not
+        touch ``model.training``, so the stochastic-depth Bernoulli branch (driven by
+        ``torch.rand(1) < drop_prob``, not autograd) still fires in train mode.
+        """
         random_input = torch.rand((1, 2, 16))
         random_length = torch.tensor([16], dtype=torch.int64)
 
@@ -190,8 +199,9 @@ class TestStochasticDepth:
         )
         model.train()
         outputs = [None] * 5
-        for i in range(5):
-            outputs[i] = model(audio_signal=random_input, length=random_length)[0]
+        with torch.no_grad():
+            for i in range(5):
+                outputs[i] = model(audio_signal=random_input, length=random_length)[0]
         # checking that not all outputs are the same
         num_diff = 0
         for i in range(1, 5):
@@ -201,8 +211,9 @@ class TestStochasticDepth:
 
         model.eval()
         outputs = [None] * 5
-        for i in range(5):
-            outputs[i] = model(audio_signal=random_input, length=random_length)[0]
+        with torch.no_grad():
+            for i in range(5):
+                outputs[i] = model(audio_signal=random_input, length=random_length)[0]
         # checking that not all outputs are the same
         num_diff = 0
         for i in range(1, 5):
@@ -215,7 +226,13 @@ class TestBypassPreEncode:
     """Testing bypass pre-encode functionality."""
 
     def test_bypass_pre_encode_forward(self):
-        """Testing that forward works with "bypass pre-encode" mode."""
+        """Testing that forward works with "bypass pre-encode" mode.
+
+        Forwards are wrapped in ``torch.no_grad()`` so the test runs on CPU as well as GPU:
+        FlexAttention's CPU path refuses to run when any input requires gradients (parameters
+        of an ``nn.Module`` do by default), and we are only checking output shapes here, never
+        calling ``.backward()``.
+        """
         # For pre-encoded embeddings, the shape is (batch_size, n_frames, emb_dim)
         batch_size = 2
         n_frames, emb_dim, feat_out = 17, 16, 8
@@ -234,11 +251,13 @@ class TestBypassPreEncode:
             dropout_emb=0.0,
         )
         model.train()
-        fwd_outputs = model(audio_signal=random_input, length=random_length, bypass_pre_encode=True)[0]
+        with torch.no_grad():
+            fwd_outputs = model(audio_signal=random_input, length=random_length, bypass_pre_encode=True)[0]
         assert fwd_outputs.shape == (batch_size, feat_out, n_frames)
 
         model.eval()
-        fwd_outputs = model(audio_signal=random_input, length=random_length, bypass_pre_encode=True)[0]
+        with torch.no_grad():
+            fwd_outputs = model(audio_signal=random_input, length=random_length, bypass_pre_encode=True)[0]
         assert fwd_outputs.shape == (batch_size, feat_out, n_frames)
 
     def test_error_shape_invalid_bypass_pre_encode_forward(self):
@@ -283,12 +302,19 @@ class TestBypassPreEncode:
             model(audio_signal=feat_input, length=input_length, bypass_pre_encode=True)
 
         # Test with bypass_pre_encode = True, given the correct input pre_encode_input.
+        # NB: forwards that actually reach FlexAttention are wrapped in ``torch.no_grad()`` so
+        # the test passes on CPU (FlexAttention's CPU path refuses inputs that require grad).
+        # The ``pytest.raises(ValueError)`` blocks above/below intentionally do *not* need this
+        # wrapper because the shape check in ``TransformerEncoder.forward()`` raises before any
+        # attention computation.
         model.train()
-        fwd_outputs = model(audio_signal=pre_encode_input, length=input_length, bypass_pre_encode=True)[0]
+        with torch.no_grad():
+            fwd_outputs = model(audio_signal=pre_encode_input, length=input_length, bypass_pre_encode=True)[0]
         assert fwd_outputs.shape == (batch_size, feat_out, n_frames)
 
         model.eval()
-        fwd_outputs = model(audio_signal=pre_encode_input, length=input_length, bypass_pre_encode=True)[0]
+        with torch.no_grad():
+            fwd_outputs = model(audio_signal=pre_encode_input, length=input_length, bypass_pre_encode=True)[0]
         assert fwd_outputs.shape == (batch_size, feat_out, n_frames)
 
         # Test with bypass_pre_encode = False, should be feat_input but given pre_encode_input.
@@ -302,11 +328,13 @@ class TestBypassPreEncode:
 
         # Test with bypass_pre_encode = False, given the correct input feat_input.
         model.train()
-        fwd_outputs = model(audio_signal=feat_input, length=input_length, bypass_pre_encode=False)[0]
+        with torch.no_grad():
+            fwd_outputs = model(audio_signal=feat_input, length=input_length, bypass_pre_encode=False)[0]
         assert fwd_outputs.shape == (batch_size, feat_out, sub_sampled_n_frames)
 
         model.eval()
-        fwd_outputs = model(audio_signal=feat_input, length=input_length, bypass_pre_encode=False)[0]
+        with torch.no_grad():
+            fwd_outputs = model(audio_signal=feat_input, length=input_length, bypass_pre_encode=False)[0]
         assert fwd_outputs.shape == (batch_size, feat_out, sub_sampled_n_frames)
 
 
@@ -476,3 +504,129 @@ class TestTransformerEncoder:
         for name, param in model.named_parameters():
             assert param.grad is not None, f"No gradient for {name}"
             assert not torch.isnan(param.grad).any(), f"NaN gradient for {name}"
+
+
+class TestSelfAttentionModel:
+    """Tests for the ``self_attention_model`` positional encoding option."""
+
+    @pytest.mark.unit
+    def test_default_is_rel_pos(self):
+        model = TransformerEncoder(feat_in=128, d_model=64, n_heads=4, n_layers=2)
+        assert model.self_attention_model == "rel_pos"
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("mode", ["abs_pos", "rel_pos", "no_pos"])
+    def test_valid_modes_are_accepted(self, mode):
+        model = TransformerEncoder(
+            feat_in=128, d_model=64, n_heads=4, n_layers=2, self_attention_model=mode
+        )
+        assert model.self_attention_model == mode
+
+    @pytest.mark.unit
+    def test_none_aliases_no_pos(self):
+        """Passing ``self_attention_model=None`` must be equivalent to ``"no_pos"``."""
+        model = TransformerEncoder(
+            feat_in=128, d_model=64, n_heads=4, n_layers=2, self_attention_model=None
+        )
+        assert model.self_attention_model == "no_pos"
+        assert model.pos_enc is None
+
+    @pytest.mark.unit
+    def test_invalid_mode_raises(self):
+        with pytest.raises(ValueError, match="not supported"):
+            TransformerEncoder(
+                feat_in=128, d_model=64, n_heads=4, n_layers=2, self_attention_model="rel_pos_local_attn"
+            )
+
+    @pytest.mark.unit
+    def test_rel_pos_attention_params_allocated(self):
+        """rel_pos mode allocates the Transformer-XL bias parameters per attention layer."""
+        d_model, n_heads, n_layers = 64, 4, 2
+        model = TransformerEncoder(
+            feat_in=128, d_model=d_model, n_heads=n_heads, n_layers=n_layers, self_attention_model="rel_pos"
+        )
+        head_dim = d_model // n_heads
+        assert model.pos_enc is not None
+        for layer in model.layers:
+            attn = layer.attn
+            assert attn.linear_pos is not None
+            assert attn.pos_bias_u is not None
+            assert attn.pos_bias_v is not None
+            assert attn.pos_bias_u.shape == (n_heads, head_dim)
+            assert attn.pos_bias_v.shape == (n_heads, head_dim)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("mode", ["abs_pos", "no_pos"])
+    def test_non_rel_pos_modes_have_no_rel_params(self, mode):
+        """abs_pos and no_pos modes must not allocate the rel-pos parameters."""
+        model = TransformerEncoder(
+            feat_in=128, d_model=64, n_heads=4, n_layers=2, self_attention_model=mode
+        )
+        for layer in model.layers:
+            attn = layer.attn
+            assert attn.linear_pos is None
+            assert attn.pos_bias_u is None
+            assert attn.pos_bias_v is None
+
+    @pytest.mark.unit
+    def test_no_pos_has_no_positional_encoding_module(self):
+        model = TransformerEncoder(
+            feat_in=128, d_model=64, n_heads=4, n_layers=2, self_attention_model="no_pos"
+        )
+        assert model.pos_enc is None
+        # set_max_audio_length is invoked in __init__; it must not crash for no_pos and must
+        # still record the requested max length so update_max_seq_length works normally.
+        assert model.max_audio_length == model.pos_emb_max_len
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("mode", ["abs_pos", "rel_pos", "no_pos", None])
+    def test_forward_each_mode_cpu(self, mode):
+        """Each ``self_attention_model`` choice (including ``None``) must produce a valid forward."""
+        model = TransformerEncoder(
+            feat_in=128,
+            d_model=64,
+            n_heads=4,
+            n_layers=2,
+            drop_rate=0.0,
+            subsampling_factor=4,
+            self_attention_model=mode,
+        )
+        model.eval()
+
+        B, C, T = 2, 128, 200
+        x = torch.randn(B, C, T)
+        lengths = torch.tensor([T, 160])
+
+        with torch.no_grad():
+            out, out_lengths = model(audio_signal=x, length=lengths)
+
+        assert out.shape == (B, 64, T // 4)
+        assert out_lengths[0].item() == T // 4
+        assert out_lengths[1].item() == 160 // 4
+        assert not torch.isnan(out).any()
+
+    @pytest.mark.unit
+    def test_rel_pos_broadcasts_when_T_differs_from_n_heads(self):
+        """Regression test for the Transformer-XL bias broadcasting.
+
+        ``pos_bias_{u,v}`` has shape ``(H, D)`` and must broadcast against the head axis of
+        ``q`` which has shape ``(B, H, T, D)``. A naive add would right-align ``H`` against
+        ``T`` and either crash (``T != H``) or silently apply the bias on the wrong axis
+        (``T == H``). This test exercises a configuration where ``T_attn != n_heads`` so the
+        broken broadcast would surface as an error.
+        """
+        # 200 input frames / subsampling_factor=4 -> 50 attention frames; n_heads=4 -> T != H.
+        model = TransformerEncoder(
+            feat_in=128, d_model=64, n_heads=4, n_layers=2, drop_rate=0.0, self_attention_model="rel_pos"
+        )
+        model.eval()
+
+        B, C, T = 2, 128, 200
+        x = torch.randn(B, C, T)
+        lengths = torch.tensor([T, 160])
+
+        with torch.no_grad():
+            out, _ = model(audio_signal=x, length=lengths)
+
+        assert out.shape == (B, 64, T // 4)
+        assert not torch.isnan(out).any()

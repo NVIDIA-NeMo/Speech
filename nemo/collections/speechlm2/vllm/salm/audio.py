@@ -64,6 +64,8 @@ from nemo.collections.speechlm2.vllm.salm.config import _AUDIO_PLACEHOLDER
 _SAMPLING_RATE = 16000
 _AUDIO_CHANNELS = 1
 _DUMMY_AUDIO_DURATION_S = 40.0
+_DUMMY_AUDIO_MAX_DURATION_S = 3600.0
+_DUMMY_AUDIO_TEXT_TOKEN_RESERVE = 64
 # FastConformer preprocessor hop length, used to derive the smallest
 # chunk that produces ≥ 2 feature frames (per-feature normalization
 # breaks on a single frame). Mirrors

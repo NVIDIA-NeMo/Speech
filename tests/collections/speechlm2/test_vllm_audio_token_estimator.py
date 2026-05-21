@@ -109,8 +109,7 @@ def test_estimator_chunked_sums_per_chunk_frames() -> None:
         for i in range(0, samples, chunk_samples)
     )
     assert (
-        NeMoSpeechLMProcessingInfo._estimate_audio_tokens(samples, chunk_size_seconds=chunk_size_seconds)
-        == expected
+        NeMoSpeechLMProcessingInfo._estimate_audio_tokens(samples, chunk_size_seconds=chunk_size_seconds) == expected
     )
 
 
@@ -124,8 +123,7 @@ def test_estimator_chunked_tail_folded_into_previous_chunk() -> None:
     # Folded: one chunk of `samples` samples (no split).
     expected = NeMoSpeechLMProcessingInfo._estimate_audio_tokens_single_pass(samples)
     assert (
-        NeMoSpeechLMProcessingInfo._estimate_audio_tokens(samples, chunk_size_seconds=chunk_size_seconds)
-        == expected
+        NeMoSpeechLMProcessingInfo._estimate_audio_tokens(samples, chunk_size_seconds=chunk_size_seconds) == expected
     )
 
 

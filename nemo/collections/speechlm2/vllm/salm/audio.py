@@ -132,7 +132,7 @@ class NeMoSpeechLMProcessingInfo(BaseProcessingInfo):
         )
 
     def get_supported_mm_limits(self) -> Mapping[str, int | None]:
-        return {"audio": 1}
+        return {"audio": None}
 
     def _get_encoder_chunk_size_seconds(self) -> float | None:
         """Return the per-encoder-call chunk size baked into the checkpoint.
@@ -201,6 +201,31 @@ class NeMoSpeechLMProcessingInfo(BaseProcessingInfo):
             spans.pop()
 
         return sum(cls._estimate_audio_tokens_single_pass(end - begin) for begin, end in spans)
+
+    @classmethod
+    def _samples_for_audio_tokens(cls, target_tokens: int, chunk_size_seconds: float | None = None) -> int:
+        """Return the smallest sample count estimated to produce ``target_tokens``.
+
+        vLLM sizes the multimodal encoder cache from dummy inputs.  The SALM
+        plugin supports arbitrarily long audio by chunking the encoder forward,
+        but the decoder still receives the concatenated full-audio embedding
+        sequence.  This inverse estimator lets ``--limit-mm-per-prompt`` audio
+        length hints reserve cache for that full sequence without hard-coding a
+        single maximum call duration.
+        """
+        target_tokens = max(1, int(target_tokens))
+        max_samples = int(_DUMMY_AUDIO_MAX_DURATION_S * _SAMPLING_RATE)
+        lo, hi = 1, min(_SAMPLING_RATE, max_samples)
+        while hi < max_samples and cls._estimate_audio_tokens(hi, chunk_size_seconds) < target_tokens:
+            hi = min(hi * 2, max_samples)
+
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if cls._estimate_audio_tokens(mid, chunk_size_seconds) >= target_tokens:
+                hi = mid
+            else:
+                lo = mid + 1
+        return lo
 
 
 class NeMoSpeechLMMultiModalProcessor(
@@ -310,6 +335,19 @@ class NeMoSpeechLMDummyInputsBuilder(
     ) -> MultiModalDataDict:
         num_audios = mm_counts.get("audio", 0)
         dummy_audio_len = int(_DUMMY_AUDIO_DURATION_S * _SAMPLING_RATE)
+        audio_options = mm_options.get("audio") if mm_options else None
+        requested_audio_len = getattr(audio_options, "length", None)
+        if requested_audio_len:
+            chunk_size_seconds = self.info._get_encoder_chunk_size_seconds()
+            if seq_len > _DUMMY_AUDIO_TEXT_TOKEN_RESERVE:
+                max_audio_tokens = seq_len - _DUMMY_AUDIO_TEXT_TOKEN_RESERVE
+                max_audio_len = NeMoSpeechLMProcessingInfo._samples_for_audio_tokens(
+                    max_audio_tokens,
+                    chunk_size_seconds,
+                )
+            else:
+                max_audio_len = int(_DUMMY_AUDIO_MAX_DURATION_S * _SAMPLING_RATE)
+            dummy_audio_len = min(int(requested_audio_len), max_audio_len)
         return {
             "audio": self._get_dummy_audios(
                 length=dummy_audio_len,

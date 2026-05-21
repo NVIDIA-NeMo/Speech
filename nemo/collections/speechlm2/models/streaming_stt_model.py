@@ -170,6 +170,20 @@ class StreamingSTTModelConfig:
     # frames are "keep listening" (label=0); the few "emit" frames (label=1) get
     # drowned out without rebalancing.
     chunk_classifier_auto_balance: bool = True
+    # Detach the LLM's last hidden state before feeding it to the aux backbone.
+    # When True, the aux BCE loss does NOT propagate back into the LLM (body,
+    # lm_head, or embed_tokens) — the LLM is supervised purely by the masked
+    # LM CE on text positions, and the aux head learns on a fixed feature.
+    # Recommended default for clean A/B against pure text-LLM training.
+    chunk_classifier_stop_grad_to_llm: bool = True
+    # When True, keep the LM-CE supervision at audio positions (blank /
+    # user_footer_first targets) alongside the aux head's BCE. The LM head
+    # learns the boundary signal too — useful when LoRA / lm_head needs more
+    # gradient density per batch (default text-only positions can be sparse,
+    # ~20% of input length, slowing convergence). When False (default), audio
+    # positions are masked to IGNORE_INDEX in the LM CE — the aux head owns
+    # the boundary decision exclusively.
+    chunk_classifier_keep_lm_supervision_at_audio: bool = False
 
 
 @dataclass
@@ -562,7 +576,10 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         # text positions (line 1696/1701 in inference) remain supervised.
         if use_aux:
             audio_mask = batch.input_tokens == AUDIO_TOKEN_IDX  # (B, L)
-            target_ids = torch.where(audio_mask, torch.full_like(target_ids, IGNORE_INDEX), target_ids)
+            if not self.core_cfg.chunk_classifier_keep_lm_supervision_at_audio:
+                target_ids = torch.where(audio_mask, torch.full_like(target_ids, IGNORE_INDEX), target_ids)
+            # else: keep blank / user_footer_first targets at audio positions —
+            # LM head is co-supervised alongside the aux BCE.
         else:
             audio_mask = None
 
@@ -628,8 +645,11 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
             decision_mask = audio_mask_flat & (orig_targets_flat != IGNORE_INDEX)
             num_decisions = decision_mask.sum()
             if num_decisions > 0:
+                aux_input = outputs["hidden_states"]  # (B, L, H)
+                if self.core_cfg.chunk_classifier_stop_grad_to_llm:
+                    aux_input = aux_input.detach()
                 aux_out = self.chunk_classifier_backbone(
-                    inputs_embeds=outputs["hidden_states"],  # (B, L, H)
+                    inputs_embeds=aux_input,
                     attention_mask=inputs["attention_mask"],
                     return_dict=True,
                 )
@@ -768,8 +788,9 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         # boundary decision, audio positions are not LM-supervised in
         # training, so they must also be excluded from val_loss / val_acc —
         # otherwise val metrics are dominated by positions the LM was never
-        # trained on.
-        if aux_active:
+        # trained on. If keep_lm_supervision_at_audio is True, the LM IS
+        # supervised at audio positions during training, so don't mask in val.
+        if aux_active and not self.core_cfg.chunk_classifier_keep_lm_supervision_at_audio:
             audio_mask_for_lm = batch.input_tokens == AUDIO_TOKEN_IDX
             target_ids = torch.where(audio_mask_for_lm, torch.full_like(target_ids, IGNORE_INDEX), target_ids)
         num_targets = (target_ids != IGNORE_INDEX).long().sum()
@@ -820,8 +841,16 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
 
         # Log decoded predictions vs references periodically (first sample in batch).
         if batch_idx % self.core_cfg.log_every_n_steps == 0:
-            # Per-sample: decode only the first sample's non-IGNORE tokens.
-            sample_target = batch.target_tokens[0]
+            # Decode only positions where the LM head was actually trained.
+            # Important when use_chunk_classifier=True with
+            # keep_lm_supervision_at_audio=False: at audio positions the LM
+            # head is unsupervised and its argmax output is meaningless. Using
+            # the post-masking `target_ids` (audio = IGNORE_INDEX) restricts
+            # the printed `pred` to text positions only, matching what the LM
+            # was actually optimized for. This is teacher-forced argmax —
+            # any LM-head emit threshold is an *inference-time* concept and
+            # does not apply here.
+            sample_target = target_ids[0]
             sample_logits = outputs["logits"][0]
             sample_preds = sample_logits.argmax(dim=-1)
             mask = sample_target != IGNORE_INDEX

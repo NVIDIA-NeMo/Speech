@@ -32,7 +32,13 @@ ENV PATH="/root/.local/bin:${VIRTUAL_ENV}/bin:${PATH}"
 
 RUN <<"EOF" bash -ex
 apt-get update
-apt-get install -y bc curl git libsox-fmt-all
+apt-get install -y \
+    bc \
+    curl \
+    git \
+    libsndfile1 \
+    libsox-fmt-all \
+    sox \
 apt-get clean
 EOF
 

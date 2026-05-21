@@ -100,6 +100,7 @@ core = [
     "nv_one_logger_core>=2.3.1",
     "nv_one_logger_training_telemetry>=2.3.1",
     "nv_one_logger_pytorch_lightning_integration>=2.3.1",
+    "aistore"
 ]
 
 lightning = [
@@ -602,7 +603,7 @@ conflicts = [
     ],
 ]
 override-dependencies = [
-    "torch==2.10.0+cu130 ; sys_platform == 'linux'",
+    "torch==2.12.0+cu130 ; sys_platform == 'linux'",
 ]
 
 # --- uv configuration ---

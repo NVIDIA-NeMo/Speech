@@ -162,7 +162,7 @@ class AudioCodecLhotseDataset(torch.utils.data.Dataset):
 
     def _load_and_truncate_target_audio(self, cut) -> torch.Tensor:
         """
-        Load `target_audio`, resample, and return a random segmentof length `truncate_duration`.
+        Load `target_audio`, resample, and return a random segment of length `truncate_duration`.
         """
         if not cut.has_custom("target_audio"):
             raise ValueError(f"Cut {cut.id} is missing custom field 'target_audio'")

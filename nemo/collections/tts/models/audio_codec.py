@@ -855,16 +855,18 @@ class AudioCodecModel(ModelPT):
         loader_cfg.sample_rate = self.output_sample_rate
 
         # Random windowing is done in AudioCodecLhotseDataset on `target_audio`, not via
-        # Lhotse's cuts.truncate (which operates on the parent recording coordinates).
+        # Lhotse's cuts.truncate (which operates on the parent recording).
+        # However, to ensure the total batch duration is correct, we need to also set
+        # the truncate duration in the loader configuration.
         truncate_duration = dataset_args.get("truncate_duration")
         if truncate_duration is None:
             raise ValueError("`truncate_duration` must be set in `train_ds.dataset_args` ")
-        if cfg.dataloader_params.get("truncate_duration") is not None:
+        dataloader_truncate_duration = cfg.dataloader_params.get("truncate_duration")
+        if dataloader_truncate_duration is not None and dataloader_truncate_duration != truncate_duration:
             raise ValueError(
-                "`truncate_duration` must not be set in `train_ds.dataloader_params`; "
-                "set it in `train_ds.dataset_args` instead."
+                "`truncate_duration` in `train_ds.dataloader_params` must be set to the same value as `train_ds.dataset_args.truncate_duration`."
             )
-        loader_cfg.truncate_duration = None
+        loader_cfg.truncate_duration = truncate_duration
         # Pre-filter cuts whose parent recording is shorter than the training window.
         existing_min_duration = cfg.dataloader_params.get("min_duration")
         if existing_min_duration is not None and existing_min_duration != -1:
@@ -872,7 +874,8 @@ class AudioCodecModel(ModelPT):
                 "`min_duration` must not be set in `train_ds.dataloader_params` "
                 "it is set automatically from `train_ds.dataset_args.truncate_duration`."
             )
-        loader_cfg.min_duration = truncate_duration + 0.01  # add a bit to allow for resampling length mismatch
+        # random truncation of the audio
+        loader_cfg.min_duration = truncate_duration  # + 0.01  # add a bit to allow for resampling length mismatch
 
         # --- Create the dataset ---
 

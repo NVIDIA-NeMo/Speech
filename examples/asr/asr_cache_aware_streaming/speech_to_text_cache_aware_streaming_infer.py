@@ -193,6 +193,8 @@ class TranscriptionConfig:
     # whether to strip the language tags from the transcriptions
     # Ignored for model without prompt support
     strip_lang_tags: bool = False
+    # Optional regex describing the language tag to strip. Defaults to "<xx-XX>". (r'\s*<[a-z]{2}-[A-Z]{2}>')
+    lang_tag_pattern: Optional[str] = None
 
 
 def extract_transcriptions(hyps):
@@ -375,8 +377,7 @@ def main(cfg: TranscriptionConfig):
     if hasattr(asr_model, 'set_inference_prompt'):
         lang = cfg.target_lang if cfg.target_lang is not None else "auto"
         asr_model.set_inference_prompt(lang)
-        asr_model.decoding.strip_lang_tags = cfg.strip_lang_tags
-        asr_model.decoding.set_strip_lang_tags(cfg.strip_lang_tags)
+        asr_model.decoding.set_strip_lang_tags(cfg.strip_lang_tags, lang_tag_pattern=cfg.lang_tag_pattern)
 
     asr_model = asr_model.to(device=device, dtype=compute_dtype)
     asr_model.eval()

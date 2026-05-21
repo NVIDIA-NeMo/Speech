@@ -73,8 +73,6 @@ class LhotseSpeechToTextBpeDatasetWithPromptIndex(torch.utils.data.Dataset):
         # Field to use for prompt key (default to 'target_lang')
         self.prompt_field = cfg.get('prompt_field', 'target_lang')
 
-        self.training_mode = cfg.get('training_mode', True)
-
         # Per-dataset prompt mode is read from cut.custom["prompt_mode"] at runtime.
         # Supported values:
         #   "langID"  — always pass the real language ID
@@ -115,19 +113,14 @@ class LhotseSpeechToTextBpeDatasetWithPromptIndex(torch.utils.data.Dataset):
         """
         Determine the prompt index for a cut based on its prompt_mode tag.
 
-        During inference (training_mode=False): always returns the real lang ID
-        regardless of prompt_mode.
-
-        During training, behaviour depends on prompt_mode (set per-dataset via
-        lhotse input_cfg tags):
+        Behaviour depends on prompt_mode (set per-dataset via lhotse
+        input_cfg tags, falling back to ``default_prompt_mode``):
             "langID"  — always return the real language ID
+                        (use for inference / language-forced tasks)
             "auto"    — always return auto index (language-agnostic)
             "unified" — return auto with probability unified_auto_ratio,
                         otherwise the real language ID
         """
-        if not self.training_mode:
-            return self._get_prompt_index(cut.supervisions[0].language)
-
         mode = self._get_prompt_mode(cut)
 
         if mode == 'langID':

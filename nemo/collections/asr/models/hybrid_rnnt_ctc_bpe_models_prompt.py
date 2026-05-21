@@ -28,7 +28,7 @@ from nemo.collections.asr.data.audio_to_text_lhotse_prompt_index import LhotseSp
 from nemo.collections.asr.metrics.bleu import BLEU
 from nemo.collections.asr.metrics.wer import WER
 from nemo.collections.asr.models.hybrid_rnnt_ctc_bpe_models import EncDecHybridRNNTCTCBPEModel
-from nemo.collections.asr.parts.mixins import ASRTranscriptionMixin, TranscribeConfig
+from nemo.collections.asr.parts.mixins import ASRTranscriptionMixin, PromptStreamingMixin, TranscribeConfig
 from nemo.collections.asr.parts.mixins.streaming import StreamingEncoder
 from nemo.collections.asr.parts.mixins.transcription import TranscriptionReturnType
 from nemo.collections.asr.parts.preprocessing.segment import ChannelSelectorType
@@ -59,7 +59,7 @@ class HybridRNNTCTCPromptTranscribeConfig(TranscribeConfig):
     prompt_field: str = "target_lang"
 
 
-class EncDecHybridRNNTCTCBPEModelWithPrompt(EncDecHybridRNNTCTCBPEModel, ASRTranscriptionMixin):
+class EncDecHybridRNNTCTCBPEModelWithPrompt(PromptStreamingMixin, EncDecHybridRNNTCTCBPEModel, ASRTranscriptionMixin):
     """Base class for encoder decoder RNNT-based models with auxiliary CTC decoder/loss, subword tokenization, and prompt conditioning."""
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
@@ -194,62 +194,6 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(EncDecHybridRNNTCTCBPEModel, ASRTran
 
         # setting the RNNT decoder as the default one
         self.cur_decoder = "rnnt"
-
-    # Streaming inference with language-ID prompt
-
-    def set_inference_prompt(self, target_lang: str):
-        """
-        Set the language prompt for streaming inference.
-
-        Call this before ``conformer_stream_step`` to condition decoding on
-        a specific language, following the same pattern as
-        ``change_decoding_strategy``.
-
-        Args:
-            target_lang: A key from the model's ``prompt_dictionary``
-                         (e.g. ``"en-US"``, ``"auto"``).
-        """
-        prompt_dict = self.cfg.model_defaults.get('prompt_dictionary', {})
-        if target_lang not in prompt_dict:
-            available = list(prompt_dict.keys())
-            raise ValueError(
-                f"Unknown target language '{target_lang}'. "
-                f"Available: {available[:20]}{'...' if len(available) > 20 else ''}"
-            )
-        self._inference_prompt_index = prompt_dict[target_lang]
-        logging.info(f"Inference prompt set to '{target_lang}' (index {self._inference_prompt_index})")
-
-    def _apply_prompt_to_encoded(self, encoded: torch.Tensor) -> torch.Tensor:
-        """
-        Inject the language-ID prompt into encoder output during streaming.
-
-        ``encoded`` arrives as (B, D, T) from the encoder cache-aware step.
-        Returns the same shape after prompt concatenation + projection.
-        """
-        if not self.concat or not hasattr(self, '_inference_prompt_index'):
-            return encoded
-
-        encoded = encoded.transpose(1, 2)  # (B, D, T) -> (B, T, D)
-
-        batch_size, time_steps, _ = encoded.shape
-        prompt = torch.zeros(
-            batch_size,
-            time_steps,
-            self.num_prompts,
-            dtype=encoded.dtype,
-            device=encoded.device,
-        )
-        idx = torch.full(
-            (batch_size,),
-            self._inference_prompt_index,
-            dtype=torch.long,
-            device=encoded.device,
-        )
-        prompt.scatter_(2, idx.view(batch_size, 1, 1).expand(-1, time_steps, -1), 1.0)
-
-        out_dtype = encoded.dtype
-        encoded = self.prompt_kernel(torch.cat([encoded, prompt], dim=-1)).to(out_dtype)
-        return encoded.transpose(1, 2)  # (B, T, D) -> (B, D, T)
 
     def _setup_dataloader_from_config(self, config: Optional[Dict]):
         if config.get("use_lhotse"):

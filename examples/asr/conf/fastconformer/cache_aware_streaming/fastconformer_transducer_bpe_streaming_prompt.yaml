@@ -166,7 +166,6 @@ model:
     num_prompts: ${model.model_defaults.num_prompts}
     subsampling_factor: ${model.encoder.subsampling_factor}
     lang_field: target_lang
-    training_mode: true
 
     # Per-dataset prompt mode — controls how language prompts are selected during training.
     # The mode is set per data source via lhotse input_cfg tags:
@@ -197,7 +196,6 @@ model:
     prompt_dictionary: ${model.model_defaults.prompt_dictionary}
     num_prompts: ${model.model_defaults.num_prompts}
     subsampling_factor: ${model.encoder.subsampling_factor}
-    training_mode: true
 
   test_ds:
     manifest_filepath: null
@@ -213,7 +211,7 @@ model:
     prompt_dictionary: ${model.model_defaults.prompt_dictionary}
     num_prompts: ${model.model_defaults.num_prompts}
     subsampling_factor: ${model.encoder.subsampling_factor}
-    training_mode: false
+    default_prompt_mode: langID
 
   tokenizer:
     dir: ???

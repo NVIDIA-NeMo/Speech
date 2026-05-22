@@ -80,7 +80,7 @@ jobs:
       !cancelled() && !failure()
       && !(needs.pre-flight.outputs.docs_only == 'true'
            || needs.pre-flight.outputs.is_deployment_workflow == 'true')
-    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_release_library.yml@v1.2.0
+    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_release_library.yml@4190636d64ef82819c800b430280d6d7606089d7
     with:
       release-ref: ${{ inputs.release-ref || github.sha }}
       python-package: nemo

@@ -619,6 +619,8 @@ def main():
         secs_metric = SECS("titanet_large").reset()
 
     eval_dataset = EvalJSONLDataset(args.datasets_json_path, num_turns=args.num_turns)
+    # debug
+    # eval_dataset.samples = eval_dataset.samples[:100]
 
     collate_fn = partial(
         collate_and_tokenize_custom,
@@ -1118,44 +1120,60 @@ def main():
                     ext = ".wav"
 
                 if inputs["profile_multiturn"]:
-                    wav = audio_f32[i, : audio_len[i]].numpy()
-                    out_path = os.path.join(args.out_dir, base_name)
-                    sf.write(out_path, wav, samplerate=model.output_sample_rate)
-                    logging.info(f"Full Audio Saved: {out_path}")
-    
-                    full_wav = audio_f32[i].numpy()
                     full_len = int(audio_len[i].item())
+                    full_wav_t = audio_f32[i, :full_len].detach().cpu().float()
+
+                    samples_per_prediction_frame = (
+                        model.codec_model_samples_per_frame
+                        / (model.sample_rate / model.output_sample_rate)
+                    )
+
+                    # Build artifact-free aligned agent audio:
+                    # start from true zeros and copy only generated turn regions.
+                    aligned_agent = torch.zeros_like(full_wav_t)
+
                     print(profile_turn_frame_ranges)
+
                     for turn_id, start_frame, end_frame in profile_turn_frame_ranges:
-                        samples_per_prediction_frame = (
-                            model.codec_model_samples_per_frame / (model.sample_rate / model.output_sample_rate)
-                        )
                         rel_start_frame = start_frame - profile_decode_start_frame
                         rel_end_frame = end_frame - profile_decode_start_frame
 
                         start_sample = int(round(rel_start_frame * samples_per_prediction_frame))
                         end_sample = int(round(rel_end_frame * samples_per_prediction_frame))
+
                         start_sample = max(0, min(start_sample, full_len))
                         end_sample = max(start_sample, min(end_sample, full_len))
-                        print("Turn:", turn_id, "Start:", start_sample, "End:", end_sample,  "Start S:", start_sample/model.output_sample_rate, "End S:", end_sample/model.output_sample_rate, )
-                        turn_wav = full_wav[start_sample:end_sample]
 
+                        print(
+                            "Turn:", turn_id,
+                            "Start:", start_sample,
+                            "End:", end_sample,
+                            "Start S:", start_sample / model.output_sample_rate,
+                            "End S:", end_sample / model.output_sample_rate,
+                        )
+
+                        # Copy only this turn into the aligned full output.
+                        aligned_agent[start_sample:end_sample] = full_wav_t[start_sample:end_sample]
+
+                        # Save individual turn from the same aligned region.
+                        turn_wav = aligned_agent[start_sample:end_sample].numpy()
                         out_path = os.path.join(args.out_dir, f"{stem}_turn_{turn_id}{ext}")
                         sf.write(out_path, turn_wav, samplerate=model.output_sample_rate)
                         logging.info(f"Saved: {out_path}")
 
+                    # Save full artifact-scrubbed agent audio.
+                    wav = aligned_agent.numpy()
+                    out_path = os.path.join(args.out_dir, base_name)
+                    sf.write(out_path, wav, samplerate=model.output_sample_rate)
+                    logging.info(f"Full aligned agent audio saved: {out_path}")
+
                     # ---------------------------------------------------------
                     # Save aligned stereo conversation:
                     # channel 0 = user conditioning audio
-                    # channel 1 = generated agent audio
+                    # channel 1 = generated agent audio, zeroed outside turns
                     # ---------------------------------------------------------
                     if "user_audio_turns" in inputs:
                         user_segments = []
-
-                        samples_per_prediction_frame = (
-                            model.codec_model_samples_per_frame
-                            / (model.sample_rate / model.output_sample_rate)
-                        )
 
                         first_user_len_in = int(inputs["user_audio_turns_lens"][0][i].item())
                         first_user_delay_out = int(
@@ -1197,11 +1215,11 @@ def main():
                             e = s + wav_seg.numel()
                             user_ch[s:e] += wav_seg
 
-                        agent_pred = torch.from_numpy(wav).float()
+                        # Agent channel keeps the same previous offset, but uses aligned_agent.
                         agent_ch = torch.cat(
                             [
-                                torch.zeros(first_user_delay_out, dtype=agent_pred.dtype),
-                                agent_pred,
+                                torch.zeros(first_user_delay_out, dtype=aligned_agent.dtype),
+                                aligned_agent,
                             ]
                         )
 
@@ -1227,6 +1245,7 @@ def main():
                         )
 
                         logging.info(f"Aligned user/agent stereo audio saved: {aligned_path}")
+
                 else:
                     wav = audio_f32[i, : audio_len[i]].numpy()
                     out_path = os.path.join(args.out_dir, base_name)

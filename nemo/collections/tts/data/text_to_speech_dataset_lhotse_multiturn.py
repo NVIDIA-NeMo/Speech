@@ -478,7 +478,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
                         audio_array_16khz = cut.context_audio.resample(16_000).load_audio().squeeze(0)
                         if self.volume_norm:
                             audio_array_16khz = normalize_volume(audio_array_16khz)
-                            
+
                         _available_context_duration = len(audio_array_16khz) / 16_000
                         _context_duration_to_slice = _sample_context_duration_with_available_limit(_available_context_duration)
                         _num_samples_to_slice = int(_context_duration_to_slice * 16_000)

@@ -1836,8 +1836,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             next_input = next_input + audio_emb
 
         if user_audio_channel_embedding is not None:
-            if user_audio_channel_embedding.dim() == 2:
-                user_audio_channel_embedding = user_audio_channel_embedding.unsqueeze(1)
+            user_audio_channel_embedding = user_audio_channel_embedding.unsqueeze(1)
 
             next_input = next_input + user_audio_channel_embedding.to(
                 device=next_input.device,

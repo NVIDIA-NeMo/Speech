@@ -134,6 +134,13 @@ class SALMDataset(torch.utils.data.Dataset):
         # Only the audio-locator placeholder must be a single registered token.
         self._audio_loc_id = _token_id(tokenizer, audio_locator_tag)
 
+        # EOS must be present and supervised at the end of each target sequence;
+        # otherwise autoregressive generation has no learned stop signal.
+        self._eos_id = getattr(tokenizer, "eos_id", None)
+        if self._eos_id is None:
+            self._eos_id = getattr(tokenizer, "eos_token_id", None)
+        if self._eos_id is None:
+            raise ValueError("SALMDataset: tokenizer has neither eos_id nor eos_token_id")
     # ------------------------------------------------------------------ #
     # Public interface                                                     #
     # ------------------------------------------------------------------ #
@@ -220,6 +227,9 @@ class SALMDataset(torch.utils.data.Dataset):
                 ids_parts.append(text_ids)
                 mask_parts.append(torch.zeros(len(text_ids), dtype=torch.long))
             i += 1
+          
+        ids_parts.append(torch.tensor([self._eos_id], dtype=torch.long))
+        mask_parts.append(torch.ones(1, dtype=torch.long))
 
         return _cat(ids_parts), _cat(mask_parts)
 
@@ -266,9 +276,9 @@ class SALMDataset(torch.utils.data.Dataset):
                 text_ids = _encode_text(self.tokenizer, turn.value)
                 ids_parts.append(text_ids)
                 mask_parts.append(torch.zeros(len(text_ids), dtype=torch.long))
-
             i += 1
-
+        ids_parts.append(torch.tensor([self._eos_id], dtype=torch.long))
+        mask_parts.append(torch.ones(1, dtype=torch.long))
         return _cat(ids_parts), _cat(mask_parts)
 
 

@@ -1640,11 +1640,9 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             state.cache_seq_len += 1
 
             if prefill_like_step:
-                # Advance logical streams, but do not predict phoneme/audio logits.
+                # Advance logical streams, keep audio silent, but predict phonemes if enabled.
                 state.context_position += needs_context.long()
                 state.text_tokens_seen += (~needs_context).long()
-                state.phoneme_steps += needs_phoneme.long()
-                state.audio_steps += needs_audio.long()
 
                 C = self.num_audio_codebooks
                 S = self.frame_stacking_factor
@@ -1656,7 +1654,51 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 # Keep decoded profile/warmup region silent.
                 state.all_predictions.append(sil)
 
-                # Only the final prefill-like step should expose USER_SPEAKING_END.
+                pred_phoneme_tokens = None
+
+                if needs_phoneme.any() and self.phoneme_tokenizer is not None:
+                    first_phoneme_step = needs_phoneme & (state.phoneme_prediction_start_idx == -1)
+                    if first_phoneme_step.any():
+                        current_phoneme_step_idx = len(state.all_phoneme_predictions)
+                        state.phoneme_prediction_start_idx = torch.where(
+                            first_phoneme_step,
+                            torch.full_like(state.phoneme_prediction_start_idx, current_phoneme_step_idx),
+                            state.phoneme_prediction_start_idx,
+                        )
+
+                    pred_phoneme_tokens = self._predict_phoneme_tokens(state)
+
+                    if state.last_phoneme_tokens is None:
+                        state.last_phoneme_tokens = pred_phoneme_tokens
+                    else:
+                        update_mask = needs_phoneme.view(B, 1).expand_as(pred_phoneme_tokens)
+                        state.last_phoneme_tokens = torch.where(
+                            update_mask,
+                            pred_phoneme_tokens,
+                            state.last_phoneme_tokens,
+                        )
+
+                    state.all_phoneme_predictions.append(pred_phoneme_tokens)
+
+                    phoneme_eos_detected = needs_phoneme & (
+                        pred_phoneme_tokens == self.phoneme_tokenizer.eos_token_id
+                    ).any(dim=1)
+
+                    state.phoneme_eos_detected = state.phoneme_eos_detected | phoneme_eos_detected
+
+                    newly_ended_phoneme = phoneme_eos_detected & (state.phoneme_prediction_end_idx == -1)
+                    if newly_ended_phoneme.any():
+                        current_phoneme_step_idx = len(state.all_phoneme_predictions)
+                        state.phoneme_prediction_end_idx = torch.where(
+                            newly_ended_phoneme,
+                            torch.full_like(state.phoneme_prediction_end_idx, current_phoneme_step_idx),
+                            state.phoneme_prediction_end_idx,
+                        )
+
+                state.phoneme_steps += needs_phoneme.long()
+                state.audio_steps += needs_audio.long()
+
+                # Same behavior as your previous code when phoneme is disabled.
                 use_end_token = (
                     prefill_like_is_last_step
                     and self.cfg.get("use_user_speaking_end_token", False)
@@ -1680,15 +1722,13 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                     )
                 else:
                     state.last_audio_codes = sil.reshape(B, C * S)
-
-                return state, None, None
+                return state, None, pred_phoneme_tokens
 
 
             # Phase 3: Update counters and extract predictions
             audio_codes_next, pred_phoneme_tokens = self._process_predictions(
                 state, needs_context, needs_phoneme, needs_audio
             )
-
             return state, audio_codes_next, pred_phoneme_tokens
 
     def _prepare_streaming_input(
@@ -1791,9 +1831,22 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                         phoneme_emb = phoneme_emb + phoneme_bos_emb * first_mask
 
                     if has_last_phoneme.any() and state.last_phoneme_tokens is not None:
+                        last_phoneme_tokens = state.last_phoneme_tokens  # (B, S_ph)
+
                         last_phoneme_emb = self.embed_phoneme_tokens(
-                            state.last_phoneme_tokens.unsqueeze(2)
+                            last_phoneme_tokens.unsqueeze(2)
                         )  # (B, 1, E)
+
+                        # Match training: PAD phoneme inputs contribute zero embedding.
+                        if self.cfg.get("use_multiturn_dataset", False):
+                            phoneme_pad_id = getattr(self.phoneme_tokenizer, "pad", None)
+                            if phoneme_pad_id is not None:
+                                # Same convention as training: check first stacked phoneme channel.
+                                phoneme_is_pad = last_phoneme_tokens[:, 0] == phoneme_pad_id  # (B,)
+                                last_phoneme_emb = last_phoneme_emb * (~phoneme_is_pad).view(batch_size, 1, 1).float()
+                            else:
+                                raise ValueError("self.phoneme_tokenizer.pad is not defined, so it is not possible to zero-out the phoneme on the padding positon, please verify it!")
+
                         last_mask = has_last_phoneme.view(batch_size, 1, 1).float()
                         phoneme_emb = phoneme_emb + last_phoneme_emb * last_mask
 

@@ -214,21 +214,70 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         total_codebook_loss = total_codebook_loss / audio_codes.size(1)
         return total_codebook_loss, loss_mask
 
-    def compute_phoneme_loss(self, logits, phoneme_tokens, phoneme_tokens_lens):
+    def compute_phoneme_loss(
+        self,
+        logits,
+        phoneme_tokens,
+        phoneme_tokens_lens,
+        agent_mask_target=None,
+    ):
+        """
+        logits: (B, T', phoneme_stacking_factor * phoneme_vocab_size)
+        phoneme_tokens: (B, S, T')
+        phoneme_tokens_lens: (B,)
+        agent_mask_target: optional (B, T')
+        """
         loss_mask = get_mask_from_lengths(phoneme_tokens_lens)
+        loss_mask = loss_mask.unsqueeze(1).repeat(1, phoneme_tokens.size(1), 1)
+
+        if agent_mask_target is not None:
+            target_T = phoneme_tokens.size(2)
+
+            if agent_mask_target.size(1) < target_T:
+                pad = torch.zeros(
+                    agent_mask_target.size(0),
+                    target_T - agent_mask_target.size(1),
+                    device=agent_mask_target.device,
+                    dtype=agent_mask_target.dtype,
+                )
+                agent_mask_target = torch.cat([agent_mask_target, pad], dim=1)
+            else:
+                agent_mask_target = agent_mask_target[:, :target_T]
+
+            agent_mask_target = agent_mask_target.to(
+                device=phoneme_tokens.device,
+                dtype=loss_mask.dtype,
+            )
+
         total_phoneme_loss = None
+
         for codebook in range(self.phoneme_stacking_factor):
             si = codebook * self.phoneme_vocab_size
             ei = si + self.phoneme_vocab_size
+
             phoneme_logits = logits[:, :, si:ei]
             phoneme_targets = phoneme_tokens[:, codebook]
-            phoneme_loss = self.cross_entropy_loss(phoneme_logits.permute(0, 2, 1), phoneme_targets)
-            phoneme_loss = phoneme_loss * loss_mask
-            phoneme_loss = phoneme_loss.sum() / loss_mask.sum()
-            if total_phoneme_loss is None:
-                total_phoneme_loss = phoneme_loss
-            else:
-                total_phoneme_loss = total_phoneme_loss + phoneme_loss
+
+            raw_loss = self.cross_entropy_loss(
+                phoneme_logits.permute(0, 2, 1),
+                phoneme_targets.long(),
+            )  # (B, T')
+
+            effective_mask = loss_mask[:, codebook, :]
+
+            if agent_mask_target is not None:
+                effective_mask = effective_mask * agent_mask_target
+                print("Hereee")
+
+            phoneme_loss = raw_loss * effective_mask
+            phoneme_loss = phoneme_loss.sum() / effective_mask.sum().clamp_min(1.0)
+
+            total_phoneme_loss = (
+                phoneme_loss
+                if total_phoneme_loss is None
+                else total_phoneme_loss + phoneme_loss
+            )
+
         total_phoneme_loss = total_phoneme_loss / self.phoneme_stacking_factor
         return total_phoneme_loss, loss_mask
 
@@ -1171,7 +1220,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 dropout_complete_phoneme_channel or dropout_conditional_input or dropout_text_input
             ):
                 phoneme_loss, _ = self.compute_phoneme_loss(
-                    pb_phoneme_logits, pb_phoneme_tokens_target, pb_phoneme_tokens_lens_target
+                    pb_phoneme_logits, pb_phoneme_tokens_target, pb_phoneme_tokens_lens_target, agent_mask_target=agent_mask if self.cfg.get("mask_user_on_loss", False) else None
                 )
             else:
                 phoneme_loss = torch.tensor(0.0, device=logits.device)

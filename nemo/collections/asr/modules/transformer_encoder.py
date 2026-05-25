@@ -209,8 +209,7 @@ class TransformerEncoder(nn.Module):
             raise ValueError(f"d_model ({d_model}) must be divisible by n_heads ({n_heads}).")
         if attn_mode not in _SUPPORTED_ATTN_MODES:
             raise ValueError(
-                f"attn_mode='{attn_mode}' is not yet supported. "
-                f"Supported modes: {_SUPPORTED_ATTN_MODES}."
+                f"attn_mode='{attn_mode}' is not yet supported. " f"Supported modes: {_SUPPORTED_ATTN_MODES}."
             )
         self.attn_mode = attn_mode
 

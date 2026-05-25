@@ -589,4 +589,3 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
             assert 'context_audio' not in batch_dict
 
         return batch_dict
-

@@ -268,6 +268,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         self.use_bpe_char_tokenizer = cfg.get('use_bpe_char_tokenizer', False)
         self.disable_subword_embedding = cfg.get('disable_subword_embedding', False)
         self.disable_lm_text_head = cfg.get('disable_lm_text_head', False)
+        self.disable_cas_for_context_text = cfg.get('disable_cas_for_context_text', False)
         if self.disable_subword_embedding and not self.use_bpe_char_tokenizer:
             logging.warning(
                 "`disable_subword_embedding=True` requires `use_bpe_char_tokenizer=True`; overriding automatically."
@@ -657,8 +658,20 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         audio_embedding = self.audio_in_projection(audio_embedding)
         return audio_embedding
 
-    def embed_text_tokens(self, text_tokens: torch.Tensor, text_lens: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """Embed text tokens using decoder embedding + optional CAS, or CAS-only when configured."""
+    def embed_text_tokens(
+        self,
+        text_tokens: torch.Tensor,
+        text_lens: Optional[torch.Tensor] = None,
+        disable_cas_embedding: bool = False,
+    ) -> torch.Tensor:
+        """Embed text tokens using decoder embedding + optional CAS, or CAS-only when configured.
+
+        Args:
+            text_tokens: Token ids to embed, shaped ``(B, T)``.
+            text_lens: Optional valid token lengths for constructing the CAS mask. Defaults to the full sequence length.
+            disable_cas_embedding: When True, skip adding CAS embeddings even if the model uses the BPE char tokenizer.
+                This is needed for legacy models where context text was trained without CAS embeddings.
+        """
         if text_lens is None:
             text_lens = torch.full(
                 (text_tokens.size(0),), text_tokens.size(1), dtype=torch.long, device=text_tokens.device
@@ -666,10 +679,12 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
         text_mask = get_mask_from_lengths(text_lens)
         if self.disable_subword_embedding:
+            if disable_cas_embedding:
+                raise ValueError("Cannot disable CAS embedding when `disable_subword_embedding=True`.")
             return self.cas_encoder(text_tokens, subword_mask=text_mask)
 
         text_embedded = self.decoder.get_input_embeddings()(text_tokens)
-        if self.use_bpe_char_tokenizer:
+        if self.use_bpe_char_tokenizer and not disable_cas_embedding:
             cas_embedding = self.cas_encoder(text_tokens, subword_mask=text_mask)
             text_embedded = text_embedded + cas_embedding
         return text_embedded
@@ -947,7 +962,11 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
         # Context Text
         context_text_lens = context_text_tokens_lens
-        context_text_embedded = self.embed_text_tokens(context_text_tokens, text_lens=context_text_lens)  # (B, L, E)
+        context_text_embedded = self.embed_text_tokens(
+            context_text_tokens,
+            text_lens=context_text_lens,
+            disable_cas_embedding=self.disable_cas_for_context_text,
+        )  # (B, L, E)
 
         # Prepare task embedding for multi-mode training
         task_embedding = None

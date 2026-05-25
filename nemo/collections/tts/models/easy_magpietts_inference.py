@@ -266,8 +266,14 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         self.mask_token_id = get_token_index(SpecialAudioToken.MASK_TOKEN)
         self.num_all_tokens_per_codebook = self.codebook_size + len(SpecialAudioToken)
         self.use_bpe_char_tokenizer = cfg.get('use_bpe_char_tokenizer', False)
+        # If True, text tokens are embedded only with the char-aware subword (CAS) encoder, and the decoder token
+        # embedding table is removed. This is useful for CAS-only text modeling.
         self.disable_subword_embedding = cfg.get('disable_subword_embedding', False)
+        # If True, remove the decoder LM head over text tokens to save parameters when the model does not train or
+        # infer text-token logits from the decoder output.
         self.disable_lm_text_head = cfg.get('disable_lm_text_head', False)
+        # Legacy checkpoints may have trained context text with decoder embeddings only, even when CAS is enabled for
+        # regular text tokens. This flag skips adding CAS embeddings for context text to match those checkpoints.
         self.disable_cas_for_context_text = cfg.get('disable_cas_for_context_text', False)
         if self.disable_subword_embedding and not self.use_bpe_char_tokenizer:
             logging.warning(
@@ -349,7 +355,11 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         self.pad_context_text_to_max_duration = False
         self.add_language_to_context_text = cfg.get('add_language_to_context_text', False)
         self.ignore_phoneme_languages = cfg.get('ignore_phoneme_languages', [])
+        # During training, this is the probability of replacing transcript text with G2P output
+        # before tokenization. It is disabled for validation/inference by the dataset setup.
         self.phoneme_as_text_prob = cfg.get('phoneme_as_text_prob', 0.0)
+        # Optional per-language Hydra configs for G2P modules used by pronunciation control when phoneme_as_text_prob
+        # samples the G2P-text path. Used only when phoneme_as_text_prob > 0.0.
         self.pronunciation_control_g2p = cfg.get('pronunciation_control_g2p', None)
 
         super().__init__(cfg=cfg, trainer=trainer)

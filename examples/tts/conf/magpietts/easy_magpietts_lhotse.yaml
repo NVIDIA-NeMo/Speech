@@ -96,6 +96,9 @@ model:
   phoneme_corruption_timestep_ratio: 0.15
   phoneme_corruption_unk_mode_prob: 0.5
   phoneme_corruption_type: "repeat_skip_unk" # "repeat_skip_unk" or "complete_channel"
+  phoneme_as_text_prob: 0.0 # Probability of replacing training text with pronunciation-control G2P output.
+  ignore_phoneme_languages: [] # Languages for which missing IPA phoneme fields are allowed during training.
+  add_language_to_context_text: false # Prefix context text with language metadata for multilingual conditioning.
   
   pronunciation_control_g2p:
     en:

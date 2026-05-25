@@ -947,9 +947,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
         # Context Text
         context_text_lens = context_text_tokens_lens
-        context_text_embedded = self.embed_text_tokens(
-            context_text_tokens, text_lens=context_text_lens
-        )  # (B, L, E)
+        context_text_embedded = self.embed_text_tokens(context_text_tokens, text_lens=context_text_lens)  # (B, L, E)
 
         # Prepare task embedding for multi-mode training
         task_embedding = None

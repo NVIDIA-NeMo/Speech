@@ -446,9 +446,7 @@ class MagpieTTSDataset(TextToSpeechDataset):
             and self.pronunciation_control_g2p_config is not None
             and self.phoneme_as_text_prob > 0.0
         ):
-            self.pronunciation_control_g2p = setup_pronunciation_control_g2p(
-                self.pronunciation_control_g2p_config
-            )
+            self.pronunciation_control_g2p = setup_pronunciation_control_g2p(self.pronunciation_control_g2p_config)
 
         def _sample_context_duration_with_available_limit(available_duration_sec: float) -> float:
             effective_duration_max = min(self.context_duration_max, available_duration_sec)
@@ -686,7 +684,9 @@ class MagpieTTSDataset(TextToSpeechDataset):
 
         return example
 
-    def _tokenize_text_with_pronunciation_control(self, text_str: str, language: str, tokenizer_name: str) -> List[int]:
+    def _tokenize_text_with_pronunciation_control(
+        self, text_str: str, language: str, tokenizer_name: str
+    ) -> List[int]:
         use_pronunciation_control = (
             self.dataset_type == 'train'
             and self.phoneme_as_text_prob > 0.0

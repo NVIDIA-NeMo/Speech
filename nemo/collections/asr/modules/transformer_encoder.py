@@ -244,12 +244,25 @@ class TransformerEncoder(nn.Module):
         return x, length
 
     def freeze(self):
+        """Freeze all parameters, recording prior ``requires_grad`` so ``unfreeze(partial=True)`` can restore it."""
+        grad_map = {name: p.requires_grad for name, p in self.named_parameters()}
         for p in self.parameters():
             p.requires_grad = False
+        if not hasattr(self, "_frozen_grad_map"):
+            self._frozen_grad_map = grad_map
+        else:
+            self._frozen_grad_map.update(grad_map)
         self.eval()
 
     def unfreeze(self, partial: bool = False):
-        for p in self.parameters():
-            p.requires_grad = True
-        if not partial:
-            self.train()
+        """Unfreeze parameters. ``partial=True`` restores the pre-``freeze()`` state from ``_frozen_grad_map``."""
+        if partial and not hasattr(self, "_frozen_grad_map"):
+            raise ValueError("Cannot unfreeze partially without first freezing the module with `freeze()`")
+        for name, p in self.named_parameters():
+            if partial:
+                p.requires_grad = self._frozen_grad_map.get(name, True)
+            else:
+                p.requires_grad = True
+        if hasattr(self, "_frozen_grad_map"):
+            del self._frozen_grad_map
+        self.train()

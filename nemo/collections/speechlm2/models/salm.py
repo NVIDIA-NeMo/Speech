@@ -123,14 +123,21 @@ def _setup_gemma4(salm: "SALM") -> None:
     )
 
     # ------------------------------------------------------------------
-    # Patch 3 — skip per_layer_inputs computation when inputs_embeds are
-    # already provided (i.e. during SALM's audio-fused forward pass).
+    # Patch 3 — provide token-identity per_layer_inputs even when inputs_embeds
+    # is the only thing passed at the top of SALM's forward. We read the spliced
+    # input_ids that prepare_inputs stashed on the SALM instance and feed them
+    # to the original get_per_layer_inputs. Fallback (None) preserves the
+    # original short-circuit if no stash is available (e.g. generate()).
     # ------------------------------------------------------------------
     _orig_get_per_layer_inputs = lm.get_per_layer_inputs
 
     def _patched_get_per_layer_inputs(inner_self, input_ids, inputs_embeds):
         if input_ids is None:
-            return None
+            cached = getattr(salm, "_current_input_ids", None)
+            if cached is not None and cached.shape == inputs_embeds.shape[:2]:
+                input_ids = cached
+            else:
+                return None
         return _orig_get_per_layer_inputs(input_ids, inputs_embeds)
 
     lm.get_per_layer_inputs = types.MethodType(_patched_get_per_layer_inputs, lm)
@@ -300,6 +307,11 @@ class SALM(LightningModule, HFHubMixin):
         audio_embs = [emb[:emblen] for emb, emblen in zip(audio_embs, audio_emb_lens)]
         input_ids_to_embed = torch.where(batch["input_ids"] == self.audio_locator_tag_id, 0, batch["input_ids"])
         text_embs = self.embed_tokens(input_ids_to_embed)
+        # If embed_tokens is fp32 (LLM-fp32 workaround) but encoder output is bf16,
+        # cast audio_embs to match so the splice and downstream LLM forward see one dtype.
+        if len(audio_embs) > 0 and audio_embs[0].dtype != text_embs.dtype:
+            audio_embs = [emb.to(text_embs.dtype) for emb in audio_embs]
+            
         input_embs, target_ids, attention_mask = replace_placeholders_and_build_targets(
             input_ids=batch["input_ids"],
             embeds=text_embs,
@@ -308,9 +320,22 @@ class SALM(LightningModule, HFHubMixin):
             replacements=audio_embs,
             target_ids=batch["input_ids"].where(batch["loss_mask"], -100),  # CrossEntropyLoss().ignore_index
         )
+        # Build spliced input_ids (audio_locator_tag_id at audio positions, real
+        # token ids elsewhere) so Gemma 4's per-layer-embeddings lookup has token
+        # identity to use. Stash on self for the patched get_per_layer_inputs to read.
+        _, _llm_input_ids, _ = replace_placeholders_and_build_targets(
+            input_ids=batch["input_ids"],
+            embeds=text_embs,
+            padding_id=self.text_pad_id,
+            placeholder_id=self.audio_locator_tag_id,
+            replacements=audio_embs,
+            target_ids=batch["input_ids"],
+        )
+        _llm_input_ids = torch.where(_llm_input_ids == -100, 0, _llm_input_ids)
         input_embs = input_embs[:, :-1]
         attention_mask = attention_mask[:, :-1]
         target_ids = target_ids[:, 1:]
+        self._current_input_ids = _llm_input_ids[:, :-1]
 
         # Combine target audio and text into a single tensor to slice them together.
         # It will also help us truncate the sequence lengths to be divisible by TP world size,
@@ -535,6 +560,10 @@ class SALM(LightningModule, HFHubMixin):
             audio_embeds, audio_embed_lens = self.perception(audios, audio_lens)
             audio_embeds = [audio_embeds[i, :elen] for i, elen in enumerate(audio_embed_lens)]
             # Insert audio embeddings into relevant positions in text embeddings.
+            # Use left-padding for generation (Bug D fix): HF generate() appends new tokens at the
+            # end of the sequence; with right-pad, shorter rows in a batch end at position
+            # seq_len < max_seq_length, so the next token lands at position max_seq_length and
+            # RoPE positions are misaligned for shorter audios -> gibberish at bs>1.
             input_embeds, _, attention_mask = replace_placeholders_and_build_targets(
                 input_ids=tokens,
                 embeds=token_embeds,
@@ -542,6 +571,7 @@ class SALM(LightningModule, HFHubMixin):
                 placeholder_id=self.audio_locator_tag_id,
                 replacements=audio_embeds,
                 target_ids=None,
+                padding_side="left",
             )
             generation_inputs = {"inputs_embeds": input_embeds, "attention_mask": attention_mask}
         else:
@@ -692,6 +722,7 @@ def replace_placeholders_and_build_targets(
     placeholder_id: int,
     replacements: list[torch.Tensor],
     target_ids: Optional[torch.Tensor] = None,
+    padding_side: str = "right",
 ) -> tuple[torch.Tensor, Optional[torch.Tensor], torch.Tensor]:
     """Replaces each occurrence of the placeholder_id in input_ids with the corresponding tensor
     from the replacements list in the embeds tensor, and creates corresponding adjusted target_ids.
@@ -706,6 +737,11 @@ def replace_placeholders_and_build_targets(
       placeholder_id (int): an id to be replaced.
       replacements (list of Tensor): each Tensor has shape (L_i, hidden_dim), with L_i arbitrary.
       target_ids (Tensor): shape (batch, sequence_length); target token ids.
+      padding_side (str): "right" (default, for training — bf16 backward stability through
+          Gemma 4's 35 layers requires real content at low RoPE positions) or "left"
+          (for autoregressive generation — all batch rows must end at the same position
+          so the "next token" RoPE position is correct; shorter audios otherwise produce
+          gibberish at bs>1 because RoPE positions are misaligned, see Bug D notes).
 
     Returns:
       Tuple[Tensor, Tensor, Tensor]:
@@ -718,6 +754,7 @@ def replace_placeholders_and_build_targets(
         - Tensor of shape (batch, max_new_sequence_length) with attention padding masks
           updated to account for shape changes due to replacements.
     """
+    assert padding_side in ("right", "left"), f"padding_side must be 'right' or 'left', got {padding_side!r}"
     batch_size, seq_len = input_ids.size()
     if target_ids is not None:
         assert target_ids.size() == input_ids.size(), "target_ids must have the same shape as input_ids"
@@ -813,10 +850,22 @@ def replace_placeholders_and_build_targets(
         output_target_ids = repeat(None)
     for i, (seq, tgt, att) in enumerate(zip(output_sequences, output_target_ids, output_att_masks)):
         seq_len = seq.size(0)
-        output[i, -seq_len:] = seq
-        if tgt is not None:
-            new_target_ids[i, -seq_len:] = tgt
-        attention_masks[i, -seq_len:] = att
+        # padding_side="right" (default, training): real tokens at [0:seq_len], pad at [seq_len:].
+        #   bf16 backward through Gemma 4's 35 transformer layers requires this layout to avoid
+        #   NaN gradients. See docs/DECISIONS.md (2026-04-30 entry) for the full bisection.
+        # padding_side="left" (generation): real tokens at [-seq_len:], pad at [:max_seq_length-seq_len].
+        #   All rows end at the same position, so HF generate()'s "next token" RoPE position is
+        #   consistent across the batch. Required for bs>1 inference (Bug D fix, 2026-05-23).
+        if padding_side == "left":
+            output[i, -seq_len:] = seq
+            if tgt is not None:
+                new_target_ids[i, -seq_len:] = tgt
+            attention_masks[i, -seq_len:] = att
+        else:  # "right"
+            output[i, :seq_len] = seq
+            if tgt is not None:
+                new_target_ids[i, :seq_len] = tgt
+            attention_masks[i, :seq_len] = att
 
     return output, new_target_ids, attention_masks
 

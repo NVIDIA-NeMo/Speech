@@ -267,7 +267,6 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
 
             if agent_mask_target is not None:
                 effective_mask = effective_mask * agent_mask_target
-                print("Hereee")
 
             phoneme_loss = raw_loss * effective_mask
             phoneme_loss = phoneme_loss.sum() / effective_mask.sum().clamp_min(1.0)

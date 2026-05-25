@@ -18,6 +18,8 @@ import torch
 import torch.nn as nn
 from torch.nn.attention.flex_attention import create_block_mask, flex_attention
 
+from nemo.utils.decorators import experimental
+
 flex_attention_compiled = torch.compile(flex_attention, dynamic=True)
 
 
@@ -151,6 +153,7 @@ class TransformerBlock(nn.Module):
         return x
 
 
+@experimental
 class TransformerEncoder(nn.Module):
     """Pre-norm Transformer encoder for ASR.
 
@@ -239,3 +242,14 @@ class TransformerEncoder(nn.Module):
         x = self.final_norm(x)
         x = x.transpose(1, 2)  # (B, T, D) -> (B, D, T)
         return x, length
+
+    def freeze(self):
+        for p in self.parameters():
+            p.requires_grad = False
+        self.eval()
+
+    def unfreeze(self, partial: bool = False):
+        for p in self.parameters():
+            p.requires_grad = True
+        if not partial:
+            self.train()

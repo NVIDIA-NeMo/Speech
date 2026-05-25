@@ -16,7 +16,7 @@ from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
-from torch.nn.attention.flex_attention import create_block_mask, flex_attention
+from torch.nn.attention.flex_attention import and_masks, create_block_mask, flex_attention
 
 flex_attention_compiled = torch.compile(flex_attention, dynamic=True)
 
@@ -33,8 +33,8 @@ class TransformerEncoderConfig:
     ff_expansion: float = 4.0
     pre_block_norm: bool = True
     subsampling_factor: int = 4
-    # Attention mode — currently only "full" is supported.
-    # Future: "causal", "lookahead", "local", "sliding_window"
+    # Attention mode: "full" (bidirectional) or "causal" (each token only attends to itself and earlier tokens).
+    # Future: "lookahead", "local", "sliding_window".
     attn_mode: str = "full"
 
 
@@ -45,6 +45,18 @@ def _make_padding_mod(lengths):
         return kv_idx < lengths[b]
 
     return pad_mask
+
+
+def _make_causal_mod():
+    """Strictly causal — each query only attends to its own and earlier kv positions."""
+
+    def causal(b, h, q_idx, kv_idx):
+        return q_idx >= kv_idx
+
+    return causal
+
+
+_SUPPORTED_ATTN_MODES = ("full", "causal")
 
 
 class FeatureStacking(nn.Module):
@@ -174,7 +186,8 @@ class TransformerEncoder(nn.Module):
             such as Whisper or GPT-2 — required when loading pretrained weights from those
             checkpoints.
         subsampling_factor: Frame stacking factor for the pre-encoder.
-        attn_mode: Attention pattern — currently only "full" (bidirectional) is supported.
+        attn_mode: Attention pattern — "full" (bidirectional, default) or "causal" (each token
+            only attends to itself and earlier tokens).
     """
 
     def __init__(
@@ -194,8 +207,12 @@ class TransformerEncoder(nn.Module):
         super().__init__()
         if d_model % n_heads != 0:
             raise ValueError(f"d_model ({d_model}) must be divisible by n_heads ({n_heads}).")
-        if attn_mode != "full":
-            raise ValueError(f"attn_mode='{attn_mode}' is not yet supported. Currently only 'full' is available.")
+        if attn_mode not in _SUPPORTED_ATTN_MODES:
+            raise ValueError(
+                f"attn_mode='{attn_mode}' is not yet supported. "
+                f"Supported modes: {_SUPPORTED_ATTN_MODES}."
+            )
+        self.attn_mode = attn_mode
 
         cfg = TransformerEncoderConfig(
             feat_in=feat_in,
@@ -231,7 +248,11 @@ class TransformerEncoder(nn.Module):
         x = self.embed_norm(x)
 
         B, T, _ = x.shape
-        block_mask = create_block_mask(_make_padding_mod(length), B=B, H=1, Q_LEN=T, KV_LEN=T, device=x.device)
+        if self.attn_mode == "causal":
+            mask_mod = and_masks(_make_causal_mod(), _make_padding_mod(length))
+        else:
+            mask_mod = _make_padding_mod(length)
+        block_mask = create_block_mask(mask_mod, B=B, H=1, Q_LEN=T, KV_LEN=T, device=x.device)
 
         for layer in self.layers:
             x = layer(x, block_mask=block_mask)

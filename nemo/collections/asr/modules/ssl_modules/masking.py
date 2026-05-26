@@ -124,6 +124,7 @@ class RandomBlockMasking(NeuralModule):
                 positions = positions.reshape(-1).clamp(0, T - 1)
                 mask[i, positions] = True
 
+        mask[:, :16] = False  # make sure at least 16 tokens are not masked
         mask_3d = mask.unsqueeze(1)
         masks = mask_3d.float().expand_as(input_feats)
         masked_feats = torch.where(mask_3d, self.mask_embedding.view(1, -1, 1), input_feats)
@@ -165,6 +166,7 @@ class RandomBlockMasking(NeuralModule):
                 positions = positions.reshape(-1).clamp(0, T - 1)
                 mask[i, positions] = True
 
+        mask[:, :16] = False  # make sure at least 16 tokens are not masked
         mask_3d = mask.unsqueeze(1)
         masks = mask_3d.float().expand_as(input_feats)
         masked_feats = torch.where(mask_3d, self.mask_embedding.view(1, -1, 1), input_feats)

@@ -757,44 +757,23 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             # -----------------------
             # KV CACHE EXTENSION
             # -----------------------
-            # ToDo: on VLLM we need to make nemotron_h class support prefill
-            if self.decoder_type == "nemotron_h" and state.past_key_values is not None and T > 1:
-                hidden_chunks = []
-                for t in range(T):
-                    cache_position_t = torch.tensor([state.cache_seq_len], device=device)
+            cache_position = torch.arange(
+                state.cache_seq_len,
+                state.cache_seq_len + T,
+                device=device,
+            )
 
-                    out = self.forward(
-                        inputs_embeds=inputs_embeds[:, t : t + 1, :],
-                        attention_mask=None,
-                        use_cache=True,
-                        past_key_values=state.past_key_values,
-                        cache_position=cache_position_t,
-                    )
+            out = self.forward(
+                inputs_embeds=inputs_embeds,
+                attention_mask=None,
+                use_cache=True,
+                past_key_values=state.past_key_values,
+                cache_position=cache_position,
+            )
 
-                    state.past_key_values = out.past_key_values
-                    state.cache_seq_len += 1
-                    hidden_chunks.append(out.last_hidden_state)
-
-                state.last_hidden = torch.cat(hidden_chunks, dim=1)
-
-            else:
-                cache_position = torch.arange(
-                    state.cache_seq_len,
-                    state.cache_seq_len + T,
-                    device=device,
-                )
-
-                out = self.forward(
-                    inputs_embeds=inputs_embeds,
-                    attention_mask=None,
-                    use_cache=True,
-                    past_key_values=state.past_key_values,
-                    cache_position=cache_position,
-                )
-
-                state.past_key_values = out.past_key_values
-                state.cache_seq_len += T
-                state.last_hidden = out.last_hidden_state
+            state.past_key_values = out.past_key_values
+            state.cache_seq_len += T
+            state.last_hidden = out.last_hidden_state
 
             # Advance logical streams consumed by this profile prefill.
             state.text_tokens_seen += T

@@ -1004,6 +1004,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             cfg_token_embedding = self.embed_text_tokens(
                 torch.full((batch_size, 1), cfg_token_id, device=device),
                 text_lens=torch.ones(batch_size, dtype=torch.long, device=device),
+                disable_cas_embedding=self.disable_cas_for_context_text,
             )  # (B, 1, E)
             # Expand CFG token to match context embedding size
             context_embedding = cfg_token_embedding.expand(-1, context_embedding.size(1), -1)  # (B, T_context, E)
@@ -1253,6 +1254,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 dummy_context_embedding_unconditional = self.embed_text_tokens(
                     torch.full((1, 1), self.cfg_unk_token_id, device=device),
                     text_lens=torch.ones(1, dtype=torch.long, device=device),
+                    disable_cas_embedding=self.disable_cas_for_context_text,
                 )
                 # Create unconditional context (same length as conditional)
                 dummy_context_expanded = dummy_context_embedding_unconditional.expand(

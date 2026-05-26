@@ -138,6 +138,7 @@ class StreamingState:
     full_context_lens: torch.Tensor
     context_position: torch.Tensor
     text_tokens_seen: torch.Tensor
+    turn_text_tokens_seen: torch.Tensor
     phoneme_steps: torch.Tensor
     audio_steps: torch.Tensor
     phoneme_stream_ended: torch.Tensor
@@ -151,6 +152,7 @@ class StreamingState:
     audio_prediction_end_idx: torch.Tensor
     phoneme_prediction_start_idx: torch.Tensor
     phoneme_prediction_end_idx: torch.Tensor
+    
     gt_phoneme_embeddings: Optional[torch.Tensor] = None  # (B, T', E) pre-computed GT embeddings
     gt_phoneme_lens: Optional[torch.Tensor] = None  # (B,) lengths after stacking
     gt_audio_embeddings: Optional[torch.Tensor] = None  # (B, T', E) pre-computed GT audio embeddings
@@ -1562,6 +1564,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 full_context_lens=full_context_lens,
                 context_position=torch.full((batch_size,), min_context_len, dtype=torch.long, device=device),
                 text_tokens_seen=torch.zeros(batch_size, dtype=torch.long, device=device),
+                turn_text_tokens_seen=torch.zeros(batch_size, dtype=torch.long, device=device),
                 phoneme_steps=torch.zeros(batch_size, dtype=torch.long, device=device),
                 audio_steps=torch.zeros(batch_size, dtype=torch.long, device=device),
                 phoneme_stream_ended=torch.zeros(batch_size, dtype=torch.bool, device=device),
@@ -1642,7 +1645,11 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             if prefill_like_step:
                 # Advance logical streams, keep audio silent, but predict phonemes if enabled.
                 state.context_position += needs_context.long()
+                advance_text = (~needs_context).long()
                 state.text_tokens_seen += (~needs_context).long()
+
+                if hasattr(state, "turn_text_tokens_seen"):
+                    state.turn_text_tokens_seen += (~needs_context).long()
 
                 C = self.num_audio_codebooks
                 S = self.frame_stacking_factor
@@ -1667,7 +1674,6 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                         )
 
                     pred_phoneme_tokens = self._predict_phoneme_tokens(state)
-
                     if state.last_phoneme_tokens is None:
                         state.last_phoneme_tokens = pred_phoneme_tokens
                     else:
@@ -1757,10 +1763,19 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         # Determine phases per batch item
         needs_context = state.context_position < state.full_context_lens  # (B,) bool
         needs_text = (~needs_context) & (~state.text_finished)
+
+        turn_text_tokens_seen = getattr(state, "turn_text_tokens_seen", state.text_tokens_seen)
         needs_phoneme = (
-            (~needs_context) & (state.text_tokens_seen >= streaming_phonemes_delay) & (~state.phoneme_stream_ended)
+            (~needs_context)
+            & (turn_text_tokens_seen >= streaming_phonemes_delay)
+            & (~state.phoneme_stream_ended)
         )
-        needs_audio = (~needs_context) & (state.text_tokens_seen >= streaming_speech_delay) & (~state.finished)
+
+        needs_audio = (
+            (~needs_context)
+            & (turn_text_tokens_seen >= streaming_speech_delay)
+            & (~state.finished)
+        )
 
         next_input = torch.zeros(batch_size, 1, self.cfg.embedding_dim, device=device)
 
@@ -1985,6 +2000,9 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         # Update counters
         state.context_position = state.context_position + needs_context.long()
         state.text_tokens_seen = state.text_tokens_seen + (~needs_context).long()
+        if hasattr(state, "turn_text_tokens_seen"):
+            state.turn_text_tokens_seen = state.turn_text_tokens_seen + (~needs_context).long()
+
         state.phoneme_steps = state.phoneme_steps + needs_phoneme.long()
         state.audio_steps = state.audio_steps + needs_audio.long()
 

@@ -822,10 +822,19 @@ def main():
                     state.text_finished.zero_()
                     state.audio_prediction_end_idx.fill_(-1)
 
+                    if hasattr(state, "turn_text_tokens_seen"):
+                        state.turn_text_tokens_seen.zero_()
+
+                    if hasattr(state, "phoneme_steps"):
+                        state.phoneme_steps.zero_()
+
                     if hasattr(state, "phoneme_stream_ended"):
                         state.phoneme_stream_ended.zero_()
+
                     if hasattr(state, "phoneme_eos_detected"):
                         state.phoneme_eos_detected.zero_()
+
+                    state.last_phoneme_tokens = None
 
                     if not model.cfg.get("condition_on_user_speech", False): 
                         # Prefill on the begining of each turn

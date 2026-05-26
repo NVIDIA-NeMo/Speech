@@ -34,9 +34,8 @@ As of now, we only support English input and output, but more languages will be 
 
 
 ## 💡 Upcoming Next
-- Better tool calling support for LLMs.
-- Better inference latency for Magpie TTS model.
 - Evaluation tools and benchmarks for voice agents.
+- Better inference latency for Magpie TTS model.
 - Accuracy and robustness ASR model improvements.
 - Combine ASR and speaker diarization model to handle overlapping speech.
 
@@ -151,6 +150,8 @@ Most LLMs from HuggingFace are supported. A few examples are:
     ```
     - If you have a GPU with FP8 support, the VRAM requirement is reduced to about 30GB. You can switch to [nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8) by modifying the llm config accordingly.
     - Tool calling is enabled for this model.
+- [nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4)
+    - Can be used by modifying `server/server_configs/llm_configs/nemotron_nano_v3.yaml` accordingly.
 - [Qwen/Qwen2.5-7B-Instruct](https://huggingface.co/Qwen/Qwen2.5-7B-Instruct)
     - Please use `server/server_configs/llm_configs/qwen2.5-7B.yaml` as the server config.
 - [Qwen/Qwen3-8B](https://huggingface.co/Qwen/Qwen3-8B)
@@ -246,6 +247,9 @@ We support tool calling for LLMs to use external tools (e.g., getting the curren
 
 Currently, tool calling is only supported for vLLM server and specific LLM models:
 - [nvidia/NVIDIA-Nemotron-Nano-9B-v2](https://huggingface.co/nvidia/NVIDIA-Nemotron-Nano-9B-v2) (default)
+- [nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16)
+  - Other quantized versions can also be used.
+- [nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4)
 
 More LLMs can be supported by referring to their documentation on how to enable tool calling in vLLM. Note that the system prompt may need to be tuned accordingly.
 

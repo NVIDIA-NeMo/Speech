@@ -4,16 +4,20 @@ SpeechLM2
 .. note::
    The SpeechLM2 collection is still in active development and the code is likely to keep changing.
 
+.. note::
+   Install with ``pip install nemo-toolkit[speechlm2]`` to get all required dependencies including NeMo Automodel.
 
+SpeechLM2 refers to a collection that augments pre-trained Large Language Models (LLMs) with speech understanding and generation capabilities.
 
-SpeechLM2 refers to a collection that augments pre-trained Large Language Models (LLMs) with speech understanding and generation capabilities. 
-
-This collection is designed to be compact, efficient, and to support easy swapping of different LLMs backed by HuggingFace AutoModel. 
+This collection is designed to be compact, efficient, and to support easy swapping of different LLMs backed by HuggingFace AutoModel or NeMo Automodel. 
 It has a first-class support for using dynamic batch sizes via Lhotse and various model parallelism techniques (e.g., FSDP2, Tensor Parallel, Sequence Parallel) via PyTorch DTensor API.
 
 We currently support six main model types:
 
-* **SALM** (Speech-Augmented Language Model) - a simple but effective approach to augmenting pre-trained LLMs with speech understanding capabilities.
+* **SALM** (Speech-Augmented Language Model) - a simple but effective approach to augmenting pre-trained LLMs with speech understanding capabilities. Available in two variants:
+
+  * ``SALM`` — uses HuggingFace Transformers for the LLM backbone with optional HF PEFT LoRA.
+  * ``SALMAutomodel`` — uses `NeMo Automodel <https://github.com/NVIDIA-NeMo/Automodel>`_ for the LLM backbone with native LoRA, advanced parallelism (FSDP2, TP, SP, EP via ``AutomodelParallelStrategy``), and MoE optimizations (Grouped GEMM, DeepEP) for efficient training with models like `NVIDIA Nemotron Nano V3 <https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16>`_.
 * **DuplexS2SModel** - a full-duplex speech-to-speech model with an ASR encoder, directly predicting discrete audio codes.
 * **DuplexS2SSpeechDecoderModel** - a variant of DuplexS2SModel with a separate transformer decoder for speech generation.
 * **DuplexEARTTS** - a ready-to-use duplex text-to-speech model that supports user interruption via a special text interruption token.
@@ -71,7 +75,7 @@ You can run inference using the loaded pretrained SALM model:
     prompt = [{"role": "user", "content": f"{model.audio_locator_tag}"}]
     
     # Generate response
-    with torch.no_grad():
+    with torch.inference_mode():
         output = model.generate(
             prompts=[prompt],
             audios=audio_signal,
@@ -82,6 +86,43 @@ You can run inference using the loaded pretrained SALM model:
     # Process the output tokens
     response = model.tokenizer.ids_to_text(output[0])
     print(f"Model response: {response}")
+
+SALMAutomodel
+*************
+
+``SALMAutomodel`` is the NeMo Automodel variant of SALM. It enables efficient training of
+Speech LLMs with MoE architectures like `NVIDIA Nemotron Nano V3 <https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16>`_
+using MoE-specific optimizations (Grouped GEMM, DeepEP). It uses deferred initialization
+(``configure_model()``) and supports distributed training and inference via
+``AutomodelParallelStrategy``.
+
+.. code-block:: python
+
+    import torch
+    import nemo.collections.speechlm2 as slm
+    from nemo.collections.speechlm2.parts.parallel import setup_distributed
+
+    # Initialize distributed and create an Automodel-compatible device mesh with EP=2.
+    # setup_distributed delegates mesh creation to nemo_automodel, which builds
+    # the full (pp, dp_replicate, dp_shard, cp, tp) mesh with MoE submeshes.
+    strategy = setup_distributed(ep_size=2)
+
+    # Load a pretrained SALMAutomodel with the Automodel device mesh
+    model = slm.models.SALMAutomodel.from_pretrained(
+        "path/to/checkpoint",
+        device_mesh=strategy.device_mesh,
+        distributed_config=strategy.distributed_config,
+        moe_config=strategy.moe_config,
+        moe_mesh=strategy.moe_mesh,
+    ).eval()
+
+    # Inference is identical to SALM
+    with torch.inference_mode():
+        output = model.generate(
+            prompts=[prompt],
+            audios=audio_signal,
+            audio_lens=audio_len,
+        )
 
 DuplexS2SModel
 **************
@@ -310,13 +351,26 @@ Alternatively, you can train a model using the provided training scripts in the 
       --config-path=examples/speechlm2/conf \
       --config-name=salm
 
-    # For SALM inference/evaluation 
+    # For SALM inference/evaluation
     python examples/speechlm2/salm_eval.py \
       pretrained_name=/path/to/checkpoint \
       inputs=/path/to/test_manifest \
       batch_size=64 \
       max_new_tokens=128 \
       output_manifest=generations.jsonl
+
+To train the SALMAutomodel variant (with NeMo Automodel backend), use the ``salm_automodel`` config:
+
+.. code-block:: bash
+
+    # Train SALMAutomodel with NVIDIA Nemotron Nano V3 MoE backbone on 8 GPUs
+    torchrun --nproc_per_node=8 examples/speechlm2/salm_train.py \
+      --config-name=salm_automodel \
+      model.pretrained_llm=nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
+
+The ``salm_automodel.yaml`` config sets ``model.use_nemo_automodel: true``, which selects the
+``SALMAutomodel`` class. This variant supports ``AutomodelParallelStrategy`` for FSDP2/TP/EP
+parallelism and MoE optimizations (Grouped GEMM, DeepEP).
 
 For more detailed information on training at scale, model parallelism, and SLURM-based training, see :doc:`training and scaling <training_and_scaling>`.
 
@@ -325,7 +379,7 @@ Collection Structure
 
 The speechlm2 collection is organized into the following key components:
 
-- **Models**: Contains implementations of DuplexS2SModel, DuplexS2SSpeechDecoderModel, DuplexSTTModel, SALM, DuplexEARTTS, and the inference-only NemotronVoiceChat.
+- **Models**: Contains implementations of DuplexS2SModel, DuplexS2SSpeechDecoderModel, DuplexSTTModel, SALM, SALMAutomodel, DuplexEARTTS, and the inference-only NemotronVoiceChat.
 - **Modules**: Contains audio perception and speech generation modules.
 - **Data**: Includes dataset classes and data loading utilities.
 

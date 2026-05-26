@@ -27,8 +27,8 @@
 # limitations under the License.
 
 import os
-import pickle
 import sys
+import tempfile
 from functools import partial
 from typing import Callable, Optional
 
@@ -51,7 +51,7 @@ THRESHOLD = 0.5
 
 
 def setup_ddp(rank, world_size):
-    """ Setup ddp enviroment """
+    """Setup ddp enviroment"""
     os.environ["MASTER_ADDR"] = 'localhost'
     os.environ['MASTER_PORT'] = '8088'
 
@@ -72,29 +72,34 @@ def _class_test(
     check_batch: bool = True,
     atol: float = 1e-8,
 ):
-    """ Utility function doing the actual comparison between lightning class metric
-        and reference metric.
-        Args:
-            rank: rank of current process
-            worldsize: number of processes
-            preds: torch tensor with predictions
-            target: torch tensor with targets
-            metric_class: lightning metric class that should be tested
-            sk_metric: callable function that is used for comparison
-            dist_sync_on_step: bool, if true will synchronize metric state across
-                processes at each ``forward()``
-            metric_args: dict with additional arguments used for class initialization
-            check_dist_sync_on_step: bool, if true will check if the metric is also correctly
-                calculated per batch per device (and not just at the end)
-            check_batch: bool, if true will check if the metric is also correctly
-                calculated across devices for each batch (and not just at the end)
+    """Utility function doing the actual comparison between lightning class metric
+    and reference metric.
+    Args:
+        rank: rank of current process
+        worldsize: number of processes
+        preds: torch tensor with predictions
+        target: torch tensor with targets
+        metric_class: lightning metric class that should be tested
+        sk_metric: callable function that is used for comparison
+        dist_sync_on_step: bool, if true will synchronize metric state across
+            processes at each ``forward()``
+        metric_args: dict with additional arguments used for class initialization
+        check_dist_sync_on_step: bool, if true will check if the metric is also correctly
+            calculated per batch per device (and not just at the end)
+        check_batch: bool, if true will check if the metric is also correctly
+            calculated across devices for each batch (and not just at the end)
     """
     # Instanciate lightning metric
     metric = metric_class(dist_sync_on_step=dist_sync_on_step, **metric_args)
 
-    # verify metrics work after being loaded from pickled state
-    pickled_metric = pickle.dumps(metric)
-    metric = pickle.loads(pickled_metric)
+    # verify metrics work after being loaded from saved state
+    # As per https://lightning.ai/docs/torchmetrics/stable/pages/overview.html#saving-and-loading-metrics, best to
+    # save and load state_dicts
+    if len(metric.state_dict()) > 0:
+        metric.persistent(True)
+        with tempfile.TemporaryFile() as fp:
+            torch.save(metric.state_dict(), fp)
+            metric = metric.load_state_dict(torch.load(fp, map_location="cpu"))
 
     for i in range(rank, NUM_BATCHES, worldsize):
         batch_result = metric(preds[i], target[i])
@@ -133,14 +138,14 @@ def _functional_test(
     metric_args: dict = {},
     atol: float = 1e-8,
 ):
-    """ Utility function doing the actual comparison between lightning functional metric
-        and reference metric.
-        Args:
-            preds: torch tensor with predictions
-            target: torch tensor with targets
-            metric_functional: lightning metric functional that should be tested
-            sk_metric: callable function that is used for comparison
-            metric_args: dict with additional arguments used for class initialization
+    """Utility function doing the actual comparison between lightning functional metric
+    and reference metric.
+    Args:
+        preds: torch tensor with predictions
+        target: torch tensor with targets
+        metric_functional: lightning metric functional that should be tested
+        sk_metric: callable function that is used for comparison
+        metric_args: dict with additional arguments used for class initialization
     """
     metric = partial(metric_functional, **metric_args)
 
@@ -153,19 +158,19 @@ def _functional_test(
 
 
 class MetricTester:
-    """ Class used for efficiently run alot of parametrized tests in ddp mode.
-        Makes sure that ddp is only setup once and that pool of processes are
-        used for all tests.
-        All tests should subclass from this and implement a new method called
-            `test_metric_name`
-        where the method `self.run_metric_test` is called inside.
+    """Class used for efficiently run alot of parametrized tests in ddp mode.
+    Makes sure that ddp is only setup once and that pool of processes are
+    used for all tests.
+    All tests should subclass from this and implement a new method called
+        `test_metric_name`
+    where the method `self.run_metric_test` is called inside.
     """
 
     atol = 1e-8
 
     def setup_class(self):
-        """ Setup the metric class. This will spawn the pool of workers that are
-            used for metric testing and setup_ddp
+        """Setup the metric class. This will spawn the pool of workers that are
+        used for metric testing and setup_ddp
         """
         try:
             set_start_method('spawn')
@@ -176,7 +181,7 @@ class MetricTester:
         self.pool.starmap(setup_ddp, [(rank, self.poolSize) for rank in range(self.poolSize)])
 
     def teardown_class(self):
-        """ Close pool of workers """
+        """Close pool of workers"""
         self.pool.close()
         self.pool.join()
 
@@ -188,14 +193,14 @@ class MetricTester:
         sk_metric: Callable,
         metric_args: dict = {},
     ):
-        """ Main method that should be used for testing functions. Call this inside
-            testing method
-            Args:
-                preds: torch tensor with predictions
-                target: torch tensor with targets
-                metric_functional: lightning metric class that should be tested
-                sk_metric: callable function that is used for comparison
-                metric_args: dict with additional arguments used for class initialization
+        """Main method that should be used for testing functions. Call this inside
+        testing method
+        Args:
+            preds: torch tensor with predictions
+            target: torch tensor with targets
+            metric_functional: lightning metric class that should be tested
+            sk_metric: callable function that is used for comparison
+            metric_args: dict with additional arguments used for class initialization
         """
         _functional_test(
             preds=preds,
@@ -218,21 +223,21 @@ class MetricTester:
         check_dist_sync_on_step: bool = True,
         check_batch: bool = True,
     ):
-        """ Main method that should be used for testing class. Call this inside testing
-            methods.
-            Args:
-                ddp: bool, if running in ddp mode or not
-                preds: torch tensor with predictions
-                target: torch tensor with targets
-                metric_class: lightning metric class that should be tested
-                sk_metric: callable function that is used for comparison
-                dist_sync_on_step: bool, if true will synchronize metric state across
-                    processes at each ``forward()``
-                metric_args: dict with additional arguments used for class initialization
-                check_dist_sync_on_step: bool, if true will check if the metric is also correctly
-                    calculated per batch per device (and not just at the end)
-                check_batch: bool, if true will check if the metric is also correctly
-                    calculated across devices for each batch (and not just at the end)
+        """Main method that should be used for testing class. Call this inside testing
+        methods.
+        Args:
+            ddp: bool, if running in ddp mode or not
+            preds: torch tensor with predictions
+            target: torch tensor with targets
+            metric_class: lightning metric class that should be tested
+            sk_metric: callable function that is used for comparison
+            dist_sync_on_step: bool, if true will synchronize metric state across
+                processes at each ``forward()``
+            metric_args: dict with additional arguments used for class initialization
+            check_dist_sync_on_step: bool, if true will check if the metric is also correctly
+                calculated per batch per device (and not just at the end)
+            check_batch: bool, if true will check if the metric is also correctly
+                calculated across devices for each batch (and not just at the end)
         """
         if ddp:
             if sys.platform == "win32":
@@ -286,21 +291,21 @@ def _perplexity_class_test(
     check_batch: bool = True,
     atol: float = 1e-8,
 ):
-    """ Utility function doing the actual comparison between lightning class metric
-        and reference metric.
-        Args:
-            rank: rank of current process
-            worldsize: number of processes
-            probs: torch tensor with probabilities
-            logits: torch tensor with logits. The function checks ``probs`` and ``logits are mutually exclusive for
-                ``Perplexity`` metric.
-            dist_sync_on_step: bool, if true will synchronize metric state across
-                processes at each ``forward()``
-            metric_args: dict with additional arguments used for class initialization
-            check_dist_sync_on_step: bool, if true will check if the metric is also correctly
-                calculated per batch per device (and not just at the end)
-            check_batch: bool, if true will check if the metric is also correctly
-                calculated across devices for each batch (and not just at the end)
+    """Utility function doing the actual comparison between lightning class metric
+    and reference metric.
+    Args:
+        rank: rank of current process
+        worldsize: number of processes
+        probs: torch tensor with probabilities
+        logits: torch tensor with logits. The function checks ``probs`` and ``logits are mutually exclusive for
+            ``Perplexity`` metric.
+        dist_sync_on_step: bool, if true will synchronize metric state across
+            processes at each ``forward()``
+        metric_args: dict with additional arguments used for class initialization
+        check_dist_sync_on_step: bool, if true will check if the metric is also correctly
+            calculated per batch per device (and not just at the end)
+        check_batch: bool, if true will check if the metric is also correctly
+            calculated across devices for each batch (and not just at the end)
     """
     # Instanciate lightning metric
     perplexity = Perplexity(dist_sync_on_step=dist_sync_on_step, **metric_args)
@@ -309,9 +314,12 @@ def _perplexity_class_test(
             perplexity(probs, logits)
         return
 
-    # verify perplexity works after being loaded from pickled state
-    pickled_metric = pickle.dumps(perplexity)
-    perplexity = pickle.loads(pickled_metric)
+    # verify perplexity works after being loaded from saved state
+    if len(perplexity.state_dict()) > 0:
+        perplexity.persistent(True)
+        with tempfile.TemporaryFile() as fp:
+            torch.save(perplexity.state_dict(), fp)
+            perplexity = perplexity.load_state_dict(torch.load(fp, map_location="cpu"))
 
     for i in range(rank, NUM_BATCHES, worldsize):
         batch_result = perplexity(None if probs is None else probs[i], None if logits is None else logits[i])
@@ -361,20 +369,20 @@ class PerplexityTester(MetricTester):
         check_dist_sync_on_step: bool = True,
         check_batch: bool = True,
     ):
-        """ Main method that should be used for testing class. Call this inside testing
-            methods.
-            Args:
-                ddp: bool, if running in ddp mode or not
-                probs: torch tensor with probabilities.
-                logits: torch tensor with logits. This test checks that probs and logits are mutually exclusive for
-                    ``Perplexity`` metric.
-                dist_sync_on_step: bool, if true will synchronize metric state across
-                    processes at each ``forward()``
-                metric_args: dict with additional arguments used for class initialization
-                check_dist_sync_on_step: bool, if true will check if the metric is also correctly
-                    calculated per batch per device (and not just at the end)
-                check_batch: bool, if true will check if the metric is also correctly
-                    calculated across devices for each batch (and not just at the end)
+        """Main method that should be used for testing class. Call this inside testing
+        methods.
+        Args:
+            ddp: bool, if running in ddp mode or not
+            probs: torch tensor with probabilities.
+            logits: torch tensor with logits. This test checks that probs and logits are mutually exclusive for
+                ``Perplexity`` metric.
+            dist_sync_on_step: bool, if true will synchronize metric state across
+                processes at each ``forward()``
+            metric_args: dict with additional arguments used for class initialization
+            check_dist_sync_on_step: bool, if true will check if the metric is also correctly
+                calculated per batch per device (and not just at the end)
+            check_batch: bool, if true will check if the metric is also correctly
+                calculated across devices for each batch (and not just at the end)
         """
         if ddp:
             if sys.platform == "win32":
@@ -447,28 +455,32 @@ def _loss_class_test(
     check_batch: bool = True,
     atol: float = 1e-8,
 ):
-    """ Utility function doing the actual comparison between lightning class metric
-        and reference metric.
-        Args:
-            rank: rank of current process
-            worldsize: number of processes
-            loss_sum_or_avg: a one dimensional float torch tensor with loss sums or means.
-            num_measurements: a one dimensional integer torch tensor with number of values on which sums or means from
-                ``loss_sum_or_avg`` were computed.
-            dist_sync_on_step: bool, if true will synchronize metric state across processes at each call of the
-                method :meth:`forward()`
-            take_avg_loss: dict with additional arguments used for class initialization
-            check_dist_sync_on_step: bool, if true will check if the metric is also correctly
-                calculated per batch per device (and not just at the end)
-            check_batch: bool, if true will check if the metric is also correctly
-                calculated across devices for each batch (and not just at the end)
+    """Utility function doing the actual comparison between lightning class metric
+    and reference metric.
+    Args:
+        rank: rank of current process
+        worldsize: number of processes
+        loss_sum_or_avg: a one dimensional float torch tensor with loss sums or means.
+        num_measurements: a one dimensional integer torch tensor with number of values on which sums or means from
+            ``loss_sum_or_avg`` were computed.
+        dist_sync_on_step: bool, if true will synchronize metric state across processes at each call of the
+            method :meth:`forward()`
+        take_avg_loss: dict with additional arguments used for class initialization
+        check_dist_sync_on_step: bool, if true will check if the metric is also correctly
+            calculated per batch per device (and not just at the end)
+        check_batch: bool, if true will check if the metric is also correctly
+            calculated across devices for each batch (and not just at the end)
     """
     # Instantiate lightning metric
     loss_metric = GlobalAverageLossMetric(dist_sync_on_step=dist_sync_on_step, take_avg_loss=take_avg_loss)
 
-    # verify loss works after being loaded from pickled state
-    pickled_metric = pickle.dumps(loss_metric)
-    loss_metric = pickle.loads(pickled_metric)
+    # verify loss works after being loaded from saved state
+    if len(loss_metric.state_dict()) > 0:
+        loss_metric.persistent(True)
+        with tempfile.TemporaryFile() as fp:
+            torch.save(loss_metric.state_dict(), fp)
+            loss_metric = loss_metric.load_state_dict(torch.load(fp, map_location="cpu"))
+
     for i in range(rank, NUM_BATCHES, worldsize):
         batch_result = loss_metric(loss_sum_or_avg[i], num_measurements[i])
         if loss_metric.dist_sync_on_step:

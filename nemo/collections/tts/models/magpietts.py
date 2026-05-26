@@ -72,6 +72,7 @@ from nemo.collections.tts.parts.utils.tts_dataset_utils import (
 from nemo.core.classes import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.utils import logging
+from nemo.utils.exceptions import NeMoBaseException
 
 
 @dataclass
@@ -592,11 +593,23 @@ class MagpieTTSModel(ModelPT):
             for layer in self.context_decoder_layers:
                 multi_encoder_mapping[layer] = 1
             self.multi_encoder_mapping = multi_encoder_mapping
-            # Create context encoder (filter out MoE loss coefficients if present)
-            # Note: Loss coefficients are model-level config, not passed to Transformer module
+            # Create context encoder.
+            # Note: router_* loss coefficients are model-level config, not consumed by the Transformer module.
             context_encoder_cfg = dict(cfg.context_encoder)
-            context_encoder_cfg.pop('router_load_balancing_loss_coeff', None)
-            context_encoder_cfg.pop('router_z_loss_coeff', None)
+            if context_encoder_cfg.get('use_moe', False):
+                raise NeMoBaseException(
+                    "MoE is not recommended for the context encoder. Please set context_encoder.use_moe to False."
+                )
+            if 'router_load_balancing_loss_coeff' in context_encoder_cfg:
+                logging.warning(
+                    "Detected `router_load_balancing_loss_coeff` in context encoder config. "
+                    "MoE is not recommended for the context encoder."
+                )
+            if 'router_z_loss_coeff' in context_encoder_cfg:
+                logging.warning(
+                    "Detected `router_z_loss_coeff` in context encoder config. "
+                    "MoE is not recommended for the context encoder."
+                )
             self.context_encoder = transformer_2501.Transformer(**context_encoder_cfg)
         elif self.model_type == 'decoder_context_tts':
             # Context audio/text goes directly to the decoder (before the target audio codes)
@@ -606,9 +619,22 @@ class MagpieTTSModel(ModelPT):
         elif self.model_type == 'decoder_ce':
             # Similar to decoder_context_tts, but we use context encoder
             # Decoder gets output from context encoder instead of raw context tokens embeddings
+            # Note: router_* loss coefficients are model-level config, not consumed by the Transformer module.
             context_encoder_cfg = dict(cfg.context_encoder)
-            context_encoder_cfg.pop('router_load_balancing_loss_coeff', None)
-            context_encoder_cfg.pop('router_z_loss_coeff', None)
+            if context_encoder_cfg.get('use_moe', False):
+                raise NeMoBaseException(
+                    "MoE is not recommended for the context encoder. Please set context_encoder.use_moe to False."
+                )
+            if 'router_load_balancing_loss_coeff' in context_encoder_cfg:
+                logging.warning(
+                    "Detected `router_load_balancing_loss_coeff` in context encoder config. "
+                    "MoE is not recommended for the context encoder."
+                )
+            if 'router_z_loss_coeff' in context_encoder_cfg:
+                logging.warning(
+                    "Detected `router_z_loss_coeff` in context encoder config. "
+                    "MoE is not recommended for the context encoder."
+                )
             self.context_encoder = transformer_2501.Transformer(**context_encoder_cfg)
             self.transcript_decoder_layers = [
                 idx for idx in range(cfg.decoder.n_layers)
@@ -835,7 +861,7 @@ class MagpieTTSModel(ModelPT):
         Check if the configuration is compatible with frame stacking.
         """
         if self.frame_stacking_factor > 1:
-            # The settings below are not supported with frame stacking.
+            # Reject configurations that are not supported with frame stacking.
             # Some of them may work - but they have not been tested.
 
             # disallow alignment encoder
@@ -847,9 +873,22 @@ class MagpieTTSModel(ModelPT):
             # disallow training prior
             if self.cfg.prior_scaling_factor is not None and self.cfg.prior_scaling_factor > 0:
                 raise ValueError("Training-time attention prior is not supported for frame stacking")
-            # disallow text conditioning
+            # With frame stacking, the audio context sequence length is divided by the
+            # frame stacking factor (e.g., 108 tokens at 21fps --> 54 positions with 2x stacking).
+            # The text context is NOT stacked but must fit within the same sequence length
+            # as the audio context. If needed, this constraint could be likey be removed by also
+            # stacking the text context, but that would require some experimentation.
             if self.use_text_conditioning_encoder:
-                raise ValueError("Text conditioning is not supported for frame stacking")
+                # Use 5 seconds as the baseline context length since it is known to fit
+                # existing text contexts.
+                min_required_context_sec = 5.0 * self.frame_stacking_factor
+                actual_context_length_sec = self.cfg.get('context_duration_max')
+                if actual_context_length_sec < min_required_context_sec:
+                    raise ValueError(
+                        f"With text context and a frame stacking factor of {self.frame_stacking_factor}, "
+                        f"context_duration_max must be >= {min_required_context_sec} seconds "
+                        f"(5 seconds x frame_stacking_factor); got context_duration_max={actual_context_length_sec}"
+                    )
 
     @property
     def has_baked_context_embedding(self) -> bool:
@@ -1055,6 +1094,7 @@ class MagpieTTSModel(ModelPT):
             'eval_speaker_verification_model',
             'whisper_model',
             'squim_objective_model',
+            '_teacher_model',
         ]
         # Skip context_encoder if checkpoint has baked embedding (weights won't be in checkpoint)
         if has_baked_embedding_in_ckpt:

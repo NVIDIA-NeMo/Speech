@@ -1,134 +1,205 @@
 {
     "categories": [
-      {
-        "title": "## ASR\n\n<details><summary>Changelog</summary>",
-        "labels": ["asr"],
-        "exclude_labels": ["cherry-pick"]
-      },
-      {
-        "title": "</details>\n\n## TTS\n\n<details><summary>Changelog</summary>",
-        "labels": ["tts"],
-        "exclude_labels": ["cherry-pick"]
-      },
-      {
-        "title": "</details>\n\n## NLP / NMT\n\n<details><summary>Changelog</summary>",
-        "labels": ["nlp", "nmt", "megatron"],
-        "exclude_labels": ["cherry-pick"]
-      },
-      {
-        "title": "</details>\n\n## Text Normalization / Inverse Text Normalization\n\n<details><summary>Changelog</summary>",
-        "labels": ["tn", "itn"],
-        "exclude_labels": ["cherry-pick"]
-      },
-      {
-        "title": "</details>\n\n## NeMo Tools\n\n<details><summary>Changelog</summary>",
-        "labels": ["tools"],
-        "exclude_labels": ["cherry-pick"]
-      },
-      {
-        "title": "</details>\n\n## Export\n\n<details><summary>Changelog</summary>",
-        "labels": ["export"],
-        "exclude_labels": ["cherry-pick"]
-      },
-      {
-        "title": "</details>\n\n## Documentation\n\n<details><summary>Changelog</summary>",
-        "labels": ["docs"],
-        "exclude_labels": ["cherry-pick"]
-      },
-      {
-        "title": "</details>\n\n## Bugfixes\n\n<details><summary>Changelog</summary>",
-        "labels": ["bug"],
-        "exclude_labels": ["cherry-pick"]
-      },
-      {
-        "title": "</details>\n\n## Cherrypick\n\n<details><summary>Changelog</summary>",
-        "labels": ["cherry-pick"],
-        "exclude_labels": ["cherry-pick"]
-      }
+        {
+            "title": "## ASR\n\n<details><summary>Changelog</summary>",
+            "labels": [
+                "asr"
+            ],
+            "exclude_labels": [
+                "cherry-pick"
+            ]
+        },
+        {
+            "title": "</details>\n\n## TTS\n\n<details><summary>Changelog</summary>",
+            "labels": [
+                "tts"
+            ],
+            "exclude_labels": [
+                "cherry-pick"
+            ]
+        },
+        {
+            "title": "</details>\n\n## NLP / NMT\n\n<details><summary>Changelog</summary>",
+            "labels": [
+                "nlp",
+                "nmt",
+                "megatron"
+            ],
+            "exclude_labels": [
+                "cherry-pick"
+            ]
+        },
+        {
+            "title": "</details>\n\n## Text Normalization / Inverse Text Normalization\n\n<details><summary>Changelog</summary>",
+            "labels": [
+                "tn",
+                "itn"
+            ],
+            "exclude_labels": [
+                "cherry-pick"
+            ]
+        },
+        {
+            "title": "</details>\n\n## NeMo Tools\n\n<details><summary>Changelog</summary>",
+            "labels": [
+                "tools"
+            ],
+            "exclude_labels": [
+                "cherry-pick"
+            ]
+        },
+        {
+            "title": "</details>\n\n## Export\n\n<details><summary>Changelog</summary>",
+            "labels": [
+                "export"
+            ],
+            "exclude_labels": [
+                "cherry-pick"
+            ]
+        },
+        {
+            "title": "</details>\n\n## Documentation\n\n<details><summary>Changelog</summary>",
+            "labels": [
+                "docs"
+            ],
+            "exclude_labels": [
+                "cherry-pick"
+            ]
+        },
+        {
+            "title": "</details>\n\n## Bugfixes\n\n<details><summary>Changelog</summary>",
+            "labels": [
+                "bug"
+            ],
+            "exclude_labels": [
+                "cherry-pick"
+            ]
+        },
+        {
+            "title": "</details>\n\n## Cherrypick\n\n<details><summary>Changelog</summary>",
+            "labels": [
+                "cherry-pick"
+            ],
+            "exclude_labels": [
+                "cherry-pick"
+            ]
+        }
     ],
     "ignore_labels": [
-      "ignore"
+        "ignore"
     ],
     "sort": "ASC",
     "template": "\n${{CHANGELOG}}</details>\n\n## Uncategorized:\n\n<details><summary>Changelog</summary>\n\n${{UNCATEGORIZED}}\n</details>\n",
     "pr_template": "- ${{TITLE}} by @${{AUTHOR}} :: PR: #${{NUMBER}}",
     "empty_template": "${{OWNER}}\n${{REPO}}\n${{FROM_TAG}}\n${{TO_TAG}}",
     "label_extractor": [
-      {
-        "pattern": "(.*tts.*)|(.*g2p.*)",
-        "target": "tts",
-        "flags": "gimu",
-        "on_property": ["title", "body"]
-      },
-      {
-        "pattern": "(.*asr.*)|(.*ctc.*)|(.*rnnt.*)|(.*transducer.*)|(.*dali.*)|(.*k2.*)",
-        "target": "asr",
-        "flags": "gimu",
-        "on_property": ["title", "body"]
-      },
-      {
-        "pattern": "(.*nlp.*)|(.*punctuation.*)|(.*capitalization.*)|(.*entity.*)|(.*glue.*)|(.*entity.*)|(.*retrieval.*)|(.*entity.*)|(.*intent.*)|(.*slot.*)|(.*entity.*)|(.*language.*)|(.*qa.*)|(.*token class.*)|(.*text class.*)",
-        "target": "nlp",
-        "flags": "gimu",
-        "on_property": ["title", "body"]
-      },
-      {
-        "pattern": "(.*nmt.*)|(.*bignlp.*)|(.*megatron.*)|(.*machine.*)|(.*translation.*)|(.*gpt.*)",
-        "target": "nmt",
-        "flags": "gimu",
-        "on_property": ["title", "body"]
-      },
-      {
-        "pattern": "(.*tn.*)|(.*itn.*)|(.*text norm.*)",
-        "target": "tn",
-        "flags": "gimu",
-        "on_property": ["title", "body"]
-      },
-      {
-        "pattern": "(.*sde.*)|(.*ctc segment.*)",
-        "target": "tools",
-        "flags": "gimu",
-        "on_property": ["title", "body"]
-      },
-      {
-        "pattern": "(.*trt.*)|(.*onnx.*)|(.*export.*)",
-        "target": "export",
-        "flags": "gimu",
-        "on_property": ["title", "body"]
-      },
-      {
-        "pattern": "(.*\\[x\\] Documentation.*)",
-        "target": "docs",
-        "flags": "gmu",
-        "on_property": ["title", "body"]
-      },
-      {
-        "pattern": "(.*\\[x\\] Bugfix.*)|(.*patch.*)",
-        "target": "bug",
-        "flags": "gmu",
-        "on_property": ["title", "body"]
-      },
-      {
-        "pattern": "(.*cherry-pick.*)|(.*cherrypick.*)",
-        "target": "cherrypick",
-        "flags": "gimu",
-        "on_property": ["title", "body"]
-      }
+        {
+            "pattern": "(.*tts.*)|(.*g2p.*)",
+            "target": "tts",
+            "flags": "gimu",
+            "on_property": [
+                "title",
+                "body"
+            ]
+        },
+        {
+            "pattern": "(.*asr.*)|(.*ctc.*)|(.*rnnt.*)|(.*transducer.*)|(.*dali.*)|(.*k2.*)",
+            "target": "asr",
+            "flags": "gimu",
+            "on_property": [
+                "title",
+                "body"
+            ]
+        },
+        {
+            "pattern": "(.*nlp.*)|(.*punctuation.*)|(.*capitalization.*)|(.*entity.*)|(.*glue.*)|(.*entity.*)|(.*retrieval.*)|(.*entity.*)|(.*intent.*)|(.*slot.*)|(.*entity.*)|(.*language.*)|(.*qa.*)|(.*token class.*)|(.*text class.*)",
+            "target": "nlp",
+            "flags": "gimu",
+            "on_property": [
+                "title",
+                "body"
+            ]
+        },
+        {
+            "pattern": "(.*nmt.*)|(.*bignlp.*)|(.*megatron.*)|(.*machine.*)|(.*translation.*)|(.*gpt.*)",
+            "target": "nmt",
+            "flags": "gimu",
+            "on_property": [
+                "title",
+                "body"
+            ]
+        },
+        {
+            "pattern": "(.*tn.*)|(.*itn.*)|(.*text norm.*)",
+            "target": "tn",
+            "flags": "gimu",
+            "on_property": [
+                "title",
+                "body"
+            ]
+        },
+        {
+            "pattern": "(.*sde.*)|(.*ctc segment.*)",
+            "target": "tools",
+            "flags": "gimu",
+            "on_property": [
+                "title",
+                "body"
+            ]
+        },
+        {
+            "pattern": "(.*trt.*)|(.*onnx.*)|(.*export.*)",
+            "target": "export",
+            "flags": "gimu",
+            "on_property": [
+                "title",
+                "body"
+            ]
+        },
+        {
+            "pattern": "(.*\\[x\\] Documentation.*)",
+            "target": "docs",
+            "flags": "gmu",
+            "on_property": [
+                "title",
+                "body"
+            ]
+        },
+        {
+            "pattern": "(.*\\[x\\] Bugfix.*)|(.*patch.*)",
+            "target": "bug",
+            "flags": "gmu",
+            "on_property": [
+                "title",
+                "body"
+            ]
+        },
+        {
+            "pattern": "(.*cherry-pick.*)|(.*cherrypick.*)",
+            "target": "cherrypick",
+            "flags": "gimu",
+            "on_property": [
+                "title",
+                "body"
+            ]
+        }
     ],
     "duplicate_filter": {
-      "pattern": ".+",
-      "on_property": "title",
-      "method": "match"
+        "pattern": ".+",
+        "on_property": "title",
+        "method": "match"
     },
     "transformers": [
+        {
+            "pattern": "^cp:\\s*`(.+?)`\\s*into\\s*\\S+",
+            "target": "$1"
+        }
     ],
     "max_tags_to_fetch": 100,
     "max_pull_requests": 500,
     "max_back_track_time_days": 365,
-    "exclude_merge_branches": [
-    ],
+    "exclude_merge_branches": [],
     "tag_resolver": {
-      "method": "semver"
+        "method": "semver"
     }
 }
-

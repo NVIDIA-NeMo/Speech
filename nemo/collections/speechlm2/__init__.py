@@ -19,6 +19,7 @@ from .models import (
     DuplexS2SSpeechDecoderModel,
     DuplexSTTModel,
     NemotronVoiceChat,
+    SALMAutomodel,
     SALMWithAsrDecoder,
 )
 
@@ -33,6 +34,7 @@ __all__ = [
     'DuplexS2SSpeechDecoderModel',
     'DuplexSTTModel',
     'SALM',
+    'SALMAutomodel',
     'SALMWithAsrDecoder',
     'NemotronVoiceChat',
 ]

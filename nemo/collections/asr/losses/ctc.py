@@ -25,8 +25,7 @@ __all__ = ['CTCLoss']
 class CTCLoss(nn.CTCLoss, Serialization, Typing):
     @property
     def input_types(self):
-        """Input types definitions for CTCLoss.
-        """
+        """Input types definitions for CTCLoss."""
         return {
             "log_probs": NeuralType(('B', 'T', 'D'), LogprobsType()),
             "targets": NeuralType(('B', 'T'), LabelsType()),

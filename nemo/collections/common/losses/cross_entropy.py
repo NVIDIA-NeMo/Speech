@@ -29,8 +29,7 @@ class CrossEntropyLoss(nn.CrossEntropyLoss, Serialization, Typing):
 
     @property
     def input_types(self):
-        """Returns definitions of module input ports.
-        """
+        """Returns definitions of module input ports."""
         return {
             "logits": NeuralType(['B'] + ['ANY'] * (self._logits_dim - 1), LogitsType()),
             "labels": NeuralType(['B'] + ['ANY'] * (self._logits_dim - 2), LabelsType()),
@@ -39,8 +38,7 @@ class CrossEntropyLoss(nn.CrossEntropyLoss, Serialization, Typing):
 
     @property
     def output_types(self):
-        """Returns definitions of module output ports.
-        """
+        """Returns definitions of module output ports."""
         return {"loss": NeuralType(elements_type=LossType())}
 
     def __init__(self, logits_ndim=2, weight=None, reduction='mean', ignore_index=-100):
@@ -88,8 +86,7 @@ class NLLLoss(nn.NLLLoss, Serialization, Typing):
 
     @property
     def input_types(self):
-        """Returns definitions of module input ports.
-        """
+        """Returns definitions of module input ports."""
         return {
             "log_probs": NeuralType(("B", "T", "D"), LogprobsType()),
             "labels": NeuralType(("B", "T"), LabelsType()),
@@ -98,8 +95,7 @@ class NLLLoss(nn.NLLLoss, Serialization, Typing):
 
     @property
     def output_types(self):
-        """Returns definitions of module output ports.
-        """
+        """Returns definitions of module output ports."""
         return {"loss": NeuralType(elements_type=LossType())}
 
     def __init__(self, log_probs_ndim=2, weight=None, reduction='mean', ignore_index=-100):

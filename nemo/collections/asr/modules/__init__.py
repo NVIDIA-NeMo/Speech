@@ -53,6 +53,7 @@ from nemo.collections.asr.modules.ssl_modules import (
     RandomBlockMasking,
     RandomProjectionVectorQuantizer,
 )
+from nemo.collections.asr.modules.transformer_encoder import TransformerEncoder  # noqa: F401
 
 __all__ = [
     'AudioToMelSpectrogramPreprocessor',
@@ -84,4 +85,5 @@ __all__ = [
     'MultiSoftmaxDecoder',
     'RandomBlockMasking',
     'RandomProjectionVectorQuantizer',
+    'TransformerEncoder',
 ]

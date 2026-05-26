@@ -14,15 +14,25 @@
 
 import os
 import shutil
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 import torch
 from lightning.pytorch import Trainer
+from lightning.pytorch.loops.progress import _BatchProgress
+from lightning.pytorch.utilities.exceptions import _TunerExitException
 from omegaconf import OmegaConf
 
 from nemo.core import ModelPT
 from nemo.utils import logging
-from nemo.utils.exp_manager import CallbackParams, ExpManagerConfig, StatelessTimer, exp_manager
+from nemo.utils.exp_manager import (
+    CallbackParams,
+    ExpManagerConfig,
+    StatelessTimer,
+    _flush_in_flight_batch_progress,
+    exp_manager,
+)
 
 
 class OnesDataset(torch.utils.data.Dataset):
@@ -132,3 +142,125 @@ class TestStatelessTimer:
         logging.info(f"Global steps : {global_step_1}, {global_step_2}, {global_step_3}")
         assert global_step_3 > global_step_2 > global_step_1
         self.cleanup()
+
+
+def _make_trainer_with_batch_progress(batch_progress: _BatchProgress) -> MagicMock:
+    trainer = MagicMock()
+    trainer.fit_loop.epoch_loop.batch_progress = batch_progress
+    return trainer
+
+
+class TestFlushInFlightBatchProgress:
+    """Regression tests for the mid-batch save off-by-one on wall-time/preemption resume.
+
+    PTL's TrainingEpochLoop.advance() calls on_train_batch_end hooks BEFORE
+    batch_progress.current.increment_completed(), but the batch's optim step has already
+    advanced global_step (optim_progress.step.total.completed). If a timer/preemption hook
+    saves in that window, the checkpoint captures batch_progress lagging one behind
+    optim_progress. On resume, PTL's reset_on_restart rewinds batch_progress, PTL replays
+    the in-flight batch, and its optim step runs a second time — leaking one extra
+    global_step per resume. _flush_in_flight_batch_progress closes that gap.
+    """
+
+    @pytest.mark.unit
+    def test_flushes_in_flight_batch(self):
+        batch_progress = _BatchProgress()
+        # Simulate the mid-batch state: batch K just had its optim step run, but
+        # increment_completed() has not yet fired (it fires AFTER on_train_batch_end
+        # hooks in PTL's TrainingEpochLoop.advance).
+        batch_progress.total.ready = 500
+        batch_progress.total.processed = 500
+        batch_progress.total.completed = 499
+        batch_progress.current.ready = 500
+        batch_progress.current.processed = 500
+        batch_progress.current.completed = 499
+
+        trainer = _make_trainer_with_batch_progress(batch_progress)
+        _flush_in_flight_batch_progress(trainer)
+
+        assert batch_progress.current.completed == 500
+        assert batch_progress.total.completed == 500
+        # Ready/processed unchanged — we're only closing the completed gap.
+        assert batch_progress.current.ready == 500
+        assert batch_progress.total.ready == 500
+
+    @pytest.mark.unit
+    def test_noop_when_state_already_consistent(self):
+        batch_progress = _BatchProgress()
+        batch_progress.total.ready = 500
+        batch_progress.total.processed = 500
+        batch_progress.total.completed = 500
+        batch_progress.current.ready = 500
+        batch_progress.current.processed = 500
+        batch_progress.current.completed = 500
+
+        trainer = _make_trainer_with_batch_progress(batch_progress)
+        _flush_in_flight_batch_progress(trainer)
+
+        # Nothing over-incremented.
+        assert batch_progress.current.completed == 500
+        assert batch_progress.total.completed == 500
+
+    @pytest.mark.unit
+    def test_tolerates_missing_fit_loop(self):
+        # on_fit_start may fire before fit_loop attributes are materialized; helper must
+        # not explode in that case.
+        trainer = SimpleNamespace()
+        _flush_in_flight_batch_progress(trainer)  # must not raise
+
+
+class TestStatelessTimerResumeStateConsistency:
+    """Verify StatelessTimer._check_time_remaining flushes batch_progress before saving.
+
+    Without this flush, the saved -last.ckpt drifts global_step by +1 per resume (see
+    _flush_in_flight_batch_progress docstring). This test drives _check_time_remaining
+    directly with a mid-batch batch_progress and a mock checkpoint_callback, and asserts
+    that the state handed to _save_last_checkpoint is already self-consistent.
+    """
+
+    @pytest.mark.unit
+    def test_check_time_remaining_flushes_before_save(self, monkeypatch):
+        # Simulate a mid-batch state: batch 500 in flight, optim step ran (global_step
+        # effectively at 8500 on the optim side), but batch_progress.current.completed
+        # is still 499.
+        batch_progress = _BatchProgress()
+        batch_progress.total.ready = 8500
+        batch_progress.total.processed = 8500
+        batch_progress.total.completed = 8499
+        batch_progress.current.ready = 500
+        batch_progress.current.processed = 500
+        batch_progress.current.completed = 499
+
+        seen = {}
+
+        def _capture_save_last(trainer, monitor_candidates):
+            bp = trainer.fit_loop.epoch_loop.batch_progress
+            seen['current_completed'] = bp.current.completed
+            seen['current_ready'] = bp.current.ready
+            seen['total_completed'] = bp.total.completed
+
+        checkpoint_callback = MagicMock()
+        checkpoint_callback._monitor_candidates.return_value = {}
+        checkpoint_callback._save_last_checkpoint.side_effect = _capture_save_last
+
+        trainer = MagicMock()
+        trainer.should_stop = True  # pretend the wall-time budget is exhausted
+        trainer.fit_loop.epoch_loop.batch_progress = batch_progress
+        trainer.checkpoint_callback = checkpoint_callback
+
+        timer = StatelessTimer(duration="00:00:00:01")
+        # Bypass the real Timer._check_time_remaining (which would re-set should_stop
+        # via a broadcast and rely on a started clock); we only want to verify the
+        # branch that runs when should_stop is already True.
+        monkeypatch.setattr(
+            "lightning.pytorch.callbacks.timer.Timer._check_time_remaining",
+            lambda self, trainer: None,
+        )
+
+        with pytest.raises(_TunerExitException):
+            timer._check_time_remaining(trainer)
+
+        # The checkpoint save saw a self-consistent state — no +1 drift on resume.
+        assert seen['current_completed'] == 500
+        assert seen['current_ready'] == 500
+        assert seen['total_completed'] == 8500

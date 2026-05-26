@@ -40,7 +40,10 @@ if __name__ == "__main__":
         default='AMI_test_manifest.json',
     )
     parser.add_argument(
-        "--dev_manifest_filepath", help="path to output dev manifest file", type=str, default='AMI_dev_manifest.json',
+        "--dev_manifest_filepath",
+        help="path to output dev manifest file",
+        type=str,
+        default='AMI_dev_manifest.json',
     )
     parser.add_argument(
         "--train_manifest_filepath",

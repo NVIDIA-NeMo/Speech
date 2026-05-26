@@ -14,7 +14,6 @@
 
 import asyncio
 import concurrent.futures
-import inspect
 import os
 import queue as stdlib_queue
 import threading
@@ -45,6 +44,45 @@ from pipecat.frames.frames import (
 from pipecat.services.llm_service import FunctionCallParams
 from pipecat.services.tts_service import TTSService
 
+
+def _disallow_mamba_kernels_in_graph() -> None:
+    """Make Dynamo treat mamba-ssm / causal-conv1d Triton kernels as opaque.
+
+    Custom Triton kernels with their own autotune wrappers can't be co-optimized
+    by Inductor — without this, `torch.compile(model.decoder)` crashes with
+    `KeyError: 'op5'` during Inductor lowering on the NemotronH SmallMamba
+    checkpoint.  `torch._dynamo.disable` wraps each kernel so Dynamo breaks the
+    graph at the call site, executes the kernel eagerly, and resumes tracing
+    the rest of the backbone.
+
+    Patches both the originating module and `nemotron_h_decoder` (which already
+    imported these names at module load time).  Idempotent — safe to call from
+    multiple workers.
+    """
+    import nemo.collections.tts.modules.nemotron_h_decoder as nhd
+    from mamba_ssm.ops.triton import selective_state_update as _ssu_mod
+    from mamba_ssm.ops.triton import ssd_combined as _ssd_mod
+    from mamba_ssm.ops.triton import layernorm_gated as _rms_mod
+    import causal_conv1d as _cc_mod
+
+    targets = [
+        (_ssu_mod, "selective_state_update", "selective_state_update"),
+        (_ssd_mod, "mamba_chunk_scan_combined", "mamba_chunk_scan_combined"),
+        (_ssd_mod, "mamba_split_conv1d_scan_combined", "mamba_split_conv1d_scan_combined"),
+        (_rms_mod, "rmsnorm_fn", "rmsnorm_fn"),
+        (_cc_mod, "causal_conv1d_fn", "causal_conv1d_fn"),
+        (_cc_mod, "causal_conv1d_update", "causal_conv1d_update"),
+    ]
+    for src_mod, src_attr, dst_attr in targets:
+        original = getattr(src_mod, src_attr)
+        # Already-wrapped fns expose the original via __wrapped__; skip those.
+        if getattr(original, "__wrapped__", None) is not None:
+            continue
+        wrapped = torch._dynamo.disable(original)
+        setattr(src_mod, src_attr, wrapped)
+        if hasattr(nhd, dst_attr):
+            setattr(nhd, dst_attr, wrapped)
+
 from nemo.agents.voice_agent.pipecat.services.nemo.audio_logger import AudioLogger
 from nemo.agents.voice_agent.pipecat.utils.text.simple_text_aggregator import SimpleSegmentedTextAggregator
 from nemo.agents.voice_agent.utils.tool_calling.mixins import ToolCallingMixin
@@ -73,12 +111,23 @@ class BaseNemoTTSService(TTSService, ToolCallingMixin):
         think_tokens: Optional[List[str]] = None,
         audio_logger: Optional[AudioLogger] = None,
         ignore_strings: Optional[List[str]] = None,
+        streaming: bool = True,
         **kwargs,
     ):
         super().__init__(sample_rate=sample_rate, **kwargs)
         logger.info(f"Initializing TTS service with model: {model} and device: {device}")
         self._model_name = model
         self._device = device
+        # Persistent single-worker executor.  ALL operations that touch the
+        # torch.compile'd model (warmup, streaming_init, streaming_step in
+        # _generate_audio) must run on this same thread so that CUDA graphs
+        # captured by torch._inductor (stored in thread-local storage) are
+        # visible at replay time.  Subclasses that use torch.compile with
+        # CUDA graphs rely on this guarantee.  Created BEFORE _setup_model so
+        # the subclass can submit warmup work to it.
+        self._tts_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="tts-worker"
+        )
         self._model = self._setup_model()
         self._think_tokens = think_tokens
         self._audio_logger = audio_logger
@@ -87,6 +136,11 @@ class BaseNemoTTSService(TTSService, ToolCallingMixin):
                 isinstance(think_tokens, list) and len(think_tokens) == 2
             ), f"think_tokens must be a list of two strings, but got type {type(think_tokens)}: {think_tokens}"
         self._ignore_strings = set(ignore_strings) if ignore_strings is not None else None
+        # When True (default): background thread streams each chunk to the queue one-by-one;
+        # run_tts awaits each chunk asynchronously, keeping the event loop free between chunks.
+        # When False: background thread puts the generator object on the queue; run_tts
+        # iterates it synchronously on the event loop (simpler, but blocks between chunks).
+        self._streaming = streaming
         # Background processing infrastructure - no response handler needed
         self._tts_queue = asyncio.Queue()
         self._processing_task = None
@@ -111,10 +165,6 @@ class BaseNemoTTSService(TTSService, ToolCallingMixin):
 
     def _generate_audio(self, text: str) -> Iterator[np.ndarray]:
         raise NotImplementedError("Subclass must implement _generate_audio")
-
-    def can_generate_metrics(self) -> bool:
-        """If the TTS service can generate metrics."""
-        return True
 
     async def start(self, frame: StartFrame):
         """Handle service start."""
@@ -173,21 +223,32 @@ class BaseNemoTTSService(TTSService, ToolCallingMixin):
                         logger.warning(f"No response queue found for request {request_id}")
                         continue
 
-                    # Process TTS generation
                     try:
-                        audio_result = self._generate_audio(text)
-
-                        # Send result directly to the waiting request
-                        asyncio.run_coroutine_threadsafe(
-                            response_queue.put(('success', audio_result)), self.get_event_loop()
-                        )
+                        if self._streaming:
+                            # Streaming: iterate generator here in background thread,
+                            # push each chunk to the queue so run_tts can yield between
+                            # chunks without blocking the asyncio event loop.
+                            for audio_chunk in self._generate_audio(text):
+                                if request_id not in self._pending_requests:
+                                    break  # request was cancelled
+                                asyncio.run_coroutine_threadsafe(
+                                    response_queue.put(('chunk', audio_chunk)), self.get_event_loop()
+                                )
+                            asyncio.run_coroutine_threadsafe(
+                                response_queue.put(('done', None)), self.get_event_loop()
+                            )
+                        else:
+                            # Non-streaming: send the generator object to run_tts,
+                            # which iterates it synchronously on the event loop.
+                            asyncio.run_coroutine_threadsafe(
+                                response_queue.put(('result', self._generate_audio(text))), self.get_event_loop()
+                            )
                     except Exception as e:
-                        logger.error(f"Error in TTS generation: {e}")
-                        # Send error directly to the waiting request
+                        logger.exception(f"Error in TTS generation: {e}")
                         asyncio.run_coroutine_threadsafe(response_queue.put(('error', e)), self.get_event_loop())
 
                 except Exception as e:
-                    logger.error(f"Error in background TTS processor: {e}")
+                    logger.exception(f"Error in background TTS processor: {e}")
 
         except Exception as e:
             logger.error(f"Background TTS processor fatal error: {e}")
@@ -203,7 +264,11 @@ class BaseNemoTTSService(TTSService, ToolCallingMixin):
         try:
             self._processing_running = True
             logger.debug("Starting background TTS processing task")
-            await asyncio.to_thread(self._tts_processor)
+            # Pin _tts_processor to the persistent _tts_executor's single worker
+            # thread (NOT the default thread pool) so that CUDA graphs captured
+            # during warmup on the same thread are replayable from _generate_audio.
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(self._tts_executor, self._tts_processor)
         except asyncio.CancelledError:
             logger.debug("Background TTS processing task cancelled")
             self._processing_running = False
@@ -289,7 +354,6 @@ class BaseNemoTTSService(TTSService, ToolCallingMixin):
         logger.debug(f"{self}: Generating TTS [{text}]")
 
         try:
-            await self.start_ttfb_metrics()
             yield TTSStartedFrame()
 
             # Increment turn index at the start of agent speaking (only if speaker changed)
@@ -297,7 +361,6 @@ class BaseNemoTTSService(TTSService, ToolCallingMixin):
                 self._audio_logger.increment_turn_index(speaker="agent")
 
             # Generate unique request ID
-
             request_id = str(uuid.uuid4())
 
             # Create response queue for this specific request
@@ -308,47 +371,33 @@ class BaseNemoTTSService(TTSService, ToolCallingMixin):
                 # Queue the TTS request for background processing
                 await self._tts_queue.put((text, request_id))
 
-                # Wait for the result directly from our request queue
-                result = await request_queue.get()
-                status, data = result
-
-                if status == 'error':
-                    logger.error(f"{self} TTS generation error: {data}")
-                    yield ErrorFrame(error=f"TTS generation error: {str(data)}")
-                    return
-
-                audio_result = data
-                if audio_result is None:
-                    logger.error(f"{self} TTS model returned None for text: [{text}]")
-                    yield ErrorFrame(error="TTS generation failed - no audio returned")
-                    return
-
-                await self.start_tts_usage_metrics(text)
-
-                # Collect all audio for logging
+                first_chunk = True
                 all_audio_bytes = b""
-                # Capture the start time when TTS begins (not when it ends)
-                if self._audio_logger is not None and self._audio_logger.first_audio_timestamp is None:
-                    self._audio_logger.first_audio_timestamp = datetime.now()
 
-                # Process the audio result (same as before)
-                if (
-                    inspect.isgenerator(audio_result)
-                    or hasattr(audio_result, '__iter__')
-                    and hasattr(audio_result, '__next__')
-                ):
-                    # Handle generator case
-                    first_chunk = True
-                    for audio_chunk in audio_result:
-                        if first_chunk:
-                            await self.stop_ttfb_metrics()
-                            first_chunk = False
-                            # Capture start time on first chunk
-                            if self._audio_logger is not None:
-                                tts_start_time = self._audio_logger.get_time_from_start_of_session()
+                if self._streaming:
+                    # Streaming mode: background thread pushes chunks one-by-one;
+                    # await each so the event loop stays free between chunks.
+                    while True:
+                        result = await request_queue.get()
+                        status, data = result
 
+                        if status == 'error':
+                            logger.error(f"{self} TTS generation error: {data}")
+                            yield ErrorFrame(error=f"TTS generation error: {str(data)}")
+                            return
+
+                        if status == 'done':
+                            break
+
+                        # status == 'chunk'
+                        audio_chunk = data
                         if audio_chunk is None:
                             break
+
+                        if first_chunk:
+                            first_chunk = False
+                            if self._audio_logger is not None and self._audio_logger.first_audio_timestamp is None:
+                                self._audio_logger.first_audio_timestamp = datetime.now()
 
                         audio_bytes = self._convert_to_bytes(audio_chunk)
                         all_audio_bytes += audio_bytes
@@ -357,28 +406,33 @@ class BaseNemoTTSService(TTSService, ToolCallingMixin):
                             audio_chunk_bytes = audio_bytes[i : i + chunk_size]
                             if not audio_chunk_bytes:
                                 break
-
-                            frame = TTSAudioRawFrame(
-                                audio=audio_chunk_bytes, sample_rate=self.sample_rate, num_channels=1
-                            )
-                            yield frame
+                            yield TTSAudioRawFrame(audio=audio_chunk_bytes, sample_rate=self.sample_rate, num_channels=1)
                 else:
-                    # Handle single result case
-                    await self.stop_ttfb_metrics()
-                    # Capture start time for single result
-                    if self._audio_logger is not None:
-                        tts_start_time = self._audio_logger.get_time_from_start_of_session()
-                    audio_bytes = self._convert_to_bytes(audio_result)
-                    all_audio_bytes = audio_bytes
+                    # Non-streaming mode: background thread sends the generator object;
+                    # iterate it synchronously here (blocks event loop between chunks).
+                    result = await request_queue.get()
+                    status, data = result
 
-                    chunk_size = self.chunk_size
-                    for i in range(0, len(audio_bytes), chunk_size):
-                        chunk = audio_bytes[i : i + chunk_size]
-                        if not chunk:
-                            break
+                    if status == 'error':
+                        logger.error(f"{self} TTS generation error: {data}")
+                        yield ErrorFrame(error=f"TTS generation error: {str(data)}")
+                        return
 
-                        frame = TTSAudioRawFrame(audio=chunk, sample_rate=self.sample_rate, num_channels=1)
-                        yield frame
+                    # status == 'result'
+                    for audio_chunk in data:
+                        if first_chunk:
+                            first_chunk = False
+                            if self._audio_logger is not None and self._audio_logger.first_audio_timestamp is None:
+                                self._audio_logger.first_audio_timestamp = datetime.now()
+
+                        audio_bytes = self._convert_to_bytes(audio_chunk)
+                        all_audio_bytes += audio_bytes
+                        chunk_size = self.chunk_size
+                        for i in range(0, len(audio_bytes), chunk_size):
+                            audio_chunk_bytes = audio_bytes[i : i + chunk_size]
+                            if not audio_chunk_bytes:
+                                break
+                            yield TTSAudioRawFrame(audio=audio_chunk_bytes, sample_rate=self.sample_rate, num_channels=1)
 
                 # Log the complete audio if logger is available
                 if self._audio_logger is not None and all_audio_bytes:
@@ -391,7 +445,6 @@ class BaseNemoTTSService(TTSService, ToolCallingMixin):
                             additional_metadata={
                                 "model": self._model_name,
                             },
-                            tts_generation_time=tts_start_time,
                         )
                     except Exception as e:
                         logger.warning(f"Failed to log agent audio: {e}")
@@ -860,10 +913,15 @@ class EasyMagpieTTSService(BaseNemoTTSService):
         cfg_scale: float = 2.5,
         max_steps: int = 300,
         device: str = "cuda",
+        codec_device: Optional[str] = None,
+        streaming: bool = True,
+        plugin_path: Optional[str] = None,
         **kwargs,
     ):
         self._model_path = model_path
+        self._plugin_path = plugin_path
         self._codec_model_path = codec_model_path
+        self._codec_device_override = codec_device
         self._phoneme_tokenizer_path = phoneme_tokenizer_path
         self._context_text = context_text
         self._context_audio_path = context_audio_path
@@ -879,8 +937,8 @@ class EasyMagpieTTSService(BaseNemoTTSService):
         self._base_streaming_state = None
         # The pipecat WebSocketTransport frontend player runs at PLAYER_SAMPLE_RATE=24000 Hz.
         # Audio is resampled from the codec's native 22050 Hz to 24000 Hz before sending.
-        output_sample_rate = kwargs.pop("sample_rate", 24000)
-        super().__init__(model=model_path, device=device, sample_rate=output_sample_rate, **kwargs)
+        output_sample_rate = kwargs.pop("sample_rate", 22050)
+        super().__init__(model=model_path, device=device, sample_rate=output_sample_rate, streaming=streaming, **kwargs)
         self.setup_tool_calling()
 
     def _setup_model(self):
@@ -920,9 +978,48 @@ class EasyMagpieTTSService(BaseNemoTTSService):
             self._model_path,
             override_config_path=model_cfg,
             map_location=torch.device("cpu"),
+            # strict=False lets us load DisableTextEmb-style checkpoints whose
+            # state dict legitimately omits the backbone's input embedding tensor
+            # (it's never used at inference because text tokens go through a
+            # separate text embedding outside the backbone).
+            strict=False,
         )
         model.use_kv_cache_for_inference = True
         model.eval().to(self._device).float()
+
+        # Nemotron-H SmallMamba checkpoint requires the mamba-ssm /
+        # causal-conv1d Triton kernels to be marked opaque to Dynamo, otherwise
+        # `torch.compile(model.decoder)` crashes with `KeyError: 'op5'` during
+        # Inductor lowering.  Idempotent and safe even if torch.compile is
+        # later disabled.
+        #
+        # The server process must be launched with
+        #   LD_PRELOAD=/home/subhankarg/.local/lib/libc_single_threaded_stub.so
+        # so the GLIBC 2.32 `__libc_single_threaded` symbol used by mamba-ssm's
+        # prebuilt .so resolves.  See easymagpie_minimal_streaming_demo.py
+        # header for the full rationale.
+        #
+        # NOTE on precision: the Gradio demo wraps streaming_step in
+        # `torch.autocast(dtype=bfloat16)` and additionally calls
+        # `model.decoder.half()` to get an extra ~5-10 ms/step.  This service
+        # explicitly disables autocast (line ~1132, ~1362) to match the FP32
+        # fused TRT LT engine, so we leave the decoder at FP32 here — halving
+        # would produce dtype mismatches against the FP32 input embeddings and
+        # break SDPA.  If you ever introduce autocast on this path, the
+        # `.half()` can come back.
+        is_nemotron_h = getattr(model, "decoder_type", None) == "nemotron_h"
+        if is_nemotron_h:
+            logger.info("Detected nemotron_h decoder — applying SmallMamba-specific setup")
+            _disallow_mamba_kernels_in_graph()
+
+        # Compile the backbone decoder with Triton autotuning but WITHOUT CUDA
+        # graph capture.  CUDA graphs are stored in torch._inductor's thread-local
+        # storage; even when warmup and inference are pinned to the same thread,
+        # variable-length text means new shapes are common and each new shape
+        # triggers an expensive (~40s) graph capture on the first request that
+        # hits it.  Triton kernel autotuning alone gives the bulk of the speedup
+        # without that cost.
+        model.decoder = torch.compile(model.decoder, dynamic=True, mode="max-autotune-no-cudagraphs")
 
         lt_backend = os.environ.get("EASYMAGPIE_LT_BACKEND", "torch").strip().lower()
         if lt_backend == "compile":
@@ -930,6 +1027,15 @@ class EasyMagpieTTSService(BaseNemoTTSService):
             compiled_lt = torch.compile(model.local_transformer, mode="reduce-overhead")
             model.local_transformer = compiled_lt
             model._lt_helper.local_transformer = compiled_lt
+        elif lt_backend == "trt_fused":
+            if self._plugin_path:
+                os.environ.setdefault("EASYMAGPIE_CATEGORICAL_PLUGIN_PATH", self._plugin_path)
+            model._lt_helper._fused_temperature = self._temperature
+            model._lt_helper._fused_topk = self._topk
+            logger.info(
+                f"trt_fused LT backend active "
+                f"(temperature={self._temperature}, topk={self._topk})"
+            )
 
         # Build a separate codec instance dedicated to decoding
         logger.info("Building decode codec helper...")
@@ -939,7 +1045,9 @@ class EasyMagpieTTSService(BaseNemoTTSService):
         if hasattr(codec_model, "discriminator"):
             del codec_model.discriminator
         codec_model.freeze()
-        _codec_device = self._device
+        _codec_device = self._codec_device_override if self._codec_device_override else self._device
+        if _codec_device != self._device:
+            logger.info(f"Codec decoder on separate device {_codec_device} (TTS model on {self._device}) — true GPU overlap enabled")
         codec_model = codec_model.to(_codec_device).eval()
 
         codec_converter = None
@@ -958,21 +1066,34 @@ class EasyMagpieTTSService(BaseNemoTTSService):
         self._base_context_tensors = self._build_context_inputs(model)
         logger.info("Context tensors pre-computed and cached")
 
-        # Warm-up: prime CUDA kernels and KV-cache path
-        self._run_warmup(model)
-
-        # Cache the streaming_init state so _generate_audio never calls streaming_init again —
-        # each call clones this instead, avoiding the full context-encoding forward pass.
-        # Must be built under inference_mode + autocast so the KV-cache tensors have bfloat16
-        # dtype, matching the autocast context used during _generate_audio. A dtype mismatch
-        # would cause torch.compile to retrace (slow) or deadlock on the background thread.
+        # Run warmup AND streaming_init on the persistent _tts_executor's worker
+        # thread so torch.compile's Triton compile-worker IPC and any thread-local
+        # state are bound to the same thread that will run _generate_audio later.
+        # (CUDA graphs are disabled via the no-cudagraphs compile mode — see above —
+        # but keeping warmup on the worker thread still avoids the
+        # ThreadPoolExecutor-vs-main-thread deadlock we saw with cross-thread
+        # compile-worker IPC.)
         _device_type = "cuda" if "cuda" in self._device else "cpu"
-        with torch.inference_mode():
-            self._base_streaming_state = self._call_streaming_init(model, device_type=_device_type)
-        logger.info("Cached base streaming_init state")
+
+        def _warmup_and_init():
+            self._run_warmup(model)
+            with torch.inference_mode():
+                base_state = self._call_streaming_init(model, device_type=_device_type)
+            base_state_dynamic = self._clone_state(base_state)
+            base_state_static = self._convert_kv_to_static_cache(
+                model, base_state, max_gen_steps=self._max_steps + 50
+            )
+            return base_state_static, base_state_dynamic
+
+        (
+            self._base_streaming_state,
+            self._base_streaming_state_dynamic,
+        ) = self._tts_executor.submit(_warmup_and_init).result()
+        logger.info("Warmup + base streaming_init done on TTS worker thread")
 
         # Thread pool for overlapping codec decoding with autoregressive generation.
-        # max_workers=1 ensures only one decode runs at a time (GPU memory safety).
+        # Codec runs on cuda:0 (separate device) — this thread is independent of
+        # the TTS worker thread; CUDA graphs aren't used on the codec.
         self._decode_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         logger.info("Decode executor initialized")
 
@@ -1009,11 +1130,12 @@ class EasyMagpieTTSService(BaseNemoTTSService):
         """Run streaming_init with the cached context tensors and return the state.
 
         Must be called inside torch.inference_mode(). Pass device_type='cuda' when
-        called inside torch.autocast so the returned state has bfloat16 KV-cache
-        tensors that match the inference autocast context.
+        Runs in FP32 (no autocast) to match the FP32 fused TRT LT engine — keeping
+        the full AR pipeline in one precision avoids dtype mismatches that can
+        degrade audio quality.
         """
         ctx = self._base_context_tensors
-        with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+        with torch.autocast(device_type=device_type, enabled=False):
             state = model.streaming_init(
                 context_audio_codes=ctx[0],
                 context_audio_codes_lens=ctx[1],
@@ -1026,6 +1148,136 @@ class EasyMagpieTTSService(BaseNemoTTSService):
                 topk=self._topk,
             )
         return state
+
+    @staticmethod
+    def _convert_kv_to_static_cache(model, state, max_gen_steps: int):
+        """Replace DynamicCache in state with a pre-allocated StaticCache.
+
+        DynamicCache grows via torch.cat each step (changes tensor address),
+        which is incompatible with CUDA graph capture.  StaticCache writes
+        in-place at cache_position so shapes stay static and CUDA graphs work.
+
+        NemotronH backbones use a HybridMambaAttentionDynamicCache (mix of
+        attention KV + Mamba2 SSM state) that doesn't have a `.layers` list.
+        StaticCache only covers the attention path; the Mamba2 state is already
+        fixed-shape inside the hybrid cache.  For these checkpoints we leave the
+        cache untouched — torch.compile can still trace it (slightly less optimal
+        per-step but functionally correct).
+        """
+        from transformers import StaticCache
+        dyn = state.past_key_values
+        if not hasattr(dyn, "layers"):
+            return state  # HybridMambaAttentionDynamicCache (NemotronH) — keep as-is
+        context_len = state.cache_seq_len
+        max_cache_len = context_len + max_gen_steps
+        device = state.config.device
+        # Use the actual KV dtype (fp16 under autocast) so StaticCache buffers
+        # match what streaming_step writes during generation.
+        dtype = dyn.layers[0].keys.dtype
+
+        static = StaticCache(
+            config=model.transformer_backend_config,
+            max_cache_len=max_cache_len,
+        )
+        first = dyn.layers[0]
+        static.early_initialization(
+            batch_size=first.keys.shape[0],
+            num_heads=first.keys.shape[1],
+            head_dim=first.keys.shape[3],
+            dtype=dtype,
+            device=device,
+        )
+        for dyn_layer, static_layer in zip(dyn.layers, static.layers):
+            static_layer.keys[:, :, :context_len, :] = dyn_layer.keys
+            static_layer.values[:, :, :context_len, :] = dyn_layer.values
+
+        state.past_key_values = static
+        return state
+
+    @staticmethod
+    def _snapshot_state_for_reset(state):
+        """Snapshot a StreamingState for later in-place restore.
+
+        Used to reset _live_streaming_state at the start of every TTS call without
+        allocating new tensors.  Tensor addresses in the live state stay stable
+        across calls — required for torch.compile + CUDA graphs (graphs capture
+        specific GPU addresses; a new allocation invalidates the graph and
+        triggers a costly re-capture).
+
+        For each field we store either the int/bool value, a clone of the tensor,
+        or for StaticCache: clones of all layer keys/values tensors.  StreamingConfig
+        is treated as immutable and stored by reference.
+        """
+        from dataclasses import fields as dc_fields
+
+        snap = {}
+        for f in dc_fields(state):
+            if f.name == "config":
+                snap[f.name] = getattr(state, f.name)
+                continue
+            v = getattr(state, f.name)
+            if v is None:
+                snap[f.name] = None
+            elif isinstance(v, torch.Tensor):
+                snap[f.name] = v.clone()
+            elif isinstance(v, list):
+                snap[f.name] = list(v)  # shallow copy (lists usually start empty)
+            else:
+                # StaticCache or primitive (int, bool, ...).  Detect StaticCache by
+                # presence of `.layers`.
+                layers = getattr(v, "layers", None)
+                if layers is not None and hasattr(layers[0], "keys"):
+                    snap[f.name] = [
+                        (layer.keys.clone(), layer.values.clone()) for layer in layers
+                    ]
+                else:
+                    snap[f.name] = v
+        return snap
+
+    @staticmethod
+    def _reset_state_in_place(state, snap):
+        """Restore state to match snap IN-PLACE (preserves tensor addresses).
+
+        Tensor fields are reset via .copy_(), StaticCache buffers via per-layer
+        .copy_(), lists via .clear() + .extend(), primitives via setattr.
+        """
+        from dataclasses import fields as dc_fields
+
+        for f in dc_fields(state):
+            if f.name == "config":
+                continue
+            live_v = getattr(state, f.name)
+            snap_v = snap[f.name]
+
+            if live_v is None and snap_v is None:
+                continue
+            if live_v is None or snap_v is None:
+                # Shape changed — must reassign (rare; no addresses to preserve).
+                setattr(state, f.name, snap_v)
+                continue
+
+            if isinstance(live_v, torch.Tensor) and isinstance(snap_v, torch.Tensor):
+                # Shape match → in-place .copy_() preserves the tensor's GPU
+                # address (matters for fields the compiled decoder is captured
+                # against).  Shape mismatch → the field was REASSIGNED inside
+                # streaming_step (e.g. last_hidden goes from (1, ctx_len, d) to
+                # (1, 1, d) after the first step), so a fresh clone is the only
+                # safe restore.  These fields aren't compiled-graph inputs;
+                # they're streaming_step bookkeeping — overhead is microseconds.
+                if live_v.shape == snap_v.shape and live_v.dtype == snap_v.dtype:
+                    live_v.copy_(snap_v)
+                else:
+                    setattr(state, f.name, snap_v.clone())
+            elif isinstance(live_v, list) and isinstance(snap_v, list):
+                live_v.clear()
+                live_v.extend(snap_v)
+            elif hasattr(live_v, "layers") and isinstance(snap_v, list):
+                # StaticCache: copy each layer's keys/values in-place.
+                for layer, (k_snap, v_snap) in zip(live_v.layers, snap_v):
+                    layer.keys.copy_(k_snap)
+                    layer.values.copy_(v_snap)
+            else:
+                setattr(state, f.name, snap_v)
 
     @staticmethod
     def _clone_state(state):
@@ -1064,6 +1316,13 @@ class EasyMagpieTTSService(BaseNemoTTSService):
                     return new_cache
             except ImportError:
                 pass
+            # NemotronH hybrid cache (HybridMambaAttentionDynamicCache) — has
+            # attention KV tensors + Mamba2 SSM state tensors but no `.layers`
+            # list compatible with DynamicCache.  deepcopy works here because
+            # the deepcopy-deadlock issue is specific to DynamicCache's
+            # torch.compile guard interaction, not the hybrid cache.
+            if type(v).__name__ == "HybridMambaAttentionDynamicCache":
+                return deepcopy(v)
             # For legacy tuple-based KV cache (pre-4.38 transformers)
             return v  # primitives (int, bool, float, str, torch.device, etc.)
 
@@ -1086,30 +1345,54 @@ class EasyMagpieTTSService(BaseNemoTTSService):
     def _run_warmup(self, model):
         device = next(model.parameters()).device
         main_tokenizer_name = list(model.cfg.text_tokenizers.keys())[0]
-        token_ids = model.tokenizer.encode("This is a warmup.", tokenizer_name=main_tokenizer_name)
+        # Use the bot's greeting as warmup text so the CUDA graphs captured during
+        # warmup cover the exact shapes the first user-facing TTS call will need.
+        # Otherwise the first real request pays a ~40s graph-capture penalty for
+        # the new text length.
+        token_ids = model.tokenizer.encode(
+            "Hi, I'm Lisa, your helpful AI assistant. How can I help you today?",
+            tokenizer_name=main_tokenizer_name,
+        )
         token_ids.append(model.eos_id)
         pending = deque(token_ids)
         steps = 0
         device_type = "cuda" if "cuda" in str(device) else "cpu"
         with torch.inference_mode():
             state = self._call_streaming_init(model, device_type=device_type)
-            with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+            # StaticCache required for CUDA graph capture (DynamicCache grows via
+            # torch.cat which changes tensor addresses, incompatible with CUDA graphs).
+            # Use max_gen_steps matching _generate_audio so torch.compile sees the same
+            # StaticCache buffer shape during warmup as during inference — different shapes
+            # trigger a retrace from the background thread which deadlocks the compile worker.
+            state = self._convert_kv_to_static_cache(model, state, max_gen_steps=self._max_steps + 50)
+            with torch.autocast(device_type=device_type, enabled=False):
+                # Cap at 80 steps — letting warmup run the FULL greeting caused
+                # a deadlock (every thread stuck on futex after the first real
+                # TTS request), likely from CUDA graph capture state interacting
+                # badly with later AR steps near EOS.  80 steps is enough to
+                # warm Triton kernels and capture the steady-state graphs.
                 while not bool(state.finished.all()) and steps < 80:
                     tok = pending.popleft() if pending else None
                     text_tokens = torch.tensor([tok], dtype=torch.long, device=device) if tok is not None else None
+                    # Signal new step to CUDA graph replay (required when replaying
+                    # compiled graphs with changing dynamic values like cache_position).
+                    torch.compiler.cudagraph_mark_step_begin()
                     state, _, _ = model.streaming_step(state=state, text_tokens=text_tokens, use_inference_mode=True)
                     steps += 1
         torch.cuda.empty_cache()
 
     def _decode_new_chunk(self, accumulated_codes, last_emitted_sample_idx):
+        codec_dev = getattr(self, "_codec_device", None)
+        if codec_dev is not None:
+            # Move to codec device BEFORE _prepare_codes_for_decode so every op in this
+            # executor thread runs on codec_dev, never touching the TTS AR device's default
+            # CUDA stream.  _prepare_codes_for_decode is pure tensor ops (no model params)
+            # so it runs correctly on whichever device the input tensor is on.
+            accumulated_codes = accumulated_codes.to(codec_dev)
         codes_lens = torch.tensor(
             [accumulated_codes.size(-1)], dtype=torch.long, device=accumulated_codes.device
         )
         pred_codes, pred_codes_lens = self._model._prepare_codes_for_decode(accumulated_codes, codes_lens)
-        codec_dev = getattr(self, "_codec_device", None)
-        if codec_dev is not None:
-            pred_codes = pred_codes.to(codec_dev)
-            pred_codes_lens = pred_codes_lens.to(codec_dev)
         audio, audio_len, _ = self._decode_codec_helper.codes_to_audio(pred_codes, pred_codes_lens)
         full_wav = audio[0, : audio_len[0]].detach().float().cpu().numpy()
         if full_wav.shape[0] <= last_emitted_sample_idx:
@@ -1136,8 +1419,6 @@ class EasyMagpieTTSService(BaseNemoTTSService):
         token_ids.append(model.eos_id)
         pending = deque(token_ids)
 
-        state = self._clone_state(self._base_streaming_state)
-
         accumulated_codes = None
         last_emitted_sample_idx = 0
         steps = 0
@@ -1147,16 +1428,30 @@ class EasyMagpieTTSService(BaseNemoTTSService):
         pending_decode_future = None
 
         device_type = "cuda" if "cuda" in self._device else "cpu"
-        with torch.inference_mode(), torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+        # Full FP32 path: no autocast, so the backbone, KV cache, and FP32 fused
+        # TRT LT engine all operate in matching precision.  Slower than FP16 but
+        # numerically faithful to the original eager model.
+        with torch.inference_mode(), torch.autocast(device_type=device_type, enabled=False):
+            # Clone the per-request state from the DynamicCache base then convert
+            # to a StaticCache.  StaticCache is required because DynamicCache grows
+            # via torch.cat (changing tensor addresses each step), which prevents
+            # torch.compile from caching kernels for the inner attention call.
+            state = self._clone_state(self._base_streaming_state_dynamic)
+            state = self._convert_kv_to_static_cache(
+                model, state, max_gen_steps=self._max_steps + 50
+            )
+
             while not bool(state.finished.all()) and steps < self._max_steps:
                 tok = pending.popleft() if pending else None
                 text_tokens = torch.tensor([tok], dtype=torch.long, device=device) if tok is not None else None
 
+                # Signal new step to CUDA graph replay so the compiled graph
+                # correctly updates dynamic values (e.g. cache_position) each step.
+                torch.compiler.cudagraph_mark_step_begin()
                 state, audio_codes, _ = model.streaming_step(
                     state=state, text_tokens=text_tokens, use_inference_mode=True
                 )
                 steps += 1
-                num_decoding_steps += 1
 
                 if audio_codes is not None:
                     audio_codes = audio_codes.to(device=device, dtype=torch.long)
@@ -1164,6 +1459,7 @@ class EasyMagpieTTSService(BaseNemoTTSService):
                         audio_codes if accumulated_codes is None
                         else torch.cat([accumulated_codes, audio_codes], dim=-1)
                     )
+                    num_decoding_steps += 1  # count only audio-producing steps so first batch has same size as subsequent
 
                 if accumulated_codes is not None and num_decoding_steps >= self._decode_every_n_frames:
                     num_decoding_steps = 0
@@ -1200,6 +1496,294 @@ class EasyMagpieTTSService(BaseNemoTTSService):
 
     def setup_tool_calling(self):
         pass
+
+
+class EasyMagpieSmallMambaVllmService(EasyMagpieTTSService):
+    """vLLM-backed variant of :class:`EasyMagpieTTSService`.
+
+    The AR backbone (NemotronH SmallMamba) + Local Transformer run in a
+    separate ``vllm_omni_env`` sidecar process and are reached over HTTP.
+    See ``HANDOFF_vllm_smallmamba_streaming.md`` for the rationale (vLLM 0.19.1
+    cannot coexist with the legacy nemo_virtual_environment that this agent
+    uses).
+
+    What still runs locally:
+      * Phoneme tokenizer (text -> subword IDs to send to the sidecar).
+      * Codec **encoder** (context audio -> 16-codebook codes to send).
+      * Codec **decoder** (audio code frames from the sidecar -> waveform).
+      * The existing chunked-decode + sliding-window emit loop from the
+        parent class.
+
+    What's replaced:
+      * The autoregressive loop -- ``_generate_audio`` no longer calls
+        ``model.streaming_step``. Instead it POSTs to ``/tts/stream`` on the
+        sidecar and yields audio chunks as code frames arrive.
+
+    v1 reuses the parent's ``_setup_model`` so we still load the AR weights
+    onto the local GPU even though they're unused on this code path. Trades
+    GPU memory for code reuse (tokenizer + codec helpers + codes-prep
+    method are all already wired by the parent). Future work: a thinner
+    setup that skips the AR backbone load entirely.
+    """
+
+    def __init__(
+        self,
+        *,
+        vllm_server_url: str,
+        max_frames_per_request: int = 300,
+        **kwargs,
+    ) -> None:
+        # Defer the vLLM client construction until _setup_model (which runs
+        # on the TTS executor thread) so a misconfigured sidecar surfaces in
+        # the agent's startup logs alongside the AR model load, not silently
+        # at the first user utterance.
+        self._vllm_server_url = vllm_server_url
+        self._vllm_client = None
+        self._max_frames_per_request = max_frames_per_request
+        # Pre-flattened context inputs we'll send to the sidecar every call.
+        self._sidecar_ctx_codes: Optional[list[list[int]]] = None
+        self._sidecar_ctx_text: Optional[list[int]] = None
+        super().__init__(**kwargs)
+
+    def _run_warmup(self, model):
+        """Skip the parent's warmup loop entirely.
+
+        The parent's ``_run_warmup`` runs ~10-20 streaming_step iterations,
+        which on the SmallMamba checkpoint triggers a per-static-shape
+        TensorRT engine build for the local transformer at each new shape
+        (each build takes ~30 s, total ~5-10 min). On this code path we
+        never call ``streaming_step`` -- the AR loop happens entirely in
+        the vLLM sidecar -- so these engines are dead weight. Skipping the
+        warmup cuts service startup from ~10 min to ~80 s.
+
+        Note: the agent's local-side ``streaming_state`` and TRT engine
+        cache remain unbuilt. If you ever want to fall back to the local
+        AR path, remove this override.
+        """
+        return
+
+    def _setup_model(self):
+        # Re-use the parent's full setup. This loads the AR backbone, the LT,
+        # the codec helpers, builds the cached context tensors. The
+        # warmup-loop step has been short-circuited above; ``streaming_init``
+        # still runs (cheap, ~30 s).
+        model = super()._setup_model()
+
+        # Build the HTTP client now so a missing sidecar fails at startup,
+        # not at the first user utterance.
+        from nemo.agents.voice_agent.pipecat.services.nemo.easymagpie_vllm_client import (
+            build_client_from_url,
+        )
+        logger.info(
+            f"Connecting to vLLM sidecar at {self._vllm_server_url} ..."
+        )
+        self._vllm_client = build_client_from_url(self._vllm_server_url, ping_first=True)
+        logger.info("vLLM sidecar reachable.")
+
+        # Wire the CAS encoder on the sidecar with our BPE subword vocab.
+        # Without this the CAS encoder's subword->char map is empty and
+        # the first /tts/stream POST triggers a CUDA out-of-range assert.
+        # Uses the SAME tokenizer that _build_context_inputs encoded the
+        # context_text with, namely ``text_conditioning_tokenizer_name``.
+        ctx_tok_name = model.text_conditioning_tokenizer_name
+        ctx_tokenizer = model.tokenizer.tokenizers[ctx_tok_name]
+        self._vllm_client.wire_tokenizer(
+            subword_vocab=ctx_tokenizer.get_vocab(),
+            bos_id=model.bos_id,
+            eos_id=model.eos_id,
+            cfg_unk_token_id=model.cfg_unk_token_id,
+            subword_padding_idx=model.tokenizer.pad,
+        )
+        logger.info(
+            "Sidecar CAS encoder wired with %d-token subword vocab.",
+            len(ctx_tokenizer.get_vocab()),
+        )
+
+        # The parent's _build_context_inputs already encoded the context audio
+        # into 16-codebook codes and the context text into subword IDs.
+        # Flatten to plain Python lists for HTTP serialization. These are
+        # identical across utterances, so we cache them.
+        ctx_codes, ctx_codes_lens, ctx_text_tokens, ctx_text_lens = self._base_context_tensors
+        logger.info(
+            "[em-vllm] raw ctx_codes shape=%s dtype=%s min=%d max=%d  ctx_text shape=%s",
+            tuple(ctx_codes.shape), ctx_codes.dtype,
+            int(ctx_codes.min()), int(ctx_codes.max()),
+            tuple(ctx_text_tokens.shape),
+        )
+        # Apply the same context-codes preparation the production
+        # ``prepare_context_tensors`` path does (and that the A4'
+        # equivalence test mirrored):
+        #   1. codec_converter map (codec-native vocab -> model vocab)
+        #   2. add_special_tokens (BOS prefix + EOS suffix)
+        #   3. stack_codes (B, C=8, T) -> (B, C*S=16, T/S)
+        # The vLLM subclass's build_prefill_combined_embeddings expects the
+        # output of step 3. Without these the audio-code IDs exceed the
+        # codebook vocab and trigger an async CUDA out-of-range assert.
+        from nemo.collections.tts.modules.magpietts_modules import add_special_tokens
+        if getattr(model, "_codec_converter", None) is not None:
+            ctx_codes = model._codec_converter.convert_original_to_new(
+                audio_tokens=ctx_codes, audio_lens=ctx_codes_lens,
+            ).long()
+        ctx_codes, ctx_codes_lens = add_special_tokens(
+            codes=ctx_codes, codes_len=ctx_codes_lens,
+            bos_id=model.context_audio_bos_id,
+            eos_id=model.context_audio_eos_id,
+        )
+        ctx_codes, ctx_codes_lens = model.stack_codes(
+            ctx_codes, ctx_codes_lens,
+            model.context_audio_bos_id, model.context_audio_eos_id,
+            model.frame_stacking_factor, model.num_audio_codebooks,
+        )
+        logger.info(
+            "[em-vllm] prepared ctx_codes shape=%s min=%d max=%d",
+            tuple(ctx_codes.shape), int(ctx_codes.min()), int(ctx_codes.max()),
+        )
+        codes_cpu = ctx_codes.detach().to("cpu").long()[0]   # (16, T_ctx_stacked)
+        self._sidecar_ctx_codes = codes_cpu.tolist()
+        # ctx_text_tokens shape: (1, L). Send as list[int].
+        text_cpu = ctx_text_tokens.detach().to("cpu").long()[0]
+        self._sidecar_ctx_text = text_cpu.tolist()
+        logger.info(
+            f"Cached sidecar context: codes ({len(self._sidecar_ctx_codes)} tables x "
+            f"{len(self._sidecar_ctx_codes[0])} frames) + text ({len(self._sidecar_ctx_text)} tokens)"
+        )
+        return model
+
+    def _generate_audio(self, text: str) -> Iterator[np.ndarray]:
+        """Stream audio for ``text`` by:
+        1. Tokenizing ``text`` with the local model's tokenizer.
+        2. POSTing to the sidecar with the cached context + the per-utterance
+           text token IDs.
+        3. Accumulating returned audio code frames, calling the parent's
+           ``_decode_new_chunk`` every ``decode_every_n_frames`` frames to
+           emit audio chunks.
+        """
+        model = self._model
+        device = next(model.parameters()).device
+
+        # Tokenize the utterance with the model's main phoneme tokenizer
+        # (the one production ``_generate_audio`` uses on its
+        # ``streaming_step(text_tokens=...)`` path). The sidecar's
+        # ``embed_input_ids`` hook consumes one of these IDs per AR step,
+        # looks it up via ``phoneme_embeddings[0]``, and adds it to the
+        # audio-code embedding -- matching production's additive
+        # ``next_input = audio_emb + phoneme_emb`` layout.
+        main_tokenizer_name = list(model.cfg.text_tokenizers.keys())[0]
+        phoneme_token_ids = model.tokenizer.encode(
+            text, tokenizer_name=main_tokenizer_name,
+        )
+        phoneme_token_ids.append(model.eos_id)
+        # Diagnostic so we can spot out-of-range IDs without re-running.
+        logger.info(
+            f"[em-vllm] tokenizer={main_tokenizer_name} phoneme stream: "
+            f"len={len(phoneme_token_ids)} "
+            f"min={int(min(phoneme_token_ids))} "
+            f"max={int(max(phoneme_token_ids))} "
+            f"eos_id={int(model.eos_id)} "
+            f"text_tokenizer_keys={list(model.cfg.text_tokenizers.keys())}"
+        )
+
+        # The sidecar's CAS-encoder path takes the cached context-text
+        # token IDs (built from speaker/language tag at setup time). It
+        # is NOT the place to send per-utterance phonemes -- those go
+        # via ``phoneme_token_ids`` and a separate embedding table.
+        sidecar_text = list(self._sidecar_ctx_text)
+
+        accumulated_codes: Optional[torch.Tensor] = None
+        last_emitted_sample_idx = 0
+        num_decoding_steps = 0
+        _max_codec_frames = 64
+        _spf = getattr(model, 'codec_model_samples_per_frame', 640)
+        pending_decode_future = None
+
+        with torch.inference_mode():
+            # Iterate over audio code frames streamed from the sidecar.
+            # max_frames is sized to give the AR a little headroom past
+            # the EOS so the tail audio (silence / decay) lands; the
+            # sidecar's _streaming_eos_seen flag (set when the EOS
+            # phoneme token is consumed) provides the tighter early-exit
+            # signal in practice.
+            # Pull the model-specific constants production's streaming_init
+            # reads from the .nemo config. The sidecar's state machine needs
+            # these to replicate production semantics.
+            #   - audio_bos_id / audio_eos_id: AudioToken special IDs
+            #   - phoneme_bos_id / phoneme_eos_id: from phoneme_tokenizer
+            #   - streaming_speech_delay / streaming_phonemes_delay: from
+            #     selected training_mode (e.g. "streaming_3_5" -> 3/5).
+            training_mode = model.mode_name_to_mode[model.default_inference_mode]
+            for frame_codes in self._vllm_client.stream_frames(
+                context_audio_codes=self._sidecar_ctx_codes,
+                context_text_token_ids=sidecar_text,
+                phoneme_token_ids=phoneme_token_ids,
+                text_eos_id=int(model.eos_id),
+                audio_bos_id=int(model.audio_bos_id),
+                audio_eos_id=int(model.audio_eos_id),
+                phoneme_bos_id=int(model.phoneme_tokenizer.bos_token_id),
+                phoneme_eos_id=int(model.phoneme_tokenizer.eos_token_id),
+                streaming_speech_delay=int(training_mode.streaming_speech_delay),
+                streaming_phonemes_delay=int(training_mode.streaming_phonemes_delay),
+                # Sidecar audio_eos detection is the real early-exit; this
+                # is just a safety cap. Use a generous per-token budget so
+                # natural-length English utterances reach EOS organically.
+                # Roughly 8 stacked frames per subword (with frame_stacking
+                # factor 2, that's ~16 codec frames = ~0.64 s of audio at
+                # 25 fps -- plenty for any subword's worst case).
+                max_frames=min(
+                    self._max_frames_per_request,
+                    len(phoneme_token_ids) * 8 + 80,
+                ),
+            ):
+                # Each frame is a list of 16 ints. Stack into a (1, 16, 1)
+                # tensor and append along the frame (time) axis.
+                frame_t = torch.tensor(
+                    frame_codes, dtype=torch.long, device=device,
+                ).view(1, -1, 1)
+                accumulated_codes = (
+                    frame_t if accumulated_codes is None
+                    else torch.cat([accumulated_codes, frame_t], dim=-1)
+                )
+                num_decoding_steps += 1
+
+                if num_decoding_steps >= self._decode_every_n_frames:
+                    num_decoding_steps = 0
+
+                    if pending_decode_future is not None:
+                        chunk, last_emitted_sample_idx = pending_decode_future.result()
+                        if chunk.size > 0:
+                            yield chunk
+
+                    if last_emitted_sample_idx > 0 and accumulated_codes.size(-1) > _max_codec_frames:
+                        _trim = accumulated_codes.size(-1) - _max_codec_frames
+                        last_emitted_sample_idx = max(
+                            0, last_emitted_sample_idx - _trim * _spf
+                        )
+                        accumulated_codes = accumulated_codes[..., _trim:]
+
+                    pending_decode_future = self._decode_executor.submit(
+                        self._decode_new_chunk_no_grad,
+                        accumulated_codes,
+                        last_emitted_sample_idx,
+                    )
+
+        # Drain any pending decode + emit the tail.
+        if pending_decode_future is not None:
+            chunk, last_emitted_sample_idx = pending_decode_future.result()
+            if chunk.size > 0:
+                yield chunk
+            if last_emitted_sample_idx > 0 and accumulated_codes is not None \
+                    and accumulated_codes.size(-1) > _max_codec_frames:
+                _trim = accumulated_codes.size(-1) - _max_codec_frames
+                last_emitted_sample_idx = max(
+                    0, last_emitted_sample_idx - _trim * _spf
+                )
+                accumulated_codes = accumulated_codes[..., _trim:]
+
+        if accumulated_codes is not None:
+            chunk, _ = self._decode_new_chunk_no_grad(
+                accumulated_codes, last_emitted_sample_idx
+            )
+            if chunk.size > 0:
+                yield chunk
 
 
 def get_tts_service_from_config(config: DictConfig, audio_logger: Optional[AudioLogger] = None) -> BaseNemoTTSService:
@@ -1261,7 +1845,37 @@ def get_tts_service_from_config(config: DictConfig, audio_logger: Optional[Audio
             audio_logger=audio_logger,
             ignore_strings=config.get("ignore_strings", None),
         )
-    elif model == "easy_magpie":
+    elif model == "easy_magpie_smallmamba_vllm":
+        # SmallMamba via a separate vLLM sidecar (vllm_omni_env).  Tokenizer
+        # + codec live locally; the AR loop is HTTP-streamed from the sidecar.
+        return EasyMagpieSmallMambaVllmService(
+            vllm_server_url=config.get("vllm_server_url",
+                                       "http://127.0.0.1:18765"),
+            max_frames_per_request=config.get("max_steps", 300),
+            model_path=config.get("main_model_id"),
+            codec_model_path=config.get("codec_model_path"),
+            phoneme_tokenizer_path=config.get("phoneme_tokenizer_path"),
+            context_text=config.get("context_text", "[NO TEXT CONTEXT]"),
+            context_audio_path=config.get("context_audio_path", None),
+            decode_every_n_frames=config.get("decode_every_n_frames", 6),
+            temperature=config.get("temperature", 0.7),
+            topk=config.get("topk", 80),
+            use_cfg=config.get("use_cfg", False),
+            cfg_scale=config.get("cfg_scale", 2.5),
+            max_steps=config.get("max_steps", 300),
+            device=device,
+            codec_device=config.get("codec_device", None),
+            streaming=config.get("streaming", True),
+            plugin_path=config.get("plugin_path", None),
+            text_aggregator=text_aggregator,
+            think_tokens=config.get("think_tokens", None),
+            audio_logger=audio_logger,
+            ignore_strings=config.get("ignore_strings", None),
+        )
+    elif model in ("easy_magpie", "easy_magpie_smallmamba"):
+        # Both names route to EasyMagpieTTSService; the SmallMamba-specific
+        # setup (Mamba kernel disable, fp16 decoder) is auto-applied inside
+        # _setup_model based on the loaded checkpoint's decoder_type.
         return EasyMagpieTTSService(
             model_path=config.get("main_model_id"),
             codec_model_path=config.get("codec_model_path"),
@@ -1275,10 +1889,17 @@ def get_tts_service_from_config(config: DictConfig, audio_logger: Optional[Audio
             cfg_scale=config.get("cfg_scale", 2.5),
             max_steps=config.get("max_steps", 300),
             device=device,
+            codec_device=config.get("codec_device", None),
+            streaming=config.get("streaming", True),
+            plugin_path=config.get("plugin_path", None),
             text_aggregator=text_aggregator,
             think_tokens=config.get("think_tokens", None),
             audio_logger=audio_logger,
             ignore_strings=config.get("ignore_strings", None),
         )
     else:
-        raise ValueError(f"Invalid model: {model}, only 'fastpitch-hifigan', 'magpie', 'kokoro' and 'easy_magpie' are supported")
+        raise ValueError(
+            f"Invalid model: {model}, only 'fastpitch-hifigan', 'magpie', "
+            "'kokoro', 'easy_magpie', 'easy_magpie_smallmamba', and "
+            "'easy_magpie_smallmamba_vllm' are supported"
+        )

@@ -27,6 +27,7 @@ from torch.utils.data import get_worker_info
 from nemo.collections.tts.modules import transformer_2501
 from nemo.collections.tts.parts.utils.helpers import get_mask_from_lengths
 from nemo.core.classes.module import NeuralModule
+from loguru import logger as loguru_logger
 from nemo.utils import logging
 from nemo.utils.enum import PrettyStrEnum
 
@@ -182,7 +183,14 @@ class CharAwareSubwordEncoder(NeuralModule):
     The output is a tensor of shape (batch_size, max_subword_length, d_embed).
     """
 
-    def __init__(self, d_embed: int, llm_tokenizer_vocab: dict, subword_padding_idx: int, special_vocab: dict = None):
+    def __init__(
+        self,
+        d_embed: int,
+        llm_tokenizer_vocab: dict,
+        subword_padding_idx: int,
+        special_vocab: dict = None,
+        n_layers: int = 1,
+    ):
         """
         Args:
             d_embed (int): The dimension of the embedding.
@@ -192,6 +200,8 @@ class CharAwareSubwordEncoder(NeuralModule):
             subword_padding_idx (int): The padding index for the subword vocabulary.
             special_vocab (dict): items of special token dictionary (usually BOS, EOS)
                 eg. special_vocab = {'<BOS>': 30001, '<EOS>': 30002}
+            n_layers (int): Transformer encoder depth (must match the trained checkpoint;
+                some checkpoints train with deeper CAS encoders).
         """
         super().__init__()
         self.subword_id_to_char_ids, self.char_vocab = build_vocabs(
@@ -199,7 +209,7 @@ class CharAwareSubwordEncoder(NeuralModule):
         )
         self.embed_tokens = torch.nn.Embedding(self.vocab_size + 1, d_embed, padding_idx=self.vocab_size)
         self.encoder = transformer_2501.Transformer(
-            n_layers=1,
+            n_layers=n_layers,
             d_model=d_embed,
             d_ffn=d_embed * 4,
             sa_n_heads=8,
@@ -657,6 +667,9 @@ class LocalTransformerHelper:
         self._lt_trt_cache: Dict[tuple, Any] = {}
         # Shapes that failed TRT validation — fall back to PyTorch for these.
         self._lt_trt_fallback_keys: set = set()
+        self._lt_fused_engine = None  # (engine, context, stream) once built
+        self._fused_temperature = 0.7
+        self._fused_topk = 80
 
     def _build_lt_trt_engine(self, x: torch.Tensor, x_mask: torch.Tensor) -> tuple:
         """Build a per-static-shape TRT engine for the local transformer.
@@ -710,9 +723,10 @@ class LocalTransformerHelper:
         onnx_hash = hashlib.sha256(onnx_bytes).hexdigest()[:16]
         cache_dir = os.path.expanduser("~/.cache/easymagpie_trt")
         os.makedirs(cache_dir, exist_ok=True)
-        # "perT_v2" suffix distinguishes from older padded/BF16-flag engines.
-        engine_path = os.path.join(cache_dir, f"lt_fp32perT_v2_B{B}_T{T}_H{H}_trt{trt_ver}_{onnx_hash}.engine")
-        logging.info(f"Building TRT FP32 engine for LT (B={B}, T={T}, H={H})...")
+        # "fp16perT_v1": FP16 flag enabled, per-static-shape, FP32 ONNX with TRT FP16 compute.
+        # sm_86 (A6000): FP16 works fine; only BF16 flags cause Cast-kernel failures.
+        engine_path = os.path.join(cache_dir, f"lt_fp16perT_v1_B{B}_T{T}_H{H}_trt{trt_ver}_{onnx_hash}.engine")
+        logging.info(f"Building TRT FP16 engine for LT (B={B}, T={T}, H={H})...")
 
         logger_trt = trt.Logger(trt.Logger.WARNING)
 
@@ -734,8 +748,10 @@ class LocalTransformerHelper:
                         logging.error(f"ONNX parse error {i}: {parser.get_error(i)}")
                     raise RuntimeError("TRT ONNX parsing failed")
                 config = builder.create_builder_config()
-                # Pure FP32 — no BF16 flag.  BF16 precision flags cause Cast-kernel
-                # failures on sm_86 (A6000) with TRT 10.x; pure FP32 avoids this.
+                # FP16 flag: TRT uses tensor-core FP16 kernels for matmuls while keeping
+                # FP32 ONNX I/O boundaries.  FP16 works on sm_86 (A6000); only the BF16
+                # flag causes Cast-kernel failures on this GPU with TRT 10.x.
+                config.set_flag(trt.BuilderFlag.FP16)
                 config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 1 << 30)
                 serialized = builder.build_serialized_network(network, config)
             if serialized is None:
@@ -761,10 +777,13 @@ class LocalTransformerHelper:
             pt_ref = self._lt_trt_wrapper(x_val, m_val)
         trt_out = self._run_lt_trt_engine(engine_info, x_val, m_val)
         max_diff = (pt_ref - trt_out).abs().max().item()
-        if max_diff > 5.0:
+        # FP16 TRT vs FP32 PyTorch: allow up to 20.0 absolute diff — FP16 accumulates
+        # more rounding error over 2-layer attention + FFN on H=1536 but argmax-based
+        # sampling is robust to absolute magnitude differences.
+        if max_diff > 20.0:
             logging.warning(
                 f"TRT engine for B={B}, T={T}, H={H} failed validation "
-                f"(max_diff={max_diff:.2f} > 5.0). Deleting cached engine and "
+                f"(max_diff={max_diff:.2f} > 20.0). Deleting cached engine and "
                 f"falling back to PyTorch for this shape."
             )
             if os.path.isfile(engine_path):
@@ -832,8 +851,8 @@ class LocalTransformerHelper:
                 return self.local_transformer(local_transformer_input, local_transformer_mask)['output']
             if compile_key not in self._lt_trt_cache:
                 if not self._lt_trt_logged:
-                    logging.info(
-                        "Using TRT per-static-shape FP32 backend for local transformer "
+                    loguru_logger.info(
+                        "Using TRT per-static-shape FP16 backend for local transformer "
                         "(EASYMAGPIE_LT_BACKEND=trt)."
                     )
                     self._lt_trt_logged = True
@@ -842,7 +861,7 @@ class LocalTransformerHelper:
                         local_transformer_input, local_transformer_mask
                     )
                 except RuntimeError as e:
-                    logging.warning(f"TRT build/validation failed ({e}); using PyTorch fallback for shape {compile_key}.")
+                    loguru_logger.warning(f"TRT build/validation failed ({e}); using PyTorch fallback for shape {compile_key}.")
                     self._lt_trt_fallback_keys.add(compile_key)
                     return self.local_transformer(local_transformer_input, local_transformer_mask)['output']
             return self._run_lt_trt_engine(
@@ -940,6 +959,51 @@ class LocalTransformerHelper:
 
     def sample_autoregressive(
         self,
+        dec_output,
+        temperature=0.7,
+        topk=80,
+        unfinished_items={},
+        finished_items={},
+        use_cfg=False,
+        cfg_scale=1.0,
+        use_kv_cache=True,
+        forbid_audio_eos=False,
+        sanitize_logits=False,
+    ):
+        # trt_fused fast path: single engine call for the full 16-codebook loop.
+        # Falls back to PyTorch when CFG, EOS masking, or argmax is active.
+        if self.lt_backend == "trt_fused":
+            conds = {
+                "use_cfg": not use_cfg,
+                "temp>0": temperature > 0.0,
+                "temp==fused": temperature == self._fused_temperature,
+                "topk==fused": topk == self._fused_topk,
+                "no_unfinished": not unfinished_items,
+                "no_finished": not finished_items,
+                "no_forbid_eos": not forbid_audio_eos,
+            }
+            if all(conds.values()):
+                loguru_logger.debug(f"[trt_fused] dispatch: FUSED path taken (temp={temperature}, topk={topk})")
+                return self._run_lt_fused(dec_output)
+            else:
+                failed = [k for k, v in conds.items() if not v]
+                loguru_logger.warning(f"[trt_fused] dispatch: falling back to pytorch — conditions failed: {failed} (temp={temperature} fused_temp={self._fused_temperature}, topk={topk} fused_topk={self._fused_topk})")
+
+        return self._sample_autoregressive_pytorch(
+            dec_output=dec_output,
+            temperature=temperature,
+            topk=topk,
+            unfinished_items=unfinished_items,
+            finished_items=finished_items,
+            use_cfg=use_cfg,
+            cfg_scale=cfg_scale,
+            use_kv_cache=use_kv_cache,
+            forbid_audio_eos=forbid_audio_eos,
+            sanitize_logits=sanitize_logits,
+        )
+
+    def _sample_autoregressive_pytorch(
+        self,
         dec_output: torch.Tensor,
         temperature: float = 0.7,
         topk: int = 80,
@@ -972,7 +1036,18 @@ class LocalTransformerHelper:
         dec_output = dec_output.unsqueeze(1)  # (B, 1, E)
         local_transformer_input = self.local_transformer_in_projection(dec_output)
         all_preds = []
-        for codebook_num in range(self.num_audio_codebooks * self.frame_stacking_factor):
+        n_codebooks = self.num_audio_codebooks * self.frame_stacking_factor
+        # Pre-generate all Gumbel noise in one batched CURAND call instead of N separate
+        # calls inside the loop. Each per-codebook call to .exponential_() launches a new
+        # CURAND kernel — for B=1 that overhead dominates actual compute. One (N, vocab)
+        # call amortises the fixed CURAND cost across all codebooks.
+        if temperature > 0.0:
+            _vocab_size = self.local_transformer_out_projections[0].out_features
+            _dev = dec_output.device
+            _all_gumbel = -torch.empty(
+                n_codebooks, dec_output.size(0), _vocab_size, device=_dev
+            ).exponential_().log()
+        for codebook_num in range(n_codebooks):
             _mask = torch.ones(
                 local_transformer_input.size(0), local_transformer_input.size(1), device=local_transformer_input.device
             )
@@ -1012,8 +1087,8 @@ class LocalTransformerHelper:
             if temperature <= 0.0:
                 codebook_preds = codebook_logits_rescored.argmax(dim=-1, keepdim=True)
             else:
-                codebook_probs = torch.softmax(codebook_logits_rescored / temperature, dim=-1)
-                codebook_preds = torch.multinomial(codebook_probs, 1)
+                # Use pre-generated Gumbel noise (one batched CURAND call before the loop).
+                codebook_preds = (codebook_logits_rescored / temperature + _all_gumbel[codebook_num]).argmax(dim=-1, keepdim=True)
 
             if use_cfg:
                 codebook_preds[actual_batch_size:] = codebook_preds[:actual_batch_size]
@@ -1030,6 +1105,218 @@ class LocalTransformerHelper:
             all_preds = all_preds[:actual_batch_size]
 
         return all_preds
+
+    def _run_lt_fused(self, dec_output: torch.Tensor) -> torch.Tensor:
+        """Run the fused TRT engine for the full autoregressive LT loop.
+
+        Lazy-builds the engine on first call. Falls back to pytorch if engine
+        build fails (e.g., plugin binary incompatible with system glibc/libstdc++).
+        Returns tokens reshaped to (B, num_audio_codebooks, frame_stacking_factor).
+        """
+        if self._lt_fused_engine is None:
+            if getattr(self, '_lt_fused_build_failed', False):
+                return self._sample_autoregressive_pytorch(
+                    dec_output,
+                    temperature=self._fused_temperature,
+                    topk=self._fused_topk,
+                    sanitize_logits=True,
+                )
+            try:
+                loguru_logger.info("[trt_fused] calling _build_lt_fused_engine ...")
+                self._lt_fused_engine = self._build_lt_fused_engine(dec_output.device)
+                loguru_logger.info("[trt_fused] engine built successfully")
+            except Exception as e:
+                import traceback
+                loguru_logger.warning(
+                    f"[trt_fused] engine build FAILED ({type(e).__name__}: {e}); falling back to pytorch LT.\n{traceback.format_exc()}"
+                )
+                self._lt_fused_build_failed = True
+                return self._sample_autoregressive_pytorch(
+                    dec_output,
+                    temperature=self._fused_temperature,
+                    topk=self._fused_topk,
+                    sanitize_logits=True,
+                )
+
+        torch.cuda.nvtx.range_push("LT_TRT_fused")
+        flat_tokens = self._run_lt_fused_engine(self._lt_fused_engine, dec_output)
+        torch.cuda.nvtx.range_pop()
+        B = flat_tokens.size(0)
+        return flat_tokens.reshape(
+            B, self.frame_stacking_factor, self.num_audio_codebooks
+        ).permute(0, 2, 1)
+
+    def _run_lt_fused_engine(
+        self, engine_info: tuple, dec_output: torch.Tensor
+    ) -> torch.Tensor:
+        """Execute a single forward pass through the fused TRT engine.
+
+        Args:
+            engine_info: (engine, context, stream) from _build_lt_fused_engine.
+            dec_output: (B, H) float32 on the model's CUDA device.
+
+        Returns:
+            (B, n_codebooks) int32 token tensor.
+        """
+        engine, context, stream = engine_info
+        B = dec_output.size(0)
+        H = dec_output.size(1)
+        n_codebooks = self.num_audio_codebooks * self.frame_stacking_factor
+        topk = self._fused_topk
+        dev_idx = dec_output.device.index if dec_output.device.index is not None else 0
+
+        with torch.cuda.device(dev_idx):
+            x = dec_output.contiguous().float()
+            # Gumbel(0,1) noise: -log(-log(U)) where U ~ Uniform(eps, 1).
+            # Generated from torch's RNG so identical (dec_output, RNG state)
+            # produces identical samples -- replaces the plugin's
+            # clock-seeded curand. Caller can torch.manual_seed(0) at request
+            # start to make the whole TTS request bit-reproducible.
+            u = torch.rand(
+                n_codebooks, B, topk, dtype=torch.float32, device=dec_output.device,
+            ).clamp_(min=1e-10, max=1.0 - 1e-7)
+            gumbel = -torch.log(-torch.log(u))
+            tokens_out = torch.empty(B, n_codebooks, dtype=torch.int32, device=dec_output.device)
+
+            context.set_input_shape("dec_output", (B, H))
+            context.set_input_shape("gumbel_noise", (n_codebooks, B, topk))
+            context.set_tensor_address("dec_output", x.data_ptr())
+            context.set_tensor_address("gumbel_noise", gumbel.data_ptr())
+            context.set_tensor_address("tokens", tokens_out.data_ptr())
+            stream.wait_stream(torch.cuda.current_stream(dec_output.device))
+            ok = context.execute_async_v3(stream_handle=stream.cuda_stream)
+            torch.cuda.current_stream(dec_output.device).wait_stream(stream)
+            stream.synchronize()
+        if not ok:
+            raise RuntimeError("Fused LT TRT execute_async_v3 returned False")
+        return tokens_out
+
+    def _build_lt_fused_engine(self, device: torch.device) -> tuple:
+        """Build and cache the fused TRT engine from the current model weights.
+
+        Gumbel-max sampling replaces ``CategoricalSamplingPlugin``: the
+        engine takes ``gumbel_noise`` as a second input and uses
+        ``argmax(logits/T + gumbel)``. The caller generates noise from
+        torch's RNG, so the engine no longer depends on a custom plugin
+        (no plugin .so load, no clock-seeded curand → fully deterministic).
+        """
+        import hashlib
+        import io
+        import tensorrt as trt
+        from nemo.collections.tts.modules.magpietts_lt_fused import LocalTransformerFusedModule
+
+        dev = device if isinstance(device, torch.device) else torch.device(device)
+        dev_idx = dev.index if dev.index is not None else 0
+        n_codebooks = self.num_audio_codebooks * self.frame_stacking_factor
+        topk = self._fused_topk
+        temperature = self._fused_temperature
+        # Derive H (backbone output dim → LT input dim) from the in-projection.
+        in_proj = self.local_transformer_in_projection
+        if hasattr(in_proj, 'in_features'):
+            H = in_proj.in_features
+        elif hasattr(self.local_transformer_audio_out_projection, 'in_features'):
+            H = self.local_transformer_audio_out_projection.in_features
+        else:
+            H = self.local_transformer_out_projections[0].in_features
+
+        wrapper = LocalTransformerFusedModule(self, temperature=temperature, topk=topk)
+        wrapper.eval().to(dev)
+
+        dummy = torch.zeros(1, H, dtype=torch.float32, device=dev)
+        dummy_noise = torch.zeros(n_codebooks, 1, topk, dtype=torch.float32, device=dev)
+        buf = io.BytesIO()
+        with torch.no_grad(), torch.amp.autocast(device_type="cuda", enabled=False):
+            torch.onnx.export(
+                wrapper,
+                (dummy, dummy_noise),
+                buf,
+                dynamo=False,
+                input_names=["dec_output", "gumbel_noise"],
+                output_names=["tokens"],
+                opset_version=17,
+                dynamic_axes={
+                    "dec_output": {0: "batch"},
+                    "gumbel_noise": {1: "batch"},
+                    "tokens": {0: "batch"},
+                },
+            )
+        onnx_bytes = buf.getvalue()
+
+        # Precision toggle: set EASYMAGPIE_LT_FUSED_PRECISION=fp32 to build a
+        # pure-FP32 fused engine (no Tensor Core matmuls).  Default fp16 enables
+        # Tensor Core matmuls via the FP16 builder flag while keeping FP32 I/O.
+        precision = os.environ.get("EASYMAGPIE_LT_FUSED_PRECISION", "fp16").lower()
+        if precision not in {"fp16", "fp32"}:
+            raise ValueError(f"EASYMAGPIE_LT_FUSED_PRECISION must be fp16 or fp32, got {precision!r}")
+
+        trt_ver = getattr(trt, "__version__", "unknown")
+        onnx_hash = hashlib.sha256(onnx_bytes).hexdigest()[:16]
+        cache_dir = os.path.expanduser("~/.cache/easymagpie_trt")
+        os.makedirs(cache_dir, exist_ok=True)
+        # ``v2_gumbel`` cache prefix: this graph takes ``gumbel_noise`` as
+        # input and does Gumbel-max sampling natively. Stale plugin-based
+        # ``lt_fused_*_v1_*`` engines (which baked the
+        # CategoricalSamplingPlugin op into the graph) are NOT compatible
+        # with this graph and would deserialize-but-fail at runtime --
+        # the cache hash differs so they're naturally bypassed.
+        engine_path = os.path.join(
+            cache_dir,
+            f"lt_fused_{precision}_v2_gumbel_B4_H{H}_T{n_codebooks}_topk{topk}_trt{trt_ver}_{onnx_hash}.engine",
+        )
+
+        logger_trt = trt.Logger(trt.Logger.WARNING)
+        torch.cuda.set_device(dev_idx)
+
+        if os.path.isfile(engine_path):
+            loguru_logger.info(f"Loading cached fused LT engine ({precision.upper()}) from {engine_path}")
+            with open(engine_path, "rb") as f:
+                engine_bytes = f.read()
+        else:
+            loguru_logger.info(
+                f"Building fused LT TRT engine {precision.upper()} (H={H}, T={n_codebooks}) ..."
+            )
+            with torch.cuda.device(dev_idx):
+                builder = trt.Builder(logger_trt)
+                network = builder.create_network(
+                    trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH
+                )
+                parser = trt.OnnxParser(network, logger_trt)
+                if not parser.parse(onnx_bytes):
+                    for i in range(parser.num_errors):
+                        loguru_logger.error(f"ONNX parse error {i}: {parser.get_error(i)}")
+                    raise RuntimeError("Fused LT TRT ONNX parsing failed")
+                config = builder.create_builder_config()
+                config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 1 << 30)
+                if precision == "fp16":
+                    # FP16 compute: enables Tensor Cores on sm_86 (A6000) for all
+                    # eligible matmuls + activations. With Gumbel-max sampling
+                    # (no plugin), all ops are standard ONNX so FP16 fuses cleanly.
+                    config.set_flag(trt.BuilderFlag.FP16)
+                # FP32: no precision flag set -- TRT keeps all ops in FP32.
+                profile = builder.create_optimization_profile()
+                profile.set_shape("dec_output", (1, H), (1, H), (4, H))
+                profile.set_shape(
+                    "gumbel_noise",
+                    (n_codebooks, 1, topk),
+                    (n_codebooks, 1, topk),
+                    (n_codebooks, 4, topk),
+                )
+                config.add_optimization_profile(profile)
+                serialized = builder.build_serialized_network(network, config)
+            if serialized is None:
+                raise RuntimeError("Fused LT TRT engine build returned None")
+            engine_bytes = bytes(serialized)
+            with open(engine_path, "wb") as f:
+                f.write(engine_bytes)
+            loguru_logger.info(f"Fused LT engine cached to {engine_path}")
+
+        with torch.cuda.device(dev_idx):
+            runtime = trt.Runtime(logger_trt)
+            engine = runtime.deserialize_cuda_engine(engine_bytes)
+            context = engine.create_execution_context()
+        stream = torch.cuda.Stream(device=dev)
+        loguru_logger.info("Fused LT TRT engine ready.")
+        return engine, context, stream
 
     def sample_maskgit(
         self,

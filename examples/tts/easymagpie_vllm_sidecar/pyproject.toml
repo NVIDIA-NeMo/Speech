@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "easymagpie-vllm-sidecar"
+version = "0.1.0"
+description = "vLLM-backed sidecar service for EasyMagpie NemotronH SmallMamba TTS"
+requires-python = ">=3.10"
+dependencies = [
+    # The heavy runtime deps (vllm-omni, torch, mamba-ssm, nemo_toolkit) are
+    # provided by the vllm_omni_env (NemotronH-compatible torch/triton/nccl
+    # pins).  Listing them here would either break the install or force a
+    # version-resolve dance.  Treat this package as "install into an already-
+    # bootstrapped vllm_omni_env".
+    "fastapi",
+    "uvicorn",
+    "httpx",
+]
+
+[project.entry-points."vllm.general_plugins"]
+easymagpie = "vllm_plugin_easymagpie:register"
+
+[project.scripts]
+easymagpie-sidecar = "easymagpie_server.server:main"
+
+[tool.setuptools.packages.find]
+include = ["easymagpie_vllm*", "easymagpie_server*", "vllm_plugin_easymagpie*"]
+exclude = ["dev*", "tests*"]

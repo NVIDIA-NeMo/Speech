@@ -4,7 +4,7 @@
 # Specify the type and an a model identifier to automatically configure the model.
 
 transport:
-  audio_out_10ms_chunks: 10  # use 4 as websocket default, but increasing to a larger number might have less glitches in TTS output
+  audio_out_10ms_chunks: 6  # use 4 as websocket default, but increasing to a larger number might have less glitches in TTS output
   record_audio_data: false
   audio_log_dir: "./audio_logs"
 
@@ -20,7 +20,7 @@ stt:
   model: "nvidia/parakeet_realtime_eou_120m-v1"
   # model: "nvidia/nemotron-speech-streaming-en-0.6b"
   model_config: "./server_configs/stt_configs/nemo_cache_aware_streaming.yaml"
-  device: "cuda"
+  device: "cuda:0"
 
 diar:
   type: nemo
@@ -31,7 +31,7 @@ diar:
   frame_len_in_secs: 0.08  # default for Sortformer, do not change unless using other architechtures
 
 turn_taking:
-  backchannel_phrases_path: "./server/backchannel_phrases.yaml"  # set it to the actual path of the file, or specify a list of backchannel phrases here
+  backchannel_phrases_path: "./backchannel_phrases.yaml"  # set it to the actual path of the file, or specify a list of backchannel phrases here
   max_buffer_size: 2  # num of words more than this amount will interrupt the LLM immediately if not backchannel phrases
   bot_stop_delay: 0.5  # a delay in seconds allowed between server and client audio output, so that the BotStopSpeaking signal is handled not too far away from the actual time that the user hears all audio output
 
@@ -55,9 +55,9 @@ llm:
 
 tts:
   type: nemo
-  model: "kokoro"
-  model_config: "./server_configs/tts_configs/kokoro_82M.yaml"
-  device: "cuda"
+  model: "easy_magpie_smallmamba_vllm"
+  model_config: "./server_configs/tts_configs/easy_magpie_smallmamba_vllm.yaml"
+  device: "cuda:1"
   ignore_strings:  # strings/characters to ignore in TTS
     - "*"
     - "<unk>"

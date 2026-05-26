@@ -1,0 +1,54 @@
+type: nemo
+
+# NemotronH SmallMamba TTS driven through vLLM 0.19.1 (see
+# /mnt/n1_mount/personal/vllm_omni/easymagpie_vllm/ + easymagpie_server/).
+#
+# Two-process architecture:
+#  * SIDECAR (vllm_omni_env): owns the SmallMamba AR backbone + Local
+#    Transformer + audio-code sampling.  Started separately.  See
+#    handoff doc Section 6 for the launch command.
+#  * THIS PROCESS (nemo_virtual_environment): owns the codec encoder
+#    (for context audio) + decoder (for emitting audio) + phoneme
+#    tokenizer.  Streams audio code frames from the sidecar over HTTP.
+#
+# Why split: vLLM 0.19.1 (with the kernels we need) cannot live in
+# nemo_virtual_environment without breaking the existing voice agent;
+# see HANDOFF_vllm_smallmamba_streaming.md Section 4 (pinned decisions).
+
+model: easy_magpie_smallmamba_vllm
+
+# URL of the FastAPI sidecar.  The smoke client default port is 18765 to
+# avoid colliding with the existing vllm serve on 8765.  Override with
+# EM_VLLM_URL if the sidecar is on a different host/port.
+vllm_server_url: "http://127.0.0.1:18765"
+
+# v1 of the vLLM-backed service still loads the AR backbone .nemo locally so
+# we can reuse the parent class's tokenizer + codec helper wiring; only the
+# AR loop is replaced by the sidecar call.  Future revision should strip
+# the AR weight load (see HANDOFF Section 6 "Integration status").
+main_model_id: "/datap/misc/EasyMagpieAssets/NemotronTTS_V0.2/2605_NemotronTTS_SmallMamba/2605_EMTTS_SmallMamba_Step150k.nemo"
+
+# Codec + tokenizer paths are identical to easy_magpie_smallmamba.yaml --
+# we still load them locally for context encoding + audio decoding.
+codec_model_path: "/datap/misc/EasyMagpieAssets/25fps_spectral_codec_with_bandwidth_extension.nemo"
+phoneme_tokenizer_path: "/datap/misc/EasyMagpieAssets/NemotronTTS_V0.2/bpe_ipa_tokenizer_2048_en_de_es_fr_hi_it_vi_zh_ko-KR_pt-BR_ar.json"
+
+# Same context-audio path as smallmamba.yaml; voice + style come from this
+# wav, encoded to 16-codebook audio codes by the codec.
+context_text: "[EN]"
+context_audio_path: "/home/subhankarg/Projects/open_source/dev_examples/Megan/Megan_Generic_00100.wav"
+
+# Streaming + sampling (passed through to the sidecar).
+decode_every_n_frames: 8
+codec_device: "cuda:0"
+streaming: true
+min_sentence_length: 30
+
+# Inference parameters -- forwarded to the sidecar's sampling_params.
+temperature: 0.7
+topk: 80
+max_steps: 300
+
+# Text segmentation (used in the agent's input pipeline; unchanged).
+extra_separator: [',', '\n', '.', '?', '!', ';']
+think_tokens: ['<think>', '</think>']

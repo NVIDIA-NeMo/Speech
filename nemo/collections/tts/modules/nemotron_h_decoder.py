@@ -33,50 +33,26 @@ from torch.nn import CrossEntropyLoss
 from nemo.utils import logging
 
 
-# Try to import optimized kernels, fall back to pure PyTorch if unavailable
-try:
-    from mamba_ssm.ops.triton.selective_state_update import selective_state_update
-    from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined, mamba_split_conv1d_scan_combined
+# All optimized kernels are required. Imports must succeed; no silent fallback.
+# To use the fused Mamba2 / causal-conv1d / flash-attn kernels on this system
+# (Ubuntu 20.04 / GLIBC 2.31), the CUDA `.so`s built against newer toolchains
+# need a stub for `__libc_single_threaded`; run the process with
+#   LD_PRELOAD=/home/subhankarg/.local/lib/libc_single_threaded_stub.so
+# (Their .gnu.version_r entries for GLIBC_2.32 must also be stripped, which
+# was done in-place via tools/strip_glibc_verneed.py — see env setup notes.)
+from mamba_ssm.ops.triton.selective_state_update import selective_state_update
+from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined, mamba_split_conv1d_scan_combined
+MAMBA_SSM_AVAILABLE = True
 
-    MAMBA_SSM_AVAILABLE = True
-except ImportError:
-    selective_state_update = None
-    mamba_chunk_scan_combined = None
-    mamba_split_conv1d_scan_combined = None
-    MAMBA_SSM_AVAILABLE = False
+from mamba_ssm.ops.triton.layernorm_gated import rmsnorm_fn
+RMSNORM_FN_AVAILABLE = True
 
-try:
-    from mamba_ssm.ops.triton.layernorm_gated import rmsnorm_fn
+from causal_conv1d import causal_conv1d_fn, causal_conv1d_update
+CAUSAL_CONV1D_AVAILABLE = True
 
-    RMSNORM_FN_AVAILABLE = True
-except ImportError:
-    rmsnorm_fn = None
-    RMSNORM_FN_AVAILABLE = False
-
-try:
-    from causal_conv1d import causal_conv1d_fn, causal_conv1d_update
-
-    CAUSAL_CONV1D_AVAILABLE = True
-except ImportError:
-    causal_conv1d_fn = None
-    causal_conv1d_update = None
-    CAUSAL_CONV1D_AVAILABLE = False
-
-try:
-    from transformers.utils.import_utils import is_flash_attn_2_available, is_flash_attn_greater_or_equal_2_10
-
-    if is_flash_attn_2_available():
-        from transformers.modeling_flash_attention_utils import _flash_attention_forward
-
-        FLASH_ATTN_AVAILABLE = True
-    else:
-        _flash_attention_forward = None
-        FLASH_ATTN_AVAILABLE = False
-except ImportError:
-    is_flash_attn_2_available = None
-    is_flash_attn_greater_or_equal_2_10 = None
-    _flash_attention_forward = None
-    FLASH_ATTN_AVAILABLE = False
+from transformers.utils.import_utils import is_flash_attn_2_available, is_flash_attn_greater_or_equal_2_10
+from transformers.modeling_flash_attention_utils import _flash_attention_forward
+FLASH_ATTN_AVAILABLE = is_flash_attn_2_available()
 
 
 # Check if fast path is available (all optimized kernels present)
@@ -232,10 +208,21 @@ class HybridMambaAttentionDynamicCache:
     and mamba cache (with constant shape regardless of seq_len).
     """
 
+    # Max attention KV cache length (positions).  Sized to comfortably cover the
+    # longest sequence the TTS streaming path produces (context ~70 + audio up
+    # to ~330 ⇒ ~400).  Keeping it bounded matters because the attention layer
+    # always matmuls over the full buffer when CUDA graphs are enabled.
+    DEFAULT_MAX_ATTN_CACHE_LEN = 1024
+
     def __init__(self, config: NemotronHConfig, batch_size: int, dtype=torch.float16, device=None):
         self.dtype = dtype
         self.has_previous_state = False
         self.conv_kernel_size = config.conv_kernel
+        self.batch_size = batch_size
+        self.device = device
+        self.max_attn_cache_len = getattr(
+            config, "max_attn_cache_len", self.DEFAULT_MAX_ATTN_CACHE_LEN
+        )
 
         intermediate_size = config.mamba_num_heads * config.mamba_head_dim
         ssm_state_size = config.ssm_state_size
@@ -262,6 +249,8 @@ class HybridMambaAttentionDynamicCache:
 
         self.key_cache = [torch.tensor([[]] * batch_size, device=device) for _ in range(config.num_hidden_layers)]
         self.value_cache = [torch.tensor([[]] * batch_size, device=device) for _ in range(config.num_hidden_layers)]
+        # Per-layer write position into the static KV buffer (logical seq len).
+        self.kv_seq_lens = [0] * config.num_hidden_layers
 
     def update(
         self,
@@ -270,19 +259,51 @@ class HybridMambaAttentionDynamicCache:
         layer_idx: int,
         cache_kwargs: Optional[Dict[str, Any]] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        if self.key_cache[layer_idx].shape[-1] == 0:
-            self.key_cache[layer_idx] = key_states
-            self.value_cache[layer_idx] = value_states
-        else:
-            self.key_cache[layer_idx] = torch.cat([self.key_cache[layer_idx], key_states], dim=2)
-            self.value_cache[layer_idx] = torch.cat([self.value_cache[layer_idx], value_states], dim=2)
-        return self.key_cache[layer_idx], self.value_cache[layer_idx]
+        """Static-KV update — pre-allocate (B, H_kv, max_attn_cache_len, D)
+        buffers on the first call, then write in-place at `kv_seq_lens[layer_idx]`.
+
+        Address stability of `self.key_cache[layer_idx]` / `self.value_cache[layer_idx]`
+        across iterations is required for CUDA-graph replay; the previous
+        `torch.cat`-grow pattern produced a new tensor (new address) each step
+        and broke graph capture.
+
+        Returns slices `[:, :, :new_len, :]` of the static buffers — these views
+        share the buffer's `data_ptr` (offset 0) so addresses stay stable; only
+        the slice length grows step-by-step.  `torch.compile(dynamic=True)` then
+        traces a single dynamic-shape graph and Inductor's cudagraph_trees can
+        reuse one capture per unique length bucket.
+        """
+        new_seq_len = key_states.shape[2]
+        cur = self.kv_seq_lens[layer_idx]
+        if self.key_cache[layer_idx].dim() < 4:
+            # First call: allocate the static (B, H_kv, max_attn_cache_len, D) buffers.
+            b, h_kv, _, d = key_states.shape
+            self.key_cache[layer_idx] = torch.zeros(
+                b, h_kv, self.max_attn_cache_len, d,
+                device=key_states.device, dtype=key_states.dtype,
+            )
+            self.value_cache[layer_idx] = torch.zeros(
+                b, h_kv, self.max_attn_cache_len, d,
+                device=value_states.device, dtype=value_states.dtype,
+            )
+
+        end = cur + new_seq_len
+        if end > self.max_attn_cache_len:
+            raise RuntimeError(
+                f"HybridMambaAttentionDynamicCache: attention KV cache overflow at "
+                f"layer {layer_idx}: want {end} positions, max_attn_cache_len="
+                f"{self.max_attn_cache_len}. Increase DEFAULT_MAX_ATTN_CACHE_LEN."
+            )
+        self.key_cache[layer_idx][:, :, cur:end, :] = key_states
+        self.value_cache[layer_idx][:, :, cur:end, :] = value_states
+        self.kv_seq_lens[layer_idx] = end
+        return self.key_cache[layer_idx][:, :, :end, :], self.value_cache[layer_idx][:, :, :end, :]
 
     def get_seq_length(self, layer_idx: Optional[int] = 0) -> int:
         layer_idx = self.transformer_layers[0] if layer_idx not in self.transformer_layers else layer_idx
         if len(self.key_cache) <= layer_idx:
             return 0
-        return self.key_cache[layer_idx].shape[-2] if self.key_cache[layer_idx].dim() > 2 else 0
+        return self.kv_seq_lens[layer_idx]
 
     def update_conv_state(self, layer_idx: int, new_conv_state: torch.Tensor, cache_init: bool = False):
         if cache_init:

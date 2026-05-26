@@ -23,7 +23,6 @@ coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     asr.model_name="stt_en_fastconformer_transducer_large" \
     streaming.batch_size=5 \
     lang=en \
-    enable_pnc=False \
     enable_itn=False \
     enable_nmt=False \
     asr_output_granularity=segment
@@ -38,7 +37,6 @@ coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     asr.model_name="nvidia/stt_en_fastconformer_tdt_large" \
     streaming.batch_size=5 \
     lang=en \
-    enable_pnc=False \
     enable_itn=False \
     enable_nmt=False \
     asr_output_granularity=segment
@@ -53,7 +51,6 @@ coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     asr.model_name="nvidia/nemotron-speech-streaming-en-0.6b" \
     streaming.batch_size=5 \
     lang=en \
-    enable_pnc=False \
     enable_itn=False \
     enable_nmt=False \
     asr_output_granularity=segment

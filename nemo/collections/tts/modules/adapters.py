@@ -24,7 +24,7 @@ from nemo.core.classes import adapter_mixins
 
 
 class FFTransformerDecoderAdapter(FFTransformerDecoder, adapter_mixins.AdapterModuleMixin):
-    """ Inherit from FFTransformerDecoder and add support for adapter"""
+    """Inherit from FFTransformerDecoder and add support for adapter"""
 
     def add_adapter(self, name: str, cfg: dict):
         cfg = self._update_adapter_cfg_input_dim(cfg)
@@ -54,13 +54,13 @@ class FFTransformerDecoderAdapter(FFTransformerDecoder, adapter_mixins.AdapterMo
 class FFTransformerEncoderAdapter(
     FFTransformerDecoderAdapter, FFTransformerEncoder, adapter_mixins.AdapterModuleMixin
 ):
-    """ Inherit from FFTransformerEncoder and add support for adapter"""
+    """Inherit from FFTransformerEncoder and add support for adapter"""
 
     pass
 
 
 class AlignmentEncoderAdapter(AlignmentEncoder, adapter_mixins.AdapterModuleMixin):
-    """ Inherit from AlignmentEncoder and add support for adapter"""
+    """Inherit from AlignmentEncoder and add support for adapter"""
 
     def add_adapter(self, name: str, cfg: dict):
 
@@ -106,7 +106,7 @@ class AlignmentEncoderAdapter(AlignmentEncoder, adapter_mixins.AdapterModuleMixi
 
 
 class TemporalPredictorAdapter(TemporalPredictor, adapter_mixins.AdapterModuleMixin):
-    """ Inherit from TemporalPredictor and add support for adapter"""
+    """Inherit from TemporalPredictor and add support for adapter"""
 
     def add_adapter(self, name: str, cfg: dict):
         cfg = self._update_adapter_cfg_input_dim(cfg)

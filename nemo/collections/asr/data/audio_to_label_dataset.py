@@ -131,7 +131,11 @@ def get_tarred_classification_label_dataset(
 
 
 def get_concat_tarred_speech_label_dataset(
-    featurizer, config: dict, shuffle_n: int, global_rank: int, world_size: int,
+    featurizer,
+    config: dict,
+    shuffle_n: int,
+    global_rank: int,
+    world_size: int,
 ):
     tarred_audio_filepaths = config['tarred_audio_filepaths']
     manifest_filepaths = config['manifest_filepath']
@@ -143,7 +147,11 @@ def get_concat_tarred_speech_label_dataset(
         conf['manifest_filepath'] = manifest_filepath
         conf['tarred_audio_filepaths'] = tarred_audio_filepath
         dataset = get_tarred_speech_label_dataset(
-            config=conf, featurizer=featurizer, shuffle_n=shuffle_n, global_rank=global_rank, world_size=world_size,
+            config=conf,
+            featurizer=featurizer,
+            shuffle_n=shuffle_n,
+            global_rank=global_rank,
+            world_size=world_size,
         )
         datasets.append(dataset)
 
@@ -160,7 +168,11 @@ def get_concat_tarred_speech_label_dataset(
 
 
 def get_tarred_speech_label_dataset(
-    featurizer, config: dict, shuffle_n: int, global_rank: int, world_size: int,
+    featurizer,
+    config: dict,
+    shuffle_n: int,
+    global_rank: int,
+    world_size: int,
 ) -> audio_to_label.TarredAudioToSpeechLabelDataset:
     """
     InInstantiates a Speech Label (e.g. VAD, speaker recognition) TarredAudioLabelDataset.

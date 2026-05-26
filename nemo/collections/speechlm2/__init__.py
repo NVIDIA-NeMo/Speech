@@ -12,7 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from .data import DataModule, DuplexEARTTSDataset, DuplexS2SDataset, DuplexSTTDataset, SALMDataset
-from .models import SALM, DuplexEARTTS, DuplexS2SModel, DuplexS2SSpeechDecoderModel, DuplexSTTModel, SALMWithAsrDecoder
+from .models import (
+    SALM,
+    DuplexEARTTS,
+    DuplexS2SModel,
+    DuplexS2SSpeechDecoderModel,
+    DuplexSTTModel,
+    NemotronVoiceChat,
+    SALMAutomodel,
+    SALMWithAsrDecoder,
+)
 
 __all__ = [
     'DataModule',
@@ -25,5 +34,7 @@ __all__ = [
     'DuplexS2SSpeechDecoderModel',
     'DuplexSTTModel',
     'SALM',
+    'SALMAutomodel',
     'SALMWithAsrDecoder',
+    'NemotronVoiceChat',
 ]

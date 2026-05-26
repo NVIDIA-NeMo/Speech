@@ -17,7 +17,6 @@
 
 """Setup for pip package."""
 
-import codecs
 import importlib.util
 import os
 import subprocess
@@ -78,10 +77,15 @@ extras_require = {
     'tts': req_file("requirements_tts.txt"),
     'slu': req_file("requirements_slu.txt"),
     'audio': req_file("requirements_audio.txt"),
+    'speechlm2-only': req_file("requirements_speechlm2.txt"),
 }
 
 
 extras_require['all'] = list(chain(val for key, val in extras_require.items()))
+
+# CUDA version extras (not included in 'all' - user must explicitly select)
+extras_require['cu12'] = req_file("requirements_cu12.txt")
+extras_require['cu13'] = req_file("requirements_cu13.txt")
 
 # Add lightning requirements as needed
 extras_require['common'] = extras_require['common-only']
@@ -123,6 +127,13 @@ extras_require['slu'] = list(
     chain(
         extras_require['slu'],
         extras_require['asr'],
+    )
+)
+extras_require['speechlm2'] = list(
+    chain(
+        extras_require['speechlm2-only'],
+        extras_require['asr'],
+        extras_require['tts'],
     )
 )
 

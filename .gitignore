@@ -192,3 +192,6 @@ node_modules/
 bot_server.*
 audio_logs/
 eval_results/
+
+# agents
+.claude/settings.local.json

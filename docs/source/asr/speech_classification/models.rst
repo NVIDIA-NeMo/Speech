@@ -19,9 +19,9 @@ The Checkpoints page also contains benchmark results for the available ASR model
 MatchboxNet (Speech Commands) 
 ------------------------------
 
-MatchboxNet :cite:`sc-models-matchboxnet` is an end-to-end neural network for speech command recognition based on :ref:`QuartzNet <QuartzNet_model>`.
+MatchboxNet :cite:`sc-models-matchboxnet` is an end-to-end neural network for speech command recognition.
 
-Similarly to QuartzNet, the MatchboxNet family of models are denoted as MatchBoxNet_[BxRxC] where B is the number of blocks, and R is the number of convolutional sub-blocks within a block, and C is the number of channels. Each sub-block contains a 1-D *separable* convolution, batch normalization, ReLU, and dropout:
+The MatchboxNet family of models are denoted as MatchBoxNet_[BxRxC] where B is the number of blocks, and R is the number of convolutional sub-blocks within a block, and C is the number of channels. Each sub-block contains a 1-D *separable* convolution, batch normalization, ReLU, and dropout:
 
     .. image:: images/matchboxnet_vertical.png
         :align: center

@@ -4,5 +4,4 @@ Model,Model Base Class
 `stt_ru_conformer_transducer_large <https://huggingface.co/nvidia/stt_ru_conformer_transducer_large>`_,EncDecRNNTBPEModel
 `stt_kk_ru_fastconformer_hybrid_large <https://huggingface.co/nvidia/stt_kk_ru_fastconformer_hybrid_large>`_,EncDecHybridRNNTCTCBPEModel
 `stt_ru_conformer_ctc_large <https://huggingface.co/nvidia/stt_ru_conformer_ctc_large>`_,EncDecCTCModelBPE
-`stt_ru_quartznet15x5 <https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_ru_quartznet15x5>`_,EncDecCTCModel
 `stt_multilingual_fastconformer_hybrid_large_pc <https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_multilingual_fastconformer_hybrid_large_pc>`_,EncDecHybridRNNTCTCBPEModel

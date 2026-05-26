@@ -62,7 +62,10 @@ def __extract_file(filepath, data_dir):
 
 def __process_data(data_root):
     text_normalizer = Normalizer(
-        lang="en", input_case="cased", overwrite_cache=True, cache_dir=data_root / "cache_dir",
+        lang="en",
+        input_case="cased",
+        overwrite_cache=True,
+        cache_dir=data_root / "cache_dir",
     )
     text_normalizer_call_kwargs = {"punct_pre_process": True, "punct_post_process": True}
     normalizer_call = lambda x: text_normalizer.normalize(x, **text_normalizer_call_kwargs)

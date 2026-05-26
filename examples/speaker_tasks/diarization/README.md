@@ -16,6 +16,11 @@ Documentation section for speaker related tasks can be found at:
 - [ecapa_tdnn](https://ngc.nvidia.com/catalog/models/nvidia:nemo:ecapa_tdnn)
 - [speakerverification_speakernet](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models/speakerverification_speakernet)
 
+## Supported End-to-End Speaker Diarization models
+- [diar_sortformer_4spk-v1](https://huggingface.co/nvidia/diar_sortformer_4spk-v1) — Offline Sortformer diarizer (up to 4 speakers)
+- [diar_streaming_sortformer_4spk-v2](https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2) — Streaming Sortformer diarizer (up to 4 speakers)
+- [diar_streaming_sortformer_4spk-v2.1](https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1) — Streaming Sortformer diarizer with improved meeting speech robustness
+
 ## Supported Pretrained VAD models
 - [vad_multilingual_marblenet](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models/vad_multilingual_marblenet)
 - [vad_marblenet](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models/vad_marblenet)
@@ -23,10 +28,8 @@ Documentation section for speaker related tasks can be found at:
 
 ## Supported ASR models
 QuartzNet, CitriNet and Conformer-CTC models are supported. 
-Recommended models on NGC:
-- [stt_en_quartznet15x5](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models/stt_en_quartznet15x5)
-- [stt_en_conformer_ctc_large](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models/stt_en_conformer_ctc_large)
-- [stt_en_citrinet_1024](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models/stt_en_citrinet_1024)
+Recommended models HuggingFace:
+- [stt_en_conformer_ctc_large](https://huggingface.co/nvidia/stt_en_conformer_ctc_large/tree/main)
 
 ## Performance
 
@@ -43,31 +46,100 @@ Diarization Error Rate (DER) table of `titanet_large.nemo` model on well known e
 * The above result is based on the oracle Voice Activity Detection (VAD) result.
 * This result is based on [titanet_large.nemo](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models/titanet_large) model.
 
-#### Neural Diarizer 
-Multi-scale Diarization Decoder (MSDD) model [Multi-scale Diarization decoder](https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/asr/speaker_diarization/model.html)
-Diarization Error Rate (DER) table of [diar_msdd_telephonic.nemo](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models/diar_msdd_telephonic) model on telephonic speech datasets.
+#### End-to-End Diarizer: Sortformer
 
-|                                 CH109| Forgiving                       | Fair                             | Full                            |
-|-------------------------------------:|---------------------------------|----------------------------------|---------------------------------|
-|              (collar, ignore_overlap)|  (0.25, True)                   |  (0.25, True)                    |   (0.0, False)                  |
-|                          False Alarm | -                               | 0.62%                            | 1.80%                           |
-|                                 Miss | -                               | 2.47%                            | 5.96%                           |
-|                            Confusion | -                               | 0.43%                            | 2.10%                           |
-|                                  DER | **0.58%**                       | **3.52%**                        | **9.86%**                       |
+[Sortformer](https://arxiv.org/abs/2409.06656) is a novel end-to-end neural model for speaker diarization that resolves the permutation problem by following the arrival-time order of speech segments from each speaker. Sortformer consists of a Fast-Conformer (NEST) encoder followed by a Transformer encoder with sigmoid outputs for each speaker. Both offline and streaming variants are available.
 
+##### [diar_sortformer_4spk-v1](https://huggingface.co/nvidia/diar_sortformer_4spk-v1) (Offline)
 
-|                             CALLHOME | Forgiving                       | Fair                             | Full                            |
-|-------------------------------------:|---------------------------------|----------------------------------|---------------------------------|
-|              (collar, ignore_overlap)|  (0.25, True)                   |  (0.25, True)                    |   (0.0, False)                  |
-|                          False Alarm | -                               | 1.05%                            | 2.24%                           |
-|                                 Miss | -                               | 7.62%                            | 11.09%                          |
-|                            Confusion | -                               | 4.06%                            | 6.03%                           |
-|                                  DER | **4.15%**                       | **12.73%**                       | **19.37%**                      |
+An offline Sortformer diarizer with an 18-layer NEST encoder (L-size) and 18-layer Transformer encoder (hidden size 192), supporting up to 4 speakers. Trained on ~7,180 hours of real conversations and simulated audio mixtures.
 
-* Evaluation setting: Oracle VAD <br> Unknown number of speakers (max. 8)
-* Clustering parameter: `max_rp_threshold=0.15` 
-* All models were tested using the domain specific `.yaml` files which can be found in `conf/inference/` folder.
-* The above result is based on the oracle Voice Activity Detection (VAD) result.
+```python
+from nemo.collections.asr.models import SortformerEncLabelModel
+diar_model = SortformerEncLabelModel.from_pretrained("nvidia/diar_sortformer_4spk-v1")
+diar_model.eval()
+predicted_segments = diar_model.diarize(audio="/path/to/audio.wav", batch_size=1)
+```
+
+Diarization Error Rate (DER) — all evaluations include overlapping speech:
+
+| Dataset | Collar | DER (no PP) | DER (with PP) |
+|:-------:|:------:|:-----------:|:-------------:|
+| DIHARD3-Eval (<=4spk) | 0.0s | 16.28 | **14.76** |
+| CALLHOME-part2 (2spk) | 0.25s | 6.49 | **5.85** |
+| CALLHOME-part2 (3spk) | 0.25s | 10.01 | **8.46** |
+| CALLHOME-part2 (4spk) | 0.25s | 14.14 | **12.59** |
+| CH109 | 0.25s | **6.27** | 6.86 |
+
+##### [diar_streaming_sortformer_4spk-v2](https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2) (Streaming)
+
+A streaming version of Sortformer using an Arrival-Order Speaker Cache (AOSC) for consistent speaker tracking across chunks. Uses a 17-layer NEST encoder and 18-layer Transformer encoder. Supports configurable latency from ultra-low (0.32s) to very-high (30.4s).
+
+```python
+from nemo.collections.asr.models import SortformerEncLabelModel
+diar_model = SortformerEncLabelModel.from_pretrained("nvidia/diar_streaming_sortformer_4spk-v2")
+diar_model.eval()
+diar_model.sortformer_modules.chunk_len = 340
+diar_model.sortformer_modules.chunk_right_context = 40
+diar_model.sortformer_modules.fifo_len = 40
+diar_model.sortformer_modules.spkcache_update_period = 300
+predicted_segments = diar_model.diarize(audio="/path/to/audio.wav", batch_size=1)
+```
+
+Diarization Error Rate (DER) with post-processing — all evaluations include overlapping speech:
+
+| Dataset | Collar | 30.4s latency | 10.0s latency | 1.04s latency | 0.32s latency |
+|:-------:|:------:|:-------------:|:-------------:|:-------------:|:-------------:|
+| DIHARD III Eval (<=4spk) | 0.0s | 13.45 | 13.75 | 13.24 | 13.44 |
+| DIHARD III Eval (>=5spk) | 0.0s | 41.40 | 41.41 | 42.56 | 43.73 |
+| CALLHOME-part2 (2spk) | 0.25s | 5.34 | 6.05 | 6.57 | 6.91 |
+| CALLHOME-part2 (3spk) | 0.25s | 9.22 | 9.88 | 10.05 | 10.45 |
+| CALLHOME-part2 (4spk) | 0.25s | 11.29 | 11.72 | 12.44 | 13.70 |
+| CH109 | 0.25s | 4.61 | 4.80 | 4.88 | 5.27 |
+
+##### [diar_streaming_sortformer_4spk-v2.1](https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1) (Streaming, improved)
+
+An improved streaming Sortformer with greater robustness for meeting speech scenarios. Same architecture as v2 but with additional training on meeting corpora (DiPCo, AliMeeting, NOTSOFAR1) and forced-alignment-based ground-truth RTTMs for AMI and AliMeeting.
+
+```python
+from nemo.collections.asr.models import SortformerEncLabelModel
+diar_model = SortformerEncLabelModel.from_pretrained("nvidia/diar_streaming_sortformer_4spk-v2.1")
+diar_model.eval()
+diar_model.sortformer_modules.chunk_len = 340
+diar_model.sortformer_modules.chunk_right_context = 40
+diar_model.sortformer_modules.fifo_len = 40
+diar_model.sortformer_modules.spkcache_update_period = 300
+predicted_segments = diar_model.diarize(audio="/path/to/audio.wav", batch_size=1)
+```
+
+Diarization Error Rate (DER) — all evaluations include overlapping speech:
+
+**Telephonic and General-Purpose Speech:**
+
+| Dataset | Collar | 30.4s latency | 1.04s latency |
+|:-------:|:------:|:-------------:|:-------------:|
+| DIHARD III Eval (<=4spk) | 0.0s | 14.84 | 15.09 |
+| DIHARD III Eval (full) | 0.0s | 19.49 | 20.21 |
+| CALLHOME-part2 (full) | 0.25s | 10.10 | 11.19 |
+| CH109 | 0.25s | 5.04 | 5.09 |
+
+**Meeting Speech (v2.1 vs v2 comparison):**
+
+| Dataset | Collar | v2.1 (30.4s) | v2 (30.4s) | v2.1 (1.04s) | v2 (1.04s) |
+|:-------:|:------:|:------------:|:----------:|:------------:|:----------:|
+| AliMeeting Test (near) | 0.0s | **11.73** | 19.63 | **12.60** | 19.98 |
+| AliMeeting Test (far) | 0.0s | **13.55** | 21.09 | **15.60** | 22.09 |
+| AMI Test (IHM) | 0.0s | **15.90** | 22.39 | **16.67** | 25.11 |
+| AMI Test (SDM) | 0.0s | **17.80** | 28.56 | **20.57** | 31.34 |
+| NOTSOFAR1 Eval SC (full) | 0.0s | **27.07** | 33.43 | **28.75** | 34.52 |
+
+##### Example inference script for end-to-end diarizer
+```bash
+python neural_diarizer/e2e_diarize_speech.py \
+    model_path=<path to .nemo or HuggingFace model name> \
+    dataset_manifest=<path to manifest file> \
+    batch_size=1
+```
 
 ## Run Speaker Diarization on Your Audio Files
 
@@ -79,17 +151,6 @@ Diarization Error Rate (DER) table of [diar_msdd_telephonic.nemo](https://catalo
     diarizer.speaker_embeddings.parameters.save_embeddings=False \
     diarizer.vad.model_path=<pretrained model name or path to .nemo> \
     diarizer.speaker_embeddings.model_path=<pretrained speaker embedding model name or path to .nemo> 
-```
-
-#### Example script for neural diarizer: with system-VAD
-```bash
-  python neural_diarizer/multiscale_diar_decoder_infer.py \
-    diarizer.manifest_filepath=<path to manifest file> \
-    diarizer.out_dir='demo_output' \
-    diarizer.speaker_embeddings.parameters.save_embeddings=False \
-    diarizer.vad.model_path=<pretrained model name or path to .nemo> \
-    diarizer.speaker_embeddings.model_path=<pretrained speaker embedding model name or path to .nemo> \
-    diarizer.msdd_model.model_path=<pretrained MSDD model name or path .nemo> \
 ```
 
 If you have oracle VAD files and groundtruth RTTM files for evaluation:
@@ -140,20 +201,6 @@ You could also download *.nemo files from [this link](https://ngc.nvidia.com/cat
 
 Multiscale diarization system employs multiple scales at the same time to obtain a finer temporal resolution. To use multiscale feature, at least two scales and scale weights should be provided. The scales should be provided in descending order, from the longest scale to the base scale (the shortest). If multiple scales are provided, multiscale_weights must be provided in list format. The following example shows how multiscale parameters are specified and the recommended parameters.
 
-- **`diarizer.msdd_model.model_path`: neural diarizer (multiscale diarization decoder) name**
-
-If you want to use a neural diarizer model (e.g., MSDD model), specify the name of the neural diarizer model, then the script will download the model from NGC. Currently, we support 'diar_msdd_telephonic'.
-
-Note that you should not specify a scale setting that does not match with the MSDD model you are using. For example, `diar_msdd_telephonic` model is based on 5 scales as in the configs in model configs.
-
-`diarizer.speaker_embeddings.model_path='diar_msdd_telephonic'
-
-You could also download [diar_msdd_telephonic](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models/diar_msdd_telephonic)
-and specify the full path name to the speaker embedding model file (`*.nemo`).
-
-`diarizer.msdd_model.model_path='path/to/diar_msdd_telephonic.nemo'` 
- 
-
 #### Example script: single-scale and multiscale
 
 Single-scale setting:
@@ -177,7 +224,7 @@ Multiscale setting (base scale - window_length 0.5 s and shift_length 0.25):
  
 <br/>
 
-## Run Speech Recognition with Speaker Diarization
+## Run Speech Recognition with Clustering based Speaker Diarization
 
 Using the script `offline_diar_with_asr_infer.py`, you can transcribe your audio recording with speaker labels as shown below:
 
@@ -187,7 +234,7 @@ Using the script `offline_diar_with_asr_infer.py`, you can transcribe your audio
 [00:12.10 - 00:13.97] speaker_0: well it's the middle of the week or whatever so
 ```
 
-Currently, NeMo offline diarization inference supports QuartzNet English model and ConformerCTC ASR models (e.g.,`QuartzNet15x5Base-En`, `stt_en_conformer_ctc_large`). 
+Currently, offline clustering diarization inference supports ConformerCTC ASR models (e.g.,`stt_en_conformer_ctc_large`). 
 
 #### Example script
 

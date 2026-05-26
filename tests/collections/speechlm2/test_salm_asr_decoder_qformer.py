@@ -161,7 +161,7 @@ def test_salm_dataset(dataset, prompt_formatter, training_cutset_batch):
     tokenized = training_cutset_batch[0].input_ids
     assert (
         prompt_formatter.tokenizer.tokenizer.decode(tokenized) ==
-        f"<s> [INST] Repeat after me: {AUDIO_LOCATOR_TAG}  [/INST] Some text transcription. </s>"
+        f"<s> [INST] Repeat after me: {AUDIO_LOCATOR_TAG} [/INST] Some text transcription. </s>"
     )
     # fmt: on
     batch = dataset[training_cutset_batch]

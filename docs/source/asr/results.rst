@@ -1,3 +1,5 @@
+:orphan:
+
 Checkpoints
 ===========
 
@@ -44,14 +46,14 @@ the ASR Model class. In general, you can load any of these models with code in t
 
 Where the model name is the value under "Model Name" entry in the tables below.
 
-For example, to load the base English QuartzNet model for speech recognition, run:
+For example, to load the Parakeet TDT model for speech recognition, run:
 
 .. code-block:: python
 
-  model = nemo_asr.models.ASRModel.from_pretrained(model_name="QuartzNet15x5Base-En")
+  model = nemo_asr.models.ASRModel.from_pretrained(model_name="nvidia/parakeet-tdt-0.6b-v2")
 
-You can also call :code:`from_pretrained()` from the specific model class (such as :code:`EncDecCTCModel`
-for QuartzNet) if you need to access a specific model functionality.
+You can also call :code:`from_pretrained()` from the specific model class (such as :code:`EncDecRNNTBPEModel`
+for Parakeet) if you need to access a specific model functionality.
 
 If you would like to programmatically list the models available for a particular base class, you can use the
 :code:`list_available_models()` method.
@@ -259,7 +261,7 @@ Automatic Speech Recognition Models
 
 Speech Recognition
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-Below is a list of the high quality ASR models available in NeMo for specific languages, all ASR models can be found in :doc:`All checkpoints <./all_chkpt>`. 
+Below is a list of the high quality ASR models available in NeMo for specific languages. All ASR models can be found in :doc:`ASR Model Checkpoints <./asr_checkpoints>`. 
 
 Multilingual Multitask
 ^^^^^^^^^^^^^^^^^^^^^^

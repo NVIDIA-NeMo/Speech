@@ -103,6 +103,7 @@ stream = p.open(
     output=True,
 )
 
+
 # read data
 def generator(w, s):
     d = w.readframes(CHUNK)

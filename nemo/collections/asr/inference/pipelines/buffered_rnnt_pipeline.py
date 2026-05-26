@@ -132,8 +132,6 @@ class BufferedRNNTPipeline(BasePipeline):
         self.return_tail_result = cfg.return_tail_result
         self.tokens_to_move = self.punctuation_ids.union(self.language_token_ids)
 
-        # Keep small amount of extra padding
-        self.tail_padding_in_samples = max(int(self.chunk_size * self.sample_rate * 0.45), 6400)
         self.zero_encoded = self.init_zero_enc() if self.right_padding else None
 
     def init_endpointer(self) -> None:
@@ -228,9 +226,8 @@ class BufferedRNNTPipeline(BasePipeline):
         """
         state = RNNTStreamingState()
         state.set_global_offset(-self.initial_delay)
-        new_options = options.augment_with_defaults(
-            default_enable_itn=self.text_processor.is_itn_enabled(),
-            default_enable_pnc=self.text_processor.is_pnc_enabled(),
+        new_options = options.fill_defaults(
+            default_enable_itn=self.text_processor.itn_enabled,
             default_enable_nmt=self.nmt_enabled,
             default_source_language=self.nmt_model.source_language if self.nmt_enabled else None,
             default_target_language=self.nmt_model.target_language if self.nmt_enabled else None,
@@ -314,10 +311,10 @@ class BufferedRNNTPipeline(BasePipeline):
             buffers.append(buffer.unsqueeze_(0))
 
         # Only final frames have right padding
-        # Keep some amount of extra padding to avoid the performance degradation
-        right_paddings = torch.tensor(
-            [frame.size - frame.valid_size - self.tail_padding_in_samples for frame in frames], device=self.device
-        ).clamp(min=0)
+        # Calculate right paddings
+        right_paddings = torch.tensor([frame.size - frame.valid_size for frame in frames], device=self.device).clamp(
+            min=0
+        )
 
         # Create and adjust the buffer lens
         buffer_lens = torch.tensor([buffers[0].size(1)] * len(buffers), device=self.device)
@@ -808,6 +805,5 @@ class BufferedRNNTPipeline(BasePipeline):
             device=self.device,
             pad_last_frame=True,
             right_pad_features=self.right_padding,
-            tail_padding_in_samples=self.tail_padding_in_samples,
         )
         return request_generator

@@ -305,7 +305,7 @@ def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List[Hypothesis
         if cfg.decoder_type and cfg.decoder_type != 'rnnt':
             raise ValueError('RNNT model only support rnnt decoding!')
 
-    if cfg.decoder_type and hasattr(asr_model.encoder, 'set_default_att_context_size'):
+    if cfg.att_context_size and hasattr(asr_model.encoder, 'set_default_att_context_size'):
         asr_model.encoder.set_default_att_context_size(cfg.att_context_size)
 
     # Setup decoding strategy

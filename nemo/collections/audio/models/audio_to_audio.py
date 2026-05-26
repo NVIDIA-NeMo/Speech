@@ -18,6 +18,7 @@ import tempfile
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Union
 
+import einops
 import hydra
 import librosa
 import soundfile as sf
@@ -50,7 +51,9 @@ class AudioToAudioModel(ModelPT, ABC):
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
         super().__init__(cfg=cfg, trainer=trainer)
 
+        self.sample_rate = self._cfg.sample_rate
         self._setup_loss()
+        self.setup_optimization_flags()
 
     def _setup_loss(self):
         """Setup loss for this model."""
@@ -129,6 +132,55 @@ class AudioToAudioModel(ModelPT, ABC):
             logging.info(
                 'Setup metrics for %s, dataloader %d: %s', tag, dataloader_idx, ', '.join(metrics_dataloader_idx)
             )
+
+    def _parse_batch(self, batch):
+        """Parse a batch into input signal, target signal, and input length.
+
+        Handles both dict-style (lhotse) and tuple-style (AudioToTargetDataset)
+        batches, and ensures signals are in multi-channel format (B, C, T).
+
+        Returns:
+            Tuple of (input_signal, target_signal, input_length).
+        """
+        if isinstance(batch, dict):
+            # Lhotse dataloaders produce dict batches
+            input_signal = batch['input_signal']
+            input_length = batch['input_length']
+            target_signal = batch['target_signal']
+        else:
+            # Standard audio datasets produce tuple batches
+            input_signal, input_length, target_signal, _ = batch
+
+        if input_signal.ndim == 2:
+            input_signal = einops.rearrange(input_signal, 'B T -> B 1 T')
+        if target_signal.ndim == 2:
+            target_signal = einops.rearrange(target_signal, 'B T -> B 1 T')
+
+        return input_signal, target_signal, input_length
+
+    @abstractmethod
+    def _compute_train_loss(self, input_signal, target_signal, input_length):
+        """Compute training loss from parsed batch signals.
+
+        Args:
+            input_signal: input audio tensor (B, C, T)
+            target_signal: target audio tensor (B, C, T)
+            input_length: length of each example in the batch (B,)
+
+        Returns:
+            Scalar loss tensor.
+        """
+        pass
+
+    def training_step(self, batch, batch_idx):
+        input_signal, target_signal, input_length = self._parse_batch(batch)
+        loss = self._compute_train_loss(input_signal, target_signal, input_length)
+
+        self.log('train_loss', loss)
+        self.log('learning_rate', self._optimizer.param_groups[0]['lr'])
+        self.log('global_step', torch.tensor(self.trainer.global_step, dtype=torch.float32))
+
+        return loss
 
     @abstractmethod
     def evaluation_step(self, batch, batch_idx, dataloader_idx: int = 0, tag: str = 'val'):
@@ -313,6 +365,23 @@ class AudioToAudioModel(ModelPT, ABC):
         temporary_dataloader = self._setup_dataloader_from_config(config=DictConfig(dl_config))
         return temporary_dataloader
 
+    def _normalize(self, signal: torch.Tensor):
+        """Normalize signal so its peak amplitude is 1.
+
+        Args:
+            signal: tensor with shape (B, C, T)
+
+        Returns:
+            Tuple of (normalized_signal, norm_scale). Pass norm_scale to
+            _denormalize to restore the original scale.
+        """
+        norm_scale = torch.amax(signal.abs(), dim=(-1, -2), keepdim=True)
+        return signal / (norm_scale + self.eps), norm_scale
+
+    def _denormalize(self, signal: torch.Tensor, norm_scale: torch.Tensor) -> torch.Tensor:
+        """Restore original scale after _normalize."""
+        return signal * (norm_scale + self.eps)
+
     @staticmethod
     def match_batch_length(input: torch.Tensor, batch_length: int) -> torch.Tensor:
         """Trim or pad the output to match the batch length.
@@ -467,11 +536,10 @@ class AudioToAudioModel(ModelPT, ABC):
         return list_of_models
 
     def setup_optimization_flags(self):
-        """
-        Utility method that must be explicitly called by the subclass in order to support optional optimization flags.
-        This method is the only valid place to access self.cfg prior to DDP training occurs.
+        """Setup optional optimization flags from the model config.
 
-        The subclass may chose not to support this method, therefore all variables here must be checked via hasattr()
+        Called automatically during __init__. This is the only valid place
+        to access self.cfg prior to DDP training.
         """
         # Skip update if nan/inf grads appear on any rank.
         self._skip_nan_grad = False

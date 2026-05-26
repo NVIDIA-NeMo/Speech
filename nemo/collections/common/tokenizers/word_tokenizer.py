@@ -37,7 +37,7 @@ class WordTokenizer(CharTokenizer):
         Args:
             vocab_file: path to file with vocabulary which consists
                 of characters separated by \n
-            mask_token: mask token 
+            mask_token: mask token
             bos_token: the beginning of sequence token
             eos_token: the end of sequence token. Usually equal to sep_token
             pad_token: token to use for padding

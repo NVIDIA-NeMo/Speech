@@ -1332,6 +1332,8 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
 
                 - compute_wer (bool, default false). Whether to compute WER or not for the fused batch.
 
+                - keep_hypotheses (bool, default false). Whether to keep the hypotheses of the decoded outputs.
+
             Output - instead of the usual `joint` log prob tensor, the following results can be returned.
 
                 - loss (optional). Returned if decoder_outputs, transcripts and transript_lengths are not None.
@@ -1357,6 +1359,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
             "transcripts": NeuralType(('B', 'T'), LabelsType(), optional=True),
             "transcript_lengths": NeuralType(tuple('B'), LengthsType(), optional=True),
             "compute_wer": NeuralType(optional=True),
+            "keep_hypotheses": NeuralType(optional=True),
         }
 
     @property
@@ -1469,6 +1472,8 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         # to change, requires running ``model.temperature = T`` explicitly
         self.temperature = 1.0
 
+        self.hypotheses = None
+
     @typecheck()
     def forward(
         self,
@@ -1478,6 +1483,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         transcripts: Optional[torch.Tensor] = None,
         transcript_lengths: Optional[torch.Tensor] = None,
         compute_wer: bool = False,
+        keep_hypotheses: bool = False,
     ) -> Union[torch.Tensor, List[Optional[torch.Tensor]]]:
         # encoder = (B, D, T)
         # decoder = (B, D, U) if passed, else None
@@ -1515,6 +1521,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
             wers, wer_nums, wer_denoms = [], [], []
             target_lengths = []
             batch_size = int(encoder_outputs.size(0))  # actual batch size
+            hypotheses = []
 
             # Iterate over batch using fused_batch_size steps
             for batch_idx in range(0, batch_size, self._fused_batch_size):
@@ -1599,6 +1606,9 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
                         targets=sub_transcripts,
                         targets_lengths=sub_transcript_lens,
                     )
+
+                    hyp = self.wer.get_hypotheses() if keep_hypotheses else []
+
                     # Sync and all_reduce on all processes, compute global WER
                     wer, wer_num, wer_denom = self.wer.compute()
                     self.wer.reset()
@@ -1609,6 +1619,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
                     wers.append(wer)
                     wer_nums.append(wer_num)
                     wer_denoms.append(wer_denom)
+                    hypotheses.extend(hyp)
 
                 del sub_enc, sub_transcripts, sub_enc_lens, sub_transcript_lens
 
@@ -1626,7 +1637,18 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
                 wer_num = None
                 wer_denom = None
 
+            self.hypotheses = hypotheses if keep_hypotheses else None
             return losses, wer, wer_num, wer_denom
+
+    def get_hypotheses(self):
+        """
+        Returns the hypotheses generated during the last forward pass.
+        """
+        if self.hypotheses is None:
+            raise ValueError(
+                "No hypotheses were generated during the last forward pass. Did you set keep_hypotheses=True in forward()?"
+            )
+        return self.hypotheses
 
     def project_encoder(self, encoder_output: torch.Tensor) -> torch.Tensor:
         """

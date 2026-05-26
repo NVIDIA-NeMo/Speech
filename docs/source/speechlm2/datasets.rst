@@ -198,6 +198,36 @@ This dataset class is specialized for the SALM model, which focuses on understan
         tokenizer=model.tokenizer,                   # Text tokenizer
     )
 
+AIStore GetBatch (multimodal conversations) (experimental)
+**********************************************************
+
+`AIStore GetBatch <https://docs.nvidia.com/aistore/get_batch>`_ is a server-side
+batched object-fetch API; see the `paper <https://arxiv.org/html/2602.22434v1>`_
+for the design and motivation.
+
+For tarred multimodal conversation manifests (``NeMoMultimodalConversationJsonlAdapter``
+and ``NeMoMultimodalConversationShareGPTJsonlAdapter``), set the environment variable
+``USE_AIS_GET_BATCH=true`` to enable AIStore GetBatch loading:
+
+.. code-block:: bash
+
+    USE_AIS_GET_BATCH=true python examples/speechlm2/salm_train.py \
+      --config-name=salm_automodel ...
+
+When enabled:
+
+* The adapters skip opening tar files and instead build URL-backed cuts whose
+  ``AudioSource`` points at the per-shard audio location (the JSONL ``value``
+  field is trusted to match the tar layout).
+* ``SALMDataset`` constructs its loader as
+  ``AudioSamples(use_batch_loader=True, fault_tolerant=True, mono_downmix=True)``,
+  which issues a single batched fetch per minibatch instead of per-cut reads.
+* ``collate_conversation_audio_fault_tolerant`` delegates loading and collation
+  to ``AudioSamples`` and drops every conversation whose cuts didn't survive
+  the fetch — preserving the legacy fault-tolerant semantics.
+
+Leave the env var unset to keep the original tar-iterating loader.
+
 DuplexSTTDataset
 ****************
 

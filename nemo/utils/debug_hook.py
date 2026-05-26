@@ -133,11 +133,11 @@ def get_backward_hook(name, trainer, rank, logger, dump_to_file=False):
 
 def get_tensor_hook(module, name, trainer, rank, logger, dump_to_file=False):
     """
-    A tensor hook to dump all of the tensor weight norms and grad norms at the end of each of the backward steps. 
-    For more details about the tensor hook, check https://pytorch.org/docs/stable/generated/torch.Tensor.register_hook.html 
+    A tensor hook to dump all of the tensor weight norms and grad norms at the end of each of the backward steps.
+    For more details about the tensor hook, check https://pytorch.org/docs/stable/generated/torch.Tensor.register_hook.html
 
     Args:
-        module: the model module 
+        module: the model module
         name: tensor name
         trainer: PTL trainer
         rank: worker rank

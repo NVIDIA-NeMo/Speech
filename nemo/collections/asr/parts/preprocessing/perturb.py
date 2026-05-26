@@ -39,7 +39,7 @@ import os
 import random
 import subprocess
 from tempfile import NamedTemporaryFile
-from typing import Any, List, Optional, Union
+from typing import List, Optional, Union
 
 import librosa
 import numpy as np
@@ -438,10 +438,12 @@ class ShiftPerturbation(Perturbation):
 
     def perturb(self, data):
         shift_ms = random.uniform(self._min_shift_ms, self._max_shift_ms)
-        if abs(shift_ms) / 1000 > data.duration:
-            # TODO: do something smarter than just ignore this condition
-            return
+        max_shift_ms = data.duration * 1000
+        if abs(shift_ms) > max_shift_ms:
+            shift_ms = max(-max_shift_ms, min(shift_ms, max_shift_ms))
         shift_samples = int(shift_ms * data.sample_rate // 1000)
+        if shift_samples == 0:
+            return
         # logging.debug("shift: %s", shift_samples)
         if shift_samples < 0:
             data._samples[-shift_samples:] = data._samples[:shift_samples]

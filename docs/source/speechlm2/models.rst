@@ -49,6 +49,49 @@ SALM is particularly useful for:
 * Speech understanding tasks that benefit from the contextual understanding of an LLM
 * Applications that need to handle mixed text and speech inputs
 
+SALMAutomodel (NeMo Automodel variant)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+SALMAutomodel is a variant of SALM that replaces HuggingFace Transformers with
+`NeMo Automodel <https://github.com/NVIDIA-NeMo/Automodel>`_ for the LLM backbone.
+It provides the same speech-augmented language model capabilities with additional
+benefits for distributed training and inference — especially with Mixture-of-Experts
+(MoE) models like `NVIDIA Nemotron Nano V3 <https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16>`_.
+
+Key differences from SALM:
+
+* **Deferred initialization**: The LLM and perception module are not loaded until
+  ``configure_model()`` is called, enabling memory-efficient distributed loading
+  where each GPU only loads its own shard.
+* **Native LoRA**: Uses NeMo Automodel's built-in LoRA instead of HuggingFace PEFT.
+  LoRA is applied before FSDP2 sharding for correct meta-device handling.
+* **AutomodelParallelStrategy**: Integrates with a custom Lightning strategy that
+  delegates device mesh creation to NeMo Automodel, supporting FSDP2, TP, PP, CP,
+  EP (MoE), and HSDP.
+* **MoE optimizations**: NeMo Automodel provides first-class support for
+  Mixture-of-Experts architectures with **Grouped GEMM** (fused expert computation
+  for higher throughput) and **DeepEP** (Deep Expert Parallelism for efficient
+  all-to-all expert routing across GPUs). This makes it possible to efficiently
+  train Speech LLMs using MoE backbones like NVIDIA Nemotron Nano V3 (30B total,
+  3B active parameters).
+* **Embedding stays in LLM**: Unlike SALM (which moves ``embed_tokens`` out of the
+  LLM to avoid FSDP/TP hook issues), SALMAutomodel keeps embeddings inside the LLM
+  and uses ``F.embedding`` with explicit DTensor handling.
+* **Encoder chunking**: Long audio inputs can be split into fixed-duration chunks
+  for the speech encoder, batched through the perception forward, and concatenated
+  back into one embedding sequence before the LLM forward. This is controlled by
+  ``model.encoder_chunk_size_seconds`` in ``salm_automodel.yaml``; set it to
+  ``null`` to encode each audio row directly. The same knob is also available in
+  ``SALM`` via ``model.encoder_chunk_size_seconds`` in ``salm.yaml`` (defaults to
+  ``null`` there to preserve existing behavior).
+
+SALMAutomodel is particularly useful for:
+
+* Efficient training of Speech LLMs with MoE backbones (e.g., Nemotron Nano V3)
+* Large-scale distributed training with advanced parallelism strategies (FSDP2 with EP for MoE, TP)
+* Models that benefit from native Automodel LoRA integration
+* Inference with model parallelism (TP/EP)
+
 DuplexS2SModel
 ^^^^^^^^^^^^^^
 
@@ -98,6 +141,24 @@ This model is particularly useful for:
 * Speech-to-text applications in conversational settings
 * Duplex systems where text responses are needed instead of speech
 * Applications requiring transcript generation from spoken dialogue
+
+
+NemotronVoiceChat
+^^^^^^^^^^^^^^^^^
+
+NemotronVoiceChat is an **inference-only**, end-to-end Duplex Speech-to-Speech pipeline. It achieves full-duplex conversational capabilities by seamlessly merging the `DuplexSTTModel` with the `DuplexEARTTS` model. 
+
+Because it is designed exclusively for evaluation, offline inference, and validation workflows (no training step is implemented), it is highly optimized for executing the full perception-generation-synthesis loop.
+
+Key components:
+
+* **DuplexSTTModel**: Handles the streaming audio perception and text response generation.
+* **DuplexEARTTS**: Serves as the autoregressive speech decoder, generating high-fidelity audio from the STT model's text tokens in a streamable fashion.
+
+This model is particularly useful for:
+* End-to-end evaluation of the complete speech-to-speech pipeline.
+* Offline speech-to-speech inference workflows.
+
 
 Model Components
 ----------------
@@ -235,6 +296,9 @@ All models in the speechlm2 collection can be instantiated from pretrained check
     # Load SALM model
     salm_model = slm.models.SALM.from_pretrained("path/to/checkpoint")
     
+    # Load SALMAutomodel
+    salm_automodel = slm.models.SALMAutomodel.from_pretrained("path/to/checkpoint")
+
     # Load DuplexS2SModel
     duplex_model = slm.models.DuplexS2SModel.from_pretrained("path/to/checkpoint")
 
@@ -247,9 +311,31 @@ All models in the speechlm2 collection can be instantiated from pretrained check
     # Load DuplexEARTTS
     ear_tts_model = slm.models.DuplexEARTTS.from_pretrained("path/to/checkpoint")
 
+    # Load NemotronVoiceChat (Inference Only)
+    voicechat_model = slm.models.NemotronVoiceChat.from_pretrained("path/to/checkpoint")
+
+Fine-Tuning from a Checkpoint
+------------------------------
+
+To fine-tune a model starting from a previous training checkpoint (with a fresh
+optimizer and step counter), set ``model.init_from_checkpoint`` in the config:
+
+.. code-block:: python
+
+    # Via Hydra override:
+    # ++model.init_from_checkpoint=/path/to/step=6375.ckpt
+
+This loads only model weights from the checkpoint — optimizer state, LR scheduler,
+and training step are discarded. Supports DCP directories (from FSDP2/TP training),
+HuggingFace directories, and single-file ``.ckpt`` files. Works with both ``SALM``
+and ``SALMAutomodel``.
+
+See :ref:`fine-tuning-from-checkpoint` in the configuration documentation for full
+details.
+
 Model Configuration
 -------------------
 
 All models in this collection use a configuration-based approach, where a YAML configuration file specifies the model architecture, components, and training parameters. See the :doc:`configurations documentation <configs>` for details on these configuration files.
 
-For information about scaling and training these models at scale, see the :doc:`training and scaling documentation <training_and_scaling>`. 
+For information about scaling and training these models at scale, see the :doc:`training and scaling documentation <training_and_scaling>`.

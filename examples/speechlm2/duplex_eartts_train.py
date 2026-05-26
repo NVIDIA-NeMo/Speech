@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import datetime
 import os
 
 import torch
@@ -30,7 +31,9 @@ torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
 @hydra_runner(config_path="conf", config_name="duplex_eartts")
 def train(cfg):
     OmegaConf.resolve(cfg)
-    torch.distributed.init_process_group(backend="nccl")
+    torch.distributed.init_process_group(
+        backend="nccl", timeout=datetime.timedelta(seconds=int(cfg.trainer.strategy.get("timeout", 3600)))
+    )
     torch.set_float32_matmul_precision("medium")
     torch.backends.cudnn.allow_tf32 = True
     trainer = Trainer(**resolve_trainer_cfg(cfg.trainer))
@@ -61,9 +64,10 @@ def train(cfg):
         add_audio_prompt=cfg.data.get("add_audio_prompt", True),
         audio_prompt_duration=cfg.data.get("audio_prompt_duration", 3),
         num_delay_speech_tokens=cfg.model.get("num_delay_speech_tokens", 2),
+        add_system_prompt=cfg.model.get("use_system_prompt", False),
+        ignore_data_system_prompt=cfg.model.get("ignore_data_system_prompt", False),
     )
     datamodule = DataModule(cfg.data, tokenizer=model.tokenizer, dataset=dataset)
-
     trainer.fit(model, datamodule)
 
 

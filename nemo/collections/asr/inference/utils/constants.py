@@ -18,7 +18,7 @@ SMALL_EPSILON = 1e-10
 ROUND_PRECISION = 9
 
 # ASR Preprocessing related constants
-LOG_MEL_ZERO = -16.635
+LOG_MEL_ZERO = -16.635532333438686  # log(2^-24), matches preprocessor output for silence
 
 # Punctuation related constants
 POST_WORD_PUNCTUATION = set(".,?")

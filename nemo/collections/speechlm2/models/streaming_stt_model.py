@@ -163,9 +163,10 @@ class StreamingSTTModelConfig:
     chunk_classifier_loss_weight: float = 0.5
     chunk_classifier_num_layers: int = 2
     chunk_classifier_init_from_llm: bool = True
-    chunk_classifier_threshold: float = 0.5
-    chunk_classifier_use_at_inference: bool = False
     freeze_chunk_classifier: bool = False
+    # NOTE: chunk_classifier_threshold and chunk_classifier_use_at_inference
+    # are inference-time concerns and have been moved to generate() / the
+    # eval script. They are no longer part of the model config.
     # Auto-balance the BCE: pos_weight = num_neg/num_pos per batch. Most audio
     # frames are "keep listening" (label=0); the few "emit" frames (label=1) get
     # drowned out without rebalancing.
@@ -294,8 +295,6 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
             # label). It's normally set lazily by _ensure_inference_cache, but
             # training runs before any inference call — so prime the cache now.
             self._ensure_inference_cache()
-        elif self.core_cfg.chunk_classifier_use_at_inference:
-            raise ValueError("chunk_classifier_use_at_inference=True requires use_chunk_classifier=True")
 
         self._apply_freeze_config()
 
@@ -827,9 +826,13 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                 flat_aux = aux_out.last_hidden_state.flatten(0, 1)
                 cls_logits = self.chunk_classifier_head(flat_aux[decision_mask]).squeeze(-1)
                 cls_targets = orig_targets_flat[decision_mask] == self._user_footer_first_id
-                # Use the configured threshold so val acc reflects what
-                # _generate_dynamic_streaming will actually do at inference.
-                thr = self.core_cfg.chunk_classifier_threshold
+                # Hardcoded threshold for val metrics. The actual inference
+                # threshold is set at decode time via generate(emit_threshold=...),
+                # so val metrics use a fixed 0.5 convention. Use this only as
+                # a relative quality signal across checkpoints; if you sweep
+                # the inference threshold post-training, the inference WER
+                # is the authoritative comparison.
+                thr = 0.5
                 cls_preds = torch.sigmoid(cls_logits) >= thr
                 correct = cls_preds == cls_targets
                 pos_mask = cls_targets
@@ -1273,6 +1276,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         system_prompt: Union[str, List[str]],
         device: torch.device,
         batch_size: int = 1,
+        use_chunk_classifier_at_inference: bool = False,
     ) -> StreamingState:
         """Forward the system prompt through the LLM and return a fresh :class:`StreamingState`.
 
@@ -1307,7 +1311,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         # Capture hidden states from the prefill if the aux head will be used at
         # inference, so the aux backbone sees the same full-sequence context as
         # at training time.
-        capture_hidden = self.core_cfg.use_chunk_classifier and self.core_cfg.chunk_classifier_use_at_inference
+        capture_hidden = self.core_cfg.use_chunk_classifier and use_chunk_classifier_at_inference
 
         if not needs_padding:
             # Fast path: all same length, no padding needed
@@ -1671,8 +1675,11 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         inference_chunk_size: Optional[int] = None,
         dynamic_min_chunk_size: int = 0,
         dynamic_max_chunk_size: Optional[int] = None,
-        lm_head_emit_threshold: Optional[float] = None,
+        use_chunk_classifier_at_inference: bool = False,
+        emit_threshold: Optional[float] = None,
+        emit_delay_frames: int = 0,
         debug_logs: Optional[list] = None,
+        disable_emit_for_debug: bool = False,
         **generation_kwargs,
     ) -> list[str]:
         """Batched dynamic-chunking generation.
@@ -1717,7 +1724,12 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         chunk_samples = math.ceil(N * self.core_cfg.frame_length_in_secs * self.core_cfg.sample_rate)
 
         # --- Init state ---
-        state = self.get_init_streaming_state(system_prompt, device=device, batch_size=B)
+        state = self.get_init_streaming_state(
+            system_prompt,
+            device=device,
+            batch_size=B,
+            use_chunk_classifier_at_inference=use_chunk_classifier_at_inference,
+        )
         state.audio_feature_buffer = self.get_audio_feature_buffer(
             batch_size=B,
             chunk_size_override=N,
@@ -1742,6 +1754,13 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         fixed_chunk_mode = self.core_cfg.chunk_size > 0
         fixed_chunk_size = self.core_cfg.chunk_size if fixed_chunk_mode else 0
         frames_in_segment = [0] * B  # frames consumed in current LISTENING segment
+        # When emit_delay_frames > 0: after the aux head decides "emit" at
+        # frame T, we keep listening for K more LISTENING frames and only
+        # then transition to FOOTER. This realigns chunk boundaries with
+        # the training-supervised position (compensates for the aux head's
+        # early-firing bias) and gives GENERATING K more frames of audio
+        # context. -1 = no pending emit; 0..K-1 = countdown to actual emit.
+        pending_emit_countdown = [-1] * B
 
         # --- Audio-frame debug logging ---
         # When debug_logs is provided (a list passed in by the caller), we
@@ -1867,7 +1886,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
             input_embs = torch.stack(embs_list).unsqueeze(1)  # (B, H) → (B, 1, H)
 
             # --- Single LLM forward ---
-            use_aux = self.core_cfg.use_chunk_classifier and self.core_cfg.chunk_classifier_use_at_inference
+            use_aux = self.core_cfg.use_chunk_classifier and use_chunk_classifier_at_inference
             llm_kwargs = dict(
                 inputs_embeds=input_embs,
                 past_key_values=state.cache,
@@ -1917,7 +1936,23 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                     seg_idx_now = frames_in_segment[b]  # captured before any reset
                     decision_str = "keep_listening"
                     aux_p_log: Optional[float] = None  # only set when aux head consulted
-                    if fixed_chunk_mode:
+                    if disable_emit_for_debug:
+                        # Diagnostic mode: never emit; stay in LISTENING for
+                        # the entire audio so the per-frame log captures
+                        # aux_p_emit at every audio frame (no gaps from
+                        # GENERATING phases). The model is force-emitted once
+                        # when audio runs out (single chunk for full utterance),
+                        # so transcript output will be unusable — use this
+                        # mode only for offline trace analysis, not for WER.
+                        if use_aux and aux_last_hidden is not None:
+                            aux_logit_b = self.chunk_classifier_head(aux_last_hidden[b, -1, :])
+                            aux_p_log = float(torch.sigmoid(aux_logit_b).item())
+                        if not audio_emb_buf[b] and audio_sample_idx[b] >= n_samples_list[b]:
+                            stream_state[b] = FOOTER
+                            template_pos[b] = 0
+                            frames_in_segment[b] = 0
+                            decision_str = "emit_forced_audio_end"
+                    elif fixed_chunk_mode:
                         # Fixed chunking: transition after exactly chunk_size frames
                         if frames_in_segment[b] >= fixed_chunk_size:
                             stream_state[b] = FOOTER
@@ -1951,14 +1986,18 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                             # Either the aux classifier head (when enabled) or
                             # the LM head's vocab sample (legacy path).
                             if use_aux and aux_last_hidden is not None:
+                                # Aux head decision: threshold the sigmoid output.
+                                # Use the runtime emit_threshold if provided,
+                                # else default to 0.5.
                                 h_last = aux_last_hidden[b, -1, :]  # (H,)
                                 aux_logit_b = self.chunk_classifier_head(h_last)
                                 aux_p_log = float(torch.sigmoid(aux_logit_b).item())
-                                emit = aux_p_log >= self.core_cfg.chunk_classifier_threshold
-                            elif lm_head_emit_threshold is not None:
-                                # Threshold-based LM-head decision: fire when
-                                # p(user_footer_first_id) ≥ threshold. Lower
-                                # values catch boundaries where the LM is
+                                thr_eff = emit_threshold if emit_threshold is not None else 0.5
+                                emit = aux_p_log >= thr_eff
+                            elif emit_threshold is not None:
+                                # LM head decision with explicit threshold: fire
+                                # when p(user_footer_first_id) ≥ emit_threshold.
+                                # Lower values catch boundaries where the LM is
                                 # moderately confident but loses argmax to blank.
                                 lm_probs_emit = torch.softmax(out.logits[b, -1, :].float(), dim=-1)
                                 p_ufid_emit = (
@@ -1966,7 +2005,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                                     if user_footer_first_id is not None
                                     else 0.0
                                 )
-                                emit = p_ufid_emit >= lm_head_emit_threshold
+                                emit = p_ufid_emit >= emit_threshold
                             else:
                                 token = self._sample_token(
                                     out.logits[b : b + 1, -1, :],
@@ -1975,11 +2014,33 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                                     **generation_kwargs,
                                 ).item()
                                 emit = token == user_footer_first_id
-                            if emit:
-                                stream_state[b] = FOOTER
-                                template_pos[b] = 0
-                                frames_in_segment[b] = 0
-                                decision_str = "emit_model"
+                            # If we already have a pending emit from an earlier
+                            # frame (emit_delay_frames > 0), decrement first;
+                            # if the countdown reaches zero on this frame, commit.
+                            if pending_emit_countdown[b] >= 0:
+                                pending_emit_countdown[b] -= 1
+                                if pending_emit_countdown[b] < 0:
+                                    stream_state[b] = FOOTER
+                                    template_pos[b] = 0
+                                    frames_in_segment[b] = 0
+                                    decision_str = "emit_model_delayed"
+                                else:
+                                    decision_str = "emit_pending"
+                            elif emit:
+                                if emit_delay_frames > 0:
+                                    # Defer the actual FOOTER transition by K
+                                    # LISTENING frames so the chunk break aligns
+                                    # with the training-supervised position
+                                    # (compensates for aux-head early bias) and
+                                    # GENERATING starts with K more frames of
+                                    # audio context in the KV cache.
+                                    pending_emit_countdown[b] = emit_delay_frames - 1
+                                    decision_str = "emit_pending"
+                                else:
+                                    stream_state[b] = FOOTER
+                                    template_pos[b] = 0
+                                    frames_in_segment[b] = 0
+                                    decision_str = "emit_model"
                             elif (
                                 not audio_emb_buf[b] and audio_sample_idx[b] >= n_samples_list[b] and not all_tokens[b]
                             ):
@@ -1999,8 +2060,17 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                             elif not audio_emb_buf[b] and audio_sample_idx[b] >= n_samples_list[b]:
                                 # Already emitted at least once and model says
                                 # blank at end-of-audio: trust it and stop.
-                                stream_state[b] = DONE
-                                decision_str = "done_audio_end"
+                                # Also force-fire any pending delayed emit before
+                                # exiting (no point losing the chunk).
+                                if pending_emit_countdown[b] >= 0:
+                                    stream_state[b] = FOOTER
+                                    template_pos[b] = 0
+                                    frames_in_segment[b] = 0
+                                    pending_emit_countdown[b] = -1
+                                    decision_str = "emit_model_delayed_at_end"
+                                else:
+                                    stream_state[b] = DONE
+                                    decision_str = "done_audio_end"
 
                     # Per-frame debug log (LM head + aux head diagnostics).
                     if log_frames:
@@ -2294,8 +2364,11 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         use_state_machine_inference: bool = False,
         dynamic_min_chunk_size: int = 0,
         dynamic_max_chunk_size: Optional[int] = None,
-        lm_head_emit_threshold: Optional[float] = None,
+        use_chunk_classifier_at_inference: bool = False,
+        emit_threshold: Optional[float] = None,
+        emit_delay_frames: int = 0,
         debug_logs: Optional[list] = None,
+        disable_emit_for_debug: bool = False,
         **generation_kwargs,
     ) -> list[str]:
         """
@@ -2319,6 +2392,12 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
             List of transcription strings, one per sample.
         """
         self._ensure_inference_cache()
+
+        if use_chunk_classifier_at_inference and not self.core_cfg.use_chunk_classifier:
+            raise ValueError(
+                "use_chunk_classifier_at_inference=True requires the model to be built with "
+                "use_chunk_classifier=True (the aux head must exist)."
+            )
 
         with move_embedding(self):
             B = audios.shape[0]
@@ -2344,8 +2423,11 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                     generation_config,
                     dynamic_min_chunk_size=dynamic_min_chunk_size,
                     dynamic_max_chunk_size=dynamic_max_chunk_size,
-                    lm_head_emit_threshold=lm_head_emit_threshold,
+                    use_chunk_classifier_at_inference=use_chunk_classifier_at_inference,
+                    emit_threshold=emit_threshold,
+                    emit_delay_frames=emit_delay_frames,
                     debug_logs=debug_logs,
+                    disable_emit_for_debug=disable_emit_for_debug,
                     **generation_kwargs,
                 )
             else:

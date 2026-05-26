@@ -42,6 +42,7 @@ class StreamingSTTEvalConfig:
     device: str = "cuda"
     dtype: str = "bfloat16"
     use_normalizer: Optional[str] = "english"  # "english", "basic", or "none"
+    num_delay_frames: int = 1
 
 
 @hydra_runner(config_name="StreamingSTTEvalConfig", schema=StreamingSTTEvalConfig)
@@ -52,16 +53,23 @@ def main(cfg: StreamingSTTEvalConfig):
     model = model.eval().to(getattr(torch, cfg.dtype)).to(cfg.device)
 
     trainer = Trainer()
+    # Inherit dataset-relevant fields from the trained model. Critically,
+    # compact_template and write_token MUST match training — otherwise the
+    # dataset tokenizes inputs in a different chat-template layout than the
+    # model expects, and every val metric (val_acc, val_aux_*, val_loss) is
+    # garbage even with the correct checkpoint loaded.
     dataset_cfg = OmegaConf.create(
         {
             "sample_rate": model.sampling_rate,
             "frame_length_in_secs": model.core_cfg.frame_length_in_secs,
             "chunk_size": model.core_cfg.chunk_size,
-            "num_delay_frames": 0,
+            "num_delay_frames": cfg.num_delay_frames,
             "audio_tag": model.core_cfg.audio_tag,
             "blank_token": model.core_cfg.blank_token,
             "system_role": cfg.system_role,
             "system_prompt": cfg.system_prompt,
+            "compact_template": model.core_cfg.compact_template,
+            "write_token": model.core_cfg.write_token,
         }
     )
     dataset = StreamingSTTDataset(cfg=dataset_cfg, tokenizer=model.tokenizer)
@@ -70,9 +78,8 @@ def main(cfg: StreamingSTTEvalConfig):
         "manifest_filepath": cfg.inputs,
         "sample_rate": model.sampling_rate,
         "batch_size": cfg.batch_size,
-        "num_workers": 2,
-        "seed": 42,
-        "shard_seed": "randomized",
+        "num_workers": 4,
+        "shuffle": False,
     }
     data_cfg = OmegaConf.create({"validation_ds": data_cfg})
     datamodule = DataModule(data_cfg, tokenizer=model.tokenizer, dataset=dataset)

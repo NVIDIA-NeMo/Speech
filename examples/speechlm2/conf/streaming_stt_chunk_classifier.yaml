@@ -23,16 +23,15 @@ model:
   # --- Aux chunk-boundary classifier ---
   # Master switch (must be true to build the head). Requires chunk_size=0
   # (dynamic chunking). When true, the LM CE is masked to text positions only
-  # and the aux head is trained with BCE at audio decision frames. Flip
-  # chunk_classifier_use_at_inference to true post-training to decode with
-  # the aux head instead of the LM head.
+  # and the aux head is trained with BCE at audio decision frames.
   use_chunk_classifier: true
   chunk_classifier_loss_weight: 0.5
   chunk_classifier_num_layers: 2
   chunk_classifier_init_from_llm: true
-  chunk_classifier_threshold: 0.5
-  chunk_classifier_use_at_inference: false
   freeze_chunk_classifier: false
+  # NOTE: chunk_classifier_threshold and chunk_classifier_use_at_inference
+  # are inference-time params, set via the eval script (emit_threshold,
+  # use_chunk_classifier_at_inference).
   # Auto-balance BCE per batch (pos_weight = N_neg/N_pos). "Emit" frames are
   # rare vs. "keep listening" frames, so this is on by default.
   chunk_classifier_auto_balance: true

@@ -121,7 +121,7 @@ class NemoSTTService(STTService):
         Returns:
             bool: True, as this service supports metric generation.
         """
-        return True
+        return False
 
     async def start(self, frame: StartFrame):
         """Handle service start.

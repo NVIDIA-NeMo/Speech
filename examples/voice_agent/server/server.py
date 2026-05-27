@@ -309,10 +309,10 @@ async def run_bot_websocket_server(host: str = "0.0.0.0", port: int = None):
         pipeline,
         params=PipelineParams(
             allow_interruptions=True,
-            enable_metrics=False,
+            enable_metrics=True,
             enable_usage_metrics=False,
             send_initial_empty_metrics=True,
-            report_only_initial_ttfb=True,
+            report_only_initial_ttfb=False,
             idle_timeout=None,  # Disable idle timeout
         ),
         observers=[

@@ -352,7 +352,7 @@ class BaseNemoTTSService(TTSService, ToolCallingMixin):
             text = self._drop_special_tokens(text)
 
         logger.debug(f"{self}: Generating TTS [{text}]")
-
+        tts_start_time = asyncio.get_running_loop().time()
         try:
             yield TTSStartedFrame()
 
@@ -370,6 +370,7 @@ class BaseNemoTTSService(TTSService, ToolCallingMixin):
             try:
                 # Queue the TTS request for background processing
                 await self._tts_queue.put((text, request_id))
+                await self.start_tts_usage_metrics(text)
 
                 first_chunk = True
                 all_audio_bytes = b""
@@ -448,7 +449,9 @@ class BaseNemoTTSService(TTSService, ToolCallingMixin):
                         )
                     except Exception as e:
                         logger.warning(f"Failed to log agent audio: {e}")
-
+                
+                tts_end_time = asyncio.get_running_loop().time()
+                logger.debug(f"TTS generation time for text `{text}`: {tts_end_time - tts_start_time}s")
                 yield TTSStoppedFrame()
 
             finally:

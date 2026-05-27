@@ -5,6 +5,23 @@ Default to the NeMo release container. Use local execution only when the user ex
 Check `README.md`, `docker/Dockerfile.speech`, and the NGC catalog before quoting container tags. The container avoids
 most local CUDA, torch, audio backend, `sox`, `ffmpeg`, and `libsndfile` issues.
 
+When running repo scripts from a mounted source checkout inside a container, ensure Python imports the mounted checkout,
+not an unrelated package already installed in the image:
+
+```bash
+export PYTHONPATH=/workspace/NeMo
+python -c "import nemo.collections.asr as asr; print(asr.__file__)"
+```
+
+If the source checkout must be installed in the container, prefer `pip install -e '.[asr]'`.
+
+For Hugging Face models or datasets that require authentication, verify access before launching long jobs. Containers
+often do not include `huggingface-cli`; mounting a populated `HF_HOME` or token/cache directory is usually enough:
+
+```bash
+docker run -e HF_HOME=/tmp/hf_home -v /host/hf_home:/tmp/hf_home ...
+```
+
 For explicit local setup, verify:
 
 ```bash

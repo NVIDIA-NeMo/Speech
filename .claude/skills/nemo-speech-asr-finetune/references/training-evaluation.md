@@ -6,15 +6,21 @@ Use `trainer.max_steps`, not `trainer.max_epochs`. Use a cosine LR schedule with
 Start with `model.optim.lr=1e-4`, then tune. Set warmup to 1-2% of `trainer.max_steps`.
 
 ```bash
++init_from_pretrained_model=<hf-or-ngc-name> \
 trainer.max_steps=50000 \
 +trainer.limit_train_batches=1000 \
 trainer.val_check_interval=1000 \
 model.optim.lr=1e-4 \
 model.optim.sched.name=CosineAnnealing \
-model.optim.sched.max_steps=50000 \
+++model.optim.sched.max_steps=50000 \
 model.optim.sched.warmup_steps=500 \
 model.optim.sched.min_lr=5e-6
 ```
+
+`examples/asr/speech_to_text_finetune.py` supports `init_from_pretrained_model`, but some fine-tune YAMLs do not
+declare that key. Use `+init_from_pretrained_model=...` when Hydra says the key is not in struct. Use `+` or `++` for
+other trainer/model keys that are valid for the script but absent from the selected YAML; do not remove the plus just
+because a similar key exists in another config.
 
 Prefer `trainer.precision=bf16-true` for memory savings and larger batch sizes, especially for datasets over 1k
 hours. If it diverges or has stability issues, fall back to a more stable precision mode. Prefer `bf16-true` over
@@ -28,6 +34,24 @@ exp_manager.checkpoint_callback_params.mode=min \
 exp_manager.checkpoint_callback_params.save_top_k=5 \
 exp_manager.checkpoint_callback_params.always_save_nemo=true
 ```
+
+## Multi-GPU Launch Troubleshooting
+
+For routine single-node runs, start with the normal Lightning launch (`trainer.devices=<num_gpus>`). If a container run
+hangs immediately after NCCL registration or one rank restores the model on the wrong GPU before DDP takes ownership,
+use `torchrun --nproc_per_node=<num_gpus>` with the normal script entry point. Keep `trainer.devices=<num_gpus>` and
+set `trainer.use_distributed_sampler=false` for Lhotse.
+
+On systems with NCCL P2P or CUDA memory allocator issues, retry with conservative distributed environment settings
+after confirming the job is stuck in communication setup:
+
+```bash
+export NCCL_CUMEM_ENABLE=0
+export NCCL_P2P_DISABLE=1
+```
+
+Keep `trainer.sync_batchnorm` the same as it was set in the original model's config unless the user explicitly asks to
+change it.
 
 ## Checkpoint Averaging
 
@@ -45,6 +69,22 @@ python scripts/checkpoint_averaging/checkpoint_averaging.py \
 This produces `*-averaged.nemo`. If model class loading fails, use the script's `--class_path` or `--import_fname_list`
 options. Some checkpoint averaging scripts are marked deprecated in the repo; verify they still work in the current
 checkout before relying on them.
+
+With PyTorch 2.6+, the deprecated averaging utility may fail because `torch.load` defaults to `weights_only=True`.
+Only for checkpoints you trust, rerun with:
+
+```bash
+TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 python scripts/checkpoint_averaging/checkpoint_averaging.py \
+  /exp/asr-ft/checkpoints/best.nemo
+```
+
+Do not assume the latest `.nemo` is the best validation checkpoint. `always_save_nemo=true` can overwrite the `.nemo`
+artifact on later saves. Check the `.ckpt` filenames and validation logs, then evaluate the exported `.nemo`, the best
+checkpoint-derived artifact, and any averaged model before deciding what to keep.
+
+Use the same standalone evaluation command for the baseline model, the final exported `.nemo`, and any averaged model.
+In-training `val_wer` is useful for checkpoint selection, but standalone WER is the fair number to report because it
+holds decoding options, text processing, precision, and output scoring constant.
 
 Evaluate both:
 

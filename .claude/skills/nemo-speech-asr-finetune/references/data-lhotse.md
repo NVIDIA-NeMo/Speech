@@ -25,6 +25,15 @@ target script and docs explicitly support the behavior you need.
 Before training, inspect duration and token-per-second distributions. Set `min_duration`, `max_duration`, `min_tps`,
 and `max_tps` so they do not silently filter out a large or important part of the fine-tuning set.
 
+If OOMptimizer cannot fit batch size 1 for an extreme duration bucket, inspect the duration tail before changing the
+model or precision. When only a tiny outlier fraction is affected, set `max_duration` to cap that tail, record the
+number and hours filtered, and rerun OOMptimizer with the capped final bucket. Do not silently cap substantial or
+domain-critical long-form data.
+
+For non-tarred data, Lhotse may tokenize samples during sampling when `pretokenize=true`. This enables token-per-second
+filtering and 2D token bucketing, but tokenization happens in the main training process and can slow training with large
+tokenizers. If the run does not use token-per-second filters or 2D bucketing, consider `pretokenize=false`.
+
 ## Batch Mode Compatibility
 
 When changing Lhotse batch settings, explicitly null conflicting options. `dataloader.py` accepts these batch sizing
@@ -73,6 +82,10 @@ model.validation_ds.batch_size=8 \
 ++model.validation_ds.bucket_batch_size=null \
 model.validation_ds.shuffle=false
 ```
+
+Use Hydra `++` for dataloader keys that are not declared in the selected YAML. This commonly applies to Lhotse-specific
+validation keys such as `use_lhotse`, `use_bucketing`, `batch_duration`, `bucket_duration_bins`, and sometimes
+`min_duration`/`max_duration`.
 
 ## Bucketing Policy
 

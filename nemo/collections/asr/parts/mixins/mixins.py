@@ -911,10 +911,35 @@ class PromptStreamingMixin:
 
     Overrides ``ASRModuleMixin._apply_prompt_to_encoded`` so that
     ``conformer_stream_step`` injects a one-hot language prompt into the
-    encoder output. The host class is expected to set ``self.concat``,
-    ``self.num_prompts``, and ``self.prompt_kernel`` during its own
-    ``initialize_prompt_feature``.
+    encoder output. Subclasses must call ``super().initialize_prompt_feature()``
+    to populate ``self.concat``, ``self.num_prompts``, and ``self.prompt_kernel``;
+    they may then attach their own decoding / WER objects.
     """
+
+    # Plain class-level defaults document the mixin contract. ``prompt_kernel``
+    # is intentionally NOT declared here — it's an ``nn.Module`` and a class-level
+    # default would shadow ``nn.Module.__getattr__``'s lookup into ``_modules``
+    # after the real Sequential is registered in ``initialize_prompt_feature``.
+    concat: bool = False
+    num_prompts: int = None
+
+    def initialize_prompt_feature(self):
+        """Populate the attributes ``_apply_prompt_to_encoded`` depends on.
+
+        Subclasses should call ``super().initialize_prompt_feature()`` first,
+        then attach their decoding / WER / joint objects. The mixin sets
+        ``self.concat``, ``self.num_prompts``, and ``self.prompt_kernel``.
+        """
+        self.concat = True
+        self.num_prompts = self.cfg.get('num_prompts', 128)
+
+        proj_in_size = self.num_prompts + self._cfg.model_defaults.enc_hidden
+        proj_out_size = self._cfg.model_defaults.enc_hidden
+        self.prompt_kernel = torch.nn.Sequential(
+            torch.nn.Linear(proj_in_size, proj_out_size * 2),
+            torch.nn.ReLU(),
+            torch.nn.Linear(proj_out_size * 2, proj_out_size),
+        )
 
     def set_inference_prompt(self, target_lang: str):
         """

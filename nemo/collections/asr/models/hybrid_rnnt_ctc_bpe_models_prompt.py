@@ -134,21 +134,8 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(PromptStreamingMixin, EncDecHybridRN
 
     def initialize_prompt_feature(self):
         """Initialize model components for prompt feature via concatenation."""
+        super().initialize_prompt_feature()
         logging.info("Model with prompt feature has been initialized")
-
-        # Enable concatenation mode
-        self.concat = True
-        self.num_prompts = self.cfg.get('num_prompts', 128)
-
-        # Setup projection layers
-        proj_in_size = self.num_prompts + self._cfg.model_defaults.enc_hidden
-        proj_out_size = self._cfg.model_defaults.enc_hidden
-
-        self.prompt_kernel = torch.nn.Sequential(
-            torch.nn.Linear(proj_in_size, proj_out_size * 2),
-            torch.nn.ReLU(),
-            torch.nn.Linear(proj_out_size * 2, proj_out_size),
-        )
 
         # Setup decoding object
         self.decoding = RNNTBPEDecoding(

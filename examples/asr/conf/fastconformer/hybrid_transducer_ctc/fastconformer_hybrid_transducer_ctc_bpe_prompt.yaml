@@ -140,7 +140,6 @@ model:
     sample_rate: ${model.sample_rate}
     batch_size: 16
     shuffle: false
-    use_start_end_token: false
     num_workers: 8
     pin_memory: true
     batch_duration: null
@@ -159,7 +158,6 @@ model:
     sample_rate: ${model.sample_rate}
     batch_size: 16
     shuffle: false
-    use_start_end_token: false
     num_workers: 8
     pin_memory: true
     use_lhotse: true

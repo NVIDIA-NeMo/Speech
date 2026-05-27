@@ -36,12 +36,9 @@ import torch
 
 from nemo.collections.asr.parts.utils.offline_clustering import (
     NMESC,
-    SpeakerClustering,
     SpectralClustering,
-    get_scale_interpolated_embs,
     getAffinityGraphMat,
     getCosAffinityMatrix,
-    split_input_data,
 )
 from nemo.collections.asr.parts.utils.optimization_utils import linear_sum_assignment
 
@@ -180,9 +177,9 @@ def calculate_removable_counts(removable_counts_mat: torch.Tensor, remain_count:
             >>> removable_counts_mat = [5, 3, 1]
             >>> remain_count = 6
             >>> num_clus = 3
-        
+
         Interim results:
-            >>> diff_counts 
+            >>> diff_counts
             [1, 2, 2]
             >>> gradual_counts
             [3, 4, 2]
@@ -190,7 +187,7 @@ def calculate_removable_counts(removable_counts_mat: torch.Tensor, remain_count:
             [3, 7, 9]
 
         Return:
-            >>> removable_counts_mat 
+            >>> removable_counts_mat
             [2, 1, 0]
 
     Args:
@@ -239,7 +236,9 @@ def calculate_removable_counts(removable_counts_mat: torch.Tensor, remain_count:
 
 
 def get_merge_quantity(
-    num_to_be_removed: int, pre_clus_labels: torch.Tensor, min_count_per_cluster: int,
+    num_to_be_removed: int,
+    pre_clus_labels: torch.Tensor,
+    min_count_per_cluster: int,
 ) -> torch.Tensor:
     """
     Determine which embeddings we need to reduce or merge in history buffer.
@@ -257,8 +256,8 @@ def get_merge_quantity(
         >>> pre_clus_labels = [0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2]
         >>> min_count_per_cluster = 2
         >>> get_merge_quantity(num_to_be_removed, pre_clus_labels, min_count_per_cluster)
-        Return:   
-            torch.tensor([2, 1, 0]) 
+        Return:
+            torch.tensor([2, 1, 0])
         >>> # Sum should be equal to `num_to_be_removed` which is 3
 
     Args:
@@ -352,7 +351,7 @@ def get_closest_embeddings(affinity_mat: torch.Tensor, n_closest: int) -> Tuple[
         >>> affinity_mat = [[1.0, 0.2, 0.8],
                             [0.2, 1.0, 0.4],
                             [0.8, 0.4, 1.0]]
-        >>> affinity_mat.sum(0) 
+        >>> affinity_mat.sum(0)
         [2.0, 1.6, 2.2]
 
         # The closest two embedding vectors are at index 0 and 2.
@@ -388,15 +387,18 @@ def get_closest_embeddings(affinity_mat: torch.Tensor, n_closest: int) -> Tuple[
 
 
 def run_reducer(
-    pre_embs: torch.Tensor, target_spk_idx: int, merge_quantity: int, pre_clus_labels: torch.Tensor,
+    pre_embs: torch.Tensor,
+    target_spk_idx: int,
+    merge_quantity: int,
+    pre_clus_labels: torch.Tensor,
 ):
     """
     Reduce the number of embedding vectors by merging the closest embedding vectors.
-        - This merging algorithm is based on the assumption that the closest embeddings 
+        - This merging algorithm is based on the assumption that the closest embeddings
           are the most redundant embedding vectors.
-        - The closest embedding vectors are chosen by selecting the highest top-N sum of 
+        - The closest embedding vectors are chosen by selecting the highest top-N sum of
           each column in a given affinity matrix.
-        - If merge_quantity is N, we choose (N+1) vectors into 1 embedding vector. 
+        - If merge_quantity is N, we choose (N+1) vectors into 1 embedding vector.
           Thus, we reduce N embeddings in the original embedding vector set.
 
     Example:
@@ -404,12 +406,12 @@ def run_reducer(
         >>> affinity_mat = [[1.0, 0.2, 0.8],
                             [0.2, 1.0, 0.4],
                             [0.8, 0.4, 1.0]]
-        >>> affinity_mat.sum(0) 
+        >>> affinity_mat.sum(0)
         [2.0, 1.6, 2.2]
 
         The first and the third embedding vectors are merged into one embedding vector.
         >>> index_mapping # (bypassed indices, merged indices)
-        ([1], [0, 2]) 
+        ([1], [0, 2])
 
     Args:
         pre_embs (Tensor):
@@ -424,7 +426,7 @@ def run_reducer(
             The original cluster (speaker) index
 
     Returns:
-        merged_embs (torch.Tensor):    
+        merged_embs (torch.Tensor):
             The merged embedding vectors.
         merged_clus_labels (torch.Tensor):
             The cluster (speaker) indices for the merged embedding vectors.
@@ -551,7 +553,7 @@ class OnlineSpeakerClustering(torch.nn.Module):
         temporal_label_major_vote_buffer_size (int):
             Buffer size for major-voting the
         num_spk_stat (list):
-            List of number of speakers for major voting. Number of speakers are estimated through 
+            List of number of speakers for major voting. Number of speakers are estimated through
             majority voting of `self.num_spk_stat` list.
         p_value_hist (list):
             List of p_values for major voting.
@@ -559,7 +561,7 @@ class OnlineSpeakerClustering(torch.nn.Module):
             saved to `self.p_value_hist`.
 
     Attributes for counters and buffers in streaming system:
-        
+
         is_online (bool):
             - If self.is_online is False:
                 FIFO queue does not push out any speaker embedding vector
@@ -684,7 +686,7 @@ class OnlineSpeakerClustering(torch.nn.Module):
         p_hat_int_list: List[int] = [int(p) for p in self.p_value_hist]
         p_hat_value = torch.mode(torch.tensor(p_hat_int_list))[0].item()
         output = nmesc.getEigRatio(p_hat_value)
-        g_p, est_num_of_spk = output[0], output[1].int()
+        est_num_of_spk = output[1].int()
         return est_num_of_spk, p_hat_value
 
     def speaker_counter_buffer(self, est_num_of_spk: int) -> torch.Tensor:
@@ -717,7 +719,7 @@ class OnlineSpeakerClustering(torch.nn.Module):
                 Unique index for each segment and embedding vector
             est_num_of_spk (int):
                 Estimated number of speakers
-        
+
         Returns:
             (int) Estimated number of speakers capped by `self.min_frame_per_spk`
         """
@@ -777,7 +779,7 @@ class OnlineSpeakerClustering(torch.nn.Module):
             hist_curr_boundary (int):
                 The current boundary of between history buffer and current buffer.
                 This is the new history-current buffer boundary while self.history_buffer_seg_end is the old one.
-                Thus, the new set of embedding vectors are collected from 
+                Thus, the new set of embedding vectors are collected from
                 `label_stt=self.hist_buffer_seg_end` to `label_end=hist_curr_boundary`.
             total_segments_processed_count (int):
                 The number of segments that are processed so far in integer format.
@@ -930,7 +932,7 @@ class OnlineSpeakerClustering(torch.nn.Module):
 
             Step (2)
             |-----------------------|ABCDEF--------------XY|
-                                    |---------emb_in-------| 
+                                    |---------emb_in-------|
 
             The newly accepted embeddings go through a FIFO queue (first come, first merge)
             history buffer = 22
@@ -947,7 +949,7 @@ class OnlineSpeakerClustering(torch.nn.Module):
             Step (4)
             |======================|CDEF--------------XY|
             |-----hist_emb_buff----|
-            
+
             After clustering, `self.Y_fullhist` is updated as:
 
             |0000000000011111111111|11110000110010010011|
@@ -1181,7 +1183,10 @@ class OnlineSpeakerClustering(torch.nn.Module):
         if cuda and (curr_emb.device == torch.device("cpu") or base_segment_indexes.device == torch.device("cpu")):
             raise ValueError(f"CUDA is enabled but the input {curr_emb} or {base_segment_indexes} is not on the GPU.")
 
-        merged_embs, add_new = self.get_reduced_mat(emb_in=curr_emb, base_segment_indexes=base_segment_indexes,)
+        merged_embs, add_new = self.get_reduced_mat(
+            emb_in=curr_emb,
+            base_segment_indexes=base_segment_indexes,
+        )
         # Perform clustering on the embedding matrix containing history and current FIFO buffer merged_embeddings
         if merged_embs.shape[0] == 1:
             Y = torch.zeros((1,), dtype=torch.int32)

@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 import torch
 
@@ -21,12 +21,15 @@ from nemo.core.classes import Dataset
 from nemo.core.neural_types import AcousticEncodedRepresentation, LabelsType, LengthsType, NeuralType
 from nemo.utils import logging
 
+if TYPE_CHECKING:
+    from nemo.collections.asr.parts.preprocessing.perturb import AudioAugmentor
+
 
 def _feature_collate_fn(batch):
     """collate batch of feat sig, feat len, labels, labels len, assuming all features have the same shape.
     Args:
         batch (FloatTensor, LongTensor, LongTensor, LongTensor):  A tuple of tuples of feature, feature lengths,
-               encoded labels, and encoded labels length. 
+               encoded labels, and encoded labels length.
     """
     packed_batch = list(zip(*batch))
     if len(packed_batch) == 5:
@@ -61,7 +64,7 @@ def _audio_feature_collate_fn(batch, feat_pad_val, label_pad_id):
     Args:
         batch (Optional[FloatTensor], Optional[LongTensor], LongTensor,
                LongTensor):  A tuple of tuples of feature, feature lengths,
-               labels, and label lengths.  This collate func assumes the 
+               labels, and label lengths.  This collate func assumes the
                features are torch tensors of Log-Melspectrogram (i.e. [N_MEL, T]).
     """
     packed_batch = list(zip(*batch))
@@ -178,8 +181,7 @@ class _FeatureSeqSpeakerLabelDataset(Dataset):
 
     @property
     def output_types(self) -> Optional[Dict[str, NeuralType]]:
-        """Returns definitions of module output ports.
-        """
+        """Returns definitions of module output ports."""
         # TODO output type for external features
         output_types = {
             'external_feat': NeuralType(('B', 'D', 'T'), AcousticEncodedRepresentation()),
@@ -197,16 +199,26 @@ class _FeatureSeqSpeakerLabelDataset(Dataset):
             )
         else:
             output_types.update(
-                {'label': NeuralType(('B', 'T'), LabelsType()), 'label_length': NeuralType(tuple('B'), LengthsType()),}
+                {
+                    'label': NeuralType(('B', 'T'), LabelsType()),
+                    'label_length': NeuralType(tuple('B'), LengthsType()),
+                }
             )
 
         return output_types
 
     def __init__(
-        self, *, manifest_filepath: str, labels: List[str], feature_loader, is_speaker_emb: bool = False,
+        self,
+        *,
+        manifest_filepath: str,
+        labels: List[str],
+        feature_loader,
+        is_speaker_emb: bool = False,
     ):
         super().__init__()
-        self.collection = collections.ASRFeatureSequenceLabel(manifests_files=manifest_filepath.split(','),)
+        self.collection = collections.ASRFeatureSequenceLabel(
+            manifests_files=manifest_filepath.split(','),
+        )
 
         self.feature_loader = feature_loader
         self.labels = labels if labels else self.collection.uniq_labels
@@ -259,12 +271,12 @@ class FeatureToSeqSpeakerLabelDataset(_FeatureSeqSpeakerLabelDataset):
 
 class FeatureToLabelDataset(Dataset):
     """
-    Dataset that loads tensors via a json file containing paths to feature files and their labels. 
+    Dataset that loads tensors via a json file containing paths to feature files and their labels.
     Each new line is a different sample. Example below:
     and their target labels. JSON files should be of the following format:
         {"feature_filepath": "/path/to/audio_feature.pt", "label": "1"}
         ...
-        {"feature_filepath": "/path/to/audio_feature.pt", "label": "0"} 
+        {"feature_filepath": "/path/to/audio_feature.pt", "label": "0"}
     Args:
         manifest_filepath (str): Path to JSON containing data.
         labels (Optional[list]): List of unique labels collected from all samples.
@@ -283,8 +295,7 @@ class FeatureToLabelDataset(Dataset):
 
     @property
     def output_types(self) -> Optional[Dict[str, NeuralType]]:
-        """Returns definitions of module output ports.
-        """
+        """Returns definitions of module output ports."""
         output_types = {
             'audio_feat': NeuralType(('B', 'D', 'T'), AcousticEncodedRepresentation()),
             'feat_length': NeuralType(tuple('B'), LengthsType()),
@@ -299,7 +310,7 @@ class FeatureToLabelDataset(Dataset):
         *,
         manifest_filepath: str,
         labels: List[str] = None,
-        augmentor: 'nemo.collections.asr.parts.perturb.AudioAugmentor' = None,
+        augmentor: 'AudioAugmentor' = None,
         window_length_in_sec: float = 0.63,
         shift_length_in_sec: float = 0.01,
         is_regression_task: bool = False,
@@ -375,12 +386,12 @@ class FeatureToLabelDataset(Dataset):
 
 class FeatureToMultiLabelDataset(Dataset):
     """
-    Dataset that loads tensors via a json file containing paths to feature files and their labels. 
+    Dataset that loads tensors via a json file containing paths to feature files and their labels.
     Each new line is a different sample. Example below:
     and their target labels. JSON files should be of the following format:
         {"feature_filepath": "/path/to/audio_feature.pt", "label": "1 1 0 0 1"}
         ...
-        {"feature_filepath": "/path/to/audio_feature.pt", "label": "0 1 0 0"} 
+        {"feature_filepath": "/path/to/audio_feature.pt", "label": "0 1 0 0"}
     Args:
         manifest_filepath (str): Path to JSON containing data.
         labels (Optional[list]): List of unique labels collected from all samples.
@@ -397,8 +408,7 @@ class FeatureToMultiLabelDataset(Dataset):
 
     @property
     def output_types(self) -> Optional[Dict[str, NeuralType]]:
-        """Returns definitions of module output ports.
-        """
+        """Returns definitions of module output ports."""
         output_types = {
             'audio_feat': NeuralType(('B', 'D', 'T'), AcousticEncodedRepresentation()),
             'feat_length': NeuralType(tuple('B'), LengthsType()),
@@ -413,7 +423,7 @@ class FeatureToMultiLabelDataset(Dataset):
         *,
         manifest_filepath: str,
         labels: List[str] = None,
-        augmentor: 'nemo.collections.asr.parts.perturb.AudioAugmentor' = None,
+        augmentor: 'AudioAugmentor' = None,
         delimiter: Optional[str] = None,
         is_regression_task: bool = False,
         cal_labels_occurrence: Optional[bool] = False,

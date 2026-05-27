@@ -98,6 +98,93 @@ For example, training data setup can be deferred as follows:
 
 .. _asr-configs-metric-configuration:
 
+
+.. _asr-configs-preprocessor-configuration:
+
+Preprocessor Configuration
+--------------------------
+
+If you are loading audio files for your experiment, you will likely want to use a preprocessor to convert from the
+raw audio signal to features (e.g. mel-spectrogram or MFCC). The ``preprocessor`` section of the config specifies the audio
+preprocessor to be used via the ``_target_`` field, as well as any initialization parameters for that preprocessor.
+
+An example of specifying a preprocessor is as follows:
+
+.. code-block:: yaml
+
+  model:
+    ...
+    preprocessor:
+      # _target_ is the audio preprocessor module you want to use
+      _target_: nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor
+      normalize: "per_feature"
+      window_size: 0.02
+      ...
+      # Other parameters for the preprocessor
+
+Refer to the :ref:`Audio Preprocessors <asr-audio-preprocessors>` API section for the preprocessor options, expected arguments,
+and defaults.
+
+.. _asr-configs-augmentation-configurations:
+
+Augmentation Configurations
+---------------------------
+
+There are a few on-the-fly spectrogram augmentation options for NeMo ASR, which can be specified by the
+configuration file using a ``spec_augment`` section.
+
+For example, there are options for `Cutout <https://arxiv.org/abs/1708.04552>`_ and
+`SpecAugment <https://arxiv.org/abs/1904.08779>`_ available via the ``SpectrogramAugmentation`` module.
+
+The following example sets up both ``Cutout`` (via the ``rect_*`` parameters) and ``SpecAugment`` (via the ``freq_*``
+and ``time_*`` parameters).
+
+.. code-block:: yaml
+
+  model:
+    ...
+    spec_augment:
+      _target_: nemo.collections.asr.modules.SpectrogramAugmentation
+      # Cutout parameters
+      rect_masks: 5   # Number of rectangles to cut from any given spectrogram
+      rect_freq: 50   # Max cut of size 50 along the frequency dimension
+      rect_time: 120  # Max cut of size 120 along the time dimension
+      # SpecAugment parameters
+      freq_masks: 2   # Cut two frequency bands
+      freq_width: 15  # ... of width 15 at maximum
+      time_masks: 5    # Cut out 10 time bands
+      time_width: 25  # ... of width 25 at maximum
+
+You can use any combination of ``Cutout``, frequency/time ``SpecAugment``, or neither of them.
+
+You can also add audio augmentation pipelines via an ``augmentor`` section in ``train_ds``.
+
+.. caution::
+   The ``augmentor`` pipeline is not supported by the Lhotse dataloader, which provides its own set of augmentation options.
+   See :doc:`Lhotse Dataloading </dataloaders>` for details.
+
+Augmentors are applied on-the-fly to audio data in the data layer. The following example
+adds white noise (probability 0.5, level between -50 dB and -10 dB) and room impulse response
+augmentation (probability 0.3, from a manifest of impulse responses):
+
+.. code-block:: yaml
+
+  model:
+    ...
+    train_ds:
+    ...
+        augmentor:
+            white_noise:
+                prob: 0.5
+                min_level: -50
+                max_level: -10
+            impulse:
+                prob: 0.3
+                manifest_path: /path/to/impulse_manifest.json
+
+Refer to the :ref:`Audio Augmentors <asr-api-audio-augmentors>` API section for more details.
+
+
 Metric Configurations
 ---------------------
 
@@ -190,88 +277,6 @@ Each metric within ``MultiTaskMetric`` can be configured with an optional boolea
 
 **Note:** MultiTaskMetric is currently only supported for AED multitask models.
 
-
-.. _asr-configs-preprocessor-configuration:
-
-Preprocessor Configuration
---------------------------
-
-If you are loading audio files for your experiment, you will likely want to use a preprocessor to convert from the
-raw audio signal to features (e.g. mel-spectrogram or MFCC). The ``preprocessor`` section of the config specifies the audio
-preprocessor to be used via the ``_target_`` field, as well as any initialization parameters for that preprocessor.
-
-An example of specifying a preprocessor is as follows:
-
-.. code-block:: yaml
-
-  model:
-    ...
-    preprocessor:
-      # _target_ is the audio preprocessor module you want to use
-      _target_: nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor
-      normalize: "per_feature"
-      window_size: 0.02
-      ...
-      # Other parameters for the preprocessor
-
-Refer to the :ref:`Audio Preprocessors <asr-audio-preprocessors>` API section for the preprocessor options, expected arguments,
-and defaults.
-
-.. _asr-configs-augmentation-configurations:
-
-Augmentation Configurations
----------------------------
-
-There are a few on-the-fly spectrogram augmentation options for NeMo ASR, which can be specified by the
-configuration file using a ``spec_augment`` section.
-
-For example, there are options for `Cutout <https://arxiv.org/abs/1708.04552>`_ and
-`SpecAugment <https://arxiv.org/abs/1904.08779>`_ available via the ``SpectrogramAugmentation`` module.
-
-The following example sets up both ``Cutout`` (via the ``rect_*`` parameters) and ``SpecAugment`` (via the ``freq_*``
-and ``time_*`` parameters).
-
-.. code-block:: yaml
-
-  model:
-    ...
-    spec_augment:
-      _target_: nemo.collections.asr.modules.SpectrogramAugmentation
-      # Cutout parameters
-      rect_masks: 5   # Number of rectangles to cut from any given spectrogram
-      rect_freq: 50   # Max cut of size 50 along the frequency dimension
-      rect_time: 120  # Max cut of size 120 along the time dimension
-      # SpecAugment parameters
-      freq_masks: 2   # Cut two frequency bands
-      freq_width: 15  # ... of width 15 at maximum
-      time_masks: 5    # Cut out 10 time bands
-      time_width: 25  # ... of width 25 at maximum
-
-You can use any combination of ``Cutout``, frequency/time ``SpecAugment``, or neither of them.
-
-With NeMo ASR, you can also add augmentation pipelines that can be used to simulate various kinds of noise
-added to audio in the channel. Augmentors in a pipeline are applied on the audio data read in the data layer. Online
-augmentors can be specified in the config file using an ``augmentor`` section in ``train_ds``. The following example
-adds an augmentation pipeline that first adds white noise to an audio sample with a probability of 0.5 and at a level
-randomly picked between -50 dB and -10 dB and then passes the resultant samples through a room impulse response randomly
-picked from the manifest file provided for ``impulse`` augmentation in the config file.
-
-.. code-block:: yaml
-
-  model:
-    ...
-    train_ds:
-    ...
-        augmentor:
-            white_noise:
-                prob: 0.5
-                min_level: -50
-                max_level: -10
-            impulse:
-                prob: 0.3
-                manifest_path: /path/to/impulse_manifest.json
-
-Refer to the :ref:`Audio Augmentors <asr-api-audio-augmentors>` API section for more details.
 
 Tokenizer Configurations
 ------------------------
@@ -394,9 +399,7 @@ Here is the list of the parameters in the model section which are shared among m
 |                         |                  |                                                                                                               | :code:`mean`, :code:`sum`       |
 +-------------------------+------------------+---------------------------------------------------------------------------------------------------------------+---------------------------------+
 
-The following sections go into more detail about the specific configurations of each model architecture.
-
-For more information about the ASR models, refer to the :doc:`Models <./models>` section.
+For more information about the ASR models, refer to the :doc:`Featured Models <./featured_models>` section.
 
 
 .. _asr-configs-conformer-ctc:
@@ -427,68 +430,6 @@ Conformer-Transducer
 ~~~~~~~~~~~~~~~~~~~~
 
 Please refer to the model page of :ref:`Conformer-Transducer <Conformer-Transducer_model>` for more information on this model.
-
-.. _asr-configs-lstm-transducer-and-ctc:
-
-LSTM-Transducer and LSTM-CTC
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-The config files for LSTM-Transducer and LSTM-CTC models can be found at ``<NeMo_git_root>/examples/asr/conf/lstm/lstm_transducer_bpe.yaml`` and ``<NeMo_git_root>/examples/asr/conf/lstm/lstm_ctc_bpe.yaml`` respectively.
-Most of the of the configs of are similar to other ctc or transducer models. The main difference is the encoder part.
-The encoder section includes the details about the RNN-based encoder architecture. You may find more information in the
-config files and also :ref:`nemo.collections.asr.modules.RNNEncoder <rnn-encoder-api>`.
-
-
-InterCTC Config
----------------
-
-All CTC-based models also support `InterCTC loss <https://arxiv.org/abs/2102.03216>`_. To use it, you need to specify
-2 parameters as in example below
-
-.. code-block:: yaml
-
-   model:
-      # ...
-      interctc:
-        loss_weights: [0.3]
-        apply_at_layers: [8]
-
-which can be used to reproduce the default setup from the paper (assuming the total number of layers is 18).
-You can also specify multiple CTC losses from different layers, e.g., to get 2 losses from layers 3 and 8 with
-weights 0.1 and 0.3, specify:
-
-.. code-block:: yaml
-
-   model:
-      # ...
-      interctc:
-        loss_weights: [0.1, 0.3]
-        apply_at_layers: [3, 8]
-
-Note that the final-layer CTC loss weight is automatically computed to normalize
-all weight to 1 (0.6 in the example above).
-
-
-Stochastic Depth Config
------------------------
-
-`Stochastic Depth <https://arxiv.org/abs/2102.03216>`_ is a useful technique for regularizing ASR model training.
-Currently it's only supported for :ref:`nemo.collections.asr.modules.ConformerEncoder <conformer-encoder-api>`. To
-use it, specify the following parameters in the encoder config file to reproduce the default setup from the paper:
-
-.. code-block:: yaml
-
-   model:
-      # ...
-      encoder:
-        # ...
-        stochastic_depth_drop_prob: 0.3
-        stochastic_depth_mode: linear  # linear or uniform
-        stochastic_depth_start_layer: 1
-
-See :ref:`documentation of ConformerEncoder <conformer-encoder-api>` for more details. Note that stochastic depth
-is supported for both CTC and Transducer model variations (or any other kind of model/loss that's using
-conformer as encoder).
 
 
 Transducer Configurations
@@ -634,13 +575,13 @@ Take the following example.
 
 BS=32 ; T (after 2x stride) = 800, U (with character encoding) = 400-450 tokens, Vocabulary size V = 28 (26 alphabet chars, space and apostrophe). Let the hidden dimension of the Joint model be 640 (Most Google Transducer papers use hidden dimension of 640).
 
-* :math:`Memory \, (Hidden, \, gb) = 32 \times 800 \times 450 \times 640 \times 4 = 29.49` gigabytes (4 bytes per float).
+* Memory (Hidden, gb) = 32 x 800 x 450 x 640 x 4 = 29.49 gigabytes (4 bytes per float).
 
-* :math:`Memory \, (Joint, \, gb) = 32 \times 800 \times 450 \times 28 \times 4 = 1.290` gigabytes (4 bytes per float)
+* Memory (Joint, gb) = 32 x 800 x 450 x 28 x 4 = 1.290 gigabytes (4 bytes per float)
 
 **NOTE**: This is just for the forward pass! We need to double this memory to store gradients! This much memory is also just for the Joint model **alone**. Far more memory is required for the Prediction model as well as the large Acoustic model itself and its gradients!
 
-Even with mixed precision, that's $\sim 30$ GB of GPU RAM for just 1 part of the network + its gradients.
+Even with mixed precision, that's ~30 GB of GPU RAM for just 1 part of the network + its gradients.
 
 Effect of Fused Batch Step
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -657,17 +598,17 @@ The fused operation goes as follows :
 
 2) Split the Acoustic Model's logits by ``fused_batch_size`` and loop over these sub-batches.
 
-3) Construct a sub-batch of same ``fused_batch_size`` for the Prediction model. Now the target sequence length is :math:`U_{sub-batch} < U`.
+3) Construct a sub-batch of same ``fused_batch_size`` for the Prediction model. Now the target sequence length is U_sub-batch < U.
 
-4) Feed this :math:`U_{sub-batch}` into the Joint model, along with a sub-batch from the Acoustic model (with :math:`T_{sub-batch} < T)`. Remember, we only have to slice off a part of the acoustic model here since we have the full batch of samples :math:`(B, T, D)` from the acoustic model.
+4) Feed this U_sub-batch into the Joint model, along with a sub-batch from the Acoustic model (with T_sub-batch < T). Remember, we only have to slice off a part of the acoustic model here since we have the full batch of samples (B, T, D) from the acoustic model.
 
-5) Performing steps (3) and (4) yields :math:`T_{sub-batch}` and :math:`U_{sub-batch}`. Perform sub-batch joint step - costing an intermediate :math:`(B, T_{sub-batch}, U_{sub-batch}, V)` in memory.
+5) Performing steps (3) and (4) yields T_sub-batch and U_sub-batch. Perform sub-batch joint step - costing an intermediate (B, T_sub-batch, U_sub-batch, V) in memory.
 
 6) Compute loss on sub-batch and preserve in a list to be later concatenated.
 
 7) Compute sub-batch metrics (such as Character / Word Error Rate) using the above Joint tensor and sub-batch of ground truth labels. Preserve the scores to be averaged across the entire batch later.
 
-8) Delete the sub-batch joint matrix  :math:`(B, T_{sub-batch}, U_{sub-batch}, V)`. Only gradients from .backward() are preserved now in the computation graph.
+8) Delete the sub-batch joint matrix (B, T_sub-batch, U_sub-batch, V). Only gradients from .backward() are preserved now in the computation graph.
 
 9) Repeat steps (3) - (8) until all sub-batches are consumed.
 
@@ -704,7 +645,7 @@ The most important component at the top level is the ``strategy``. It can take o
 
     # Overrides the fused batch size after training.
     # Setting it to -1 will process whole batch at once when combined with `greedy_batch` decoding strategy
-    fused_batch_size: Optional[int] = -1
+    fused_batch_size: -1
 
     # greedy strategy config
     greedy:
@@ -749,6 +690,60 @@ FastEmit Regularization
 FastEmit Regularization is supported for the default Numba based WarpRNNT loss. Recently proposed regularization approach - `FastEmit: Low-latency Streaming ASR with Sequence-level Emission Regularization <https://arxiv.org/abs/2010.11148>`_ allows us near-direct control over the latency of transducer models.
 
 Refer to the above paper for results and recommendations of ``fastemit_lambda``.
+
+For decoding customization (confidence scores, CUDA graphs, language models, word boosting), see :doc:`ASR Language Modeling and Customization <./asr_language_modeling_and_customization>`.
+
+
+InterCTC Config
+---------------
+
+All CTC-based models also support `InterCTC loss <https://arxiv.org/abs/2102.03216>`_. To use it, you need to specify
+2 parameters as in example below
+
+.. code-block:: yaml
+
+   model:
+      # ...
+      interctc:
+        loss_weights: [0.3]
+        apply_at_layers: [8]
+
+which can be used to reproduce the default setup from the paper (assuming the total number of layers is 18).
+You can also specify multiple CTC losses from different layers, e.g., to get 2 losses from layers 3 and 8 with
+weights 0.1 and 0.3, specify:
+
+.. code-block:: yaml
+
+   model:
+      # ...
+      interctc:
+        loss_weights: [0.1, 0.3]
+        apply_at_layers: [3, 8]
+
+Note that the final-layer CTC loss weight is automatically computed to normalize
+all weight to 1 (0.6 in the example above).
+
+
+Stochastic Depth Config
+-----------------------
+
+`Stochastic Depth <https://arxiv.org/abs/2102.03216>`_ is a useful technique for regularizing ASR model training.
+Currently it's only supported for :ref:`nemo.collections.asr.modules.ConformerEncoder <conformer-encoder-api>`. To
+use it, specify the following parameters in the encoder config file to reproduce the default setup from the paper:
+
+.. code-block:: yaml
+
+   model:
+      # ...
+      encoder:
+        # ...
+        stochastic_depth_drop_prob: 0.3
+        stochastic_depth_mode: linear  # linear or uniform
+        stochastic_depth_start_layer: 1
+
+See :ref:`documentation of ConformerEncoder <conformer-encoder-api>` for more details. Note that stochastic depth
+is supported for both CTC and Transducer model variations (or any other kind of model/loss that's using
+conformer as encoder).
 
 
 .. _Hybrid-Transducer-CTC-Prompt_model__Config:
@@ -831,99 +826,3 @@ A complete example configuration can be found at:
       model.validation_ds.manifest_filepath=<path_to_val_manifest> \
       model.tokenizer.dir=<path_to_tokenizer> \
       model.test_ds.manifest_filepath=<path_to_test_manifest>
-
-Fine-tuning Configurations
---------------------------
-
-All ASR scripts support easy fine-tuning by partially/fully loading the pretrained weights from a checkpoint into the **currently instantiated model**. Note that the currently instantiated model should have parameters that match the pre-trained checkpoint (such that weights may load properly). In order to directly fine-tune a pre-existing checkpoint, please follow the tutorial  `ASR Language Fine-tuning. <https://colab.research.google.com/github/NVIDIA/NeMo/blob/main/tutorials/asr/ASR_CTC_Language_Finetuning.ipynb>`_
-
-Models can be fine-tuned in two ways:
-* By updating or retaining current tokenizer alone
-* By updating model architecture and tokenizer
-
-Fine-tuning by updating or retaining current tokenizer
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-In this case, the model architecture is not updated. The model is initialized with the pre-trained weights by
-two ways:
-
-1) Providing a path to a NeMo model (via ``init_from_nemo_model``)
-2) Providing a name of a pretrained NeMo model (which will be downloaded via the cloud) (via ``init_from_pretrained_model``)
-
-Then users can use existing tokenizer or update the tokenizer with new vocabulary. This is useful when users don't want to update the model architecture
-but want to update the tokenizer with new vocabulary.
-
-The same script can be used to finetune CTC, RNNT or Hybrid models as well.
-
-<NeMo_repo>/examples/asr/speech_to_text_finetune.py script supports this type of fine-tuning with the following arguments:
-
-.. code-block:: sh
-
-    python examples/asr/speech_to_text_finetune.py \
-        --config-path=<path to dir of configs> \
-        --config-name=<name of config without .yaml>) \
-        model.train_ds.manifest_filepath="<path to manifest file>" \
-        model.validation_ds.manifest_filepath="<path to manifest file>" \
-        model.tokenizer.update_tokenizer=<True/False> \ # True to update tokenizer, False to retain existing tokenizer
-        model.tokenizer.dir=<path to tokenizer dir> \ # Path to tokenizer dir when update_tokenizer=True
-        model.tokenizer.type=<tokenizer type> \ # tokenizer type when update_tokenizer=True
-        trainer.devices=-1 \
-        trainer.accelerator='gpu' \
-        trainer.max_epochs=50 \
-        +init_from_nemo_model="<path to .nemo model file>" (or +init_from_pretrained_model="<name of pretrained checkpoint>")
-
-
-Refer to <NeMo_repo>/examples/asr/conf/asr_finetune/speech_to_text_finetune.yaml for more details.
-
-Finetune ASR Models using HuggingFace Datasets
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-Users can utilize HuggingFace Datasets for finetuning NeMo ASR models. The following config file can be used for this purpose:
-`<NeMo_repo>/examples/asr/conf/asr_finetune/speech_to_text_hf_finetune.yaml`
-
-As mentioned earlier, users can update the tokenizer or use an existing one based on their requirements. If users want to create a new tokenizer
-from HuggingFace Datasets, they can use the following script:
-`<NeMo_repo>/scripts/tokenizers/get_hf_text_data.py`
-
-Fine-tuning by changing model architecture and tokenizer
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-If users want to update the model architecture as well they can use the following script:
-
-For providing pretrained model, users can provide Pre-trained weights in multiple ways -
-
-1) Providing a path to a NeMo model (via ``init_from_nemo_model``)
-2) Providing a name of a pretrained NeMo model (which will be downloaded via the cloud) (via ``init_from_pretrained_model``)
-3) Providing a path to a Pytorch Lightning checkpoint file (via ``init_from_ptl_ckpt``)
-
-There are multiple ASR subtasks inside the ``examples/asr/`` directory, you can substitute the ``<subtask>`` tag below.
-
-.. code-block:: sh
-
-    python examples/asr/<subtask>/script_to_<script_name>.py \
-        --config-path=<path to dir of configs> \
-        --config-name=<name of config without .yaml>) \
-        model.train_ds.manifest_filepath="<path to manifest file>" \
-        model.validation_ds.manifest_filepath="<path to manifest file>" \
-        trainer.devices=-1 \
-        trainer.accelerator='gpu' \
-        trainer.max_epochs=50 \
-        +init_from_nemo_model="<path to .nemo model file>" # (or +init_from_pretrained_model, +init_from_ptl_ckpt )
-
-To reinitialize part of the model, to make it different from the pretrained model, users can mention them through config:
-
-.. code-block:: yaml
-
-    init_from_nemo_model: "<path to .nemo model file>"
-        asr_model:
-            include: ["preprocessor","encoder"]
-            exclude: ["decoder"]
-
-Fine-tuning Execution Flow Diagram
-----------------------------------
-
-When preparing your own training or fine-tuning scripts, please follow the execution flow diagram order for correct inference.
-
-Depending on the type of model, there may be extra steps that must be performed -
-
-* CTC Models - `Examples directory for CTC Models <https://github.com/NVIDIA/NeMo/blob/stable/examples/asr/asr_ctc/README.md>`_
-* RNN Transducer Models - `Examples directory for Transducer Models <https://github.com/NVIDIA/NeMo/blob/stable/examples/asr/asr_transducer/README.md>`_

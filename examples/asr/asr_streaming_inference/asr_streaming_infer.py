@@ -29,7 +29,6 @@ python asr_streaming_infer.py \
         audio_file=<path to audio file, directory of audio files, or manifest file> \
         output_filename=<path to output jsonfile> \
         lang=en \
-        enable_pnc=False \
         enable_itn=False \
         enable_nmt=False \
         asr_output_granularity=segment \

@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_input.file_path' | { read -r f; f=\"${f#\"$(git rev-parse --show-toplevel)/\"}\"; case \"$f\" in *.py) ;; *) exit 0;; esac; case \"$f\" in docs/*|external/*|examples/*) exit 0;; nemo/collections/speechlm2/*) ;; nemo/collections/*) exit 0;; esac; black --quiet \"$f\"; isort --quiet \"$f\"; } 2>/dev/null || true",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -15,12 +15,12 @@ name: CICD NeMo
 on:
   schedule:
     - cron: 0 0 * * *
-  pull_request:
+  push:
     branches:
       - main
       - r**
       - weekly-bump*
-    types: [labeled]
+      - "pull-request/[0-9]+"
   workflow_dispatch:
     inputs:
       test_to_run:
@@ -31,21 +31,37 @@ on:
 
 concurrency:
   # group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.event.pull_request.number || github.ref }}-${{ github.event_name }}
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event.label.name || 'main' }}-${{ github.event_name }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 jobs:
   pre-flight:
+    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_cicd_preflight.yml@v0.89.0
+    with:
+      default_runner_prefix: ${{ vars.DEFAULT_RUNNER_PREFIX }}
+      non_nvidia_runner_prefix: ${{ vars.NON_NVIDIA_RUNNER_PREFIX }}
+      default_test_data_path: ${{ vars.DEFAULT_TEST_DATA_PATH }}
+      non_nvidia_test_data_path: ${{ vars.NON_NVIDIA_TEST_DATA_PATH }}
+      default_registry: ${{ vars.DEFAULT_CONTAINER_REGISTRY }}
+      non_nvidia_registry: ${{ vars.NON_NVIDIA_CONTAINER_REGISTRY }}
+      sso_users_filename: ${{ vars.SSO_USERS_FILENAME }}
+    secrets:
+      NVIDIA_MANAGEMENT_ORG_PAT: ${{ secrets.NVIDIA_MANAGEMENT_ORG_PAT }}
+
+  configure:
     runs-on: ubuntu-latest
+    needs: [pre-flight]
     outputs:
       test_to_run: ${{ steps.test_to_run.outputs.main }}
       is_ci_workload: ${{ steps.is_ci_workload.outputs.main }}
       no_fail_fast: ${{ steps.no_fail_fast.outputs.main }}
       components_to_run: ${{ steps.components_to_run.outputs.main }}
+      run_nightly: ${{ steps.pr_labels.outputs.run_nightly }}
+      skip_docs: ${{ steps.pr_labels.outputs.skip_docs }}
+      skip_linting: ${{ steps.pr_labels.outputs.skip_linting }}
     env:
       TESTS_TO_RUN: ${{ inputs.test_to_run }}
       EVENT_NAME: ${{ github.event_name }}
-      HAS_LABEL: ${{ github.event.label.name == 'Run CICD' }}
     steps:
       - name: Checkout branch
         uses: actions/checkout@v6
@@ -60,20 +76,11 @@ jobs:
       - name: Select tests to run
         id: test_to_run
         run: |
-          # For manual dispatch, we replace `all` with the actual job names
+          # For manual dispatch, use the provided input
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             TESTS_TO_RUN=$TESTS_TO_RUN
 
-          # For correctly labeled PR, we replace `all` with the actual job names
-          elif [[ "$EVENT_NAME" == "pull_request" && "$HAS_LABEL" == "true" ]]; then
-            TESTS_TO_RUN=all
-
-          # For incorrectly labeled PR, run no tests
-          elif [[ "$EVENT_NAME" == "pull_request" && "$HAS_LABEL" != "true" ]]; then
-            TESTS_TO_RUN=""
-
-          # For push events, run all tests. This is so that we can generate coverage
-          # on branch `main`.
+          # For push (PR branches via copy-pr-bot, main, release) and schedule, run all tests
           elif [[ "$EVENT_NAME" == "push" || "$EVENT_NAME" == "schedule" ]]; then
             TESTS_TO_RUN=all
 
@@ -100,11 +107,29 @@ jobs:
 
           echo "main=$is_ci_workload" | tee -a "$GITHUB_OUTPUT"
 
+      - name: Fetch PR labels
+        id: pr_labels
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          REF="${GITHUB_REF#refs/heads/}"
+          if [[ "$REF" =~ ^pull-request/([0-9]+)$ ]]; then
+            PR_NUMBER="${BASH_REMATCH[1]}"
+            LABELS=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json labels -q '[.labels[].name]')
+          else
+            LABELS='[]'
+          fi
+          echo "run_nightly=$(echo "$LABELS" | jq 'any(. == "Run e2e nightly")')" | tee -a "$GITHUB_OUTPUT"
+          echo "skip_docs=$(echo "$LABELS" | jq 'any(. == "skip-docs")')" | tee -a "$GITHUB_OUTPUT"
+          echo "skip_linting=$(echo "$LABELS" | jq 'any(. == "skip-linting")')" | tee -a "$GITHUB_OUTPUT"
+          echo "no_fail_fast=$(echo "$LABELS" | jq 'any(. == "no-fail-fast")')" | tee -a "$GITHUB_OUTPUT"
+
       - name: Check if no-fail-fast is set
         shell: bash
         id: no_fail_fast
         env:
-          HAS_FAIL_FAST_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'no-fail-fast') }}
+          HAS_FAIL_FAST_LABEL: ${{ steps.pr_labels.outputs.no_fail_fast }}
         run: |
           if [[ "$HAS_FAIL_FAST_LABEL" == "true" || "$EVENT_NAME" == "schedule" ]]; then
             no_fail_fast=true
@@ -115,18 +140,21 @@ jobs:
           echo "main=$no_fail_fast" | tee -a "$GITHUB_OUTPUT"
 
   code-linting:
-    if: needs.pre-flight.outputs.test_to_run != '[]'
-    needs: [pre-flight]
+    if: needs.configure.outputs.test_to_run != '[]'
+    needs: [configure]
     uses: ./.github/workflows/code-linting.yml
+    with:
+      skip_docs: ${{ needs.configure.outputs.skip_docs }}
+      skip_linting: ${{ needs.configure.outputs.skip_linting }}
 
   cicd-wait-in-queue:
-    needs: [pre-flight, code-linting]
+    needs: [configure, code-linting]
     runs-on: ubuntu-latest
     environment: test
     if: |
-      needs.pre-flight.outputs.test_to_run != '[]'
-      && needs.pre-flight.outputs.components_to_run != '[]'
-      && needs.pre-flight.outputs.is_ci_workload == 'false'
+      needs.configure.outputs.test_to_run != '[]'
+      && needs.configure.outputs.components_to_run != '[]'
+      && needs.configure.outputs.is_ci_workload == 'false'
     steps:
       - name: Running CI tests
         run: |
@@ -134,36 +162,38 @@ jobs:
 
   cicd-test-container-build:
     uses: ./.github/workflows/_build_container.yml
-    needs: [pre-flight, code-linting, cicd-wait-in-queue]
+    needs: [pre-flight, configure, code-linting, cicd-wait-in-queue]
     if: |
-      needs.pre-flight.outputs.test_to_run != '[]'
-      && needs.pre-flight.outputs.components_to_run != '[]'
+      needs.configure.outputs.test_to_run != '[]'
+      && needs.configure.outputs.components_to_run != '[]'
       && (
         success()
         || (
           needs.cicd-wait-in-queue.result == 'skipped'
-          && needs.pre-flight.outputs.is_ci_workload == 'true'
+          && needs.configure.outputs.is_ci_workload == 'true'
         )
       )
       && !cancelled()
     with:
       image-name: nemo_container
       dockerfile: docker/Dockerfile.ci
+      runner: ${{ needs.pre-flight.outputs.runner_prefix }}
+      registry: ${{ needs.pre-flight.outputs.registry }}
 
   cicd-import-tests:
     if: |
-      needs.pre-flight.outputs.test_to_run != '[]'
-      && needs.pre-flight.outputs.components_to_run != '[]'
+      needs.configure.outputs.test_to_run != '[]'
+      && needs.configure.outputs.components_to_run != '[]'
       && (
         success()
         || (
           needs.cicd-wait-in-queue.result == 'skipped'
-          && needs.pre-flight.outputs.is_ci_workload == 'true'
+          && needs.configure.outputs.is_ci_workload == 'true'
         )
       )
       && !cancelled()
-    needs: [cicd-test-container-build, pre-flight]
-    runs-on: self-hosted-azure-gpus-1
+    needs: [cicd-test-container-build, configure, pre-flight]
+    runs-on: ${{ needs.pre-flight.outputs.runner_prefix }}
     steps:
       - name: Create UUID
         id: uuid
@@ -184,12 +214,9 @@ jobs:
             --shm-size=8g \
             --volume $(pwd)/${{ github.run_id }}/${{steps.uuid.outputs.id }}/NeMo:/workspace \
             --env TRANSFORMERS_OFFLINE=0 \
-            --env HYDRA_FULL_ERROR=1 --env PYTHONUNBUFFERED=1 nemoci.azurecr.io/nemo_container:${{ github.run_id }} bash -c '\
+            --env HYDRA_FULL_ERROR=1 --env PYTHONUNBUFFERED=1 ${{ needs.cicd-test-container-build.outputs.image }} bash -c '\
             # PyTorch Lightning version
             python -c "import lightning.pytorch; print(lightning.pytorch.__version__)"
-
-            # PyTorch Lightning DDP Checks
-            CUDA_VISIBLE_DEVICES="0,1" python "tests/core_ptl/check_for_ranks.py"
 
             # Basic Import Checks
             python tests/core_ptl/check_imports.py --domain asr
@@ -197,73 +224,81 @@ jobs:
           '
 
   L0_Setup_Test_Data_And_Models:
-    needs: [pre-flight, cicd-test-container-build, cicd-wait-in-queue]
-    runs-on: self-hosted-azure
+    needs: [configure, cicd-test-container-build, cicd-wait-in-queue, pre-flight]
+    runs-on: ${{ needs.pre-flight.outputs.runner_prefix }}
     if: |
-      needs.pre-flight.outputs.test_to_run != '[]'
-      && needs.pre-flight.outputs.components_to_run != '[]'
+      needs.configure.outputs.test_to_run != '[]'
+      && needs.configure.outputs.components_to_run != '[]'
       && (
         success()
         || (
           needs.cicd-wait-in-queue.result == 'skipped'
-          && needs.pre-flight.outputs.is_ci_workload == 'true'
+          && needs.configure.outputs.is_ci_workload == 'true'
         )
       )
       && !cancelled()
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+      - name: Checkout NeMo
+        uses: actions/checkout@v6
         with:
           path: ${{ github.run_id }}
 
       - name: main
-        uses: NVIDIA/NeMo/.github/actions/test-template@main
+        uses: ./.github/actions/test-template
         with:
           runner: ${{ runner.name }}
           script: L0_Setup_Test_Data_And_Models
           tests_to_run: '["L0_Setup_Test_Data_And_Models"]'
+          image: ${{ needs.cicd-test-container-build.outputs.image }}
+          test-data-path: ${{ vars.DEFAULT_TEST_DATA_PATH || '/mnt/datadrive/TestData' }}
 
   cicd-main-unit-tests:
-    needs: [pre-flight, cicd-test-container-build]
+    needs: [pre-flight, configure, cicd-test-container-build]
     uses: ./.github/workflows/cicd-main-unit-tests.yml
     if: |
-      needs.pre-flight.outputs.test_to_run != '[]'
-      && needs.pre-flight.outputs.components_to_run != '[]'
+      needs.configure.outputs.test_to_run != '[]'
+      && needs.configure.outputs.components_to_run != '[]'
       && (
         success()
         || (
           needs.cicd-wait-in-queue.result == 'skipped'
-          && needs.pre-flight.outputs.is_ci_workload == 'true'
+          && needs.configure.outputs.is_ci_workload == 'true'
         )
       )
       && !cancelled()
     with:
-      test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
+      test_to_run: ${{ needs.configure.outputs.test_to_run }}
+      runner: ${{ needs.pre-flight.outputs.runner_prefix }}
+      container-image: ${{ needs.cicd-test-container-build.outputs.image }}
 
   cicd-main-speech:
-    needs: [pre-flight, cicd-test-container-build, cicd-main-unit-tests]
+    needs: [pre-flight, configure, cicd-test-container-build, cicd-main-unit-tests]
     uses: ./.github/workflows/cicd-main-speech.yml
     if: |
       (
-        needs.pre-flight.outputs.test_to_run != '[]'
+        needs.configure.outputs.test_to_run != '[]'
         && (
-          contains(fromJson(needs.pre-flight.outputs.components_to_run), 'speech')
+          contains(fromJson(needs.configure.outputs.components_to_run), 'speech')
         )
       )
       && (
         success()
         || (
           needs.cicd-wait-in-queue.result == 'skipped'
-          && needs.pre-flight.outputs.is_ci_workload == 'true'
+          && needs.configure.outputs.is_ci_workload == 'true'
         )
       )
       && !cancelled()
     with:
-      test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
+      test_to_run: ${{ needs.configure.outputs.test_to_run }}
+      runner: ${{ needs.pre-flight.outputs.runner_prefix }}
+      run_nightly: ${{ needs.configure.outputs.run_nightly }}
 
   Nemo_CICD_Test:
     needs:
-      - pre-flight
+      - configure
       - cicd-test-container-build
       - cicd-import-tests
       - L0_Setup_Test_Data_And_Models
@@ -281,15 +316,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ github.run_id }}
-          HAS_LABEL: ${{ github.event.label.name == 'Run CICD' }}
-          IS_SCHEDULED: ${{ github.event_name == 'schedule' }}
         run: |
           # Get workflow run details and check job conclusions
           LATEST_ATTEMPT=$(gh run view $RUN_ID --json jobs -q '[.jobs[] | select(.conclusion != null) | .conclusion] | last')
           NUM_FAILED=$(gh run view $RUN_ID --json jobs -q '[.jobs[] | select(.conclusion == "failure") | .name] | length')
           NUM_CANCELLED=$(gh run view $RUN_ID --json jobs -q '[.jobs[] | select(.conclusion == "cancelled") | .name] | length')
 
-          if [[ $NUM_FAILED -eq 0 && $NUM_CANCELLED -eq 0 && ("$HAS_LABEL" == "true" || "$IS_SCHEDULED" == "true") ]]; then
+          if [[ $NUM_FAILED -eq 0 && $NUM_CANCELLED -eq 0 ]]; then
             RESULT="success"
           elif [[ $NUM_CANCELLED -gt 0 ]]; then
             RESULT="cancelled"
@@ -300,37 +333,25 @@ jobs:
           # Output the final status
           echo "code=$RESULT" | tee -a $GITHUB_OUTPUT
 
-      - name: Checkout for GH CLI
-        uses: actions/checkout@v6
-
-      - name: Remove label if not cancelled
-        if: |
-          steps.result.outputs.code != 'cancelled'
-          && github.event.label.name == 'Run CICD'
-          && github.event.pull_request.head.repo.full_name == github.repository
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.number }}
-        run: gh pr edit "$PR_NUMBER" --remove-label "Run CICD"
-
       - name: Pipeline successful, add PR comment
         if: |
           steps.result.outputs.code == 'success'
-          && github.event_name == 'pull_request'
+          && github.event_name == 'push'
+          && startsWith(github.ref, 'refs/heads/pull-request/')
           && env.SLACK_WEBHOOK != ''
-        uses: peter-evans/create-or-update-comment@v4
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
           REPOSITORY: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
-        with:
-          issue-number: ${{ github.event.number }}
-          body: |
-            [🤖]: Hi @${{ github.event.pull_request.user.login }} 👋,
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR_NUMBER="${GITHUB_REF#refs/heads/pull-request/}"
+          PR_AUTHOR=$(gh pr view "$PR_NUMBER" --repo "$REPOSITORY" --json author -q '.author.login')
+          gh pr comment "$PR_NUMBER" --repo "$REPOSITORY" --body "[🤖]: Hi @${PR_AUTHOR} 👋,
 
-            We wanted to let you know that a [CICD pipeline](https://github.com/${{ env.REPOSITORY }}/actions/runs/${{ env.RUN_ID }}) for this PR just finished successfully.
+          We wanted to let you know that a [CICD pipeline](https://github.com/${REPOSITORY}/actions/runs/${RUN_ID}) for this PR just finished successfully.
 
-            So it might be time to merge this PR or get some approvals.
+          So it might be time to merge this PR or get some approvals."
 
       - name: Exit
         if: ${{ always() }}
@@ -345,10 +366,10 @@ jobs:
 
   Coverage:
     runs-on: ubuntu-latest
-    needs: [pre-flight, Nemo_CICD_Test]
+    needs: [configure, Nemo_CICD_Test]
     if: |
-      needs.pre-flight.outputs.test_to_run != '[]'
-      && needs.pre-flight.outputs.components_to_run != '[]'
+      needs.configure.outputs.test_to_run != '[]'
+      && needs.configure.outputs.components_to_run != '[]'
       && (
         success()
         || needs.Nemo_CICD_Test.result == 'success'

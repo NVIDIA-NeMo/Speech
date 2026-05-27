@@ -48,7 +48,7 @@ parser.add_argument(
 
 
 def process_alignment(alignment_file: str, manifest: str, clips_dir: str, args):
-    """ Cut original audio file into audio segments based on alignment_file
+    """Cut original audio file into audio segments based on alignment_file
 
     Args:
         alignment_file: path to the file with segmented text and corresponding time stamps.

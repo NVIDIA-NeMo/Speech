@@ -914,11 +914,11 @@ def tokenize(example, tokenizer):
     return example
 
 
-def tokenize_with_prompt(example, tokenizer, prompt_format: str | PromptFormatter):
+def tokenize_with_prompt(example, tokenizer, prompt_format: str | PromptFormatter, **prompt_kwargs):
     """Tokenize the example with the provided tokenizer and prompt format."""
     if isinstance(prompt_format, str):
         prompt_format = PromptFormatter.resolve(prompt_format)(tokenizer)
-    encoded = apply_prompt_format_fn(example, prompt_format)
+    encoded = apply_prompt_format_fn(example, prompt_format, **prompt_kwargs)
     for key, value in encoded.items():
         setattr(example, key, value)
     return example

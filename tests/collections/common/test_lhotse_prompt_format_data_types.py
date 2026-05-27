@@ -15,15 +15,21 @@ import json
 
 import lhotse.serialization
 import pytest
+import torch
 from lhotse import CutSet, SupervisionSegment
 from lhotse.cut import Cut
 from lhotse.testing.dummies import dummy_cut, dummy_recording
 
 from nemo.collections.common.data.lhotse import (
+    NeMoMultimodalConversation,
     NeMoSFTExample,
     SourceTargetTextExample,
     get_lhotse_dataloader_from_config,
 )
+from nemo.collections.common.data.lhotse.dataloader import tokenize_with_prompt
+from nemo.collections.common.data.lhotse.text_adapters import TextTurn
+from nemo.collections.common.prompts import PromptFormatter
+from nemo.collections.common.prompts.formatter import Modality
 from nemo.collections.common.tokenizers import SentencePieceTokenizer
 from nemo.collections.common.tokenizers.sentencepiece_tokenizer import create_spt_model
 
@@ -179,6 +185,15 @@ class Identity:
         return item
 
 
+class _DummyMultimodalPromptFormatter(PromptFormatter):
+    NAME = "_dummy_multimodal_prompt_formatter"
+    TEMPLATE = {"user": {"template": "|message|", "slots": {"message": Modality.Text}}}
+    OUTPUT_ROLE = "assistant"
+
+    def encode_dialog(self, turns: list[dict], enable_thinking: bool = True, **kwargs):
+        return {"input_ids": torch.tensor([1 if enable_thinking else 0], dtype=torch.long)}
+
+
 def test_prompt_format_cut(cuts_path, tokenizer):
     dl = get_lhotse_dataloader_from_config(
         {
@@ -200,6 +215,23 @@ def test_prompt_format_cut(cuts_path, tokenizer):
     assert tokenizer.ids_to_text(ex.input_ids) == "[INST] dummy context [/INST] dummy text"
     assert tokenizer.ids_to_text(ex.context_ids) == "[INST] dummy context [/INST]"
     assert tokenizer.ids_to_text(ex.answer_ids) == "dummy text"
+
+
+def test_tokenize_with_prompt_passes_enable_thinking_to_multimodal_formatter(tokenizer):
+    conversation = NeMoMultimodalConversation(
+        id="example-0",
+        turns=[TextTurn(role="user", value="hello")],
+        token_equivalent_duration=0.08,
+    )
+
+    tokenized = tokenize_with_prompt(
+        conversation,
+        tokenizer=tokenizer,
+        prompt_format=_DummyMultimodalPromptFormatter(tokenizer),
+        enable_thinking=False,
+    )
+
+    assert tokenized.input_ids.tolist() == [0]
 
 
 def test_prompt_format_cut_filtered_out(cuts_path, tokenizer):

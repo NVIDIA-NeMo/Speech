@@ -1,5 +1,5 @@
 # This YAML file is created for all types of offline speaker diarization inference tasks in `<NeMo git root>/example/speaker_tasks/diarization` folder.
-# The inference parameters for VAD, speaker embedding extractor, clustering module, ASR decoder are all included in this YAML file. 
+# The inference parameters for VAD, speaker embedding extractor, clustering module, ASR decoder are all included in this YAML file.
 # All the keys under `diarizer` key (`vad`, `speaker_embeddings`, `clustering`, `asr`) can be selectively used for its own purpose and also can be ignored if the module is not used.
 # The configurations in this YAML file is suitable for 3~5 speakers participating in a meeting and may not show the best performance on other types of dialogues.
 # An example line in an input manifest file (`.json` format):
@@ -20,21 +20,21 @@ diarizer:
   ignore_overlap: True # Consider or ignore overlap segments while scoring
 
   vad:
-    model_path:  vad_multilingual_marblenet # .nemo local model path or pretrained VAD model name 
+    model_path:  vad_multilingual_marblenet # .nemo local model path or pretrained VAD model name
     external_vad_manifest: null # This option is provided to use external vad and provide its speech activity labels for speaker embeddings extraction. Only one of model_path or external_vad_manifest should be set
 
-    parameters: # Tuned parameters for CH109 (using the 11 multi-speaker sessions as dev set) 
-      window_length_in_sec: 0.63  # Window length in sec for VAD context input 
+    parameters: # Tuned parameters for CH109 (using the 11 multi-speaker sessions as dev set)
+      window_length_in_sec: 0.63  # Window length in sec for VAD context input
       shift_length_in_sec: 0.01 # Shift length in sec for generate frame level VAD prediction
       smoothing: False # False or type of smoothing method (eg: median)
       overlap: 0.5 # Overlap ratio for overlapped mean/median smoothing filter
-      onset: 0.9 # Onset threshold for detecting the beginning and end of a speech 
+      onset: 0.9 # Onset threshold for detecting the beginning and end of a speech
       offset: 0.5 # Offset threshold for detecting the end of a speech
-      pad_onset: 0 # Adding durations before each speech segment 
-      pad_offset: 0 # Adding durations after each speech segment 
+      pad_onset: 0 # Adding durations before each speech segment
+      pad_offset: 0 # Adding durations after each speech segment
       min_duration_on: 0 # Threshold for short speech segment deletion
       min_duration_off: 0.6 # Threshold for small non_speech deletion
-      filter_speech_first: True 
+      filter_speech_first: True
 
   speaker_embeddings:
     model_path: titanet_large # .nemo local model path or pretrained model name (titanet_large, ecapa_tdnn or speakerverification_speakernet)
@@ -42,19 +42,19 @@ diarizer:
       window_length_in_sec: [3.0,2.5,2.0,1.5,1.0,0.5] # Window length(s) in sec (floating-point number). either a number or a list. ex) 1.5 or [1.5,1.0,0.5]
       shift_length_in_sec: [1.5,1.25,1.0,0.75,0.5,0.25] # Shift length(s) in sec (floating-point number). either a number or a list. ex) 0.75 or [0.75,0.5,0.25]
       multiscale_weights: [1,1,1,1,1,1] # Weight for each scale. should be null (for single scale) or a list matched with window/shift scale count. ex) [0.33,0.33,0.33]
-      save_embeddings: True # If True, save speaker embeddings in pickle format.
-  
+      save_embeddings: True # If True, save speaker embedding tensor.
+
   clustering:
     parameters:
       oracle_num_speakers: False # If True, use num of speakers value provided in manifest file.
       max_num_speakers: 8 # Max number of speakers for each recording. If an oracle number of speakers is passed, this value is ignored.
       enhanced_count_thres: 80 # If the number of segments is lower than this number, enhanced speaker counting is activated.
-      max_rp_threshold: 0.25 # Determines the range of p-value search: 0 < p <= max_rp_threshold. 
-      sparse_search_volume: 30 # The higher the number, the more values will be examined with more time. 
+      max_rp_threshold: 0.25 # Determines the range of p-value search: 0 < p <= max_rp_threshold.
+      sparse_search_volume: 30 # The higher the number, the more values will be examined with more time.
       maj_vote_spk_count: False  # If True, take a majority vote on multiple p-values to estimate the number of speakers.
       chunk_cluster_count: 50 # Number of forced clusters (overclustering) per unit chunk in long-form audio clustering.
-      embeddings_per_chunk: 10000 # Number of embeddings in each chunk for long-form audio clustering. Adjust based on GPU memory capacity. (default: 10000, approximately 40 mins of audio) 
-  
+      embeddings_per_chunk: 10000 # Number of embeddings in each chunk for long-form audio clustering. Adjust based on GPU memory capacity. (default: 10000, approximately 40 mins of audio)
+
   asr:
     model_path: stt_en_conformer_ctc_large # Provide NGC cloud ASR model name. stt_en_conformer_ctc_* models are recommended for diarization purposes.
     parameters:
@@ -62,13 +62,13 @@ diarizer:
       asr_based_vad_threshold: 1.0 # Threshold (in sec) that caps the gap between two words when generating VAD timestamps using ASR based VAD.
       asr_batch_size: null # Batch size can be dependent on each ASR model. Default batch sizes are applied if set to null.
       decoder_delay_in_sec: null # Native decoder delay. null is recommended to use the default values for each ASR model.
-      word_ts_anchor_offset: null # Offset to set a reference point from the start of the word. Recommended range of values is [-0.05  0.2]. 
+      word_ts_anchor_offset: null # Offset to set a reference point from the start of the word. Recommended range of values is [-0.05  0.2].
       word_ts_anchor_pos: "start" # Select which part of the word timestamp we want to use. The options are: 'start', 'end', 'mid'.
       fix_word_ts_with_VAD: False # Fix the word timestamp using VAD output. You must provide a VAD model to use this feature.
       colored_text: False # If True, use colored text to distinguish speakers in the output transcript.
       print_time: True # If True, the start and end time of each speaker turn is printed in the output transcript.
       break_lines: False # If True, the output transcript breaks the line to fix the line width (default is 90 chars)
-    
+
     ctc_decoder_parameters: # Optional beam search decoder (pyctcdecode)
       pretrained_language_model: null # KenLM model file: .arpa model file or .bin binary file.
       beam_width: 32

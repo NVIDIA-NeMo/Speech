@@ -14,7 +14,7 @@
 
 # Tests a 4x-stacked model with local transformer inference.
 
-HF_HUB_OFFLINE=1 TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/tts/magpietts_inference.py \
+CUBLAS_WORKSPACE_CONFIG=:4096:8 HF_HUB_OFFLINE=1 TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/tts/magpietts_inference.py \
     --deterministic \
     --codecmodel_path /home/TestData/tts/21fps_causal_codecmodel.nemo \
     --datasets_json_path examples/tts/evalset_config.json \

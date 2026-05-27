@@ -154,7 +154,8 @@ class TestTorchJitCompatibility:
 
     @pytest.mark.unit
     @pytest.mark.parametrize(
-        "neural_type", get_all_neural_types(),
+        "neural_type",
+        get_all_neural_types(),
     )
     def test_element_compilable(self, neural_type: Type[nelements.ElementType]):
         """

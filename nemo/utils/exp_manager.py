@@ -274,9 +274,6 @@ class ExpManagerConfig:
     # log step time with nemo logger instead of lightning logger to avoid lightning logger overhead
     log_delta_step_timing: Optional[bool] = False
     step_timing_kwargs: Optional[StepTimingParams] = field(default_factory=lambda: StepTimingParams())
-    # Configures creation of log files for different ranks
-    log_local_rank_0_only: Optional[bool] = False
-    log_global_rank_0_only: Optional[bool] = False
     # disable initial validation when resuming from a checkpoint saved during validation
     disable_validation_on_resume: Optional[bool] = True
     ema: Optional[EMAParams] = field(default_factory=lambda: EMAParams())
@@ -558,14 +555,6 @@ def exp_manager(trainer: 'lightning.pytorch.Trainer', cfg: Optional[Union[DictCo
             - create_fault_tolerance_callback (bool): Use fault tolerance callback. Default is False.
             - files_to_copy (list): A list of files to copy to the experiment logging directory.
                 Defaults to None which copies no files.
-            - log_local_rank_0_only (bool): Whether to only create log files for local rank 0.
-                Defaults to False.
-                Set this to True if you are using DDP with many GPUs and do not want many log files
-                in your exp dir.
-            - log_global_rank_0_only (bool): Whether to only create log files for global rank 0.
-                Defaults to False.
-                Set this to True if you are using DDP with many GPUs and do not want many log files
-                in your exp dir.
             - max_time (str): The maximum wall clock time *per run*. This is intended to be used on
                 clusters where you want a checkpoint to be saved after this specified time and be
                 able to resume from that checkpoint. Defaults to None.
@@ -659,25 +648,9 @@ def exp_manager(trainer: 'lightning.pytorch.Trainer', cfg: Optional[Union[DictCo
     logging.info(f'Experiments will be logged at {log_dir}')
     trainer._default_root_dir = log_dir
 
-    if cfg.log_local_rank_0_only is True and cfg.log_global_rank_0_only is True:
-        raise ValueError(
-            "Cannot set both log_local_rank_0_only and log_global_rank_0_only to True."
-            "Please set either one or neither."
-        )
-
-    # This is set if the env var NEMO_TESTING is set to True.
-    nemo_testing = get_envbool(NEMO_ENV_VARNAME_TESTING, False)
-
-    # Handle logging to file
-    log_file = log_dir / f'nemo_log_globalrank-{global_rank}_localrank-{local_rank}.txt'
-    if cfg.log_local_rank_0_only is True and not nemo_testing:
-        if local_rank == 0:
-            logging.add_file_handler(log_file)
-    elif cfg.log_global_rank_0_only is True and not nemo_testing:
-        if global_rank == 0:
-            logging.add_file_handler(log_file)
-    else:
-        # Logs on all ranks.
+    # Only log on all ranks when NEMO_TESTING is True
+    if get_envbool(NEMO_ENV_VARNAME_TESTING, False):
+        log_file = log_dir / f'nemo_log_globalrank-{global_rank}_localrank-{local_rank}.txt'
         logging.add_file_handler(log_file)
 
     # For some reason, LearningRateLogger requires trainer to have a logger. Safer to create logger on all ranks
@@ -1479,6 +1452,15 @@ class StatelessTimer(Timer):
         """_check_time_remaining"""
         super()._check_time_remaining(trainer)
         if trainer.should_stop:
+            # PTL's TrainingEpochLoop.advance() calls the on_train_batch_end hooks (which is where
+            # Timer._check_time_remaining fires) BEFORE batch_progress.increment_completed(). The
+            # current batch's optim step has already advanced global_step, so saving here would
+            # capture batch_progress.current.completed lagging one behind optim_progress. On
+            # resume, reset_on_restart rewinds batch_progress to .completed, PTL replays the
+            # in-flight batch, and its optim step runs a second time — double-counting one
+            # global_step per wall-time resume. Flush the in-flight batch first to keep the
+            # saved state self-consistent.
+            _flush_in_flight_batch_progress(trainer)
             checkpoint_callback: Optional[NeMoModelCheckpoint] = trainer.checkpoint_callback
             if checkpoint_callback:
                 monitor_candidates = checkpoint_callback._monitor_candidates(trainer)
@@ -1487,6 +1469,22 @@ class StatelessTimer(Timer):
             from lightning.pytorch.utilities.exceptions import _TunerExitException
 
             raise _TunerExitException()
+
+
+def _flush_in_flight_batch_progress(trainer: lightning.pytorch.Trainer) -> None:
+    """Bring batch_progress.current.completed up to .ready if a batch is in flight.
+
+    Meant to be called from an ``on_train_batch_end`` hook before a checkpoint save,
+    where PTL has not yet incremented ``batch_progress.current.completed`` but the
+    batch's optim step has already advanced ``global_step``. See
+    :meth:`StatelessTimer._check_time_remaining` for the off-by-one it avoids.
+    """
+    try:
+        batch_progress = trainer.fit_loop.epoch_loop.batch_progress
+    except AttributeError:
+        return
+    if batch_progress.current.ready > batch_progress.current.completed:
+        batch_progress.increment_completed()
 
 
 def configure_no_restart_validation_training_loop(trainer: lightning.pytorch.Trainer) -> None:

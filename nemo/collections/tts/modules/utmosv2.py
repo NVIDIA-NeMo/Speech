@@ -44,12 +44,13 @@ class UTMOSv2Calculator:
             Default is None.
     """
 
-    def __init__(self, device: Optional[str] = None):
+    def __init__(self, device: Optional[str] = None, verbose: bool = True):
         if device is None:
             device = get_available_device()
         self.model = utmosv2.create_model()
         self.model.eval()
         self.model.to(torch.device(device))
+        self.verbose = verbose
 
     def __call__(self, file_path):
         """
@@ -59,24 +60,46 @@ class UTMOSv2Calculator:
             # UTMOSv2 tends to launch many OpenMP threads which can overload the machine's CPUs
             # without actually speeding up prediction. Limit to 4 threads.
             with threadpool_limits(limits=4):
-                mos_score = self.model.predict(input_path=file_path, num_repetitions=1, num_workers=0)
+                mos_score = self.model.predict(
+                    input_path=file_path, num_repetitions=1, num_workers=0, verbose=self.verbose
+                )
         return mos_score
 
-    def process_directory(self, input_dir: str, batch_size: int = 16) -> list[dict[str, str | float]]:
+    def process_directory(
+        self,
+        input_dir: str,
+        batch_size: int = 16,
+        num_workers: int = None,
+        val_list: list[str] | None = None,
+    ) -> list[dict[str, str | float]]:
         """
-        Computes UTMOSv2 scores for all `*.wav` files in the given directory.
+        Computes UTMOSv2 scores for `*.wav` files in the given directory.
+
         Args:
             input_dir: The directory containing the audio files.
-            batch_size: The number of audio files to process in parallel.
+            batch_size: The number of audio files per scoring batch.
+            num_workers: Number of worker processes used by UTMOS internals.
+                Set to 0 to avoid multiprocessing pickling issues.
+            val_list: If provided, only score these basenames (e.g. ``["000000.wav", "000001.wav"]``)
+                via the library's ``val_list`` parameter instead of globbing the whole directory.
+                If None, all ``*.wav`` files in ``input_dir`` are scored.
         Returns:
             A list of dictionaries, each containing the file path and the UTMOSv2 score.
         """
+        if num_workers is None:
+            num_workers = batch_size
+
         with torch.inference_mode():
             # UTMOSV2 tends to launch many of OpenMP threads which overloads the machine's CPUs
             # while actually slowing down the prediction. Limit the number of threads here.
             with threadpool_limits(limits=1):
                 results = self.model.predict(
-                    input_dir=input_dir, num_repetitions=1, num_workers=batch_size, batch_size=batch_size
+                    input_dir=input_dir,
+                    num_repetitions=1,
+                    num_workers=num_workers,
+                    batch_size=batch_size,
+                    val_list=val_list,
+                    verbose=self.verbose,
                 )
         return results
 

@@ -76,7 +76,7 @@ def test_model_training_step():
     }
 
     # Run the shared forward pass used by training_step.
-    audio, audio_len, audio_gen, commit_loss, codes = model._process_batch(batch)
+    audio, audio_len, audio_gen, commit_loss, codes, *_ = model._process_batch(batch)
 
     # Compute the mel reconstruction loss (l1 + l2) — same calls as training_step.
     loss_mel_l1, loss_mel_l2 = model.mel_loss_fn(

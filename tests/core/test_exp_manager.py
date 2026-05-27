@@ -595,6 +595,50 @@ class TestExpManager:
         assert not _get_versioned_name(ckpt_nemo, nemo=True).exists(), all_checkpoints
 
     @pytest.mark.unit
+    def test_save_nemo_on_train_end_skips_models_without_save_to(self, tmp_path):
+        class PlainLightningModel(pl.LightningModule):
+            def __init__(self):
+                super().__init__()
+                self.l1 = torch.nn.Linear(in_features=2, out_features=1)
+
+            def train_dataloader(self):
+                return torch.utils.data.DataLoader(OnesDataset(2), batch_size=2, num_workers=0)
+
+            def training_step(self, batch, batch_idx):
+                output = self.l1(batch)
+                loss = torch.nn.functional.l1_loss(output, torch.zeros_like(output))
+                self.log("train_loss", loss)
+                return loss
+
+            def configure_optimizers(self):
+                return DoNothingOptimizer(self.parameters())
+
+        trainer = pl.Trainer(
+            accelerator='cpu',
+            enable_checkpointing=False,
+            logger=False,
+            limit_train_batches=1,
+            max_epochs=1,
+            num_sanity_val_steps=0,
+        )
+        exp_manager(
+            trainer,
+            {
+                "explicit_log_dir": str(tmp_path / "test"),
+                "checkpoint_callback_params": {
+                    "monitor": "train_loss",
+                    "save_last": False,
+                    "save_nemo_on_train_end": True,
+                    "save_top_k": 0,
+                },
+            },
+        )
+
+        trainer.fit(PlainLightningModel())
+
+        assert not list((tmp_path / "test").rglob("*.nemo"))
+
+    @pytest.mark.unit
     def test_last_checkpoint_saved(self, tmp_path):
         max_steps = 64
         tmp_path = tmp_path / "test_1"

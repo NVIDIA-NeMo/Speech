@@ -64,10 +64,10 @@ class TextGeneration:
 
         Args:
             inputs (Union[List[str], Tensor, List[dict]]):
-                Can be one of the 3 types: 
+                Can be one of the 3 types:
                 1. List of strings. Each element of the list provides input prompt. The model will apply tokenizer on it.
                     E.g [‘sentence’, ‘sentence2’ … ]
-                2. Tuple of Pytorch Tensors (context_tokens, context_lengths). The `context_tokens` has shape (batch_size, seq_length),  it's the batched sequences of tokens used as a prompst for the generation or as model inputs to the encoder. 
+                2. Tuple of Pytorch Tensors (context_tokens, context_lengths). The `context_tokens` has shape (batch_size, seq_length),  it's the batched sequences of tokens used as a prompst for the generation or as model inputs to the encoder.
                    The generative model will skip the tokenization and padding step.  The `context_lengths` has shape (batch_size,), it indicates the length of the context tokens for each of the input sequences.
                     E.g. ( torch.tensor([[23,5234,23,35,…], [223,323,23,23232,232,...] …]), torch.tensor([20, 30, …]))
                 3. List of python dict objects. Used for prompt/p-tuning inputs where a set of key-value pairs are converted into input token embeddings for the model.
@@ -84,7 +84,7 @@ class TextGeneration:
                     use_greedy: bool,  Whether or not to use sampling ; use greedy decoding otherwise
                     top_k: int, The number of highest probability vocabulary tokens to keep for top-k-filtering.
                     top_p: float, If set to float < 1, only the most probable tokens with probabilities that add up to top_p or higher are kept for generation.
-                    repetition_penalty: float, The parameter for repetition penalty. 1.0 means no penalty. 
+                    repetition_penalty: float, The parameter for repetition penalty. 1.0 means no penalty.
                     add_BOS: bool, Whether add the bos token at the begining of the prompt
                     all_probs: bool  # whether return the log prob for all the tokens in vocab
                     compute_logprob: bool  # a flag used to compute logprob of all the input text, a very special case of running inference, default False

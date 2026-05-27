@@ -86,7 +86,7 @@ class MLMScorer:
 
     def __mask_text__(self, idx: int, tokens: List[str]):
         """
-        replaces string at index idx in list `tokens` with a masked token and returns the modified list. 
+        replaces string at index idx in list `tokens` with a masked token and returns the modified list.
         """
         masked = tokens.copy()
         masked[idx] = self.MASK_LABEL

@@ -587,7 +587,7 @@ conflicts = [
     ],
 ]
 override-dependencies = [
-    "torch==2.12.0+cu130 ; sys_platform == 'linux'",
+    "torch==2.12.0+cu132 ; sys_platform == 'linux'",
 ]
 
 # --- uv configuration ---
@@ -598,7 +598,7 @@ override-dependencies = [
 nemo_automodel = { git = "https://github.com/NVIDIA-NeMo/Automodel.git", rev = "9eccbb6102a260efd7cbdffa890fc57b94f94528" }
 torch = [
   { index = "pytorch-cpu", marker = "sys_platform != 'linux' and sys_platform != 'darwin'" },
-  { index = "pytorch-cu130", marker = "sys_platform == 'linux'" },
+  { index = "pytorch-cu132", marker = "sys_platform == 'linux'" },
   { index = "pypi", marker = "sys_platform == 'darwin'" },
 ]
 
@@ -613,8 +613,8 @@ url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
 [[tool.uv.index]]
-name = "pytorch-cu130"
-url = "https://download.pytorch.org/whl/cu130"
+name = "pytorch-cu132"
+url = "https://download.pytorch.org/whl/cu132"
 explicit = true
 
 [dependency-groups]

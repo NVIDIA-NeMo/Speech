@@ -110,7 +110,11 @@ class T5G2PDataset(Dataset):
 
         # Encode inputs (graphemes)
         input_encoding = self.tokenizer(
-            graphemes_batch, padding='longest', max_length=self.max_source_len, truncation=True, return_tensors='pt',
+            graphemes_batch,
+            padding='longest',
+            max_length=self.max_source_len,
+            truncation=True,
+            return_tensors='pt',
         )
         input_ids, attention_mask = input_encoding.input_ids, input_encoding.attention_mask
         output = (input_ids, attention_mask)
@@ -120,7 +124,10 @@ class T5G2PDataset(Dataset):
             # Encode targets (phonemes)
             phonemes_batch = [entry["phonemes"] for entry in batch]
             target_encoding = self.tokenizer(
-                phonemes_batch, padding='longest', max_length=self.max_target_len, truncation=True,
+                phonemes_batch,
+                padding='longest',
+                max_length=self.max_target_len,
+                truncation=True,
             )
             labels = target_encoding.input_ids
 

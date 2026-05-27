@@ -155,7 +155,10 @@ def test_get_common_suffix():
 
 def test_warn_missing_suffix():
     df_no_common = pd.DataFrame(
-        {'prompt': [f'prompt{i}' for i in range(100)], 'completion': [f'completion{i}' for i in range(100)],}
+        {
+            'prompt': [f'prompt{i}' for i in range(100)],
+            'completion': [f'completion{i}' for i in range(100)],
+        }
     )
     message = f"TODO: prompt does not have common suffix, please add one (e.g. \\n) at the end of prompt_template\n"
     message += (
@@ -164,7 +167,10 @@ def test_warn_missing_suffix():
 
     assert warn_missing_suffix(df_no_common) == message
     df_common = pd.DataFrame(
-        {'prompt': [f'prompt{i} answer:' for i in range(100)], 'completion': [f'completion{i}\n' for i in range(100)],}
+        {
+            'prompt': [f'prompt{i} answer:' for i in range(100)],
+            'completion': [f'completion{i}\n' for i in range(100)],
+        }
     )
     assert warn_missing_suffix(df_common) is None
 
@@ -233,7 +239,11 @@ def test_drop_duplicated_rows():
 
 def test_template_mapper():
 
-    df = pd.DataFrame({'prompt': ['prompt sample'],})
+    df = pd.DataFrame(
+        {
+            'prompt': ['prompt sample'],
+        }
+    )
 
     template = "{prompt}"
     field_names = ['prompt']
@@ -265,7 +275,12 @@ def test_convert_into_template():
     with pytest.raises(ValueError):
         convert_into_template(df_non_existant_field_name, template)
 
-    df = pd.DataFrame({'question': ['question sample'], 'context': ['context sample'],})
+    df = pd.DataFrame(
+        {
+            'question': ['question sample'],
+            'context': ['context sample'],
+        }
+    )
 
     df_prompt = pd.DataFrame(
         {
@@ -345,7 +360,10 @@ def test_get_prepared_filename():
     prepared_val_filename = "tmp/sample_prepared_val.jsonl"
     assert get_prepared_filename(filename) == (prepared_filename, None)
     assert get_prepared_filename(filename, split_train_validation=True) == (
-        [prepared_train_filename, prepared_val_filename,],
+        [
+            prepared_train_filename,
+            prepared_val_filename,
+        ],
         None,
     )
     csv_filename = "tmp/sample.csv"

@@ -37,7 +37,10 @@ def build_manifest(data_root, transcripts_path, manifest_path, wav_path):
 
                 file_id = line[line.find('(') + 1 : -2]  # e.g. "cen4-fash-b"
                 audio_path = os.path.join(
-                    data_root, wav_path, file_id[file_id.find('-') + 1 : file_id.rfind('-')], file_id + '.wav',
+                    data_root,
+                    wav_path,
+                    file_id[file_id.find('-') + 1 : file_id.rfind('-')],
+                    file_id + '.wav',
                 )
 
                 duration = librosa.core.get_duration(filename=audio_path)

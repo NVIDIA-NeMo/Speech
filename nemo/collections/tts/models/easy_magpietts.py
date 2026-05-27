@@ -1222,6 +1222,27 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 custom_mask = None
                 if self.cfg.get("phoneme_loss_mask_padding", False):
                     custom_mask = pb_phoneme_tokens_target[:, 0, :] != self.phoneme_tokenizer.pad  # (B, T')
+                elif self.cfg.get("phoneme_loss_mask_agent_expanded", False):
+                    # +1 keeps one supervised PAD step before BOS, which teaches the PAD -> BOS transition
+                    # and makes the mask robust to small frame-shift / target-shift mismatches.
+                    transition_prefix = int(current_streaming_phonemes_delay) + 1  # +1 to learn PAD -> BOS transition and also avoid frame-shift issues
+
+                    agent_i = agent_mask.float().unsqueeze(1)  # (B, 1, T_agent)
+
+                    # Expand supervision to the left of the agent span by transition_prefix steps.
+                    # Padding on the right + max_pool1d makes earlier positions become active.
+                    agent_i = torch.nn.functional.pad(agent_i, (0, transition_prefix))
+
+                    custom_mask = (
+                        torch.nn.functional.max_pool1d(
+                            agent_i,
+                            kernel_size=transition_prefix + 1,
+                            stride=1,
+                        )
+                        .squeeze(1)
+                        .bool()
+                    )
+
                 elif self.cfg.get("mask_user_on_loss", False):
                     custom_mask = agent_mask
 

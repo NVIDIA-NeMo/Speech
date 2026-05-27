@@ -571,10 +571,8 @@ def main():
         model_cfg.run_val_inference = False
         model_cfg.use_utmos = False
         model_cfg.use_meta_init_for_decoder = True
-
         # Guarantees silence for pad tokens
-        model_cfg.use_multiturn_dataset = True 
-        
+        # model_cfg.use_multiturn_dataset = True 
         if args.phoneme_tokenizer_path and getattr(model_cfg, "phoneme_tokenizer", None) is not None:
             model_cfg.phoneme_tokenizer.tokenizer_path = args.phoneme_tokenizer_path
 

@@ -254,6 +254,9 @@ def get_full_path(
         ]
     elif isinstance(audio_file, str):
         # If input is a string, get the corresponding full path
+        if is_datastore_path(audio_file):
+            # Audio file is on an object store (s3://, ais://, etc.) — return as-is or cache.
+            return get_datastore_object(audio_file) if force_cache else audio_file
         if is_tarred_dataset(audio_file=audio_file, manifest_file=manifest_file):
             logging.warning(
                 f"Manifest file `{manifest_file}` seems to be part of a tarred dataset, skip checking for relative paths. If this is not intended, please avoid having `/sharded_manifests/` and `tarred_audio_manifest.json` in manifest_filepath.",

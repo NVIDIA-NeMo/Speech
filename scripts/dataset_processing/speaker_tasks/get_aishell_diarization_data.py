@@ -64,7 +64,9 @@ def __process_data(dataset_url: str, dataset_path: Path, manifest_output_path: P
     with open(rttm_list, 'w') as f:
         f.write('\n'.join(rttm_files))
     create_manifest(
-        str(audio_list), manifest_output_path, rttm_path=str(rttm_list),
+        str(audio_list),
+        manifest_output_path,
+        rttm_path=str(rttm_list),
     )
 
 

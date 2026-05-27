@@ -1,3 +1,5 @@
+:orphan:
+
 All Checkpoints
 ===============
 English

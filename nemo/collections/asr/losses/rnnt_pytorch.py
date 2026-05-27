@@ -24,8 +24,7 @@ from nemo.core.neural_types import LabelsType, LengthsType, LogprobsType, LossTy
 class RNNTLossPytorch(Loss):
     @property
     def input_types(self):
-        """Input types definitions for CTCLoss.
-        """
+        """Input types definitions for CTCLoss."""
         return {
             "acts": NeuralType(('B', 'T', 'T', 'D'), LogprobsType()),
             "labels": NeuralType(('B', 'T'), LabelsType()),
@@ -126,8 +125,7 @@ class TDTLossPytorch(Loss):
 
     @property
     def input_types(self):
-        """Input types definitions for CTCLoss.
-        """
+        """Input types definitions for CTCLoss."""
         return {
             "acts": NeuralType(('B', 'T', 'T', 'D'), LogprobsType()),
             "labels": NeuralType(('B', 'T'), LabelsType()),
@@ -256,8 +254,7 @@ class MultiblankRNNTLossPytorch(Loss):
 
     @property
     def input_types(self):
-        """Input types definitions for CTCLoss.
-        """
+        """Input types definitions for CTCLoss."""
         return {
             "acts": NeuralType(('B', 'T', 'T', 'D'), LogprobsType()),
             "labels": NeuralType(('B', 'T'), LabelsType()),

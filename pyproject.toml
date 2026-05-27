@@ -66,6 +66,9 @@ py-modules = ["nemo"]
 [project.entry-points."nemo_run.cli"]
 llm = "nemo.collections.llm"
 
+[project.entry-points."vllm.general_plugins"]
+nemo_speechlm = "nemo.collections.speechlm2.vllm.salm:register"
+
 [project.urls]
 Download = "https://github.com/NVIDIA/NeMo/releases"
 Homepage = "https://github.com/nvidia/nemo"
@@ -89,31 +92,15 @@ skip_string_normalization = true
 # https://black.readthedocs.io/en/stable/the_black_code_style/index.html
 # `required_version` is necessary for consistency (other `black` versions will fail to reformat files)
 required_version = "24"
-target-version = ['py310', 'py311', 'py312']
+target-version = ['py310', 'py311', 'py312', 'py313']
+# by default exclude Jupyter Notebooks (but can be reformated when passed directly)
 extend-exclude = '''
-# A regex preceded with ^/ will apply only to files and directories
-# in the root of the project.
-# include here only current collections, new collections should not be ignored
-# exclude the collection once it is reformatted (due to changes in PRs)
 (
-  ^\/docs\/
-  | ^\/external\/
-  | ^\/examples\/
-  | ^\/nemo\/collections\/asr\/
-  | ^\/nemo\/collections\/common\/
-  | ^\/nemo\/collections\/multimodal\/
-  | ^\/nemo\/collections\/nlp\/
-  | ^\/nemo\/collections\/tts\/
-  | ^\/nemo\/collections\/vision\/
-  | ^\/nemo\/core\/
-  | ^\/nemo\/utils\/
-  | ^\/scripts\/
-  | ^\/tests\/
-  | ^\/tools\/
-  | ^\/tutorials\/
-  | ^\/setup.py
+  \.ipynb
+  | \.ipynb_checkpoints
 )
 '''
+
 
 [tool.pytest.ini_options]
 # durations=0 will display all tests execution time, sorted in ascending order starting from from the slowest one.
@@ -152,6 +139,7 @@ markers = [
     "pleasefixme: marks tests that are broken and need fixing",
 ]
 
+
 [tool.uv]
 conflicts = [
     [
@@ -159,6 +147,32 @@ conflicts = [
         { extra = "cu13" },
     ],
 ]
+
+# --- uv configuration ---
+# Match nemo_automodel's torch index sources so uv doesn't see conflicting
+# indexes when resolving the speechlm2 extra (which pulls nemo_automodel
+# from git as a source dependency — uv treats these as workspace members).
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cpu", marker = "sys_platform != 'linux' and sys_platform != 'darwin'" },
+  { index = "pytorch-cu129", marker = "sys_platform == 'linux'" },
+  { index = "pypi", marker = "sys_platform == 'darwin'" },
+]
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu129"
+url = "https://download.pytorch.org/whl/cu129"
+explicit = true
 
 [dependency-groups]
 docs = [

@@ -1,3 +1,5 @@
+:orphan:
+
 Checkpoints
 ===========
 
@@ -259,7 +261,7 @@ Automatic Speech Recognition Models
 
 Speech Recognition
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-Below is a list of the high quality ASR models available in NeMo for specific languages, all ASR models can be found in :doc:`All checkpoints <./all_chkpt>`. 
+Below is a list of the high quality ASR models available in NeMo for specific languages. All ASR models can be found in :doc:`ASR Model Checkpoints <./asr_checkpoints>`. 
 
 Multilingual Multitask
 ^^^^^^^^^^^^^^^^^^^^^^

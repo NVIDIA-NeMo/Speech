@@ -262,7 +262,7 @@ class PromptFormatter(ABC):
             prompt = prompt.replace(_mangled(slot), value)
         return self._apply_tokenizer(prompt, lang=slot_values.get(self.PROMPT_LANGUAGE_SLOT))
 
-    def encode_dialog(self, turns: list[dict]) -> dict[str, torch.Tensor]:
+    def encode_dialog(self, turns: list[dict], **kwargs) -> dict[str, torch.Tensor]:
         roles = self.get_roles()
         assert len(turns) > 0, "Empty dialog is not supported."
         for turn in turns:

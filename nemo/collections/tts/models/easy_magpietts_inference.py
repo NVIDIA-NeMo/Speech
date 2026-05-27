@@ -42,6 +42,7 @@ from nemo.collections.tts.parts.utils.helpers import get_mask_from_lengths
 from nemo.core.classes import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.utils import logging
+from nemo.utils.exceptions import NeMoBaseException
 
 
 @dataclass
@@ -265,8 +266,15 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         self.mask_token_id = get_token_index(SpecialAudioToken.MASK_TOKEN)
         self.num_all_tokens_per_codebook = self.codebook_size + len(SpecialAudioToken)
         self.use_bpe_char_tokenizer = cfg.get('use_bpe_char_tokenizer', False)
+        # If True, text tokens are embedded only with the char-aware subword (CAS) encoder, and the decoder token
+        # embedding table is removed. This is useful for CAS-only text modeling.
         self.disable_subword_embedding = cfg.get('disable_subword_embedding', False)
+        # If True, remove the decoder LM head over text tokens to save parameters when the model does not train or
+        # infer text-token logits from the decoder output.
         self.disable_lm_text_head = cfg.get('disable_lm_text_head', False)
+        # Legacy checkpoints may have trained context text with decoder embeddings only, even when CAS is enabled for
+        # regular text tokens. This flag skips adding CAS embeddings for context text to match those checkpoints.
+        self.disable_cas_for_context_text = cfg.get('disable_cas_for_context_text', False)
         if self.disable_subword_embedding and not self.use_bpe_char_tokenizer:
             logging.warning(
                 "`disable_subword_embedding=True` requires `use_bpe_char_tokenizer=True`; overriding automatically."
@@ -347,6 +355,12 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         self.pad_context_text_to_max_duration = False
         self.add_language_to_context_text = cfg.get('add_language_to_context_text', False)
         self.ignore_phoneme_languages = cfg.get('ignore_phoneme_languages', [])
+        # During training, this is the probability of replacing transcript text with G2P output
+        # before tokenization. It is disabled for validation/inference by the dataset setup.
+        self.phoneme_as_text_prob = cfg.get('phoneme_as_text_prob', 0.0)
+        # Optional per-language Hydra configs for G2P modules used by pronunciation control when phoneme_as_text_prob
+        # samples the G2P-text path. Used only when phoneme_as_text_prob > 0.0.
+        self.pronunciation_control_g2p = cfg.get('pronunciation_control_g2p', None)
 
         super().__init__(cfg=cfg, trainer=trainer)
 
@@ -372,14 +386,28 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
         # Speaker/context encoder for context audio embeddings.
         # This enables keeping the zero-shot conditioning module private at release time.
+
         self.use_speaker_encoder = cfg.get('use_speaker_encoder', False)
         self.train_shuffle_context_embedding_prob = 0.0
         if self.use_speaker_encoder:
-            speaker_encoder_cfg = cfg.get('speaker_encoder', cfg.get('context_encoder', None))
+            speaker_encoder_cfg = cfg.get('speaker_encoder', None)
             if speaker_encoder_cfg is not None:
                 speaker_encoder_cfg = dict(speaker_encoder_cfg)
-                speaker_encoder_cfg.pop('router_load_balancing_loss_coeff', None)
-                speaker_encoder_cfg.pop('router_z_loss_coeff', None)
+                if speaker_encoder_cfg.get('use_moe', False):
+                    raise NeMoBaseException(
+                        "MoE is not recommended for the speaker encoder. "
+                        "Please set speaker_encoder.use_moe to False."
+                    )
+                if 'router_load_balancing_loss_coeff' in speaker_encoder_cfg:
+                    logging.warning(
+                        "Detected `router_load_balancing_loss_coeff` in speaker encoder config. "
+                        "MoE is not recommended for the speaker encoder."
+                    )
+                if 'router_z_loss_coeff' in speaker_encoder_cfg:
+                    logging.warning(
+                        "Detected `router_z_loss_coeff` in speaker encoder config. "
+                        "MoE is not recommended for the speaker encoder."
+                    )
             else:
                 speaker_encoder_cfg = {
                     'n_layers': cfg.get('speaker_encoder_n_layers', 1),
@@ -644,13 +672,20 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         audio_embedding = self.audio_in_projection(audio_embedding)
         return audio_embedding
 
-    def encode_context_audio_embeddings(self, context_audio_embedded: torch.Tensor, context_audio_lens: torch.Tensor):
-        """Encode context audio embeddings with the speaker encoder."""
-        context_mask = get_mask_from_lengths(context_audio_lens)
-        return self.speaker_encoder(context_audio_embedded, context_mask, cond=None, cond_mask=None)['output']
+    def embed_text_tokens(
+        self,
+        text_tokens: torch.Tensor,
+        text_lens: Optional[torch.Tensor] = None,
+        disable_cas_embedding: bool = False,
+    ) -> torch.Tensor:
+        """Embed text tokens using decoder embedding + optional CAS, or CAS-only when configured.
 
-    def embed_text_tokens(self, text_tokens: torch.Tensor, text_lens: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """Embed text tokens using decoder embedding + optional CAS, or CAS-only when configured."""
+        Args:
+            text_tokens: Token ids to embed, shaped ``(B, T)``.
+            text_lens: Optional valid token lengths for constructing the CAS mask. Defaults to the full sequence length.
+            disable_cas_embedding: When True, skip adding CAS embeddings even if the model uses the BPE char tokenizer.
+                This is needed for legacy models where context text was trained without CAS embeddings.
+        """
         if text_lens is None:
             text_lens = torch.full(
                 (text_tokens.size(0),), text_tokens.size(1), dtype=torch.long, device=text_tokens.device
@@ -658,13 +693,20 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
         text_mask = get_mask_from_lengths(text_lens)
         if self.disable_subword_embedding:
+            if disable_cas_embedding:
+                raise ValueError("Cannot disable CAS embedding when `disable_subword_embedding=True`.")
             return self.cas_encoder(text_tokens, subword_mask=text_mask)
 
         text_embedded = self.decoder.get_input_embeddings()(text_tokens)
-        if self.use_bpe_char_tokenizer:
+        if self.use_bpe_char_tokenizer and not disable_cas_embedding:
             cas_embedding = self.cas_encoder(text_tokens, subword_mask=text_mask)
             text_embedded = text_embedded + cas_embedding
         return text_embedded
+
+    def encode_context_audio_embeddings(self, context_audio_embedded: torch.Tensor, context_audio_lens: torch.Tensor):
+        """Encode context audio embeddings with the speaker encoder."""
+        context_mask = get_mask_from_lengths(context_audio_lens)
+        return self.speaker_encoder(context_audio_embedded, context_mask, cond=None, cond_mask=None)['output']
 
     def embed_phoneme_tokens(self, phoneme_tokens):
         # phoneme_tokens: (B, S, T')
@@ -914,6 +956,23 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             self.num_audio_codebooks,
         )
         context_audio_embedded = self.embed_audio_tokens(context_audio_codes)  # (B, T', E)
+        batch_size = context_audio_embedded.size(0)
+
+        if self.use_speaker_encoder:
+            if (
+                self.training
+                and batch_size > 1
+                and self.train_shuffle_context_embedding_prob > 0
+                and random.random() < self.train_shuffle_context_embedding_prob
+            ):
+                # Feed shuffled raw context embeddings (without speaker encoder) so
+                # the decoder cannot rely on direct unencoded speaker identity cues.
+                shift = random.randint(1, batch_size - 1)
+                context_audio_embedded = context_audio_embedded.roll(shift, dims=0)
+            else:
+                context_audio_embedded = self.encode_context_audio_embeddings(
+                    context_audio_embedded=context_audio_embedded, context_audio_lens=context_audio_codes_lens
+                )
 
         if self.use_speaker_encoder:
             if (
@@ -934,7 +993,9 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         # Context Text
         context_text_lens = context_text_tokens_lens
         context_text_embedded = self.embed_text_tokens(
-            context_text_tokens, text_lens=context_text_lens
+            context_text_tokens,
+            text_lens=context_text_lens,
+            disable_cas_embedding=self.disable_cas_for_context_text,
         )  # (B, L, E)
 
         # Prepare task embedding for multi-mode training
@@ -963,6 +1024,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             cfg_token_embedding = self.embed_text_tokens(
                 torch.full((batch_size, 1), cfg_token_id, device=device),
                 text_lens=torch.ones(batch_size, dtype=torch.long, device=device),
+                disable_cas_embedding=self.disable_cas_for_context_text,
             )  # (B, 1, E)
             # Expand CFG token to match context embedding size
             context_embedding = cfg_token_embedding.expand(-1, context_embedding.size(1), -1)  # (B, T_context, E)
@@ -1212,6 +1274,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 dummy_context_embedding_unconditional = self.embed_text_tokens(
                     torch.full((1, 1), self.cfg_unk_token_id, device=device),
                     text_lens=torch.ones(1, dtype=torch.long, device=device),
+                    disable_cas_embedding=self.disable_cas_for_context_text,
                 )
                 # Create unconditional context (same length as conditional)
                 dummy_context_expanded = dummy_context_embedding_unconditional.expand(

@@ -59,13 +59,13 @@ For grid search, you can provide a list of arguments as follows -
 import contextlib
 import json
 import os
-import pickle
 import tempfile
 from dataclasses import dataclass, field, is_dataclass
 from pathlib import Path
 from typing import List, Optional
 
 import editdistance
+import msgpack
 import numpy as np
 import torch
 from omegaconf import MISSING, OmegaConf
@@ -287,10 +287,10 @@ def main(cfg: EvalBeamSearchNGramConfig):
             audio_file_paths.append(str(audio_file.absolute()))
 
     if cfg.probs_cache_file and os.path.exists(cfg.probs_cache_file):
-        logging.info(f"Found a pickle file of probabilities at '{cfg.probs_cache_file}'.")
-        logging.info(f"Loading the cached pickle file of probabilities from '{cfg.probs_cache_file}' ...")
+        logging.info(f"Found a cached file of probabilities at '{cfg.probs_cache_file}'.")
+        logging.info(f"Loading the cached file of probabilities from '{cfg.probs_cache_file}' ...")
         with open(cfg.probs_cache_file, 'rb') as probs_file:
-            all_probs = pickle.load(probs_file)
+            all_probs = msgpack.load(probs_file)
 
         if len(all_probs) != len(audio_file_paths):
             raise ValueError(
@@ -330,9 +330,9 @@ def main(cfg: EvalBeamSearchNGramConfig):
                             all_probs.append(encoded_no_pad)
 
         if cfg.probs_cache_file:
-            logging.info(f"Writing pickle files of probabilities at '{cfg.probs_cache_file}'...")
+            logging.info(f"Writing cached files of probabilities at '{cfg.probs_cache_file}'...")
             with open(cfg.probs_cache_file, 'wb') as f_dump:
-                pickle.dump(all_probs, f_dump)
+                msgpack.dump(all_probs, f_dump)
 
     if cfg.decoding_strategy == "greedy_batch":
         asr_model = asr_model.to('cpu')

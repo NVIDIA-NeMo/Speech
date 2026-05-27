@@ -118,7 +118,12 @@ def __generate_mels(entry, spec_model, device, use_beta_binomial_interpolator, m
             )
 
         spectrogram = spec_model.forward(
-            text=text, input_lens=text_len, spec=spect, mel_lens=spect_len, attn_prior=attn_prior, speaker=speaker,
+            text=text,
+            input_lens=text_len,
+            spec=spect,
+            mel_lens=spect_len,
+            attn_prior=attn_prior,
+            speaker=speaker,
         )[0]
 
         save_path = mel_root / f"{Path(entry['audio_filepath']).stem}.npy"

@@ -77,6 +77,7 @@ extras_require = {
     'tts': req_file("requirements_tts.txt"),
     'slu': req_file("requirements_slu.txt"),
     'audio': req_file("requirements_audio.txt"),
+    'speechlm2-only': req_file("requirements_speechlm2.txt"),
 }
 
 
@@ -126,6 +127,13 @@ extras_require['slu'] = list(
     chain(
         extras_require['slu'],
         extras_require['asr'],
+    )
+)
+extras_require['speechlm2'] = list(
+    chain(
+        extras_require['speechlm2-only'],
+        extras_require['asr'],
+        extras_require['tts'],
     )
 )
 

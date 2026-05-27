@@ -21,8 +21,6 @@ from huggingface_hub import get_token as get_hf_token
 from huggingface_hub.hf_api import ModelInfo
 from huggingface_hub.utils import SoftTemporaryDirectory
 
-from nemo.utils import logging
-
 
 class HuggingFaceFileIO(ABC):
     """
@@ -112,9 +110,6 @@ class HuggingFaceFileIO(ABC):
 
         # Search for all valid models after filtering
         api = HfApi()
-
-        # Setup extra arguments for model filtering
-        all_results = []  # type: List[ModelInfo]
 
         results = api.list_models(token=hf_token, sort="lastModified", **model_filter)  # type: Iterable[ModelInfo]
 
@@ -219,7 +214,7 @@ class HuggingFaceFileIO(ABC):
             model_card = str(model_card)
 
             # Write model card to temp dir
-            model_card_filepath = saved_path / f"README.md"
+            model_card_filepath = saved_path / "README.md"
             model_card_filepath.write_text(str(model_card), encoding='utf-8', errors='ignore')
 
             api.upload_folder(

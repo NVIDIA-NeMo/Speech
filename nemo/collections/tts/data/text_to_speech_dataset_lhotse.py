@@ -14,21 +14,28 @@
 
 import random
 import re
-from typing import Dict, List, Union
+from typing import Dict, List, Optional, Union
 
 import numpy as np
 import torch
 from hydra.utils import instantiate
 from lhotse import CutSet
 from lhotse.dataset.collation import collate_matrices, collate_vectors
-from omegaconf import DictConfig
+from omegaconf import DictConfig, open_dict
 from transformers import AutoTokenizer, T5Tokenizer
 
-from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import AggregatedTTSTokenizer, IPABPETokenizer
+from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import (
+    CASELESS_SCRIPT_TOKENIZER_TARGETS,
+    DEFAULT_CHARSET_VERSION,
+    AggregatedTTSTokenizer,
+    IPABPETokenizer,
+)
 from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     beta_binomial_prior_distribution,
     normalize_volume,
+    setup_pronunciation_control_g2p,
     stack_tensors,
+    tokenize_text_with_pronunciation_control,
 )
 from nemo.utils import logging
 
@@ -48,10 +55,44 @@ def setup_tokenizers(all_tokenizers_config, mode='train'):
             text_tokenizer_kwargs = {}
             if "g2p" in tokenizer_config:
                 text_tokenizer_kwargs["g2p"] = instantiate(tokenizer_config.g2p)
+            # Ensure locale_specific_punct is persisted so it survives .nemo save/restore.
+            # New training for locales with extended punctuation should use the full set (True).
+            if (
+                hasattr(tokenizer_config, '_target_')
+                and tokenizer_config._target_
+                == "nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.IPATokenizer"
+                and tokenizer_config.get('locale', None) == "pt-BR"
+                and not hasattr(tokenizer_config, 'non_default_punct_list')
+                and not hasattr(tokenizer_config, 'locale_specific_punct')
+            ):
+                with open_dict(tokenizer_config):
+                    tokenizer_config.locale_specific_punct = True
+            # Persist punct_version=2 for HindiCharsTokenizer so .nemo save/restore
+            # always uses the expanded punctuation set (with dandas).
+            if (
+                hasattr(tokenizer_config, '_target_')
+                and tokenizer_config._target_
+                == "nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.HindiCharsTokenizer"
+                and not hasattr(tokenizer_config, 'punct_version')
+            ):
+                with open_dict(tokenizer_config):
+                    tokenizer_config.punct_version = 2
             tokenizer = instantiate(tokenizer_config, **text_tokenizer_kwargs)
             # TODO @xueyang: is it really necessary to set phone probability to 1.0 for test mode?
             if mode == 'test' and hasattr(tokenizer, "set_phone_prob"):
                 tokenizer.set_phone_prob(1.0)
+
+            # Persist charset_version so it's saved in .nemo archives and
+            # update_config_for_inference can distinguish old checkpoints
+            # (missing charset_version → v1) from new ones.
+            if (
+                hasattr(tokenizer_config, '_target_')
+                and tokenizer_config._target_ in CASELESS_SCRIPT_TOKENIZER_TARGETS
+                and not hasattr(tokenizer_config, 'charset_version')
+            ):
+                with open_dict(all_tokenizers_config):
+                    tokenizer_config.charset_version = DEFAULT_CHARSET_VERSION
+
         tokenizers.append(tokenizer)
         tokenizer_names.append(tokenizer_name)
 
@@ -142,6 +183,8 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
         text_context_remapping_prob: float = 0.0,
         phoneme_tokenizer_config: DictConfig = None,
         ignore_phoneme_languages: List[str] = None,
+        phoneme_as_text_prob: float = 0.0,
+        pronunciation_control_g2p: Optional[DictConfig] = None,
         add_language_to_context_text: bool = False,
     ):
         super().__init__()
@@ -164,10 +207,13 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
         self.tokenizer_config = tokenizer_config
         self.text_tokenizer = None
         self.phoneme_tokenizer = None
+        self.pronunciation_control_g2p = None
         self.text_context_remapping = text_context_remapping
         self.text_context_remapping_prob = text_context_remapping_prob
         self.phoneme_tokenizer_config = phoneme_tokenizer_config
         self.ignore_phoneme_languages = ignore_phoneme_languages or []
+        self.phoneme_as_text_prob = phoneme_as_text_prob
+        self.pronunciation_control_g2p_config = pronunciation_control_g2p
         self.add_language_to_context_text = add_language_to_context_text
 
     def get_num_audio_samples_to_slice(self, duration, sample_rate):
@@ -198,6 +244,12 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
         # initialize the phoneme tokenizer once per dataset/worker when config is available.
         if self.phoneme_tokenizer is None and self.phoneme_tokenizer_config is not None:
             self.phoneme_tokenizer = instantiate(self.phoneme_tokenizer_config)
+        if (
+            self.pronunciation_control_g2p is None
+            and self.pronunciation_control_g2p_config is not None
+            and self.phoneme_as_text_prob > 0.0
+        ):
+            self.pronunciation_control_g2p = setup_pronunciation_control_g2p(self.pronunciation_control_g2p_config)
 
         # define list to store batched information
         dataset_name_list = []
@@ -417,7 +469,15 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
                 tokenizer_name = random.choice(cut.tokenizer_names)
             else:
                 tokenizer_name = "english_phoneme"  # Default to english phoneme tokenizer
-            tokens = self.text_tokenizer.encode(text=text_str, tokenizer_name=tokenizer_name)
+            tokens = tokenize_text_with_pronunciation_control(
+                text_tokenizer=self.text_tokenizer,
+                text_str=text_str,
+                language=language,
+                tokenizer_name=tokenizer_name,
+                dataset_type=self.dataset_type,
+                phoneme_as_text_prob=self.phoneme_as_text_prob,
+                pronunciation_control_g2p=self.pronunciation_control_g2p,
+            )
             tokens = tokens + [self.eos_id]  # Not adding BOS id
             tokens = torch.tensor(tokens, dtype=torch.int32)
             text_len = tokens.shape[0]
@@ -428,7 +488,7 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
                 # Use IPA text for IPABPETokenizer (required), otherwise use regular text_str
                 if isinstance(self.phoneme_tokenizer, IPABPETokenizer):
                     if not cut.supervisions[0].has_custom("ipa"):
-                        if self.dataset_type == 'train':
+                        if (self.dataset_type == 'train') and (language not in self.ignore_phoneme_languages):
                             raise ValueError(
                                 f"IPABPETokenizer requires 'ipa' field but it is not available in the cut. "
                                 f"Cut ID: {cut.id}, Text: {text_str}"

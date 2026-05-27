@@ -81,7 +81,10 @@ def __process_transcript(file_path: str):
     cc = OpenCC('t2s')
     # Create normalizer
     text_normalizer = Normalizer(
-        lang="zh", input_case="cased", overwrite_cache=True, cache_dir=str(file_path / "cache_dir"),
+        lang="zh",
+        input_case="cased",
+        overwrite_cache=True,
+        cache_dir=str(file_path / "cache_dir"),
     )
     text_normalizer_call_kwargs = {"punct_pre_process": True, "punct_post_process": True}
     normalizer_call = lambda x: text_normalizer.normalize(x, **text_normalizer_call_kwargs)
@@ -160,7 +163,11 @@ def main():
     __extract_file(str(tarred_data_path), str(args.data_root))
 
     __process_data(
-        args.data_root, args.val_size, args.test_size, args.seed_for_ds_split, args.manifests_path,
+        args.data_root,
+        args.val_size,
+        args.test_size,
+        args.seed_for_ds_split,
+        args.manifests_path,
     )
 
 

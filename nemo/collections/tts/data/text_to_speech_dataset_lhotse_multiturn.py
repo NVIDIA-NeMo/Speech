@@ -900,6 +900,7 @@ def build_phoneme_channel(
                 
                 text_len = len(phoneme_ids)
                 if text_len > turn_frames:
+
                     phoneme_ids = phoneme_ids[:turn_frames]
                     text_len = turn_frames
                 
@@ -925,7 +926,6 @@ def build_phoneme_channel(
 
             phoneme_ids = phoneme_tokenizer.encode(ipa_text)
             phoneme_ids = [bos_id] + phoneme_ids + [eos_id]
-            
             phoneme_ids = torch.as_tensor(phoneme_ids, dtype=torch.long)
             pos = compute_num_frames(supervision.start, frame_length, cut.sampling_rate)
             if pos >= len(tokens):

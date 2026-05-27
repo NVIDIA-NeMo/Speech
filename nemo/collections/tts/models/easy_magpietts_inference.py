@@ -1707,7 +1707,6 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                     )
                 else:
                     state.last_audio_codes = sil.reshape(B, C * S)
-                # print("prefill", state.all_phoneme_predictions[-1] if state.all_phoneme_predictions else None, self.phoneme_tokenizer.bos_token_id, self.phoneme_tokenizer.eos_token_id, getattr(self.phoneme_tokenizer, "pad", None), )
                 return state, None, pred_phoneme_tokens
 
 
@@ -1715,7 +1714,6 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             audio_codes_next, pred_phoneme_tokens = self._process_predictions(
                 state, needs_context, needs_phoneme, needs_audio
             )
-            # print("step", state.all_phoneme_predictions[-1] if state.all_phoneme_predictions else None, self.phoneme_tokenizer.bos_token_id, self.phoneme_tokenizer.eos_token_id, getattr(self.phoneme_tokenizer, "pad", None), )
             return state, audio_codes_next, pred_phoneme_tokens
 
     def _prepare_streaming_input(

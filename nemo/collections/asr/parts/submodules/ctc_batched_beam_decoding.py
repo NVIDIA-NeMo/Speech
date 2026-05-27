@@ -24,20 +24,18 @@ from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMeth
 from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import BatchedBeamHyps
 from nemo.collections.common.parts.optional_cuda_graphs import WithOptionalCudaGraphs
 from nemo.core.utils.cuda_python_utils import (
+    NeMoCUDAPythonException,
     check_cuda_python_cuda_graphs_conditional_nodes_supported,
     cu_call,
     run_nvrtc,
     with_conditional_node,
 )
+from nemo.core.utils.optional_libs import CUDA_PYTHON_AVAILABLE, cuda_python_required
 from nemo.utils import logging
 from nemo.utils.enum import PrettyStrEnum
 
-try:
+if CUDA_PYTHON_AVAILABLE:
     from cuda.bindings import runtime as cudart
-
-    HAVE_CUDA_PYTHON = True
-except ImportError:
-    HAVE_CUDA_PYTHON = False
 
 
 NON_EXISTENT_LABEL_VALUE = -1
@@ -220,6 +218,7 @@ class BatchedBeamCTCComputer(WithOptionalCudaGraphs, ConfidenceMethodMixin):
         self.separate_graphs = None
 
         self.cuda_graphs_mode = None
+        self.cuda_graphs_allow_fallback = True
         self.maybe_enable_cuda_graphs()
 
         self.fusion_models = fusion_models
@@ -231,6 +230,7 @@ class BatchedBeamCTCComputer(WithOptionalCudaGraphs, ConfidenceMethodMixin):
         For debugging the algorithm use "no_graphs" mode, since it is impossible to debug CUDA graphs directly.
         """
         self.cuda_graphs_mode = self.CudaGraphsMode(mode) if mode is not None else None
+        self.cuda_graphs_allow_fallback = False
         self.state = None
 
     def maybe_enable_cuda_graphs(self) -> bool:
@@ -519,7 +519,17 @@ class BatchedBeamCTCComputer(WithOptionalCudaGraphs, ConfidenceMethodMixin):
                 )
 
         if self.cuda_graphs_mode is self.CudaGraphsMode.FULL_GRAPH:
-            self._full_graph_compile()
+            try:
+                self._full_graph_compile()
+            except NeMoCUDAPythonException as e:
+                if not self.cuda_graphs_allow_fallback:
+                    raise RuntimeError("Full CUDA graph decoding failed. Mode is forced, raising exception") from e
+                logging.warning(
+                    f"Full CUDA graph compilation failed: {e}. "
+                    "Falling back to native PyTorch CUDA graphs. Decoding will be slower."
+                )
+                self.cuda_graphs_mode = self.CudaGraphsMode.NO_WHILE_LOOPS
+                self._partial_graphs_compile()
         elif self.cuda_graphs_mode is self.CudaGraphsMode.NO_WHILE_LOOPS:
             self._partial_graphs_compile()
         elif self.cuda_graphs_mode is self.CudaGraphsMode.NO_GRAPHS:
@@ -561,6 +571,7 @@ class BatchedBeamCTCComputer(WithOptionalCudaGraphs, ConfidenceMethodMixin):
         ):
             self._after_process_batch()
 
+    @cuda_python_required
     def _full_graph_compile(self):
         """Compile full graph for decoding"""
         # Always create a new stream, because the per-thread default stream disallows stream capture to a graph.
@@ -573,7 +584,8 @@ class BatchedBeamCTCComputer(WithOptionalCudaGraphs, ConfidenceMethodMixin):
             torch.cuda.graph(self.full_graph, stream=stream_for_graph, capture_error_mode="thread_local"),
         ):
             self._before_process_batch()
-            capture_status, _, graph, _, _, _ = cu_call(
+            # NB: depending on cuda-python version, cudaStreamGetCaptureInfo can return either 5 or 6 elements
+            capture_status, _, graph, *_ = cu_call(
                 cudart.cudaStreamGetCaptureInfo(torch.cuda.current_stream(device=self.state.device).cuda_stream)
             )
 

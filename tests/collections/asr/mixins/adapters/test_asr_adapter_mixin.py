@@ -29,7 +29,7 @@ from nemo.core.classes.mixins.access_mixins import AccessMixin
 from nemo.core.classes.mixins.adapter_mixins import AdapterModuleMixin, get_registered_adapter
 from nemo.core.utils import numba_utils
 from nemo.core.utils.numba_utils import __NUMBA_MINIMUM_VERSION__
-from nemo.utils import config_utils, model_utils
+from nemo.utils import model_utils
 
 NUMBA_RNNT_LOSS_AVAILABLE = numba_utils.numba_cpu_is_supported(
     __NUMBA_MINIMUM_VERSION__
@@ -113,66 +113,6 @@ def conformer_ctc_adapter():
         'n_layers': 2,
         'd_model': 128,
         'subsampling': 'striding',
-        'subsampling_factor': 4,
-        'self_attention_model': 'rel_pos',
-        'n_heads': 4,
-        'conv_kernel_size': 31,
-    }
-
-    decoder = {
-        '_target_': 'nemo.collections.asr.modules.ConvASRDecoder',
-        'feat_in': 128,
-        'num_classes': 28,
-        'vocabulary': [
-            ' ',
-            'a',
-            'b',
-            'c',
-            'd',
-            'e',
-            'f',
-            'g',
-            'h',
-            'i',
-            'j',
-            'k',
-            'l',
-            'm',
-            'n',
-            'o',
-            'p',
-            'q',
-            'r',
-            's',
-            't',
-            'u',
-            'v',
-            'w',
-            'x',
-            'y',
-            'z',
-            "'",
-        ],
-    }
-    modelConfig = DictConfig(
-        {'preprocessor': DictConfig(preprocessor), 'encoder': DictConfig(encoder), 'decoder': DictConfig(decoder)}
-    )
-
-    model_instance = EncDecCTCModel(cfg=modelConfig)
-    return model_instance
-
-
-@pytest.fixture()
-def squeezeformer_ctc_adapter():
-    preprocessor = {'_target_': 'nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor'}
-    encoder = {
-        '_target_': 'nemo.collections.asr.modules.SqueezeformerEncoderAdapter',
-        'feat_in': 64,
-        'feat_out': -1,
-        'n_layers': 2,
-        'd_model': 128,
-        'time_reduce_idx': 1,
-        'subsampling': 'dw_striding',
         'subsampling_factor': 4,
         'self_attention_model': 'rel_pos',
         'n_heads': 4,
@@ -432,7 +372,7 @@ def get_adapter_cfg(in_features=50, dim=100, norm_pos='pre', atype='linear', **k
             hidden_size=in_features,
             proj_dim=kwargs.get('proj_dim', None),
         )
-    elif atype == 'relmha':
+    else:  # atype == 'relmha'
         cfg = multi_head_attention_adapter_module.RelPositionMultiHeadAttentionAdapterConfig(
             n_head=kwargs.get('n_head', 1), n_feat=in_features
         )
@@ -477,14 +417,6 @@ class TestASRAdapterMixin:
 
         conformer_ctc_adapter.add_adapter(name='adapter_0', cfg=get_adapter_cfg(atype='relmha'))
         new_num_params = conformer_ctc_adapter.num_weights
-        assert new_num_params > original_num_params
-
-    @pytest.mark.unit
-    def test_squeezeformer_constructor_mha_adapter(self, squeezeformer_ctc_adapter):
-        original_num_params = squeezeformer_ctc_adapter.num_weights
-
-        squeezeformer_ctc_adapter.add_adapter(name='adapter_0', cfg=get_adapter_cfg(atype='relmha'))
-        new_num_params = squeezeformer_ctc_adapter.num_weights
         assert new_num_params > original_num_params
 
     @pytest.mark.unit
@@ -584,23 +516,6 @@ class TestASRAdapterMixin:
 
         conformer_ctc_adapter.add_adapter(name=name, cfg=get_adapter_cfg(in_features=128, atype='mha'))
         new_output = conformer_ctc_adapter(input_signal=input_signal, input_signal_length=input_signal_length)[0]
-
-        assert torch.mean(torch.abs(origial_output - new_output)) < 1e-5
-
-    @pytest.mark.unit
-    @pytest.mark.parametrize('name', ['adapter_0', 'encoder:adapter_0'])
-    def test_squeezeformer_forward_mha(self, squeezeformer_ctc_adapter, name):
-        squeezeformer_ctc_adapter.eval()
-        torch.random.manual_seed(0)
-        input_signal = torch.randn(2, 512)
-        input_signal_length = torch.tensor([512, 512], dtype=torch.int32)
-
-        origial_output = squeezeformer_ctc_adapter(input_signal=input_signal, input_signal_length=input_signal_length)[
-            0
-        ]
-
-        squeezeformer_ctc_adapter.add_adapter(name=name, cfg=get_adapter_cfg(in_features=128, atype='mha'))
-        new_output = squeezeformer_ctc_adapter(input_signal=input_signal, input_signal_length=input_signal_length)[0]
 
         assert torch.mean(torch.abs(origial_output - new_output)) < 1e-5
 
@@ -795,11 +710,11 @@ class TestASRAdapterMixin:
     @pytest.mark.unit
     def test_constructor_pretrained_rnnt(self):
         # Check to/from config_dict:
-        cfg = ASRModel.from_pretrained('stt_en_contextnet_256', map_location='cpu', return_config=True)
+        cfg = ASRModel.from_pretrained('stt_en_fastconformer_transducer_large', map_location='cpu', return_config=True)
         adapter_metadata = get_registered_adapter(cfg.encoder._target_)
         if adapter_metadata is not None:
             cfg.encoder._target_ = adapter_metadata.adapter_class_path
-        model = ASRModel.from_pretrained('stt_en_contextnet_256', override_config_path=cfg)
+        model = ASRModel.from_pretrained('stt_en_fastconformer_transducer_large', override_config_path=cfg)
 
         assert isinstance(model, AdapterModuleMixin)
         assert hasattr(model, 'encoder')
@@ -809,14 +724,14 @@ class TestASRAdapterMixin:
         assert hasattr(model, 'joint')
         assert isinstance(model.joint, AdapterModuleMixin)
 
-        model.add_adapter('adapter_0', cfg=get_adapter_cfg(in_features=cfg.encoder.jasper[0].filters, dim=5))
+        model.add_adapter('adapter_0', cfg=get_adapter_cfg(in_features=cfg.encoder.d_model, dim=5))
         model.add_adapter('decoder:adapter_1', cfg=get_adapter_cfg(in_features=cfg.decoder.prednet.pred_hidden, dim=5))
         model.add_adapter('joint:adapter_2', cfg=get_adapter_cfg(in_features=cfg.joint.jointnet.joint_hidden, dim=5))
         assert model.is_adapter_available()
 
         model.freeze()
         model.unfreeze_enabled_adapters()
-        assert model.num_weights < 1e5
+        assert model.num_weights < 2e5
 
     @pytest.mark.unit
     def test_asr_model_adapter_loss(self, model):

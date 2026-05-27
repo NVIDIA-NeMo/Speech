@@ -144,16 +144,6 @@ Load speaker embedding models
   # pass with hydra config
   config.diarizer.speaker_embeddings.model_path=pretrained_speaker_model
 
-Load neural diarizer models
-
-.. code-block:: bash
-
-  pretrained_neural_diarizer_model='/path/to/diarizer_msdd_telephonic.nemo' # local .nemo or pretrained neural diarizer model name
-  ...
-  # pass with hydra config
-  config.diarizer.msdd_model.model_path=pretrained_neural_diarizer_model
-
-
 NeMo will automatically save checkpoints of a model you are training in a `.nemo` format.
 You can also manually save your models at any point using :code:`model.save_to(<checkpoint_path>.nemo)`.
 
@@ -187,11 +177,9 @@ In general, you can load models with model name in the following format,
 
   pretrained_vad_model='vad_multilingual_marblenet'
   pretrained_speaker_model='titanet_large'
-  pretrained_neural_diarizer_model='diar_msdd_telephonic'
   ...
-  config.diarizer.vad.model_path=retrained_vad_model \
-  config.diarizer.speaker_embeddings.model_path=pretrained_speaker_model \
-  config.diarizer.msdd_model.model_path=pretrained_neural_diarizer_model
+  config.diarizer.vad.model_path=pretrained_vad_model \
+  config.diarizer.speaker_embeddings.model_path=pretrained_speaker_model
 
 where the model name is the value under "Model Name" entry in the tables below.
 

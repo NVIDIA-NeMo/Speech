@@ -41,6 +41,8 @@ class WebsocketClientApp {
   private analyser: AnalyserNode | null = null;
   private microphone: MediaStreamAudioSourceNode | null = null;
   private volumeUpdateInterval: number | null = null;
+  private currentBotMessageElement: HTMLDivElement | null = null;
+  private currentBotMessage: string = '';
 
   // Server configurations
   private readonly serverConfigs = {
@@ -108,6 +110,19 @@ class WebsocketClientApp {
     this.debugLog.appendChild(entry);
     this.debugLog.scrollTop = this.debugLog.scrollHeight;
     console.log(message);
+  }
+
+  /**
+   * Create a bot message element and add it to the debug log
+   */
+  private createBotMessageElement(initialText: string): HTMLDivElement | null {
+    if (!this.debugLog) return null;
+    const entry = document.createElement('div');
+    entry.style.color = '#4CAF50';
+    entry.textContent = `${new Date().toISOString()} - ${initialText}`;
+    this.debugLog.appendChild(entry);
+    this.debugLog.scrollTop = this.debugLog.scrollHeight;
+    return entry;
   }
 
   /**
@@ -240,7 +255,34 @@ class WebsocketClientApp {
               this.log(`User: ${data.text}`);
             }
           },
-          onBotTranscript: (data) => this.log(`Bot: ${data.text}`),
+          onBotTranscript: (data) => {
+            // If no current element exists, create one (fallback in case BOT_LLM_STARTED didn't fire)
+            if (!this.currentBotMessageElement) {
+              this.currentBotMessage = '';
+              this.currentBotMessageElement = this.createBotMessageElement('Bot: ');
+            }
+            
+            // Accumulate the text
+            this.currentBotMessage += data.text;
+            
+            // Update the current element
+            if (this.currentBotMessageElement) {
+              const timestamp = new Date().toISOString();
+              this.currentBotMessageElement.textContent = `${timestamp} - Bot: ${this.currentBotMessage}`;
+              this.debugLog?.scrollTo({ top: this.debugLog.scrollHeight, behavior: 'smooth' });
+            }
+          },
+          onBotLlmStarted: () => {
+            // Only create a new bot message element if the current one has content
+            if (this.currentBotMessage !== '') {
+              this.currentBotMessage = '';
+              this.currentBotMessageElement = this.createBotMessageElement('Bot: ');
+            } else if (!this.currentBotMessageElement) {
+              // Create element if it doesn't exist at all
+              this.currentBotMessage = '';
+              this.currentBotMessageElement = this.createBotMessageElement('Bot: ');
+            }
+          },
           onMessageError: (error) => console.error('Message error:', error),
           onError: (error) => console.error('Error:', error),
         },
@@ -313,6 +355,10 @@ class WebsocketClientApp {
     // Stop volume monitoring
     this.stopVolumeMonitoring();
     
+    // Clean up bot message state
+    this.currentBotMessage = '';
+    this.currentBotMessageElement = null;
+    
     // Reset mute state
     this.isMuted = false;
     
@@ -356,6 +402,10 @@ class WebsocketClientApp {
     
     // Stop volume monitoring
     this.stopVolumeMonitoring();
+    
+    // Clean up bot message state
+    this.currentBotMessage = '';
+    this.currentBotMessageElement = null;
     
     // Reset mute state
     this.isMuted = false;

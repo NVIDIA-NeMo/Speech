@@ -83,6 +83,7 @@ class CacheAwareRNNTInferenceWrapper(CacheAwareASRInferenceWrapper):
         keep_all_outputs: bool,
         drop_left_context: int | None = None,
         valid_out_len: int | None = None,
+        prompt_vectors: Tensor | None = None,
     ) -> tuple[list[Hypothesis], CacheAwareContext]:
         """
         Executes a single streaming step.
@@ -95,6 +96,7 @@ class CacheAwareRNNTInferenceWrapper(CacheAwareASRInferenceWrapper):
             keep_all_outputs: (bool) whether to keep all outputs or not.
             drop_left_context: (int | None) number of left context frames to drop.
             valid_out_len: (int | None) number of valid output frames.
+            prompt_vectors: (Tensor | None) Optional prompt vectors of shape [B, num_prompts].
         Returns:
             (tuple[list[Hypothesis], CacheAwareContext]) best hypothesis and new context.
         """
@@ -144,6 +146,7 @@ class CacheAwareRNNTInferenceWrapper(CacheAwareASRInferenceWrapper):
         keep_all_outputs: bool = False,
         drop_left_context: int | None = None,
         valid_out_len: int | None = None,
+        prompt_vectors: Tensor | None = None,
     ) -> tuple[list[Hypothesis], CacheAwareContext]:
         """
         Executes a single streaming step.
@@ -156,6 +159,7 @@ class CacheAwareRNNTInferenceWrapper(CacheAwareASRInferenceWrapper):
             keep_all_outputs: (bool) whether to keep all outputs or not.
             drop_left_context: (int | None) number of left context frames to drop.
             valid_out_len: (int | None) number of valid output frames.
+            prompt_vectors: (Tensor | None) Optional prompt vectors of shape [B, num_prompts].
         Returns:
             (tuple[list[Hypothesis], CacheAwareContext]) best hypothesis and new context.
         """
@@ -185,6 +189,7 @@ class CacheAwareRNNTInferenceWrapper(CacheAwareASRInferenceWrapper):
                 keep_all_outputs,
                 drop_left_context,
                 valid_out_len,
+                prompt_vectors,
             )
 
         return best_hyp, new_context

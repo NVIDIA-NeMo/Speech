@@ -701,6 +701,9 @@ class EncDecClassificationModel(EncDecSpeakerLabelModel, TranscriptionMixin):
             if 'test_ds' in self._cfg and self._cfg.test_ds is not None:
                 self._cfg.test_ds.labels = new_labels
 
+            self._macro_accuracy = Accuracy(
+                num_classes=self.decoder.num_classes, top_k=1, average='macro', task='multiclass'
+            )
             logging.info(f"Changed decoder output to {self.decoder.num_classes} labels.")
 
     @classmethod

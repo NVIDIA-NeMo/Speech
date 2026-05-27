@@ -1,8 +1,0 @@
-/code/general_data/*
-/code/data/*
-/code/models/*
-/code/nemo_experiments/
-./preprocessed_data_text_document.bin
-./preprocessed_data_text_document.idx
-./llama2_7b.py
-./test_convert.py 

@@ -138,6 +138,7 @@ class ContinuousBatchedFrameStreamer:
         self.n_audio_files = len(audio_filepaths)
         self.total_progress_steps = self.n_audio_files * 2  # One step for adding, one for processing
         self.sid2filepath = {}
+        self.elapsed_durations = {}
 
     def set_progress_bar(self, progress_bar: ProgressBar) -> None:
         """
@@ -180,6 +181,7 @@ class ContinuousBatchedFrameStreamer:
         audio_filepath = self.audio_filepaths[self.stream_id]
         options = self.options[self.stream_id]
         self.sid2filepath[self.stream_id] = audio_filepath
+        self.elapsed_durations[self.stream_id] = 0.0
         stream.load_audio(audio_filepath, options)
 
         # Add the stream to the multi streamer
@@ -203,8 +205,10 @@ class ContinuousBatchedFrameStreamer:
             frames = next(self.multi_streamer)
             # Update progress when a stream is fully processed
             for frame in frames:
-                if frame.stream_id not in self.processed_streams and frame.is_last:
-                    self.processed_streams.add(frame.stream_id)
+                sid = frame.stream_id
+                self.elapsed_durations[sid] += frame.valid_size / self.sample_rate
+                if sid not in self.processed_streams and frame.is_last:
+                    self.processed_streams.add(sid)
                     self.update_progress_bar()
             return frames
         except StopIteration:
@@ -239,7 +243,6 @@ class ContinuousBatchedRequestStreamer:
         device: torch.device = None,
         pad_last_frame: bool = False,
         right_pad_features: bool = False,
-        tail_padding_in_samples: int = 0,
     ):
         """
         Args:
@@ -253,7 +256,6 @@ class ContinuousBatchedRequestStreamer:
             device (torch.device): The device to use, required for request type FEATURE_BUFFER
             pad_last_frame (bool): Whether to pad the last frame
             right_pad_features (bool): Whether to right pad the features, optional for request type FEATURE_BUFFER
-            tail_padding_in_samples (int): The tail padding in samples, optional for request type FEATURE_BUFFER
         """
 
         if request_type is RequestType.FEATURE_BUFFER:
@@ -280,7 +282,6 @@ class ContinuousBatchedRequestStreamer:
                 sample_rate=sample_rate, buffer_size_in_secs=buffer_size_in_secs
             )
             self.right_pad_features = right_pad_features
-            self.tail_padding_in_samples = tail_padding_in_samples
 
     def set_audio_filepaths(self, audio_filepaths: list[str], options: list[RequestOptions]) -> None:
         """
@@ -308,6 +309,16 @@ class ContinuousBatchedRequestStreamer:
             str: The audio filepath for the given stream id
         """
         return self.multi_streamer.sid2filepath[stream_id]
+
+    def get_elapsed_duration(self, stream_id: int) -> float:
+        """
+        Get the elapsed audio duration for a given stream id
+        Args:
+            stream_id (int): The id of the stream
+        Returns:
+            float: The elapsed audio duration for the given stream id
+        """
+        return self.multi_streamer.elapsed_durations[stream_id]
 
     def to_feature_buffers(self, frames: list[Frame]) -> list[FeatureBuffer]:
         """
@@ -337,11 +348,9 @@ class ContinuousBatchedRequestStreamer:
         buffer_lens = torch.tensor([buffers[0].size(1)] * len(buffers), device=self.device)
 
         # Calculate right paddings and subtract from buffer lens
-        # tail_padding_in_samples is used to keep some amount of padding at the end of the buffer
-        # some models perform better with this padding
-        right_paddings = torch.tensor(
-            [frame.size - frame.valid_size - self.tail_padding_in_samples for frame in frames], device=self.device
-        ).clamp(min=0)
+        right_paddings = torch.tensor([frame.size - frame.valid_size for frame in frames], device=self.device).clamp(
+            min=0
+        )
 
         # Subtract right paddings from buffer lens
         buffer_lens = buffer_lens - right_paddings

@@ -14,18 +14,23 @@
 # limitations under the License.
 
 import itertools
+import os
 import string
+import warnings
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from typing import List, Optional, Union
 
+from tokenizers import Tokenizer
 from transformers import PreTrainedTokenizerBase
 
 from nemo.collections.common.tokenizers.text_to_speech.ipa_lexicon import (
+    DEFAULT_PUNCTUATION,
     get_grapheme_character_set,
     get_ipa_punctuation_list,
     validate_locale,
 )
+
 from nemo.collections.common.tokenizers.text_to_speech.tokenizer_utils import (
     any_locale_text_preprocessing,
     chinese_text_preprocessing,
@@ -36,24 +41,34 @@ from nemo.collections.common.tokenizers.text_to_speech.tokenizer_utils import (
     spanish_text_preprocessing,
     vietnamese_text_preprocessing,
 )
+from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.utils import logging
-from nemo.utils.decorators import experimental
+
+CASELESS_SCRIPT_TOKENIZER_TARGETS = frozenset(
+    {
+        'nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.HindiCharsTokenizer',
+        'nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.ArabicCharsTokenizer',
+    }
+)
+
+DEFAULT_CHARSET_VERSION = 2
 
 
 class BaseTokenizer(ABC):
+    """Abstract class for creating an arbitrary tokenizer to convert string to list of int tokens.
+    Args:
+        tokens: List of tokens.
+        pad: Pad token as string.
+        blank: Blank token as string.
+        oov: OOV token as string.
+        sep: Separation token as string.
+        add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
+            if None then no blank in labels.
+    """
+
     PAD, BLANK, OOV = '<pad>', '<blank>', '<oov>'
 
     def __init__(self, tokens, *, pad=PAD, blank=BLANK, oov=OOV, sep='', add_blank_at=None):
-        """Abstract class for creating an arbitrary tokenizer to convert string to list of int tokens.
-        Args:
-            tokens: List of tokens.
-            pad: Pad token as string.
-            blank: Blank token as string.
-            oov: OOV token as string.
-            sep: Separation token as string.
-            add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
-                if None then no blank in labels.
-        """
         super().__init__()
 
         tokens = list(tokens)
@@ -95,14 +110,19 @@ class BaseTokenizer(ABC):
 
 
 class BaseCharsTokenizer(BaseTokenizer):
-    # fmt: off
-    # TODO @xueyang: unify definition of the default PUNCT_LIST and import from ipa_lexicon.py
-    PUNCT_LIST = (  # Derived from LJSpeech and "/" additionally
-        ',', '.', '!', '?', '-',
-        ':', ';', '/', '"', '(',
-        ')', '[', ']', '{', '}',
-    )
-    # fmt: on
+    """Base class for char-based tokenizer.
+    Args:
+        chars: string that represents all possible characters.
+        punct: Whether to reserve grapheme for basic punctuation or not.
+        apostrophe: Whether to use apostrophe or not.
+        add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
+            if None then no blank in labels.
+        pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
+        non_default_punct_list: List of punctuation marks which will be used instead default.
+        text_preprocessing_func: Text preprocessing function for correct execution of the tokenizer.
+    """
+
+    PUNCT_LIST = DEFAULT_PUNCTUATION
 
     def __init__(
         self,
@@ -114,17 +134,6 @@ class BaseCharsTokenizer(BaseTokenizer):
         non_default_punct_list=None,
         text_preprocessing_func=lambda x: x,
     ):
-        """Base class for char-based tokenizer.
-        Args:
-            chars: string that represents all possible characters.
-            punct: Whether to reserve grapheme for basic punctuation or not.
-            apostrophe: Whether to use apostrophe or not.
-            add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
-             if None then no blank in labels.
-            pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
-            non_default_punct_list: List of punctuation marks which will be used instead default.
-            text_preprocessing_func: Text preprocessing function for correct execution of the tokenizer.
-        """
 
         tokens = []
         self.space, tokens = len(tokens), tokens + [' ']  # Space
@@ -164,9 +173,8 @@ class BaseCharsTokenizer(BaseTokenizer):
                 logging.warning(f"Text: [{text}] contains unknown char: [{c}]. Symbol will be skipped.")
 
         # Remove trailing spaces
-        if cs:
-            while cs[-1] == space:
-                cs.pop()
+        while cs and cs[-1] == space:
+            cs.pop()
 
         if self.pad_with_space:
             cs = [space] + cs + [space]
@@ -175,6 +183,18 @@ class BaseCharsTokenizer(BaseTokenizer):
 
 
 class EnglishCharsTokenizer(BaseCharsTokenizer):
+    """English char-based tokenizer.
+    Args:
+        punct: Whether to reserve grapheme for basic punctuation or not.
+        apostrophe: Whether to use apostrophe or not.
+        add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
+            if None then no blank in labels.
+        pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
+        non_default_punct_list: List of punctuation marks which will be used instead default.
+        text_preprocessing_func: Text preprocessing function for correct execution of the tokenizer.
+            Basically, it replaces all non-unicode characters with unicode ones and apply lower() function.
+    """
+
     def __init__(
         self,
         punct=True,
@@ -184,17 +204,6 @@ class EnglishCharsTokenizer(BaseCharsTokenizer):
         non_default_punct_list=None,
         text_preprocessing_func=english_text_preprocessing,
     ):
-        """English char-based tokenizer.
-        Args:
-            punct: Whether to reserve grapheme for basic punctuation or not.
-            apostrophe: Whether to use apostrophe or not.
-            add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
-             if None then no blank in labels.
-            pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
-            non_default_punct_list: List of punctuation marks which will be used instead default.
-            text_preprocessing_func: Text preprocessing function for correct execution of the tokenizer.
-             Basically, it replaces all non-unicode characters with unicode ones and apply lower() function.
-        """
         super().__init__(
             chars=string.ascii_lowercase,
             punct=punct,
@@ -207,6 +216,17 @@ class EnglishCharsTokenizer(BaseCharsTokenizer):
 
 
 class VietnameseCharsTokenizer(BaseCharsTokenizer):
+    """Vietnamese grapheme tokenizer.
+    Args:
+        punct: Whether to reserve grapheme for basic punctuation or not.
+        apostrophe: Whether to use apostrophe or not.
+        add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
+        if None then no blank in labels.
+        pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
+        non_default_punct_list: List of punctuation marks which will be used instead default.
+        text_preprocessing_func: Text preprocessing function for correct execution of the tokenizer. By default, it
+        would keep any word lowercase.
+    """
 
     _LOCALE = "vi-VN"
     _CHARSET_STR = get_grapheme_character_set(locale=_LOCALE, case="mixed")
@@ -221,17 +241,6 @@ class VietnameseCharsTokenizer(BaseCharsTokenizer):
         non_default_punct_list=None,
         text_preprocessing_func=vietnamese_text_preprocessing,
     ):
-        """Vietnamese grapheme tokenizer.
-        Args:
-            punct: Whether to reserve grapheme for basic punctuation or not.
-            apostrophe: Whether to use apostrophe or not.
-            add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
-            if None then no blank in labels.
-            pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
-            non_default_punct_list: List of punctuation marks which will be used instead default.
-            text_preprocessing_func: Text preprocessing function for correct execution of the tokenizer. By default, it
-            would keep any word lowercase.
-        """
         super().__init__(
             chars=chars,
             punct=punct,
@@ -244,6 +253,17 @@ class VietnameseCharsTokenizer(BaseCharsTokenizer):
 
 
 class GermanCharsTokenizer(BaseCharsTokenizer):
+    """German grapheme-based tokenizer.
+    Args:
+        punct: Whether to reserve grapheme for basic punctuation or not.
+        apostrophe: Whether to use apostrophe or not.
+        add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
+            if None then no blank in labels.
+        pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
+        non_default_punct_list: List of punctuation marks which will be used instead default.
+        text_preprocessing_func: Text preprocessing function for correct execution of the tokenizer. By default, it
+        would keep any word unchanged.
+    """
 
     _LOCALE = "de-DE"
     _PUNCT_LIST = get_ipa_punctuation_list(_LOCALE)
@@ -259,17 +279,6 @@ class GermanCharsTokenizer(BaseCharsTokenizer):
         non_default_punct_list=_PUNCT_LIST,
         text_preprocessing_func=any_locale_text_preprocessing,
     ):
-        """German grapheme-based tokenizer.
-        Args:
-            punct: Whether to reserve grapheme for basic punctuation or not.
-            apostrophe: Whether to use apostrophe or not.
-            add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
-             if None then no blank in labels.
-            pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
-            non_default_punct_list: List of punctuation marks which will be used instead default.
-            text_preprocessing_func: Text preprocessing function for correct execution of the tokenizer. By default, it
-            would keep any word unchanged.
-        """
         super().__init__(
             chars=chars,
             punct=punct,
@@ -282,6 +291,15 @@ class GermanCharsTokenizer(BaseCharsTokenizer):
 
 
 class SpanishCharsTokenizer(BaseCharsTokenizer):
+    """Spanish grapheme tokenizer.
+    Args:
+        punct: Whether to reserve grapheme for basic punctuation or not.
+        apostrophe: Whether to use apostrophe or not.
+        add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
+            if None then no blank in labels.
+        pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
+        non_default_punct_list: List of punctuation marks which will be used instead default.
+    """
 
     PUNCT_LIST = get_ipa_punctuation_list("es-ES")
 
@@ -293,15 +311,6 @@ class SpanishCharsTokenizer(BaseCharsTokenizer):
         pad_with_space=False,
         non_default_punct_list=None,
     ):
-        """Spanish grapheme tokenizer.
-        Args:
-            punct: Whether to reserve grapheme for basic punctuation or not.
-            apostrophe: Whether to use apostrophe or not.
-            add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
-             if None then no blank in labels.
-            pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
-            non_default_punct_list: List of punctuation marks which will be used instead default.
-        """
 
         es_alphabet = "abcdefghijklmnopqrstuvwxyzáéíñóúü"
         super().__init__(
@@ -316,6 +325,15 @@ class SpanishCharsTokenizer(BaseCharsTokenizer):
 
 
 class FrenchCharsTokenizer(BaseCharsTokenizer):
+    """French grapheme tokenizer.
+    Args:
+        punct: Whether to reserve grapheme for basic punctuation or not.
+        apostrophe: Whether to use apostrophe or not.
+        add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
+        if None then no blank in labels.
+        pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
+        non_default_punct_list: List of punctuation marks which will be used instead default.
+    """
 
     PUNCT_LIST = get_ipa_punctuation_list("fr-FR")
 
@@ -327,15 +345,6 @@ class FrenchCharsTokenizer(BaseCharsTokenizer):
         pad_with_space=False,
         non_default_punct_list=None,
     ):
-        """French grapheme tokenizer.
-        Args:
-            punct: Whether to reserve grapheme for basic punctuation or not.
-            apostrophe: Whether to use apostrophe or not.
-            add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
-            if None then no blank in labels.
-            pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
-            non_default_punct_list: List of punctuation marks which will be used instead default.
-        """
 
         fr_alphabet = get_grapheme_character_set(locale="fr-FR", case="lower")
         super().__init__(
@@ -350,20 +359,21 @@ class FrenchCharsTokenizer(BaseCharsTokenizer):
 
 
 class ItalianCharsTokenizer(BaseCharsTokenizer):
+    """Italian grapheme tokenizer.
+    Args:
+        punct: Whether to reserve grapheme for basic punctuation or not.
+        apostrophe: Whether to use apostrophe or not.
+        add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
+        if None then no blank in labels.
+        pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
+        non_default_punct_list: List of punctuation marks which will be used instead default.
+    """
+
     PUNCT_LIST = get_ipa_punctuation_list("it-IT")
 
     def __init__(
         self, punct=True, apostrophe=True, add_blank_at=None, pad_with_space=False, non_default_punct_list=None
     ):
-        """Italian grapheme tokenizer.
-        Args:
-            punct: Whether to reserve grapheme for basic punctuation or not.
-            apostrophe: Whether to use apostrophe or not.
-            add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
-            if None then no blank in labels.
-            pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
-            non_default_punct_list: List of punctuation marks which will be used instead default.
-        """
 
         it_alphabet = "abcdefghijklmnopqrstuvwxyzàèéìòùó"
         super().__init__(
@@ -377,14 +387,232 @@ class ItalianCharsTokenizer(BaseCharsTokenizer):
         )
 
 
+class HindiCharsTokenizer(BaseCharsTokenizer):
+    """Hindi grapheme tokenizer (character-based, no phonemes).
+    Args:
+        chars: Explicit character set string. When provided, ``charset_version`` is ignored.
+        charset_version: Controls which default character set to use (only when ``chars`` is None).
+            ``2`` (default) — ``case="upper"`` Devanagari + ``ascii_letters``.
+            Hindi/Devanagari has no case distinction, so ``case="upper"`` avoids duplicating
+            every code-point. ``ascii_letters`` covers both upper- and lower-case English for
+            mixed-language text.
+            ``1`` — legacy ``case="mixed"`` Devanagari + ``ascii_lowercase``. Use this value to
+            restore models that were trained before the charset fix.
+        punct: Whether to reserve grapheme for basic punctuation or not.
+        apostrophe: Whether to use apostrophe or not.
+        add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
+            if None then no blank in labels.
+        pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
+        non_default_punct_list: List of punctuation marks which will be used instead default.
+            Overrides ``punct_version`` when explicitly provided.
+        punct_version: Punctuation set version (default 2).
+            2 — expanded set from ``get_ipa_punctuation_list("hi-IN")`` including dandas.
+            1 — legacy ``sorted(list(DEFAULT_PUNCTUATION))`` without dandas; emits
+            ``DeprecationWarning`` and will be removed in a future release.
+            Ignored when ``non_default_punct_list`` is explicitly provided.
+        text_preprocessing_func: Text preprocessing function. Keeps Devanagari unchanged.
+
+        Each Unicode code point becomes 1 token (not visual grapheme clusters)
+        ड़ = ड (U+0921) + '़' nukta (U+093C)
+
+        Input Text: अंगड़ाई
+        Chars: ['अ', 'ं', 'ग', 'ड', '़', 'ा', 'ई']
+        IDs:   [74, 138, 90, 100, 141, 124, 77]
+    """
+
+    _LOCALE = "hi-IN"
+    _PUNCT_LIST = get_ipa_punctuation_list(_LOCALE)
+    _CHARSET_STR = get_grapheme_character_set(locale=_LOCALE, case="upper") + string.ascii_letters
+    _PUNCT_LIST_V1 = sorted(list(DEFAULT_PUNCTUATION))
+    _CHARSET_STR_V1 = get_grapheme_character_set(locale=_LOCALE, case="mixed") + string.ascii_lowercase
+
+    def __init__(
+        self,
+        chars=None,
+        charset_version=2,
+        punct=True,
+        apostrophe=True,
+        add_blank_at=None,
+        pad_with_space=False,
+        non_default_punct_list=None,
+        punct_version=2,
+        text_preprocessing_func=any_locale_text_preprocessing,
+    ):
+        if chars is None:
+            if charset_version == 1:
+                warnings.warn(
+                    "HindiCharsTokenizer charset_version=1 (case='mixed' + ascii_lowercase) is deprecated "
+                    "and will be removed in a future release. "
+                    "Migrate to charset_version=2 (case='upper' + ascii_letters) and retrain.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                chars = self._CHARSET_STR_V1
+            elif charset_version == 2:
+                chars = self._CHARSET_STR
+            else:
+                raise ValueError(
+                    f"HindiCharsTokenizer: unsupported charset_version={charset_version!r}. Use 1 (legacy) or 2."
+                )
+        if non_default_punct_list is None:
+            if punct_version == 1:
+                warnings.warn(
+                    "HindiCharsTokenizer: punct_version=1 uses DEFAULT_PUNCTUATION without dandas "
+                    "and will be removed in a future release. Migrate to punct_version=2.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                non_default_punct_list = self._PUNCT_LIST_V1
+            elif punct_version == 2:
+                non_default_punct_list = self._PUNCT_LIST
+            else:
+                raise ValueError(
+                    f"HindiCharsTokenizer: unsupported punct_version={punct_version}. Use 1 (legacy) or 2."
+                )
+        super().__init__(
+            chars=chars,
+            punct=punct,
+            apostrophe=apostrophe,
+            add_blank_at=add_blank_at,
+            pad_with_space=pad_with_space,
+            non_default_punct_list=non_default_punct_list,
+            text_preprocessing_func=text_preprocessing_func,
+        )
+
+    def encode(self, text):
+        """Encode Hindi text, handling Devanagari combining marks correctly."""
+        cs, space, tokens = [], self.tokens[self.space], set(self.tokens)
+
+        text = self.text_preprocessing_func(text)
+        for c in text:
+            # Add a whitespace if the current char is a whitespace while the previous char is not a whitespace.
+            if c == space and len(cs) > 0 and cs[-1] != space:
+                cs.append(c)
+            # For Hindi: accept any character that's in tokens (not just alphanumeric)
+            # This handles Devanagari combining marks like ि, ं, ी, etc.
+            elif c in tokens and c != space:
+                cs.append(c)
+            # Add a punctuation that has a single char.
+            elif (c in self.PUNCT_LIST) and self.punct:
+                cs.append(c)
+
+            elif c != space:
+                logging.warning(f"Text: [{text}] contains unknown char: [{c}]. Symbol will be skipped.")
+
+        # Remove trailing spaces
+        while cs and cs[-1] == space:
+            cs.pop()
+
+        if self.pad_with_space:
+            cs = [space] + cs + [space]
+
+        return [self._token2id[p] for p in cs]
+
+
+class ArabicCharsTokenizer(BaseCharsTokenizer):
+    """Arabic grapheme tokenizer (character-based, no phonemes).
+    Args:
+        chars: Explicit character set string. When provided, ``charset_version`` is ignored.
+        charset_version: Controls which default character set to use (only when ``chars`` is None).
+            ``2`` (default) — ``case="upper"`` Arabic + ``ascii_letters``.
+            Arabic script has no case distinction, so ``case="upper"`` avoids duplicating
+            every code-point. ``ascii_letters`` covers both upper- and lower-case English for
+            mixed-language text.
+            ``1`` — legacy ``case="mixed"`` Arabic + ``ascii_letters``. Use this value to
+            restore models that were trained before the charset fix.
+        punct: Whether to reserve grapheme for basic punctuation or not.
+        apostrophe: Whether to use apostrophe or not.
+        add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
+            if None then no blank in labels.
+        pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
+        non_default_punct_list: List of punctuation marks which will be used instead default.
+        text_preprocessing_func: Text preprocessing function. Keeps Arabic unchanged.
+
+        Each Unicode code point becomes 1 token (letters, diacritics, and Arabic punct from ipa_lexicon).
+        Supports both upper and lower English letters (e.g. mixed-language text).
+
+        Input Text: مرحبا Hello
+        Chars: ['م', 'ر', 'ح', 'ب', 'ا', ' ', 'H', 'e', 'l', 'l', 'o']
+    """
+
+    _LOCALE = "ar-MSA"
+    _PUNCT_LIST = get_ipa_punctuation_list(_LOCALE)
+    _CHARSET_STR = get_grapheme_character_set(locale=_LOCALE, case="upper") + string.ascii_letters
+    _CHARSET_STR_V1 = get_grapheme_character_set(locale=_LOCALE, case="mixed") + string.ascii_letters
+
+    def __init__(
+        self,
+        chars=None,
+        charset_version=2,
+        punct=True,
+        apostrophe=True,
+        add_blank_at=None,
+        pad_with_space=False,
+        non_default_punct_list=_PUNCT_LIST,
+        text_preprocessing_func=any_locale_text_preprocessing,
+    ):
+        if chars is None:
+            if charset_version == 1:
+                warnings.warn(
+                    "ArabicCharsTokenizer charset_version=1 (case='mixed' + ascii_letters) is deprecated "
+                    "and will be removed in a future release. "
+                    "Migrate to charset_version=2 (case='upper' + ascii_letters) and retrain.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                chars = self._CHARSET_STR_V1
+            elif charset_version == 2:
+                chars = self._CHARSET_STR
+            else:
+                raise ValueError(
+                    f"ArabicCharsTokenizer: unsupported charset_version={charset_version!r}. Use 1 (legacy) or 2."
+                )
+        super().__init__(
+            chars=chars,
+            punct=punct,
+            apostrophe=apostrophe,
+            add_blank_at=add_blank_at,
+            pad_with_space=pad_with_space,
+            non_default_punct_list=non_default_punct_list,
+            text_preprocessing_func=text_preprocessing_func,
+        )
+
+    def encode(self, text):
+        """Encode Arabic text, handling diacritics and English (upper/lower) correctly."""
+        cs, space, tokens = [], self.tokens[self.space], set(self.tokens)
+
+        text = self.text_preprocessing_func(text)
+        for c in text:
+            if c == space and len(cs) > 0 and cs[-1] != space:
+                cs.append(c)
+            elif c in tokens and c != space:
+                cs.append(c)
+            elif (c in self.PUNCT_LIST) and self.punct:
+                cs.append(c)
+            elif c != space:
+                logging.warning(f"Text: [{text}] contains unknown char: [{c}]. Symbol will be skipped.")
+
+        while cs and cs[-1] == space:
+            cs.pop()
+
+        if self.pad_with_space:
+            cs = [space] + cs + [space]
+
+        return [self._token2id[p] for p in cs]
+
+
 class GermanPhonemesTokenizer(BaseCharsTokenizer):
-    # fmt: off
-    PUNCT_LIST = (  # Derived from LJSpeech and "/" additionally
-        ',', '.', '!', '?', '-',
-        ':', ';', '/', '"', '(',
-        ')', '[', ']', '{', '}',
-    )
-    # fmt: on
+    """Deutsch phoneme-based tokenizer.
+    Args:
+        punct: Whether to reserve grapheme for basic punctuation or not.
+        apostrophe: Whether to use apostrophe or not.
+        add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
+            if None then no blank in labels.
+        pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
+        non_default_punct_list: List of punctuation marks which will be used instead default.
+        text_preprocessing_func: Text preprocessing function for correct execution of the tokenizer.
+            Currently, it only applies lower() function.
+    """
 
     def __init__(
         self,
@@ -395,17 +623,6 @@ class GermanPhonemesTokenizer(BaseCharsTokenizer):
         non_default_punct_list=None,
         text_preprocessing_func=any_locale_text_preprocessing,
     ):
-        """Deutsch phoneme-based tokenizer.
-        Args:
-            punct: Whether to reserve grapheme for basic punctuation or not.
-            apostrophe: Whether to use apostrophe or not.
-            add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
-             if None then no blank in labels.
-            pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
-            non_default_punct_list: List of punctuation marks which will be used instead default.
-            text_preprocessing_func: Text preprocessing function for correct execution of the tokenizer.
-             Currently, it only applies lower() function.
-        """
 
         de_ipa = "abdefhijklmnoprstuvwxyzçðøŋœɐɑɒɔəɛɜɡɪɹɾʃʊʌʒː̃"
         de_suprasegmentals = "12"
@@ -449,6 +666,18 @@ class GermanPhonemesTokenizer(BaseCharsTokenizer):
 
 
 class ItalianPhonemesTokenizer(BaseCharsTokenizer):
+    """Italian phoneme-based tokenizer.
+    Args:
+        punct: Whether to reserve grapheme for basic punctuation or not.
+        apostrophe: Whether to use apostrophe or not.
+        add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
+            if None then no blank in labels.
+        pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
+        non_default_punct_list: List of punctuation marks which will be used instead default.
+        text_preprocessing_func: Text preprocessing function for correct execution of the tokenizer.
+            Currently, it only applies lower() function.
+    """
+
     # fmt: off
     PUNCT_LIST = (
         ',', '.', '!', '?', '-',
@@ -467,17 +696,6 @@ class ItalianPhonemesTokenizer(BaseCharsTokenizer):
         non_default_punct_list=None,
         text_preprocessing_func=italian_text_preprocessing,
     ):
-        """Italian phoneme-based tokenizer.
-        Args:
-            punct: Whether to reserve grapheme for basic punctuation or not.
-            apostrophe: Whether to use apostrophe or not.
-            add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
-             if None then no blank in labels.
-            pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
-            non_default_punct_list: List of punctuation marks which will be used instead default.
-            text_preprocessing_func: Text preprocessing function for correct execution of the tokenizer.
-             Currently, it only applies lower() function.
-        """
 
         it_ipa = (
             "abcdefghijklmnopqrstuvwxyzàèéìòùóæɐɑɔəɚɜɬɹʌʔᵻðŋɛɡɣɪɲɾʃʊʎʒʝβθd͡'t͡'øɒɕɓçɖɘɝɞɟʄɡɠɢʛɦɧħɥʜɨɬɫɮʟɱɯɰɳɵɸœɶʘɺ"
@@ -523,12 +741,31 @@ class ItalianPhonemesTokenizer(BaseCharsTokenizer):
 
 
 class EnglishPhonemesTokenizer(BaseTokenizer):
+    """English phoneme-based tokenizer.
+    Args:
+        g2p: Grapheme to phoneme module.
+        punct: Whether to reserve grapheme for basic punctuation or not.
+        non_default_punct_list: List of punctuation marks which will be used instead default.
+        stresses: Whether to use phonemes codes with stresses (0-2) or not.
+        chars: Whether to additionally use chars together with phonemes. It is useful if g2p module can return
+            chars too.
+        space: Space token as string.
+        silence: Silence token as string (will be disabled if it is None).
+        apostrophe: Whether to use apostrophe or not.
+        oov: OOV token as string.
+        sep: Separation token as string.
+        add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
+            if None then no blank in labels.
+        pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
+        text_preprocessing_func: Text preprocessing function for correct execution of the tokenizer.
+            Basically, it replaces all non-unicode characters with unicode ones.
+            Note that lower() function shouldn't be applied here, in case the text contains phonemes (it will be
+            handled by g2p).
+    """
+
+    PUNCT_LIST = DEFAULT_PUNCTUATION
+
     # fmt: off
-    PUNCT_LIST = (  # Derived from LJSpeech and "/" additionally
-        ',', '.', '!', '?', '-',
-        ':', ';', '/', '"', '(',
-        ')', '[', ']', '{', '}',
-    )
     VOWELS = (
         'AA', 'AE', 'AH', 'AO', 'AW',
         'AY', 'EH', 'ER', 'EY', 'IH',
@@ -559,27 +796,6 @@ class EnglishPhonemesTokenizer(BaseTokenizer):
         pad_with_space=False,
         text_preprocessing_func=lambda text: english_text_preprocessing(text, lower=False),
     ):
-        """English phoneme-based tokenizer.
-        Args:
-            g2p: Grapheme to phoneme module.
-            punct: Whether to reserve grapheme for basic punctuation or not.
-            non_default_punct_list: List of punctuation marks which will be used instead default.
-            stresses: Whether to use phonemes codes with stresses (0-2) or not.
-            chars: Whether to additionally use chars together with phonemes. It is useful if g2p module can return
-                chars too.
-            space: Space token as string.
-            silence: Silence token as string (will be disabled if it is None).
-            apostrophe: Whether to use apostrophe or not.
-            oov: OOV token as string.
-            sep: Separation token as string.
-            add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
-                if None then no blank in labels.
-            pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
-            text_preprocessing_func: Text preprocessing function for correct execution of the tokenizer.
-                Basically, it replaces all non-unicode characters with unicode ones.
-                Note that lower() function shouldn't be applied here, in case the text contains phonemes (it will be
-                handled by g2p).
-        """
 
         self.phoneme_probability = None
         if hasattr(g2p, "phoneme_probability"):
@@ -674,6 +890,7 @@ class EnglishPhonemesTokenizer(BaseTokenizer):
 
     @contextmanager
     def set_phone_prob(self, prob):
+        """Updates the phone probability inside context"""
         if hasattr(self.g2p, "phoneme_probability"):
             self.g2p.phoneme_probability = prob
         try:
@@ -683,14 +900,42 @@ class EnglishPhonemesTokenizer(BaseTokenizer):
                 self.g2p.phoneme_probability = self.phoneme_probability
 
 
-@experimental
 class IPATokenizer(BaseTokenizer):
+    """General-purpose IPA-based tokenizer.
+    Args:
+        g2p: Grapheme to phoneme module, should be IpaG2p or some subclass thereof.
+        locale: Locale used to determine default text processing logic and punctuation.
+            See ``SUPPORTED_LOCALES`` in ``ipa_lexicon.py`` for the full list. Defaults to "en-US".
+            Specify None if implementing custom logic for a new locale.
+        punct: Whether to reserve grapheme for basic punctuation or not.
+        non_default_punct_list: List of punctuation marks which will be used instead default, if any.
+        locale_specific_punct: Whether to use locale-specific punctuation (via ``get_ipa_punctuation_list``)
+            or only ``DEFAULT_PUNCTUATION``. Defaults to True. Set to False to preserve the token
+            vocabulary of checkpoints trained before locale-specific punctuation was introduced.
+            Currently only affects pt-BR. Ignored when ``non_default_punct_list`` is provided.
+        fixed_vocab: List of valid grapheme/phoneme tokens for the model.
+            Set only if overriding the default vocab generation process (reading from G2P dict).
+            If set, any dataset entries that have unincluded graphemes will be filtered out, and any words whose
+            pronunciations have unincluded phonemes will be treated as OOV.
+            Please make sure that the grapheme prefixes and cases are consistent with the G2P module's settings.
+            Defaults to None, which means default vocab generation is used.
+        space: Space token as string.
+        silence: Silence token as string (will be disabled if it is None).
+        apostrophe: Whether to use apostrophe or not.
+        oov: OOV token as string.
+        sep: Separation token as string.
+        add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
+            if None then no blank in labels.
+        pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
+    """
+
     def __init__(
         self,
         g2p,
         locale="en-US",
         punct=True,
         non_default_punct_list=None,
+        locale_specific_punct=True,
         fixed_vocab=None,
         *,
         space=' ',
@@ -701,29 +946,6 @@ class IPATokenizer(BaseTokenizer):
         add_blank_at=None,
         pad_with_space=False,
     ):
-        """General-purpose IPA-based tokenizer.
-        Args:
-            g2p: Grapheme to phoneme module, should be IpaG2p or some subclass thereof.
-            locale: Locale used to determine default text processing logic and punctuation.
-                Supports ["en-US", "de-DE", "es-ES", "fr-FR"]. Defaults to "en-US".
-                Specify None if implementing custom logic for a new locale.
-            punct: Whether to reserve grapheme for basic punctuation or not.
-            non_default_punct_list: List of punctuation marks which will be used instead default, if any.
-            fixed_vocab: List of valid grapheme/phoneme tokens for the model.
-                Set only if overriding the default vocab generation process (reading from G2P dict).
-                If set, any dataset entries that have unincluded graphemes will be filtered out, and any words whose
-                pronunciations have unincluded phonemes will be treated as OOV.
-                Please make sure that the grapheme prefixes and cases are consistent with the G2P module's settings.
-                Defaults to None, which means default vocab generation is used.
-            space: Space token as string.
-            silence: Silence token as string (will be disabled if it is None).
-            apostrophe: Whether to use apostrophe or not.
-            oov: OOV token as string.
-            sep: Separation token as string.
-            add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
-                if None then no blank in labels.
-            pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
-        """
         if not hasattr(g2p, "symbols"):
             logging.error(
                 f"Please make sure the G2P module passed into the IPATokenizer has a `symbols` attribute. "
@@ -766,8 +988,10 @@ class IPATokenizer(BaseTokenizer):
         if punct:
             if non_default_punct_list is not None:
                 self.punct_list = non_default_punct_list
-            else:
+            elif locale_specific_punct:
                 self.punct_list = get_ipa_punctuation_list(locale)
+            else:
+                self.punct_list = sorted(list(DEFAULT_PUNCTUATION))
 
             tokens.update(self.punct_list)
 
@@ -848,6 +1072,7 @@ class IPATokenizer(BaseTokenizer):
 
     @contextmanager
     def set_phone_prob(self, prob):
+        """Updates the phone probability inside context"""
         if hasattr(self.g2p, "phoneme_probability"):
             self.g2p.phoneme_probability = prob
         try:
@@ -858,12 +1083,27 @@ class IPATokenizer(BaseTokenizer):
 
 
 class ChinesePhonemesTokenizer(BaseTokenizer):
-    # fmt: off
-    PUNCT_LIST = (  # Derived from LJSpeech and "/" additionally
-        ',', '.', '!', '?', '-',
-        ':', ';', '/', '"', '(',
-        ')', '[', ']', '{', '}',
-    )
+    """Chinese phoneme-based tokenizer.
+    Note: This tokenizer for now covers Chinese phonemes/tones and English letters because our dataset contains
+            both Chinese and English graphemes.
+    Args:
+        g2p: Grapheme to phoneme module.
+        punct: Whether to reserve grapheme for basic punctuation or not.
+        non_default_punct_list: List of punctuation marks which will be used instead default.
+        space: Space token as string.
+        silence: Silence token as string (will be disabled if it is None).
+        apostrophe: Whether to use apostrophe or not.
+        sep: Separation token as string.
+        add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
+            if None then no blank in labels.
+        pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
+        text_preprocessing_func: Text preprocessing function for correct execution of the tokenizer.
+            Basically, it replaces all non-unicode characters with unicode ones.
+            Note that lower() function shouldn't be applied here, in case the text contains phonemes (it will be
+            handled by g2p).
+    """
+
+    PUNCT_LIST = DEFAULT_PUNCTUATION
     ZH_PUNCT_LIST = list("，。？！；：、‘’“”（）【】「」《》") + list(PUNCT_LIST)
 
     def __init__(
@@ -880,25 +1120,6 @@ class ChinesePhonemesTokenizer(BaseTokenizer):
         pad_with_space=False,
         text_preprocessing_func=chinese_text_preprocessing,
     ):
-        """Chinese phoneme-based tokenizer.
-        Note: This tokenizer for now covers Chinese phonemes/tones and English letters because our dataset contains
-              both Chinese and English graphemes.
-        Args:
-            g2p: Grapheme to phoneme module.
-            punct: Whether to reserve grapheme for basic punctuation or not.
-            non_default_punct_list: List of punctuation marks which will be used instead default.
-            space: Space token as string.
-            silence: Silence token as string (will be disabled if it is None).
-            apostrophe: Whether to use apostrophe or not.
-            sep: Separation token as string.
-            add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
-                if None then no blank in labels.
-            pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
-            text_preprocessing_func: Text preprocessing function for correct execution of the tokenizer.
-                Basically, it replaces all non-unicode characters with unicode ones.
-                Note that lower() function shouldn't be applied here, in case the text contains phonemes (it will be
-                handled by g2p).
-        """
         tokens = []
         self.space, tokens = len(tokens), tokens + [space]  # Space
 
@@ -952,8 +1173,9 @@ class ChinesePhonemesTokenizer(BaseTokenizer):
             if p == space and len(ps) > 0 and ps[-1] != space:
                 ps.append(p)
             # Add next phoneme or tone or ascii letter or apostrophe.
-            elif ((p.isalnum() or p == "'" or p in self.phoneme_list + self.tone_list + self.ascii_letter_list) and
-                   p in tokens):
+            elif (
+                p.isalnum() or p == "'" or p in self.phoneme_list + self.tone_list + self.ascii_letter_list
+            ) and p in tokens:
                 ps.append(p)
             # Add punctuation
             elif (p in self.PUNCT_LIST) and self.punct:
@@ -977,6 +1199,24 @@ class ChinesePhonemesTokenizer(BaseTokenizer):
 
 
 class JapanesePhonemeTokenizer(BaseTokenizer):
+    """Japanese phoneme-based tokenizer.
+    Note: This tokenizer for now covers Japanese phonemes
+    Args:
+        g2p: Grapheme to phoneme module.
+        punct: Whether to reserve grapheme for basic punctuation or not.
+        non_default_punct_list: List of punctuation marks which will be used instead default.
+        space: Space token as string.
+        silence: Silence token as string (will be disabled if it is None).
+        apostrophe: Whether to use apostrophe or not.
+        sep: Separation token as string.
+        add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
+            if None then no blank in labels.
+        pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
+        text_preprocessing_func: Text preprocessing function for correct execution of the tokenizer.
+            Basically, it replaces all non-unicode characters with unicode ones.
+            Note that lower() function shouldn't be applied here, in case the text contains phonemes (it will be
+            handled by g2p).
+    """
 
     JA_PUNCT_LIST = get_ipa_punctuation_list("ja-JP")
 
@@ -994,24 +1234,6 @@ class JapanesePhonemeTokenizer(BaseTokenizer):
         pad_with_space=False,
         text_preprocessing_func=japanese_text_preprocessing,
     ):
-        """Japanese phoneme-based tokenizer.
-        Note: This tokenizer for now covers Japanese phonemes
-        Args:
-            g2p: Grapheme to phoneme module.
-            punct: Whether to reserve grapheme for basic punctuation or not.
-            non_default_punct_list: List of punctuation marks which will be used instead default.
-            space: Space token as string.
-            silence: Silence token as string (will be disabled if it is None).
-            apostrophe: Whether to use apostrophe or not.
-            sep: Separation token as string.
-            add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
-                if None then no blank in labels.
-            pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
-            text_preprocessing_func: Text preprocessing function for correct execution of the tokenizer.
-                Basically, it replaces all non-unicode characters with unicode ones.
-                Note that lower() function shouldn't be applied here, in case the text contains phonemes (it will be
-                handled by g2p).
-        """
         tokens = []
         self.space, tokens = len(tokens), tokens + [space]  # Space
 
@@ -1086,43 +1308,147 @@ class JapanesePhonemeTokenizer(BaseTokenizer):
         return [self._token2id[p] for p in ps]
 
 
+class IPABPETokenizer(TokenizerSpec):
+    """Simple IPA BPE tokenizer wrapper around HuggingFace tokenizers.
+
+    Args:
+        tokenizer_path: Path to the tokenizer.json file (or directory containing it).
+    """
+
+    def __init__(self, tokenizer_path: str):
+        if os.path.isdir(tokenizer_path):
+            tokenizer_file = os.path.join(tokenizer_path, "tokenizer.json")
+        else:
+            tokenizer_file = tokenizer_path
+
+        if not os.path.exists(tokenizer_file):
+            raise ValueError(f"Tokenizer file not found: {tokenizer_file}")
+
+        self._tokenizer = Tokenizer.from_file(tokenizer_file)
+        self.tokens = self._tokenizer.get_vocab()
+        phoneme_vocab_size = len(self.tokens)
+        self.bos_token_id = phoneme_vocab_size
+        self.eos_token_id = phoneme_vocab_size + 1
+        self.unk_token_id = phoneme_vocab_size + 2
+        self.vocab_size = phoneme_vocab_size + 3
+        self.tokens["<sp_bos>"] = self.bos_token_id
+        self.tokens["<sp_eos>"] = self.eos_token_id
+        self.tokens["<sp_unk>"] = self.unk_token_id
+        self._inv_vocab = {idx: token for token, idx in self.tokens.items()}
+        self.pad_token_id = self.tokens.get("<pad>", None)
+
+    def encode(self, text: str) -> List[int]:
+        """Encode IPA text to token IDs."""
+        return self._tokenizer.encode(text).ids
+
+    def decode(self, tokens: List[int]) -> str:
+        """Decode token IDs back to IPA text."""
+        return self._tokenizer.decode(tokens)
+
+    def text_to_tokens(self, text: str) -> List[str]:
+        """Convert text into token pieces."""
+        return self._tokenizer.encode(text).tokens
+
+    def tokens_to_text(self, tokens: List[str]) -> str:
+        """Convert token pieces back into text."""
+        return self.ids_to_text(self.tokens_to_ids(tokens))
+
+    def tokens_to_ids(self, tokens: List[str]) -> List[int]:
+        """Convert token pieces into IDs."""
+        return [self.tokens.get(token, self.unk_token_id) for token in tokens]
+
+    def ids_to_tokens(self, ids: List[int]) -> List[str]:
+        """Convert IDs into token pieces."""
+        return [self._inv_vocab.get(idx, "<sp_unk>") for idx in ids]
+
+    def text_to_ids(self, text: str) -> List[int]:
+        """Convert text directly into IDs."""
+        return self.encode(text)
+
+    def ids_to_text(self, ids: List[int]) -> str:
+        """Convert IDs back into text."""
+        return self.decode(ids)
+
+    @property
+    def bos(self):
+        return self.bos_token_id
+
+    @property
+    def eos(self):
+        return self.eos_token_id
+
+    @property
+    def pad(self):
+        return self.pad_token_id
+
+
+# TODO @xueyang: subclassing from `nemo/collections/common/tokenizers/tokenizer_spec.py::TokenizerSpec`, and/or
+# adjust to reuse `nemo/collections/common/tokenizers/aggregate_tokenizer.py::AggregateTokenizer`
 class AggregatedTTSTokenizer:
+    """A simple aggregated tokenizer. Aggregates multiple tokenizers into one by combining (simply concatenating)
+    their tokens into one vocabulary.
+    Args:
+        tokenizers: List of tokenizers to aggregate.
+        tokenizer_names: List of names for each tokenizer (usually the language identifier).
+    """
+
     def __init__(self, tokenizers: List[Union[BaseTokenizer, PreTrainedTokenizerBase]], tokenizer_names: List[str]):
-        """A simple aggregated tokenizer. Aggregates multiple tokenizers into one by combining (simply concatenating)
-        their tokens into one vocabulary.
-        Args:
-            tokenizers: List of tokenizers to aggregate.
-            tokenizer_names: List of names for each tokenizer (usually the language identifier).
-        """
         assert len(tokenizers) == len(tokenizer_names), "Number of tokenizers and tokenizer names must be the same."
         tokens = []
-        toknizer_offsets = {}
+        tokenizer_offsets = {}
         tokenizer_offset = 0
         self.tokenizers = {}
+        num_tokens_per_tokenizer = {}
+        tokenizer_pad_ids = {}
         for idx, tokenizer in enumerate(tokenizers):
-            self.tokenizers[tokenizer_names[idx]] = tokenizer
-            toknizer_offsets[tokenizer_names[idx]] = tokenizer_offset
+            tokenizer_name = tokenizer_names[idx]
+            self.tokenizers[tokenizer_name] = tokenizer
+            tokenizer_offsets[tokenizer_name] = tokenizer_offset
             if isinstance(tokenizer, BaseTokenizer):
                 tokens.extend(tokenizer.tokens)
                 num_tokens = len(tokenizer.tokens)
+                tokenizer_pad_ids[tokenizer_name] = tokenizer.pad + tokenizer_offset
             elif isinstance(tokenizer, PreTrainedTokenizerBase):
                 _tokens = list(tokenizer.get_vocab().keys())
                 tokens.extend(_tokens)
                 num_tokens = len(_tokens)
+                pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.unk_token_id
+                if pad_token_id is None:
+                    raise ValueError(
+                        f"Tokenizer '{tokenizer_name}' has no pad_token_id or unk_token_id. "
+                        "Please set one before using with AggregatedTTSTokenizer."
+                    )
+                tokenizer_pad_ids[tokenizer_name] = pad_token_id + tokenizer_offset
             else:
                 raise ValueError("Tokenizers must be either BaseTokenizer or HuggingFace PreTrainedTokenizerBase.")
             tokenizer_offset += num_tokens
+            num_tokens_per_tokenizer[tokenizer_name] = num_tokens
 
         self.tokens = tokens
         self.tokenizer_names = tokenizer_names
-        self.toknizer_offsets = toknizer_offsets
-        self.pad = self.tokenizers[tokenizer_names[0]].pad  # Use the first tokenizer's pad token
+        self.tokenizer_offsets = tokenizer_offsets
+        self.vocab_size = len(tokens)
+        self.num_tokens_per_tokenizer = num_tokens_per_tokenizer
+        self.tokenizer_pad_ids = tokenizer_pad_ids
+        # Define aggregated token's pad value from the first tokenizer's pad value
+        first_tokenizer = self.tokenizers[tokenizer_names[0]]
+        self.first_tokenizer = first_tokenizer
+        if hasattr(first_tokenizer, "pad_token_id") and first_tokenizer.pad_token_id is not None:
+            self.pad = first_tokenizer.pad_token_id
+        elif hasattr(first_tokenizer, "unk_token_id") and first_tokenizer.unk_token_id is not None:
+            self.pad = first_tokenizer.unk_token_id
+        elif hasattr(first_tokenizer, "pad"):  # Defined in BaseTokenizer subclasses
+            self.pad = first_tokenizer.pad
+        else:
+            raise ValueError("AggregatedTTSTokenizer could not find a padding token in the first tokenizer")
 
-    def encode(self, text: str, tokenizer_name: str) -> List[int]:
+    def encode(self, text: str, tokenizer_name: str = None) -> List[int]:
+        """Tokenizer encode from text to tokens"""
         tokenizer = self.tokenizers[tokenizer_name]
         tokens = tokenizer.encode(text)
-        return [self.toknizer_offsets[tokenizer_name] + token for token in tokens]
+        return [self.tokenizer_offsets[tokenizer_name] + token for token in tokens]
 
-    def decode(self, tokens: List[int], tokenizer_name: str) -> str:
+    def decode(self, tokens: List[int], tokenizer_name: str = None) -> str:
+        """Tokernizer decoder from tokens to text"""
         tokenizer = self.tokenizers[tokenizer_name]
-        return tokenizer.decode([token - self.toknizer_offsets[tokenizer_name] for token in tokens])
+        return tokenizer.decode([token - self.tokenizer_offsets[tokenizer_name] for token in tokens])

@@ -131,7 +131,7 @@ class NeuralType:
             return NeuralTypeComparisonResult.INCOMPATIBLE
 
     def compare_and_raise_error(self, parent_type_name, port_name, second_object):
-        """ Method compares definition of one type with another and raises an error if not compatible. """
+        """Method compares definition of one type with another and raises an error if not compatible."""
         if torch.jit.is_scripting():
             # suppress for TorchScript
             return

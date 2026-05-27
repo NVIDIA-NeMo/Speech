@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import Any, Sequence
 
 import numpy as np
-from lhotse.cut import Cut
+from lhotse.cut import Cut, MonoCut
 from lhotse.dataset import SamplingConstraint, TokenConstraint
 from lhotse.dataset.sampling.dynamic_bucketing import FixedBucketBatchSizeConstraint
 from lhotse.utils import ifnone
@@ -266,6 +266,66 @@ class DurationFilter:
             return self.d_min <= tot_dur <= self.d_max
         else:
             return True  # does not apply to text etc.
+
+
+class ValidationStatusFilter:
+    """
+    Callable, returns ``True`` if a cut's validation status is equal to keep and ``False`` otherwise.
+    Acts as a pass-through for objects of other type than Cut.
+    """
+
+    def __init__(self, keep: str = "pass") -> None:
+        self.keep = keep
+
+    def __call__(self, example) -> bool:
+        if (
+            isinstance(example, MonoCut)
+            and example.has_custom("validation_status")
+            and example.validation_status != self.keep
+        ):
+            return False
+        else:
+            return True
+
+
+class CERFilter:
+    """
+    Callable, returns ``True`` if a cut's CER is less than max_cer and ``False`` otherwise.
+    Acts as a pass-through for objects of other type than Cut.
+    """
+
+    def __init__(self, max_cer: float | None) -> None:
+        self.max_cer = ifnone(max_cer, float("inf"))
+
+    def __call__(self, example) -> bool:
+        if (
+            isinstance(example, MonoCut)
+            and len(example.supervisions) > 0
+            and example.supervisions[0].has_custom("cer")
+        ):
+            return example.supervisions[0].cer <= self.max_cer
+        else:
+            return True
+
+
+class ContextSpeakerSimilarityFilter:
+    """
+    Callable, returns ``True`` if a cut's context speaker similarity is greater than min_context_speaker_similarity and ``False`` otherwise.
+    Acts as a pass-through for objects of other type than Cut.
+    """
+
+    def __init__(self, min_context_speaker_similarity: float | None) -> None:
+        self.min_context_speaker_similarity = ifnone(min_context_speaker_similarity, -1)
+
+    def __call__(self, example) -> bool:
+        if (
+            isinstance(example, MonoCut)
+            and len(example.supervisions) > 0
+            and example.supervisions[0].has_custom("context_speaker_similarity")
+        ):
+            return example.supervisions[0].context_speaker_similarity >= self.min_context_speaker_similarity
+        else:
+            return True
 
 
 class TokenCountFilter:

@@ -1,0 +1,11 @@
+<div class="card">
+  {% if not is_summary %}
+    <h3 id="{{ section_id }}">{{ title }}</h3>
+  {% endif %}
+
+  {{ stat_tests_analysis|safe }}
+  {{ metrics_table|safe }}
+  {{ stat_tests_table|safe }}
+  {{ image_block|safe }}
+
+</div>

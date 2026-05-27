@@ -71,7 +71,11 @@ class LhotseSpeechToTextSpkBpeDataset(torch.utils.data.Dataset):
         for idx, cut in enumerate(cuts):
 
             speaker_targets, texts = speaker_to_target(
-                cut, self.num_sample_per_mel_frame, self.num_mel_frame_per_asr_frame, return_text=True
+                a_cut=cut,
+                num_speakers=self.num_speakers,
+                num_sample_per_mel_frame=self.num_sample_per_mel_frame,
+                num_mel_frame_per_asr_frame=self.num_mel_frame_per_asr_frame,
+                return_text=True,
             )
             speaker_targets = speaker_targets.transpose(0, 1)[: len(texts)]
 

@@ -12,20 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os.path
-
-import pickle
-import warnings
 from dataclasses import dataclass
-
-try:
-    from joblib.numpy_pickle_utils import _read_fileobject as _validate_joblib_file
-except ImportError:
-    from joblib.numpy_pickle_utils import _validate_fileobject_and_memmap as _validate_joblib_file
 import torch
-from sklearn.linear_model import LogisticRegression
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
 
 from nemo.collections.asr.parts.utils.asr_confidence_utils import (
     ConfidenceConfig,
@@ -150,84 +138,3 @@ def compute_confidence(hypothesis: Hypothesis, confidence_cfg: ConfidenceConfig)
     conf_value = aggr_func(conf_func(filtered_logprobs, v=vocab_size, t=alpha)).cpu().item()
 
     return conf_value
-
-
-def safe_joblib_load(file_path: str) -> Pipeline:
-    """
-    Safely load a joblib file containing a scikit-learn pipeline.
-
-    Args:
-        file_path: Path to the joblib file
-
-    Returns:
-        Pipeline: A scikit-learn pipeline object
-
-    Raises:
-        ValueError: If the file doesn't exist or contains unauthorized content
-        SecurityError: If the file contains potentially malicious content
-    """
-    if not os.path.exists(file_path):
-        raise ValueError(f"Model file not found: {file_path}")
-
-    # Define whitelist of allowed classes for deserialization
-    ALLOWED_CLASSES = {
-        'sklearn.pipeline.Pipeline',
-        'sklearn.preprocessing._data.StandardScaler',
-        'sklearn.linear_model._logistic.LogisticRegression',
-        'numpy.ndarray',
-        'numpy.dtype',
-        'numpy._pickle',
-    }
-
-    class RestrictedUnpickler(pickle.Unpickler):
-        def find_class(self, module, name):
-            # Only allow specific classes to be loaded
-            class_path = f"{module}.{name}"
-            if class_path in ALLOWED_CLASSES:
-                if module == "numpy._pickle":
-                    import numpy as np
-
-                    return getattr(np, name)
-                return super().find_class(module, name)
-            # Log and raise exception for unauthorized classes
-            raise SecurityError(f"Unauthorized class {class_path} in joblib file")
-
-    try:
-        # Use joblib's load function with our custom unpickler
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            # First try to load with our custom unpickler
-            try:
-                with open(file_path, 'rb') as rawf:
-                    with _validate_joblib_file(rawf, file_path, mmap_mode=None) as stream:
-                        if isinstance(stream, tuple):
-                            stream = stream[0]
-
-                        if isinstance(stream, str):
-                            with open(stream, "rb") as f:
-                                model = RestrictedUnpickler(f).load()
-                        else:
-                            model = RestrictedUnpickler(stream).load()
-
-                # Validate the loaded object is a sklearn Pipeline
-                if not isinstance(model, Pipeline):
-                    raise ValueError("Loaded model must be a scikit-learn Pipeline")
-
-                # Validate pipeline steps
-                for step_name, step_obj in model.named_steps.items():
-                    if not (isinstance(step_obj, (StandardScaler, LogisticRegression))):
-                        raise ValueError(f"Unauthorized pipeline step: {type(step_obj)}")
-
-            except (pickle.UnpicklingError, AttributeError) as e:
-                raise SecurityError(f"Failed to safely load model: {e}")
-
-        return model
-
-    except Exception as e:
-        raise SecurityError(f"Failed to safely load model: {str(e)}")
-
-
-class SecurityError(Exception):
-    """Custom exception for security-related errors."""
-
-    pass

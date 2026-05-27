@@ -173,9 +173,9 @@ class TestASRLocalAttention:
         asr_model = EncDecCTCModel(cfg=model_config)
         asr_model.train()
         _ = asr_model.forward(input_signal=input_signal, input_signal_length=input_length)
-        ## Explicitly pass acclerator as cpu, since deafult val in PTL >= 2.0 is auto and it picks cuda
-        ## which further causes an error in all reduce at: https://github.com/NVIDIA/NeMo/blob/v1.18.1/nemo/collections/asr/modules/conformer_encoder.py#L462
-        ## and in ConvASREncoder, SqueezeformerEncoder where device is CPU
+        # Explicitly pass accelerator as cpu, since default val in PTL >= 2.0 is auto and it picks cuda
+        # which further causes an error in all reduce at: https://github.com/NVIDIA/NeMo/blob/v1.18.1/nemo/collections/asr/modules/conformer_encoder.py#L462
+        # and in ConvASREncoder where device is CPU
         trainer = pl.Trainer(max_epochs=1, accelerator='cpu')
         trainer.fit(
             asr_model,

@@ -13,7 +13,6 @@
 # limitations under the License.
 import json
 import math
-import os
 import re
 from pathlib import Path
 from typing import Any
@@ -27,7 +26,6 @@ from lightning.pytorch.loops import _TrainingEpochLoop
 from omegaconf import OmegaConf
 from omegaconf.errors import OmegaConfBaseException
 
-from nemo.collections.common.parts.nlp_overrides import NLPDDPStrategy
 from nemo.constants import NEMO_ENV_VARNAME_VERSION
 from nemo.core.classes import ModelPT
 from nemo.utils.app_state import AppState
@@ -539,11 +537,11 @@ class TestExpManager:
         assert math.fabs(float(model(torch.tensor([1.0, 1.0], device=model.device))) - 0.03) < 1e-5
 
     @pytest.mark.run_only_on('GPU')
-    @pytest.mark.parametrize('test_dist_ckpt', [False, True])
     @pytest.mark.pleasefixme
-    def test_base_checkpoints_are_not_overwritten(self, tmp_path, test_dist_ckpt):
+    def test_base_checkpoints_are_not_overwritten(self, tmp_path):
         """Simulates already existing checkpoints in the ckpt directory and tests non-nemo ckpt versioning"""
-        strategy = NLPDDPStrategy() if test_dist_ckpt else 'auto'
+        test_dist_ckpt = True
+        strategy = 'auto'
         test_trainer = pl.Trainer(
             accelerator='cpu', enable_checkpointing=False, logger=False, max_epochs=4, strategy=strategy
         )
@@ -597,6 +595,50 @@ class TestExpManager:
         assert not _get_versioned_name(ckpt_nemo, nemo=True).exists(), all_checkpoints
 
     @pytest.mark.unit
+    def test_save_nemo_on_train_end_skips_models_without_save_to(self, tmp_path):
+        class PlainLightningModel(pl.LightningModule):
+            def __init__(self):
+                super().__init__()
+                self.l1 = torch.nn.Linear(in_features=2, out_features=1)
+
+            def train_dataloader(self):
+                return torch.utils.data.DataLoader(OnesDataset(2), batch_size=2, num_workers=0)
+
+            def training_step(self, batch, batch_idx):
+                output = self.l1(batch)
+                loss = torch.nn.functional.l1_loss(output, torch.zeros_like(output))
+                self.log("train_loss", loss)
+                return loss
+
+            def configure_optimizers(self):
+                return DoNothingOptimizer(self.parameters())
+
+        trainer = pl.Trainer(
+            accelerator='cpu',
+            enable_checkpointing=False,
+            logger=False,
+            limit_train_batches=1,
+            max_epochs=1,
+            num_sanity_val_steps=0,
+        )
+        exp_manager(
+            trainer,
+            {
+                "explicit_log_dir": str(tmp_path / "test"),
+                "checkpoint_callback_params": {
+                    "monitor": "train_loss",
+                    "save_last": False,
+                    "save_nemo_on_train_end": True,
+                    "save_top_k": 0,
+                },
+            },
+        )
+
+        trainer.fit(PlainLightningModel())
+
+        assert not list((tmp_path / "test").rglob("*.nemo"))
+
+    @pytest.mark.unit
     def test_last_checkpoint_saved(self, tmp_path):
         max_steps = 64
         tmp_path = tmp_path / "test_1"
@@ -621,7 +663,7 @@ class TestExpManager:
 
         checkpoint_dir = Path(str(tmp_path / "checkpoints"))
         model_path = checkpoint_dir / "val_loss=0.0300-epoch=1-step=64-last.ckpt"
-        last_saved_checkpoint = torch.load(model_path, weights_only=False)
+        last_saved_checkpoint = torch.load(model_path)
         assert max_steps == last_saved_checkpoint['global_step']
 
         # restart training, ensure global step starts correctly

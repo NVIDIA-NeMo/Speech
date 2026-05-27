@@ -14,7 +14,6 @@
 
 import argparse
 import os
-import pickle as pkl
 import sys
 
 import numpy as np
@@ -23,14 +22,13 @@ from scipy.optimize import brentq
 from sklearn.metrics import roc_curve
 from tqdm import tqdm
 
-
 """
-This script faciliates to get EER % based on cosine-smilarity 
+This script faciliates to get EER % based on cosine-smilarity
 for Voxceleb dataset.
 
 Args:
     trial_file str: path to voxceleb trial file
-    emb : path to pickle file of embeddings dictionary (generated from spkr_get_emb.py)
+    emb : path to cached file of embeddings dictionary (generated from spkr_get_emb.py)
     save_kaldi_emb: if required pass this argument to save kaldi embeddings for KALDI PLDA training later
     Note: order of audio files in manifest file should match the embeddings
 """
@@ -40,8 +38,7 @@ def get_acc(trial_file='', emb='', save_kaldi_emb=False):
 
     trial_score = open('trial_score.txt', 'w')
     dirname = os.path.dirname(trial_file)
-    with open(emb, 'rb') as f:
-        emb = pkl.load(f)
+    emb = torch.load(emb)
     trial_embs = []
     keys = []
     all_scores = []

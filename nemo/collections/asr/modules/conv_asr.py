@@ -242,7 +242,7 @@ class ConvASREncoder(NeuralModule, Exportable, AccessMixin):
 
 class ParallelConvASREncoder(NeuralModule, Exportable):
     """
-    Convolutional encoder for ASR models with parallel blocks. CarneliNet can be implemented with this class.
+    Convolutional encoder for ASR models with parallel blocks.
     """
 
     def _prepare_for_export(self):
@@ -878,11 +878,11 @@ class SpeakerDecoder(NeuralModule, Exportable):
     @typecheck()
     def forward(self, encoder_output, length=None):
         pool = self._pooling(encoder_output, length)
-        embs = []
 
         for layer in self.emb_layers:
-            pool, emb = layer(pool), layer[: self.emb_id](pool)
-            embs.append(emb)
+            last_pool = pool
+            pool = layer(pool)
+        emb = layer[: self.emb_id](last_pool)
 
         pool = pool.squeeze(-1)
         if self.angular:
@@ -892,7 +892,7 @@ class SpeakerDecoder(NeuralModule, Exportable):
 
         out = self.final(pool)
 
-        return out, embs[-1].squeeze(-1)
+        return out, emb.squeeze(-1)
 
 
 class ConvASREncoderAdapter(ConvASREncoder, adapter_mixins.AdapterModuleMixin):

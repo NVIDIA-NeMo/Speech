@@ -103,7 +103,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         cuts = cuts.transform_text(_strip_timestamps)
         source_audio, source_audio_lens = collate_audio(cuts.resample(self.source_sample_rate))
         target_audio, target_audio_lens = collate_audio(
-            cuts.resample(self.target_sample_rate), recording_field="target_audio"
+            cuts.resample(self.target_sample_rate, recording_field="target_audio"), recording_field="target_audio"
         )
         target_tokens, target_token_lens = collate_token_channel(
             cuts, self.tokenizer, self.frame_length, roles=self.output_roles

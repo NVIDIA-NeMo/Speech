@@ -97,7 +97,7 @@ def create_manifest(data: List[tuple], output_name: str, manifest_path: str):
 
 
 def process_files(csv_file, data_root, num_workers):
-    """ Read *.csv file description, convert mp3 to wav, process text.
+    """Read *.csv file description, convert mp3 to wav, process text.
         Save results to data_root.
 
     Args:
@@ -165,14 +165,13 @@ def main():
         commands = [
             'wget',
             '--user-agent',
-            '"Mozilla/5.0 (Windows NT 10.0; WOW64) '
-            'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/51.0.2704.103 Safari/537.36"',
+            'Mozilla/5.0 (Windows NT 10.0; WOW64) '
+            'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/51.0.2704.103 Safari/537.36',
             '-O',
             output_archive_filename,
-            f'{COMMON_VOICE_URL}',
+            COMMON_VOICE_URL,
         ]
-        commands = " ".join(commands)
-        subprocess.run(commands, shell=True, stderr=sys.stderr, stdout=sys.stdout, capture_output=False)
+        subprocess.run(commands, shell=False, stderr=sys.stderr, stdout=sys.stdout, capture_output=False)
         filename = f"{args.language}.tar.gz"
         target_file = os.path.join(data_root, os.path.basename(filename))
 

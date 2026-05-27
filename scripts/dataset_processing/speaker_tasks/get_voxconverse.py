@@ -45,7 +45,9 @@ def _generate_manifest(data_root: Path, audio_path: Path, rttm_path: Path, manif
     with open(rttm_list, 'w') as f:
         f.write('\n'.join([str(os.path.join(rttm_path, x)) for x in os.listdir(rttm_path)]))
     create_manifest(
-        audio_list, str(manifest_output_path), rttm_path=rttm_list,
+        audio_list,
+        str(manifest_output_path),
+        rttm_path=rttm_list,
     )
 
 

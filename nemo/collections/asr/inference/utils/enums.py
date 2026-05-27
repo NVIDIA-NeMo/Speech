@@ -36,6 +36,7 @@ class ASRDecodingType(StrEnumMixin, Enum):
 
     CTC = auto()
     RNNT = auto()
+    SALM = auto()
 
 
 class ASROutputGranularity(StrEnumMixin, Enum):
@@ -72,3 +73,12 @@ class FeatureBufferPaddingMode(StrEnumMixin, Enum):
 
     LEFT = auto()
     RIGHT = auto()
+
+
+class MergingStrategy(StrEnumMixin, Enum):
+    """
+    Enumeration of the tokens merging strategies for the buffered inference.
+    """
+
+    LCS = auto()  # Longest Common Subsequence
+    LCSUBSTR = auto()  # Longest Common Substring

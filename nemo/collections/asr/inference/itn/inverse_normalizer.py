@@ -32,8 +32,11 @@ try:
     import pynini
     from nemo_text_processing.inverse_text_normalization.inverse_normalize import InverseNormalizer, Normalizer
     from nemo_text_processing.text_normalization.en.graph_utils import INPUT_CASED, INPUT_LOWER_CASED
-except ImportError as e:
-    raise ImportError("Failed to import pynini or nemo_text_processing.") from e
+
+    HAVE_NEMO_TEXT_PROCESSING = True
+except ImportError:
+    INPUT_CASED, INPUT_LOWER_CASED = "undefined", "undefined"
+    HAVE_NEMO_TEXT_PROCESSING = False
 
 try:
     import diskcache
@@ -76,6 +79,11 @@ class AlignmentPreservingInverseNormalizer:
             max_number_of_permutations_per_split: a maximum number
                 of permutations which can be generated from input sequence of tokens.
         """
+        if not HAVE_NEMO_TEXT_PROCESSING:
+            raise RuntimeError(
+                "In order to use AlignmentPreservingInverseNormalizer, "
+                "please install the nemo_text_processing and pynini packages."
+            )
         self.itn_model = InverseNormalizer(
             lang=lang,
             input_case=input_case,

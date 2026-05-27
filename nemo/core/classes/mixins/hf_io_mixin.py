@@ -21,8 +21,6 @@ from huggingface_hub import get_token as get_hf_token
 from huggingface_hub.hf_api import ModelInfo
 from huggingface_hub.utils import SoftTemporaryDirectory
 
-from nemo.utils import logging
-
 
 class HuggingFaceFileIO(ABC):
     """
@@ -50,11 +48,8 @@ class HuggingFaceFileIO(ABC):
         """
         model_filter = dict(
             author=None,
-            library='nemo',
-            language=None,
+            filter=['nemo'],
             model_name=None,
-            task=None,
-            tags=None,
             limit=None,
             full=None,
             cardData=False,
@@ -83,9 +78,8 @@ class HuggingFaceFileIO(ABC):
             filt = <DomainSubclass>.get_hf_model_filter()
 
             # Make any modifications to the filter as necessary
-            filt['language'] = [...]
-            filt['task'] = ...
-            filt['tags'] = [...]
+            filt['filter'].append('en')  # Add language filter
+            filt['filter'].append('automatic-speech-recognition')  # Add task filter
 
             # Add any metadata to the filter as needed (kwargs to list_models)
             filt['limit'] = 5
@@ -117,12 +111,7 @@ class HuggingFaceFileIO(ABC):
         # Search for all valid models after filtering
         api = HfApi()
 
-        # Setup extra arguments for model filtering
-        all_results = []  # type: List[ModelInfo]
-
-        results = api.list_models(
-            token=hf_token, sort="lastModified", direction=-1, **model_filter
-        )  # type: Iterable[ModelInfo]
+        results = api.list_models(token=hf_token, sort="lastModified", **model_filter)  # type: Iterable[ModelInfo]
 
         return results
 
@@ -225,7 +214,7 @@ class HuggingFaceFileIO(ABC):
             model_card = str(model_card)
 
             # Write model card to temp dir
-            model_card_filepath = saved_path / f"README.md"
+            model_card_filepath = saved_path / "README.md"
             model_card_filepath.write_text(str(model_card), encoding='utf-8', errors='ignore')
 
             api.upload_folder(

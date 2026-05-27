@@ -1,4 +1,6 @@
-.github/ @pablo-garay @ko3n1g @thomasdhc @chtruong814
-docker/Dockerfile.ci @pablo-garay @ko3n1g @thomasdhc @chtruong814
-.pylintrc.* @pablo-garay @ko3n1g @thomasdhc @chtruong814
-.flake8.* @pablo-garay @ko3n1g @thomasdhc @chtruong814
+.github/ @nvidia-nemo/automation
+docker/ @nvidia-nemo/automation
+requirements/ @nvidia-nemo/automation
+pyproject.toml @nvidia-nemo/automation
+setup.py @nvidia-nemo/automation
+uv.lock @nvidia-nemo/automation

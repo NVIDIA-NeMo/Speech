@@ -103,6 +103,7 @@ def get_new_ctm_lines_from_alignments(session_name, speaker_id, wordlist, alignm
         word = wordlist[i]
         if word != "":
             # note that using the current alignments the first word is always empty, so there is no error from indexing the array with i-1
+            align1 = float(round(alignments[i - 1], output_precision))
             align2 = float(
                 round(
                     alignments[i] - alignments[i - 1],

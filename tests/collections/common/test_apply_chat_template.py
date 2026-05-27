@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import pytest
-from nemo.collections.nlp.modules.common.tokenizer_utils import get_tokenizer
+from nemo.collections.common.tokenizers.tokenizer_utils import get_tokenizer
 
 
 def test_chat_template():

@@ -27,14 +27,12 @@ __all__ = ['MultiSimilarityLoss']
 class MultiSimilarityLoss(Loss):
     @property
     def input_types(self):
-        """Returns definitions of module input ports.
-        """
+        """Returns definitions of module input ports."""
         return {"logits": NeuralType(('B', 'D'), LogitsType()), "labels": NeuralType(('B'), LabelsType())}
 
     @property
     def output_types(self):
-        """Returns definitions of module output ports.
-        """
+        """Returns definitions of module output ports."""
         return {"loss": NeuralType(elements_type=LossType())}
 
     def __init__(

@@ -39,7 +39,11 @@ from tqdm import tqdm
 
 parser = argparse.ArgumentParser(description="Fisher Data Processing")
 parser.add_argument(
-    "--audio_root", default=None, type=str, required=True, help="The path to the root of the audio (wav) data folder.",
+    "--audio_root",
+    default=None,
+    type=str,
+    required=True,
+    help="The path to the root of the audio (wav) data folder.",
 )
 parser.add_argument(
     "--transcript_root",
@@ -49,21 +53,34 @@ parser.add_argument(
     help="The path to the root of the transcript data folder.",
 )
 parser.add_argument(
-    "--dest_root", default=None, type=str, required=True, help="Path to the destination root directory.",
+    "--dest_root",
+    default=None,
+    type=str,
+    required=True,
+    help="Path to the destination root directory.",
 )
 
 # Optional arguments
 parser.add_argument(
-    "--min_slice_duration", default=10.0, type=float, help="Minimum audio slice duration after processing.",
+    "--min_slice_duration",
+    default=10.0,
+    type=float,
+    help="Minimum audio slice duration after processing.",
 )
 parser.add_argument(
-    "--keep_low_conf", action="store_true", help="Keep all utterances with low confidence transcripts",
+    "--keep_low_conf",
+    action="store_true",
+    help="Keep all utterances with low confidence transcripts",
 )
 parser.add_argument(
-    "--remove_noises", action="store_true", help="Removes transcripted noises such as [laughter].",
+    "--remove_noises",
+    action="store_true",
+    help="Removes transcripted noises such as [laughter].",
 )
 parser.add_argument(
-    "--noises_to_emoji", action="store_true", help="Converts transcripts for noises to an emoji character.",
+    "--noises_to_emoji",
+    action="store_true",
+    help="Converts transcripts for noises to an emoji character.",
 )
 args = parser.parse_args()
 
@@ -271,7 +288,10 @@ def __process_one_file(
             # Append utterance to buffer
             transcript_buffers[idx] += content
             audio_buffers[idx].append(
-                audio_data[floor(t_start * sample_rate) : ceil(t_end * sample_rate), idx,]
+                audio_data[
+                    floor(t_start * sample_rate) : ceil(t_end * sample_rate),
+                    idx,
+                ]
             )
             buffer_durations[idx] += duration
 
@@ -310,7 +330,14 @@ def __partition_name(file_count):
 
 
 def __process_data(
-    audio_root, transcript_root, dst_root, min_slice_duration, file_count, keep_low_conf, rem_noises, emojify,
+    audio_root,
+    transcript_root,
+    dst_root,
+    min_slice_duration,
+    file_count,
+    keep_low_conf,
+    rem_noises,
+    emojify,
 ):
     """
     Converts Fisher wav files to numpy arrays, segments audio and transcripts.

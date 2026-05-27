@@ -16,6 +16,7 @@
 # that is incompatible with torch.use_deterministic_algorithms(True) on CUDA >= 10.2.
 # Setting CUBLAS_WORKSPACE_CONFIG is not sufficient since the error originates inside the
 # transformers library (modeling_qwen2.py Qwen2RotaryEmbedding.forward).
+# This legacy EasyMagpieTTS checkpoint trained context text without adding CAS embeddings.
 CUBLAS_WORKSPACE_CONFIG=:4096:8 HF_HUB_OFFLINE=1 TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/tts/magpietts_inference.py \
     --deterministic \
     --codecmodel_path /home/TestData/tts/25fps_spectral_codec_with_bandwidth_extension.nemo \
@@ -30,6 +31,7 @@ CUBLAS_WORKSPACE_CONFIG=:4096:8 HF_HUB_OFFLINE=1 TORCH_FORCE_NO_WEIGHTS_ONLY_LOA
     --use_cfg \
     --cfg_scale 2.5 \
     --phoneme_input_type predicted \
+    --disable_cas_for_context_text \
     --run_evaluation \
     --disable_fcd \
     --phoneme_tokenizer_path /home/TestData/tts/2603_EasyMagpieTTS/bpe_ipa_tokenizer_2048_en_de_es_fr_hi_it_vi_zh.json \

@@ -151,14 +151,25 @@ def run_multispeaker_data_analysis(
     queue = []
     for rttm_file in tqdm(rttm_list):
         queue.append(
-            {"rttm_file": rttm_file, "session_dur": session_dur, "precise": precise,}
+            {
+                "rttm_file": rttm_file,
+                "session_dur": session_dur,
+                "precise": precise,
+            }
         )
 
     if num_workers <= 1:
         results = [process_sample(sess_dict) for sess_dict in tqdm(queue)]
     else:
         with multiprocessing.Pool(processes=num_workers) as p:
-            results = list(tqdm(p.imap(process_sample, queue), total=len(queue), desc='Processing', leave=True,))
+            results = list(
+                tqdm(
+                    p.imap(process_sample, queue),
+                    total=len(queue),
+                    desc='Processing',
+                    leave=True,
+                )
+            )
 
     for item in results:
         total_duration += item["session_dur"]

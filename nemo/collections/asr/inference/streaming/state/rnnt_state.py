@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Optional
+
 from nemo.collections.asr.inference.streaming.state.state import StreamingState
 
 
@@ -40,3 +42,16 @@ class RNNTStreamingState(StreamingState):
         """
         self.timestamp_offset = 0
         self.hyp_decoding_state = None
+        # Index into the carried beam prefix tree where the current utterance starts.
+        # Advanced after each EOU commit; used to slice the winner beam's tokens.
+        self.utterance_start_len = 0
+        # Chunk-local K-beam snapshot for the on_eou rerank. Populated by
+        # ``BufferedRNNTPipeline._snapshot_eou_rerank_candidates`` only in beam mode;
+        # stays ``None`` for greedy. Declared here so greedy reads in
+        # ``_maybe_rerank_eou_transcript`` don't raise ``AttributeError``.
+        self._eou_rerank: Optional[list[dict]] = None
+
+    def cleanup_after_eou(self) -> None:
+        """Clear per-utterance buffers (including the beam rerank snapshot)."""
+        super().cleanup_after_eou()
+        self._eou_rerank = None

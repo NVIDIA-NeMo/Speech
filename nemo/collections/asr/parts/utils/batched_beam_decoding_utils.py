@@ -280,16 +280,26 @@ class BatchedBeamHyps:
                 other.last_timestamp_lasts[:batch_size, :beam_size]
             )
 
-    def clone(self) -> "BatchedBeamHyps":
+    def clone(self, batch_size: Optional[int] = None) -> "BatchedBeamHyps":
         """
         Create a deep copy of this BatchedBeamHyps object.
-        Used for streaming/chunked decoding to save state for next chunk.
-        
+
+        Args:
+            batch_size: optional output batch size. If provided, must satisfy
+                ``1 <= batch_size <= self.batch_size``, and the returned object
+                holds a deep copy of the first ``batch_size`` rows. Defaults to
+                ``self.batch_size`` (i.e. a full copy). Used by streaming/chunked
+                decoding to trim graph-captured buffers (sized at the capture-time
+                max) down to the live batch.
+
         Returns:
-            New BatchedBeamHyps with copied state
+            New BatchedBeamHyps with copied state.
         """
+        out_batch = self.batch_size if batch_size is None else batch_size
+        if out_batch <= 0 or out_batch > self.batch_size:
+            raise ValueError(f"batch_size must be in [1, {self.batch_size}], got {out_batch}")
         new_hyps = BatchedBeamHyps(
-            batch_size=self.batch_size,
+            batch_size=out_batch,
             beam_size=self.beam_size,
             init_length=self._max_length,
             blank_index=self.blank_index,
@@ -305,20 +315,6 @@ class BatchedBeamHyps:
         """
         In-place: collapse each row to a single surviving beam, replicated across all
         ``beam_size`` slots, with the other slots' scores set to ``-inf``.
-
-        Used at end-of-utterance in streaming beam decoding to commit one hypothesis
-        as the "definitive" history before starting the next utterance. Replicating
-        the surviving beam across all slots (instead of just leaving one active beam
-        and zero-initialising the rest) preserves the invariant that every per-beam
-        tensor on this object - decoder state, predictor output, transcript hash,
-        last_label, current_lengths_nb, last_timestamp_lasts - has the surviving
-        beam's value at index 0 and identical clones at indices 1..beam_size-1.
-        Scores at indices 1..beam_size-1 are then driven to ``INACTIVE_SCORE`` (-inf)
-        so the beam-search inner loop will not pick them on the next iteration but
-        will repopulate them through normal top-k expansion of the surviving beam,
-        exactly mirroring the SOS-time initialisation in
-        ``modified_alsd_torch`` / ``_before_loop``.
-
         Args:
             beam_indices: ``[batch_size]`` long tensor giving the beam to keep for
                 each row in the batch.

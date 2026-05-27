@@ -917,7 +917,9 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         # IMPORTANT: return a clone, not the live captured-graph buffer. The caller
         # (streaming pipeline) may keep a reference and convert to hypotheses *after*
         # the next chunk's loop has already mutated ``self.state.batched_hyps``.
-        return self.state.batched_hyps.clone(), None, decoding_state
+        # Trim to the live batch: ``self.state.batched_hyps`` is sized at the
+        # capture-time max which can exceed ``current_batch_size`` when streams finish.
+        return self.state.batched_hyps.clone(batch_size=current_batch_size), None, decoding_state
 
     @classmethod
     def _create_loop_body_kernel(cls):
@@ -1595,7 +1597,10 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             decoded_lengths=decoded_lengths,
             fusion_states_list=fusion_states_list,
             time_jumps=None,
-            batched_hyps=self.state.batched_hyps.clone(),
+            # Trim to current batch (graph buffers are sized to the capture-time max,
+            # which can exceed the live batch when streams finish). Keeps this state's
+            # ``batched_hyps.batch_size`` consistent with ``labels.shape[0]``.
+            batched_hyps=self.state.batched_hyps.clone(batch_size=current_batch_size),
         )
 
     def split_batched_state(self, state: BatchedLabelLoopingState) -> list[MALSDStateItem]:
@@ -1812,6 +1817,54 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         batched_hyps.keep_beam_(beam_indices)
         if state.batched_hyps is not None and state.batched_hyps is not batched_hyps:
             state.batched_hyps.keep_beam_(beam_indices)
+
+    def collapse_state_item_to_beam_(self, item: MALSDStateItem) -> None:
+        """
+        In-place per-stream version of :meth:`collapse_batched_state_to_beams_`.
+
+        Collapses the ``beam_size`` parallel hypotheses on a single ``MALSDStateItem`` to
+        the raw-score best beam, replicating it across all ``beam_size`` slots and setting
+        the other slots' scores to ``INACTIVE_SCORE`` so the next chunk's top-k repopulates
+        them through normal expansion of the surviving beam.
+
+        Intended for the "collapse-on-EOU-only" mode of the streaming pipeline: per-chunk
+        beam diversity is preserved across the utterance, and the beams are only collapsed
+        at the natural utterance boundary so the carried state stays consistent with the
+        finalised transcript.
+
+        Args:
+            item: per-stream MALSD state. Mutated in place. If ``item.batched_hyps_item``
+                is ``None`` (e.g. a stream that never went through a beam decode), this is
+                a no-op.
+        """
+        if item.batched_hyps_item is None:
+            return
+        beam_size = self.beam_size
+        if beam_size <= 1:
+            return
+
+        # Pick the surviving beam from the per-stream prefix tree (batch dim == 1).
+        chosen = int(item.batched_hyps_item.scores[0].argmax().item())
+        device = item.label.device
+
+        # Predictor state: replicate the chosen row across all ``beam_size`` rows.
+        per_row = self.decoder.batch_split_states(item.predictor_state)
+        if len(per_row) != beam_size:
+            raise AssertionError(
+                f"Expected predictor state with batch dim {beam_size}, got {len(per_row)} per-row items"
+            )
+        item.predictor_state = self.decoder.batch_unsplit_states([per_row[chosen]] * beam_size)
+
+        # Predictor output / fusion states: gather the chosen row, then broadcast back.
+        chosen_idx = torch.full([beam_size], chosen, dtype=torch.long, device=device)
+        item.predictor_output = item.predictor_output.index_select(0, chosen_idx).contiguous()
+        item.label = item.label[chosen].expand(beam_size).contiguous()
+        if item.fusion_state_list:
+            item.fusion_state_list = [fs.index_select(0, chosen_idx).contiguous() for fs in item.fusion_state_list]
+
+        # Prefix tree: ``keep_beam_`` expects per-row indices, shape [batch_size=1].
+        chosen_row = torch.tensor([chosen], dtype=torch.long, device=item.batched_hyps_item.device)
+        item.batched_hyps_item.keep_beam_(chosen_row)
 
     def __call__(
         self,

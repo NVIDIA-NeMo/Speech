@@ -103,6 +103,12 @@ streaming:
   request_type: feature_buffer
   stateful: true
   padding_mode: right
+  # MALSD beam-search collapse strategy. ``false`` (default): commit the chunk's top
+  # beam at every chunk boundary (classic streaming beam search). ``true``: keep
+  # ``beam_size`` divergent beams in the carried state across all chunks of an
+  # utterance and only collapse them at end-of-utterance. The per-chunk published
+  # transcript uses the argmax beam in both modes; no effect for greedy decoding.
+  collapse_on_eou_only: false
 
 
 # ========================

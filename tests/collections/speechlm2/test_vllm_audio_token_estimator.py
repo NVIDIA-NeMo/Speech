@@ -33,7 +33,12 @@ import torch
 pytest.importorskip("vllm")
 
 from nemo.collections.asr.parts.submodules.subsampling import calc_length
-from nemo.collections.speechlm2.vllm.salm.audio import NeMoSpeechLMProcessingInfo
+from nemo.collections.speechlm2.vllm.salm.audio import (
+    _DUMMY_AUDIO_MAX_DURATION_S,
+    _MIN_CHUNK_SIZE_SAMPLES,
+    _SAMPLING_RATE,
+    NeMoSpeechLMProcessingInfo,
+)
 
 
 def _reference(audio_length_samples: int) -> int:
@@ -127,6 +132,38 @@ def test_estimator_chunked_tail_folded_into_previous_chunk() -> None:
     )
 
 
+def test_estimator_clamps_tiny_chunk_size_to_min_samples() -> None:
+    assert _MIN_CHUNK_SIZE_SAMPLES == 320
+
+    chunk_size_seconds = 1 / _SAMPLING_RATE
+    samples = 2 * _MIN_CHUNK_SIZE_SAMPLES + 100
+    expected = NeMoSpeechLMProcessingInfo._estimate_audio_tokens_single_pass(
+        _MIN_CHUNK_SIZE_SAMPLES
+    ) + NeMoSpeechLMProcessingInfo._estimate_audio_tokens_single_pass(_MIN_CHUNK_SIZE_SAMPLES + 100)
+
+    assert (
+        NeMoSpeechLMProcessingInfo._estimate_audio_tokens(samples, chunk_size_seconds=chunk_size_seconds) == expected
+    )
+
+
 def test_estimator_negative_chunk_size_raises() -> None:
     with pytest.raises(ValueError, match="encoder_chunk_size_seconds"):
         NeMoSpeechLMProcessingInfo._estimate_audio_tokens(16_000, chunk_size_seconds=-1.0)
+
+
+@pytest.mark.parametrize("chunk_size_seconds", [None, 30.0])
+def test_samples_for_audio_tokens_returns_minimum_sample_count(chunk_size_seconds: float | None) -> None:
+    target_tokens = 17
+
+    samples = NeMoSpeechLMProcessingInfo._samples_for_audio_tokens(target_tokens, chunk_size_seconds)
+
+    assert NeMoSpeechLMProcessingInfo._estimate_audio_tokens(samples, chunk_size_seconds) >= target_tokens
+    assert NeMoSpeechLMProcessingInfo._estimate_audio_tokens(samples - 1, chunk_size_seconds) < target_tokens
+
+
+def test_samples_for_audio_tokens_rejects_unreachable_target() -> None:
+    max_samples = int(_DUMMY_AUDIO_MAX_DURATION_S * _SAMPLING_RATE)
+    max_tokens = NeMoSpeechLMProcessingInfo._estimate_audio_tokens(max_samples)
+
+    with pytest.raises(ValueError, match="Cannot produce"):
+        NeMoSpeechLMProcessingInfo._samples_for_audio_tokens(max_tokens + 1)

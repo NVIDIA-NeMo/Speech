@@ -159,7 +159,7 @@ class NeMoSpeechLMForConditionalGeneration(
                 sampling_rate=_SAMPLING_RATE,
             )
 
-        return tuple(emb.to(torch.bfloat16) for emb in audio_embeds)
+        return tuple(emb.to(_PERCEPTION_DTYPE) for emb in audio_embeds)
 
     def embed_multimodal(self, **kwargs) -> MultiModalEmbeddings:
         audio_input = self._parse_audio_input(**kwargs)

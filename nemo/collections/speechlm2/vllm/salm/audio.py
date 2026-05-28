@@ -198,7 +198,7 @@ class NeMoSpeechLMProcessingInfo(BaseProcessingInfo):
         for begin in range(0, audio_length_samples, chunk_size_samples):
             end = min(begin + chunk_size_samples, audio_length_samples)
             spans.append((begin, end))
-        if len(spans) > 1 and spans[-1][1] - spans[-1][0] < _MIN_CHUNK_SIZE_SAMPLES:
+        if spans[-1][1] - spans[-1][0] < _MIN_CHUNK_SIZE_SAMPLES:
             spans[-2] = (spans[-2][0], spans[-1][1])
             spans.pop()
 
@@ -220,6 +220,14 @@ class NeMoSpeechLMProcessingInfo(BaseProcessingInfo):
         lo, hi = 1, min(_SAMPLING_RATE, max_samples)
         while hi < max_samples and cls._estimate_audio_tokens(hi, chunk_size_seconds) < target_tokens:
             hi = min(hi * 2, max_samples)
+
+        hi_tokens = cls._estimate_audio_tokens(hi, chunk_size_seconds)
+        if hi_tokens < target_tokens:
+            raise ValueError(
+                f"Cannot produce {target_tokens} audio tokens within the "
+                f"{_DUMMY_AUDIO_MAX_DURATION_S:g} s dummy-audio cap; "
+                f"maximum is {hi_tokens}."
+            )
 
         while lo < hi:
             mid = (lo + hi) // 2
@@ -343,10 +351,16 @@ class NeMoSpeechLMDummyInputsBuilder(
             chunk_size_seconds = self.info._get_encoder_chunk_size_seconds()
             if seq_len > _DUMMY_AUDIO_TEXT_TOKEN_RESERVE:
                 max_audio_tokens = seq_len - _DUMMY_AUDIO_TEXT_TOKEN_RESERVE
-                max_audio_len = NeMoSpeechLMProcessingInfo._samples_for_audio_tokens(
-                    max_audio_tokens,
+                max_audio_len = int(_DUMMY_AUDIO_MAX_DURATION_S * _SAMPLING_RATE)
+                max_supported_audio_tokens = NeMoSpeechLMProcessingInfo._estimate_audio_tokens(
+                    max_audio_len,
                     chunk_size_seconds,
                 )
+                if max_audio_tokens < max_supported_audio_tokens:
+                    max_audio_len = NeMoSpeechLMProcessingInfo._samples_for_audio_tokens(
+                        max_audio_tokens,
+                        chunk_size_seconds,
+                    )
             else:
                 max_audio_len = int(_DUMMY_AUDIO_MAX_DURATION_S * _SAMPLING_RATE)
             dummy_audio_len = min(int(requested_audio_len), max_audio_len)

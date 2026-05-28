@@ -1680,6 +1680,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         emit_delay_frames: int = 0,
         debug_logs: Optional[list] = None,
         disable_emit_for_debug: bool = False,
+        alignments_out: Optional[list] = None,
         **generation_kwargs,
     ) -> list[str]:
         """Batched dynamic-chunking generation.
@@ -1770,6 +1771,18 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         log_frames = debug_logs is not None
         per_stream_frame_logs: list[list[dict]] = [[] for _ in range(B)] if log_frames else []
         total_frame_idx = [0] * B  # cumulative LISTENING frames per stream
+
+        # --- Per-chunk frame intervals (for word alignment output) ---
+        # When alignments_out is provided, we record (start_frame, end_frame)
+        # in cumulative LISTENING-frame units for each chunk this stream
+        # emits. start_frame = total_frame_idx at the beginning of the
+        # LISTENING segment; end_frame = total_frame_idx at the moment of the
+        # LISTENING → FOOTER transition (= last frame consumed before emit).
+        # Pairing these with all_tokens (split on blank separators) yields
+        # one (text, start_time, end_time) per chunk; words inherit the
+        # chunk's interval. Always tracked; copy is cheap.
+        chunk_intervals: list[list[tuple[int, int]]] = [[] for _ in range(B)]
+        segment_start_frame = [0] * B
 
         uf_ah_ids = self._user_footer_and_asst_header_ids
         uh_ids = self._user_header_ids
@@ -2072,6 +2085,15 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                                     stream_state[b] = DONE
                                     decision_str = "done_audio_end"
 
+                    # Record chunk interval whenever this LISTENING step ends
+                    # in a FOOTER transition (= an emit committed). All emit
+                    # paths above transition to FOOTER; non-emit terminations
+                    # (done_audio_end → DONE) and continuations (keep_listening,
+                    # below_min_keep, emit_pending) leave the state alone.
+                    if stream_state[b] == FOOTER:
+                        chunk_intervals[b].append((segment_start_frame[b], total_frame_idx[b]))
+                        segment_start_frame[b] = total_frame_idx[b]
+
                     # Per-frame debug log (LM head + aux head diagnostics).
                     if log_frames:
                         lm_logits_b = out.logits[b, -1, :]
@@ -2231,6 +2253,51 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
 
         if log_frames:
             debug_logs.extend(per_stream_frame_logs)
+
+        # --- Build per-word alignments per stream (if requested) ---
+        # Each chunk emit contributes a (start_time, end_time) span equal to
+        # the LISTENING-frame interval committed at its LISTENING → FOOTER
+        # transition, converted via frame_length_in_secs. All words in the
+        # chunk's emitted text inherit that span. Empty chunks are skipped.
+        # Format matches the GT manifest's `alignments` field:
+        #   [{"text": "word", "start_time": float_s, "end_time": float_s}, ...]
+        if alignments_out is not None:
+            blank_id = self.blank_token_id
+            frame_len_s = float(self.core_cfg.frame_length_in_secs)
+            hf_tok = self.tokenizer.tokenizer
+            for b in range(B):
+                # Split all_tokens[b] by blank_id into per-chunk token lists.
+                # Preserves empty chunks so positional alignment with
+                # chunk_intervals[b] stays correct.
+                chunks_toks: list[list[int]] = []
+                cur: list[int] = []
+                for tid in all_tokens[b]:
+                    if tid == blank_id:
+                        chunks_toks.append(cur)
+                        cur = []
+                    else:
+                        cur.append(tid)
+                if cur:
+                    chunks_toks.append(cur)
+                # Pair chunks with intervals (truncate to the shorter — emit
+                # transitions count should equal blank-separator count, but
+                # guard against off-by-one in edge cases).
+                per_cut: list[dict] = []
+                n_pairs = min(len(chunks_toks), len(chunk_intervals[b]))
+                for i in range(n_pairs):
+                    start_f, end_f = chunk_intervals[b][i]
+                    toks = chunks_toks[i]
+                    if not toks:
+                        continue  # empty chunk — no words to align
+                    text = hf_tok.decode(toks, skip_special_tokens=True).strip()
+                    if not text:
+                        continue
+                    start_t = round(start_f * frame_len_s, 4)
+                    end_t = round(end_f * frame_len_s, 4)
+                    for word in text.split():
+                        per_cut.append({"text": word, "start_time": start_t, "end_time": end_t})
+                alignments_out.append(per_cut)
+
         return [decode_with_blank(toks, self.blank_token, self.tokenizer) for toks in all_tokens]
 
     @staticmethod
@@ -2369,6 +2436,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         emit_delay_frames: int = 0,
         debug_logs: Optional[list] = None,
         disable_emit_for_debug: bool = False,
+        alignments_out: Optional[list] = None,
         **generation_kwargs,
     ) -> list[str]:
         """
@@ -2428,6 +2496,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                     emit_delay_frames=emit_delay_frames,
                     debug_logs=debug_logs,
                     disable_emit_for_debug=disable_emit_for_debug,
+                    alignments_out=alignments_out,
                     **generation_kwargs,
                 )
             else:

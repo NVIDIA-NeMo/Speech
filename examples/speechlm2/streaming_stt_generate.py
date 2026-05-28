@@ -104,16 +104,25 @@ class StreamingSTTEvalConfig:
     )
     dynamic_min_chunk_size: int = 0  # dynamic chunking: min frames before allowing generation
     dynamic_max_chunk_size: Optional[int] = None  # dynamic chunking: max frames before forcing generation
-    # When set, LM-head boundary decision uses a probability threshold:
-    # emit when p(user_footer_first_id) ≥ threshold (instead of argmax). Useful
-    # to recover boundaries where the LM is moderately confident but loses
-    # argmax to <blank>. Has no effect when use_chunk_classifier is True.
-    lm_head_emit_threshold: Optional[float] = None
+    # Probability threshold for the boundary decision.
+    #   - When use_chunk_classifier_at_inference=True: threshold on the aux
+    #     head's sigmoid output. None → 0.5 default.
+    #   - When False: threshold on p(user_footer_first_id) from the LM head.
+    #     None → fall back to argmax (legacy behavior).
+    emit_threshold: Optional[float] = None
     # When True, dump per-LISTENING-frame diagnostics (LM head top-5, prob of
     # user_footer_first / blank, aux head sigmoid, decision taken) to a
     # sibling JSONL alongside output_manifest. Slows inference; use on
     # small eval sets when debugging boundary-decision behavior.
+    emit_delay_frames: int = 0
+    disable_emit_for_debug: bool = False
     debug_log_audio_frames: bool = False
+    use_chunk_classifier_at_inference: bool = False
+    # When True, save per-word alignments alongside pred_text in the output
+    # manifest. Each predicted word inherits the start_time / end_time of the
+    # audio chunk it was generated from. Format matches the GT manifest:
+    #   [{"text": "...", "start_time": float_s, "end_time": float_s}, ...]
+    save_alignments: bool = True
     generation_config: StreamingSTTGenerationConfig = field(default_factory=StreamingSTTGenerationConfig)
 
 
@@ -161,6 +170,10 @@ def main(cfg: StreamingSTTEvalConfig):
     hyps = []
     input_durations = []
     infer_durations = []
+    # Per-cut alignment lists, ordered to match `cuts` after `sort_by_duration`.
+    # Each entry is a list of {text, start_time, end_time} dicts. None when
+    # save_alignments=False.
+    cut_alignments: Optional[list[list[dict]]] = [] if cfg.save_alignments else None
 
     # Optional per-frame debug log file (one record per LISTENING frame per
     # cut, keyed by cut id). Only opened when debug_log_audio_frames=True.
@@ -178,6 +191,7 @@ def main(cfg: StreamingSTTEvalConfig):
         cfg.generation_config.max_new_tokens = cfg.max_new_tokens
         generation_config = GenerationConfig(**OmegaConf.to_container(cfg.generation_config))
         batch_debug_logs: Optional[list] = [] if cfg.debug_log_audio_frames else None
+        batch_alignments: Optional[list] = [] if cfg.save_alignments else None
         batch_hyps_raw = model.generate(
             audios=batch["audios"].to(model.device, non_blocking=True),
             audio_lens=batch["audio_lens"].to(model.device, non_blocking=True),
@@ -188,8 +202,12 @@ def main(cfg: StreamingSTTEvalConfig):
             use_state_machine_inference=cfg.use_state_machine_inference,
             dynamic_min_chunk_size=cfg.dynamic_min_chunk_size,
             dynamic_max_chunk_size=cfg.dynamic_max_chunk_size,
-            lm_head_emit_threshold=cfg.lm_head_emit_threshold,
+            emit_threshold=cfg.emit_threshold,
             debug_logs=batch_debug_logs,
+            alignments_out=batch_alignments,
+            emit_delay_frames=cfg.emit_delay_frames,
+            disable_emit_for_debug=cfg.disable_emit_for_debug,
+            use_chunk_classifier_at_inference=cfg.use_chunk_classifier_at_inference,
         )
         batch_infer_duration = perf_counter() - ts
 
@@ -217,6 +235,8 @@ def main(cfg: StreamingSTTEvalConfig):
 
         refs.extend(batch_refs)
         hyps.extend(batch_hyps)
+        if cut_alignments is not None and batch_alignments is not None:
+            cut_alignments.extend(batch_alignments)
         input_durations.append(batch_duration)
         infer_durations.append(batch_infer_duration)
 
@@ -237,20 +257,26 @@ def main(cfg: StreamingSTTEvalConfig):
             f.write(f"RTFx: {rtfx:.1f}\n")
             f.write(f"=============================================\n\n")
         with SequentialJsonlWriter(cfg.output_manifest) as writer:
-            for cut, ref, hyp in zip(cuts, refs, hyps):
+            for idx, (cut, ref, hyp) in enumerate(zip(cuts, refs, hyps)):
                 wer, _, nins, ndel, nsub = word_error_rate_detail(hypotheses=[hyp], references=[ref], use_cer=False)
-                writer.write(
-                    {
-                        "id": cut.id,
-                        "duration": cut.duration,
-                        "text": ref,
-                        "pred_text": hyp,
-                        "wer": wer,
-                        "ins": nins,
-                        "del": ndel,
-                        "sub": nsub,
-                    }
-                )
+                record = {
+                    "id": cut.id,
+                    "duration": cut.duration,
+                    "text": ref,
+                    "pred_text": hyp,
+                    "wer": wer,
+                    "ins": nins,
+                    "del": ndel,
+                    "sub": nsub,
+                }
+                # Per-word predicted timestamps (same schema as the GT
+                # manifest's `alignments` field: text / start_time / end_time,
+                # in seconds). Stored as `pred_alignments` to mirror the
+                # `pred_text` / `text` naming convention. Words from the
+                # same chunk share that chunk's audio span.
+                if cut_alignments is not None and idx < len(cut_alignments):
+                    record["pred_alignments"] = cut_alignments[idx]
+                writer.write(record)
 
 
 if __name__ == "__main__":

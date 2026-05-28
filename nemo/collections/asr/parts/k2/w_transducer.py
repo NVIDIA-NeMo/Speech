@@ -289,9 +289,9 @@ class GraphWTransducerLoss(GraphRnntLoss):
         arcs[:-3, 1] = self.relabel_states(arcs[:-3, 1], text_length + 1, num_frames)
 
         if self.last_blank_mode == self.LastBlankMode.ALLOW_IGNORE:
-            arcs[
-                num_forward_arcs_base + (num_frames - 1) : num_forward_arcs_base + (num_frames - 1) * 2, 1
-            ] = num_grid_states
+            arcs[num_forward_arcs_base + (num_frames - 1) : num_forward_arcs_base + (num_frames - 1) * 2, 1] = (
+                num_grid_states
+            )
 
         # sort by start state - required in k2
         # TODO: maybe it is more optimal to avoid sort, construct arcs in ascending order
@@ -305,7 +305,11 @@ class GraphWTransducerLoss(GraphRnntLoss):
         return rnnt_graph
 
     def forward(
-        self, acts: torch.Tensor, labels: torch.Tensor, act_lens: torch.Tensor, label_lens: torch.Tensor,
+        self,
+        acts: torch.Tensor,
+        labels: torch.Tensor,
+        act_lens: torch.Tensor,
+        label_lens: torch.Tensor,
     ):
         """
         Forward method is similar to RNN-T Graph-Transducer forward method,

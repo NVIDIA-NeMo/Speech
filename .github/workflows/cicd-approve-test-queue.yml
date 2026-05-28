@@ -60,7 +60,7 @@ jobs:
               "X-GitHub-Api-Version": "2022-11-28",
           }
 
-          def make_request(endpoint, method="GET", data=None):
+          def make_request(endpoint, method="GET", data=None, allow_no_pending_deployments=False):
               """Make a request to the GitHub API with error handling."""
               url = f"{API_BASE}/{endpoint}"
               try:
@@ -74,9 +74,27 @@ jobs:
                       response_json["next"] = response.links.get("next", {}).get("url")
 
                   return response_json
+              except requests.exceptions.HTTPError as e:
+                  if (
+                      allow_no_pending_deployments
+                      and e.response is not None
+                      and e.response.status_code == 422
+                  ):
+                      try:
+                          response_json = e.response.json()
+                      except ValueError:
+                          response_json = {}
+                      if "No pending deployment requests to approve or reject" in str(response_json.get("errors", "")):
+                          print(f"No pending deployment requests remain for {endpoint}; skipping")
+                          return {"skipped": True, "reason": "no_pending_deployments"}
+
+                  print(f"Error making request to {endpoint}: {str(e)}")
+                  if e.response is not None:
+                      print(f"Response: {e.response.text}")
+                  return None
               except requests.exceptions.RequestException as e:
                   print(f"Error making request to {endpoint}: {str(e)}")
-                  if hasattr(e.response, 'text'):
+                  if e.response is not None:
                       print(f"Response: {e.response.text}")
                   return None
 
@@ -99,14 +117,38 @@ jobs:
               return all_results
 
 
+          def filter_cicd_runs(workflow_runs):
+              """Keep only CICD workflow runs."""
+              return [run for run in workflow_runs if run.get("name") == "CICD NeMo"]
+
+
+          def print_workflow_run_details(label, workflow_runs):
+              """Print the runs that are counted against concurrency."""
+              if not workflow_runs:
+                  print(f"{label}: none")
+                  return
+
+              print(f"{label}:")
+              for run in workflow_runs:
+                  print(
+                      "  "
+                      f"id={run.get('id')} "
+                      f"status={run.get('status')} "
+                      f"branch={run.get('head_branch')} "
+                      f"title={run.get('display_title')}"
+                  )
+
+
           # Get current running and queued workflows
           print("Fetching workflow runs...")
-          queued_workflow_runs = get_workflow_runs("queued")
-          in_progress_workflow_runs = get_workflow_runs("in_progress")
+          queued_workflow_runs = filter_cicd_runs(get_workflow_runs("queued"))
+          in_progress_workflow_runs = filter_cicd_runs(get_workflow_runs("in_progress"))
+          print_workflow_run_details("Queued CICD workflows counted against concurrency", queued_workflow_runs)
+          print_workflow_run_details("Running CICD workflows counted against concurrency", in_progress_workflow_runs)
 
           # Count running and queued workflows
-          queued_workflows = sum(1 for run in queued_workflow_runs if run["name"] == "CICD NeMo")
-          in_progress_workflows = sum(1 for run in in_progress_workflow_runs if run["name"] == "CICD NeMo")
+          queued_workflows = len(queued_workflow_runs)
+          in_progress_workflows = len(in_progress_workflow_runs)
 
           total_workflows = queued_workflows + in_progress_workflows
           print(f"Current queued workflows: {queued_workflows}")
@@ -120,12 +162,11 @@ jobs:
 
           # Get waiting CI workflows for test environment
           print("Fetching deployments...")
-          pending_workflows = get_workflow_runs("waiting")
-          pending_workflows = [run for run in pending_workflows if run["name"] == "CICD NeMo"]
+          pending_workflows = filter_cicd_runs(get_workflow_runs("waiting"))
 
           # Sort deployments by creation date (oldest first)
           print("Sorting workflows...")
-          pending_workflows = sorted(pending_workflows, key=lambda x: x["created_at"])
+          pending_workflows = sorted(pending_workflows, key=lambda x: x.get("created_at", ""))
 
           # Process each deployment
           print("Processing ...")
@@ -134,27 +175,56 @@ jobs:
                   print("Maximum concurrency reached, stopping approvals")
                   break
 
-              workflow_id = workflow["id"]
-              workflow_name = workflow["display_title"]
+              workflow_id = workflow.get("id")
+              workflow_name = workflow.get("display_title") or workflow.get("name") or "<unknown>"
+              if not workflow_id:
+                  print(f"Skipping workflow without a run id: {workflow_name}")
+                  continue
               print(f"Approving workflow {workflow_name} with Run Id: {workflow_id}")
 
               deployment_url = f"actions/runs/{workflow_id}/pending_deployments"
-              deployment = make_request(deployment_url)[0]
-              environment_id = deployment["environment"]["id"]
+              pending_deployments = make_request(deployment_url)
+              if not pending_deployments:
+                  print(f"No pending deployments found for workflow {workflow_name}; skipping")
+                  continue
+
+              environment_ids = []
+              environment_names = []
+              for deployment in pending_deployments:
+                  environment = deployment.get("environment") or {}
+                  environment_id = environment.get("id")
+                  environment_name = environment.get("name") or "<unknown>"
+                  if not environment_id:
+                      print(f"Skipping deployment without an environment id for workflow {workflow_name}")
+                      continue
+
+                  environment_ids.append(environment_id)
+                  environment_names.append(environment_name)
+
+              if not environment_ids:
+                  print(f"No pending deployments with environment ids found for workflow {workflow_name}")
+                  exit(1)
 
               # Approve the deployment
               status_data = {
-                  "environment_ids": [environment_id],
+                  "environment_ids": environment_ids,
                   "state": "approved",
                   "comment": "Automatically approved by queue manager"
               }
-              result = make_request(deployment_url, method="POST", data=status_data)
+              result = make_request(
+                  deployment_url,
+                  method="POST",
+                  data=status_data,
+                  allow_no_pending_deployments=True,
+              )
 
-              if result:
-                  total_workflows += 1
-              else:
-                  print(f"Failed to approve deployment {deployment['id']}")
+              if result is None:
+                  print(f"Failed to approve environments {environment_names} for workflow {workflow_name}")
                   exit(1)
+              if isinstance(result, dict) and result.get("skipped"):
+                  continue
+
+              total_workflows += 1
 
           EOF
   notify:

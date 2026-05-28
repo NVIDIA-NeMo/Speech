@@ -21,9 +21,9 @@ Requires Python 3.10+, PyTorch 2.6+.
 - **Line length: 119** (not default 88) — consistent across black, isort, flake8
 - Black with `skip_string_normalization = true`
 - isort with `profile = black`
-- Check: `python setup.py style --scope <path>`
-- Fix: `python setup.py style --scope <path> --fix`
-- **Incremental reformatting**: most collections are excluded from black (see `extend-exclude` in pyproject.toml). The files are reformatted when somebody makes changes to avoid a single big reformatting PR. Do not reformat files outside your changes.
+- Check: `isort --check <path> && black --check <path>` or `isort --check . && black --check .`
+- Fix: `isort <path> && black <path>` or `isort . && black .`
+- Jupyter Notebooks are excluded from automatic black reformatting (see `extend-exclude`), but can be still reformatted when passed directly. Do not reformat notebooks outside your changes.
 
 ## Testing
 

@@ -117,7 +117,8 @@ def __process_data(data_folder: str, dst_folder: str, manifest_file: str):
         else:
             for chan in range(1, n_chans + 1):
                 chan_file_name = os.path.join(
-                    real_rir_folder, os.path.splitext(os.path.basename(rir_f))[0] + "-" + str(chan) + ".wav",
+                    real_rir_folder,
+                    os.path.splitext(os.path.basename(rir_f))[0] + "-" + str(chan) + ".wav",
                 )
                 _ = subprocess.check_output(f"sox {rir_f} {chan_file_name} remix {chan}", shell=True)
 

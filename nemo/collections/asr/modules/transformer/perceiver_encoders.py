@@ -53,7 +53,8 @@ class PerceiverEncoder(torch.nn.Module):
         if self.hidden_init_method not in self.supported_init_methods:
             raise ValueError(
                 "Unknown hidden_init_method = {hidden_init_method}, supported methods are {supported_init_methods}".format(
-                    hidden_init_method=self.hidden_init_method, supported_init_methods=self.supported_init_methods,
+                    hidden_init_method=self.hidden_init_method,
+                    supported_init_methods=self.supported_init_methods,
                 )
             )
 
@@ -77,7 +78,11 @@ class PerceiverEncoder(torch.nn.Module):
             self.init_cross_att.diagonal = diagonal
         elif self.hidden_init_method == "bridge":
             # initialize latent with attention bridge
-            self.att_bridge = AttentionBridge(hidden_size=hidden_size, k=hidden_steps, bridge_size=inner_size,)
+            self.att_bridge = AttentionBridge(
+                hidden_size=hidden_size,
+                k=hidden_steps,
+                bridge_size=inner_size,
+            )
 
         # cross-attention encoder
         layer = TransformerDecoder(
@@ -150,7 +155,10 @@ class PerceiverEncoder(torch.nn.Module):
             )
         elif self._hidden_init_method == "bridge":
             # initialize latent with attention bridge
-            hidden_states = self.att_bridge(hidden=encoder_states, hidden_mask=encoder_mask,)
+            hidden_states = self.att_bridge(
+                hidden=encoder_states,
+                hidden_mask=encoder_mask,
+            )
 
         # apply block (cross-attention, self-attention) multiple times
         # for block in range(self._hidden_blocks):
@@ -166,7 +174,10 @@ class PerceiverEncoder(torch.nn.Module):
             )
 
             # self-attention over hidden
-            hidden_states = self_att(encoder_states=hidden_states, encoder_mask=hidden_mask,)
+            hidden_states = self_att(
+                encoder_states=hidden_states,
+                encoder_mask=hidden_mask,
+            )
 
             # residual connection
             hidden_states += residual

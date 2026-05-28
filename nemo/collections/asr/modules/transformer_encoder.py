@@ -18,7 +18,7 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
-from torch.nn.attention.flex_attention import create_block_mask, flex_attention
+from torch.nn.attention.flex_attention import and_masks, create_block_mask, flex_attention
 
 from nemo.collections.asr.parts.submodules.multi_head_attention import (
     PositionalEncoding,
@@ -26,6 +26,8 @@ from nemo.collections.asr.parts.submodules.multi_head_attention import (
     RelPositionMultiHeadAttention,
 )
 from nemo.collections.asr.parts.submodules.subsampling import FeatureStacking, StackingSubsampling
+from nemo.core.classes.module import freeze, unfreeze
+from nemo.utils.decorators import experimental
 
 flex_attention_compiled = torch.compile(flex_attention, dynamic=True)
 
@@ -85,6 +87,8 @@ class TransformerEncoderConfig:
     ff_expansion: float = 4.0
     pre_block_norm: bool = True
     subsampling_factor: int = 4
+    # Attention mode: "full" (bidirectional) or "causal" (each token only attends to itself and earlier tokens).
+    # Future: "lookahead", "local", "sliding_window".
     attn_mode: str = "full"
     self_attention_model: str = "rel_pos"
 
@@ -96,6 +100,18 @@ def _make_padding_mod(lengths):
         return kv_idx < lengths[b]
 
     return pad_mask
+
+
+def _make_causal_mod():
+    """Strictly causal — each query only attends to its own and earlier kv positions."""
+
+    def causal(b, h, q_idx, kv_idx):
+        return q_idx >= kv_idx
+
+    return causal
+
+
+_SUPPORTED_ATTN_MODES = ("full", "causal")
 
 
 class FeedForward(nn.Module):
@@ -253,6 +269,7 @@ class TransformerBlock(nn.Module):
         return x
 
 
+@experimental
 class TransformerEncoder(nn.Module):
     """Pre-norm Transformer encoder for ASR.
 
@@ -350,8 +367,10 @@ class TransformerEncoder(nn.Module):
         super().__init__()
         if d_model % n_heads != 0:
             raise ValueError(f"d_model ({d_model}) must be divisible by n_heads ({n_heads}).")
-        if attn_mode != "full":
-            raise ValueError(f"attn_mode='{attn_mode}' is not yet supported. Currently only 'full' is available.")
+        if attn_mode not in _SUPPORTED_ATTN_MODES:
+            raise ValueError(
+                f"attn_mode='{attn_mode}' is not yet supported. Supported modes: {_SUPPORTED_ATTN_MODES}."
+            )
         # ``None`` is accepted as a YAML-friendly alias for ``"no_pos"`` (an unset field in a
         # config simply maps to None) — normalize here so the rest of the module only deals with
         # the string form.
@@ -388,6 +407,7 @@ class TransformerEncoder(nn.Module):
         self.subsampling_factor = subsampling_factor
         self.sync_max_audio_length = sync_max_audio_length
         self.self_attention_model = self_attention_model
+        self.attn_mode = attn_mode
 
         if subsampling == 'feature_stacking':
             self.pre_encode = FeatureStacking(subsampling_factor, feat_in, d_model)
@@ -441,7 +461,6 @@ class TransformerEncoder(nn.Module):
             self.out_proj = None
 
         self.set_max_audio_length(self.pos_emb_max_len)
-        self.use_pad_mask = True
 
     def forward(self, audio_signal, length, bypass_pre_encode=False):
         """
@@ -502,15 +521,14 @@ class TransformerEncoder(nn.Module):
         x = self.embed_norm(x)
 
         B, T, _ = x.shape
-        if self.use_pad_mask:
-            block_mask = create_block_mask(_make_padding_mod(length), B=B, H=1, Q_LEN=T, KV_LEN=T, device=x.device)
+        if self.attn_mode == "causal":
+            mask_mod = and_masks(_make_causal_mod(), _make_padding_mod(length))
         else:
-            block_mask = None
-
+            mask_mod = _make_padding_mod(length)
+        block_mask = create_block_mask(mask_mod, B=B, H=1, Q_LEN=T, KV_LEN=T, device=x.device)
         # For ``abs_pos`` the positional information is already baked into ``x``, so we don't
         # need to thread ``pos_emb`` through each layer; only ``rel_pos`` consumes it.
         layer_pos_emb = pos_emb if self.self_attention_model == "rel_pos" else None
-
         for layer in self.layers:
             x = layer(x, block_mask=block_mask, pos_emb=layer_pos_emb)
 
@@ -546,8 +564,8 @@ class TransformerEncoder(nn.Module):
         dtype = next(self.parameters()).dtype
         self.pos_enc.extend_pe(max_audio_length, device, dtype)
 
-    def enable_pad_mask(self, on=True):
-        """Enables or disables pad masking and returns the previous state."""
-        mask = self.use_pad_mask
-        self.use_pad_mask = on
-        return mask
+    def freeze(self) -> None:
+        freeze(self)
+
+    def unfreeze(self, partial: bool = False) -> None:
+        unfreeze(self, partial=partial)

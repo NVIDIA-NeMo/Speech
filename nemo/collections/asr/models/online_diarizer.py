@@ -445,7 +445,9 @@ class OnlineClusteringDiarizer(ClusteringDiarizer):
 
     @timeit
     def _perform_online_clustering(
-        self, uniq_embs_and_timestamps: Dict[str, torch.Tensor], cuda=False,
+        self,
+        uniq_embs_and_timestamps: Dict[str, torch.Tensor],
+        cuda=False,
     ) -> torch.Tensor:
         """
         Launch online clustering for `uniq_embs_and_timestamps` input variable.
@@ -476,7 +478,10 @@ class OnlineClusteringDiarizer(ClusteringDiarizer):
 
         base_segment_indexes = torch.tensor(self.segment_indexes[self.base_scale_index]).to(curr_emb.device)
         merged_clus_labels = self.online_clus.forward_infer(
-            curr_emb=curr_emb, base_segment_indexes=base_segment_indexes, frame_index=self.frame_index, cuda=cuda,
+            curr_emb=curr_emb,
+            base_segment_indexes=base_segment_indexes,
+            frame_index=self.frame_index,
+            cuda=cuda,
         )
         # Update history data
         for scale_idx, (window, shift) in self.multiscale_args_dict['scale_dict'].items():
@@ -572,7 +577,10 @@ class OnlineClusteringDiarizer(ClusteringDiarizer):
         )
 
         # Step 3 - Clustering: Perform an online version of clustering algorithm
-        cluster_label_hyp = self._perform_online_clustering(embs_and_timestamps[self.uniq_id], cuda=self.cuda,)
+        cluster_label_hyp = self._perform_online_clustering(
+            embs_and_timestamps[self.uniq_id],
+            cuda=self.cuda,
+        )
 
         # Step 4: Generate RTTM style diarization labels from segment ranges and cluster labels
         diar_hyp, _ = generate_cluster_labels(self.memory_segment_ranges[self.base_scale_index], cluster_label_hyp)

@@ -57,7 +57,8 @@ class PoolingEncoder(torch.nn.Module):
         if self.hidden_init_method not in self.supported_init_methods:
             raise ValueError(
                 "Unknown hidden_init_method = {hidden_init_method}, supported methods are {supported_init_methods}".format(
-                    hidden_init_method=self.hidden_init_method, supported_init_methods=self.supported_init_methods,
+                    hidden_init_method=self.hidden_init_method,
+                    supported_init_methods=self.supported_init_methods,
                 )
             )
 

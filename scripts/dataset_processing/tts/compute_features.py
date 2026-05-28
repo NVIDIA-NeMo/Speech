@@ -38,19 +38,32 @@ from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
 
 def get_args():
     parser = argparse.ArgumentParser(
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter, description="Compute TTS features.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description="Compute TTS features.",
     )
     parser.add_argument(
-        "--feature_config_path", required=True, type=Path, help="Path to feature config file.",
+        "--feature_config_path",
+        required=True,
+        type=Path,
+        help="Path to feature config file.",
     )
     parser.add_argument(
-        "--manifest_path", required=True, type=Path, help="Path to training manifest.",
+        "--manifest_path",
+        required=True,
+        type=Path,
+        help="Path to training manifest.",
     )
     parser.add_argument(
-        "--audio_dir", required=True, type=Path, help="Path to base directory with audio data.",
+        "--audio_dir",
+        required=True,
+        type=Path,
+        help="Path to base directory with audio data.",
     )
     parser.add_argument(
-        "--feature_dir", required=True, type=Path, help="Path to directory where feature data will be stored.",
+        "--feature_dir",
+        required=True,
+        type=Path,
+        help="Path to directory where feature data will be stored.",
     )
     parser.add_argument(
         "--dedupe_files",
@@ -58,7 +71,9 @@ def get_args():
         help="If given, will only process the first manifest entry found for each audio file.",
     )
     parser.add_argument(
-        "--overwrite", action=argparse.BooleanOptionalAction, help="Whether to overwrite existing feature files.",
+        "--overwrite",
+        action=argparse.BooleanOptionalAction,
+        help="Whether to overwrite existing feature files.",
     )
     parser.add_argument(
         "--num_workers", default=1, type=int, help="Number of parallel threads to use. If -1 all CPUs are used."

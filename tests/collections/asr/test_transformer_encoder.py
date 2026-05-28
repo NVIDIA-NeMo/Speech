@@ -218,6 +218,43 @@ class TestBypassPreEncode:
             fwd_outputs = model(audio_signal=feat_input, length=input_length, bypass_pre_encode=False)[0]
         assert fwd_outputs.shape == (batch_size, feat_out, sub_sampled_n_frames)
 
+    @pytest.mark.unit
+    def test_bypass_pre_encode_matches_manual_pre_encode(self):
+        """``bypass_pre_encode=True`` must skip *only* the pre-encoder.
+
+        Running the pre-encoder by hand and feeding its output back in with
+        ``bypass_pre_encode=True`` should reproduce the full forward
+        (``bypass_pre_encode=False``) exactly, because the positional-encoding, norm and
+        Transformer-block stack downstream of the pre-encoder is identical on both paths.
+        """
+        B, feat_in, T, d_model, feat_out = 2, 32, 64, 32, 8
+        model = TransformerEncoder(
+            feat_in=feat_in,
+            d_model=d_model,
+            n_heads=4,
+            n_layers=2,
+            feat_out=feat_out,
+            subsampling_factor=4,
+            drop_rate=0.0,
+            dropout_pre_encoder=0.0,
+            dropout_emb=0.0,
+        )
+        model.eval()
+
+        mel = torch.randn(B, feat_in, T)
+        lengths = torch.tensor([T, T - 8], dtype=torch.int64)
+
+        with torch.no_grad():
+            out_full, len_full = model(audio_signal=mel, length=lengths, bypass_pre_encode=False)
+
+            # Reproduce just the pre-encoder, then bypass it on the next call.
+            pre_x, pre_len = model.pre_encode(mel, lengths)
+            out_bypass, len_bypass = model(audio_signal=pre_x, length=pre_len, bypass_pre_encode=True)
+
+        assert out_full.shape == out_bypass.shape == (B, feat_out, pre_x.shape[1])
+        assert torch.equal(len_full, len_bypass)
+        assert torch.allclose(out_full, out_bypass, atol=1e-5)
+
 
 class TestTransformerEncoder:
     @pytest.mark.unit
@@ -244,7 +281,59 @@ class TestTransformerEncoder:
     @pytest.mark.unit
     def test_invalid_attn_mode(self):
         with pytest.raises(ValueError, match="not yet supported"):
-            TransformerEncoder(feat_in=128, d_model=64, n_heads=4, n_layers=2, attn_mode="causal")
+            TransformerEncoder(feat_in=80, d_model=64, n_heads=4, n_layers=2, attn_mode="sliding_window")
+
+    @pytest.mark.unit
+    def test_causal_forward_cpu(self):
+        model = TransformerEncoder(feat_in=80, d_model=64, n_heads=4, n_layers=2, drop_rate=0.0, attn_mode="causal")
+        model.eval()
+
+        x = torch.randn(2, 80, 400)
+        lengths = torch.tensor([400, 300])
+
+        with torch.no_grad():
+            out, out_lengths = model(x, lengths)
+
+        assert out.shape == (2, 64, 100)
+        assert out_lengths.tolist() == [100, 75]
+        assert not torch.isnan(out).any()
+
+    @pytest.mark.unit
+    def test_causal_future_does_not_affect_past(self):
+        """Output at position t must be invariant to changes at positions > t."""
+        model = TransformerEncoder(feat_in=80, d_model=64, n_heads=4, n_layers=2, drop_rate=0.0, attn_mode="causal")
+        model.eval()
+
+        B, C, T = 1, 80, 400
+        x_a = torch.randn(B, C, T)
+        x_b = x_a.clone()
+        # Perturb only the second half of frames.
+        x_b[:, :, T // 2 :] = torch.randn(B, C, T - T // 2)
+        lengths = torch.tensor([T])
+
+        with torch.no_grad():
+            out_a, _ = model(x_a, lengths)
+            out_b, _ = model(x_b, lengths)
+
+        # Output frames covering only past + present should be identical.
+        # First half of *output* frames corresponds to first half of input frames after subsampling.
+        safe_t = (T // 2) // model.pre_encode.subsampling_factor
+        assert torch.allclose(out_a[:, :, :safe_t], out_b[:, :, :safe_t], atol=1e-5)
+
+    @pytest.mark.unit
+    def test_freeze_unfreeze_partial_restores_prior_state(self):
+        model = TransformerEncoder(feat_in=80, d_model=64, n_heads=4, n_layers=2)
+        for p in model.final_norm.parameters():
+            p.requires_grad = False
+        prior = {n: p.requires_grad for n, p in model.named_parameters()}
+
+        model.freeze()
+        assert all(not p.requires_grad for p in model.parameters())
+        assert not model.training
+
+        model.unfreeze(partial=True)
+        assert {n: p.requires_grad for n, p in model.named_parameters()} == prior
+        assert model.training
 
     @pytest.mark.unit
     def test_forward_cpu(self):

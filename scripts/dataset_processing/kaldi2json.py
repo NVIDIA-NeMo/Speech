@@ -24,10 +24,16 @@ from nemo.utils import logging
 def main():
     parser = argparse.ArgumentParser(description="Convert kaldi data folder to manifest.json")
     parser.add_argument(
-        "--data_dir", required=True, type=str, help="data in kaldi format",
+        "--data_dir",
+        required=True,
+        type=str,
+        help="data in kaldi format",
     )
     parser.add_argument(
-        "--manifest", required=True, type=str, help="path to store the manifest file",
+        "--manifest",
+        required=True,
+        type=str,
+        help="path to store the manifest file",
     )
     parser.add_argument(
         "--with_aux_data",
@@ -74,12 +80,20 @@ def main():
 
     # read text
     text = pd.read_csv(
-        required_data["text"], sep="^([^ ]+) ", engine="python", header=None, usecols=[1, 2], names=["label", "text"],
+        required_data["text"],
+        sep="^([^ ]+) ",
+        engine="python",
+        header=None,
+        usecols=[1, 2],
+        names=["label", "text"],
     )
 
     # read segments
     segments = pd.read_csv(
-        required_data["duration"], sep=" ", header=None, names=["label", "wav_label", "offset", "end"],
+        required_data["duration"],
+        sep=" ",
+        header=None,
+        names=["label", "wav_label", "offset", "end"],
     )
     # add offset if needed
     if len(segments.offset) > len(segments.offset[segments.offset == 0.0]):
@@ -89,7 +103,10 @@ def main():
 
     # merge data
     wav_segments_text = pd.merge(
-        pd.merge(segments, wavscp, how="inner", on="wav_label"), text, how="inner", on="label",
+        pd.merge(segments, wavscp, how="inner", on="wav_label"),
+        text,
+        how="inner",
+        on="label",
     )
 
     if args.with_aux_data:

@@ -21,7 +21,7 @@ from nemo.utils import logging, logging_mode
 
 
 class FastPitchAdapterModelMixin(AdapterModelPTMixin):
-    """ FastPitch Adapter Mixin that can augment any Encoder module with Adapter module support.
+    """FastPitch Adapter Mixin that can augment any Encoder module with Adapter module support.
     This mixin class should be used only with a top level ModelPT subclass, that includes an `encoder` submodule.
     This mixin class adds several utility methods which are propagated to the `encoder`.
     An Adapter module is any Pytorch nn.Module that possess a few properties :

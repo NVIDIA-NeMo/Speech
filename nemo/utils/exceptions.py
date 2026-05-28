@@ -14,7 +14,7 @@
 
 
 class NeMoBaseException(Exception):
-    """ NeMo Base Exception. All exceptions created in NeMo should inherit from this class"""
+    """NeMo Base Exception. All exceptions created in NeMo should inherit from this class"""
 
 
 class LightningNotInstalledException(NeMoBaseException):

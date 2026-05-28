@@ -28,7 +28,9 @@ def get_feature_seq_speakerlabel_dataset(
         An instance of FeatureToSeqSpeakerLabelDataset.
     """
     dataset = feature_to_label.FeatureToSeqSpeakerLabelDataset(
-        manifest_filepath=config['manifest_filepath'], labels=config['labels'], feature_loader=feature_loader,
+        manifest_filepath=config['manifest_filepath'],
+        labels=config['labels'],
+        feature_loader=feature_loader,
     )
     return dataset
 

@@ -588,7 +588,7 @@ class ASRModuleMixin(ASRAdapterModelMixin):
         if update_config:
             with open_dict(self.cfg):
                 self.cfg.encoder.subsampling_conv_chunking_factor = subsampling_conv_chunking_factor
-    
+
     def _apply_prompt_to_encoded(self, encoded: Tensor) -> Tensor:
         """Hook for prompt-conditioned subclasses to inject a language prompt
         into the encoder output. Default: no-op. See ``PromptStreamingMixin``
@@ -906,6 +906,7 @@ class DiarizationMixin(VerificationMixin):
         """
         pass
 
+
 class PromptStreamingMixin:
     """Adds language-ID prompt conditioning to a cache-aware streaming ASR model.
 
@@ -994,4 +995,3 @@ class PromptStreamingMixin:
         out_dtype = encoded.dtype
         encoded = self.prompt_kernel(torch.cat([encoded, prompt], dim=-1)).to(out_dtype)
         return encoded.transpose(1, 2)  # (B, T, D) -> (B, D, T)
-

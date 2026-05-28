@@ -260,16 +260,12 @@ class TestEncDecHybridRNNTCTCBPEModelWithPrompt:
             processed, processed_len = hybrid_asr_model_with_prompt.preprocessor(
                 input_signal=input_signal, length=length
             )
-            encoded_sample, _ = hybrid_asr_model_with_prompt.encoder(
-                audio_signal=processed, length=processed_len
-            )
+            encoded_sample, _ = hybrid_asr_model_with_prompt.encoder(audio_signal=processed, length=processed_len)
             time_steps = encoded_sample.shape[2]  # [B, D, T]
 
         num_prompts = hybrid_asr_model_with_prompt.num_prompts
         prompt_one_hot = torch.zeros(4, time_steps, num_prompts)
-        prompt_one_hot.scatter_(
-            2, prompt_indices.view(4, 1, 1).expand(-1, time_steps, -1), 1.0
-        )
+        prompt_one_hot.scatter_(2, prompt_indices.view(4, 1, 1).expand(-1, time_steps, -1), 1.0)
 
         with torch.no_grad():
             out_from_prompt, _ = hybrid_asr_model_with_prompt.forward(

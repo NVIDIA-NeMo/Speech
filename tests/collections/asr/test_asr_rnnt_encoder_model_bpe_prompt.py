@@ -23,7 +23,6 @@ from omegaconf import DictConfig
 from nemo.collections.asr.models.rnnt_bpe_models_prompt import EncDecRNNTBPEModelWithPrompt
 from nemo.collections.asr.parts.submodules import rnnt_beam_decoding as beam_decode
 from nemo.collections.asr.parts.submodules import rnnt_greedy_decoding as greedy_decode
-from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.common import tokenizers
 from nemo.core.utils import numba_utils
 from nemo.core.utils.numba_utils import __NUMBA_MINIMUM_VERSION__
@@ -266,9 +265,7 @@ class TestEncDecRNNTBPEModelWithPrompt:
             shutil.copy2(old_tokenizer_dir, new_tokenizer_dir)
 
             nw1 = rnnt_asr_model_with_prompt.num_weights
-            rnnt_asr_model_with_prompt.change_vocabulary(
-                new_tokenizer_dir=new_tokenizer_dir, new_tokenizer_type='wpe'
-            )
+            rnnt_asr_model_with_prompt.change_vocabulary(new_tokenizer_dir=new_tokenizer_dir, new_tokenizer_type='wpe')
             # No change
             assert nw1 == rnnt_asr_model_with_prompt.num_weights
 
@@ -277,9 +274,7 @@ class TestEncDecRNNTBPEModelWithPrompt:
                 f.write('$\n')
                 f.write('@\n')
 
-            rnnt_asr_model_with_prompt.change_vocabulary(
-                new_tokenizer_dir=new_tokenizer_dir, new_tokenizer_type='wpe'
-            )
+            rnnt_asr_model_with_prompt.change_vocabulary(new_tokenizer_dir=new_tokenizer_dir, new_tokenizer_type='wpe')
 
             # rnn embedding + joint + bias (no CTC decoder in RNNT-only model)
             pred_embedding = 3 * (rnnt_asr_model_with_prompt.decoder.pred_hidden)

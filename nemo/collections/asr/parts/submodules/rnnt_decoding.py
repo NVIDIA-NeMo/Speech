@@ -333,7 +333,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
             self.cfg.get('strip_lang_tags', False),
             lang_tag_pattern=self.cfg.get('lang_tag_pattern', None),
         )
-        
+
         # initialize confidence-related fields
         self._init_confidence(self.cfg.get('confidence_cfg', None))
 
@@ -686,7 +686,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
 
         # Update the joint fused batch size or disable it entirely if needed.
         self.update_joint_fused_batch_size()
-    
+
     def set_strip_lang_tags(self, strip_lang_tags: bool, lang_tag_pattern: Optional[str] = None):
         """
         Toggle language-tag stripping on decoded text.

@@ -15,6 +15,8 @@ Default posture:
 - Prefer Lhotse for train and validation dataloaders.
 - Use `trainer.max_steps`, not `trainer.max_epochs`.
 - Use `val_wer` as the checkpoint monitor for validation.
+- By default, evaluate WER without capitalization and punctuation effects. Change that only when the user explicitly
+  asks for raw/cased/punctuated scoring.
 - Report final quality from standalone evaluation, not only in-training validation logs.
 
 ## Staged Workflow
@@ -26,7 +28,8 @@ Load only the reference file needed for the current stage:
    `references/data-lhotse.md`.
 3. Architecture detection, tokenizer changes, and AED/Canary multitask metrics: read
    `references/architecture-tokenizer-metrics.md`.
-4. Training, checkpoint averaging, and evaluation: read `references/training-evaluation.md`.
+4. Training, checkpoint averaging, and evaluation: read `references/training-evaluation.md` and, when reporting WER,
+   `references/evaluation-style-contract.md`.
 5. Post-run refinement, error analysis, curriculum, and general-vs-domain evaluation: read
    `references/refinement-iteration.md`.
 
@@ -67,6 +70,8 @@ Always check the current repo docs before giving version-sensitive claims:
 - Do not train a tokenizer on validation or test transcripts.
 - Do not ignore silent Lhotse filtering from `min_duration`, `max_duration`, `min_tps`, and `max_tps`.
 - Do not use `amp=true` for inference/evaluation; use `amp=false compute_dtype=bfloat16`.
+- Unless the user asks otherwise, report the default WER with capitalization and punctuation removed, and record any raw
+  WER separately when it helps diagnose transcript-style mismatch.
 - For AED/Canary, configure `multitask_metrics_cfg` so ASR and translation/task-specific samples are evaluated with
   the right constrained metrics.
 - If checkpoint averaging is used, evaluate the averaged checkpoint and keep it only if it beats the best individual

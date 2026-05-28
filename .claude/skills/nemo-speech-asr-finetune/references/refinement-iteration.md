@@ -32,7 +32,8 @@ Example tracking table:
 1. Transcribe the held-out domain set with the current best checkpoint.
 2. Compute per-utterance WER/CER and sort from worst to best.
 3. Before treating raw WER as acoustic/model quality, rescore with the chosen transcript normalization and compare
-   raw vs normalized WER. A large gap usually means the Stage 2 transcript-style preflight was incomplete.
+   raw vs the default capitalization/punctuation-normalized WER. This is mandatory. A large gap usually means the
+   Stage 2 transcript-style preflight or the evaluation-style contract is incomplete.
 4. Categorize errors by actionable patterns: numbers, named entities, abbreviations, rare domain words, commands,
    readbacks, punctuation/capitalization, language/task tags, accents, noise, long utterances, and clipping/VAD issues.
 5. Count errors by category and inspect representative audio. Separate model errors from label/audio defects.
@@ -54,6 +55,32 @@ Prefer the least invasive intervention that matches the error pattern:
 - Tokenization issue: revisit tokenizer only when transcript language/domain coverage cannot be represented well by the
   existing tokenizer.
 
+## Source-Weighted Rebalancing
+
+Use source-weighted rebalancing when standalone evaluation shows that a few train sources, domains, or acoustic styles
+are underfitting and those sources are important to the user's goal. Do not use it to chase a public test set without a
+new blind holdout.
+
+Recipe:
+
+1. Ensure every sample has a stable source/domain tag, either in manifest metadata such as `source_dataset` or in
+   Lhotse `input_cfg.tags`.
+2. Run standalone evaluation and compute source-wise WER using the default evaluation-style contract.
+3. Decide whether weights should reflect user priority, source-wise validation errors, dataset hours, or a blend of
+   those signals.
+4. Apply a floor so low-error sources are not removed entirely, and cap extreme weight jumps unless the user explicitly
+   wants domain-only adaptation.
+5. Write a new Lhotse `input_cfg` with normalized weights. Prefer changing weights over duplicating manifests.
+6. Re-run duration-bin estimation and OOMptimizer, or at least verify the previous profile is still valid when the
+   source union is unchanged.
+7. Fine-tune from the current best checkpoint with a lower LR refinement phase, commonly `1e-5` or `5e-6`.
+8. Compare the previous best, the rebalanced final checkpoint, the best individual checkpoint, and any averaged model
+   with the same standalone scoring contract.
+
+When using `estimate_data_weights.py`, validate the YAML shape expected by the current script before running it. If the
+new weights were influenced by validation/test performance, record that in the ledger. For final claims, evaluate on a
+holdout that did not influence the reweighting decision.
+
 ## Targeted Synthetic Data
 
 Synthetic data is most useful when it fills a measured gap. Generate small, targeted batches for the worst categories
@@ -70,14 +97,18 @@ Recommendations:
 
 ## Run Ledger
 
+Use `assets/experiment-ledger-template.md` as the starting template for experiment notes.
+
 Maintain a compact run ledger with:
 
 - Data sources and blend weights.
 - Transcript style policy, any manifest transform, and whether it differs from the original checkpoint output style.
 - LR, `max_steps`, warmup, precision, and batch profile.
 - Duration/token filters and number of examples filtered.
-- Best checkpoint and standalone WER/CER.
+- Final `.nemo`, best individual checkpoint-derived artifact, averaged artifact, and the keep/drop decision.
+- Raw WER/CER and default capitalization/punctuation-normalized WER/CER when both are informative.
 - Target-set WER and any goal-relevant guardrail WER.
+- GPU utilization evidence from training steps, not validation/checkpoint/export windows.
 - Decision for the next run.
 
 ## Late-Stage Curriculum Pattern

@@ -74,6 +74,9 @@ model or precision. When only a tiny outlier fraction is affected, set `max_dura
 number and hours filtered, and rerun OOMptimizer with the capped final bucket. Do not silently cap substantial or
 domain-critical long-form data.
 
+When duration-tail capping is used, include the chosen cap as the final duration bucket passed to OOMptimizer. This
+keeps the last bucket aligned with the longest sample that training will actually admit.
+
 Run the first OOMptimizer pass with its default CLI settings. Do not lower `--memory-fraction`, disable DDP simulation,
 change dtype, or adjust the search threshold unless there is a concrete reason. The default profile is intended to be
 aggressive enough for high GPU utilization while reserving non-training-loop memory. If the resulting real training run
@@ -83,6 +86,17 @@ Validate the generated profile with a short multi-GPU pilot and sample GPU utili
 startup, checkpointing, or validation. OOMptimizer sizes worst-case synthetic batches at the bucket upper bounds; real
 training memory can be noticeably lower when the sampler draws shorter cuts or smaller buckets. Focus on peak training
 memory and sustained SM utilization over enough steps to exercise several buckets.
+
+Sample utilization while training is inside the train loop:
+
+```bash
+nvidia-smi --query-gpu=index,utilization.gpu,utilization.memory,memory.used,memory.total \
+  --format=csv,noheader,nounits
+```
+
+Do not judge utilization from checkpoint save, validation, export, dataloader prefill, or process shutdown windows.
+Record peak memory and sustained SM utilization in the run ledger. If memory remains much lower than expected, first
+confirm the run is using the OOMptimizer `bucket_batch_size` profile and that conflicting batch settings are null.
 
 For non-tarred data, Lhotse may tokenize samples during sampling when `pretokenize=true`. This enables token-per-second
 filtering and 2D token bucketing, but tokenization happens in the main training process and can slow training with large
@@ -160,6 +174,8 @@ python scripts/speech_recognition/oomptimizer.py \
   --buckets '[2.0,3.1,5.6,8.4,12.0,18.0,30.0]'
 ```
 
+If `max_duration` was capped to 30.0, make sure 30.0 is present as the final bucket.
+
 2D AED/Canary bins and OOMptimizer:
 
 ```bash
@@ -196,6 +212,11 @@ Nested `bucket_duration_bins` automatically activate 2D bucketing.
 ## Data Blends
 
 Use Lhotse `input_cfg` for mixed datasets rather than concatenating manifests blindly.
+
+Before running helper scripts such as duration-bin estimation, OOMptimizer, or data-weight estimation, validate the
+input YAML shape they expect in the current checkout. Some scripts consume a list-form input config directly, while
+training configs may wrap the same list under `input_cfg:`. Run a tiny dry run or inspect the script help before a long
+OOMptimizer pass.
 
 For a large generic dataset plus a smaller domain dataset, either manually upweight the domain data or estimate weights
 then apply temperature reweighting. Lower temperature oversamples smaller datasets; `1.0` is neutral.

@@ -49,6 +49,31 @@ hangs immediately after NCCL registration or one rank restores the model on the 
 use `torchrun --nproc_per_node=<num_gpus>` with the normal script entry point. Keep `trainer.devices=<num_gpus>` and
 set `trainer.use_distributed_sampler=false` for Lhotse.
 
+Container `torchrun` template:
+
+```bash
+docker run --rm --gpus all --ipc=host \
+  --ulimit memlock=-1 --ulimit stack=67108864 \
+  -e PYTHONPATH=/workspace/NeMo \
+  -v /path/to/NeMo:/workspace/NeMo \
+  -v /data:/data \
+  nemo-speech:<tag> bash -lc '
+    cd /workspace/NeMo &&
+    torchrun --nproc_per_node=2 examples/asr/speech_to_text_finetune.py \
+      +init_from_pretrained_model=nvidia/parakeet-tdt-0.6b-v3 \
+      model.train_ds.manifest_filepath=/data/train.json \
+      model.validation_ds.manifest_filepath=/data/val.json \
+      ++model.train_ds.use_lhotse=true \
+      ++model.validation_ds.use_lhotse=true \
+      +trainer.use_distributed_sampler=false \
+      trainer.devices=2 \
+      trainer.max_steps=10000
+  '
+```
+
+Keep `trainer.num_nodes` for real multi-node jobs only. For single-node container fine-tuning, avoid manual
+one-visible-GPU-per-process launch patterns unless the user explicitly asks to debug that environment.
+
 On systems with NCCL P2P or CUDA memory allocator issues, retry with conservative distributed environment settings
 after confirming the job is stuck in communication setup:
 
@@ -89,6 +114,10 @@ Do not assume the latest `.nemo` is the best validation checkpoint. `always_save
 artifact on later saves. Check the `.ckpt` filenames and validation logs, then evaluate the exported `.nemo`, the best
 checkpoint-derived artifact, and any averaged model before deciding what to keep.
 
+Decision rule: evaluate the final exported `.nemo`, the best individual validation checkpoint-derived artifact, and the
+averaged artifact with the same standalone command and scoring contract. Keep the artifact with the best standalone
+default WER. If averaging is worse, record it and drop the averaged artifact.
+
 Always run the same standalone evaluation command for the baseline model, the final exported `.nemo`, the best
 checkpoint-derived artifact, and any averaged model. In-training `val_wer` is useful for checkpoint selection, but it is
 not the final number to report. Standalone WER is the fair comparison because it holds decoding options, text
@@ -118,6 +147,10 @@ python examples/asr/speech_to_text_eval.py \
 
 Do not use AMP for inference/evaluation. Use `compute_dtype=bfloat16` and `amp=false`. Report standalone
 `speech_to_text_eval.py` results for every model variant being compared; do not report only trainer logs.
+
+Use `evaluation-style-contract.md` for scoring. By default, report WER with capitalization and punctuation removed via
+score-only evaluation of the saved prediction manifest. Report raw WER separately only when the user requests it or it
+helps diagnose transcript-style mismatch.
 
 ```bash
 python examples/asr/speech_to_text_eval.py \
@@ -174,6 +207,8 @@ If predictions already exist:
 python examples/asr/speech_to_text_eval.py \
   dataset_manifest=/exp/asr-ft/test_predictions.json \
   only_score_manifest=True \
+  text_processing.do_lowercase=true \
+  text_processing.rm_punctuation=true \
   use_cer=False
 ```
 

@@ -655,7 +655,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                     checkpoint_state = torch.load(checkpoint_path, map_location='cpu')
             else:
                 checkpoint_state = torch.load(checkpoint_path, map_location='cpu')
-            checkpoint_state = set_model_dict_for_partial_init(checkpoint_state, self.state_dict())
+            checkpoint_state = set_model_dict_for_partial_init(checkpoint_state, self.state_dict(), allow_partial_copy=True)
 
             self.load_state_dict(checkpoint_state, strict=True)
             logging.info(f"Model restored from the checkpoint: {checkpoint_path} !")

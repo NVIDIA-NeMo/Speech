@@ -302,46 +302,110 @@ def setup_parallel_expert_encoder(model: torch.nn.Module):
 
 
 def set_model_dict_for_partial_init(
-    pretrained_dict: Dict[str, torch.Tensor], model_dict: Dict[str, torch.Tensor]
+    pretrained_dict: Dict[str, torch.Tensor],
+    model_dict: Dict[str, torch.Tensor],
+    allow_partial_copy: bool = False,
 ) -> Dict[str, torch.Tensor]:
     """
     Partially initialize a model's state dictionary with a pretrained state dictionary.
-    This function safely copies compatible layers from a pretrained model into a new model,
-    ignoring layers with mismatched shapes or missing keys.
 
-    Steps:
-        1. Remove layers from the pretrained dictionary if their shape does not match the target model.
-        2. Keep only keys that exist in the target model.
-        3. Update the model dictionary with the filtered pretrained weights.
+    This function safely copies compatible layers from a pretrained model into a new model,
+    ignoring layers with missing keys or incompatible shapes.
+
+    By default, only tensors with exactly matching shapes are restored.
+
+    If ``allow_partial_copy=True``, tensors whose shapes differ only in the first
+    dimension are partially restored by copying the overlapping rows from the
+    pretrained tensor into the target tensor. The remaining rows keep their
+    model-initialized values. This is useful when adding new vocabulary rows or
+    special tokens, e.g. adding an interruption token to an embedding table.
 
     Args:
-        pretrained_dict (Dict[str, torch.Tensor]):
-            The state dictionary of the pretrained model.
-        model_dict (Dict[str, torch.Tensor]):
-            The state dictionary of the target model to be partially initialized.
+        pretrained_dict:
+            State dictionary from the pretrained checkpoint.
+
+        model_dict:
+            State dictionary of the target model.
+
+        allow_partial_copy:
+            If True, allow partial row-wise restore for tensors where only
+            dimension 0 differs and all trailing dimensions match. Defaults to False.
 
     Returns:
-        Dict[str, torch.Tensor]:
-            The updated model state dictionary with compatible layers loaded from the pretrained dictionary.
+        Updated model state dictionary with compatible pretrained weights loaded.
 
     Example:
         >>> model_dict = model.state_dict()
         >>> pretrained_dict = load_checkpoint("pretrained_model.ckpt")
-        >>> model_dict = set_model_dict_for_partial_init(pretrained_dict, model_dict)
+        >>> model_dict = set_model_dict_for_partial_init(
+        ...     pretrained_dict,
+        ...     model_dict,
+        ...     allow_partial_copy=True,
+        ... )
         >>> model.load_state_dict(model_dict)
     """
-    # 1. Remove layers where pretrained shape differs from model shape
-    for k, v in list(pretrained_dict.items()):
-        if k in model_dict and hasattr(model_dict[k], "numel") and v.numel() != model_dict[k].numel():
-            del pretrained_dict[k]
-            logging.info(f" | > Layer with shape mismatch in the model definition: {k}")
+    restored_dict = {}
+    exact_restored = 0
+    partial_restored = 0
+    skipped_mismatch = 0
 
-    # 2. Keep only keys that exist in the target model
-    pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict}
+    for key, pretrained_value in pretrained_dict.items():
+        if key not in model_dict:
+            continue
 
-    # 3. Update model dictionary with filtered pretrained layers
-    model_dict.update(pretrained_dict)
-    logging.info(f" | > {len(pretrained_dict)} / {len(model_dict)} layers are restored.")
+        model_value = model_dict[key]
+
+        if not hasattr(pretrained_value, "shape") or not hasattr(model_value, "shape"):
+            continue
+
+        if pretrained_value.shape == model_value.shape:
+            restored_dict[key] = pretrained_value
+            exact_restored += 1
+            continue
+
+        can_partial_copy = (
+            allow_partial_copy
+            and pretrained_value.ndim == model_value.ndim
+            and pretrained_value.ndim > 0
+            and pretrained_value.shape[1:] == model_value.shape[1:]
+        )
+
+        if can_partial_copy:
+            merged_value = model_value.clone()
+            rows_to_copy = min(pretrained_value.shape[0], model_value.shape[0])
+
+            merged_value[:rows_to_copy].copy_(
+                pretrained_value[:rows_to_copy].to(
+                    device=merged_value.device,
+                    dtype=merged_value.dtype,
+                )
+            )
+
+            restored_dict[key] = merged_value
+            partial_restored += 1
+
+            logging.info(
+                f" | > Partially restored resized tensor: {key} "
+                f"pretrained={tuple(pretrained_value.shape)} "
+                f"model={tuple(model_value.shape)} "
+                f"copied_rows={rows_to_copy}"
+            )
+            continue
+
+        skipped_mismatch += 1
+        logging.info(
+            f" | > Layer with shape mismatch in the model definition: {key} "
+            f"pretrained={tuple(pretrained_value.shape)} "
+            f"model={tuple(model_value.shape)}"
+        )
+
+    model_dict.update(restored_dict)
+
+    logging.info(
+        f" | > {len(restored_dict)} / {len(model_dict)} layers are restored "
+        f"({exact_restored} exact, {partial_restored} partial, "
+        f"{skipped_mismatch} skipped due to incompatible shape)."
+    )
 
     return model_dict
 

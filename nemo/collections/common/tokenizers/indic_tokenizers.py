@@ -14,6 +14,8 @@
 
 from typing import List
 
+from nemo.utils.dependency import assert_optional_dependency_available
+
 
 class IndicProcessor:
     """
@@ -24,6 +26,7 @@ class IndicProcessor:
     def __init__(self, lang_id: str):
         if lang_id != 'hi':
             raise NotImplementedError
+        assert_optional_dependency_available("sacremoses")
         from sacremoses import MosesDetokenizer, MosesPunctNormalizer, MosesTokenizer
 
         self.moses_tokenizer = MosesTokenizer(lang=lang_id)

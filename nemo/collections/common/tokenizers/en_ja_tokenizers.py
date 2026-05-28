@@ -14,6 +14,8 @@
 import re
 from typing import List
 
+from nemo.utils.dependency import assert_optional_dependency_available
+
 try:
     import ipadic
     import MeCab
@@ -33,6 +35,7 @@ class EnJaProcessor:
     """
 
     def __init__(self, lang_id: str):
+        assert_optional_dependency_available("sacremoses")
         from sacremoses import MosesDetokenizer, MosesPunctNormalizer, MosesTokenizer
 
         self.lang_id = lang_id

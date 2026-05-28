@@ -19,9 +19,9 @@ import tempfile
 from math import ceil
 from typing import Any, Dict, List, Optional, Union
 
-import editdistance
 import torch
 import torch.distributed as dist
+from kaldialign import edit_distance
 from lightning.pytorch import Trainer
 from omegaconf import DictConfig, OmegaConf, open_dict
 from torch.utils.data import DataLoader
@@ -529,7 +529,7 @@ class EncDecTransfModelBPE(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRTran
                 wer_scores, wer_words = 0, 0
                 for h, r in zip(_translations, _ground_truths):
                     wer_words += len(r.split())
-                    wer_scores += editdistance.eval(h.split(), r.split())
+                    wer_scores += edit_distance(r.split(), h.split())['total']
                 wer_score = 1.0 * wer_scores * self.world_size / wer_words
 
             else:

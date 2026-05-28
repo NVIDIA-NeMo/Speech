@@ -49,7 +49,6 @@ autodoc_mock_imports = [
     'sklearn',  # scikit_learn in requirements, sklearn in import
     'nemo_text_processing.inverse_text_normalization',  # Not installed automatically
     'nemo_text_processing.text_normalization',  # Not installed automatically
-    'attr',  # attrdict in requirements, attr in import
     'torchmetrics',  # inherited from PTL
     'lightning_utilities',  # inherited from PTL
     'lightning_fabric',

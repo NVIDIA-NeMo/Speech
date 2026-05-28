@@ -35,8 +35,6 @@ from urllib.parse import urlparse
 import dash
 import dash_bootstrap_components as dbc
 import diff_match_patch
-import editdistance
-import jiwer
 import librosa
 import numpy as np
 import pandas as pd
@@ -45,6 +43,7 @@ import tqdm
 from dash import dash_table, dcc, html
 from dash.dependencies import Input, Output, State
 from dash.exceptions import PreventUpdate
+from kaldialign import edit_distance
 from plotly import express as px
 from plotly import graph_objects as go
 from plotly.subplots import make_subplots
@@ -1053,9 +1052,9 @@ def load_data(
                 if field_name in item and item[TEXT_KEY]:
                     metrics_available = True
                     pred = item[field_name].split()
-                    measures = jiwer.compute_measures(item[TEXT_KEY], item[field_name])
-                    word_dist = measures['substitutions'] + measures['insertions'] + measures['deletions']
-                    char_dist = editdistance.eval(item[TEXT_KEY], item[field_name])
+                    measures = edit_distance(item[TEXT_KEY].split(), item[field_name].split())
+                    word_dist = measures['total']
+                    char_dist = edit_distance(list(item[TEXT_KEY]), list(item[field_name]))['total']
                     wer_dist += word_dist
                     cer_dist += char_dist
                     wer_count += num_words
@@ -1065,7 +1064,7 @@ def load_data(
                     for m in sm.get_matching_blocks():
                         for word_idx in range(m[0], m[0] + m[2]):
                             match_vocab[orig[word_idx]] += 1
-                    wmr_count += measures['hits']
+                    wmr_count += num_words - measures['sub'] - measures['del']
                 elif field_name in item:
                     pass
                 else:
@@ -1922,14 +1921,14 @@ if comparison_mode:
         pred_words = pred.split()
         if not grnd_words:
             return 0.0
-        edit_distance = editdistance.eval(grnd_words, pred_words)
-        wer = edit_distance / len(grnd_words)
+        dist = edit_distance(grnd_words, pred_words)['total']
+        wer = dist / len(grnd_words)
         return wer
 
     def metric(a, b, met=None):
         if not a:
             return 0.0, 0.0
-        cer = editdistance.distance(a, b) / len(a)
+        cer = edit_distance(list(a), list(b))['total'] / len(a)
         wer = _wer_(a, b)
         return round(float(wer) * 100, 2), round(float(cer) * 100, 2)
 

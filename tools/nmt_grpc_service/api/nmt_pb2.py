@@ -226,7 +226,7 @@ TranslateTextRequest = _reflection.GeneratedProtocolMessageType(
     (_message.Message,),
     {
         'DESCRIPTOR': _TRANSLATETEXTREQUEST,
-        '__module__': 'nmt_pb2'
+        '__module__': 'nmt_pb2',
         # @@protoc_insertion_point(class_scope:nvidia.riva.nmt.TranslateTextRequest)
     },
 )
@@ -237,7 +237,7 @@ Translation = _reflection.GeneratedProtocolMessageType(
     (_message.Message,),
     {
         'DESCRIPTOR': _TRANSLATION,
-        '__module__': 'nmt_pb2'
+        '__module__': 'nmt_pb2',
         # @@protoc_insertion_point(class_scope:nvidia.riva.nmt.Translation)
     },
 )
@@ -248,7 +248,7 @@ TranslateTextResponse = _reflection.GeneratedProtocolMessageType(
     (_message.Message,),
     {
         'DESCRIPTOR': _TRANSLATETEXTRESPONSE,
-        '__module__': 'nmt_pb2'
+        '__module__': 'nmt_pb2',
         # @@protoc_insertion_point(class_scope:nvidia.riva.nmt.TranslateTextResponse)
     },
 )

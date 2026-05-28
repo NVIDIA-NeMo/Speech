@@ -601,6 +601,11 @@ def _add_easy_magpie_args(parser: argparse.ArgumentParser) -> None:
         default=None,
         help='Override path to the phoneme tokenizer file (overrides the path stored in the checkpoint config)',
     )
+    group.add_argument(
+        '--disable_cas_for_context_text',
+        action='store_true',
+        help='Skip CAS embeddings for context text when loading legacy EasyMagpieTTS models',
+    )
 
 
 def create_argument_parser() -> argparse.ArgumentParser:
@@ -716,6 +721,7 @@ def main(argv=None):
                 legacy_text_conditioning=args.legacy_text_conditioning,
                 hparams_from_wandb=args.hparams_file_from_wandb,
                 phoneme_tokenizer_path=getattr(args, 'phoneme_tokenizer_path', None),
+                disable_cas_for_context_text=args.disable_cas_for_context_text,
             )
 
             # Load model
@@ -758,6 +764,7 @@ def main(argv=None):
                 legacy_codebooks=args.legacy_codebooks,
                 legacy_text_conditioning=args.legacy_text_conditioning,
                 phoneme_tokenizer_path=getattr(args, 'phoneme_tokenizer_path', None),
+                disable_cas_for_context_text=args.disable_cas_for_context_text,
             )
 
             # Load model

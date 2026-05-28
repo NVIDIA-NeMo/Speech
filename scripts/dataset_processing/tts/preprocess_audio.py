@@ -59,19 +59,32 @@ from nemo.utils import logging
 
 def get_args():
     parser = argparse.ArgumentParser(
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter, description="Compute speaker level pitch statistics.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description="Compute speaker level pitch statistics.",
     )
     parser.add_argument(
-        "--input_manifest", required=True, type=Path, help="Path to input training manifest.",
+        "--input_manifest",
+        required=True,
+        type=Path,
+        help="Path to input training manifest.",
     )
     parser.add_argument(
-        "--input_audio_dir", required=True, type=Path, help="Path to base directory with audio files.",
+        "--input_audio_dir",
+        required=True,
+        type=Path,
+        help="Path to base directory with audio files.",
     )
     parser.add_argument(
-        "--output_manifest", required=True, type=Path, help="Path to output training manifest with processed audio.",
+        "--output_manifest",
+        required=True,
+        type=Path,
+        help="Path to output training manifest with processed audio.",
     )
     parser.add_argument(
-        "--output_audio_dir", required=True, type=Path, help="Path to output directory for audio files.",
+        "--output_audio_dir",
+        required=True,
+        type=Path,
+        help="Path to output directory for audio files.",
     )
     parser.add_argument(
         "--overwrite_audio",

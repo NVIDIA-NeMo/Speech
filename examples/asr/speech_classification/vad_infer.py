@@ -91,7 +91,9 @@ def main(cfg):
             'vad_stream': True,
             'sample_rate': 16000,
             'manifest_filepath': manifest_vad_input,
-            'labels': ['infer',],
+            'labels': [
+                'infer',
+            ],
             'num_workers': cfg.num_workers,
             'shuffle': False,
             'window_length_in_sec': cfg.vad.parameters.window_length_in_sec,

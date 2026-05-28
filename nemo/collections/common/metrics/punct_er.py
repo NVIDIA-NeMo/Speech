@@ -28,19 +28,21 @@ except (ImportError, ModuleNotFoundError):
 
 
 def punctuation_error_rate(
-    references: list[str], hypotheses: list[str], punctuation_marks: list[str], punctuation_mask: str = "[PUNCT]",
+    references: list[str],
+    hypotheses: list[str],
+    punctuation_marks: list[str],
+    punctuation_mask: str = "[PUNCT]",
 ) -> None:
-
     """
     Computes Punctuation Error Rate
-    
+
     Args:
         references (list[str]) - list of references
         hypotheses (list[str]) - list of hypotheses
         punctuation_marks (list[str]) - list of punctuation marks for computing metrics
         punctuation_mask (str, by default "[PUNCT]") - mask token that will be applied to
         given punctuation marks while edit distance calculation
-        
+
     Return:
         punct_er (float) - Punctuation Error Rate
     """
@@ -72,14 +74,14 @@ class OccurancePunctuationErrorRate:
     Args to init:
         punctuation_marks (list[str]) - list of punctuation marks for computing metrics
         punctuation_mask (str, by default "[PUNCT]") - mask token that will be applied to
-        given punctuation marks while edit distance calculation 
-    
+        given punctuation marks while edit distance calculation
+
     How to use:
         1. Create object of OccurancePunctuationErrorRate class.
            Example:
                 punctuation_marks = [".", ",", "!", "?"]
                 oper_obj = OccurancePunctuationErrorRate(punctuation_marks)
-        
+
         2. To compute punctuation metrics, pass reference and hypothesis string to the "compute" method
         of created object.
             Example:
@@ -94,16 +96,16 @@ class OccurancePunctuationErrorRate:
              ',': {'Correct': 0, 'Deletions': 1, 'Insertions': 0, 'Substitutions': 0},
              '!': {'Correct': 1, 'Deletions': 0, 'Insertions': 0, 'Substitutions': 0},
              '?': {'Correct': 0, 'Deletions': 0, 'Insertions': 1, 'Substitutions': 0}}
-              
+
         2. Dict of substitutions absolute amounts between given punctuation marks:
             Example:
             {'.': {'.': 0, ',': 0, '!': 1, '?': 0},
              ',': {'.': 0, ',': 0, '!': 0, '?': 0},
              '!': {'.': 0, ',': 0, '!': 0, '?': 0},
              '?': {'.': 0, ',': 0, '!': 0, '?': 0}}
-            
+
         3. namedtuple "PunctuationRates" of punctuation operation rates (in range from 0 to 1):
-            3.1. correct_rate - overall correct rate 
+            3.1. correct_rate - overall correct rate
                 Example: correct_rate=0.25
             3.2. deletions_rate - overall deletions rate
                 Example: deletions_rate=0.25
@@ -114,14 +116,14 @@ class OccurancePunctuationErrorRate:
             3.5. punct_er - Punctuation Error Rate
                 Example: punct_er=0.75
             3.6. operation_rates - dict of operations rates for each given punctuation mark
-                Example: 
+                Example:
                 operation_rates={
                     '.': {'Correct': 0.0, 'Deletions': 0.0, 'Insertions': 0.0, 'Substitutions': 1.0},
                     ',': {'Correct': 0.0, 'Deletions': 1.0, 'Insertions': 0.0, 'Substitutions': 0.0},
                     '!': {'Correct': 1.0, 'Deletions': 0.0, 'Insertions': 0.0, 'Substitutions': 0.0},
                     '?': {'Correct': 0.0, 'Deletions': 0.0, 'Insertions': 1.0, 'Substitutions': 0.0}
                     }
-  
+
             3.7. substitution_rates - dict of substitution rates for each given punctuation mark
                 Example:
                 substitution_rates={
@@ -320,59 +322,59 @@ class OccurancePunctuationErrorRate:
 
 class DatasetPunctuationErrorRate:
     """
-    Class for computation the total puncutation-related absolute amounts of operations and their rates 
+    Class for computation the total puncutation-related absolute amounts of operations and their rates
     in pairs of reference and hypothesis strins:
         - Absolute amounts of correct predictions, deletions, insertions
         and substitutions for each given punctuation mark
         - Rates of correct predictions, deletions, insertions
-        and substitutions for each given punctuation mark 
+        and substitutions for each given punctuation mark
         - Total rates of correct predictions, deletions, insertions
-        and substiturions in pairs of reference and hypothesis strings 
+        and substiturions in pairs of reference and hypothesis strings
         - Punctuation Error Rate
-        
+
     Args to init:
         references (list[str]) - list of references
         hypotheses (list[str]) - list of hypotheses
         punctuation_marks (list[str]) - list of punctuation marks for computing metrics
         punctuation_mask (str, by default "[PUNCT]") - mask token that will be applied to
         given punctuation marks while edit distance calculation
-        
+
     How to use:
         1. Create object of DatasetPunctuationErrorRate class.
            Example:
                 references = ["Hi, dear! Nice to see you. What's"]
-                hypotheses = ["Hi dear! Nice to see you! What's?"]                
+                hypotheses = ["Hi dear! Nice to see you! What's?"]
                 punctuation_marks = [".", ",", "!", "?"]
-                
+
                 dper_obj = DatasetPunctuationErrorRate(references, hypotheses, punctuation_marks)
-                
+
         2. To compute punctuation metrics, call the class method "compute()".
             Example:
-                dper_obj.compute() 
-                
+                dper_obj.compute()
+
     Result:
     The following atributes of class object will be updated with calculated metrics values.
     The values are available with calling the atributes:
-        
-        dper_obj.operation_rates - dict, rates of correctness and errors for each punctuation mark 
+
+        dper_obj.operation_rates - dict, rates of correctness and errors for each punctuation mark
         from `preset dper_obj.punctuation_marks` list.
-        
+
         dper_obj.substitution_rates - dict, substitution rates between puncutation marks from
         `preset dper_obj.punctuation_marks` list.
-        
-        dper_obj.correct_rate - float, total rate of correctness between provided pairs of 
+
+        dper_obj.correct_rate - float, total rate of correctness between provided pairs of
         references and hypotheses.
-        
-        dper_obj.deletions_rate - float, total rate of deletions between provided pairs of 
+
+        dper_obj.deletions_rate - float, total rate of deletions between provided pairs of
         references and hypotheses.
-        
-        dper_obj.insertions_rate - float, total rate of insertions between provided pairs of 
+
+        dper_obj.insertions_rate - float, total rate of insertions between provided pairs of
         references and hypotheses.
-        
-        dper_obj.substitutions_rate - float, total rate of substitutions between provided pairs of 
+
+        dper_obj.substitutions_rate - float, total rate of substitutions between provided pairs of
         references and hypotheses.
-        
-        dper_obj.punct_er - float, total Punctuation Error Rate between provided pairs of 
+
+        dper_obj.punct_er - float, total Punctuation Error Rate between provided pairs of
         references and hypotheses.
     """
 

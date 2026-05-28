@@ -10,5 +10,4 @@ pandas
 plotly
 requests
 SoundFile
-sox
 tqdm

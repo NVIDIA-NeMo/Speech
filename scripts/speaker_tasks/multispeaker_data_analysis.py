@@ -21,7 +21,6 @@ from pprint import pprint
 from typing import Dict
 
 import numpy as np
-import sox
 from scipy.stats import expon
 from tqdm import tqdm
 
@@ -77,6 +76,7 @@ def process_sample(sess_dict: Dict) -> Dict:
     session_dur = sess_dict["session_dur"]
     precise = sess_dict["precise"]
     if precise or session_dur is None:
+        sox = import_optional_dependency("sox")
         wav_file = rttm_file.parent / Path(rttm_file.stem + ".wav")
         session_dur = sox.file_info.duration(str(wav_file))
 

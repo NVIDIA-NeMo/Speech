@@ -14,6 +14,7 @@ Default posture:
 - Prefer Lhotse for train and validation dataloaders.
 - Use `trainer.max_steps`, not `trainer.max_epochs`.
 - Use `val_wer` as the checkpoint monitor for validation.
+- Report final quality from standalone evaluation, not only in-training validation logs.
 
 ## Staged Workflow
 
@@ -53,6 +54,9 @@ Always check the current repo docs before giving version-sensitive claims:
   `batch_size=null`, `batch_duration=null`, and `quadratic_duration=null` when adding `bucket_batch_size`.
 - Set `model.validation_ds.use_lhotse=true`, but prefer static validation `batch_size` with bucketing disabled.
 - Do not use fused loss/WER or tune `fused_batch_size` for RNNT/TDT fine-tuning guidance from this skill.
+- Run the first OOMptimizer pass with default CLI settings; lower `--memory-fraction` only after a real training OOM.
+- Run preflight checks before long jobs: disk space, free GPUs, manifest validity, and duration/text sanity.
+- For small domain adaptation, start with a lower LR than large-data fine-tuning; do not blindly use `1e-4`.
 - Do not train a tokenizer on validation or test transcripts.
 - Do not ignore silent Lhotse filtering from `min_duration`, `max_duration`, `min_tps`, and `max_tps`.
 - Do not use `amp=true` for inference/evaluation; use `amp=false compute_dtype=bfloat16`.

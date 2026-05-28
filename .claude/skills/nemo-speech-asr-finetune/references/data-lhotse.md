@@ -30,6 +30,16 @@ model or precision. When only a tiny outlier fraction is affected, set `max_dura
 number and hours filtered, and rerun OOMptimizer with the capped final bucket. Do not silently cap substantial or
 domain-critical long-form data.
 
+Run the first OOMptimizer pass with its default CLI settings. Do not lower `--memory-fraction`, disable DDP simulation,
+change dtype, or adjust the search threshold unless there is a concrete reason. The default profile is intended to be
+aggressive enough for high GPU utilization while reserving non-training-loop memory. If the resulting real training run
+OOMs, then rerun OOMptimizer with a lower `--memory-fraction` and document why.
+
+Validate the generated profile with a short multi-GPU pilot and sample GPU utilization during training steps, not just
+startup, checkpointing, or validation. OOMptimizer sizes worst-case synthetic batches at the bucket upper bounds; real
+training memory can be noticeably lower when the sampler draws shorter cuts or smaller buckets. Focus on peak training
+memory and sustained SM utilization over enough steps to exercise several buckets.
+
 For non-tarred data, Lhotse may tokenize samples during sampling when `pretokenize=true`. This enables token-per-second
 filtering and 2D token bucketing, but tokenization happens in the main training process and can slow training with large
 tokenizers. If the run does not use token-per-second filters or 2D bucketing, consider `pretokenize=false`.
@@ -145,6 +155,12 @@ Use Lhotse `input_cfg` for mixed datasets rather than concatenating manifests bl
 
 For a large generic dataset plus a smaller domain dataset, either manually upweight the domain data or estimate weights
 then apply temperature reweighting. Lower temperature oversamples smaller datasets; `1.0` is neutral.
+
+For small-domain adaptation, target-domain real data should usually dominate synthetic or heavily augmented data.
+Synthetic data can help coverage, but it can also dilute the real-domain signal. Start conservatively, e.g. keep
+synthetic sources below roughly 30% total weight, evaluate ablations, and only increase synthetic weight when standalone
+domain WER improves. This applies especially when the synthetic data is generated from TTS, noisy augmentation, or
+generic prompts rather than real target-domain audio.
 
 ```bash
 python scripts/speech_recognition/estimate_data_weights.py \

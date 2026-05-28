@@ -38,6 +38,43 @@ pip install -e '.[asr]'
 
 If CUDA, torch, audio backend, or dependency issues appear, steer back to the container.
 
+## Preflight Checks
+
+Before launching a long fine-tune, spend a few minutes on cheap failure checks:
+
+- Confirm the intended NeMo checkout is imported from inside the container.
+- Confirm each training/validation manifest exists, has non-empty `text`, valid `audio_filepath`, and usable
+  `duration` values.
+- Inspect duration and token-per-second distributions before setting filters; Lhotse filtering is silent.
+- Check GPU state with `nvidia-smi` and stop stale training processes before sizing batches.
+- Check free disk space for experiment logs and checkpoints. Large `.nemo` exports, `save_top_k`, checkpoint averaging,
+  and EMA can produce tens of GB per run.
+- Confirm `HF_HOME`/tokens and any object-store credentials are visible inside the container before launching jobs that
+  will download checkpoints or data.
+
+Useful quick checks:
+
+```bash
+nvidia-smi
+df -h /exp /tmp /data
+python - /data/train.json <<'PY'
+import json, pathlib, statistics, sys
+manifest = pathlib.Path(sys.argv[1])
+durations, missing_audio, empty_text = [], 0, 0
+for line in manifest.open():
+    item = json.loads(line)
+    if not pathlib.Path(item["audio_filepath"]).exists():
+        missing_audio += 1
+    if not item.get("text", "").strip():
+        empty_text += 1
+    if "duration" in item:
+        durations.append(float(item["duration"]))
+print({"items": len(durations), "missing_audio": missing_audio, "empty_text": empty_text})
+if durations:
+    print({"hours": sum(durations) / 3600, "min": min(durations), "p50": statistics.median(durations), "max": max(durations)})
+PY
+```
+
 ## Checkpoint Candidates
 
 Use the user's constraints first: language, streaming vs offline, latency, memory budget, punctuation/capitalization,

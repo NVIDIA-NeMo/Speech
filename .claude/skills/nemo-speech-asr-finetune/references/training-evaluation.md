@@ -3,7 +3,14 @@
 ## Optimizer And Trainer
 
 Use `trainer.max_steps`, not `trainer.max_epochs`. Use a cosine LR schedule with the same `max_steps` as the trainer.
-Start with `model.optim.lr=1e-4`, then tune. Set warmup to 1-2% of `trainer.max_steps`.
+Choose the initial LR by data size and risk:
+
+- For large or mixed fine-tuning runs, start with `model.optim.lr=1e-4`, then tune.
+- For small domain adaptation, especially below roughly 20 hours of high-value target-domain audio, start around
+  `3e-5` and watch early validation closely.
+- For later refinement phases or unstable/diverging runs, try `1e-5` or lower.
+
+Set warmup to 1-2% of `trainer.max_steps`.
 
 ```bash
 +init_from_pretrained_model=<hf-or-ngc-name> \
@@ -82,9 +89,10 @@ Do not assume the latest `.nemo` is the best validation checkpoint. `always_save
 artifact on later saves. Check the `.ckpt` filenames and validation logs, then evaluate the exported `.nemo`, the best
 checkpoint-derived artifact, and any averaged model before deciding what to keep.
 
-Use the same standalone evaluation command for the baseline model, the final exported `.nemo`, and any averaged model.
-In-training `val_wer` is useful for checkpoint selection, but standalone WER is the fair number to report because it
-holds decoding options, text processing, precision, and output scoring constant.
+Always run the same standalone evaluation command for the baseline model, the final exported `.nemo`, the best
+checkpoint-derived artifact, and any averaged model. In-training `val_wer` is useful for checkpoint selection, but it is
+not the final number to report. Standalone WER is the fair comparison because it holds decoding options, text
+processing, precision, and output scoring constant.
 
 Evaluate both:
 
@@ -108,7 +116,8 @@ python examples/asr/speech_to_text_eval.py \
 
 ## Evaluation
 
-Do not use AMP for inference/evaluation. Use `compute_dtype=bfloat16` and `amp=false`.
+Do not use AMP for inference/evaluation. Use `compute_dtype=bfloat16` and `amp=false`. Report standalone
+`speech_to_text_eval.py` results for every model variant being compared; do not report only trainer logs.
 
 ```bash
 python examples/asr/speech_to_text_eval.py \

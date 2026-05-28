@@ -45,6 +45,8 @@ Before launching a long fine-tune, spend a few minutes on cheap failure checks:
 - Confirm the intended NeMo checkout is imported from inside the container.
 - Confirm each training/validation manifest exists, has non-empty `text`, valid `audio_filepath`, and usable
   `duration` values.
+- Run the transcript-style preflight in `data-lhotse.md` before training. Mixed casing, punctuation, number, or symbol
+  conventions across fine-tuning sources are an experiment setup issue, not a tuning detail.
 - Inspect duration and token-per-second distributions before setting filters; Lhotse filtering is silent.
 - Check GPU state with `nvidia-smi` and stop stale training processes before sizing batches.
 - Check free disk space for experiment logs and checkpoints. Large `.nemo` exports, `save_top_k`, checkpoint averaging,

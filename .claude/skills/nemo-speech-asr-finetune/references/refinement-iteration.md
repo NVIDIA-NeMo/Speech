@@ -31,10 +31,12 @@ Example tracking table:
 
 1. Transcribe the held-out domain set with the current best checkpoint.
 2. Compute per-utterance WER/CER and sort from worst to best.
-3. Categorize errors by actionable patterns: numbers, named entities, abbreviations, rare domain words, commands,
+3. Before treating raw WER as acoustic/model quality, rescore with the chosen transcript normalization and compare
+   raw vs normalized WER. A large gap usually means the Stage 2 transcript-style preflight was incomplete.
+4. Categorize errors by actionable patterns: numbers, named entities, abbreviations, rare domain words, commands,
    readbacks, punctuation/capitalization, language/task tags, accents, noise, long utterances, and clipping/VAD issues.
-4. Count errors by category and inspect representative audio. Separate model errors from label/audio defects.
-5. Choose one or two interventions for the next run. Avoid changing LR, data mix, tokenizer, and decoding all at once.
+5. Count errors by category and inspect representative audio. Separate model errors from label/audio defects.
+6. Choose one or two interventions for the next run. Avoid changing LR, data mix, tokenizer, and decoding all at once.
 
 Do not train on validation or test transcripts. If error analysis uses a public or user-visible test set to guide new
 data generation, create a new blind holdout before claiming final quality.
@@ -71,6 +73,7 @@ Recommendations:
 Maintain a compact run ledger with:
 
 - Data sources and blend weights.
+- Transcript style policy, any manifest transform, and whether it differs from the original checkpoint output style.
 - LR, `max_steps`, warmup, precision, and batch profile.
 - Duration/token filters and number of examples filtered.
 - Best checkpoint and standalone WER/CER.

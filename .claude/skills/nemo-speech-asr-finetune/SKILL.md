@@ -22,7 +22,8 @@ Default posture:
 Load only the reference file needed for the current stage:
 
 1. Setup and checkpoint selection: read `references/setup-checkpoints.md`.
-2. Data prep, Lhotse, bucketing, validation dataloader, and blends: read `references/data-lhotse.md`.
+2. Data prep, transcript-style preflight, Lhotse, bucketing, validation dataloader, and blends: read
+   `references/data-lhotse.md`.
 3. Architecture detection, tokenizer changes, and AED/Canary multitask metrics: read
    `references/architecture-tokenizer-metrics.md`.
 4. Training, checkpoint averaging, and evaluation: read `references/training-evaluation.md`.
@@ -59,6 +60,9 @@ Always check the current repo docs before giving version-sensitive claims:
 - Do not use fused loss/WER or tune `fused_batch_size` for RNNT/TDT fine-tuning guidance from this skill.
 - Run the first OOMptimizer pass with default CLI settings; lower `--memory-fraction` only after a real training OOM.
 - Run preflight checks before long jobs: disk space, free GPUs, manifest validity, and duration/text sanity.
+- Before any fine-tuning, audit transcript style within and across all fine-tuning/validation/test sources. Do not
+  train on mixed casing, punctuation, inverse-text-normalization, or symbol conventions; choose and fix one target style
+  first, and compare it with the original checkpoint's prediction style when applicable.
 - For small domain adaptation, start with a lower LR than large-data fine-tuning; do not blindly use `1e-4`.
 - Do not train a tokenizer on validation or test transcripts.
 - Do not ignore silent Lhotse filtering from `min_duration`, `max_duration`, `min_tps`, and `max_tps`.

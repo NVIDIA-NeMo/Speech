@@ -14,6 +14,50 @@ Standard ASR JSONL:
 Use separate train, validation, and test manifests. Prefer 16 kHz mono audio unless the model card/config says
 otherwise.
 
+## Transcript Style Preflight
+
+Do this before sharding, tokenizer changes, OOMptimizer, or fine-tuning. Treat mixed transcript style as an experiment
+setup failure.
+
+For every train, validation, and test manifest, and for each source inside a blend, audit a representative sample of
+reference transcripts. At minimum, report:
+
+- Fraction with uppercase letters.
+- Fraction with punctuation or symbols, including sentence punctuation, quotes, dashes, and brackets.
+- Number, abbreviation, currency, unit, and special-symbol conventions.
+- Unicode normalization and script/language consistency.
+- A few examples before and after the intended text transform.
+
+The target style must be consistent within and across all fine-tuning sources, and the validation/test style must match
+the metric being optimized. Do not rely on blend weights to average away style conflicts. If one source is cased and
+punctuated and another is lowercase/no-punctuation, fix the manifests or split the task before launching training.
+
+Also check the original checkpoint's prediction style when applicable:
+
+- First read the model card/config/docs for punctuation, capitalization, ITN, language, and prompt behavior.
+- If the checkpoint can already transcribe the target language or a close proxy, run a small baseline transcription on
+  representative fine-tuning audio and compute the same style rates on predictions.
+- If the checkpoint is being moved to a new language/script and baseline predictions are unreliable, do not infer style
+  from bad transcripts; record the checkpoint style as documented or unknown.
+
+If all fine-tuning data is internally consistent but differs from the original checkpoint's prediction style, that can
+be acceptable. Flag it to the user because the model may shift output style and raw WER may move even when recognition
+improves. In autonomous runs, consider adapting the fine-tuning transcripts to the checkpoint's output style when that
+style is required by deployment or evaluation. If that requires adding missing punctuation/case/ITN labels, treat the
+new labels as generated data: validate them and keep the raw manifests.
+
+Choose one target style and materialize new manifests before training:
+
+- Normalized ASR style: lowercase if appropriate for the language, remove punctuation/symbols that are not part of the
+  target transcript, normalize whitespace and Unicode, and score with the same normalization.
+- Cased/punctuated/ITN style: use data that already has reliable labels in that style, or restore missing style labels
+  with a validated post-processing pipeline. Do not mix unstyled labels into this target style without relabeling.
+- Prompted AED/Canary style: use task/language/punctuation prompts only when the selected script and metrics support
+  separating those behaviors; otherwise still enforce one transcript style per fine-tuning objective.
+
+Preserve raw manifests. Write derived manifests with a clear suffix such as `_style_normalized.json`, record the exact
+transform, and include the style audit in the run ledger.
+
 Shard training manifests even when not tarred. For resume-heavy fine-tuning with an unsharded non-tarred manifest,
 each restart can begin iterating from the start again. Split into shards like `manifest_0.json` ... `manifest_N.json`
 with roughly 200 utterances per shard. This is less important for one-shot runs that will not be interrupted.

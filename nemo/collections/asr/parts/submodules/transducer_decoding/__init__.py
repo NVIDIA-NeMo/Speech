@@ -12,6 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
+from nemo.collections.asr.parts.submodules.transducer_decoding.greedy_batched_hyps import (
+    BatchedAlignments,
+    BatchedHyps,
+)
 from nemo.collections.asr.parts.submodules.transducer_decoding.label_looping_base import (
     BatchedLabelLoopingState,
     GreedyBatchedLabelLoopingComputerBase,
@@ -28,4 +33,6 @@ __all__ = [
     "GreedyBatchedRNNTLabelLoopingComputer",
     "GreedyBatchedTDTLabelLoopingComputer",
     "BatchedLabelLoopingState",
+    "BatchedHyps",
+    "BatchedAlignments",
 ]

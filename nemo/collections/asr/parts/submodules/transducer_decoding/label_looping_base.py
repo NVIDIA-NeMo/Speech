@@ -20,7 +20,10 @@ import torch
 
 from nemo.collections.asr.parts.context_biasing.biasing_multi_model import GPUBiasingMultiModelBase
 from nemo.collections.asr.parts.submodules.ngram_lm import NGramGPULanguageModel
-from nemo.collections.asr.parts.utils import rnnt_utils
+from nemo.collections.asr.parts.submodules.transducer_decoding.greedy_batched_hyps import (
+    BatchedAlignments,
+    BatchedHyps,
+)
 from nemo.collections.common.parts.optional_cuda_graphs import WithOptionalCudaGraphs
 from nemo.core.utils.cuda_python_utils import check_cuda_python_cuda_graphs_conditional_nodes_supported
 from nemo.utils import logging
@@ -205,7 +208,7 @@ class GreedyBatchedLabelLoopingComputerBase(WithOptionalCudaGraphs, ABC):
         encoder_output_length: torch.Tensor,
         prev_batched_state: Optional[BatchedLabelLoopingState] = None,
         multi_biasing_ids: Optional[torch.Tensor] = None,
-    ) -> tuple[rnnt_utils.BatchedHyps, Optional[rnnt_utils.BatchedAlignments], BatchedLabelLoopingState]:
+    ) -> tuple[BatchedHyps, Optional[BatchedAlignments], BatchedLabelLoopingState]:
         """
         Pure PyTorch implementation
 
@@ -224,7 +227,7 @@ class GreedyBatchedLabelLoopingComputerBase(WithOptionalCudaGraphs, ABC):
         encoder_output_length: torch.Tensor,
         prev_batched_state: Optional[BatchedLabelLoopingState] = None,
         multi_biasing_ids: Optional[torch.Tensor] = None,
-    ) -> tuple[rnnt_utils.BatchedHyps, Optional[rnnt_utils.BatchedAlignments], BatchedLabelLoopingState]:
+    ) -> tuple[BatchedHyps, Optional[BatchedAlignments], BatchedLabelLoopingState]:
         """
         Implementation with CUDA graphs.
 
@@ -280,7 +283,7 @@ class GreedyBatchedLabelLoopingComputerBase(WithOptionalCudaGraphs, ABC):
         out_len: torch.Tensor,
         prev_batched_state: Optional[BatchedLabelLoopingState] = None,
         multi_biasing_ids: Optional[torch.Tensor] = None,
-    ) -> tuple[rnnt_utils.BatchedHyps, Optional[rnnt_utils.BatchedAlignments], BatchedLabelLoopingState]:
+    ) -> tuple[BatchedHyps, Optional[BatchedAlignments], BatchedLabelLoopingState]:
         """
         Entry point for the decoding algorithm
 

@@ -22,13 +22,16 @@ from omegaconf import DictConfig
 
 from nemo.collections.asr.parts.context_biasing.biasing_multi_model import GPUBiasingMultiModel
 from nemo.collections.asr.parts.submodules.ngram_lm import NGramGPULanguageModel
+from nemo.collections.asr.parts.submodules.transducer_decoding.greedy_batched_hyps import (
+    BatchedAlignments,
+    BatchedHyps,
+)
 from nemo.collections.asr.parts.submodules.transducer_decoding.label_looping_base import (
     BatchedLabelLoopingState,
     GreedyBatchedLabelLoopingComputerBase,
     LabelLoopingStateItem,
     SeparateGraphsLabelLooping,
 )
-from nemo.collections.asr.parts.utils import rnnt_utils
 from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMethodMixin
 from nemo.core.utils.cuda_python_utils import NeMoCUDAPythonException, cu_call, run_nvrtc, with_conditional_node
 from nemo.core.utils.optional_libs import CUDA_PYTHON_AVAILABLE, cuda_python_required
@@ -77,8 +80,8 @@ class LabelLoopingState:
         torch.Tensor
     )  # output from the decoder (projected) after _SOS symbol (for initialization)
 
-    batched_hyps: rnnt_utils.BatchedHyps  # batched hypotheses - decoding result
-    alignments: Optional[rnnt_utils.BatchedAlignments] = None  # batched alignments
+    batched_hyps: BatchedHyps  # batched hypotheses - decoding result
+    alignments: Optional[BatchedAlignments] = None  # batched alignments
 
     # for fusion models
     fusion_states_list: list[torch.Tensor]
@@ -109,8 +112,9 @@ class LabelLoopingState:
             device: device to store tensors
             float_dtype: default float dtype for tensors (should match projected encoder output)
             logits_dim: output dimension for Joint
-            preserve_alignments: if alignments are needed
-            preserve_frame_confidence: if frame confidence is needed
+            preserve_logits: if alignments are needed
+            preserve_step_confidence_no_blank: if non-blank step confidence should be preserved
+            preserve_each_step_confidence: if each step confidence is needed
         """
         self.device = device
         self.float_dtype = float_dtype
@@ -146,7 +150,7 @@ class LabelLoopingState:
         self.fusion_states_list = []
         self.fusion_states_candidates_list = []
         self.fusion_scores_list = []
-        self.batched_hyps = rnnt_utils.BatchedHyps(
+        self.batched_hyps = BatchedHyps(
             batch_size=self.batch_size,
             init_length=self.max_time * max_symbols,
             device=self.device,
@@ -160,7 +164,7 @@ class LabelLoopingState:
         )
         use_alignments = preserve_logits or preserve_each_step_confidence
         if use_alignments:
-            self.alignments = rnnt_utils.BatchedAlignments(
+            self.alignments = BatchedAlignments(
                 batch_size=batch_size,
                 logits_dim=logits_dim,
                 init_length=max_time * (max_symbols + 1),
@@ -290,7 +294,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
         encoder_output_length: torch.Tensor,
         prev_batched_state: Optional[BatchedLabelLoopingState] = None,
         multi_biasing_ids: Optional[torch.Tensor] = None,
-    ) -> tuple[rnnt_utils.BatchedHyps, Optional[rnnt_utils.BatchedAlignments], BatchedLabelLoopingState]:
+    ) -> tuple[BatchedHyps, Optional[BatchedAlignments], BatchedLabelLoopingState]:
         """
         Pure PyTorch implementation
 
@@ -312,7 +316,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
 
         # init output structures: BatchedHyps (for results), BatchedAlignments + last decoder state
         # init empty batched hypotheses
-        batched_hyps = rnnt_utils.BatchedHyps(
+        batched_hyps = BatchedHyps(
             batch_size=batch_size,
             init_length=max_time * self.max_symbols if self.max_symbols is not None else max_time,
             device=device,
@@ -321,7 +325,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
         )
         # init alignments if necessary
         if self.use_alignments:
-            alignments = rnnt_utils.BatchedAlignments(
+            alignments = BatchedAlignments(
                 batch_size=batch_size,
                 logits_dim=self.joint.num_classes_with_blank,
                 init_length=max_time * 2,  # blank for each timestep + text tokens
@@ -695,7 +699,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
         encoder_output_length: torch.Tensor,
         prev_batched_state: Optional[BatchedLabelLoopingState] = None,
         multi_biasing_ids: Optional[torch.Tensor] = None,
-    ) -> tuple[rnnt_utils.BatchedHyps, Optional[rnnt_utils.BatchedAlignments], BatchedLabelLoopingState]:
+    ) -> tuple[BatchedHyps, Optional[BatchedAlignments], BatchedLabelLoopingState]:
         """
         Implementation with CUDA graphs.
 

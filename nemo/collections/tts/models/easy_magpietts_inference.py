@@ -507,6 +507,17 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         else:
             raise ValueError(f"Unknown decoder_type: {self.decoder_type}. Supported: 'huggingface', 'nemotron_h'")
 
+        self.activation_checkpointing = cfg.get("activation_checkpointing", False)
+        if self.activation_checkpointing:
+            logging.info("Enabling activation checkpointing for decoder")
+
+            if self.decoder_type == "nemotron_h":
+                self.decoder.gradient_checkpointing = True
+            elif hasattr(self.decoder, "gradient_checkpointing_enable"):
+                self.decoder.gradient_checkpointing_enable()
+            elif hasattr(self.decoder, "gradient_checkpointing"):
+                self.decoder.gradient_checkpointing = True
+
         if self.disable_lm_text_head and hasattr(self.decoder, 'lm_head'):
             self.decoder.lm_head = None
 
@@ -1888,7 +1899,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 device=next_input.device,
                 dtype=next_input.dtype,
             )
-            
+
         # --- Handle CFG ---
         if state.config.use_cfg:
             next_input_unconditional_context = state.config.dummy_context_embedding_unconditional.expand(

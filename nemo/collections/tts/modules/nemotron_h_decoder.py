@@ -1536,9 +1536,22 @@ class NemotronHModel(nn.Module):
             if output_hidden_states:
                 all_hidden_states = all_hidden_states + (hidden_states,)
 
+            def create_custom_forward(layer, layer_mask):
+                def custom_forward(hidden_states):
+                    return layer(
+                        hidden_states,
+                        cache_params=None,
+                        cache_position=None,
+                        attention_mask=layer_mask,
+                    )
+                return custom_forward
+
+
             if self.gradient_checkpointing and self.training:
                 hidden_states = torch.utils.checkpoint.checkpoint(
-                    layer.__call__, hidden_states, cache_params, cache_position, layer_mask
+                    create_custom_forward(layer, layer_mask),
+                    hidden_states,
+                    use_reentrant=False,
                 )
             else:
                 hidden_states = layer(

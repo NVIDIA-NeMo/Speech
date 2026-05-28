@@ -736,15 +736,6 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             target_agent_mask = agent_mask & valid
             loss_agent_mask = target_agent_mask
 
-            if self.cfg.get("debug_decode_agent_mask", False) and self.training and self.global_step < 5:
-                self.debug_decode_mask_regions(
-                    audio_codes_target=audio_codes_target,
-                    audio_codes_lens_target=audio_codes_lens_target,
-                    agent_mask=agent_mask,
-                    out_dir=os.path.join(self.trainer.log_dir, "mask_debug", f"step_{self.global_step}"),
-                    prefix=f"batch_{self.global_rank}_{self.global_step}",
-                )
-
             # Replace user/non-agent regions with a learned token.
             # Important: audio_codes_input predicts audio_codes_target, so input mask must be shifted.
             if self.cfg.get("use_user_speaking_token", False):
@@ -2023,7 +2014,6 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 input_roles=["user", "User"],
                 output_roles=["assistant", "Assistant", "agent", "Agent"],
                 add_text_bos=self.cfg.get("add_text_bos", False),
-                remove_user_turns_prob=self.cfg.get("remove_user_turns_prob", None),
             )
             dataset = FallbackDataset(dataset)
         else:
@@ -2177,112 +2167,3 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
 
         self._val_dl_wrapped_with_dist_sampler = True
         return self._validation_dl
-
-    def debug_decode_mask_regions(
-        self,
-        audio_codes_target,
-        audio_codes_lens_target,
-        agent_mask,
-        out_dir,
-        prefix="debug_mask",
-    ):
-        os.makedirs(out_dir, exist_ok=True)
-
-        device = audio_codes_target.device
-        B, C, T = audio_codes_target.shape
-
-        agent_mask = agent_mask.to(device).bool()
-
-        if agent_mask.size(1) < T:
-            pad = torch.zeros(B, T - agent_mask.size(1), device=device, dtype=torch.bool)
-            agent_mask = torch.cat([agent_mask, pad], dim=1)
-        else:
-            agent_mask = agent_mask[:, :T]
-
-        valid = get_mask_from_lengths(audio_codes_lens_target).bool().to(device)
-        agent_mask = agent_mask & valid
-
-        C_base = self.num_audio_codebooks
-        S = self.frame_stacking_factor
-        C_target = audio_codes_target.size(1)
-
-        sil = self.codec_sil_codes.to(device=device, dtype=audio_codes_target.dtype)
-
-        if C_target == C_base:
-            sil = sil.view(1, C_base, 1).expand(B, C_base, T)
-
-        elif C_target == C_base * S:
-            sil_unstacked = sil.view(1, C_base, 1).expand(B, C_base, T * S).contiguous()
-            sil_stacked, _ = self.stack_codes(
-                sil_unstacked,
-                torch.full((B,), T * S, dtype=torch.long, device=device),
-                bos_id=self.audio_bos_id,
-                eos_id=self.audio_eos_id,
-                stacking_factor=S,
-                num_codebooks=C_base,
-            )
-            sil = sil_stacked[:, :, :T]
-        else:
-            raise RuntimeError(
-                f"Unexpected codebook dim: target C={C_target}, "
-                f"base C={C_base}, stacking_factor={S}"
-            )
-
-        def decode_and_save(codes, lens, name):
-            codes = codes.clone()
-            codes, lens = self._prepare_codes_for_decode(codes, lens)
-            audio, audio_len, _ = self._codec_helper.codes_to_audio(codes, lens)
-
-            for b in range(B):
-                wav = audio[b, : audio_len[b]].float().detach().cpu().numpy()
-                sf.write(
-                    os.path.join(out_dir, f"{prefix}_b{b}_{name}.wav"),
-                    wav,
-                    self.output_sample_rate,
-                )
-
-        # 1. full target
-        decode_and_save(audio_codes_target, audio_codes_lens_target, "full_target")
-
-        # 2. only agent region, silence elsewhere
-        agent_codes = torch.where(agent_mask[:, None, :], audio_codes_target, sil)
-        decode_and_save(agent_codes, audio_codes_lens_target, "agent_only_sil_elsewhere")
-
-        # 3. only masked-out region, silence elsewhere
-        non_agent_codes = torch.where((~agent_mask & valid)[:, None, :], audio_codes_target, sil)
-        decode_and_save(non_agent_codes, audio_codes_lens_target, "non_agent_only_sil_elsewhere")
-
-        # 4. each contiguous agent segment independently
-        for b in range(B):
-            mask_b = agent_mask[b]
-            idx = mask_b.nonzero(as_tuple=False).flatten()
-
-            if idx.numel() == 0:
-                continue
-
-            # contiguous runs
-            breaks = torch.where(idx[1:] != idx[:-1] + 1)[0] + 1
-            chunks = torch.tensor_split(idx, breaks.cpu().tolist())
-
-            for seg_i, seg_idx in enumerate(chunks):
-                start = int(seg_idx[0])
-                end = int(seg_idx[-1]) + 1
-
-                seg_codes = audio_codes_target[b : b + 1, :, start:end].clone()
-                seg_lens = torch.tensor([end - start], device=device, dtype=torch.long)
-
-                seg_codes, seg_lens = self._prepare_codes_for_decode(seg_codes, seg_lens)
-                audio, audio_len, _ = self._codec_helper.codes_to_audio(seg_codes, seg_lens)
-
-                wav = audio[0, : audio_len[0]].float().detach().cpu().numpy()
-                sf.write(
-                    os.path.join(out_dir, f"{prefix}_b{b}_agent_segment{seg_i}_frames{start}-{end}.wav"),
-                    wav,
-                    self.output_sample_rate,
-                )
-
-        logging.info(
-            f"[mask_debug] saved mask decode files to {out_dir}; "
-            f"agent coverage frames={agent_mask.sum(dim=1).detach().cpu().tolist()} / "
-            f"{audio_codes_lens_target.detach().cpu().tolist()}"
-        )

@@ -172,7 +172,6 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         input_roles: List[str] = ["user", "User"],
         output_roles: List[str] = ["assistant", "Assistant", "agent", "Agent"],
         add_text_bos: bool = False,
-        remove_user_turns_prob: float = None,
     ):
         super().__init__()
         self.sample_rate = sample_rate
@@ -180,7 +179,6 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
 
         self.codec_model_samples_per_frame = codec_model_samples_per_frame
         self.num_audio_codebooks = num_audio_codebooks
-        self.remove_user_turns_prob = remove_user_turns_prob
 
         self.include_align_prior = prior_scaling_factor is not None
         self.prior_scaling_factor = prior_scaling_factor
@@ -239,7 +237,6 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
                     supervision.speaker = "agent"
 
         batch_tokenizer_names = []
-        remove_user_turn_flags = []
         for cut in cuts:
             if cut.has_custom("tokenizer_names"):
                 batch_tokenizer_names.append(random.choice(cut.tokenizer_names))
@@ -251,12 +248,6 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
 
             # It is a multiturn if there's more than 1 agent turn
             is_multiturn = not (len(agent_sups) <= 1)
-
-            # Apply augmentation only if it's multiturn AND passes the probability check
-            if is_multiturn and self.remove_user_turns_prob and random.random() < self.remove_user_turns_prob:
-                remove_user_turn_flags.append(True)
-            else:
-                remove_user_turn_flags.append(False)
 
         def _align_codebooks(t):
             C = t.shape[1]
@@ -275,7 +266,6 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             # normalize volume and apply audio the removal of user turn if needed
 
             for i, cut in enumerate(cuts):
-                remove_user_turn_this_cut = remove_user_turn_flags[i]
 
                 # Extract the raw, unpadded 1D numpy array for this specific cut
                 t_audio = target_audio[i, :target_audio_lens[i]].numpy()
@@ -286,25 +276,6 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
                     s_audio = np.zeros(src_len, dtype=t_audio.dtype)
                 else:
                     s_audio = cut.resample(self.source_sample_rate).load_audio().squeeze(0)
-
-                if remove_user_turn_this_cut:
-                    collapsed_t, collapsed_s = [], []
-                    for sup in cut.supervisions:
-                        if sup.speaker in self.output_roles:
-                            start_t = int(round(max(0, sup.start) * self.sample_rate))
-                            end_t = int(round(sup.end * self.sample_rate))
-                            start_s = int(round(max(0, sup.start) * self.source_sample_rate))
-                            end_s = int(round(sup.end * self.source_sample_rate))
-                            
-                            # Clamp safely inside the array
-                            start_t, end_t = min(start_t, len(t_audio)), min(end_t, len(t_audio))
-                            start_s, end_s = min(start_s, len(s_audio)), min(end_s, len(s_audio))
-                            
-                            if end_t > start_t: collapsed_t.append(t_audio[start_t:end_t])
-                            if end_s > start_s: collapsed_s.append(s_audio[start_s:end_s])
-                                
-                    t_audio = np.concatenate(collapsed_t) if collapsed_t else np.zeros(1, dtype=np.float32)
-                    s_audio = np.concatenate(collapsed_s) if collapsed_s else np.zeros(1, dtype=np.float32)
 
                 # Apply volume norm locally (so we only normalize the stitched audio, saving math ops)
                 if self.volume_norm:
@@ -331,19 +302,18 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         target_text_tokens, target_token_lens = collate_token_channel(
             cuts, self.text_tokenizer, self.frame_length, roles=self.output_roles,
             add_text_bos=self.add_text_bos, tokenizer_names=batch_tokenizer_names,
-            pad_id=self.pad_id, eos_id=self.eos_id, bos_id=self.bos_id, interruption_token_id=self.interruption_token_id, remove_user_turn_flags=remove_user_turn_flags
+            pad_id=self.pad_id, eos_id=self.eos_id, bos_id=self.bos_id, interruption_token_id=self.interruption_token_id
         )
         source_tokens, source_token_lens = collate_token_channel(
             cuts, self.text_tokenizer, self.frame_length, roles=self.input_roles,
             add_text_bos=self.add_text_bos, tokenizer_names=batch_tokenizer_names,
-            pad_id=self.pad_id, eos_id=self.eos_id, bos_id=self.bos_id, interruption_token_id=self.interruption_token_id, remove_user_turn_flags=remove_user_turn_flags
+            pad_id=self.pad_id, eos_id=self.eos_id, bos_id=self.bos_id, interruption_token_id=self.interruption_token_id
         )
 
         if self.phoneme_tokenizer is not None:
             target_phoneme_tokens, target_phoneme_lens = collate_phoneme_channel(
                 cuts, self.phoneme_tokenizer, self.frame_length, roles=self.output_roles,
                 ignore_phoneme_languages=self.ignore_phoneme_languages, pad_id=self.phoneme_tokenizer.pad, eos_id=self.phoneme_tokenizer.eos_token_id, bos_id=self.phoneme_tokenizer.bos_token_id,
-                remove_user_turn_flags=remove_user_turn_flags,
             )
         else:
             target_phoneme_tokens, target_phoneme_lens = None, None
@@ -372,7 +342,6 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             return random.uniform(self.context_duration_min, effective_duration_max)
 
         for i, cut in enumerate(cuts):
-            remove_user_turn_this_cut = remove_user_turn_flags[i]
             speaker_found = False
             for sup in reversed(cut.supervisions):
                 if check_speaker_format(sup.speaker):
@@ -383,7 +352,6 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             if not speaker_found:
                 dataset_name = "unknown"
             dataset_name_list.append(dataset_name)
-            # print("Language is available?", cut.has_custom("lang"), " Has codes?", cut.has_custom("target_codes"), "Has context audio?", cut.has_custom("context_audio"), "Has context codes?", cut.has_custom("context_codes"))
 
             language = cut.lang if cut.has_custom("lang") else next((sup.language for sup in reversed(cut.supervisions) if sup.has_custom("language")), "en")
             language_list.append(language)
@@ -392,14 +360,10 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             if self.load_cached_codes_if_available:
                 if cut.has_custom("target_codes"):
                     codes_array = cut.target_codes.load().astype(np.int32)
-                    if remove_user_turn_this_cut:
-                        raise RuntimeError("Remove user turn augmentation is not implemented for cached codes!")
                     target_codes_list.append(torch.from_numpy(codes_array).T)
 
                 if cut.has_custom("source_codes"):
                     source_codes_list.append(torch.from_numpy(cut.source_codes.load().astype(np.int32)).T)
-                    if remove_user_turn_this_cut:
-                        raise RuntimeError("Remove user turn augmentation is not implemented for cached codes!")
 
             # Context Audio or Context Codes
             if self.load_cached_codes_if_available and cut.has_custom("context_codes"):
@@ -443,7 +407,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
 
             else:
                 matching_supervisions = [s for s in cut.supervisions if s.speaker in self.output_roles]
-                
+
                 if self.load_cached_codes_if_available:
                     if len(matching_supervisions) > 0 and cut.has_custom("target_codes"):
                         sup = random.choice(matching_supervisions)
@@ -642,18 +606,16 @@ def collate_token_channel(
     eos_id: int = None,
     bos_id: int = None,
     interruption_token_id: int = None,
-    remove_user_turn_flags: list[bool] = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Build and collate token channels aligned to the audio frame grid."""
     tokens = []
 
     for i, c in enumerate(cuts):
         tok_name = tokenizer_names[i] if tokenizer_names else "english_phoneme"
-        flag = remove_user_turn_flags[i] if remove_user_turn_flags else False
         tokens.append(
             build_token_channel(
                 c, tokenizer, frame_length, roles, pad_id, eos_id, bos_id, interruption_token_id,
-                add_text_bos, tok_name, remove_user_turns=flag,
+                add_text_bos, tok_name,
             )
         )
     token_lens = torch.tensor([len(tt) for tt in tokens])
@@ -701,53 +663,7 @@ def build_token_channel(
     interruption_token_id: int = -4,
     add_text_bos: bool = True,
     tokenizer_name: str = "english_phoneme",
-    remove_user_turns: bool = False,
 ) -> torch.Tensor:
-    if remove_user_turns:
-        turn_chunks = []
-        for supervision in cut.supervisions:
-            if supervision.speaker in roles:
-                # 1. Get exact frame length of THIS turn
-                start_f = compute_num_frames(supervision.start, frame_length, cut.sampling_rate)
-                end_f = compute_num_frames(supervision.end, frame_length, cut.sampling_rate)
-                turn_frames = max(0, end_f - start_f)
-                
-                turn_tokens = torch.ones(turn_frames, dtype=torch.long) * pad_id
-                
-                if turn_frames == 0:
-                    continue
-
-                # 2. Encode text
-                text = supervision.text
-                if hasattr(tokenizer, "encode"):
-                    try:
-                        raw_ids = tokenizer.encode(text=text, tokenizer_name=tokenizer_name)
-                    except TypeError:
-                        raw_ids = tokenizer.encode(text)
-                else:
-                    raw_ids = tokenizer.text_to_ids(text)
-
-                if add_text_bos:
-                    text_ids = [bos_id] + raw_ids + [eos_id]
-                else:
-                    text_ids = raw_ids + [eos_id]
-                
-                # 3. Place text at the start, keeping the rest as pad_id
-                text_len = len(text_ids)
-                if text_len > turn_frames:
-                    text_ids = text_ids[:turn_frames]
-                    text_len = turn_frames
-                
-                turn_tokens[0:text_len] = torch.as_tensor(text_ids, dtype=torch.long)
-                
-                # 4. Place interruption token at the exact end of the turn
-                turn_tokens[-1] = interruption_token_id
-                turn_chunks.append(turn_tokens)
-
-        if turn_chunks:
-            return torch.cat(turn_chunks, dim=0)
-        else:
-            return torch.tensor([pad_id], dtype=torch.long)
 
     total = compute_num_frames(cut.duration, frame_length, cut.sampling_rate)
     tokens = torch.ones(total, dtype=torch.long) * pad_id
@@ -847,15 +763,13 @@ def collate_phoneme_channel(
     pad_id: int = -1,
     eos_id: int = -2,
     bos_id: int = -3,
-    remove_user_turn_flags: list[bool] = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     tokens = []
     for i, c in enumerate(cuts):
-        flag = remove_user_turn_flags[i] if remove_user_turn_flags else False
         tokens.append(
             build_phoneme_channel(
                 c, phoneme_tokenizer, frame_length, roles,
-                ignore_phoneme_languages, pad_id, eos_id, bos_id, remove_user_turns=flag
+                ignore_phoneme_languages, pad_id, eos_id, bos_id
             )
         )
     token_lens = torch.tensor([len(tt) for tt in tokens])
@@ -871,46 +785,8 @@ def build_phoneme_channel(
     pad_id: int = -1,
     eos_id: int = -2,
     bos_id: int = -3,
-    remove_user_turns: bool = False,
 ) -> torch.Tensor:
     language = cut.lang if cut.has_custom("lang") else next((sup.language for sup in cut.supervisions if sup.has_custom("language")), "en")
-
-    if remove_user_turns:
-        turn_chunks = []
-        for supervision in cut.supervisions:
-            if supervision.speaker in roles:
-                start_f = compute_num_frames(supervision.start, frame_length, cut.sampling_rate)
-                end_f = compute_num_frames(supervision.end, frame_length, cut.sampling_rate)
-                turn_frames = max(0, end_f - start_f)
-                
-                turn_tokens = torch.ones(turn_frames, dtype=torch.long) * pad_id
-                
-                if turn_frames == 0:
-                    continue
-
-                if isinstance(phoneme_tokenizer, IPABPETokenizer):
-                    ipa_text = _get_supervision_ipa_text(supervision)
-                    if language in ignore_phoneme_languages:
-                        ipa_text = ""
-                else:
-                    ipa_text = supervision.text
-
-                phoneme_ids = phoneme_tokenizer.encode(ipa_text)
-                phoneme_ids = [bos_id] + phoneme_ids + [eos_id]
-                
-                text_len = len(phoneme_ids)
-                if text_len > turn_frames:
-
-                    phoneme_ids = phoneme_ids[:turn_frames]
-                    text_len = turn_frames
-                
-                turn_tokens[0:text_len] = torch.as_tensor(phoneme_ids, dtype=torch.long)
-                turn_chunks.append(turn_tokens)
-
-        if turn_chunks:
-            return torch.cat(turn_chunks, dim=0)
-        else:
-            return torch.tensor([pad_id], dtype=torch.long)
 
     total = compute_num_frames(cut.duration, frame_length, cut.sampling_rate)
     tokens = torch.ones(total, dtype=torch.long) * pad_id

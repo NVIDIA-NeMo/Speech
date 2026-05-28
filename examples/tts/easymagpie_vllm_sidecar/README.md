@@ -25,8 +25,9 @@ source /path/to/vllm_omni_env/bin/activate
 pip install -e .
 ```
 
-This registers `EasyMagpieSmallMambaV2` in vLLM's ModelRegistry via the
-`vllm.general_plugins` entry point.
+This registers `EasyMagpieSmallMamba` in vLLM's ModelRegistry via the
+`vllm.general_plugins` entry point. The legacy `EasyMagpieSmallMambaV2` arch
+name is also registered (alias) so existing checkpoints still resolve.
 
 ## Run
 
@@ -48,7 +49,8 @@ curl -s http://127.0.0.1:18765/healthz   # → {"status":"ok"}
 - `easymagpie_server/` — FastAPI sidecar (`/healthz`, `/tts/wire_tokenizer`,
   `/tts/stream`).
 - `vllm_plugin_easymagpie/` — `vllm.general_plugins` entry-point package that
-  registers `EasyMagpieSmallMambaV2` with vLLM's ModelRegistry.
+  registers `EasyMagpieSmallMamba` (and the `EasyMagpieSmallMambaV2` alias)
+  with vLLM's ModelRegistry.
 - `dev/` — workstation-only tooling: `refactor_harness.py` (A/B
   benchmarking — WER + UTMOS + RTF), `say.py` (CLI wrapper), `smoke_client.py`
   (curl-equivalent for `/tts/stream`), integration tests.

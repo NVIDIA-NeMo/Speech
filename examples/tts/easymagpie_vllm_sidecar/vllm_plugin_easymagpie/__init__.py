@@ -1,25 +1,22 @@
-"""vLLM plugin: register ``EasyMagpieSmallMambaV2`` so the LLM API
-instantiates our composition-based TTS class when ``config.json`` sets
-``architectures: ["EasyMagpieSmallMambaV2"]``.
+"""vLLM plugin: register ``EasyMagpieSmallMamba`` as a model architecture.
 
-Loaded by vLLM in both the parent process and each EngineCore subprocess via
-the entry-point group ``vllm.general_plugins``.
+Loaded by vLLM in the parent process and each EngineCore subprocess via the
+entry-point group ``vllm.general_plugins``.
 
-Uses the lazy ``<module>:<class>`` form so registration only stores a path
-string — the model module itself isn't imported until vLLM resolves the
-architecture. The class module is structured so its top-level imports are
-nemo-free (nemo imports are deferred to method bodies), preventing the
-parent's resolve_model_cls from poisoning the spawn-child's CUDA init.
+The legacy arch name ``EasyMagpieSmallMambaV2`` is also registered (alias) so
+existing checkpoints whose ``config.json`` lists it still resolve. The lazy
+``<module>:<class>`` form means the model module is only imported when vLLM
+resolves the architecture — keeping nemo imports out of the parent process.
 """
+
+_TARGET = "easymagpie_vllm.easymagpie_smallmamba:EasyMagpieSmallMamba"
+_ARCHS = ("EasyMagpieSmallMamba", "EasyMagpieSmallMambaV2")
 
 
 def register() -> None:
+    """Register the model class under all supported arch names."""
     from vllm import ModelRegistry
 
-    arch = "EasyMagpieSmallMambaV2"
-    if arch not in ModelRegistry.get_supported_archs():
-        ModelRegistry.register_model(
-            arch,
-            "easymagpie_vllm.easymagpie_smallmamba_v2"
-            ":EasyMagpieSmallMambaV2",
-        )
+    for arch in _ARCHS:
+        if arch not in ModelRegistry.get_supported_archs():
+            ModelRegistry.register_model(arch, _TARGET)

@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import math
-from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Optional
 
@@ -26,13 +25,7 @@ from nemo.collections.asr.parts.submodules.multi_head_attention import (
     RelPositionalEncoding,
     RelPositionMultiHeadAttention,
 )
-from nemo.collections.asr.parts.submodules.subsampling import ConvSubsampling, FeatureStacking, StackingSubsampling
-from nemo.collections.asr.parts.utils.regularization_utils import compute_stochastic_depth_drop_probs
-from nemo.core.classes.common import typecheck
-from nemo.core.classes.exportable import Exportable
-from nemo.core.classes.mixins import AccessMixin
-from nemo.core.classes.module import NeuralModule
-from nemo.core.neural_types import AcousticEncodedRepresentation, BoolType, LengthsType, NeuralType, SpectrogramType
+from nemo.collections.asr.parts.submodules.subsampling import FeatureStacking, StackingSubsampling
 
 flex_attention_compiled = torch.compile(flex_attention, dynamic=True)
 
@@ -260,7 +253,7 @@ class TransformerBlock(nn.Module):
         return x
 
 
-class TransformerEncoder(NeuralModule, Exportable, AccessMixin):
+class TransformerEncoder(nn.Module):
     """Pre-norm Transformer encoder for ASR.
 
     Architecture: PreEncode -> PositionalEncoding -> LayerNorm -> N x TransformerBlock -> FinalNorm
@@ -281,13 +274,9 @@ class TransformerEncoder(NeuralModule, Exportable, AccessMixin):
         n_layers: Number of Transformer blocks.
         feat_out: Output feature dimension. Defaults to ``d_model``.
         subsampling: Subsampling method. Supports ``feature_stacking`` for the
-            Transformer-native ``FeatureStacking`` module, plus Conformer-style
-            ``stacking``, ``stacking_norm``, ``vggnet``, ``striding``,
-            ``dw_striding``/``dw-striding``, ``striding_conv1d``, and ``dw_striding_conv1d``.
+            Transformer-native ``FeatureStacking`` module, plus ``stacking`` and
+            ``stacking_norm`` for linear frame stacking.
         subsampling_factor: Subsampling factor for the pre-encoder.
-        subsampling_conv_chunking_factor: Optional input chunking factor for convolutional subsampling.
-        subsampling_conv_channels: Hidden channels for convolutional subsampling.
-        causal_downsampling: Whether convolutional subsampling should be causal.
         drop_rate: Dropout probability.
         dropout_pre_encoder: Dropout probability after positional encoding. Defaults to ``drop_rate``.
         dropout_emb: Dropout probability for positional embeddings.
@@ -332,58 +321,9 @@ class TransformerEncoder(NeuralModule, Exportable, AccessMixin):
             pre-encoders and the LayerNorm directly after the positional sum, this scaling is
             largely a no-op for activation magnitudes. Only meaningful when ``pre_block_norm=False``
             or when matching pretrained checkpoints that expect this scaling.
-        stochastic_depth_drop_prob: Final-layer stochastic depth drop probability.
-        stochastic_depth_mode: Stochastic depth schedule, ``linear`` or ``uniform``.
-        stochastic_depth_start_layer: First 1-based layer index eligible for stochastic depth.
         attn_mode: Attention pattern — currently only "full" (bidirectional) is supported.
         sync_max_audio_length: When true, sync positional encoding allocation length across distributed ranks.
     """
-
-    def input_example(self, max_batch=1, max_dim=256):
-        """Generates input examples for tracing and export."""
-        dev = next(self.parameters()).device
-        input_example = torch.randn(max_batch, self._feat_in, max_dim, device=dev)
-        input_example_length = torch.randint(max_dim // 4, max_dim, (max_batch,), device=dev, dtype=torch.int64)
-        return tuple([input_example, input_example_length])
-
-    @property
-    def input_types(self):
-        """Returns definitions of module input ports."""
-        return OrderedDict(
-            {
-                "audio_signal": NeuralType(('B', 'D', 'T'), SpectrogramType()),
-                "length": NeuralType(tuple('B'), LengthsType()),
-                "bypass_pre_encode": NeuralType(tuple(), BoolType(), optional=True),
-            }
-        )
-
-    @property
-    def input_types_for_export(self):
-        """Returns definitions of module input ports for export."""
-        return self.input_types
-
-    @property
-    def output_types(self):
-        """Returns definitions of module output ports."""
-        return OrderedDict(
-            {
-                "outputs": NeuralType(('B', 'D', 'T'), AcousticEncodedRepresentation()),
-                "encoded_lengths": NeuralType(tuple('B'), LengthsType()),
-            }
-        )
-
-    @property
-    def output_types_for_export(self):
-        """Returns definitions of module output ports for export."""
-        return self.output_types
-
-    @property
-    def disabled_deployment_input_names(self):
-        return set()
-
-    @property
-    def disabled_deployment_output_names(self):
-        return set()
 
     def __init__(
         self,
@@ -392,11 +332,8 @@ class TransformerEncoder(NeuralModule, Exportable, AccessMixin):
         n_heads: int = 8,
         n_layers: int = 17,
         feat_out: int = -1,
-        causal_downsampling: bool = False,
         subsampling: str = 'feature_stacking',
         subsampling_factor: int = 4,
-        subsampling_conv_chunking_factor: int = 1,
-        subsampling_conv_channels: int = -1,
         drop_rate: float = 0.1,
         dropout_pre_encoder: float = None,
         dropout_emb: float = 0.0,
@@ -407,9 +344,6 @@ class TransformerEncoder(NeuralModule, Exportable, AccessMixin):
         self_attention_model: Optional[str] = "rel_pos",
         pos_emb_max_len: int = 5000,
         xscaling: bool = False,
-        stochastic_depth_drop_prob: float = 0.0,
-        stochastic_depth_mode: str = "linear",
-        stochastic_depth_start_layer: int = 1,
         attn_mode: str = "full",
         sync_max_audio_length: bool = True,
     ):
@@ -432,8 +366,6 @@ class TransformerEncoder(NeuralModule, Exportable, AccessMixin):
             dropout_pre_encoder = drop_rate
         if subsampling == 'feature-stacking':
             subsampling = 'feature_stacking'
-        if subsampling == 'dw-striding':
-            subsampling = 'dw_striding'
 
         cfg = TransformerEncoderConfig(
             feat_in=feat_in,
@@ -454,12 +386,9 @@ class TransformerEncoder(NeuralModule, Exportable, AccessMixin):
         self._feat_in = feat_in
         self.subsampling = subsampling
         self.subsampling_factor = subsampling_factor
-        self.subsampling_conv_chunking_factor = subsampling_conv_chunking_factor
         self.sync_max_audio_length = sync_max_audio_length
         self.self_attention_model = self_attention_model
 
-        if subsampling_conv_channels == -1:
-            subsampling_conv_channels = d_model
         if subsampling == 'feature_stacking':
             self.pre_encode = FeatureStacking(subsampling_factor, feat_in, d_model)
         elif subsampling and subsampling_factor > 1:
@@ -471,15 +400,9 @@ class TransformerEncoder(NeuralModule, Exportable, AccessMixin):
                     norm=True if subsampling == 'stacking_norm' else False,
                 )
             else:
-                self.pre_encode = ConvSubsampling(
-                    subsampling=subsampling,
-                    subsampling_factor=subsampling_factor,
-                    feat_in=feat_in,
-                    feat_out=d_model,
-                    conv_channels=subsampling_conv_channels,
-                    subsampling_conv_chunking_factor=subsampling_conv_chunking_factor,
-                    activation=nn.ReLU(True),
-                    is_causal=causal_downsampling,
+                raise ValueError(
+                    f"subsampling='{subsampling}' is not supported. "
+                    "Currently only 'feature_stacking', 'stacking', and 'stacking_norm' are available."
                 )
         else:
             self.pre_encode = nn.Linear(feat_in, d_model)
@@ -519,16 +442,7 @@ class TransformerEncoder(NeuralModule, Exportable, AccessMixin):
 
         self.set_max_audio_length(self.pos_emb_max_len)
         self.use_pad_mask = True
-        self.layer_drop_probs = compute_stochastic_depth_drop_probs(
-            len(self.layers), stochastic_depth_drop_prob, stochastic_depth_mode, stochastic_depth_start_layer
-        )
-        self.interctc_capture_at_layers = None
 
-    def forward_for_export(self, audio_signal, length):
-        """Forward function for model export. Please see ``forward()`` for details."""
-        return self.forward_internal(audio_signal=audio_signal, length=length)
-
-    @typecheck()
     def forward(self, audio_signal, length, bypass_pre_encode=False):
         """
         Args:
@@ -597,28 +511,8 @@ class TransformerEncoder(NeuralModule, Exportable, AccessMixin):
         # need to thread ``pos_emb`` through each layer; only ``rel_pos`` consumes it.
         layer_pos_emb = pos_emb if self.self_attention_model == "rel_pos" else None
 
-        for lth, (drop_prob, layer) in enumerate(zip(self.layer_drop_probs, self.layers)):
-            original_signal = x
+        for layer in self.layers:
             x = layer(x, block_mask=block_mask, pos_emb=layer_pos_emb)
-
-            if self.training and drop_prob > 0.0:
-                should_drop = torch.rand(1, device=x.device) < drop_prob
-                if should_drop:
-                    x = x * 0.0 + original_signal
-                else:
-                    x = (x - original_signal) / (1.0 - drop_prob) + original_signal
-
-            if self.is_access_enabled(getattr(self, "model_guid", None)):
-                if self.interctc_capture_at_layers is None:
-                    self.interctc_capture_at_layers = self.access_cfg.get('interctc', {}).get('capture_layers', [])
-                if lth in self.interctc_capture_at_layers:
-                    lth_audio_signal = x
-                    if self.out_proj is not None:
-                        lth_audio_signal = self.out_proj(lth_audio_signal)
-                    self.register_accessible_tensor(
-                        name=f'interctc/layer_output_{lth}', tensor=torch.transpose(lth_audio_signal, 1, 2)
-                    )
-                    self.register_accessible_tensor(name=f'interctc/layer_length_{lth}', tensor=length)
 
         x = self.final_norm(x)
         if self.out_proj is not None:

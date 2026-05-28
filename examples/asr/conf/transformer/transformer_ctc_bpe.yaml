@@ -96,14 +96,10 @@ model:
     d_model: 512
     n_heads: 8
 
-    # Sub-sampling params (Conformer-style options are supported; ``feature_stacking`` is the
-    # Transformer-native default in the module itself, but for parity with the Canary-flash
-    # baseline we keep dw_striding x8 here.)
-    subsampling: dw_striding # feature_stacking, stacking, stacking_norm, vggnet, striding, dw_striding, striding_conv1d, dw_striding_conv1d
-    subsampling_factor: 8 # must be power of 2 for striding / vggnet variants
-    subsampling_conv_channels: 256 # -1 sets it to d_model
-    subsampling_conv_chunking_factor: 1 # 1 = auto-chunking, -1 = no chunking, otherwise power-of-2
-    causal_downsampling: false
+    # Sub-sampling params. ``feature_stacking`` is the Transformer-native default and is more
+    # low-precision friendly with no accuracy/throughput downside vs. convolutional frontends.
+    subsampling: feature_stacking # feature_stacking, stacking, stacking_norm
+    subsampling_factor: 8
 
     # Feed-forward module's params
     ff_expansion: 4.0 # FFN hidden = ff_expansion * d_model
@@ -128,11 +124,6 @@ model:
     drop_rate: 0.1 # dropout inside attention/FFN sublayers (corresponds to conformer's ``dropout``)
     dropout_pre_encoder: 0.1 # dropout applied after positional encoding (unused when self_attention_model=no_pos)
     dropout_emb: 0.0 # dropout for the positional embeddings (unused when self_attention_model=no_pos)
-
-    # Set to non-zero to enable stochastic depth
-    stochastic_depth_drop_prob: 0.0
-    stochastic_depth_mode: linear  # linear or uniform
-    stochastic_depth_start_layer: 1
 
     # When true, sync max-audio-length across distributed ranks before extending positional buffers
     sync_max_audio_length: true

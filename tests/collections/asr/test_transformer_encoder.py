@@ -105,123 +105,6 @@ class TestFeatureStacking:
         assert out_lengths[0].item() == stacking.compute_num_out_frames(T)
 
 
-class TestStochasticDepth:
-    """Testing stochastic depth functionality."""
-
-    def test_stochastic_depth_model_creation(self):
-        """Testing basic model creation and the drop probs are correctly assigned."""
-        n_layers = 4
-        model = TransformerEncoder(feat_in=10, n_layers=n_layers, d_model=4, n_heads=2, feat_out=8)
-
-        # checking that by default SD is disabled
-        assert model.layer_drop_probs == [0.0] * n_layers
-
-        # linear mode
-        for drop_prob in [0.3, 0.5, 0.9]:
-            for start_layer in [1, 3]:
-                model = TransformerEncoder(
-                    feat_in=10,
-                    n_layers=n_layers,
-                    d_model=4,
-                    n_heads=2,
-                    feat_out=8,
-                    stochastic_depth_drop_prob=drop_prob,
-                    stochastic_depth_start_layer=start_layer,
-                )
-                L = n_layers - start_layer
-                assert model.layer_drop_probs == [0.0] * start_layer + [drop_prob * l / L for l in range(1, L + 1)]
-
-        # uniform mode
-        for drop_prob in [0.3, 0.5, 0.9]:
-            model = TransformerEncoder(
-                feat_in=10,
-                n_layers=n_layers,
-                d_model=4,
-                n_heads=2,
-                feat_out=8,
-                stochastic_depth_drop_prob=drop_prob,
-                stochastic_depth_mode="uniform",
-                stochastic_depth_start_layer=start_layer,
-            )
-            L = n_layers - start_layer
-            assert model.layer_drop_probs == [0.0] * start_layer + [drop_prob] * L
-
-        # checking for errors
-        for drop_prob in [-1.0, 1.0]:
-            with pytest.raises(ValueError, match="stochastic_depth_drop_prob has to be in"):
-                TransformerEncoder(
-                    feat_in=10,
-                    n_layers=n_layers,
-                    d_model=4,
-                    n_heads=2,
-                    feat_out=8,
-                    stochastic_depth_drop_prob=drop_prob,
-                    stochastic_depth_mode="uniform",
-                )
-
-        with pytest.raises(ValueError, match="stochastic_depth_mode has to be one of"):
-            TransformerEncoder(
-                feat_in=10, n_layers=n_layers, d_model=4, n_heads=2, feat_out=8, stochastic_depth_mode="weird"
-            )
-
-        for start_layer in [-1, 0, 5]:
-            with pytest.raises(ValueError, match="stochastic_depth_start_layer has to be in"):
-                TransformerEncoder(
-                    feat_in=10,
-                    n_layers=n_layers,
-                    d_model=4,
-                    n_heads=2,
-                    feat_out=8,
-                    stochastic_depth_start_layer=start_layer,
-                )
-
-    def test_stochastic_depth_forward(self):
-        """Testing that forward works and we get randomness during training, but not during eval.
-
-        The forwards are wrapped in ``torch.no_grad()`` because FlexAttention's CPU path raises
-        ``NotImplementedError`` if any input requires gradients. ``torch.no_grad()`` does not
-        touch ``model.training``, so the stochastic-depth Bernoulli branch (driven by
-        ``torch.rand(1) < drop_prob``, not autograd) still fires in train mode.
-        """
-        random_input = torch.rand((1, 2, 16))
-        random_length = torch.tensor([16], dtype=torch.int64)
-
-        model = TransformerEncoder(
-            feat_in=2,
-            n_layers=3,
-            d_model=4,
-            n_heads=2,
-            feat_out=4,
-            stochastic_depth_drop_prob=0.8,
-            drop_rate=0.0,
-            dropout_pre_encoder=0.0,
-            dropout_emb=0.0,
-        )
-        model.train()
-        outputs = [None] * 5
-        with torch.no_grad():
-            for i in range(5):
-                outputs[i] = model(audio_signal=random_input, length=random_length)[0]
-        # checking that not all outputs are the same
-        num_diff = 0
-        for i in range(1, 5):
-            if not torch.allclose(outputs[i], outputs[0]):
-                num_diff += 1
-        assert num_diff > 0
-
-        model.eval()
-        outputs = [None] * 5
-        with torch.no_grad():
-            for i in range(5):
-                outputs[i] = model(audio_signal=random_input, length=random_length)[0]
-        # checking that not all outputs are the same
-        num_diff = 0
-        for i in range(1, 5):
-            if not torch.allclose(outputs[i], outputs[0]):
-                num_diff += 1
-        assert num_diff == 0
-
-
 class TestBypassPreEncode:
     """Testing bypass pre-encode functionality."""
 
@@ -245,7 +128,6 @@ class TestBypassPreEncode:
             d_model=emb_dim,
             n_heads=4,
             feat_out=feat_out,
-            stochastic_depth_drop_prob=0.0,
             drop_rate=0.0,
             dropout_pre_encoder=0.0,
             dropout_emb=0.0,
@@ -285,7 +167,6 @@ class TestBypassPreEncode:
             d_model=emb_dim,
             n_heads=4,
             feat_out=feat_out,
-            stochastic_depth_drop_prob=0.0,
             drop_rate=0.0,
             dropout_pre_encoder=0.0,
             dropout_emb=0.0,

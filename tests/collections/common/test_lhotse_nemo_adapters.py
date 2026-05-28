@@ -262,3 +262,45 @@ def test_lazy_nemo_iterator_with_offset_metadata_only(nemo_offset_manifest_path)
         assert s.channel == 0
         assert s.text == "irrelevant"
         assert s.language == "en"
+
+
+@pytest.fixture
+def nemo_manifest_path_sample_rate(tmp_path_factory):
+    """2 utterances using 'sample_rate' field instead of 'sampling_rate'."""
+    tmpdir = tmp_path_factory.mktemp("nemo_data_sr")
+    cuts = DummyManifest(CutSet, begin_id=0, end_id=2, with_data=True).save_audios(tmpdir, progress_bar=False)
+    nemo = []
+    for c in cuts:
+        nemo.append(
+            {
+                "audio_filepath": c.recording.sources[0].source,
+                "text": "irrelevant",
+                "duration": c.duration,
+                "sample_rate": c.sampling_rate,
+                "lang": "en",
+            }
+        )
+    p = tmpdir / "nemo_manifest_sr.json"
+    save_to_jsonl(nemo, p)
+    return p
+
+
+def test_lazy_nemo_iterator_sample_rate_fallback(nemo_manifest_path_sample_rate):
+    """Test that LazyNeMoIterator accepts 'sample_rate' when 'sampling_rate' is absent."""
+    cuts = CutSet(LazyNeMoIterator(nemo_manifest_path_sample_rate))
+
+    assert len(cuts) == 2
+
+    for c in cuts:
+        assert isinstance(c, MonoCut)
+        assert c.sampling_rate == 16000
+        assert c.has_recording
+        assert isinstance(c.recording, Recording)
+        assert c.recording.sampling_rate == 16000
+
+        audio = c.load_audio()
+        assert isinstance(audio, np.ndarray)
+        assert audio.shape == (1, 16000)
+
+        # sample_rate should not leak into custom fields
+        assert "sample_rate" not in (c.custom or {})

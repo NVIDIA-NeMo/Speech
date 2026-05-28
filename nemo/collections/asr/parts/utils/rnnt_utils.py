@@ -395,6 +395,8 @@ class BatchedHyps:
             labels: non-blank labels to add
             time_indices: tensor of time index for each label
             scores: label scores
+            token_durations: optional tensor with durations
+            confidence: optional tensor with step confidence
         """
         if active_indices.shape[0] == 0:
             return  # nothing to add
@@ -431,6 +433,7 @@ class BatchedHyps:
             time_indices: tensor of time index for each label
             scores: label scores
             token_durations: predicted durations for each token by TDT head
+            confidence: optional tensor with step confidence
         """
         # accumulate scores
         self.scores[active_indices] += scores
@@ -469,6 +472,7 @@ class BatchedHyps:
             time_indices: tensor of time index for each label
             scores: label scores
             token_durations: token durations for TDT
+            confidence: optional tensor with step confidence
         """
         if (self.current_lengths + active_mask).max() >= self._max_length:
             self._allocate_more()
@@ -501,6 +505,7 @@ class BatchedHyps:
             time_indices: tensor of time index for each label
             scores: label scores
             token_durations: token durations for TDT
+            confidence: optional tensor with step confidence
         """
         # accumulate scores
         # same as self.scores[active_mask] += scores[active_mask], but non-blocking

@@ -5,19 +5,23 @@ next from evidence, not from guesswork.
 
 ## Evaluation Matrix
 
-Always compare at least:
+Always compare:
 
 - Baseline pretrained model on the domain validation/test set.
 - Fine-tuned model on the same domain validation/test set.
-- Fine-tuned model on a general or out-of-domain guardrail set.
+
+Add a general or out-of-domain guardrail set only when it matches the user's goal, such as preserving same-language
+general ASR quality, broad production behavior, or a known existing benchmark. If the user is intentionally changing
+language, task, script, domain, or deployment scope, do not assume a generic guardrail is meaningful; pick validation
+sets that reflect the desired behavior.
 
 Report standalone `speech_to_text_eval.py` WER for each row. In-training `val_wer` is only for checkpoint selection.
-For small-domain adaptation, do not optimize only the target-domain set; track a general set so regressions and
-catastrophic forgetting are visible.
+For small-domain adaptation, avoid optimizing only one tiny target set when the model must still work broadly; track the
+smallest goal-relevant guardrail set that would reveal unacceptable regressions.
 
 Example tracking table:
 
-| Run | Checkpoint | Domain WER | General WER | Notes |
+| Run | Checkpoint | Target WER | Optional Guardrail WER | Notes |
 | --- | --- | --- | --- | --- |
 | baseline | pretrained |  |  | no fine-tune |
 | ft-001 | best single |  |  | first pass |
@@ -41,8 +45,8 @@ Prefer the least invasive intervention that matches the error pattern:
 
 - Data issue: fix labels/audio, remove broken samples, adjust `min_duration`, `max_duration`, `min_tps`, or `max_tps`.
 - Rare vocabulary or entities: add more real examples if available; otherwise add carefully reviewed synthetic examples.
-- Overfitting or regression: lower LR, reduce `max_steps`, increase generic/guardrail blend, or stop at an earlier
-  checkpoint.
+- Overfitting or regression: lower LR, reduce `max_steps`, stop at an earlier checkpoint, or increase a generic/guardrail
+  blend only when preserving that behavior is part of the user's objective.
 - Domain underfitting: raise target-domain real-data weight, add targeted data, or run a lower-LR domain-focus phase.
 - Decoding issue: compare decoder options, prompts, punctuation/capitalization settings, or CTC/RNNT head for hybrids.
 - Tokenization issue: revisit tokenizer only when transcript language/domain coverage cannot be represented well by the
@@ -62,23 +66,6 @@ Recommendations:
 - Add synthetic data as a separately weighted Lhotse input source so it can be ablated.
 - For small-domain adaptation, keep real target-domain audio dominant unless standalone WER proves otherwise.
 
-## Curriculum Pattern
-
-For small-data domain adaptation, prefer short lower-LR phases over one long aggressive run:
-
-1. Foundation phase: preserve broad behavior with a mix of generic and target-domain data.
-2. Domain-focus phase: increase real target-domain and targeted data weight, lower LR.
-3. Optional refinement phase: lower LR again and evaluate carefully; this phase can regress.
-
-Typical starting points:
-
-- First small-domain phase: `model.optim.lr=3e-5`.
-- Follow-up domain-focus phase: `model.optim.lr=1e-5`.
-- Refinement phase: `model.optim.lr=5e-6` or lower.
-
-Use `trainer.max_steps` for each phase, checkpoint by `val_wer`, and run standalone evaluation after each phase. Keep
-the best phase, not necessarily the last phase.
-
 ## Run Ledger
 
 Maintain a compact run ledger with:
@@ -87,5 +74,25 @@ Maintain a compact run ledger with:
 - LR, `max_steps`, warmup, precision, and batch profile.
 - Duration/token filters and number of examples filtered.
 - Best checkpoint and standalone WER/CER.
-- Domain and general guardrail WER.
+- Target-set WER and any goal-relevant guardrail WER.
 - Decision for the next run.
+
+## Late-Stage Curriculum Pattern
+
+Use curriculum-style staged fine-tuning only after simpler refinements stop improving standalone WER. Try data cleanup,
+filter fixes, blend-weight changes, targeted data additions, decoding choices, and tokenizer decisions first.
+
+For small-data domain adaptation, use short lower-LR phases instead of one long aggressive run:
+
+1. Foundation phase: preserve required broad behavior with a mix of source and target-domain data when that is a goal.
+2. Domain-focus phase: increase real target-domain and targeted data weight, lower LR.
+3. Final refinement phase: lower LR again and evaluate carefully; this phase can regress.
+
+Typical starting points:
+
+- First small-domain phase: `model.optim.lr=3e-5`.
+- Follow-up domain-focus phase: `model.optim.lr=1e-5`.
+- Final refinement phase: `model.optim.lr=5e-6` or lower.
+
+Use `trainer.max_steps` for each phase, checkpoint by `val_wer`, and run standalone evaluation after each phase. Keep
+the best phase, not necessarily the last phase.

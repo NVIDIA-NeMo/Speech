@@ -7,7 +7,7 @@ description: Guide NeMo Speech users through ASR fine-tuning with container setu
 
 Use this skill when a user wants to fine-tune a NeMo Speech ASR model, choose a checkpoint, adapt a tokenizer,
 configure Lhotse dataloading, train, average checkpoints, or evaluate a fine-tuned ASR `.nemo` checkpoint.
-Also use it for post-run refinement planning and export/deployment handoff after fine-tuning.
+Also use it for post-run refinement planning after fine-tuning.
 
 Default posture:
 
@@ -28,7 +28,6 @@ Load only the reference file needed for the current stage:
 4. Training, checkpoint averaging, and evaluation: read `references/training-evaluation.md`.
 5. Post-run refinement, error analysis, curriculum, and general-vs-domain evaluation: read
    `references/refinement-iteration.md`.
-6. Export/deployment handoff: read `references/export-deploy.md`.
 
 If the user explicitly asks for parallel/sub-agent work, split the work by these same stages. Keep each agent scoped to
 one stage and have the main agent integrate the final command/config.
@@ -51,7 +50,6 @@ Always check the current repo docs before giving version-sensitive claims:
 - `docs/source/asr/featured_models.rst`
 - `docs/source/asr/asr_checkpoints.rst`
 - `nemo/collections/common/data/lhotse/dataloader.py`
-- `examples/asr/export/transducer/`
 
 ## Non-Negotiable Pitfalls
 

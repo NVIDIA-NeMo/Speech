@@ -212,5 +212,5 @@ python examples/asr/speech_to_text_eval.py \
   use_cer=False
 ```
 
-Use `examples/asr/transcribe_speech.py` for direct transcription and streaming or chunked inference scripts for
+Use `examples/asr/transcribe_speech.py` for direct offline transcription and streaming or chunked inference scripts for
 streaming models.

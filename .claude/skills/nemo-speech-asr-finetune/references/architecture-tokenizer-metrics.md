@@ -7,7 +7,7 @@ Inspect the model config before choosing scripts and overrides:
 ```python
 from nemo.collections.asr.models import ASRModel
 
-cfg = ASRModel.from_pretrained("nvidia/parakeet-tdt-0.6b-v2", return_config=True)
+cfg = ASRModel.from_pretrained("nvidia/parakeet-tdt-0.6b-v3", return_config=True)
 print(cfg.target)
 print(cfg.get("decoder", None))
 print(cfg.get("joint", None))
@@ -31,6 +31,14 @@ recipes:
 - RNNT: `examples/asr/asr_transducer/speech_to_text_rnnt_bpe.py`
 - Hybrid RNNT/CTC or TDT/CTC: `examples/asr/asr_hybrid_transducer_ctc/speech_to_text_hybrid_rnnt_ctc_bpe.py`
 - AED/Canary: `examples/asr/speech_multitask/speech_to_text_aed.py`
+
+Reference configs to inspect before writing overrides:
+
+- CTC: `examples/asr/conf/fastconformer/fast-conformer_ctc_bpe.yaml`
+- RNNT: `examples/asr/conf/fastconformer/fast-conformer_transducer_bpe.yaml`
+- TDT: `examples/asr/conf/conformer/tdt/conformer_tdt_bpe.yaml`
+- Hybrid TDT/CTC: `examples/asr/conf/fastconformer/hybrid_transducer_ctc/fastconformer_hybrid_tdt_ctc_bpe.yaml`
+- AED/Canary: `examples/asr/conf/speech_multitask/fast-conformer_aed.yaml`
 
 ## Tokenizer Decisions
 

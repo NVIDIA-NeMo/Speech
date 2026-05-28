@@ -23,7 +23,6 @@ from omegaconf import DictConfig
 from nemo.collections.asr.parts.context_biasing.biasing_multi_model import GPUBiasingMultiModel
 from nemo.collections.asr.parts.submodules.ngram_lm import NGramGPULanguageModel
 from nemo.collections.asr.parts.submodules.transducer_decoding.label_looping_base import (
-    CUDA_GRAPH_COMPILE_ERROR_TYPES,
     BatchedLabelLoopingState,
     GreedyBatchedLabelLoopingComputerBase,
     LabelLoopingStateItem,
@@ -31,7 +30,7 @@ from nemo.collections.asr.parts.submodules.transducer_decoding.label_looping_bas
 )
 from nemo.collections.asr.parts.utils import rnnt_utils
 from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMethodMixin
-from nemo.core.utils.cuda_python_utils import cu_call, run_nvrtc, with_conditional_node
+from nemo.core.utils.cuda_python_utils import CUDA_GRAPH_COMPILE_ERROR_TYPES, cu_call, run_nvrtc, with_conditional_node
 from nemo.core.utils.optional_libs import CUDA_PYTHON_AVAILABLE, cuda_python_required
 from nemo.utils import logging
 

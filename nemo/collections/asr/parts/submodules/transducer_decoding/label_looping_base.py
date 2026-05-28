@@ -22,16 +22,9 @@ from nemo.collections.asr.parts.context_biasing.biasing_multi_model import GPUBi
 from nemo.collections.asr.parts.submodules.ngram_lm import NGramGPULanguageModel
 from nemo.collections.asr.parts.utils import rnnt_utils
 from nemo.collections.common.parts.optional_cuda_graphs import WithOptionalCudaGraphs
-from nemo.core.utils.cuda_python_utils import (
-    NeMoCUDAPythonException,
-    check_cuda_python_cuda_graphs_conditional_nodes_supported,
-)
+from nemo.core.utils.cuda_python_utils import check_cuda_python_cuda_graphs_conditional_nodes_supported
 from nemo.utils import logging
 from nemo.utils.enum import PrettyStrEnum
-
-CUDA_GRAPH_COMPILE_ERROR_TYPES = (NeMoCUDAPythonException,)
-if hasattr(torch, "AcceleratorError"):
-    CUDA_GRAPH_COMPILE_ERROR_TYPES += (torch.AcceleratorError,)
 
 
 @dataclass

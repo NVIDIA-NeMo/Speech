@@ -13,7 +13,7 @@
 # limitations under the License.
 
 
-from nemo.collections.asr.parts.submodules.transducer_decoding.greedy_batched_hyps import (
+from nemo.collections.asr.parts.submodules.transducer_decoding.batched_hyps import (
     BatchedAlignments,
     BatchedHyps,
 )

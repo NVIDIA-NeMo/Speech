@@ -22,7 +22,7 @@ from omegaconf import DictConfig
 
 from nemo.collections.asr.parts.context_biasing.biasing_multi_model import GPUBiasingMultiModel
 from nemo.collections.asr.parts.submodules.ngram_lm import NGramGPULanguageModel
-from nemo.collections.asr.parts.submodules.transducer_decoding.greedy_batched_hyps import (
+from nemo.collections.asr.parts.submodules.transducer_decoding.batched_hyps import (
     BatchedAlignments,
     BatchedHyps,
 )

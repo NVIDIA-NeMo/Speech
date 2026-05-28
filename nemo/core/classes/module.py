@@ -117,9 +117,9 @@ class NeuralModule(Module, Typing, Serialization, FileIO):
         Context manager which temporarily freezes a module, yields control and finally unfreezes the module partially
         to return to original state.
 
-        Allows for either total unfreeze or partial unfreeze (if the module was explicitly frozen previously with `freeze()`).
-        The `partial` argument is used to determine whether to unfreeze all parameters or only the parameters that were
-        previously unfrozen prior `freeze()`.
+        Allows for either total unfreeze or partial unfreeze (if the module was explicitly frozen
+        previously with `freeze()`). The `partial` argument is used to determine whether to unfreeze
+        all parameters or only the parameters that were previously unfrozen prior `freeze()`.
 
         Example:
             with model.as_frozen():  # by default, partial = True

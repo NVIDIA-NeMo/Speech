@@ -49,6 +49,7 @@ class BatchedHyps:
         self.float_dtype = float_dtype
         self.with_durations = with_durations
         self.with_step_confidence = with_step_confidence
+        self.with_duration_confidence = with_duration_confidence
         self.with_logits = with_logits
 
         # batch of current lengths of hypotheses and correspoinding timestamps
@@ -66,11 +67,10 @@ class BatchedHyps:
             self.token_durations = None
         # optional (2) step confidence
         if self.with_step_confidence:
-            self.step_confidence = torch.zeros(
-                [batch_size, self._max_length, 2] if with_duration_confidence else [batch_size, self._max_length],
-                device=device,
-                dtype=float_dtype,
+            confidence_shape = (
+                [batch_size, self._max_length, 2] if self.with_duration_confidence else [batch_size, self._max_length]
             )
+            self.step_confidence = torch.zeros(confidence_shape, device=device, dtype=float_dtype)
         else:
             self.step_confidence = None
         # optional (3) logits
@@ -389,10 +389,17 @@ class BatchedHyps:
             self.token_durations.scatter_(dim=1, index=shifted_indices, src=other.token_durations)
         # optional (2) step confidence
         if self.with_step_confidence:
-            raise NotImplementedError
+            if self.with_duration_confidence:
+                self.step_confidence.scatter_(
+                    dim=1, index=shifted_indices[..., None].expand([-1, -1, 2]), src=other.step_confidence
+                )
+            else:
+                self.step_confidence.scatter_(dim=1, index=shifted_indices, src=other.step_confidence)
         # optional (3) logits
         if self.with_logits:
-            raise NotImplementedError
+            self.logits.scatter_(
+                dim=-1, index=shifted_indices[..., None].expand([-1, -1, self.logits_dim]), src=other.logits
+            )
         self.current_lengths += other.current_lengths
         self.scores += other.scores
         self.last_nb_timestamp.copy_(other.last_nb_timestamp)

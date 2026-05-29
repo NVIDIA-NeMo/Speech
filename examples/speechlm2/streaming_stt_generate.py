@@ -104,6 +104,9 @@ class StreamingSTTEvalConfig:
     )
     dynamic_min_chunk_size: int = 0  # dynamic chunking: min frames before allowing generation
     dynamic_max_chunk_size: Optional[int] = None  # dynamic chunking: max frames before forcing generation
+    # Fixed-chunk size (frames) to run inference at. None → use the model config
+    # chunk_size (the longest value when the model was trained with a list of sizes).
+    chunk_size_override: Optional[int] = None
     # Probability threshold for the boundary decision.
     #   - When use_chunk_classifier_at_inference=True: threshold on the aux
     #     head's sigmoid output. None → 0.5 default.
@@ -208,6 +211,7 @@ def main(cfg: StreamingSTTEvalConfig):
             emit_delay_frames=cfg.emit_delay_frames,
             disable_emit_for_debug=cfg.disable_emit_for_debug,
             use_chunk_classifier_at_inference=cfg.use_chunk_classifier_at_inference,
+            chunk_size_override=cfg.chunk_size_override,
         )
         batch_infer_duration = perf_counter() - ts
 

@@ -720,7 +720,7 @@ class TestTranscriptPreservation:
         asst = [m["content"] for m in msgs if m["role"] == "assistant"]
         # Trailing space is excluded because preserve_leading_whitespace=True
         #  ensures correct concatenation when turns are joined.
-        assert asst[0] == "said good"
+        assert asst[0] == " said good"
 
     def test_without_transcript_falls_back(self):
         """Without transcript, words are joined with plain space."""
@@ -1349,8 +1349,8 @@ class TestDynamicChunking:
             transcript="Hello, World!",
         )
         asst_msgs = [m for m in msgs if m["role"] == "assistant"]
-        assert asst_msgs[0]["content"] == "Hello, "
-        assert asst_msgs[1]["content"] == "World!"
+        assert asst_msgs[0]["content"] == "Hello,"
+        assert asst_msgs[1]["content"] == " World!"
 
     def test_with_delay(self):
         """Delay frames shift chunk boundaries."""
@@ -1494,8 +1494,8 @@ class TestWordsPerChunk:
             words_per_group=2,
         )
         asst = [m["content"] for m in msgs if m["role"] == "assistant"]
-        assert asst[0] == "Hello, World! "  # preserve_trailing_whitespace includes trailing space
-        assert asst[1] == "How?"
+        assert asst[0] == "Hello, World!"
+        assert asst[1] == " How?"
 
 
 class TestDynamicChunkTargets:
@@ -1997,3 +1997,103 @@ class TestCompactTemplate:
         # and decode_with_blank splits on `eos_token_id`. The training sequence's
         # per-turn eos_id plays exactly that role. Verify the trailing token is eos.
         assert input_ids[-1] == eos_id
+
+
+# ---------------------------------------------------------------------------
+# Tests: multi chunk-size training (chunk_size as a list) + backward
+# compatibility when chunk_size is a plain integer as before.
+# ---------------------------------------------------------------------------
+class TestMultiChunkSizeDataset:
+    """``StreamingSTTDataConfig.chunk_size`` may be a list of positive ints;
+    a scalar int keeps the original single-mode behavior."""
+
+    def _make_dataset(self, chunk_size):
+        from nemo.collections.speechlm2.data.streaming_stt_dataset import StreamingSTTDataset
+
+        cfg = {
+            "sample_rate": 16000,
+            "frame_length_in_secs": FRAME_LEN,
+            "chunk_size": chunk_size,
+            "audio_tag": AUDIO_TAG,
+            "blank_token": BLANK_TOKEN,
+        }
+        nemo_tok = _MockNemoTokenizer(_MockHFTokenizer())
+        nemo_tok.pad_id = 0  # needed by right/left_collate_vectors in get_batch_data
+        return StreamingSTTDataset(cfg, nemo_tok)
+
+    # --- __init__ normalization & precompute ---
+
+    def test_list_candidates_and_audio_ids(self):
+        ds = self._make_dataset([2, 4])
+        assert ds._chunk_size_candidates == [2, 4]
+        assert set(ds._audio_chunk_ids_by_size) == {2, 4}
+        assert len(ds._audio_chunk_ids_by_size[2]) == 2
+        assert len(ds._audio_chunk_ids_by_size[4]) == 4
+
+    def test_scalar_backward_compatible(self):
+        ds = self._make_dataset(2)
+        assert ds._chunk_size_candidates is None
+        assert set(ds._audio_chunk_ids_by_size) == {2}
+        assert len(ds._audio_chunk_ids_by_size[2]) == 2
+
+    def test_scalar_dynamic_and_offline_have_no_audio_ids(self):
+        for cs in (0, -1):
+            ds = self._make_dataset(cs)
+            assert ds._chunk_size_candidates is None
+            assert ds._audio_chunk_ids_by_size == {}
+
+    def test_empty_list_raises(self):
+        with pytest.raises(ValueError):
+            self._make_dataset([])
+
+    def test_non_positive_in_list_raises(self):
+        with pytest.raises(ValueError):
+            self._make_dataset([2, 0, 4])
+        with pytest.raises(ValueError):
+            self._make_dataset([2, -1])
+
+    # --- per-batch selection through get_batch_data ---
+
+    def _run_batch(self, ds, forced_chunk_size, monkeypatch):
+        """Run get_batch_data on a 1-second mono sample, forcing the random pick."""
+        import torch
+
+        import nemo.collections.speechlm2.data.streaming_stt_dataset as mod
+
+        if forced_chunk_size is not None:
+            monkeypatch.setattr(mod.random, "choice", lambda seq: forced_chunk_size)
+
+        audios = torch.zeros(1, 16000)  # 1.0 s @ 16 kHz → 13 frames @ 80 ms
+        audio_lens = torch.tensor([16000])
+        alignments = [[WordAlignment(text="hello", start_time=0.0, end_time=0.16)]]
+        text = ["hello"]
+        from types import SimpleNamespace
+
+        cuts = [SimpleNamespace(custom={})]
+        return ds.get_batch_data(cuts, audios, audio_lens, alignments, text)
+
+    def test_batch_records_selected_chunk_size(self, monkeypatch):
+        ds = self._make_dataset([2, 4, 8])
+        batch = self._run_batch(ds, forced_chunk_size=4, monkeypatch=monkeypatch)
+        assert batch.chunk_size == 4
+        # 13 frames, chunk_size 4 → ceil(13/4)=4 chunks → 16 audio slots.
+        n_audio = int((batch.input_tokens == AUDIO_TOKEN_IDX).sum().item())
+        assert n_audio == 16
+
+    def test_batch_audio_slots_track_chunk_size(self, monkeypatch):
+        ds = self._make_dataset([2, 8])
+        b2 = self._run_batch(ds, forced_chunk_size=2, monkeypatch=monkeypatch)
+        b8 = self._run_batch(ds, forced_chunk_size=8, monkeypatch=monkeypatch)
+        n2 = int((b2.input_tokens == AUDIO_TOKEN_IDX).sum().item())
+        n8 = int((b8.input_tokens == AUDIO_TOKEN_IDX).sum().item())
+        assert b2.chunk_size == 2 and b8.chunk_size == 8
+        assert n2 == 14  # ceil(13/2)=7 chunks * 2
+        assert n8 == 16  # ceil(13/8)=2 chunks * 8
+
+    def test_scalar_batch_backward_compatible(self, monkeypatch):
+        # No random selection for a scalar config; chunk_size flows straight through.
+        ds = self._make_dataset(2)
+        batch = self._run_batch(ds, forced_chunk_size=None, monkeypatch=monkeypatch)
+        assert batch.chunk_size == 2
+        n_audio = int((batch.input_tokens == AUDIO_TOKEN_IDX).sum().item())
+        assert n_audio == 14  # ceil(13/2)=7 chunks * 2

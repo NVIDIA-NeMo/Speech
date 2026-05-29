@@ -22,7 +22,7 @@ import torch
 import torch.nn.functional as F
 from lightning import LightningModule
 from lightning.pytorch.utilities.model_summary import ModelSummary
-from omegaconf import DictConfig
+from omegaconf import DictConfig, ListConfig
 from torch import Tensor, nn
 from torch.distributed.tensor.parallel import loss_parallel
 from transformers import AutoModel, GenerationConfig
@@ -124,6 +124,18 @@ def interleave_embeddings(
     return {"input_embeds": embeds, "attention_mask": attention_mask}
 
 
+def _repr_chunk_size(chunk_size) -> int:
+    """Representative scalar chunk size for a config value that may be a list.
+
+    Returns the longest entry when ``chunk_size`` is a list/tuple (multi
+    chunk-size training); otherwise the scalar value unchanged. Used to build
+    the default inference turn template and to dispatch the generation mode.
+    """
+    if isinstance(chunk_size, (list, tuple, ListConfig)):
+        return max(int(x) for x in chunk_size)
+    return int(chunk_size)
+
+
 @dataclass
 class StreamingSTTModelConfig:
     pretrained_llm: str
@@ -137,7 +149,13 @@ class StreamingSTTModelConfig:
     freeze_llm_model: bool
     freeze_llm_head: bool
     freeze_embed_tokens: bool
-    chunk_size: int
+    # Frames per chunk. ``> 0`` fixed chunking, ``0`` dynamic, ``< 0`` offline.
+    # May also be a list of positive ints (e.g. ``[2, 6, 13]``) for multi
+    # chunk-size training; inference then defaults to the longest size (override
+    # via ``generate(chunk_size_override=...)``). With a list, the encoder's
+    # attention look-ahead is matched per batch as ``[att_context_size[0],
+    # chunk_size - 1]``.
+    chunk_size: Union[int, List[int]]
     audio_tag: str = "<audio>"
     att_context_size: Optional[List[int]] = None
     audio_pad_to: Optional[int] = None
@@ -221,8 +239,17 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         cfg: dict,
         forced_aligner: Optional[ForcedAligner] = None,
         data_cfg: Optional[DictConfig] = None,
+        val_data_cfg: Optional[DictConfig] = None,
         dataset_cls=StreamingSTTDataset,
     ) -> None:
+        """
+        Args:
+            cfg: Configuration for the model.
+            forced_aligner: Forced aligner for online forced alignment.
+            data_cfg: Configuration for the training dataset.
+            val_data_cfg: Optional config for the dataset used in validation loop, if None, the data_cfg is used.
+            dataset_cls: Dataset class to use for the model when online forced alignment is used.
+        """
         assert isinstance(cfg, dict), (
             "You must pass the config to StreamingSTTModel as a Python dict to support hyperparameter "
             f"serialization in PTL checkpoints (we got: '{type(cfg)=}')."
@@ -231,6 +258,25 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         self.save_hyperparameters()
         self.cfg = DictConfig(cfg)
         self.core_cfg: StreamingSTTModelConfig = to_dataclass(StreamingSTTModelConfig, cfg)
+
+        # Normalize chunk_size: a list (e.g. [2, 6, 13]) enables multi chunk-size
+        # training (one drawn per batch) and configurable inference (longest by
+        # default). A scalar keeps the original single fixed/dynamic/offline mode.
+        cs = self.core_cfg.chunk_size
+        if isinstance(cs, (list, tuple, ListConfig)):
+            self._chunk_size_candidates = [int(x) for x in cs]
+            if not self._chunk_size_candidates or any(x <= 0 for x in self._chunk_size_candidates):
+                raise ValueError(f"chunk_size list must be non-empty and all positive (fixed chunking), got {cs}")
+            # Representative scalar for cache/template build and mode dispatch.
+            self._chunk_size_repr = _repr_chunk_size(self._chunk_size_candidates)
+            if self.core_cfg.att_context_size is None:
+                logging.warning(
+                    "chunk_size is a list but att_context_size is not set — the encoder's "
+                    "attention look-ahead will NOT be matched to the per-batch chunk size."
+                )
+        else:
+            self._chunk_size_candidates = None
+            self._chunk_size_repr = int(cs)
 
         # --- LLM ---
         self.tokenizer = AutoTokenizer(self.core_cfg.pretrained_llm, use_fast=True)
@@ -313,9 +359,17 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
             assert dataset_cls is not None, "Dataset class is required for online forced alignment"
             self.forced_aligner = forced_aligner
             self.dataset = dataset_cls(cfg=data_cfg, tokenizer=self.tokenizer)
+            # Separate validation dataset so val-only overrides (e.g. pinning a
+            # single chunk_size while training with a list) apply under forced
+            # alignment too — here the model, not the dataloader, runs
+            # get_batch_data. Falls back to the train dataset when not provided.
+            self.val_dataset = (
+                dataset_cls(cfg=val_data_cfg, tokenizer=self.tokenizer) if val_data_cfg is not None else self.dataset
+            )
         else:
             self.forced_aligner = None
             self.dataset = None
+            self.val_dataset = None
 
         logging.info("\n" + str(ModelSummary(self, max_depth=2)))
 
@@ -558,6 +612,11 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
             )
             batch = move_data_to_device(batch, self.device)
 
+        # Match the encoder's attention look-ahead to the per-batch chunk size
+        # the dataset used (no-op unless chunk_size is a list and att_context_size
+        # is set). The non-cached training forward only reads att_context_size.
+        self._set_encoder_att_context(batch.chunk_size)
+
         inputs = self._build_input_embeds(batch.input_tokens, batch.audios, batch.audio_lens)
         use_aux = self.core_cfg.use_chunk_classifier
         outputs = self.forward(
@@ -765,7 +824,10 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
     def _eval_step(self, batch: StreamingSTTBatch, name: str, batch_idx: int = 0) -> None:
         if self.forced_aligner is not None:
             alignments = self.forced_aligner.align(batch.audios, batch.audio_lens, batch.text)
-            batch = self.dataset.get_batch_data(
+            # Use the validation dataset (val-only overrides such as a pinned
+            # chunk_size); falls back to the train dataset when none was given.
+            val_dataset = self.val_dataset if self.val_dataset is not None else self.dataset
+            batch = val_dataset.get_batch_data(
                 cuts=batch.cuts,
                 audios=batch.audios,
                 audio_lens=batch.audio_lens,
@@ -773,6 +835,9 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                 text=batch.text,
             )
             batch = move_data_to_device(batch, self.device)
+
+        # Match the encoder's attention look-ahead to the per-batch chunk size.
+        self._set_encoder_att_context(batch.chunk_size)
 
         inputs = self._build_input_embeds(batch.input_tokens, batch.audios, batch.audio_lens)
         aux_active = self.core_cfg.use_chunk_classifier and self.has_blank and self._user_footer_first_id is not None
@@ -927,6 +992,52 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
     # Inference
     # ------------------------------------------------------------------
 
+    def _resolve_inference_chunk_size(self, chunk_size_override: Optional[int] = None) -> int:
+        """Resolve the chunk size (in frames) to use for a single inference call.
+
+        Precedence: explicit ``chunk_size_override`` > longest size when the
+        config ``chunk_size`` is a list > the scalar config value.
+        """
+        if chunk_size_override is not None:
+            return int(chunk_size_override)
+        return self._chunk_size_repr
+
+    def _build_turn_template_ids(self, chunk_size: int) -> list[int]:
+        """Build a fixed-chunk streaming turn template for ``chunk_size`` frames:
+        ``user_header + [AUDIO_TOKEN_IDX] * chunk_size + user_footer_and_asst_header``."""
+        return (
+            list(self._user_header_ids) + [AUDIO_TOKEN_IDX] * chunk_size + list(self._user_footer_and_asst_header_ids)
+        )
+
+    def _set_encoder_att_context(self, chunk_size: Optional[int], recompute_streaming: bool = False) -> None:
+        """Match the Conformer encoder's attention look-ahead to ``chunk_size``.
+
+        The left context is taken from ``att_context_size[0]`` (fixed) and the
+        right context (look-ahead) is set to ``chunk_size - 1``.  No-op for
+        dynamic (0) / offline (<0) chunking or when ``att_context_size`` is unset.
+
+        Args:
+            chunk_size: Fixed-chunk size in encoder frames.
+            recompute_streaming: When True, also recompute the cache-aware
+                streaming config (needed for streaming inference). During
+                training the offline (non-cached) forward only consults
+                ``att_context_size``, so leave it False to avoid the overhead.
+        """
+        if chunk_size is None or chunk_size <= 0 or self.core_cfg.att_context_size is None:
+            return
+        left = int(self.core_cfg.att_context_size[0])
+        new_ctx = [left, int(chunk_size) - 1]
+        encoder = self.perception.encoder
+        # Set att_context_size directly (rather than set_default_att_context_size)
+        # to avoid per-batch "not among supported look-aheads" warnings and to
+        # keep att_context_size_all length 1 — otherwise the encoder's training
+        # forward would randomly pick a look-ahead, overriding this per-batch value.
+        encoder.att_context_size = new_ctx
+        if recompute_streaming:
+            # Recompute the cache-aware streaming config from the new look-ahead
+            # (needed for streaming inference buffer/cache sizing).
+            encoder.setup_streaming_params()
+
     def _ensure_inference_cache(self) -> None:
         """Lazily cache token templates and IDs needed for inference.
 
@@ -943,7 +1054,12 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
             return
 
         hf_tok = self.tokenizer.tokenizer
-        chunk_size = self.core_cfg.chunk_size
+        # Representative scalar: longest size when chunk_size is a list. The
+        # default fixed-chunk turn template is built for it; _generate_chunked_streaming
+        # rebuilds the template for the actual (possibly overridden) inference size.
+        # Derive from core_cfg (not the cached _chunk_size_repr) so this works even
+        # when called on a lightweight object that didn't run __init__.
+        chunk_size = _repr_chunk_size(self.core_cfg.chunk_size)
 
         # --- Build turn template ---
         if self.core_cfg.compact_template:
@@ -1257,7 +1373,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         if isinstance(pre_encode_cache_size, list):
             pre_encode_cache_size = pre_encode_cache_size[1]
         pre_encode_cache_size_in_secs = pre_encode_cache_size * window_stride_in_secs
-        cs = chunk_size_override if chunk_size_override is not None else max(self.core_cfg.chunk_size, 1)
+        cs = chunk_size_override if chunk_size_override is not None else max(self._chunk_size_repr, 1)
         chunk_size_in_secs = cs * self.core_cfg.frame_length_in_secs
         buffer_size_in_secs = pre_encode_cache_size_in_secs + chunk_size_in_secs
 
@@ -1381,6 +1497,8 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         max_new_tokens: int = 64,
         generation_config: Optional[GenerationConfig] = None,
         _audio_embs: Optional[Tensor] = None,
+        chunk_size: Optional[int] = None,
+        turn_template_ids: Optional[list[int]] = None,
         **generation_kwargs,
     ) -> list[list[int]]:
         """
@@ -1443,15 +1561,18 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                 state.audio_cache.cache_last_channel_len = new_perception_cache['cache_last_channel_len']
 
         # 3. Pad/trim to chunk_size frames
-        chunk_size = self.core_cfg.chunk_size
+        if chunk_size is None:
+            chunk_size = self._chunk_size_repr
+        if turn_template_ids is None:
+            turn_template_ids = self._turn_template_ids
         n_frames = audio_chunk_embs.shape[1]
         if n_frames < chunk_size:
             audio_chunk_embs = F.pad(audio_chunk_embs, (0, 0, 0, chunk_size - n_frames))
         elif n_frames > chunk_size:
             audio_chunk_embs = audio_chunk_embs[:, :chunk_size, :]
 
-        # 4. Build input embeddings from cached turn template — (B, L, H)
-        turn_ids_t = torch.tensor(self._turn_template_ids, device=device).unsqueeze(0).expand(B, -1)  # (B, L)
+        # 4. Build input embeddings from the turn template — (B, L, H)
+        turn_ids_t = torch.tensor(turn_template_ids, device=device).unsqueeze(0).expand(B, -1)  # (B, L)
         audio_mask = turn_ids_t == AUDIO_TOKEN_IDX  # (B, L)
 
         text_tokens = turn_ids_t.where(~audio_mask, torch.zeros_like(turn_ids_t))
@@ -1522,6 +1643,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         audio_wav: Tensor,
         n_samples: int,
         device: torch.device,
+        chunk_size: Optional[int] = None,
     ) -> list[Tensor]:
         """Pre-compute offline perception embeddings and slice into chunk_size groups.
 
@@ -1533,7 +1655,8 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
 
         Returns a list of ``(1, chunk_size, H)`` tensors, one per chunk.
         """
-        chunk_size = self.core_cfg.chunk_size
+        if chunk_size is None:
+            chunk_size = self._chunk_size_repr
         with torch.no_grad():
             offline_embs, _ = self.perception(
                 input_signal=audio_wav.unsqueeze(0),
@@ -1672,6 +1795,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         system_prompt: Union[str, List[str]],
         max_new_tokens: int,
         generation_config: Optional[GenerationConfig] = None,
+        chunk_size: int = 1,
         inference_chunk_size: Optional[int] = None,
         dynamic_min_chunk_size: int = 0,
         dynamic_max_chunk_size: Optional[int] = None,
@@ -1719,7 +1843,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         # Override via inference_chunk_size only when you've trained the
         # encoder for that granularity (e.g. chunk_step > 1 in dataset).
         if inference_chunk_size is None:
-            N = max(self.core_cfg.chunk_size, 1)
+            N = max(chunk_size, 1)
         else:
             N = inference_chunk_size
         chunk_samples = math.ceil(N * self.core_cfg.frame_length_in_secs * self.core_cfg.sample_rate)
@@ -1752,8 +1876,8 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
 
         # Fixed-chunk mode: count frames consumed per segment to transition
         # after exactly chunk_size frames (ignoring model predictions).
-        fixed_chunk_mode = self.core_cfg.chunk_size > 0
-        fixed_chunk_size = self.core_cfg.chunk_size if fixed_chunk_mode else 0
+        fixed_chunk_mode = chunk_size > 0
+        fixed_chunk_size = chunk_size if fixed_chunk_mode else 0
         frames_in_segment = [0] * B  # frames consumed in current LISTENING segment
         # When emit_delay_frames > 0: after the aux head decides "emit" at
         # frame T, we keep listening for K more LISTENING frames and only
@@ -2331,6 +2455,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         system_prompt: Union[str, List[str]],
         max_new_tokens: int,
         generation_config: Optional[GenerationConfig] = None,
+        chunk_size: Optional[int] = None,
         use_offline_embs: bool = False,
         **generation_kwargs,
     ) -> list[str]:
@@ -2342,28 +2467,35 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
             system_prompt: System prompt string (shared) or list of B per-sample prompts.
             max_new_tokens: Maximum tokens to generate per chunk per stream.
             generation_config: Optional HuggingFace ``GenerationConfig``.
+            chunk_size: Fixed-chunk size in frames for this call. Defaults to the
+                resolved config size (longest when ``chunk_size`` is a list).
             use_offline_embs: When True, bypass streaming perception with offline embeddings.
             generation_kwargs: Per-call overrides for generation parameters.
 
         Returns:
             List of B transcription strings.
         """
-        assert self.core_cfg.chunk_size > 0, (
-            f"chunk_size must be positive for streaming mode, got {self.core_cfg.chunk_size}. "
+        if chunk_size is None:
+            chunk_size = self._chunk_size_repr
+        assert chunk_size > 0, (
+            f"chunk_size must be positive for streaming mode, got {chunk_size}. "
             f"Use generate() which dispatches to _generate_offline() for chunk_size < 0."
         )
         B = len(n_samples_list)
         if B == 0 or max(n_samples_list) == 0:
             return [""] * B
         device = audios.device
-        chunk_size = self.core_cfg.chunk_size
         chunk_samples = math.ceil(chunk_size * self.core_cfg.frame_length_in_secs * self.core_cfg.sample_rate)
+        # Turn template embedding the audio-slot count for this call's chunk size.
+        turn_template_ids = self._build_turn_template_ids(chunk_size)
         state = self.get_init_streaming_state(system_prompt, device=device, batch_size=B)
 
         offline_emb_chunks_list = None
         if use_offline_embs:
             offline_emb_chunks_list = [
-                self._build_offline_emb_chunks(audios[b, : n_samples_list[b]], n_samples_list[b], device)
+                self._build_offline_emb_chunks(
+                    audios[b, : n_samples_list[b]], n_samples_list[b], device, chunk_size=chunk_size
+                )
                 for b in range(B)
             ]
 
@@ -2409,6 +2541,8 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                 state,
                 max_new_tokens,
                 generation_config,
+                chunk_size=chunk_size,
+                turn_template_ids=turn_template_ids,
                 **extra_kwargs,
                 **generation_kwargs,
             )
@@ -2437,6 +2571,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         debug_logs: Optional[list] = None,
         disable_emit_for_debug: bool = False,
         alignments_out: Optional[list] = None,
+        chunk_size_override: Optional[int] = None,
         **generation_kwargs,
     ) -> list[str]:
         """
@@ -2454,6 +2589,9 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                 the model is allowed to trigger generation (default 0).
             dynamic_max_chunk_size: For dynamic chunking — maximum frames before
                 forcing generation. ``None`` means no upper bound (default).
+            chunk_size_override: Fixed-chunk size (in frames) to use for this call.
+                When ``None`` (default), uses the config ``chunk_size`` — the
+                longest value when it is a list of sizes.
             generation_kwargs: Per-call overrides for generation parameters.
 
         Returns:
@@ -2467,11 +2605,17 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                 "use_chunk_classifier=True (the aux head must exist)."
             )
 
+        # Resolve the chunk size for this call (longest of a list config by
+        # default; explicit override wins) and match the encoder's streaming
+        # look-ahead to it (no-op for dynamic/offline modes).
+        chunk_size = self._resolve_inference_chunk_size(chunk_size_override)
+        self._set_encoder_att_context(chunk_size, recompute_streaming=True)
+
         with move_embedding(self):
             B = audios.shape[0]
             n_samples_list = [int(audio_lens[b].item()) for b in range(B)]
 
-            if self.core_cfg.chunk_size < 0:
+            if chunk_size < 0:
                 results = self._generate_offline(
                     audios,
                     n_samples_list,
@@ -2480,7 +2624,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                     generation_config,
                     **generation_kwargs,
                 )
-            elif self.core_cfg.chunk_size == 0 or use_state_machine_inference:
+            elif chunk_size == 0 or use_state_machine_inference:
                 # Dynamic chunking (chunk_size=0) or state machine inference opted in for chunk_size > 0.
                 # Note that for chunk_size > 0, use_state_machine_inference is not recommended.
                 results = self._generate_dynamic_streaming(
@@ -2489,6 +2633,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                     system_prompt,
                     max_new_tokens,
                     generation_config,
+                    chunk_size=chunk_size,
                     dynamic_min_chunk_size=dynamic_min_chunk_size,
                     dynamic_max_chunk_size=dynamic_max_chunk_size,
                     use_chunk_classifier_at_inference=use_chunk_classifier_at_inference,
@@ -2507,6 +2652,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                     system_prompt,
                     max_new_tokens,
                     generation_config,
+                    chunk_size=chunk_size,
                     use_offline_embs=use_offline_embs,
                     **generation_kwargs,
                 )

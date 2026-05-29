@@ -12,8 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-Tests for StreamingSTTModel inference helpers: ``_find_sublist`` and
-``_ensure_inference_cache``.
+Tests for StreamingSTTModel inference helpers:  `_ensure_inference_cache`.
 
 Uses the real Qwen3 tokenizer to ensure the template is correct for the
 actual model used in training.
@@ -25,7 +24,7 @@ import pytest
 from transformers import AutoTokenizer
 
 from nemo.collections.speechlm2.data.streaming_stt_dataset import AUDIO_TOKEN_IDX
-from nemo.collections.speechlm2.models.streaming_stt_model import StreamingSTTModel, _find_sublist
+from nemo.collections.speechlm2.models.streaming_stt_model import StreamingSTTModel, _repr_chunk_size
 
 PRETRAINED_LLM = "Qwen/Qwen3-1.7B"
 BLANK_TOKEN = "<blank>"
@@ -48,8 +47,16 @@ def _make_mock_self(hf_tok, chunk_size=CHUNK_SIZE, blank_token=BLANK_TOKEN):
     """Build a minimal namespace that satisfies ``_ensure_inference_cache``."""
     return SimpleNamespace(
         tokenizer=SimpleNamespace(tokenizer=hf_tok),
-        core_cfg=SimpleNamespace(chunk_size=chunk_size, audio_tag="<audio>"),
+        core_cfg=SimpleNamespace(
+            chunk_size=chunk_size,
+            audio_tag="<audio>",
+            compact_template=False,
+            write_token="<|im_start|>",
+        ),
         blank_token=blank_token,
+        # blank_token_id is a model property; the mock just needs the value the
+        # cache's logging line reads.
+        blank_token_id=hf_tok.convert_tokens_to_ids(blank_token),
     )
 
 
@@ -58,36 +65,6 @@ def _run_ensure_cache(hf_tok, chunk_size=CHUNK_SIZE):
     mock = _make_mock_self(hf_tok, chunk_size=chunk_size)
     StreamingSTTModel._ensure_inference_cache(mock)
     return mock
-
-
-# ===========================================================================
-# Tests: _find_sublist
-# ===========================================================================
-class TestFindSublist:
-
-    def test_found_middle(self):
-        assert _find_sublist([1, 2, 3, 4, 5], [3, 4]) == 2
-
-    def test_found_start(self):
-        assert _find_sublist([1, 2, 3], [1, 2]) == 0
-
-    def test_found_end(self):
-        assert _find_sublist([1, 2, 3], [2, 3]) == 1
-
-    def test_exact_match(self):
-        assert _find_sublist([1, 2], [1, 2]) == 0
-
-    def test_not_found(self):
-        assert _find_sublist([1, 2, 3], [4, 5]) is None
-
-    def test_single_element(self):
-        assert _find_sublist([1, 2, 3], [2]) == 1
-
-    def test_empty_haystack(self):
-        assert _find_sublist([], [1]) is None
-
-    def test_returns_first_occurrence(self):
-        assert _find_sublist([1, 2, 1, 2], [1, 2]) == 0
 
 
 # ===========================================================================
@@ -169,16 +146,15 @@ class TestEnsureInferenceCache:
         assert mock._eos_in_footer is True
         assert mock._eos_id == mock._asst_footer_ids[0]
 
-    def test_blank_id(self, hf_tok):
-        """Blank token ID should be resolved (not UNK)."""
-        mock = _make_mock_self(hf_tok)
+    def test_blank_id(self):
+        """Blank token resolves to a real (non-UNK) id once added as a special token."""
         # Add <blank> as a special token (as the model __init__ does)
         hf_tok_copy = AutoTokenizer.from_pretrained(PRETRAINED_LLM)
         hf_tok_copy.add_special_tokens({"additional_special_tokens": [BLANK_TOKEN]})
-        mock.tokenizer.tokenizer = hf_tok_copy
+        mock = _make_mock_self(hf_tok_copy)
         StreamingSTTModel._ensure_inference_cache(mock)
         blank_id = hf_tok_copy.convert_tokens_to_ids(BLANK_TOKEN)
-        assert mock._blank_id == blank_id
+        assert mock.blank_token_id == blank_id
         assert blank_id != hf_tok_copy.unk_token_id
 
     def test_idempotent(self, hf_tok):
@@ -195,3 +171,110 @@ class TestEnsureInferenceCache:
         assert mock._asst_footer_ids == first_footer
         assert mock._eos_id == first_eos
         assert mock._eos_in_footer == first_eos_in_footer
+
+
+# ===========================================================================
+# Tests: multi chunk-size config (list) + backward compatibility (scalar int)
+# ===========================================================================
+class TestRepresentativeChunkSize:
+    """``_repr_chunk_size`` collapses a config value to a single scalar."""
+
+    def test_scalar_passthrough(self):
+        # Backward compatible: plain ints are returned unchanged.
+        assert _repr_chunk_size(2) == 2
+        assert _repr_chunk_size(0) == 0
+        assert _repr_chunk_size(-1) == -1
+
+    def test_list_returns_longest(self):
+        assert _repr_chunk_size([2, 6, 13]) == 13
+        assert _repr_chunk_size([13, 2, 6]) == 13
+        assert _repr_chunk_size((4, 8)) == 8
+        assert _repr_chunk_size([5]) == 5
+
+
+class TestResolveInferenceChunkSize:
+    """``_resolve_inference_chunk_size``: override wins, else the config repr."""
+
+    def test_default_uses_repr(self):
+        mock = SimpleNamespace(_chunk_size_repr=13)
+        assert StreamingSTTModel._resolve_inference_chunk_size(mock, None) == 13
+
+    def test_override_wins(self):
+        mock = SimpleNamespace(_chunk_size_repr=13)
+        assert StreamingSTTModel._resolve_inference_chunk_size(mock, 6) == 6
+        # Override even applies when it exceeds the configured sizes.
+        assert StreamingSTTModel._resolve_inference_chunk_size(mock, 20) == 20
+
+
+class TestBuildTurnTemplateIds:
+    """``_build_turn_template_ids`` embeds exactly ``chunk_size`` audio slots."""
+
+    def test_audio_slot_count(self):
+        mock = SimpleNamespace(_user_header_ids=[1, 2], _user_footer_and_asst_header_ids=[9])
+        for cs in (1, 2, 6, 13):
+            t = StreamingSTTModel._build_turn_template_ids(mock, cs)
+            assert t.count(AUDIO_TOKEN_IDX) == cs
+            # header ... audio block ... footer, contiguous
+            assert t[:2] == [1, 2]
+            assert t[2 : 2 + cs] == [AUDIO_TOKEN_IDX] * cs
+            assert t[2 + cs :] == [9]
+
+
+class TestEnsureInferenceCacheListChunkSize:
+    """A list ``chunk_size`` builds the default template for the longest size,
+    while a scalar ``chunk_size`` behaves exactly as before (backward compat)."""
+
+    def test_list_template_uses_longest(self, hf_tok):
+        mock = _run_ensure_cache(hf_tok, chunk_size=[2, 6, 13])
+        assert mock._turn_template_ids.count(AUDIO_TOKEN_IDX) == 13
+
+    def test_scalar_matches_singleton_list(self, hf_tok):
+        scalar = _run_ensure_cache(hf_tok, chunk_size=6)
+        as_list = _run_ensure_cache(hf_tok, chunk_size=[6])
+        assert scalar._turn_template_ids == as_list._turn_template_ids
+
+
+class TestEncoderAttContext:
+    """``_set_encoder_att_context`` sets right-context = chunk_size - 1, fixed left."""
+
+    def _mock(self, att_context_size=(70, 99)):
+        class Enc:
+            def __init__(self):
+                self.att_context_size = list(att_context_size)
+                self.recomputed = False
+
+            def setup_streaming_params(self):
+                self.recomputed = True
+
+        enc = Enc()
+        s = SimpleNamespace(
+            perception=SimpleNamespace(encoder=enc),
+            core_cfg=SimpleNamespace(att_context_size=[70, 12]),
+        )
+        return s, enc
+
+    def test_training_path_sets_lookahead(self):
+        s, enc = self._mock()
+        StreamingSTTModel._set_encoder_att_context(s, 6)
+        assert enc.att_context_size == [70, 5]
+        assert enc.recomputed is False  # training does not recompute streaming cfg
+
+    def test_inference_path_recomputes_streaming(self):
+        s, enc = self._mock()
+        StreamingSTTModel._set_encoder_att_context(s, 13, recompute_streaming=True)
+        assert enc.att_context_size == [70, 12]
+        assert enc.recomputed is True
+
+    def test_noop_for_dynamic_offline_and_none(self):
+        s, enc = self._mock()
+        enc.att_context_size = [70, 7]
+        for cs in (0, -1, None):
+            StreamingSTTModel._set_encoder_att_context(s, cs)
+            assert enc.att_context_size == [70, 7]
+
+    def test_noop_when_att_context_unset(self):
+        s, enc = self._mock()
+        enc.att_context_size = [70, 7]
+        s.core_cfg.att_context_size = None
+        StreamingSTTModel._set_encoder_att_context(s, 6)
+        assert enc.att_context_size == [70, 7]

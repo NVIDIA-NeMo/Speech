@@ -12,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
+from copy import deepcopy
 
 import torch
 from lightning.pytorch import Trainer
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf, open_dict
 
 from nemo.collections.speechlm2 import DataModule, StreamingSTTDataset, StreamingSTTModel
 from nemo.core.classes.common import Serialization
@@ -37,6 +38,22 @@ def train(cfg):
     OmegaConf.save(cfg, log_dir / "exp_config.yaml")
 
     dataset_cfg = cfg.data.dataset
+
+    # Build the optional validation dataset config (train dataset config with
+    # val_dataset_overrides applied on top, e.g. pinning a single chunk_size).
+    # It is passed to BOTH the model and the DataModule: under online forced
+    # alignment the model runs get_batch_data (so it needs the val config), while
+    # without it the DataModule's val dataset __getitem__ runs get_batch_data.
+    val_dataset_overrides = cfg.data.get("val_dataset_overrides", None)
+    if val_dataset_overrides is not None:
+        val_dataset_cfg = deepcopy(dataset_cfg)
+        if not isinstance(val_dataset_cfg, DictConfig):
+            val_dataset_cfg = OmegaConf.create(val_dataset_cfg)
+        with open_dict(val_dataset_cfg):
+            val_dataset_cfg.update(val_dataset_overrides)
+    else:
+        val_dataset_cfg = None
+
     forced_aligner_cfg = cfg.get("forced_aligner", None)
     if forced_aligner_cfg is not None:
         forced_aligner = Serialization.from_config_dict(forced_aligner_cfg)
@@ -51,11 +68,19 @@ def train(cfg):
             OmegaConf.to_container(cfg.model, resolve=True),
             forced_aligner=forced_aligner,
             data_cfg=dataset_cfg,
+            val_data_cfg=val_dataset_cfg,
             dataset_cls=StreamingSTTDataset,
         )
 
     dataset = StreamingSTTDataset(cfg=dataset_cfg, tokenizer=model.tokenizer, defer_get_batch=defer_get_batch)
-    datamodule = DataModule(cfg.data, tokenizer=model.tokenizer, dataset=dataset)
+
+    if val_dataset_cfg is not None:
+        val_dataset = StreamingSTTDataset(
+            cfg=val_dataset_cfg, tokenizer=model.tokenizer, defer_get_batch=defer_get_batch
+        )
+    else:
+        val_dataset = None
+    datamodule = DataModule(cfg.data, tokenizer=model.tokenizer, dataset=dataset, val_dataset=val_dataset)
 
     trainer.fit(model, datamodule)
 

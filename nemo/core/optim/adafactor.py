@@ -95,10 +95,12 @@ class Adafactor(Optimizer):
 
     @property
     def supports_memory_efficient_fp16(self):
+        """Whether this optimizer supports memory-efficient fp16 training."""
         return True
 
     @property
     def supports_flat_params(self):
+        """Whether this optimizer supports flattened parameters."""
         return False
 
     def _get_lr(self, param_group, param_state):

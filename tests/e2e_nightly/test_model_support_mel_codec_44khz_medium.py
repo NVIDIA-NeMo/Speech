@@ -73,13 +73,18 @@ def test_model_training_step():
     import itertools
 
     vq_params = list(model.vector_quantizer.parameters()) if model.vector_quantizer else []
-    gen_params = itertools.chain(
-        model.audio_encoder.parameters(),
-        model.audio_decoder.parameters(),
-        vq_params,
+    gen_params = list(
+        itertools.chain(
+            model.audio_encoder.parameters(),
+            model.audio_decoder.parameters(),
+            vq_params,
+        )
     )
+    disc_params = list(model.discriminator.parameters())
     optim_gen = torch.optim.Adam(gen_params, lr=2e-4, betas=(0.8, 0.99))
-    optim_disc = torch.optim.Adam(model.discriminator.parameters(), lr=2e-4, betas=(0.8, 0.99))
+    optim_disc = torch.optim.Adam(disc_params, lr=2e-4, betas=(0.8, 0.99))
+    model.gen_params = gen_params
+    model.disc_params = disc_params
 
     # Capture losses passed to manual_backward so we can assert on them.
     captured_losses = []

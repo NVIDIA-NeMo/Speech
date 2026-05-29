@@ -18,6 +18,8 @@ class NeMoBaseException(Exception):
 
 
 class LightningNotInstalledException(NeMoBaseException):
+    """Raised when optional Lightning dependencies are required but unavailable."""
+
     def __init__(self, obj):
         message = (
             f" You are trying to use {obj} without installing all of pytorch_lightning, hydra, and "
@@ -27,6 +29,8 @@ class LightningNotInstalledException(NeMoBaseException):
 
 
 class CheckInstall:
+    """Placeholder that raises when optional Lightning dependencies are missing."""
+
     def __init__(self, *args, **kwargs):
         raise LightningNotInstalledException(self)
 

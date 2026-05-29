@@ -14,14 +14,13 @@
 
 import itertools
 import math
-from typing import Iterable, List, Optional, Tuple, Union
+from typing import List, Optional, Union
 
 import numpy as np
 import torch
 
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
-from nemo.core.classes import NeuralModule, typecheck
-from nemo.core.neural_types import LengthsType, LogprobsType, NeuralType, PredictionsType
+from nemo.core.classes import NeuralModule
 
 
 class _TokensWrapper:
@@ -111,7 +110,6 @@ class FlashLightKenLMBeamSearchDecoder(NeuralModule):
 
         try:
             from flashlight.lib.text.decoder import (
-                LM,
                 CriterionType,
                 KenLM,
                 LexiconDecoder,

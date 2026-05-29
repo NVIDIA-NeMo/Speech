@@ -143,85 +143,6 @@ class BatchedHyps:
             self.logits = torch.cat((self.logits, torch.zeros_like(self.logits)), dim=1)
         self._max_length *= 2
 
-    def add_results_(
-        self,
-        active_indices: torch.Tensor,
-        labels: torch.Tensor,
-        time_indices: torch.Tensor,
-        scores: torch.Tensor,
-        token_durations: torch.Tensor | None = None,
-        confidence: torch.Tensor | None = None,
-    ):
-        """
-        Add results (inplace) from a decoding step to the batched hypotheses.
-        We assume that all tensors have the same first dimension, and labels are non-blanks.
-        Args:
-            active_indices: tensor with indices of active hypotheses (indices should be within the original batch_size)
-            labels: non-blank labels to add
-            time_indices: tensor of time index for each label
-            scores: label scores
-            token_durations: optional tensor with durations
-            confidence: optional tensor with step confidence
-        """
-        if active_indices.shape[0] == 0:
-            return  # nothing to add
-        # if needed - increase storage
-        if self.current_lengths.max().item() >= self._max_length:
-            self._allocate_more()
-
-        self.add_results_no_checks_(
-            active_indices=active_indices,
-            labels=labels,
-            time_indices=time_indices,
-            scores=scores,
-            token_durations=token_durations,
-            confidence=confidence,
-        )
-
-    def add_results_no_checks_(
-        self,
-        active_indices: torch.Tensor,
-        labels: torch.Tensor,
-        time_indices: torch.Tensor,
-        scores: torch.Tensor,
-        token_durations: torch.Tensor | None = None,
-        confidence: torch.Tensor | None = None,
-    ):
-        """
-        Add results (inplace) from a decoding step to the batched hypotheses without checks.
-        We assume that all tensors have the same first dimension, and labels are non-blanks.
-        Useful if all the memory is pre-allocated, especially with cuda graphs
-        (otherwise prefer a more safe `add_results_`)
-        Args:
-            active_indices: tensor with indices of active hypotheses (indices should be within the original batch_size)
-            labels: non-blank labels to add
-            time_indices: tensor of time index for each label
-            scores: label scores
-            token_durations: predicted durations for each token by TDT head
-            confidence: optional tensor with step confidence
-        """
-        if self.with_blank_steps:
-            raise NotImplementedError("Blank steps are not yet supported in this method")
-        # accumulate scores
-        self.scores[active_indices] += scores
-
-        # store transcript and timestamps
-        active_lengths = self.current_lengths[active_indices]
-        self.transcript[active_indices, active_lengths] = labels
-        self.timestamps[active_indices, active_lengths] = time_indices
-        if token_durations is not None:
-            self.token_durations[active_indices, active_lengths] = token_durations
-        if confidence is not None:
-            self.step_confidence[active_indices, active_lengths] = confidence
-        # store last observed timestamp + number of observation for the current timestamp
-        self.last_nb_timestamp_lasts[active_indices] = torch.where(
-            self.last_nb_timestamp[active_indices] == time_indices, self.last_nb_timestamp_lasts[active_indices] + 1, 1
-        )
-        self.last_nb_timestamp[active_indices] = time_indices
-        self.last_nb_labels[active_indices] = labels
-        # increase lengths
-        self.current_lengths[active_indices] += 1
-
     def add_results_masked_(
         self,
         active_mask: torch.Tensor,
@@ -231,43 +152,10 @@ class BatchedHyps:
         token_durations: torch.Tensor | None = None,
         confidence: torch.Tensor | None = None,
         logits: torch.Tensor | None = None,
+        check_lengths: bool = True,
     ):
         """
         Add results (inplace) from a decoding step to the batched hypotheses.
-        We assume that all tensors have the same first dimension, and labels are non-blanks.
-        Args:
-            active_mask: tensor with mask for active hypotheses (of batch_size)
-            labels: non-blank labels to add
-            time_indices: tensor of time index for each label
-            scores: label scores
-            token_durations: optional token durations (for TDT)
-            confidence: optional tensor with step confidence
-            logits: optional logits
-        """
-        if (self.current_lengths + active_mask).max() >= self._max_length:
-            self._allocate_more()
-        self.add_results_masked_no_checks_(
-            active_mask=active_mask,
-            labels=labels,
-            time_indices=time_indices,
-            scores=scores,
-            token_durations=token_durations,
-            confidence=confidence,
-            logits=logits,
-        )
-
-    def add_results_masked_no_checks_(
-        self,
-        active_mask: torch.Tensor,
-        labels: torch.Tensor,
-        time_indices: torch.Tensor,
-        scores: torch.Tensor,
-        token_durations: torch.Tensor | None = None,
-        confidence: torch.Tensor | None = None,
-        logits: torch.Tensor | None = None,
-    ):
-        """
-        Add results (inplace) from a decoding step to the batched hypotheses without checks.
         We assume that all tensors have the same first dimension, and labels are non-blanks.
         Useful if all the memory is pre-allocated, especially with cuda graphs
         (otherwise prefer a more safe `add_results_`)
@@ -279,11 +167,11 @@ class BatchedHyps:
             token_durations: token durations for TDT
             confidence: optional tensor with step confidence
             logits: optional logits
+            check_lengths: check storage length before adding results; blocking operation
         """
-        # accumulate scores
-        # same as self.scores[active_mask] += scores[active_mask], but non-blocking
-        torch.where(active_mask, self.scores + scores, self.scores, out=self.scores)
-
+        if check_lengths:
+            if (self.current_lengths + active_mask).max() >= self._max_length:
+                self._allocate_more()
         # store transcript and timestamps
         self.transcript[self._batch_indices, self.current_lengths] = labels
         self.timestamps[self._batch_indices, self.current_lengths] = time_indices
@@ -314,6 +202,9 @@ class BatchedHyps:
         # same as: self.last_nb_timestamp[active_mask] = time_indices[active_mask], but non-blocking
         torch.where(active_nb_mask, time_indices, self.last_nb_timestamp, out=self.last_nb_timestamp)
         torch.where(active_nb_mask, labels, self.last_nb_labels, out=self.last_nb_labels)
+        # accumulate scores
+        # same as self.scores[active_mask] += scores[active_mask], but non-blocking
+        torch.where(active_nb_mask, self.scores + scores, self.scores, out=self.scores)
         # increase lengths
         self.current_lengths += active_mask
 

@@ -22,6 +22,7 @@ import torch.distributed as dist
 from omegaconf import DictConfig, OmegaConf
 from safetensors.torch import save_file
 
+from nemo.collections.speechlm2.parts.hf_hub import LLM_BACKBONE_DIR
 from nemo.core.config import hydra_runner
 from nemo.utils.model_utils import import_class_by_path
 
@@ -105,6 +106,18 @@ def save_hf_checkpoint(model: torch.nn.Module, state_dict: dict, cfg: HfExportCo
     config = OmegaConf.to_container(model.cfg) if isinstance(model.cfg, DictConfig) else model.cfg
     with open(output_dir / "config.json", "w") as f:
         json.dump(config, f, indent=2)
+    save_llm_backbone_config(model, output_dir)
+
+
+def save_llm_backbone_config(model: torch.nn.Module, output_dir: str | Path) -> None:
+    """Save the original LLM config separately from the NeMo wrapper config."""
+    llm_config = getattr(getattr(model, "llm", None), "config", None)
+    if llm_config is None:
+        return
+
+    llm_backbone_dir = Path(output_dir) / LLM_BACKBONE_DIR
+    llm_backbone_dir.mkdir(parents=True, exist_ok=True)
+    llm_config.save_pretrained(str(llm_backbone_dir))
 
 
 def _detect_vllm_architecture(model_cfg: dict) -> str:
@@ -165,7 +178,11 @@ def prepare_for_vllm(output_dir: str, model_cfg: dict) -> None:
         raise ValueError("model config has no 'audio_locator_tag' (set it in the training YAML).")
 
     # 1. Patch config.json (arch, model_type, audio_locator_tag for vLLM plugin).
-    arch = _detect_vllm_architecture(model_cfg)
+    arch_model_cfg = dict(model_cfg)
+    llm_backbone_dir = output_dir / LLM_BACKBONE_DIR
+    if (llm_backbone_dir / "config.json").exists():
+        arch_model_cfg["pretrained_llm"] = str(llm_backbone_dir)
+    arch = _detect_vllm_architecture(arch_model_cfg)
     config_path = output_dir / "config.json"
     config = json.loads(config_path.read_text())
     config["model_type"] = "nemo_speechlm"
@@ -320,6 +337,7 @@ def main(cfg: HfExportConfig) -> None:
         model = model.to(getattr(torch, cfg.dtype))
         model_cfg["pretrained_weights"] = False
         model.save_pretrained(cfg.output_dir)
+        save_llm_backbone_config(model, cfg.output_dir)
         _try_prepare_for_vllm(cfg.output_dir, model_cfg)
 
 

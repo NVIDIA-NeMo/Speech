@@ -87,8 +87,9 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         ).train()
 
         # Initialize tokenizer with optional special tokens from config
+        tokenizer_src = self.cfg.get("tokenizer_path", None) or self.cfg.pretrained_llm
         self.tokenizer = AutoTokenizer(
-            self.cfg.pretrained_llm,
+            tokenizer_src,
             use_fast=True,
             bos_token=self.cfg.get("bos_token", None),
             eos_token=self.cfg.get("eos_token", None),

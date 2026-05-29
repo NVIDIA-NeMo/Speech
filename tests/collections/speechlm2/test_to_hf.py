@@ -23,6 +23,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+import torch
 
 _TO_HF_PATH = Path(__file__).parents[3] / "examples" / "speechlm2" / "to_hf.py"
 _spec = importlib.util.spec_from_file_location("to_hf_for_test", _TO_HF_PATH)
@@ -99,6 +100,52 @@ def _seed_output_dir(tmp_path, llm_arch="Qwen2ForCausalLM"):
         )
     )
     return tmp_path
+
+
+class _FakeLLMConfig:
+    def save_pretrained(self, output_dir):
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "config.json").write_text(
+            json.dumps(
+                {
+                    "model_type": "qwen2",
+                    "architectures": ["Qwen2ForCausalLM"],
+                    "hidden_size": 2048,
+                }
+            )
+        )
+
+
+class _FakeExportModel:
+    cfg = {
+        "pretrained_llm": "fake-model",
+        "pretrained_asr": "fake-asr",
+        "pretrained_weights": False,
+        "torch_dtype": "bfloat16",
+        "audio_locator_tag": AUDIO_TOKEN,
+    }
+    llm = type("_FakeLLM", (), {"config": _FakeLLMConfig()})()
+
+
+def test_save_hf_checkpoint_writes_llm_backbone_config(tmp_path):
+    cfg = to_hf.HfExportConfig(
+        class_path="fake.Class",
+        ckpt_path="fake.ckpt",
+        ckpt_config="fake.yaml",
+        output_dir=str(tmp_path),
+        dtype="bfloat16",
+    )
+    to_hf.save_hf_checkpoint(_FakeExportModel(), {"weight": torch.zeros(1)}, cfg)
+
+    root_cfg = json.loads((tmp_path / "config.json").read_text())
+    llm_cfg = json.loads((tmp_path / "llm_backbone" / "config.json").read_text())
+
+    assert "llm_config" not in root_cfg
+    assert root_cfg["pretrained_llm"] == "fake-model"
+    assert root_cfg["torch_dtype"] == "bfloat16"
+    assert llm_cfg["model_type"] == "qwen2"
+    assert llm_cfg["architectures"] == ["Qwen2ForCausalLM"]
 
 
 # ──────────────────────────────────────────────────────────────────────

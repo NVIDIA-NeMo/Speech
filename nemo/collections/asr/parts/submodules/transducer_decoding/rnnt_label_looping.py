@@ -22,10 +22,7 @@ from omegaconf import DictConfig
 
 from nemo.collections.asr.parts.context_biasing.biasing_multi_model import GPUBiasingMultiModel
 from nemo.collections.asr.parts.submodules.ngram_lm import NGramGPULanguageModel
-from nemo.collections.asr.parts.submodules.transducer_decoding.batched_hyps import (
-    BatchedAlignments,
-    BatchedHyps,
-)
+from nemo.collections.asr.parts.submodules.transducer_decoding.batched_hyps import BatchedAlignments, BatchedHyps
 from nemo.collections.asr.parts.submodules.transducer_decoding.label_looping_base import (
     BatchedLabelLoopingState,
     GreedyBatchedLabelLoopingComputerBase,
@@ -63,7 +60,7 @@ class LabelLoopingState:
     time_indices: torch.Tensor  # current time indices for each element in batch
     safe_time_indices: torch.Tensor  # current time indices, but guaranteed to be < encoder_output_length
     time_indices_current_labels: torch.Tensor  # time indices for found labels (corresponding to `labels` field)
-    last_timesteps: torch.Tensor  # indices of the last timesteps for each element (encoder_output_length - 1)
+    last_timestamps: torch.Tensor  # indices of the last timestamps for each element (encoder_output_length - 1)
 
     active_mask: torch.Tensor  # mask for active hypotheses (the decoding is finished for the utterance if it is False)
     advance_mask: torch.Tensor  # mask for "advancing" hypotheses (blank is found for the element on the current step)
@@ -137,7 +134,7 @@ class LabelLoopingState:
         self.time_indices = torch.zeros_like(self.batch_indices)
         self.safe_time_indices = torch.zeros_like(self.batch_indices)
         self.time_indices_current_labels = torch.zeros_like(self.time_indices)
-        self.last_timesteps = torch.zeros_like(self.time_indices)
+        self.last_timestamps = torch.zeros_like(self.time_indices)
 
         self.active_mask = torch.zeros([self.batch_size], dtype=torch.bool, device=self.device)
         self.advance_mask = torch.zeros_like(self.active_mask)
@@ -328,7 +325,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
             alignments = BatchedAlignments(
                 batch_size=batch_size,
                 logits_dim=self.joint.num_classes_with_blank,
-                init_length=max_time * 2,  # blank for each timestep + text tokens
+                init_length=max_time * 2,  # blank for each timestamp + text tokens
                 device=device,
                 float_dtype=float_dtype,
                 store_alignments=self.preserve_logits,
@@ -341,9 +338,9 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
         batch_indices = torch.arange(batch_size, dtype=torch.long, device=device)
 
         # time indices
-        last_timesteps = torch.maximum(encoder_output_length - 1, torch.zeros_like(encoder_output_length))
+        last_timestamps = torch.maximum(encoder_output_length - 1, torch.zeros_like(encoder_output_length))
         time_indices = torch.zeros_like(batch_indices)
-        safe_time_indices = torch.minimum(time_indices, last_timesteps)  # time indices, guaranteed to be < out_len
+        safe_time_indices = torch.minimum(time_indices, last_timestamps)  # time indices, guaranteed to be < out_len
         time_indices_current_labels = torch.zeros_like(time_indices)
 
         # masks for utterances in batch
@@ -425,7 +422,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
             # advance_mask is a mask for current batch for searching non-blank labels;
             # each element is True if non-blank symbol is not yet found AND we can increase the time index
             time_indices += blank_mask
-            torch.minimum(time_indices, last_timesteps, out=safe_time_indices)
+            torch.minimum(time_indices, last_timestamps, out=safe_time_indices)
             torch.less(time_indices, encoder_output_length, out=active_mask)
             torch.logical_and(active_mask, blank_mask, out=advance_mask)
 
@@ -476,7 +473,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
 
                 blank_mask = labels == self._blank_index
                 time_indices += blank_mask
-                torch.minimum(time_indices, last_timesteps, out=safe_time_indices)
+                torch.minimum(time_indices, last_timestamps, out=safe_time_indices)
                 torch.less(time_indices, encoder_output_length, out=active_mask)
                 torch.logical_and(active_mask, blank_mask, out=advance_mask)
 
@@ -535,21 +532,21 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
 
             # stage 4: to avoid infinite looping, go to the next frame after max_symbols emission
             if self.max_symbols is not None:
-                # if labels are non-blank (not end-of-utterance), check that last observed timestep with label:
+                # if labels are non-blank (not end-of-utterance), check that last observed timestamp with label:
                 # if it is equal to the current time index, and number of observations is >= max_symbols, force blank
                 force_blank_mask = torch.logical_and(
                     active_mask,
                     torch.logical_and(
                         torch.logical_and(
                             labels != self._blank_index,
-                            batched_hyps.last_timestamp_lasts >= self.max_symbols,
+                            batched_hyps.last_nb_timestamp_lasts >= self.max_symbols,
                         ),
-                        batched_hyps.last_timestamp == time_indices,
+                        batched_hyps.last_nb_timestamp == time_indices,
                     ),
                 )
                 time_indices += force_blank_mask  # emit blank => advance time indices
                 # update safe_time_indices, non-blocking
-                torch.minimum(time_indices, last_timesteps, out=safe_time_indices)
+                torch.minimum(time_indices, last_timestamps, out=safe_time_indices)
                 # same as: active_mask = time_indices < encoder_output_length
                 torch.less(time_indices, encoder_output_length, out=active_mask)
 
@@ -1087,7 +1084,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
         self.state.time_indices.fill_(0)
         self.state.safe_time_indices.fill_(0)  # safe time indices: guaranteed to be < encoder_output_length
         self.state.time_indices_current_labels.fill_(0)
-        torch.sub(self.state.encoder_output_length, 1, out=self.state.last_timesteps)
+        torch.sub(self.state.encoder_output_length, 1, out=self.state.last_timestamps)
 
         # masks for utterances in batch
         # same as: active_mask = self.encoder_output_length > 0
@@ -1157,7 +1154,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
         # advance_mask is a mask for current batch for searching non-blank labels;
         # each element is True if non-blank symbol is not yet found AND we can increase the time index
         self.state.time_indices.add_(self.state.blank_mask)
-        torch.minimum(self.state.time_indices, self.state.last_timesteps, out=self.state.safe_time_indices)
+        torch.minimum(self.state.time_indices, self.state.last_timestamps, out=self.state.safe_time_indices)
         torch.less(self.state.time_indices, self.state.encoder_output_length, out=self.state.active_mask)
         torch.logical_and(self.state.active_mask, self.state.blank_mask, out=self.state.advance_mask)
 
@@ -1226,7 +1223,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
         # self.time_indices += self.blank_mask
         self.state.time_indices.add_(self.state.blank_mask)
 
-        torch.minimum(self.state.time_indices, self.state.last_timesteps, out=self.state.safe_time_indices)
+        torch.minimum(self.state.time_indices, self.state.last_timestamps, out=self.state.safe_time_indices)
         torch.less(self.state.time_indices, self.state.encoder_output_length, out=self.state.active_mask)
         torch.logical_and(self.state.active_mask, self.state.blank_mask, out=self.state.advance_mask)
         torch.any(self.state.advance_mask, out=self.state.advance_mask_any)
@@ -1281,21 +1278,21 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
 
     def _after_inner_loop_force_max_symbols(self):
         """Stage 4: to avoid looping, go to next frame after max_symbols emission"""
-        # if labels are non-blank (not end-of-utterance), check that last observed timestep with label:
+        # if labels are non-blank (not end-of-utterance), check that last observed timestamp with label:
         # if it is equal to the current time index, and number of observations is >= max_symbols, force blank
         force_blank_mask = torch.logical_and(
             self.state.active_mask,
             torch.logical_and(
                 torch.logical_and(
                     self.state.labels != self._blank_index,
-                    self.state.batched_hyps.last_timestamp_lasts >= self.max_symbols,
+                    self.state.batched_hyps.last_nb_timestamp_lasts >= self.max_symbols,
                 ),
-                self.state.batched_hyps.last_timestamp == self.state.time_indices,
+                self.state.batched_hyps.last_nb_timestamp == self.state.time_indices,
             ),
         )
         self.state.time_indices.add_(force_blank_mask)  # emit blank => advance time indices
         # update safe_time_indices, non-blocking
-        torch.minimum(self.state.time_indices, self.state.last_timesteps, out=self.state.safe_time_indices)
+        torch.minimum(self.state.time_indices, self.state.last_timestamps, out=self.state.safe_time_indices)
         # same as: active_mask = time_indices < encoder_output_length
         torch.less(self.state.time_indices, self.state.encoder_output_length, out=self.state.active_mask)
         torch.any(self.state.active_mask, out=self.state.active_mask_any)

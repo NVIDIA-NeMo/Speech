@@ -118,7 +118,7 @@ class TestBypassPreEncode:
         """
         # For pre-encoded embeddings, the shape is (batch_size, n_frames, emb_dim)
         batch_size = 2
-        n_frames, emb_dim, feat_out = 17, 16, 8
+        n_frames, emb_dim, feat_out = 17, 64, 8  # emb_dim=64 with n_heads=4 -> head_dim=16 (>= 16)
         random_input = torch.rand((batch_size, n_frames, emb_dim))
         random_length = torch.tensor([n_frames] * batch_size, dtype=torch.int64)
 
@@ -155,7 +155,7 @@ class TestBypassPreEncode:
             Shape: (batch, n_frame, self.d_model)
         """
         batch_size = 2
-        n_frames, emb_dim, feat_in, feat_out = 17, 16, 10, 8
+        n_frames, emb_dim, feat_in, feat_out = 17, 64, 10, 8  # emb_dim=64 with n_heads=4 -> head_dim=16 (>= 16)
 
         pre_encode_input = torch.rand((batch_size, n_frames, emb_dim))
         feat_input = torch.rand((batch_size, feat_in, n_frames))
@@ -227,7 +227,7 @@ class TestBypassPreEncode:
         (``bypass_pre_encode=False``) exactly, because the positional-encoding, norm and
         Transformer-block stack downstream of the pre-encoder is identical on both paths.
         """
-        B, feat_in, T, d_model, feat_out = 2, 32, 64, 32, 8
+        B, feat_in, T, d_model, feat_out = 2, 32, 64, 64, 8  # d_model=64 with n_heads=4 -> head_dim=16 (>= 16)
         model = TransformerEncoder(
             feat_in=feat_in,
             d_model=d_model,
@@ -282,6 +282,17 @@ class TestTransformerEncoder:
     def test_invalid_attn_mode(self):
         with pytest.raises(ValueError, match="not yet supported"):
             TransformerEncoder(feat_in=80, d_model=64, n_heads=4, n_layers=2, attn_mode="sliding_window")
+
+    @pytest.mark.unit
+    def test_head_dim_below_16_raises(self):
+        """head_dim = d_model // n_heads must be >= 16 (PyTorch FlexAttention CUDA requirement).
+
+        The check happens at construction time, so an unsupported (d_model, n_heads) pair raises
+        before any forward pass.
+        """
+        # d_model=32, n_heads=4 -> head_dim=8 (< 16).
+        with pytest.raises(ValueError, match="per-head embedding dimension >= 16"):
+            TransformerEncoder(feat_in=128, d_model=32, n_heads=4, n_layers=2)
 
     @pytest.mark.unit
     def test_causal_forward_cpu(self):

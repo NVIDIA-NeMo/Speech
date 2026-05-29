@@ -22,6 +22,7 @@ class BatchedHyps:
         self,
         batch_size: int,
         init_length: int,
+        blank_id: int,
         logits_dim: int | None = None,
         device: torch.device | None = None,
         float_dtype: torch.dtype | None = None,
@@ -29,6 +30,7 @@ class BatchedHyps:
         with_step_confidence: bool = False,
         with_duration_confidence: bool = False,
         with_logits: bool = False,
+        with_blank_steps: bool = False,
     ):
         """
 
@@ -51,8 +53,10 @@ class BatchedHyps:
         self.with_step_confidence = with_step_confidence
         self.with_duration_confidence = with_duration_confidence
         self.with_logits = with_logits
+        self.with_blank_steps = with_blank_steps
+        self.blank_id = blank_id
 
-        # batch of current lengths of hypotheses and correspoinding timestamps
+        # batch of current lengths of hypotheses and corresponding timestamps
         self.current_lengths = torch.zeros(batch_size, device=device, dtype=torch.long)
         # tensor for storing transcripts
         self.transcript = torch.zeros((batch_size, self._max_length), device=device, dtype=torch.long)
@@ -90,6 +94,7 @@ class BatchedHyps:
         self.last_nb_timestamp = torch.full((batch_size,), -1, device=device, dtype=torch.long)
         # number of non-blank labels for the last timestamp
         self.last_nb_timestamp_lasts = torch.zeros(batch_size, device=device, dtype=torch.long)
+        self.last_nb_labels = torch.full(batch_size, fill_value=-1, device=device, dtype=torch.long)
         self._batch_indices = torch.arange(batch_size, device=device)
         self._ones_batch = torch.ones_like(self._batch_indices)
 
@@ -103,6 +108,7 @@ class BatchedHyps:
         self.scores.fill_(0.0)
         self.last_nb_timestamp.fill_(-1)
         self.last_nb_timestamp_lasts.fill_(0)
+        self.last_nb_labels.fill_(-1)
 
         # optional (1) durations corresponding to tokens
         if self.with_durations:
@@ -194,6 +200,8 @@ class BatchedHyps:
             token_durations: predicted durations for each token by TDT head
             confidence: optional tensor with step confidence
         """
+        if self.with_blank_steps:
+            raise NotImplementedError("Blank steps are not yet supported in this method")
         # accumulate scores
         self.scores[active_indices] += scores
 
@@ -210,6 +218,7 @@ class BatchedHyps:
             self.last_nb_timestamp[active_indices] == time_indices, self.last_nb_timestamp_lasts[active_indices] + 1, 1
         )
         self.last_nb_timestamp[active_indices] = time_indices
+        self.last_nb_labels[active_indices] = labels
         # increase lengths
         self.current_lengths[active_indices] += 1
 
@@ -286,39 +295,46 @@ class BatchedHyps:
             self.logits[self._batch_indices, self.current_lengths] = logits
         # store last observed timestamp + number of observation for the current timestamp
         # if last_timestamp == time_indices, increase; else set to 1
+        if self.with_blank_steps:
+            active_nb_mask = active_mask & (labels != self.blank_id)
+        else:
+            active_nb_mask = active_mask
         torch.where(
-            torch.logical_and(active_mask, self.last_nb_timestamp == time_indices),
+            torch.logical_and(active_nb_mask, self.last_nb_timestamp == time_indices),
             self.last_nb_timestamp_lasts + 1,
             self.last_nb_timestamp_lasts,
             out=self.last_nb_timestamp_lasts,
         )
         torch.where(
-            torch.logical_and(active_mask, self.last_nb_timestamp != time_indices),
+            torch.logical_and(active_nb_mask, self.last_nb_timestamp != time_indices),
             self._ones_batch,
             self.last_nb_timestamp_lasts,
             out=self.last_nb_timestamp_lasts,
         )
         # same as: self.last_nb_timestamp[active_mask] = time_indices[active_mask], but non-blocking
-        torch.where(active_mask, time_indices, self.last_nb_timestamp, out=self.last_nb_timestamp)
+        torch.where(active_nb_mask, time_indices, self.last_nb_timestamp, out=self.last_nb_timestamp)
+        torch.where(active_nb_mask, labels, self.last_nb_labels, out=self.last_nb_labels)
         # increase lengths
         self.current_lengths += active_mask
 
     def get_last_labels(self, pad_id: int = -1):
         """Get last labels. For elements without labels use pad_id"""
-        return torch.where(
-            self.current_lengths > 0, self.transcript[self._batch_indices, self.current_lengths - 1], pad_id
-        )
+        return torch.where(self.last_nb_labels != -1, self.last_nb_labels, pad_id)
 
     def clone(self) -> "BatchedHyps":
         """Return a copy of self"""
         batched_hyps = BatchedHyps(
             batch_size=self.batch_size,
             init_length=self._max_length,
+            blank_id=self.blank_id,
+            logits_dim=self.logits_dim,
             device=self.device,
             float_dtype=self.float_dtype,
             with_durations=self.with_durations,
             with_step_confidence=self.with_step_confidence,
+            with_duration_confidence=self.with_duration_confidence,
             with_logits=self.with_logits,
+            with_blank_steps=self.with_blank_steps,
         )
         batched_hyps.current_lengths.copy_(self.current_lengths)
         batched_hyps.transcript.copy_(self.transcript)
@@ -335,6 +351,7 @@ class BatchedHyps:
         batched_hyps.scores.copy_(self.scores)
         batched_hyps.last_nb_timestamp.copy_(self.last_nb_timestamp)
         batched_hyps.last_nb_timestamp_lasts.copy_(self.last_nb_timestamp_lasts)
+        batched_hyps.last_nb_labels.copy_(self.last_nb_labels)
         return batched_hyps
 
     def merge_(self, other: "BatchedHyps") -> "BatchedHyps":
@@ -402,9 +419,15 @@ class BatchedHyps:
             )
         self.current_lengths += other.current_lengths
         self.scores += other.scores
-        self.last_nb_timestamp.copy_(other.last_nb_timestamp)
-        self.last_nb_timestamp_lasts.copy_(other.last_nb_timestamp_lasts)
-
+        other_has_last_nb = other.last_nb_labels != -1
+        torch.where(other_has_last_nb, other.last_nb_timestamp, self.last_nb_timestamp, out=self.last_nb_timestamp)
+        torch.where(
+            other_has_last_nb,
+            other.last_nb_timestamp_lasts,
+            self.last_nb_timestamp_lasts,
+            out=self.last_nb_timestamp_lasts,
+        )
+        torch.where(other_has_last_nb, other.last_nb_labels, self.last_nb_labels, out=self.last_nb_labels)
         return self
 
 

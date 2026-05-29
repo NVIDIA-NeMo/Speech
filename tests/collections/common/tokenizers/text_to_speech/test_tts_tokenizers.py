@@ -28,6 +28,7 @@ from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import (
 )
 from nemo.collections.tts.g2p.models.i18n_ipa import IpaG2p
 from nemo.collections.tts.g2p.models.ja_jp_ipa import JapaneseG2p, JapaneseKatakanaAccentG2p
+from nemo.collections.tts.g2p.models.kn_in_ipa import KannadaG2p
 
 
 class TestTTSTokenizers:
@@ -71,6 +72,11 @@ class TestTTSTokenizers:
         "하세요": ["hˈɐsejˌo"],
         "감사": ["kˈɐmsɐ"],
         "합니다": ["hˈɐmnidˌɐ"],
+    }
+    PHONEME_DICT_KN = {
+        "ನಮಸ್ಕಾರ": ["namaskaːɾa"],
+        "ಕನ್ನಡ": ["kannaɖa"],
+        "ಬೆಂಗಳೂರು": ["beŋgaɭuːɾu"],
     }
 
     @staticmethod
@@ -543,3 +549,220 @@ class TestTTSTokenizers:
         tok_v2 = ArabicCharsTokenizer(charset_version=2)
 
         assert tok_v1.tokens != tok_v2.tokens
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_kannada_g2p_rule_based(self):
+        """Test Kannada G2P rule-based conversion."""
+        g2p = KannadaG2p()
+
+        # Test basic vowels
+        assert "".join(g2p("ಅ")) == "a"
+        assert "".join(g2p("ಆ")) == "aː"
+
+        # Test consonant with inherent vowel
+        assert "".join(g2p("ಕ")) == "ka"
+
+        # Test consonant with virama (no vowel)
+        assert "".join(g2p("ಕ್")) == "k"
+
+        # Test consonant with matra
+        assert "".join(g2p("ಕಾ")) == "kaː"
+        assert "".join(g2p("ಕಿ")) == "ki"
+
+        # Test word
+        assert "".join(g2p("ಕನ್ನಡ")) == "kannaɖa"
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_kannada_g2p_dictionary_based(self):
+        """Test Kannada G2P with dictionary lookup."""
+        g2p = KannadaG2p(phoneme_dict=self.PHONEME_DICT_KN)
+
+        # Test dictionary lookup
+        assert "".join(g2p("ನಮಸ್ಕಾರ")) == "namaskaːɾa"
+        assert "".join(g2p("ಕನ್ನಡ")) == "kannaɖa"
+        assert "".join(g2p("ಬೆಂಗಳೂರು")) == "beŋgaɭuːɾu"
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_kannada_g2p_special_characters(self):
+        """Test Kannada G2P with special characters."""
+        g2p = KannadaG2p()
+
+        # Test anusvara (nasal)
+        result = "".join(g2p("ಅಂಕ"))
+        assert "ŋ" in result  # Anusvara before velar should be ŋ
+
+        # Test retroflex consonants
+        assert "ɖ" in "".join(g2p("ಡ"))
+        assert "ɳ" in "".join(g2p("ಣ"))
+
+        # Test vocalic R
+        assert "ɾɯ" in "".join(g2p("ಕೃ"))
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_kannada_g2p_affricates(self):
+        """Test Kannada G2P affricate handling."""
+        g2p = KannadaG2p()
+
+        # Test palatal affricates
+        result = "".join(g2p("ಚ"))
+        assert "tʃ" in result or ("t" in result and "ʃ" in result)
+
+        result = "".join(g2p("ಜ"))
+        assert "dʒ" in result or ("d" in result and "ʒ" in result)
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_kannada_g2p_digits(self):
+        """Test Kannada G2P digit handling."""
+        g2p = KannadaG2p()
+
+        # Test Arabic digits (should pass through)
+        result = "".join(g2p("123"))
+        assert result == "123"
+
+        # Test Kannada digits (should convert to Arabic)
+        result = "".join(g2p("೧೨೩"))
+        assert result == "123"
+
+        # Test mixed
+        result = "".join(g2p("೦೫"))
+        assert result == "05"
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_kannada_g2p_punctuation(self):
+        """Test Kannada G2P punctuation handling."""
+        g2p = KannadaG2p()
+
+        # Test punctuation passthrough
+        result = "".join(g2p("ಕನ್ನಡ।"))
+        assert "।" in result
+
+        result = "".join(g2p("ಕನ್ನಡ॥"))
+        assert "॥" in result
+
+        result = "".join(g2p("ಕನ್ನಡ,"))
+        assert "," in result
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_kannada_g2p_ipa_tokenizer_integration(self):
+        """Test KannadaG2p integration with IPATokenizer."""
+        g2p = KannadaG2p(phoneme_dict=self.PHONEME_DICT_KN)
+
+        # Verify g2p has symbols attribute required by IPATokenizer
+        assert hasattr(g2p, 'symbols'), "KannadaG2p must have 'symbols' attribute for IPATokenizer"
+        assert isinstance(g2p.symbols, set), "symbols must be a set"
+        assert len(g2p.symbols) > 0, "symbols must not be empty"
+
+        # Verify replace_symbols method exists
+        assert hasattr(g2p, 'replace_symbols'), "KannadaG2p must have 'replace_symbols' method"
+
+        # Test that IPATokenizer can be instantiated with KannadaG2p
+        tokenizer = IPATokenizer(g2p=g2p, locale="kn-IN")
+        assert tokenizer is not None
+
+        # Test encode/decode roundtrip with dictionary word
+        input_text = "ನಮಸ್ಕಾರ"
+        tokens = tokenizer.encode(input_text)
+        assert len(tokens) > 0, "Tokenizer should produce tokens"
+
+        # Decode and verify exact phoneme sequence (minus any special tokens)
+        decoded = tokenizer.decode(tokens)
+        # Remove potential special tokens/whitespace and verify core phonemes
+        decoded_clean = decoded.replace(" ", "")
+        assert "namaskaːɾa" in decoded_clean or decoded_clean == "namaskaːɾa", \
+            f"Expected 'namaskaːɾa' in decoded output, got: {decoded}"
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_kannada_g2p_symbols_content(self):
+        """Test that KannadaG2p symbols contains expected characters."""
+        g2p = KannadaG2p(phoneme_dict=self.PHONEME_DICT_KN)
+
+        # Should contain Kannada graphemes
+        assert 'ಕ' in g2p.symbols
+        assert 'ನ' in g2p.symbols
+
+        # Should contain IPA phonemes
+        assert 'a' in g2p.symbols
+        assert 'k' in g2p.symbols
+
+        # Should contain punctuation
+        assert '।' in g2p.symbols
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_kannada_g2p_flat_dict_input(self):
+        """Test KannadaG2p with flat list dict input format (regression test)."""
+        # Dict with already-split phoneme tokens (documented format)
+        flat_dict = {
+            "ಕನ್ನಡ": ["k", "a", "n", "n", "a", "ɖ", "a"],
+        }
+        g2p = KannadaG2p(phoneme_dict=flat_dict)
+
+        # Should produce correct output (not just first token)
+        result = g2p("ಕನ್ನಡ")
+        assert len(result) == 7, f"Expected 7 tokens, got {len(result)}: {result}"
+        assert result == ["k", "a", "n", "n", "a", "ɖ", "a"]
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_kannada_g2p_custom_tokenizer_with_prefix(self):
+        """Test word_tokenize_func with without_changes flag and grapheme_prefix."""
+        g2p = KannadaG2p(
+            phoneme_dict=self.PHONEME_DICT_KN,
+            grapheme_prefix="@",
+        )
+
+        # Custom tokenizer that marks "nvidia" as pass-through (without_changes=True)
+        # Note: text is already lowercased by set_grapheme_case before reaching tokenizer
+        def custom_tokenizer(text):
+            if "nvidia" in text:
+                # Split: return nvidia as pass-through, rest as process
+                parts = text.split("nvidia")
+                result = []
+                for i, part in enumerate(parts):
+                    if part:
+                        result.append(([part], False))
+                    if i < len(parts) - 1:
+                        result.append((["nvidia"], True))
+                return result
+            return [([text], False)]
+
+        g2p.word_tokenize_func = custom_tokenizer
+
+        # Test with code-mixed text (input is uppercase, but lowercased before tokenizer)
+        result = g2p("NVIDIA")
+        # Should produce prefixed lowercase ASCII letters via without_changes=True path
+        assert result == ["@n", "@v", "@i", "@d", "@i", "@a"], f"Got {result}"
+
+        # Verify all emitted symbols are tokenizable
+        for symbol in result:
+            assert symbol in g2p.symbols, f"Symbol {symbol} not in g2p.symbols"
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_kannada_g2p_passthrough_kannada_unprefixed(self):
+        """Test that pass-through Kannada graphemes remain unprefixed."""
+        g2p = KannadaG2p(grapheme_prefix="@")
+
+        # Custom tokenizer that marks Kannada text as pass-through
+        def passthrough_tokenizer(text):
+            return [([text], True)]
+
+        g2p.word_tokenize_func = passthrough_tokenizer
+
+        # Pass through Kannada text
+        result = g2p("ಕನ")
+        # Kannada graphemes should NOT be prefixed (they're in symbols unprefixed)
+        assert "ಕ" in result, f"Expected unprefixed ಕ, got {result}"
+        assert "@ಕ" not in result, f"Kannada should not be prefixed: {result}"
+
+        # Verify all symbols are tokenizable
+        for symbol in result:
+            assert symbol in g2p.symbols, f"Symbol {symbol} not in g2p.symbols"

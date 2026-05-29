@@ -111,7 +111,8 @@ def _make_causal_mod():
     return causal
 
 
-_SUPPORTED_ATTN_MODES = ("full", "causal")
+_SUPPORTED_ATTENTION_MODES = ("full", "causal")
+_SUPPORTED_SELF_ATTENTION_MODELS = ("abs_pos", "rel_pos", "no_pos")
 
 
 class FeedForward(nn.Module):
@@ -137,6 +138,17 @@ class MultiHeadAttention(nn.Module):
         self.head_dim = cfg.d_model // cfg.n_heads
         self.d_model = cfg.d_model
         self.self_attention_model = cfg.self_attention_model
+        self._uses_rel_pos = self.self_attention_model == "rel_pos"
+        if self.self_attention_model not in _SUPPORTED_SELF_ATTENTION_MODELS:
+            raise ValueError(
+                f"self_attention_model='{self.self_attention_model}' is not supported. "
+                f"Supported modes: {_SUPPORTED_SELF_ATTENTION_MODELS}."
+            )
+        if self.head_dim < 16:
+            raise ValueError(
+                "PyTorch FlexAttention CUDA backend requires per-head embedding dimension >= 16, "
+                f"but got head_dim={self.head_dim} from d_model={self.d_model}, n_heads={self.n_heads}."
+            )
 
         self.w_qkv = nn.Linear(cfg.d_model, 3 * cfg.d_model, bias=cfg.qkv_bias)
         self.out_proj = nn.Linear(cfg.d_model, cfg.d_model)
@@ -149,7 +161,7 @@ class MultiHeadAttention(nn.Module):
         # Transformer-XL relative-position parameters (matrix b and matrix d from
         # https://arxiv.org/abs/1901.02860 Section 3.3). The "matrix c" term `u @ K^T` is
         # absorbed by passing `Q + pos_bias_u` as the query to FlexAttention.
-        if self.self_attention_model == "rel_pos":
+        if self._uses_rel_pos:
             self.linear_pos = nn.Linear(cfg.d_model, cfg.d_model, bias=False)
             self.pos_bias_u = nn.Parameter(torch.zeros(self.n_heads, self.head_dim))
             self.pos_bias_v = nn.Parameter(torch.zeros(self.n_heads, self.head_dim))
@@ -237,16 +249,8 @@ class MultiHeadAttention(nn.Module):
             k = self.k_norm(k).to(v.dtype)
 
         score_mod = None
-        if self.self_attention_model == "rel_pos":
-            if pos_emb is None:
-                raise ValueError("MultiHeadAttention with self_attention_model='rel_pos' requires pos_emb.")
+        if self._uses_rel_pos:
             score_mod, q = self._build_rel_pos_score_mod(q, pos_emb)
-
-        if q.is_cuda and D < 16:
-            raise ValueError(
-                "PyTorch FlexAttention CUDA backend requires per-head embedding dimension >= 16, "
-                f"but got head_dim={D} from d_model={self.d_model}, n_heads={self.n_heads}."
-            )
 
         attn_fn = flex_attention_compiled if q.is_cuda else flex_attention
         out = attn_fn(q, k, v, block_mask=block_mask, score_mod=score_mod)
@@ -367,24 +371,22 @@ class TransformerEncoder(nn.Module):
         super().__init__()
         if d_model % n_heads != 0:
             raise ValueError(f"d_model ({d_model}) must be divisible by n_heads ({n_heads}).")
-        if attn_mode not in _SUPPORTED_ATTN_MODES:
+        if attn_mode not in _SUPPORTED_ATTENTION_MODES:
             raise ValueError(
-                f"attn_mode='{attn_mode}' is not yet supported. Supported modes: {_SUPPORTED_ATTN_MODES}."
+                f"attn_mode='{attn_mode}' is not yet supported. Supported modes: {_SUPPORTED_ATTENTION_MODES}."
             )
         # ``None`` is accepted as a YAML-friendly alias for ``"no_pos"`` (an unset field in a
         # config simply maps to None) — normalize here so the rest of the module only deals with
         # the string form.
         if self_attention_model is None:
             self_attention_model = "no_pos"
-        if self_attention_model not in ("abs_pos", "rel_pos", "no_pos"):
+        if self_attention_model not in _SUPPORTED_SELF_ATTENTION_MODELS:
             raise ValueError(
                 f"self_attention_model='{self_attention_model}' is not supported. "
                 "Currently only 'abs_pos', 'rel_pos', and 'no_pos' (or None) are available."
             )
         if dropout_pre_encoder is None:
             dropout_pre_encoder = drop_rate
-        if subsampling == 'feature-stacking':
-            subsampling = 'feature_stacking'
 
         cfg = TransformerEncoderConfig(
             feat_in=feat_in,
@@ -469,6 +471,8 @@ class TransformerEncoder(nn.Module):
                 or ``(B, T, D)`` pre-encoded embeddings when ``bypass_pre_encode=True``.
             length: (B,) — valid frame counts per sample.
             bypass_pre_encode: If true, skip the pre-encoder and consume frame-level embeddings.
+                               This option is used when pre-encoded embeddings are used as speaker cache
+                               such as speaker diarization models.
 
         Returns:
             x: (B, D, T') — encoded representation (channels-first).

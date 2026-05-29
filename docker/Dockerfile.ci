@@ -54,6 +54,150 @@ RUN <<"EOF" bash -ex
 uv sync --link-mode copy --locked --extra all --extra cu13 --group test
 EOF
 
+FROM base-image AS automodel-deps-wheels
+ARG GPU_TARGET=h100plus
+ARG TRANSFORMER_ENGINE_REPO=https://github.com/NVIDIA/TransformerEngine.git
+ARG TRANSFORMER_ENGINE_REF=v2.15
+ARG DEEPEP_REPO=https://github.com/deepseek-ai/DeepEP.git
+ARG DEEPEP_REF=v1.2.1
+ARG NV_GROUPED_GEMM_VERSION=1.1.4.post8
+ARG CAUSAL_CONV1D_VERSION=1.6.2.post1
+ARG MAMBA_SSM_VERSION=2.3.2.post1
+ARG FLASH_ATTN_VERSION=2.8.3
+
+ENV PIP_NO_CACHE_DIR=1
+
+COPY external/patches/deepep_v1_a100_disable_nvshmem.patch /tmp/patches/
+RUN <<"EOF" bash -euxo pipefail
+apt-get update
+apt-get install -y \
+    build-essential \
+    ca-certificates \
+    cmake \
+    ninja-build \
+    patch
+apt-get clean
+rm -rf /var/lib/apt/lists/*
+EOF
+
+RUN <<"EOF" bash -euxo pipefail
+cat >/usr/local/bin/automodel-build-env <<'SCRIPT'
+case "${GPU_TARGET}" in
+    h100plus)
+        export DEEPEP_TORCH_CUDA_ARCH_LIST="9.0+PTX"
+        export TORCH_CUDA_ARCH_LIST="9.0;10.0"
+        export NVTE_CUDA_ARCHS="90;100"
+        export FLASH_ATTN_CUDA_ARCHS="90;100"
+        export CMAKE_CUDA_ARCHITECTURES="90;100"
+        ;;
+    a100)
+        export DEEPEP_TORCH_CUDA_ARCH_LIST="8.0"
+        export TORCH_CUDA_ARCH_LIST="8.0"
+        export NVTE_CUDA_ARCHS="80"
+        export FLASH_ATTN_CUDA_ARCHS="80"
+        export CMAKE_CUDA_ARCHITECTURES="80"
+        export DISABLE_SM90_FEATURES=1
+        ;;
+    *)
+        echo "Unsupported GPU_TARGET='${GPU_TARGET}'. Expected 'h100plus' or 'a100'."
+        exit 1
+        ;;
+esac
+
+AUTOMODEL_CCCL_INCLUDES="/usr/local/cuda/include/cccl"
+PYTHON_CCCL_INCLUDE="${VIRTUAL_ENV}/lib/python${UV_PYTHON}/site-packages/nvidia/cu13/include/cccl"
+if [[ -d "${PYTHON_CCCL_INCLUDE}" ]]; then
+    AUTOMODEL_CCCL_INCLUDES="${AUTOMODEL_CCCL_INCLUDES}:${PYTHON_CCCL_INCLUDE}"
+fi
+export CPATH="${AUTOMODEL_CCCL_INCLUDES}${CPATH:+:${CPATH}}"
+export CPLUS_INCLUDE_PATH="${AUTOMODEL_CCCL_INCLUDES}${CPLUS_INCLUDE_PATH:+:${CPLUS_INCLUDE_PATH}}"
+SCRIPT
+uv pip install --upgrade \
+    cmake \
+    ninja \
+    nvidia-mathdx \
+    packaging \
+    pip \
+    psutil \
+    pybind11 \
+    setuptools \
+    wheel
+
+mkdir -p /opt/automodel-src /opt/automodel-wheels
+EOF
+
+RUN <<"EOF" bash -euxo pipefail
+source /usr/local/bin/automodel-build-env
+git clone "${TRANSFORMER_ENGINE_REPO}" /opt/automodel-src/TransformerEngine
+git -C /opt/automodel-src/TransformerEngine checkout -f "${TRANSFORMER_ENGINE_REF}"
+git -C /opt/automodel-src/TransformerEngine submodule update --init --recursive
+NVTE_FRAMEWORK=pytorch \
+    python -m pip wheel \
+    --no-build-isolation \
+    --no-deps \
+    --wheel-dir /opt/automodel-wheels \
+    /opt/automodel-src/TransformerEngine
+EOF
+
+RUN <<"EOF" bash -euxo pipefail
+source /usr/local/bin/automodel-build-env
+git clone "${DEEPEP_REPO}" /opt/automodel-src/DeepEP
+git -C /opt/automodel-src/DeepEP checkout -f "${DEEPEP_REF}"
+if [[ "${GPU_TARGET}" == "a100" ]]; then
+    patch -d /opt/automodel-src/DeepEP -p1 < /tmp/patches/deepep_v1_a100_disable_nvshmem.patch
+fi
+TORCH_CUDA_ARCH_LIST="${DEEPEP_TORCH_CUDA_ARCH_LIST}" \
+python -m pip wheel \
+    --no-build-isolation \
+    --no-deps \
+    --wheel-dir /opt/automodel-wheels \
+    /opt/automodel-src/DeepEP
+EOF
+
+RUN <<"EOF" bash -euxo pipefail
+source /usr/local/bin/automodel-build-env
+GROUPED_GEMM_FORCE_BUILD=TRUE \
+    python -m pip wheel \
+    --no-build-isolation \
+    --no-binary=nv-grouped-gemm \
+    --no-deps \
+    --wheel-dir /opt/automodel-wheels \
+    "nv-grouped-gemm==${NV_GROUPED_GEMM_VERSION}"
+
+CAUSAL_CONV1D_FORCE_BUILD=TRUE \
+    python -m pip wheel \
+    --no-build-isolation \
+    --no-binary=causal-conv1d \
+    --no-deps \
+    --wheel-dir /opt/automodel-wheels \
+    "causal-conv1d==${CAUSAL_CONV1D_VERSION}"
+
+MAMBA_FORCE_BUILD=TRUE \
+    python -m pip wheel \
+    --no-build-isolation \
+    --no-binary=mamba-ssm \
+    --no-deps \
+    --wheel-dir /opt/automodel-wheels \
+    "mamba-ssm==${MAMBA_SSM_VERSION}"
+
+FLASH_ATTENTION_FORCE_BUILD=TRUE \
+    python -m pip wheel \
+    --no-build-isolation \
+    --no-binary=flash-attn \
+    --no-deps \
+    --wheel-dir /opt/automodel-wheels \
+    "flash-attn==${FLASH_ATTN_VERSION}"
+
+ls -lh /opt/automodel-wheels
+EOF
+
+FROM base-image
+COPY --from=automodel-deps-wheels /opt/automodel-wheels /opt/automodel-wheels
+RUN <<"EOF" bash -euxo pipefail
+uv pip install --no-deps /opt/automodel-wheels/*.whl
+rm -rf /opt/automodel-wheels
+EOF
+
 ENV NEMO_HOME="/home/TestData/nemo_home"
 
 ARG IMAGE_LABEL

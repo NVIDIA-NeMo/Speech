@@ -209,6 +209,26 @@ class TestNeMoSpeechLMConfig:
         with pytest.raises(AttributeError):
             _ = cfg.nonexistent_attribute_xyz
 
+    def test_encoder_chunk_size_seconds_default_none(self):
+        """Legacy checkpoints without a chunk size keep the single-pass encoder path."""
+        cfg = NeMoSpeechLMConfig(**_DEFAULT_CONFIG_KWARGS)
+        assert cfg.encoder_chunk_size_seconds is None
+
+    def test_encoder_chunk_size_seconds_round_trips(self):
+        """Chunk size set in config.json (e.g. SALMAutomodel default 30 s) survives load."""
+        cfg = NeMoSpeechLMConfig(
+            **{
+                **_DEFAULT_CONFIG_KWARGS,
+                "encoder_chunk_size_seconds": 30.0,
+            }
+        )
+        assert cfg.encoder_chunk_size_seconds == 30.0
+
+    def test_encoder_chunk_size_seconds_default_init_inert(self):
+        """No-arg default init must still expose ``encoder_chunk_size_seconds=None``."""
+        cfg = NeMoSpeechLMConfig()
+        assert cfg.encoder_chunk_size_seconds is None
+
 
 @pytest.mark.skipif(not (_HAS_CONFIG and _HAS_VLLM), reason="NeMoSpeechLMConfig or vLLM not available")
 class TestBackendSelection:
@@ -326,13 +346,82 @@ class TestAudioProcessing:
 
         assert result["audio"][0].shape[-1] == 40 * 16000
 
+    def test_dummy_inputs_use_requested_audio_length(self, monkeypatch):
+        from nemo.collections.speechlm2.vllm.salm.audio import NeMoSpeechLMDummyInputsBuilder
+
+        builder = object.__new__(NeMoSpeechLMDummyInputsBuilder)
+        builder.info = SimpleNamespace(_get_encoder_chunk_size_seconds=lambda: None)
+        monkeypatch.setattr(
+            builder,
+            "_get_dummy_audios",
+            lambda length, num_audios: [SimpleNamespace(length=length) for _ in range(num_audios)],
+        )
+
+        result = builder.get_dummy_mm_data(
+            seq_len=0,
+            mm_counts={"audio": 1},
+            mm_options={"audio": SimpleNamespace(length=12345)},
+        )
+
+        assert result["audio"][0].length == 12345
+
+    def test_dummy_inputs_cap_requested_audio_length_to_text_budget(self, monkeypatch):
+        from nemo.collections.speechlm2.vllm.salm.audio import (
+            _DUMMY_AUDIO_TEXT_TOKEN_RESERVE,
+            NeMoSpeechLMDummyInputsBuilder,
+            NeMoSpeechLMProcessingInfo,
+        )
+
+        target_audio_tokens = 4
+        max_audio_len = NeMoSpeechLMProcessingInfo._samples_for_audio_tokens(target_audio_tokens)
+        builder = object.__new__(NeMoSpeechLMDummyInputsBuilder)
+        builder.info = SimpleNamespace(_get_encoder_chunk_size_seconds=lambda: None)
+        monkeypatch.setattr(
+            builder,
+            "_get_dummy_audios",
+            lambda length, num_audios: [SimpleNamespace(length=length) for _ in range(num_audios)],
+        )
+
+        result = builder.get_dummy_mm_data(
+            seq_len=_DUMMY_AUDIO_TEXT_TOKEN_RESERVE + target_audio_tokens,
+            mm_counts={"audio": 1},
+            mm_options={"audio": SimpleNamespace(length=max_audio_len + 16000)},
+        )
+
+        assert result["audio"][0].length == max_audio_len
+
+    def test_dummy_inputs_large_seq_len_uses_max_audio_cap(self, monkeypatch):
+        from nemo.collections.speechlm2.vllm.salm.audio import (
+            _DUMMY_AUDIO_MAX_DURATION_S,
+            _SAMPLING_RATE,
+            NeMoSpeechLMDummyInputsBuilder,
+        )
+
+        max_audio_len = int(_DUMMY_AUDIO_MAX_DURATION_S * _SAMPLING_RATE)
+        builder = object.__new__(NeMoSpeechLMDummyInputsBuilder)
+        builder.info = SimpleNamespace(_get_encoder_chunk_size_seconds=lambda: None)
+        monkeypatch.setattr(
+            builder,
+            "_get_dummy_audios",
+            lambda length, num_audios: [SimpleNamespace(length=length) for _ in range(num_audios)],
+        )
+
+        result = builder.get_dummy_mm_data(
+            seq_len=10_000_000,
+            mm_counts={"audio": 1},
+            mm_options={"audio": SimpleNamespace(length=max_audio_len + 16000)},
+        )
+
+        assert result["audio"][0].length == max_audio_len
+
     def test_call_hf_processor_requires_matching_placeholder_count(self):
         from nemo.collections.speechlm2.vllm.salm.audio import NeMoSpeechLMMultiModalProcessor
 
         processor = object.__new__(NeMoSpeechLMMultiModalProcessor)
         processor.info = SimpleNamespace(
             get_tokenizer=_FakeTokenizer,
-            _estimate_audio_tokens=lambda samples: 2,
+            _estimate_audio_tokens=lambda samples, chunk_size_seconds=None: 2,
+            _get_encoder_chunk_size_seconds=lambda: None,
         )
 
         with pytest.raises(ValueError, match="placeholders"):
@@ -351,7 +440,8 @@ class TestAudioProcessing:
         processor = object.__new__(NeMoSpeechLMMultiModalProcessor)
         processor.info = SimpleNamespace(
             get_tokenizer=_FakeTokenizer,
-            _estimate_audio_tokens=lambda samples: 2,
+            _estimate_audio_tokens=lambda samples, chunk_size_seconds=None: 2,
+            _get_encoder_chunk_size_seconds=lambda: None,
         )
 
         result = processor._call_hf_processor(

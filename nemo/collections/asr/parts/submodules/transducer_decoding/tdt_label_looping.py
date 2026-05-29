@@ -330,7 +330,7 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
         encoder_output_length: torch.Tensor,
         prev_batched_state: Optional[BatchedLabelLoopingState] = None,
         multi_biasing_ids: Optional[torch.Tensor] = None,
-    ) -> tuple[BatchedHyps, Optional[BatchedAlignments], BatchedLabelLoopingState]:
+    ) -> tuple[BatchedHyps, BatchedLabelLoopingState]:
         """
         Pure PyTorch implementation
 
@@ -645,7 +645,7 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
             fusion_states_list=fusion_states_list,
             time_jumps=time_indices - encoder_output_length,
         )
-        return batched_hyps, alignments, decoding_state
+        return batched_hyps, decoding_state
 
     def _get_decoding_state_item_after_sos(self, device: torch.device | str) -> LabelLoopingStateItem:
         """Get decoding state item after <SOS> symbol, used for initialization from empty hypotheses."""
@@ -871,7 +871,6 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
         # to avoid any manipulations with allocated memory outside the decoder
         return (
             self.state.batched_hyps.clone(),
-            self.state.alignments.clone() if self.state.alignments is not None else None,
             decoding_state,
         )
 

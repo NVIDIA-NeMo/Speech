@@ -205,7 +205,7 @@ class GreedyBatchedLabelLoopingComputerBase(WithOptionalCudaGraphs, ABC):
         encoder_output_length: torch.Tensor,
         prev_batched_state: Optional[BatchedLabelLoopingState] = None,
         multi_biasing_ids: Optional[torch.Tensor] = None,
-    ) -> tuple[BatchedHyps, Optional[BatchedAlignments], BatchedLabelLoopingState]:
+    ) -> tuple[BatchedHyps, BatchedLabelLoopingState]:
         """
         Pure PyTorch implementation
 
@@ -224,7 +224,7 @@ class GreedyBatchedLabelLoopingComputerBase(WithOptionalCudaGraphs, ABC):
         encoder_output_length: torch.Tensor,
         prev_batched_state: Optional[BatchedLabelLoopingState] = None,
         multi_biasing_ids: Optional[torch.Tensor] = None,
-    ) -> tuple[BatchedHyps, Optional[BatchedAlignments], BatchedLabelLoopingState]:
+    ) -> tuple[BatchedHyps, BatchedLabelLoopingState]:
         """
         Implementation with CUDA graphs.
 
@@ -280,7 +280,7 @@ class GreedyBatchedLabelLoopingComputerBase(WithOptionalCudaGraphs, ABC):
         out_len: torch.Tensor,
         prev_batched_state: Optional[BatchedLabelLoopingState] = None,
         multi_biasing_ids: Optional[torch.Tensor] = None,
-    ) -> tuple[BatchedHyps, Optional[BatchedAlignments], BatchedLabelLoopingState]:
+    ) -> tuple[BatchedHyps, BatchedLabelLoopingState]:
         """
         Entry point for the decoding algorithm
 

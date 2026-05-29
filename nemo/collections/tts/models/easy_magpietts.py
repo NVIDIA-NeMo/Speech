@@ -1296,15 +1296,53 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             user_audio = batch["user_audio_turn_splitted"]
             user_audio_lens = batch["user_audio_turn_splitted_lens"]
 
-            silence_prob = float(self.cfg.get("user_cond_silence_augmentation_prob", 0.0) or 0.0)
-            if self.training and silence_prob > 0.0:
-                silence_mask = torch.rand(
-                    user_audio.size(0),
-                    device=user_audio.device,
-                ) < silence_prob
+            turn_silence_prob = float(self.cfg.get("user_cond_silence_augmentation_prob", 0.0) or 0.0)
+            sample_silence_prob = float(self.cfg.get("user_cond_sample_silence_augmentation_prob", 0.0) or 0.0)
+
+            if self.training and (turn_silence_prob > 0.0 or sample_silence_prob > 0.0):
+                user_audio = user_audio.clone()
+
+                # randomly drop individual turns.
+                if turn_silence_prob > 0.0:
+                    turn_silence_mask = torch.rand(
+                        user_audio.size(0),
+                        device=user_audio.device,
+                    ) < turn_silence_prob
+                else:
+                    turn_silence_mask = torch.zeros(
+                        user_audio.size(0),
+                        device=user_audio.device,
+                        dtype=torch.bool,
+                    )
+
+                # randomly drop all turns for selected samples
+                if sample_silence_prob > 0.0:
+                    B = batch["text"].shape[0]
+
+                    sample_silence_mask = torch.rand(
+                        B,
+                        device=user_audio.device,
+                    ) < sample_silence_prob
+
+                    indices = batch["user_audio_turn_splitted_indices"].to(user_audio.device)
+                    turn_batch_indices = indices[:, 0].long()
+
+                    valid_turns = turn_batch_indices >= 0
+                    sample_drop_turn_mask = torch.zeros(
+                        user_audio.size(0),
+                        device=user_audio.device,
+                        dtype=torch.bool,
+                    )
+
+                    sample_drop_turn_mask[valid_turns] = sample_silence_mask[
+                        turn_batch_indices[valid_turns]
+                    ]
+
+                    silence_mask = turn_silence_mask | sample_drop_turn_mask
+                else:
+                    silence_mask = turn_silence_mask
 
                 if silence_mask.any():
-                    user_audio = user_audio.clone()
                     user_audio[silence_mask] = 0.0
 
             user_audio_codes, user_audio_codes_lens = self._codec_helper.audio_to_codes(

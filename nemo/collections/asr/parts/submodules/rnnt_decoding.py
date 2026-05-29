@@ -329,6 +329,11 @@ class AbstractRNNTDecoding(ConfidenceMixin):
             punct_pattern = '|'.join([re.escape(p) for p in self.supported_punctuation])
             self.space_before_punct_pattern = re.compile(r'(\s)(' + punct_pattern + ')')
 
+        self.set_strip_lang_tags(
+            self.cfg.get('strip_lang_tags', False),
+            lang_tag_pattern=self.cfg.get('lang_tag_pattern', None),
+        )
+
         # initialize confidence-related fields
         self._init_confidence(self.cfg.get('confidence_cfg', None))
 
@@ -682,6 +687,23 @@ class AbstractRNNTDecoding(ConfidenceMixin):
         # Update the joint fused batch size or disable it entirely if needed.
         self.update_joint_fused_batch_size()
 
+    def set_strip_lang_tags(self, strip_lang_tags: bool, lang_tag_pattern: Optional[str] = None):
+        """
+        Toggle language-tag stripping on decoded text.
+
+        Args:
+            strip_lang_tags: Whether ``decode_tokens_to_str_with_strip_punctuation``
+                should remove language tags from its output.
+            lang_tag_pattern: Optional regex (as a string) describing the tag to
+                strip. Defaults to ``\\s*<[a-z]{2}-[A-Z]{2}>`` (``<xx-XX>``).
+                Ignored when ``strip_lang_tags`` is False.
+        """
+        self.strip_lang_tags = strip_lang_tags
+        if strip_lang_tags:
+            pattern = lang_tag_pattern if lang_tag_pattern is not None else r'\s*<[a-z]{2}-[A-Z]{2}>'
+            logging.info(f"Setting strip_lang_tags to True with lang_tag_pattern={pattern!r}")
+            self.lang_tag_pattern = re.compile(pattern)
+
     @abstractproperty
     def tokenizer_type(self):
         """
@@ -949,10 +971,13 @@ class AbstractRNNTDecoding(ConfidenceMixin):
     def decode_tokens_to_str_with_strip_punctuation(self, tokens: List[int]) -> str:
         """
         Decodes a list of tokens to a string and removes a space before supported punctuation marks.
+        Optionally strips language-ID tags (e.g. ``<en-US>``) when ``strip_lang_tags`` is enabled.
         """
         text = self.decode_ids_to_str(tokens)
         if self.supported_punctuation:
             text = self.space_before_punct_pattern.sub(r'\2', text)
+        if self.strip_lang_tags:
+            text = self.lang_tag_pattern.sub('', text).strip()
         return text
 
     def update_joint_fused_batch_size(self):
@@ -1854,6 +1879,14 @@ class RNNTDecodingConfig:
 
     # config for multiblank decoding.
     big_blank_durations: Optional[List[int]] = field(default_factory=list)
+
+    # Strip language-ID tags (e.g. <en-US>) from decoded output.
+    # Enable for prompt-conditioned models that emit locale tags after punctuation.
+    strip_lang_tags: bool = False
+
+    # Optional regex (as a string) describing the language tag to strip.
+    # When None, defaults to ``DEFAULT_LANG_TAG_PATTERN`` (``\s*<[a-z]{2}-[A-Z]{2}>``).
+    lang_tag_pattern: Optional[str] = None
 
 
 @dataclass

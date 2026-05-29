@@ -164,6 +164,21 @@ class TestTransformerEncoder:
         assert torch.allclose(out_a[:, :, :safe_t], out_b[:, :, :safe_t], atol=1e-5)
 
     @pytest.mark.unit
+    def test_freeze_unfreeze_partial_restores_prior_state(self):
+        model = TransformerEncoder(feat_in=80, d_model=64, n_heads=4, n_layers=2)
+        for p in model.final_norm.parameters():
+            p.requires_grad = False
+        prior = {n: p.requires_grad for n, p in model.named_parameters()}
+
+        model.freeze()
+        assert all(not p.requires_grad for p in model.parameters())
+        assert not model.training
+
+        model.unfreeze(partial=True)
+        assert {n: p.requires_grad for n, p in model.named_parameters()} == prior
+        assert model.training
+
+    @pytest.mark.unit
     def test_forward_cpu(self):
         """Forward pass on CPU uses unfused FlexAttention fallback."""
         model = TransformerEncoder(feat_in=80, d_model=64, n_heads=4, n_layers=2, drop_rate=0.0, subsampling_factor=4)

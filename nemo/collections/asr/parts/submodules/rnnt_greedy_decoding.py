@@ -815,13 +815,13 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
             multi_biasing_ids = torch.from_numpy(multi_biasing_ids).to(device=x.device)
         else:
             multi_biasing_ids = None
-        batched_hyps, alignments, batched_state = self.decoding_computer(
+        batched_hyps, batched_state = self.decoding_computer(
             x=x,
             out_len=out_len,
             prev_batched_state=batched_state,
             multi_biasing_ids=multi_biasing_ids,
         )
-        hyps = rnnt_utils.batched_hyps_to_hypotheses(batched_hyps, alignments, batch_size=x.shape[0])
+        hyps = rnnt_utils.batched_hyps_to_hypotheses(batched_hyps, batch_size=x.shape[0])
         for hyp, state_item in zip(hyps, self.decoding_computer.split_batched_state(batched_state)):
             hyp.dec_state = state_item
 
@@ -2984,13 +2984,13 @@ class GreedyBatchedTDTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
             multi_biasing_ids = torch.from_numpy(multi_biasing_ids).to(device=x.device)
         else:
             multi_biasing_ids = None
-        batched_hyps, alignments, batched_state = self.decoding_computer(
+        batched_hyps, batched_state = self.decoding_computer(
             x=x,
             out_len=out_len,
             prev_batched_state=batched_state,
             multi_biasing_ids=multi_biasing_ids,
         )
-        hyps = rnnt_utils.batched_hyps_to_hypotheses(batched_hyps, alignments, batch_size=x.shape[0])
+        hyps = rnnt_utils.batched_hyps_to_hypotheses(batched_hyps, batch_size=x.shape[0])
         for hyp, state_item in zip(hyps, self.decoding_computer.split_batched_state(batched_state)):
             hyp.dec_state = state_item
 

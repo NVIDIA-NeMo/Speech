@@ -289,22 +289,21 @@ def select_k_expansions(
     return k_expansions
 
 
-def batched_hyps_to_hypotheses(
-    batched_hyps: BatchedHyps, alignments: Optional[BatchedAlignments] = None, batch_size=None
-) -> List[Hypothesis]:
+def batched_hyps_to_hypotheses(batched_hyps: BatchedHyps, batch_size=None) -> List[Hypothesis]:
     """
     Convert batched hypotheses to a list of Hypothesis objects.
     Keep this function separate to allow for jit compilation for BatchedHyps class (see tests)
 
     Args:
         batched_hyps: BatchedHyps object
-        alignments: BatchedAlignments object, optional; must correspond to BatchedHyps if present
         batch_size: Batch Size to retrieve hypotheses. When working with CUDA graphs the batch size for all tensors
             is constant, thus we need here the real batch size to return only necessary hypotheses
 
     Returns:
         list of Hypothesis objects
     """
+    if batched_hyps.with_blank_steps:
+        raise NotImplementedError
     assert batch_size is None or batch_size <= batched_hyps.scores.shape[0]
     num_hyps = batched_hyps.scores.shape[0] if batch_size is None else batch_size
     # NB: clone is not necessary anymore, since CUDA graph decoder always returns an independent copy
@@ -330,6 +329,7 @@ def batched_hyps_to_hypotheses(
         )
         for i in range(num_hyps)
     ]
+    alignments = None
     if alignments is not None:
         # move all data to cpu to avoid overhead with moving data by chunks
         alignment_lengths = alignments.current_lengths.cpu().tolist()

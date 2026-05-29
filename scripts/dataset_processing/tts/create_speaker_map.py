@@ -48,10 +48,17 @@ def get_args():
         description="Create mapping from speaker names to numerical speaker indices.",
     )
     parser.add_argument(
-        "--manifest_path", required=True, type=Path, action="append", help="Path to training manifest(s).",
+        "--manifest_path",
+        required=True,
+        type=Path,
+        action="append",
+        help="Path to training manifest(s).",
     )
     parser.add_argument(
-        "--speaker_map_path", required=True, type=Path, help="Path for output speaker index JSON",
+        "--speaker_map_path",
+        required=True,
+        type=Path,
+        help="Path for output speaker index JSON",
     )
     parser.add_argument(
         "--overwrite",

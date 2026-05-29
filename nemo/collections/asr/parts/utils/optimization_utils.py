@@ -52,26 +52,26 @@ def unravel_index(index: int, shape: torch.Tensor):
 @torch.jit.script
 class LinearSumAssignmentSolver(object):
     """
-    A Solver class for the linear sum assignment (LSA) problem. 
-    Designed for torch.jit.script compatibility in NeMo. 
-        
-    The LSA problem is also referred to as bipartite matching problem. An LSA problem is described 
-    by a matrix `cost_mat`, where each cost_mat[i,j] is the cost of matching vertex i of the first partite 
-    set (e.g. a "worker") and vertex j of the second set (e.g. a "job"). 
-    
-    Thus, the goal of LSA-solver is to find a complete assignment of column element to row element with 
-    the minimal cost. Note that the solution may not be unique and there could be multiple solutions that 
+    A Solver class for the linear sum assignment (LSA) problem.
+    Designed for torch.jit.script compatibility in NeMo.
+
+    The LSA problem is also referred to as bipartite matching problem. An LSA problem is described
+    by a matrix `cost_mat`, where each cost_mat[i,j] is the cost of matching vertex i of the first partite
+    set (e.g. a "worker") and vertex j of the second set (e.g. a "job").
+
+    Thus, the goal of LSA-solver is to find a complete assignment of column element to row element with
+    the minimal cost. Note that the solution may not be unique and there could be multiple solutions that
     yield the same minimal cost.
 
-    LSA problem solver is needed for the following tasks in NeMo: 
+    LSA problem solver is needed for the following tasks in NeMo:
         - Permutation Invariant Loss (PIL) for diarization model training
-        - Label permutation matching for online speaker diarzation 
-        - Concatenated minimum-permutation Word Error Rate (cp-WER) calculation 
+        - Label permutation matching for online speaker diarzation
+        - Concatenated minimum-permutation Word Error Rate (cp-WER) calculation
 
-    This implementation is based on the LAP solver from scipy: 
+    This implementation is based on the LAP solver from scipy:
         https://github.com/scipy/scipy/blob/v0.18.1/scipy/optimize/_hungarian.py
         The scipy implementation comes with the following license:
-    
+
         Copyright (c) 2008 Brian M. Clapper <bmc@clapper.org>, Gael Varoquaux
         Author: Brian M. Clapper, Gael Varoquaux
         License: 3-clause BSD
@@ -139,8 +139,8 @@ class LinearSumAssignmentSolver(object):
         Goal: Make sure assignment with cost sum 0 is feasible.
 
         Procedure:
-        - Find a zero in the resulting cost matrix. 
-        - If there are no marked zeros in its row or column, mark the zero. 
+        - Find a zero in the resulting cost matrix.
+        - If there are no marked zeros in its row or column, mark the zero.
         - Repeat for each element in the matrix.
         - Go to step 3.
         """
@@ -158,11 +158,11 @@ class LinearSumAssignmentSolver(object):
     def _step3(self) -> int:
         """
         Step 3
-        
+
         Goal: All zeros in the matrix must be covered by marking with the least numbers of rows and columns.
 
         Procedure:
-            - Cover each column containing a marked zero. 
+            - Cover each column containing a marked zero.
                 - If n columns are covered, the marked zeros describe a complete set of unique assignments.
                 In this case, Go to Step 0 (Done state)
                 - Otherwise, Go to Step 4.
@@ -181,10 +181,10 @@ class LinearSumAssignmentSolver(object):
         Goal: Cover all columns containing a marked zero.
 
         Procedure:
-        - Find a non-covered zero and put a prime mark on it. 
+        - Find a non-covered zero and put a prime mark on it.
             - If there is no marked zero in the row containing this primed zero, Go to Step 5.
-            - Otherwise, cover this row and uncover the column containing the marked zero. 
-        - Continue in this manner until there are no uncovered zeros left. 
+            - Otherwise, cover this row and uncover the column containing the marked zero.
+        - Continue in this manner until there are no uncovered zeros left.
         - Save the smallest uncovered value.
         - Go to Step 6.
         """
@@ -219,15 +219,15 @@ class LinearSumAssignmentSolver(object):
         Step 5
 
         Goal: Construct a series of alternating primed and marked zeros as follows.
-        
+
         Procedure:
         - Let Z0 represent the uncovered primed zero found in Step 4.
         - Let Z1 denote the marked zero in the column of Z0 (if any).
         - Let Z2 denote the primed zero in the row of Z1 (there will always be one).
-        - Continue until the series terminates at a primed zero that has no marked zero in its column. 
+        - Continue until the series terminates at a primed zero that has no marked zero in its column.
         - Unmark each marked zero of the series.
         - Mark each primed zero of the series.
-        - Erase all primes and uncover every line in the matrix. 
+        - Erase all primes and uncover every line in the matrix.
         - Return to Step 3
         """
         count = torch.tensor(0)

@@ -60,7 +60,12 @@ class Novograd(Optimizer):
     ):
         _check_valid_opt_params(lr, eps, betas)
         defaults = dict(
-            lr=lr, betas=betas, eps=eps, weight_decay=weight_decay, grad_averaging=grad_averaging, amsgrad=amsgrad,
+            lr=lr,
+            betas=betas,
+            eps=eps,
+            weight_decay=weight_decay,
+            grad_averaging=grad_averaging,
+            amsgrad=amsgrad,
         )
         self.luc = luc
         self.luc_trust = luc_trust

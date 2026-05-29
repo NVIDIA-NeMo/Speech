@@ -46,14 +46,14 @@ Usage:
 
 def generate_manifest_entry(inputs):
     """
-    Generates a manifest entry for a single audio file. 
+    Generates a manifest entry for a single audio file.
     This function is parallelized using multiprocessing.Pool.
 
     Args:
         inputs (tuple): Tuple containing audio file path and frame length in seconds.
-            inputs[0]: 
+            inputs[0]:
                 audio_filepath (str): Path to audio file.
-            inputs[1]: 
+            inputs[1]:
                 vad_frame_unit_secs (float): Duration in seconds for each frame label.
 
     Returns:

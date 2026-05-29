@@ -71,16 +71,28 @@ from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
 
 def get_args():
     parser = argparse.ArgumentParser(
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter, description="Compute TTS feature statistics.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description="Compute TTS feature statistics.",
     )
     parser.add_argument(
-        "--feature_config_path", required=True, type=Path, help="Path to feature config file.",
+        "--feature_config_path",
+        required=True,
+        type=Path,
+        help="Path to feature config file.",
     )
     parser.add_argument(
-        "--manifest_path", required=True, type=Path, action="append", help="Path(s) to training manifest.",
+        "--manifest_path",
+        required=True,
+        type=Path,
+        action="append",
+        help="Path(s) to training manifest.",
     )
     parser.add_argument(
-        "--audio_dir", required=True, type=Path, action="append", help="Path(s) to base directory with audio data.",
+        "--audio_dir",
+        required=True,
+        type=Path,
+        action="append",
+        help="Path(s) to base directory with audio data.",
     )
     parser.add_argument(
         "--feature_dir",
@@ -90,7 +102,10 @@ def get_args():
         help="Path(s) to directory where feature data was stored.",
     )
     parser.add_argument(
-        "--feature_names", default="pitch,energy", type=str, help="Comma separated list of features to process.",
+        "--feature_names",
+        default="pitch,energy",
+        type=str,
+        help="Comma separated list of features to process.",
     )
     parser.add_argument(
         "--mask_field",
@@ -141,7 +156,7 @@ def main():
             f"{len(feature_dirs)}"
         )
 
-    for (manifest_path, audio_dir, feature_dir) in zip(manifest_paths, audio_dirs, feature_dirs):
+    for manifest_path, audio_dir, feature_dir in zip(manifest_paths, audio_dirs, feature_dirs):
         if not manifest_path.exists():
             raise ValueError(f"Manifest {manifest_path} does not exist.")
 
@@ -172,7 +187,7 @@ def main():
     # for that speaker
     feature_stats = {name: defaultdict(list) for name in feature_names}
 
-    for (manifest_path, audio_dir, feature_dir) in zip(manifest_paths, audio_dirs, feature_dirs):
+    for manifest_path, audio_dir, feature_dir in zip(manifest_paths, audio_dirs, feature_dirs):
         entries = read_manifest(manifest_path)
 
         for entry in tqdm(entries):

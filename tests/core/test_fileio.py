@@ -107,8 +107,8 @@ def asr_model():
 class TestFileIO:
     @pytest.mark.unit
     def test_to_from_config_file(self, asr_model):
-        """" Test makes sure that the second instance created with the same configuration (BUT NOT checkpoint)
-        has different weights. """
+        """ " Test makes sure that the second instance created with the same configuration (BUT NOT checkpoint)
+        has different weights."""
 
         with tempfile.NamedTemporaryFile() as fp:
             yaml_filename = fp.name
@@ -127,8 +127,8 @@ class TestFileIO:
 
     @pytest.mark.unit
     def test_save_restore_from_nemo_file(self, asr_model):
-        """" Test makes sure that the second instance created from the same configuration AND checkpoint 
-        has the same weights. """
+        """ " Test makes sure that the second instance created from the same configuration AND checkpoint
+        has the same weights."""
 
         with tempfile.NamedTemporaryFile() as fp:
             filename = fp.name
@@ -152,7 +152,7 @@ class TestFileIO:
     @requires_eff
     @pytest.mark.unit
     def test_eff_save_restore_from_nemo_file_encrypted(self, asr_model):
-        """" Test makes sure that after encrypted save-restore the model has the same weights. """
+        """ " Test makes sure that after encrypted save-restore the model has the same weights."""
 
         with tempfile.NamedTemporaryFile() as fp:
             filename = fp.name
@@ -181,7 +181,7 @@ class TestFileIO:
 
     @pytest.mark.unit
     def test_save_restore_from_nemo_file_with_override(self, asr_model, tmpdir):
-        """" Test makes sure that the second instance created from the same configuration AND checkpoint
+        """ " Test makes sure that the second instance created from the same configuration AND checkpoint
         has the same weights.
 
         Args:

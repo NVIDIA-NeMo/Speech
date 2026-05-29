@@ -273,6 +273,25 @@ class TestPreprocessingUtils:
         )
 
     @pytest.mark.unit
+    def test_get_full_path_datastore_uri_passthrough(self):
+        """Test that datastore URIs in audio_filepath are returned as-is without path joining."""
+        s3_uris = [
+            "s3://bucket/path/to/audio.opus",
+            "s3://audio-riva-originals/youtube/audios/file.opus",
+            "ais://my-bucket/data/audio.wav",
+        ]
+        manifest_file = "/local/path/manifest.json"
+
+        for uri in s3_uris:
+            # Without force_cache, the URI should be returned unchanged
+            result = get_full_path(uri, manifest_file=manifest_file, force_cache=False)
+            assert result == uri, f"Expected {uri} to be returned unchanged, got {result}"
+
+        # With a list of URIs
+        result = get_full_path(s3_uris, manifest_file=manifest_file, force_cache=False)
+        assert result == s3_uris
+
+    @pytest.mark.unit
     def test_get_full_path_audio_file_len_limit(self):
         """Test with audio_file_len_limit.
         Currently, get_full_path will always return the input path when the length

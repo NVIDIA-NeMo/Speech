@@ -22,10 +22,12 @@ class LogEpochTimeCallback(Callback):
 
     @rank_zero_only
     def on_train_epoch_start(self, trainer, pl_module):
+        """Record epoch start time."""
         self.epoch_start = time.time()
 
     @rank_zero_only
     def on_train_epoch_end(self, trainer, pl_module):
+        """Log elapsed epoch time."""
         curr_time = time.time()
         duration = curr_time - self.epoch_start
         trainer.logger.log_metrics({"epoch_time": duration}, step=trainer.global_step)

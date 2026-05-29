@@ -44,7 +44,9 @@ class IndicProcessor:
         return self.moses_detokenizer.detokenize(tokens)
 
     def tokenize(self, text: str):
+        """Return text unchanged."""
         return text
 
     def normalize(self, text: str):
+        """Return text unchanged."""
         return text

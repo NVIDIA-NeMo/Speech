@@ -18,13 +18,18 @@ import tempfile
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, NamedTuple, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, List, NamedTuple, Optional, Tuple, Union
 
 import torch
 from kaldialign import edit_distance
 from omegaconf import DictConfig
 
 from nemo.collections.asr.parts.utils.wfst_utils import TW_BREAK, kaldifst_importer
+
+if TYPE_CHECKING:
+    import kaldifst
+
+    from nemo.collections.asr.parts.utils.wfst_utils import KaldiWordLattice
 
 RIVA_DECODER_INSTALLATION_MESSAGE = (
     "riva decoder is not installed or is installed incorrectly.\n"

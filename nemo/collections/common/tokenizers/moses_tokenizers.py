@@ -47,4 +47,5 @@ class MosesProcessor:
         return self.moses_tokenizer.tokenize(text, escape=False, return_str=True)
 
     def normalize(self, text: str):
+        """Normalize text with Moses punctuation normalization."""
         return self.normalizer.normalize(text)

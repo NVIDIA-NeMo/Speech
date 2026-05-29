@@ -520,6 +520,7 @@ def plot_expert_usage_heatmap_to_numpy(
     Returns:
         numpy array in RGBA HWC format suitable for wandb.Image().
     """
+    import matplotlib.pylab as plt
     from matplotlib.colors import TwoSlopeNorm
 
     n_layers, num_experts = layer_expert_usage.shape

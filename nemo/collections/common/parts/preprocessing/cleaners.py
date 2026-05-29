@@ -18,6 +18,9 @@ from functools import cache
 from nemo.utils import logging
 from nemo.utils.dependency import assert_optional_dependency_available, import_optional_dependency
 
+# pylint: disable=missing-class-docstring,missing-function-docstring
+
+
 NUM_CHECK = re.compile(r'([$]?)(^|\s)(\S*[0-9]\S*)(?=(\s|$)((\S*)(\s|$))?)')
 
 TIME_CHECK = re.compile(r'([0-9]{1,2}):([0-9]{2})(am|pm)?')
@@ -224,7 +227,6 @@ class NumberCleaner:
         inflect = inflect_engine()
         ws = match.group(2)
         number = match.group(3)
-        _proceeding_symbol = match.group(7)
 
         time_match = TIME_CHECK.match(number)
         if time_match:

@@ -13,9 +13,7 @@
 # limitations under the License.
 
 import itertools
-import json
 import os
-import tempfile
 from math import ceil
 from typing import Any, Dict, List, Optional, Union
 
@@ -26,7 +24,6 @@ from lightning.pytorch import Trainer
 from omegaconf import DictConfig, OmegaConf, open_dict
 from torch.utils.data import DataLoader
 from torchmetrics.text import SacreBLEUScore
-from tqdm.auto import tqdm
 
 from nemo.collections.asr.data import audio_to_text_dataset
 from nemo.collections.asr.data.audio_to_text_dali import DALIOutputs

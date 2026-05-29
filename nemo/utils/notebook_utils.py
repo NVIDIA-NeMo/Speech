@@ -23,8 +23,8 @@ from typing import Optional
 from nemo.utils.dependency import import_optional_dependency
 
 
-# Function to build a manifest
 def build_manifest(transcripts_path, manifest_path, data_dir, mount_dir, wav_path):
+    """Build an AN4 manifest with local or mounted audio paths."""
     # create manifest with reference to this directory. This is useful when mounting the dataset.
     mount_dir = mount_dir if mount_dir else data_dir
     sox = import_optional_dependency("sox")

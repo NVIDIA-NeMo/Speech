@@ -136,7 +136,7 @@ class OccurancePunctuationErrorRate:
 
     def __init__(self, punctuation_marks: list[str], punctuation_mask: str = "[PUNCT]") -> None:
 
-        assert len(punctuation_marks) != 0, f"List of punctuation marks is empty"
+        assert len(punctuation_marks) != 0, "List of punctuation marks is empty"
 
         self.punctuation_marks = punctuation_marks
         self.punctuation_mask = punctuation_mask
@@ -144,6 +144,7 @@ class OccurancePunctuationErrorRate:
         self.operations = ["Correct", "Deletions", "Insertions", "Substitutions"]
 
     def compute_rates(self, operation_amounts: dict, substitution_amounts: dict):
+        """Compute punctuation operation and substitution rates."""
         operation_rates = {pm: {operation: 0 for operation in self.operations} for pm in self.punctuation_marks}
         substitution_rates = {pm: {pm: 0 for pm in self.punctuation_marks} for pm in self.punctuation_marks}
 
@@ -208,6 +209,7 @@ class OccurancePunctuationErrorRate:
         return rates
 
     def compute_operation_amounts(self, reference: str, hypothesis: str):
+        """Compute punctuation operation counts between a reference and hypothesis."""
         operation_amounts = {pm: {operation: 0 for operation in self.operations} for pm in self.punctuation_marks}
         substitution_amounts = {pm: {pm: 0 for pm in self.punctuation_marks} for pm in self.punctuation_marks}
 
@@ -315,6 +317,7 @@ class OccurancePunctuationErrorRate:
         return operation_amounts, substitution_amounts
 
     def compute(self, reference: str, hypothesis: str):
+        """Compute punctuation operation counts and rates for one reference-hypothesis pair."""
         operation_amounts, substitution_amounts = self.compute_operation_amounts(reference, hypothesis)
         punctuation_rates = self.compute_rates(operation_amounts, substitution_amounts)
         return operation_amounts, substitution_amounts, punctuation_rates
@@ -408,6 +411,8 @@ class DatasetPunctuationErrorRate:
         self.punct_er = None
 
     def compute(self):
+        """Compute aggregate punctuation error rates for the dataset."""
+
         def sum_amounts(amounts_dicts: list[dict]):
             amounts = {key: {_key: 0 for _key in amounts_dicts[0][key]} for key in amounts_dicts[0].keys()}
 
@@ -440,6 +445,7 @@ class DatasetPunctuationErrorRate:
         self.punct_er = overall_rates.punct_er
 
     def reset(self):
+        """Reset accumulated punctuation error statistics."""
         self.operation_amounts = []
         self.substitution_amounts = []
         self.rates = []
@@ -453,7 +459,8 @@ class DatasetPunctuationErrorRate:
         self.punct_er = None
 
     def print(self):
-        logging.info(f'Dataset PER ' + str(round(100 * self.punct_er, 2)) + '%')
+        """Log aggregate punctuation error rates."""
+        logging.info('Dataset PER ' + str(round(100 * self.punct_er, 2)) + '%')
 
         if HAVE_TABLUATE_AND_PANDAS:
             rates_by_pm_df = pd.DataFrame(self.operation_rates) * 100

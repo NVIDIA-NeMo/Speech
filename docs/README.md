@@ -7,13 +7,13 @@
 1. Install the documentation dependencies:
 
    ```console
-   $ python3 -m pip install -r requirements/requirements_docs.txt
+   $ uv sync --group docs
    ```
 
 1. Build the documentation:
 
    ```console
-   $ make -C docs html
+   $ uv run make -C docs html
    ```
 
 ## Checking for Broken Links

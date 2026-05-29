@@ -38,26 +38,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Parse manifest.json
-        id: manifest
-        run: |
-          BUILD_ARGS=$(cat << EOF
-          BASE_IMAGE=$(cat requirements/manifest.json | jq -r '."ngc-pytorch"')
-          TRTLLM_REPO=$(cat requirements/manifest.json | jq -r '."vcs-dependencies"."trt-llm".repo')
-          TRTLLM_TAG=$(cat requirements/manifest.json | jq -r '."vcs-dependencies"."trt-llm".ref')
-          MLM_REPO=$(cat requirements/manifest.json | jq -r '."vcs-dependencies"."megatron-lm".repo')
-          MLM_TAG=$(cat requirements/manifest.json | jq -r '."vcs-dependencies"."megatron-lm".ref')
-          TE_REPO=$(cat requirements/manifest.json | jq -r '."vcs-dependencies".transformer_engine.repo')
-          TE_TAG=$(cat requirements/manifest.json | jq -r '."vcs-dependencies".transformer_engine.ref')
-          APEX_REPO=$(cat requirements/manifest.json | jq -r '."vcs-dependencies".apex.repo')
-          APEX_TAG=$(cat requirements/manifest.json | jq -r '."vcs-dependencies".apex.ref')
-          EOF
-          )
-
-          echo "BUILD_ARGS<<EOF" >> $GITHUB_OUTPUT
-          echo "$BUILD_ARGS" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-
       - name: Get last merged PR
         id: cache_from
         env:
@@ -121,7 +101,6 @@ jobs:
             NEMO_TAG=${{ github.sha }}
             NEMO_REPO=https://github.com/NVIDIA/NeMo
             PR_NUMBER=${{ github.event.pull_request.number || 0 }}
-            ${{ needs.pre-flight.outputs.build_args }}
           cache-from: |
             type=registry,ref=${{ inputs.registry }}/nemo-speech:${{ inputs.image-name }}-buildcache-main,mode=max
             type=registry,ref=${{ inputs.registry }}/nemo-speech:${{ inputs.image-name }}-buildcache-${{ github.event.pull_request.number || 0 }},mode=max

@@ -136,6 +136,7 @@ class LinearAdapter(nn.Module, AdapterModuleUtil):
         self.reset_parameters()
 
     def reset_parameters(self):
+        """Initialize adapter projection parameters."""
         # Final layer initializations must be 0
         if self.norm_position == 'pre':
             self.module[-1].weight.data *= 0
@@ -145,6 +146,7 @@ class LinearAdapter(nn.Module, AdapterModuleUtil):
             self.module[-1].bias.data *= 0
 
     def forward(self, x):
+        """Apply the adapter module to the input tensor."""
         x = self.module(x)
 
         # Add dropout if available
@@ -156,6 +158,8 @@ class LinearAdapter(nn.Module, AdapterModuleUtil):
 
 @dataclass
 class LinearAdapterConfig:
+    """Configuration for a linear adapter module."""
+
     in_features: int
     dim: int
     activation: str = 'swish'

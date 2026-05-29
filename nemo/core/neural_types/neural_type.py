@@ -55,7 +55,8 @@ class NeuralType:
         """
         Args:
             axes: a tuple of AxisTypes objects representing the semantics of what varying each axis means
-            elements_type: None or ElementType; we need Any annotation here to avoid problems with TorchScript (it is checked in _init_internal)
+            elements_type: None or ElementType; we need Any annotation here to avoid problems with TorchScript
+                (it is checked in _init_internal)
             optional: If input to the port of this type can be optional (False by default).
         """
         if not torch.jit.is_scripting():

@@ -52,7 +52,9 @@ if __name__ == "__main__":
     parser.add_argument("--paths2ctm_files", help="path to ctm files", type=str)
     parser.add_argument("--manifest_filepath", help="path to output manifest file", type=str, required=True)
     parser.add_argument(
-        "--add_duration", help="add duration of audio files to output manifest files.", action='store_true',
+        "--add_duration",
+        help="add duration of audio files to output manifest files.",
+        action='store_true',
     )
     args = parser.parse_args()
 

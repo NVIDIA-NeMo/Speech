@@ -124,7 +124,59 @@ class TestTransformerEncoder:
     @pytest.mark.unit
     def test_invalid_attn_mode(self):
         with pytest.raises(ValueError, match="not yet supported"):
-            TransformerEncoder(feat_in=80, d_model=64, n_heads=4, n_layers=2, attn_mode="causal")
+            TransformerEncoder(feat_in=80, d_model=64, n_heads=4, n_layers=2, attn_mode="sliding_window")
+
+    @pytest.mark.unit
+    def test_causal_forward_cpu(self):
+        model = TransformerEncoder(feat_in=80, d_model=64, n_heads=4, n_layers=2, drop_rate=0.0, attn_mode="causal")
+        model.eval()
+
+        x = torch.randn(2, 80, 400)
+        lengths = torch.tensor([400, 300])
+
+        with torch.no_grad():
+            out, out_lengths = model(x, lengths)
+
+        assert out.shape == (2, 64, 100)
+        assert out_lengths.tolist() == [100, 75]
+        assert not torch.isnan(out).any()
+
+    @pytest.mark.unit
+    def test_causal_future_does_not_affect_past(self):
+        """Output at position t must be invariant to changes at positions > t."""
+        model = TransformerEncoder(feat_in=80, d_model=64, n_heads=4, n_layers=2, drop_rate=0.0, attn_mode="causal")
+        model.eval()
+
+        B, C, T = 1, 80, 400
+        x_a = torch.randn(B, C, T)
+        x_b = x_a.clone()
+        # Perturb only the second half of frames.
+        x_b[:, :, T // 2 :] = torch.randn(B, C, T - T // 2)
+        lengths = torch.tensor([T])
+
+        with torch.no_grad():
+            out_a, _ = model(x_a, lengths)
+            out_b, _ = model(x_b, lengths)
+
+        # Output frames covering only past + present should be identical.
+        # First half of *output* frames corresponds to first half of input frames after subsampling.
+        safe_t = (T // 2) // model.pre_encode.subsampling_factor
+        assert torch.allclose(out_a[:, :, :safe_t], out_b[:, :, :safe_t], atol=1e-5)
+
+    @pytest.mark.unit
+    def test_freeze_unfreeze_partial_restores_prior_state(self):
+        model = TransformerEncoder(feat_in=80, d_model=64, n_heads=4, n_layers=2)
+        for p in model.final_norm.parameters():
+            p.requires_grad = False
+        prior = {n: p.requires_grad for n, p in model.named_parameters()}
+
+        model.freeze()
+        assert all(not p.requires_grad for p in model.parameters())
+        assert not model.training
+
+        model.unfreeze(partial=True)
+        assert {n: p.requires_grad for n, p in model.named_parameters()} == prior
+        assert model.training
 
     @pytest.mark.unit
     def test_forward_cpu(self):

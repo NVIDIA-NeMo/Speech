@@ -1,6 +1,7 @@
 """
 This module support timing of code blocks.
 """
+
 # Copyright (c) 2021, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -57,6 +58,7 @@ class NamedTimer(object):
 
     @property
     def buffer_size(self):
+        """Return the number of recent timings retained per timer."""
         return self._buffer_size
 
     @property
@@ -128,6 +130,7 @@ class NamedTimer(object):
         self.timers[name] = timer_data
 
     def is_active(self, name=""):
+        """Return whether the named timer is currently active."""
         timer_data = self.timers.get(name, {})
         if "start" in timer_data:
             return True

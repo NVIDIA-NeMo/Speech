@@ -21,9 +21,9 @@ Requires Python 3.10+, PyTorch 2.6+.
 - **Line length: 119** (not default 88) — consistent across black, isort, flake8
 - Black with `skip_string_normalization = true`
 - isort with `profile = black`
-- Check: `python setup.py style --scope <path>`
-- Fix: `python setup.py style --scope <path> --fix`
-- **Incremental reformatting**: most collections are excluded from black (see `extend-exclude` in pyproject.toml). The files are reformatted when somebody makes changes to avoid a single big reformatting PR. Do not reformat files outside your changes.
+- Check: `isort --check <path> && black --check <path>` or `isort --check . && black --check .`
+- Fix: `isort <path> && black <path>` or `isort . && black .`
+- Jupyter Notebooks are excluded from automatic black reformatting (see `extend-exclude`), but can be still reformatted when passed directly. Do not reformat notebooks outside your changes.
 
 ## Testing
 
@@ -49,9 +49,9 @@ Markers: `unit`, `integration`, `system`, `pleasefixme` (broken — skip), `skip
 Sphinx-based docs live in `docs/source/`. Build with:
 
 ```bash
-pip install -r requirements/requirements_docs.txt   # one-time setup
-make -C docs clean html                              # full rebuild
-make -C docs html                                    # incremental rebuild
+uv sync --group docs                                 # one-time setup
+uv run make -C docs clean html                       # full rebuild
+uv run make -C docs html                             # incremental rebuild
 ```
 
 Output goes to `docs/build/html/`. Open `docs/build/html/index.html` to preview locally.

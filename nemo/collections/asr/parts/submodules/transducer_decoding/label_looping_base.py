@@ -140,6 +140,17 @@ class GreedyBatchedLabelLoopingComputerBase(WithOptionalCudaGraphs, ABC):
         self.reset_cuda_graphs_state()
         return True
 
+    def _fallback_to_no_while_loop_cuda_graphs(self, error: Exception):
+        """Fallback when full CUDA graph compilation fails."""
+        if not self.cuda_graphs_allow_fallback:
+            raise RuntimeError("Full CUDA graph decoding failed. Mode is forced, raising exception") from error
+        logging.warning(
+            f"Full CUDA graph compilation failed: {error}. "
+            "Falling back to native PyTorch CUDA graphs. Decoding will be slower."
+        )
+        self.cuda_graphs_mode = self.CudaGraphsMode.NO_WHILE_LOOPS
+        self._partial_graphs_compile()
+
     # fusion models-related methods
     @property
     def per_stream_biasing_enabled(self):

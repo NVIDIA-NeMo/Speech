@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import List, Optional
 
 import torch
 
@@ -65,7 +65,9 @@ class StatelessNet(torch.nn.Module):
         self.blank_idx = blank_idx
 
     def forward(
-        self, y: Optional[torch.Tensor] = None, state: Optional[List[torch.Tensor]] = None,
+        self,
+        y: Optional[torch.Tensor] = None,
+        state: Optional[List[torch.Tensor]] = None,
     ):
         """
         Although this is a *stateless* net, we use the "state" parameter to

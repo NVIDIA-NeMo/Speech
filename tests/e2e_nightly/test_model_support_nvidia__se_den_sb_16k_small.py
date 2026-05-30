@@ -61,7 +61,7 @@ def test_model_training_step():
     input_signal = torch.randn(B, C, T, device=d)
     input_length = torch.tensor([T], device=d)
     target_signal = torch.randn(B, C, T, device=d)
-    loss, _loss_enc, _loss_time = model._step(
+    loss = model._step(
         target_signal=target_signal,
         input_signal=input_signal,
         input_length=input_length,

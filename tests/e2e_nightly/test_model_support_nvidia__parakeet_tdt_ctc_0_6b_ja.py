@@ -56,7 +56,8 @@ def test_model_training_step():
     model = _load_model()
     prepare_for_training_step(model)
     d = next(model.parameters()).device
-    vocab_size = model.joint.num_classes_with_blank - 1
+    # TDT joints may include duration outputs; transcript targets must use only decoder token IDs.
+    vocab_size = model.decoder.vocab_size
     batch = (
         torch.randn(2, 16000, device=d),
         torch.tensor([16000, 12000], device=d),

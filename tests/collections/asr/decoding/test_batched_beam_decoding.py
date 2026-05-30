@@ -686,13 +686,13 @@ class TestTransducerCudaGraphBeamDecoding:
                 cudagraph_timestamps[batch_idx] == actual_timestamps[batch_idx]
             ), f"Timestamps mismatch for batch_idx {batch_idx}"
 
-            ref_words = actual_transcripts[batch_idx].split()
-            hyp_words = cudagraph_transcripts[batch_idx].split()
-            wer = edit_distance(ref_words, hyp_words)['total'] / max(len(ref_words), 1)
-
-            assert wer <= 1e-3, "Cuda graph greedy decoder should match original decoder implementation."
-
             for actual, fast in zip(actual_transcripts[batch_idx], cudagraph_transcripts[batch_idx]):
+                ref_words = actual.split()
+                hyp_words = fast.split()
+                wer = edit_distance(ref_words, hyp_words)['total'] / max(len(ref_words), 1)
+
+                assert wer <= 1e-3, "Cuda graph beam decoder should match original decoder implementation."
+
                 if actual != fast:
                     print("Erroneous samples in batch:", batch_idx)
                     print("Original transcript:", actual)

@@ -27,10 +27,14 @@ omit =
     /workspace/config-3.12.py
     /workspace/config-3.py
     /workspace/config.py
+    /workspace/_remote_module_non_scriptable*
+
+[report]
+omit =
+    /workspace/_remote_module_non_scriptable*
 
 [paths]
 source =
     nemo/
     /home/runner/work/NeMo/NeMo/nemo
     /workspace/nemo
-

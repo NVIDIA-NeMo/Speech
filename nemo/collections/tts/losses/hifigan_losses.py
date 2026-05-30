@@ -125,8 +125,8 @@ class GeneratorLoss(Loss):
         loss = 0
         gen_losses = []
         for dg in disc_outputs:
-            l = torch.mean((1 - dg) ** 2)
-            gen_losses.append(l)
-            loss += l
+            layer_loss = torch.mean((1 - dg) ** 2)
+            gen_losses.append(layer_loss)
+            loss += layer_loss
 
         return loss, gen_losses

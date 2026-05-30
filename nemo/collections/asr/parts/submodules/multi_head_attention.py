@@ -695,7 +695,7 @@ class RelPositionMultiHeadAttentionLongformer(RelPositionMultiHeadAttention):
         Returns:
             torch.Tensor: (batch, time, head x head_dim) The attention output of all tokens attending to global.
         """
-        batch_size, time = attn_probs.shape[0], attn_probs.shape[2]
+        batch_size = attn_probs.shape[0]
 
         value = value.transpose(1, 2)
 

@@ -577,9 +577,9 @@ class ASRModuleMixin(ASRAdapterModelMixin):
         )
         if update_config:
             with open_dict(self.cfg):
-                self.cfg.encoder.self_attention_model = self_attention_model
-                self.cfg.encoder.att_context_size = att_context_size
-                if self_attention_model == 'rope':
+                self.cfg.encoder.self_attention_model = self.encoder.self_attention_model
+                self.cfg.encoder.att_context_size = self.encoder.att_context_size
+                if self.encoder.self_attention_model == 'rope':
                     self.cfg.encoder.rope_base = self.encoder._cfg.rope_base
                     self.cfg.encoder.rotary_fraction = self.encoder._cfg.rotary_fraction
 

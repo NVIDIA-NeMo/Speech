@@ -279,9 +279,7 @@ class TestRoPEMultiHeadAttention:
 
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit
-    @pytest.mark.parametrize(
-        "backend", ['MATH', 'FLASH_ATTENTION', 'EFFICIENT_ATTENTION', 'CUDNN_ATTENTION']
-    )
+    @pytest.mark.parametrize("backend", ['MATH', 'FLASH_ATTENTION', 'EFFICIENT_ATTENTION', 'CUDNN_ATTENTION'])
     def test_sdpa_backend_smoke_gpu(self, backend):
         # Each SDPA backend must run with RoPE pre-rotation under bf16 autocast
         # (the production training path) without falling back or crashing on
@@ -475,3 +473,109 @@ class TestConformerEncoderRoPE:
         lens = torch.tensor([200, 150])
         out, _ = enc(audio_signal=x, length=lens)
         assert torch.isfinite(out).all()
+
+    @pytest.mark.unit
+    def test_change_attention_model_preserves_use_bias_false(self):
+        # Regression: the swap loop in change_attention_model was building the new
+        # attention without forwarding use_bias, so a use_bias=False model silently
+        # gained randomly-initialised bias parameters after a swap.
+        from nemo.collections.asr.modules.conformer_encoder import ConformerEncoder
+
+        enc = ConformerEncoder(
+            feat_in=80,
+            n_layers=2,
+            d_model=64,
+            n_heads=4,
+            self_attention_model='rel_pos',
+            subsampling_factor=4,
+            subsampling_conv_channels=32,
+            pos_emb_max_len=256,
+            use_bias=False,
+            dropout=0.0,
+            dropout_att=0.0,
+            dropout_emb=0.0,
+            dropout_pre_encoder=0.0,
+        ).eval()
+        enc._cfg = OmegaConf.create(
+            {
+                'd_model': 64,
+                'n_heads': 4,
+                'dropout': 0.0,
+                'dropout_att': 0.0,
+                'dropout_emb': 0.0,
+                'pos_emb_max_len': 256,
+                'rope_base': 10000.0,
+                'rotary_fraction': 1.0,
+                'use_bias': False,
+            }
+        )
+        # Pre-condition: rel_pos attention has no biases.
+        for layer in enc.layers:
+            assert layer.self_attn.linear_q.bias is None
+
+        enc.change_attention_model('rope')
+
+        # Post-condition: still no biases — use_bias preserved through the swap.
+        for layer in enc.layers:
+            assert layer.self_attn.linear_q.bias is None
+            assert layer.self_attn.linear_k.bias is None
+            assert layer.self_attn.linear_v.bias is None
+            assert layer.self_attn.linear_out.bias is None
+
+    @pytest.mark.unit
+    def test_change_attention_model_preserves_cfg_on_partial_update(self):
+        # Regression: ASRModuleMixin.change_attention_model used to write the *raw*
+        # kwargs into self.cfg.encoder, so a partial update like
+        # `change_attention_model(rotary_fraction=0.5)` left
+        # cfg.encoder.self_attention_model = None (corrupting the saved config) and
+        # skipped writing the rope fields entirely.
+        from omegaconf import DictConfig
+
+        from nemo.collections.asr.models import EncDecCTCModel
+
+        encoder_cfg = {
+            '_target_': 'nemo.collections.asr.modules.ConformerEncoder',
+            'feat_in': 64,
+            'n_layers': 2,
+            'd_model': 64,
+            'n_heads': 4,
+            'self_attention_model': 'rope',
+            'subsampling_factor': 4,
+            'subsampling_conv_channels': 32,
+            'pos_emb_max_len': 256,
+            'rope_base': 10000.0,
+            'rotary_fraction': 1.0,
+            'dropout': 0.0,
+            'dropout_att': 0.0,
+            'dropout_emb': 0.0,
+            'dropout_pre_encoder': 0.0,
+        }
+        decoder_cfg = {
+            '_target_': 'nemo.collections.asr.modules.ConvASRDecoder',
+            'feat_in': None,
+            'num_classes': 28,
+            'vocabulary': list("abcdefghijklmnopqrstuvwxyz '"),
+        }
+        preproc_cfg = {'_target_': 'nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor'}
+        model = EncDecCTCModel(
+            cfg=DictConfig(
+                {
+                    'preprocessor': preproc_cfg,
+                    'encoder': encoder_cfg,
+                    'decoder': decoder_cfg,
+                    'optim': {'name': 'adamw'},
+                }
+            )
+        )
+
+        # Partial update: only rotary_fraction is being changed.
+        model.change_attention_model(rotary_fraction=0.5)
+
+        # cfg.encoder must reflect the resolved values, not the None kwargs.
+        assert model.cfg.encoder.self_attention_model == 'rope'
+        assert model.cfg.encoder.att_context_size is not None
+        assert model.cfg.encoder.rotary_fraction == 0.5
+        assert model.cfg.encoder.rope_base == 10000.0
+        # Live encoder agrees.
+        assert model.encoder.self_attention_model == 'rope'
+        assert model.encoder.pos_enc.d_k_rot == 8  # d_k=16, fraction=0.5

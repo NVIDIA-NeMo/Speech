@@ -480,6 +480,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                 d_model=d_model, dropout_rate=dropout_pre_encoder, max_len=pos_emb_max_len, xscale=self.xscale
             )
         elif self_attention_model == "rope":
+            self.dropout_pre_encoder = torch.nn.Dropout(dropout_pre_encoder)
             self.pos_enc = RotaryPositionalEncoding(
                 d_k=d_model // n_heads,
                 rotary_fraction=rotary_fraction,
@@ -694,6 +695,9 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             offset = None
 
         if self.self_attention_model == 'rope':
+            if self.xscale:
+                audio_signal = audio_signal * self.xscale
+            audio_signal = self.dropout_pre_encoder(audio_signal)
             pos_emb = None
         else:
             audio_signal, pos_emb = self.pos_enc(x=audio_signal, cache_len=cache_len)
@@ -1229,6 +1233,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                 xscale=self.xscale,
             )
         elif self_attention_model == "rope":
+            self.dropout_pre_encoder = torch.nn.Dropout(getattr(self._cfg, 'dropout_pre_encoder', 0.1))
             new_pos_enc = RotaryPositionalEncoding(
                 d_k=self._cfg.d_model // self._cfg.n_heads,
                 rotary_fraction=rotary_fraction,
@@ -1256,6 +1261,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                         max_cache_len=att_context_size[0],
                         pos_bias_u=None,
                         pos_bias_v=None,
+                        use_bias=getattr(self._cfg, 'use_bias', True),
                         use_pytorch_sdpa=self.use_pytorch_sdpa,
                         use_pytorch_sdpa_backends=self.use_pytorch_sdpa_backends,
                     )
@@ -1268,6 +1274,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                         att_context_size=att_context_size,
                         pos_bias_u=None,
                         pos_bias_v=None,
+                        use_bias=getattr(self._cfg, 'use_bias', True),
                         use_pytorch_sdpa=self.use_pytorch_sdpa,
                         use_pytorch_sdpa_backends=self.use_pytorch_sdpa_backends,
                     )
@@ -1277,6 +1284,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                         n_feat=self._cfg.d_model,
                         dropout_rate=self._cfg.dropout_att,
                         max_cache_len=att_context_size[0],
+                        use_bias=getattr(self._cfg, 'use_bias', True),
                         use_pytorch_sdpa=self.use_pytorch_sdpa,
                         use_pytorch_sdpa_backends=self.use_pytorch_sdpa_backends,
                     )
@@ -1287,6 +1295,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                         dropout_rate=self._cfg.dropout_att,
                         pos_enc=new_pos_enc,
                         max_cache_len=att_context_size[0],
+                        use_bias=getattr(self._cfg, 'use_bias', True),
                         use_pytorch_sdpa=self.use_pytorch_sdpa,
                         use_pytorch_sdpa_backends=self.use_pytorch_sdpa_backends,
                     )

@@ -64,6 +64,9 @@ ARG NV_GROUPED_GEMM_VERSION=1.1.4.post8
 ARG CAUSAL_CONV1D_VERSION=1.6.2.post1
 ARG MAMBA_SSM_VERSION=2.3.2.post1
 ARG FLASH_ATTN_VERSION=2.8.3
+ARG FLASH_ATTN_4_VERSION=4.0.0b15
+ARG FLASH_ATTN_MAX_JOBS=8
+ARG FLASH_ATTN_NVCC_THREADS=1
 
 ENV PIP_NO_CACHE_DIR=1
 
@@ -85,10 +88,10 @@ cat >/usr/local/bin/automodel-build-env <<'SCRIPT'
 case "${GPU_TARGET}" in
     h100plus)
         export DEEPEP_TORCH_CUDA_ARCH_LIST="9.0+PTX"
-        export TORCH_CUDA_ARCH_LIST="9.0;10.0"
-        export NVTE_CUDA_ARCHS="90;100"
-        export FLASH_ATTN_CUDA_ARCHS="90;100"
-        export CMAKE_CUDA_ARCHITECTURES="90;100"
+        export TORCH_CUDA_ARCH_LIST="9.0;10.0;12.0"
+        export NVTE_CUDA_ARCHS="90;100;120"
+        export FLASH_ATTN_CUDA_ARCHS="90;100;120"
+        export CMAKE_CUDA_ARCHITECTURES="90;100;120"
         ;;
     a100)
         export DEEPEP_TORCH_CUDA_ARCH_LIST="8.0"
@@ -121,6 +124,7 @@ uv pip install --upgrade \
     psutil \
     pybind11 \
     setuptools \
+    setuptools-scm \
     wheel
 
 mkdir -p /opt/automodel-src /opt/automodel-wheels
@@ -154,8 +158,16 @@ python -m pip wheel \
     /opt/automodel-src/DeepEP
 EOF
 
+ARG ONNXSCRIPT_VERSION=0.7.0
+ARG ONNX_IR_VERSION=0.2.1
 RUN <<"EOF" bash -euxo pipefail
 source /usr/local/bin/automodel-build-env
+python -m pip wheel \
+    --no-deps \
+    --wheel-dir /opt/automodel-wheels \
+    "onnx-ir==${ONNX_IR_VERSION}" \
+    "onnxscript==${ONNXSCRIPT_VERSION}"
+
 GROUPED_GEMM_FORCE_BUILD=TRUE \
     python -m pip wheel \
     --no-build-isolation \
@@ -180,6 +192,8 @@ MAMBA_FORCE_BUILD=TRUE \
     --wheel-dir /opt/automodel-wheels \
     "mamba-ssm==${MAMBA_SSM_VERSION}"
 
+MAX_JOBS="${FLASH_ATTN_MAX_JOBS}" \
+NVCC_THREADS="${FLASH_ATTN_NVCC_THREADS}" \
 FLASH_ATTENTION_FORCE_BUILD=TRUE \
     python -m pip wheel \
     --no-build-isolation \
@@ -191,10 +205,52 @@ FLASH_ATTENTION_FORCE_BUILD=TRUE \
 ls -lh /opt/automodel-wheels
 EOF
 
+COPY external/patches/flash_attn_4_sm120_disable_tma_o.patch /tmp/patches/
+ARG FLASH_ATTN_4_CUTLASS_DSL_VERSION=4.5.2
+ARG FLASH_ATTN_4_APACHE_TVM_FFI_VERSION=0.1.11
+ARG FLASH_ATTN_4_TORCH_C_DLPACK_EXT_VERSION=0.1.5
+ARG FLASH_ATTN_4_QUACK_KERNELS_VERSION=0.5.0
+RUN <<"EOF" bash -euxo pipefail
+source /usr/local/bin/automodel-build-env
+if [[ "${GPU_TARGET}" == "h100plus" ]]; then
+    python -m pip wheel \
+        --no-deps \
+        --wheel-dir /opt/automodel-wheels \
+        "apache-tvm-ffi==${FLASH_ATTN_4_APACHE_TVM_FFI_VERSION}" \
+        "nvidia-cutlass-dsl==${FLASH_ATTN_4_CUTLASS_DSL_VERSION}" \
+        "nvidia-cutlass-dsl-libs-base==${FLASH_ATTN_4_CUTLASS_DSL_VERSION}" \
+        "nvidia-cutlass-dsl-libs-cu13==${FLASH_ATTN_4_CUTLASS_DSL_VERSION}" \
+        "quack-kernels==${FLASH_ATTN_4_QUACK_KERNELS_VERSION}" \
+        "torch-c-dlpack-ext==${FLASH_ATTN_4_TORCH_C_DLPACK_EXT_VERSION}"
+
+    mkdir -p /opt/automodel-src/flash-attn-4 /tmp/flash-attn-4
+    python -m pip download \
+        --no-binary=flash-attn-4 \
+        --no-deps \
+        --dest /tmp/flash-attn-4 \
+        "flash-attn-4==${FLASH_ATTN_4_VERSION}"
+    tar -xf /tmp/flash-attn-4/flash_attn_4-*.tar.gz -C /opt/automodel-src/flash-attn-4 --strip-components=1
+    patch -d /opt/automodel-src/flash-attn-4 -p1 < /tmp/patches/flash_attn_4_sm120_disable_tma_o.patch
+
+    MAX_JOBS="${FLASH_ATTN_MAX_JOBS}" \
+    NVCC_THREADS="${FLASH_ATTN_NVCC_THREADS}" \
+    python -m pip wheel \
+        --no-build-isolation \
+        --no-deps \
+        --wheel-dir /opt/automodel-wheels \
+        /opt/automodel-src/flash-attn-4
+fi
+
+ls -lh /opt/automodel-wheels
+EOF
+
 FROM base-image
 COPY --from=automodel-deps-wheels /opt/automodel-wheels /opt/automodel-wheels
 RUN <<"EOF" bash -euxo pipefail
-uv pip install --no-deps /opt/automodel-wheels/*.whl
+uv pip install --no-deps $(find /opt/automodel-wheels -name '*.whl' ! -name 'flash_attn_4-*.whl' | sort)
+if compgen -G "/opt/automodel-wheels/flash_attn_4-*.whl" >/dev/null; then
+    uv pip install --no-deps --reinstall /opt/automodel-wheels/flash_attn_4-*.whl
+fi
 rm -rf /opt/automodel-wheels
 EOF
 

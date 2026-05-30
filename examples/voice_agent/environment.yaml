@@ -326,9 +326,6 @@ dependencies:
     - pulp==3.3.0
     - pure-eval==0.2.3
     - py-cpuinfo==9.0.0
-    - pyannote-core==5.0.0
-    - pyannote-database==5.1.3
-    - pyannote-metrics==3.2.1
     - pyarrow==21.0.0
     - pybase64==1.4.2
     - pybind11==3.0.1

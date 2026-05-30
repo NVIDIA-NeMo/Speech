@@ -54,7 +54,7 @@ from nemo.collections.asr.models import SortformerEncLabelModel
 from nemo.collections.asr.parts.utils.speaker_utils import (
     audio_rttm_map,
     get_uniqname_from_filepath,
-    timestamps_to_pyannote_object,
+    timestamps_to_supervisions,
 )
 from nemo.collections.asr.parts.utils.transcribe_utils import read_and_maybe_sort_manifest
 from nemo.collections.asr.parts.utils.vad_utils import (
@@ -276,9 +276,9 @@ def convert_pred_mat_to_segments(
         bypass_postprocessing (bool, optional): if True, postprocessing will be bypassed. Defaults to False.
 
     Returns:
-       all_hypothesis (list): list of pyannote objects for each audio file.
-       all_reference (list): list of pyannote objects for each audio file.
-       all_uems (list): list of pyannote objects for each audio file.
+       all_hypothesis (list): list of (uniq_id, list[SupervisionSegment]) per audio file.
+       all_reference (list): list of (uniq_id, list[SupervisionSegment]) per audio file.
+       all_uems (list): list of (uniq_id, list[SupervisionSegment]) per audio file.
     """
     all_hypothesis, all_reference, all_uems = [], [], []
     cfg_vad_params = OmegaConf.structured(postprocessing_cfg)
@@ -296,7 +296,7 @@ def convert_pred_mat_to_segments(
                 uniq_id = audio_rttm_values["uniq_id"]
             else:
                 uniq_id = get_uniqname_from_filepath(audio_rttm_values["audio_filepath"])
-        all_hypothesis, all_reference, all_uems = timestamps_to_pyannote_object(
+        all_hypothesis, all_reference, all_uems = timestamps_to_supervisions(
             speaker_timestamps,
             uniq_id,
             audio_rttm_values,

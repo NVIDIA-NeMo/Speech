@@ -116,6 +116,8 @@ class Hypothesis:
     biasing_cfg: BiasingRequestItemConfig | None = None
     xatt_scores: Optional[List[torch.Tensor]] = None
 
+    alignment_labels: Optional[List[int]] = None  # labels corresponding to alignments (can contain blanks)
+
     @property
     def non_blank_frame_confidence(self) -> List[float]:
         """Get per-frame confidence for non-blank tokens according to self.timestamp
@@ -618,10 +620,13 @@ class BatchedAlignments:
         # empty tensors instead of None to make torch.jit.script happy
         self.logits = torch.zeros(0, device=device, dtype=float_dtype)
         self.labels = torch.zeros(0, device=device, dtype=torch.long)
-        if self.with_alignments:
-            # logits and labels; labels can contain <blank>, different from BatchedHyps
-            self.logits = torch.zeros((batch_size, self._max_length, logits_dim), device=device, dtype=float_dtype)
+        if self.with_alignments or self.with_frame_confidence:
+            # labels; labels can contain <blank>, different from BatchedHyps
+            # are used during token confidence calculation for TDT models
             self.labels = torch.zeros((batch_size, self._max_length), device=device, dtype=torch.long)
+        if self.with_alignments:
+            # logits; labels can contain <blank>, different from BatchedHyps
+            self.logits = torch.zeros((batch_size, self._max_length, logits_dim), device=device, dtype=float_dtype)
 
         # empty tensor instead of None to make torch.jit.script happy
         self.frame_confidence = torch.zeros(0, device=device, dtype=float_dtype)
@@ -650,9 +655,10 @@ class BatchedAlignments:
         to maintain O(1) insertion time complexity
         """
         self.timestamps = torch.cat((self.timestamps, torch.zeros_like(self.timestamps)), dim=-1)
+        if self.with_alignments or self.with_frame_confidence:
+            self.labels = torch.cat((self.labels, torch.zeros_like(self.labels)), dim=-1)
         if self.with_alignments:
             self.logits = torch.cat((self.logits, torch.zeros_like(self.logits)), dim=1)
-            self.labels = torch.cat((self.labels, torch.zeros_like(self.labels)), dim=-1)
         if self.with_frame_confidence:
             self.frame_confidence = torch.cat((self.frame_confidence, torch.zeros_like(self.frame_confidence)), dim=1)
         self._max_length *= 2
@@ -687,9 +693,11 @@ class BatchedAlignments:
         # store timestamps - same for alignments / confidence
         self.timestamps[active_indices, active_lengths] = time_indices
 
-        if self.with_alignments and logits is not None and labels is not None:
-            self.logits[active_indices, active_lengths] = logits
+        if self.with_alignments or self.with_frame_confidence and labels is not None:
             self.labels[active_indices, active_lengths] = labels
+
+        if self.with_alignments and logits is not None:
+            self.logits[active_indices, active_lengths] = logits
 
         if self.with_frame_confidence and confidence is not None:
             self.frame_confidence[active_indices, active_lengths] = confidence
@@ -743,10 +751,12 @@ class BatchedAlignments:
         # store timestamps - same for alignments / confidence
         self.timestamps[self._batch_indices, self.current_lengths] = time_indices
 
-        if self.with_alignments and logits is not None and labels is not None:
+        if self.with_alignments or self.with_frame_confidence and labels is not None:
+            self.labels[self._batch_indices, self.current_lengths] = labels
+
+        if self.with_alignments and logits is not None:
             self.timestamps[self._batch_indices, self.current_lengths] = time_indices
             self.logits[self._batch_indices, self.current_lengths] = logits
-            self.labels[self._batch_indices, self.current_lengths] = labels
 
         if self.with_frame_confidence and confidence is not None:
             self.frame_confidence[self._batch_indices, self.current_lengths] = confidence
@@ -814,9 +824,10 @@ def batched_hyps_to_hypotheses(
     if alignments is not None:
         # move all data to cpu to avoid overhead with moving data by chunks
         alignment_lengths = alignments.current_lengths.cpu().tolist()
+        if alignments.with_alignments or alignments.with_frame_confidence:
+            alignment_labels = alignments.labels.cpu()
         if alignments.with_alignments:
             alignment_logits = alignments.logits.cpu()
-            alignment_labels = alignments.labels.cpu()
         if alignments.with_frame_confidence:
             frame_confidence = alignments.frame_confidence.cpu()
 
@@ -842,4 +853,8 @@ def batched_hyps_to_hypotheses(
                         [frame_confidence[i, start + j] for j in range(timestamp_cnt)]
                     )
                 start += timestamp_cnt
+
+            if alignments.with_frame_confidence:
+                hypotheses[i].alignment_labels = alignment_labels[i][: alignment_lengths[i]]
+
     return hypotheses

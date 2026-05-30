@@ -841,39 +841,27 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                 (lambda x: self._aggregate_confidence(x)) if self.tdt_include_duration_confidence else (lambda x: x)
             )
             for hyp in hypotheses_list:
+                frame_confidence = []
+                for frame_confs in hyp.frame_confidence:
+                    for frame_conf in frame_confs:
+                        if len(frame_conf) > 0:
+                            frame_confidence.append(maybe_pre_aggregate(frame_conf))
+                assert len(frame_confidence) == len(hyp.alignment_labels), (
+                    f"Length mismatch: frame_confidence has {len(frame_confidence)} elements, "
+                    f"but hyp.alignment_labels has {len(hyp.alignment_labels)} elements"
+                )
+
                 token_confidence = []
-                # trying to recover frame_confidence according to alignments
-                subsequent_blank_confidence = []
-                # going backwards since <blank> tokens are considered belonging to the last non-blank token.
-                for fc, fa in zip(hyp.frame_confidence[::-1], hyp.alignments[::-1]):
-                    # there is only one score per frame most of the time
-                    if len(fa) > 1:
-                        for i, a in reversed(list(enumerate(fa))):
-                            if a[-1] == self.blank_id:
-                                if not self.exclude_blank_from_confidence:
-                                    subsequent_blank_confidence.append(maybe_pre_aggregate(fc[i]))
-                            elif not subsequent_blank_confidence:
-                                token_confidence.append(maybe_pre_aggregate(fc[i]))
-                            else:
-                                token_confidence.append(
-                                    self._aggregate_confidence(
-                                        [maybe_pre_aggregate(fc[i])] + subsequent_blank_confidence
-                                    )
-                                )
-                                subsequent_blank_confidence = []
+                for label, frame_conf in zip(hyp.alignment_labels, frame_confidence):
+                    if label == self.blank_id:
+                        if self.exclude_blank_from_confidence:
+                            # skip if blank tokens are to be excluded from confidence calculation
+                            continue
+                        elif len(token_confidence) > 0:
+                            # aggregate blank confidence to the previous token if any
+                            token_confidence[-1] = self._aggregate_confidence([token_confidence[-1], frame_conf])
                     else:
-                        i, a = 0, fa[0]
-                        if a[-1] == self.blank_id:
-                            if not self.exclude_blank_from_confidence:
-                                subsequent_blank_confidence.append(maybe_pre_aggregate(fc[i]))
-                        elif not subsequent_blank_confidence:
-                            token_confidence.append(maybe_pre_aggregate(fc[i]))
-                        else:
-                            token_confidence.append(
-                                self._aggregate_confidence([maybe_pre_aggregate(fc[i])] + subsequent_blank_confidence)
-                            )
-                            subsequent_blank_confidence = []
-                token_confidence = token_confidence[::-1]
+                        token_confidence.append(frame_conf)
                 hyp.token_confidence = token_confidence
         else:
             if self.exclude_blank_from_confidence:

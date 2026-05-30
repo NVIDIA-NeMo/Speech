@@ -249,6 +249,7 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
         self.max_symbols = max_symbols_per_step
         self.preserve_alignments = preserve_alignments
         self.preserve_frame_confidence = preserve_frame_confidence
+        self.allow_cuda_graphs = allow_cuda_graphs
         self.preserve_alignments = preserve_alignments or preserve_frame_confidence
         self.include_duration = include_duration
         self.include_duration_confidence = include_duration_confidence
@@ -450,7 +451,7 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
                     active_mask=active_mask,
                     time_indices=time_indices_current_labels,
                     logits=logits if self.preserve_alignments else None,
-                    labels=labels if self.preserve_alignments else None,
+                    labels=labels if (self.preserve_alignments or self.preserve_frame_confidence) else None,
                     confidence=self._get_frame_confidence(logits=logits, num_durations=num_durations),
                 )
 
@@ -501,7 +502,7 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
                         active_mask=advance_mask,
                         time_indices=time_indices_current_labels,
                         logits=logits if self.preserve_alignments else None,
-                        labels=more_labels if self.preserve_alignments else None,
+                        labels=more_labels if (self.preserve_alignments or self.preserve_frame_confidence) else None,
                         confidence=self._get_frame_confidence(logits=logits, num_durations=num_durations),
                     )
 
@@ -839,7 +840,7 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
         # to avoid any manipulations with allocated memory outside the decoder
         return (
             self.state.batched_hyps.clone(),
-            self.state.alignments.clone() if self.preserve_alignments else None,
+            self.state.alignments.clone() if (self.preserve_alignments or self.preserve_frame_confidence) else None,
             decoding_state,
         )
 
@@ -1192,7 +1193,7 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
                 active_mask=self.state.active_mask,
                 time_indices=self.state.time_indices_current_labels,
                 logits=logits if self.preserve_alignments else None,
-                labels=self.state.labels if self.preserve_alignments else None,
+                labels=self.state.labels if (self.preserve_alignments or self.preserve_frame_confidence) else None,
                 confidence=self._get_frame_confidence(
                     logits=logits, num_durations=self.state.model_durations.shape[0]
                 ),
@@ -1257,7 +1258,7 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
                 active_mask=self.state.advance_mask,
                 time_indices=self.state.time_indices_current_labels,
                 logits=logits if self.preserve_alignments else None,
-                labels=more_labels if self.preserve_alignments else None,
+                labels=more_labels if (self.preserve_alignments or self.preserve_frame_confidence) else None,
                 confidence=self._get_frame_confidence(
                     logits=logits, num_durations=self.state.model_durations.shape[0]
                 ),

@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """
-Tests for cpWER calculation in nemo.collections.asr.metrics.der.
+Tests for cpWER calculation in nemo.collections.asr.metrics.cpwer.
 All expected values are pre-verified against MeetEval (https://github.com/fgnt/meeteval).
 """
 
@@ -21,7 +21,7 @@ from itertools import permutations
 import pytest
 import torch
 
-from nemo.collections.asr.metrics.der import (
+from nemo.collections.asr.metrics.cpwer import (
     calculate_session_cpWER,
     calculate_session_cpWER_bruteforce,
     concat_perm_word_error_rate,

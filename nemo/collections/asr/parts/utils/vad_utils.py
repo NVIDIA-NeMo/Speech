@@ -22,11 +22,9 @@ from dataclasses import dataclass
 from itertools import repeat
 from math import ceil, floor
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
-import IPython.display as ipd
 import librosa
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
@@ -49,9 +47,10 @@ from nemo.collections.asr.metrics.md_eval import (
 from nemo.collections.asr.models import EncDecClassificationModel, EncDecFrameClassificationModel
 from nemo.collections.common.parts.preprocessing.manifest import get_full_path
 from nemo.utils import logging
+from nemo.utils.dependency import import_optional_dependency
 
 """
-This file contains all the utility functions required for voice activity detection. 
+This file contains all the utility functions required for voice activity detection.
 """
 
 
@@ -1190,7 +1189,7 @@ def plot(
     unit_frame_len: float = 0.01,
     label_repeat: int = 1,
     xticks_step: int = 5,
-) -> ipd.Audio:
+) -> Any:
     """
     Plot Audio and/or VAD output and/or groundtruth labels for visualization
     Args:
@@ -1208,6 +1207,7 @@ def plot(
                             frame lengths in preds and labels.
         xticks_step (int): step size for xticks.
     """
+    ipd, plt = _get_notebook_plotting_modules()
     plt.figure(figsize=[20, 2])
 
     audio, sample_rate = librosa.load(
@@ -1658,6 +1658,7 @@ def plot_sample_from_rttm(
     """
     Plot audio signal and frame-level labels from RTTM file
     """
+    ipd, plt = _get_notebook_plotting_modules()
     plt.figure(figsize=[20, 2])
 
     audio, sample_rate = librosa.load(path=audio_file, sr=16000, mono=True, offset=offset, duration=max_duration)
@@ -2056,3 +2057,9 @@ def predlist_to_timestamps(
             speaker_timestamps[spk_id].extend(ts_seg_list)
         total_speaker_timestamps.append(speaker_timestamps)
     return total_speaker_timestamps
+
+
+def _get_notebook_plotting_modules():
+    ipd = import_optional_dependency("IPython.display", pip_name="IPython")
+    plt = import_optional_dependency("matplotlib.pyplot", pip_name="matplotlib")
+    return ipd, plt

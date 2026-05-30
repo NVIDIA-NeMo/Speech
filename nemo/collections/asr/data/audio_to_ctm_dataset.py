@@ -16,10 +16,13 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, List, Tuple
+from typing import TYPE_CHECKING, Any, List, Tuple
 
 from nemo.collections.asr.data.audio_to_text_dataset import ASRPredictionWriter
 from nemo.utils import logging
+
+if TYPE_CHECKING:
+    from lightning.pytorch import LightningModule
 
 
 @dataclass

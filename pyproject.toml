@@ -18,11 +18,32 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nemo-toolkit"
-dynamic = ["dependencies", "optional-dependencies", "version"]
+dynamic = ["version"]
 description = "NeMo - a toolkit for Conversational AI"
 readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.10"
+dependencies = [
+    "fsspec>=2024.12.0",
+    "huggingface_hub>=0.24",
+    "numba ; platform_system == 'Darwin'",
+    "cuda-bindings ; platform_system != 'Darwin'",
+    # WAR for attempted use of nonexistent numpy.typing
+    "numexpr<2.14.0",
+    "numpy>=1.22",
+    "onnx>=1.7.0",
+    # Align with upstream PyTorch requirements
+    "python-dateutil",
+    "ruamel.yaml",
+    "scikit-learn",
+    "setuptools>=70.0.0",
+    "tensorboard",
+    "text-unidecode",
+    "torch>=2.6.0",
+    "tqdm>=4.41.0",
+    "wget",
+    "wrapt",
+]
 authors = [{ name = "NVIDIA", email = "nemo-toolkit@nvidia.com" }]
 maintainers = [{ name = "NVIDIA", email = "nemo-toolkit@nvidia.com" }]
 keywords = [
@@ -58,6 +79,410 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Software Development :: Libraries",
     "Topic :: Utilities",
+]
+
+[project.optional-dependencies]
+run = [
+    "nemo_run",
+]
+
+core = [
+    "cloudpickle",
+    "fiddle",
+    "hydra-core>1.3,<=1.3.2",
+    "lightning>2.2.1,<=2.4.0",
+    "omegaconf<=2.3",
+    "peft<=0.18.0",
+    "torchmetrics>=0.11.0",
+    "transformers",
+    "wandb",
+    "webdataset>=0.2.86",
+    "nv_one_logger_core>=2.3.1",
+    "nv_one_logger_training_telemetry>=2.3.1",
+    "nv_one_logger_pytorch_lightning_integration>=2.3.1",
+    "aistore"
+]
+
+lightning = [
+    "cloudpickle",
+    "fiddle",
+    "hydra-core>1.3,<=1.3.2",
+    "lightning>2.2.1,<=2.4.0",
+    "omegaconf<=2.3",
+    "peft<=0.18.0",
+    "torchmetrics>=0.11.0",
+    "transformers",
+    "wandb",
+    "webdataset>=0.2.86",
+    "nv_one_logger_core>=2.3.1",
+    "nv_one_logger_training_telemetry>=2.3.1",
+    "nv_one_logger_pytorch_lightning_integration>=2.3.1",
+]
+
+common-only = [
+    "datasets>=3.2.0",
+    "einops",
+    "inflect",
+    "mediapy==1.1.6",
+    "pandas",
+    "sacremoses>=0.0.43",
+    "sentencepiece<1.0.0",
+]
+
+asr-only = [
+    "braceexpand",
+    "editdistance",
+    "einops",
+    "jiwer>=3.1.0,<4.0.0",
+    "kaldi-python-io",
+    "kaldialign",
+    "lhotse>=1.33.0",
+    "librosa>=0.10.1",
+    "marshmallow",
+    "optuna",
+    "packaging",
+    "pydub",
+    "pyloudnorm",
+    "resampy",
+    "ruamel.yaml",
+    "sacrebleu",
+    "scipy>=0.14",
+    "soundfile",
+    "sox<=1.5.0",
+    "whisper_normalizer",
+]
+
+tts = [
+    "attrdict",
+    "cdifflib==1.2.6",
+    "einops",
+    "janome",
+    "jieba",
+    "kornia",
+    "librosa",
+    "matplotlib",
+    "nemo_text_processing; 'arm' not in platform_machine and 'aarch' not in platform_machine and sys_platform != 'darwin'",
+    "nltk",
+    "pandas",
+    "pypinyin",
+    "pypinyin-dict",
+    "seaborn",
+    "pyopenjtalk",
+    "braceexpand",
+    "editdistance",
+    "jiwer>=3.1.0,<4.0.0",
+    "kaldi-python-io",
+    "kaldialign",
+    "lhotse>=1.33.0",
+    "librosa>=0.10.1",
+    "marshmallow",
+    "optuna",
+    "packaging",
+    "pydub",
+    "pyloudnorm",
+    "resampy",
+    "ruamel.yaml",
+    "sacrebleu",
+    "scipy>=0.14",
+    "soundfile",
+    "sox<=1.5.0",
+    "whisper_normalizer",
+    "datasets>=3.2.0",
+    "inflect",
+    "mediapy==1.1.6",
+    "sacremoses>=0.0.43",
+    "sentencepiece<1.0.0",
+    "cloudpickle",
+    "fiddle",
+    "hydra-core>1.3,<=1.3.2",
+    "lightning>2.2.1,<=2.4.0",
+    "omegaconf<=2.3",
+    "peft<=0.18.0",
+    "torchmetrics>=0.11.0",
+    "transformers",
+    "wandb",
+    "webdataset>=0.2.86",
+    "nv_one_logger_core>=2.3.1",
+    "nv_one_logger_training_telemetry>=2.3.1",
+    "nv_one_logger_pytorch_lightning_integration>=2.3.1",
+]
+
+slu = [
+    "jiwer>=2.0.0,<4.0.0",
+    "progress>=1.5",
+    "tabulate>=0.8.7",
+    "textdistance>=4.1.5",
+    "tqdm",
+    "braceexpand",
+    "editdistance",
+    "einops",
+    "jiwer>=3.1.0,<4.0.0",
+    "kaldi-python-io",
+    "kaldialign",
+    "lhotse>=1.33.0",
+    "librosa>=0.10.1",
+    "marshmallow",
+    "optuna",
+    "packaging",
+    "pydub",
+    "pyloudnorm",
+    "resampy",
+    "ruamel.yaml",
+    "sacrebleu",
+    "scipy>=0.14",
+    "soundfile",
+    "sox<=1.5.0",
+    "whisper_normalizer",
+    "datasets>=3.2.0",
+    "inflect",
+    "mediapy==1.1.6",
+    "pandas",
+    "sacremoses>=0.0.43",
+    "sentencepiece<1.0.0",
+    "cloudpickle",
+    "fiddle",
+    "hydra-core>1.3,<=1.3.2",
+    "lightning>2.2.1,<=2.4.0",
+    "omegaconf<=2.3",
+    "peft<=0.18.0",
+    "torchmetrics>=0.11.0",
+    "transformers",
+    "wandb",
+    "webdataset>=0.2.86",
+    "nv_one_logger_core>=2.3.1",
+    "nv_one_logger_training_telemetry>=2.3.1",
+    "nv_one_logger_pytorch_lightning_integration>=2.3.1",
+]
+
+audio = [
+    "einops",
+    "lhotse>=1.33.0",
+    "librosa>=0.10.0",
+    "matplotlib",
+    "pesq; (platform_machine != 'x86_64' or platform_system != 'Darwin')",
+    "pystoi",
+    "scipy>=0.14",
+    "soundfile",
+    "datasets>=3.2.0",
+    "inflect",
+    "mediapy==1.1.6",
+    "pandas",
+    "sacremoses>=0.0.43",
+    "sentencepiece<1.0.0",
+    "cloudpickle",
+    "fiddle",
+    "hydra-core>1.3,<=1.3.2",
+    "lightning>2.2.1,<=2.4.0",
+    "omegaconf<=2.3",
+    "peft<=0.18.0",
+    "torchmetrics>=0.11.0",
+    "transformers",
+    "wandb",
+    "webdataset>=0.2.86",
+    "nv_one_logger_core>=2.3.1",
+    "nv_one_logger_training_telemetry>=2.3.1",
+    "nv_one_logger_pytorch_lightning_integration>=2.3.1",
+]
+
+speechlm2-only = [
+    "nemo_automodel",
+    "flashoptim",
+]
+
+all = [
+    "nemo_run",
+    "cloudpickle",
+    "fiddle",
+    "hydra-core>1.3,<=1.3.2",
+    "lightning>2.2.1,<=2.4.0",
+    "omegaconf<=2.3",
+    "peft<=0.18.0",
+    "torchmetrics>=0.11.0",
+    "transformers",
+    "webdataset>=0.2.86",
+    "nv_one_logger_core>=2.3.1",
+    "nv_one_logger_training_telemetry>=2.3.1",
+    "nv_one_logger_pytorch_lightning_integration>=2.3.1",
+    "datasets>=3.2.0",
+    "einops",
+    "inflect",
+    "mediapy==1.1.6",
+    "pandas",
+    "sacremoses>=0.0.43",
+    "sentencepiece<1.0.0",
+    "braceexpand",
+    "editdistance",
+    "jiwer>=3.1.0,<4.0.0",
+    "kaldi-python-io",
+    "kaldialign",
+    "lhotse>=1.33.0",
+    "librosa>=0.10.1",
+    "marshmallow",
+    "optuna",
+    "packaging",
+    "pydub",
+    "pyloudnorm",
+    "resampy",
+    "sacrebleu",
+    "scipy>=0.14",
+    "soundfile",
+    "sox<=1.5.0",
+    "whisper_normalizer",
+    "attrdict",
+    "cdifflib==1.2.6",
+    "janome",
+    "jieba",
+    "kornia",
+    "librosa",
+    "matplotlib",
+    "nemo_text_processing; 'arm' not in platform_machine and 'aarch' not in platform_machine and sys_platform != 'darwin'",
+    "nltk",
+    "pypinyin",
+    "pypinyin-dict",
+    "seaborn",
+    "pyopenjtalk",
+    "jiwer>=2.0.0,<4.0.0",
+    "progress>=1.5",
+    "tabulate>=0.8.7",
+    "textdistance>=4.1.5",
+    "tqdm",
+    "librosa>=0.10.0",
+    "pesq; (platform_machine != 'x86_64' or platform_system != 'Darwin')",
+    "pystoi",
+    "nemo_automodel",
+    "flashoptim",
+]
+
+cu12 = [
+    "numba-cuda[cu12] ; platform_system != 'Darwin'",
+    "cuda-python>=12.6.0,<13 ; platform_system != 'Darwin'",
+]
+
+cu13 = [
+    "numba-cuda[cu13] ; platform_system != 'Darwin'",
+    "cuda-python>=13,<14 ; platform_system != 'Darwin'",
+]
+
+common = [
+    "datasets>=3.2.0",
+    "einops",
+    "inflect",
+    "mediapy==1.1.6",
+    "pandas",
+    "sacremoses>=0.0.43",
+    "sentencepiece<1.0.0",
+    "cloudpickle",
+    "fiddle",
+    "hydra-core>1.3,<=1.3.2",
+    "lightning>2.2.1,<=2.4.0",
+    "omegaconf<=2.3",
+    "peft<=0.18.0",
+    "torchmetrics>=0.11.0",
+    "transformers",
+    "wandb",
+    "webdataset>=0.2.86",
+    "nv_one_logger_core>=2.3.1",
+    "nv_one_logger_training_telemetry>=2.3.1",
+    "nv_one_logger_pytorch_lightning_integration>=2.3.1",
+]
+
+asr = [
+    "braceexpand",
+    "editdistance",
+    "einops",
+    "jiwer>=3.1.0,<4.0.0",
+    "kaldi-python-io",
+    "kaldialign",
+    "lhotse>=1.33.0",
+    "librosa>=0.10.1",
+    "marshmallow",
+    "optuna",
+    "packaging",
+    "pydub",
+    "pyloudnorm",
+    "resampy",
+    "ruamel.yaml",
+    "sacrebleu",
+    "scipy>=0.14",
+    "soundfile",
+    "sox<=1.5.0",
+    "whisper_normalizer",
+    "datasets>=3.2.0",
+    "inflect",
+    "mediapy==1.1.6",
+    "pandas",
+    "sacremoses>=0.0.43",
+    "sentencepiece<1.0.0",
+    "cloudpickle",
+    "fiddle",
+    "hydra-core>1.3,<=1.3.2",
+    "lightning>2.2.1,<=2.4.0",
+    "omegaconf<=2.3",
+    "peft<=0.18.0",
+    "torchmetrics>=0.11.0",
+    "transformers",
+    "wandb",
+    "webdataset>=0.2.86",
+    "nv_one_logger_core>=2.3.1",
+    "nv_one_logger_training_telemetry>=2.3.1",
+    "nv_one_logger_pytorch_lightning_integration>=2.3.1",
+]
+
+speechlm2 = [
+    "nemo_automodel",
+    "flashoptim",
+    "braceexpand",
+    "editdistance",
+    "einops",
+    "jiwer>=3.1.0,<4.0.0",
+    "kaldi-python-io",
+    "kaldialign",
+    "lhotse>=1.33.0",
+    "librosa>=0.10.1",
+    "marshmallow",
+    "optuna",
+    "packaging",
+    "pydub",
+    "pyloudnorm",
+    "resampy",
+    "ruamel.yaml",
+    "sacrebleu",
+    "scipy>=0.14",
+    "soundfile",
+    "sox<=1.5.0",
+    "whisper_normalizer",
+    "datasets>=3.2.0",
+    "inflect",
+    "mediapy==1.1.6",
+    "pandas",
+    "sacremoses>=0.0.43",
+    "sentencepiece<1.0.0",
+    "cloudpickle",
+    "fiddle",
+    "hydra-core>1.3,<=1.3.2",
+    "lightning>2.2.1,<=2.4.0",
+    "omegaconf<=2.3",
+    "peft<=0.18.0",
+    "torchmetrics>=0.11.0",
+    "transformers",
+    "wandb",
+    "webdataset>=0.2.86",
+    "nv_one_logger_core>=2.3.1",
+    "nv_one_logger_training_telemetry>=2.3.1",
+    "nv_one_logger_pytorch_lightning_integration>=2.3.1",
+    "attrdict",
+    "cdifflib==1.2.6",
+    "janome",
+    "jieba",
+    "kornia",
+    "librosa",
+    "matplotlib",
+    "nemo_text_processing; 'arm' not in platform_machine and 'aarch' not in platform_machine and sys_platform != 'darwin'",
+    "nltk",
+    "pypinyin",
+    "pypinyin-dict",
+    "seaborn",
+    "pyopenjtalk",
 ]
 
 [tool.setuptools]
@@ -139,6 +564,8 @@ markers = [
     "pleasefixme: marks tests that are broken and need fixing",
 ]
 
+[tool.setuptools.dynamic]
+version = { attr = "nemo.package_info.__version__" }
 
 [tool.uv]
 conflicts = [
@@ -147,15 +574,19 @@ conflicts = [
         { extra = "cu13" },
     ],
 ]
+override-dependencies = [
+    "torch==2.12.0+cu132 ; sys_platform == 'linux'",
+]
 
 # --- uv configuration ---
 # Match nemo_automodel's torch index sources so uv doesn't see conflicting
 # indexes when resolving the speechlm2 extra (which pulls nemo_automodel
 # from git as a source dependency — uv treats these as workspace members).
 [tool.uv.sources]
+nemo_automodel = { git = "https://github.com/NVIDIA-NeMo/Automodel.git", rev = "9eccbb6102a260efd7cbdffa890fc57b94f94528" }
 torch = [
   { index = "pytorch-cpu", marker = "sys_platform != 'linux' and sys_platform != 'darwin'" },
-  { index = "pytorch-cu129", marker = "sys_platform == 'linux'" },
+  { index = "pytorch-cu132", marker = "sys_platform == 'linux'" },
   { index = "pypi", marker = "sys_platform == 'darwin'" },
 ]
 
@@ -170,19 +601,46 @@ url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
 [[tool.uv.index]]
-name = "pytorch-cu129"
-url = "https://download.pytorch.org/whl/cu129"
+name = "pytorch-cu132"
+url = "https://download.pytorch.org/whl/cu132"
 explicit = true
 
 [dependency-groups]
+test = [
+    "black~=24.3",
+    "click>=8.1",
+    "coverage",
+    "isort>5.1.0,<6.0.0",
+    "parameterized",
+    "pytest",
+    "pytest-httpserver",
+    "pytest-shard",
+    "pytest-mock",
+    "pytest-runner",
+    "ruamel.yaml",
+    "sphinx",
+    "sphinxcontrib-bibtex",
+    "wandb",
+    "wget",
+    "wrapt",
+]
+
 docs = [
+    "boto3",
+    "Jinja2",
+    "latexcodec",
     "myst-parser>=4.0.1",
+    "numpy",
     "nvidia-sphinx-theme>=0.0.8",
+    "pydata-sphinx-theme",
     "sphinx>=8.1.3",
     "sphinx-autobuild>=2024.10.3",
     "sphinx-autodoc2>=0.5.0",
+    "sphinx-book-theme",
     "sphinx-copybutton>=0.5.2",
-    "sphinxcontrib-mermaid",
     "sphinxcontrib-bibtex",
-    "sphinxext-opengraph"
+    "sphinxcontrib-mermaid",
+    "sphinxext-opengraph",
+    "urllib3",
+    "wrapt",
 ]

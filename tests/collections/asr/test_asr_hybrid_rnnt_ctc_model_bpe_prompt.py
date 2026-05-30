@@ -145,7 +145,8 @@ class TestEncDecHybridRNNTCTCBPEModelWithPrompt:
         reason='RNNTLoss has not been compiled with appropriate numba version.',
     )
     @pytest.mark.unit
-    def test_forward(self, hybrid_asr_model_with_prompt):
+    def test_forward_with_prompt(self, hybrid_asr_model_with_prompt):
+        """Exercise the legacy 3D one-hot ``prompt`` forward path."""
         hybrid_asr_model_with_prompt = hybrid_asr_model_with_prompt.eval()
 
         hybrid_asr_model_with_prompt.preprocessor.featurizer.dither = 0.0
@@ -195,8 +196,91 @@ class TestEncDecHybridRNNTCTCBPEModelWithPrompt:
         diff = torch.max(torch.abs(logits_instance - logprobs_batch))
         assert diff <= 1e-6
 
+    @pytest.mark.skipif(
+        not NUMBA_RNNT_LOSS_AVAILABLE,
+        reason='RNNTLoss has not been compiled with appropriate numba version.',
+    )
     @pytest.mark.unit
-    def test_predict_step(self, hybrid_asr_model_with_prompt):
+    def test_forward(self, hybrid_asr_model_with_prompt):
+        """Exercise the canonical 1D ``prompt_indices`` forward path (model builds the one-hot internally)."""
+        hybrid_asr_model_with_prompt = hybrid_asr_model_with_prompt.eval()
+
+        hybrid_asr_model_with_prompt.preprocessor.featurizer.dither = 0.0
+        hybrid_asr_model_with_prompt.preprocessor.featurizer.pad_to = 0
+
+        hybrid_asr_model_with_prompt.compute_eval_loss = False
+
+        input_signal = torch.randn(size=(4, 512))
+        length = torch.randint(low=321, high=500, size=[4])
+
+        # 1D per-sample language ids
+        prompt_indices = torch.tensor([0, 1, 2, 3], dtype=torch.long)
+
+        with torch.no_grad():
+            # batch size 1
+            logprobs_instance = []
+            for i in range(input_signal.size(0)):
+                logprobs_ins, _ = hybrid_asr_model_with_prompt.forward(
+                    input_signal=input_signal[i : i + 1],
+                    input_signal_length=length[i : i + 1],
+                    prompt_indices=prompt_indices[i : i + 1],
+                )
+                logprobs_instance.append(logprobs_ins)
+            logits_instance = torch.cat(logprobs_instance, 0)
+
+            # batch size 4
+            logprobs_batch, _ = hybrid_asr_model_with_prompt.forward(
+                input_signal=input_signal, input_signal_length=length, prompt_indices=prompt_indices
+            )
+
+        assert logits_instance.shape == logprobs_batch.shape
+        diff = torch.mean(torch.abs(logits_instance - logprobs_batch))
+        assert diff <= 1e-6
+        diff = torch.max(torch.abs(logits_instance - logprobs_batch))
+        assert diff <= 1e-6
+
+    @pytest.mark.skipif(
+        not NUMBA_RNNT_LOSS_AVAILABLE,
+        reason='RNNTLoss has not been compiled with appropriate numba version.',
+    )
+    @pytest.mark.unit
+    def test_forward_prompt_vs_indices_equivalence(self, hybrid_asr_model_with_prompt):
+        """A 3D one-hot ``prompt`` and the matching 1D ``prompt_indices`` must produce identical output."""
+        hybrid_asr_model_with_prompt = hybrid_asr_model_with_prompt.eval()
+
+        hybrid_asr_model_with_prompt.preprocessor.featurizer.dither = 0.0
+        hybrid_asr_model_with_prompt.preprocessor.featurizer.pad_to = 0
+
+        input_signal = torch.randn(size=(4, 512))
+        length = torch.randint(low=321, high=500, size=[4])
+        prompt_indices = torch.tensor([0, 1, 2, 3], dtype=torch.long)
+
+        # Build a 3D one-hot prompt that matches what the model would build internally.
+        with torch.no_grad():
+            processed, processed_len = hybrid_asr_model_with_prompt.preprocessor(
+                input_signal=input_signal, length=length
+            )
+            encoded_sample, _ = hybrid_asr_model_with_prompt.encoder(audio_signal=processed, length=processed_len)
+            time_steps = encoded_sample.shape[2]  # [B, D, T]
+
+        num_prompts = hybrid_asr_model_with_prompt.num_prompts
+        prompt_one_hot = torch.zeros(4, time_steps, num_prompts)
+        prompt_one_hot.scatter_(2, prompt_indices.view(4, 1, 1).expand(-1, time_steps, -1), 1.0)
+
+        with torch.no_grad():
+            out_from_prompt, _ = hybrid_asr_model_with_prompt.forward(
+                input_signal=input_signal, input_signal_length=length, prompt=prompt_one_hot
+            )
+            out_from_indices, _ = hybrid_asr_model_with_prompt.forward(
+                input_signal=input_signal, input_signal_length=length, prompt_indices=prompt_indices
+            )
+
+        assert out_from_prompt.shape == out_from_indices.shape
+        assert torch.max(torch.abs(out_from_prompt - out_from_indices)) <= 1e-6
+
+    @pytest.mark.unit
+    def test_predict_step_with_prompt(self, hybrid_asr_model_with_prompt):
+        """Exercise the legacy ``.dim() == 3`` branch of predict_step (3D one-hot prompt in the batch)."""
         hybrid_asr_model_with_prompt = hybrid_asr_model_with_prompt.eval()
 
         # Create a simple batch manually
@@ -214,6 +298,28 @@ class TestEncDecHybridRNNTCTCBPEModelWithPrompt:
         prompt[0, :, 0] = 1  # Set first prompt to 1
 
         batch = (audio_signal, audio_lengths, transcript, transcript_lengths, prompt)
+
+        outputs = hybrid_asr_model_with_prompt.predict_step(batch, 0)
+        assert len(outputs) == 1
+        assert len(outputs[0]) == 2
+        assert isinstance(outputs[0][1], Hypothesis)
+
+    @pytest.mark.unit
+    def test_predict_step(self, hybrid_asr_model_with_prompt):
+        """Exercise the canonical ``.dim() == 1`` branch of predict_step (1D prompt_indices in the batch)."""
+        hybrid_asr_model_with_prompt = hybrid_asr_model_with_prompt.eval()
+
+        batch_size = 1
+        seq_len = 1600
+
+        audio_signal = torch.randn(batch_size, seq_len)
+        audio_lengths = torch.tensor([seq_len])
+        transcript = torch.randint(0, 10, (batch_size, 10))
+        transcript_lengths = torch.tensor([10])
+        # 1D tensor -> hits the prompt_indices branch in predict_step.
+        prompt_indices = torch.tensor([0], dtype=torch.long)
+
+        batch = (audio_signal, audio_lengths, transcript, transcript_lengths, prompt_indices)
 
         outputs = hybrid_asr_model_with_prompt.predict_step(batch, 0)
         assert len(outputs) == 1
@@ -279,7 +385,8 @@ class TestEncDecHybridRNNTCTCBPEModelWithPrompt:
             assert isinstance(new_model, type(hybrid_asr_model_with_prompt))
             assert isinstance(new_model.tokenizer, tokenizers.AggregateTokenizer)
 
-            # should be double
+            # Both source tokenizers are the same 132-token vocab; the AggregateTokenizer
+            # deduplicates 10 shared control tokens, so total = 132 + (132 - 10) = 254.
             assert new_model.tokenizer.tokenizer.vocab_size == 264
             assert len(new_model.tokenizer.tokenizer.get_vocab()) == 264
 

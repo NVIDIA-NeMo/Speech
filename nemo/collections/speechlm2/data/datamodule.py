@@ -175,9 +175,14 @@ class DataModule(LightningDataModule):
                 elif (
                     "dp_shard" in dm.mesh_dim_names and "dp_replicate" in dm.mesh_dim_names
                 ):  # AutomodelParallelStrategy
-                    dp_rank = (
-                        dm["dp_replicate"].get_local_rank() * dm["dp_shard"].size() + dm["dp_shard"].get_local_rank()
-                    )
+                    try:
+                        dp_rank = dm["dp"].get_local_rank()
+                    except (KeyError, RuntimeError, ValueError):
+                        # Compatibility for older Automodel/PyTorch meshes without a flattened "dp" submesh.
+                        dp_rank = (
+                            dm["dp_replicate"].get_local_rank() * dm["dp_shard"].size()
+                            + dm["dp_shard"].get_local_rank()
+                        )
                 return dp_rank
             else:
                 return torch.distributed.get_rank()  # plain ol' DDP
@@ -196,7 +201,11 @@ class DataModule(LightningDataModule):
                 elif (
                     "dp_shard" in dm.mesh_dim_names and "dp_replicate" in dm.mesh_dim_names
                 ):  # AutomodelParallelStrategy
-                    dp_size = dm["dp_replicate", "dp_shard"].size()
+                    try:
+                        dp_size = dm["dp"].size()
+                    except (KeyError, RuntimeError, ValueError):
+                        # Compatibility for older Automodel/PyTorch meshes without a flattened "dp" submesh.
+                        dp_size = dm["dp_replicate", "dp_shard"].size()
                 return dp_size
             else:  # plain ol' DDP
                 return torch.distributed.get_world_size()

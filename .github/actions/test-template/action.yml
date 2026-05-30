@@ -153,7 +153,6 @@ runs:
           set -e
 
           docker exec -t nemo_container_${{ github.run_id }}_${{ inputs.runner }} bash -c '\
-            cp -r /opt/Megatron-LM/ /workspace/ && \
             bash tests/${{ inputs.test_dir }}/${{ inputs.script }}.sh && \
             echo "Finished successfully." || echo "Did not finish."'
         ) 2>&1 | tee $DIR/err.log

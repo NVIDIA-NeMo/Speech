@@ -93,7 +93,9 @@ model:
   phoneme_corruption_timestep_ratio: 0.15
   phoneme_corruption_unk_mode_prob: 0.5
   phoneme_corruption_type: "repeat_skip_unk" # "repeat_skip_unk" or "complete_channel"
-  
+  phoneme_turn_dropout_batch_prob: 0.0  # prob of applying turn dropout to a sample
+  phoneme_turn_dropout_turn_prob: 0.0  # prob of dropping each phoneme turn within a sample
+
   phoneme_tokenizer:
     _target_: nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.IPABPETokenizer
     tokenizer_path: ???

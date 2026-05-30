@@ -858,6 +858,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         context_audio_codes_lens: torch.Tensor,
         phoneme_tokens: Optional[torch.Tensor] = None,
         phoneme_tokens_lens: Optional[torch.Tensor] = None,
+        phoneme_turn_dropout: Optional[torch.Tensor] = None,
         mode: str = "train",
         training_mode: Optional[TrainingMode] = None,
         task: Optional[List[str]] = None,
@@ -1208,7 +1209,10 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             pb_phoneme_tokens_lens_target = phoneme_tokens_lens_stacked - 1
 
             if (phoneme_corruption_mode != 'repeat_skip') and not (
-                dropout_complete_phoneme_channel or dropout_conditional_input or dropout_text_input
+                dropout_complete_phoneme_channel
+                or (phoneme_turn_dropout is not None and phoneme_turn_dropout.any())
+                or dropout_conditional_input
+                or dropout_text_input
             ):
                 custom_mask = None
                 if self.cfg.get("phoneme_loss_mask_padding", False):
@@ -1568,6 +1572,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             context_audio_codes_lens=context_audio_codes_lens,
             phoneme_tokens=batch.get('phoneme_tokens'),
             phoneme_tokens_lens=batch.get('phoneme_tokens_lens'),
+            phoneme_turn_dropout=batch.get('phoneme_turn_dropout'),
             mode="train",
             task=batch["task"] if self.cfg.get("use_multiturn_dataset", False) else None,
             agent_mask=batch["agent_mask"] if self.cfg.get("use_multiturn_dataset", False) else None,
@@ -2052,6 +2057,8 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 input_roles=["user", "User"],
                 output_roles=["assistant", "Assistant", "agent", "Agent"],
                 add_text_bos=self.cfg.get("add_text_bos", False),
+                phoneme_turn_dropout_batch_prob=self.cfg.get("phoneme_turn_dropout_batch_prob", 0.0),
+                phoneme_turn_dropout_turn_prob=self.cfg.get("phoneme_turn_dropout_turn_prob", 0.0),
             )
             dataset = FallbackDataset(dataset)
         else:

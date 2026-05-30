@@ -172,6 +172,8 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         input_roles: List[str] = ["user", "User"],
         output_roles: List[str] = ["assistant", "Assistant", "agent", "Agent"],
         add_text_bos: bool = False,
+        phoneme_turn_dropout_batch_prob: float = 0.0,
+        phoneme_turn_dropout_turn_prob: float = 0.0,
     ):
         super().__init__()
         self.sample_rate = sample_rate
@@ -203,6 +205,8 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         self.input_roles = set(ifnone(input_roles, ["user"]))
         self.output_roles = set(ifnone(output_roles, ["agent"]))
         self.add_text_bos = add_text_bos
+        self.phoneme_turn_dropout_batch_prob = phoneme_turn_dropout_batch_prob
+        self.phoneme_turn_dropout_turn_prob = phoneme_turn_dropout_turn_prob
 
         self.frame_length = (self.codec_model_samples_per_frame / codec_model_input_sample_rate) * frame_stacking_factor
 
@@ -311,12 +315,15 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         )
 
         if self.phoneme_tokenizer is not None:
-            target_phoneme_tokens, target_phoneme_lens = collate_phoneme_channel(
+            target_phoneme_tokens, target_phoneme_lens, phoneme_turn_dropout = collate_phoneme_channel(
                 cuts, self.phoneme_tokenizer, self.frame_length, roles=self.output_roles,
                 ignore_phoneme_languages=self.ignore_phoneme_languages, pad_id=self.phoneme_tokenizer.pad, eos_id=self.phoneme_tokenizer.eos_token_id, bos_id=self.phoneme_tokenizer.bos_token_id,
+                phoneme_turn_dropout_batch_prob=self.phoneme_turn_dropout_batch_prob,
+                phoneme_turn_dropout_turn_prob=self.phoneme_turn_dropout_turn_prob,
+                apply_turn_dropout=self.dataset_type == 'train',
             )
         else:
-            target_phoneme_tokens, target_phoneme_lens = None, None
+            target_phoneme_tokens, target_phoneme_lens, phoneme_turn_dropout = None, None, None
 
         dataset_name_list = []
         audio_list_16khz = []
@@ -547,6 +554,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         if self.phoneme_tokenizer is not None:
             batch_dict["phoneme_tokens"] = target_phoneme_tokens
             batch_dict["phoneme_tokens_lens"] = target_phoneme_lens
+            batch_dict["phoneme_turn_dropout"] = phoneme_turn_dropout
 
         if len(audio_list_16khz) > 0:
             batch_dict["audio_16khz"] = collate_vectors(audio_list_16khz, padding_value=0.0)
@@ -763,17 +771,24 @@ def collate_phoneme_channel(
     pad_id: int = -1,
     eos_id: int = -2,
     bos_id: int = -3,
-) -> tuple[torch.Tensor, torch.Tensor]:
+    phoneme_turn_dropout_batch_prob: float = 0.0,
+    phoneme_turn_dropout_turn_prob: float = 0.0,
+    apply_turn_dropout: bool = False,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     tokens = []
+    dropout_flags = []
     for i, c in enumerate(cuts):
-        tokens.append(
-            build_phoneme_channel(
-                c, phoneme_tokenizer, frame_length, roles,
-                ignore_phoneme_languages, pad_id, eos_id, bos_id
-            )
+        token, dropout_applied = build_phoneme_channel(
+            c, phoneme_tokenizer, frame_length, roles,
+            ignore_phoneme_languages, pad_id, eos_id, bos_id,
+            phoneme_turn_dropout_batch_prob=phoneme_turn_dropout_batch_prob,
+            phoneme_turn_dropout_turn_prob=phoneme_turn_dropout_turn_prob,
+            apply_turn_dropout=apply_turn_dropout,
         )
+        tokens.append(token)
+        dropout_flags.append(dropout_applied)
     token_lens = torch.tensor([len(tt) for tt in tokens])
-    return collate_vectors(tokens, padding_value=pad_id), token_lens
+    return collate_vectors(tokens, padding_value=pad_id), token_lens, torch.tensor(dropout_flags, dtype=torch.bool)
 
 
 def build_phoneme_channel(
@@ -785,14 +800,28 @@ def build_phoneme_channel(
     pad_id: int = -1,
     eos_id: int = -2,
     bos_id: int = -3,
-) -> torch.Tensor:
+    phoneme_turn_dropout_batch_prob: float = 0.0,
+    phoneme_turn_dropout_turn_prob: float = 0.0,
+    apply_turn_dropout: bool = False,
+) -> tuple[torch.Tensor, bool]:
     language = cut.lang if cut.has_custom("lang") else next((sup.language for sup in cut.supervisions if sup.has_custom("language")), "en")
 
     total = compute_num_frames(cut.duration, frame_length, cut.sampling_rate)
     tokens = torch.ones(total, dtype=torch.long) * pad_id
+    dropout_applied = False
+    apply_dropout = (
+        apply_turn_dropout
+        and phoneme_turn_dropout_batch_prob > 0.0
+        and phoneme_turn_dropout_turn_prob > 0.0
+        and random.random() < phoneme_turn_dropout_batch_prob
+    )
 
     for supervision in cut.supervisions:
         if supervision.speaker in roles:
+            if apply_dropout and random.random() < phoneme_turn_dropout_turn_prob:
+                dropout_applied = True
+                continue
+
             if isinstance(phoneme_tokenizer, IPABPETokenizer):
                 ipa_text = _get_supervision_ipa_text(supervision)
                 if language in ignore_phoneme_languages:
@@ -812,4 +841,4 @@ def build_phoneme_channel(
                 phoneme_ids = phoneme_ids[:len(tokens) - pos]
             tokens[pos:pos+len(phoneme_ids)] = phoneme_ids
 
-    return tokens
+    return tokens, dropout_applied

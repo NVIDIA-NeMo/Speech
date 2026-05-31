@@ -143,6 +143,13 @@ class BatchedHyps:
             self.logits = torch.cat((self.logits, torch.zeros_like(self.logits)), dim=1)
         self._max_length *= 2
 
+    def _to_confidence_shape(self, x: torch.Tensor) -> torch.Tensor:
+        """Convert 2d tensor x to confidence-compatible shape"""
+        if not self.with_duration_confidence:
+            # shape compatible
+            return x
+        return x[..., None].expand(-1, -1, 2)
+
     def add_results_masked_(
         self,
         active_mask: torch.Tensor,
@@ -297,12 +304,9 @@ class BatchedHyps:
             self.token_durations.scatter_(dim=1, index=shifted_indices, src=other.token_durations)
         # optional (2) step confidence
         if self.with_step_confidence:
-            if self.with_duration_confidence:
-                self.step_confidence.scatter_(
-                    dim=1, index=shifted_indices[..., None].expand([-1, -1, 2]), src=other.step_confidence
-                )
-            else:
-                self.step_confidence.scatter_(dim=1, index=shifted_indices, src=other.step_confidence)
+            self.step_confidence.scatter_(
+                dim=1, index=self._to_confidence_shape(shifted_indices), src=other.step_confidence
+            )
         # optional (3) logits
         if self.with_logits:
             self.logits.scatter_(
@@ -320,6 +324,30 @@ class BatchedHyps:
         )
         torch.where(other_has_last_nb, other.last_nb_labels, self.last_nb_labels, out=self.last_nb_labels)
         return self
+
+    def get_data_without_blank(
+        self,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
+        """Return lengths, transcript, timestamps, (optional) step_confidence without blank labels"""
+        if not self.with_blank_steps:
+            return self.current_lengths, self.transcript, self.timestamps, self.token_durations, self.step_confidence
+        mask_nb_int = torch.logical_and(
+            torch.arange(self.transcript.shape[1], device=self.device)[None, :] < self.current_lengths[:, None],
+            self.transcript != self.blank_id,
+        ).to(torch.int)
+        lengths_nb = mask_nb_int.sum(dim=-1)
+        indices_nb_first = torch.argsort(mask_nb_int, dim=1, descending=True, stable=True)
+        transcript_nb = self.transcript.gather(dim=1, index=indices_nb_first)
+        timestamps_nb = self.timestamps.gather(dim=1, index=indices_nb_first)
+        if self.with_durations:
+            token_durations_nb = self.token_durations.gather(dim=1, index=indices_nb_first)
+        else:
+            token_durations_nb = None
+        if self.with_step_confidence:
+            step_confidence_nb = self.step_confidence.gather(dim=1, index=self._to_confidence_shape(indices_nb_first))
+        else:
+            step_confidence_nb = None
+        return lengths_nb, transcript_nb, timestamps_nb, token_durations_nb, step_confidence_nb
 
 
 class BatchedAlignments:

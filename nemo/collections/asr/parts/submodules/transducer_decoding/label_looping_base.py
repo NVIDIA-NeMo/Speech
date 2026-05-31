@@ -20,7 +20,7 @@ import torch
 
 from nemo.collections.asr.parts.context_biasing.biasing_multi_model import GPUBiasingMultiModelBase
 from nemo.collections.asr.parts.submodules.ngram_lm import NGramGPULanguageModel
-from nemo.collections.asr.parts.submodules.transducer_decoding.batched_hyps import BatchedAlignments, BatchedHyps
+from nemo.collections.asr.parts.submodules.transducer_decoding.batched_hyps import BatchedHyps
 from nemo.collections.common.parts.optional_cuda_graphs import WithOptionalCudaGraphs
 from nemo.core.utils.cuda_python_utils import check_cuda_python_cuda_graphs_conditional_nodes_supported
 from nemo.utils import logging

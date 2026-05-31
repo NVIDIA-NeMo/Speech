@@ -32,7 +32,8 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import torch
 
 from nemo.collections.asr.parts.context_biasing.biasing_multi_model import BiasingRequestItemConfig
-from nemo.collections.asr.parts.submodules.transducer_decoding import BatchedAlignments, BatchedHyps
+from nemo.collections.asr.parts.submodules.transducer_decoding import BatchedHyps
+from tutorials.asr.Online_Offline_Microphone_VAD_Demo import legend
 
 
 @dataclass
@@ -289,7 +290,7 @@ def select_k_expansions(
     return k_expansions
 
 
-def batched_hyps_to_hypotheses(batched_hyps: BatchedHyps, batch_size=None) -> List[Hypothesis]:
+def batched_hyps_to_hypotheses(batched_hyps: BatchedHyps, batch_size=None) -> list[Hypothesis]:
     """
     Convert batched hypotheses to a list of Hypothesis objects.
     Keep this function separate to allow for jit compilation for BatchedHyps class (see tests)
@@ -302,63 +303,58 @@ def batched_hyps_to_hypotheses(batched_hyps: BatchedHyps, batch_size=None) -> Li
     Returns:
         list of Hypothesis objects
     """
-    if batched_hyps.with_blank_steps:
-        raise NotImplementedError
     assert batch_size is None or batch_size <= batched_hyps.scores.shape[0]
     num_hyps = batched_hyps.scores.shape[0] if batch_size is None else batch_size
     # NB: clone is not necessary anymore, since CUDA graph decoder always returns an independent copy
     scores = batched_hyps.scores.cpu()
-    current_lengths = batched_hyps.current_lengths.cpu().tolist()
-    transcript = batched_hyps.transcript.cpu()
-    timestamps = batched_hyps.timestamps.cpu()
-    token_durations = batched_hyps.token_durations.cpu() if batched_hyps.with_durations else None
-    step_confidence = batched_hyps.step_confidence.cpu() if batched_hyps.with_step_confidence else None
+
+    lengths_nb, transcript_nb, timestamps_nb, durations_nb, step_confidence_nb = batched_hyps.get_data_without_blank()
+    lengths_nb, transcript_nb, timestamps_nb = lengths_nb.cpu(), transcript_nb.cpu(), timestamps_nb.cpu()
+    if durations_nb is not None:
+        durations_nb = durations_nb.cpu()
+    if step_confidence_nb is not None:
+        step_confidence_nb = step_confidence_nb.cpu()
+    lengths_nb = lengths_nb.tolist()
     hypotheses = [
         Hypothesis(
             score=scores[i].item(),
-            y_sequence=transcript[i, : current_lengths[i]],
-            timestamp=timestamps[i, : current_lengths[i]],
-            token_duration=(
-                token_durations[i, : current_lengths[i]] if batched_hyps.with_durations else torch.empty(0)
-            ),
+            y_sequence=transcript_nb[i, : lengths_nb[i]],
+            timestamp=timestamps_nb[i, : lengths_nb[i]],
+            token_duration=(durations_nb[i, : lengths_nb[i]] if durations_nb is not None else torch.empty(0)),
             alignments=None,
             dec_state=None,
             non_blank_step_confidence_precomputed=(
-                step_confidence[i, : current_lengths[i]].tolist() if step_confidence is not None else None
+                step_confidence_nb[i, : lengths_nb[i]].tolist() if step_confidence_nb is not None else None
             ),
         )
         for i in range(num_hyps)
     ]
-    alignments = None
-    if alignments is not None:
-        # move all data to cpu to avoid overhead with moving data by chunks
-        alignment_lengths = alignments.current_lengths.cpu().tolist()
-        if alignments.with_alignments:
-            alignment_logits = alignments.logits.cpu()
-            alignment_labels = alignments.labels.cpu()
-        if alignments.with_frame_confidence:
-            frame_confidence = alignments.frame_confidence.cpu()
+
+    if batched_hyps.with_blank_steps:
+        if batched_hyps.with_logits:
+            logits = batched_hyps.logits.cpu()
+        if batched_hyps.with_step_confidence:
+            step_confidence = batched_hyps.step_confidence.cpu()
+        labels = batched_hyps.transcript.cpu()
 
         # for each hypothesis - aggregate alignment using unique_consecutive for time indices (~itertools.groupby)
         for i in range(len(hypotheses)):
-            hypotheses[i].alignments = []
-            if alignments.with_frame_confidence:
+            if batched_hyps.with_logits:
+                hypotheses[i].alignments = []
+            if batched_hyps.with_step_confidence:
                 hypotheses[i].frame_confidence = []
             _, grouped_counts = torch.unique_consecutive(
-                alignments.timestamps[i, : alignment_lengths[i]], return_counts=True
+                batched_hyps.timestamps[i, : batched_hyps.current_lengths[i]], return_counts=True
             )
             start = 0
             for timestamp_cnt in grouped_counts.tolist():
-                if alignments.with_alignments:
+                if batched_hyps.with_logits:
                     hypotheses[i].alignments.append(
-                        [
-                            (alignment_logits[i, start + j], alignment_labels[i, start + j])
-                            for j in range(timestamp_cnt)
-                        ]
+                        [(logits[i, start + j], labels[i, start + j]) for j in range(timestamp_cnt)]
                     )
-                if alignments.with_frame_confidence:
+                if batched_hyps.with_step_confidence:
                     hypotheses[i].frame_confidence.append(
-                        [frame_confidence[i, start + j] for j in range(timestamp_cnt)]
+                        [step_confidence[i, start + j] for j in range(timestamp_cnt)]
                     )
                 start += timestamp_cnt
     return hypotheses

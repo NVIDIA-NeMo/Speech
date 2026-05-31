@@ -317,6 +317,8 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
             max_symbols_for_step = self.max_symbols + 1 if self.record_all_steps else self.max_symbols
             hyp_initial_max_length = max_time * max_symbols_for_step
             dynamic_hyp_storage = False
+
+        # batched hyps: storage for hyps and additional information
         batched_hyps = BatchedHyps(
             batch_size=batch_size,
             blank_id=self._blank_index,
@@ -1245,7 +1247,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
 
     def _after_inner_loop_store_labels(self):
         """Stage 3.1: Store hypotheses, update decoder state"""
-        self.state.batched_hyps.add_results_masked_no_checks_(
+        self.state.batched_hyps.add_results_masked_(
             active_mask=self.state.active_mask,
             labels=self.state.labels,
             time_indices=self.state.time_indices_current_labels,
@@ -1255,6 +1257,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
                 if self.preserve_step_confidence_no_blank
                 else None
             ),
+            check_lengths=False,
         )
 
     def _after_inner_loop_select_fusion_states(self):

@@ -14,17 +14,17 @@
 
 import numpy as np
 import pytest
-from pyannote.core import Annotation, Segment
+from lhotse import SupervisionSegment
 
 from nemo.collections.asr.parts.utils.vad_utils import (
     align_labels_to_frames,
     convert_labels_to_speech_segments,
-    frame_vad_construct_pyannote_object_per_file,
+    frame_vad_construct_supervisions_per_file,
     get_frame_labels,
     get_nonspeech_segments,
     load_speech_overlap_segments_from_rttm,
     load_speech_segments_from_rttm,
-    read_rttm_as_pyannote_object,
+    read_rttm_as_supervisions,
 )
 
 
@@ -101,26 +101,41 @@ class TestVADUtils:
         assert speech_segments_new == speech_segments
 
     @pytest.mark.unit
-    def test_read_rttm_as_pyannote_object(self, test_data_dir):
+    def test_read_rttm_as_supervisions(self, test_data_dir):
         rttm_file, speech_segments = get_simple_rttm_without_overlap(test_data_dir + "/test6.rttm")
-        pyannote_object = read_rttm_as_pyannote_object(rttm_file)
-        pyannote_object_gt = Annotation()
-        pyannote_object_gt[Segment(0.0, 2.0)] = 'speech'
-        assert pyannote_object == pyannote_object_gt
+        annotation = read_rttm_as_supervisions(rttm_file)
+        assert _annotation_equals(annotation, [(0.0, 2.0, 'speech')])
 
     @pytest.mark.unit
-    def test_frame_vad_construct_pyannote_object_per_file(self, test_data_dir):
+    def test_frame_vad_construct_supervisions_per_file(self, test_data_dir):
         rttm_file, speech_segments = get_simple_rttm_without_overlap(test_data_dir + "/test7.rttm")
         # test for rttm input
-        ref, hyp = frame_vad_construct_pyannote_object_per_file(rttm_file, rttm_file)
-        pyannote_object_gt = Annotation()
-        pyannote_object_gt[Segment(0.0, 2.0)] = 'speech'
-        assert ref == hyp == pyannote_object_gt
+        ref, hyp = frame_vad_construct_supervisions_per_file(rttm_file, rttm_file)
+        expected = [(0.0, 2.0, 'speech')]
+        assert _annotation_equals(ref, expected)
+        assert _annotation_equals(hyp, expected)
 
         # test for list input
         speech_segments = load_speech_segments_from_rttm(rttm_file)
         frame_labels = get_frame_labels(speech_segments, 0.02, 0.0, 3.0, as_str=False)
         speech_segments_new = convert_labels_to_speech_segments(frame_labels, 0.02)
         assert speech_segments_new == speech_segments
-        ref, hyp = frame_vad_construct_pyannote_object_per_file(frame_labels, frame_labels, 0.02)
-        assert ref == hyp == pyannote_object_gt
+        ref, hyp = frame_vad_construct_supervisions_per_file(frame_labels, frame_labels, 0.02)
+        assert _annotation_equals(ref, expected)
+        assert _annotation_equals(hyp, expected)
+
+
+def _annotation_equals(annotation, expected_segments, *, atol=1e-6):
+    """Compare a list of :class:`lhotse.SupervisionSegment` to expected ``(start, end, speaker)`` tuples."""
+    assert isinstance(annotation, list)
+    assert all(isinstance(s, SupervisionSegment) for s in annotation)
+    if len(annotation) != len(expected_segments):
+        return False
+    for seg, (exp_start, exp_end, exp_spk) in zip(annotation, expected_segments):
+        if abs(float(seg.start) - exp_start) > atol:
+            return False
+        if abs(float(seg.end) - exp_end) > atol:
+            return False
+        if seg.speaker != exp_spk:
+            return False
+    return True

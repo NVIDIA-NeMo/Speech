@@ -25,19 +25,18 @@ from nemo.utils import logging
 
 
 class AudioTrimmer(ABC):
-    """Interface for silence trimming implementations
-    """
+    """Interface for silence trimming implementations"""
 
     @abstractmethod
     def trim_audio(self, audio: np.array, sample_rate: int, audio_id: str) -> Tuple[np.array, int, int]:
         """Trim starting and trailing silence from the input audio.
-           Args:
-               audio: Numpy array containing audio samples. Float [-1.0, 1.0] format.
-               sample_rate: Sample rate of input audio.
-               audio_id: String identifier (eg. file name) used for logging.
+        Args:
+            audio: Numpy array containing audio samples. Float [-1.0, 1.0] format.
+            sample_rate: Sample rate of input audio.
+            audio_id: String identifier (eg. file name) used for logging.
 
-           Returns numpy array with trimmed audio, and integer sample indices representing the start and end
-           of speech within the original audio array.
+        Returns numpy array with trimmed audio, and integer sample indices representing the start and end
+        of speech within the original audio array.
         """
         raise NotImplementedError
 
@@ -54,22 +53,22 @@ class EnergyAudioTrimmer(AudioTrimmer):
         volume_norm: bool = True,
     ) -> None:
         """Energy/power based silence trimming using Librosa backend.
-           Args:
-               db_threshold: Audio frames at least db_threshold decibels below ref_amplitude will be
-                 considered silence.
-               ref_amplitude: Amplitude threshold for classifying speech versus silence.
-               speech_frame_threshold: Start and end of speech will be detected where there are at least
-                 speech_frame_threshold consecutive audio frames classified as speech. Setting this value higher
-                 is more robust to false-positives (silence detected as speech), but setting it too high may result
-                 in very short speech segments being cut out from the audio.
-               trim_win_length: Length of audio frames to use when doing speech detection. This does not need to match
-                 the win_length used any other part of the code or model.
-               trim_hop_length: Stride of audio frames to use when doing speech detection. This does not need to match
-                 the hop_length used any other part of the code or model.
-               pad_seconds: Audio duration in seconds to keep before and after each speech segment.
-                 Set this to at least 0.1 to avoid cutting off any speech audio, with larger values
-                 being safer but increasing the average silence duration left afterwards.
-               volume_norm: Whether to normalize the volume of audio before doing speech detection.
+        Args:
+            db_threshold: Audio frames at least db_threshold decibels below ref_amplitude will be
+              considered silence.
+            ref_amplitude: Amplitude threshold for classifying speech versus silence.
+            speech_frame_threshold: Start and end of speech will be detected where there are at least
+              speech_frame_threshold consecutive audio frames classified as speech. Setting this value higher
+              is more robust to false-positives (silence detected as speech), but setting it too high may result
+              in very short speech segments being cut out from the audio.
+            trim_win_length: Length of audio frames to use when doing speech detection. This does not need to match
+              the win_length used any other part of the code or model.
+            trim_hop_length: Stride of audio frames to use when doing speech detection. This does not need to match
+              the hop_length used any other part of the code or model.
+            pad_seconds: Audio duration in seconds to keep before and after each speech segment.
+              Set this to at least 0.1 to avoid cutting off any speech audio, with larger values
+              being safer but increasing the average silence duration left afterwards.
+            volume_norm: Whether to normalize the volume of audio before doing speech detection.
         """
         assert db_threshold >= 0
         assert ref_amplitude >= 0
@@ -99,7 +98,9 @@ class EnergyAudioTrimmer(AudioTrimmer):
         )
 
         start_frame, end_frame = get_start_and_end_of_speech_frames(
-            is_speech=speech_frames, speech_frame_threshold=self.speech_frame_threshold, audio_id=audio_id,
+            is_speech=speech_frames,
+            speech_frame_threshold=self.speech_frame_threshold,
+            audio_id=audio_id,
         )
         if not start_frame and not end_frame:
             return np.array([]), 0, 0
@@ -135,21 +136,21 @@ class VadAudioTrimmer(AudioTrimmer):
     ) -> None:
         """Voice activity detection (VAD) based silence trimming.
 
-           Args:
-               model_name: NeMo VAD model to load. Valid configurations can be found with
-                 EncDecClassificationModel.list_available_models()
-               vad_sample_rate: Sample rate used for pretrained VAD model.
-               vad_threshold: Softmax probability [0, 1] of VAD output, above which audio frames will be classified
-                 as speech.
-               device: Device "cpu" or "cuda" to use for running the VAD model.
-               trim_win_length: Length of audio frames to use when doing speech detection. This does not need to match
-                 the win_length used any other part of the code or model.
-               trim_hop_length: Stride of audio frames to use when doing speech detection. This does not need to match
-                 the hop_length used any other part of the code or model.
-               pad_seconds: Audio duration in seconds to keep before and after each speech segment.
-                 Set this to at least 0.1 to avoid cutting off any speech audio, with larger values
-                 being safer but increasing the average silence duration left afterwards.
-               volume_norm: Whether to normalize the volume of audio before doing speech detection.
+        Args:
+            model_name: NeMo VAD model to load. Valid configurations can be found with
+              EncDecClassificationModel.list_available_models()
+            vad_sample_rate: Sample rate used for pretrained VAD model.
+            vad_threshold: Softmax probability [0, 1] of VAD output, above which audio frames will be classified
+              as speech.
+            device: Device "cpu" or "cuda" to use for running the VAD model.
+            trim_win_length: Length of audio frames to use when doing speech detection. This does not need to match
+              the win_length used any other part of the code or model.
+            trim_hop_length: Stride of audio frames to use when doing speech detection. This does not need to match
+              the hop_length used any other part of the code or model.
+            pad_seconds: Audio duration in seconds to keep before and after each speech segment.
+              Set this to at least 0.1 to avoid cutting off any speech audio, with larger values
+              being safer but increasing the average silence duration left afterwards.
+            volume_norm: Whether to normalize the volume of audio before doing speech detection.
         """
         assert vad_sample_rate > 0
         assert vad_threshold >= 0
@@ -217,7 +218,9 @@ class VadAudioTrimmer(AudioTrimmer):
         speech_frames = self._detect_speech(audio=vad_audio)
 
         start_frame, end_frame = get_start_and_end_of_speech_frames(
-            is_speech=speech_frames, speech_frame_threshold=self.speech_frame_threshold, audio_id=audio_id,
+            is_speech=speech_frames,
+            speech_frame_threshold=self.speech_frame_threshold,
+            audio_id=audio_id,
         )
         if not start_frame and not end_frame:
             return np.array([]), 0, 0
@@ -258,12 +261,12 @@ def get_start_and_end_of_speech_frames(
     is_speech: np.array, speech_frame_threshold: int, audio_id: str = ""
 ) -> Tuple[int, int]:
     """Finds the speech frames corresponding to the start and end of speech for an utterance.
-       Args:
-           is_speech: [num_frames] boolean array with true entries labeling speech frames.
-           speech_frame_threshold: The number of consecutive speech frames required to classify the speech boundaries.
-           audio_id: String identifier (eg. file name) used for logging.
+    Args:
+        is_speech: [num_frames] boolean array with true entries labeling speech frames.
+        speech_frame_threshold: The number of consecutive speech frames required to classify the speech boundaries.
+        audio_id: String identifier (eg. file name) used for logging.
 
-       Returns integers representing the frame indices of the start (inclusive) and end (exclusive) of speech.
+    Returns integers representing the frame indices of the start (inclusive) and end (exclusive) of speech.
     """
     num_frames = is_speech.shape[0]
 
@@ -295,14 +298,14 @@ def pad_sample_indices(
     start_sample: int, end_sample: int, max_sample: int, sample_rate: int, pad_seconds: float
 ) -> Tuple[int, int]:
     """Shift the input sample indices by pad_seconds in front and back within [0, max_sample]
-       Args:
-           start_sample: Start sample index
-           end_sample: End sample index
-           max_sample: Maximum sample index
-           sample_rate: Sample rate of audio
-           pad_seconds: Amount to pad/shift the indices by.
+    Args:
+        start_sample: Start sample index
+        end_sample: End sample index
+        max_sample: Maximum sample index
+        sample_rate: Sample rate of audio
+        pad_seconds: Amount to pad/shift the indices by.
 
-       Returns the sample indices after padding by the input amount.
+    Returns the sample indices after padding by the input amount.
     """
     pad_samples = int(pad_seconds * sample_rate)
     start_sample = start_sample - pad_samples

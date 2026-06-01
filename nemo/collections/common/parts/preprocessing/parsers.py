@@ -106,6 +106,7 @@ class CharParser:
         return tokens
 
     def decode(self, str_input):
+        """Decode token ids into labels."""
         r_map = {}
         for k, v in self._labels_map.items():
             r_map[v] = k
@@ -207,7 +208,9 @@ class RUCharParser(CharParser):
         # noinspection PyBroadException
         try:
             text = cleaners.clean_text(
-                string=text, table=self._table, punctuation_to_replace=self.PUNCTUATION_TO_REPLACE,
+                string=text,
+                table=self._table,
+                punctuation_to_replace=self.PUNCTUATION_TO_REPLACE,
             )
         except Exception:
             return None
@@ -218,7 +221,11 @@ class RUCharParser(CharParser):
 NAME_TO_PARSER = {'base': CharParser, 'en': ENCharParser, 'ru': RUCharParser}
 
 
-def make_parser(labels: Optional[List[str]] = None, name: str = 'base', **kwargs,) -> CharParser:
+def make_parser(
+    labels: Optional[List[str]] = None,
+    name: str = 'base',
+    **kwargs,
+) -> CharParser:
     """Creates parser from labels, set of arguments and concise parser name.
 
     Args:

@@ -127,7 +127,10 @@ def __text_normalization(json_file, num_workers=-1):
         "punct_post_process": True,
     }
     text_normalizer = Normalizer(
-        lang="de", input_case="cased", overwrite_cache=True, cache_dir=str(json_file.parent / "cache_dir"),
+        lang="de",
+        input_case="cased",
+        overwrite_cache=True,
+        cache_dir=str(json_file.parent / "cache_dir"),
     )
 
     def normalizer_call(x):

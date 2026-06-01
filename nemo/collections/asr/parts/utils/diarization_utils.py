@@ -23,9 +23,9 @@ from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
-from pyannote.metrics.diarization import DiarizationErrorRate
 
-from nemo.collections.asr.metrics.der import calculate_session_cpWER, concat_perm_word_error_rate
+from nemo.collections.asr.metrics.cpwer import calculate_session_cpWER, concat_perm_word_error_rate
+from nemo.collections.asr.metrics.der import score_labels_from_rttm_labels
 from nemo.collections.asr.metrics.wer import word_error_rate
 from nemo.collections.asr.models import ClusteringDiarizer
 from nemo.collections.asr.parts.utils.speaker_utils import (
@@ -670,44 +670,61 @@ class OnlineEvaluation:
 
         assert ref_session_id == hyp_session_id, "Session IDs of reference and hypothesis should match"
 
-        # Only care about the sessions in reference only
         session_id = ref_session_id
         ref_speaker_words = defaultdict(list)
         hyp_speaker_words = defaultdict(list)
 
-        der_metric = DiarizationErrorRate(collar=2 * self.collar, skip_overlap=self.ignore_overlap)
         cpwer_metric = calculate_session_cpWER
         der_list, cpwer_list = [], []
+
+        cum_ref_labels: List[str] = []
+        cum_hyp_labels: List[str] = []
+
         for chunk_idx in range(max_idx):
-            ref_seglst = chunked_ref_seglst[chunk_idx]
-            hyp_seglst = chunked_hyp_seglst[chunk_idx]
+            ref_seglst_chunk = chunked_ref_seglst[chunk_idx]
+            hyp_seglst_chunk = chunked_hyp_seglst[chunk_idx]
 
             if len(ref_speaker_words) == 0:
                 ref_speaker_words = ['' for _ in ref_speakers]
             if len(hyp_speaker_words) == 0:
                 hyp_speaker_words = ['' for _ in hyp_speakers]
-            hyp_speaker_timestamps, hyp_speaker_word = convert_seglst(hyp_seglst, hyp_speakers)
-            ref_speaker_timestamps, ref_speaker_word = convert_seglst(ref_seglst, ref_speakers)
+            hyp_speaker_timestamps, hyp_speaker_word = convert_seglst(hyp_seglst_chunk, hyp_speakers)
+            ref_speaker_timestamps, ref_speaker_word = convert_seglst(ref_seglst_chunk, ref_speakers)
 
             for idx, speaker in enumerate(ref_speakers):
                 ref_speaker_words[idx] += ref_speaker_word[idx]
+                for st, et in ref_speaker_timestamps[idx]:
+                    cum_ref_labels.append(f"{st} {et} {speaker}")
             for idx, speaker in enumerate(hyp_speakers):
                 hyp_speaker_words[idx] += hyp_speaker_word[idx]
+                for st, et in hyp_speaker_timestamps[idx]:
+                    cum_hyp_labels.append(f"{st} {et} {speaker}")
 
-            # Normalize the text
             for spk_idx in range(len(hyp_speaker_words)):
                 hyp_speaker_words[spk_idx] = (
                     hyp_speaker_words[spk_idx].translate(str.maketrans('', '', string.punctuation)).lower()
                 )
             cpWER, min_perm_hyp_trans, ref_trans = cpwer_metric(ref_speaker_words, hyp_speaker_words)
 
+            der = 0.0
+            if cum_ref_labels:
+                result = score_labels_from_rttm_labels(
+                    ref_labels_list=[(session_id, list(cum_ref_labels))],
+                    hyp_labels_list=[(session_id, list(cum_hyp_labels))],
+                    collar=self.collar,
+                    ignore_overlap=self.ignore_overlap,
+                    verbose=False,
+                )
+                if result is not None:
+                    der = abs(result[0]) * 100
+
             if verbose:
                 logging.info(
                     f"Session ID: {session_id} Chunk ID: {chunk_idx} from 0.0s to {(chunk_idx+1)*chunk_size}s"
                 )
-                logging.info(f"DER: {abs(der_metric)*100:.2f}%, cpWER: {cpWER*100:.2f}%")
+                logging.info(f"DER: {der:.2f}%, cpWER: {cpWER*100:.2f}%")
 
-            der_list.append(abs(der_metric) * 100)
+            der_list.append(der)
             cpwer_list.append(cpWER * 100)
 
         return der_list, cpwer_list
@@ -890,9 +907,9 @@ class OfflineDiarWithASR:
         Returns:
             diar_hyp (dict):
                 A dictionary containing rttm results which are indexed by a unique ID.
-            score Tuple[pyannote object, dict]:
-                A tuple containing pyannote metric instance and mapping dictionary between
-                speakers in hypotheses and speakers in reference RTTM files.
+            score (Tuple[DiarizationErrorResult, dict]):
+                A tuple containing the DER result object and a mapping dictionary
+                between speakers in hypotheses and speakers in reference RTTM files.
         """
 
         if diar_model_config.diarizer.asr.parameters.asr_based_vad:
@@ -949,11 +966,11 @@ class OfflineDiarWithASR:
         decimals: int = 4,
     ) -> Dict[str, Dict[str, float]]:
         """
-        Gather diarization evaluation results from pyannote DiarizationErrorRate metric object.
+        Gather diarization evaluation results from DiarizationErrorResult metric object.
 
         Args:
-            metric (DiarizationErrorRate metric):
-                DiarizationErrorRate metric pyannote object
+            metric (DiarizationErrorResult):
+                DiarizationErrorResult metric object from md_eval
             trans_info_dict (dict):
                 Dictionary containing word timestamps, speaker labels and words from all sessions.
                 Each session is indexed by unique ID as a key.

@@ -22,7 +22,7 @@ __all__ = ['DecoderModule']
 
 
 class DecoderModule(NeuralModule, ABC):
-    """ Base class for decoder neural module to be used in NLP models. """
+    """Base class for decoder neural module to be used in NLP models."""
 
     @property
     def input_types(self) -> Optional[Dict[str, NeuralType]]:

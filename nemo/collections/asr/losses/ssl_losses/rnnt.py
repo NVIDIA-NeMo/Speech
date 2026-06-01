@@ -22,8 +22,7 @@ __all__ = ["RNNTLossForSSL"]
 class RNNTLossForSSL(Loss):
     @property
     def input_types(self):
-        """Input types definitions for Contrastive.
-        """
+        """Input types definitions for Contrastive."""
         return {
             "spec_masks": NeuralType(("B", "D", "T"), SpectrogramType()),
             "decoder_outputs": NeuralType(('B', 'T', 'T', 'D'), LogprobsType()),

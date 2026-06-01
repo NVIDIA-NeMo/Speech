@@ -28,6 +28,7 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Dataset
 from omegaconf import OmegaConf, open_dict
 
+from nemo.collections.asr.metrics.wer import word_error_rate
 from nemo.collections.audio.parts.utils.transforms import resample
 from nemo.collections.speechlm2.parts.metrics.asr_cer_wer import Intelligibility
 from nemo.collections.speechlm2.parts.metrics.secs import SECS
@@ -214,6 +215,46 @@ def _load_audio(path, sample_rate, normalize=True, use_librosa=False):
 
     wav = torch.as_tensor(wav, dtype=torch.float32).unsqueeze(0)
     return resample(wav, sr, sample_rate).squeeze(0)
+
+
+def _json_metric_value(value):
+    if torch.is_tensor(value):
+        value = value.detach().cpu()
+        if value.numel() == 1:
+            return value.item()
+        return value.tolist()
+    return value
+
+
+def _write_json(path, data):
+    output_dir = os.path.dirname(path)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+
+def _write_filewise_metrics(path, filewise_metrics):
+    sorted_metrics = sorted(filewise_metrics, key=lambda row: row.get("cer", float("-inf")), reverse=True)
+    _write_json(path, sorted_metrics)
+
+
+def _compute_secs_per_sample(secs_metric, name, target_audio, target_audio_lens, pred_audio, pred_audio_lens):
+    if secs_metric.speaker_encoder is None:
+        secs_metric.reset()
+
+    with fp32_precision():
+        with torch.no_grad():
+            _, t_g = secs_metric.speaker_encoder(
+                input_signal=target_audio, input_signal_length=target_audio_lens.long()
+            )
+            _, s_g = secs_metric.speaker_encoder(
+                input_signal=pred_audio, input_signal_length=pred_audio_lens.long()
+            )
+        secs = torch.nn.functional.cosine_similarity(t_g, s_g, dim=-1)
+
+    secs_metric._secs[name].append(secs.mean())
+    return secs.detach().cpu()
 
 
 def collate_and_tokenize_custom(
@@ -476,6 +517,7 @@ def collate_and_tokenize_custom(
 
     out_dict["context_audio"] = padded_audio
     out_dict["context_audio_lengths"] = torch.tensor(audio_lengths, dtype=torch.long)
+    out_dict["context_audio_paths"] = [s.get("context_audio_filepath") for s in batch]
     out_dict["target_audio_paths"] = [s["audio_filepath"] for s in batch]
     out_dict["target_num_frames"] = target_num_frames
 
@@ -510,6 +552,18 @@ def main():
     parser.add_argument("--inference_dtype", type=str, default="float32")
     parser.add_argument("--debug_dtype", action="store_true")
     parser.add_argument("--use_librosa", action="store_true", help="Use librosa instead of soundfile+torch for audio load")
+    parser.add_argument(
+        "--filewise_metrics_path",
+        type=str,
+        default=None,
+        help="Path to save per-file metrics JSON. Defaults to <out_dir>/filewise_metrics.json",
+    )
+    parser.add_argument(
+        "--aggregate_metrics_path",
+        type=str,
+        default=None,
+        help="Path to save aggregate metrics JSON. Defaults to <out_dir>/aggregate_metrics.json",
+    )
     
     # Dataloader & Batching
     parser.add_argument("--batch_size", type=int, default=6)
@@ -553,6 +607,9 @@ def main():
 
     if args.profile_pad_max_sec < args.profile_pad_min_sec:
         raise RuntimeError("--profile_pad_max_sec must be >= --profile_pad_min_sec.")
+
+    filewise_metrics_path = args.filewise_metrics_path or os.path.join(args.out_dir, "filewise_metrics.json")
+    aggregate_metrics_path = args.aggregate_metrics_path or os.path.join(args.out_dir, "aggregate_metrics.json")
 
     distributed = int(os.environ.get("WORLD_SIZE", "1")) > 1
     if distributed and not torch.distributed.is_initialized():
@@ -648,6 +705,10 @@ def main():
             normalize=args.normalize_volume,
             use_librosa=args.use_librosa,
         ).unsqueeze(0).to(model.device, dtype=target_dtype)
+
+    filewise_metrics = []
+    running_metric_sums = {"cer": 0.0, "wer": 0.0, "secs": 0.0}
+    running_metric_count = 0
 
     for batch_id, inputs in enumerate(dataloader):
         B = inputs["context_audio"].size(0)
@@ -1099,7 +1160,7 @@ def main():
             metric_audio_pred = torch_rms_norm(metric_audio_pred)
             context_audio = torch_rms_norm(context_audio)
 
-            intelligibility.update(
+            asr_hyps = intelligibility.update(
                 name="dataset",
                 refs=inputs["raw_text"],
                 pred_audio=metric_audio_pred,
@@ -1107,13 +1168,60 @@ def main():
                 asr_hyps=None,
             )
 
-            secs_metric.update(
-                name="dataset",
-                target_audio=context_audio,
-                target_audio_lens=context_audio_lens,
-                pred_audio=metric_audio_pred,
-                pred_audio_lens=metric_audio_pred_lens,
+            secs_values = _compute_secs_per_sample(
+                secs_metric,
+                "dataset",
+                context_audio,
+                context_audio_lens,
+                metric_audio_pred,
+                metric_audio_pred_lens,
             )
+
+            batch_filewise_metrics = []
+            for i, (raw_ref, raw_hyp) in enumerate(zip(inputs["raw_text"], asr_hyps)):
+                normalized_ref = intelligibility.normalizer(raw_ref)
+                normalized_hyp = intelligibility.normalizer(raw_hyp)
+                target_path = inputs["target_audio_paths"][i]
+                context_path = inputs["context_audio_paths"][i]
+                cer = word_error_rate([normalized_hyp], [normalized_ref], use_cer=True)
+                wer = word_error_rate([normalized_hyp], [normalized_ref], use_cer=False)
+                secs = _json_metric_value(secs_values[i])
+                running_metric_count += 1
+                running_metric_sums["cer"] += cer
+                running_metric_sums["wer"] += wer
+                running_metric_sums["secs"] += secs
+                row = {
+                    "sample_index": running_metric_count - 1,
+                    "batch_id": batch_id,
+                    "batch_sample_index": i,
+                    "target_audio_filepath": target_path,
+                    "target_audio_resolved_filepath": _resolve_audio_path(target_path, args.audio_dir),
+                    "context_audio_filepath": context_path,
+                    "context_audio_resolved_filepath": _resolve_audio_path(context_path, args.audio_dir),
+                    "speaker_reference_filepath": (
+                        args.inference_speaker_reference
+                        if args.user_custom_speaker_reference and args.inference_speaker_reference
+                        else None
+                    ),
+                    "generated_audio_filepath": None,
+                    "generated_turn_audio_filepaths": [],
+                    "aligned_user_agent_audio_filepath": None,
+                    "reference_transcript": raw_ref,
+                    "asr_hypothesis": raw_hyp,
+                    "normalized_reference_transcript": normalized_ref,
+                    "normalized_asr_hypothesis": normalized_hyp,
+                    "cer": cer,
+                    "wer": wer,
+                    "secs": secs,
+                    "running_average_metrics": {
+                        "num_samples": running_metric_count,
+                        "cer": running_metric_sums["cer"] / running_metric_count,
+                        "wer": running_metric_sums["wer"] / running_metric_count,
+                        "secs": running_metric_sums["secs"] / running_metric_count,
+                    },
+                }
+                batch_filewise_metrics.append(row)
+                filewise_metrics.append(row)
 
             os.makedirs(args.out_dir, exist_ok=True)
             audio_f32 = audio_f32.detach().cpu()
@@ -1166,12 +1274,14 @@ def main():
                         turn_wav = aligned_agent[start_sample:end_sample].numpy()
                         out_path = os.path.join(args.out_dir, f"{stem}_turn_{turn_id}{ext}")
                         sf.write(out_path, turn_wav, samplerate=model.output_sample_rate)
+                        batch_filewise_metrics[i]["generated_turn_audio_filepaths"].append(out_path)
                         logging.info(f"Saved: {out_path}")
 
                     # Save full artifact-scrubbed agent audio.
                     wav = aligned_agent.numpy()
                     out_path = os.path.join(args.out_dir, base_name)
                     sf.write(out_path, wav, samplerate=model.output_sample_rate)
+                    batch_filewise_metrics[i]["generated_audio_filepath"] = out_path
                     logging.info(f"Full aligned agent audio saved: {out_path}")
 
                     # ---------------------------------------------------------
@@ -1251,13 +1361,21 @@ def main():
                             samplerate=model.output_sample_rate,
                         )
 
+                        batch_filewise_metrics[i]["aligned_user_agent_audio_filepath"] = aligned_path
                         logging.info(f"Aligned user/agent stereo audio saved: {aligned_path}")
 
                 else:
                     wav = audio_f32[i, : audio_len[i]].numpy()
                     out_path = os.path.join(args.out_dir, base_name)
                     sf.write(out_path, wav, samplerate=model.output_sample_rate)
+                    batch_filewise_metrics[i]["generated_audio_filepath"] = out_path
                     logging.info(f"Saved: {out_path}")
+
+            _write_filewise_metrics(filewise_metrics_path, filewise_metrics)
+            logging.info(
+                f"Filewise metrics checkpoint saved: {filewise_metrics_path} "
+                f"({len(filewise_metrics)} samples, sorted by CER)"
+            )
 
     with fp32_precision():
         logging.info("\n--- Evaluation Metrics ---")
@@ -1268,6 +1386,15 @@ def main():
         secs_scores = secs_metric.compute()
         for k, m in secs_scores.items():
             logging.info(f"SECS - {k}: {m}")
+
+    aggregate_metrics = {
+        **{k: _json_metric_value(v) for k, v in cer_wer.items()},
+        **{k: _json_metric_value(v) for k, v in secs_scores.items()},
+    }
+    _write_filewise_metrics(filewise_metrics_path, filewise_metrics)
+    logging.info(f"Filewise metrics saved: {filewise_metrics_path}")
+    _write_json(aggregate_metrics_path, aggregate_metrics)
+    logging.info(f"Aggregate metrics saved: {aggregate_metrics_path}")
 
 
 if __name__ == "__main__":

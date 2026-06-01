@@ -299,6 +299,7 @@ The Hybrid-Transducer-CTC model with prompt conditioning (``EncDecHybridRNNTCTCB
 - **Scalable architecture** can support multilingual ASR and AST tasks
 
 **Key Features:**
+
 - Prompt-based language conditioning using one-hot embeddings
 - Concatenation-based feature fusion with learned projection networks
 - Compatible with existing FastConformer hybrid architecture
@@ -320,6 +321,7 @@ The Hybrid-Transducer-CTC model with prompt conditioning (``EncDecHybridRNNTCTCB
   )
 
 **Configuration and Training:**
+
 - Training script: ``<NeMo_git_root>/examples/asr/asr_hybrid_transducer_ctc/speech_to_text_hybrid_rnnt_ctc_bpe_prompt.py``
 - Config file: ``<NeMo_git_root>/examples/asr/conf/fastconformer/hybrid_transducer_ctc/fastconformer_hybrid_transducer_ctc_bpe_prompt.yaml``
 
@@ -333,6 +335,7 @@ counterpart of the hybrid prompt model — same one-hot language-ID prompt mecha
 auxiliary CTC head. 
 
 **Key Features:**
+
 - Cache-aware streaming RNN-T with language-ID prompt conditioning
 - Concatenation-based feature fusion with learned projection (shared with the hybrid variant)
 - Per-sample dynamic language selection from the manifest (``target_lang=auto``) or
@@ -364,6 +367,7 @@ For batched offline transcription via the cache-aware streaming simulation scrip
       strip_lang_tags=true
 
 **Configuration and Training:**
+
 - Training script: ``examples/asr/asr_transducer/speech_to_text_rnnt_bpe_prompt.py``
 - Config file: ``examples/asr/conf/fastconformer/cache_aware_streaming/fastconformer_transducer_bpe_streaming_prompt.yaml``
 

@@ -880,3 +880,145 @@ class TestCTCDecoding:
             check_res_best_hyps(num_samples, hyps)
             hyps = decode_text_from_hypotheses(hyps, model)
             print_res_best_hyps(hyps)
+
+
+class TestBeamDecodingTimestamps:
+    """
+    Tests that MALSD batch beam decoding produces valid timestamps for both RNN-T and TDT models.
+    """
+
+    @pytest.mark.skipif(
+        not NUMBA_RNNT_LOSS_AVAILABLE,
+        reason='RNNTLoss has not been compiled with appropriate numba version.',
+    )
+    @pytest.mark.with_downloads
+    @pytest.mark.unit
+    @pytest.mark.parametrize("device", DEVICES)
+    def test_rnnt_beam_decoding_with_preserve_alignments(
+        self, test_audio_filenames, rnnt_model, get_rnnt_encoder_output, device
+    ):
+        """Test that RNN-T MALSD batch decoding works with preserve_alignments=True and produces timestamps."""
+        batch_size = 4
+        beam_size = 4
+        num_samples = min(batch_size, len(test_audio_filenames))
+        model = rnnt_model.to(device)
+        encoder_output, encoded_lengths = get_rnnt_encoder_output
+        encoder_output = encoder_output[:num_samples].to(device)
+        encoded_lengths = encoded_lengths[:num_samples].to(device)
+
+        vocab_size = model.tokenizer.vocab_size
+        decoding = BeamBatchedRNNTInfer(
+            model.decoder,
+            model.joint,
+            blank_index=vocab_size,
+            beam_size=beam_size,
+            score_norm=True,
+            return_best_hypothesis=True,
+            search_type="malsd_batch",
+            allow_cuda_graphs=False,
+            preserve_alignments=True,
+        )
+
+        with torch.no_grad():
+            hyps = decoding(encoder_output=encoder_output, encoded_lengths=encoded_lengths)[0]
+
+        assert len(hyps) == num_samples
+        for hyp in hyps:
+            assert hyp.timestamp is not None
+            assert len(hyp.timestamp) > 0, "Timestamp should not be empty for non-empty transcription"
+            assert len(hyp.timestamp) == len(
+                hyp.y_sequence
+            ), f"Timestamp length {len(hyp.timestamp)} should match y_sequence length {len(hyp.y_sequence)}"
+
+    @pytest.mark.skipif(
+        not NUMBA_RNNT_LOSS_AVAILABLE,
+        reason='RNNTLoss has not been compiled with appropriate numba version.',
+    )
+    @pytest.mark.with_downloads
+    @pytest.mark.unit
+    @pytest.mark.parametrize("device", DEVICES)
+    def test_tdt_beam_decoding_with_preserve_alignments(
+        self, test_audio_filenames, tdt_model, get_tdt_encoder_output, device
+    ):
+        """Test that TDT MALSD batch decoding works with preserve_alignments=True and produces timestamps + durations."""
+        batch_size = 4
+        beam_size = 4
+        num_samples = min(batch_size, len(test_audio_filenames))
+        model = tdt_model.to(device)
+        encoder_output, encoded_lengths = get_tdt_encoder_output
+        encoder_output = encoder_output[:num_samples].to(device)
+        encoded_lengths = encoded_lengths[:num_samples].to(device)
+
+        model_config = model.to_config_dict()
+        durations = list(model_config["model_defaults"]["tdt_durations"])
+
+        vocab_size = model.tokenizer.vocab_size
+        decoding = BeamBatchedTDTInfer(
+            model.decoder,
+            model.joint,
+            blank_index=vocab_size,
+            durations=durations,
+            beam_size=beam_size,
+            score_norm=True,
+            return_best_hypothesis=True,
+            search_type="malsd_batch",
+            allow_cuda_graphs=False,
+            preserve_alignments=True,
+        )
+
+        with torch.no_grad():
+            hyps = decoding(encoder_output=encoder_output, encoded_lengths=encoded_lengths)[0]
+
+        assert len(hyps) == num_samples
+        for hyp in hyps:
+            assert hyp.timestamp is not None
+            assert len(hyp.timestamp) > 0, "Timestamp should not be empty for non-empty transcription"
+            assert len(hyp.timestamp) == len(
+                hyp.y_sequence
+            ), f"Timestamp length {len(hyp.timestamp)} should match y_sequence length {len(hyp.y_sequence)}"
+            # TDT-specific: token_duration should be populated
+            assert hyp.token_duration is not None, "TDT hypothesis should have token_duration populated"
+            assert len(hyp.token_duration) == len(
+                hyp.y_sequence
+            ), f"token_duration length {len(hyp.token_duration)} should match y_sequence length {len(hyp.y_sequence)}"
+
+    @pytest.mark.with_downloads
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="Test requires CUDA")
+    @pytest.mark.parametrize("model_type", ["rnnt", "tdt"])
+    def test_beam_decoding_compute_timestamps(self, test_audio_filenames, rnnt_model, tdt_model, model_type):
+        """Test the full compute_timestamps pipeline via model.transcribe() with malsd_batch strategy."""
+        batch_size = 4
+        device = torch.device("cuda")
+        model = rnnt_model.to(device) if model_type == "rnnt" else tdt_model.to(device)
+        decoding_config = copy.deepcopy(model.cfg.decoding)
+
+        with open_dict(decoding_config):
+            decoding_config["strategy"] = "malsd_batch"
+            decoding_config["beam"]["beam_size"] = 4
+            decoding_config["beam"]["return_best_hypothesis"] = True
+            decoding_config["beam"]["allow_cuda_graphs"] = False
+            decoding_config["compute_timestamps"] = True
+
+        model.change_decoding_strategy(decoding_config)
+
+        hypotheses = model.transcribe(
+            test_audio_filenames[:batch_size], batch_size=batch_size, num_workers=None, return_hypotheses=True
+        )
+
+        assert len(hypotheses) > 0
+        for hyp in hypotheses:
+            assert hyp.timestamp is not None
+            assert isinstance(
+                hyp.timestamp, dict
+            ), f"After compute_timestamps, timestamp should be a dict, got {type(hyp.timestamp)}"
+            assert 'timestep' in hyp.timestamp, "timestamp dict should contain 'timestep' key"
+            assert 'char' in hyp.timestamp, "timestamp dict should contain 'char' key"
+            assert 'word' in hyp.timestamp, "timestamp dict should contain 'word' key"
+
+            # Verify char offsets have correct structure
+            if len(hyp.timestamp['char']) > 0:
+                char_offset = hyp.timestamp['char'][0]
+                assert 'start_offset' in char_offset, "char offset should have start_offset"
+                assert 'end_offset' in char_offset, "char offset should have end_offset"
+                assert char_offset['start_offset'] >= 0, "start_offset should be non-negative"
+                assert char_offset['end_offset'] >= char_offset['start_offset'], "end_offset should be >= start_offset"

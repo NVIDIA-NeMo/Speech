@@ -279,7 +279,10 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
         self.allow_cuda_graphs = allow_cuda_graphs
 
         if self.preserve_alignments:
-            raise NotImplementedError("Preserve alignments is not supported")
+            logging.warning(
+                "Full alignment data (per-step logprobs) is not available in batched beam search. "
+                "Hypothesis.alignments will be None. Timestamps are still available via compute_timestamps."
+            )
 
         self.state = None
         self.full_graph = None

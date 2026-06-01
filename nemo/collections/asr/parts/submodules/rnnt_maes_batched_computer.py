@@ -95,7 +95,10 @@ class ModifiedAESBatchedRNNTComputer(ConfidenceMethodMixin):
         self.maes_num_expansions = self.beam_size + self.maes_expansion_beta
 
         if self.preserve_alignments:
-            raise NotImplementedError("Preserve alignments is not supported")
+            logging.warning(
+                "Full alignment data (per-step logprobs) is not available in batched beam search. "
+                "Hypothesis.alignments will be None. Timestamps are still available via compute_timestamps."
+            )
 
         if allow_cuda_graphs:
             logging.info("CUDA Graphs are unsupported for `maes_batch`; preceeding pure pytorch decoding")

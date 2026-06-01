@@ -73,32 +73,33 @@ class CacheAwareRNNTInferenceWrapper(CacheAwareASRInferenceWrapper):
         """
         return self.asr_model.joint.vocabulary
 
-    def execute_step(
+    def encode_step(
         self,
         processed_signal: Tensor,
         processed_signal_length: Tensor,
         context: CacheAwareContext,
-        previous_hypotheses: list[Hypothesis] | None,
         drop_extra_pre_encoded: int | None,
         keep_all_outputs: bool,
         drop_left_context: int | None = None,
         valid_out_len: int | None = None,
-        prompt_vectors: Tensor | None = None,
-    ) -> tuple[list[Hypothesis], CacheAwareContext]:
+    ) -> tuple[Tensor, Tensor, CacheAwareContext]:
         """
-        Executes a single streaming step.
+        Runs only the cache-aware encoder + left/right context trimming, returning the
+        encoded features that can then be consumed by either the high-level decoding
+        path (``rnnt_decoder_predictions_tensor``) or a direct
+        ``decoding_computer`` invocation (e.g. for streaming MALSD beam search).
+
         Args:
             processed_signal: (Tensor) input signal tensor.
             processed_signal_length: (Tensor) input signal length tensor.
             context: (CacheAwareContext) context object.
-            previous_hypotheses: (list[Hypothesis] | None) list of previous hypotheses for RNNT decoding.
             drop_extra_pre_encoded: (int | None) number of extra pre-encoded frames to drop.
             keep_all_outputs: (bool) whether to keep all outputs or not.
             drop_left_context: (int | None) number of left context frames to drop.
             valid_out_len: (int | None) number of valid output frames.
-            prompt_vectors: (Tensor | None) Optional prompt vectors of shape [B, num_prompts].
         Returns:
-            (tuple[list[Hypothesis], CacheAwareContext]) best hypothesis and new context.
+            (tuple[Tensor, Tensor, CacheAwareContext]) encoded features ``[B, D, T]``,
+            encoded lengths, and the updated cache context.
         """
         (
             encoded,
@@ -130,6 +131,45 @@ class CacheAwareRNNTInferenceWrapper(CacheAwareASRInferenceWrapper):
             # drop right context if any
             encoded = encoded[:, :, :valid_out_len]
             encoded_len = torch.ones_like(encoded_len) * valid_out_len
+
+        return encoded, encoded_len, new_context
+
+    def execute_step(
+        self,
+        processed_signal: Tensor,
+        processed_signal_length: Tensor,
+        context: CacheAwareContext,
+        previous_hypotheses: list[Hypothesis] | None,
+        drop_extra_pre_encoded: int | None,
+        keep_all_outputs: bool,
+        drop_left_context: int | None = None,
+        valid_out_len: int | None = None,
+        prompt_vectors: Tensor | None = None,
+    ) -> tuple[list[Hypothesis], CacheAwareContext]:
+        """
+        Executes a single streaming step.
+        Args:
+            processed_signal: (Tensor) input signal tensor.
+            processed_signal_length: (Tensor) input signal length tensor.
+            context: (CacheAwareContext) context object.
+            previous_hypotheses: (list[Hypothesis] | None) list of previous hypotheses for RNNT decoding.
+            drop_extra_pre_encoded: (int | None) number of extra pre-encoded frames to drop.
+            keep_all_outputs: (bool) whether to keep all outputs or not.
+            drop_left_context: (int | None) number of left context frames to drop.
+            valid_out_len: (int | None) number of valid output frames.
+            prompt_vectors: (Tensor | None) Optional prompt vectors of shape [B, num_prompts].
+        Returns:
+            (tuple[list[Hypothesis], CacheAwareContext]) best hypothesis and new context.
+        """
+        encoded, encoded_len, new_context = self.encode_step(
+            processed_signal=processed_signal,
+            processed_signal_length=processed_signal_length,
+            context=context,
+            drop_extra_pre_encoded=drop_extra_pre_encoded,
+            keep_all_outputs=keep_all_outputs,
+            drop_left_context=drop_left_context,
+            valid_out_len=valid_out_len,
+        )
 
         best_hyp = self.asr_model.decoding.rnnt_decoder_predictions_tensor(
             encoded, encoded_len, return_hypotheses=True, partial_hypotheses=previous_hypotheses
@@ -193,3 +233,58 @@ class CacheAwareRNNTInferenceWrapper(CacheAwareASRInferenceWrapper):
             )
 
         return best_hyp, new_context
+
+    def stream_encode_step(
+        self,
+        processed_signal: Tensor,
+        processed_signal_length: Tensor,
+        context: CacheAwareContext = None,
+        drop_extra_pre_encoded: int | None = None,
+        keep_all_outputs: bool = False,
+        drop_left_context: int | None = None,
+        valid_out_len: int | None = None,
+    ) -> tuple[Tensor, Tensor, CacheAwareContext]:
+        """
+        Encoder-only streaming step. Mirrors :meth:`stream_step` (same autocast /
+        inference-mode wrapping, same device placement) but returns the raw
+        encoder output instead of running the high-level decoder. Used by
+        pipelines that drive a stateful ``decoding_computer`` (e.g. MALSD beam
+        search) directly.
+
+        Args:
+            processed_signal: (Tensor) input signal tensor.
+            processed_signal_length: (Tensor) input signal length tensor.
+            context: (CacheAwareContext) context object.
+            drop_extra_pre_encoded: (int | None) number of extra pre-encoded frames to drop.
+            keep_all_outputs: (bool) whether to keep all outputs or not.
+            drop_left_context: (int | None) number of left context frames to drop.
+            valid_out_len: (int | None) number of valid output frames.
+        Returns:
+            (tuple[Tensor, Tensor, CacheAwareContext]) encoded features ``[B, D, T]``,
+            encoded lengths, and the updated cache context.
+        """
+        if processed_signal.device != self.device:
+            processed_signal = processed_signal.to(self.device)
+
+        if processed_signal_length.device != self.device:
+            processed_signal_length = processed_signal_length.to(self.device)
+
+        if context is None:
+            context = CacheAwareContext()
+
+        with (
+            torch.amp.autocast(device_type=self.device_str, dtype=self.compute_dtype, enabled=self.use_amp),
+            torch.inference_mode(),
+            torch.no_grad(),
+        ):
+            encoded, encoded_len, new_context = self.encode_step(
+                processed_signal=processed_signal,
+                processed_signal_length=processed_signal_length,
+                context=context,
+                drop_extra_pre_encoded=drop_extra_pre_encoded,
+                keep_all_outputs=keep_all_outputs,
+                drop_left_context=drop_left_context,
+                valid_out_len=valid_out_len,
+            )
+
+        return encoded, encoded_len, new_context

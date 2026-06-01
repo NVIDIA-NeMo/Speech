@@ -526,8 +526,14 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
                         fusion_model.get_init_states(batch_size=batch_size * self.beam_size, bos=True)
                     )
             else:
-                # continuation: reuse fusion states (including biasing) from previous chunk
-                fusion_states_list = list(prev_batched_state.fusion_states_list)
+                # Continuation: reuse fusion states (incl. biasing) from previous chunk.
+                # ``prev_batched_state.fusion_states_list[i]`` is stored as
+                # ``[B, K]`` (see the ``s.view(batch_size, self.beam_size)`` step
+                # below). ``_advance_all_fusion_models`` expects the flat
+                # ``[B * K]`` layout, so reshape on the way in. The local
+                # ``fusion_states_list`` is replaced again below with the
+                # reshaped-to-``[B, K]`` view used by the rest of the loop.
+                fusion_states_list = [s.reshape(-1) for s in prev_batched_state.fusion_states_list]
                 for fusion_model in self._all_fusion_models():
                     fusion_model.to(device)
             fusion_scores_list, fusion_states_candidates_list = self._advance_all_fusion_models(
@@ -1645,7 +1651,12 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
                     label=state.labels[i].clone(),
                     decoded_length=state.decoded_lengths[i].clone(),
                     fusion_state_list=(
-                        [fs[i * beam_size : (i + 1) * beam_size].clone() for fs in state.fusion_states_list]
+                        # ``state.fusion_states_list[k]`` is stored as ``[B, K]``
+                        # (see ``modified_alsd_torch``'s
+                        # ``s.view(batch_size, self.beam_size)`` step), NOT as the
+                        # flat ``[B*K, ...]`` layout used by ``predictor_*``. Slice
+                        # along dim 0 with the per-stream index to get ``[K]``.
+                        [fs[i].clone() for fs in state.fusion_states_list]
                         if state.fusion_states_list
                         else []
                     ),
@@ -1691,8 +1702,17 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         num_fusion = len(state_items[0].fusion_state_list)
         fusion_states_list = []
         for fusion_idx in range(num_fusion):
+            # Per-stream ``fusion_state_list[fusion_idx]`` is ``[K]`` (from
+            # ``split_batched_state``'s ``fs[i]`` slice or from
+            # ``_get_state_item_after_sos``'s ``get_init_states(batch_size=K)``).
+            # We need the batched ``[B, K]`` layout that ``modified_alsd_torch``
+            # uses for the inner loop (``s.view(batch_size, self.beam_size)``),
+            # so stack along a new dim 0 rather than ``cat`` which would
+            # produce the flat ``[B*K]`` shape that triggers downstream
+            # shape mismatches in ``collapse_batched_state_to_beams_`` and the
+            # continuation reshape.
             fusion_states_list.append(
-                torch.cat([item.fusion_state_list[fusion_idx] for item in state_items], dim=0)
+                torch.stack([item.fusion_state_list[fusion_idx] for item in state_items], dim=0)
             )
 
         batched_hyps_items = [item.batched_hyps_item for item in state_items]
@@ -1808,8 +1828,26 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         state.labels = torch.gather(state.labels, dim=1, index=beam_perm).contiguous()
 
         if state.fusion_states_list:
+            # Fusion states (n-gram LM, GPU boosting tree, biasing multi-model)
+            # are reshaped to ``[B, K]`` inside ``modified_alsd_torch`` (see the
+            # ``s.view(batch_size, self.beam_size)`` step right after the initial
+            # ``_advance_all_fusion_models`` call). They are NOT in the
+            # ``[B*K, ...]`` flat layout used by ``predictor_states`` /
+            # ``predictor_outputs``, so ``index_select(0, flat_perm)`` (whose
+            # indices range over ``[0, B*K)``) goes out of bounds and trips a
+            # vectorized-gather CUDA assert. Use the per-stream ``beam_perm``
+            # gather along the beam axis instead - same pattern as ``state.labels``
+            # above. All current fusion models store a single state-id per
+            # ``(b, k)`` cell so ``fs.ndim == 2``; assert that here to fail loudly
+            # if a future fusion model breaks that assumption.
+            for fs in state.fusion_states_list:
+                if fs.ndim != 2:
+                    raise NotImplementedError(
+                        f"collapse_batched_state_to_beams_ only supports rank-2 [B, K] "
+                        f"fusion states; got shape {tuple(fs.shape)}"
+                    )
             state.fusion_states_list = [
-                fs.index_select(0, flat_perm).contiguous() for fs in state.fusion_states_list
+                torch.gather(fs, dim=1, index=beam_perm).contiguous() for fs in state.fusion_states_list
             ]
 
         # `keep_beam_` on the prefix tree. In the torch path `state.batched_hyps is

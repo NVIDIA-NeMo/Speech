@@ -1,0 +1,164 @@
+# Streaming inference config for cache-aware RNN-T with MALSD beam search decoding.
+# Mirrors ``cache_aware_rnnt.yaml`` but switches the decoding strategy to ``malsd_batch``.
+# This routes the pipeline through the new ``_malsd_stream_step`` path in
+# ``CacheAwareRNNTPipeline``, which carries a per-stream MALSD state
+# (``state.hyp_decoding_state``) across chunks and publishes the raw-argmax beam
+# every chunk. ``collapse_on_eou_only``, EOU rerank, RC pass, snapshot, etc.
+# from the buffered pipeline are intentionally NOT supported here yet.
+
+# ================================
+# ASR Configuration
+# ================================
+asr:
+  model_name: nvidia/nemotron-speech-streaming-en-0.6b         # Pre-trained cache-aware RNN-T model
+  device: cuda
+  device_id: 0
+  compute_dtype: bfloat16
+  use_amp: true
+  decoding:
+    strategy: "malsd_batch"
+    preserve_alignments: false
+    fused_batch_size: -1
+    beam:
+      beam_size: 4
+      return_best_hypothesis: true
+      score_norm: true
+      # CUDA graphs are not yet validated for the cache-aware MALSD path; keep
+      # them off for now. The greedy cache-aware config disables them too.
+      allow_cuda_graphs: false
+      # Per-stream biasing in MALSD decoder. Default off because the combination
+      # of MALSD + an empty ``GPUBiasingMultiModel`` (no per-stream requests) +
+      # a global ``boosting_tree`` fusion model is not currently stable. If you
+      # want per-stream biasing, override on the CLI:
+      #   asr.decoding.beam.enable_per_stream_biasing=true
+      # and only do that when you actually send per-stream ``biasing_cfg``
+      # requests; combining it with a global boosting tree triggers a CUDA
+      # assert in the fusion model loop.
+      enable_per_stream_biasing: false
+      # n-gram LM (global)
+      ngram_lm_model: null
+      ngram_lm_alpha: 0.0
+      # phrase boosting (global - applied to every stream when set)
+      boosting_tree:
+        model_path: null
+        key_phrases_file: null  # The path to the context-biasing list file (one phrase per line)
+        key_phrases_list: null  # The list of context-biasing phrases ['word1', 'word2', 'word3', ...]
+        key_phrase_items_list: null  # The list of context-biasing phrases with custom fields
+        source_lang: "en"  # The source language of the context-biasing phrases (for aggregate tokenizer)
+      boosting_tree_alpha: 0.0
+
+
+# ==========================================
+# Inverse Text Normalization Configuration
+# ==========================================
+itn:
+  input_case: lower_cased
+  whitelist: null
+  overwrite_cache: false
+  max_number_of_permutations_per_split: 729
+  left_padding_size: 4
+  batch_size: 32
+  n_jobs: 16
+
+
+# ================================
+# Neural Machine Translation Configuration
+# ================================
+nmt:
+  model_name: "utter-project/EuroLLM-1.7B-Instruct"
+  source_language: "English"
+  target_language: "Russian"
+  waitk: -1
+  device: cuda
+  device_id: 1
+  batch_size: 16
+  llm_params:
+    dtype: "auto"
+    seed: 42
+  sampling_params:
+    max_tokens: 100
+    temperature: 0.0
+    top_p: 0.9
+    seed: 42
+
+
+# ========================
+# Confidence estimation
+# ========================
+confidence:
+  exclude_blank: true
+  aggregation: mean
+  method_cfg:
+    name: entropy
+    entropy_type: tsallis
+    alpha: 0.5
+    entropy_norm: exp
+
+
+# ========================
+# Endpointing settings
+# ========================
+endpointing:
+  stop_history_eou: 800
+  residue_tokens_at_end: 2
+
+
+# ========================
+# Streaming configuration
+# ========================
+streaming:
+  sample_rate: 16000
+  batch_size: 64
+  word_boundary_tolerance: 4
+  att_context_size: [70,13]
+  use_cache: true
+  use_feat_cache: true
+  chunk_size_in_secs: null
+  request_type: frame
+  num_slots: 256
+
+
+# ========================
+# Pipeline settings
+# ========================
+matmul_precision: high
+log_level: 20
+pipeline_type: cache_aware
+asr_decoding_type: rnnt
+
+
+# ========================
+# Runtime arguments defined at runtime via command line
+# ========================
+audio_file: null
+output_filename: null
+output_dir: null
+enable_itn: false
+enable_nmt: false
+asr_output_granularity: segment
+cache_dir: null
+lang: null
+return_tail_result: false
+calculate_wer: true
+calculate_bleu: true
+warmup_steps: 0
+run_steps: 1
+
+
+# ========================
+# Metrics
+# ========================
+metrics:
+  asr:
+    gt_text_attr_name: text
+    clean_groundtruth_text: false
+    langid: en
+    use_cer: false
+    ignore_capitalization: true
+    ignore_punctuation: true
+    strip_punc_space: false
+  nmt:
+    gt_text_attr_name: answer
+    ignore_capitalization: false
+    ignore_punctuation: false
+    strip_punc_space: false

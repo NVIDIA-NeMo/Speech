@@ -42,6 +42,11 @@ class CacheAwareRNNTStreamingState(CacheAwareStreamingState):
         """
         super()._additional_params_reset()
         self.previous_hypothesis = None
+        # Per-stream MALSD batched-state item carried across chunks (and across
+        # utterances within a stream, same as the buffered RNNT pipeline). Stays
+        # ``None`` when the pipeline is running greedy decoding via the
+        # high-level ``rnnt_decoder_predictions_tensor`` path.
+        self.hyp_decoding_state = None
 
     def set_previous_hypothesis(self, previous_hypothesis: Hypothesis) -> None:
         """
@@ -64,3 +69,4 @@ class CacheAwareRNNTStreamingState(CacheAwareStreamingState):
         Reset the previous hypothesis to None
         """
         self.previous_hypothesis = None
+        self.hyp_decoding_state = None

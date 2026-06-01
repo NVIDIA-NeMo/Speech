@@ -363,6 +363,31 @@ cu13 = [
     "cuda-python>=13,<14 ; platform_system != 'Darwin'",
 ]
 
+compiled = [
+    "onnx-ir==0.2.1",
+    "onnxscript==0.7.0",
+    "transformer-engine @ git+https://github.com/NVIDIA/TransformerEngine.git@v2.15",
+    "deep_ep @ git+https://github.com/deepseek-ai/DeepEP.git@v1.2.1",
+    "nv-grouped-gemm==1.1.4.post8",
+    "causal-conv1d==1.6.2.post1",
+    "mamba-ssm==2.3.2.post1",
+    # v2.8.3 release assets do not include a cu13/torch2.12/cp313 wheel,
+    # so uv builds this from source under the Dockerfile build environment.
+    "flash-attn==2.8.3",
+]
+
+compiled-a100 = [
+    "onnx-ir==0.2.1",
+    "onnxscript==0.7.0",
+    "transformer-engine @ git+https://github.com/NVIDIA/TransformerEngine.git@v2.15",
+    "nv-grouped-gemm==1.1.4.post8",
+    "causal-conv1d==1.6.2.post1",
+    "mamba-ssm==2.3.2.post1",
+    # v2.8.3 release assets do not include a cu13/torch2.12/cp313 wheel,
+    # so uv builds this from source under the Dockerfile build environment.
+    "flash-attn==2.8.3",
+]
+
 common = [
     "datasets>=3.2.0",
     "einops",
@@ -573,9 +598,35 @@ conflicts = [
         { extra = "cu12" },
         { extra = "cu13" },
     ],
+    [
+        { extra = "cu12" },
+        { extra = "compiled" },
+    ],
+    [
+        { extra = "cu12" },
+        { extra = "compiled-a100" },
+    ],
+    [
+        { extra = "compiled" },
+        { extra = "compiled-a100" },
+    ],
 ]
 override-dependencies = [
     "torch==2.12.0+cu132 ; sys_platform == 'linux'",
+]
+no-binary-package = [
+    "causal-conv1d",
+    "flash-attn",
+    "mamba-ssm",
+    "nv-grouped-gemm",
+]
+no-build-isolation-package = [
+    "causal-conv1d",
+    "deep-ep",
+    "flash-attn",
+    "mamba-ssm",
+    "nv-grouped-gemm",
+    "transformer-engine",
 ]
 
 # --- uv configuration ---

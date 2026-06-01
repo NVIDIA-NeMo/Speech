@@ -1685,9 +1685,6 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             start_item = self._get_state_item_after_sos(device=device)
             state_items = [item if item is not None else start_item for item in state_items]
 
-        batch_size = len(state_items)
-        beam_size = self.beam_size
-
         # Re-batch predictor state. Each `item.predictor_state` was built for `beam_size` rows;
         # we split it back to per-row items and then re-batch all `batch_size * beam_size`.
         per_row_states: list[Any] = []

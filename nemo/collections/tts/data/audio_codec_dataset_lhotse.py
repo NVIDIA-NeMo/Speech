@@ -40,7 +40,7 @@ class AudioCodecLhotseDataset(torch.utils.data.Dataset):
 
     The operations below are handled directly by Lhotse according to the configuration
     applied in `AudioCodecModel._get_lhotse_dataloader()`:
-    * Duration filtering
+    * Minimum duration filtering
     * Any additional transformations configured in Lhotse during its construction are
       applied to the audio as it is loaded in `load_audio()`.
     """
@@ -48,9 +48,8 @@ class AudioCodecLhotseDataset(torch.utils.data.Dataset):
     def __init__(
         self,
         sample_rate: int,
-        truncate_duration: float,
+        segment_duration: float,
         sanity_check_audio: bool = False,
-        min_samples_for_sanity: Optional[int] = None,
         log_audio: bool = False,
         log_audio_dir: Union[str, Path] = "logged_audio",
         log_audio_num_batches: int = 3,
@@ -58,13 +57,10 @@ class AudioCodecLhotseDataset(torch.utils.data.Dataset):
         """
         Args:
             sample_rate: The sample rate to resample the audio to.
-            truncate_duration: Length of each training window in seconds. A random
-                window of this length is taken from each cut's `target_audio` field
-                (not from the parent `recording`, which may span a much longer file).
+            segment_duration: Length of each training segment in seconds. A random
+                segment of this length is taken from each cut's `target_audio` field
+                (not from the parent `recording`, which may span a much longer duration).
             sanity_check_audio: If True, perform sanity checks on the loaded audio.
-            min_samples_for_sanity: cuts should have at least this many samples or an
-                                    error will be raised. Only used when
-                                    `sanity_check_audio` is True.
             log_audio: If True, save the original `target_audio` waveforms from
                        the first few batches before any dataset resampling.
             log_audio_dir: Directory where debug wav files will be written.
@@ -73,10 +69,11 @@ class AudioCodecLhotseDataset(torch.utils.data.Dataset):
         """
         super().__init__()
         self.sample_rate = sample_rate
-        self.truncate_duration = truncate_duration
-        self.truncate_samples = int(truncate_duration * sample_rate)
+        self.segment_duration = segment_duration
+        self.segment_samples = int(segment_duration * sample_rate)
         self.sanity_check_audio = sanity_check_audio
-        self.min_samples_for_sanity = min_samples_for_sanity
+        # Error out if audio is suspiciously short (leaving some slack for resampling).
+        self.min_samples_for_sanity = max(1, self.segment_samples - 5)
         self.log_audio = log_audio
         self.log_audio_dir = Path(log_audio_dir)
         self.log_audio_num_batches = log_audio_num_batches
@@ -162,7 +159,7 @@ class AudioCodecLhotseDataset(torch.utils.data.Dataset):
 
     def _load_and_truncate_target_audio(self, cut) -> torch.Tensor:
         """
-        Load `target_audio`, resample, and return a random segment of length `truncate_duration`.
+        Load `target_audio`, resample, and return a random segment of length `segment_duration`.
         """
         if not cut.has_custom("target_audio"):
             raise ValueError(f"Cut {cut.id} is missing custom field 'target_audio'")
@@ -173,17 +170,17 @@ class AudioCodecLhotseDataset(torch.utils.data.Dataset):
             audio = audio.squeeze(0)
 
         num_samples = audio.shape[-1]
-        if num_samples < self.truncate_samples:
+        if num_samples < self.segment_samples:
             raise ValueError(
-                f"target_audio is shorter than truncate_duration: "
+                f"target_audio is shorter than segment_duration: "
                 f"cut_id={cut.id}, target_audio_id={target_audio_recording.id}, "
-                f"num_samples={num_samples}, required={self.truncate_samples}, "
-                f"truncate_duration={self.truncate_duration}s"
+                f"num_samples={num_samples}, required={self.segment_samples}, "
+                f"segment_duration={self.segment_duration}s"
             )
-
-        start = random.randint(0, num_samples - self.truncate_samples)
-        window = audio[start : start + self.truncate_samples]
-        return torch.from_numpy(np.ascontiguousarray(window, dtype=np.float32))
+        # Randomly select a segment of the audio of length `segment_duration`.
+        start = random.randint(0, num_samples - self.segment_samples)
+        segment = audio[start : start + self.segment_samples]
+        return torch.from_numpy(np.ascontiguousarray(segment, dtype=np.float32))
 
     def __getitem__(self, cuts: CutSet) -> Dict[str, torch.Tensor]:
         """
@@ -200,7 +197,7 @@ class AudioCodecLhotseDataset(torch.utils.data.Dataset):
         batch_audio = torch.stack(audio_list, dim=0)
         batch_audio_len = torch.full(
             (len(audio_list),),
-            self.truncate_samples,
+            self.segment_samples,
             dtype=torch.int32,
         )
 
@@ -221,7 +218,7 @@ class AudioCodecLhotseDataset(torch.utils.data.Dataset):
         # --- Error cases ---
 
         # Audio length is unexpectedly short
-        if self.min_samples_for_sanity is not None and audio_len.min() < self.min_samples_for_sanity:
+        if audio_len.min() < self.min_samples_for_sanity:
             raise ValueError(
                 f"Audio length is less than {self.min_samples_for_sanity} samples (min: {audio_len.min()})"
             )

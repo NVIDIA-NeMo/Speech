@@ -856,34 +856,28 @@ class AudioCodecModel(ModelPT):
 
         # Random windowing is done in AudioCodecLhotseDataset on `target_audio`, not via
         # Lhotse's cuts.truncate (which operates on the parent recording).
-        # However, to ensure the total batch duration is correct, we need to also set
-        # the truncate duration in the loader configuration.
-        truncate_duration = dataset_args.get("truncate_duration")
-        if truncate_duration is None:
-            raise ValueError("`truncate_duration` must be set in `train_ds.dataset_args` ")
-        dataloader_truncate_duration = cfg.dataloader_params.get("truncate_duration")
-        if dataloader_truncate_duration is not None and dataloader_truncate_duration != truncate_duration:
+        segment_duration = dataset_args.get("segment_duration")
+        if segment_duration is None:
+            raise ValueError("`segment_duration` must be set in `train_ds.dataset_args` ")
+        if cfg.dataloader_params.get("truncate_duration") is not None:
             raise ValueError(
-                "`truncate_duration` in `train_ds.dataloader_params` must be set to the same value as `train_ds.dataset_args.truncate_duration`."
+                "`truncate_duration` must not be set in `train_ds.dataloader_params`; "
+                "segment extraction is handled in `AudioCodecLhotseDataset` via `segment_duration`."
             )
-        loader_cfg.truncate_duration = truncate_duration
-        # Pre-filter cuts whose parent recording is shorter than the training window.
         existing_min_duration = cfg.dataloader_params.get("min_duration")
         if existing_min_duration is not None and existing_min_duration != -1:
             raise ValueError(
-                "`min_duration` must not be set in `train_ds.dataloader_params` "
-                "it is set automatically from `train_ds.dataset_args.truncate_duration`."
+                "`min_duration` must not be set in `train_ds.dataloader_params`; "
+                "it is set automatically from `train_ds.dataset_args.segment_duration`."
             )
-        # random truncation of the audio
-        loader_cfg.min_duration = truncate_duration  # + 0.01  # add a bit to allow for resampling length mismatch
+        # Pre-filter to only include cuts whose parent recording is at least as long as
+        # the training segment duration so the dataset class has enough samples to choose from.
+        loader_cfg.min_duration = segment_duration
 
         # --- Create the dataset ---
 
-        # Error out if the audio is suspiciously short (half the expected length)
-        min_samples_for_sanity = truncate_duration * self.output_sample_rate // 2
         dataset = AudioCodecLhotseDataset(
             sample_rate=self.output_sample_rate,
-            min_samples_for_sanity=min_samples_for_sanity,
             **dataset_args,
         )
 

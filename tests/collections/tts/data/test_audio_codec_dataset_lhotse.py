@@ -88,16 +88,16 @@ def cutset(tmp_path) -> CutSet:
 def dataset() -> AudioCodecLhotseDataset:
     return AudioCodecLhotseDataset(
         sample_rate=TARGET_SAMPLE_RATE,
-        min_samples_for_sanity=DEFAULT_DURATION * TARGET_SAMPLE_RATE,
+        segment_duration=DEFAULT_DURATION,
     )
 
 
 class TestAudioCodecLhotseDataset:
     @pytest.mark.unit
     def test_init(self):
-        ds = AudioCodecLhotseDataset(sample_rate=22050, min_samples_for_sanity=512)
+        ds = AudioCodecLhotseDataset(sample_rate=22050, segment_duration=1.0)
         assert ds.sample_rate == 22050
-        assert ds.min_samples_for_sanity == 512
+        assert ds.min_samples_for_sanity == 22050 - 5
 
     @pytest.mark.unit
     def test_getitem_returns_expected_keys_and_shapes(self, dataset, cutset):

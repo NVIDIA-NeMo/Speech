@@ -25,7 +25,7 @@ asr:
       score_norm: true
       # CUDA graphs are not yet validated for the cache-aware MALSD path; keep
       # them off for now. The greedy cache-aware config disables them too.
-      allow_cuda_graphs: false
+      allow_cuda_graphs: true
       # Per-stream biasing in MALSD decoder. Default off because the combination
       # of MALSD + an empty ``GPUBiasingMultiModel`` (no per-stream requests) +
       # a global ``boosting_tree`` fusion model is not currently stable. If you

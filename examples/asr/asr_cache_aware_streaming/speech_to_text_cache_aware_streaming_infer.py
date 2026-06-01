@@ -186,6 +186,16 @@ class TranscriptionConfig:
     # use_cer: bool = False
     debug_mode: bool = False  # Whether to print more detail in the output.
 
+    # Language-ID prompt for prompt-conditioned models (e.g. EncDecRNNTBPEModelWithPrompt).
+    # Set to a language key from the model's prompt_dictionary (e.g. "en-US", "auto").
+    # Ignored for models without prompt support.
+    target_lang: Optional[str] = None
+    # whether to strip the language tags from the transcriptions
+    # Ignored for model without prompt support
+    strip_lang_tags: bool = False
+    # Optional regex describing the language tag to strip. Defaults to "<xx-XX>". (r'\s*<[a-z]{2}-[A-Z]{2}>')
+    lang_tag_pattern: Optional[str] = None
+
 
 def extract_transcriptions(hyps):
     """
@@ -362,6 +372,12 @@ def main(cfg: TranscriptionConfig):
                 asr_model.change_decoding_strategy(cfg.rnnt_decoding)
         else:
             asr_model.change_decoding_strategy(cfg.ctc_decoding)
+
+    # Set language-ID prompt for prompt-conditioned models
+    if hasattr(asr_model, 'set_inference_prompt'):
+        lang = cfg.target_lang if cfg.target_lang is not None else "auto"
+        asr_model.set_inference_prompt(lang)
+        asr_model.decoding.set_strip_lang_tags(cfg.strip_lang_tags, lang_tag_pattern=cfg.lang_tag_pattern)
 
     asr_model = asr_model.to(device=device, dtype=compute_dtype)
     asr_model.eval()

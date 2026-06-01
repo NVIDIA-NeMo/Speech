@@ -24,6 +24,8 @@ __all__ = ['MLMScorer']
 
 
 class MLMScorer:
+    """Masked language model scorer."""
+
     def __init__(self, model_name: str, device: str = 'cpu'):
         """
         Creates MLM scorer from https://arxiv.org/abs/1910.14659.

@@ -331,9 +331,11 @@ class CacheAwareRNNTPipeline(BasePipeline):
         feature_buffers: Tensor,
         feature_buffer_lens: Tensor,
         context,
+        previous_hypotheses: list[Hypothesis | None],
         drop_extra_pre_encoded: int | None,
         keep_all_outputs: bool,
-        multi_biasing_ids: Tensor | None = None,
+        prompt_vectors: Tensor | None,
+        biasing_enabled: bool,
     ) -> tuple[list[Hypothesis], object]:
         """
         Cache-aware streaming step that routes decoding through MALSD
@@ -344,21 +346,52 @@ class CacheAwareRNNTPipeline(BasePipeline):
         hypotheses compatible with the existing ``run_greedy_decoder``
         consumer.
 
+        Mirrors the greedy backend's ``stream_step`` signature so the two paths
+        can be dispatched uniformly from ``_streaming_step``. The
+        ``previous_hypotheses`` argument is accepted for symmetry but MALSD
+        does not consume it directly; per-stream beam state is reconstructed
+        from ``state.hyp_decoding_state`` instead.
+
         Args:
             states: per-stream cache-aware RNNT states.
             feature_buffers: stacked feature tensor for the chunk.
             feature_buffer_lens: per-stream feature lengths.
             context: shared cache-aware context for the encoder.
+            previous_hypotheses: cumulative ``Hypothesis`` per stream (accepted
+                for signature parity with the greedy path; not used by MALSD).
             drop_extra_pre_encoded: as in ``execute_step``.
             keep_all_outputs: as in ``execute_step``.
-            multi_biasing_ids: ``[B]`` long tensor of per-stream
-                ``biasing_cfg.multi_model_id`` (``-1`` for streams without a
-                biasing request). ``None`` skips per-stream biasing entirely.
+            prompt_vectors: as in ``execute_step``. Not yet supported by the
+                MALSD cache-aware path; a warning is logged when non-``None``.
+            biasing_enabled: whether the decoding computer supports per-stream
+                biasing (used to gate ``multi_biasing_ids`` construction).
 
         Returns:
             (best_hyp, new_context): cumulative ``Hypothesis`` per stream and the
             updated ``CacheAwareContext``.
         """
+        del previous_hypotheses  # signature parity with the greedy backend
+        # Remaining minimal-scope gaps vs the buffered pipeline:
+        #   * ``prompt_vectors`` are not threaded into ``decoding_computer``.
+        #   * No ``collapse_on_eou_only`` / snapshot / EOU rerank / RC pass.
+        if prompt_vectors is not None:
+            logging.warning("Prompt vectors are not yet supported in the MALSD cache-aware path; ignoring.")
+
+        # Build the per-stream ``multi_biasing_ids`` tensor consumed by the MALSD
+        # decoding computer. ``-1`` for streams without a biasing request; the
+        # whole tensor is dropped to ``None`` when no stream is biased so the
+        # decoder skips the multi-model fusion path entirely.
+        multi_biasing_ids = None
+        if biasing_enabled:
+            raw_ids = [
+                state.options.biasing_cfg.multi_model_id
+                if state.has_biasing_request() and state.options.biasing_cfg.multi_model_id is not None
+                else -1
+                for state in states
+            ]
+            if any(rid != -1 for rid in raw_ids):
+                multi_biasing_ids = torch.tensor(raw_ids, dtype=torch.long, device=feature_buffer_lens.device)
+
         encoded, encoded_len, new_context = self.asr_model.stream_encode_step(
             processed_signal=feature_buffers,
             processed_signal_length=feature_buffer_lens,
@@ -419,6 +452,56 @@ class CacheAwareRNNTPipeline(BasePipeline):
             best_hyp.append(self._malsd_build_cumulative_hyp(state.get_previous_hypothesis(), chunk_hyp))
 
         return best_hyp, new_context
+
+    def _streaming_step(
+        self,
+        states: list[CacheAwareRNNTStreamingState],
+        feature_buffers: Tensor,
+        feature_buffer_lens: Tensor,
+        context,
+        previous_hypotheses: list[Hypothesis | None],
+        drop_extra_pre_encoded: int | None,
+        keep_all_outputs: bool,
+        prompt_vectors: Tensor | None,
+        biasing_enabled: bool,
+    ) -> tuple[list[Hypothesis], object]:
+        """
+        Run a single streaming step on the current chunk and return cumulative
+        per-stream hypotheses plus the updated cache context.
+
+        Dispatches to the MALSD path (``_malsd_stream_step``) when the model
+        was configured with a beam-search ``decoding_computer``, otherwise
+        falls back to the wrapper's high-level greedy ``stream_step``. Both
+        branches see exactly the same kwargs so callers don't have to know
+        which backend is active.
+        """
+        if self.decoding_computer is not None:
+            return self._malsd_stream_step(
+                states=states,
+                feature_buffers=feature_buffers,
+                feature_buffer_lens=feature_buffer_lens,
+                context=context,
+                previous_hypotheses=previous_hypotheses,
+                drop_extra_pre_encoded=drop_extra_pre_encoded,
+                keep_all_outputs=keep_all_outputs,
+                prompt_vectors=prompt_vectors,
+                biasing_enabled=biasing_enabled,
+            )
+        # ``biasing_enabled`` is consumed entirely by the MALSD path; greedy
+        # biasing is plumbed via ``previous_hypotheses[i].biasing_cfg`` set up
+        # in ``cache_aware_transcribe_step``.
+        del biasing_enabled
+        return self.asr_model.stream_step(
+            processed_signal=feature_buffers,
+            processed_signal_length=feature_buffer_lens,
+            context=context,
+            previous_hypotheses=previous_hypotheses,
+            drop_extra_pre_encoded=drop_extra_pre_encoded,
+            keep_all_outputs=keep_all_outputs,
+            drop_left_context=self.drop_left_context,
+            valid_out_len=self.valid_out_len,
+            prompt_vectors=prompt_vectors,
+        )
 
     def run_greedy_decoder(self, state: CacheAwareRNNTStreamingState, request: Request, hyp: Hypothesis) -> bool:
         """
@@ -530,59 +613,23 @@ class CacheAwareRNNTPipeline(BasePipeline):
             prompt_vectors = self._build_prompt_vectors(states)
 
         drop_extra_pre_encoded = 0 if not self.use_cache else self.asr_model.drop_extra_pre_encoded
-        if self.decoding_computer is not None:
-            # MALSD path: explicit encoder + stateful beam decoder. Per-stream MALSD
-            # state lives in ``state.hyp_decoding_state``; ``previous_hypothesis``
-            # is still maintained (cumulative tokens) so downstream consumers
-            # (``run_greedy_decoder``, ``state.offset`` bookkeeping) are unchanged.
-            # Per-stream biasing is wired through ``multi_biasing_ids``. Remaining
-            # minimal-scope gaps vs the buffered pipeline:
-            #   * ``prompt_vectors`` are not threaded into ``decoding_computer``.
-            #   * No ``collapse_on_eou_only`` / snapshot / EOU rerank / RC pass.
-            if prompt_vectors is not None:
-                logging.warning(
-                    "Prompt vectors are not yet supported in the MALSD cache-aware path; ignoring."
-                )
-
-            # Build the per-stream ``multi_biasing_ids`` tensor consumed by the MALSD
-            # decoding computer. ``-1`` for streams without a biasing request; the
-            # whole tensor is dropped to ``None`` when no stream is biased so the
-            # decoder skips the multi-model fusion path entirely.
-            multi_biasing_ids = None
-            if biasing_enabled:
-                raw_ids = [
-                    state.options.biasing_cfg.multi_model_id
-                    if state.has_biasing_request()
-                    and state.options.biasing_cfg.multi_model_id is not None
-                    else -1
-                    for state in states
-                ]
-                if any(rid != -1 for rid in raw_ids):
-                    multi_biasing_ids = torch.tensor(
-                        raw_ids, dtype=torch.long, device=feature_buffer_lens.device
-                    )
-
-            best_hyp, new_context = self._malsd_stream_step(
-                states=states,
-                feature_buffers=feature_buffers,
-                feature_buffer_lens=feature_buffer_lens,
-                context=context,
-                drop_extra_pre_encoded=drop_extra_pre_encoded,
-                keep_all_outputs=keep_all_outputs,
-                multi_biasing_ids=multi_biasing_ids,
-            )
-        else:
-            best_hyp, new_context = self.asr_model.stream_step(
-                processed_signal=feature_buffers,
-                processed_signal_length=feature_buffer_lens,
-                context=context,
-                previous_hypotheses=previous_hypotheses,
-                drop_extra_pre_encoded=drop_extra_pre_encoded,
-                keep_all_outputs=keep_all_outputs,
-                drop_left_context=self.drop_left_context,
-                valid_out_len=self.valid_out_len,
-                prompt_vectors=prompt_vectors,
-            )
+        # Single entry point for both decoding backends. ``_streaming_step``
+        # dispatches to either the high-level greedy ``stream_step`` or the
+        # MALSD ``_malsd_stream_step``; the two paths still differ internally
+        # (greedy carries ``Hypothesis.dec_state`` via ``previous_hypotheses``,
+        # MALSD carries ``MALSDStateItem`` via ``state.hyp_decoding_state``)
+        # but the caller no longer has to know which is active.
+        best_hyp, new_context = self._streaming_step(
+            states=states,
+            feature_buffers=feature_buffers,
+            feature_buffer_lens=feature_buffer_lens,
+            context=context,
+            previous_hypotheses=previous_hypotheses,
+            drop_extra_pre_encoded=drop_extra_pre_encoded,
+            keep_all_outputs=keep_all_outputs,
+            prompt_vectors=prompt_vectors,
+            biasing_enabled=biasing_enabled,
+        )
 
         # update the cache and reset the cache slots for the streams that has ended
         self.context_manager.update_cache(stream_ids, new_context, mapping)

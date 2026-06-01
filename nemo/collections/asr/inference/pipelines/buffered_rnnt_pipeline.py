@@ -15,9 +15,6 @@
 from __future__ import annotations
 
 import math
-import os
-import re
-import sys
 from typing import TYPE_CHECKING, Optional
 
 import numpy as np
@@ -570,14 +567,6 @@ class BufferedRNNTPipeline(BasePipeline):
         if not all_rnnt_states_are_none:
             batched_rnnt_states = self.decoding_computer.merge_to_batched_state(rnnt_states)
 
-        self._dbg_log_carry_in(batched_rnnt_states, requests)
-        # Snapshot the carry-in (scores, lengths) BEFORE the decoder mutates it in place.
-        # Used by ``_dbg_log_chunk_delta`` to show per-beam token/score increments per chunk.
-        carry_snapshot_lens, carry_snapshot_scores = (None, None)
-        if self._dbg_enabled() and batched_rnnt_states is not None and batched_rnnt_states.batched_hyps is not None:
-            carry_snapshot_lens = batched_rnnt_states.batched_hyps.current_lengths_nb.cpu().tolist()
-            carry_snapshot_scores = batched_rnnt_states.batched_hyps.scores.cpu().tolist()
-
         if all_multi_biasing_models_empty:
             multi_biasing_ids = None
         else:
@@ -600,13 +589,6 @@ class BufferedRNNTPipeline(BasePipeline):
             )
 
             is_beam = isinstance(best_batched_hyps_chunk, BatchedBeamHyps)
-
-            self._dbg_log_beams("post-decode (pre-collapse)", best_batched_hyps_chunk, requests)
-            # Delta vs the carry-in: how many tokens were added this chunk per beam
-            # and how much cumulative score moved. Reveals whether all K survivors
-            # gained tokens (real diversity) or only the empty-prefix survivors did
-            # (silence-K-carry contamination).
-            self._dbg_log_chunk_delta(carry_snapshot_lens, carry_snapshot_scores, best_batched_hyps_chunk, requests)
 
             # In on_eou mode, snapshot the K beams' chunk-local tokens, chunk-local
             # delta scores, and chunk-local delta lengths BEFORE the publish collapse.
@@ -726,21 +708,6 @@ class BufferedRNNTPipeline(BasePipeline):
                 tokens, timestamp, self.tokens_to_move, self.underscore_id
             )
             vad_segments = request.vad_segments
-            # DEBUG: log what came in (hyp) before the time-clip and overlap-dedup.
-            if self._dbg_enabled():
-                try:
-                    hyp_text = self.asr_model.tokenizer.ids_to_text([int(t) for t in tokens.tolist() if int(t) >= 0])
-                except Exception:
-                    hyp_text = "<decode failed>"
-                self._dbg(
-                    f"decode_step IN  sid={request.stream_id} is_first={request.is_first} "
-                    f"is_last={request.is_last} hyp_len={len(tokens)} clip=[{start},{end}] "
-                    f"state.dec_start={state.decoder_start_idx} state.dec_end={state.decoder_end_idx} "
-                    f"timestamp_offset={state.timestamp_offset:.1f} hyp_text={hyp_text!r}"
-                )
-                # Full state snapshot BEFORE the greedy decoder mutates it, so we can see
-                # what tokens the current-utterance buffer has accumulated from prior chunks.
-                self._dbg_log_state("state IN ", state, request)
 
             # Snapshot the cumulative-buffer length before the greedy decoder appends
             # this chunk's raw-argmax tokens. Used by ``_maybe_rerank_eou_transcript``
@@ -765,249 +732,17 @@ class BufferedRNNTPipeline(BasePipeline):
                 vad_segments=vad_segments,
             )
 
-            self._dbg_log_state(
-                "decode_step OUT",
-                state,
-                request,
-                extras={"eou": eou_detected, "dec_end": state.decoder_end_idx},
-            )
-
             if eou_detected:
-                self._dbg(f"EOU sid={request.stream_id} committing state.tokens to transcript")
                 # In ``collapse_on_eou_only`` mode, replace the chunk-N portion of
                 # ``state.tokens`` (just appended by ``run_greedy_decoder``) with the
                 # chunk-local length-normalised winner among the K beams of the EOU
                 # chunk. No-op when no EOU snapshot is available (greedy / per_chunk
                 # mode, or stream without a beam search step this chunk).
                 self._maybe_rerank_eou_transcript(state, request, prev_tokens_len)
-                # State right before the BPE decoder consumes ``state.tokens`` and we then
-                # clear the per-utterance buffer in ``cleanup_after_eou``. Lets us verify
-                # that nothing meaningful is being silently discarded by the reset.
-                self._dbg_log_state("state EOU pre-cleanup ", state, request)
                 self.bpe_decoder.decode_bpe_tokens(state)
                 state.cleanup_after_eou()
-                # Confirms ``tokens`` / ``timesteps`` were cleared and that the carried
-                # bookkeeping (``decoder_*_idx``, ``global_offset``, ``timestamp_offset``,
-                # ``last_token*``) is preserved as intended for the next utterance.
-                self._dbg_log_state("state EOU post-cleanup", state, request)
                 ready_state_ids.add(request.stream_id)
         return ready_state_ids
-
-    # ---------------------------------------------------------------------
-    # Debug helpers.
-    # ---------------------------------------------------------------------
-    # Env vars:
-    #   NEMO_STREAMING_DBG=1                       enable debug logging
-    #   NEMO_STREAMING_DBG_FILE=/path/to/log       write to this file (line-buffered)
-    #                                              instead of stderr; greatly reduces IDE
-    #                                              terminal hangs on large runs
-    #   NEMO_STREAMING_DBG_SIDS=0,6,12             only emit lines containing ``sid=K``
-    #                                              where K is in this comma-separated set
-    #                                              (lines without a ``sid=`` token are always
-    #                                              emitted, e.g. carry-in headers)
-    # Implementation notes:
-    #   The file handle is cached on the class; we reopen only if the path changes.
-    #   We deliberately do NOT pass flush=True per call - that was the main reason the
-    #   IDE terminal lagged. Line-buffered file IO already flushes per newline; stderr
-    #   in an IDE is line-buffered too. The OS may buffer writes if the process aborts
-    #   abnormally, but a normal exit will flush.
-    _dbg_file = None
-    _dbg_file_path = None
-    _dbg_sids_cache: tuple[str, frozenset[int]] | None = None
-
-    @staticmethod
-    def _dbg_enabled() -> bool:
-        return os.environ.get("NEMO_STREAMING_DBG", "0") == "1"
-
-    @classmethod
-    def _dbg_stream(cls):
-        path = os.environ.get("NEMO_STREAMING_DBG_FILE")
-        if not path:
-            return sys.stderr
-        if cls._dbg_file_path != path:
-            if cls._dbg_file is not None:
-                try:
-                    cls._dbg_file.close()
-                except Exception:
-                    pass
-            cls._dbg_file = open(path, "a", buffering=1)
-            cls._dbg_file_path = path
-        return cls._dbg_file
-
-    @classmethod
-    def _dbg_sid_filter(cls) -> frozenset[int] | None:
-        raw = os.environ.get("NEMO_STREAMING_DBG_SIDS", "")
-        if not raw:
-            return None
-        if cls._dbg_sids_cache is None or cls._dbg_sids_cache[0] != raw:
-            try:
-                sids = frozenset(int(x) for x in raw.split(",") if x.strip())
-            except ValueError:
-                sids = frozenset()
-            cls._dbg_sids_cache = (raw, sids)
-        return cls._dbg_sids_cache[1]
-
-    @staticmethod
-    def _dbg(msg: str) -> None:
-        cls = BufferedRNNTPipeline
-        if not cls._dbg_enabled():
-            return
-        sids = cls._dbg_sid_filter()
-        if sids is not None:
-            m = re.search(r"sid=(\d+)", msg)
-            if m is not None and int(m.group(1)) not in sids:
-                return
-        print(f"[DBG] {msg}", file=cls._dbg_stream())
-
-    def _dbg_log_beams(self, label: str, batched_hyps, requests: list[Request]) -> None:
-        """Dump K beams' text + scores per stream. No-op if not in beam mode or debug off.
-
-        ``transcript_wb`` is a prefix tree, not a flat per-beam token array; the real
-        tokens for beam ``k`` must be reconstructed by walking ``transcript_wb_prev_ptr``
-        from the leaf. We do that the cheap way by cloning the ``BatchedBeamHyps`` and
-        calling :meth:`to_nbest_hyps_list`, which performs the walk via
-        :meth:`flatten_sort_`. Cloning is essential: that method is in-place.
-        """
-        if not self._dbg_enabled():
-            return
-        from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import BatchedBeamHyps
-
-        if not isinstance(batched_hyps, BatchedBeamHyps):
-            return
-
-        cloned = batched_hyps.clone()
-        nbest_list = cloned.to_nbest_hyps_list(score_norm=False)
-        K = batched_hyps.beam_size
-        for b in range(batched_hyps.batch_size):
-            sid = requests[b].stream_id if b < len(requests) else b
-            raw_scores = batched_hyps.scores[b].tolist()
-            lens_nb = batched_hyps.current_lengths_nb[b].tolist()
-            argmax = int(batched_hyps.scores[b].argmax().item())
-            self._dbg(
-                f"{label} sid={sid} argmax_beam={argmax} "
-                f"raw_scores={[f'{s:.3f}' for s in raw_scores]} len_nb={lens_nb}"
-            )
-            # ``nbest_list[b].n_best_hypotheses`` is sorted by ``to_nbest_hyps_list`` (raw
-            # since ``score_norm=False``), so its order matches ``raw_scores`` after sort.
-            sorted_idx = sorted(range(K), key=lambda k: -raw_scores[k])
-            for rank, hyp in enumerate(nbest_list[b].n_best_hypotheses):
-                k = sorted_idx[rank] if rank < len(sorted_idx) else rank
-                try:
-                    ids = [int(t) for t in hyp.y_sequence.tolist() if int(t) >= 0]
-                    txt = self.asr_model.tokenizer.ids_to_text(ids) if ids else ""
-                except Exception as e:
-                    txt = f"<decode-err {type(e).__name__}>"
-                win = " <-WIN(raw)" if k == argmax else ""
-                self._dbg(
-                    f"  {label}   beam[{k}]: score={raw_scores[k]:.3f} len_nb={lens_nb[k]} "
-                    f"text={txt!r}{win} sid={sid}"
-                )
-
-    def _dbg_log_carry_in(self, batched_state, requests: list[Request]) -> None:
-        """At chunk start, dump the K beams of the carry-in state for each stream.
-
-        Shows, per stream, what the K diverse hypothesis seeds look like before this
-        chunk's MALSD search runs. Lets us see whether the carry actually preserves
-        meaningful alternatives or is mostly silence-induced near-duplicates.
-        """
-        if not self._dbg_enabled():
-            return
-        if batched_state is None or batched_state.batched_hyps is None:
-            self._dbg("carry-in: <no carry> (fresh streams - K identical SOS seeds)")
-            return
-        from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import BatchedBeamHyps
-
-        bh = batched_state.batched_hyps
-        if not isinstance(bh, BatchedBeamHyps):
-            return
-        cloned = bh.clone()
-        nbest_list = cloned.to_nbest_hyps_list(score_norm=False)
-        K = bh.beam_size
-        for b in range(bh.batch_size):
-            sid = requests[b].stream_id if b < len(requests) else b
-            raw_scores = bh.scores[b].tolist()
-            lens_nb = bh.current_lengths_nb[b].tolist()
-            self._dbg(f"carry-in sid={sid} raw_scores={[f'{s:.3f}' for s in raw_scores]} len_nb={lens_nb}")
-            sorted_idx = sorted(range(K), key=lambda k: -raw_scores[k])
-            for rank, hyp in enumerate(nbest_list[b].n_best_hypotheses):
-                k = sorted_idx[rank] if rank < len(sorted_idx) else rank
-                try:
-                    ids = [int(t) for t in hyp.y_sequence.tolist() if int(t) >= 0]
-                    txt = self.asr_model.tokenizer.ids_to_text(ids) if ids else ""
-                except Exception as e:
-                    txt = f"<decode-err {type(e).__name__}>"
-                self._dbg(f"  carry-in   beam[{k}]: score={raw_scores[k]:.3f} text={txt!r} sid={sid}")
-
-    def _dbg_log_chunk_delta(self, before_lens, before_scores, batched_hyps_after, requests: list[Request]) -> None:
-        """Show per-beam (delta_len_nb, delta_score) added in this chunk.
-
-        ``before_lens`` / ``before_scores`` are snapshots taken from the carry-in
-        state just before the decoder ran (MALSD mutates the carry in place, so a
-        live reference would already be the after-state). ``batched_hyps_after`` is
-        the K post-decode beams. Beam indices are NOT directly comparable (MALSD
-        permutes slots inside the chunk) - the deltas are *per beam slot*, so a
-        slot that "gained nothing" usually means no chunk-N parent's lineage
-        survived in that slot. The aggregate of ``delta_len_nb`` across the K slots
-        tells us how spread out this chunk's new tokens were across beam slots.
-        """
-        if not self._dbg_enabled():
-            return
-        from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import BatchedBeamHyps
-
-        if not isinstance(batched_hyps_after, BatchedBeamHyps):
-            return
-        after_lens = batched_hyps_after.current_lengths_nb.tolist()
-        after_scores = batched_hyps_after.scores.tolist()
-        if before_lens is None:
-            # Fresh streams: pretend pre-state was all zeros / 0.0.
-            B, K = batched_hyps_after.batch_size, batched_hyps_after.beam_size
-            before_lens = [[0] * K for _ in range(B)]
-            before_scores = [[0.0] * K for _ in range(B)]
-        for b in range(batched_hyps_after.batch_size):
-            sid = requests[b].stream_id if b < len(requests) else b
-            d_lens = [a - bf for a, bf in zip(after_lens[b], before_lens[b])]
-            d_scores = [a - bf if bf != float("-inf") else None for a, bf in zip(after_scores[b], before_scores[b])]
-            unique_lens = len(set(d_lens))
-            self._dbg(
-                f"chunk-delta sid={sid} d_len_nb={d_lens} (unique={unique_lens}) "
-                f"d_score={[f'{s:.3f}' if s is not None else 'n/a' for s in d_scores]}"
-            )
-
-    def _dbg_log_state(
-        self, label: str, state: RNNTStreamingState, request: Request, extras: dict | None = None
-    ) -> None:
-        """Dump streaming state's accumulated tokens / text and bookkeeping indices.
-
-        ``state.tokens`` is the *current-utterance* buffer (cleared on EOU by
-        :meth:`StreamingState.cleanup_after_eou`). This helper renders both the
-        buffer (as text and as a tail slice of timesteps) and the per-state
-        bookkeeping (decoder index window, global timestamp offset, last-token
-        de-dup info, EOU latch) so we can see exactly what survives the EOU reset
-        and what does not.
-        """
-        if not self._dbg_enabled():
-            return
-        toks = list(state.tokens) if state.tokens is not None else []
-        text = ""
-        try:
-            ids = [int(t) for t in toks if int(t) >= 0]
-            if ids:
-                text = self.asr_model.tokenizer.ids_to_text(ids)
-        except Exception:
-            text = "<decode failed>"
-        ts = list(state.timesteps) if state.timesteps is not None else []
-        extra_str = ""
-        if extras:
-            extra_str = " " + " ".join(f"{k}={v}" for k, v in extras.items())
-        self._dbg(
-            f"{label} sid={request.stream_id} chunk_is_last={request.is_last} "
-            f"n_tokens={len(toks)} text={text!r} tokens_tail={toks[-8:]} timesteps_tail={ts[-6:]} "
-            f"dec=[{state.decoder_start_idx},{state.decoder_end_idx}] "
-            f"global_offset={state.global_offset:.1f} ts_offset={state.timestamp_offset:.1f} "
-            f"last_token={state.last_token} last_tok_idx={state.last_token_idx} "
-            f"eou_before={state.eou_detected_before}"
-            f"{extra_str}"
-        )
 
     def _snapshot_eou_rerank_candidates(
         self,
@@ -1124,11 +859,6 @@ class BufferedRNNTPipeline(BasePipeline):
         # share a real-speech prefix already committed earlier in the
         # utterance and the length bias is much weaker.
         if prev_tokens_len == 0:
-            if self._dbg_enabled():
-                self._dbg(
-                    f"EOU-rerank sid={request.stream_id} SKIP (first chunk of utterance, "
-                    f"prev_tokens_len=0): keeping raw top-1"
-                )
             return
 
         # Chunk-local length-norm: chunk's score delta / (chunk's non-blank
@@ -1137,23 +867,6 @@ class BufferedRNNTPipeline(BasePipeline):
         # per-chunk collapse and never see this rerank.
         norms = [c["delta_score"] / (c["delta_len_nb"] + 1) for c in candidates]
         norm_winner = max(range(len(candidates)), key=norms.__getitem__)
-
-        if self._dbg_enabled():
-            disagree = " (NORM-DISAGREES)" if norm_winner != 0 else ""
-            self._dbg(
-                f"EOU-rerank sid={request.stream_id} prev_tokens_len={prev_tokens_len} "
-                f"raw_winner=0 norm_winner={norm_winner}{disagree}"
-            )
-            for k, c in enumerate(candidates):
-                try:
-                    txt = self.asr_model.tokenizer.ids_to_text([int(t) for t in c["tokens"] if int(t) >= 0])
-                except Exception:
-                    txt = "<decode-err>"
-                mark = " <-NORM-WIN" if k == norm_winner else (" <-RAW-WIN" if k == 0 else "")
-                self._dbg(
-                    f"  EOU-rerank sid={request.stream_id} beam[{k}]: dscore={c['delta_score']:.3f} "
-                    f"norm={norms[k]:.3f} dlen_nb={c['delta_len_nb']} text={txt!r}{mark}"
-                )
 
         if norm_winner == 0:
             return

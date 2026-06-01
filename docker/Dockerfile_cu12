@@ -1,0 +1,263 @@
+# syntax=docker/dockerfile:1-labs
+
+# Copyright (c) 2019, NVIDIA CORPORATION. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+ARG BASE_IMAGE=nvcr.io/nvidia/cuda-dl-base:25.06-cuda12.9-devel-ubuntu24.04
+FROM ${BASE_IMAGE} AS base-image
+ARG UV_VERSION=0.11.14
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TRANSFORMERS_OFFLINE=0
+ENV HYDRA_FULL_ERROR=1
+ENV PYTHONUNBUFFERED=1
+ENV UV_PYTHON=3.13
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv
+ENV UV_LINK_MODE=copy
+ENV UV_NO_CACHE=1
+ENV UV_NO_PROGRESS=1
+ENV VIRTUAL_ENV=/opt/venv
+ENV PATH="/root/.local/bin:${VIRTUAL_ENV}/bin:${PATH}"
+
+RUN <<"EOF" bash -ex
+apt-get update
+apt-get install -y \
+    bc \
+    curl \
+    git \
+    libsndfile1 \
+    libsox-fmt-all \
+    sox
+apt-get clean
+EOF
+
+RUN <<"EOF" bash -ex
+curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh
+uv --version
+EOF
+
+WORKDIR /workspace
+COPY pyproject.toml uv.lock /workspace/
+COPY nemo/__init__.py nemo/package_info.py /workspace/nemo/
+RUN <<"EOF" bash -ex
+uv sync --link-mode copy --locked --extra all --extra cu12 --group test
+EOF
+
+FROM base-image AS automodel-deps-wheels
+ARG GPU_TARGET=h100plus
+ARG TRANSFORMER_ENGINE_REPO=https://github.com/NVIDIA/TransformerEngine.git
+ARG TRANSFORMER_ENGINE_REF=v2.15
+ARG DEEPEP_REPO=https://github.com/deepseek-ai/DeepEP.git
+ARG DEEPEP_REF=v1.2.1
+ARG NV_GROUPED_GEMM_VERSION=1.1.4.post8
+ARG CAUSAL_CONV1D_VERSION=1.6.2.post1
+ARG MAMBA_SSM_VERSION=2.3.2.post1
+ARG FLASH_ATTN_VERSION=2.8.3
+ARG FLASH_ATTN_4_VERSION=4.0.0b15
+ARG FLASH_ATTN_MAX_JOBS=8
+ARG FLASH_ATTN_NVCC_THREADS=1
+
+ENV PIP_NO_CACHE_DIR=1
+
+COPY external/patches/deepep_v1_a100_disable_nvshmem.patch /tmp/patches/
+RUN <<"EOF" bash -euxo pipefail
+apt-get update
+apt-get install -y \
+    build-essential \
+    ca-certificates \
+    cmake \
+    ninja-build \
+    patch
+apt-get clean
+rm -rf /var/lib/apt/lists/*
+EOF
+
+RUN <<"EOF" bash -euxo pipefail
+cat >/usr/local/bin/automodel-build-env <<'SCRIPT'
+case "${GPU_TARGET}" in
+    h100plus)
+        export DEEPEP_TORCH_CUDA_ARCH_LIST="9.0"
+        export TORCH_CUDA_ARCH_LIST="9.0"
+        export NVTE_CUDA_ARCHS="90"
+        export FLASH_ATTN_CUDA_ARCHS="90"
+        export CMAKE_CUDA_ARCHITECTURES="90"
+        ;;
+    a100)
+        export DEEPEP_TORCH_CUDA_ARCH_LIST="8.0"
+        export TORCH_CUDA_ARCH_LIST="8.0"
+        export NVTE_CUDA_ARCHS="80"
+        export FLASH_ATTN_CUDA_ARCHS="80"
+        export CMAKE_CUDA_ARCHITECTURES="80"
+        export DISABLE_SM90_FEATURES=1
+        ;;
+    *)
+        echo "Unsupported GPU_TARGET='${GPU_TARGET}'. Expected 'h100plus' or 'a100'."
+        exit 1
+        ;;
+esac
+
+AUTOMODEL_CCCL_INCLUDES="/usr/local/cuda/include/cccl"
+PYTHON_CCCL_INCLUDE="${VIRTUAL_ENV}/lib/python${UV_PYTHON}/site-packages/nvidia/cu12/include/cccl"
+if [[ -d "${PYTHON_CCCL_INCLUDE}" ]]; then
+    AUTOMODEL_CCCL_INCLUDES="${AUTOMODEL_CCCL_INCLUDES}:${PYTHON_CCCL_INCLUDE}"
+fi
+export CPATH="${AUTOMODEL_CCCL_INCLUDES}${CPATH:+:${CPATH}}"
+export CPLUS_INCLUDE_PATH="${AUTOMODEL_CCCL_INCLUDES}${CPLUS_INCLUDE_PATH:+:${CPLUS_INCLUDE_PATH}}"
+SCRIPT
+uv pip install --upgrade \
+    cmake \
+    ninja \
+    nvidia-mathdx \
+    packaging \
+    pip \
+    psutil \
+    pybind11 \
+    setuptools \
+    setuptools-scm \
+    wheel
+
+mkdir -p /opt/automodel-src /opt/automodel-wheels
+EOF
+
+RUN <<"EOF" bash -euxo pipefail
+source /usr/local/bin/automodel-build-env
+git clone "${TRANSFORMER_ENGINE_REPO}" /opt/automodel-src/TransformerEngine
+git -C /opt/automodel-src/TransformerEngine checkout -f "${TRANSFORMER_ENGINE_REF}"
+git -C /opt/automodel-src/TransformerEngine submodule update --init --recursive
+NVTE_FRAMEWORK=pytorch \
+    python -m pip wheel \
+    --no-build-isolation \
+    --no-deps \
+    --wheel-dir /opt/automodel-wheels \
+    /opt/automodel-src/TransformerEngine
+EOF
+
+RUN <<"EOF" bash -euxo pipefail
+source /usr/local/bin/automodel-build-env
+git clone "${DEEPEP_REPO}" /opt/automodel-src/DeepEP
+git -C /opt/automodel-src/DeepEP checkout -f "${DEEPEP_REF}"
+if [[ "${GPU_TARGET}" == "a100" ]]; then
+    patch -d /opt/automodel-src/DeepEP -p1 < /tmp/patches/deepep_v1_a100_disable_nvshmem.patch
+fi
+TORCH_CUDA_ARCH_LIST="${DEEPEP_TORCH_CUDA_ARCH_LIST}" \
+python -m pip wheel \
+    --no-build-isolation \
+    --no-deps \
+    --wheel-dir /opt/automodel-wheels \
+    /opt/automodel-src/DeepEP
+EOF
+
+ARG ONNXSCRIPT_VERSION=0.7.0
+ARG ONNX_IR_VERSION=0.2.1
+RUN <<"EOF" bash -euxo pipefail
+source /usr/local/bin/automodel-build-env
+python -m pip wheel \
+    --no-deps \
+    --wheel-dir /opt/automodel-wheels \
+    "onnx-ir==${ONNX_IR_VERSION}" \
+    "onnxscript==${ONNXSCRIPT_VERSION}"
+
+GROUPED_GEMM_FORCE_BUILD=TRUE \
+    python -m pip wheel \
+    --no-build-isolation \
+    --no-binary=nv-grouped-gemm \
+    --no-deps \
+    --wheel-dir /opt/automodel-wheels \
+    "nv-grouped-gemm==${NV_GROUPED_GEMM_VERSION}"
+
+CAUSAL_CONV1D_FORCE_BUILD=TRUE \
+    python -m pip wheel \
+    --no-build-isolation \
+    --no-binary=causal-conv1d \
+    --no-deps \
+    --wheel-dir /opt/automodel-wheels \
+    "causal-conv1d==${CAUSAL_CONV1D_VERSION}"
+
+MAMBA_FORCE_BUILD=TRUE \
+    python -m pip wheel \
+    --no-build-isolation \
+    --no-binary=mamba-ssm \
+    --no-deps \
+    --wheel-dir /opt/automodel-wheels \
+    "mamba-ssm==${MAMBA_SSM_VERSION}"
+
+MAX_JOBS="${FLASH_ATTN_MAX_JOBS}" \
+NVCC_THREADS="${FLASH_ATTN_NVCC_THREADS}" \
+FLASH_ATTENTION_FORCE_BUILD=TRUE \
+    python -m pip wheel \
+    --no-build-isolation \
+    --no-binary=flash-attn \
+    --no-deps \
+    --wheel-dir /opt/automodel-wheels \
+    "flash-attn==${FLASH_ATTN_VERSION}"
+
+ls -lh /opt/automodel-wheels
+EOF
+
+ARG FLASH_ATTN_4_CUTLASS_DSL_VERSION=4.5.2
+ARG FLASH_ATTN_4_APACHE_TVM_FFI_VERSION=0.1.11
+ARG FLASH_ATTN_4_TORCH_C_DLPACK_EXT_VERSION=0.1.5
+ARG FLASH_ATTN_4_QUACK_KERNELS_VERSION=0.5.0
+RUN <<"EOF" bash -euxo pipefail
+source /usr/local/bin/automodel-build-env
+if [[ "${GPU_TARGET}" == "h100plus" ]]; then
+    python -m pip wheel \
+        --no-deps \
+        --wheel-dir /opt/automodel-wheels \
+        "apache-tvm-ffi==${FLASH_ATTN_4_APACHE_TVM_FFI_VERSION}" \
+        "nvidia-cutlass-dsl==${FLASH_ATTN_4_CUTLASS_DSL_VERSION}" \
+        "nvidia-cutlass-dsl-libs-base==${FLASH_ATTN_4_CUTLASS_DSL_VERSION}" \
+        "quack-kernels==${FLASH_ATTN_4_QUACK_KERNELS_VERSION}" \
+        "torch-c-dlpack-ext==${FLASH_ATTN_4_TORCH_C_DLPACK_EXT_VERSION}"
+
+    mkdir -p /opt/automodel-src/flash-attn-4 /tmp/flash-attn-4
+    python -m pip download \
+        --no-binary=flash-attn-4 \
+        --no-deps \
+        --dest /tmp/flash-attn-4 \
+        "flash-attn-4==${FLASH_ATTN_4_VERSION}"
+    tar -xf /tmp/flash-attn-4/flash_attn_4-*.tar.gz -C /opt/automodel-src/flash-attn-4 --strip-components=1
+
+    MAX_JOBS="${FLASH_ATTN_MAX_JOBS}" \
+    NVCC_THREADS="${FLASH_ATTN_NVCC_THREADS}" \
+    python -m pip wheel \
+        --no-build-isolation \
+        --no-deps \
+        --wheel-dir /opt/automodel-wheels \
+        /opt/automodel-src/flash-attn-4
+fi
+
+ls -lh /opt/automodel-wheels
+EOF
+
+FROM base-image
+COPY --from=automodel-deps-wheels /opt/automodel-wheels /opt/automodel-wheels
+RUN <<"EOF" bash -euxo pipefail
+uv pip install --no-deps $(find /opt/automodel-wheels -name '*.whl' ! -name 'flash_attn_4-*.whl' | sort)
+if compgen -G "/opt/automodel-wheels/flash_attn_4-*.whl" >/dev/null; then
+    uv pip install --no-deps --reinstall /opt/automodel-wheels/flash_attn_4-*.whl
+fi
+rm -rf /opt/automodel-wheels
+EOF
+
+ENV NEMO_HOME="/home/TestData/nemo_home"
+
+ARG IMAGE_LABEL
+LABEL "nemo.library"=${IMAGE_LABEL}
+
+ARG PR_NUMBER
+LABEL "nemo.pr_number"=${PR_NUMBER}
+
+ARG NVIDIA_BUILD_ID
+LABEL "NVIDIA_BUILD_ID"=${NVIDIA_BUILD_ID}

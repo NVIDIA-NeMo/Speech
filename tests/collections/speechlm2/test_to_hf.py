@@ -24,6 +24,7 @@ from unittest.mock import patch
 
 import pytest
 import torch
+from safetensors.torch import load_file
 
 _TO_HF_PATH = Path(__file__).parents[3] / "examples" / "speechlm2" / "to_hf.py"
 _spec = importlib.util.spec_from_file_location("to_hf_for_test", _TO_HF_PATH)
@@ -122,7 +123,8 @@ class _FakeExportModel:
         "pretrained_llm": "fake-model",
         "pretrained_asr": "fake-asr",
         "pretrained_weights": False,
-        "torch_dtype": "bfloat16",
+        "dtype": "bf16",
+        "torch_dtype": "bf16",
         "audio_locator_tag": AUDIO_TOKEN,
     }
     llm = type("_FakeLLM", (), {"config": _FakeLLMConfig()})()
@@ -143,9 +145,29 @@ def test_save_hf_checkpoint_writes_llm_backbone_config(tmp_path):
 
     assert "llm_config" not in root_cfg
     assert root_cfg["pretrained_llm"] == "fake-model"
+    assert root_cfg["dtype"] == "bfloat16"
     assert root_cfg["torch_dtype"] == "bfloat16"
     assert llm_cfg["model_type"] == "qwen2"
     assert llm_cfg["architectures"] == ["Qwen2ForCausalLM"]
+    assert _FakeExportModel.cfg["dtype"] == "bf16"
+
+
+def test_save_hf_checkpoint_accepts_bf16_export_dtype(tmp_path):
+    cfg = to_hf.HfExportConfig(
+        class_path="fake.Class",
+        ckpt_path="fake.ckpt",
+        ckpt_config="fake.yaml",
+        output_dir=str(tmp_path),
+        dtype="bf16",
+    )
+    to_hf.save_hf_checkpoint(_FakeExportModel(), {"weight": torch.zeros(1)}, cfg)
+
+    root_cfg = json.loads((tmp_path / "config.json").read_text())
+    state_dict = load_file(tmp_path / "model.safetensors")
+
+    assert root_cfg["dtype"] == "bfloat16"
+    assert root_cfg["torch_dtype"] == "bfloat16"
+    assert state_dict["weight"].dtype == torch.bfloat16
 
 
 # ──────────────────────────────────────────────────────────────────────

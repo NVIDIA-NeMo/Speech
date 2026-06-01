@@ -13,6 +13,7 @@
 # limitations under the License.
 import json
 import os
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,7 @@ from safetensors.torch import save_file
 
 from nemo.collections.speechlm2.parts.hf_hub import LLM_BACKBONE_DIR
 from nemo.core.config import hydra_runner
+from nemo.utils.dtype import str_to_dtype
 from nemo.utils.model_utils import import_class_by_path
 
 
@@ -93,17 +95,31 @@ def consolidate_state_dict(model: torch.nn.Module) -> dict[str, torch.Tensor]:
     return consolidated
 
 
+def _canonical_torch_dtype_name(dtype: str | torch.dtype) -> str:
+    """Return the PyTorch dtype name accepted by Transformers configs."""
+    return str(str_to_dtype(dtype)).replace("torch.", "")
+
+
+def _hf_export_config(model: torch.nn.Module, dtype: str | torch.dtype) -> dict[str, Any]:
+    """Build the exported root config without mutating the training config."""
+    config = OmegaConf.to_container(model.cfg) if isinstance(model.cfg, DictConfig) else deepcopy(model.cfg)
+    dtype_name = _canonical_torch_dtype_name(dtype)
+    config["dtype"] = dtype_name
+    config["torch_dtype"] = dtype_name
+    return config
+
+
 def save_hf_checkpoint(model: torch.nn.Module, state_dict: dict, cfg: HfExportConfig) -> None:
     """Save a consolidated state dict and model config in HuggingFace Hub format."""
     output_dir = Path(cfg.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    target_dtype = getattr(torch, cfg.dtype)
+    target_dtype = str_to_dtype(cfg.dtype)
     state_dict = {k: v.to(target_dtype) for k, v in state_dict.items()}
 
     save_file(state_dict, output_dir / "model.safetensors")
 
-    config = OmegaConf.to_container(model.cfg) if isinstance(model.cfg, DictConfig) else model.cfg
+    config = _hf_export_config(model, cfg.dtype)
     with open(output_dir / "config.json", "w") as f:
         json.dump(config, f, indent=2)
     save_llm_backbone_config(model, output_dir)
@@ -291,7 +307,7 @@ def main(cfg: HfExportConfig) -> None:
 
     full_cfg = OmegaConf.to_container(OmegaConf.load(cfg.ckpt_config), resolve=True)
     model_cfg = full_cfg["model"]
-    model_cfg["torch_dtype"] = cfg.dtype
+    model_cfg["torch_dtype"] = _canonical_torch_dtype_name(cfg.dtype)
     cls = import_class_by_path(cfg.class_path)
 
     strategy_cfg = full_cfg.get("trainer", {}).get("strategy", {})
@@ -334,9 +350,9 @@ def main(cfg: HfExportConfig) -> None:
         model_cfg["init_configure_model"] = True
         model = cls(model_cfg)
         load_checkpoint(model, cfg.ckpt_path)
-        model = model.to(getattr(torch, cfg.dtype))
+        model = model.to(str_to_dtype(cfg.dtype))
         model_cfg["pretrained_weights"] = False
-        model.save_pretrained(cfg.output_dir)
+        model.save_pretrained(cfg.output_dir, config=_hf_export_config(model, cfg.dtype))
         save_llm_backbone_config(model, cfg.output_dir)
         _try_prepare_for_vllm(cfg.output_dir, model_cfg)
 

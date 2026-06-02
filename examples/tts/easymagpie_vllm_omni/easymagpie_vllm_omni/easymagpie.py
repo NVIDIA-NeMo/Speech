@@ -665,11 +665,14 @@ class EasyMagpieTTSForConditionalGeneration(
     ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
         decode_offset = int(info_dict.get("ear_decode_offset", 0) or 0)
 
-        # Text channel (streaming list that grows by one per step).
+        # Text channel (streaming list, one subword consumed per step). Step k
+        # consumes text_tokens[k] (the list ends with the text eos id). Once the
+        # stream is exhausted the channel is masked off (adds nothing) — matching
+        # the reference ``text_finished`` behaviour, which stops adding text after
+        # EOS rather than repeating the last token.
         text_tokens = info_dict.get("text_tokens")
-        if isinstance(text_tokens, list) and text_tokens:
-            idx = min(decode_offset, len(text_tokens) - 1)
-            self._dec_text_tokens[start] = int(text_tokens[idx])
+        if isinstance(text_tokens, list) and decode_offset < len(text_tokens):
+            self._dec_text_tokens[start] = int(text_tokens[decode_offset])
             self._dec_text_mask[start] = 1
         else:
             self._dec_text_mask[start] = 0
@@ -782,6 +785,14 @@ class EasyMagpieTTSForConditionalGeneration(
                 target.data.copy_(tensor.to(target.dtype))
             loaded.add(mapped)
 
+        # ``NemotronHModel.load_weights`` (the inner model) does *not* apply the
+        # HF->vLLM renaming that lives on the ``NemotronHForCausalLM`` wrapper, so
+        # raw HF names such as ``embeddings.weight`` / ``...mixer.A_log`` would not
+        # match the inner param names (``embed_tokens.weight`` / ``...mixer.A``).
+        # Apply that mapper here so the converted checkpoint can keep stock HF
+        # Nemotron-H names. The wrapper's ``backbone -> model`` prefix rule is a
+        # no-op here because we already stripped the ``decoder.`` prefix.
+        backbone_weights = list(NemotronHForCausalLM.hf_to_vllm_mapper.apply(backbone_weights))
         backbone_loaded = self.backbone.load_weights(backbone_weights)
         loaded |= {f"backbone.{n}" for n in backbone_loaded}
 

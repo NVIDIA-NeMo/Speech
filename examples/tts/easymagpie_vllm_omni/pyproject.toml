@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "easymagpie-vllm-omni"
+version = "0.1.0"
+description = "vLLM-Omni model definition for EasyMagpieTTS (Qwen2 backbone + AR local transformer)"
+requires-python = ">=3.10"
+dependencies = [
+    # The heavy runtime deps (vllm, vllm-omni, torch) are provided by the
+    # target vllm_omni_env. Treat this as "install into an already-bootstrapped
+    # vllm_omni_env"; do not install into NeMo's nemo_virtual_environment.
+]
+
+[project.entry-points."vllm.general_plugins"]
+easymagpie_omni = "vllm_plugin_easymagpie_omni:register"
+
+[tool.setuptools.packages.find]
+include = ["easymagpie_vllm_omni*", "vllm_plugin_easymagpie_omni*"]

@@ -32,6 +32,7 @@ from typing import Optional
 import torch
 import torch.distributed as dist
 from torch import Tensor
+from torch.distributed.nn.functional import all_gather as differentiable_all_gather
 
 from nemo.collections.speechlm2.parts.encoder_chunking import encode_audio_with_optional_chunking
 
@@ -88,7 +89,8 @@ def encode_audio_with_cp_distribution(
         )
 
     cp_size = cp_mesh.size()
-    cp_rank = dist.get_rank(group=cp_mesh.get_group())
+    cp_group = cp_mesh.get_group()
+    cp_rank = dist.get_rank(group=cp_group)
     device = audios.device
 
     per_rank = (B_aud + cp_size - 1) // cp_size
@@ -120,7 +122,7 @@ def encode_audio_with_cp_distribution(
     H = local_embs[0].shape[-1]
     local_max_L = max(e.shape[0] for e in local_embs)
     max_L_t = torch.tensor(local_max_L, dtype=torch.long, device=device)
-    dist.all_reduce(max_L_t, op=dist.ReduceOp.MAX, group=cp_mesh.get_group())
+    dist.all_reduce(max_L_t, op=dist.ReduceOp.MAX, group=cp_group)
     max_L = int(max_L_t.item())
 
     local_stack = torch.zeros(per_rank, max_L, H, device=device, dtype=local_embs[0].dtype)
@@ -129,10 +131,9 @@ def encode_audio_with_cp_distribution(
         local_stack[i, : e.shape[0]] = e
         local_lens[i] = e.shape[0]
 
-    gathered_stack = [torch.zeros_like(local_stack) for _ in range(cp_size)]
     gathered_lens = [torch.zeros_like(local_lens) for _ in range(cp_size)]
-    dist.all_gather(gathered_stack, local_stack, group=cp_mesh.get_group())
-    dist.all_gather(gathered_lens, local_lens, group=cp_mesh.get_group())
+    gathered_stack = differentiable_all_gather(local_stack, group=cp_group)
+    dist.all_gather(gathered_lens, local_lens, group=cp_group)
 
     full_embs: list[Tensor] = []
     for r in range(cp_size):

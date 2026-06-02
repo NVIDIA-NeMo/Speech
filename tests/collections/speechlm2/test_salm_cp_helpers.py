@@ -18,6 +18,7 @@ a real ``torch.distributed`` process group; it's exercised by the 2-GPU
 smoke. These tests cover the fallback contracts that run on every machine
 (``cp_mesh is None``, ``B_aud == 0``).
 """
+import pytest
 import torch
 
 from nemo.collections.speechlm2.parts.cp_helpers import encode_audio_with_cp_distribution, get_cp_mesh
@@ -118,3 +119,58 @@ def test_encode_audio_empty_batch_returns_empty():
         cp_mesh=None,
     )
     assert embs == []
+
+
+class _FakeCpMesh:
+    def size(self):
+        return 2
+
+    def get_group(self):
+        return "fake-cp-group"
+
+
+class _TrainablePerceptionStub(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.scale = torch.nn.Parameter(torch.tensor(2.0))
+
+    def forward(self, *, input_signal, input_signal_length):
+        B = input_signal.shape[0]
+        embs = input_signal[:, :2].unsqueeze(-1) * self.scale
+        lens = torch.full((B,), 2, dtype=input_signal_length.dtype, device=input_signal_length.device)
+        return embs, lens
+
+
+def test_encode_audio_cp_distribution_preserves_local_autograd(monkeypatch):
+    perception = _TrainablePerceptionStub()
+    audios = torch.tensor([[1.0, 2.0, 0.0], [3.0, 4.0, 0.0]])
+    audio_lens = torch.tensor([3, 3], dtype=torch.long)
+
+    def fake_all_gather(local_stack, group):
+        assert group == "fake-cp-group"
+        remote_stack = torch.zeros_like(local_stack)
+        return (local_stack, remote_stack)
+
+    def fake_lens_all_gather(gathered_lens, local_lens, group):
+        assert group == "fake-cp-group"
+        gathered_lens[0].copy_(local_lens)
+        gathered_lens[1].fill_(2)
+
+    monkeypatch.setattr("nemo.collections.speechlm2.parts.cp_helpers.dist.get_rank", lambda group: 0)
+    monkeypatch.setattr("nemo.collections.speechlm2.parts.cp_helpers.dist.all_reduce", lambda *args, **kwargs: None)
+    monkeypatch.setattr("nemo.collections.speechlm2.parts.cp_helpers.dist.all_gather", fake_lens_all_gather)
+    monkeypatch.setattr("nemo.collections.speechlm2.parts.cp_helpers.differentiable_all_gather", fake_all_gather)
+
+    embs = encode_audio_with_cp_distribution(
+        perception,
+        audios,
+        audio_lens,
+        chunk_size_seconds=None,
+        sampling_rate=16000,
+        cp_mesh=_FakeCpMesh(),
+    )
+
+    assert embs[0].requires_grad
+    embs[0].sum().backward()
+    assert perception.scale.grad is not None
+    assert perception.scale.grad.item() == pytest.approx(3.0)

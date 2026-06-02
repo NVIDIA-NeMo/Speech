@@ -65,7 +65,9 @@ def pack_audio_into_text_embeds(
         cp_size:         per-utterance flat lengths are rounded up to a
                          multiple of ``2 * cp_size`` (TE-CP requirement).
         tp_size:         the last utterance's padded length is bumped so that
-                         ``T_total % tp_size == 0`` (sequence-parallel).
+                         ``T_total % tp_size == 0`` (sequence-parallel). When
+                         CP is active, the bump also preserves the
+                         ``2 * cp_size`` per-utterance alignment.
         ignore_index:    label fill for audio-frame slots, padding slots, and
                          the last position of every utterance.
 
@@ -142,16 +144,24 @@ def pack_audio_into_text_embeds(
     # Round each utterance's length up to a multiple of 2*cp_size (TE-CP
     # interleaves 2 chunks per rank); skip rounding when cp_size == 1. Then
     # bump the last so the total is divisible by tp_size for sequence
-    # parallelism.
+    # parallelism, preserving the CP alignment when CP is active.
     if cp_size > 1:
         cp_mult = 2 * cp_size
         padded_lens = [((L + cp_mult - 1) // cp_mult) * cp_mult for L in real_lens]
     else:
         padded_lens = list(real_lens)
     if tp_size > 1:
-        rem = sum(padded_lens) % tp_size
-        if rem != 0:
-            padded_lens[-1] += tp_size - rem
+        total_len = sum(padded_lens)
+        if cp_size > 1:
+            cp_mult = 2 * cp_size
+            tp_bump = 0
+            while (total_len + tp_bump) % tp_size != 0:
+                tp_bump += cp_mult
+            padded_lens[-1] += tp_bump
+        else:
+            rem = total_len % tp_size
+            if rem != 0:
+                padded_lens[-1] += tp_size - rem
 
     # Materialize the flat THD batch.
     flat_emb_segs: list[Tensor] = []

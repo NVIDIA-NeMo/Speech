@@ -360,26 +360,43 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         return ans
 
     def on_validation_epoch_start(self) -> None:
-        self._partial_val_losses = defaultdict(list)
-        self._partial_accuracies = defaultdict(list)
+        self._partial_val_loss_sums = defaultdict(list)
+        self._partial_val_corrects = defaultdict(list)
+        self._partial_val_num_frames = defaultdict(list)
 
     def on_validation_epoch_end(self) -> None:
         val_losses = []
-        for name, vals in self._partial_val_losses.items():
-            val_loss = torch.stack(vals).mean()
+        accuracies = []
+        reduction_group = self._get_moe_dp_group()
+        for name, vals in self._partial_val_loss_sums.items():
+            loss_sum = torch.stack(vals).sum()
+            correct = torch.stack(self._partial_val_corrects[name]).sum().to(loss_sum.dtype)
+            num_frames = torch.stack(self._partial_val_num_frames[name]).sum().to(loss_sum.dtype)
+            metric_sums = self._reduce_validation_metric_sums(
+                torch.stack([loss_sum, correct, num_frames]), reduction_group
+            )
+            num_frames = metric_sums[2].clamp(min=1)
+            val_loss = metric_sums[0] / num_frames
+            val_acc = metric_sums[1] / num_frames
+
             self.log(f"val_loss_{name}", val_loss, on_epoch=True, sync_dist=True)
             val_losses.append(val_loss)
-        self.log("val_loss", torch.stack(val_losses).mean(), on_epoch=True, sync_dist=True)
 
-        accuracies = []
-        for name, accs in self._partial_accuracies.items():
-            val_acc = torch.stack(accs).mean()
             self.log(f"val_acc_{name}", val_acc, on_epoch=True, sync_dist=True)
             accuracies.append(val_acc)
+
+        self.log("val_loss", torch.stack(val_losses).mean(), on_epoch=True, sync_dist=True)
         self.log("val_acc", torch.stack(accuracies).mean(), on_epoch=True, sync_dist=True)
 
-        self._partial_val_losses.clear()
-        self._partial_accuracies.clear()
+        self._partial_val_loss_sums.clear()
+        self._partial_val_corrects.clear()
+        self._partial_val_num_frames.clear()
+
+    def _reduce_validation_metric_sums(self, metric_sums: Tensor, group) -> Tensor:
+        if group is not None and dist.is_available() and dist.is_initialized():
+            metric_sums = metric_sums.clone()
+            dist.all_reduce(metric_sums, op=dist.ReduceOp.SUM, group=group)
+        return metric_sums
 
     def validation_step(self, batch: dict, batch_idx: int):
         for name, dataset_batch in batch.items():
@@ -394,24 +411,22 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             num_frames = (inputs["target_ids"] != -100).long().sum()
             with loss_parallel():
                 logits = forward_outputs["logits"]
-                loss = (
-                    torch.nn.functional.cross_entropy(
-                        logits.reshape(-1, logits.size(-1)),
-                        inputs["target_ids"].reshape(-1),
-                        reduction="sum",
-                        ignore_index=-100,
-                    )
-                    / num_frames
+                loss_sum = torch.nn.functional.cross_entropy(
+                    logits.reshape(-1, logits.size(-1)),
+                    inputs["target_ids"].reshape(-1),
+                    reduction="sum",
+                    ignore_index=-100,
                 )
 
             preds = forward_outputs["logits"].argmax(dim=-1).view(-1)
             refs = inputs["target_ids"].reshape(-1)
             preds = preds[refs != -100]
             refs = refs[refs != -100]
-            accuracy = preds.eq(refs).float().mean()
+            correct = preds.eq(refs).sum()
 
-            self._partial_accuracies[name].append(accuracy)
-            self._partial_val_losses[name].append(loss)
+            self._partial_val_loss_sums[name].append(loss_sum.detach())
+            self._partial_val_corrects[name].append(correct.detach().to(loss_sum.dtype))
+            self._partial_val_num_frames[name].append(num_frames.detach().to(loss_sum.dtype))
 
     def on_test_epoch_start(self) -> None:
         return self.on_validation_epoch_start()

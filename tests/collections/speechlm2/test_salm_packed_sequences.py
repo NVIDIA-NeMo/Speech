@@ -255,6 +255,28 @@ def test_tp_and_cp_combined():
     assert sum(padded) % 8 == 0
 
 
+def test_tp_bump_preserves_cp_alignment_when_tp_is_not_cp_multiple():
+    input_ids = torch.tensor([[1, 2, 3, 4, 5], [6, 7, 8, 9, 10]])
+    loss_mask = torch.ones_like(input_ids, dtype=torch.bool)
+    embeds = torch.ones(2, 5, 2)
+    target_ids = input_ids.where(loss_mask, -100)
+    out = pack_audio_into_text_embeds(
+        input_ids=input_ids,
+        embeds=embeds,
+        target_ids=target_ids,
+        replacements=[],
+        padding_id=PAD,
+        placeholder_id=AUDIO,
+        cp_size=2,
+        tp_size=6,
+    )
+    padded = out["seq_lens_padded"].squeeze(-1).tolist()
+    assert padded == [8, 16]
+    for L in padded:
+        assert L % 4 == 0
+    assert sum(padded) % 6 == 0
+
+
 def test_cu_seqlens_matches_padded_cumsum():
     input_ids, embeds, target_ids, replacements = _basic_batch()
     out = pack_audio_into_text_embeds(

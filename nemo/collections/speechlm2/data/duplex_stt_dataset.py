@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import json
 import random
 import re
 
@@ -25,11 +26,17 @@ from nemo.collections.common.data.lhotse.text_adapters import Formattable
 from nemo.collections.common.tokenizers import TokenizerSpec
 from nemo.collections.speechlm2.data.force_align import ForceAligner
 from nemo.collections.speechlm2.data.s2s_dataset import _strip_timestamps
-from nemo.collections.speechlm2.data.utils import get_pad_id
+from nemo.collections.speechlm2.data.utils import (
+    MCQ_SYSTEM_PROMPT_NOTHINK,
+    MCQ_SYSTEM_PROMPT_THINK,
+    get_pad_id,
+    is_asr_cut,
+    is_mcq_cut_train,
+    is_mcq_cut_val,
+    normalize_numbers,
+)
 from nemo.collections.speechlm2.parts.augmentation import AudioAugmenter
 from nemo.utils import logging
-
-MCQ_VAL_PROMPT = "Answer the following multiple choice question with an explanation for the answer."
 
 
 class DuplexSTTDataset(torch.utils.data.Dataset):
@@ -76,6 +83,7 @@ class DuplexSTTDataset(torch.utils.data.Dataset):
         aug_by_swap_role: bool = False,
         cfg: dict = None,
         model_cfg: dict = None,
+        is_training: bool = True,
     ):
         self.tokenizer = tokenizer
         self.frame_length = frame_length
@@ -83,6 +91,7 @@ class DuplexSTTDataset(torch.utils.data.Dataset):
         self.input_roles = set(ifnone(input_roles, ["user"]))
         self.output_roles = set(ifnone(output_roles, ["agent"]))
         self.aug_by_swap_role = aug_by_swap_role
+        self.is_training = is_training
 
         self.word_align_position = cfg.get("word_align_position", "left") if cfg is not None else "left"
         self.predict_user_text = model_cfg.get("predict_user_text", False) if model_cfg is not None else False
@@ -91,7 +100,13 @@ class DuplexSTTDataset(torch.utils.data.Dataset):
 
         self.prepend_word_space = cfg.get("prepend_word_space", True) if cfg is not None else True
         self.early_interruption_prob = cfg.get("early_interruption_prob", 0.0) if cfg is not None else 0.0
-        self.add_mcq_val_prompt = cfg.get("add_mcq_val_prompt", False) if cfg is not None else False
+        self.add_mcq_prompt = cfg.get("add_mcq_prompt", False) if cfg is not None else False
+
+        self.add_filler_response_for_asr = cfg.get("add_filler_response_for_asr", False) if cfg is not None else False
+        self.filler_response_delay = cfg.get("filler_response_delay", 0) if cfg is not None else 0
+        self.filler_responses = None
+
+        self.use_numbers_norm = model_cfg.get("use_numbers_norm", True) if model_cfg is not None else True
 
         self.cfg = cfg
         self.model_cfg = model_cfg
@@ -111,11 +126,80 @@ class DuplexSTTDataset(torch.utils.data.Dataset):
 
         assert tokenizer.bos is not None, "BOS support in the tokenizer is required."
         assert tokenizer.eos is not None, "EOS support in the tokenizer is required."
+        
+        user_bos_token = '^'
+        user_eos_token = '$'
+        self.user_bos_id = self.tokenizer.text_to_ids(user_bos_token)[0]
+        self.user_eos_id = self.tokenizer.text_to_ids(user_eos_token)[0]
+        self.agent_bos_id = self.tokenizer.bos
+        self.agent_eos_id = self.tokenizer.eos
+        self.pad_id = get_pad_id(self.tokenizer)
 
     def _is_augmentation_task(self, task: str) -> bool:
         if self.cfg is not None and self.cfg.get('force_use_noise_augmentation', False):
             return True
         return task not in ('s2s_duplex_overlap_as_s2s_duplex', 'asr')
+
+    def _load_filler_responses(self):
+        if self.filler_responses is not None:
+            return
+        filler_response_file = self.cfg.get("filler_response_file", None)
+        if filler_response_file is None:
+            raise ValueError("filler_response_file must be specified when add_filler_response_for_asr is True")
+        with open(filler_response_file, 'r') as f:
+            self.filler_responses = json.load(f)["agent_responses"]
+        logging.info(f"Loaded {len(self.filler_responses)} filler responses from {filler_response_file}")
+
+    def _inject_filler_responses(self, target_tokens: torch.Tensor, target_token_lens: torch.Tensor) -> None:
+        """Inject random filler agent responses into target_tokens for ASR cuts.
+
+        For each sample, finds the existing agent BOS, clears it, then writes
+        [BOS filler_tok1 ... filler_tokN] at (old_bos_pos + filler_response_delay).
+        Truncates if the filler extends beyond the sequence length.
+        Updates target_token_lens based on filler duration_ms when available.
+        """
+        self._load_filler_responses()
+        bos_id = self.agent_bos_id
+        seq_len = target_tokens.shape[1]
+
+        for i in range(target_tokens.shape[0]):
+            bos_positions = (target_tokens[i] == bos_id).nonzero(as_tuple=True)[0]
+            if bos_positions.numel() == 0:
+                logging.warning(f"[_inject_filler] sample {i}: no BOS found, skipping")
+                continue
+
+            old_bos_pos = bos_positions[0].item()
+            target_tokens[i, old_bos_pos] = self.pad_id
+
+            insert_pos = old_bos_pos + self.filler_response_delay
+            if insert_pos >= seq_len:
+                logging.warning(
+                    f"[_inject_filler] sample {i}: insert_pos={insert_pos} >= seq_len={seq_len}, skipping"
+                )
+                continue
+
+            filler = random.choice(self.filler_responses)
+            filler_token_ids = self.tokenizer.text_to_ids(filler["text"])
+            turn_tokens = [bos_id] + filler_token_ids
+            turn_tensor = torch.tensor(turn_tokens, dtype=torch.long)
+
+            available = seq_len - insert_pos
+            if len(turn_tensor) > available:
+                logging.warning(
+                    f"[_inject_filler] sample {i}: truncating filler from {len(turn_tensor)} to {available} tokens"
+                )
+                turn_tensor = turn_tensor[:available]
+
+            target_tokens[i, insert_pos:insert_pos + len(turn_tensor)] = turn_tensor
+
+            filler_end = insert_pos + len(turn_tensor)
+            duration_ms = filler.get("duration_ms", None)
+            if duration_ms is not None:
+                duration_frames = max(1, int(duration_ms / (self.frame_length * 1000)))
+                duration_end = insert_pos + duration_frames
+            else: # fallback to filler end
+                duration_end = filler_end
+            target_token_lens[i] = min(max(duration_end, filler_end), seq_len)
 
     def _apply_early_interruption_augmentation(
         self,
@@ -127,11 +211,10 @@ class DuplexSTTDataset(torch.utils.data.Dataset):
     ) -> None:
         """Simulate early interruption by randomly truncating an agent turn with overlap."""
         target_seq = target_tokens[batch_idx]
-        bos_id = self.tokenizer.bos
-        eos_id = self.tokenizer.eos
-        pad_id = get_pad_id(self.tokenizer)
-
-        overlap_tokens = self.cfg.get("early_interruption_overlap_tokens", 13) if self.cfg is not None else 13
+        bos_id = self.agent_bos_id
+        eos_id = self.agent_eos_id
+        pad_id = self.pad_id
+        overlap_tokens = self.cfg.get("early_interruption_overlap_tokens", 8) if self.cfg is not None else 8
 
         bos_positions = (target_seq == bos_id).nonzero(as_tuple=True)[0]
         eos_positions = (target_seq == eos_id).nonzero(as_tuple=True)[0]
@@ -216,9 +299,9 @@ class DuplexSTTDataset(torch.utils.data.Dataset):
             "sample_id": ["empty_batch"],
             "source_audio": torch.zeros((1, 1000), dtype=torch.float32),
             "source_audio_lens": torch.tensor([1000], dtype=torch.long),
-            "target_tokens": torch.full((1, 50), get_pad_id(self.tokenizer), dtype=torch.long),
+            "target_tokens": torch.full((1, 50), self.pad_id, dtype=torch.long),
             "target_token_lens": torch.tensor([1], dtype=torch.long),
-            "source_tokens": torch.full((1, 50), get_pad_id(self.tokenizer), dtype=torch.long),
+            "source_tokens": torch.full((1, 50), self.pad_id, dtype=torch.long),
             "source_token_lens": torch.tensor([1], dtype=torch.long),
             "source_texts": [""],
             "target_texts": [""],
@@ -266,7 +349,12 @@ class DuplexSTTDataset(torch.utils.data.Dataset):
                 all_cuts_combined = cuts
 
             prompt_tokens, prompt_token_lens = collate_system_prompt(
-                all_cuts_combined, self.tokenizer, add_mcq_val_prompt=self.add_mcq_val_prompt
+                all_cuts_combined,
+                self.tokenizer,
+                bos_id=self.agent_bos_id,
+                eos_id=self.agent_eos_id,
+                pad_id=self.pad_id,
+                add_mcq_prompt=self.add_mcq_prompt,
             )
             source_audio, source_audio_lens = collate_audio(all_cuts_combined.resample(self.source_sample_rate))
 
@@ -275,13 +363,20 @@ class DuplexSTTDataset(torch.utils.data.Dataset):
                 self.tokenizer,
                 self.frame_length,
                 roles=self.output_roles,
-                bos_id=self.tokenizer.bos,
-                eos_id=self.tokenizer.eos,
+                bos_id=self.agent_bos_id,
+                eos_id=self.agent_eos_id,
+                pad_id=self.pad_id,
                 remove_timestamps=True,
+                skip_eos=True, # agent eos is placed when source tokens are collated
+                use_numbers_norm=self.use_numbers_norm,
             )
 
-            # Force align user text (runs in dataloader worker, overlapped with training)
-            if self.force_align_user_text and torch.is_grad_enabled():
+            # Inject filler agent responses for ASR cuts (training only)
+            if self.add_filler_response_for_asr and self.is_training and is_asr_cut(all_cuts_combined[0]):
+                self._inject_filler_responses(target_tokens, target_token_lens)
+
+            # Force align user text (runs in dataloader worker, training only)
+            if self.force_align_user_text and self.is_training:
                 all_cuts_combined = self.force_aligner.batch_force_align_user_audio(
                     all_cuts_combined, source_sample_rate=self.source_sample_rate
                 )
@@ -291,23 +386,27 @@ class DuplexSTTDataset(torch.utils.data.Dataset):
                 self.tokenizer,
                 self.frame_length,
                 roles=self.input_roles,
-                bos_id=self.tokenizer.bos,
-                eos_id=self.tokenizer.eos,
+                bos_id=self.user_bos_id,
+                eos_id=self.agent_eos_id,
+                pad_id=self.pad_id,
                 word_align_position=self.word_align_position,
                 remove_timestamps=not self.predict_user_text,
                 prepend_word_space=self.prepend_word_space,
+                agent_token_channel=target_tokens,
+                agent_token_channel_lengths=target_token_lens.clone(),
+                agent_eos_id=self.agent_eos_id,
             )
 
-            # Audio augmentation (runs in dataloader workers for performance)
+            # Audio augmentation (runs in dataloader workers for performance, training only)
             if (
                 self.audio_augmenter is not None
-                and torch.is_grad_enabled()
+                and self.is_training
                 and self._is_augmentation_task(getattr(all_cuts_combined[0], 'task', 's2s_duplex'))
             ):
                 source_audio = self.audio_augmenter.augment_batch(self.cfg, source_audio, source_audio_lens)
 
-            # Early interruption augmentation
-            if self.early_interruption_prob > 0 and torch.is_grad_enabled():
+            # Early interruption augmentation (training only)
+            if self.early_interruption_prob > 0 and self.is_training:
                 for batch_idx in range(target_tokens.shape[0]):
                     if random.random() < self.early_interruption_prob:
                         self._apply_early_interruption_augmentation(
@@ -351,7 +450,7 @@ class DuplexSTTDataset(torch.utils.data.Dataset):
                 text_tokens.append(text_ids)
                 text_token_lens.append(text_ids.shape[0])
 
-            text_tokens = collate_vectors(text_tokens, padding_value=get_pad_id(self.tokenizer))
+            text_tokens = collate_vectors(text_tokens, padding_value=self.pad_id)
             text_token_lens = torch.tensor(text_token_lens, dtype=torch.long)
             text_data = {
                 "text_tokens": text_tokens,
@@ -497,13 +596,19 @@ def collate_token_channel(
     roles: set[str],
     bos_id: int = None,
     eos_id: int = None,
+    pad_id: int = None,
     word_align_position: str = 'left',
     remove_timestamps: bool = False,
     prepend_word_space: bool = True,
+    skip_eos: bool = False,
+    agent_token_channel: torch.Tensor = None,
+    agent_token_channel_lengths: torch.Tensor = None,
+    agent_eos_id: int = None,
+    use_numbers_norm: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    pad_id = get_pad_id(tokenizer)
-    tokens = [
-        _build_token_channel(
+    tokens = []
+    for cut_idx, c in enumerate(cuts):
+        token_seq = _build_token_channel(
             c,
             tokenizer=tokenizer,
             frame_length=frame_length,
@@ -514,9 +619,13 @@ def collate_token_channel(
             word_align_position=word_align_position,
             remove_timestamps=remove_timestamps,
             prepend_word_space=prepend_word_space,
+            skip_eos=skip_eos,
+            cut_agent_token_channel=agent_token_channel[cut_idx] if agent_token_channel is not None else None,
+            cut_agent_token_channel_length=agent_token_channel_lengths[cut_idx] if agent_token_channel_lengths is not None else None,
+            agent_eos_id=agent_eos_id,
+            use_numbers_norm=use_numbers_norm,
         )
-        for c in cuts
-    ]
+        tokens.append(token_seq)
     token_lens = torch.tensor([len(tt) for tt in tokens])
     tokens = collate_vectors(tokens, padding_value=pad_id)
     return tokens, token_lens
@@ -525,23 +634,37 @@ def collate_token_channel(
 def collate_system_prompt(
     cuts: CutSet,
     tokenizer: TokenizerSpec,
-    add_mcq_val_prompt: bool = False,
+    bos_id: int = None,
+    eos_id: int = None,
+    pad_id: int = None,
+    add_mcq_prompt: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Collate system prompts from cuts stored in cut.custom['system_prompt']."""
-    pad_id = get_pad_id(tokenizer)
+    """Collate system prompts from cuts.
+
+    Prompt selection priority:
+      1. Per-cut custom prompt (cut.custom['system_prompt'])
+      2. MCQ training cut -> THINK prompt for think-cuts, NOTHINK prompt for others
+      3. MCQ validation cut (when add_mcq_prompt=True) -> THINK prompt
+      4. No prompt (empty tensor)
+    """
     tokens = []
     for c in cuts:
+        prompt_text = None
+
         if c.custom and c.custom.get("system_prompt", None):
             prompt_text = c.custom["system_prompt"]
-        elif add_mcq_val_prompt:
-            prompt_text = MCQ_VAL_PROMPT
-        else:
-            prompt_text = None
+        elif add_mcq_prompt and is_mcq_cut_train(c):
+            if is_mcq_cut_train(c, check_think=True):
+                prompt_text = MCQ_SYSTEM_PROMPT_THINK
+            else:
+                prompt_text = MCQ_SYSTEM_PROMPT_NOTHINK
+        elif add_mcq_prompt and is_mcq_cut_val(c):
+            prompt_text = MCQ_SYSTEM_PROMPT_THINK
 
         if prompt_text:
             tokens.append(
                 torch.as_tensor(
-                    [tokenizer.bos] + tokenizer.text_to_ids(prompt_text) + [tokenizer.eos], dtype=torch.long
+                    [bos_id] + tokenizer.text_to_ids(prompt_text) + [eos_id], dtype=torch.long
                 )
             )
         else:
@@ -563,6 +686,12 @@ def _build_token_channel(
     word_align_position: str = 'left',
     remove_timestamps: bool = False,
     prepend_word_space: bool = True,
+    skip_eos: bool = False,
+    cut_agent_token_channel: torch.Tensor = None,
+    cut_agent_token_channel_length: torch.Tensor = None,
+    agent_eos_id: int = None,
+    eos_offset_frames: int = 8,
+    use_numbers_norm: bool = False,
 ) -> torch.Tensor:
     diagnostic = f"Extra info: {cut.id=}"
     if getattr(cut, "shard_origin", None) is not None:
@@ -581,17 +710,17 @@ def _build_token_channel(
             eospos = compute_num_frames(supervision.end, frame_length, cut.sampling_rate)
             available_frames_for_text = eospos - pos
 
-            text = supervision.text
-
             text_ids = torch.as_tensor(
                 [bos_id]
                 + _text_to_ids(
-                    text,
+                    supervision.text,
                     tokenizer,
                     available_frames_for_text=available_frames_for_text,
                     word_align_position=word_align_position,
                     remove_timestamps=remove_timestamps,
                     prepend_word_space=prepend_word_space,
+                    pad_id=pad_id,
+                    use_numbers_norm=use_numbers_norm,
                 )
             )
 
@@ -613,9 +742,21 @@ def _build_token_channel(
                 tokens[pos:endpos] = text_ids
             except Exception as e:
                 raise RuntimeError(f"{tokens.shape=} {pos=} {endpos=} {text_ids.shape=} {diagnostic}") from e
+            
+            if not skip_eos:
+                # place agent eos in the agent token channel
+                if cut_agent_token_channel is not None:
+                    assert agent_eos_id is not None, "Agent EOS ID is not set"
+                    user_bospos = compute_num_frames(supervision.start, frame_length, cut.sampling_rate)
+                    agent_eospos = user_bospos + eos_offset_frames
+                    if agent_eospos < cut_agent_token_channel_length.item():
+                        cut_agent_token_channel[agent_eospos] = agent_eos_id
+                    else:
+                        logging.warning(f"Agent EOS position {agent_eospos} is out of bounds for agent token channel {cut_agent_token_channel.shape}")
 
-            if eospos < len(tokens) and eos_id is not None:
-                tokens[eospos] = eos_id
+                # place user eos in the user token channel
+                if eospos < len(tokens) and eos_id is not None:
+                    tokens[eospos] = eos_id
 
     return tokens
 
@@ -628,8 +769,12 @@ def _text_to_ids(
     word_align_position='left',
     remove_timestamps=False,
     prepend_word_space=True,
+    pad_id: int = None,
+    use_numbers_norm: bool = False,
 ):
     if not remove_timestamps and re.compile(_TIMESTAMP_PATTERN_STR).search(text):
+        # Timestamp-aligned path: normalization is skipped because some expansions
+        # change word count (e.g. "$3.50" → 4 words), breaking word-to-timestamp pairing.
         text_ids = _text_with_timestamps_to_ids(
             text,
             tokenizer,
@@ -637,11 +782,14 @@ def _text_to_ids(
             available_frames_for_text,
             word_align_position,
             prepend_word_space=prepend_word_space,
+            pad_id=pad_id,
         )
     else:
         _TIMESTAMP_PATTERN = re.compile(_TIMESTAMP_PATTERN_STR)
         text = _TIMESTAMP_PATTERN.sub("", text)
         text = " ".join(text.strip().split())
+        if use_numbers_norm:
+            text = normalize_numbers(text)
         text_ids = tokenizer.text_to_ids(text)
     return text_ids
 
@@ -653,6 +801,7 @@ def _text_with_timestamps_to_ids(
     available_frames_for_text=None,
     word_align_position='left',
     prepend_word_space=True,
+    pad_id: int = None,
 ) -> list[int]:
     text_ids, start_times, end_times, word_lens = _extract_text_and_time_tokens(
         text,
@@ -667,7 +816,7 @@ def _text_with_timestamps_to_ids(
         end_times,
         available_frames_for_text,
         frame_rate=0.08,
-        pad_id=get_pad_id(tokenizer),
+        pad_id=pad_id,
         word_align_position=word_align_position,
     )
     return text_ids_with_timestamps

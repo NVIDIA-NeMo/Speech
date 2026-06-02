@@ -52,7 +52,7 @@ def train(cfg):
     with trainer.init_module():
         model = DuplexSTTModel(OmegaConf.to_container(cfg.model, resolve=True))
 
-    dataset = DuplexSTTDataset(
+    common_kwargs = dict(
         tokenizer=model.tokenizer,
         frame_length=cfg.data.frame_length,
         source_sample_rate=cfg.data.source_sample_rate,
@@ -62,7 +62,9 @@ def train(cfg):
         cfg=cfg.data,
         model_cfg=cfg.model,
     )
-    datamodule = DataModule(cfg.data, tokenizer=model.tokenizer, dataset=dataset)
+    train_dataset = DuplexSTTDataset(**common_kwargs, is_training=True)
+    val_dataset = DuplexSTTDataset(**common_kwargs, is_training=False)
+    datamodule = DataModule(cfg.data, tokenizer=model.tokenizer, train_dataset=train_dataset, val_dataset=val_dataset)
 
     trainer.fit(model, datamodule)
 

@@ -53,12 +53,23 @@ class DataModule(LightningDataModule):
     Args:
         cfg: a DictConfig instance, typically corresponding to `data` namespace in YAML configs.
         tokenizer: a tokenizer instance, typically NeMo's AutoTokenizer wrapping HF's AutoTokenizer.
-        dataset: a torch.utils.data.Dataset instance, expected to define __getitem__ that accepts
+        train_dataset: a torch.utils.data.Dataset instance, expected to define __getitem__ that accepts
             a lhotse.CutSet. It converts metadata + raw data to a batch of PyTorch tensors.
             The data sampling is controlled by Lhotse samplers rather than the dataset.
+            Used for train_dataloader (is_training=True).
+        val_dataset: same contract as train_dataset, but for validation/test (is_training=False).
+            If None, falls back to train_dataset.
+        dataset: deprecated alias for train_dataset. Kept for backward compatibility.
     """
 
-    def __init__(self, cfg, tokenizer: TokenizerSpec, dataset: torch.utils.data.Dataset) -> None:
+    def __init__(
+        self,
+        cfg,
+        tokenizer: TokenizerSpec,
+        train_dataset: torch.utils.data.Dataset = None,
+        val_dataset: torch.utils.data.Dataset = None,
+        dataset: torch.utils.data.Dataset = None,
+    ) -> None:
         super().__init__()
         self.cfg = cfg
         with open_dict(self.cfg):
@@ -67,7 +78,19 @@ class DataModule(LightningDataModule):
                     getattr(self.cfg, k).force_finite = True
                     getattr(self.cfg, k).force_map_dataset = True
         self.tokenizer = tokenizer
-        self.dataset = dataset
+
+        if train_dataset is not None:
+            self.train_dataset = train_dataset
+        elif dataset is not None:
+            self.train_dataset = dataset
+        else:
+            raise ValueError("Either train_dataset or dataset must be provided.")
+
+        self.val_dataset = val_dataset if val_dataset is not None else self.train_dataset
+
+    @property
+    def dataset(self):
+        return self.train_dataset
 
     def train_dataloader(self):
         if "train_ds" not in self.cfg:
@@ -76,7 +99,7 @@ class DataModule(LightningDataModule):
             config=self.cfg.train_ds,
             global_rank=self._get_dp_rank(),
             world_size=self._get_world_size(),
-            dataset=FallbackDataset(self.dataset),
+            dataset=FallbackDataset(self.train_dataset),
             tokenizer=self.tokenizer,
         )
 
@@ -121,7 +144,7 @@ class DataModule(LightningDataModule):
                 config=cfg,
                 global_rank=self._get_dp_rank(),
                 world_size=self._get_world_size(),
-                dataset=self.dataset,
+                dataset=self.val_dataset,
                 tokenizer=self.tokenizer,
             )
 

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import os
 import re
 
@@ -24,10 +25,15 @@ from lhotse.testing.dummies import dummy_cut, dummy_recording
 from nemo.collections.common.tokenizers import AutoTokenizer
 from nemo.collections.speechlm2.data.duplex_stt_dataset import (
     DuplexSTTDataset,
+    _text_to_ids,
     collate_system_prompt,
     collate_token_channel,
 )
-from nemo.collections.speechlm2.data.utils import get_pad_id
+from nemo.collections.speechlm2.data.utils import (
+    MCQ_SYSTEM_PROMPT_NOTHINK,
+    MCQ_SYSTEM_PROMPT_THINK,
+    get_pad_id,
+)
 
 SR = 16000
 FL = 0.08
@@ -96,13 +102,13 @@ def tokenizer():
 @pytest.fixture(scope="session")
 def cuts():
     """Two cuts: cut1 with plain text, cut2 with timestamped text and a system prompt."""
-    cut1 = dummy_cut(0, duration=1.0, recording=dummy_recording(0, duration=1.0, with_data=True))
+    cut1 = dummy_cut(0, duration=1.5, recording=dummy_recording(0, duration=1.5, with_data=True))
     cut1.supervisions = [
         SupervisionSegment(
             id="s0-user", recording_id=cut1.recording_id, start=0, duration=0.3, text="hi", speaker="user"
         ),
         SupervisionSegment(
-            id="s0-agent", recording_id=cut1.recording_id, start=0.4, duration=0.3, text="hello", speaker="assistant"
+            id="s0-agent", recording_id=cut1.recording_id, start=1.0, duration=0.3, text="hello", speaker="assistant"
         ),
     ]
 
@@ -119,7 +125,7 @@ def cuts():
         SupervisionSegment(
             id="s1-agent",
             recording_id=cut2.recording_id,
-            start=0.6,
+            start=0.8,
             duration=0.5,
             text="<|0|> good <|2|> <|2|> morning <|4|> <|4|> to <|5|> <|5|> you <|6|>",
             speaker="assistant",
@@ -151,11 +157,11 @@ def test_collate_audio(cuts):
     audio, audio_lens = collate_audio(cuts.resample(SR))
 
     assert audio.shape == (2, 32000)
-    assert audio_lens.tolist() == [16000, 32000]
+    assert audio_lens.tolist() == [24000, 32000]
     # Padding region for the shorter cut must be zero
-    assert (audio[0, 16000:] == 0).all(), "Audio padding should be zero"
+    assert (audio[0, 24000:] == 0).all(), "Audio padding should be zero"
     # Non-padding region should have non-zero data (random audio from dummy_recording)
-    assert (audio[0, :16000] != 0).any(), "Audio data should be non-zero"
+    assert (audio[0, :24000] != 0).any(), "Audio data should be non-zero"
     assert (audio[1, :32000] != 0).any(), "Audio data should be non-zero"
 
 
@@ -164,7 +170,7 @@ def test_collate_token_channel_target(cuts, tokenizer):
     pad = get_pad_id(tokenizer)
     bos = tokenizer.bos
     eos = tokenizer.eos
-    total1 = compute_num_frames(1.0, FL, SR)  # 13
+    total1 = compute_num_frames(1.5, FL, SR)  # 19
     total2 = compute_num_frames(2.0, FL, SR)  # 25
 
     target_tokens, target_token_lens = collate_token_channel(
@@ -174,26 +180,27 @@ def test_collate_token_channel_target(cuts, tokenizer):
         roles={"assistant"},
         bos_id=bos,
         eos_id=eos,
+        pad_id=pad,
         remove_timestamps=True,
     )
 
     assert target_token_lens.tolist() == [total1, total2]
 
     # fmt: off
-    # Cut 1: "hello"(22172) at frames 5–9, padded to 25
-    # Cut 2: "good morning to you"(1781,7250,304,366) at frames 8–14, "welcome"(12853) at frames 20–24
+    # Cut 1: "hello"(22172) at frames 13–16, padded to 25
+    # Cut 2: "good morning to you"(1781,7250,304,366) at frames 10–16, "welcome"(12853) at frames 20–24
     expected_target = torch.tensor([
-        [0, 0, 0, 0, 0, 1, 22172, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 1, 1781, 7250, 304, 366, 0, 2, 0, 0, 0, 0, 0, 1, 12853, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 22172, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1781, 7250, 304, 366, 0, 2, 0, 0, 0, 1, 12853, 0, 0, 0],
     ])
     # fmt: on
     assert torch.equal(target_tokens, expected_target)
 
     # Decode verification
-    _verify_supervision_tokens(target_tokens[0], 0.4, 0.3, "hello", tokenizer, pad, bos, eos, total1)
+    _verify_supervision_tokens(target_tokens[0], 1.0, 0.3, "hello", tokenizer, pad, bos, eos, total1)
     _verify_supervision_tokens(
         target_tokens[1],
-        0.6,
+        0.8,
         0.5,
         "<|0|> good <|2|> <|2|> morning <|4|> <|4|> to <|5|> <|5|> you <|6|>",
         tokenizer,
@@ -210,7 +217,7 @@ def test_collate_token_channel_source(cuts, tokenizer):
     pad = get_pad_id(tokenizer)
     bos = tokenizer.bos
     eos = tokenizer.eos
-    total1 = compute_num_frames(1.0, FL, SR)  # 13
+    total1 = compute_num_frames(1.5, FL, SR)  # 19
     total2 = compute_num_frames(2.0, FL, SR)  # 25
 
     source_tokens, source_token_lens = collate_token_channel(
@@ -220,6 +227,7 @@ def test_collate_token_channel_source(cuts, tokenizer):
         roles={"user"},
         bos_id=bos,
         eos_id=eos,
+        pad_id=pad,
         remove_timestamps=False,
         prepend_word_space=False,
     )
@@ -260,8 +268,13 @@ def test_collate_token_channel_source(cuts, tokenizer):
 
 def test_collate_system_prompt(cuts, tokenizer):
     """Test collate_system_prompt: cut1 has no prompt, cut2 has 'be helpful'."""
+    pad = get_pad_id(tokenizer)
+    bos = tokenizer.bos
+    eos = tokenizer.eos
 
-    prompt_tokens, prompt_token_lens = collate_system_prompt(cuts, tokenizer)
+    prompt_tokens, prompt_token_lens = collate_system_prompt(
+        cuts, tokenizer, bos_id=bos, eos_id=eos, pad_id=pad
+    )
 
     # fmt: off
     # cut1: no system_prompt → all pad, len=0
@@ -316,31 +329,39 @@ def test_duplex_stt_dataset(cuts, tokenizer):
     batch = dataset[cuts]
     ad = batch["audio_data"]
 
-    total1 = compute_num_frames(1.0, FL, SR)  # 13
+    total1 = compute_num_frames(1.5, FL, SR)  # 19
     total2 = compute_num_frames(2.0, FL, SR)  # 25
+
+    bos = dataset.agent_bos_id
+    eos = dataset.agent_eos_id
+    ubos = dataset.user_bos_id
+    p = dataset.pad_id
 
     # sample_id
     assert len(ad["sample_id"]) == 2
 
     # source_audio
     assert ad["source_audio"].shape == (2, 32000)
-    assert ad["source_audio_lens"].tolist() == [16000, 32000]
+    assert ad["source_audio_lens"].tolist() == [24000, 32000]
 
-    # target_tokens (remove_timestamps=True, same as unit test)
+    # target_tokens (remove_timestamps=True)
+    # Agent EOS is placed by the source channel at user_bospos + eos_offset_frames(=8).
+    # Cut1: user@0 → agent EOS@8, agent BOS@13.  Cut2: user@0 → EOS@8, agent BOS@10, user@15 → EOS@23.
     assert ad["target_token_lens"].tolist() == [total1, total2]
     # fmt: off
     assert torch.equal(ad["target_tokens"], torch.tensor([
-        [0, 0, 0, 0, 0, 1, 22172, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 1, 1781, 7250, 304, 366, 0, 2, 0, 0, 0, 0, 0, 1, 12853, 0, 0, 0],
+        [p, p, p, p, p, p, p, p, eos, p, p, p, p, bos, 22172, p, p, p, p, p, p, p, p, p, p],
+        [p, p, p, p, p, p, p, p, eos, p, bos, 1781, 7250, 304, 366, p, p, p, p, p, bos, 12853, p, eos, p],
     ]))
     # fmt: on
 
     # source_tokens (remove_timestamps=False via predict_user_text=True, timestamp-aligned)
+    # Uses user_bos_id (from '^' token) as BOS for user turns.
     assert ad["source_token_lens"].tolist() == [total1, total2]
     # fmt: off
     assert torch.equal(ad["source_tokens"], torch.tensor([
-        [1, 7251, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [1, 1781, 0, 0, 7250, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 1, 3969, 0, 0, 2, 0, 0, 0, 0, 0],
+        [ubos, 7251, p, p, eos, p, p, p, p, p, p, p, p, p, p, p, p, p, p, p, p, p, p, p, p],
+        [ubos, 1781, p, p, 7250, p, eos, p, p, p, p, p, p, p, p, ubos, 3969, p, p, eos, p, p, p, p, p],
     ]))
     # fmt: on
 
@@ -349,8 +370,8 @@ def test_duplex_stt_dataset(cuts, tokenizer):
     assert ad["prompt_token_lens"].tolist() == [0, 4]
     # fmt: off
     assert torch.equal(ad["prompt_tokens"], torch.tensor([
-        [0, 0, 0, 0],
-        [1, 367, 8444, 2],
+        [p, p, p, p],
+        [bos, 367, 8444, eos],
     ]))
     # fmt: on
 
@@ -366,8 +387,6 @@ def test_duplex_stt_dataset(cuts, tokenizer):
 
     # no text data (no Formattable cuts)
     assert batch["text_data"] is None
-
-    # source_audio is not augmented when augmenter is not configured (audio is unchanged from collate_audio)
 
 
 def test_duplex_stt_dataset_augmentation(cuts, tokenizer, tmp_path):
@@ -413,3 +432,271 @@ def test_duplex_stt_dataset_augmentation(cuts, tokenizer, tmp_path):
     assert "source_audio_aug" not in ad
     assert ad["source_audio"].shape == original_audio.shape
     assert not torch.equal(ad["source_audio"], original_audio)
+
+
+# ................... MCQ prompt selection ...........................................
+
+
+def _make_cut_with_shard_origin(shard_origin, system_prompt=None):
+    """Helper to create a cut with a given shard_origin attribute."""
+    cut = dummy_cut(0, duration=1.0, recording=dummy_recording(0, duration=1.0, with_data=True))
+    cut.supervisions = [
+        SupervisionSegment(id="s0", recording_id=cut.recording_id, start=0, duration=0.5, text="hi", speaker="user"),
+    ]
+    cut.shard_origin = shard_origin
+    if system_prompt:
+        cut.custom = {"system_prompt": system_prompt}
+    return cut
+
+
+def test_mcq_prompt_think_cut(tokenizer):
+    """MCQ training think-cut should get THINK prompt."""
+    pad = get_pad_id(tokenizer)
+    bos = tokenizer.bos
+    eos = tokenizer.eos
+
+    cut = _make_cut_with_shard_origin("MCQ_training_think_v1")
+    prompt_tokens, prompt_token_lens = collate_system_prompt(
+        CutSet([cut]), tokenizer, bos_id=bos, eos_id=eos, pad_id=pad, add_mcq_prompt=True
+    )
+
+    assert prompt_token_lens[0].item() > 0
+    expected_ids = [bos] + tokenizer.text_to_ids(MCQ_SYSTEM_PROMPT_THINK) + [eos]
+    assert prompt_tokens[0].tolist()[:len(expected_ids)] == expected_ids
+
+
+def test_mcq_prompt_nothink_cut(tokenizer):
+    """MCQ training non-think cut should get NOTHINK prompt."""
+    pad = get_pad_id(tokenizer)
+    bos = tokenizer.bos
+    eos = tokenizer.eos
+
+    cut = _make_cut_with_shard_origin("MCQ_training_v2")
+    prompt_tokens, prompt_token_lens = collate_system_prompt(
+        CutSet([cut]), tokenizer, bos_id=bos, eos_id=eos, pad_id=pad, add_mcq_prompt=True
+    )
+
+    assert prompt_token_lens[0].item() > 0
+    expected_ids = [bos] + tokenizer.text_to_ids(MCQ_SYSTEM_PROMPT_NOTHINK) + [eos]
+    assert prompt_tokens[0].tolist()[:len(expected_ids)] == expected_ids
+
+
+def test_mcq_prompt_singleqa_excluded(tokenizer):
+    """MCQ training singleQA cut should get no MCQ prompt."""
+    pad = get_pad_id(tokenizer)
+    bos = tokenizer.bos
+    eos = tokenizer.eos
+
+    cut = _make_cut_with_shard_origin("MCQ_training_singleQA_v1")
+    prompt_tokens, prompt_token_lens = collate_system_prompt(
+        CutSet([cut]), tokenizer, bos_id=bos, eos_id=eos, pad_id=pad, add_mcq_prompt=True
+    )
+
+    assert prompt_token_lens[0].item() == 0
+
+
+def test_mcq_val_prompt_when_enabled(tokenizer):
+    """MCQ validation cut gets THINK prompt when add_mcq_prompt=True."""
+    pad = get_pad_id(tokenizer)
+    bos = tokenizer.bos
+    eos = tokenizer.eos
+
+    cut = _make_cut_with_shard_origin("openbookqa_test")
+    prompt_tokens, prompt_token_lens = collate_system_prompt(
+        CutSet([cut]), tokenizer, bos_id=bos, eos_id=eos, pad_id=pad, add_mcq_prompt=True
+    )
+
+    assert prompt_token_lens[0].item() > 0
+    expected_ids = [bos] + tokenizer.text_to_ids(MCQ_SYSTEM_PROMPT_THINK) + [eos]
+    assert prompt_tokens[0].tolist()[:len(expected_ids)] == expected_ids
+
+
+def test_mcq_val_prompt_disabled_by_default(tokenizer):
+    """MCQ validation cut gets no prompt when add_mcq_prompt=False (default)."""
+    pad = get_pad_id(tokenizer)
+    bos = tokenizer.bos
+    eos = tokenizer.eos
+
+    cut = _make_cut_with_shard_origin("openbookqa_test")
+    prompt_tokens, prompt_token_lens = collate_system_prompt(
+        CutSet([cut]), tokenizer, bos_id=bos, eos_id=eos, pad_id=pad
+    )
+
+    assert prompt_token_lens[0].item() == 0
+
+
+def test_custom_prompt_overrides_mcq(tokenizer):
+    """Per-cut custom system_prompt takes priority over MCQ logic."""
+    pad = get_pad_id(tokenizer)
+    bos = tokenizer.bos
+    eos = tokenizer.eos
+
+    cut = _make_cut_with_shard_origin("MCQ_training_think_v1", system_prompt="be concise")
+    prompt_tokens, prompt_token_lens = collate_system_prompt(
+        CutSet([cut]), tokenizer, bos_id=bos, eos_id=eos, pad_id=pad, add_mcq_prompt=True
+    )
+
+    expected_ids = [bos] + tokenizer.text_to_ids("be concise") + [eos]
+    assert prompt_tokens[0].tolist()[:len(expected_ids)] == expected_ids
+
+
+# ................... Filler response injection ...........................................
+
+
+def test_filler_response_injection(tokenizer, tmp_path):
+    """_inject_filler_responses should replace BOS and write filler tokens."""
+    filler_data = {"agent_responses": [{"text": "okay", "duration_ms": 500}]}
+    filler_file = tmp_path / "fillers.json"
+    filler_file.write_text(json.dumps(filler_data))
+
+    dataset = DuplexSTTDataset(
+        tokenizer=tokenizer,
+        frame_length=FL,
+        source_sample_rate=SR,
+        input_roles=["user"],
+        output_roles=["assistant"],
+        cfg={
+            "prepend_word_space": False,
+            "add_filler_response_for_asr": True,
+            "filler_response_file": str(filler_file),
+            "filler_response_delay": 2,
+        },
+        model_cfg={},
+        is_training=True,
+    )
+
+    bos = dataset.agent_bos_id
+    pad = dataset.pad_id
+    seq_len = 20
+
+    target_tokens = torch.full((1, seq_len), pad, dtype=torch.long)
+    target_tokens[0, 5] = bos  # original BOS at position 5
+    target_token_lens = torch.tensor([seq_len])
+
+    dataset._inject_filler_responses(target_tokens, target_token_lens)
+
+    # Original BOS at pos 5 should be cleared
+    assert target_tokens[0, 5].item() == pad
+
+    # Filler should be written at pos 5 + delay(2) = 7
+    insert_pos = 7
+    assert target_tokens[0, insert_pos].item() == bos, "Filler should start with BOS"
+
+    # Filler text "okay" tokens should follow BOS
+    filler_ids = tokenizer.text_to_ids("okay")
+    for j, fid in enumerate(filler_ids):
+        assert target_tokens[0, insert_pos + 1 + j].item() == fid
+
+    # target_token_lens should be updated based on duration_ms
+    duration_frames = max(1, int(500 / (FL * 1000)))
+    filler_end = insert_pos + 1 + len(filler_ids)
+    duration_end = insert_pos + duration_frames
+    expected_len = min(max(duration_end, filler_end), seq_len)
+    assert target_token_lens[0].item() == expected_len
+
+
+def test_filler_response_no_bos_skips(tokenizer, tmp_path):
+    """When target has no BOS, _inject_filler_responses should skip gracefully."""
+    filler_data = {"agent_responses": [{"text": "okay"}]}
+    filler_file = tmp_path / "fillers.json"
+    filler_file.write_text(json.dumps(filler_data))
+
+    dataset = DuplexSTTDataset(
+        tokenizer=tokenizer,
+        frame_length=FL,
+        source_sample_rate=SR,
+        cfg={
+            "add_filler_response_for_asr": True,
+            "filler_response_file": str(filler_file),
+            "filler_response_delay": 0,
+        },
+        model_cfg={},
+    )
+
+    pad = dataset.pad_id
+    target_tokens = torch.full((1, 10), pad, dtype=torch.long)
+    target_token_lens = torch.tensor([10])
+    original = target_tokens.clone()
+
+    dataset._inject_filler_responses(target_tokens, target_token_lens)
+
+    assert torch.equal(target_tokens, original), "Tokens should be unchanged when no BOS exists"
+
+
+def test_filler_response_truncation(tokenizer, tmp_path):
+    """Filler should be truncated when it exceeds available space."""
+    filler_data = {"agent_responses": [{"text": "this is a very long filler response sentence"}]}
+    filler_file = tmp_path / "fillers.json"
+    filler_file.write_text(json.dumps(filler_data))
+
+    dataset = DuplexSTTDataset(
+        tokenizer=tokenizer,
+        frame_length=FL,
+        source_sample_rate=SR,
+        cfg={
+            "add_filler_response_for_asr": True,
+            "filler_response_file": str(filler_file),
+            "filler_response_delay": 0,
+        },
+        model_cfg={},
+    )
+
+    bos = dataset.agent_bos_id
+    pad = dataset.pad_id
+    seq_len = 5  # very short sequence
+
+    target_tokens = torch.full((1, seq_len), pad, dtype=torch.long)
+    target_tokens[0, 0] = bos
+    target_token_lens = torch.tensor([seq_len])
+
+    dataset._inject_filler_responses(target_tokens, target_token_lens)
+
+    # Should not crash, filler gets truncated to fit
+    assert target_tokens[0, 0].item() == bos, "Truncated filler should still start with BOS"
+    assert target_token_lens[0].item() <= seq_len
+
+
+# ................... Timestamp safety for number normalization ........................
+
+
+def test_normalize_numbers_does_not_corrupt_timestamps(tokenizer):
+    """When remove_timestamps=True, timestamps should be stripped before normalization."""
+    pad = get_pad_id(tokenizer)
+    text = "<|0|> I have 3 cats <|5|>"
+
+    ids_with_norm = _text_to_ids(
+        text, tokenizer, remove_timestamps=True, pad_id=pad, use_numbers_norm=True
+    )
+    ids_without_norm = _text_to_ids(
+        text, tokenizer, remove_timestamps=True, pad_id=pad, use_numbers_norm=False
+    )
+
+    decoded_with = tokenizer.ids_to_text(ids_with_norm).strip()
+    decoded_without = tokenizer.ids_to_text(ids_without_norm).strip()
+
+    assert "three" in decoded_with, f"Numbers should be normalized: '{decoded_with}'"
+    assert "3" in decoded_without, f"Numbers should NOT be normalized: '{decoded_without}'"
+    # Neither should contain timestamp artifacts
+    assert "<|" not in decoded_with
+    assert "<|" not in decoded_without
+
+
+def test_normalize_numbers_skipped_on_timestamp_aligned_path(tokenizer):
+    """When remove_timestamps=False and text has timestamps, normalization is skipped."""
+    pad = get_pad_id(tokenizer)
+    text = "<|0|> buy <|2|> <|3|> 3 <|4|> <|5|> items <|7|>"
+
+    ids = _text_to_ids(
+        text, tokenizer, remove_timestamps=False, pad_id=pad,
+        available_frames_for_text=10, use_numbers_norm=True,
+    )
+
+    # On the timestamp-aligned path, normalization is skipped because some
+    # expansions change word count (e.g. "$3.50" → "three dollars fifty cents"),
+    # which would break the word-to-timestamp pairing.
+    assert isinstance(ids, list)
+    digit_ids = tokenizer.text_to_ids("3")
+    three_ids = tokenizer.text_to_ids("three")
+    flat_ids = [x for x in ids if x != pad]
+    assert any(d in flat_ids for d in digit_ids), "Digit '3' should remain as-is on timestamp path"
+    assert not any(t in flat_ids for t in three_ids), "Word 'three' should not appear on timestamp path"

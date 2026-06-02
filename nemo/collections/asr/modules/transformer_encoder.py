@@ -225,8 +225,9 @@ class MultiHeadAttention(nn.Module):
         p = self.linear_pos(pos_emb).view(pos_emb.size(0), -1, H, D).transpose(1, 2)
         # pos_bias_{u,v}: (H, D) -> (1, H, 1, D) so they broadcast over the (B, H, T, D)
         # Q tensor against the head/depth axes rather than (incorrectly) against time.
-        bias_u = self.pos_bias_u.view(1, H, 1, D)
-        bias_v = self.pos_bias_v.view(1, H, 1, D)
+        # Match dtype under AMP so fp32 bias params do not upcast q before FlexAttention.
+        bias_u = self.pos_bias_u.view(1, H, 1, D).to(dtype=q.dtype)
+        bias_v = self.pos_bias_v.view(1, H, 1, D).to(dtype=q.dtype)
         # Matrix b + d: ((Q + v) @ R^T) shifted into (q_idx, kv_idx) space, then scaled
         # by 1/sqrt(D) so it can be added directly to FlexAttention's already-scaled scores.
         q_with_bias_v = q + bias_v

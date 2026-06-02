@@ -379,7 +379,11 @@ class EasyMagpieCodePredictor(nn.Module):
         # Row 0: projected backbone hidden state (the AR "prompt").
         buf[:, 0, :] = self.local_transformer_in_projection(dec_hidden)
 
-        forbidden = self.forbidden_mask if self.forbidden_mask.any() else None
+        # Always pass the mask unconditionally. An all-False mask makes
+        # ``masked_fill`` a no-op, so there's no need to guard with
+        # ``forbidden_mask.any()`` — and that guard is a data-dependent
+        # host sync that is illegal during CUDA-graph capture.
+        forbidden = self.forbidden_mask
         for k in range(self.num_codebooks):
             hidden = self(buf)  # compiled transformer over the fixed buffer
             row = self.local_transformer_audio_out_projection(hidden[:, k, :])

@@ -116,6 +116,17 @@ streaming:
   chunk_size_in_secs: null
   request_type: frame
   num_slots: 256
+  # Number of chunks the MALSD K-beam state persists across before being forced
+  # to collapse to top-1. ``1`` (default) reproduces the original per-chunk
+  # collapse behaviour. Values ``> 1`` let beams compete across multiple chunks
+  # before committing - useful for low right-context configs (e.g. ``[70,0]``)
+  # where the encoder is uncertain per-chunk and a wrong boost-induced commit at
+  # one chunk would otherwise eliminate the correct carrier-phrase beam from
+  # the search. Larger values increase publish latency by up to ``N - 1`` chunks
+  # (mid-window publications are speculative; only the value at the next
+  # collapse boundary is final) and proportionally increase the worst-case
+  # per-stream divergence carried in the beam state.
+  chunks_per_beam_reset: 24
 
 
 # ========================

@@ -156,6 +156,19 @@ class CacheAwareRNNTPipeline(BasePipeline):
 
         self.request_type = RequestType.from_str(cfg.streaming.request_type)
 
+        # Cross-chunk MALSD K-beam window. ``1`` (default) collapses the K beams
+        # to top-1 every chunk (original behaviour). Higher values let beams
+        # diverge across (N-1) chunks before being forced to a top-1 commit.
+        # See the YAML config comment block for the full motivation and the
+        # mid-window publication caveat.
+        self.chunks_per_beam_reset = max(1, int(cfg.streaming.get("chunks_per_beam_reset", 1)))
+        # Counter shared across the batched MALSD state because
+        # ``collapse_batched_state_to_beams_`` is an all-or-nothing batched
+        # operation. Reset to 0 on each collapse boundary, never on per-stream
+        # ``eos`` (the per-stream window state on
+        # ``CacheAwareRNNTStreamingState`` is what handles eos correctness).
+        self._chunks_since_collapse = 0
+
     def init_greedy_rnnt_decoder(self) -> None:
         """Initialize the RNNT decoder."""
         check_existance_of_required_attributes(self, ['vocabulary', 'conf_func'])
@@ -266,6 +279,88 @@ class CacheAwareRNNTPipeline(BasePipeline):
             feature_buffer_lens = feature_buffer_lens - right_paddings
         feature_buffers = torch.cat(feature_buffers).to(self.device)
         return feature_buffers, feature_buffer_lens
+
+    def _update_windowed_beam_state(
+        self,
+        states: list[CacheAwareRNNTStreamingState],
+        best_batched_hyps: BatchedBeamHyps,
+    ) -> None:
+        """
+        Update each stream's per-beam cumulative tokens / timestamps since the
+        last collapse by walking each post-chunk slot's *own* prefix-tree
+        backwards. Cannot reuse :meth:`BatchedBeamHyps.flatten_` here because
+        its single ``max_idx``-bounded loop runs ``max(current_lengths_wb)``
+        iterations across all slots in a row, and any slot shorter than that
+        max walks past the end of its own valid ``transcript_wb_prev_ptr``
+        chain into ``INIT_POINTER_VALUE = -1``. PyTorch advanced indexing then
+        wraps ``-1`` to slot ``K-1`` and continues traversing the wrong slot's
+        chain - corrupting both the returned ``root_ptrs`` and the in-place
+        flattened ``transcript_wb`` for every short beam in the row. Standard
+        consumers of ``flatten_sort_`` only read slot 0 after sorting (top-1)
+        and don't notice, but the windowed-beam carry needs every slot.
+
+        For each (stream b, slot k) we instead walk back from position
+        ``current_lengths_wb[b, k] - 1`` to 0 along the per-slot
+        ``transcript_wb_prev_ptr`` chain, collecting non-blank tokens and
+        timestamps in reverse. The last visited slot id at position 0 is the
+        carry slot of origin ``sigma(k)`` (= what ``flatten_``'s ``root_ptrs``
+        was meant to give us, but reliably this time):
+
+            new_window_beam_tokens[k] =
+                prev_window_beam_tokens[sigma(k)] + chunk_local_tokens[b, k]
+
+        With ``chunks_per_beam_reset == 1`` the previous window is always
+        empty (cleared on the previous chunk's collapse) so this reduces to
+        ``new[k] == chunk_local[k]`` and the published hypothesis ends up
+        identical to the original ``prev_hyp + chunk_local`` concatenation.
+        """
+        K = best_batched_hyps.beam_size
+        blank_index = best_batched_hyps.blank_index
+        wb_lens = best_batched_hyps.current_lengths_wb.detach().cpu().tolist()  # [B][K]
+        transcripts = best_batched_hyps.transcript_wb.detach().cpu()  # [B, K, L_max]
+        prev_ptrs = best_batched_hyps.transcript_wb_prev_ptr.detach().cpu()  # [B, K, L_max]
+        timestamps = best_batched_hyps.timestamps.detach().cpu()  # [B, K, L_max]
+        for b, state in enumerate(states):
+            prev_tokens = state.window_beam_tokens or [[] for _ in range(K)]
+            prev_ts = state.window_beam_timestamps or [[] for _ in range(K)]
+            new_tokens: list[list[int]] = []
+            new_ts: list[list[int]] = []
+            for k in range(K):
+                L_k = wb_lens[b][k]
+                if L_k <= 0:
+                    # No chunk-local emissions: slot identity is preserved
+                    # across this chunk, so the carry slot of origin is itself.
+                    new_tokens.append(list(prev_tokens[k]))
+                    new_ts.append(list(prev_ts[k]))
+                    continue
+                # Walk back along slot k's own chain. ``cur_slot`` migrates
+                # across the K dimension as we follow prev_ptr; tokens are
+                # collected in reverse and reversed at the end.
+                rev_tok: list[int] = []
+                rev_ts: list[int] = []
+                cur_slot = k
+                for idx in range(L_k - 1, -1, -1):
+                    tok = int(transcripts[b, cur_slot, idx])
+                    if tok >= 0 and tok != blank_index:
+                        rev_tok.append(tok)
+                        rev_ts.append(int(timestamps[b, cur_slot, idx]))
+                    cur_slot = int(prev_ptrs[b, cur_slot, idx])
+                    if cur_slot < 0:
+                        # Defensive: should not happen for ``idx > 0`` because
+                        # MALSD writes a valid prev_ptr for every position it
+                        # emitted into. If it does, treat as a stuck chain and
+                        # bail out keeping whatever we've collected so far.
+                        cur_slot = k
+                        break
+                chunk_tok = list(reversed(rev_tok))
+                chunk_ts = list(reversed(rev_ts))
+                src = cur_slot
+                if src < 0 or src >= K:
+                    src = k
+                new_tokens.append(prev_tokens[src] + chunk_tok)
+                new_ts.append(prev_ts[src] + chunk_ts)
+            state.window_beam_tokens = new_tokens
+            state.window_beam_timestamps = new_ts
 
     def _malsd_build_cumulative_hyp(self, prev: Hypothesis | None, chunk_hyp: Hypothesis) -> Hypothesis:
         """
@@ -416,6 +511,17 @@ class CacheAwareRNNTPipeline(BasePipeline):
         if multi_biasing_ids is not None:
             multi_biasing_ids = multi_biasing_ids.to(device=encs_dim_last.device)
 
+        # Decide BEFORE running the decoder whether this chunk should collapse the
+        # K-beam state. With ``chunks_per_beam_reset == 1`` we collapse every
+        # chunk (original behaviour). With ``N > 1`` we let beams diverge for
+        # ``N - 1`` chunks and only collapse on the Nth. The counter is global
+        # across the batch because ``collapse_batched_state_to_beams_`` is an
+        # all-or-nothing batched op; per-stream correctness on early stream end
+        # is handled via the per-state ``window_*`` fields below (the carried
+        # MALSD state of a finished stream is simply discarded by the next
+        # ``reset_previous_hypothesis`` call).
+        do_collapse = (self._chunks_since_collapse + 1) >= self.chunks_per_beam_reset
+
         with torch.inference_mode(), torch.no_grad():
             best_batched_hyps, _, batched_state = self.decoding_computer(
                 encs_dim_last,
@@ -424,32 +530,74 @@ class CacheAwareRNNTPipeline(BasePipeline):
                 multi_biasing_ids=multi_biasing_ids,
             )
 
-            # Beam-only: collapse the prefix tree + carried state to the per-chunk
-            # raw-argmax winner so the next chunk starts from a single committed
-            # prefix. ``collapse_batched_state_to_beams_`` is a no-op for the
-            # greedy backend (different ``decoding_computer`` type), but we only
-            # reach this path when the model has been configured with MALSD so we
-            # always pass a ``BatchedBeamHyps``.
             if isinstance(best_batched_hyps, BatchedBeamHyps):
-                beam_indices = best_batched_hyps.scores.argmax(dim=-1)
-                self.decoding_computer.collapse_batched_state_to_beams_(
-                    batched_state, best_batched_hyps, beam_indices
-                )
+                # Track each post-chunk slot's cumulative non-blank tokens since
+                # the last collapse, using ``root_ptrs`` to identify the
+                # pre-chunk carry slot each beam descended from. With
+                # ``chunks_per_beam_reset == 1`` this still runs and reduces to
+                # ``window_beam_tokens[k] == this_chunk_local[k]`` (every chunk
+                # is a collapse chunk so the cumulative is just the chunk).
+                self._update_windowed_beam_state(states=states, best_batched_hyps=best_batched_hyps)
 
-        chunk_local_hyps = batched_beam_hyps_to_hypotheses(best_batched_hyps, batch_size=encoded.shape[0])
+                # Capture pre-collapse argmax + scores. After
+                # ``collapse_batched_state_to_beams_`` runs, ``scores[:, 1:]``
+                # is forced to -inf and ``scores[:, 0]`` carries the winner -
+                # which makes ``argmax`` return 0 unconditionally. We need the
+                # PRE-collapse slot index to index ``window_beam_tokens`` (which
+                # was just computed against the diverged pre-collapse slots).
+                beam_indices_cpu = best_batched_hyps.scores.argmax(dim=-1).detach().cpu().tolist()
+                scores_pre_collapse = best_batched_hyps.scores.detach().cpu()
+                if do_collapse:
+                    beam_indices = best_batched_hyps.scores.argmax(dim=-1)
+                    self.decoding_computer.collapse_batched_state_to_beams_(
+                        batched_state, best_batched_hyps, beam_indices
+                    )
 
-        # Persist the collapsed (single-winner) MALSD state per stream for the
-        # next chunk. Mirrors the buffered pipeline's ``hyp_decoding_state`` carry.
+        if do_collapse:
+            self._chunks_since_collapse = 0
+        else:
+            self._chunks_since_collapse += 1
+
+        # Persist the (possibly collapsed) MALSD state per stream for the next
+        # chunk. Mirrors the buffered pipeline's ``hyp_decoding_state`` carry.
         carry_items = self.decoding_computer.split_batched_state(batched_state)
         for state, rnnt_state in zip(states, carry_items):
             state.hyp_decoding_state = rnnt_state
 
-        # Build cumulative hypotheses (chunk-local tokens + previous cumulative
-        # tokens) so the downstream ``run_greedy_decoder`` sees the same
-        # interface as the greedy path.
+        # Build the cumulative hypothesis per stream from the windowed state.
+        # ``window_committed_tokens`` is the immutable prefix up to the last
+        # collapse, and ``window_beam_tokens[top1_slot]`` is the new tokens that
+        # the current top-1 beam has emitted since then. On collapse chunks we
+        # promote ``window_beam_tokens[top1_slot]`` into the committed prefix
+        # below so subsequent chunks build on the freshly committed history.
         best_hyp: list[Hypothesis] = []
-        for state, chunk_hyp in zip(states, chunk_local_hyps):
-            best_hyp.append(self._malsd_build_cumulative_hyp(state.get_previous_hypothesis(), chunk_hyp))
+        for b, state in enumerate(states):
+            top1_slot = beam_indices_cpu[b]
+            window_tokens = state.window_beam_tokens[top1_slot] if state.window_beam_tokens else []
+            window_ts = state.window_beam_timestamps[top1_slot] if state.window_beam_timestamps else []
+
+            cum_tokens = state.window_committed_tokens + window_tokens
+            cum_ts = state.window_committed_timestamps + window_ts
+
+            best_hyp.append(
+                Hypothesis(
+                    score=float(scores_pre_collapse[b, top1_slot].item()),
+                    y_sequence=torch.as_tensor(cum_tokens, dtype=torch.long),
+                    timestamp=torch.as_tensor(cum_ts, dtype=torch.long),
+                    alignments=None,
+                    dec_state=None,
+                )
+            )
+
+            if do_collapse:
+                # Promote the chosen beam's window tokens into the committed
+                # prefix and clear the window. Done after building ``best_hyp``
+                # above so the post-collapse published hypothesis equals the
+                # mid-window one - just with everything moved into ``committed``.
+                state.window_committed_tokens = list(cum_tokens)
+                state.window_committed_timestamps = list(cum_ts)
+                state.window_beam_tokens = None
+                state.window_beam_timestamps = None
 
         return best_hyp, new_context
 
@@ -533,6 +681,72 @@ class CacheAwareRNNTPipeline(BasePipeline):
             )
 
         state.update_state(cur_output, eou_detected=eou_detected)
+        return eou_detected
+
+    def run_malsd_decoder(self, state: CacheAwareRNNTStreamingState, request: Request, hyp: Hypothesis) -> bool:
+        """
+        Accurate per-chunk state update for the windowed MALSD path.
+
+        Builds on :meth:`run_greedy_decoder` (so EOU detection, label-buffer
+        rolling and ``cleanup_after_eou`` semantics are preserved unchanged)
+        but RESYNCS ``state.tokens`` / ``state.timesteps`` /
+        ``state.confidences`` with the current top-1's full cumulative
+        afterwards. Required for correctness with
+        ``streaming.chunks_per_beam_reset > 1``: between collapses the
+        raw-argmax winner can switch between beams with incompatible histories
+        (beam A: ``["I"]`` at chunk t, beam B: ``["I", "I"]`` at chunk t+1),
+        and ``run_greedy_decoder``'s append-after-offset would splice A's
+        prefix with B's new-suffix into a frankenstein transcript like
+        ``"I I"`` that no beam ever believed. Overwriting state.tokens with
+        the actual current top-1 belief at the end of each chunk avoids that
+        splice and keeps the published state in sync with whichever beam
+        currently wins, regardless of how many chunks the window spans.
+
+        ``_malsd_utterance_start`` tracks where the current utterance begins
+        within ``hyp.y_sequence`` (which is cumulative since stream start
+        because the windowed state only resets on stream end). It is bumped
+        to the current cumulative length on EOU below so the next chunk's
+        resync slice starts past the cleared-from-state previous utterance.
+        """
+        eou_detected = self.run_greedy_decoder(state, request, hyp)
+
+        # Resync state.tokens with the current top-1 belief. ``run_greedy_decoder``
+        # appended ``hyp.y_sequence[state.offset:]`` onto whatever was already
+        # there; here we replace ``state.tokens`` with the slice of
+        # ``hyp.y_sequence`` that belongs to the current utterance so the
+        # next ``decode_bpe_tokens`` call sees an accurate transcript.
+        all_tokens = (
+            hyp.y_sequence.detach().cpu().tolist()
+            if isinstance(hyp.y_sequence, torch.Tensor)
+            else [int(t) for t in hyp.y_sequence]
+        )
+        all_timestamps = (
+            hyp.timestamp.detach().cpu().tolist()
+            if isinstance(hyp.timestamp, torch.Tensor)
+            else [int(t) for t in hyp.timestamp]
+        )
+        start = max(0, getattr(state, "_malsd_utterance_start", 0))
+        # Defensive: never slice past the cumulative length.
+        start = min(start, len(all_tokens))
+        tokens_list = all_tokens[start:]
+        timestamps_list = all_timestamps[start:]
+
+        state.tokens = list(tokens_list)
+        state.timesteps = list(timestamps_list)
+        state.confidences = [0.0] * len(tokens_list)
+        if tokens_list:
+            state.last_token = tokens_list[-1]
+            state.last_token_idx = timestamps_list[-1] if timestamps_list else None
+
+        if eou_detected:
+            # Mark the boundary in ``hyp.y_sequence`` coordinates so the next
+            # chunk's resync slice starts past the cleared previous
+            # utterance. ``cleanup_after_eou`` (called by
+            # ``cache_aware_transcribe_step`` right after this returns)
+            # clears ``state.tokens``; ``_malsd_utterance_start`` plays the
+            # same role for the windowed cumulative.
+            state._malsd_utterance_start = len(all_tokens)
+
         return eou_detected
 
     def cache_aware_transcribe_step(
@@ -635,20 +849,42 @@ class CacheAwareRNNTPipeline(BasePipeline):
         self.context_manager.update_cache(stream_ids, new_context, mapping)
         self.context_manager.reset_slots(stream_ids, eos_flags)
 
-        # update the previous hypothesis and reset the previous hypothesis for the streams that has ended
+        # Stash the carry hypothesis for streams that aren't ending. We DEFER
+        # ``reset_previous_hypothesis`` for ending streams until AFTER the
+        # per-request decoder loop below: that reset also wipes
+        # ``_malsd_utterance_start`` (the MALSD windowed-beam pipeline needs
+        # it to slice the just-finished utterance out of the cumulative
+        # ``hyp.y_sequence``), and clearing it before ``run_malsd_decoder``
+        # ran for the last chunk made the final EOU re-decode the entire
+        # stream from token 0 - producing "What's What's the primary
+        # function of lithium..." style segment duplications.
         for state, hyp, eos in zip(states, best_hyp, eos_flags):
-            if eos:
-                state.reset_previous_hypothesis()
-            else:
+            if not eos:
                 state.set_previous_hypothesis(hyp)
 
-        # run greedy decoder for each request-state-hypothesis tuple
+        # Run the per-stream state update for each request-state-hypothesis
+        # tuple. For the MALSD windowed-beam path we cannot use the standard
+        # ``run_greedy_decoder`` (its append-after-offset pattern frankensteins
+        # state.tokens whenever the raw-argmax winner switches beams mid
+        # window); ``run_malsd_decoder`` REPLACES the per-chunk cumulative so
+        # state.tokens stays exactly in sync with whichever beam currently
+        # wins the chunk.
+        update_fn = self.run_malsd_decoder if decoding_computer is not None else self.run_greedy_decoder
         for request, state, hyp in zip(requests, states, best_hyp):
-            eou_detected = self.run_greedy_decoder(state, request, hyp)
+            eou_detected = update_fn(state, request, hyp)
             if eou_detected:
                 self.bpe_decoder.decode_bpe_tokens(state)
                 state.cleanup_after_eou()
                 ready_state_ids.add(request.stream_id)
+
+        # Now safe to drop the MALSD windowed state + previous_hypothesis for
+        # streams that just ended: their final chunk's ``run_malsd_decoder``
+        # has already produced the last segment using the correct utterance
+        # slice. The next stream that lands on this slot will see a fresh
+        # ``_malsd_utterance_start == 0``.
+        for state, eos in zip(states, eos_flags):
+            if eos:
+                state.reset_previous_hypothesis()
 
         # Cleanup per-stream biasing models when stream ends
         if biasing_enabled:

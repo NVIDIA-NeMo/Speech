@@ -14,14 +14,15 @@
 """EasyMagpieTTS model definition for vLLM-Omni.
 
 This package provides an inference-only re-implementation of EasyMagpieTTS
-(decoder-only, Qwen2 backbone + autoregressive local transformer over the
-stacked audio codebooks) that plugs into the vLLM-Omni serving stack via the
-standard ``preprocess`` / ``postprocess`` / ``make_omni_output`` hooks.
+(decoder-only, Nemotron-H hybrid-Mamba backbone + autoregressive local
+transformer over the stacked audio codebooks) that plugs into the vLLM-Omni
+serving stack via the standard ``preprocess`` / ``postprocess`` /
+``make_omni_output`` hooks.
 
 The companion ``vllm_plugin_easymagpie_omni`` package registers the model with
 vLLM's ``ModelRegistry`` through the ``vllm.general_plugins`` entry point.
 """
 
-from easymagpie_vllm_omni.config import EASYMAGPIE_QWEN, EasyMagpieOmniArch
+from easymagpie_vllm_omni.config import EASYMAGPIE_SMALLMAMBA, EasyMagpieOmniArch
 
-__all__ = ["EASYMAGPIE_QWEN", "EasyMagpieOmniArch"]
+__all__ = ["EASYMAGPIE_SMALLMAMBA", "EasyMagpieOmniArch"]

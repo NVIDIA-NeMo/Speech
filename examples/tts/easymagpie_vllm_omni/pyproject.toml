@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "easymagpie-vllm-omni"
 version = "0.1.0"
-description = "vLLM-Omni model definition for EasyMagpieTTS (Qwen2 backbone + AR local transformer)"
+description = "vLLM-Omni model definition for EasyMagpieTTS (Nemotron-H hybrid-Mamba backbone + AR local transformer)"
 requires-python = ">=3.10"
 dependencies = [
     # The heavy runtime deps (vllm, vllm-omni, torch) are provided by the

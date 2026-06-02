@@ -14,20 +14,27 @@
 """Inference-only EasyMagpieTTS model for vLLM-Omni.
 
 EasyMagpieTTS is a decoder-only streaming TTS model: a text-LM backbone (the
-reference checkpoint uses Qwen2.5-1.5B) consumes a per-frame additive input
-embedding (text + phoneme + audio) and emits a per-frame hidden state, from
-which a small autoregressive *local transformer* samples all ``C * S`` stacked
-audio codebooks for that frame (see :mod:`easymagpie_vllm_omni.local_transformer`).
+SmallMamba checkpoint uses a Nemotron-H hybrid Mamba2 + attention + MoE decoder)
+consumes a per-frame additive input embedding (text + phoneme + audio) and
+emits a per-frame hidden state, from which a small autoregressive *local
+transformer* samples all ``C * S`` stacked audio codebooks for that frame
+(see :mod:`easymagpie_vllm_omni.local_transformer`).
 
 This module wires that architecture into vLLM-Omni's
 ``preprocess`` / ``forward`` / ``compute_logits`` / ``make_omni_output`` /
 ``postprocess`` contract, following the same conventions as the upstream
 qwen3-tts and eartts vLLM-Omni model definitions:
 
-* **Backbone** — vLLM's :class:`~vllm.model_executor.models.qwen2.Qwen2Model`,
-  reused wholesale (KV cache + paged attention) the same way the EasyMagpie
-  vLLM *sidecar* reuses ``NemotronHModel``. Every step feeds the backbone via
-  ``inputs_embeds``; its own ``embed_tokens`` table is never consumed.
+* **Backbone** — vLLM's
+  :class:`~vllm.model_executor.models.nemotron_h.NemotronHModel`, reused
+  wholesale (hybrid Mamba2 state + KV cache + paged attention) exactly like the
+  EasyMagpie vLLM *sidecar*. Every step feeds the backbone via ``inputs_embeds``;
+  its own ``embed_tokens`` table is never consumed. Because the backbone is a
+  hybrid-Mamba model, the class implements vLLM's
+  :class:`HasInnerState` / :class:`IsHybrid` / :class:`SupportsMambaPrefixCaching`
+  contracts (mamba-state shape/dtype/copy helpers are delegated to
+  :class:`NemotronHForCausalLM`), and the SmallMamba SiLU shared-experts fix is
+  applied at construction (see :mod:`easymagpie_vllm_omni.backbone_patches`).
 * **Local transformer** — :class:`EasyMagpieCodePredictor`, a from-scratch,
   CUDA-graph-capturable re-implementation that runs as a single compiled graph.
 * **compute_logits** — returns trivial logits (à la eartts) so vLLM's sampler
@@ -59,16 +66,21 @@ from typing import Any, Optional
 import torch
 from torch import nn
 from vllm.compilation.backends import set_model_tag
-from vllm.compilation.decorators import ignore_torch_compile, support_torch_compile
 from vllm.config import CUDAGraphMode, VllmConfig
 from vllm.forward_context import BatchDescriptor, get_forward_context
 from vllm.logger import init_logger
-from vllm.model_executor.models.qwen2 import Qwen2Model
+from vllm.model_executor.models.interfaces import (
+    HasInnerState,
+    IsHybrid,
+    SupportsMambaPrefixCaching,
+)
+from vllm.model_executor.models.nemotron_h import NemotronHForCausalLM, NemotronHModel
 from vllm.model_executor.models.utils import maybe_prefix
 from vllm.sequence import IntermediateTensors
 
 from vllm_omni.model_executor.models.output_templates import OmniOutput
 
+from easymagpie_vllm_omni.backbone_patches import patch_silu_shared_experts
 from easymagpie_vllm_omni.config import EasyMagpieOmniArch
 from easymagpie_vllm_omni.local_transformer import EasyMagpieCodePredictor
 
@@ -81,21 +93,18 @@ logger = init_logger(__name__)
 _DUMMY_TOKEN_ID = 0
 
 
-# ``dynamic_arg_dims`` is passed explicitly: this file uses
-# ``from __future__ import annotations`` (PEP 563), so ``forward``'s annotations
-# are strings and vLLM's annotation-based inference would fail with
-# "No dynamic dimensions found...". These mirror vLLM's default inference
-# (dim 0 for every tensor / IntermediateTensors argument).
-@ignore_torch_compile
-@support_torch_compile(
-    dynamic_arg_dims={
-        "input_ids": 0,
-        "positions": 0,
-        "intermediate_tensors": 0,
-        "inputs_embeds": 0,
-    }
-)
-class EasyMagpieTTSForConditionalGeneration(nn.Module):
+# NOTE: unlike the Qwen2 backbone variant, this class is *not* wrapped in
+# ``@support_torch_compile``. The Nemotron-H backbone is a hybrid-Mamba model
+# that manages its own ``torch.compile`` / CUDA-graph capture internally (as
+# does :class:`EasyMagpieCodePredictor`), so the outer ``forward`` runs eagerly
+# and dispatches into the two self-compiled subgraphs — matching the EasyMagpie
+# vLLM sidecar (``EasyMagpieSmallMamba``).
+class EasyMagpieTTSForConditionalGeneration(
+    nn.Module,
+    HasInnerState,
+    IsHybrid,
+    SupportsMambaPrefixCaching,
+):
     """EasyMagpieTTS talker for vLLM-Omni.
 
     See the module docstring for the per-step flow and the per-request I/O
@@ -103,6 +112,12 @@ class EasyMagpieTTSForConditionalGeneration(nn.Module):
     ``has_postprocess`` / ``have_multimodal_outputs``) consumed by the
     ``OmniGPUModelRunner``.
     """
+
+    # Hybrid-Mamba bookkeeping (delegated to vLLM's NemotronH causal-LM, exactly
+    # like the EasyMagpie sidecar). vLLM expects these as class attributes.
+    get_mamba_state_dtype_from_config = NemotronHForCausalLM.get_mamba_state_dtype_from_config
+    get_mamba_state_shape_from_config = NemotronHForCausalLM.get_mamba_state_shape_from_config
+    get_mamba_state_copy_func = NemotronHForCausalLM.get_mamba_state_copy_func
 
     # Omni runner hooks.
     has_preprocess: bool = True
@@ -129,11 +144,15 @@ class EasyMagpieTTSForConditionalGeneration(nn.Module):
         self.embedding_dim = arch.embedding_dim
         self.num_codebooks = arch.num_stacked_codebooks
 
-        # ── Backbone (reused vLLM text LM; fed via inputs_embeds) ───────
-        self.backbone = Qwen2Model(
+        # ── Backbone (reused vLLM Nemotron-H LM; fed via inputs_embeds) ──
+        self.backbone = NemotronHModel(
             vllm_config=vllm_config,
             prefix=maybe_prefix(prefix, "backbone"),
         )
+        # SmallMamba was trained with mlp_hidden_act=silu but vLLM's NemotronHMLP
+        # hard-codes ReLU² in shared_experts. Restore SiLU (no-op when the
+        # backbone has no MoE layers).
+        patch_silu_shared_experts(self.backbone)
 
         # ── Local transformer (its own compile group / CUDA graph) ──────
         with set_model_tag("local_transformer"):
@@ -202,6 +221,43 @@ class EasyMagpieTTSForConditionalGeneration(nn.Module):
     # Decode-token dispatch (which positions need the local transformer)
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _select_query_layout(attn_metadata):
+        """Return ``(max_query_len, query_start_loc)`` from heterogeneous metadata.
+
+        The Nemotron-H backbone is hybrid, so ``attn_metadata`` is a per-layer
+        dict mixing two metadata types:
+
+        * **attention** layers carry standard metadata that exposes the
+          batch-level ``max_query_len`` + ``query_start_loc`` (e.g.
+          ``TritonAttentionMetadata``);
+        * **Mamba2** layers carry ``Mamba2AttentionMetadata``, which has *no*
+          ``max_query_len`` and splits the query layout into ``query_start_loc_p``
+          / ``query_start_loc_d`` instead.
+
+        Both are built from the same batch query layout, so we prefer any
+        attention-layer metadata. As a fallback for a (hypothetical) attention-free
+        backbone, we infer a decode-only batch from the Mamba2 ``num_prefills``
+        counter. Returns ``(None, None)`` when the layout can't be determined.
+        """
+        metas = list(attn_metadata.values()) if isinstance(attn_metadata, dict) else [attn_metadata]
+
+        # Preferred: an attention layer exposes the unified query layout.
+        for m in metas:
+            mql = getattr(m, "max_query_len", None)
+            qsl = getattr(m, "query_start_loc", None)
+            if mql is not None and qsl is not None:
+                return int(mql), qsl
+
+        # Fallback: Mamba2-only backbone. We can at least detect a decode-only
+        # batch (every request contributes a single token) from the counters.
+        for m in metas:
+            if hasattr(m, "num_prefills") and hasattr(m, "num_decodes"):
+                if int(getattr(m, "num_prefills", 0)) == 0:
+                    return 1, None  # decode-only -> caller runs the LT everywhere
+                break
+        return None, None
+
     def _get_decode_idxs(self):
         """Return ``(decode_token_indices, num_requests)`` for code-predictor dispatch.
 
@@ -220,15 +276,12 @@ class EasyMagpieTTSForConditionalGeneration(nn.Module):
         if attn_metadata is None:
             return None, 0
 
-        if isinstance(attn_metadata, dict):
-            any_layer_meta = next(iter(attn_metadata.values()))
-        else:
-            any_layer_meta = attn_metadata
+        max_query_len, start_loc = self._select_query_layout(attn_metadata)
 
-        if any_layer_meta.max_query_len == 1:
+        # Decode-only batch (or layout unavailable) -> run the LT on every token.
+        if max_query_len is None or max_query_len == 1 or start_loc is None:
             return None, 0
 
-        start_loc = any_layer_meta.query_start_loc
         tokens_per_req = start_loc[1:] - start_loc[:-1]
         is_decode = tokens_per_req == 1
         decode_token_indices = start_loc[:-1][is_decode]
@@ -284,9 +337,9 @@ class EasyMagpieTTSForConditionalGeneration(nn.Module):
             self._assemble_decode_embeddings(combined, valid)
 
         hidden_states = self.backbone(
-            input_ids,
-            positions,
-            intermediate_tensors,
+            input_ids=input_ids,
+            positions=positions,
+            intermediate_tensors=intermediate_tensors,
             inputs_embeds=combined,
         )
 
@@ -331,7 +384,10 @@ class EasyMagpieTTSForConditionalGeneration(nn.Module):
     @torch.no_grad()
     def _predict_phonemes(self, hidden_states: torch.Tensor, idx) -> None:
         """Argmax the phoneme head and stash the prediction for the next step."""
-        logits = self.phoneme_final_proj(hidden_states[idx].float())
+        # Run in the model dtype (don't force fp32): ``phoneme_final_proj`` weights
+        # follow ``model_config.dtype`` (e.g. bf16), and argmax is dtype-insensitive,
+        # so an fp32 upcast here would mismatch the weight dtype in ``F.linear``.
+        logits = self.phoneme_final_proj(hidden_states[idx])
         s = self.arch.phoneme_stacking_factor
         logits = logits.view(-1, s, self.arch.phoneme_vocab_size)
         self._dec_phoneme_tokens[idx] = logits.argmax(dim=-1).long()
@@ -517,7 +573,8 @@ class EasyMagpieTTSForConditionalGeneration(nn.Module):
 
     # Checkpoint prefixes (reference EasyMagpieTTS state dict) → in-model paths.
     # ``decoder.*`` is fed to the vLLM backbone loader separately (it understands
-    # HF Qwen2 naming + qkv packing). The TTS submodules are copied manually.
+    # HF Nemotron-H naming + Mamba/MoE packing). The TTS submodules are copied
+    # manually.
     _TTS_PREFIX_MAP = {
         "local_transformer.": "code_predictor.local_transformer.",
         "local_transformer_in_projection.": "code_predictor.local_transformer_in_projection.",
@@ -538,14 +595,15 @@ class EasyMagpieTTSForConditionalGeneration(nn.Module):
         return None
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
-        """Load backbone (Qwen2) + TTS submodule weights from a converted checkpoint.
+        """Load backbone (Nemotron-H) + TTS submodule weights from a converted checkpoint.
 
         The converted checkpoint is expected to use the reference EasyMagpieTTS
-        key layout: the backbone under ``decoder.*`` (HF Qwen2 names) and the
-        TTS submodules at top level (``audio_embeddings.*``, ``local_transformer.*``,
-        ``phoneme_*``, ``text_embedding.*``, projection heads). Backbone weights
-        are routed to :meth:`Qwen2Model.load_weights` (which packs qkv / gate-up
-        and handles HF naming); TTS weights are copied directly by name.
+        key layout: the backbone under ``decoder.*`` (HF Nemotron-H names) and
+        the TTS submodules at top level (``audio_embeddings.*``,
+        ``local_transformer.*``, ``phoneme_*``, ``text_embedding.*``, projection
+        heads). Backbone weights are routed to :meth:`NemotronHModel.load_weights`
+        (which handles HF naming + Mamba/MoE packing); TTS weights are copied
+        directly by name.
         """
         own_params = dict(self.named_parameters())
         loaded: set[str] = set()
@@ -577,10 +635,6 @@ class EasyMagpieTTSForConditionalGeneration(nn.Module):
 
         # Derived runtime state.
         self.code_predictor.init_forbidden_mask()
-
-        # The backbone's vestigial embed_tokens table is never consumed
-        # (everything goes through inputs_embeds); don't flag it as missing.
-        loaded.add("backbone.embed_tokens.weight")
 
         logger.info("Loaded %d weights for EasyMagpieTTSForConditionalGeneration", len(loaded))
         return loaded

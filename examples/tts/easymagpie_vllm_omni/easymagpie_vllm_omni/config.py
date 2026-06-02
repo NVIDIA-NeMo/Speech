@@ -13,9 +13,9 @@
 # limitations under the License.
 """Architecture constants for the EasyMagpieTTS vLLM-Omni model.
 
-These mirror the values baked into the reference EasyMagpieTTS checkpoint
-(``examples/tts/conf/magpietts/easy_magpietts.yaml`` — Qwen2.5-1.5B backbone,
-8 codebooks, frame-stacking ×2, 3-layer autoregressive local transformer).
+These mirror the values baked into the reference EasyMagpieTTS SmallMamba
+checkpoint (Nemotron-H hybrid Mamba2 + attention + MoE backbone, 8 codebooks,
+frame-stacking ×2, 3-layer autoregressive local transformer).
 
 The vLLM-Omni model reads the bulk of its configuration from the
 ``hf_config`` provided by vLLM at construction time; this dataclass captures
@@ -123,7 +123,7 @@ class EasyMagpieOmniArch:
         Any attribute present on ``hf_config`` overrides the default profile;
         unknown attributes are ignored. This lets a converted checkpoint carry
         its own ``easymagpie`` block in ``config.json`` while still working
-        out-of-the-box on the reference Qwen2.5-1.5B profile.
+        out-of-the-box on the reference SmallMamba profile.
         """
         defaults = cls()
         kwargs: dict[str, Any] = {}
@@ -154,5 +154,5 @@ class EasyMagpieOmniArch:
         return cls(**merged)
 
 
-# Reference profile: Qwen2.5-1.5B backbone EasyMagpieTTS checkpoint.
-EASYMAGPIE_QWEN = EasyMagpieOmniArch()
+# Reference profile: Nemotron-H SmallMamba EasyMagpieTTS checkpoint.
+EASYMAGPIE_SMALLMAMBA = EasyMagpieOmniArch()

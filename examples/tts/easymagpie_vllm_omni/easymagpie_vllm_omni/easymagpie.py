@@ -62,8 +62,19 @@ Per-request I/O (via ``additional_information``):
 * ``text_tokens`` — Python ``list[int]`` of subword ids that grows by one per
   decode step; step ``k`` consumes ``text_tokens[k]`` (embedded through the
   precomputed per-subword table).
-* ``phoneme_tokens`` (optional) — same streaming-list contract for the phoneme
-  channel; if omitted the phoneme branch is skipped.
+* ``temperature`` / ``top_k`` (prefill only, optional) — audio sampling params
+  for the local transformer. vLLM's ``SamplingParams.temperature`` drives only
+  the dummy backbone token sampler, so the *audio* temperature/top-k are passed
+  here and applied to the code predictor (defaults: ``0.7`` / ``80``).
+
+Streaming delays: the text, phoneme and audio streams are temporally offset by
+the checkpoint's ``streaming_phonemes_delay`` / ``streaming_speech_delay`` (baked
+into ``config.json`` by the converter from the default inference mode). The text
+stream runs from decode step 0; the phoneme stream opens at step
+``phonemes_delay`` (seeded with phoneme BOS) and the audio stream at step
+``speech_delay`` (seeded with audio BOS). The leading ``speech_delay`` decoded
+frames are warm-up only and must be dropped by the caller. Delays of 0/0
+reproduce a lock-step / non-delayed model.
 """
 from __future__ import annotations
 
@@ -191,6 +202,11 @@ class EasyMagpieTTSForConditionalGeneration(
         # caller passes plain text, never pre-tokenized ids.
         self._text_tokenizer: Any = None
 
+        # ── Streaming delays (text leads phoneme by ``phonemes_delay`` and audio
+        # by ``speech_delay`` decode steps; 0/0 == lock-step). ──
+        self.phonemes_delay = int(getattr(arch, "streaming_phonemes_delay", 0) or 0)
+        self.speech_delay = int(getattr(arch, "streaming_speech_delay", 0) or 0)
+
         # Phoneme channel (optional — only built when the checkpoint has one).
         self.has_phoneme = arch.phoneme_vocab_size > 0 and arch.phoneme_stacking_factor > 0
         if self.has_phoneme:
@@ -200,6 +216,11 @@ class EasyMagpieTTSForConditionalGeneration(
             self.phoneme_final_proj = nn.Linear(
                 self.hidden_dim, arch.phoneme_vocab_size * arch.phoneme_stacking_factor
             )
+            # Phoneme special-token ids + confidence→UNK replacement threshold.
+            self.phoneme_bos_id = int(arch.resolved_phoneme_bos_id)
+            self.phoneme_eos_id = int(arch.resolved_phoneme_eos_id)
+            self.phoneme_unk_id = int(arch.resolved_phoneme_unk_id)
+            self.phoneme_confidence_unk_threshold = float(arch.phoneme_confidence_unk_threshold)
 
         # ── Persistent, address-stable scratch buffers ─────────────────
         max_num_tokens = vllm_config.scheduler_config.max_num_batched_tokens
@@ -401,14 +422,34 @@ class EasyMagpieTTSForConditionalGeneration(
 
     @torch.no_grad()
     def _predict_phonemes(self, hidden_states: torch.Tensor, idx) -> None:
-        """Argmax the phoneme head and stash the prediction for the next step."""
+        """Argmax the phoneme head (with confidence→UNK replacement) and stash it.
+
+        The UNK replacement mirrors the reference: when the max phoneme
+        probability of any stacked channel falls below
+        ``phoneme_confidence_unk_threshold`` (and the step is not an EOS step),
+        the whole step is replaced with the UNK id to curb error propagation.
+
+        This is done here — not in ``preprocess``/``postprocess`` — because this
+        is the only place the phoneme logits exist (preprocess has no logits, and
+        postprocess only sees the argmax id). It uses only elementwise ops +
+        ``torch.where`` (no ``.item()`` / host sync), so it stays CUDA-graph safe.
+        """
         # Run in the model dtype (don't force fp32): ``phoneme_final_proj`` weights
         # follow ``model_config.dtype`` (e.g. bf16), and argmax is dtype-insensitive,
         # so an fp32 upcast here would mismatch the weight dtype in ``F.linear``.
         logits = self.phoneme_final_proj(hidden_states[idx])
         s = self.arch.phoneme_stacking_factor
         logits = logits.view(-1, s, self.arch.phoneme_vocab_size)
-        self._dec_phoneme_tokens[idx] = logits.argmax(dim=-1).long()
+        preds = logits.argmax(dim=-1).long()  # (n, S)
+
+        if self.phoneme_confidence_unk_threshold > 0.0:
+            max_probs = torch.softmax(logits.float(), dim=-1).amax(dim=-1)  # (n, S)
+            underconfident = (max_probs < self.phoneme_confidence_unk_threshold).any(dim=1, keepdim=True)
+            eos_step = (preds == self.phoneme_eos_id).any(dim=1, keepdim=True)
+            replace = underconfident & (~eos_step)
+            preds = torch.where(replace, torch.full_like(preds, self.phoneme_unk_id), preds)
+
+        self._dec_phoneme_tokens[idx] = preds
         self._dec_phoneme_valid[idx] = 1
 
     # ------------------------------------------------------------------
@@ -502,6 +543,13 @@ class EasyMagpieTTSForConditionalGeneration(
         device: torch.device,
         info_dict: dict[str, Any],
     ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
+        # Forward the audio (local-transformer) sampling params from the request.
+        # vLLM's ``SamplingParams.temperature`` drives only the dummy backbone
+        # token sampler, so the real audio temperature/top-k are passed via
+        # ``additional_information`` and applied to the code predictor here (once,
+        # at prefill — they are scalars that persist across decode steps).
+        self._maybe_set_lt_sampling_params(info_dict)
+
         prefill_embeds = self._build_prefill_embeds(device, info_dict)
 
         offset = int(info_dict.get("prefill_offset", 0) or 0)
@@ -577,6 +625,20 @@ class EasyMagpieTTSForConditionalGeneration(
 
         return torch.cat(parts, dim=0)
 
+    def _maybe_set_lt_sampling_params(self, info_dict: dict[str, Any]) -> None:
+        """Apply per-request audio sampling params to the local transformer.
+
+        Reads ``temperature`` / ``top_k`` (alias ``topk``) from the request's
+        ``additional_information`` and stores them on the code predictor. Absent
+        keys leave the existing defaults untouched.
+        """
+        temperature = info_dict.get("temperature")
+        if temperature is not None:
+            self.code_predictor.temperature = float(self._first_str(temperature) or 0.0)
+        top_k = info_dict.get("top_k", info_dict.get("topk"))
+        if top_k is not None:
+            self.code_predictor.top_k = int(float(self._first_str(top_k) or 0))
+
     def _get_text_tokenizer(self):
         """Lazily load the context-text tokenizer from the model directory.
 
@@ -640,11 +702,13 @@ class EasyMagpieTTSForConditionalGeneration(
         info_dict: dict[str, Any],
     ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
         decode_offset = int(info_dict.get("decode_offset", 0) or 0)
+        info_update: dict[str, Any] = {"decode_offset": decode_offset + 1}
 
-        # Text channel (streaming list, one subword consumed per step). Step k
+        # ── Text channel ── (delay 0: one subword per step from step 0). Step k
         # consumes text_tokens[k] (the list ends with the text eos id). Once the
         # stream is exhausted the channel is masked off (adds nothing) rather than
-        # repeating the last token.
+        # repeating the last token. The text stream leads the phoneme/audio
+        # streams by their respective delays.
         text_tokens = info_dict.get("text_tokens")
         if isinstance(text_tokens, list) and decode_offset < len(text_tokens):
             self._dec_text_tokens[start] = int(text_tokens[decode_offset])
@@ -652,29 +716,52 @@ class EasyMagpieTTSForConditionalGeneration(
         else:
             self._dec_text_mask[start] = 0
 
-        # Phoneme channel: previous-step prediction stashed by postprocess.
+        # ── Phoneme channel ── opens at decode step == ``phonemes_delay`` (seeded
+        # with phoneme BOS), then feeds back the previous step's prediction, and
+        # closes one step after the model emits the phoneme EOS (sticky flag).
         if self.has_phoneme:
-            last_phon = info_dict.get("last_phoneme_token")
-            if isinstance(last_phon, torch.Tensor) and last_phon.numel() > 0:
-                p = last_phon.to(device=device, dtype=torch.long).reshape(-1)
-                self._dec_phoneme_tokens[start, : p.shape[0]].copy_(p[: self.arch.phoneme_stacking_factor])
+            phoneme_ended = bool(info_dict.get("phoneme_ended", False))
+            feed_eos = False
+            if phoneme_ended or decode_offset < self.phonemes_delay:
+                self._dec_phoneme_valid[start] = 0
+            elif decode_offset == self.phonemes_delay:
+                self._dec_phoneme_tokens[start].fill_(self.phoneme_bos_id)
                 self._dec_phoneme_valid[start] = 1
             else:
-                self._dec_phoneme_valid[start] = 0
+                last_phon = info_dict.get("last_phoneme_token")
+                if isinstance(last_phon, torch.Tensor) and last_phon.numel() > 0:
+                    p = last_phon.to(device=device, dtype=torch.long).reshape(-1)[: self.arch.phoneme_stacking_factor]
+                    self._dec_phoneme_tokens[start, : p.shape[0]].copy_(p)
+                    self._dec_phoneme_valid[start] = 1
+                    feed_eos = bool((p == self.phoneme_eos_id).any())
+                else:
+                    self._dec_phoneme_valid[start] = 0
+            if phoneme_ended or feed_eos:
+                info_update["phoneme_ended"] = True
 
-        # Audio channel: previous-frame codes (BOS seed on the first step).
-        last_codes = info_dict.get("last_audio_codes")
-        if isinstance(last_codes, torch.Tensor) and last_codes.numel() > 0:
-            c = last_codes.to(device=device, dtype=torch.long).reshape(-1)[: self.num_codebooks]
-            self._dec_audio_codes[start, : c.shape[0]].copy_(c)
-            self._dec_audio_valid[start] = 1
-        else:
-            # First decode step after prefill: seed with audio BOS.
+        # ── Audio channel ── opens at decode step == ``speech_delay`` (seeded with
+        # audio BOS), then feeds back the previous frame's codes. For the leading
+        # ``speech_delay`` steps the channel is masked off (only text/phoneme
+        # condition the backbone); the local transformer still runs for CUDA-graph
+        # stability but its codes for those frames are discarded by the caller and
+        # never fed back here.
+        if decode_offset < self.speech_delay:
+            self._dec_audio_valid[start] = 0
+        elif decode_offset == self.speech_delay:
             self._dec_audio_codes[start].fill_(self.arch.audio_bos_id)
             self._dec_audio_valid[start] = 1
+        else:
+            last_codes = info_dict.get("last_audio_codes")
+            if isinstance(last_codes, torch.Tensor) and last_codes.numel() > 0:
+                c = last_codes.to(device=device, dtype=torch.long).reshape(-1)[: self.num_codebooks]
+                self._dec_audio_codes[start, : c.shape[0]].copy_(c)
+                self._dec_audio_valid[start] = 1
+            else:
+                # Fallback (should not happen once audio has started): seed BOS.
+                self._dec_audio_codes[start].fill_(self.arch.audio_bos_id)
+                self._dec_audio_valid[start] = 1
 
         inputs_embeds_out = torch.zeros((1, self.embedding_dim), device=device, dtype=self._combined_embeddings.dtype)
-        info_update = {"decode_offset": decode_offset + 1}
         return input_ids, inputs_embeds_out, info_update
 
     def postprocess(self, hidden_states: torch.Tensor, multimodal_outputs: Optional[dict[str, Any]] = None, **_: Any):

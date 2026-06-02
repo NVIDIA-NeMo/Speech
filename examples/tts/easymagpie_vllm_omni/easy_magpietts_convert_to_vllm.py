@@ -306,6 +306,34 @@ def build_config(model, vocab_size: int, torch_dtype: str) -> dict:
     has_phoneme = getattr(model, "phoneme_tokenizer", None) is not None
     config["phoneme_stacking_factor"] = int(getattr(model, "phoneme_stacking_factor", 0)) if has_phoneme else 0
     config["phoneme_vocab_size"] = int(getattr(model, "phoneme_vocab_size", 0)) if has_phoneme else 0
+    if has_phoneme:
+        # Phoneme special-token ids + the confidence→UNK replacement threshold,
+        # consumed by the in-engine phoneme stream (BOS seeding, EOS-stop, UNK).
+        config["phoneme_bos_id"] = int(model.phoneme_tokenizer.bos_token_id)
+        config["phoneme_eos_id"] = int(model.phoneme_tokenizer.eos_token_id)
+        unk_id = getattr(model.phoneme_tokenizer, "unk_token_id", None)
+        if unk_id is not None:
+            config["phoneme_unk_id"] = int(unk_id)
+        config["phoneme_confidence_unk_threshold"] = float(getattr(model, "phoneme_confidence_unk_threshold", 0.0))
+
+    # ── Streaming delays from the default inference mode ──
+    # The reference offsets the text/phoneme/audio streams by these per-mode
+    # delays; the vLLM model reproduces them in its decode step. A 0/0 (or "full")
+    # mode runs the three streams in lock-step.
+    default_mode = model.mode_name_to_mode.get(model.default_inference_mode)
+    if default_mode is not None:
+        if default_mode.text_input_mode != "streaming":
+            logging.warning(
+                "Converting a checkpoint whose default inference mode is "
+                f"'{default_mode.text_input_mode}' (not 'streaming'); the vLLM model only "
+                "implements the streaming-mode delay semantics (audio starts after "
+                "`streaming_speech_delay` text tokens)."
+            )
+        config["streaming_phonemes_delay"] = int(default_mode.streaming_phonemes_delay)
+        config["streaming_speech_delay"] = int(default_mode.streaming_speech_delay)
+    else:
+        config["streaming_phonemes_delay"] = 0
+        config["streaming_speech_delay"] = 0
 
     config["num_task_embeddings"] = len(model.training_modes) if model.task_embedding is not None else 0
 

@@ -72,6 +72,23 @@ class EasyMagpieOmniArch:
     phoneme_stacking_factor: int = 1
     phoneme_vocab_size: int = 2051
 
+    # ── Streaming delays (per the checkpoint's default inference mode) ──
+    # The text/phoneme/audio streams are temporally offset: at decode step ``k``
+    # the text channel consumes ``text_tokens[k]``, the phoneme channel starts at
+    # ``k == streaming_phonemes_delay`` (seeded with phoneme BOS), and the audio
+    # channel starts at ``k == streaming_speech_delay`` (seeded with audio BOS).
+    # Both default to 0 (lock-step), which reproduces a non-delayed / "full" mode.
+    streaming_phonemes_delay: int = 0
+    streaming_speech_delay: int = 0
+
+    # Phoneme special-token ids (into the per-stack ``phoneme_embeddings`` table)
+    # and the confidence→UNK replacement threshold. ``None`` falls back to the
+    # IPABPETokenizer convention (bos/eos/unk = vocab-3/-2/-1).
+    phoneme_bos_id: int | None = None
+    phoneme_eos_id: int | None = None
+    phoneme_unk_id: int | None = None
+    phoneme_confidence_unk_threshold: float = 0.0
+
     # Number of multi-mode task ("service token") embeddings. The reference model
     # prepends a single learned per-mode embedding to the prefill context when
     # trained with >1 mode (``cfg.training_modes``); 0 disables it (single-mode
@@ -122,6 +139,21 @@ class EasyMagpieOmniArch:
             return self.forced_mask_token_id
         return self.codebook_size + SPECIAL_AUDIO_MASK
 
+    @property
+    def resolved_phoneme_bos_id(self) -> int:
+        """Phoneme BOS id, falling back to the IPABPETokenizer convention (vocab-3)."""
+        return self.phoneme_bos_id if self.phoneme_bos_id is not None else self.phoneme_vocab_size - 3
+
+    @property
+    def resolved_phoneme_eos_id(self) -> int:
+        """Phoneme EOS id, falling back to the IPABPETokenizer convention (vocab-2)."""
+        return self.phoneme_eos_id if self.phoneme_eos_id is not None else self.phoneme_vocab_size - 2
+
+    @property
+    def resolved_phoneme_unk_id(self) -> int:
+        """Phoneme UNK id, falling back to the IPABPETokenizer convention (vocab-1)."""
+        return self.phoneme_unk_id if self.phoneme_unk_id is not None else self.phoneme_vocab_size - 1
+
     @classmethod
     def from_hf_config(cls, hf_config: Any) -> "EasyMagpieOmniArch":
         """Build an arch description from a vLLM ``hf_config``.
@@ -142,6 +174,12 @@ class EasyMagpieOmniArch:
             "frame_stacking_factor",
             "phoneme_stacking_factor",
             "phoneme_vocab_size",
+            "streaming_phonemes_delay",
+            "streaming_speech_delay",
+            "phoneme_bos_id",
+            "phoneme_eos_id",
+            "phoneme_unk_id",
+            "phoneme_confidence_unk_threshold",
             "num_task_embeddings",
             "local_transformer_n_layers",
             "local_transformer_n_heads",

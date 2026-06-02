@@ -99,6 +99,13 @@ Get started in 30 seconds:
 
 .. toctree::
    :maxdepth: 1
+   :caption: Lhotse Dataloading
+   :name: Lhotse Dataloading
+
+   dataloaders
+
+.. toctree::
+   :maxdepth: 1
    :caption: Collections
    :name: Collections
    :titlesonly:

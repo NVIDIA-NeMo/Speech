@@ -30,7 +30,7 @@ from nemo.collections.asr.parts.submodules.transducer_decoding.label_looping_bas
 )
 from nemo.collections.asr.parts.utils import rnnt_utils
 from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMethodMixin
-from nemo.core.utils.cuda_python_utils import NeMoCUDAPythonException, cu_call, run_nvrtc, with_conditional_node
+from nemo.core.utils.cuda_python_utils import CUDA_GRAPH_COMPILE_ERROR_TYPES, cu_call, run_nvrtc, with_conditional_node
 from nemo.core.utils.optional_libs import CUDA_PYTHON_AVAILABLE, cuda_python_required
 from nemo.utils import logging
 
@@ -874,15 +874,8 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
         if self.cuda_graphs_mode is self.CudaGraphsMode.FULL_GRAPH:
             try:
                 self._full_graph_compile()
-            except NeMoCUDAPythonException as e:
-                if not self.cuda_graphs_allow_fallback:
-                    raise RuntimeError("Full CUDA graph decoding failed. Mode is forced, raising exception") from e
-                logging.warning(
-                    f"Full CUDA graph compilation failed: {e}. "
-                    "Falling back to native PyTorch CUDA graphs. Decoding will be slower."
-                )
-                self.cuda_graphs_mode = self.CudaGraphsMode.NO_WHILE_LOOPS
-                self._partial_graphs_compile()
+            except CUDA_GRAPH_COMPILE_ERROR_TYPES as e:
+                self._fallback_to_no_while_loop_cuda_graphs(e)
         elif self.cuda_graphs_mode is self.CudaGraphsMode.NO_WHILE_LOOPS:
             self._partial_graphs_compile()
         elif self.cuda_graphs_mode is self.CudaGraphsMode.NO_GRAPHS:

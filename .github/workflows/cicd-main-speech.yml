@@ -164,6 +164,8 @@ jobs:
           - runner: ${{ inputs.runner }}
             script: ASR_dev_run_Speech_to_Text_Hybrid_RNNT_CTC_Prompt
           - runner: ${{ inputs.runner }}
+            script: ASR_dev_run_Speech_to_Text_RNNT_Prompt
+          - runner: ${{ inputs.runner }}
             script: L2_ASR_Multi-dataloader_dev_run_Speech_to_Text_multi-dataloader
           - runner: ${{ inputs.runner }}
             script: L2_ASR_Multi-dataloader_dev_run_Speech_to_Label_multi-dataloader
@@ -192,6 +194,8 @@ jobs:
             script: L2_Speech_Transcription_Speech_to_Text_Streaming_Infer
           - runner: ${{ inputs.runner }}
             script: L2_Speech_Transcription_Speech_to_Text_Cache_Aware_Infer
+          - runner: ${{ inputs.runner }}
+            script: L2_Speech_Transcription_Speech_to_Text_Cache_Aware_with_Prompt_Infer
           - runner: ${{ inputs.runner }}
             script: L2_Speech_Transcription_Streaming_Inference
           - runner: ${{ inputs.runner }}

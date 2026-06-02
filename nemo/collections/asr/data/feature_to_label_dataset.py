@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Optional
+from typing import Any, Optional
 
 from nemo.collections.asr.data import feature_to_label
 
@@ -35,9 +35,7 @@ def get_feature_seq_speakerlabel_dataset(
     return dataset
 
 
-def get_feature_label_dataset(
-    config: dict, augmentor: Optional['FeatureAugmentor'] = None
-) -> feature_to_label.FeatureToLabelDataset:
+def get_feature_label_dataset(config: dict, augmentor: Optional[Any] = None) -> feature_to_label.FeatureToLabelDataset:
     dataset = feature_to_label.FeatureToLabelDataset(
         manifest_filepath=config['manifest_filepath'],
         labels=config['labels'],
@@ -54,7 +52,7 @@ def get_feature_label_dataset(
 
 
 def get_feature_multi_label_dataset(
-    config: dict, augmentor: Optional['FeatureAugmentor'] = None
+    config: dict, augmentor: Optional[Any] = None
 ) -> feature_to_label.FeatureToMultiLabelDataset:
     dataset = feature_to_label.FeatureToMultiLabelDataset(
         manifest_filepath=config['manifest_filepath'],

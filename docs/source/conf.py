@@ -146,8 +146,8 @@ bibtex_bibfiles = [
 ]
 
 intersphinx_mapping = {
-    'pytorch': ('https://pytorch.org/docs/stable', None),
-    'pytorch-lightning': ('https://pytorch-lightning.readthedocs.io/en/latest/', None),
+    'pytorch': ('https://docs.pytorch.org/docs/stable', None),
+    'pytorch-lightning': ('https://lightning.ai/docs/pytorch/latest/', None),
 }
 
 # Set default flags for all classes.

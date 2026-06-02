@@ -52,6 +52,7 @@ class AxisKind(AxisKindAbstract):
         return str(self.name).lower()
 
     def t_with_string(self, text):
+        """Check whether a dynamic time-axis label matches this axis kind."""
         # it checks if text is "t_<any string>"
         return text.startswith("t_") and text.endswith("_") and text[2:-1] == self.__str__()
 

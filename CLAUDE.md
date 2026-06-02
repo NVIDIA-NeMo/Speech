@@ -49,9 +49,9 @@ Markers: `unit`, `integration`, `system`, `pleasefixme` (broken — skip), `skip
 Sphinx-based docs live in `docs/source/`. Build with:
 
 ```bash
-pip install -r requirements/requirements_docs.txt   # one-time setup
-make -C docs clean html                              # full rebuild
-make -C docs html                                    # incremental rebuild
+uv sync --group docs                                 # one-time setup
+uv run make -C docs clean html                       # full rebuild
+uv run make -C docs html                             # incremental rebuild
 ```
 
 Output goes to `docs/build/html/`. Open `docs/build/html/index.html` to preview locally.

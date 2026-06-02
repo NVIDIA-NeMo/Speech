@@ -102,7 +102,6 @@ jobs:
       docs-no-extras: "--no-extra cu12"
       publish-as-latest: true
       run-on-version-tag-only: ${{ github.ref_name != 'main' }}
-      docs-skip-linkcheck: true
       gh-release-from-tag: ${{ inputs.gh-release-from-tag || '' }}
       restrict-to-admins: true
     secrets: inherit  # pragma: allowlist secret

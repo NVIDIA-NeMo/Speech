@@ -14,11 +14,10 @@
 import copy
 import glob
 
-
-import jiwer
 import lightning.pytorch as ptl
 import pytest
 import torch
+from kaldialign import edit_distance
 from omegaconf import DictConfig, open_dict
 
 from nemo.core.config.pytorch_lightning import TrainerConfig
@@ -108,7 +107,11 @@ def test_cuda_graph_rnnt_greedy_decoder(model_name, batch_size, enable_bfloat16,
     fast_transcripts = [hyp.text for hyp in fast_hypotheses]
     fast_y_sequences = [hyp.y_sequence for hyp in fast_hypotheses]
 
-    wer = jiwer.wer(actual_transcripts, fast_transcripts)
+    total_dist = sum(
+        edit_distance(r.split(), h.split())['total'] for r, h in zip(actual_transcripts, fast_transcripts)
+    )
+    total_words = sum(len(r.split()) for r in actual_transcripts)
+    wer = total_dist / total_words if total_words > 0 else 0.0
     y_sequence_eq = [torch.equal(act_y, fast_y) for (act_y, fast_y) in zip(actual_y_sequences, fast_y_sequences)]
 
     assert wer <= 1e-3, "Cuda graph greedy decoder should match original decoder implementation."
@@ -175,7 +178,11 @@ def test_loop_labels_cuda_graph_rnnt_greedy_decoder_forced_mode(
             )
         fast_transcripts = [hyp.text for hyp in fast_hypotheses]
 
-        wer = jiwer.wer(actual_transcripts, fast_transcripts)
+        total_dist = sum(
+            edit_distance(r.split(), h.split())['total'] for r, h in zip(actual_transcripts, fast_transcripts)
+        )
+        total_words = sum(len(r.split()) for r in actual_transcripts)
+        wer = total_dist / total_words if total_words > 0 else 0.0
 
         assert wer <= 1e-3, "Cuda graph greedy decoder should match original decoder implementation."
 

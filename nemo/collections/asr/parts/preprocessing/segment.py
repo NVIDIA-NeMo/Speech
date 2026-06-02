@@ -34,7 +34,6 @@
 # This file contains code artifacts adapted from https://github.com/ryanleary/patter
 
 import math
-import os
 import random
 from typing import Iterable, List, Optional, Union
 
@@ -45,21 +44,7 @@ import soundfile as sf
 
 from nemo.utils import logging
 
-# TODO @blisc: Perhaps refactor instead of import guarding
-HAVE_PYDUB = True
-try:
-    from pydub import AudioSegment as Audio
-    from pydub.exceptions import CouldntDecodeError
-
-    # FFMPEG for some formats needs explicitly defined coding-decoding strategy
-    ffmpeg_codecs = {'opus': 'opus'}
-
-except ModuleNotFoundError:
-    HAVE_PYDUB = False
-
-
 available_formats = sf.available_formats()
-sf_supported_formats = ["." + i.lower() for i in available_formats.keys()]
 
 
 ChannelSelectorType = Union[int, Iterable[int], str]
@@ -314,7 +299,6 @@ class AudioSegment(object):
                                             set None to use max RMS across channels
         :return: AudioSegment instance
         """
-        samples = None
         if isinstance(audio_file, list):
             return cls.from_file_list(
                 audio_file_list=audio_file,
@@ -333,48 +317,15 @@ class AudioSegment(object):
                 ref_channel=ref_channel,
             )
 
-        if not isinstance(audio_file, str) or os.path.splitext(audio_file)[-1] in sf_supported_formats:
-            try:
-                with sf.SoundFile(audio_file, 'r') as f:
-                    dtype = 'int32' if int_values else 'float32'
-                    sample_rate = f.samplerate
-                    if offset is not None and offset > 0:
-                        f.seek(int(offset * sample_rate))
-                    if duration is not None and duration > 0:
-                        samples = f.read(int(duration * sample_rate), dtype=dtype)
-                    else:
-                        samples = f.read(dtype=dtype)
-            except RuntimeError as e:
-                logging.error(
-                    f"Loading {audio_file} via SoundFile raised RuntimeError: `{e}`. "
-                    f"NeMo will fallback to loading via pydub."
-                )
-
-                if hasattr(audio_file, "seek"):
-                    audio_file.seek(0)
-
-        if HAVE_PYDUB and samples is None:
-            try:
-                samples = Audio.from_file(audio_file, codec=ffmpeg_codecs.get(os.path.splitext(audio_file)[-1]))
-                sample_rate = samples.frame_rate
-                num_channels = samples.channels
-                if offset is not None and offset > 0:
-                    # pydub does things in milliseconds
-                    seconds = offset * 1000
-                    samples = samples[int(seconds) :]
-                if duration is not None and duration > 0:
-                    seconds = duration * 1000
-                    samples = samples[: int(seconds)]
-                samples = np.array(samples.get_array_of_samples())
-                # For multi-channel signals, channels are stacked in a one-dimensional vector
-                if num_channels > 1:
-                    samples = np.reshape(samples, (-1, num_channels))
-            except CouldntDecodeError as err:
-                logging.error(f"Loading {audio_file} via pydub raised CouldntDecodeError: `{err}`.")
-
-        if samples is None:
-            libs = "soundfile, and pydub" if HAVE_PYDUB else "soundfile"
-            raise Exception(f"Your audio file {audio_file} could not be decoded. We tried using {libs}.")
+        with sf.SoundFile(audio_file, 'r') as f:
+            dtype = 'int32' if int_values else 'float32'
+            sample_rate = f.samplerate
+            if offset is not None and offset > 0:
+                f.seek(int(offset * sample_rate))
+            if duration is not None and duration > 0:
+                samples = f.read(int(duration * sample_rate), dtype=dtype)
+            else:
+                samples = f.read(dtype=dtype)
 
         return cls(
             samples,

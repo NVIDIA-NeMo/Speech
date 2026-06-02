@@ -11,6 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import ast
+from pathlib import Path
+
 import pytest
 import torch
 
@@ -18,6 +21,25 @@ from nemo.collections.speechlm2.parts.packed_sequences import pack_audio_into_te
 
 PAD = 0
 AUDIO = 100
+REPO_ROOT = Path(__file__).parents[3]
+
+
+def test_packed_sequences_does_not_import_speechlm2_models_globally():
+    source = REPO_ROOT / "nemo/collections/speechlm2/parts/packed_sequences.py"
+    tree = ast.parse(source.read_text())
+    bad_imports = []
+    for node in tree.body:
+        if (
+            isinstance(node, ast.ImportFrom)
+            and node.module
+            and node.module.startswith("nemo.collections.speechlm2.models")
+        ):
+            bad_imports.append((node.lineno, node.module))
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.startswith("nemo.collections.speechlm2.models"):
+                    bad_imports.append((node.lineno, alias.name))
+    assert bad_imports == []
 
 
 def _basic_batch():

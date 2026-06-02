@@ -30,7 +30,7 @@ from typing import Any, Optional
 import torch
 from torch import Tensor
 
-from nemo.collections.speechlm2.models.salm import _unpad_inputs
+from nemo.collections.speechlm2.parts.input_utils import _unpad_inputs
 
 
 def pack_audio_into_text_embeds(

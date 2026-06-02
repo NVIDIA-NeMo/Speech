@@ -19,6 +19,8 @@ HF_HUB_OFFLINE=1 TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 coverage run -a --data-file=
     +model.teacher_model_path="/home/TestData/tts/2602_FrameStacking4x/frame-stacking-4x-english-nanocodec.ckpt" \
     model.codecmodel_path="/home/TestData/tts/21fps_causal_codecmodel.nemo" \
     +model.frame_stacking_factor=4 \
+    +model.distill_local_transformer=true \
+    +model.lt_distillation_start_step=0 \
     model.alignment_loss_scale=0.0 \
     model.use_text_conditioning_encoder=false \
     model.prior_scaling_factor=null \

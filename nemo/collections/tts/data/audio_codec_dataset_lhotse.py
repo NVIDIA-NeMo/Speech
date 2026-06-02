@@ -69,6 +69,7 @@ class AudioCodecLhotseDataset(torch.utils.data.Dataset):
             raise ValueError(f"Cut {cut.id} is missing custom field 'target_audio'")
 
         target_audio_recording = cut.target_audio.resample(self.sample_rate)
+        # Load the target audio, resampling and applying and Lhotse transformation in the process
         audio = target_audio_recording.load_audio()
         if audio.ndim > 1:
             audio = audio.squeeze(0)
@@ -81,7 +82,8 @@ class AudioCodecLhotseDataset(torch.utils.data.Dataset):
                 f"num_samples={num_samples}, required={self.segment_samples}, "
                 f"segment_duration={self.segment_duration}s"
             )
-        # Randomly select a segment of the audio of length `segment_duration`.
+
+        # Randomly select a segment of the audio
         start = random.randint(0, num_samples - self.segment_samples)
         segment = audio[start : start + self.segment_samples]
         return torch.from_numpy(np.ascontiguousarray(segment, dtype=np.float32))

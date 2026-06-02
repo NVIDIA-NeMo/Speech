@@ -132,6 +132,7 @@ All pretrained NeMo models are available on:
 
 - `HuggingFace Hub (nvidia) <https://huggingface.co/nvidia>`_ — search for "nemo" or specific model names
 - `NGC Model Catalog <https://catalog.ngc.nvidia.com/models?query=nemo&orderBy=weightPopularDESC>`_ — NVIDIA's model registry
+- :doc:`Featured Community Checkpoints </asr/featured_community_checkpoints>` — fine-tunes from external users
 
 See :doc:`../checkpoints/intro` for instructions on loading pretrained models.
 

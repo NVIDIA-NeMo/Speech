@@ -7,6 +7,8 @@ ASR Model Checkpoints
 This page lists all supported ASR model checkpoints released by NVIDIA NeMo.
 Benchmark scores for each model can be found on its `HuggingFace model card <https://huggingface.co/nvidia>`__.
 
+For community fine-tunes built on these checkpoints, see :doc:`Featured Community Checkpoints <./featured_community_checkpoints>`.
+
 Glossary
 --------
 

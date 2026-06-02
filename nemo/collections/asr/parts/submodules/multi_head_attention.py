@@ -1005,7 +1005,7 @@ class RoPEMultiHeadAttention(MultiHeadAttention):
         n_feat (int): size of the features
         dropout_rate (float): dropout rate
         pos_enc (RotaryPositionalEncoding): rotary position encoding shared across layers
-        use_bias (bool): whether to remove bias in linear and conv layers
+        use_bias (bool): whether to apply bias in linear and conv layers
         use_pytorch_sdpa (bool): use torch sdpa instead of manual attention
         use_pytorch_sdpa_backends list[str]: list of backend names to use in sdpa.
     """

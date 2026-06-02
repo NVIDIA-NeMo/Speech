@@ -1209,10 +1209,8 @@ def process_augmentations(augmenter, global_rank=0, world_size=1) -> Optional[Au
     Then in the training script,
     ```python
     import copy
-    from ruamel.yaml import YAML
-    yaml = YAML(typ="safe")
-    with open(model_config) as f:
-        params = yaml.load(f)
+    from omegaconf import OmegaConf
+    params = OmegaConf.to_container(OmegaConf.load(model_config), resolve=True)
     # Train Config for Data Loader
     train_dl_params = copy.deepcopy(params["AudioToTextDataLayer"])
     train_dl_params.update(params["AudioToTextDataLayer"]["train"])

@@ -42,8 +42,7 @@
 import decimal
 import json
 import os
-
-from dateutil import parser
+from datetime import datetime
 
 __all__ = [
     "get_env",
@@ -131,12 +130,61 @@ def _dict(value):
     return json.loads(value)
 
 
+_DATE_FORMATS = (
+    "%Y-%m-%d",
+    "%d-%m-%Y",
+    "%m/%d/%Y",
+    "%d %B %Y",
+    "%B %d, %Y",
+)
+
+_DATETIME_FORMATS = (
+    "%Y-%m-%dT%H:%M:%S%z",
+    "%Y-%m-%dT%H:%M:%S",
+    "%Y-%m-%d %H:%M:%S%z",
+    "%Y-%m-%d %H:%M:%S",
+    "%d-%m-%Y %H:%M:%S%z",
+    "%d-%m-%Y %H:%M:%S",
+    "%m/%d/%Y %H:%M:%S%z",
+    "%m/%d/%Y %H:%M:%S",
+    "%d %B %Y %H:%M:%S%z",
+    "%d %B %Y %H:%M:%S",
+    "%B %d, %Y %H:%M:%S%z",
+    "%B %d, %Y %H:%M:%S",
+)
+
+
+def _parse_datetime(value):
+    value = value.strip()
+    if value.endswith("Z"):
+        value = value[:-1] + "+00:00"
+
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        pass
+
+    for fmt in _DATETIME_FORMATS:
+        try:
+            return datetime.strptime(value, fmt)
+        except ValueError:
+            pass
+
+    for fmt in _DATE_FORMATS:
+        try:
+            return datetime.strptime(value, fmt)
+        except ValueError:
+            pass
+
+    raise ValueError(value)
+
+
 def _datetime(value):
-    return parser.parse(value)
+    return _parse_datetime(value)
 
 
 def _date(value):
-    return parser.parse(value).date()
+    return _parse_datetime(value).date()
 
 
 def get_env(key, *default, **kwargs):

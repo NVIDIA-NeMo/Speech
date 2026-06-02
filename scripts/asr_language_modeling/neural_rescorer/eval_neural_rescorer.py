@@ -45,12 +45,11 @@ import json
 from abc import ABC
 from argparse import ArgumentParser
 
-import editdistance
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
 import tqdm
+from kaldialign import edit_distance
 from transformers import AutoModelForCausalLM
 
 try:
@@ -109,7 +108,7 @@ class BeamScoresDataset(torch.utils.data.Dataset):
         input_mask = np.zeros(self.max_seq_length)
         input_mask[: len(tokens)] = 1
         acoustic_score = self.data[1][idx]
-        dist = editdistance.eval(text.split(), self.ground_truths[idx // self.beam_size].split())
+        dist = edit_distance(self.ground_truths[idx // self.beam_size].split(), text.split())['total']
         ref_len = len(self.ground_truths[idx // self.beam_size].split())
         len_in_chars = len(str(self.data[0][idx]))
         return input_ids, input_mask, acoustic_score, dist, ref_len, len_in_chars, idx
@@ -133,6 +132,8 @@ def linear_search_wer(
     Output:
         (best coefficient found, best WER achieved)
     """
+    import matplotlib.pyplot as plt
+
     scale = scores1.mean().abs().item() / scores2.mean().abs().item()
     left = coef_range[0] * scale
     right = coef_range[1] * scale

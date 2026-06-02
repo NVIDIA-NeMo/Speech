@@ -855,7 +855,7 @@ class AudioCodecModel(ModelPT):
         loader_cfg.sample_rate = self.output_sample_rate
 
         # Random segment selection is done in AudioCodecLhotseDataset on `target_audio`, not via
-        # Lhotse's cuts.truncate (which operates on the parent recording).
+        # Lhotse's `truncate_duration` config (which operates on the parent recording).
         segment_duration = dataset_args.get("segment_duration")
         if segment_duration is None:
             raise ValueError("`segment_duration` must be set in `train_ds.dataset_args` ")
@@ -873,6 +873,10 @@ class AudioCodecModel(ModelPT):
         # Pre-filter to only include cuts whose parent recording is at least as long as
         # the training segment duration so the dataset class has enough samples to choose from.
         loader_cfg.min_duration = segment_duration
+
+        # Make sure batch_size is set
+        if loader_cfg.batch_size is None:
+            raise ValueError("`batch_size` must be set in `train_ds.dataloader_params`.")
 
         # --- Create the dataset ---
 

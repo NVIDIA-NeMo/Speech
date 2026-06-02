@@ -106,6 +106,7 @@ class CharParser:
         return tokens
 
     def decode(self, str_input):
+        """Decode token ids into labels."""
         r_map = {}
         for k, v in self._labels_map.items():
             r_map[v] = k

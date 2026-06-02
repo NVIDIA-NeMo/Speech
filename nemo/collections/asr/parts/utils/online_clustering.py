@@ -36,12 +36,9 @@ import torch
 
 from nemo.collections.asr.parts.utils.offline_clustering import (
     NMESC,
-    SpeakerClustering,
     SpectralClustering,
-    get_scale_interpolated_embs,
     getAffinityGraphMat,
     getCosAffinityMatrix,
-    split_input_data,
 )
 from nemo.collections.asr.parts.utils.optimization_utils import linear_sum_assignment
 
@@ -689,7 +686,7 @@ class OnlineSpeakerClustering(torch.nn.Module):
         p_hat_int_list: List[int] = [int(p) for p in self.p_value_hist]
         p_hat_value = torch.mode(torch.tensor(p_hat_int_list))[0].item()
         output = nmesc.getEigRatio(p_hat_value)
-        g_p, est_num_of_spk = output[0], output[1].int()
+        est_num_of_spk = output[1].int()
         return est_num_of_spk, p_hat_value
 
     def speaker_counter_buffer(self, est_num_of_spk: int) -> torch.Tensor:

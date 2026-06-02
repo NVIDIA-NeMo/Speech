@@ -17,9 +17,9 @@ import glob
 import os
 from pathlib import Path
 
-import jiwer
 import pytest
 import torch
+from kaldialign import edit_distance
 from omegaconf import open_dict
 from tqdm import tqdm
 
@@ -686,11 +686,13 @@ class TestTransducerCudaGraphBeamDecoding:
                 cudagraph_timestamps[batch_idx] == actual_timestamps[batch_idx]
             ), f"Timestamps mismatch for batch_idx {batch_idx}"
 
-            wer = jiwer.wer(actual_transcripts[batch_idx], cudagraph_transcripts[batch_idx])
-
-            assert wer <= 1e-3, "Cuda graph greedy decoder should match original decoder implementation."
-
             for actual, fast in zip(actual_transcripts[batch_idx], cudagraph_transcripts[batch_idx]):
+                ref_words = actual.split()
+                hyp_words = fast.split()
+                wer = edit_distance(ref_words, hyp_words)['total'] / max(len(ref_words), 1)
+
+                assert wer <= 1e-3, "Cuda graph beam decoder should match original decoder implementation."
+
                 if actual != fast:
                     print("Erroneous samples in batch:", batch_idx)
                     print("Original transcript:", actual)

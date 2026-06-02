@@ -29,7 +29,6 @@ import subprocess
 import tarfile
 import urllib.request
 
-from sox import Transformer
 from tqdm import tqdm
 
 parser = argparse.ArgumentParser(description="LibriSpeech Data download")
@@ -50,6 +49,17 @@ URLS = {
     "DEV_CLEAN_2": "https://www.openslr.org/resources/31/dev-clean-2.tar.gz",
     "TRAIN_CLEAN_5": "https://www.openslr.org/resources/31/train-clean-5.tar.gz",
 }
+
+
+def _load_sox_transformer():
+    try:
+        from sox import Transformer
+    except ImportError:
+        raise ImportError(
+            "Optional dependency 'sox' is required by this script. Install it with: pip install sox"
+        ) from None
+
+    return Transformer
 
 
 def __retrieve_with_progress(source: str, filename: str):
@@ -114,6 +124,7 @@ def __process_transcript(file_path: str, dst_folder: str):
     Returns:
         a list of metadata entries for processed files.
     """
+    Transformer = _load_sox_transformer()
     entries = []
     root = os.path.dirname(file_path)
     with open(file_path, encoding="utf-8") as fin:

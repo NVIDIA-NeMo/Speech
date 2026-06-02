@@ -38,6 +38,7 @@ from nemo.utils import logging
 
 # monkey-patch hydra func
 def is_in_toplevel_plugins_module(*args, **kwargs) -> bool:
+    """Treat NeMo launcher plugins as top-level Hydra plugins."""
     return True
 
 
@@ -47,6 +48,8 @@ Plugins.instance().is_in_toplevel_plugins_module = is_in_toplevel_plugins_module
 
 @dataclass
 class ProcessLauncherConfig:
+    """Configuration for the NeMo process launcher."""
+
     _target_: str = "nemo.core.utils.process_launcher.launcher.ProcessLauncher"
     num_gpus: int = -1
     jobs_per_gpu: int = 1
@@ -342,6 +345,8 @@ def launch(
 
 
 class ProcessLauncher(Launcher):
+    """Hydra launcher that multiplexes jobs across local GPU processes."""
+
     def __init__(self, **kwargs: Any) -> None:
         """Process Launcher
         Based on the JoblibLauncher, but uses processes to scatter jobs in a multiplexed manner across
@@ -360,11 +365,13 @@ class ProcessLauncher(Launcher):
         task_function: TaskFunction,
         config: DictConfig,
     ) -> None:
+        """Store Hydra launch context and task function."""
         self.config = config
         self.task_function = task_function
         self.hydra_context = hydra_context
 
     def launch(self, job_overrides: Sequence[Sequence[str]], initial_job_idx: int) -> Sequence[JobReturn]:
+        """Launch jobs with the configured process launcher."""
 
         return launch(launcher=self, job_overrides=job_overrides, initial_job_idx=initial_job_idx)
 

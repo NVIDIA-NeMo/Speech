@@ -25,6 +25,8 @@ __all__ = ['MultiSimilarityLoss']
 
 
 class MultiSimilarityLoss(Loss):
+    """Multi-similarity metric learning loss."""
+
     @property
     def input_types(self):
         """Returns definitions of module input ports."""
@@ -51,6 +53,7 @@ class MultiSimilarityLoss(Loss):
 
     @typecheck()
     def forward(self, logits, labels):
+        """Compute the multi-similarity loss for the input embeddings and labels."""
         cos_sim = torch.matmul(logits, torch.t(logits))
         losses = []
 

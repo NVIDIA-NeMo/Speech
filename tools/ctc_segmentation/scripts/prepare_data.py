@@ -22,7 +22,6 @@ import regex
 from joblib import Parallel, delayed
 from normalization_helpers import LATIN_TO_RU, RU_ABBREVIATIONS
 from num2words import num2words
-from sox import Transformer
 from tqdm import tqdm
 
 from nemo.collections.asr.models import ASRModel
@@ -85,6 +84,17 @@ parser.add_argument(
 )
 
 
+def _load_sox_transformer():
+    try:
+        from sox import Transformer
+    except ImportError:
+        raise ImportError(
+            "Optional dependency 'sox' is required by this script. Install it with: pip install sox"
+        ) from None
+
+    return Transformer
+
+
 def process_audio(
     in_file: str, wav_file: str = None, cut_prefix: int = 0, sample_rate: int = 16000, bit_depth: int = 16
 ):
@@ -100,6 +110,7 @@ def process_audio(
     try:
         if not os.path.exists(in_file):
             raise ValueError(f'{in_file} not found')
+        Transformer = _load_sox_transformer()
         tfm = Transformer()
         tfm.convert(samplerate=sample_rate, n_channels=1, bitdepth=bit_depth)
         tfm.trim(cut_prefix)

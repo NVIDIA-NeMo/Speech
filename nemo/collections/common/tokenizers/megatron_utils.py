@@ -15,10 +15,10 @@
 
 import os
 import shutil
+import urllib.request
 from typing import List, Optional
 
 import torch
-import wget
 from torch.hub import _get_torch_home
 
 from nemo.core.classes.common import PretrainedModelInfo
@@ -171,7 +171,8 @@ def _download(path: str, url: str):
     if (not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0) and not os.path.exists(path):
         os.makedirs(MEGATRON_CACHE, exist_ok=True)
         logging.info(f"Downloading from {url} to {path}")
-        downloaded_path = wget.download(url)
+        downloaded_path = path + ".tmp"
+        urllib.request.urlretrieve(url, downloaded_path)
         if not os.path.exists(downloaded_path):
             raise FileNotFoundError(f"Downloaded file not found: {downloaded_path}")
         shutil.move(downloaded_path, path)

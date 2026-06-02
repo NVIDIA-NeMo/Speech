@@ -46,7 +46,8 @@ SYNOGLYPH2ASCII = {g: asc for asc, glyphs in _synoglyphs.items() for g in glyphs
 # Example of parsing by groups via _WORDS_RE_EN.
 # Regular expression pattern groups:
 #   1st group -- valid english words,
-#   2nd group -- any substring starts from | to | (mustn't be nested), useful when you want to leave sequence unchanged,
+#   2nd group -- any substring starts from | to | (mustn't be nested),
+#                useful when you want to leave sequence unchanged,
 #   3rd group -- punctuation marks or whitespaces.
 # Text (first line) and mask of groups for every char (second line).
 # config file must contain |EY1 EY1|, B, C, D, E, F, and G.
@@ -77,7 +78,8 @@ KOREAN_CHARS = r'\uAC00-\uD7A3\u1100-\u11FF\u3130-\u318F'
 WORD_CHARS_ALL = f"{LATIN_CHARS_ALL}{INDIC_CHARS_ALL}{KOREAN_CHARS}"
 
 _WORDS_RE_EN = re.compile(
-    fr"([{LATIN_ALPHABET_BASIC}]+(?:[{LATIN_ALPHABET_BASIC}\-']*[{LATIN_ALPHABET_BASIC}]+)*)|(\|[^|]*\|)|([^{LATIN_ALPHABET_BASIC}|]+)"
+    fr"([{LATIN_ALPHABET_BASIC}]+(?:[{LATIN_ALPHABET_BASIC}\-']*[{LATIN_ALPHABET_BASIC}]+)*)"
+    fr"|(\|[^|]*\|)|([^{LATIN_ALPHABET_BASIC}|]+)"
 )
 _WORDS_RE_ANY_LOCALE = re.compile(
     fr"([{WORD_CHARS_ALL}]+(?:[{WORD_CHARS_ALL}\-']*[{WORD_CHARS_ALL}]+)*)|(\|[^|]*\|)|([^{WORD_CHARS_ALL}|]+)"
@@ -85,6 +87,7 @@ _WORDS_RE_ANY_LOCALE = re.compile(
 
 
 def english_text_preprocessing(text, lower=True):
+    """Normalize English text and optionally lowercase it."""
     text = unicode(text)
     text = ''.join(char for char in unicodedata.normalize('NFD', text) if unicodedata.category(char) != 'Mn')
     text = ''.join(char if char not in SYNOGLYPH2ASCII else SYNOGLYPH2ASCII[char] for char in text)
@@ -115,11 +118,12 @@ def any_locale_text_preprocessing(text: str) -> str:
 
 
 def normalize_unicode_text(text: str) -> str:
-    """
-    TODO @xueyang: Apply NFC form may be too aggressive since it would ignore some accented characters that do not exist
-      in predefined German alphabet (nemo.collections.common.tokenizers.text_to_speech.ipa_lexicon.IPA_CHARACTER_SETS),
-      such as 'é'. This is not expected. A better solution is to add an extra normalization with NFD to discard the
-      diacritics and consider 'é' and 'e' produce similar pronunciations.
+    r"""Normalize unicode text to NFC.
+
+    TODO @xueyang: Applying NFC form may be too aggressive since it would ignore some accented characters
+         that do not exist in the predefined German alphabet (.ipa_lexicon.IPA_CHARACTER_SETS), such as 'é'.
+         This is not expected. A better solution is to add an extra normalization with NFD to discard the
+         diacritics and consider 'é' and 'e' produce similar pronunciations.
 
     Note that the tokenizer needs to run `unicodedata.normalize("NFC", x)` before calling `encode` function,
     especially for the characters that have diacritics, such as 'ö' in the German alphabet. 'ö' can be encoded as
@@ -204,34 +208,42 @@ def _word_tokenize(words: List[Tuple[str, str, str]], is_lower: bool = False) ->
 
 
 def english_word_tokenize(text: str) -> List[Tuple[List[str], bool]]:
+    """Tokenize English text into word spans and unchanged spans."""
     words = _WORDS_RE_EN.findall(text)
     return _word_tokenize(words, is_lower=True)
 
 
 def any_locale_word_tokenize(text: str) -> List[Tuple[List[str], bool]]:
+    """Tokenize locale-agnostic text into word spans and unchanged spans."""
     words = _WORDS_RE_ANY_LOCALE.findall(text)
     return _word_tokenize(words)
 
 
 def spanish_text_preprocessing(text: str) -> str:
+    """Lowercase Spanish text."""
     return text.lower()
 
 
 def italian_text_preprocessing(text: str) -> str:
+    """Lowercase Italian text."""
     return text.lower()
 
 
 def chinese_text_preprocessing(text: str) -> str:
+    """Return Chinese text unchanged."""
     return text
 
 
 def french_text_preprocessing(text: str) -> str:
+    """Lowercase French text."""
     return text.lower()
 
 
 def vietnamese_text_preprocessing(text: str) -> str:
+    """Lowercase Vietnamese text."""
     return text.lower()
 
 
 def japanese_text_preprocessing(text: str) -> str:
+    """Lowercase Japanese text."""
     return text.lower()

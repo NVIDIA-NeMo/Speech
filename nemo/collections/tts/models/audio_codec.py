@@ -856,14 +856,14 @@ class AudioCodecModel(ModelPT):
 
         # Random segment selection is done in AudioCodecLhotseDataset on `target_audio`, not via
         # Lhotse's `truncate_duration` config (which operates on the parent recording).
-        segment_duration = dataset_args.get("segment_duration")
-        if segment_duration is None:
-            raise ValueError("`segment_duration` must be set in `train_ds.dataset_args` ")
         if cfg.dataloader_params.get("truncate_duration") is not None:
             raise ValueError(
                 "`truncate_duration` must not be set in `train_ds.dataloader_params`; "
                 "segment extraction is handled in `AudioCodecLhotseDataset` via `segment_duration`."
             )
+        segment_duration = dataset_args.get("segment_duration")
+        if segment_duration is None:
+            raise ValueError("`segment_duration` must be set in `train_ds.dataset_args` ")
         existing_min_duration = cfg.dataloader_params.get("min_duration")
         if existing_min_duration is not None and existing_min_duration != -1:
             raise ValueError(

@@ -11,29 +11,24 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""From-scratch autoregressive local transformer for EasyMagpieTTS on vLLM-Omni.
+"""Autoregressive local transformer for EasyMagpieTTS on vLLM-Omni.
 
-The reference EasyMagpieTTS model predicts the ``C * S`` stacked audio
-codebooks of one frame *autoregressively* with a small causal transformer
-(``nemo.collections.tts.modules.transformer_2501.Transformer``) conditioned on
-the backbone's per-frame hidden state. The reference implementation re-creates
-fresh tensors and (optionally) a KV cache on every codebook step, which is
-incompatible with CUDA-graph replay.
+EasyMagpieTTS predicts the ``C * S`` stacked audio codebooks of one frame
+*autoregressively* with a small causal transformer conditioned on the backbone's
+per-frame hidden state. This module implements that local transformer so it can
+run as a single compiled CUDA graph:
 
-This module re-implements that local transformer from scratch so it can run as
-a single compiled CUDA graph:
-
-* :class:`EasyMagpieLocalTransformer` mirrors the ``transformer_2501``
-  layer/weight layout **exactly** (so a stock checkpoint loads 1:1) but uses
-  ``scaled_dot_product_attention`` and drops the KV cache / padding-mask
-  plumbing. It is decorated with ``@support_torch_compile`` so vLLM captures
-  one CUDA graph for the fixed ``(num_tokens, num_stacked_codebooks, hidden)``
-  input shape.
+* :class:`EasyMagpieLocalTransformer` is a causal transformer stack with
+  learnable positional embeddings, using ``scaled_dot_product_attention`` and no
+  KV cache. It is decorated with ``@support_torch_compile`` so vLLM captures one
+  CUDA graph for the fixed ``(num_tokens, num_stacked_codebooks, hidden)`` input
+  shape. Its layer/weight layout matches the training checkpoint so weights load
+  1:1.
 * :class:`EasyMagpieCodePredictor` owns the persistent, address-stable scratch
   buffers and runs the per-frame autoregressive loop, re-invoking the compiled
-  transformer once per codebook over the **same** buffer (matching the
-  qwen3-tts code-predictor trick: replaying one fixed-shape graph N times is
-  faster and simpler than capturing N separate graphs).
+  transformer once per codebook over the **same** buffer (replaying one
+  fixed-shape graph N times is faster and simpler than capturing N separate
+  graphs).
 
 All sampling is CUDA-graph safe (Gumbel-max + ``topk`` + ``masked_fill`` only;
 no host syncs, no ``multinomial`` on possibly-degenerate warmup data).
@@ -96,12 +91,11 @@ def sample_codebook(
 
 
 class EasyMagpieLTSelfAttention(nn.Module):
-    """Causal self-attention matching ``transformer_2501.SelfAttention`` weights.
+    """Causal self-attention.
 
-    Same projections (``qkv_net`` fused QKV without bias, ``o_net`` without
-    bias) and the same ``d_head ** -0.5`` scaling, but computed with
-    ``scaled_dot_product_attention`` and an ``is_causal=True`` flag instead of
-    the materialised causal-mask buffer + naive softmax. No KV cache: the
+    Fused QKV projection (``qkv_net``) and output projection (``o_net``), both
+    bias-free, with ``d_head ** -0.5`` scaling computed via
+    ``scaled_dot_product_attention`` with ``is_causal=True``. No KV cache: the
     autoregressive loop re-runs the full (short, fixed-length) sequence each
     step, which is what makes the whole thing CUDA-graph capturable.
     """
@@ -131,19 +125,16 @@ class EasyMagpieLTSelfAttention(nn.Module):
 
 
 class EasyMagpieLTFeedForward(nn.Module):
-    """Positionwise FFN matching ``transformer_2501.PositionwiseConvFF`` weights.
+    """Positionwise feed-forward network.
 
-    The reference uses ``Conv1d(kernel_size=1)`` layers named ``proj.conv`` and
-    ``o_net.conv`` (no bias). A kernel-1 conv is a plain linear over the channel
-    dim, so we keep the exact ``Conv1d`` submodule names — the checkpoint loads
-    1:1 — and apply them with a single transpose, GELU(tanh) in between.
+    Uses ``Conv1d(kernel_size=1)`` layers named ``proj.conv`` and ``o_net.conv``
+    (no bias). A kernel-1 conv is a plain linear over the channel dim, applied
+    with a single transpose and GELU(tanh) in between. The ``Conv1d`` submodule
+    names match the training checkpoint so weights load 1:1.
     """
 
     def __init__(self, d_model: int, d_ffn: int) -> None:
         super().__init__()
-        # Wrap the Conv1d in a tiny container so the parameter path is
-        # ``proj.conv.weight`` / ``o_net.conv.weight`` exactly as in the
-        # reference ``ConvolutionLayer``.
         self.proj = _Conv1dWrapper(d_model, d_ffn)
         self.o_net = _Conv1dWrapper(d_ffn, d_model)
         self.act = nn.GELU(approximate="tanh")
@@ -170,10 +161,8 @@ class _Conv1dWrapper(nn.Module):
 class EasyMagpieLTLayer(nn.Module):
     """One pre-norm transformer layer (self-attn + FFN), bias-free LayerNorms.
 
-    Residual structure matches ``transformer_2501.TransformerLayer`` with an
-    all-ones ``x_mask`` (inference): ``x = x + attn(norm_self(x))`` then
-    ``x = x + ff(norm_pos_ff(x))``. The ``x * x_mask`` multiplications are
-    identities when nothing is padded, so they are dropped.
+    Residual structure: ``x = x + attn(norm_self(x))`` then
+    ``x = x + ff(norm_pos_ff(x))``.
     """
 
     def __init__(self, d_model: int, d_ffn: int, n_heads: int) -> None:
@@ -202,9 +191,8 @@ class EasyMagpieLocalTransformer(nn.Module):
 
     Decorated with ``@support_torch_compile`` so vLLM captures a single CUDA
     graph for the fixed ``(num_tokens, num_stacked_codebooks, d_model)`` input
-    shape. Weight layout mirrors ``transformer_2501.Transformer``:
-    ``position_embeddings`` (learnable), ``layers.{i}.*`` and a no-op
-    ``norm_out`` (``apply_norm_out=False`` in the reference, hence ``Identity``).
+    shape. Holds learnable ``position_embeddings``, the stacked ``layers.{i}.*``
+    and a no-op ``norm_out``.
     """
 
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = "") -> None:
@@ -214,15 +202,13 @@ class EasyMagpieLocalTransformer(nn.Module):
         n_heads = arch.local_transformer_n_heads
         n_layers = arch.local_transformer_n_layers
         d_ffn = d_model * 4
-        # +2 matches the reference ``max_length_causal_mask`` head-room
-        # (``num_stacked_codebooks + 2``).
+        # +2 of head-room over ``num_stacked_codebooks`` for the positional table.
         max_len = arch.num_stacked_codebooks + 2
 
         self.position_embeddings = nn.Embedding(max_len, d_model)
         self.layers = nn.ModuleList(
             [EasyMagpieLTLayer(d_model, d_ffn, n_heads) for _ in range(n_layers)]
         )
-        # apply_norm_out=False in the reference config -> no parameters.
         self.norm_out = nn.Identity()
 
     def forward(self, inputs_embeds: torch.Tensor) -> torch.Tensor:
@@ -267,8 +253,7 @@ class EasyMagpieCodePredictor(nn.Module):
         lt_hidden = arch.local_transformer_hidden_dim
 
         # Per-codebook audio token embeddings (shared with the outer model's
-        # decode-step input-embedding assembly). Names match the reference
-        # checkpoint's ``audio_embeddings.{i}``.
+        # decode-step input-embedding assembly).
         self.audio_embeddings = nn.ModuleList(
             [nn.Embedding(self.num_tokens_per_codebook, self.audio_embedding_dim) for _ in range(self.num_codebooks)]
         )
@@ -321,9 +306,9 @@ class EasyMagpieCodePredictor(nn.Module):
     def init_forbidden_mask(self) -> None:
         """Forbid all trailing special tokens except audio EOS.
 
-        Mirrors ``SpecialAudioToken.get_forbidden_tokens`` — everything in the
-        special-token block above ``codebook_size`` is blocked at sampling
-        time, except ``audio_eos`` which must remain reachable to terminate.
+        Everything in the special-token block above ``codebook_size`` is blocked
+        at sampling time, except ``audio_eos`` which must remain reachable to
+        terminate.
         """
         mask = torch.zeros(self.num_tokens_per_codebook, dtype=torch.bool, device=self.forbidden_mask.device)
         mask[self.arch.codebook_size :] = True
@@ -339,10 +324,9 @@ class EasyMagpieCodePredictor(nn.Module):
     def embed_audio_frame(self, codes: torch.Tensor) -> torch.Tensor:
         """Embed a full frame of stacked codes into the backbone embedding space.
 
-        Averages per-codebook embeddings then applies ``audio_in_projection``,
-        matching the reference ``embed_audio_tokens`` (which sums and divides by
-        the number of codebooks). Used by the outer model to build the decode
-        input embedding from the previous frame's codes.
+        Averages the per-codebook embeddings then applies ``audio_in_projection``.
+        Used by the outer model to build the decode input embedding from the
+        previous frame's codes.
 
         Args:
             codes: ``[num_tokens, num_codebooks]`` int64 codes.

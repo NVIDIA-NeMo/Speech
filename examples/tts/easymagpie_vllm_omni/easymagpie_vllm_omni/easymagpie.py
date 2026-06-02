@@ -13,53 +13,46 @@
 # limitations under the License.
 """Inference-only EasyMagpieTTS model for vLLM-Omni.
 
-EasyMagpieTTS is a decoder-only streaming TTS model: a text-LM backbone (the
-SmallMamba checkpoint uses a Nemotron-H hybrid Mamba2 + attention + MoE decoder)
-consumes a per-frame additive input embedding (text + phoneme + audio) and
-emits a per-frame hidden state, from which a small autoregressive *local
-transformer* samples all ``C * S`` stacked audio codebooks for that frame
-(see :mod:`easymagpie_vllm_omni.local_transformer`).
+EasyMagpieTTS is a decoder-only streaming TTS model. A Nemotron-H hybrid
+(Mamba2 + attention + MoE) text-LM backbone consumes a per-frame additive input
+embedding (text + phoneme + audio) and emits a per-frame hidden state. A small
+autoregressive *local transformer* then samples all ``C * S`` stacked audio
+codebooks for that frame (see :mod:`easymagpie_vllm_omni.local_transformer`).
 
 This module wires that architecture into vLLM-Omni's
 ``preprocess`` / ``forward`` / ``compute_logits`` / ``make_omni_output`` /
-``postprocess`` contract, following the same conventions as the upstream
-qwen3-tts and eartts vLLM-Omni model definitions:
+``postprocess`` contract:
 
 * **Backbone** — vLLM's
-  :class:`~vllm.model_executor.models.nemotron_h.NemotronHModel`, reused
-  wholesale (hybrid Mamba2 state + KV cache + paged attention) exactly like the
-  EasyMagpie vLLM *sidecar*. Every step feeds the backbone via ``inputs_embeds``;
-  its own ``embed_tokens`` table is never consumed. Because the backbone is a
-  hybrid-Mamba model, the class implements vLLM's
-  :class:`HasInnerState` / :class:`IsHybrid` / :class:`SupportsMambaPrefixCaching`
-  contracts (mamba-state shape/dtype/copy helpers are delegated to
-  :class:`NemotronHForCausalLM`), and the SmallMamba SiLU shared-experts fix is
+  :class:`~vllm.model_executor.models.nemotron_h.NemotronHModel` is reused
+  wholesale (hybrid Mamba2 state + KV cache + paged attention). Every step feeds
+  the backbone via ``inputs_embeds``; its own ``embed_tokens`` table is never
+  consumed. Because the backbone is a hybrid-Mamba model, the class implements
+  vLLM's :class:`HasInnerState` / :class:`IsHybrid` /
+  :class:`SupportsMambaPrefixCaching` contracts (mamba-state helpers are
+  delegated to :class:`NemotronHForCausalLM`), and a SiLU shared-experts fix is
   applied at construction (see :mod:`easymagpie_vllm_omni.backbone_patches`).
-* **Local transformer** — :class:`EasyMagpieCodePredictor`, a from-scratch,
-  CUDA-graph-capturable re-implementation that runs as a single compiled graph.
-* **compute_logits** — returns trivial logits (à la eartts) so vLLM's sampler
-  always picks index 0; the real audio output is the codes tensor surfaced
-  through :meth:`make_omni_output` under the ``"audio_codes"`` key.
+* **Local transformer** — :class:`EasyMagpieCodePredictor`, a
+  CUDA-graph-capturable implementation that runs as a single compiled graph.
+* **compute_logits** — returns trivial logits so vLLM's sampler always picks
+  index 0; the real audio output is the codes tensor surfaced through
+  :meth:`make_omni_output` under the ``"audio_codes"`` key.
 
 Text is embedded via a precomputed per-subword lookup table baked at
-checkpoint-conversion time (the reference char-aware subword encoder is
-deterministic per subword id, so it is never run inside the engine).
+checkpoint-conversion time, so the char-aware subword encoder is never run
+inside the engine.
 
 Per-request I/O (via ``additional_information``):
 
-* ``speaker_embedding`` (prefill only) — ``(T_audio, embedding_dim)`` speaker-
-  encoded context-audio embedding (the audio branch of the reference
-  ``prepare_context_tensors``), e.g. the tensor saved by
-  ``easy_magpietts_extract_speaker_encoding.py``. ``preprocess`` assembles the
-  full prefill context embedding itself as
-  ``[task_embedding | speaker_embedding | context_text_embedded]`` — the same
-  layout the reference model builds — so the caller only does the speaker-encoder
-  math and passes plain context text (the model tokenizes + embeds it and
-  prepends the per-mode service token).
+* ``speaker_embedding`` (prefill only) — ``(T_audio, embedding_dim)``
+  speaker-encoded context-audio embedding. ``preprocess`` assembles the full
+  prefill context embedding itself as
+  ``[task_embedding | speaker_embedding | context_text_embedded]``, so the
+  caller only does the speaker-encoder math and passes plain context text (the
+  model tokenizes + embeds it and prepends the per-mode service token).
 * ``context_text`` (prefill only, optional) — plain conditioning string (e.g.
   ``"[EN]"``); tokenized in-model with the checkpoint's text tokenizer and
-  embedded through the baked per-subword ``text_embedding`` table. Defaults to
-  ``"[NO TEXT CONTEXT]"`` when omitted.
+  embedded through the baked per-subword ``text_embedding`` table.
 * ``task_mode_id`` (prefill only, optional) — int selecting the per-mode task
   ("service token") embedding row; defaults to ``0``. Ignored for single-mode
   checkpoints (no ``task_embedding`` table).
@@ -111,12 +104,10 @@ _DUMMY_TOKEN_ID = 0
 _DEFAULT_CONTEXT_TEXT = "[EN]"
 
 
-# NOTE: unlike the Qwen2 backbone variant, this class is *not* wrapped in
-# ``@support_torch_compile``. The Nemotron-H backbone is a hybrid-Mamba model
-# that manages its own ``torch.compile`` / CUDA-graph capture internally (as
-# does :class:`EasyMagpieCodePredictor`), so the outer ``forward`` runs eagerly
-# and dispatches into the two self-compiled subgraphs — matching the EasyMagpie
-# vLLM sidecar (``EasyMagpieSmallMamba``).
+# This class is not wrapped in ``@support_torch_compile``: the Nemotron-H
+# backbone and :class:`EasyMagpieCodePredictor` each manage their own
+# ``torch.compile`` / CUDA-graph capture internally, so the outer ``forward``
+# runs eagerly and dispatches into the two self-compiled subgraphs.
 class EasyMagpieTTSForConditionalGeneration(
     nn.Module,
     HasInnerState,
@@ -131,8 +122,8 @@ class EasyMagpieTTSForConditionalGeneration(
     ``OmniGPUModelRunner``.
     """
 
-    # Hybrid-Mamba bookkeeping (delegated to vLLM's NemotronH causal-LM, exactly
-    # like the EasyMagpie sidecar). vLLM expects these as class attributes.
+    # Hybrid-Mamba bookkeeping (delegated to vLLM's NemotronH causal-LM). vLLM
+    # expects these as class attributes.
     get_mamba_state_dtype_from_config = NemotronHForCausalLM.get_mamba_state_dtype_from_config
     get_mamba_state_shape_from_config = NemotronHForCausalLM.get_mamba_state_shape_from_config
     get_mamba_state_copy_func = NemotronHForCausalLM.get_mamba_state_copy_func
@@ -167,9 +158,9 @@ class EasyMagpieTTSForConditionalGeneration(
             vllm_config=vllm_config,
             prefix=maybe_prefix(prefix, "backbone"),
         )
-        # SmallMamba was trained with mlp_hidden_act=silu but vLLM's NemotronHMLP
-        # hard-codes ReLU² in shared_experts. Restore SiLU (no-op when the
-        # backbone has no MoE layers).
+        # The checkpoint was trained with mlp_hidden_act=silu but vLLM's
+        # NemotronHMLP hard-codes ReLU² in shared_experts. Restore SiLU (no-op
+        # when the backbone has no MoE layers).
         patch_silu_shared_experts(self.backbone)
 
         # ── Local transformer (its own compile group / CUDA graph) ──────
@@ -180,26 +171,21 @@ class EasyMagpieTTSForConditionalGeneration(
             )
 
         # ── Text + phoneme embedding heads ──────────────────────────────
-        # Precomputed per-subword text embedding. The reference model embeds
-        # text with a char-aware subword (CAS) encoder + the decoder's subword
-        # table; both are deterministic per subword id, so the checkpoint
-        # converter bakes their combined result into this single lookup table
-        # (one row per subword id). It is fed additively on every decode step;
-        # the CAS encoder is never run inside the engine.
+        # Precomputed per-subword text embedding (one row per subword id), baked
+        # at conversion time and fed additively on every decode step.
         text_vocab_size = int(getattr(hf_config, "text_vocab_size", getattr(hf_config, "vocab_size", 0)))
         self.text_embedding = nn.Embedding(text_vocab_size, self.embedding_dim)
 
-        # Task ("service token") embedding — a single learned per-mode row the
-        # reference model prepends to the prefill context when trained with >1
-        # mode. Built only when the checkpoint carries one; otherwise ``None``.
+        # Task ("service token") embedding — a single learned per-mode row
+        # prepended to the prefill context for multi-mode checkpoints. Built only
+        # when the checkpoint carries one; otherwise ``None``.
         self.num_task_embeddings = int(arch.num_task_embeddings)
         if self.num_task_embeddings > 0:
             self.task_embedding = nn.Embedding(self.num_task_embeddings, self.embedding_dim)
         else:
             self.task_embedding = None
 
-        # Context-text tokenizer, loaded lazily from the model directory (same
-        # ``AutoTokenizer.from_pretrained(model_path)`` pattern as qwen3-tts). It
+        # Context-text tokenizer, loaded lazily from the model directory. It
         # turns the per-request ``context_text`` string (e.g. ``"[EN]"``) into the
         # subword ids that the baked ``text_embedding`` table consumes — so the
         # caller passes plain text, never pre-tokenized ids.
@@ -294,8 +280,6 @@ class EasyMagpieTTSForConditionalGeneration(
 
     def _get_decode_idxs(self):
         """Return ``(decode_token_indices, num_requests)`` for code-predictor dispatch.
-
-        Mirrors the qwen3-tts / eartts pattern:
 
         * ``(None, 0)`` → run the local transformer on every token (profile /
           dummy run with no ``attn_metadata``, or a decode-only batch where
@@ -434,9 +418,9 @@ class EasyMagpieTTSForConditionalGeneration(
     def compute_logits(self, hidden_states, sampling_metadata: Any = None) -> Optional[torch.Tensor]:
         """Return zero logits so vLLM's sampler always picks index 0.
 
-        The width is taken from ``hf_config.vocab_size`` so the sampler's
-        working buffers match. The sampled id is irrelevant — audio is surfaced
-        via :meth:`make_omni_output`.
+        The width is taken from ``hf_config.vocab_size`` so the sampler's working
+        buffers match. The sampled id is irrelevant — audio is surfaced via
+        :meth:`make_omni_output`.
         """
         if isinstance(hidden_states, OmniOutput):
             hidden_states = hidden_states.text_hidden_states
@@ -520,7 +504,7 @@ class EasyMagpieTTSForConditionalGeneration(
     ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
         prefill_embeds = self._build_prefill_embeds(device, info_dict)
 
-        offset = int(info_dict.get("ear_prefill_offset", 0) or 0)
+        offset = int(info_dict.get("prefill_offset", 0) or 0)
         total = int(prefill_embeds.shape[0])
         s = max(0, min(offset, total))
         e = max(0, min(offset + span_len, total))
@@ -535,8 +519,8 @@ class EasyMagpieTTSForConditionalGeneration(
             take = torch.cat([take, pad_rows], dim=0)
 
         info_update = {
-            "ear_prefill_offset": offset + span_len,
-            "ear_decode_offset": 0,
+            "prefill_offset": offset + span_len,
+            "decode_offset": 0,
         }
         input_ids_out = torch.full_like(input_ids, _DUMMY_TOKEN_ID)
         return input_ids_out, take, info_update
@@ -546,23 +530,17 @@ class EasyMagpieTTSForConditionalGeneration(
         device: torch.device,
         info_dict: dict[str, Any],
     ) -> torch.Tensor:
-        """Assemble the full ``(T_ctx, embedding_dim)`` prefill context embedding.
-
-        Reproduces the prefill assembly from the reference
-        ``prepare_context_tensors``::
+        """Assemble the full ``(T_ctx, embedding_dim)`` prefill context embedding::
 
             [task_embedding | speaker_embedding | context_text_embedded]
 
         from the per-request inputs:
 
-        * ``speaker_embedding`` — the speaker-encoded context-audio embedding
-          (e.g. produced by ``easy_magpietts_extract_speaker_encoding.py``),
+        * ``speaker_embedding`` — the speaker-encoded context-audio embedding,
           required as a 2-D ``(T_audio, embedding_dim)`` tensor.
         * ``context_text`` — a plain string (e.g. ``"[EN]"``); tokenized in-model
           (see :meth:`_encode_context_text`) and embedded through the baked
-          per-subword ``text_embedding`` table (which already folds in the CAS
-          encoder, matching the default ``disable_cas_for_context_text=False``
-          training). Defaults to ``"[NO TEXT CONTEXT]"`` when omitted.
+          per-subword ``text_embedding`` table.
         * ``task_mode_id`` — selects the per-mode task ("service token")
           embedding row; prepended only when the checkpoint has a task table.
 
@@ -602,9 +580,9 @@ class EasyMagpieTTSForConditionalGeneration(
     def _get_text_tokenizer(self):
         """Lazily load the context-text tokenizer from the model directory.
 
-        Mirrors qwen3-tts: the converted checkpoint ships a HuggingFace
-        ``AutoTokenizer`` (the model's text-conditioning tokenizer) alongside its
-        weights, so we load it on first use from ``model_path``.
+        The converted checkpoint ships a HuggingFace ``AutoTokenizer`` (the
+        model's text-conditioning tokenizer) alongside its weights, so we load it
+        on first use from ``model_path``.
         """
         if self._text_tokenizer is None:
             from transformers import AutoTokenizer
@@ -613,12 +591,11 @@ class EasyMagpieTTSForConditionalGeneration(
         return self._text_tokenizer
 
     def _encode_context_text(self, context_text: str, device: torch.device) -> torch.Tensor:
-        """Tokenize ``context_text`` to subword ids (matching the reference encode path).
+        """Tokenize ``context_text`` to subword ids.
 
-        The reference ``AggregatedTTSTokenizer.encode`` calls the underlying
-        HF tokenizer's ``encode`` (default ``add_special_tokens``) for the
-        text-conditioning tokenizer, which sits at offset 0 in the aggregate, so
-        its raw ids index the baked ``text_embedding`` table directly.
+        The text-conditioning tokenizer sits at offset 0 in the model's
+        tokenizer aggregate, so its raw ids index the baked ``text_embedding``
+        table directly.
         """
         tok = self._get_text_tokenizer()
         ids = tok.encode(context_text)
@@ -632,8 +609,7 @@ class EasyMagpieTTSForConditionalGeneration(
         context_text: str = _DEFAULT_CONTEXT_TEXT,
         has_task_embedding: bool = False,
     ) -> int:
-        """Length-only mirror of :meth:`_build_prefill_embeds` (à la qwen3-tts's
-        ``estimate_prompt_len_from_additional_information``).
+        """Length-only mirror of :meth:`_build_prefill_embeds`.
 
         The engine assembles the prefill context as
         ``[task_embedding? | speaker_embedding | context_text_embedded]``, so the
@@ -663,13 +639,12 @@ class EasyMagpieTTSForConditionalGeneration(
         device: torch.device,
         info_dict: dict[str, Any],
     ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
-        decode_offset = int(info_dict.get("ear_decode_offset", 0) or 0)
+        decode_offset = int(info_dict.get("decode_offset", 0) or 0)
 
         # Text channel (streaming list, one subword consumed per step). Step k
         # consumes text_tokens[k] (the list ends with the text eos id). Once the
-        # stream is exhausted the channel is masked off (adds nothing) — matching
-        # the reference ``text_finished`` behaviour, which stops adding text after
-        # EOS rather than repeating the last token.
+        # stream is exhausted the channel is masked off (adds nothing) rather than
+        # repeating the last token.
         text_tokens = info_dict.get("text_tokens")
         if isinstance(text_tokens, list) and decode_offset < len(text_tokens):
             self._dec_text_tokens[start] = int(text_tokens[decode_offset])
@@ -699,7 +674,7 @@ class EasyMagpieTTSForConditionalGeneration(
             self._dec_audio_valid[start] = 1
 
         inputs_embeds_out = torch.zeros((1, self.embedding_dim), device=device, dtype=self._combined_embeddings.dtype)
-        info_update = {"ear_decode_offset": decode_offset + 1}
+        info_update = {"decode_offset": decode_offset + 1}
         return input_ids, inputs_embeds_out, info_update
 
     def postprocess(self, hidden_states: torch.Tensor, multimodal_outputs: Optional[dict[str, Any]] = None, **_: Any):
@@ -722,7 +697,7 @@ class EasyMagpieTTSForConditionalGeneration(
     # weight loading
     # ------------------------------------------------------------------
 
-    # Checkpoint prefixes (reference EasyMagpieTTS state dict) → in-model paths.
+    # Checkpoint prefixes (EasyMagpieTTS state dict) → in-model paths.
     # ``decoder.*`` is fed to the vLLM backbone loader separately (it understands
     # HF Nemotron-H naming + Mamba/MoE packing). The TTS submodules are copied
     # manually.
@@ -749,13 +724,12 @@ class EasyMagpieTTSForConditionalGeneration(
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         """Load backbone (Nemotron-H) + TTS submodule weights from a converted checkpoint.
 
-        The converted checkpoint is expected to use the reference EasyMagpieTTS
-        key layout: the backbone under ``decoder.*`` (HF Nemotron-H names) and
-        the TTS submodules at top level (``audio_embeddings.*``,
-        ``local_transformer.*``, ``phoneme_*``, ``text_embedding.*``, projection
-        heads). Backbone weights are routed to :meth:`NemotronHModel.load_weights`
-        (which handles HF naming + Mamba/MoE packing); TTS weights are copied
-        directly by name.
+        The converted checkpoint carries the backbone under ``decoder.*`` (HF
+        Nemotron-H names) and the TTS submodules at top level
+        (``audio_embeddings.*``, ``local_transformer.*``, ``phoneme_*``,
+        ``text_embedding.*``, projection heads). Backbone weights are routed to
+        :meth:`NemotronHModel.load_weights` (which handles HF naming + Mamba/MoE
+        packing); TTS weights are copied directly by name.
         """
         own_params = dict(self.named_parameters())
         loaded: set[str] = set()

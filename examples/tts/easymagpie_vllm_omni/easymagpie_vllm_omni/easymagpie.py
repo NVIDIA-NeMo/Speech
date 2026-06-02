@@ -47,10 +47,25 @@ deterministic per subword id, so it is never run inside the engine).
 
 Per-request I/O (via ``additional_information``):
 
-* ``prompt_embeds`` (prefill only) — ``(T_ctx, embedding_dim)`` precomputed
-  context/prompt embedding (speaker-encoded context audio + context text)
-  produced by the caller, exactly like qwen3-tts ``talker_prompt_embeds`` /
-  eartts ``speaker_latent``. The user passes ``prompt_token_ids = [0] * T_ctx``.
+* ``speaker_embedding`` (prefill only) — ``(T_audio, embedding_dim)`` speaker-
+  encoded context-audio embedding (the audio branch of the reference
+  ``prepare_context_tensors``), e.g. the tensor saved by
+  ``easy_magpietts_extract_speaker_encoding.py``. ``preprocess`` assembles the
+  full prefill context embedding itself as
+  ``[task_embedding | speaker_embedding | context_text_embedded]`` — the same
+  layout the reference model builds — so the caller only does the speaker-encoder
+  math and passes plain context text (the model tokenizes + embeds it and
+  prepends the per-mode service token).
+* ``context_text`` (prefill only, optional) — plain conditioning string (e.g.
+  ``"[EN]"``); tokenized in-model with the checkpoint's text tokenizer and
+  embedded through the baked per-subword ``text_embedding`` table. Defaults to
+  ``"[NO TEXT CONTEXT]"`` when omitted.
+* ``task_mode_id`` (prefill only, optional) — int selecting the per-mode task
+  ("service token") embedding row; defaults to ``0``. Ignored for single-mode
+  checkpoints (no ``task_embedding`` table).
+
+  The caller passes ``prompt_token_ids = [0] * T_ctx``, where ``T_ctx`` is the
+  assembled context length (``[task?] + T_audio + len(tokenize(context_text))``).
 * ``text_tokens`` — Python ``list[int]`` of subword ids that grows by one per
   decode step; step ``k`` consumes ``text_tokens[k]`` (embedded through the
   precomputed per-subword table).
@@ -60,7 +75,7 @@ Per-request I/O (via ``additional_information``):
 from __future__ import annotations
 
 import bisect
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import Any, Optional
 
 import torch
@@ -91,6 +106,9 @@ logger = init_logger(__name__)
 # driven by the per-token buffers), and ``compute_logits`` returns
 # argmax-at-0 dummy logits, so this only needs to be a valid id.
 _DUMMY_TOKEN_ID = 0
+
+# Context text used when the request omits ``context_text``
+_DEFAULT_CONTEXT_TEXT = "[EN]"
 
 
 # NOTE: unlike the Qwen2 backbone variant, this class is *not* wrapped in
@@ -170,6 +188,22 @@ class EasyMagpieTTSForConditionalGeneration(
         # the CAS encoder is never run inside the engine.
         text_vocab_size = int(getattr(hf_config, "text_vocab_size", getattr(hf_config, "vocab_size", 0)))
         self.text_embedding = nn.Embedding(text_vocab_size, self.embedding_dim)
+
+        # Task ("service token") embedding — a single learned per-mode row the
+        # reference model prepends to the prefill context when trained with >1
+        # mode. Built only when the checkpoint carries one; otherwise ``None``.
+        self.num_task_embeddings = int(arch.num_task_embeddings)
+        if self.num_task_embeddings > 0:
+            self.task_embedding = nn.Embedding(self.num_task_embeddings, self.embedding_dim)
+        else:
+            self.task_embedding = None
+
+        # Context-text tokenizer, loaded lazily from the model directory (same
+        # ``AutoTokenizer.from_pretrained(model_path)`` pattern as qwen3-tts). It
+        # turns the per-request ``context_text`` string (e.g. ``"[EN]"``) into the
+        # subword ids that the baked ``text_embedding`` table consumes — so the
+        # caller passes plain text, never pre-tokenized ids.
+        self._text_tokenizer: Any = None
 
         # Phoneme channel (optional — only built when the checkpoint has one).
         self.has_phoneme = arch.phoneme_vocab_size > 0 and arch.phoneme_stacking_factor > 0
@@ -432,10 +466,13 @@ class EasyMagpieTTSForConditionalGeneration(
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _unwrap(value: Any) -> Any:
+    def _first_str(value: Any) -> str:
+        """Return the first element of a list-wrapped scalar, or the scalar itself, as a string."""
         if isinstance(value, list):
-            return value[0] if value else None
-        return value
+            return str(value[0]) if value else ""
+        if value is None:
+            return ""
+        return str(value)
 
     def preprocess(
         self,
@@ -448,9 +485,11 @@ class EasyMagpieTTSForConditionalGeneration(
     ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
         """Build per-request ``(input_ids, inputs_embeds)`` for this step.
 
-        Prefill (``span_len > 1``): slice the precomputed ``prompt_embeds``
-        context embedding into this chunk and return it; ``input_ids`` are
-        placeholders. Decode (``span_len == 1``): write the per-token decode
+        Prefill (``span_len > 1``): assemble the full context embedding
+        (``[task_embedding | speaker_embedding | context_text_embedded]`` from
+        the per-request inputs; see :meth:`_build_prefill_embeds`), slice this
+        chunk out of it, and return it;
+        ``input_ids`` are placeholders. Decode (``span_len == 1``): write the per-token decode
         inputs (previous codes, current text token, previous phoneme) into the
         model buffers at ``start`` and return a zero embedding that
         :meth:`forward` accumulates into.
@@ -479,25 +518,19 @@ class EasyMagpieTTSForConditionalGeneration(
         device: torch.device,
         info_dict: dict[str, Any],
     ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
-        prompt_embeds = self._unwrap(info_dict.get("prompt_embeds"))
-        if not isinstance(prompt_embeds, torch.Tensor) or prompt_embeds.ndim != 2:
-            raise ValueError(
-                "EasyMagpieTTS preprocess requires additional_information.prompt_embeds "
-                "of shape (T_ctx, embedding_dim) for prefill."
-            )
-        prompt_embeds = prompt_embeds.to(device=device, dtype=self._combined_embeddings.dtype)
+        prefill_embeds = self._build_prefill_embeds(device, info_dict)
 
         offset = int(info_dict.get("ear_prefill_offset", 0) or 0)
-        total = int(prompt_embeds.shape[0])
+        total = int(prefill_embeds.shape[0])
         s = max(0, min(offset, total))
         e = max(0, min(offset + span_len, total))
-        take = prompt_embeds[s:e]
+        take = prefill_embeds[s:e]
         if int(take.shape[0]) < span_len:
             pad_n = span_len - int(take.shape[0])
             pad_rows = (
                 take[-1:].expand(pad_n, -1)
                 if take.shape[0] > 0
-                else prompt_embeds.new_zeros(pad_n, prompt_embeds.shape[-1])
+                else prefill_embeds.new_zeros(pad_n, prefill_embeds.shape[-1])
             )
             take = torch.cat([take, pad_rows], dim=0)
 
@@ -507,6 +540,121 @@ class EasyMagpieTTSForConditionalGeneration(
         }
         input_ids_out = torch.full_like(input_ids, _DUMMY_TOKEN_ID)
         return input_ids_out, take, info_update
+
+    def _build_prefill_embeds(
+        self,
+        device: torch.device,
+        info_dict: dict[str, Any],
+    ) -> torch.Tensor:
+        """Assemble the full ``(T_ctx, embedding_dim)`` prefill context embedding.
+
+        Reproduces the prefill assembly from the reference
+        ``prepare_context_tensors``::
+
+            [task_embedding | speaker_embedding | context_text_embedded]
+
+        from the per-request inputs:
+
+        * ``speaker_embedding`` — the speaker-encoded context-audio embedding
+          (e.g. produced by ``easy_magpietts_extract_speaker_encoding.py``),
+          required as a 2-D ``(T_audio, embedding_dim)`` tensor.
+        * ``context_text`` — a plain string (e.g. ``"[EN]"``); tokenized in-model
+          (see :meth:`_encode_context_text`) and embedded through the baked
+          per-subword ``text_embedding`` table (which already folds in the CAS
+          encoder, matching the default ``disable_cas_for_context_text=False``
+          training). Defaults to ``"[NO TEXT CONTEXT]"`` when omitted.
+        * ``task_mode_id`` — selects the per-mode task ("service token")
+          embedding row; prepended only when the checkpoint has a task table.
+
+        Returns the full context embedding; the per-chunk slicing/padding is done
+        by :meth:`_preprocess_prefill`.
+        """
+        dtype = self._combined_embeddings.dtype
+
+        speaker_embedding = info_dict.get("speaker_embedding")
+        assert isinstance(speaker_embedding, torch.Tensor) and speaker_embedding.ndim == 2, (
+            "EasyMagpieTTS preprocess expects additional_information.speaker_embedding to be a 2-D "
+            "(T_audio, embedding_dim) tensor (the speaker-encoded context audio); "
+            f"got {type(speaker_embedding).__name__}"
+            + (f" with ndim={speaker_embedding.ndim}" if isinstance(speaker_embedding, torch.Tensor) else "")
+        )
+
+        parts: list[torch.Tensor] = []
+
+        # Task / "service token" embedding (prepended), when present.
+        if self.task_embedding is not None:
+            task_mode_id = int(info_dict.get("task_mode_id", 0) or 0)
+            task_mode_id = max(0, min(task_mode_id, self.num_task_embeddings - 1))
+            task_row = self.task_embedding(torch.tensor([task_mode_id], device=device, dtype=torch.long))
+            parts.append(task_row.to(dtype))
+
+        # Speaker-encoded context audio.
+        parts.append(speaker_embedding.to(device=device, dtype=dtype))
+
+        # Context text: tokenized in-model and embedded through the baked table.
+        context_text = self._first_str(info_dict.get("context_text")) or _DEFAULT_CONTEXT_TEXT
+        ctx_ids = self._encode_context_text(context_text, device)
+        if ctx_ids.numel() > 0:
+            parts.append(self.text_embedding(ctx_ids).to(dtype))
+
+        return torch.cat(parts, dim=0)
+
+    def _get_text_tokenizer(self):
+        """Lazily load the context-text tokenizer from the model directory.
+
+        Mirrors qwen3-tts: the converted checkpoint ships a HuggingFace
+        ``AutoTokenizer`` (the model's text-conditioning tokenizer) alongside its
+        weights, so we load it on first use from ``model_path``.
+        """
+        if self._text_tokenizer is None:
+            from transformers import AutoTokenizer
+
+            self._text_tokenizer = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True)
+        return self._text_tokenizer
+
+    def _encode_context_text(self, context_text: str, device: torch.device) -> torch.Tensor:
+        """Tokenize ``context_text`` to subword ids (matching the reference encode path).
+
+        The reference ``AggregatedTTSTokenizer.encode`` calls the underlying
+        HF tokenizer's ``encode`` (default ``add_special_tokens``) for the
+        text-conditioning tokenizer, which sits at offset 0 in the aggregate, so
+        its raw ids index the baked ``text_embedding`` table directly.
+        """
+        tok = self._get_text_tokenizer()
+        ids = tok.encode(context_text)
+        return torch.tensor(ids, device=device, dtype=torch.long)
+
+    @staticmethod
+    def estimate_prompt_len(
+        speaker_embedding: torch.Tensor,
+        *,
+        tokenize: Callable[[str], Iterable[int]],
+        context_text: str = _DEFAULT_CONTEXT_TEXT,
+        has_task_embedding: bool = False,
+    ) -> int:
+        """Length-only mirror of :meth:`_build_prefill_embeds` (à la qwen3-tts's
+        ``estimate_prompt_len_from_additional_information``).
+
+        The engine assembles the prefill context as
+        ``[task_embedding? | speaker_embedding | context_text_embedded]``, so the
+        caller must pass ``prompt_token_ids = [0] * estimate_prompt_len(...)`` for
+        the placeholder length to match the assembled embedding length (otherwise
+        vLLM pads / truncates and quality drops).
+
+        Args:
+            speaker_embedding: ``(T_audio, embedding_dim)`` speaker-encoded
+                context-audio embedding (only its length is used).
+            tokenize: callable turning ``context_text`` into its subword ids
+                (e.g. ``lambda t: tokenizer.encode(t)``) — must match the
+                tokenizer the engine loads from ``model_path``.
+            context_text: conditioning string (default ``"[NO TEXT CONTEXT]"``).
+            has_task_embedding: whether the checkpoint prepends a task /
+                "service token" embedding (``num_task_embeddings > 0``).
+        """
+        t_audio = int(speaker_embedding.shape[0])
+        ctx_len = len(list(tokenize(context_text or _DEFAULT_CONTEXT_TEXT)))
+        task_len = 1 if has_task_embedding else 0
+        return task_len + t_audio + ctx_len
 
     def _preprocess_decode(
         self,
@@ -585,6 +733,7 @@ class EasyMagpieTTSForConditionalGeneration(
         "phoneme_embeddings.": "phoneme_embeddings.",
         "phoneme_final_proj.": "phoneme_final_proj.",
         "text_embedding.": "text_embedding.",
+        "task_embedding.": "task_embedding.",
     }
 
     def _remap_tts_key(self, name: str) -> Optional[str]:
@@ -616,6 +765,9 @@ class EasyMagpieTTSForConditionalGeneration(
             mapped = self._remap_tts_key(name)
             if mapped is None:
                 # Unrelated checkpoint section (codec, speaker encoder, CAS, etc.).
+                continue
+            if mapped.startswith("task_embedding.") and self.task_embedding is None:
+                # Single-mode model: checkpoint may still ship an (unused) table.
                 continue
             target = own_params.get(mapped)
             if target is None:

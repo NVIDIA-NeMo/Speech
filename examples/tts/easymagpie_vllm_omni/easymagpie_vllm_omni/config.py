@@ -72,6 +72,12 @@ class EasyMagpieOmniArch:
     phoneme_stacking_factor: int = 1
     phoneme_vocab_size: int = 2051
 
+    # Number of multi-mode task ("service token") embeddings. The reference model
+    # prepends a single learned per-mode embedding to the prefill context when
+    # trained with >1 mode (``cfg.training_modes``); 0 disables it (single-mode
+    # checkpoints have no ``task_embedding`` table).
+    num_task_embeddings: int = 0
+
     local_transformer_n_layers: int = 3
     local_transformer_n_heads: int = 12
     local_transformer_hidden_dim: int = 1536
@@ -136,6 +142,7 @@ class EasyMagpieOmniArch:
             "frame_stacking_factor",
             "phoneme_stacking_factor",
             "phoneme_vocab_size",
+            "num_task_embeddings",
             "local_transformer_n_layers",
             "local_transformer_n_heads",
             "local_transformer_hidden_dim",

@@ -854,7 +854,7 @@ class AudioCodecModel(ModelPT):
         # manually in the dataset class.
         loader_cfg.sample_rate = self.output_sample_rate
 
-        # Random windowing is done in AudioCodecLhotseDataset on `target_audio`, not via
+        # Random segment selection is done in AudioCodecLhotseDataset on `target_audio`, not via
         # Lhotse's cuts.truncate (which operates on the parent recording).
         segment_duration = dataset_args.get("segment_duration")
         if segment_duration is None:

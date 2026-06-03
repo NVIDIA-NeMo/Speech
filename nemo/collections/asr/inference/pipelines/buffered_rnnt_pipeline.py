@@ -564,7 +564,7 @@ class BufferedRNNTPipeline(BasePipeline):
         encs_dim_last = encs.transpose(1, 2)
         # decode chunk
         with torch.inference_mode(), torch.no_grad():
-            best_batched_hyps_chunk, _, batched_state = self.decoding_computer(
+            best_batched_hyps_chunk, batched_state = self.decoding_computer(
                 encs_dim_last,
                 enc_lens_chunk,
                 batched_rnnt_states,
@@ -587,7 +587,7 @@ class BufferedRNNTPipeline(BasePipeline):
             # pad with zeros everything beyond needed context
             shift_indices = torch.where(shift_indices < max_time, shift_indices, torch.zeros_like(shift_indices))
             with torch.inference_mode(), torch.no_grad():
-                best_batched_hyps_rc, _, _ = self.decoding_computer(
+                best_batched_hyps_rc, _ = self.decoding_computer(
                     torch.gather(encs_dim_last, dim=1, index=shift_indices[:, :, None].expand(-1, -1, feat_dim)),
                     enc_lens - enc_lens_chunk,
                     batched_state,

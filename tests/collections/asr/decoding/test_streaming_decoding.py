@@ -141,7 +141,7 @@ def test_label_looping_streaming_batched_state(
                 current_len = torch.full_like(encoder_output_len, fill_value=chunk_size)
                 current_len = torch.minimum(current_len, rest_len)
                 current_len = torch.maximum(current_len, torch.zeros_like(current_len))
-                batched_hyps_chunk, _, state = decoding_computer(
+                batched_hyps_chunk, state = decoding_computer(
                     x=encoder_output[:, t : t + chunk_size],
                     out_len=current_len,
                     prev_batched_state=state,
@@ -295,7 +295,7 @@ def test_label_looping_continuous_streaming_batched_state(
             current_len = torch.full_like(encoder_output_len, fill_value=chunk_size)
             current_len = torch.minimum(current_len, rest_len)
             encoder_frames = encoder_output[expanded_batch_indices, :, frame_indices]
-            batched_hyps, _, state = decoding_computer(
+            batched_hyps, state = decoding_computer(
                 x=encoder_frames,
                 out_len=current_len,
                 prev_batched_state=state,
@@ -570,7 +570,7 @@ def test_label_looping_streaming_boosting_with_ref_transcripts(
                 current_len = torch.minimum(current_len, rest_len)
                 current_len = torch.maximum(current_len, torch.zeros_like(current_len))
 
-                batched_hyps_chunk, _, state = decoding_computer(
+                batched_hyps_chunk, state = decoding_computer(
                     x=encoder_output[:, t : t + chunk_size],
                     out_len=current_len,
                     prev_batched_state=state,

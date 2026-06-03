@@ -425,7 +425,7 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
                 encoder_output = encoder_output[:, encoder_context.left :]
 
                 # decode only chunk frames
-                chunk_batched_hyps, _, state = decoding_computer(
+                chunk_batched_hyps, state = decoding_computer(
                     x=encoder_output,
                     out_len=torch.where(
                         is_last_chunk_batch,

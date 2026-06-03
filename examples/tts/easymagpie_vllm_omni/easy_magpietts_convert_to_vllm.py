@@ -157,7 +157,7 @@ def parse_args():
     parser.add_argument("--context_audio_duration", type=float, default=5.0)
     parser.add_argument(
         "--dtype",
-        default="bfloat16",
+        default="float32",
         choices=["bfloat16", "float16", "float32"],
         help="Saved weight dtype / config torch_dtype. bf16 matches the reference inference setup.",
     )

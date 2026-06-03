@@ -13,6 +13,56 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""
+Restartable OOMptimizer for distributed speechlm2 training.
+
+This script intentionally lives next to, rather than inside, ``oomptimizer.py``. The original OOMptimizer is a
+single-process calibration tool that relies on catching CUDA OOM exceptions in the same Python process, emptying
+enough state to keep going, and then continuing a binary search over synthetic batch sizes. That model is useful for
+one GPU and for simple DDP-style memory estimates, but it becomes unreliable once the model is truly distributed.
+With FSDP2, EP, and multi-node NCCL process groups, a single rank hitting CUDA OOM can leave other ranks blocked in
+collectives, can poison the process group, and often prevents the training process from reaching Python exception
+handling on every rank. In practice, trying to recover from those errors in-process is exactly the failure mode we
+want to avoid.
+
+The distributed OOMptimizer uses a different unit of recovery: a whole ``torchrun`` child job. A lightweight
+supervisor process owns the search state and launches short-lived probe jobs. Each probe instantiates the real model
+and optimizer from the provided config, creates synthetic batches through the model's OOMptimizer schema, runs one or
+more candidate batch sizes, records the observed peak CUDA memory, and exits. If a candidate succeeds, rank 0 writes a
+JSONL record with the batch size, bucket, peak allocated memory, peak reserved memory, and target memory. If a
+candidate reaches the requested memory fraction, the worker records ``memory_target`` and stops probing that session.
+If a candidate OOMs, hangs, crashes, or loses the distributed process group, the child process is allowed to die and
+the supervisor interprets the missing or failed result as the first bad candidate.
+
+The main control flow is:
+
+1. The supervisor reads bucket boundaries and model config, then converts each bucket into synthetic input/output
+   sequence lengths. SALMAutomodel has its own conversion because a single token bucket represents both audio
+   locator/audio-equivalent tokens and text tokens; the ``--salm-audio-token-ratio`` option controls that split.
+2. Buckets are processed from largest to smallest to preserve the memory-fragmentation behavior expected during real
+   training. The next smaller bucket starts near the previous bucket's discovered batch size instead of starting from
+   scratch.
+3. For each bucket, the supervisor proposes one or more candidate batch sizes. Early probes expand quickly; later
+   probes use the observed memory slope when possible, otherwise they fall back to doubling or bisection.
+4. A probe session is launched with ``torchrun --max-restarts=0`` and a short process-group timeout. On a single node
+   the supervisor uses ``--standalone``. On multiple nodes, one supervisor per node coordinates through a shared
+   filesystem barrier and a rendezvous endpoint.
+5. Probe workers run the actual model training step under the requested dtype. In distributed mode, workers reduce
+   the maximum observed CUDA memory across ranks so the profile reflects the most memory-constrained rank.
+6. The supervisor merges successful, memory-target, timeout, and failed-child observations into the same search state:
+   ``max_ok`` tracks the largest usable batch size and ``min_err`` tracks the smallest known bad batch size. The search
+   finishes when the relative gap between those bounds is below ``--threshold`` or the bounds differ by one.
+7. The primary supervisor emits the same style of final ``bucket_duration_bins`` and ``bucket_batch_size`` output as
+   the original tool, while preserving the per-probe logs for debugging.
+
+The important design choice is that CUDA OOM recovery is delegated to process lifetime instead of Python exception
+cleanup. A failed child can leave NCCL, CUDA allocator state, or model state in a bad condition, but that state dies
+with the child process. The supervisor waits for GPU memory to be reclaimed, keeps the search state on the host, and
+continues with the next candidate. This makes the tool slower than an in-process loop, but it matches the failure
+semantics of FSDP2/EP training and allows us to profile batch sizes that put real distributed jobs near a target GPU
+memory pressure without manually babysitting every OOM.
+"""
+
 import importlib
 import json
 import math

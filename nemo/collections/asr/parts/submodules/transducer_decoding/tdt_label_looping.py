@@ -249,10 +249,18 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
         self.max_symbols = max_symbols_per_step
         self.preserve_step_confidence = preserve_step_confidence
         self.preserve_logits = preserve_alignments
-        self.preserve_each_step_confidence = preserve_step_confidence and not exclude_blank_from_confidence
+        if self.preserve_logits:
+            logging.warning(
+                "Preserving logits uses enormous amount of memory. Consider avoiding storing logits during decoding."
+            )
         self.record_all_steps = preserve_alignments or (
             self.preserve_step_confidence and not exclude_blank_from_confidence
         )
+        if self.record_all_steps:
+            logging.warning(
+                "All decoding steps will be recorded, including blank steps. Decoding algorithm will be slower."
+                " Consider not saving alignments and excluding blank symbols from confidence for efficient decoding."
+            )
         self.include_duration = include_duration
         self.include_duration_confidence = include_duration_confidence
         self._SOS = self._blank_index

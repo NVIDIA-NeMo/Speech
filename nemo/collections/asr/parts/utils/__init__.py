@@ -13,3 +13,8 @@
 # limitations under the License.
 
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis, NBestHypotheses
+
+__all__ = [
+    "Hypothesis",
+    "NBestHypotheses",
+]

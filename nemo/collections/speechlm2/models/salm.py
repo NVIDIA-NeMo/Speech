@@ -574,6 +574,7 @@ def replace_placeholders_and_build_targets(
     placeholder_id: int,
     replacements: list[torch.Tensor],
     target_ids: Optional[torch.Tensor] = None,
+    return_input_ids: bool = False,
 ) -> tuple[torch.Tensor, Optional[torch.Tensor], torch.Tensor]:
     """Replaces each occurrence of the placeholder_id in input_ids with the corresponding tensor
     from the replacements list in the embeds tensor, and creates corresponding adjusted target_ids.
@@ -599,6 +600,12 @@ def replace_placeholders_and_build_targets(
           Will be None if target_ids input was None.
         - Tensor of shape (batch, max_new_sequence_length) with attention padding masks
           updated to account for shape changes due to replacements.
+      When ``return_input_ids=True``, a 4th tensor is appended: the expanded token-id
+      sequence aligned 1:1 with the returned embeds, where text positions keep their
+      original ``input_ids`` and replacement (e.g. audio) spans are filled with
+      ``padding_id``. Used to drive Multi-Token Prediction (which needs token ids
+      aligned to the embedding stream); audio spans carry pad ids whose MTP targets
+      are -100 and thus ignored.
     """
     batch_size, seq_len = input_ids.size()
     if target_ids is not None:
@@ -614,6 +621,7 @@ def replace_placeholders_and_build_targets(
     output_sequences = []
     output_target_ids = []
     output_att_masks = []
+    output_input_ids = [] if return_input_ids else None
     replacement_idx = 0
 
     for i in range(batch_size):
@@ -630,11 +638,14 @@ def replace_placeholders_and_build_targets(
                 new_target_ids[input_ids[i] == padding_id] = ignore_index
                 output_target_ids.append(new_target_ids)
             output_att_masks.append(input_ids[i] != padding_id)
+            if return_input_ids:
+                output_input_ids.append(input_ids[i].clone())
             continue
 
         # Build segments between placeholders
         segments = []  # For embeddings
         target_segments = []  # For target IDs
+        id_segments = []  # For expanded input token IDs (MTP)
         att_masks = []
         prev_pos = 0
 
@@ -648,6 +659,8 @@ def replace_placeholders_and_build_targets(
                     segment_target_ids = target_ids[i][prev_pos:pos].clone()
                     segment_target_ids[segment_target_ids == padding_id] = ignore_index
                     target_segments.append(segment_target_ids)
+                if return_input_ids:
+                    id_segments.append(input_ids[i][prev_pos:pos].clone())
                 att_masks.append(input_ids[i][prev_pos:pos] != padding_id)
 
             # Add replacement for embeddings
@@ -656,6 +669,10 @@ def replace_placeholders_and_build_targets(
 
             # For target IDs: all replacement positions get ignore_index
             target_segments.append(torch.full((rep.size(0),), ignore_index, dtype=torch.long, device=device))
+            # For input IDs: replacement (audio) spans carry pad ids (no token); their
+            # MTP targets are -100 so they never contribute to the loss.
+            if return_input_ids:
+                id_segments.append(torch.full((rep.size(0),), padding_id, dtype=torch.long, device=device))
             att_masks.append(torch.ones((rep.size(0),), dtype=torch.bool, device=device))
 
             replacement_idx += 1
@@ -670,6 +687,8 @@ def replace_placeholders_and_build_targets(
                 segment_target_ids = target_ids[i][prev_pos:seq_len].clone()
                 segment_target_ids[segment_target_ids == padding_id] = ignore_index
                 target_segments.append(segment_target_ids)
+            if return_input_ids:
+                id_segments.append(input_ids[i][prev_pos:seq_len].clone())
             att_masks.append(input_ids[i][prev_pos:seq_len] != padding_id)
 
         # Concatenate all segments for this example
@@ -677,6 +696,8 @@ def replace_placeholders_and_build_targets(
         output_att_masks.append(torch.cat(att_masks, dim=0))
         if target_ids is not None:
             output_target_ids.append(torch.cat(target_segments, dim=0))
+        if return_input_ids:
+            output_input_ids.append(torch.cat(id_segments, dim=0))
 
     # Verify all replacements were used
     if replacement_idx != len(replacements):
@@ -690,16 +711,30 @@ def replace_placeholders_and_build_targets(
     else:
         new_target_ids = None
     attention_masks = torch.zeros((batch_size, max_seq_length), dtype=torch.bool, device=device)
+    # The expanded id tensor is left-padded with ``padding_id`` (not -100) so it stays a
+    # valid index for the embedding lookup the MTP head performs.
+    if return_input_ids:
+        new_input_ids = torch.full((batch_size, max_seq_length), padding_id, dtype=torch.long, device=device)
+    else:
+        new_input_ids = None
 
     if target_ids is None:
         output_target_ids = repeat(None)
-    for i, (seq, tgt, att) in enumerate(zip(output_sequences, output_target_ids, output_att_masks)):
+    if not return_input_ids:
+        output_input_ids = repeat(None)
+    for i, (seq, tgt, ids, att) in enumerate(
+        zip(output_sequences, output_target_ids, output_input_ids, output_att_masks)
+    ):
         seq_len = seq.size(0)
         output[i, -seq_len:] = seq
         if tgt is not None:
             new_target_ids[i, -seq_len:] = tgt
+        if ids is not None:
+            new_input_ids[i, -seq_len:] = ids
         attention_masks[i, -seq_len:] = att
 
+    if return_input_ids:
+        return output, new_target_ids, attention_masks, new_input_ids
     return output, new_target_ids, attention_masks
 
 

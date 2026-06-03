@@ -66,6 +66,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
 
         self._use_fsdp = False
         self._use_tp = False
+        self._mtp_enabled = False  # set in configure_model when cfg.mtp.enabled
 
         if self.cfg.get("init_configure_model", False):
             self.configure_model()
@@ -184,6 +185,13 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             ans = {"logits": out['logits']}  # (B, T, text_vocab_size)
             if cache is not None:
                 ans["cache"] = out["past_key_values"]
+            # MTP per-depth hidden states (present only when the LLM built an MTP head,
+            # is in training mode, and received input_ids). Attribute access is None-safe;
+            # out['mtp_per_depth_h'] would KeyError when the field is None.
+            mtp_h = getattr(out, "mtp_per_depth_h", None)
+            if mtp_h is not None:
+                ans["mtp_per_depth_h"] = mtp_h
+                ans["mtp_loss_scaling_factor"] = getattr(out, "mtp_loss_scaling_factor", None)
         return ans
 
     def _uses_parallel_expert_encoder(self) -> bool:
@@ -285,17 +293,34 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 device_mesh=getattr(self, "_device_mesh", None),
             )
 
-        input_embs, target_ids, attention_mask = replace_placeholders_and_build_targets(
-            input_ids=batch["input_ids"],
-            embeds=text_embs,
-            padding_id=self.text_pad_id,
-            placeholder_id=self.audio_locator_tag_id,
-            replacements=audio_embs,
-            target_ids=target_ids_full,
-        )
+        # When MTP is on, also build the expanded token-id sequence (text=id, audio=pad)
+        # aligned 1:1 with input_embs, so the LLM's MTP head can embed the future tokens.
+        if self._mtp_enabled:
+            input_embs, target_ids, attention_mask, mtp_input_ids = replace_placeholders_and_build_targets(
+                input_ids=batch["input_ids"],
+                embeds=text_embs,
+                padding_id=self.text_pad_id,
+                placeholder_id=self.audio_locator_tag_id,
+                replacements=audio_embs,
+                target_ids=target_ids_full,
+                return_input_ids=True,
+            )
+        else:
+            input_embs, target_ids, attention_mask = replace_placeholders_and_build_targets(
+                input_ids=batch["input_ids"],
+                embeds=text_embs,
+                padding_id=self.text_pad_id,
+                placeholder_id=self.audio_locator_tag_id,
+                replacements=audio_embs,
+                target_ids=target_ids_full,
+            )
+            mtp_input_ids = None
         input_embs = input_embs[:, :-1]
         attention_mask = attention_mask[:, :-1]
         target_ids = target_ids[:, 1:]
+        # mtp_input_ids stays input-aligned (like input_embs): slice [:, :-1], NOT [:, 1:].
+        if mtp_input_ids is not None:
+            mtp_input_ids = mtp_input_ids[:, :-1]
 
         # BSHD path runs only when CP is inactive (the fit-start validator
         # rejects BSHD + CP > 1, see _validate_parallelism_compatibility).
@@ -307,12 +332,14 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 input_embs = input_embs[:, :-remainder]
                 attention_mask = attention_mask[:, :-remainder]
                 target_ids = target_ids[:, :-remainder]
+                if mtp_input_ids is not None:
+                    mtp_input_ids = mtp_input_ids[:, :-remainder]
 
         return {
             "input_embeds": input_embs,
             "attention_mask": attention_mask,
             "target_ids": target_ids,
-            "llm_kwargs": {},
+            "llm_kwargs": {"input_ids": mtp_input_ids} if mtp_input_ids is not None else {},
         }
 
     def on_fit_start(self) -> None:
@@ -400,6 +427,32 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         # this fix. The gradient-carrying ``loss`` above is the globally-normalized quantity.
         with torch.no_grad():
             loss_display = loss_sum.detach() / num_frames.clamp(min=1)
+
+        # Multi-Token Prediction auxiliary loss. Reuse Automodel's calculate_mtp_loss
+        # (it rolls labels per depth, masks the wrapped tail, projects each depth's hidden
+        # state through the shared lm_head via self._mtp_loss_fn, and sums the CE). We pass
+        # num_label_tokens=num_frames_global so each depth is normalized by the same global
+        # token count as the main loss, and multiply by dp_size to cancel FSDP's gradient
+        # averaging (matching the main-loss scaling above). loss_parallel() keeps the
+        # vocab-sharded CE correct under tensor parallelism.
+        mtp_h = forward_outputs.get("mtp_per_depth_h", None)
+        if mtp_h is not None:
+            from nemo_automodel.components.loss.mtp import calculate_mtp_loss
+
+            scaling = forward_outputs.get("mtp_loss_scaling_factor", None)
+            if scaling is None:
+                scaling = getattr(self, "_mtp_loss_scaling_factor", 0.1)
+            with loss_parallel():
+                mtp_loss = dp_size * calculate_mtp_loss(
+                    self._mtp_loss_fn,
+                    mtp_per_depth_h=mtp_h,
+                    labels=inputs["target_ids"],
+                    model=self.llm,
+                    scaling_factor=scaling,
+                    num_label_tokens=num_frames_global,
+                )
+            loss = loss + mtp_loss
+            self.log("mtp_loss", mtp_loss.detach(), on_step=True, prog_bar=True)
 
         # Input embeds shape is (B, T, H) for BSHD or (T, H) for THD packed.
         input_embeds = inputs["input_embeds"]
@@ -960,6 +1013,27 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         if sdpa_method is not None:
             automodel_kwargs["sdpa_method"] = list(OmegaConf.to_container(sdpa_method, resolve=True))
 
+        # Multi-Token Prediction (MTP) auxiliary head. When enabled, forward the head
+        # settings to Automodel's NemotronHForCausalLM so it builds (and, under a
+        # device_mesh, parallelizes) ``self.llm.mtp`` during loading. The hybrid pattern
+        # is read only from the HF config (no __init__ kwarg) so we pass it as a config
+        # override; the count / scaling / repeated-layer flag are __init__ kwargs.
+        mtp_cfg = self.cfg.get("mtp", None)
+        self._mtp_enabled = bool(mtp_cfg is not None and mtp_cfg.get("enabled", False))
+        if self._mtp_enabled:
+            if self.cfg.get("packed_sequences", False):
+                raise NotImplementedError("MTP is not yet supported with packed_sequences=true (THD path).")
+            self._mtp_loss_scaling_factor = float(mtp_cfg.get("loss_scaling_factor", 0.1))
+            # Same per-token loss class the Automodel recipe uses for MTP; reduction="sum"
+            # so calculate_mtp_loss can normalize by our global token count.
+            from nemo_automodel.components.loss.masked_ce import MaskedCrossEntropy
+
+            self._mtp_loss_fn = MaskedCrossEntropy(reduction="sum")
+            automodel_kwargs["num_nextn_predict_layers"] = int(mtp_cfg.get("num_nextn_predict_layers", 1))
+            automodel_kwargs["mtp_hybrid_override_pattern"] = str(mtp_cfg.get("hybrid_override_pattern", "*"))
+            automodel_kwargs["mtp_loss_scaling_factor"] = self._mtp_loss_scaling_factor
+            automodel_kwargs["mtp_use_repeated_layer"] = bool(mtp_cfg.get("use_repeated_layer", False))
+
         self.llm = load_pretrained_automodel_llm(
             self.cfg.pretrained_llm,
             pretrained_weights=pretrained_llm_weights,
@@ -967,6 +1041,15 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             trust_remote_code=self.cfg.get("trust_remote_code", False),
             **automodel_kwargs,
         )
+
+        # Fail loudly if MTP was requested but the head did not get built (e.g. the
+        # config override for the pattern didn't take) — otherwise we'd silently train
+        # without the auxiliary objective.
+        if self._mtp_enabled and getattr(self.llm, "mtp", None) is None:
+            raise RuntimeError(
+                "MTP was enabled (cfg.mtp.enabled=true) but self.llm.mtp is None after loading. "
+                "Check that num_nextn_predict_layers and hybrid_override_pattern reached the model config."
+            )
 
         # Apply MoE options (aux_loss_coeff override, load balance tracking)
         self.setup_moe_options()

@@ -143,6 +143,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             are not set externally. Defaults to None.
         text_context_remapping: Dict defining mapping of multiple text contexts to a single text context.
         text_context_remapping_prob: Probability of remapping the original text context to a remapped text context.
+        phoneme_turn_max_words_to_drop: Turns with this many words or fewer keep phoneme tokens as pad_id.
     """
 
     def __init__(
@@ -174,6 +175,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         add_text_bos: bool = False,
         phoneme_turn_dropout_batch_prob: float = 0.0,
         phoneme_turn_dropout_turn_prob: float = 0.0,
+        phoneme_turn_max_words_to_drop: int = 2,
     ):
         super().__init__()
         self.sample_rate = sample_rate
@@ -207,6 +209,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         self.add_text_bos = add_text_bos
         self.phoneme_turn_dropout_batch_prob = phoneme_turn_dropout_batch_prob
         self.phoneme_turn_dropout_turn_prob = phoneme_turn_dropout_turn_prob
+        self.phoneme_turn_max_words_to_drop = phoneme_turn_max_words_to_drop
 
         self.frame_length = (self.codec_model_samples_per_frame / codec_model_input_sample_rate) * frame_stacking_factor
 
@@ -320,6 +323,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
                 ignore_phoneme_languages=self.ignore_phoneme_languages, pad_id=self.phoneme_tokenizer.pad, eos_id=self.phoneme_tokenizer.eos_token_id, bos_id=self.phoneme_tokenizer.bos_token_id,
                 phoneme_turn_dropout_batch_prob=self.phoneme_turn_dropout_batch_prob,
                 phoneme_turn_dropout_turn_prob=self.phoneme_turn_dropout_turn_prob,
+                phoneme_turn_max_words_to_drop=self.phoneme_turn_max_words_to_drop,
                 apply_turn_dropout=self.dataset_type == 'train',
             )
         else:
@@ -773,6 +777,7 @@ def collate_phoneme_channel(
     bos_id: int = -3,
     phoneme_turn_dropout_batch_prob: float = 0.0,
     phoneme_turn_dropout_turn_prob: float = 0.0,
+    phoneme_turn_max_words_to_drop: int = 2,
     apply_turn_dropout: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     tokens = []
@@ -783,6 +788,7 @@ def collate_phoneme_channel(
             ignore_phoneme_languages, pad_id, eos_id, bos_id,
             phoneme_turn_dropout_batch_prob=phoneme_turn_dropout_batch_prob,
             phoneme_turn_dropout_turn_prob=phoneme_turn_dropout_turn_prob,
+            phoneme_turn_max_words_to_drop=phoneme_turn_max_words_to_drop,
             apply_turn_dropout=apply_turn_dropout,
         )
         tokens.append(token)
@@ -802,6 +808,7 @@ def build_phoneme_channel(
     bos_id: int = -3,
     phoneme_turn_dropout_batch_prob: float = 0.0,
     phoneme_turn_dropout_turn_prob: float = 0.0,
+    phoneme_turn_max_words_to_drop: int = 2,
     apply_turn_dropout: bool = False,
 ) -> tuple[torch.Tensor, bool]:
     language = cut.lang if cut.has_custom("lang") else next((sup.language for sup in cut.supervisions if sup.has_custom("language")), "en")
@@ -820,6 +827,9 @@ def build_phoneme_channel(
         if supervision.speaker in roles:
             if apply_dropout and random.random() < phoneme_turn_dropout_turn_prob:
                 dropout_applied = True
+                continue
+            
+            if len(_strip_timestamps(supervision.text).split()) <= phoneme_turn_max_words_to_drop:
                 continue
 
             if isinstance(phoneme_tokenizer, IPABPETokenizer):

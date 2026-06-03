@@ -452,7 +452,7 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
                     if request is not None and request.multi_model_id is not None:
                         decoding_computer.biasing_multi_model.remove_model(request.multi_model_id)
                         request.multi_model_id = None
-            all_hyps.extend(batched_hyps_to_hypotheses(current_batched_hyps, None, batch_size=batch_size))
+            all_hyps.extend(batched_hyps_to_hypotheses(current_batched_hyps, batch_size=batch_size))
         timer.stop(device=map_location)
 
     # convert text

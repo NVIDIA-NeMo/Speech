@@ -151,7 +151,7 @@ def test_label_looping_streaming_batched_state(
                 else:
                     batched_hyps.merge_(batched_hyps_chunk)
             assert batched_hyps is not None
-            all_hyps.extend(batched_hyps_to_hypotheses(batched_hyps, None, batch_size=local_batch_size))
+            all_hyps.extend(batched_hyps_to_hypotheses(batched_hyps, batch_size=local_batch_size))
 
     streaming_transcripts = []
     for hyp in all_hyps:
@@ -300,7 +300,7 @@ def test_label_looping_continuous_streaming_batched_state(
                 out_len=current_len,
                 prev_batched_state=state,
             )
-            hyps_continuations = batched_hyps_to_hypotheses(batched_hyps, None, batch_size=batch_size)
+            hyps_continuations = batched_hyps_to_hypotheses(batched_hyps, batch_size=batch_size)
             for i, (hyp, hyp_continuation) in enumerate(zip(hyps, hyps_continuations)):
                 if hyp is None:
                     hyps[i] = hyp_continuation
@@ -589,7 +589,7 @@ def test_label_looping_streaming_boosting_with_ref_transcripts(
                     request.multi_model_id = None
 
             assert batched_hyps is not None
-            all_hyps.extend(batched_hyps_to_hypotheses(batched_hyps, None, batch_size=local_batch_size))
+            all_hyps.extend(batched_hyps_to_hypotheses(batched_hyps, batch_size=local_batch_size))
 
     streaming_transcripts = []
     for hyp in all_hyps:

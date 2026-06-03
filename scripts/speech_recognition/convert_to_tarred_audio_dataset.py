@@ -213,6 +213,17 @@ class ASRTarredDatasetBuilder:
         if not os.path.exists(target_dir):
             os.makedirs(target_dir)
 
+        if not config.shuffle:
+            self._create_new_dataset_streaming(
+                manifest_path=manifest_path,
+                target_dir=target_dir,
+                buckets_num=buckets_num,
+                dynamic_buckets_num=dynamic_buckets_num,
+                only_manifests=only_manifests,
+                dry_run=dry_run,
+            )
+            return
+
         # Read the existing manifest
         entries, total_duration, filtered_entries, filtered_duration = self._read_manifest(manifest_path, config)
 
@@ -549,10 +560,7 @@ class ASRTarredDatasetBuilder:
         filtered_entries = []
         filtered_duration = 0.0
 
-        if isinstance(manifest_path, str):
-            manifest_paths = manifest_path.split(",")
-        else:
-            manifest_paths = manifest_path
+        manifest_paths = self._get_manifest_paths(manifest_path)
 
         print(f"Found {len(manifest_paths)} manifest files to be processed")
         for manifest_file in manifest_paths:
@@ -566,42 +574,200 @@ class ASRTarredDatasetBuilder:
 
         return entries, total_duration, filtered_entries, filtered_duration
 
-    def _read_single_manifest(self, manifest_path: str, config: ASRTarredDatasetConfig):
-        # Read the existing manifest
-        entries = []
-        total_duration = 0.0
-        filtered_entries = []
-        filtered_duration = 0.0
-        print(f"Reading manifest: {manifest_path}")
+    def _get_manifest_paths(self, manifest_path: Union[str, List[str]]):
+        if isinstance(manifest_path, str):
+            return manifest_path.split(",")
+        return manifest_path
+
+    def _prepare_manifest_entry(self, entry: dict, manifest_path: str, config: ASRTarredDatasetConfig):
+        audio_key = "audio_filepath" if "audio_filepath" in entry else "audio_file"
+        if config.slice_with_offset and "offset" not in entry:
+            raise KeyError(
+                f"Manifest entry does not contain 'offset' field, but '--slice_with_offset' is enabled: {entry}"
+            )
+        if audio_key not in entry:
+            raise KeyError(f"Manifest entry does not contain 'audio_filepath' or  'audio_file' key: {entry}")
+        audio_filepath = entry[audio_key]
+        if not os.path.isfile(audio_filepath) and not os.path.isabs(audio_filepath):
+            audio_filepath_abs = os.path.join(os.path.dirname(manifest_path), audio_filepath)
+            if not os.path.isfile(audio_filepath_abs):
+                raise FileNotFoundError(f"Could not find {audio_filepath} or {audio_filepath_abs}!")
+            entry[audio_key] = audio_filepath_abs
+        if audio_key != "audio_filepath":
+            entry["audio_filepath"] = entry[audio_key]
+
+        is_valid = (config.max_duration is None or entry['duration'] < config.max_duration) and (
+            config.min_duration is None or entry['duration'] >= config.min_duration
+        )
+        return entry, is_valid
+
+    def _iter_single_manifest(self, manifest_path: str, config: ASRTarredDatasetConfig, action: str = "Reading"):
+        print(f"{action} manifest: {manifest_path}")
         with open(manifest_path, 'r', encoding='utf-8') as m:
             for line in m:
                 line = line.strip()
                 if not line:
                     continue
                 entry = json.loads(line)
-                audio_key = "audio_filepath" if "audio_filepath" in entry else "audio_file"
-                if config.slice_with_offset and "offset" not in entry:
-                    raise KeyError(
-                        f"Manifest entry does not contain 'offset' field, but '--slice_with_offset' is enabled: {entry}"
-                    )
-                if audio_key not in entry:
-                    raise KeyError(f"Manifest entry does not contain 'audio_filepath' or  'audio_file' key: {entry}")
-                audio_filepath = entry[audio_key]
-                if not os.path.isfile(audio_filepath) and not os.path.isabs(audio_filepath):
-                    audio_filepath_abs = os.path.join(os.path.dirname(manifest_path), audio_filepath)
-                    if not os.path.isfile(audio_filepath_abs):
-                        raise FileNotFoundError(f"Could not find {audio_filepath} or {audio_filepath_abs}!")
-                    entry[audio_key] = audio_filepath_abs
-                if (config.max_duration is None or entry['duration'] < config.max_duration) and (
-                    config.min_duration is None or entry['duration'] >= config.min_duration
-                ):
-                    entries.append(entry)
-                    total_duration += entry["duration"]
-                else:
-                    filtered_entries.append(entry)
-                    filtered_duration += entry['duration']
+                yield self._prepare_manifest_entry(entry, manifest_path, config)
+
+    def _read_single_manifest(self, manifest_path: str, config: ASRTarredDatasetConfig):
+        # Read the existing manifest
+        entries = []
+        total_duration = 0.0
+        filtered_entries = []
+        filtered_duration = 0.0
+
+        for entry, is_valid in self._iter_single_manifest(manifest_path, config):
+            if is_valid:
+                entries.append(entry)
+                total_duration += entry["duration"]
+            else:
+                filtered_entries.append(entry)
+                filtered_duration += entry['duration']
 
         return entries, total_duration, filtered_entries, filtered_duration
+
+    def _count_manifest(self, manifest_path: Union[str, List[str]], config: ASRTarredDatasetConfig):
+        entries_count = 0
+        total_duration = 0.0
+        filtered_entries_count = 0
+        filtered_duration = 0.0
+        manifest_paths = self._get_manifest_paths(manifest_path)
+
+        print(f"Found {len(manifest_paths)} manifest files to be processed")
+        for manifest_file in manifest_paths:
+            for entry, is_valid in self._iter_single_manifest(str(manifest_file), config, action="Counting"):
+                if is_valid:
+                    entries_count += 1
+                    total_duration += entry["duration"]
+                else:
+                    filtered_entries_count += 1
+                    filtered_duration += entry["duration"]
+
+        return entries_count, total_duration, filtered_entries_count, filtered_duration
+
+    def _iter_manifest_entries(self, manifest_path: Union[str, List[str]], config: ASRTarredDatasetConfig):
+        for manifest_file in self._get_manifest_paths(manifest_path):
+            for entry, is_valid in self._iter_single_manifest(str(manifest_file), config):
+                if is_valid:
+                    yield entry
+
+    def _write_manifest_entries(self, manifest_path: str, entries) -> None:
+        with open(manifest_path, 'w', encoding='utf-8') as m2:
+            for entry in entries:
+                json.dump(entry, m2, ensure_ascii=False)
+                m2.write('\n')
+
+    def _write_shard_manifest(self, target_dir: str, entries) -> None:
+        if not self.config.shard_manifests:
+            return
+        if not entries:
+            return
+
+        sharded_manifests_dir = target_dir + '/sharded_manifests'
+        if not os.path.exists(sharded_manifests_dir):
+            os.makedirs(sharded_manifests_dir)
+
+        shard_id = entries[0]['shard_id']
+        new_manifest_shard_path = os.path.join(sharded_manifests_dir, f'manifest_{shard_id}.json')
+        self._write_manifest_entries(new_manifest_shard_path, entries)
+
+    def _create_new_dataset_streaming(
+        self,
+        manifest_path: str,
+        target_dir: str,
+        buckets_num: int = 1,
+        dynamic_buckets_num: int = 30,
+        only_manifests: bool = False,
+        dry_run: bool = False,
+    ):
+        config = self.config
+        entries_count, total_duration, filtered_entries_count, filtered_duration = self._count_manifest(
+            manifest_path, config
+        )
+
+        entries_per_shard = entries_count // config.num_shards
+        remainder_entries = entries_count % config.num_shards
+        print(
+            f"\n  Min duration:              {config.min_duration} s"
+            f"\n  Max duration:              {config.max_duration} s"
+            f"\n  Entries after filtration:   {entries_count} / {entries_count + filtered_entries_count}"
+            f"\n  Duration after filtration:  {total_duration:.2f} / {total_duration + filtered_duration:.2f} s"
+            f"\n  Shards:                    {config.num_shards}"
+            f"\n  Entries per shard:         {entries_per_shard}"
+            f"\n  Remainder entries:         {remainder_entries}"
+        )
+        if dry_run:
+            return
+
+        if entries_count == 0:
+            print("No tarred dataset was created as there were 0 valid samples after filtering!")
+            return
+
+        if entries_per_shard == 0:
+            print(
+                "No tarred dataset was created because the number of valid samples is smaller than "
+                "the requested number of shards."
+            )
+            return
+
+        manifest_folder, _ = os.path.split(self._get_manifest_paths(manifest_path)[0])
+        new_manifest_path = os.path.join(target_dir, 'tarred_audio_manifest.json')
+        total_new_entries = 0
+
+        current_entries = []
+        current_shard_id = 0
+        start_idx = 0
+        valid_entries = self._iter_manifest_entries(manifest_path, config)
+
+        with open(new_manifest_path, 'w', encoding='utf-8') as m2:
+            for entry in valid_entries:
+                if current_shard_id >= config.num_shards:
+                    break
+
+                current_entries.append(entry)
+                if len(current_entries) < entries_per_shard:
+                    continue
+
+                end_idx = start_idx + entries_per_shard
+                print(f"Shard {current_shard_id} has entries {start_idx} ~ {end_idx}")
+                files = {ent["audio_filepath"] for ent in current_entries}
+                print(f"Shard {current_shard_id} contains {len(files)} files")
+                if current_shard_id == config.num_shards - 1:
+                    print(f"Have {remainder_entries} entries left over that will be discarded.")
+
+                new_entries = self._create_shard(
+                    current_entries, target_dir, current_shard_id, manifest_folder, only_manifests
+                )
+                self._write_shard_manifest(target_dir, new_entries)
+                for new_entry in new_entries:
+                    json.dump(new_entry, m2, ensure_ascii=False)
+                    m2.write('\n')
+                total_new_entries += len(new_entries)
+
+                current_entries = []
+                current_shard_id += 1
+                start_idx = end_idx
+
+        print("Total number of entries in manifest :", total_new_entries)
+
+        # Write metadata (default metadata for new datasets)
+        new_metadata_path = os.path.join(target_dir, 'metadata.yaml')
+        metadata = ASRTarredDatasetMetadata()
+
+        metadata.dataset_config = config
+        metadata.num_samples_per_shard = entries_per_shard
+
+        if buckets_num <= 1:
+            bucketing_kwargs = self.estimate_dynamic_bucketing_duration_bins(
+                new_manifest_path, num_buckets=dynamic_buckets_num
+            )
+            for k, v in bucketing_kwargs.items():
+                setattr(metadata.dataset_config, k, v)
+
+        metadata_yaml = OmegaConf.structured(metadata)
+        OmegaConf.save(metadata_yaml, new_metadata_path, resolve=True)
 
     def _write_to_tar(
         self, tar, audio_filepath: str, squashed_filename: str, duration: float = None, offset: float = 0
@@ -622,7 +788,7 @@ class ASRTarredDatasetBuilder:
         # Trim audio based on offset and duration.
         start_sample = int(offset * sampling_rate)
         num_frames = int(duration * sampling_rate) if duration else -1
-        audio, sampling_rate = soundfile.read(file_path, start=start_sample, frames=num_frames)
+        audio, sampling_rate = soundfile.read(audio_filepath, start=start_sample, frames=num_frames)
 
         # Determine codec parameters.
         if codec is not None:
@@ -644,7 +810,7 @@ class ASRTarredDatasetBuilder:
         # Add the in-memory audio file to the tar archive.
         ti = tarfile.TarInfo(encoded_squashed_filename)
         encoded_audio.seek(0)
-        ti.size = len(encoded_audio.getvalue())
+        ti.size = encoded_audio.getbuffer().nbytes
         tar.addfile(ti, encoded_audio)
 
     def _create_shard(self, entries, target_dir, shard_id, manifest_folder: str = None, only_manifests: bool = False):

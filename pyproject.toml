@@ -229,15 +229,65 @@ all = [
 ]
 
 cu12 = [
-    "torch>=2.6.0 ; sys_platform == 'linux'",
+    "torch==2.12.0+cu126 ; sys_platform == 'linux'",
     "numba-cuda[cu12] ; platform_system != 'Darwin'",
     "cuda-python>=12.9.0,<13 ; platform_system != 'Darwin'",
 ]
 
 cu13 = [
-    "torch>=2.6.0 ; sys_platform == 'linux'",
+    "torch==2.12.0+cu132 ; sys_platform == 'linux'",
     "numba-cuda[cu13] ; platform_system != 'Darwin'",
     "cuda-python>=13,<14 ; platform_system != 'Darwin'",
+]
+
+compiled = [
+    "onnx-ir==0.2.1",
+    "onnxscript==0.7.0",
+    "transformer-engine @ git+https://github.com/NVIDIA/TransformerEngine.git@v2.15",
+    "deep_ep @ git+https://github.com/deepseek-ai/DeepEP.git@v1.2.1",
+    "nv-grouped-gemm==1.1.4.post8",
+    "causal-conv1d==1.6.2.post1",
+    "mamba-ssm==2.3.2.post1",
+    # v2.8.3 release assets do not include a cu13/torch2.12/cp313 wheel,
+    # so uv builds this from source under the Dockerfile build environment.
+    "flash-attn==2.8.3",
+]
+
+compiled-a100 = [
+    "onnx-ir==0.2.1",
+    "onnxscript==0.7.0",
+    "transformer-engine @ git+https://github.com/NVIDIA/TransformerEngine.git@v2.15",
+    "nv-grouped-gemm==1.1.4.post8",
+    "causal-conv1d==1.6.2.post1",
+    "mamba-ssm==2.3.2.post1",
+    # v2.8.3 release assets do not include a cu13/torch2.12/cp313 wheel,
+    # so uv builds this from source under the Dockerfile build environment.
+    "flash-attn==2.8.3",
+]
+
+compiled-cu12 = [
+    "onnx-ir==0.2.1",
+    "onnxscript==0.7.0",
+    "transformer-engine @ git+https://github.com/NVIDIA/TransformerEngine.git@v2.15",
+    "deep_ep @ git+https://github.com/deepseek-ai/DeepEP.git@v1.2.1",
+    "nv-grouped-gemm==1.1.4.post8",
+    "causal-conv1d==1.6.2.post1",
+    "mamba-ssm==2.3.2.post1",
+    # v2.8.3 release assets do not include a cu12/torch2.12/cp313 wheel,
+    # so uv builds this from source under the Dockerfile build environment.
+    "flash-attn==2.8.3",
+]
+
+compiled-a100-cu12 = [
+    "onnx-ir==0.2.1",
+    "onnxscript==0.7.0",
+    "transformer-engine @ git+https://github.com/NVIDIA/TransformerEngine.git@v2.15",
+    "nv-grouped-gemm==1.1.4.post8",
+    "causal-conv1d==1.6.2.post1",
+    "mamba-ssm==2.3.2.post1",
+    # v2.8.3 release assets do not include a cu12/torch2.12/cp313 wheel,
+    # so uv builds this from source under the Dockerfile build environment.
+    "flash-attn==2.8.3",
 ]
 
 common = [
@@ -406,7 +456,62 @@ conflicts = [
         { extra = "cu12" },
         { extra = "cu13" },
     ],
+    [
+        { extra = "cu12" },
+        { extra = "compiled" },
+    ],
+    [
+        { extra = "cu12" },
+        { extra = "compiled-a100" },
+    ],
+    [
+        { extra = "cu13" },
+        { extra = "compiled-cu12" },
+    ],
+    [
+        { extra = "cu13" },
+        { extra = "compiled-a100-cu12" },
+    ],
+    [
+        { extra = "compiled" },
+        { extra = "compiled-a100" },
+    ],
+    [
+        { extra = "compiled" },
+        { extra = "compiled-cu12" },
+    ],
+    [
+        { extra = "compiled" },
+        { extra = "compiled-a100-cu12" },
+    ],
+    [
+        { extra = "compiled-a100" },
+        { extra = "compiled-cu12" },
+    ],
+    [
+        { extra = "compiled-a100" },
+        { extra = "compiled-a100-cu12" },
+    ],
+    [
+        { extra = "compiled-cu12" },
+        { extra = "compiled-a100-cu12" },
+    ],
 ]
+no-binary-package = [
+    "causal-conv1d",
+    "flash-attn",
+    "mamba-ssm",
+    "nv-grouped-gemm",
+]
+no-build-isolation-package = [
+    "causal-conv1d",
+    "deep-ep",
+    "flash-attn",
+    "mamba-ssm",
+    "nv-grouped-gemm",
+    "transformer-engine",
+]
+
 # --- uv configuration ---
 # Keep Torch wheel indexes explicit per CUDA extra. The pinned Automodel git
 # dependency also carries Torch source metadata; see the static metadata below.
@@ -444,18 +549,22 @@ name = "nemo-automodel"
 version = "0.4.0+9eccbb61"
 requires-python = ">=3.10"
 # The pinned Automodel git revision carries its own Torch source table. Keep
-# limited dependency metadata static here so this repo controls the CUDA wheel index.
+# its core dependency metadata static here so this repo controls the CUDA wheel index.
 requires-dist = [
     "datasets>=4.0.0",
-    "flashoptim>=0.1.3",
+    "megatron-fsdp>=0.2.3",
+    "mistral-common[audio,hf-hub,image,sentencepiece]",
+    "opencv-python-headless==4.10.0.84",
     "pybind11",
     "pyyaml",
     "tiktoken",
     "torch>=2.6.0",
-    "torchao",
     "torchdata",
     "transformers==5.5.0",
     "wandb",
+    "torchao",
+    "mlflow",
+    "flashoptim>=0.1.3",
 ]
 
 [dependency-groups]

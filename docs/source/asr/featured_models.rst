@@ -70,6 +70,14 @@ Streaming models trained with limited right context for real-time inference with
 
 Configs: ``examples/asr/conf/fastconformer/cache_aware_streaming/``
 
+.. _RNNT-Prompt_model:
+
+**With Prompt Conditioning (RNN-T only):** Cache-aware streaming RNN-T model with language-ID prompt conditioning for multilingual ASR via
+:class:`~nemo.collections.asr.models.EncDecRNNTBPEModelWithPrompt`. The streaming inference
+script accepts a ``target_lang`` flag to select the prompt at runtime
+(see :ref:`RNN-T with Prompt Conditioning Configuration <RNNT-Prompt_model__Config>`).
+Config: ``fastconformer_transducer_bpe_streaming_prompt.yaml``
+
 
 Multitalker Streaming
 ---------------------

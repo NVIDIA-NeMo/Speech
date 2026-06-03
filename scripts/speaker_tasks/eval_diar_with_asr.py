@@ -22,7 +22,7 @@ from nemo.collections.asr.parts.utils.diarization_utils import OfflineDiarWithAS
 from nemo.collections.asr.parts.utils.manifest_utils import read_file
 from nemo.collections.asr.parts.utils.speaker_utils import (
     get_uniqname_from_filepath,
-    labels_to_pyannote_object,
+    labels_to_supervisions,
     rttm_to_labels,
 )
 
@@ -79,17 +79,20 @@ python eval_diar_with_asr.py \
 """
 
 
-def get_pyannote_objs_from_rttms(rttm_file_path_list):
-    """Generate PyAnnote objects from RTTM file list"""
-    pyannote_obj_list = []
+def get_supervisions_from_rttms(rttm_file_path_list):
+    """Generate diarization annotation objects from a list of RTTM files.
+
+    Each entry in the returned list is ``[uniq_id, list[SupervisionSegment]]``.
+    """
+    annotation_obj_list = []
     for rttm_file in rttm_file_path_list:
         rttm_file = rttm_file.strip()
         if rttm_file is not None and os.path.exists(rttm_file):
             uniq_id = get_uniqname_from_filepath(rttm_file)
             ref_labels = rttm_to_labels(rttm_file)
-            reference = labels_to_pyannote_object(ref_labels, uniq_name=uniq_id)
-            pyannote_obj_list.append([uniq_id, reference])
-    return pyannote_obj_list
+            reference = labels_to_supervisions(ref_labels, uniq_name=uniq_id)
+            annotation_obj_list.append([uniq_id, reference])
+    return annotation_obj_list
 
 
 def make_meta_dict(hyp_rttm_list, ref_rttm_list):
@@ -142,8 +145,8 @@ def main(
 
     trans_info_dict = make_trans_info_dict(hyp_json_list) if hyp_json_list else None
 
-    all_hypothesis = get_pyannote_objs_from_rttms(hyp_rttm_list)
-    all_reference = get_pyannote_objs_from_rttms(ref_rttm_list)
+    all_hypothesis = get_supervisions_from_rttms(hyp_rttm_list)
+    all_reference = get_supervisions_from_rttms(ref_rttm_list)
 
     diar_score = evaluate_der(
         audio_rttm_map_dict=audio_rttm_map_dict,

@@ -191,6 +191,33 @@ def test_salm_automodel_validation_step(model, dataset, prompt_formatter, traini
     assert results is None
 
 
+def test_salm_automodel_validation_epoch_end_uses_token_weighted_metrics():
+    model = SALMAutomodel.__new__(SALMAutomodel)
+    torch.nn.Module.__init__(model)
+    model.on_validation_epoch_start()
+    model._get_moe_dp_group = lambda: None
+
+    model._partial_val_loss_sums["dummy"].extend([torch.tensor(2.0), torch.tensor(18.0)])
+    model._partial_val_corrects["dummy"].extend([torch.tensor(1.0), torch.tensor(3.0)])
+    model._partial_val_num_frames["dummy"].extend([torch.tensor(1.0), torch.tensor(9.0)])
+
+    logged = {}
+
+    def fake_log(name, value, **kwargs):
+        logged[name] = value.detach().cpu()
+
+    model.log = fake_log
+    model.on_validation_epoch_end()
+
+    assert logged["val_loss_dummy"].item() == pytest.approx(2.0)
+    assert logged["val_acc_dummy"].item() == pytest.approx(0.4)
+    assert logged["val_loss"].item() == pytest.approx(2.0)
+    assert logged["val_acc"].item() == pytest.approx(0.4)
+    assert not model._partial_val_loss_sums
+    assert not model._partial_val_corrects
+    assert not model._partial_val_num_frames
+
+
 @requires_cuda
 def test_salm_automodel_generation(model):
     answer = model.generate(

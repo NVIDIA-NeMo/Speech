@@ -20,6 +20,7 @@ from omegaconf import DictConfig, OmegaConf
 from transformers.utils import cached_file
 
 SAFETENSORS_SINGLE_FILE = "model.safetensors"
+LLM_BACKBONE_DIR = "llm_backbone"
 
 
 class HFHubMixin(
@@ -80,6 +81,7 @@ class HFHubMixin(
         if resolved_config_file is None:
             raise RuntimeError(f"Missing {CONFIG_NAME} file for {model_id=}")
         model_kwargs['cfg'] = OmegaConf.to_container(OmegaConf.load(resolved_config_file))
+        _inject_local_artifact_paths(model_kwargs['cfg'], model_id, _cached_file_kwargs)
         # The setting below tells the model's __init__ not to load the original pretrained weights
         # for individual children modules.
         # To illustrate: if you trained a new model M using a pretrained ASR and a pretrained LLM,
@@ -252,3 +254,28 @@ def _load_state_dict_with_dtensors(model, weight_dir):
     # the planner narrows each tensor to the local DTensor shard,
     # and copies directly into model parameter storage.
     dcp.load(state_dict, storage_reader=reader)
+
+
+def _inject_local_artifact_paths(cfg: dict, model_id: str, cached_file_kwargs: dict) -> None:
+    """
+    Redirect a loaded SpeechLM2 checkpoint config to artifacts saved beside it.
+
+    The root checkpoint directory keeps NeMo's wrapper ``config.json``. When it
+    also contains a root tokenizer and ``llm_backbone/config.json``, point
+    tokenizer construction to the root directory and LLM config construction to
+    ``llm_backbone`` by mutating ``tokenizer_path`` plus ``pretrained_llm`` or
+    ``pretrained_lm_name`` in-place.
+    """
+    resolved_tokenizer_file = cached_file(model_id, "tokenizer_config.json", **cached_file_kwargs)
+    if resolved_tokenizer_file is not None and ("pretrained_llm" in cfg or "pretrained_lm_name" in cfg):
+        cfg["tokenizer_path"] = str(Path(resolved_tokenizer_file).parent)
+
+    resolved_llm_config_file = cached_file(model_id, f"{LLM_BACKBONE_DIR}/{CONFIG_NAME}", **cached_file_kwargs)
+    if resolved_llm_config_file is None:
+        return
+
+    llm_backbone_path = str(Path(resolved_llm_config_file).parent)
+    if "pretrained_llm" in cfg:
+        cfg["pretrained_llm"] = llm_backbone_path
+    if "pretrained_lm_name" in cfg:
+        cfg["pretrained_lm_name"] = llm_backbone_path

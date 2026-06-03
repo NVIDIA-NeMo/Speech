@@ -257,6 +257,41 @@ See the `Streaming ASR Pipelines tutorial <https://github.com/NVIDIA-NeMo/NeMo/b
 See :ref:`cache-aware streaming conformer` for model architecture details.
 
 
+Prompt-conditioned Streaming (Multilingual)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Prompt-conditioned cache-aware streaming models
+(:class:`~nemo.collections.asr.models.EncDecRNNTBPEModelWithPrompt` and
+:class:`~nemo.collections.asr.models.EncDecHybridRNNTCTCBPEModelWithPrompt`) select a language
+prompt at inference time via ``target_lang``. The cache-aware simulation script accepts the
+flag directly:
+
+.. code-block:: bash
+
+    python examples/asr/asr_cache_aware_streaming/speech_to_text_cache_aware_streaming_infer.py \
+        model_path=<path_to_nemo_checkpoint> \
+        dataset_manifest=<path_to_manifest> \
+        target_lang=en-US \
+        decoder_type=rnnt \
+        strip_lang_tags=true
+
+Use ``target_lang=<lang-code>`` to pin every sample in the batch to one language, or
+``target_lang=auto`` to read the per-sample ``target_lang`` field from each manifest entry.
+Setting ``strip_lang_tags=true`` removes ``<xx-XX>`` language tags from the decoded text
+(pattern is customizable via ``lang_tag_pattern``).
+
+In Python, call ``set_inference_prompt`` once before decoding:
+
+.. code-block:: python
+
+    model = nemo_asr.models.EncDecRNNTBPEModelWithPrompt.restore_from("path/to/model.nemo")
+    model.set_inference_prompt("en-US")
+    # ... subsequent conformer_stream_step / streaming pipeline calls use this prompt ...
+
+See :ref:`RNN-T with Prompt Conditioning Configuration <RNNT-Prompt_model__Config>` for the
+full model config reference.
+
+
 Apple MPS Support
 -----------------
 

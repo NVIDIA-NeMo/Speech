@@ -129,11 +129,11 @@ uv pip install --upgrade \
     setuptools-scm \
     wheel
 
-automodel_extra=compiled-cu12
+automodel_extra=compiled
 if [[ "${GPU_TARGET}" == "h100plus" ]]; then
-    automodel_extra=compiled-cu12
+    automodel_extra=compiled
 elif [[ "${GPU_TARGET}" == "a100" ]]; then
-    automodel_extra=compiled-a100-cu12
+    automodel_extra=compiled-a100
 fi
 uv sync \
     --inexact \

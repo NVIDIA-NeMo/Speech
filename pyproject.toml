@@ -265,31 +265,6 @@ compiled-a100 = [
     "flash-attn==2.8.3",
 ]
 
-compiled-cu12 = [
-    "onnx-ir==0.2.1",
-    "onnxscript==0.7.0",
-    "transformer-engine @ git+https://github.com/NVIDIA/TransformerEngine.git@v2.15",
-    "deep_ep @ git+https://github.com/deepseek-ai/DeepEP.git@v1.2.1",
-    "nv-grouped-gemm==1.1.4.post8",
-    "causal-conv1d==1.6.2.post1",
-    "mamba-ssm==2.3.2.post1",
-    # v2.8.3 release assets do not include a cu12/torch2.12/cp313 wheel,
-    # so uv builds this from source under the Dockerfile build environment.
-    "flash-attn==2.8.3",
-]
-
-compiled-a100-cu12 = [
-    "onnx-ir==0.2.1",
-    "onnxscript==0.7.0",
-    "transformer-engine @ git+https://github.com/NVIDIA/TransformerEngine.git@v2.15",
-    "nv-grouped-gemm==1.1.4.post8",
-    "causal-conv1d==1.6.2.post1",
-    "mamba-ssm==2.3.2.post1",
-    # v2.8.3 release assets do not include a cu12/torch2.12/cp313 wheel,
-    # so uv builds this from source under the Dockerfile build environment.
-    "flash-attn==2.8.3",
-]
-
 common = [
     "datasets>=3.2.0",
     "einops",
@@ -457,44 +432,8 @@ conflicts = [
         { extra = "cu13" },
     ],
     [
-        { extra = "cu12" },
-        { extra = "compiled" },
-    ],
-    [
-        { extra = "cu12" },
-        { extra = "compiled-a100" },
-    ],
-    [
-        { extra = "cu13" },
-        { extra = "compiled-cu12" },
-    ],
-    [
-        { extra = "cu13" },
-        { extra = "compiled-a100-cu12" },
-    ],
-    [
         { extra = "compiled" },
         { extra = "compiled-a100" },
-    ],
-    [
-        { extra = "compiled" },
-        { extra = "compiled-cu12" },
-    ],
-    [
-        { extra = "compiled" },
-        { extra = "compiled-a100-cu12" },
-    ],
-    [
-        { extra = "compiled-a100" },
-        { extra = "compiled-cu12" },
-    ],
-    [
-        { extra = "compiled-a100" },
-        { extra = "compiled-a100-cu12" },
-    ],
-    [
-        { extra = "compiled-cu12" },
-        { extra = "compiled-a100-cu12" },
     ],
 ]
 no-binary-package = [

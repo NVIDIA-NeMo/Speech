@@ -87,11 +87,11 @@ RUN <<"EOF" bash -euxo pipefail
 cat >/usr/local/bin/automodel-build-env <<'SCRIPT'
 case "${GPU_TARGET}" in
     h100plus)
-        export DEEPEP_TORCH_CUDA_ARCH_LIST="9.0"
-        export TORCH_CUDA_ARCH_LIST="9.0"
-        export NVTE_CUDA_ARCHS="90"
-        export FLASH_ATTN_CUDA_ARCHS="90"
-        export CMAKE_CUDA_ARCHITECTURES="90"
+        export DEEPEP_TORCH_CUDA_ARCH_LIST="9.0+PTX"
+        export TORCH_CUDA_ARCH_LIST="9.0;10.0;12.0"
+        export NVTE_CUDA_ARCHS="90;100;120"
+        export FLASH_ATTN_CUDA_ARCHS="90;100;120"
+        export CMAKE_CUDA_ARCHITECTURES="90;100;120"
         ;;
     a100)
         export DEEPEP_TORCH_CUDA_ARCH_LIST="8.0"
@@ -205,6 +205,7 @@ FLASH_ATTENTION_FORCE_BUILD=TRUE \
 ls -lh /opt/automodel-wheels
 EOF
 
+COPY external/patches/flash_attn_4_sm120_disable_tma_o.patch /tmp/patches/
 ARG FLASH_ATTN_4_CUTLASS_DSL_VERSION=4.5.2
 ARG FLASH_ATTN_4_APACHE_TVM_FFI_VERSION=0.1.11
 ARG FLASH_ATTN_4_TORCH_C_DLPACK_EXT_VERSION=0.1.5
@@ -228,6 +229,7 @@ if [[ "${GPU_TARGET}" == "h100plus" ]]; then
         --dest /tmp/flash-attn-4 \
         "flash-attn-4==${FLASH_ATTN_4_VERSION}"
     tar -xf /tmp/flash-attn-4/flash_attn_4-*.tar.gz -C /opt/automodel-src/flash-attn-4 --strip-components=1
+    patch -d /opt/automodel-src/flash-attn-4 -p1 < /tmp/patches/flash_attn_4_sm120_disable_tma_o.patch
 
     MAX_JOBS="${FLASH_ATTN_MAX_JOBS}" \
     NVCC_THREADS="${FLASH_ATTN_NVCC_THREADS}" \

@@ -14,6 +14,8 @@
 
 from typing import List
 
+from nemo.utils.dependency import assert_optional_dependency_available
+
 
 class MosesProcessor:
     """
@@ -21,6 +23,7 @@ class MosesProcessor:
     """
 
     def __init__(self, lang_id: str):
+        assert_optional_dependency_available("sacremoses")
         from sacremoses import MosesDetokenizer, MosesPunctNormalizer, MosesTokenizer
 
         self.moses_tokenizer = MosesTokenizer(lang=lang_id)
@@ -44,4 +47,5 @@ class MosesProcessor:
         return self.moses_tokenizer.tokenize(text, escape=False, return_str=True)
 
     def normalize(self, text: str):
+        """Normalize text with Moses punctuation normalization."""
         return self.normalizer.normalize(text)

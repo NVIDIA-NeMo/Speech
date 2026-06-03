@@ -36,15 +36,13 @@ import json
 import logging
 import multiprocessing
 import os
-import subprocess
 import sys
 import tarfile
+import urllib.request
 from multiprocessing.pool import ThreadPool
 from pathlib import Path
 from typing import List
 
-import sox
-from sox import Transformer
 from tqdm import tqdm
 
 parser = argparse.ArgumentParser(description='Downloads and processes Mozilla Common Voice dataset.')
@@ -80,6 +78,31 @@ COMMON_VOICE_URL = (
     f"https://voice-prod-bundler-ee1969a6ce8178826482b88e843c335139bd3fb4.s3.amazonaws.com/"
     "{}/{}.tar.gz".format(args.version, args.language)
 )
+COMMON_VOICE_USER_AGENT = (
+    'Mozilla/5.0 (Windows NT 10.0; WOW64) ' 'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/51.0.2704.103 Safari/537.36'
+)
+
+
+def _load_sox():
+    try:
+        import sox
+        from sox import Transformer
+    except ImportError:
+        raise ImportError(
+            "Optional dependency 'sox' is required by this script. Install it with: pip install sox"
+        ) from None
+
+    return sox, Transformer
+
+
+def download_commonvoice_archive(url: str, output_path: str):
+    request = urllib.request.Request(url, headers={'User-Agent': COMMON_VOICE_USER_AGENT})
+    with urllib.request.urlopen(request) as response, open(output_path, 'wb') as f:
+        while True:
+            chunk = response.read(1024 * 1024)
+            if not chunk:
+                break
+            f.write(chunk)
 
 
 def create_manifest(data: List[tuple], output_name: str, manifest_path: str):
@@ -104,6 +127,7 @@ def process_files(csv_file, data_root, num_workers):
         csv_file: str, path to *.csv file with data description, usually start from 'cv-'
         data_root: str, path to dir to save results; wav/ dir will be created
     """
+    sox, Transformer = _load_sox()
     wav_dir = os.path.join(data_root, 'wav/')
     os.makedirs(wav_dir, exist_ok=True)
     audio_clips_path = os.path.dirname(csv_file) + '/clips/'
@@ -162,16 +186,7 @@ def main():
         output_archive_filename = args.language + '.tar.gz'
         output_archive_filename = os.path.join(data_root, output_archive_filename)
 
-        commands = [
-            'wget',
-            '--user-agent',
-            'Mozilla/5.0 (Windows NT 10.0; WOW64) '
-            'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/51.0.2704.103 Safari/537.36',
-            '-O',
-            output_archive_filename,
-            COMMON_VOICE_URL,
-        ]
-        subprocess.run(commands, shell=False, stderr=sys.stderr, stdout=sys.stdout, capture_output=False)
+        download_commonvoice_archive(COMMON_VOICE_URL, output_archive_filename)
         filename = f"{args.language}.tar.gz"
         target_file = os.path.join(data_root, os.path.basename(filename))
 

@@ -64,10 +64,10 @@ from dataclasses import dataclass, field, is_dataclass
 from pathlib import Path
 from typing import List, Optional
 
-import editdistance
 import msgpack
 import numpy as np
 import torch
+from kaldialign import edit_distance
 from omegaconf import MISSING, OmegaConf
 from sklearn.model_selection import ParameterGrid
 from tqdm.auto import tqdm
@@ -195,9 +195,9 @@ def decoding_step(
             for candidate_idx, candidate in enumerate(beams):  # type: (int, rnnt_beam_decoding.rnnt_utils.Hypothesis)
                 pred_text = candidate.text
                 pred_split_w = pred_text.split()
-                wer_dist = editdistance.eval(target_split_w, pred_split_w)
+                wer_dist = edit_distance(target_split_w, pred_split_w)['total']
                 pred_split_c = list(pred_text)
-                cer_dist = editdistance.eval(target_split_c, pred_split_c)
+                cer_dist = edit_distance(target_split_c, pred_split_c)['total']
 
                 wer_dist_min = min(wer_dist_min, wer_dist)
                 cer_dist_min = min(cer_dist_min, cer_dist)

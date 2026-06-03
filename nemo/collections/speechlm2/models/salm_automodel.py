@@ -1019,6 +1019,8 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         Return a typing schema for optimal batch size calibration for various
         sequence lengths using OOMptimizer.
         """
+        embed_tokens = self.embed_tokens
+        vocab_size = embed_tokens.num_embeddings if embed_tokens is not None else self.tokenizer.vocab_size
         return {
             "cls": dict,
             "inputs": [
@@ -1028,7 +1030,9 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                     "name": "input_ids",
                     "type": NeuralType(("B", "T"), LabelsType()),
                     "seq_length": "output",
-                    "vocab_size": self.text_vocab_size,
+                    "vocab_size": vocab_size,
+                    "excluded_token_ids": [self.audio_locator_tag_id],
+                    "forced_token_ids": {0: self.audio_locator_tag_id},
                 },
                 {"name": "loss_mask", "type": NeuralType(("B", "T"), MaskType()), "seq_length": "output"},
             ],

@@ -78,6 +78,7 @@ python convert_to_tarred_audio_dataset.py \
 import argparse
 import copy
 import json
+import math
 import os
 import random
 import tarfile
@@ -112,6 +113,7 @@ class ASRTarredDatasetConfig:
     shard_manifests: bool = True
     keep_files_together: bool = False
     force_codec: Optional[str] = None
+    force_sampling_rate: Optional[int] = None
     use_lhotse: bool = False
     use_bucketing: bool = False
     num_buckets: Optional[int] = None
@@ -773,22 +775,24 @@ class ASRTarredDatasetBuilder:
         self, tar, audio_filepath: str, squashed_filename: str, duration: float = None, offset: float = 0
     ) -> None:
         codec = self.config.force_codec
+        force_sampling_rate = self.config.force_sampling_rate
+        source_sampling_rate = soundfile.info(audio_filepath).samplerate
         to_transcode = not (codec is None or audio_filepath.endswith(f".{codec}"))
         to_crop = not (duration is None and offset == 0)
+        to_resample = force_sampling_rate is not None and force_sampling_rate != source_sampling_rate
 
-        if not to_crop and not to_transcode:
+        if not to_crop and not to_transcode and not to_resample:
             # Add existing file without transcoding, trimming, or re-encoding.
             tar.add(audio_filepath, arcname=squashed_filename)
             return
 
-        # Standard processing: read, trim, and transcode the audio file
-        with soundfile.SoundFile(audio_filepath) as f:
-            sampling_rate = f.samplerate
-
         # Trim audio based on offset and duration.
-        start_sample = int(offset * sampling_rate)
-        num_frames = int(duration * sampling_rate) if duration else -1
+        start_sample = int(offset * source_sampling_rate)
+        num_frames = int(duration * source_sampling_rate) if duration else -1
         audio, sampling_rate = soundfile.read(audio_filepath, start=start_sample, frames=num_frames)
+        if to_resample:
+            audio = self._resample_audio(audio, sampling_rate, force_sampling_rate)
+            sampling_rate = force_sampling_rate
 
         # Determine codec parameters.
         if codec is not None:
@@ -812,6 +816,17 @@ class ASRTarredDatasetBuilder:
         encoded_audio.seek(0)
         ti.size = encoded_audio.getbuffer().nbytes
         tar.addfile(ti, encoded_audio)
+
+    def _resample_audio(self, audio, source_sampling_rate: int, target_sampling_rate: int):
+        if source_sampling_rate == target_sampling_rate:
+            return audio
+
+        from scipy.signal import resample_poly
+
+        common = math.gcd(source_sampling_rate, target_sampling_rate)
+        up = target_sampling_rate // common
+        down = source_sampling_rate // common
+        return resample_poly(audio, up, down, axis=0)
 
     def _create_shard(self, entries, target_dir, shard_id, manifest_folder: str = None, only_manifests: bool = False):
         """Creates a tarball containing the audio files from `entries`."""
@@ -956,6 +971,7 @@ def create_tar_datasets(
     write_metadata: bool = False,
     no_shard_manifests: bool = False,
     force_codec: str = None,
+    force_sampling_rate: int = None,
     workers: int = 1,
     slice_with_offset: bool = False,
     only_manifests: bool = False,
@@ -977,6 +993,7 @@ def create_tar_datasets(
             shard_manifests=shard_manifests,
             keep_files_together=keep_files_together,
             force_codec=force_codec,
+            force_sampling_rate=force_sampling_rate,
             slice_with_offset=slice_with_offset,
         )
         metadata.dataset_config = dataset_cfg
@@ -998,6 +1015,7 @@ def create_tar_datasets(
             shard_manifests=shard_manifests,
             keep_files_together=keep_files_together,
             force_codec=force_codec,
+            force_sampling_rate=force_sampling_rate,
             slice_with_offset=slice_with_offset,
         )
         builder.configure(config)
@@ -1034,6 +1052,7 @@ def create_tar_datasets(
         metadata.dataset_config.shuffle_seed = shuffle_seed
         metadata.dataset_config.sort_in_shards = sort_in_shards
         metadata.dataset_config.shard_manifests = shard_manifests
+        metadata.dataset_config.force_sampling_rate = force_sampling_rate
 
         builder.configure(metadata.dataset_config)
 
@@ -1053,6 +1072,13 @@ def create_tar_datasets(
         print("Constructing DALI Tarfile Index - ", target_dir)
         index_config = dali_index.DALITarredIndexConfig(tar_dir=target_dir, workers=workers)
         dali_index.main(index_config)
+
+
+def positive_int(value: str) -> int:
+    value_int = int(value)
+    if value_int <= 0:
+        raise argparse.ArgumentTypeError("value must be a positive integer")
+    return value_int
 
 
 if __name__ == "__main__":
@@ -1170,6 +1196,15 @@ if __name__ == "__main__":
         help=(
             "If specified, transcode the audio to the given format. "
             "Supports libnsndfile formats (example values: 'opus', 'flac')."
+        ),
+    )
+    parser.add_argument(
+        "--force_sampling_rate",
+        type=positive_int,
+        default=None,
+        help=(
+            "If specified, resample audio to this sampling rate before writing it into the tar file. "
+            "Example: --force_sampling_rate=16000."
         ),
     )
     parser.add_argument(

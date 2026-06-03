@@ -4215,6 +4215,7 @@ wheels = [
 name = "nemo-toolkit"
 source = { editable = "." }
 dependencies = [
+    { name = "aistore" },
     { name = "cuda-bindings", version = "12.9.7", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'darwin' and extra != 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-cu12') or (sys_platform != 'darwin' and extra != 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-cu12') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13')" },
     { name = "cuda-bindings", version = "13.0.3", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-12-nemo-toolkit-compiled-a100' and extra != 'extra-12-nemo-toolkit-cu12') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-12-nemo-toolkit-compiled' and extra != 'extra-12-nemo-toolkit-cu12') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13')" },
     { name = "cuda-bindings", version = "13.2.0", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine != 'aarch64' and sys_platform == 'linux' and extra != 'extra-12-nemo-toolkit-compiled-a100' and extra != 'extra-12-nemo-toolkit-cu12') or (platform_machine != 'aarch64' and sys_platform == 'linux' and extra != 'extra-12-nemo-toolkit-compiled' and extra != 'extra-12-nemo-toolkit-cu12') or (sys_platform != 'darwin' and sys_platform != 'linux' and extra != 'extra-12-nemo-toolkit-compiled-a100' and extra != 'extra-12-nemo-toolkit-cu12') or (sys_platform != 'darwin' and sys_platform != 'linux' and extra != 'extra-12-nemo-toolkit-compiled' and extra != 'extra-12-nemo-toolkit-cu12') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13')" },
@@ -4227,6 +4228,7 @@ dependencies = [
     { name = "scikit-learn", version = "1.7.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13')" },
     { name = "scikit-learn", version = "1.8.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13')" },
     { name = "setuptools" },
+    { name = "smart-open" },
     { name = "tensorboard" },
     { name = "text-unidecode" },
     { name = "torch", version = "2.12.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin' or (sys_platform == 'linux' and extra != 'extra-12-nemo-toolkit-compiled-a100' and extra != 'extra-12-nemo-toolkit-cu12' and extra != 'extra-12-nemo-toolkit-cu13') or (sys_platform == 'linux' and extra != 'extra-12-nemo-toolkit-compiled' and extra != 'extra-12-nemo-toolkit-cu12' and extra != 'extra-12-nemo-toolkit-cu13') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13')" },
@@ -4273,6 +4275,7 @@ all = [
     { name = "soundfile" },
     { name = "torchmetrics" },
     { name = "transformers" },
+    { name = "wandb" },
     { name = "webdataset" },
     { name = "whisper-normalizer" },
 ]
@@ -4381,7 +4384,6 @@ compiled-a100 = [
     { name = "transformer-engine" },
 ]
 core = [
-    { name = "aistore" },
     { name = "hydra-core" },
     { name = "lightning" },
     { name = "nv-one-logger-core" },
@@ -4539,7 +4541,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aistore", marker = "extra == 'core'" },
+    { name = "aistore" },
     { name = "braceexpand", marker = "extra == 'all'" },
     { name = "braceexpand", marker = "extra == 'asr'" },
     { name = "braceexpand", marker = "extra == 'asr-only'" },
@@ -4722,6 +4724,7 @@ requires-dist = [
     { name = "sentencepiece", marker = "extra == 'speechlm2'", specifier = "<1.0.0" },
     { name = "sentencepiece", marker = "extra == 'tts'", specifier = "<1.0.0" },
     { name = "setuptools", specifier = ">=70.0.0" },
+    { name = "smart-open" },
     { name = "soundfile", marker = "extra == 'all'" },
     { name = "soundfile", marker = "extra == 'asr'" },
     { name = "soundfile", marker = "extra == 'asr-only'" },
@@ -4754,6 +4757,7 @@ requires-dist = [
     { name = "transformers", marker = "extra == 'lightning'" },
     { name = "transformers", marker = "extra == 'speechlm2'" },
     { name = "transformers", marker = "extra == 'tts'" },
+    { name = "wandb", marker = "extra == 'all'" },
     { name = "wandb", marker = "extra == 'asr'" },
     { name = "wandb", marker = "extra == 'audio'" },
     { name = "wandb", marker = "extra == 'common'" },
@@ -5760,7 +5764,7 @@ resolution-markers = [
     "python_full_version < '3.11' and platform_machine != 'aarch64' and platform_machine != 's390x' and sys_platform == 'linux'",
 ]
 dependencies = [
-    { name = "nvidia-nvjitlink", version = "13.3.33", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform == 'linux' and extra != 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-cu13') or (sys_platform == 'linux' and extra != 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-cu13') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100')" },
+    { name = "nvidia-nvjitlink", version = "13.3.33", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine != 's390x' and sys_platform == 'linux' and extra != 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-cu13') or (platform_machine != 's390x' and sys_platform == 'linux' and extra != 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-cu13') or (platform_machine == 's390x' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (sys_platform != 'linux' and extra != 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (sys_platform != 'linux' and extra != 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/be/b1/6e36381739b51e692d91646298ad5685c562929b899331c2bb6e9722a176/nvidia_cufft-12.2.0.46-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:2e8f3a22c2745f95327b7639ba2868ea2cbd5d3131ebe6313394e24164054f41", size = 218244743, upload-time = "2026-04-13T09:51:24.75Z" },
@@ -5949,9 +5953,9 @@ resolution-markers = [
     "python_full_version < '3.11' and platform_machine != 'aarch64' and platform_machine != 's390x' and sys_platform == 'linux'",
 ]
 dependencies = [
-    { name = "nvidia-cublas", version = "13.4.0.1", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform == 'linux' and extra != 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-cu13') or (sys_platform == 'linux' and extra != 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-cu13') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100')" },
-    { name = "nvidia-cusparse", version = "12.7.10.1", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform == 'linux' and extra != 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-cu13') or (sys_platform == 'linux' and extra != 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-cu13') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100')" },
-    { name = "nvidia-nvjitlink", version = "13.3.33", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform == 'linux' and extra != 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-cu13') or (sys_platform == 'linux' and extra != 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-cu13') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100')" },
+    { name = "nvidia-cublas", version = "13.4.0.1", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine != 's390x' and sys_platform == 'linux' and extra != 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-cu13') or (platform_machine != 's390x' and sys_platform == 'linux' and extra != 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-cu13') or (platform_machine == 's390x' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (sys_platform != 'linux' and extra != 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (sys_platform != 'linux' and extra != 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100')" },
+    { name = "nvidia-cusparse", version = "12.7.10.1", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine != 's390x' and sys_platform == 'linux' and extra != 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-cu13') or (platform_machine != 's390x' and sys_platform == 'linux' and extra != 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-cu13') or (platform_machine == 's390x' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (sys_platform != 'linux' and extra != 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (sys_platform != 'linux' and extra != 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100')" },
+    { name = "nvidia-nvjitlink", version = "13.3.33", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine != 's390x' and sys_platform == 'linux' and extra != 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-cu13') or (platform_machine != 's390x' and sys_platform == 'linux' and extra != 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-cu13') or (platform_machine == 's390x' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (sys_platform != 'linux' and extra != 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (sys_platform != 'linux' and extra != 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/94/21/21e5c491a8285a6ed039cbb8c60ec13ff3aff60c669e1caa4adaeb71f997/nvidia_cusolver-12.2.0.1-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:c9def09fcf300b9465cdf800142abf10149df28c4290bdf9e7b4a700480d31d7", size = 249744985, upload-time = "2026-04-13T09:54:33.757Z" },
@@ -6023,7 +6027,7 @@ resolution-markers = [
     "python_full_version < '3.11' and platform_machine != 'aarch64' and platform_machine != 's390x' and sys_platform == 'linux'",
 ]
 dependencies = [
-    { name = "nvidia-nvjitlink", version = "13.3.33", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform == 'linux' and extra != 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-cu13') or (sys_platform == 'linux' and extra != 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-cu13') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100')" },
+    { name = "nvidia-nvjitlink", version = "13.3.33", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine != 's390x' and sys_platform == 'linux' and extra != 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-cu13') or (platform_machine != 's390x' and sys_platform == 'linux' and extra != 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-cu13') or (platform_machine == 's390x' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (sys_platform != 'linux' and extra != 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (sys_platform != 'linux' and extra != 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b5/09/9f1fa88dd305e838b71f2ca4e50064e7cbdf2e15cd6410d9e1b74066cc41/nvidia_cusparse-12.7.10.1-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:80cc98b38fdcf054a80bd9782fe2e63c66f90e202cac269f641357ccac5fe7e3", size = 168860233, upload-time = "2026-04-13T09:55:48.891Z" },
@@ -8260,6 +8264,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/94/e7/b2c673351809dca68a0e064b6af791aa332cf192da575fd474ed7d6f16a2/six-1.17.0.tar.gz", hash = "sha256:ff70335d468e7eb6ec65b95b99d3a2836546063f63acc5171de367e834932a81", size = 34031, upload-time = "2024-12-04T17:35:28.174Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b7/ce/149a00dd41f10bc29e5921b496af8b574d8413afcd5e30dfa0ed46c2cc5e/six-1.17.0-py2.py3-none-any.whl", hash = "sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274", size = 11050, upload-time = "2024-12-04T17:35:26.475Z" },
+]
+
+[[package]]
+name = "smart-open"
+version = "7.6.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "wrapt" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c5/65/3ada667d32675399001bf022ad3d9f3989b57101351ebc71d6fbe2384634/smart_open-7.6.1.tar.gz", hash = "sha256:4347996e7ba21db7cd1e059632e0b30395407e4f6c660d2ddffc8f2a9ae5f990", size = 54754, upload-time = "2026-05-09T06:23:37.06Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/14/78/0f68b93564b8c6b6987a0696c582ba2591a381ab2f733a501909e949f241/smart_open-7.6.1-py3-none-any.whl", hash = "sha256:b4de6aebef023aca91cc9fb372052e1343ba3f152de215bd22391a663e3ddd21", size = 64845, upload-time = "2026-05-09T06:23:35.386Z" },
 ]
 
 [[package]]

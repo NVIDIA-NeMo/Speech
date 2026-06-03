@@ -24,6 +24,7 @@ readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.10"
 dependencies = [
+    "aistore",
     "fsspec>=2024.12.0",
     "huggingface_hub>=0.24",
     "numba ; platform_system == 'Darwin'",
@@ -32,6 +33,7 @@ dependencies = [
     "onnx>=1.7.0",
     "scikit-learn",
     "setuptools>=70.0.0",
+    "smart-open",
     "tensorboard",
     "text-unidecode",
     "torch>=2.6.0",
@@ -87,7 +89,6 @@ core = [
     "nv_one_logger_core>=2.3.1",
     "nv_one_logger_training_telemetry>=2.3.1",
     "nv_one_logger_pytorch_lightning_integration>=2.3.1",
-    "aistore",
 ]
 
 lightning = [
@@ -194,6 +195,7 @@ all = [
     "omegaconf<=2.3",
     "torchmetrics>=0.11.0",
     "transformers",
+    "wandb",
     "webdataset>=0.2.86",
     "nv_one_logger_core>=2.3.1",
     "nv_one_logger_training_telemetry>=2.3.1",

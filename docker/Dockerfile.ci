@@ -99,6 +99,20 @@ cuda_flavor="$(nemo-cuda-flavor)"
 uv sync --link-mode copy --locked --extra all --extra "${cuda_flavor}" --group test
 EOF
 
+RUN <<"EOF" bash -ex
+# Container-only runtime utilities. Keep these out of pyproject.toml so they do
+# not become NeMo package dependencies.
+uv pip install \
+    dill \
+    orjson
+
+case "$(nemo-cuda-flavor)" in
+    cu12) torchcodec_index=https://download.pytorch.org/whl/cu126 ;;
+    cu13) torchcodec_index=https://download.pytorch.org/whl/cu132 ;;
+esac
+uv pip install --index-url "${torchcodec_index}" torchcodec
+EOF
+
 FROM base-image AS automodel-deps
 ARG GPU_TARGET=h100plus
 ARG DEEPEP_REPO=https://github.com/deepseek-ai/DeepEP.git
@@ -239,6 +253,16 @@ EOF
 
 FROM base-image
 COPY --from=automodel-deps /opt/venv /opt/venv
+
+ARG INSTALL_FFMPEG=false
+RUN <<"EOF" bash -ex
+if [ "${INSTALL_FFMPEG}" = "true" ]; then
+    apt-get update
+    apt-get install -y ffmpeg
+    apt-get clean
+    rm -rf /var/lib/apt/lists/*
+fi
+EOF
 
 ENV NEMO_HOME="/home/TestData/nemo_home"
 

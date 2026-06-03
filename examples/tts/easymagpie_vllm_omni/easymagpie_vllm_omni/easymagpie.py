@@ -108,7 +108,7 @@ from vllm.sequence import IntermediateTensors
 
 from vllm_omni.model_executor.models.output_templates import OmniOutput
 
-from easymagpie_vllm_omni.backbone_patches import patch_silu_shared_experts
+from easymagpie_vllm_omni.backbone_patches import patch_moe_routed_scale, patch_silu_shared_experts
 from easymagpie_vllm_omni.config import EasyMagpieOmniArch
 from easymagpie_vllm_omni.local_transformer import EasyMagpieCodePredictor
 
@@ -182,6 +182,11 @@ class EasyMagpieTTSForConditionalGeneration(
         # NemotronHMLP hard-codes ReLU² in shared_experts. Restore SiLU (no-op
         # when the backbone has no MoE layers).
         patch_silu_shared_experts(self.backbone)
+        # vLLM's FusedMoE defers routed_scaling_factor to the decoder layer in
+        # FP16, but NemotronH's decoder layer never compensates, so the MoE
+        # output is under-scaled by routed_scaling_factor. Restore it (no-op in
+        # fp32/bf16 and when there are no MoE layers).
+        patch_moe_routed_scale(self.backbone)
 
         # ── Local transformer (its own compile group / CUDA graph) ──────
         with set_model_tag("local_transformer"):

@@ -17,7 +17,6 @@ import importlib
 import math
 import os
 import sys
-from functools import partial
 from numbers import Number
 from typing import Literal
 
@@ -28,7 +27,6 @@ from lhotse import compute_num_samples
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader, IterableDataset
 
-from nemo.collections.speechlm2 import SALM, SALMWithAsrDecoder
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, MaskType, NeuralType
 from nemo.utils import logging
 from nemo.utils.trainer_utils import resolve_trainer_cfg
@@ -150,6 +148,14 @@ class ProfilingBatchGenerator:
             elif isinstance(nt.elements_type, LabelsType):
                 seq_length = select_seq_length[item["seq_length"]]
                 tnsr = torch.randint(0, item["vocab_size"], size=(B, seq_length), device=self.device)
+                for token_id in item.get("excluded_token_ids", []):
+                    tnsr.masked_fill_(tnsr == token_id, 0)
+                for position, token_id in item.get("forced_token_ids", {}).items():
+                    position = int(position)
+                    if position < 0:
+                        position += seq_length
+                    if 0 <= position < seq_length:
+                        tnsr[:, position] = token_id
             else:
                 raise RuntimeError("Unexpected item in oomptimizer schema: {item}")
             batch.append(tnsr)
@@ -387,9 +393,6 @@ def oomptimizer(
         model = model_cls(OmegaConf.to_container(cfg.model, resolve=True))
     model = model.to(device)
 
-    if isinstance(model, (SALM, SALMWithAsrDecoder)):
-        model.prepare_inputs = partial(_override_prepare_inputs, model)
-
     if not hasattr(model, "oomptimizer_schema"):
         click.secho(
             f"We read model of type {type(model)} which doesn't seem to support OOMptimizer "
@@ -423,9 +426,7 @@ def oomptimizer(
     def get_max_seq_lens(buckets):
 
         def _determine_lens_for_bucket(bin):
-            if isinstance(model, (SALM, SALMWithAsrDecoder)):
-                return bin, bin  # Note: only 1D bucketing, only counted in tokens
-            elif is_2d_bucketing:
+            if is_2d_bucketing:
                 input_len, output_len = bin
             else:
                 input_len = bin
@@ -563,27 +564,6 @@ def oomptimizer(
     click.secho("The final profile is:", bold=True)
     click.secho("\tbucket_duration_bins=[" + ",".join(str(seqlen) for seqlen, bs in final_profile) + "]", bold=True)
     click.secho("\tbucket_batch_size=[" + ",".join(str(bs) for seqlen, bs in final_profile) + "]", bold=True)
-
-
-def _override_prepare_inputs(self, batch: dict) -> dict:
-    ratio = 0.8
-    input_embs = self.embed_tokens(batch["input_ids"][:, :-1])
-    target_ids = batch["input_ids"][:, 1:]
-    attention_mask = torch.ones_like(target_ids, dtype=torch.bool)
-
-    B, T = input_embs.shape[:2]
-    audio_emb_len = int(input_embs.shape[1] * ratio)
-    n_samples = int(audio_emb_len * self.token_equivalent_duration * self.sampling_rate)
-    audio = torch.randn(B, n_samples, device=input_embs.device, dtype=torch.float32)
-    audio_lens = torch.tensor([n_samples] * B, device=input_embs.device)
-    audio_embs, _ = self.perception(input_signal=audio, input_signal_length=audio_lens)
-    input_embs[:, : audio_embs.shape[1]] = audio_embs
-
-    return {
-        "input_embeds": input_embs,
-        "attention_mask": attention_mask,
-        "target_ids": target_ids,
-    }
 
 
 if __name__ == "__main__":

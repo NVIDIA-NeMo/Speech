@@ -667,6 +667,8 @@ class SALMWithAsrDecoder(LightningModule, HFHubMixin):
                     "type": NeuralType(("B", "T"), LabelsType()),
                     "seq_length": "output",
                     "vocab_size": self.text_vocab_size,
+                    "excluded_token_ids": [self.audio_locator_tag_id],
+                    "forced_token_ids": {0: self.audio_locator_tag_id},
                 },
                 {"name": "loss_mask", "type": NeuralType(("B", "T"), MaskType()), "seq_length": "output"},
             ],

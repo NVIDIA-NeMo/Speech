@@ -57,8 +57,9 @@ Example four-node SLURM invocation::
 The main control flow is:
 
 1. The supervisor reads bucket boundaries and model config, then converts each bucket into synthetic input/output
-   sequence lengths. SALMAutomodel has its own conversion because a single token bucket represents both audio
-   locator/audio-equivalent tokens and text tokens; the ``--salm-audio-token-ratio`` option controls that split.
+   sequence lengths. SALM-style audio-locator models have their own conversion because a single token bucket
+   represents both audio-equivalent tokens and text tokens; the ``--salm-audio-token-ratio`` option controls that
+   split.
 2. Buckets are processed from largest to smallest to preserve the memory-fragmentation behavior expected during real
    training. The next smaller bucket starts near the previous bucket's discovered batch size instead of starting from
    scratch.
@@ -86,7 +87,6 @@ import sys
 import time
 from dataclasses import dataclass, field
 from datetime import timedelta
-from functools import partial
 from numbers import Number
 from pathlib import Path
 from typing import Literal
@@ -350,10 +350,8 @@ class SequenceLengthResolver:
         return [self.resolve_one(bucket) for bucket in buckets]
 
     def resolve_one(self, bucket) -> tuple[int, int]:
-        if self._matches_model_name("SALMAutomodel") or self._is_model_instance(SALMAutomodel):
-            return self._salm_automodel_lens(bucket)
-        if self._matches_model_name("SALM", "SALMWithAsrDecoder") or self._is_model_instance(SALM, SALMWithAsrDecoder):
-            return int(bucket), int(bucket)
+        if self._uses_audio_locator_expansion():
+            return self._audio_locator_lens(bucket)
 
         if _is_2d_bucketing([bucket]):
             input_len, output_len = bucket
@@ -386,6 +384,11 @@ class SequenceLengthResolver:
     def _is_model_instance(self, *classes: type) -> bool:
         return self.model is not None and isinstance(self.model, classes)
 
+    def _uses_audio_locator_expansion(self) -> bool:
+        return self._matches_model_name("SALMAutomodel", "SALM", "SALMWithAsrDecoder") or self._is_model_instance(
+            SALMAutomodel, SALM, SALMWithAsrDecoder
+        )
+
     def _modalities(self) -> tuple[str, str]:
         if self.schema is None:
             return "audio", "text"
@@ -408,7 +411,7 @@ class SequenceLengthResolver:
     def _sampling_rate(self) -> int:
         return int(getattr(self.model, "sample_rate", 16000))
 
-    def _salm_automodel_lens(self, bucket) -> tuple[int, int]:
+    def _audio_locator_lens(self, bucket) -> tuple[int, int]:
         sampling_rate = OmegaConf.select(self.cfg, "data.train_ds.sample_rate", default=16000)
         token_equivalent_duration = OmegaConf.select(self.cfg, "data.train_ds.token_equivalent_duration", default=0.08)
         audio_tokens = max(1, int(math.ceil(self.salm_audio_token_ratio * bucket)))
@@ -1242,7 +1245,7 @@ def _is_oom_like(error: RuntimeError) -> bool:
     "--salm-audio-token-ratio",
     type=float,
     default=0.75,
-    help="For SALMAutomodel 1D token buckets, fraction of the bucket represented by audio-equivalent tokens.",
+    help="For SALM-style 1D token buckets, fraction of the bucket represented by audio-equivalent tokens.",
 )
 @click.option(
     "--distributed-timeout-seconds",
@@ -1446,9 +1449,6 @@ def oomptimizer(
     with trainer.init_module():
         model = model_cls(OmegaConf.to_container(cfg.model, resolve=True))
     model = model.to(device)
-
-    if isinstance(model, (SALM, SALMWithAsrDecoder)):
-        model.prepare_inputs = partial(_override_prepare_inputs, model)
 
     if not hasattr(model, "oomptimizer_schema"):
         click.secho(
@@ -1690,27 +1690,6 @@ class ProbeWorkerRunner:
                     "message": str(error),
                 },
             )
-
-
-def _override_prepare_inputs(self, batch: dict) -> dict:
-    ratio = 0.8
-    input_embs = self.embed_tokens(batch["input_ids"][:, :-1])
-    target_ids = batch["input_ids"][:, 1:]
-    attention_mask = torch.ones_like(target_ids, dtype=torch.bool)
-
-    B, T = input_embs.shape[:2]
-    audio_emb_len = int(input_embs.shape[1] * ratio)
-    n_samples = int(audio_emb_len * self.token_equivalent_duration * self.sampling_rate)
-    audio = torch.randn(B, n_samples, device=input_embs.device, dtype=torch.float32)
-    audio_lens = torch.tensor([n_samples] * B, device=input_embs.device)
-    audio_embs, _ = self.perception(input_signal=audio, input_signal_length=audio_lens)
-    input_embs[:, : audio_embs.shape[1]] = audio_embs
-
-    return {
-        "input_embeds": input_embs,
-        "attention_mask": attention_mask,
-        "target_ids": target_ids,
-    }
 
 
 if __name__ == "__main__":

@@ -33,7 +33,6 @@ import torch
 
 from nemo.collections.asr.parts.context_biasing.biasing_multi_model import BiasingRequestItemConfig
 from nemo.collections.asr.parts.submodules.transducer_decoding import BatchedHyps
-from tutorials.asr.Online_Offline_Microphone_VAD_Demo import legend
 
 
 @dataclass

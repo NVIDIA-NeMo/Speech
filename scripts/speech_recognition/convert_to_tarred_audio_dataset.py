@@ -82,11 +82,13 @@ import math
 import os
 import random
 import tarfile
+import tempfile
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 from io import BytesIO
 from typing import Any, List, Optional, Union
+from urllib.parse import urlparse
 
 import soundfile
 from joblib import Parallel, delayed
@@ -99,6 +101,161 @@ try:
     DALI_INDEX_SCRIPT_AVAILABLE = True
 except (ImportError, ModuleNotFoundError, FileNotFoundError):
     DALI_INDEX_SCRIPT_AVAILABLE = False
+
+
+def is_s3_path(path: Optional[str]) -> bool:
+    return path is not None and str(path).startswith("s3://")
+
+
+def _is_not_found_error(exc: Exception) -> bool:
+    status_code = getattr(exc, "status_code", None)
+    if status_code == 404:
+        return True
+    response = getattr(exc, "response", None)
+    if response is not None and getattr(response, "status_code", None) == 404:
+        return True
+    return False
+
+
+class AISS3HTTPClient:
+    def __init__(self, endpoint: str, token: str):
+        import requests
+
+        self._base = endpoint.rstrip("/")
+        self._session = requests.Session()
+        self._session.headers["Authorization"] = f"Bearer {token}"
+
+    def bucket(self, bucket_name: str, provider: str = "s3"):
+        if provider != "s3":
+            raise ValueError(f"AISS3HTTPClient only supports provider='s3', got {provider!r}")
+        return AISS3HTTPBucket(self._base, self._session, bucket_name)
+
+
+class AISS3HTTPBucket:
+    def __init__(self, base_url: str, session, bucket_name: str):
+        self._base = base_url
+        self._session = session
+        self._bucket_name = bucket_name
+
+    def object(self, key: str):
+        return AISS3HTTPObject(self._base, self._session, self._bucket_name, key)
+
+
+class AISS3HTTPObject:
+    def __init__(self, base_url: str, session, bucket_name: str, key: str):
+        from urllib.parse import quote
+
+        self._session = session
+        self._url = f"{base_url}/s3/{bucket_name}/{quote(key)}"
+
+    def head(self):
+        response = self._session.head(self._url)
+        if response.status_code >= 400:
+            err = RuntimeError(f"STATUS:{response.status_code}, MESSAGE:{response.reason}, REQ_URL:{self._url}")
+            err.status_code = response.status_code
+            raise err
+        return response.headers
+
+    def get_writer(self):
+        return AISS3HTTPObjectWriter(self._session, self._url)
+
+
+class AISS3HTTPObjectWriter:
+    def __init__(self, session, url: str):
+        self._session = session
+        self._url = url
+
+    def put_file(self, path: str):
+        with open(path, "rb") as f:
+            response = self._session.put(self._url, data=f)
+        if response.status_code >= 400:
+            err = RuntimeError(f"STATUS:{response.status_code}, MESSAGE:{response.reason}, REQ_URL:{self._url}")
+            err.status_code = response.status_code
+            raise err
+        return response
+
+
+class OutputTarget:
+    def __init__(self, target_dir: str):
+        self.target_dir = target_dir
+        self.is_s3 = is_s3_path(target_dir)
+        self.s3_client = None
+        self.bucket = None
+        self.bucket_name = None
+        self.key_prefix = ""
+        self._tempdir = None
+
+        if self.is_s3:
+            parsed = urlparse(target_dir)
+            self.bucket_name = parsed.netloc
+            self.key_prefix = parsed.path.lstrip("/").rstrip("/")
+            self._tempdir = tempfile.TemporaryDirectory(prefix="nemo_tarred_audio_")
+            self.local_dir = self._tempdir.name
+            endpoint = os.environ.get("AIS_ENDPOINT")
+            token = os.environ.get("AIS_AUTHN_TOKEN")
+            missing = [name for name, value in (("AIS_ENDPOINT", endpoint), ("AIS_AUTHN_TOKEN", token)) if not value]
+            if missing:
+                raise ValueError(f"S3 target_dir requires environment variables: {', '.join(missing)}")
+            try:
+                from aistore.sdk.client import Client
+            except ModuleNotFoundError as exc:
+                print(
+                    f"AIStore SDK import failed because {exc.name!r} is missing; "
+                    "falling back to AIS S3-compatible HTTP upload."
+                )
+                self.s3_client = AISS3HTTPClient(endpoint, token)
+            else:
+                self.s3_client = Client(endpoint, token=token)
+            self.bucket = self.s3_client.bucket(self.bucket_name, provider="s3")
+            print(f"Uploading tarred dataset output to {self.target_dir}")
+        else:
+            self.local_dir = target_dir
+
+    def cleanup(self):
+        if self._tempdir is not None:
+            self._tempdir.cleanup()
+
+    def relative_path(self, local_path: str) -> str:
+        return os.path.relpath(local_path, self.local_dir).replace(os.sep, "/")
+
+    def object_key(self, relative_path: str) -> str:
+        relative_path = relative_path.replace(os.sep, "/").lstrip("/")
+        if self.key_prefix:
+            return f"{self.key_prefix}/{relative_path}"
+        return relative_path
+
+    def object_uri(self, relative_path: str) -> str:
+        return f"s3://{self.bucket_name}/{self.object_key(relative_path)}"
+
+    def display_path(self, local_path: str) -> str:
+        if not self.is_s3:
+            return local_path
+        return self.object_uri(self.relative_path(local_path))
+
+    def exists(self, local_path: str) -> bool:
+        if not self.is_s3:
+            return os.path.exists(local_path)
+
+        relative_path = self.relative_path(local_path)
+        key = self.object_key(relative_path)
+        try:
+            self.bucket.object(key).head()
+            return True
+        except Exception as exc:
+            if _is_not_found_error(exc):
+                return False
+            raise
+
+    def upload_file(self, local_path: str, remove_after: bool = False) -> None:
+        if not self.is_s3:
+            return
+
+        relative_path = self.relative_path(local_path)
+        key = self.object_key(relative_path)
+        print(f"Uploading {local_path} -> {self.object_uri(relative_path)}")
+        self.bucket.object(key).get_writer().put_file(local_path)
+        if remove_after:
+            os.remove(local_path)
 
 
 @dataclass
@@ -156,6 +313,7 @@ class ASRTarredDatasetBuilder:
 
     def __init__(self):
         self.config = None
+        self.output_target = None
 
     def configure(self, config: ASRTarredDatasetConfig):
         """
@@ -168,6 +326,20 @@ class ASRTarredDatasetBuilder:
 
         if self.config.num_shards < 0:
             raise ValueError("`num_shards` must be > 0. Please fill in the metadata information correctly.")
+
+    def _output_exists(self, local_path: str) -> bool:
+        if self.output_target is not None:
+            return self.output_target.exists(local_path)
+        return os.path.exists(local_path)
+
+    def _upload_output_file(self, local_path: str, remove_after: bool = False) -> None:
+        if self.output_target is not None:
+            self.output_target.upload_file(local_path, remove_after=remove_after)
+
+    def _display_output_path(self, local_path: str) -> str:
+        if self.output_target is not None:
+            return self.output_target.display_path(local_path)
+        return local_path
 
     def create_new_dataset(
         self,
@@ -299,6 +471,7 @@ class ASRTarredDatasetBuilder:
                     for entry in manifest:
                         json.dump(entry, m2, ensure_ascii=False)
                         m2.write('\n')
+                self._upload_output_file(new_manifest_shard_path, remove_after=True)
 
         # Flatten the list of list of entries to a list of entries
         new_entries = [sample for manifest in new_entries_list for sample in manifest]
@@ -329,9 +502,12 @@ class ASRTarredDatasetBuilder:
             for k, v in bucketing_kwargs.items():
                 setattr(metadata.dataset_config, k, v)
 
+        self._upload_output_file(new_manifest_path, remove_after=True)
+
         # Write metadata
         metadata_yaml = OmegaConf.structured(metadata)
         OmegaConf.save(metadata_yaml, new_metadata_path, resolve=True)
+        self._upload_output_file(new_metadata_path, remove_after=True)
 
     def estimate_dynamic_bucketing_duration_bins(self, manifest_path: str, num_buckets: int = 30) -> dict:
         from lhotse import CutSet
@@ -505,6 +681,7 @@ class ASRTarredDatasetBuilder:
                     for entry in manifest:
                         json.dump(entry, m2, ensure_ascii=False)
                         m2.write('\n')
+                self._upload_output_file(new_manifest_shard_path, remove_after=True)
 
         # Flatten the list of list of entries to a list of entries
         new_entries = [sample for manifest in new_entries_list for sample in manifest]
@@ -530,6 +707,8 @@ class ASRTarredDatasetBuilder:
                 json.dump(entry, m2, ensure_ascii=False)
                 m2.write('\n')
 
+        self._upload_output_file(new_manifest_path, remove_after=True)
+
         # Preserve historical metadata
         base_metadata = metadata
 
@@ -554,6 +733,7 @@ class ASRTarredDatasetBuilder:
         # Write metadata
         metadata_yaml = OmegaConf.structured(metadata)
         OmegaConf.save(metadata_yaml, new_metadata_path, resolve=True)
+        self._upload_output_file(new_metadata_path, remove_after=True)
 
     def _read_manifest(self, manifest_path: Union[str, List[str]], config: ASRTarredDatasetConfig):
         """Read and filters data from the manifest"""
@@ -674,6 +854,7 @@ class ASRTarredDatasetBuilder:
         shard_id = entries[0]['shard_id']
         new_manifest_shard_path = os.path.join(sharded_manifests_dir, f'manifest_{shard_id}.json')
         self._write_manifest_entries(new_manifest_shard_path, entries)
+        self._upload_output_file(new_manifest_shard_path, remove_after=True)
 
     def _create_new_dataset_streaming(
         self,
@@ -768,8 +949,11 @@ class ASRTarredDatasetBuilder:
             for k, v in bucketing_kwargs.items():
                 setattr(metadata.dataset_config, k, v)
 
+        self._upload_output_file(new_manifest_path, remove_after=True)
+
         metadata_yaml = OmegaConf.structured(metadata)
         OmegaConf.save(metadata_yaml, new_metadata_path, resolve=True)
+        self._upload_output_file(new_metadata_path, remove_after=True)
 
     def _write_to_tar(
         self, tar, audio_filepath: str, squashed_filename: str, duration: float = None, offset: float = 0
@@ -842,10 +1026,10 @@ class ASRTarredDatasetBuilder:
         new_entries = []
 
         tar_filepath = os.path.join(target_dir, f'audio_{shard_id}.tar')
-        tar_exists = os.path.exists(tar_filepath)
+        tar_exists = self._output_exists(tar_filepath)
         write_tar = not only_manifests and not tar_exists
         if tar_exists and not only_manifests:
-            print(f"Skipping existing tar shard: {tar_filepath}")
+            print(f"Skipping existing tar shard: {self._display_output_path(tar_filepath)}")
         if write_tar:
             tar = tarfile.open(tar_filepath, mode='w', dereference=True)
         else:
@@ -929,6 +1113,7 @@ class ASRTarredDatasetBuilder:
 
         if write_tar:
             tar.close()
+            self._upload_output_file(tar_filepath, remove_after=True)
         return new_entries
 
     @classmethod
@@ -990,6 +1175,9 @@ def create_tar_datasets(
     dry_run: bool = False,
 ):
     builder = ASRTarredDatasetBuilder()
+    output_target = OutputTarget(target_dir)
+    target_dir = output_target.local_dir
+    builder.output_target = output_target
 
     shard_manifests = False if no_shard_manifests else True
 
@@ -1012,8 +1200,10 @@ def create_tar_datasets(
 
         output_path = os.path.join(target_dir, 'default_metadata.yaml')
         OmegaConf.save(metadata, output_path, resolve=True)
+        output_target.upload_file(output_path, remove_after=True)
         print(f"Default metadata written to {output_path}")
-        exit(0)
+        output_target.cleanup()
+        return
 
     if concat_manifest_paths is None or len(concat_manifest_paths) == 0:
         # Create a tarred dataset from scratch
@@ -1080,10 +1270,14 @@ def create_tar_datasets(
             dry_run=dry_run,
         )
 
-    if not dry_run and (DALI_INDEX_SCRIPT_AVAILABLE and dali_index.INDEX_CREATOR_AVAILABLE):
+    if not dry_run and output_target.is_s3:
+        print("Skipping DALI Tarfile Index construction for S3 target_dir.")
+    elif not dry_run and (DALI_INDEX_SCRIPT_AVAILABLE and dali_index.INDEX_CREATOR_AVAILABLE):
         print("Constructing DALI Tarfile Index - ", target_dir)
         index_config = dali_index.DALITarredIndexConfig(tar_dir=target_dir, workers=workers)
         dali_index.main(index_config)
+
+    output_target.cleanup()
 
 
 def positive_int(value: str) -> int:

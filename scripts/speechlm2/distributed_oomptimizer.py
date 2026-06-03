@@ -34,6 +34,26 @@ candidate reaches the requested memory fraction, the worker records ``memory_tar
 If a candidate OOMs, hangs, crashes, or loses the distributed process group, the child process is allowed to die and
 the supervisor interprets the missing or failed result as the first bad candidate.
 
+Example single-node invocation using one ``torchrun`` supervisor process that launches 8-rank child probes::
+
+    torchrun --standalone --nproc-per-node=1 scripts/speechlm2/distributed_oomptimizer.py \
+        --module-name nemo.collections.speechlm2.models.SALMAutomodel \
+        --config-path /path/to/experiment.yaml \
+        --buckets '[128,256,512,1024]' \
+        --memory-fraction 0.9 \
+        --nproc-per-node 8
+
+Example four-node SLURM invocation::
+
+    srun --nodes=4 --ntasks-per-node=1 --gpus-per-node=8 \
+        python scripts/speechlm2/distributed_oomptimizer.py \
+            --module-name nemo.collections.speechlm2.models.SALMAutomodel \
+            --config-path /path/to/experiment.yaml \
+            --buckets '[128,256,512,1024]' \
+            --supervisor-nnodes 4 \
+            --rdzv-endpoint "${MASTER_ADDR}:29500" \
+            --nproc-per-node 8
+
 The main control flow is:
 
 1. The supervisor reads bucket boundaries and model config, then converts each bucket into synthetic input/output
@@ -54,13 +74,6 @@ The main control flow is:
    finishes when the relative gap between those bounds is below ``--threshold`` or the bounds differ by one.
 7. The primary supervisor emits the same style of final ``bucket_duration_bins`` and ``bucket_batch_size`` output as
    the original tool, while preserving the per-probe logs for debugging.
-
-The important design choice is that CUDA OOM recovery is delegated to process lifetime instead of Python exception
-cleanup. A failed child can leave NCCL, CUDA allocator state, or model state in a bad condition, but that state dies
-with the child process. The supervisor waits for GPU memory to be reclaimed, keeps the search state on the host, and
-continues with the next candidate. This makes the tool slower than an in-process loop, but it matches the failure
-semantics of FSDP2/EP training and allows us to profile batch sizes that put real distributed jobs near a target GPU
-memory pressure without manually babysitting every OOM.
 """
 
 import importlib
@@ -71,6 +84,7 @@ import signal
 import subprocess
 import sys
 import time
+from dataclasses import dataclass, field
 from datetime import timedelta
 from functools import partial
 from numbers import Number
@@ -323,271 +337,613 @@ def _is_2d_bucketing(buckets) -> bool:
     )
 
 
-def _count_visible_devices() -> int:
-    visible = os.environ.get("CUDA_VISIBLE_DEVICES")
-    if visible:
-        return len([item for item in visible.split(",") if item.strip()])
-    try:
+@dataclass
+class SequenceLengthResolver:
+    cfg: object
+    ratio: float
+    salm_audio_token_ratio: float
+    module_name: str | None = None
+    model: object | None = None
+    schema: dict | None = None
+
+    def resolve_many(self, buckets) -> list[tuple[int, int]]:
+        return [self.resolve_one(bucket) for bucket in buckets]
+
+    def resolve_one(self, bucket) -> tuple[int, int]:
+        if self._matches_model_name("SALMAutomodel") or self._is_model_instance(SALMAutomodel):
+            return self._salm_automodel_lens(bucket)
+        if self._matches_model_name("SALM", "SALMWithAsrDecoder") or self._is_model_instance(SALM, SALMWithAsrDecoder):
+            return int(bucket), int(bucket)
+
+        if _is_2d_bucketing([bucket]):
+            input_len, output_len = bucket
+            return int(input_len), int(output_len)
+
+        input_len = bucket
+        output_len = int(math.ceil(self.ratio * input_len))
+        if self.schema is None:
+            return compute_num_samples(input_len, sampling_rate=16000), output_len
+
+        sampling_rate = self._sampling_rate()
+        match self._modalities():
+            case ("audio", "audio"):
+                return (
+                    compute_num_samples(input_len, sampling_rate=sampling_rate),
+                    compute_num_samples(output_len, sampling_rate=sampling_rate),
+                )
+            case ("audio", "text"):
+                return compute_num_samples(input_len, sampling_rate=sampling_rate), output_len
+            case ("text", "audio"):
+                return int(input_len), compute_num_samples(output_len, sampling_rate=sampling_rate)
+            case ("text", "text"):
+                return int(input_len), output_len
+            case unexpected:
+                raise RuntimeError(f"Unexpected modality combination: {unexpected}")
+
+    def _matches_model_name(self, *suffixes: str) -> bool:
+        return self.module_name is not None and any(self.module_name.endswith(suffix) for suffix in suffixes)
+
+    def _is_model_instance(self, *classes: type) -> bool:
+        return self.model is not None and isinstance(self.model, classes)
+
+    def _modalities(self) -> tuple[str, str]:
+        if self.schema is None:
+            return "audio", "text"
+
+        def _modality(direction: Literal["input", "output"]) -> str:
+            for item in self.schema["inputs"]:
+                nt = item["type"]
+                if nt == "dummy":
+                    continue
+                if (
+                    isinstance(nt, NeuralType)
+                    and isinstance(nt.elements_type, LabelsType)
+                    and item["seq_length"] == direction
+                ):
+                    return "text"
+            return "audio"
+
+        return _modality("input"), _modality("output")
+
+    def _sampling_rate(self) -> int:
+        return int(getattr(self.model, "sample_rate", 16000))
+
+    def _salm_automodel_lens(self, bucket) -> tuple[int, int]:
+        sampling_rate = OmegaConf.select(self.cfg, "data.train_ds.sample_rate", default=16000)
+        token_equivalent_duration = OmegaConf.select(self.cfg, "data.train_ds.token_equivalent_duration", default=0.08)
+        audio_tokens = max(1, int(math.ceil(self.salm_audio_token_ratio * bucket)))
+        text_tokens = max(2, int(math.ceil((1.0 - self.salm_audio_token_ratio) * bucket)))
+        audio_len = int(math.ceil(audio_tokens * token_equivalent_duration * sampling_rate))
+        return audio_len, text_tokens
+
+
+class GpuMemoryMonitor:
+    @staticmethod
+    def count_visible_devices() -> int:
+        visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if visible:
+            return len([item for item in visible.split(",") if item.strip()])
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=index", "--format=csv,noheader,nounits"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+        except (OSError, subprocess.CalledProcessError):
+            return 1
+        return max(1, len([line for line in result.stdout.splitlines() if line.strip()]))
+
+    @staticmethod
+    def trainer_devices_to_int(devices) -> int:
+        if isinstance(devices, int):
+            return devices
+        if isinstance(devices, (list, tuple)):
+            return len(devices)
+        if isinstance(devices, str):
+            if devices.isdigit():
+                return int(devices)
+            if devices in ("auto", "-1"):
+                return GpuMemoryMonitor.count_visible_devices()
+        return 1
+
+    @staticmethod
+    def query_memory_mib() -> list[tuple[int, int]]:
         result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=index", "--format=csv,noheader,nounits"],
+            ["nvidia-smi", "--query-gpu=memory.used,memory.total", "--format=csv,noheader,nounits"],
             text=True,
             capture_output=True,
             check=True,
         )
-    except (OSError, subprocess.CalledProcessError):
-        return 1
-    return max(1, len([line for line in result.stdout.splitlines() if line.strip()]))
+        memory = []
+        for line in result.stdout.splitlines():
+            if not line.strip():
+                continue
+            used, total = line.split(",")
+            memory.append((int(used.strip()), int(total.strip())))
+        return memory
 
+    @staticmethod
+    def target_memory_bytes(memory_fraction: float) -> float:
+        gpu_memory = GpuMemoryMonitor.query_memory_mib()
+        if not gpu_memory:
+            raise click.ClickException("Could not query GPU memory via nvidia-smi.")
+        return memory_fraction * min(total for _, total in gpu_memory) * 1024 * 1024
 
-def _trainer_devices_to_int(devices) -> int:
-    if isinstance(devices, int):
-        return devices
-    if isinstance(devices, (list, tuple)):
-        return len(devices)
-    if isinstance(devices, str):
-        if devices.isdigit():
-            return int(devices)
-        if devices in ("auto", "-1"):
-            return _count_visible_devices()
-    return 1
-
-
-def _query_gpu_memory_mib() -> list[tuple[int, int]]:
-    result = subprocess.run(
-        ["nvidia-smi", "--query-gpu=memory.used,memory.total", "--format=csv,noheader,nounits"],
-        text=True,
-        capture_output=True,
-        check=True,
-    )
-    memory = []
-    for line in result.stdout.splitlines():
-        if not line.strip():
-            continue
-        used, total = line.split(",")
-        memory.append((int(used.strip()), int(total.strip())))
-    return memory
-
-
-def _wait_for_gpu_memory_reclaim(
-    timeout_seconds: float, tolerance_mb: int, poll_interval_seconds: float = 2.0
-) -> None:
-    if timeout_seconds <= 0:
-        return
-    deadline = time.monotonic() + timeout_seconds
-    while time.monotonic() < deadline:
-        try:
-            memory = _query_gpu_memory_mib()
-        except (OSError, subprocess.CalledProcessError):
+    @staticmethod
+    def wait_for_reclaim(timeout_seconds: float, tolerance_mb: int, poll_interval_seconds: float = 2.0) -> None:
+        if timeout_seconds <= 0:
             return
-        if memory and max(used for used, _ in memory) <= tolerance_mb:
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            try:
+                memory = GpuMemoryMonitor.query_memory_mib()
+            except (OSError, subprocess.CalledProcessError):
+                return
+            if memory and max(used for used, _ in memory) <= tolerance_mb:
+                return
+            time.sleep(poll_interval_seconds)
+
+
+@dataclass
+class FileBarrier:
+    log_dir: Path
+    node_rank: int
+    nnodes: int
+    timeout_seconds: float = 300.0
+
+    def wait(self, name: str) -> None:
+        if self.nnodes <= 1:
             return
-        time.sleep(poll_interval_seconds)
+        barrier_dir = self.log_dir / ".supervisor_barriers" / name
+        barrier_dir.mkdir(parents=True, exist_ok=True)
+        marker = barrier_dir / f"rank_{self.node_rank}.ready"
+        marker.write_text(str(os.getpid()))
+        deadline = time.monotonic() + self.timeout_seconds
+        while time.monotonic() < deadline:
+            if len(list(barrier_dir.glob("rank_*.ready"))) >= self.nnodes:
+                return
+            time.sleep(1.0)
+        raise TimeoutError(f"Timed out in OOMptimizer supervisor barrier {name}.")
+
+    @staticmethod
+    def wait_for_path(path: Path, timeout_seconds: float, description: str) -> None:
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            if path.exists():
+                return
+            time.sleep(1.0)
+        raise TimeoutError(f"Timed out waiting for {description}: {path}")
 
 
-def _wait_for_path(path: Path, timeout_seconds: float, description: str) -> None:
-    deadline = time.monotonic() + timeout_seconds
-    while time.monotonic() < deadline:
-        if path.exists():
-            return
-        time.sleep(1.0)
-    raise TimeoutError(f"Timed out waiting for {description}: {path}")
+@dataclass
+class ProbeOutcome:
+    records: list[dict] = field(default_factory=list)
+    failed_candidate: int | None = None
+    log_path: Path = Path()
+    returncode: int | None = None
+
+    def to_json(self) -> dict:
+        return {
+            "records": self.records,
+            "failed_candidate": self.failed_candidate,
+            "log_path": str(self.log_path),
+            "returncode": self.returncode,
+        }
+
+    @classmethod
+    def from_json(cls, data: dict) -> "ProbeOutcome":
+        return cls(
+            records=data["records"],
+            failed_candidate=data["failed_candidate"],
+            log_path=Path(data["log_path"]),
+            returncode=data["returncode"],
+        )
 
 
-def _shared_file_barrier(
-    log_dir: Path,
-    name: str,
-    node_rank: int,
-    nnodes: int,
-    timeout_seconds: float = 300.0,
-) -> None:
-    if nnodes <= 1:
-        return
-    barrier_dir = log_dir / ".supervisor_barriers" / name
-    barrier_dir.mkdir(parents=True, exist_ok=True)
-    marker = barrier_dir / f"rank_{node_rank}.ready"
-    marker.write_text(str(os.getpid()))
-    deadline = time.monotonic() + timeout_seconds
-    while time.monotonic() < deadline:
-        if len(list(barrier_dir.glob("rank_*.ready"))) >= nnodes:
-            return
-        time.sleep(1.0)
-    raise TimeoutError(f"Timed out in OOMptimizer supervisor barrier {name}.")
+@dataclass
+class ProbeStore:
+    log_dir: Path
+    probe_index: int
+    bucket: object
+    batch_sizes: list[int]
+    node_rank: int
+    nnodes: int
 
+    @property
+    def safe_bucket(self) -> str:
+        return str(self.bucket).replace("/", "_").replace("[", "").replace("]", "").replace(",", "_")
 
-def _read_json(path: Path) -> dict:
-    with path.open() as f:
-        return json.load(f)
+    @property
+    def result_path(self) -> Path:
+        return self.log_dir / f"probe_{self.probe_index:04d}_bucket_{self.safe_bucket}_bs_{self.batch_sizes[0]}.jsonl"
 
+    @property
+    def log_path(self) -> Path:
+        log_suffix = "" if self.nnodes <= 1 else f"_node{self.node_rank}"
+        return (
+            self.log_dir
+            / f"probe_{self.probe_index:04d}_bucket_{self.safe_bucket}_bs_{self.batch_sizes[0]}{log_suffix}.log"
+        )
 
-def _write_json_atomic(path: Path, data: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
-    with tmp_path.open("w") as f:
-        json.dump(data, f, sort_keys=True)
-        f.flush()
-        os.fsync(f.fileno())
-    tmp_path.replace(path)
+    @property
+    def outcome_path(self) -> Path:
+        return (
+            self.log_dir
+            / f"probe_{self.probe_index:04d}_bucket_{self.safe_bucket}_bs_{self.batch_sizes[0]}_outcome.json"
+        )
 
+    def prepare(self) -> None:
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        if self.node_rank == 0:
+            self.result_path.unlink(missing_ok=True)
+            self.outcome_path.unlink(missing_ok=True)
+        self.log_path.unlink(missing_ok=True)
 
-def _get_distributed_supervisor_seq_lens(
-    module_name: str,
-    cfg,
-    buckets,
-    ratio: float,
-    salm_audio_token_ratio: float,
-) -> list[tuple[int, int]]:
-    is_2d_bucketing = _is_2d_bucketing(buckets)
-    if module_name.endswith("SALMAutomodel"):
-        sampling_rate = OmegaConf.select(cfg, "data.train_ds.sample_rate", default=16000)
-        token_equivalent_duration = OmegaConf.select(cfg, "data.train_ds.token_equivalent_duration", default=0.08)
+    def read_records(self) -> list[dict]:
+        return self.read_records_from_path(self.result_path)
 
-        def salm_automodel_lens(bucket):
-            audio_tokens = max(1, int(math.ceil(salm_audio_token_ratio * bucket)))
-            text_tokens = max(2, int(math.ceil((1.0 - salm_audio_token_ratio) * bucket)))
-            audio_len = int(math.ceil(audio_tokens * token_equivalent_duration * sampling_rate))
-            return audio_len, text_tokens
+    def first_unreported_candidate(self, records: list[dict]) -> int | None:
+        reported = {int(record["batch_size"]) for record in records}
+        for candidate in self.batch_sizes:
+            if candidate not in reported:
+                return candidate
+        return None
 
-        return [salm_automodel_lens(bucket) for bucket in buckets]
-    if module_name.endswith("SALM") or module_name.endswith("SALMWithAsrDecoder"):
-        return [(bucket, bucket) for bucket in buckets]
-    if is_2d_bucketing:
-        return [(int(input_len), int(output_len)) for input_len, output_len in buckets]
-    return [(compute_num_samples(bucket, sampling_rate=16000), int(math.ceil(ratio * bucket))) for bucket in buckets]
+    def write_outcome(self, outcome: ProbeOutcome) -> None:
+        self.write_json_atomic(self.outcome_path, outcome.to_json())
 
+    def read_outcome(self) -> ProbeOutcome:
+        return ProbeOutcome.from_json(self.read_json(self.outcome_path))
 
-def _read_probe_records(path: Path) -> list[dict]:
-    records = []
-    seen = set()
-    if not path.exists():
+    @staticmethod
+    def read_records_from_path(path: Path) -> list[dict]:
+        records = []
+        seen = set()
+        if not path.exists():
+            return records
+        with path.open() as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    record = json.loads(line)
+                    key = json.dumps(record, sort_keys=True)
+                    if key not in seen:
+                        records.append(record)
+                        seen.add(key)
         return records
-    with path.open() as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                record = json.loads(line)
-                key = json.dumps(record, sort_keys=True)
-                if key not in seen:
-                    records.append(record)
-                    seen.add(key)
-    return records
+
+    @staticmethod
+    def append_record_to_path(path: Path, record: dict) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a") as f:
+            f.write(json.dumps(record, sort_keys=True) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+
+    @staticmethod
+    def read_json(path: Path) -> dict:
+        with path.open() as f:
+            return json.load(f)
+
+    @staticmethod
+    def write_json_atomic(path: Path, data: dict) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
+        with tmp_path.open("w") as f:
+            json.dump(data, f, sort_keys=True)
+            f.flush()
+            os.fsync(f.fileno())
+        tmp_path.replace(path)
 
 
-def _append_probe_record(path: Path, record: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a") as f:
-        f.write(json.dumps(record, sort_keys=True) + "\n")
-        f.flush()
-        os.fsync(f.fileno())
+@dataclass
+class DistributedSearchState:
+    current: int
+    threshold: float
+    target_memory: float
+    max_ok: int | None = None
+    min_err: int | None = None
+    ok_points: list[tuple[int, int]] = field(default_factory=list)
 
+    @property
+    def finished(self) -> bool:
+        if self.max_ok is None or self.min_err is None:
+            return False
+        return (self.min_err - self.max_ok) / self.min_err <= self.threshold or self.min_err - self.max_ok <= 1
 
-def _first_unreported_candidate(candidates: list[int], records: list[dict]) -> int | None:
-    reported = {int(record["batch_size"]) for record in records}
-    for candidate in candidates:
-        if candidate not in reported:
-            return candidate
-    return None
+    def make_plan(self) -> list[int]:
+        current = max(1, int(self.current))
+        if self.min_err is not None:
+            plan = [min(current, max(1, self.min_err - 1))]
+            if self.ok_points:
+                while len(plan) < 3 and plan[-1] < self.min_err - 1:
+                    next_candidate = plan[-1] + max(1, round((self.min_err - plan[-1]) / 2))
+                    next_candidate = min(next_candidate, self.min_err - 1)
+                    if next_candidate in plan:
+                        break
+                    plan.append(next_candidate)
+            return plan
 
+        plan = [current]
+        if len(self.ok_points) < 2:
+            while len(plan) < 3:
+                plan.append(plan[-1] * 2)
+        else:
+            predicted = self._predict_batch_for_target()
+            plan.append(predicted if predicted is not None else plan[-1] * 2)
 
-def _tail(path: Path, lines: int = 80) -> str:
-    if not path.exists():
-        return ""
-    return "\n".join(path.read_text(errors="replace").splitlines()[-lines:])
+        deduped = []
+        for item in plan:
+            if item not in deduped:
+                deduped.append(item)
+        return deduped
 
+    def apply_records(self, records: list[dict]) -> list[dict]:
+        events = []
+        for record in records:
+            batch_size = int(record["batch_size"])
+            peak_allocated = int(record.get("peak_allocated", 0))
+            status = record["status"]
+            if status == "ok":
+                self.max_ok = max(batch_size, -1 if self.max_ok is None else self.max_ok)
+                self.ok_points.append((batch_size, peak_allocated))
+                events.append(
+                    {
+                        "kind": "ok",
+                        "batch_size": batch_size,
+                        "peak_allocated": peak_allocated,
+                    }
+                )
+            elif status == "memory_target":
+                self.max_ok = max(batch_size, -1 if self.max_ok is None else self.max_ok)
+                self.min_err = min(batch_size + 1, int(1e18) if self.min_err is None else self.min_err)
+                self.ok_points.append((batch_size, peak_allocated))
+                events.append(
+                    {
+                        "kind": "memory_target",
+                        "batch_size": batch_size,
+                        "peak_allocated": peak_allocated,
+                    }
+                )
+            else:
+                self.min_err = min(batch_size, int(1e18) if self.min_err is None else self.min_err)
+                events.append({"kind": "failed", "batch_size": batch_size, "status": status})
+        return events
 
-def _terminate_process_group(proc: subprocess.Popen, grace_seconds: float = 10.0) -> None:
-    try:
-        os.killpg(proc.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        return
-    try:
-        proc.wait(timeout=grace_seconds)
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        proc.wait()
+    def mark_failed_candidate(self, failed_candidate: int) -> None:
+        self.min_err = min(failed_candidate, int(1e18) if self.min_err is None else self.min_err)
 
-
-def _predict_batch_for_target(ok_points: list[tuple[int, int]], target_memory: float) -> int | None:
-    points_by_batch = {}
-    for batch_size, peak_allocated in ok_points:
-        if peak_allocated > 0:
-            points_by_batch[int(batch_size)] = int(peak_allocated)
-    points = sorted(points_by_batch.items())
-    if len(points) < 2:
-        return None
-    b1, p1 = points[-2]
-    b2, p2 = points[-1]
-    if b2 <= b1 or p2 <= p1:
-        return None
-    slope = (p2 - p1) / (b2 - b1)
-    intercept = p2 - slope * b2
-    predicted = math.floor((target_memory - intercept) / slope)
-    if predicted <= b2:
-        return None
-    return int(min(predicted, max(b2 + 1, b2 * 2)))
-
-
-def _make_probe_plan(
-    current: int,
-    min_err: int | None,
-    ok_points: list[tuple[int, int]],
-    target_memory: float,
-) -> list[int]:
-    current = max(1, int(current))
-    if min_err is not None:
-        plan = [min(current, max(1, min_err - 1))]
-        if ok_points:
-            while len(plan) < 3 and plan[-1] < min_err - 1:
-                next_candidate = plan[-1] + max(1, round((min_err - plan[-1]) / 2))
-                next_candidate = min(next_candidate, min_err - 1)
-                if next_candidate in plan:
-                    break
-                plan.append(next_candidate)
-        return plan
-
-    plan = [current]
-    if len(ok_points) < 2:
-        while len(plan) < 3:
-            plan.append(plan[-1] * 2)
-    else:
-        predicted = _predict_batch_for_target(ok_points, target_memory)
-        plan.append(predicted if predicted is not None else plan[-1] * 2)
-
-    deduped = []
-    for item in plan:
-        if item not in deduped:
-            deduped.append(item)
-    return deduped
-
-
-def _next_batch_size(
-    max_ok: int | None,
-    min_err: int | None,
-    ok_points: list[tuple[int, int]],
-    target_memory: float,
-) -> int:
-    if max_ok is None:
-        assert min_err is not None
-        return max(1, min_err // 2)
-    if min_err is not None:
-        return max_ok + max(1, round((min_err - max_ok) / 2))
-    predicted = _predict_batch_for_target(ok_points, target_memory)
-    return predicted if predicted is not None else max(1, max_ok * 2)
-
-
-def _search_finished(max_ok: int | None, min_err: int | None, threshold: float) -> bool:
-    if max_ok is None or min_err is None:
+    def record_batch_size_one_failure(self) -> bool:
+        if self.max_ok is None and self.min_err is not None and self.min_err <= 1:
+            self.max_ok = 0
+            return True
         return False
-    return (min_err - max_ok) / min_err <= threshold or min_err - max_ok <= 1
+
+    def advance(self) -> None:
+        if not self.finished:
+            self.current = self._next_batch_size()
+
+    def _next_batch_size(self) -> int:
+        if self.max_ok is None:
+            assert self.min_err is not None
+            return max(1, self.min_err // 2)
+        if self.min_err is not None:
+            return self.max_ok + max(1, round((self.min_err - self.max_ok) / 2))
+        predicted = self._predict_batch_for_target()
+        return predicted if predicted is not None else max(1, self.max_ok * 2)
+
+    def _predict_batch_for_target(self) -> int | None:
+        points_by_batch = {}
+        for batch_size, peak_allocated in self.ok_points:
+            if peak_allocated > 0:
+                points_by_batch[int(batch_size)] = int(peak_allocated)
+        points = sorted(points_by_batch.items())
+        if len(points) < 2:
+            return None
+        b1, p1 = points[-2]
+        b2, p2 = points[-1]
+        if b2 <= b1 or p2 <= p1:
+            return None
+        slope = (p2 - p1) / (b2 - b1)
+        intercept = p2 - slope * b2
+        predicted = math.floor((self.target_memory - intercept) / slope)
+        if predicted <= b2:
+            return None
+        return int(min(predicted, max(b2 + 1, b2 * 2)))
 
 
-def _torchrun_launcher() -> list[str]:
-    torchrun = Path(sys.executable).with_name("torchrun")
-    if torchrun.exists() and os.access(torchrun, os.X_OK):
-        return [str(torchrun)]
-    return [sys.executable, "-m", "torch.distributed.run"]
+@dataclass
+class TorchrunProbeLauncher:
+    module_name: str
+    config_path: str
+    nproc_per_node: int
+    nnodes: int
+    node_rank: int
+    rdzv_endpoint: str | None
+    memory_fraction: float
+    dtype: str
+    ddp: bool
+    salm_audio_token_ratio: float
+    distributed_timeout_seconds: float
+    probe_timeout_seconds: float
+    log_dir: Path
+
+    def run(
+        self,
+        *,
+        bucket,
+        seq_len_in: int,
+        seq_len_out: int,
+        batch_sizes: list[int],
+        probe_index: int,
+        rdzv_id: str,
+    ) -> ProbeOutcome:
+        store = ProbeStore(
+            log_dir=self.log_dir,
+            probe_index=probe_index,
+            bucket=bucket,
+            batch_sizes=batch_sizes,
+            node_rank=self.node_rank,
+            nnodes=self.nnodes,
+        )
+        store.prepare()
+
+        cmd = [
+            *self.torchrun_launcher(),
+            f"--nnodes={self.nnodes}",
+            f"--nproc-per-node={self.nproc_per_node}",
+        ]
+        if self.nnodes <= 1:
+            cmd.append("--standalone")
+        else:
+            if not self.rdzv_endpoint:
+                raise click.ClickException("--rdzv-endpoint is required when supervisor nnodes > 1.")
+            cmd.extend(
+                [
+                    f"--node-rank={self.node_rank}",
+                    "--rdzv-backend=c10d",
+                    f"--rdzv-endpoint={self.rdzv_endpoint}",
+                    f"--rdzv-id={rdzv_id}",
+                ]
+            )
+        cmd.extend(
+            [
+                "--max-restarts=0",
+                "--monitor-interval=1",
+                str(Path(__file__).resolve()),
+                "--module-name",
+                self.module_name,
+                "--config-path",
+                self.config_path,
+                "--memory-fraction",
+                str(self.memory_fraction),
+                "--dtype",
+                self.dtype,
+                "--salm-audio-token-ratio",
+                str(self.salm_audio_token_ratio),
+                "--distributed-timeout-seconds",
+                str(self.distributed_timeout_seconds),
+                "--probe-batch-sizes",
+                ",".join(str(item) for item in batch_sizes),
+                "--probe-seq-len-in",
+                str(seq_len_in),
+                "--probe-seq-len-out",
+                str(seq_len_out),
+                "--probe-result-path",
+                str(store.result_path),
+                "--probe-bucket",
+                str(bucket),
+                "--no-distributed-supervisor",
+            ]
+        )
+        cmd.append("--ddp" if self.ddp else "--no-ddp")
+
+        env = self.clean_launcher_env(os.environ)
+        env.setdefault("NCCL_CUMEM_ENABLE", "0")
+        env.setdefault("TORCH_NCCL_ASYNC_ERROR_HANDLING", "1")
+        env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
+        barrier = FileBarrier(self.log_dir, self.node_rank, self.nnodes)
+        barrier.wait(f"probe_{probe_index:04d}_start")
+
+        with store.log_path.open("w") as log_f:
+            log_f.write(f"COMMAND: {' '.join(cmd)}\n")
+            log_f.flush()
+            proc = subprocess.Popen(
+                cmd,
+                stdout=log_f,
+                stderr=subprocess.STDOUT,
+                text=True,
+                env=env,
+                preexec_fn=os.setsid,
+            )
+            timed_out = False
+            try:
+                returncode = proc.wait(timeout=self.probe_timeout_seconds)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                self.terminate_process_group(proc)
+                returncode = proc.returncode
+                log_f.write(f"\nOOMPTIMIZER_PROBE_TIMEOUT after {self.probe_timeout_seconds}s\n")
+                log_f.flush()
+
+        if self.nnodes <= 1 or self.node_rank == 0:
+            records = store.read_records()
+            failed_candidate = None
+            if timed_out or returncode != 0:
+                if records and records[-1].get("status") not in ("ok", "memory_target"):
+                    failed_candidate = None
+                else:
+                    failed_candidate = store.first_unreported_candidate(records)
+                    if failed_candidate is None and records:
+                        failed_candidate = int(records[-1]["batch_size"])
+            outcome = ProbeOutcome(
+                records=records,
+                failed_candidate=failed_candidate,
+                log_path=store.log_path,
+                returncode=returncode,
+            )
+            if self.nnodes > 1:
+                store.write_outcome(outcome)
+        else:
+            FileBarrier.wait_for_path(
+                store.outcome_path, self.probe_timeout_seconds + 60.0, "multi-node probe outcome"
+            )
+            outcome = store.read_outcome()
+
+        barrier.wait(f"probe_{probe_index:04d}_done")
+        return outcome
+
+    @staticmethod
+    def torchrun_launcher() -> list[str]:
+        torchrun = Path(sys.executable).with_name("torchrun")
+        if torchrun.exists() and os.access(torchrun, os.X_OK):
+            return [str(torchrun)]
+        return [sys.executable, "-m", "torch.distributed.run"]
+
+    @staticmethod
+    def clean_launcher_env(env: dict[str, str]) -> dict[str, str]:
+        env = dict(env)
+        # Supervisors may be launched by srun with one task per node. If these rank variables leak into the torchrun
+        # workers, Lightning prefers SLURMEnvironment over TorchElastic and sees only the supervisor task world.
+        for name in (
+            "SLURM_PROCID",
+            "SLURM_LOCALID",
+            "SLURM_NODEID",
+            "SLURM_NTASKS",
+            "SLURM_TASKS_PER_NODE",
+            "SLURM_GTIDS",
+            "SLURM_STEP_TASKS_PER_NODE",
+        ):
+            env.pop(name, None)
+        for name in (
+            "WORLD_SIZE",
+            "RANK",
+            "LOCAL_RANK",
+            "GROUP_RANK",
+            "ROLE_RANK",
+            "ROLE_WORLD_SIZE",
+            "MASTER_ADDR",
+            "MASTER_PORT",
+        ):
+            env.pop(name, None)
+        return env
+
+    @staticmethod
+    def terminate_process_group(proc: subprocess.Popen, grace_seconds: float = 10.0) -> None:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        try:
+            proc.wait(timeout=grace_seconds)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            proc.wait()
 
 
 def _is_torchrun_worker() -> bool:
@@ -595,175 +951,6 @@ def _is_torchrun_worker() -> bool:
         os.environ.get("TORCHELASTIC_RUN_ID")
         or ("LOCAL_RANK" in os.environ and "RANK" in os.environ and "GROUP_RANK" in os.environ)
     )
-
-
-def _clean_torchrun_launcher_env(env: dict[str, str]) -> dict[str, str]:
-    env = dict(env)
-    # Supervisors may be launched by srun with one task per node. If these rank variables leak into the torchrun
-    # workers, Lightning prefers SLURMEnvironment over TorchElastic and sees only the supervisor task world.
-    for name in (
-        "SLURM_PROCID",
-        "SLURM_LOCALID",
-        "SLURM_NODEID",
-        "SLURM_NTASKS",
-        "SLURM_TASKS_PER_NODE",
-        "SLURM_GTIDS",
-        "SLURM_STEP_TASKS_PER_NODE",
-    ):
-        env.pop(name, None)
-    for name in (
-        "WORLD_SIZE",
-        "RANK",
-        "LOCAL_RANK",
-        "GROUP_RANK",
-        "ROLE_RANK",
-        "ROLE_WORLD_SIZE",
-        "MASTER_ADDR",
-        "MASTER_PORT",
-    ):
-        env.pop(name, None)
-    return env
-
-
-def _run_probe_session(
-    *,
-    module_name: str,
-    config_path: str,
-    bucket,
-    seq_len_in: int,
-    seq_len_out: int,
-    batch_sizes: list[int],
-    nproc_per_node: int,
-    nnodes: int,
-    node_rank: int,
-    rdzv_endpoint: str | None,
-    rdzv_id: str,
-    memory_fraction: float,
-    dtype: str,
-    ddp: bool,
-    salm_audio_token_ratio: float,
-    distributed_timeout_seconds: float,
-    probe_timeout_seconds: float,
-    log_dir: Path,
-    probe_index: int,
-) -> tuple[list[dict], int | None, Path, int | None]:
-    log_dir.mkdir(parents=True, exist_ok=True)
-    safe_bucket = str(bucket).replace("/", "_").replace("[", "").replace("]", "").replace(",", "_")
-    result_path = log_dir / f"probe_{probe_index:04d}_bucket_{safe_bucket}_bs_{batch_sizes[0]}.jsonl"
-    log_suffix = "" if nnodes <= 1 else f"_node{node_rank}"
-    log_path = log_dir / f"probe_{probe_index:04d}_bucket_{safe_bucket}_bs_{batch_sizes[0]}{log_suffix}.log"
-    outcome_path = log_dir / f"probe_{probe_index:04d}_bucket_{safe_bucket}_bs_{batch_sizes[0]}_outcome.json"
-    if node_rank == 0:
-        result_path.unlink(missing_ok=True)
-        outcome_path.unlink(missing_ok=True)
-    log_path.unlink(missing_ok=True)
-
-    cmd = [
-        *_torchrun_launcher(),
-        f"--nnodes={nnodes}",
-        f"--nproc-per-node={nproc_per_node}",
-    ]
-    if nnodes <= 1:
-        cmd.append("--standalone")
-    else:
-        if not rdzv_endpoint:
-            raise click.ClickException("--rdzv-endpoint is required when supervisor nnodes > 1.")
-        cmd.extend(
-            [
-                f"--node-rank={node_rank}",
-                "--rdzv-backend=c10d",
-                f"--rdzv-endpoint={rdzv_endpoint}",
-                f"--rdzv-id={rdzv_id}",
-            ]
-        )
-    cmd.extend(
-        [
-            "--max-restarts=0",
-            "--monitor-interval=1",
-            str(Path(__file__).resolve()),
-            "--module-name",
-            module_name,
-            "--config-path",
-            config_path,
-            "--memory-fraction",
-            str(memory_fraction),
-            "--dtype",
-            dtype,
-            "--salm-audio-token-ratio",
-            str(salm_audio_token_ratio),
-            "--distributed-timeout-seconds",
-            str(distributed_timeout_seconds),
-            "--probe-batch-sizes",
-            ",".join(str(item) for item in batch_sizes),
-            "--probe-seq-len-in",
-            str(seq_len_in),
-            "--probe-seq-len-out",
-            str(seq_len_out),
-            "--probe-result-path",
-            str(result_path),
-            "--probe-bucket",
-            str(bucket),
-            "--no-distributed-supervisor",
-        ]
-    )
-    cmd.append("--ddp" if ddp else "--no-ddp")
-
-    env = _clean_torchrun_launcher_env(os.environ)
-    env.setdefault("NCCL_CUMEM_ENABLE", "0")
-    env.setdefault("TORCH_NCCL_ASYNC_ERROR_HANDLING", "1")
-    env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
-
-    _shared_file_barrier(log_dir, f"probe_{probe_index:04d}_start", node_rank, nnodes)
-
-    with log_path.open("w") as log_f:
-        log_f.write(f"COMMAND: {' '.join(cmd)}\n")
-        log_f.flush()
-        proc = subprocess.Popen(
-            cmd,
-            stdout=log_f,
-            stderr=subprocess.STDOUT,
-            text=True,
-            env=env,
-            preexec_fn=os.setsid,
-        )
-        timed_out = False
-        try:
-            returncode = proc.wait(timeout=probe_timeout_seconds)
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            _terminate_process_group(proc)
-            returncode = proc.returncode
-            log_f.write(f"\nOOMPTIMIZER_PROBE_TIMEOUT after {probe_timeout_seconds}s\n")
-            log_f.flush()
-
-    if nnodes <= 1 or node_rank == 0:
-        records = _read_probe_records(result_path)
-        failed_candidate = None
-        if timed_out or returncode != 0:
-            if records and records[-1].get("status") not in ("ok", "memory_target"):
-                failed_candidate = None
-            else:
-                failed_candidate = _first_unreported_candidate(batch_sizes, records)
-                if failed_candidate is None and records:
-                    failed_candidate = int(records[-1]["batch_size"])
-        outcome = {
-            "records": records,
-            "failed_candidate": failed_candidate,
-            "log_path": str(log_path),
-            "returncode": returncode,
-        }
-        if nnodes > 1:
-            _write_json_atomic(outcome_path, outcome)
-    else:
-        _wait_for_path(outcome_path, probe_timeout_seconds + 60.0, "multi-node probe outcome")
-        outcome = _read_json(outcome_path)
-        records = outcome["records"]
-        failed_candidate = outcome["failed_candidate"]
-        log_path = Path(outcome["log_path"])
-        returncode = outcome["returncode"]
-
-    _shared_file_barrier(log_dir, f"probe_{probe_index:04d}_done", node_rank, nnodes)
-    return records, failed_candidate, log_path, returncode
 
 
 def _run_distributed_supervisor(
@@ -794,7 +981,7 @@ def _run_distributed_supervisor(
     assert module_name is not None, "--config-path requires --module-name to be specified as well."
 
     cfg = OmegaConf.load(config_path)
-    requested_devices = _trainer_devices_to_int(OmegaConf.select(cfg, "trainer.devices", default=1))
+    requested_devices = GpuMemoryMonitor.trainer_devices_to_int(OmegaConf.select(cfg, "trainer.devices", default=1))
     nproc_per_node = int(nproc_per_node or requested_devices)
     if nproc_per_node <= 1:
         raise click.ClickException("Distributed supervisor requires nproc_per_node > 1.")
@@ -825,11 +1012,14 @@ def _run_distributed_supervisor(
         )
     is_primary_supervisor = supervisor_node_rank == 0
 
-    max_seq_lens = _get_distributed_supervisor_seq_lens(module_name, cfg, buckets, ratio, salm_audio_token_ratio)
-    gpu_memory = _query_gpu_memory_mib()
-    if not gpu_memory:
-        raise click.ClickException("Could not query GPU memory via nvidia-smi.")
-    target_memory = memory_fraction * min(total for _, total in gpu_memory) * 1024 * 1024
+    length_resolver = SequenceLengthResolver(
+        cfg=cfg,
+        ratio=ratio,
+        salm_audio_token_ratio=salm_audio_token_ratio,
+        module_name=module_name,
+    )
+    max_seq_lens = length_resolver.resolve_many(buckets)
+    target_memory = GpuMemoryMonitor.target_memory_bytes(memory_fraction)
 
     log_dir = (
         Path(probe_log_dir)
@@ -844,100 +1034,96 @@ def _run_distributed_supervisor(
             f"target allocated memory={target_memory / (1024 ** 3):.2f}GiB"
         )
 
+    launcher = TorchrunProbeLauncher(
+        module_name=module_name,
+        config_path=config_path,
+        nproc_per_node=nproc_per_node,
+        nnodes=supervisor_nnodes,
+        node_rank=supervisor_node_rank,
+        rdzv_endpoint=rdzv_endpoint,
+        memory_fraction=memory_fraction,
+        dtype=dtype,
+        ddp=ddp,
+        salm_audio_token_ratio=salm_audio_token_ratio,
+        distributed_timeout_seconds=distributed_timeout_seconds,
+        probe_timeout_seconds=probe_timeout_seconds,
+        log_dir=log_dir,
+    )
     profile = {}
     next_start = max(1, start_batch_size)
     probe_index = 0
     for bucket, (seq_len_in, seq_len_out) in reversed(list(zip(buckets, max_seq_lens))):
         if is_primary_supervisor:
             click.echo(f"The current sequence lengths are: input={seq_len_in} output={seq_len_out}.")
-        max_ok = None
-        min_err = None
-        ok_points = []
-        current = next_start
-        last_log = None
+        search = DistributedSearchState(current=next_start, threshold=threshold, target_memory=target_memory)
 
-        while not _search_finished(max_ok, min_err, threshold):
-            plan = _make_probe_plan(current, min_err, ok_points, target_memory)
+        while not search.finished:
+            plan = search.make_plan()
             if is_primary_supervisor:
                 click.echo(
                     f"\tProbe plan for bucket={bucket}: {plan} "
-                    f"(max_ok={max_ok}, min_err={min_err}, ok_points={len(ok_points)})"
+                    f"(max_ok={search.max_ok}, min_err={search.min_err}, ok_points={len(search.ok_points)})"
                 )
-            records, failed_candidate, log_path, returncode = _run_probe_session(
-                module_name=module_name,
-                config_path=config_path,
+            outcome = launcher.run(
                 bucket=bucket,
                 seq_len_in=seq_len_in,
                 seq_len_out=seq_len_out,
                 batch_sizes=plan,
-                nproc_per_node=nproc_per_node,
-                nnodes=supervisor_nnodes,
-                node_rank=supervisor_node_rank,
-                rdzv_endpoint=rdzv_endpoint,
                 rdzv_id=f"{os.environ.get('SLURM_JOB_ID', os.getpid())}_{probe_index:04d}",
-                memory_fraction=memory_fraction,
-                dtype=dtype,
-                ddp=ddp,
-                salm_audio_token_ratio=salm_audio_token_ratio,
-                distributed_timeout_seconds=distributed_timeout_seconds,
-                probe_timeout_seconds=probe_timeout_seconds,
-                log_dir=log_dir,
                 probe_index=probe_index,
             )
             probe_index += 1
-            last_log = log_path
-            for record in records:
-                batch_size = int(record["batch_size"])
-                peak_allocated = int(record.get("peak_allocated", 0))
-                status = record["status"]
-                if status == "ok":
-                    max_ok = max(batch_size, -1 if max_ok is None else max_ok)
-                    ok_points.append((batch_size, peak_allocated))
-                    if is_primary_supervisor:
-                        click.echo(
-                            f"\tOK batch={batch_size}; peak={peak_allocated / (1024 ** 3):.2f}GiB "
-                            f"({peak_allocated / target_memory:.1%} of target)"
-                        )
-                elif status == "memory_target":
-                    max_ok = max(batch_size, -1 if max_ok is None else max_ok)
-                    min_err = min(batch_size + 1, int(1e18) if min_err is None else min_err)
-                    ok_points.append((batch_size, peak_allocated))
-                    if is_primary_supervisor:
-                        click.echo(
-                            f"\tMEMORY TARGET batch={batch_size}; peak={peak_allocated / (1024 ** 3):.2f}GiB "
-                            f"({peak_allocated / target_memory:.1%} of target)"
-                        )
-                else:
-                    min_err = min(batch_size, int(1e18) if min_err is None else min_err)
-                    if is_primary_supervisor:
-                        click.echo(f"\tFAILED batch={batch_size}; status={status}")
-            if failed_candidate is not None:
-                min_err = min(failed_candidate, int(1e18) if min_err is None else min_err)
+            for event in search.apply_records(outcome.records):
+                match event["kind"]:
+                    case "ok":
+                        batch_size = event["batch_size"]
+                        peak_allocated = event["peak_allocated"]
+                        if is_primary_supervisor:
+                            click.echo(
+                                f"\tOK batch={batch_size}; peak={peak_allocated / (1024 ** 3):.2f}GiB "
+                                f"({peak_allocated / target_memory:.1%} of target)"
+                            )
+                    case "memory_target":
+                        batch_size = event["batch_size"]
+                        peak_allocated = event["peak_allocated"]
+                        if is_primary_supervisor:
+                            click.echo(
+                                f"\tMEMORY TARGET batch={batch_size}; peak={peak_allocated / (1024 ** 3):.2f}GiB "
+                                f"({peak_allocated / target_memory:.1%} of target)"
+                            )
+                    case "failed":
+                        batch_size = event["batch_size"]
+                        status = event["status"]
+                        if is_primary_supervisor:
+                            click.echo(f"\tFAILED batch={batch_size}; status={status}")
+            if outcome.failed_candidate is not None:
+                search.mark_failed_candidate(outcome.failed_candidate)
                 if is_primary_supervisor:
-                    click.echo(f"\tFAILED batch={failed_candidate}; child_returncode={returncode}; log={log_path}")
-                _wait_for_gpu_memory_reclaim(
+                    click.echo(
+                        f"\tFAILED batch={outcome.failed_candidate}; "
+                        f"child_returncode={outcome.returncode}; log={outcome.log_path}"
+                    )
+                GpuMemoryMonitor.wait_for_reclaim(
                     probe_memory_reclaim_timeout_seconds,
                     probe_memory_tolerance_mb,
                 )
 
-            if max_ok is None and min_err is not None and min_err <= 1:
+            if search.record_batch_size_one_failure():
                 if is_primary_supervisor:
                     click.secho(
                         f"\tBatch size 1 failed for bucket={bucket}; recording max_batch_size=0 and continuing.",
                         fg="yellow",
                     )
-                max_ok = 0
-            if not _search_finished(max_ok, min_err, threshold):
-                current = _next_batch_size(max_ok, min_err, ok_points, target_memory)
+            search.advance()
 
         if is_primary_supervisor:
             click.secho(
                 f"=> Optimal setting for bucket={bucket} (input={seq_len_in} output={seq_len_out}) "
-                f"is max_batch_size={max_ok}",
+                f"is max_batch_size={search.max_ok}",
                 fg="green",
             )
-        profile[(bucket, seq_len_in, seq_len_out)] = max_ok
-        next_start = max(max_ok + 1, int(math.ceil(max_ok * 1.5)))
+        profile[(bucket, seq_len_in, seq_len_out)] = search.max_ok
+        next_start = max(search.max_ok + 1, int(math.ceil(search.max_ok * 1.5)))
 
     if is_primary_supervisor:
         _emit_profile(profile, buckets, memory_fraction, ddp, dtype)
@@ -1187,9 +1373,17 @@ def oomptimizer(
         )
         sys.exit(1)
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
-    if probe_batch_sizes is None and distributed_supervisor and not _is_torchrun_worker() and config_path is not None:
+    is_outer_torchrun_worker = _is_torchrun_worker()
+    if (
+        probe_batch_sizes is None
+        and distributed_supervisor
+        and (not is_outer_torchrun_worker or world_size == 1)
+        and config_path is not None
+    ):
         cfg_for_supervisor = OmegaConf.load(config_path)
-        requested_devices = _trainer_devices_to_int(OmegaConf.select(cfg_for_supervisor, "trainer.devices", default=1))
+        requested_devices = GpuMemoryMonitor.trainer_devices_to_int(
+            OmegaConf.select(cfg_for_supervisor, "trainer.devices", default=1)
+        )
         requested_devices = int(nproc_per_node or requested_devices)
         if requested_devices > 1:
             _run_distributed_supervisor(
@@ -1234,8 +1428,6 @@ def oomptimizer(
     assert config_path is not None, "--module-name requires --config-path to be specified as well."
     assert module_name is not None, "--config-path requires --module-name to be specified as well."
     cfg = OmegaConf.load(config_path)
-    cfg_sampling_rate = OmegaConf.select(cfg, "data.train_ds.sample_rate", default=16000)
-    cfg_token_equivalent_duration = OmegaConf.select(cfg, "data.train_ds.token_equivalent_duration", default=0.08)
     namespace, name = module_name.rsplit('.', maxsplit=1)
     model_cls = getattr(importlib.import_module(namespace), name)
     trainer_cfg = resolve_trainer_cfg(cfg.trainer)
@@ -1267,67 +1459,17 @@ def oomptimizer(
         sys.exit(1)
 
     schema = model.oomptimizer_schema
-
-    is_2d_bucketing = all(
-        isinstance(item, (list, tuple)) and len(item) == 2 and all(isinstance(v, Number) for v in item)
-        for item in buckets
+    length_resolver = SequenceLengthResolver(
+        cfg=cfg,
+        ratio=ratio,
+        salm_audio_token_ratio=salm_audio_token_ratio,
+        module_name=module_name,
+        model=model,
+        schema=schema,
     )
-    # Determine modality for input and output.
-    modalities = [
-        (
-            "text"
-            if any(
-                isinstance(item["type"], NeuralType)
-                and isinstance(item["type"].elements_type, LabelsType)
-                and item["seq_length"] == direction
-                for item in schema["inputs"]
-                if item["type"] != "dummy"
-            )
-            else "audio"
-        )
-        for direction in ("input", "output")
-    ]
-
-    def get_max_seq_lens(buckets):
-
-        def _determine_lens_for_bucket(bin):
-            if isinstance(model, (SALM, SALMWithAsrDecoder)):
-                return bin, bin  # Note: only 1D bucketing, only counted in tokens
-            elif isinstance(model, SALMAutomodel):
-                audio_tokens = max(1, int(math.ceil(salm_audio_token_ratio * bin)))
-                text_tokens = max(2, int(math.ceil((1.0 - salm_audio_token_ratio) * bin)))
-                audio_len = int(math.ceil(audio_tokens * cfg_token_equivalent_duration * cfg_sampling_rate))
-                return audio_len, text_tokens
-            elif is_2d_bucketing:
-                input_len, output_len = bin
-            else:
-                input_len = bin
-                output_len = math.ceil(ratio * input_len)
-            sampling_rate = getattr(
-                model, "sample_rate", 16000
-            )  # TODO: may need to extend schema for broader model coverage
-            match modalities:
-                case "audio", "audio":
-                    return (
-                        compute_num_samples(input_len, sampling_rate=sampling_rate),
-                        compute_num_samples(output_len, sampling_rate=sampling_rate),
-                    )
-                case "audio", "text":
-                    return (compute_num_samples(input_len, sampling_rate=sampling_rate), output_len)
-                case "text", "audio":
-                    return (
-                        input_len,
-                        compute_num_samples(output_len, sampling_rate=sampling_rate),
-                    )
-                case "text", "text":
-                    return input_len, output_len
-                case _:
-                    raise RuntimeError(f"Unexpected modality combination: {_}")
-
-        return [_determine_lens_for_bucket(bin) for bin in buckets]
 
     click.echo("Starting profiling.")
-    max_seq_lens = get_max_seq_lens(buckets)
+    max_seq_lens = length_resolver.resolve_many(buckets)
     target_memory = memory_fraction * torch.cuda.get_device_properties(device).total_memory
     profile_by_memory = distributed
     gen = ProfilingBatchGenerator(
@@ -1339,7 +1481,7 @@ def oomptimizer(
         def __iter__(self):
             gen.reset()
             gen._current = 1
-            yield gen(*get_max_seq_lens([33])[0])
+            yield gen(*length_resolver.resolve_one(33))
             gen.reset()
 
         def __len__(self):
@@ -1353,7 +1495,7 @@ def oomptimizer(
     if probe_batch_sizes is not None:
         if probe_seq_len_in is None or probe_seq_len_out is None or probe_result_path is None:
             raise click.ClickException("--probe-batch-sizes requires probe sequence lengths and result path.")
-        _run_probe_batch_sizes(
+        ProbeWorkerRunner(
             gen=gen,
             model=model,
             optimizer=optimizer,
@@ -1365,7 +1507,7 @@ def oomptimizer(
             bucket=probe_bucket,
             distributed=distributed,
             device=device,
-        )
+        ).run()
         return
 
     # Iterate buckets from the largest to the smallest sequences. This usually ends up creating
@@ -1453,135 +1595,101 @@ def oomptimizer(
             profile[(bucket, seq_len_in, seq_len_out)] = gen.max_batch_size
             gen.start_batch_size = gen.max_batch_size * 2
 
-    # Reverse the profile to be ascendingly sorted again.
-    profile = dict(reversed(list(profile.items())))
-
-    click.echo("The 1st stage profile is:")
-    for (bucket, seq_len_in, seq_len_out), bs in profile.items():
-        click.echo(f"Bucket={bucket} (input={seq_len_in} output={seq_len_out}) => max_batch_size={bs}")
-
-    if is_2d_bucketing:
-        # 2D bucketing doesn't support bucket merging.
-        final_profile = [["[" + ",".join(map(str, b)) + "]", bs] for (b, _, __), bs in profile.items()]
-    else:
-        click.echo("Bucket merging stage...")
-        final_profile = []
-        for idx, ((bucket, seq_len_in, seq_len_out), bs) in enumerate(profile.items()):
-            if idx == 0:
-                final_profile.append([bucket, bs])
-                continue
-            if bs == final_profile[-1][1]:
-                click.echo(f"Merging bucket {idx} with bucket {idx-1} due to identical batch sizes.")
-                final_profile[-1][0] = bucket
-                continue
-            final_profile.append([bucket, bs])
-
-    click.secho(f"The profile was created with the following settings:")
-    click.secho(f"* using {memory_fraction:.1%} of available GPU RAM.")
-    click.secho(f"* {'' if ddp else 'not '}simulating DDP memory overhead.")
-    click.secho(f"* using AMP with dtype={dtype}.")
-    click.secho("The final profile is:", bold=True)
-    click.secho("\tbucket_duration_bins=[" + ",".join(str(seqlen) for seqlen, bs in final_profile) + "]", bold=True)
-    click.secho("\tbucket_batch_size=[" + ",".join(str(bs) for seqlen, bs in final_profile) + "]", bold=True)
+    _emit_profile(profile, buckets, memory_fraction, ddp, dtype)
 
 
-def _run_probe_batch_sizes(
-    *,
-    gen: ProfilingBatchGenerator,
-    model: pl.LightningModule,
-    optimizer: torch.optim.Optimizer,
-    seq_len_in: int,
-    seq_len_out: int,
-    batch_sizes: list[int],
-    result_path: Path,
-    target_memory: float,
-    bucket: str | None,
-    distributed: bool,
-    device: torch.device,
-) -> None:
-    global_rank = int(os.environ.get("RANK", "0"))
-    batch_idx = 0
+@dataclass
+class ProbeWorkerRunner:
+    gen: ProfilingBatchGenerator
+    model: pl.LightningModule
+    optimizer: torch.optim.Optimizer
+    seq_len_in: int
+    seq_len_out: int
+    batch_sizes: list[int]
+    result_path: Path
+    target_memory: float
+    bucket: str | None
+    distributed: bool
+    device: torch.device
 
-    with torch.autocast("cuda", dtype=None, enabled=False):
-        for batch_size in batch_sizes:
-            click.echo(
-                f"OOMPTIMIZER_PROBE bucket={bucket} batch_size={batch_size} "
-                f"input={seq_len_in} output={seq_len_out}"
-            )
-            gen.reset()
-            gen._current = batch_size
-            torch.cuda.reset_peak_memory_stats()
-            batch = None
-            try:
-                optimizer.zero_grad()
-                batch = gen(seq_len_in, seq_len_out)
-                out = model.training_step(batch, batch_idx)
-                out['loss'].sum().backward()
-                optimizer.step()
-                torch.cuda.synchronize(device)
-                peak_allocated = torch.cuda.max_memory_allocated()
-                peak_reserved = torch.cuda.max_memory_reserved()
-            except torch.cuda.OutOfMemoryError as e:
-                click.echo(f"OOMPTIMIZER_PROBE_OOM batch_size={batch_size}: {e}")
-                if global_rank == 0:
-                    _append_probe_record(
-                        result_path,
-                        {
-                            "batch_size": batch_size,
-                            "bucket": bucket,
-                            "status": "oom",
-                            "message": str(e),
-                        },
-                    )
-                os._exit(42)
-            except RuntimeError as e:
-                if not _is_oom_like(e):
-                    raise
-                click.echo(f"OOMPTIMIZER_PROBE_OOM_LIKE batch_size={batch_size}: {e}")
-                if global_rank == 0:
-                    _append_probe_record(
-                        result_path,
-                        {
-                            "batch_size": batch_size,
-                            "bucket": bucket,
-                            "status": "oom",
-                            "message": str(e),
-                        },
-                    )
-                os._exit(43)
-            finally:
-                if batch is not None:
-                    del batch
+    def run(self) -> None:
+        global_rank = int(os.environ.get("RANK", "0"))
+        batch_idx = 0
 
-            if distributed:
-                try:
-                    peak_t = torch.tensor([peak_allocated, peak_reserved], dtype=torch.float64, device=device)
-                    torch.distributed.all_reduce(peak_t, op=torch.distributed.ReduceOp.MAX)
-                    peak_allocated = int(peak_t[0].item())
-                    peak_reserved = int(peak_t[1].item())
-                except RuntimeError as e:
-                    click.echo(f"OOMPTIMIZER_PROBE_COLLECTIVE_FAILED batch_size={batch_size}: {e}")
-                    os._exit(44)
-
-            status = "memory_target" if peak_allocated >= target_memory else "ok"
-            if global_rank == 0:
-                _append_probe_record(
-                    result_path,
-                    {
-                        "batch_size": batch_size,
-                        "bucket": bucket,
-                        "status": status,
-                        "peak_allocated": peak_allocated,
-                        "peak_reserved": peak_reserved,
-                        "target_memory": target_memory,
-                    },
+        with torch.autocast("cuda", dtype=None, enabled=False):
+            for batch_size in self.batch_sizes:
+                click.echo(
+                    f"OOMPTIMIZER_PROBE bucket={self.bucket} batch_size={batch_size} "
+                    f"input={self.seq_len_in} output={self.seq_len_out}"
                 )
-            click.echo(
-                f"OOMPTIMIZER_PROBE_RESULT batch_size={batch_size} status={status} "
-                f"peak_allocated={peak_allocated / (1024 ** 3):.2f}GiB"
+                self.gen.reset()
+                self.gen._current = batch_size
+                torch.cuda.reset_peak_memory_stats()
+                batch = None
+                try:
+                    self.optimizer.zero_grad()
+                    batch = self.gen(self.seq_len_in, self.seq_len_out)
+                    out = self.model.training_step(batch, batch_idx)
+                    out['loss'].sum().backward()
+                    self.optimizer.step()
+                    torch.cuda.synchronize(self.device)
+                    peak_allocated = torch.cuda.max_memory_allocated()
+                    peak_reserved = torch.cuda.max_memory_reserved()
+                except torch.cuda.OutOfMemoryError as e:
+                    click.echo(f"OOMPTIMIZER_PROBE_OOM batch_size={batch_size}: {e}")
+                    self._record_oom(global_rank, batch_size, e)
+                    os._exit(42)
+                except RuntimeError as e:
+                    if not _is_oom_like(e):
+                        raise
+                    click.echo(f"OOMPTIMIZER_PROBE_OOM_LIKE batch_size={batch_size}: {e}")
+                    self._record_oom(global_rank, batch_size, e)
+                    os._exit(43)
+                finally:
+                    if batch is not None:
+                        del batch
+
+                if self.distributed:
+                    try:
+                        peak_t = torch.tensor([peak_allocated, peak_reserved], dtype=torch.float64, device=self.device)
+                        torch.distributed.all_reduce(peak_t, op=torch.distributed.ReduceOp.MAX)
+                        peak_allocated = int(peak_t[0].item())
+                        peak_reserved = int(peak_t[1].item())
+                    except RuntimeError as e:
+                        click.echo(f"OOMPTIMIZER_PROBE_COLLECTIVE_FAILED batch_size={batch_size}: {e}")
+                        os._exit(44)
+
+                status = "memory_target" if peak_allocated >= self.target_memory else "ok"
+                if global_rank == 0:
+                    ProbeStore.append_record_to_path(
+                        self.result_path,
+                        {
+                            "batch_size": batch_size,
+                            "bucket": self.bucket,
+                            "status": status,
+                            "peak_allocated": peak_allocated,
+                            "peak_reserved": peak_reserved,
+                            "target_memory": self.target_memory,
+                        },
+                    )
+                click.echo(
+                    f"OOMPTIMIZER_PROBE_RESULT batch_size={batch_size} status={status} "
+                    f"peak_allocated={peak_allocated / (1024 ** 3):.2f}GiB"
+                )
+                if status == "memory_target":
+                    break
+
+    def _record_oom(self, global_rank: int, batch_size: int, error: RuntimeError) -> None:
+        if global_rank == 0:
+            ProbeStore.append_record_to_path(
+                self.result_path,
+                {
+                    "batch_size": batch_size,
+                    "bucket": self.bucket,
+                    "status": "oom",
+                    "message": str(error),
+                },
             )
-            if status == "memory_target":
-                break
 
 
 def _override_prepare_inputs(self, batch: dict) -> dict:

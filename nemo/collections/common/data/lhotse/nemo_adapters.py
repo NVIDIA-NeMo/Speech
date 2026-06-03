@@ -142,12 +142,12 @@ class LazyNeMoIterator:
             if data.get("_skipme", False):
                 continue
             audio_path = get_full_path(str(data.pop("audio_filepath")), str(self.path), force_cache=False)
-            sampling_rate = data.pop("sampling_rate", None)
-            if sampling_rate is None:
-                sampling_rate = data.pop("sample_rate", None)
             duration = data.pop("duration")
             offset = data.pop("offset", None)
             num_channels = data.pop("num_channels", None)
+            sampling_rate = data.pop("sampling_rate", None)
+            if sampling_rate is None:
+                sampling_rate = data.pop("sample_rate", None)
             cut = self._create_cut(
                 audio_path=audio_path,
                 offset=offset,

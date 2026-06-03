@@ -25,6 +25,8 @@ from nemo.utils.nemo_logging import LogMode
 
 
 class ManifestBase:
+    """Deprecated manifest base class."""
+
     def __init__(self, *args, **kwargs):
         raise ValueError(
             "This class is deprecated, look at https://github.com/NVIDIA/NeMo/pull/284 for correct behaviour."
@@ -32,6 +34,8 @@ class ManifestBase:
 
 
 class ManifestEN:
+    """Deprecated English manifest class."""
+
     def __init__(self, *args, **kwargs):
         raise ValueError(
             "This class is deprecated, look at https://github.com/NVIDIA/NeMo/pull/284 for correct behaviour."
@@ -121,7 +125,8 @@ def __parse_item(line: str, manifest_file: str) -> Dict[str, Any]:
 
     if 'video_file' not in item and 'audio_file' not in item:
         raise ValueError(
-            f"Manifest file {manifest_file} has invalid json line structure: {line} without proper audio/video file key."
+            f"Manifest file {manifest_file} has invalid json line structure: "
+            f"{line} without proper audio/video file key."
         )
 
     # If the audio/video path is a relative path and does not exist,
@@ -202,6 +207,7 @@ def __parse_item(line: str, manifest_file: str) -> Dict[str, Any]:
 
 
 def is_tarred_dataset(audio_file: str, manifest_file: Optional[str] = None) -> bool:
+    """Check if an audio file belongs to a tarred dataset based on path heuristics."""
     if "/" in audio_file or manifest_file is None:
         # audio files in a tarred dataset don't have `/` in their paths
         return False
@@ -254,9 +260,13 @@ def get_full_path(
         ]
     elif isinstance(audio_file, str):
         # If input is a string, get the corresponding full path
+        if is_datastore_path(audio_file):
+            return audio_file
         if is_tarred_dataset(audio_file=audio_file, manifest_file=manifest_file):
             logging.warning(
-                f"Manifest file `{manifest_file}` seems to be part of a tarred dataset, skip checking for relative paths. If this is not intended, please avoid having `/sharded_manifests/` and `tarred_audio_manifest.json` in manifest_filepath.",
+                f"Manifest file `{manifest_file}` seems to be part of a tarred dataset, skip checking"
+                f" for relative paths. If this is not intended, please avoid having `/sharded_manifests/`"
+                f" and `tarred_audio_manifest.json` in manifest_filepath.",
                 mode=LogMode.ONCE,
             )
             return audio_file
@@ -271,7 +281,8 @@ def get_full_path(
                 raise ValueError('Use either manifest_file or data_dir to specify the data directory.')
             elif manifest_file is not None and data_dir is not None:
                 raise ValueError(
-                    f'Parameters manifest_file and data_dir cannot be used simultaneously. Currently manifest_file is {manifest_file} and data_dir is {data_dir}.'
+                    f'Parameters manifest_file and data_dir cannot be used simultaneously. '
+                    f'Currently manifest_file is {manifest_file} and data_dir is {data_dir}.'
                 )
 
             # resolve the data directory

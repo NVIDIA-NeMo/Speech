@@ -36,6 +36,11 @@ class NeMoCUDAPythonException(NeMoBaseException):
     pass
 
 
+CUDA_GRAPH_COMPILE_ERROR_TYPES = (NeMoCUDAPythonException,)
+if hasattr(torch, "AcceleratorError"):
+    CUDA_GRAPH_COMPILE_ERROR_TYPES += (torch.AcceleratorError,)
+
+
 def check_cuda_python_cuda_graphs_conditional_nodes_supported():
     """Check if CUDA and CUDA-Python are available with CUDA Graphs with conditional nodes support"""
     # for CPU-only environment we need to raise an exception, otherwise cuda-python library will fail

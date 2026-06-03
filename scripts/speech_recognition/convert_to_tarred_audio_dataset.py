@@ -817,6 +817,12 @@ class ASRTarredDatasetBuilder:
         ti.size = encoded_audio.getbuffer().nbytes
         tar.addfile(ti, encoded_audio)
 
+    def _tar_audio_filename(self, squashed_filename: str) -> str:
+        if self.config.force_codec is None:
+            return squashed_filename
+        base, _ = os.path.splitext(squashed_filename)
+        return f"{base}.{self.config.force_codec}"
+
     def _resample_audio(self, audio, source_sampling_rate: int, target_sampling_rate: int):
         if source_sampling_rate == target_sampling_rate:
             return audio
@@ -836,8 +842,14 @@ class ASRTarredDatasetBuilder:
         new_entries = []
 
         tar_filepath = os.path.join(target_dir, f'audio_{shard_id}.tar')
-        if not only_manifests:
+        tar_exists = os.path.exists(tar_filepath)
+        write_tar = not only_manifests and not tar_exists
+        if tar_exists and not only_manifests:
+            print(f"Skipping existing tar shard: {tar_filepath}")
+        if write_tar:
             tar = tarfile.open(tar_filepath, mode='w', dereference=True)
+        else:
+            tar = None
 
         count = dict()
         for entry in tqdm(entries, desc="Creating shard.."):
@@ -885,8 +897,8 @@ class ASRTarredDatasetBuilder:
                     )
                 entry_duration = "_".join(entry_duration)
 
-                to_write = base + "_" + entry_offset + "_" + entry_duration + ext
-                if not only_manifests:
+                to_write = self._tar_audio_filename(base + "_" + entry_offset + "_" + entry_duration + ext)
+                if write_tar:
                     self._write_to_tar(
                         tar, audio_filepath, to_write, duration=entry['duration'], offset=entry['offset']
                     )
@@ -896,12 +908,12 @@ class ASRTarredDatasetBuilder:
                 del entry['offset']
             else:
                 if squashed_filename not in count:
-                    if not only_manifests:
-                        self._write_to_tar(tar, audio_filepath, squashed_filename)
-                    to_write = squashed_filename
+                    to_write = self._tar_audio_filename(squashed_filename)
+                    if write_tar:
+                        self._write_to_tar(tar, audio_filepath, to_write)
                     count[squashed_filename] = 1
                 else:
-                    to_write = base + "-sub" + str(count[squashed_filename]) + ext
+                    to_write = self._tar_audio_filename(base + "-sub" + str(count[squashed_filename]) + ext)
                     count[squashed_filename] += 1
 
             if only_manifests:
@@ -915,7 +927,7 @@ class ASRTarredDatasetBuilder:
             }
             new_entries.append(new_entry)
 
-        if not only_manifests:
+        if write_tar:
             tar.close()
         return new_entries
 

@@ -99,10 +99,9 @@ jobs:
       docs-directory: docs/source
       docs-requirements-file: requirements/requirements_docs.txt
       docs-sync-all: true
-      docs-no-extras: "--no-extra cu12"
+      docs-no-extras: "--no-extra cu12 --no-extra compiled --no-extra compiled-a100"
       publish-as-latest: true
       run-on-version-tag-only: ${{ github.ref_name != 'main' }}
-      docs-skip-linkcheck: true
       gh-release-from-tag: ${{ inputs.gh-release-from-tag || '' }}
       restrict-to-admins: true
     secrets: inherit  # pragma: allowlist secret

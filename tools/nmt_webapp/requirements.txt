@@ -1,3 +1,0 @@
-flask
-flask_cors
-nemo_toolkit[all]>=1.0.0rc1

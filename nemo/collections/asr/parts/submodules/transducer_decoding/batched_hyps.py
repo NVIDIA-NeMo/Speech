@@ -94,7 +94,7 @@ class BatchedHyps:
         self.last_nb_timestamp = torch.full((batch_size,), -1, device=device, dtype=torch.long)
         # number of non-blank labels for the last timestamp
         self.last_nb_timestamp_lasts = torch.zeros(batch_size, device=device, dtype=torch.long)
-        self.last_nb_labels = torch.full(batch_size, fill_value=-1, device=device, dtype=torch.long)
+        self.last_nb_labels = torch.full((batch_size,), fill_value=-1, device=device, dtype=torch.long)
         self._batch_indices = torch.arange(batch_size, device=device)
         self._ones_batch = torch.ones_like(self._batch_indices)
 

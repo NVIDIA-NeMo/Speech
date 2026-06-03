@@ -243,6 +243,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
             if enable_per_stream_biasing
             else None
         )
+
         if allow_cuda_graphs:
             for fusion_model in self._all_fusion_models():
                 if not fusion_model.compatible_with_cuda_graphs():

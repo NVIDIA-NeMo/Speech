@@ -59,9 +59,18 @@ Per-request I/O (via ``additional_information``):
 
   The caller passes ``prompt_token_ids = [0] * T_ctx``, where ``T_ctx`` is the
   assembled context length (``[task?] + T_audio + len(tokenize(context_text))``).
-* ``text_tokens`` — Python ``list[int]`` of subword ids that grows by one per
-  decode step; step ``k`` consumes ``text_tokens[k]`` (embedded through the
-  precomputed per-subword table).
+* ``text`` (prefill only) — the plain target sentence to synthesize. This is the
+  caller's text input: the model tokenizes it in-model at prefill with the
+  checkpoint's text tokenizer (HF special tokens disabled, trailing text-EOS id
+  appended), so callers never tokenize themselves. The resulting subword ids are
+  consumed one per decode step (step ``k`` consumes id ``k``, embedded through
+  the precomputed per-subword ``text_embedding`` table); once exhausted the text
+  channel is masked off.
+
+  (Internal: the tokenized ids are stashed as ``text_tokens`` in the per-request
+  info dict between prefill and decode. A future streaming mode will let the
+  caller push subword ids gradually instead of one upfront ``text`` string; for
+  now assume ``text`` is always provided whole at prefill.)
 * ``temperature`` / ``top_k`` (prefill only, optional) — audio sampling params
   for the local transformer. vLLM's ``SamplingParams.temperature`` drives only
   the dummy backbone token sampler, so the *audio* temperature/top-k are passed
@@ -186,6 +195,12 @@ class EasyMagpieTTSForConditionalGeneration(
         # at conversion time and fed additively on every decode step.
         text_vocab_size = int(getattr(hf_config, "text_vocab_size", getattr(hf_config, "vocab_size", 0)))
         self.text_embedding = nn.Embedding(text_vocab_size, self.embedding_dim)
+
+        # Text-stream EOS id — the last-but-one row of the text vocab, matching
+        # the reference ``EasyMagpieTTSInferenceModel.eos_id = num_tokens - 2``.
+        # Appended to the in-model-tokenized target text stream (see
+        # :meth:`_encode_text_stream`).
+        self.text_eos_id = text_vocab_size - 2
 
         # Task ("service token") embedding — a single learned per-mode row
         # prepended to the prefill context for multi-mode checkpoints. Built only
@@ -570,6 +585,17 @@ class EasyMagpieTTSForConditionalGeneration(
             "prefill_offset": offset + span_len,
             "decode_offset": 0,
         }
+        # Tokenize the caller's ``text`` in-model and stash the subword ids in the
+        # per-request info dict (alongside the offsets) so each decode step
+        # consumes one id from it without the caller ever running the tokenizer
+        # (see :meth:`_preprocess_decode`). The caller always passes ``text``
+        # whole at prefill; a future streaming mode will instead let the caller
+        # push ``text_tokens`` ids gradually, which is why an already-present
+        # ``text_tokens`` list is left untouched here.
+        if not info_dict.get("text_tokens"):
+            text = self._first_str(info_dict.get("text"))
+            if text:
+                info_update["text_tokens"] = self._encode_text_stream(text)
         input_ids_out = torch.full_like(input_ids, _DUMMY_TOKEN_ID)
         return input_ids_out, take, info_update
 
@@ -662,6 +688,20 @@ class EasyMagpieTTSForConditionalGeneration(
         tok = self._get_text_tokenizer()
         ids = tok.encode(context_text)
         return torch.tensor(ids, device=device, dtype=torch.long)
+
+    def _encode_text_stream(self, text: str) -> list[int]:
+        """Tokenize the target ``text`` into the streaming subword-id list.
+
+        Mirrors the reference ``tokenizer.encode(transcript) + [eos_id]``: HF
+        special tokens are disabled so the raw ids index the baked
+        ``text_embedding`` table directly, and the trailing text-EOS id closes
+        the stream. One id is consumed per decode step (see
+        :meth:`_preprocess_decode`); once exhausted the text channel is masked
+        off.
+        """
+        tok = self._get_text_tokenizer()
+        ids = tok.encode(text, add_special_tokens=False)
+        return list(ids) + [self.text_eos_id]
 
     @staticmethod
     def estimate_prompt_len(

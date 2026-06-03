@@ -867,7 +867,7 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
             time_jumps=self.state.time_indices - self.state.encoder_output_length,
         )
 
-        # NB: return an independent copy of hyps/alignments/state
+        # NB: return an independent copy of hyps/state
         # to avoid any manipulations with allocated memory outside the decoder
         return (
             self.state.batched_hyps.clone(),
@@ -1148,9 +1148,6 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
     def _before_outer_loop(self):
         """Clear state and compute initial active mask"""
         self.state.batched_hyps.clear_()
-        if self.state.alignments is not None:
-            self.state.alignments.clear_()
-
         self.state.scores.fill_(0.0)
 
         # time indices
@@ -1435,7 +1432,3 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
         self.state.batched_hyps.timestamps[:current_batch_size] += prev_batched_state.decoded_lengths[
             :current_batch_size
         ].unsqueeze(1)
-        if self.state.alignments is not None:
-            self.state.alignments.timestamps[:current_batch_size] -= prev_batched_state.decoded_lengths[
-                :current_batch_size
-            ].unsqueeze(1)

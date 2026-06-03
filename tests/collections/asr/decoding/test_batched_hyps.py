@@ -18,7 +18,8 @@ from typing import List
 import pytest
 import torch
 
-from nemo.collections.asr.parts.utils.rnnt_utils import BatchedAlignments, BatchedHyps, batched_hyps_to_hypotheses
+from nemo.collections.asr.parts.submodules.transducer_decoding.batched_hyps import BatchedHyps
+from nemo.collections.asr.parts.utils.rnnt_utils import batched_hyps_to_hypotheses
 from tests.collections.asr.decoding.utils import avoid_sync_operations
 
 DEVICES: List[torch.device] = [torch.device("cpu")]

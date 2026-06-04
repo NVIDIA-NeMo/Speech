@@ -17,8 +17,8 @@ import json
 import os
 from glob import glob
 
-import editdistance
 from joblib import Parallel, delayed
+from kaldialign import edit_distance
 from tqdm import tqdm
 
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
@@ -26,7 +26,9 @@ from nemo.utils import logging
 
 parser = argparse.ArgumentParser("Calculate metrics and filters out samples based on thresholds")
 parser.add_argument(
-    "--manifest", required=True, help="Path .json manifest file with ASR predictions saved at `pred_text` field.",
+    "--manifest",
+    required=True,
+    help="Path .json manifest file with ASR predictions saved at `pred_text` field.",
 )
 parser.add_argument(
     "--edge_len", type=int, help="Number of characters to use for CER calculation at the edges", default=5
@@ -82,14 +84,18 @@ def _calculate(line: dict, edge_len: int):
     pred_text = line["pred_text"].split()
 
     num_words = max(len(text), eps)
-    word_dist = editdistance.eval(text, pred_text)
+    word_dist = edit_distance(text, pred_text)['total']
     line["WER"] = word_dist / num_words * 100.0
     num_chars = max(len(line["text"]), eps)
-    char_dist = editdistance.eval(line["text"], line["pred_text"])
+    char_dist = edit_distance(list(line["text"]), list(line["pred_text"]))['total']
     line["CER"] = char_dist / num_chars * 100.0
 
-    line["start_CER"] = editdistance.eval(line["text"][:edge_len], line["pred_text"][:edge_len]) / edge_len * 100
-    line["end_CER"] = editdistance.eval(line["text"][-edge_len:], line["pred_text"][-edge_len:]) / edge_len * 100
+    line["start_CER"] = (
+        edit_distance(list(line["text"][:edge_len]), list(line["pred_text"][:edge_len]))['total'] / edge_len * 100
+    )
+    line["end_CER"] = (
+        edit_distance(list(line["text"][-edge_len:]), list(line["pred_text"][-edge_len:]))['total'] / edge_len * 100
+    )
     line["len_diff_ratio"] = 1.0 * abs(len(text) - len(pred_text)) / max(len(text), eps)
     return line
 
@@ -119,7 +125,7 @@ def _apply_filters(
     min_dur=1,
     original_duration=0,
 ):
-    """ Filters out samples that do not satisfy specified threshold values and saves remaining samples to manifest_out"""
+    """Filters out samples that do not satisfy specified threshold values and saves remaining samples to manifest_out"""
     remaining_duration = 0
     segmented_duration = 0
     with open(manifest, "r") as f, open(manifest_out, "w") as f_out:

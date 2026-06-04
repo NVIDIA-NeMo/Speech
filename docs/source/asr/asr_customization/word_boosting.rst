@@ -146,6 +146,104 @@ You can compute the F-score for the list of context phrases directly from the de
             --key_words_file=${CONTEXT_PHRASES_LIST}
 
 
+.. _word_boosting_per_stream:
+
+Per-Stream Phrase Boosting
+==========================
+
+Per-stream (per-utterance) phrase boosting extends GPU-PB to allow specifying different key phrases for each audio stream or utterance in a batch.
+This is useful when different utterances require different context biasing (e.g., different speaker names, product terms, or domain vocabulary per audio).
+
+Per-stream boosting is currently supported for **greedy label-looping decoding with Transducers (RNN-T, TDT)**, including cache-aware streaming models.
+
+Manifest-based Usage
+--------------------
+
+Specify per-utterance key phrases in your manifest using the ``biasing_request`` field:
+
+.. code-block:: json
+
+    {"audio_filepath": "/data/file1.wav", "text": "ground truth", "biasing_request": {"boosting_model_cfg": {"key_phrases_list": ["one phrase"]}}}
+    {"audio_filepath": "/data/file2.wav", "text": "ground truth", "biasing_request": {"boosting_model_cfg": {"key_phrases_list": ["other phrases", "and this one"]}}}
+
+Use the streaming inference script with ``use_per_stream_biasing=true``:
+
+.. code-block:: bash
+
+    python examples/asr/asr_streaming_inference/asr_streaming_infer.py \
+        --config-path="../conf/asr_streaming_inference/" \
+        --config-name=cache_aware_rnnt.yaml \
+        audio_file="<manifest_with_boosting_requests>" \
+        output_filename="result.jsonl" \
+        asr.model_name="nvidia/parakeet-rnnt-1.1b" \
+        asr.decoding.greedy.enable_per_stream_biasing=True
+
+Python API Usage
+----------------
+
+.. code-block:: python
+
+    from omegaconf import open_dict
+    from nemo.collections.asr.models import EncDecRNNTBPEModel
+    from nemo.collections.asr.parts.context_biasing.biasing_multi_model import BiasingRequestItemConfig
+    from nemo.collections.asr.parts.context_biasing.boosting_graph_batched import BoostingTreeModelConfig
+    from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
+
+    asr_model = EncDecRNNTBPEModel.from_pretrained("nvidia/parakeet-rnnt-1.1b")
+    asr_model.to("cuda")
+
+    with open_dict(asr_model.cfg.decoding):
+        asr_model.cfg.decoding.strategy = "greedy_batch"
+        asr_model.cfg.decoding.greedy.loop_labels = True
+        asr_model.cfg.decoding.greedy.enable_per_stream_biasing = True
+    asr_model.change_decoding_strategy(asr_model.cfg.decoding)
+
+    biasing_requests = [
+        BiasingRequestItemConfig(
+            boosting_model_cfg=BoostingTreeModelConfig(key_phrases_list=["one phrase"]),
+            boosting_model_alpha=2.0,
+        ),
+        None,  # no biasing for this utterance
+        BiasingRequestItemConfig(
+            boosting_model_cfg=BoostingTreeModelConfig(key_phrases_list=["other phrases"]),
+            boosting_model_alpha=1.0,
+        ),
+    ]
+
+    results = asr_model.transcribe(
+        audio=["file1.wav", "file2.wav", "file3.wav"],
+        partial_hypothesis=[
+            Hypothesis.empty_with_biasing_cfg(biasing_cfg=req) if req else None
+            for req in biasing_requests
+        ],
+        return_hypotheses=True,
+    )
+
+Caching
+-------
+
+Building a boosting model from a phrase list has some overhead. NeMo provides caching mechanisms to speed up repeated use of the same phrases:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 15 60 25
+
+   * - Strategy
+     - Description
+     - Recommended For
+   * - Memory
+     - Set ``cache_key`` on ``BiasingRequestItemConfig`` to cache compiled models in memory by a string key.
+     - Repeated phrase sets
+   * - Disk
+     - Set ``model_path`` on ``BoostingTreeModelConfig`` to save/load compiled models from disk.
+     - Persistent caching
+   * - Decoder
+     - Set ``auto_manage_multi_model=False`` and manually manage models in the decoder's multi-model.
+     - Advanced use cases
+
+With memory caching, per-stream boosting achieves near-zero overhead compared to global (shared) boosting.
+
+
 .. _word_boosting_flashlight:
 
 Flashlight-based Word Boosting

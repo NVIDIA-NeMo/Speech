@@ -119,7 +119,6 @@ dependencies:
     - docopt==0.6.2
     - docstring-parser==0.17.0
     - docutils==0.21.2
-    - editdistance==0.8.1
     - einops==0.8.1
     - einops-exts==0.0.4
     - email-validator==2.3.0
@@ -187,7 +186,6 @@ dependencies:
     - jieba==0.42.1
     - jinja2==3.1.6
     - jiter==0.11.0
-    - jiwer==3.1.0
     - jmespath==1.0.1
     - joblib==1.5.2
     - jsonlines==4.0.0
@@ -328,9 +326,6 @@ dependencies:
     - pulp==3.3.0
     - pure-eval==0.2.3
     - py-cpuinfo==9.0.0
-    - pyannote-core==5.0.0
-    - pyannote-database==5.1.3
-    - pyannote-metrics==3.2.1
     - pyarrow==21.0.0
     - pybase64==1.4.2
     - pybind11==3.0.1
@@ -442,7 +437,6 @@ dependencies:
     - tensorstore==0.1.71
     - termcolor==3.3.0
     - text-unidecode==1.3
-    - textdistance==4.6.3
     - thinc==8.3.10
     - threadpoolctl==3.6.0
     - tiktoken==0.7.0

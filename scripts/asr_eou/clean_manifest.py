@@ -28,10 +28,10 @@ python clean_manifest.py \
 import argparse
 import re
 import unicodedata
+from datetime import datetime
 from pathlib import Path
 from string import punctuation
 
-import dateutil.parser as date_parser
 from num2words import num2words
 from whisper_normalizer.english import EnglishTextNormalizer
 
@@ -214,28 +214,50 @@ def speak_number(n: int) -> str:
         return str(n)
 
 
+def _parse_numeric_date(date_str: str, *, dayfirst: bool):
+    separator = "/" if "/" in date_str else "-"
+    parts = date_str.split(separator)
+
+    if len(parts) == 3 and len(parts[0]) == 4:
+        year, month, day = [int(part) for part in parts]
+    elif len(parts) == 3:
+        first, second, year = [int(part) for part in parts]
+        day, month = (first, second) if dayfirst else (second, first)
+    elif len(parts) == 2:
+        first, second = [int(part) for part in parts]
+        year = datetime.now().year
+        day, month = (first, second) if dayfirst else (second, first)
+    else:
+        raise ValueError(date_str)
+
+    if year < 100:
+        year += 2000 if year < 69 else 1900
+
+    return datetime(year, month, day)
+
+
 def parse_with_auto_dayfirst(date_str: str):
     try:
-        # Try both ways
-        parsed_us = date_parser.parse(date_str, dayfirst=False)
-        parsed_eu = date_parser.parse(date_str, dayfirst=True)
-
-        # If one of the parses clearly makes more sense, return it
-        if parsed_us.month > 12:
-            return parsed_eu
-        if parsed_eu.month > 12:
-            return parsed_us
-
-        # If day is greater than 12, it's probably day-first
-        if parsed_us.day > 12 and parsed_eu.day <= 12:
-            return parsed_eu
-        elif parsed_eu.day > 12 and parsed_us.day <= 12:
-            return parsed_us
-
-        # Default fallback (assumes US style)
-        return parsed_us
+        parsed_us = _parse_numeric_date(date_str, dayfirst=False)
     except Exception:
-        return None
+        parsed_us = None
+
+    try:
+        parsed_eu = _parse_numeric_date(date_str, dayfirst=True)
+    except Exception:
+        parsed_eu = None
+
+    if parsed_us is None:
+        return parsed_eu
+    if parsed_eu is None:
+        return parsed_us
+
+    first = int(date_str.split("/" if "/" in date_str else "-")[0])
+    if first > 12 and len(str(first)) != 4:
+        return parsed_eu
+
+    # Default fallback assumes US style for ambiguous numeric dates.
+    return parsed_us
 
 
 def date_to_spoken_string(date_str: str) -> str:

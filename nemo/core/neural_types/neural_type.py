@@ -55,7 +55,8 @@ class NeuralType:
         """
         Args:
             axes: a tuple of AxisTypes objects representing the semantics of what varying each axis means
-            elements_type: None or ElementType; we need Any annotation here to avoid problems with TorchScript (it is checked in _init_internal)
+            elements_type: None or ElementType; we need Any annotation here to avoid problems with TorchScript
+                (it is checked in _init_internal)
             optional: If input to the port of this type can be optional (False by default).
         """
         if not torch.jit.is_scripting():
@@ -131,7 +132,7 @@ class NeuralType:
             return NeuralTypeComparisonResult.INCOMPATIBLE
 
     def compare_and_raise_error(self, parent_type_name, port_name, second_object):
-        """ Method compares definition of one type with another and raises an error if not compatible. """
+        """Method compares definition of one type with another and raises an error if not compatible."""
         if torch.jit.is_scripting():
             # suppress for TorchScript
             return

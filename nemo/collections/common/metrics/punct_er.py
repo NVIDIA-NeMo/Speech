@@ -28,19 +28,21 @@ except (ImportError, ModuleNotFoundError):
 
 
 def punctuation_error_rate(
-    references: list[str], hypotheses: list[str], punctuation_marks: list[str], punctuation_mask: str = "[PUNCT]",
+    references: list[str],
+    hypotheses: list[str],
+    punctuation_marks: list[str],
+    punctuation_mask: str = "[PUNCT]",
 ) -> None:
-
     """
     Computes Punctuation Error Rate
-    
+
     Args:
         references (list[str]) - list of references
         hypotheses (list[str]) - list of hypotheses
         punctuation_marks (list[str]) - list of punctuation marks for computing metrics
         punctuation_mask (str, by default "[PUNCT]") - mask token that will be applied to
         given punctuation marks while edit distance calculation
-        
+
     Return:
         punct_er (float) - Punctuation Error Rate
     """
@@ -72,14 +74,14 @@ class OccurancePunctuationErrorRate:
     Args to init:
         punctuation_marks (list[str]) - list of punctuation marks for computing metrics
         punctuation_mask (str, by default "[PUNCT]") - mask token that will be applied to
-        given punctuation marks while edit distance calculation 
-    
+        given punctuation marks while edit distance calculation
+
     How to use:
         1. Create object of OccurancePunctuationErrorRate class.
            Example:
                 punctuation_marks = [".", ",", "!", "?"]
                 oper_obj = OccurancePunctuationErrorRate(punctuation_marks)
-        
+
         2. To compute punctuation metrics, pass reference and hypothesis string to the "compute" method
         of created object.
             Example:
@@ -94,16 +96,16 @@ class OccurancePunctuationErrorRate:
              ',': {'Correct': 0, 'Deletions': 1, 'Insertions': 0, 'Substitutions': 0},
              '!': {'Correct': 1, 'Deletions': 0, 'Insertions': 0, 'Substitutions': 0},
              '?': {'Correct': 0, 'Deletions': 0, 'Insertions': 1, 'Substitutions': 0}}
-              
+
         2. Dict of substitutions absolute amounts between given punctuation marks:
             Example:
             {'.': {'.': 0, ',': 0, '!': 1, '?': 0},
              ',': {'.': 0, ',': 0, '!': 0, '?': 0},
              '!': {'.': 0, ',': 0, '!': 0, '?': 0},
              '?': {'.': 0, ',': 0, '!': 0, '?': 0}}
-            
+
         3. namedtuple "PunctuationRates" of punctuation operation rates (in range from 0 to 1):
-            3.1. correct_rate - overall correct rate 
+            3.1. correct_rate - overall correct rate
                 Example: correct_rate=0.25
             3.2. deletions_rate - overall deletions rate
                 Example: deletions_rate=0.25
@@ -114,14 +116,14 @@ class OccurancePunctuationErrorRate:
             3.5. punct_er - Punctuation Error Rate
                 Example: punct_er=0.75
             3.6. operation_rates - dict of operations rates for each given punctuation mark
-                Example: 
+                Example:
                 operation_rates={
                     '.': {'Correct': 0.0, 'Deletions': 0.0, 'Insertions': 0.0, 'Substitutions': 1.0},
                     ',': {'Correct': 0.0, 'Deletions': 1.0, 'Insertions': 0.0, 'Substitutions': 0.0},
                     '!': {'Correct': 1.0, 'Deletions': 0.0, 'Insertions': 0.0, 'Substitutions': 0.0},
                     '?': {'Correct': 0.0, 'Deletions': 0.0, 'Insertions': 1.0, 'Substitutions': 0.0}
                     }
-  
+
             3.7. substitution_rates - dict of substitution rates for each given punctuation mark
                 Example:
                 substitution_rates={
@@ -134,7 +136,7 @@ class OccurancePunctuationErrorRate:
 
     def __init__(self, punctuation_marks: list[str], punctuation_mask: str = "[PUNCT]") -> None:
 
-        assert len(punctuation_marks) != 0, f"List of punctuation marks is empty"
+        assert len(punctuation_marks) != 0, "List of punctuation marks is empty"
 
         self.punctuation_marks = punctuation_marks
         self.punctuation_mask = punctuation_mask
@@ -142,6 +144,7 @@ class OccurancePunctuationErrorRate:
         self.operations = ["Correct", "Deletions", "Insertions", "Substitutions"]
 
     def compute_rates(self, operation_amounts: dict, substitution_amounts: dict):
+        """Compute punctuation operation and substitution rates."""
         operation_rates = {pm: {operation: 0 for operation in self.operations} for pm in self.punctuation_marks}
         substitution_rates = {pm: {pm: 0 for pm in self.punctuation_marks} for pm in self.punctuation_marks}
 
@@ -206,6 +209,7 @@ class OccurancePunctuationErrorRate:
         return rates
 
     def compute_operation_amounts(self, reference: str, hypothesis: str):
+        """Compute punctuation operation counts between a reference and hypothesis."""
         operation_amounts = {pm: {operation: 0 for operation in self.operations} for pm in self.punctuation_marks}
         substitution_amounts = {pm: {pm: 0 for pm in self.punctuation_marks} for pm in self.punctuation_marks}
 
@@ -313,6 +317,7 @@ class OccurancePunctuationErrorRate:
         return operation_amounts, substitution_amounts
 
     def compute(self, reference: str, hypothesis: str):
+        """Compute punctuation operation counts and rates for one reference-hypothesis pair."""
         operation_amounts, substitution_amounts = self.compute_operation_amounts(reference, hypothesis)
         punctuation_rates = self.compute_rates(operation_amounts, substitution_amounts)
         return operation_amounts, substitution_amounts, punctuation_rates
@@ -320,59 +325,59 @@ class OccurancePunctuationErrorRate:
 
 class DatasetPunctuationErrorRate:
     """
-    Class for computation the total puncutation-related absolute amounts of operations and their rates 
+    Class for computation the total puncutation-related absolute amounts of operations and their rates
     in pairs of reference and hypothesis strins:
         - Absolute amounts of correct predictions, deletions, insertions
         and substitutions for each given punctuation mark
         - Rates of correct predictions, deletions, insertions
-        and substitutions for each given punctuation mark 
+        and substitutions for each given punctuation mark
         - Total rates of correct predictions, deletions, insertions
-        and substiturions in pairs of reference and hypothesis strings 
+        and substiturions in pairs of reference and hypothesis strings
         - Punctuation Error Rate
-        
+
     Args to init:
         references (list[str]) - list of references
         hypotheses (list[str]) - list of hypotheses
         punctuation_marks (list[str]) - list of punctuation marks for computing metrics
         punctuation_mask (str, by default "[PUNCT]") - mask token that will be applied to
         given punctuation marks while edit distance calculation
-        
+
     How to use:
         1. Create object of DatasetPunctuationErrorRate class.
            Example:
                 references = ["Hi, dear! Nice to see you. What's"]
-                hypotheses = ["Hi dear! Nice to see you! What's?"]                
+                hypotheses = ["Hi dear! Nice to see you! What's?"]
                 punctuation_marks = [".", ",", "!", "?"]
-                
+
                 dper_obj = DatasetPunctuationErrorRate(references, hypotheses, punctuation_marks)
-                
+
         2. To compute punctuation metrics, call the class method "compute()".
             Example:
-                dper_obj.compute() 
-                
+                dper_obj.compute()
+
     Result:
     The following atributes of class object will be updated with calculated metrics values.
     The values are available with calling the atributes:
-        
-        dper_obj.operation_rates - dict, rates of correctness and errors for each punctuation mark 
+
+        dper_obj.operation_rates - dict, rates of correctness and errors for each punctuation mark
         from `preset dper_obj.punctuation_marks` list.
-        
+
         dper_obj.substitution_rates - dict, substitution rates between puncutation marks from
         `preset dper_obj.punctuation_marks` list.
-        
-        dper_obj.correct_rate - float, total rate of correctness between provided pairs of 
+
+        dper_obj.correct_rate - float, total rate of correctness between provided pairs of
         references and hypotheses.
-        
-        dper_obj.deletions_rate - float, total rate of deletions between provided pairs of 
+
+        dper_obj.deletions_rate - float, total rate of deletions between provided pairs of
         references and hypotheses.
-        
-        dper_obj.insertions_rate - float, total rate of insertions between provided pairs of 
+
+        dper_obj.insertions_rate - float, total rate of insertions between provided pairs of
         references and hypotheses.
-        
-        dper_obj.substitutions_rate - float, total rate of substitutions between provided pairs of 
+
+        dper_obj.substitutions_rate - float, total rate of substitutions between provided pairs of
         references and hypotheses.
-        
-        dper_obj.punct_er - float, total Punctuation Error Rate between provided pairs of 
+
+        dper_obj.punct_er - float, total Punctuation Error Rate between provided pairs of
         references and hypotheses.
     """
 
@@ -406,6 +411,8 @@ class DatasetPunctuationErrorRate:
         self.punct_er = None
 
     def compute(self):
+        """Compute aggregate punctuation error rates for the dataset."""
+
         def sum_amounts(amounts_dicts: list[dict]):
             amounts = {key: {_key: 0 for _key in amounts_dicts[0][key]} for key in amounts_dicts[0].keys()}
 
@@ -438,6 +445,7 @@ class DatasetPunctuationErrorRate:
         self.punct_er = overall_rates.punct_er
 
     def reset(self):
+        """Reset accumulated punctuation error statistics."""
         self.operation_amounts = []
         self.substitution_amounts = []
         self.rates = []
@@ -451,7 +459,8 @@ class DatasetPunctuationErrorRate:
         self.punct_er = None
 
     def print(self):
-        logging.info(f'Dataset PER ' + str(round(100 * self.punct_er, 2)) + '%')
+        """Log aggregate punctuation error rates."""
+        logging.info('Dataset PER ' + str(round(100 * self.punct_er, 2)) + '%')
 
         if HAVE_TABLUATE_AND_PANDAS:
             rates_by_pm_df = pd.DataFrame(self.operation_rates) * 100

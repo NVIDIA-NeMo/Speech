@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import os
+import warnings
 from datetime import timedelta
 from typing import Any, Dict, Optional
 
@@ -23,6 +24,94 @@ import torch.distributed as dist
 from lightning.fabric.plugins.collectives.torch_collective import default_pg_timeout
 from lightning.pytorch.strategies.model_parallel import ModelParallelStrategy
 from typing_extensions import override
+
+
+# Blackwell sm_120, where TE 2.14's cuDNN fused-attention backward kernel
+# silently amplifies THD/padding_causal gradients 8x-960x per layer.
+_SM120 = (12, 0)
+
+
+def validate_parallelism_compatibility(
+    *,
+    packed_sequences: bool,
+    cp_size: int,
+    attn_backend: str,
+    nvte_fused_attn: Optional[str],
+    device_capability: Optional[tuple[int, int]],
+) -> None:
+    """Raise on known-incompatible SALMAutomodel configurations.
+
+    Catches three combinations that produce silent NaN gradients or
+    hangs at training time:
+
+    1. ``packed_sequences=False`` (BSHD) under ``cp_size > 1``: TE's
+       fused-attention CP path rejects ``padding_causal``, so the
+       right-pad mask must be dropped. With the mask dropped pad K/V
+       leak into real-token attention through the causal-only mask and
+       gradients become NaN after step 1. No supported workaround;
+       must use the THD path.
+    2. ``packed_sequences=True`` (THD) with ``attn != "te"``: the THD
+       packing emits a 2D ``[T_total, H]`` layout via TE's
+       ``thd_get_partitioned_indices`` and feeds TE varlen
+       FlashAttention. SDPA's 3D-THD path is broken in the Automodel
+       branch we depend on (transpose assumes 4D BSHD).
+    3. ``packed_sequences=True`` + ``attn="te"`` +
+       ``NVTE_FUSED_ATTN != "0"``: TE 2.14's cuDNN fused-attention
+       backward kernel produces forward outputs that match FA bit-for-bit
+       but a backward that amplifies gradients 8x-960x per layer on
+       Blackwell sm_120. Compounded across the LLM's attention stack
+       this drives gradients to ``inf`` and the optimizer to NaN. Set
+       ``NVTE_FUSED_ATTN=0`` in the launcher environment to force
+       FlashAttention dispatch.
+
+    Hard error on (1), (2), and (3)-on-sm_120; ``warnings.warn`` on
+    (3) for other architectures (the bug may not apply but we have no
+    way to be certain).
+
+    Pure function — no side effects on globals or environment, so it
+    can be unit-tested with synthetic inputs. Called from
+    :meth:`SALMAutomodel.on_fit_start` once the device mesh is wired
+    up.
+    """
+    # Case 1: BSHD + CP > 1 — hard incompatibility.
+    if not packed_sequences and cp_size > 1:
+        raise ValueError(
+            "SALMAutomodel: BSHD (model.packed_sequences=false) is incompatible "
+            f"with cp_size > 1 (got cp_size={cp_size}). TE's fused-attention CP path "
+            "rejects ``padding_causal``, so the right-pad mask is dropped before the "
+            "LLM, which lets pad K/V leak into real-token attention through the "
+            "causal mask and produces NaN gradients after step 1. "
+            "Set ``model.packed_sequences: true`` to use the THD path under CP "
+            "(see docs/source/speechlm2/training_and_scaling.rst)."
+        )
+
+    if packed_sequences:
+        # Case 2: THD path requires TE attention (SDPA THD is broken upstream).
+        if attn_backend != "te":
+            raise ValueError(
+                "SALMAutomodel: THD (model.packed_sequences=true) requires "
+                "``model.automodel_backend.attn=te``; "
+                f"got ``attn={attn_backend!r}``. SDPA's THD code path in the "
+                "Automodel branch transposes assuming 4D BSHD inputs and breaks "
+                "for the 2D [T_total, H] THD layout."
+            )
+
+        # Case 3: THD + TE attention without NVTE_FUSED_ATTN=0.
+        if nvte_fused_attn != "0":
+            msg = (
+                "SALMAutomodel: ``packed_sequences=true`` with ``attn=te`` and "
+                "``NVTE_FUSED_ATTN`` not set to ``\"0\"`` (got "
+                f"{nvte_fused_attn!r}). TE 2.14's cuDNN fused-attention "
+                "backward kernel amplifies THD/padding_causal gradients "
+                "8x-960x per layer on Blackwell sm_120; the resulting ``inf`` "
+                "gradients drive the optimizer to NaN. Set "
+                "``NVTE_FUSED_ATTN=0`` in the launcher environment to force "
+                "FlashAttention dispatch (requires ``flash-attn`` installed "
+                "for your GPU arch)."
+            )
+            if device_capability == _SM120:
+                raise ValueError(msg)
+            warnings.warn(msg, stacklevel=2)
 
 
 def setup_distributed(
@@ -34,6 +123,8 @@ def setup_distributed(
     dp_replicate_size: int | None = None,
     distributed_config=None,
     moe_config=None,
+    activation_checkpointing_llm: bool = False,
+    activation_checkpointing_perception: bool = False,
     backend: str = "nccl",
 ) -> AutomodelParallelStrategy:
     """Initialize torch.distributed, set CUDA device, and create a device mesh.
@@ -59,6 +150,8 @@ def setup_distributed(
         dp_replicate_size=dp_replicate_size,
         distributed_config=distributed_config,
         moe_config=moe_config,
+        activation_checkpointing_llm=activation_checkpointing_llm,
+        activation_checkpointing_perception=activation_checkpointing_perception,
     )
     strategy.create_device_mesh()
     return strategy
@@ -70,7 +163,7 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
 
     This is a drop-in replacement for ``ModelParallelStrategy`` that delegates
     device mesh creation to
-    ``nemo_automodel.components.distributed.device_mesh.create_device_mesh``.
+    ``nemo_automodel.components.distributed.mesh_utils.create_device_mesh``.
 
     The resulting device mesh has dimensions ``(pp, dp_replicate, dp_shard, cp, tp)``
     with flattened submeshes ``dp``, ``dp_shard_cp``, and ``dp_cp``.
@@ -90,6 +183,14 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
         distributed_config: An ``FSDP2Config`` (or ``MegatronFSDPConfig``/``DDPConfig``)
             from nemo_automodel. If None, a default ``FSDP2Config()`` is created.
         moe_config: An ``MoEParallelizerConfig`` from nemo_automodel. Optional.
+        activation_checkpointing_llm: Enable activation checkpointing for LLM
+            transformer blocks. When True, this single knob covers both paths:
+            FSDP2 AC (by forcing ``FSDP2Config.activation_checkpointing=True``)
+            and the EP/MoE parallelizer AC (``MoEParallelizerConfig`` has no
+            such field; the EP parallelizer reads it as a separate runtime arg).
+        activation_checkpointing_perception: Enable activation checkpointing
+            for the perception encoder's transformer layers (applied with
+            ``checkpoint_wrapper`` before FSDP2 sharding).
         save_distributed_checkpoint: If True, each rank saves its shard of weights
             and optimizer states. If False, full state is assembled on rank 0.
         process_group_backend: Distributed backend (e.g. ``"nccl"``).
@@ -106,6 +207,8 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
         ep_size: int = 1,
         distributed_config=None,
         moe_config=None,
+        activation_checkpointing_llm: bool = False,
+        activation_checkpointing_perception: bool = False,
         save_distributed_checkpoint: bool = True,
         process_group_backend: Optional[str] = None,
         timeout: Optional[timedelta] = default_pg_timeout,
@@ -127,6 +230,8 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
         self._ep_size = ep_size
         self._distributed_config = distributed_config
         self._moe_config = moe_config
+        self._activation_checkpointing_llm = activation_checkpointing_llm
+        self._activation_checkpointing_perception = activation_checkpointing_perception
         self._moe_mesh = None
 
     @property
@@ -144,6 +249,19 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
         """The nemo_automodel MoE configuration."""
         return self._moe_config
 
+    @property
+    def activation_checkpointing_llm(self) -> bool:
+        """Whether activation checkpointing is enabled for the LLM.
+
+        Covers both FSDP2 AC and EP/MoE AC paths.
+        """
+        return self._activation_checkpointing_llm
+
+    @property
+    def activation_checkpointing_perception(self) -> bool:
+        """Whether activation checkpointing is enabled for the perception encoder."""
+        return self._activation_checkpointing_perception
+
     def create_device_mesh(self):
         """Create the device mesh from the configured parallelism sizes.
 
@@ -156,7 +274,7 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
             Tuple of ``(device_mesh, moe_mesh)``.
         """
         from nemo_automodel.components.distributed.config import FSDP2Config
-        from nemo_automodel.components.distributed.device_mesh import create_device_mesh
+        from nemo_automodel.components.distributed.mesh_utils import create_device_mesh
 
         if self._distributed_config is None:
             self._distributed_config = FSDP2Config()

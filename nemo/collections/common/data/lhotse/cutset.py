@@ -476,6 +476,13 @@ def count_input_cfg_levels(config: Union[DictConfig, dict]) -> int:
     the same temperature (due to propagate_attrs.copy()), we count max depth,
     not total occurrences.
 
+    String/Path values for ``input_cfg`` are treated as file references (mirroring
+    :func:`parse_and_combine_datasets`) and loaded so that nested ``input_cfg``
+    keys inside those files are counted.  If the file is not found (e.g. the
+    path contains unresolved OmegaConf interpolations such as
+    ``${oc.env:MANIFEST_ROOT}``), it is conservatively counted as one additional
+    level.  All other I/O or parsing errors propagate immediately.
+
     Args:
         config: Configuration dictionary that may contain nested 'input_cfg' keys.
 
@@ -493,13 +500,35 @@ def count_input_cfg_levels(config: Union[DictConfig, dict]) -> int:
         2
     """
 
+    _cache: dict[str, object] = {}
+
+    def _resolve_if_path(val):
+        """If *val* is a string/Path, load the YAML file it points to.
+
+        Raises on I/O or parse errors except ``FileNotFoundError``, which is
+        expected when the path contains OmegaConf interpolations (e.g.
+        ``${oc.env:MANIFEST_ROOT}/file.yaml``) that raw ``yaml.load`` returns
+        as literal strings.  ``parse_and_combine_datasets`` resolves them at
+        runtime via ``OmegaConf.create()``.
+        """
+        if isinstance(val, (str, Path)):
+            key = str(val)
+            if key not in _cache:
+                try:
+                    _cache[key] = load_yaml(key)
+                except FileNotFoundError:
+                    logging.debug("count_input_cfg_levels: could not load %r, treating as leaf", key)
+                    _cache[key] = val
+            return _cache[key]
+        return val
+
     def _max_depth(obj) -> int:
         if isinstance(obj, (dict, DictConfig)):
             depths = []
             for key, val in obj.items():
                 if key == "input_cfg":
-                    # Found input_cfg: this level counts as 1 + max depth of children
-                    depths.append(1 + _max_depth(val))
+                    resolved = _resolve_if_path(val)
+                    depths.append(1 + _max_depth(resolved))
                 else:
                     depths.append(_max_depth(val))
             return max(depths, default=0)

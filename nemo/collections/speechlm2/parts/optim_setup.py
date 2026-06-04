@@ -220,6 +220,14 @@ def freeze_and_subset(
 
     trainable, nontrainable = 0, 0
     for name, param in named_parameters:
+        # Honor module-level freezing (e.g. ConformerMultiLayerFeatureExtractor freezes tail
+        # layers in its __init__). Without this guard, a param with ``requires_grad=False`` that
+        # no exclude regex matches would still be yielded into the optimizer — the optimizer
+        # would then synthesize empty state for it at DCP load, causing "Missing key in
+        # checkpoint state_dict" since the saved checkpoint has no state for never-trained params.
+        if not param.requires_grad:
+            nontrainable += param.numel()
+            continue
         discard = False
         if _exclude(name) and not _must_keep(name):
             param.requires_grad = False

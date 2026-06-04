@@ -44,8 +44,7 @@ python aligner_heteronym_disambiguation.py \
 
 
 def get_args():
-    """Retrieve arguments for disambiguation.
-    """
+    """Retrieve arguments for disambiguation."""
     parser = argparse.ArgumentParser("G2P disambiguation using Aligner input embedding distances.")
     # TODO(jocelynh): Make this required=False with default download from NGC once ckpt uploaded
     parser.add_argument('--model', required=True, type=str, help="Path to Aligner model checkpoint (.nemo file).")
@@ -85,8 +84,7 @@ def get_args():
 
 
 def load_and_prepare_audio(aligner, audio_path, target_sr, device):
-    """Loads and resamples audio to target sample rate (if necessary), and preprocesses for Aligner input.
-    """
+    """Loads and resamples audio to target sample rate (if necessary), and preprocesses for Aligner input."""
     # Load audio and get length for preprocessing
     audio_data, orig_sr = sf.read(audio_path)
     if orig_sr != target_sr:
@@ -238,8 +236,7 @@ def disambiguate_candidates(aligner, text, spec, spec_len, confidence, device, h
 def disambiguate_dataset(
     aligner, manifest_path, out_path, sr, heteronyms, confidence, device, verbose, heteronyms_only=True
 ):
-    """Disambiguates the phonemes for all words with ambiguous pronunciations in the given manifest.
-    """
+    """Disambiguates the phonemes for all words with ambiguous pronunciations in the given manifest."""
     log_file = open('disambiguation_logs.txt', 'w') if verbose else None
 
     with open(out_path, 'w') as f_out:

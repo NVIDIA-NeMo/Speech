@@ -15,8 +15,8 @@
 
 """
 # This script would evaluate an N-gram language model trained with KenLM library (https://github.com/kpu/kenlm) in
-# fusion with beam search decoders on top of a trained ASR model with CTC decoder. To evaluate a model with 
-# Transducer (RNN-T) decoder use another script 'scripts/asr_language_modeling/ngram_lm/eval_beamsearch_ngram_transducer.py'. 
+# fusion with beam search decoders on top of a trained ASR model with CTC decoder. To evaluate a model with
+# Transducer (RNN-T) decoder use another script 'scripts/asr_language_modeling/ngram_lm/eval_beamsearch_ngram_transducer.py'.
 # NeMo's beam search decoders are capable of using the KenLM's N-gram models
 # to find the best candidates. This script supports both character level and BPE level
 # encodings and models which is detected automatically from the type of the model.
@@ -59,14 +59,14 @@ For grid search, you can provide a list of arguments as follows -
 import contextlib
 import json
 import os
-import pickle
 from dataclasses import dataclass, field, is_dataclass
 from pathlib import Path
 from typing import List, Optional
 
-import editdistance
+import msgpack
 import numpy as np
 import torch
+from kaldialign import edit_distance
 from omegaconf import MISSING, OmegaConf
 from sklearn.model_selection import ParameterGrid
 from tqdm.auto import tqdm
@@ -77,7 +77,6 @@ from nemo.collections.asr.parts.submodules import ctc_beam_decoding
 from nemo.collections.asr.parts.utils.transcribe_utils import PunctuationCapitalization, TextProcessingConfig
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
-
 
 # fmt: off
 
@@ -113,7 +112,7 @@ class EvalBeamSearchNGramConfig:
 
     decoding_strategy: str = "beam"
     decoding: ctc_beam_decoding.BeamCTCInferConfig = field(default_factory=lambda: ctc_beam_decoding.BeamCTCInferConfig(beam_size=128))
-    
+
     text_processing: Optional[TextProcessingConfig] = field(default_factory=lambda: TextProcessingConfig(
         punctuation_marks = ".,?",
         separate_punctuation = False,
@@ -196,9 +195,9 @@ def beam_search_eval(
             pred_text = apply_text_processing(punctuation_capitalization, cfg, candidate.text)
 
             pred_split_w = pred_text.split()
-            wer_dist = editdistance.eval(target_split_w, pred_split_w)
+            wer_dist = edit_distance(target_split_w, pred_split_w)['total']
             pred_split_c = list(pred_text)
-            cer_dist = editdistance.eval(target_split_c, pred_split_c)
+            cer_dist = edit_distance(target_split_c, pred_split_c)['total']
 
             wer_dist_min = min(wer_dist_min, wer_dist)
             cer_dist_min = min(cer_dist_min, cer_dist)
@@ -278,10 +277,10 @@ def main(cfg: EvalBeamSearchNGramConfig):
     target_transcripts = apply_text_processing(punctuation_capitalization, cfg, target_transcripts)
 
     if cfg.hyps_cache_file and os.path.exists(cfg.hyps_cache_file):
-        logging.info(f"Found a pickle file of hypotheses at '{cfg.hyps_cache_file}'.")
-        logging.info(f"Loading the cached pickle file of hypotheses from '{cfg.hyps_cache_file}' ...")
+        logging.info(f"Found a cached file of hypotheses at '{cfg.hyps_cache_file}'.")
+        logging.info(f"Loading the cached file of hypotheses from '{cfg.hyps_cache_file}' ...")
         with open(cfg.hyps_cache_file, 'rb') as probs_file:
-            all_hyps = pickle.load(probs_file)
+            all_hyps = msgpack.load(probs_file)
 
         if len(all_hyps) != len(audio_file_paths):
             raise ValueError(
@@ -298,9 +297,9 @@ def main(cfg: EvalBeamSearchNGramConfig):
 
         if cfg.hyps_cache_file:
             os.makedirs(os.path.split(cfg.hyps_cache_file)[0], exist_ok=True)
-            logging.info(f"Writing pickle files of hypotheses at '{cfg.hyps_cache_file}'...")
+            logging.info(f"Writing cached files of hypotheses at '{cfg.hyps_cache_file}'...")
             with open(cfg.hyps_cache_file, 'wb') as f_dump:
-                pickle.dump(all_hyps, f_dump)
+                msgpack.dump(all_hyps, f_dump)
 
     wer_dist_greedy = 0
     cer_dist_greedy = 0
@@ -314,8 +313,8 @@ def main(cfg: EvalBeamSearchNGramConfig):
         pred_split_c = list(pred_text)
         target_split_c = list(target_transcripts[batch_idx])
 
-        wer_dist = editdistance.eval(target_split_w, pred_split_w)
-        cer_dist = editdistance.eval(target_split_c, pred_split_c)
+        wer_dist = edit_distance(target_split_w, pred_split_w)['total']
+        cer_dist = edit_distance(target_split_c, pred_split_c)['total']
 
         wer_dist_greedy += wer_dist
         cer_dist_greedy += cer_dist

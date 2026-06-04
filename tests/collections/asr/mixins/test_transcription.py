@@ -537,7 +537,9 @@ class TestTranscriptionMixin:
     def test_timestamps_with_transcribe_hybrid_prompt(self, audio_files, hybrid_rnnt_ctc_bpe_model_with_prompt):
         audio1, audio2 = audio_files
 
-        output = hybrid_rnnt_ctc_bpe_model_with_prompt.transcribe([audio1, audio2], timestamps=True)
+        output = hybrid_rnnt_ctc_bpe_model_with_prompt.transcribe(
+            [audio1, audio2], timestamps=True, target_lang="en-US"
+        )
 
         # check len of output
         assert len(output) == 2

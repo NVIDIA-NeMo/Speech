@@ -52,6 +52,7 @@ class AxisKind(AxisKindAbstract):
         return str(self.name).lower()
 
     def t_with_string(self, text):
+        """Check whether a dynamic time-axis label matches this axis kind."""
         # it checks if text is "t_<any string>"
         return text.startswith("t_") and text.endswith("_") and text[2:-1] == self.__str__()
 
@@ -83,11 +84,11 @@ class AxisKind(AxisKindAbstract):
 
 class AxisType(object):
     """This class represents axis semantics and (optionally) it's dimensionality
-       Args:
-           kind (AxisKindAbstract): what kind of axis it is? For example Batch, Height, etc.
-           size (int, optional): specify if the axis should have a fixed size. By default it is set to None and you
-           typically do not want to set it for Batch and Time
-           is_list (bool, default=False): whether this is a list or a tensor axis
+    Args:
+        kind (AxisKindAbstract): what kind of axis it is? For example Batch, Height, etc.
+        size (int, optional): specify if the axis should have a fixed size. By default it is set to None and you
+        typically do not want to set it for Batch and Time
+        is_list (bool, default=False): whether this is a list or a tensor axis
     """
 
     def __init__(self, kind: AxisKindAbstract, size: Optional[int] = None, is_list=False):

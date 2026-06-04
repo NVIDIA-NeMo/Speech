@@ -18,11 +18,9 @@
 """Setup for pip package."""
 
 import importlib.util
-import os
 import subprocess
 from distutils import cmd as distutils_cmd
 from distutils import log as distutils_log
-from itertools import chain
 
 import setuptools
 
@@ -46,96 +44,6 @@ __version__ = package_info.__version__
 with open("README.md", "r", encoding='utf-8') as fh:
     long_description = fh.read()
     long_description_content_type = "text/markdown"
-
-
-###############################################################################
-#                             Dependency Loading                              #
-# %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% #
-
-
-def req_file(filename, folder="requirements"):
-    files = [filename] if not isinstance(filename, list) else filename
-    ans = []
-    for file in files:
-        with open(os.path.join(folder, file), encoding='utf-8') as f:
-            ans.extend(list(map(str.strip, f.readlines())))
-    return ans
-
-
-install_requires = req_file("requirements.txt")
-
-extras_require = {
-    # User packages
-    'test': req_file("requirements_test.txt"),
-    'run': req_file("requirements_run.txt"),
-    # Lightning Collections Packages
-    'core': req_file(["requirements_lightning.txt"]),
-    'lightning': req_file(["requirements_lightning.txt"]),
-    'common-only': req_file('requirements_common.txt'),
-    # domain packages
-    'asr-only': req_file("requirements_asr.txt"),
-    'tts': req_file("requirements_tts.txt"),
-    'slu': req_file("requirements_slu.txt"),
-    'audio': req_file("requirements_audio.txt"),
-    'speechlm2-only': req_file("requirements_speechlm2.txt"),
-}
-
-
-extras_require['all'] = list(chain(val for key, val in extras_require.items()))
-
-# CUDA version extras (not included in 'all' - user must explicitly select)
-extras_require['cu12'] = req_file("requirements_cu12.txt")
-extras_require['cu13'] = req_file("requirements_cu13.txt")
-
-# Add lightning requirements as needed
-extras_require['common'] = extras_require['common-only']
-
-extras_require['common'] = list(
-    chain(
-        extras_require['common'],
-        extras_require['core'],
-    )
-)
-extras_require['test'] = list(
-    chain(
-        extras_require['test'],
-        extras_require['tts'],
-        extras_require['common'],
-    )
-)
-extras_require['asr'] = extras_require['asr-only']
-extras_require['asr'] = list(
-    chain(
-        extras_require['asr'],
-        extras_require['common'],
-    )
-)
-extras_require['tts'] = list(
-    chain(
-        extras_require['tts'],
-        extras_require['asr'],
-        extras_require['common'],
-    )
-)
-extras_require['audio'] = list(
-    chain(
-        extras_require['audio'],
-        extras_require['common'],
-    )
-)
-extras_require['slu'] = list(
-    chain(
-        extras_require['slu'],
-        extras_require['asr'],
-    )
-)
-extras_require['speechlm2'] = list(
-    chain(
-        extras_require['speechlm2-only'],
-        extras_require['asr'],
-        extras_require['tts'],
-    )
-)
 
 
 ###############################################################################
@@ -265,12 +173,6 @@ setuptools.setup(
     ],
     packages=setuptools.find_packages(),
     python_requires='>=3.10',
-    install_requires=install_requires,
-    # List additional groups of dependencies here (e.g. development
-    # dependencies). You can install these using the following syntax,
-    # $ pip install -e ".[all]"
-    # $ pip install nemo_toolkit[all]
-    extras_require=extras_require,
     # Add in any packaged data.
     include_package_data=True,
     exclude=['tools', 'tests'],

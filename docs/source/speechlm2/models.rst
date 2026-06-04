@@ -77,6 +77,13 @@ Key differences from SALM:
 * **Embedding stays in LLM**: Unlike SALM (which moves ``embed_tokens`` out of the
   LLM to avoid FSDP/TP hook issues), SALMAutomodel keeps embeddings inside the LLM
   and uses ``F.embedding`` with explicit DTensor handling.
+* **Encoder chunking**: Long audio inputs can be split into fixed-duration chunks
+  for the speech encoder, batched through the perception forward, and concatenated
+  back into one embedding sequence before the LLM forward. This is controlled by
+  ``model.encoder_chunk_size_seconds`` in ``salm_automodel.yaml``; set it to
+  ``null`` to encode each audio row directly. The same knob is also available in
+  ``SALM`` via ``model.encoder_chunk_size_seconds`` in ``salm.yaml`` (defaults to
+  ``null`` there to preserve existing behavior).
 
 SALMAutomodel is particularly useful for:
 
@@ -331,4 +338,4 @@ Model Configuration
 
 All models in this collection use a configuration-based approach, where a YAML configuration file specifies the model architecture, components, and training parameters. See the :doc:`configurations documentation <configs>` for details on these configuration files.
 
-For information about scaling and training these models at scale, see the :doc:`training and scaling documentation <training_and_scaling>`. 
+For information about scaling and training these models at scale, see the :doc:`training and scaling documentation <training_and_scaling>`.

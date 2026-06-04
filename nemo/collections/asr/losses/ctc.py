@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import torch
 from torch import nn
 
 from nemo.core.classes import Serialization, Typing, typecheck
@@ -25,8 +24,7 @@ __all__ = ['CTCLoss']
 class CTCLoss(nn.CTCLoss, Serialization, Typing):
     @property
     def input_types(self):
-        """Input types definitions for CTCLoss.
-        """
+        """Input types definitions for CTCLoss."""
         return {
             "log_probs": NeuralType(('B', 'T', 'D'), LogprobsType()),
             "targets": NeuralType(('B', 'T'), LabelsType()),

@@ -30,6 +30,7 @@ from typing import Any, Optional
 import torch
 from torch import Tensor
 
+from nemo.collections.speechlm2.parts.fp8 import maybe_pad_thd_padded_lengths_for_te_fp8, validate_te_fp8_hidden_size
 from nemo.collections.speechlm2.parts.input_utils import _unpad_inputs
 
 
@@ -43,6 +44,7 @@ def pack_audio_into_text_embeds(
     cp_size: int = 1,
     tp_size: int = 1,
     ignore_index: int = -100,
+    te_fp8_config: Any = None,
 ) -> dict[str, Tensor]:
     """Splice audio frames into per-utterance text embeddings and pack into THD.
 
@@ -70,6 +72,11 @@ def pack_audio_into_text_embeds(
                          ``2 * cp_size`` per-utterance alignment.
         ignore_index:    label fill for audio-frame slots, padding slots, and
                          the last position of every utterance.
+        te_fp8_config:   Optional ``automodel_backend.te_fp8`` config. When
+                         Transformer Engine FP8 is enabled, the final THD
+                         lengths are additionally padded before CP sharding so
+                         every rank's local TE Linear input satisfies FP8 GEMM
+                         alignment.
 
     Returns a dict with:
 
@@ -88,6 +95,7 @@ def pack_audio_into_text_embeds(
     H = embeds.shape[-1]
     device = embeds.device
     dtype = embeds.dtype
+    validate_te_fp8_hidden_size(te_fp8_config, H)
 
     # Strip left-padding so per-utt sequences are tight before splicing.
     ids_unpad, embs_unpad, tgts_unpad = _unpad_inputs(input_ids, embeds, target_ids, padding_id)
@@ -162,6 +170,13 @@ def pack_audio_into_text_embeds(
             rem = total_len % tp_size
             if rem != 0:
                 padded_lens[-1] += tp_size - rem
+
+    padded_lens = maybe_pad_thd_padded_lengths_for_te_fp8(
+        te_fp8_config,
+        padded_lens,
+        cp_size=cp_size,
+        tp_size=tp_size,
+    )
 
     # Materialize the flat THD batch.
     flat_emb_segs: list[Tensor] = []
@@ -243,6 +258,7 @@ def prepare_packed_llm_inputs(
     padding_id: int,
     placeholder_id: int,
     device_mesh: Optional[Any] = None,
+    te_fp8_config: Any = None,
 ) -> dict[str, Any]:
     """Pack a SALM minibatch and (optionally) shard it across CP ranks.
 
@@ -282,6 +298,7 @@ def prepare_packed_llm_inputs(
         placeholder_id=placeholder_id,
         cp_size=cp_size,
         tp_size=tp_size,
+        te_fp8_config=te_fp8_config,
     )
 
     if cp_mesh is not None:

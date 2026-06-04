@@ -31,6 +31,15 @@ from nemo.collections.speechlm2.data.salm_dataset import left_collate_vectors
 from nemo.collections.speechlm2.models.salm import _resolve_audios_in_prompt, replace_placeholders_and_build_targets
 from nemo.collections.speechlm2.parts.automodel_lora import ensure_lora_trainable, make_peft_config, maybe_install_lora
 from nemo.collections.speechlm2.parts.encoder_chunking import encode_audio_with_optional_chunking
+from nemo.collections.speechlm2.parts.fp8 import (
+    make_fp8_config,
+    maybe_apply_te_patches,
+    maybe_pad_bshd_inputs_for_te_fp8,
+    maybe_precompute_float8_dynamic_scale_for_fsdp,
+    te_fp8_context,
+    trim_fp8_padded_logits,
+    validate_fp8_config,
+)
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
 from nemo.collections.speechlm2.parts.optim_setup import configure_optimizers, is_frozen
 from nemo.collections.speechlm2.parts.pretrained import (
@@ -166,19 +175,30 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         # (the THD shape mirrors Automodel's _shard_thd_chunk_for_te output —
         # the model squeezes 3D inputs internally when qkv_format=="thd", so
         # passing 2D directly skips that hop)
-        out = self.llm(
-            inputs_embeds=input_embeds,
-            attention_mask=attention_mask,
-            past_key_values=cache,
-            use_cache=cache is not None,
-            return_dict=True,
-            **llm_kwargs,
-        )
+        automodel_backend_config = self.cfg.get("automodel_backend", None)
+        te_fp8_config = (automodel_backend_config or {}).get("te_fp8", None)
+        original_seq_len = input_embeds.shape[1] if input_embeds.dim() == 3 else input_embeds.shape[0]
+        if cache is None and llm_kwargs.get("qkv_format", None) != "thd":
+            input_embeds, attention_mask, llm_kwargs, original_seq_len = maybe_pad_bshd_inputs_for_te_fp8(
+                te_fp8_config,
+                input_embeds,
+                attention_mask,
+                llm_kwargs,
+            )
+        with te_fp8_context(automodel_backend_config):
+            out = self.llm(
+                inputs_embeds=input_embeds,
+                attention_mask=attention_mask,
+                past_key_values=cache,
+                use_cache=cache is not None,
+                return_dict=True,
+                **llm_kwargs,
+            )
         if not isinstance(out, dict):
             # NeMo Automodel doesn't respect return_dict=True yet
-            ans = {"logits": out}
+            ans = {"logits": trim_fp8_padded_logits(out, original_seq_len)}
         else:
-            ans = {"logits": out['logits']}  # (B, T, text_vocab_size)
+            ans = {"logits": trim_fp8_padded_logits(out['logits'], original_seq_len)}  # (B, T, text_vocab_size)
             if cache is not None:
                 ans["cache"] = out["past_key_values"]
         return ans
@@ -218,6 +238,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         if self.cfg.get("packed_sequences", False):
             from nemo.collections.speechlm2.parts.packed_sequences import prepare_packed_llm_inputs
 
+            automodel_backend_config = self.cfg.get("automodel_backend", None)
             return prepare_packed_llm_inputs(
                 input_ids=batch["input_ids"],
                 text_embs=text_embs,
@@ -226,6 +247,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 padding_id=self.text_pad_id,
                 placeholder_id=self.audio_locator_tag_id,
                 device_mesh=getattr(self, "_device_mesh", None),
+                te_fp8_config=(automodel_backend_config or {}).get("te_fp8", None),
             )
 
         input_embs, target_ids, attention_mask = replace_placeholders_and_build_targets(
@@ -440,8 +462,16 @@ class SALMAutomodel(LightningModule, HFHubMixin):
 
     def backward(self, *args, **kwargs):
         self._setup_moe_fsdp_sync()
-        with loss_parallel():
+        with loss_parallel(), te_fp8_context(self.cfg.get("automodel_backend", None)):
             super().backward(*args, **kwargs)
+
+    def on_before_zero_grad(self, optimizer) -> None:
+        maybe_precompute_float8_dynamic_scale_for_fsdp(
+            self.cfg,
+            self.llm,
+            getattr(self, "_device_mesh", None),
+            self._use_fsdp,
+        )
 
     def _setup_moe_fsdp_sync(self):
         """Configure MoE FSDP gradient sync for gradient accumulation.
@@ -751,6 +781,10 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         activation_checkpointing_llm: bool | None = None,
         activation_checkpointing_perception: bool | None = None,
     ) -> None:
+        validate_fp8_config(self.cfg)
+        automodel_backend_config = self.cfg.get("automodel_backend", None)
+        maybe_apply_te_patches(automodel_backend_config)
+
         # Use provided device_mesh, or fall back to LightningModule property
         if device_mesh is not None:
             self._device_mesh = device_mesh
@@ -828,9 +862,13 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             compile_dict = dict(compile_cfg)
             automodel_kwargs["compile_config"] = CompileConfig(**compile_dict)
 
+        fp8_config = make_fp8_config(self.cfg)
+        if fp8_config is not None:
+            automodel_kwargs["fp8_config"] = fp8_config
+
         # Pass backend through to automodel — lets YAML pick attn/linear/rms_norm/MoE
         # dispatcher backends (e.g. set attn=sdpa to bypass TransformerEngine).
-        backend_cfg = self.cfg.get("automodel_backend", None)
+        backend_cfg = automodel_backend_config
         if backend_cfg is not None:
             from nemo_automodel.components.models.common import BackendConfig
 

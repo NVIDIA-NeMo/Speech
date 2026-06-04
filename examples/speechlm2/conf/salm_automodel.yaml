@@ -73,16 +73,30 @@ model:
   #   backend: null           # Compilation backend (null = inductor)
   #   dynamo_cache_size_limit: 256  # Triton compilation cache limit
 
+  # TorchAO FP8 training. This is separate from Transformer Engine FP8 below;
+  # configure only one FP8 mode at a time. TorchAO FP8 should be paired with
+  # torch.compile for speedup and requires Hopper-class GPUs unless emulate=true.
+  # fp8:
+  #   enabled: true
+  #   recipe_name: tensorwise  # "tensorwise" | "rowwise" | "rowwise_with_gw_hp"
+  #   enable_fsdp_float8_all_gather: true
+  #   precompute_float8_dynamic_scale_for_fsdp: true
+  #   force_recompute_fp8_weight_in_bwd: true
+  #   filter_fqns: ["lm_head"]
+  #   emulate: false
+
   # Automodel backend dispatch. Selects the kernel/backend for each major module
   # in the LLM (attention, linear, rms_norm, MoE experts/dispatcher). Defaults
   # come from Automodel's BackendConfig and auto-select TE/DeepEP when available;
   # override here to pin a specific backend (e.g. attn=sdpa to bypass TE).
+  # For Hopper MoE FP8 training, prefer Transformer Engine FP8 by using TE
+  # linear/expert backends and setting te_fp8. Do not combine with model.fp8.
   # automodel_backend:
   #   attn: te                  # "te" | "sdpa" | "flex"
   #   linear: te                # "torch" | "te"
   #   rms_norm: torch_fp32      # "torch" | "torch_fp32" | "te"
   #   rope_fusion: true         # Fused RoPE (requires TE)
-  #   experts: torch_mm         # MoE expert GEMM: "torch" | "te" | "gmm" | "torch_mm"
+  #   experts: te               # MoE expert GEMM: "torch" | "te" | "gmm" | "torch_mm"
   #   dispatcher: deepep        # MoE token dispatcher: "torch" | "deepep" | "hybridep" | "uccl_ep"
   #   dispatcher_num_sms: 20    # SM count for DeepEP/UCCL-EP kernels
   #   fake_balanced_gate: false # Replace learned Gate with balanced fake gate (debug/bench)
@@ -90,8 +104,8 @@ model:
   #   enable_hf_state_dict_adapter: true
   #   enable_fsdp_optimizations: false
   #   gate_precision: null      # e.g. "float32" to force fp32 gate compute
-  #   te_fp8: null              # {recipe: "current"} or {recipe: "block"} to enable TE FP8
-  #                             # (requires linear=te or experts=te)
+  #   te_fp8:
+  #     recipe: block           # "current" or "block"; requires linear=te or experts=te
 
   # Pin the SDPA kernel list used when automodel_backend.attn=sdpa. Accepts
   # strings from: "flash_attention", "efficient_attention", "math", "cudnn_attention".

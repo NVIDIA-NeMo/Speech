@@ -12,11 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
+from contextlib import contextmanager
 
 import pytest
 import torch
 from lhotse import CutSet, SupervisionSegment
 from lhotse.testing.dummies import dummy_cut, dummy_recording
+from omegaconf import DictConfig
 from transformers import GenerationConfig
 
 from nemo.collections.common.data.lhotse import NeMoMultimodalConversation
@@ -35,6 +37,21 @@ requires_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="SALMAu
 
 if torch.cuda.is_available():
     torch.set_default_device('cuda')
+
+
+def is_te_fp8_runtime_available():
+    if not torch.cuda.is_available():
+        return False
+    try:
+        import nemo_automodel  # noqa: F401
+        import transformer_engine.pytorch  # noqa: F401
+        from transformer_engine.common.recipe import Float8BlockScaling  # noqa: F401
+        from transformer_engine.pytorch.quantization import autocast  # noqa: F401
+    except Exception:
+        return False
+
+    capability = torch.cuda.get_device_capability()
+    return capability[0] >= 9
 
 
 def resolve_pretrained_models():
@@ -57,17 +74,46 @@ PROMPT = "qwen"
 
 
 @pytest.fixture(scope="session")
-def model():
+def tiny_nemotronh_model_dir(tmp_path_factory):
+    from transformers import NemotronHConfig
+
+    model_dir = tmp_path_factory.mktemp("tiny_nemotronh")
+    config = NemotronHConfig(
+        vocab_size=200000,
+        hidden_size=256,
+        num_hidden_layers=2,
+        layers_block_type=["attention", "attention"],
+        num_attention_heads=8,
+        num_key_value_heads=2,
+        head_dim=32,
+        max_position_embeddings=2048,
+        intermediate_size=512,
+        mlp_hidden_act="relu2",
+        mlp_bias=False,
+        layer_norm_epsilon=1e-5,
+        tie_word_embeddings=False,
+        use_mamba_kernels=False,
+    )
+    config.architectures = ["NemotronHForCausalLM"]
+    config.save_pretrained(model_dir)
+    return str(model_dir)
+
+
+@pytest.fixture(scope="session")
+def model(tiny_nemotronh_model_dir):
     if not torch.cuda.is_available():
         pytest.skip("SALMAutomodel requires CUDA")
+    pretrained_models = resolve_pretrained_models()
     cfg = {
-        **resolve_pretrained_models(),
+        **pretrained_models,
+        "pretrained_llm": tiny_nemotronh_model_dir,
+        "tokenizer_path": pretrained_models["pretrained_llm"],
         "pretrained_weights": False,
         "prompt_format": PROMPT,
         "audio_locator_tag": AUDIO_LOCATOR_TAG,
         "perception": {
             "target": "nemo.collections.speechlm2.modules.perception.AudioPerceptionModule",
-            "output_dim": 2048,
+            "output_dim": 256,
             "encoder": {
                 "_target_": "nemo.collections.asr.modules.ConformerEncoder",
                 "att_context_size": [-1, -1],
@@ -114,6 +160,13 @@ def model():
         "optimizer": {"_target_": "torch.optim.AdamW"},
         "torch_dtype": "bfloat16",
     }
+    if is_te_fp8_runtime_available():
+        cfg["automodel_backend"] = {
+            "attn": "sdpa",
+            "linear": "te",
+            "rms_norm": "torch_fp32",
+            "rope_fusion": False,
+        }
     model = SALMAutomodel(cfg)
     model.configure_model()
     model.to("cuda")
@@ -216,6 +269,148 @@ def test_salm_automodel_validation_epoch_end_uses_token_weighted_metrics():
     assert not model._partial_val_loss_sums
     assert not model._partial_val_corrects
     assert not model._partial_val_num_frames
+
+
+def skip_unless_te_fp8_runtime_available():
+    if not torch.cuda.is_available():
+        pytest.skip("TE FP8 SALMAutomodel runtime tests require CUDA")
+    try:
+        import nemo_automodel  # noqa: F401
+        import transformer_engine.pytorch  # noqa: F401
+        from transformer_engine.common.recipe import Float8BlockScaling  # noqa: F401
+        from transformer_engine.pytorch.quantization import autocast  # noqa: F401
+    except Exception as exc:
+        pytest.skip(f"Automodel/Transformer Engine FP8 runtime is unavailable: {exc}")
+
+    capability = torch.cuda.get_device_capability()
+    if capability[0] < 9:
+        pytest.skip(f"TE FP8 runtime tests require Hopper or newer GPUs; got sm_{capability[0]}{capability[1]}")
+
+
+def skip_unless_model_uses_te_modules(model):
+    has_te_modules = any(type(module).__module__.startswith("transformer_engine") for module in model.llm.modules())
+    if not has_te_modules:
+        pytest.skip("The SALMAutomodel fixture LLM was not constructed with Transformer Engine modules")
+
+
+@contextmanager
+def capture_te_fp8_linear_forwards(model):
+    from transformer_engine.pytorch.fp8 import FP8GlobalStateManager
+    from transformer_engine.pytorch.module.linear import Linear as TELinear
+
+    fp8_enabled_during_forward = []
+
+    def record_fp8_state(module, args):
+        fp8_enabled_during_forward.append(FP8GlobalStateManager.is_fp8_enabled())
+
+    handles = [
+        module.register_forward_pre_hook(record_fp8_state)
+        for module in model.llm.modules()
+        if isinstance(module, TELinear)
+    ]
+    try:
+        yield fp8_enabled_during_forward
+    finally:
+        for handle in handles:
+            handle.remove()
+
+
+@contextmanager
+def te_fp8_config_enabled(model):
+    had_backend = "automodel_backend" in model.cfg
+    previous_backend = model.cfg.get("automodel_backend", None)
+    backend = DictConfig(previous_backend if previous_backend is not None else {})
+    backend.te_fp8 = {"recipe": "block"}
+    model.cfg.automodel_backend = backend
+    try:
+        yield
+    finally:
+        if had_backend:
+            model.cfg.automodel_backend = previous_backend
+        else:
+            del model.cfg["automodel_backend"]
+
+
+@requires_cuda
+def test_salm_automodel_te_fp8_training_step_backward(request):
+    skip_unless_te_fp8_runtime_available()
+    model = request.getfixturevalue("model")
+    skip_unless_model_uses_te_modules(model)
+    dataset = request.getfixturevalue("dataset")
+    prompt_formatter = request.getfixturevalue("prompt_formatter")
+    training_cutset_batch = request.getfixturevalue("training_cutset_batch")
+
+    was_training = model.training
+    try:
+        model.train()
+        model.zero_grad(set_to_none=True)
+        training_cutset_batch = training_cutset_batch.map(
+            lambda c: c.apply_prompt_format(prompt_formatter), apply_fn=None
+        )
+        batch = dataset[training_cutset_batch]
+        batch = move_data_to_device(batch, device=model.device)
+
+        with te_fp8_config_enabled(model), capture_te_fp8_linear_forwards(model) as fp8_enabled_during_forward:
+            results = model.training_step(batch, batch_idx=0)
+            loss = results["loss"]
+            assert torch.isfinite(loss)
+
+            model.backward(loss)
+            grads = [param.grad for param in model.parameters() if param.grad is not None]
+            assert grads
+            model.zero_grad(set_to_none=True)
+        assert any(fp8_enabled_during_forward)
+    finally:
+        model.train(was_training)
+
+
+@requires_cuda
+def test_salm_automodel_te_fp8_validation_step(request):
+    skip_unless_te_fp8_runtime_available()
+    model = request.getfixturevalue("model")
+    skip_unless_model_uses_te_modules(model)
+    dataset = request.getfixturevalue("dataset")
+    prompt_formatter = request.getfixturevalue("prompt_formatter")
+    training_cutset_batch = request.getfixturevalue("training_cutset_batch")
+
+    was_training = model.training
+    try:
+        model.eval()
+        model.on_validation_epoch_start()
+        training_cutset_batch = training_cutset_batch.map(
+            lambda c: c.apply_prompt_format(prompt_formatter), apply_fn=None
+        )
+        batch = dataset[training_cutset_batch]
+        batch = move_data_to_device(batch, device=model.device)
+
+        with te_fp8_config_enabled(model), capture_te_fp8_linear_forwards(model) as fp8_enabled_during_forward:
+            with torch.no_grad():
+                results = model.validation_step({"dummy_val_set": batch}, batch_idx=0)
+
+            assert results is None
+            assert model._partial_val_loss_sums["dummy_val_set"]
+            assert torch.isfinite(model._partial_val_loss_sums["dummy_val_set"][0])
+        assert any(fp8_enabled_during_forward)
+    finally:
+        model.train(was_training)
+
+
+@requires_cuda
+def test_salm_automodel_te_fp8_forward_pads_and_trims_unaligned_bshd(request):
+    skip_unless_te_fp8_runtime_available()
+    model = request.getfixturevalue("model")
+    skip_unless_model_uses_te_modules(model)
+
+    hidden_size = model.llm.config.hidden_size
+    dtype = next(model.llm.parameters()).dtype
+    input_embeds = torch.randn(1, 31, hidden_size, device=model.device, dtype=dtype)
+    attention_mask = torch.ones(1, 31, device=model.device, dtype=torch.bool)
+
+    with te_fp8_config_enabled(model), capture_te_fp8_linear_forwards(model) as fp8_enabled_during_forward:
+        outputs = model(input_embeds, attention_mask=attention_mask)
+
+    assert outputs["logits"].shape[:2] == (1, 31)
+    assert any(fp8_enabled_during_forward)
 
 
 @requires_cuda

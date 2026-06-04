@@ -16,12 +16,24 @@ from pathlib import Path
 
 import pytest
 import torch
+from omegaconf import DictConfig
 
 from nemo.collections.speechlm2.parts.packed_sequences import pack_audio_into_text_embeds, prepare_packed_llm_inputs
 
 PAD = 0
 AUDIO = 100
 REPO_ROOT = Path(__file__).parents[3]
+TE_FP8_CONFIG = DictConfig({"recipe": "block"})
+
+
+@pytest.fixture(autouse=True)
+def use_cpu_default_device_for_unit_tests():
+    previous_device = torch.get_default_device()
+    torch.set_default_device("cpu")
+    try:
+        yield
+    finally:
+        torch.set_default_device(previous_device)
 
 
 def test_packed_sequences_does_not_import_speechlm2_models_globally():
@@ -316,6 +328,103 @@ def test_cu_seqlens_matches_padded_cumsum():
         expected.append(expected[-1] + L)
     assert out["cu_seqlens"].tolist() == expected
     assert out["max_seqlen"].item() == max(out["seq_lens_padded"].squeeze(-1).tolist())
+
+
+def test_te_fp8_thd_padding_updates_metadata_and_labels():
+    input_ids = torch.tensor([[1, 2, 3, 4, 5]])
+    loss_mask = torch.ones_like(input_ids, dtype=torch.bool)
+    embeds = torch.ones(1, 5, 16)
+    target_ids = input_ids.where(loss_mask, -100)
+
+    out = pack_audio_into_text_embeds(
+        input_ids=input_ids,
+        embeds=embeds,
+        target_ids=target_ids,
+        replacements=[],
+        padding_id=PAD,
+        placeholder_id=AUDIO,
+        te_fp8_config=TE_FP8_CONFIG,
+    )
+
+    assert out["seq_lens"].squeeze(-1).tolist() == [5]
+    assert out["seq_lens_padded"].squeeze(-1).tolist() == [8]
+    assert out["inputs_embeds"].shape == (8, 16)
+    assert out["labels"].shape == (8,)
+    assert out["labels"][-3:].tolist() == [-100, -100, -100]
+    assert out["position_ids"].tolist() == list(range(8))
+    assert out["cu_seqlens"].tolist() == [0, 8]
+    assert out["max_seqlen"].item() == 8
+
+
+def test_te_fp8_thd_padding_preserves_cp_partition_alignment():
+    input_ids = torch.tensor([[1, 2, 3, 4, 5], [PAD, PAD, 6, 7, 8]])
+    loss_mask = input_ids != PAD
+    embeds = torch.ones(2, 5, 16)
+    target_ids = input_ids.where(loss_mask, -100)
+
+    out = pack_audio_into_text_embeds(
+        input_ids=input_ids,
+        embeds=embeds,
+        target_ids=target_ids,
+        replacements=[],
+        padding_id=PAD,
+        placeholder_id=AUDIO,
+        cp_size=2,
+        te_fp8_config=TE_FP8_CONFIG,
+    )
+
+    padded = out["seq_lens_padded"].squeeze(-1).tolist()
+    assert out["seq_lens"].squeeze(-1).tolist() == [5, 3]
+    assert padded == [8, 8]
+    assert all(length % 4 == 0 for length in padded)
+    assert sum(padded) % (8 * 2) == 0
+    assert (sum(padded) // 2) % 8 == 0
+    assert out["cu_seqlens"].tolist() == [0, 8, 16]
+    assert out["max_seqlen"].item() == 8
+
+
+def test_te_fp8_thd_padding_accounts_for_cp_and_tp():
+    input_ids = torch.tensor([[1, 2, 3, 4, 5], [PAD, PAD, 6, 7, 8]])
+    loss_mask = input_ids != PAD
+    embeds = torch.ones(2, 5, 16)
+    target_ids = input_ids.where(loss_mask, -100)
+
+    out = pack_audio_into_text_embeds(
+        input_ids=input_ids,
+        embeds=embeds,
+        target_ids=target_ids,
+        replacements=[],
+        padding_id=PAD,
+        placeholder_id=AUDIO,
+        cp_size=2,
+        tp_size=3,
+        te_fp8_config=TE_FP8_CONFIG,
+    )
+
+    padded = out["seq_lens_padded"].squeeze(-1).tolist()
+    assert padded == [8, 40]
+    assert all(length % 4 == 0 for length in padded)
+    assert sum(padded) % (8 * 2 * 3) == 0
+    assert out["cu_seqlens"].tolist() == [0, 8, 48]
+    assert out["max_seqlen"].item() == 40
+
+
+def test_te_fp8_thd_padding_requires_hidden_dim_multiple_of_16():
+    input_ids = torch.tensor([[1, 2, 3, 4, 5]])
+    loss_mask = torch.ones_like(input_ids, dtype=torch.bool)
+    embeds = torch.ones(1, 5, 15)
+    target_ids = input_ids.where(loss_mask, -100)
+
+    with pytest.raises(ValueError, match="hidden size"):
+        pack_audio_into_text_embeds(
+            input_ids=input_ids,
+            embeds=embeds,
+            target_ids=target_ids,
+            replacements=[],
+            padding_id=PAD,
+            placeholder_id=AUDIO,
+            te_fp8_config=TE_FP8_CONFIG,
+        )
 
 
 def test_loss_mask_propagates_to_minus_100():

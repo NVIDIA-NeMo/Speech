@@ -440,12 +440,13 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
 
         # setup fusion models if available
         if self.fusion_models is not None:
+            for fm in self.fusion_models:
+                fm.to(device)
             if prev_batched_state is None or prev_batched_state.fusion_states_list is None:
                 fusion_states_list = []
                 fusion_states_candidates_list = []
                 fusion_scores_list = []
                 for fusion_model_idx, fusion_model in enumerate(self.fusion_models):
-                    fusion_model.to(device)
                     fusion_states = fusion_model.get_init_states(batch_size=batch_size * self.beam_size, bos=True)
                     fusion_scores, fusion_states_candidates = fusion_model.advance(
                         states=fusion_states
@@ -463,7 +464,6 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
                 fusion_states_candidates_list = []
                 fusion_scores_list = []
                 for fusion_model_idx, fusion_model in enumerate(self.fusion_models):
-                    fusion_model.to(device)
                     fusion_scores, fusion_states_candidates = fusion_model.advance(
                         states=fusion_states_list[fusion_model_idx]
                     )
@@ -1008,9 +1008,10 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
             self.state.fusion_scores_list = []
             self.state.fusion_states_prev_list = []
 
-            for fusion_model_idx, fusion_model in enumerate(self.fusion_models):
-                fusion_model.to(device)
+            for fm in self.fusion_models:
+                fm.to(device)
 
+            for fusion_model_idx, fusion_model in enumerate(self.fusion_models):
                 init_fusion_states = fusion_model.get_init_states(
                     batch_size=self.state.batch_size * self.beam_size, bos=True
                 ).view(self.state.batch_size, self.beam_size)

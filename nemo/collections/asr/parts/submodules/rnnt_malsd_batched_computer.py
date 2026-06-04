@@ -422,6 +422,9 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             fusion_states_list = []
             fusion_states_candidates_list = []
             fusion_scores_list = []
+
+            for fm in self.fusion_models:
+                fm.to(device)
             if prev_batched_state is None or not prev_batched_state.fusion_states_list:
                 init_fusion_states = [
                     fm.get_init_states(batch_size=batch_size * self.beam_size, bos=True) for fm in self.fusion_models
@@ -429,7 +432,6 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             else:
                 init_fusion_states = [s.reshape(-1) for s in prev_batched_state.fusion_states_list]
             for fusion_model_idx, fusion_model in enumerate(self.fusion_models):
-                fusion_model.to(device)
                 fusion_states = init_fusion_states[fusion_model_idx]
                 fusion_scores, fusion_states_candidates = fusion_model.advance(
                     states=fusion_states
@@ -907,9 +909,12 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             self.state.fusion_scores_list = []
             self.state.fusion_states_prev_list = []
 
-            for fusion_model_idx, fusion_model in enumerate(self.fusion_models):
-                fusion_model.to(device)
+            # Move fusion models to ``device`` BEFORE any get_init_states / advance calls (see
+            # ``modified_alsd_torch`` for the device-mismatch rationale).
+            for fm in self.fusion_models:
+                fm.to(device)
 
+            for fusion_model_idx, fusion_model in enumerate(self.fusion_models):
                 init_fusion_states = fusion_model.get_init_states(
                     batch_size=self.state.batch_size * self.beam_size, bos=True
                 ).view(self.state.batch_size, self.beam_size)

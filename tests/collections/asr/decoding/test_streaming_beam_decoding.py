@@ -23,6 +23,10 @@ output to ``model.decoding.decoding.decoding_computer`` in chunks and threading
     (:class:`ModifiedALSDBatchedRNNTComputer`, :class:`ModifiedALSDBatchedTDTComputer`)
     across the eager path and both captured-graph variants (``full_graph`` and
     ``no_while_loops``).
+  - :func:`test_malsd_streaming_batched_state_with_word_boosting` -- same MALSD matrix
+    but with a ``GPUBoostingTreeModel`` fusion model plugged in (``boosting_tree.
+    key_phrases_list``); exercises cross-chunk restoration of per-beam fusion states
+    in :meth:`_restore_state_from_prev`.
   - :func:`test_maes_streaming_batched_state` -- covers RNNT MAES
     (:class:`ModifiedAESBatchedRNNTComputer`); MAES is RNNT-only and pure-PyTorch,
     so there is no ``is_tdt`` / ``cuda_graphs_mode`` axis.
@@ -157,7 +161,12 @@ def get_batch_encoder_outputs_from_records(records, model, device):
 
 
 def _configure_malsd_decoding(
-    model: ASRModel, cuda_graphs_mode: Optional[str], beam_size: int, max_symbols: int
+    model: ASRModel,
+    cuda_graphs_mode: Optional[str],
+    beam_size: int,
+    max_symbols: int,
+    key_phrases_list: Optional[list[str]] = None,
+    boosting_tree_alpha: float = 1.0,
 ) -> None:
     """Switch ``model`` to the ``malsd_batch`` beam-search strategy used by the streaming tests.
 
@@ -167,6 +176,10 @@ def _configure_malsd_decoding(
     decoding strategy is swapped in -- ``maybe_enable_cuda_graphs`` would otherwise auto-pick
     ``full_graph`` whenever conditional nodes are supported, leaving the ``no_while_loops``
     branch effectively untested.
+
+    When ``key_phrases_list`` is given, a ``boosting_tree`` fusion model is plugged in
+    (``BoostingTreeModelConfig.key_phrases_list``) so the streaming path exercises
+    cross-chunk fusion-state restoration in :meth:`_restore_state_from_prev`.
     """
     decoding_cfg = copy.deepcopy(model.cfg.decoding)
     decoding_cfg.strategy = "malsd_batch"
@@ -176,6 +189,9 @@ def _configure_malsd_decoding(
         decoding_cfg.beam.allow_cuda_graphs = cuda_graphs_mode is not None
         decoding_cfg.beam.return_best_hypothesis = True
         decoding_cfg.beam.score_norm = True
+        if key_phrases_list is not None:
+            decoding_cfg.beam.boosting_tree = {"key_phrases_list": list(key_phrases_list)}
+            decoding_cfg.beam.boosting_tree_alpha = boosting_tree_alpha
     model.change_decoding_strategy(decoding_cfg)
     if cuda_graphs_mode is not None:
         model.decoding.decoding.decoding_computer.force_cuda_graphs_mode(cuda_graphs_mode)
@@ -342,6 +358,61 @@ def test_maes_streaming_batched_state(
         maes_num_steps=maes_num_steps,
         maes_expansion_beta=maes_expansion_beta,
         maes_expansion_gamma=maes_expansion_gamma,
+    )
+
+    ref_transcripts, streaming_transcripts = _run_streaming_batched_state(
+        model=model,
+        manifest_path=an4_val_manifest_corrected,
+        device=device,
+        chunk_size=chunk_size,
+        batch_size=batch_size,
+    )
+    assert ref_transcripts == streaming_transcripts
+
+
+# Phrases chosen from the AN4 val transcripts so the boosting tree is actually exercised
+# (an empty / unseen list collapses to the no-boosting path and would not test fusion-state
+# restoration across chunks).
+_WB_KEY_PHRASES: list[str] = ["nineteen", "forty", "fifty", "repeat", "stop", "yes"]
+
+
+@pytest.mark.with_downloads
+@pytest.mark.parametrize("device,cuda_graphs_mode", DEVICE_PARAM_MATRIX)
+@pytest.mark.parametrize("is_tdt", [False, True])
+@pytest.mark.parametrize("chunk_size", [1, 3])
+@pytest.mark.parametrize("batch_size", [4])
+@pytest.mark.parametrize("beam_size", [4])
+@pytest.mark.parametrize("max_symbols", [10])
+def test_malsd_streaming_batched_state_with_word_boosting(
+    tmp_path_factory,
+    an4_val_manifest_corrected,
+    stt_en_fastconformer_transducer_large,
+    stt_en_fastconformer_tdt_large,
+    device: torch.device,
+    cuda_graphs_mode: Optional[str],
+    is_tdt: bool,
+    chunk_size: int,
+    batch_size: int,
+    beam_size: int,
+    max_symbols: int,
+):
+    """Streaming MALSD with word-boosting (``boosting_tree``) is chunk-invariant.
+
+    Adds a ``GPUBoostingTreeModel`` fusion model on top of the standard streaming MALSD
+    test. The reference (``model.transcribe``) and the streaming path are configured
+    identically, so the boosting tree's per-beam fusion states must be restored across
+    chunks via ``_restore_state_from_prev`` for the two transcripts to match.
+    """
+    model = stt_en_fastconformer_tdt_large if is_tdt else stt_en_fastconformer_transducer_large
+    model.eval()
+    model.to(device=device)
+
+    _configure_malsd_decoding(
+        model,
+        cuda_graphs_mode,
+        beam_size=beam_size,
+        max_symbols=max_symbols,
+        key_phrases_list=_WB_KEY_PHRASES,
     )
 
     ref_transcripts, streaming_transcripts = _run_streaming_batched_state(

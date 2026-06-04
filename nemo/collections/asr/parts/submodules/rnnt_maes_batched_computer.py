@@ -16,7 +16,7 @@ from typing import Optional
 
 import torch
 
-from nemo.collections.asr.parts.submodules.transducer_decoding.label_looping_base import BatchedBeamLoopingState
+from nemo.collections.asr.parts.submodules.transducer_decoding.label_looping_base import BatchedBeamState
 from nemo.collections.asr.parts.utils import rnnt_utils
 from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMethodMixin
 from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import (
@@ -129,8 +129,8 @@ class ModifiedAESBatchedRNNTComputer(ConfidenceMethodMixin):
         self,
         encoder_output: torch.Tensor,
         encoder_output_length: torch.Tensor,
-        prev_batched_state: Optional[BatchedBeamLoopingState] = None,
-    ) -> tuple[BatchedBeamHyps, Optional[rnnt_utils.BatchedAlignments], BatchedBeamLoopingState]:
+        prev_batched_state: Optional[BatchedBeamState] = None,
+    ) -> tuple[BatchedBeamHyps, Optional[rnnt_utils.BatchedAlignments], BatchedBeamState]:
         """
         Pure PyTorch implementation of batched modified adaptive expansion search for RNN-T.
 
@@ -361,7 +361,7 @@ class ModifiedAESBatchedRNNTComputer(ConfidenceMethodMixin):
         if prev_batched_state is not None:
             batched_hyps.timestamps += prev_batched_state.decoded_lengths.unsqueeze(1).unsqueeze(2)
 
-        decoding_state = BatchedBeamLoopingState(
+        decoding_state = BatchedBeamState(
             predictor_states=decoder_state,
             predictor_outputs=decoder_output,
             labels=(
@@ -495,8 +495,8 @@ class ModifiedAESBatchedRNNTComputer(ConfidenceMethodMixin):
         self,
         x: torch.Tensor,
         out_len: torch.Tensor,
-        prev_batched_state: Optional[BatchedBeamLoopingState] = None,
-    ) -> tuple[BatchedBeamHyps, Optional[rnnt_utils.BatchedAlignments], BatchedBeamLoopingState]:
+        prev_batched_state: Optional[BatchedBeamState] = None,
+    ) -> tuple[BatchedBeamHyps, Optional[rnnt_utils.BatchedAlignments], BatchedBeamState]:
         return self.batched_modified_adaptive_expansion_search_torch(
             encoder_output=x,
             encoder_output_length=out_len,

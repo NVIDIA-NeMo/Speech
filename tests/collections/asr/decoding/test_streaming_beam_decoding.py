@@ -17,7 +17,7 @@
 Beam-search analogue of ``test_streaming_decoding.py``. Exercises the streaming
 path of the batched beam-search computers by manually feeding the encoder
 output to ``model.decoding.decoding.decoding_computer`` in chunks and threading
-``prev_batched_state`` (a ``BatchedBeamLoopingState``):
+``prev_batched_state`` (a ``BatchedBeamState``):
 
   - :func:`test_malsd_streaming_batched_state` -- covers RNNT and TDT MALSD
     (:class:`ModifiedALSDBatchedRNNTComputer`, :class:`ModifiedALSDBatchedTDTComputer`)
@@ -53,7 +53,7 @@ from omegaconf import open_dict
 from tqdm.auto import tqdm
 
 from nemo.collections.asr.models import ASRModel
-from nemo.collections.asr.parts.submodules.transducer_decoding.label_looping_base import BatchedBeamLoopingState
+from nemo.collections.asr.parts.submodules.transducer_decoding.label_looping_base import BatchedBeamState
 from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import BatchedBeamHyps
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
 from tests.collections.asr.decoding.utils import load_audio, make_preprocessor_deterministic
@@ -231,7 +231,7 @@ def _run_streaming_batched_state(
     ``(ref_transcripts, streaming_transcripts)``.
 
     Shared between the MALSD and MAES streaming tests: both decoders return a
-    ``(BatchedBeamHyps, None, BatchedBeamLoopingState)`` triple and accept
+    ``(BatchedBeamHyps, None, BatchedBeamState)`` triple and accept
     ``prev_batched_state`` for cross-chunk state threading. The per-chunk results are
     flattened and merged into a single accumulator via ``flatten_()`` +
     ``merge_(..., is_chunk_continuation=True, boundary_prev_ptr=...)`` -- the same
@@ -249,7 +249,7 @@ def _run_streaming_batched_state(
             encoder_output, encoder_output_len = get_batch_encoder_outputs_from_records(
                 manifest[i : i + batch_size], model=model, device=device
             )
-            state: Optional[BatchedBeamLoopingState] = None
+            state: Optional[BatchedBeamState] = None
             current_batched_hyps: BatchedBeamHyps | None = None
             encoder_output = encoder_output.transpose(1, 2)  # (B, T, D)
             for t in range(0, encoder_output.shape[1], chunk_size):

@@ -417,9 +417,6 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
             )
             rest_audio_lengths = audio_batch_lengths.clone()
 
-            # Beam-search strategies (MALSD/MAES/TDT-MALSD) keep their batched_hyps inside
-            # the decoder state and reset chunk-local buffers per chunk; greedy returns a
-            # fresh BatchedHyps each call which we must merge externally.
             is_beam_search = isinstance(
                 decoding_computer,
                 (ModifiedALSDBatchedRNNTComputer, ModifiedAESBatchedRNNTComputer, ModifiedALSDBatchedTDTComputer),
@@ -502,11 +499,9 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
                 right_sample = min(right_sample + context_samples.chunk, audio_batch.shape[1])  # add next chunk
 
             # Convert batched hypotheses to list
-            if isinstance(current_batched_hyps, BatchedBeamHyps):
-                # MALSD beam search returns BatchedBeamHyps
+            if is_beam_search:
                 all_hyps.extend(current_batched_hyps.to_hyps_list(score_norm=True))
             else:
-                # Greedy batch returns BatchedHyps
                 # remove biasing requests from the decoder
                 if use_per_stream_biasing and audio_data.biasing_requests is not None:
                     for request in audio_data.biasing_requests:

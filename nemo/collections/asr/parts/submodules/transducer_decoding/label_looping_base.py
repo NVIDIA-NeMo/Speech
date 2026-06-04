@@ -40,7 +40,7 @@ class SeparateGraphsLabelLooping:
 
 @dataclass
 class BatchedLabelLoopingState:
-    """Decoding state to pass between invocations of greedy label-looping decoders."""
+    """Decoding state to pass between invocations."""
 
     predictor_states: Any
     predictor_outputs: torch.Tensor
@@ -51,16 +51,8 @@ class BatchedLabelLoopingState:
 
 
 @dataclass
-class BatchedBeamLoopingState(BatchedLabelLoopingState):
+class BatchedBeamState(BatchedLabelLoopingState):
     """Decoding state passed between invocations of batched beam-search decoders.
-
-    Extends :class:`BatchedLabelLoopingState` with ``beam_state``, a
-    :class:`BatchedBeamHypsState` holding only the cross-chunk per-beam tensors
-    (``scores``, ``last_label``, ``transcript_hash``, ``current_lengths_nb``,
-    optionally ``transcript_prefix_hash`` / ``last_timestamp_lasts``) -- the
-    chunk-local prefix tree, write cursor and per-step timestamps are NOT carried
-    here; they reach the caller as the first element of the computer's 3-tuple
-    return. Greedy decoders never need this and use the base class directly.
     """
 
     beam_state: Optional[BatchedBeamHypsState] = None

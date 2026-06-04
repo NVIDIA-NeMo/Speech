@@ -78,13 +78,7 @@ class ASRModelTypeEnum(PrettyStrEnum):
 
 @dataclass
 class BatchedBeamHypsState:
-    """Minimal cross-chunk per-beam state extracted from :class:`BatchedBeamHyps`.
-
-    Holds only the fields that need to survive across streaming chunk boundaries.
-    The chunk-local prefix tree (``transcript_wb`` / ``transcript_wb_prev_ptr`` /
-    ``timestamps`` / ``current_lengths_wb`` / ``next_timestamp``) is intentionally
-    excluded.
-    """
+    """Per-beam state carried across streaming chunk boundaries."""
 
     scores: torch.Tensor
     last_label: torch.Tensor
@@ -219,23 +213,10 @@ class BatchedBeamHyps:
             self.last_timestamp_lasts.fill_(0)
 
     def clear_chunk_local_(self):
-        """
-        Reset only the chunk-local storage so the per-chunk transcript buffers can be
-        reused for the next chunk in streaming/chunked beam decoding under CUDA graphs.
+        """In-place reset of the chunk-local prefix tree / timestamps / write cursor.
 
-        The chunk-local storage is the transcript prefix tree (``transcript_wb``,
-        ``transcript_wb_prev_ptr``), the per-step timestamps array (``timestamps``), the
-        write cursor into those buffers (``current_lengths_wb``) and, for transducer
-        models, the per-chunk ``next_timestamp`` counter.
-
-        Cross-chunk per-beam state - ``scores``, ``last_label``, ``transcript_hash``,
-        ``current_lengths_nb`` and ``last_timestamp_lasts`` - is intentionally left
-        untouched so the beam-search loop can continue from the previous chunk's beam
-        state without re-seeding.
-
-        This method does only in-place ``fill_`` / ``copy_`` writes into the existing
-        tensors, so it is safe to call from inside a captured CUDA-graph region (the
-        captured pointers remain valid).
+        Cross-chunk per-beam fields (those in :class:`BatchedBeamHypsState`) are left
+        untouched. CUDA-graphs-only: the torch path allocates a fresh object instead.
         """
         self.current_lengths_wb.fill_(0)
 

@@ -19,7 +19,7 @@ import torch
 import torch.nn.functional as F
 
 from nemo.collections.asr.parts.submodules.ngram_lm import NGramGPULanguageModel
-from nemo.collections.asr.parts.submodules.transducer_decoding.label_looping_base import BatchedBeamLoopingState
+from nemo.collections.asr.parts.submodules.transducer_decoding.label_looping_base import BatchedBeamState
 from nemo.collections.asr.parts.utils import rnnt_utils
 from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMethodMixin
 from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import (
@@ -362,8 +362,8 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         self,
         encoder_output: torch.Tensor,
         encoder_output_length: torch.Tensor,
-        prev_batched_state: Optional[BatchedBeamLoopingState] = None,
-    ) -> tuple[BatchedBeamHyps, Optional[rnnt_utils.BatchedAlignments], BatchedBeamLoopingState]:
+        prev_batched_state: Optional[BatchedBeamState] = None,
+    ) -> tuple[BatchedBeamHyps, Optional[rnnt_utils.BatchedAlignments], BatchedBeamState]:
         """
         Pytorch implementation of the batched ALSD algorithm for RNN-T.
         Args:
@@ -371,7 +371,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
                 [batch_size, max_time, encoder_dim].
             encoder_output_length (torch.Tensor): The lengths of the encoder outputs for each batch
                 with shape [batch_size].
-            prev_batched_state (BatchedBeamLoopingState, optional): The previous batch state.
+            prev_batched_state (BatchedBeamState, optional): The previous batch state.
         Returns:
             BatchedBeamHyps: Batched beam hypotheses.
         """
@@ -636,7 +636,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         if prev_batched_state is not None:
             batched_hyps.timestamps += prev_batched_state.decoded_lengths.unsqueeze(1).unsqueeze(2)
 
-        decoding_state = BatchedBeamLoopingState(
+        decoding_state = BatchedBeamState(
             predictor_states=decoder_state,
             predictor_outputs=decoder_output,
             labels=(
@@ -730,8 +730,8 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         self,
         encoder_output: torch.Tensor,
         encoder_output_length: torch.Tensor,
-        prev_batched_state: Optional[BatchedBeamLoopingState] = None,
-    ) -> tuple[BatchedBeamHyps, Optional[rnnt_utils.BatchedAlignments], BatchedBeamLoopingState]:
+        prev_batched_state: Optional[BatchedBeamState] = None,
+    ) -> tuple[BatchedBeamHyps, Optional[rnnt_utils.BatchedAlignments], BatchedBeamState]:
         """
         Cuda-Graphs implementation of the batched ALSD algorithm.
         Args:
@@ -908,8 +908,6 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             self.state.fusion_scores_list = []
             self.state.fusion_states_prev_list = []
 
-            # Move fusion models to ``device`` BEFORE any get_init_states / advance calls (see
-            # ``modified_alsd_torch`` for the device-mismatch rationale).
             for fm in self.fusion_models:
                 fm.to(device)
 
@@ -1367,7 +1365,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         torch.less_equal(self.state.time_indices, self.state.last_timesteps, out=self.state.active_mask)
         torch.any(self.state.active_mask, out=self.state.active_mask_any)
 
-    def _restore_state_from_prev(self, prev_batched_state: BatchedBeamLoopingState, current_batch_size: int):
+    def _restore_state_from_prev(self, prev_batched_state: BatchedBeamState, current_batch_size: int):
         """Restore decoder, fusion and batched_hyps state from the previous chunk."""
         # Restore decoder output and state
         if prev_batched_state.predictor_outputs is not None:
@@ -1415,9 +1413,9 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
     def _create_decoding_state(
         self,
         encoder_output_length: torch.Tensor,
-        prev_batched_state: Optional[BatchedBeamLoopingState],
-    ) -> BatchedBeamLoopingState:
-        """Create BatchedBeamLoopingState for the next chunk."""
+        prev_batched_state: Optional[BatchedBeamState],
+    ) -> BatchedBeamState:
+        """Create BatchedBeamState for the next chunk."""
         current_batch_size = encoder_output_length.shape[0]
 
         # Get last labels and slice to real batch (graph state's batch dim is sized to capture-time max).
@@ -1444,7 +1442,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         if self.fusion_models is not None and self.state.fusion_states_list is not None:
             fusion_states_list = [state[:current_batch_size].clone() for state in self.state.fusion_states_list]
 
-        return BatchedBeamLoopingState(
+        return BatchedBeamState(
             predictor_states=(
                 self.state.decoder_state[0][:, : current_batch_size * self.beam_size].clone(),
                 self.state.decoder_state[1][:, : current_batch_size * self.beam_size].clone(),
@@ -1462,8 +1460,8 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         self,
         x: torch.Tensor,
         out_len: torch.Tensor,
-        prev_batched_state: Optional[BatchedBeamLoopingState] = None,
-    ) -> tuple[BatchedBeamHyps, Optional[rnnt_utils.BatchedAlignments], BatchedBeamLoopingState]:
+        prev_batched_state: Optional[BatchedBeamState] = None,
+    ) -> tuple[BatchedBeamHyps, Optional[rnnt_utils.BatchedAlignments], BatchedBeamState]:
         if self.cuda_graphs_mode is not None and x.device.type == "cuda":
             with torch.amp.autocast(device_type="cuda", enabled=False):
                 return self.modified_alsd_cuda_graphs(

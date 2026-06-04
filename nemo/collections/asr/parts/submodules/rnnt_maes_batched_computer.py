@@ -137,16 +137,10 @@ class ModifiedAESBatchedRNNTComputer(ConfidenceMethodMixin):
         Args:
             encoder_output: output from the encoder, shape [batch_size, max_time, encoder_dim].
             encoder_output_length: lengths of the utterances in ``encoder_output``, shape [batch_size].
-            prev_batched_state: optional state from a previous chunk (streaming / chunked decoding).
-                When provided, ``predictor_states``, ``predictor_outputs`` and ``batched_hyps`` are
-                reused so that beam search continues across the chunk boundary.
+            prev_batched_state: optional state from a previous chunk (streaming).
 
         Returns:
-            A 3-tuple ``(batched_hyps, alignments, decoding_state)``:
-            - ``batched_hyps``: the beam hypotheses for this chunk (and, in streaming, the
-              accumulated prefix carried over from previous chunks).
-            - ``alignments``: place holder for alignments, not implemented yet
-            - ``decoding_state``: decoder states and outputs.
+            (batched_hyps, None, decoding_state).
         """
         batch_size, max_time, _unused = encoder_output.shape
         device = encoder_output.device
@@ -170,7 +164,6 @@ class ModifiedAESBatchedRNNTComputer(ConfidenceMethodMixin):
             .clone()
         )  # size: batch_size x beam_size x (beam_size + maes_expansion_beta)
 
-        
         # init empty batched hypotheses
         batched_hyps = BatchedBeamHyps(
             batch_size=batch_size,
@@ -365,9 +358,7 @@ class ModifiedAESBatchedRNNTComputer(ConfidenceMethodMixin):
         last_labels = batched_hyps.get_last_labels(pad_id=self._SOS)
         batched_hyps.next_timestamp.fill_(0)
 
-        # Make ``batched_hyps.timestamps`` global by adding the cumulative encoder frame
-        # offset (number of frames already consumed by previous chunks) to this chunk's
-        # writes.
+        # Make ``batched_hyps.timestamps`` global by adding the cumulative encoder frame offset.
         if prev_batched_state is not None:
             batched_hyps.timestamps += prev_batched_state.decoded_lengths.unsqueeze(1).unsqueeze(2)
 

@@ -190,10 +190,8 @@ class MALSDState:
             float_dtype=float_dtype,
         )
 
-        # Streaming state fields. The captured FULL_GRAPH reads ``is_first_chunk`` and
-        # ``is_continuation`` to route to the first-chunk vs. continuation prologue at replay
-        # time. The two flags are kept in lockstep by ``modified_alsd_cuda_graphs`` before
-        # each replay (they are mutually exclusive).
+        # Streaming flags read by the captured FULL_GRAPH IF nodes; kept in lockstep
+        # by ``modified_alsd_cuda_graphs`` before each replay (mutually exclusive).
         self.is_continuation = torch.tensor(False, device=self.device, dtype=torch.bool)
         self.is_first_chunk = torch.tensor(True, device=self.device, dtype=torch.bool)
 
@@ -633,9 +631,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         last_labels = batched_hyps.get_last_labels(pad_id=self._SOS)
         batched_hyps.next_timestamp.fill_(0)
 
-        # Make ``batched_hyps.timestamps`` global by adding the cumulative encoder frame
-        # offset (number of frames already consumed by previous chunks) to this chunk's
-        # writes.
+        # Make ``batched_hyps.timestamps`` global by adding the cumulative encoder frame offset.
         if prev_batched_state is not None:
             batched_hyps.timestamps += prev_batched_state.decoded_lengths.unsqueeze(1).unsqueeze(2)
 
@@ -768,12 +764,9 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         if self.state is None or self.state.need_reinit(encoder_output):
             self._graph_reinitialize(encoder_output, encoder_output_length)
 
-        # Set continuation flag and restore state from previous chunk if provided
+        # Set continuation / first-chunk flags read by the captured IF nodes.
         is_continuation = prev_batched_state is not None
         self.state.is_continuation.fill_(is_continuation)
-        # Mirror into the inverse flag so the captured graph's IF nodes can route to
-        # the right function. Both tensors are read by ``loop_conditional``-style
-        # condition kernels baked into the graph at capture time.
         self.state.is_first_chunk.fill_(not is_continuation)
 
         if is_continuation:
@@ -964,12 +957,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             raise NotImplementedError
 
     def _warmup_for_cuda_graphs(self):
-        """Warmup before compiling CUDA graphs.
-
-        Runs a few eager iterations of both the first-chunk and continuation paths so that
-        cuBLAS / cuDNN handles and workspaces are allocated and stable before any graph
-        capture begins. Mirrors the warmup pattern used by the greedy label-looping decoder.
-        """
+        """Warmup both first-chunk and continuation paths before CUDA graph capture."""
         is_ddp = torch.distributed.is_available() and torch.distributed.is_initialized()
         # 11 warmup steps required in DDP mode
         # see https://pytorch.org/docs/stable/notes/cuda.html#usage-with-distributeddataparallel
@@ -979,14 +967,10 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         s = torch.cuda.Stream(self.state.device)
         s.wait_stream(torch.cuda.current_stream(device=self.state.device))
         with torch.cuda.stream(s), torch.inference_mode():
-            # Warm up the first-chunk path.
             for _ in range(num_runs):
                 self._before_loop()
                 self._loop_body()
                 self._loop_update_decoder()
-            # Warm up the continuation path so its prologue and any kernels it touches
-            # are primed too. Both captures share a mempool, so any allocator activity
-            # they trigger needs to settle before either is captured.
             for _ in range(num_runs):
                 self._before_loop_continuation()
                 self._loop_body()
@@ -1067,8 +1051,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             torch.inference_mode(),
             torch.cuda.graph(self.full_graph, stream=stream_for_graph, capture_error_mode="thread_local"),
         ):
-            # The condition-setter kernel (created lazily by ``_create_loop_body_kernel``) is
-            # signature-compatible with any 0-d bool*; we reuse it for all three conditional nodes.
+            # condition-setter kernel reused for all three conditional nodes
             cond_kernel = self._create_loop_body_kernel()
 
             # NB: depending on cuda-python version, cudaStreamGetCaptureInfo can return either 5 or 6 elements
@@ -1143,8 +1126,8 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
 
     def _before_loop_continuation(self):
         """
-        Preserves cross-chunk per-beam state on ``batched_hyps`` (scores, last_label, 
-        transcript_hash, current_lengths_nb, last_timestamp_lasts) and resets only the 
+        Preserves cross-chunk per-beam state on ``batched_hyps`` (scores, last_label,
+        transcript_hash, current_lengths_nb, last_timestamp_lasts) and resets only the
         chunk-local prefix-tree buffers (transcript_wb / transcript_wb_prev_ptr / timestamps / current_lengths_wb).
         """
         self.state.batched_hyps.clear_chunk_local_()
@@ -1381,14 +1364,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         torch.any(self.state.active_mask, out=self.state.active_mask_any)
 
     def _restore_state_from_prev(self, prev_batched_state: BatchedBeamLoopingState, current_batch_size: int):
-        """
-        Restore decoder state, fusion states, and batched_hyps from previous chunk's state.
-        Used for streaming/chunked decoding.
-
-        Args:
-            prev_batched_state: State from previous chunk
-            current_batch_size: Current batch size
-        """
+        """Restore decoder, fusion and batched_hyps state from the previous chunk."""
         # Restore decoder output and state
         if prev_batched_state.predictor_outputs is not None:
             self.state.decoder_output[: current_batch_size * self.beam_size].copy_(
@@ -1435,22 +1411,10 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         encoder_output_length: torch.Tensor,
         prev_batched_state: Optional[BatchedBeamLoopingState],
     ) -> BatchedBeamLoopingState:
-        """
-        Create BatchedBeamLoopingState for the next chunk.
-
-        Args:
-            encoder_output_length: Length of current encoder output
-            prev_batched_state: State from previous chunk (if any)
-
-        Returns:
-            BatchedBeamLoopingState containing current decoding state
-        """
+        """Create BatchedBeamLoopingState for the next chunk."""
         current_batch_size = encoder_output_length.shape[0]
 
-        # Get last labels from batched_hyps. ``self.state.batched_hyps`` has the capture-time
-        # batch dim (>= ``current_batch_size``); slice to the real batch so the returned
-        # state matches the rest of the pipeline (and ``predictor_states`` / ``decoded_lengths``
-        # which we already slice below).
+        # Get last labels and slice to real batch (graph state's batch dim is sized to capture-time max).
         last_labels = self.state.batched_hyps.get_last_labels(pad_id=self._SOS)[:current_batch_size]
 
         # Reset next_timestamp for next chunk
@@ -1484,9 +1448,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             decoded_lengths=decoded_lengths,
             fusion_states_list=fusion_states_list,
             time_jumps=None,
-            # Trim to current batch (graph buffers are sized to the capture-time max,
-            # which can exceed the live batch when streams finish). Keeps this state's
-            # ``batched_hyps.batch_size`` consistent with ``labels.shape[0]``.
+            # Trim to current batch (graph buffers sized to capture-time max).
             batched_hyps=self.state.batched_hyps.clone(batch_size=current_batch_size),
         )
 

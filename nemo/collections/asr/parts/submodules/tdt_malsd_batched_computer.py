@@ -191,18 +191,13 @@ class MALSDState:
         self.blank_mask = torch.zeros_like(self.active_mask, dtype=torch.bool)
         self.active_mask_any = torch.tensor(True, device=self.device, dtype=torch.bool)
 
-        # Streaming state fields. The captured FULL_GRAPH reads ``is_first_chunk`` and
-        # ``is_continuation`` to route to the first-chunk vs. continuation prologue at replay
-        # time. The two flags are kept in lockstep by ``modified_alsd_cuda_graphs`` before
-        # each replay (they are mutually exclusive).
+        # Streaming flags read by the captured FULL_GRAPH IF nodes; kept in lockstep
+        # by ``modified_alsd_cuda_graphs`` before each replay (mutually exclusive).
         self.is_continuation = torch.tensor(False, device=self.device, dtype=torch.bool)
         self.is_first_chunk = torch.tensor(True, device=self.device, dtype=torch.bool)
 
-        # Per-beam pending skip from the previous chunk, so beams whose last emission overshot the 
-        # previous chunk's boundary resume at the correct global frame in the new chunk.
-        self.time_jumps_carry = torch.zeros(
-            [self.batch_size, self.beam_size], dtype=torch.long, device=self.device
-        )
+        # Per-beam pending skip from the previous chunk (TDT duration overshoot).
+        self.time_jumps_carry = torch.zeros([self.batch_size, self.beam_size], dtype=torch.long, device=self.device)
 
         self.batched_hyps = BatchedBeamHyps(
             batch_size=batch_size,
@@ -395,7 +390,7 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
                 with shape [batch_size].
             prev_batched_state (Optional[BatchedBeamLoopingState]): The previous batched state for streaming.
         Returns:
-            tuple[BatchedBeamHyps, Optional[rnnt_utils.BatchedAlignments], BatchedBeamLoopingState]: 
+            tuple[BatchedBeamHyps, Optional[rnnt_utils.BatchedAlignments], BatchedBeamLoopingState]:
                 Batched beam hypotheses, alignments (None), and decoding state.
         """
 
@@ -433,7 +428,7 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
         if prev_batched_state is not None and prev_batched_state.batched_hyps is not None:
             batched_hyps.copy_from_(prev_batched_state.batched_hyps)
             batched_hyps.clear_chunk_local_()
-        # In mixed batches some rows may have `encoder_output_length == 0`.
+        # Resume per-beam time from previous-chunk overshoot (TDT ``time_jumps``).
         if prev_batched_state is not None and prev_batched_state.time_jumps is not None:
             time_indices = prev_batched_state.time_jumps.clone()
             batched_hyps.next_timestamp.copy_(time_indices)
@@ -679,10 +674,8 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
                     fusion_scores_list[fusion_model_idx] = fusion_scores
 
             # step 6: update time indices + active mask
-            # Mask out durations for non-extended (final / inactive) slots so their time_indices
-            # stays frozen. Without this mask, inactive beams' time_indices keeps growing each
-            # iteration because top-k picks them with the joint's argmax-duration baked in,
-            # which corrupts the per-beam ``time_jumps`` we snapshot at chunk end.
+            # Mask durations of inactive beams so their time_indices stays frozen
+            # (otherwise top-k's argmax-duration corrupts the ``time_jumps`` snapshot).
             next_label_durations_eff = torch.where(next_labels >= 0, next_label_durations, 0)
             time_indices = torch.gather(time_indices, dim=-1, index=hyps_indices) + next_label_durations_eff
             torch.minimum(time_indices, last_timesteps, out=safe_time_indices)
@@ -692,18 +685,13 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
         # return the last labels from the previous state in this case
         last_labels = batched_hyps.get_last_labels(pad_id=self._SOS)
 
-        # Snapshot the per-beam pending skip BEFORE. Subtracting the encoder window length 
-        # yields how many frames each beam wants to step into the next chunk.
+        # Snapshot per-beam pending skip (frames each beam wants to step into the next chunk).
         time_jumps = torch.clamp(time_indices - encoder_output_length.unsqueeze(-1), min=0)
 
-        # Reset the per-chunk next_timestamp so the next chunk starts at frame 0 of its own
-        # encoder window (matches the CUDA-graphs path and RNNT-MALSD's torch path). The
-        # carry-over now flows through ``time_jumps`` instead of ``next_timestamp``.
+        # Reset per-chunk next_timestamp; carry now flows through ``time_jumps``.
         batched_hyps.next_timestamp.fill_(0)
 
-        # Make ``batched_hyps.timestamps`` global by adding the cumulative encoder frame
-        # offset (number of frames already consumed by previous chunks) to this chunk's
-        # writes.
+        # Make ``batched_hyps.timestamps`` global by adding the cumulative encoder frame offset.
         if prev_batched_state is not None:
             batched_hyps.timestamps += prev_batched_state.decoded_lengths[:, None, None].expand_as(
                 batched_hyps.timestamps
@@ -873,12 +861,9 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
         if self.state is None or self.state.need_reinit(encoder_output):
             self._graph_reinitialize(encoder_output, encoder_output_length)
 
-        # Set continuation flag and restore state from previous chunk if provided
+        # Set continuation / first-chunk flags read by the captured IF nodes.
         is_continuation = prev_batched_state is not None
         self.state.is_continuation.fill_(is_continuation)
-        # Mirror into the inverse flag so the captured graph's IF nodes can route to
-        # the right prologue. Both tensors are read by ``loop_conditional``-style
-        # condition kernels baked into the graph at capture time.
         self.state.is_first_chunk.fill_(not is_continuation)
 
         if is_continuation:
@@ -916,13 +901,9 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
         else:
             raise NotImplementedError(f"Unknown graph mode: {self.cuda_graphs_mode}")
 
-        # Take a chunk-local clone BEFORE ``_create_decoding_state`` mutates the live state
-        # (it resets ``next_timestamp`` for the next chunk's prologue). Without this, the
-        # captured ``_before_loop_continuation`` in the *next* chunk calls
-        # ``clear_chunk_local_()`` on the live ``self.state.batched_hyps`` and wipes the
-        # transcript / prefix-tree the caller is still holding -- which is what produced
-        # empty streaming transcripts in the CUDA-graphs path. The torch path doesn't hit
-        # this because it allocates a fresh ``batched_hyps`` per chunk.
+        # Take a chunk-local clone before the next chunk's ``_before_loop_continuation``
+        # wipes the live prefix tree via ``clear_chunk_local_()`` (the torch path doesn't
+        # hit this because it allocates a fresh ``batched_hyps`` per chunk).
         chunk_local_hyps = self.state.batched_hyps.clone(batch_size=current_batch_size)
 
         # Create and return decoding state for next chunk
@@ -1077,12 +1058,7 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
             raise NotImplementedError
 
     def _warmup_for_cuda_graphs(self):
-        """Warmup before compiling CUDA graphs.
-
-        Runs a few eager iterations of both the first-chunk and continuation paths so that
-        cuBLAS / cuDNN handles and workspaces are allocated and stable before any graph
-        capture begins. Mirrors the warmup pattern used by the greedy label-looping decoder.
-        """
+        """Warmup both first-chunk and continuation paths before CUDA graph capture."""
         is_ddp = torch.distributed.is_available() and torch.distributed.is_initialized()
         # 11 warmup steps required in DDP mode
         # see https://pytorch.org/docs/stable/notes/cuda.html#usage-with-distributeddataparallel
@@ -1092,14 +1068,10 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
         s = torch.cuda.Stream(self.state.device)
         s.wait_stream(torch.cuda.current_stream(device=self.state.device))
         with torch.cuda.stream(s), torch.inference_mode():
-            # Warm up the first-chunk path.
             for _ in range(num_runs):
                 self._before_loop()
                 self._loop_body()
                 self._loop_update_decoder()
-            # Warm up the continuation path so its prologue and any kernels it touches
-            # are primed too. Both captures share a mempool, so any allocator activity
-            # they trigger needs to settle before either is captured.
             for _ in range(num_runs):
                 self._before_loop_continuation()
                 self._loop_body()
@@ -1177,8 +1149,7 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
             torch.inference_mode(),
             torch.cuda.graph(self.full_graph, stream=stream_for_graph, capture_error_mode="thread_local"),
         ):
-            # The condition-setter kernel (created lazily by ``_create_loop_body_kernel``) is
-            # signature-compatible with any 0-d bool*; we reuse it for all three conditional nodes.
+            # condition-setter kernel reused for all three conditional nodes
             cond_kernel = self._create_loop_body_kernel()
 
             # NB: depending on cuda-python version, cudaStreamGetCaptureInfo can return either 5 or 6 elements
@@ -1253,35 +1224,17 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
 
     def _before_loop_continuation(self):
         """
-        Prologue for a continuation chunk: preserves cross-chunk per-beam state on
-        ``batched_hyps`` (scores, last_label, transcript_hash, current_lengths_nb,
-        last_timestamp_lasts) and resets only the chunk-local prefix-tree buffers
-        (transcript_wb / transcript_wb_prev_ptr / timestamps / current_lengths_wb)
-        that the captured loop body would otherwise overflow.
-
-        Decoder and fusion states are already restored by ``_restore_state_from_prev``.
-        The caller is responsible for snapshotting / merging the chunk-local transcripts
-        before the next chunk (see :meth:`BatchedBeamHyps.merge_` with
-        ``is_chunk_continuation=True``).
-
-        Carries the per-beam pending skip (``time_jumps_carry``, written by
-        ``_restore_state_from_prev`` outside the graph) into the per-chunk time
-        bookkeeping. Mirrors greedy TDT's ``time_jumps`` mechanism in
-        ``tdt_label_looping.py``: a beam whose last emission overshot the previous
-        chunk's window resumes at the correct global frame here instead of being
-        rewound to frame 0.
+        Prologue for a continuation chunk: keeps cross-chunk per-beam state on ``batched_hyps``
+        and resets only chunk-local prefix-tree buffers. Restores per-beam ``next_timestamp``
+        from ``time_jumps_carry`` (TDT duration overshoot, mirroring greedy TDT's ``time_jumps``)
+        so beams that overshot the previous chunk resume at the correct global frame.
         """
         self.state.batched_hyps.clear_chunk_local_()
-        # Restore per-beam ``next_timestamp`` from the carry written by
-        # ``_restore_state_from_prev`` (``clear_chunk_local_`` above just zeroed it).
+        # Restore per-beam ``next_timestamp`` from the carry (``clear_chunk_local_`` zeroed it).
         self.state.batched_hyps.next_timestamp.copy_(self.state.time_jumps_carry)
         self._before_loop_common()
-        # ``_before_loop_common`` reset ``time_indices`` and ``safe_time_indices`` to 0 and set
-        # ``active_mask = encoder_output_length > 0``. Override those for continuation:
-        # ``time_indices`` should resume from ``next_timestamp`` and beams whose carry runs past
-        # this chunk's last frame must stay inactive (their ``next_timestamp`` will still propagate
-        # to the next chunk via ``time_jumps`` because ``add_results_no_checks_`` doesn't touch
-        # inactive beams).
+        # Resume ``time_indices`` from restored ``next_timestamp``; mask beams whose carry
+        # runs past this chunk (they stay inactive; the carry still propagates via ``time_jumps``).
         self.state.time_indices.copy_(self.state.batched_hyps.next_timestamp)
         torch.minimum(self.state.time_indices, self.state.last_timestamps, out=self.state.safe_time_indices)
         torch.logical_and(
@@ -1563,23 +1516,14 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
         torch.less_equal(self.state.time_indices, self.state.last_timestamps, out=self.state.active_mask)
         torch.any(self.state.active_mask, out=self.state.active_mask_any)
 
-    def _restore_state_from_prev(
-        self, prev_batched_state: BatchedBeamLoopingState, current_batch_size: int
-    ):
-        """
-        Restore decoder state, fusion states, and batched_hyps from previous chunk's state.
-        Used for streaming/chunked decoding.
-        
-        Args:
-            prev_batched_state: State from previous chunk
-            current_batch_size: Current batch size
-        """
+    def _restore_state_from_prev(self, prev_batched_state: BatchedBeamLoopingState, current_batch_size: int):
+        """Restore decoder, fusion and batched_hyps state from the previous chunk."""
         # Restore decoder output and state
         if prev_batched_state.predictor_outputs is not None:
             self.state.decoder_output[:current_batch_size * self.beam_size].copy_(
                 prev_batched_state.predictor_outputs.view(-1, 1, prev_batched_state.predictor_outputs.shape[-1])
             )
-        
+
         if prev_batched_state.predictor_states is not None:
             # Copy decoder states (assuming tuple of tensors)
             for i, state_tensor in enumerate(prev_batched_state.predictor_states):
@@ -1587,7 +1531,7 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
                     self.state.decoder_state[i][:, :current_batch_size * self.beam_size].copy_(
                         state_tensor[:, :current_batch_size * self.beam_size]
                     )
-        
+
         # Restore fusion states if present
         if prev_batched_state.fusion_states_list is not None and self.fusion_models is not None:
             for fusion_idx, fusion_state in enumerate(prev_batched_state.fusion_states_list):
@@ -1606,14 +1550,12 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
                     self.state.fusion_states_candidates_list[fusion_idx][:current_batch_size].copy_(
                         fusion_states_candidates.view(current_batch_size, self.beam_size, -1)
                     )
-        
+
         # Restore batched_hyps from previous state
         if prev_batched_state.batched_hyps is not None:
             self.state.batched_hyps.copy_from_(prev_batched_state.batched_hyps)
 
-        # Stage the per-beam pending skip into a stable buffer that the captured
-        # ``_before_loop_continuation`` reads at replay time. If the previous state has no
-        # ``time_jumps`` (e.g. legacy callers), fall back to a no-skip carry of zeros.
+        # Stage per-beam pending skip into a stable buffer for the captured continuation prologue.
         self.state.time_jumps_carry.fill_(0)
         if prev_batched_state.time_jumps is not None:
             self.state.time_jumps_carry[:current_batch_size].copy_(
@@ -1625,27 +1567,14 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
         encoder_output_length: torch.Tensor,
         prev_batched_state: Optional[BatchedBeamLoopingState],
     ) -> BatchedBeamLoopingState:
-        """
-        Create BatchedBeamLoopingState for the next chunk.
-        
-        Args:
-            encoder_output_length: Length of current encoder output
-            prev_batched_state: State from previous chunk (if any)
-            
-        Returns:
-            BatchedBeamLoopingState containing current decoding state
-        """
+        """Create BatchedBeamLoopingState for the next chunk."""
         current_batch_size = encoder_output_length.shape[0]
 
         # Get last labels from batched_hyps
         last_labels = self.state.batched_hyps.get_last_labels(pad_id=self._SOS)
 
-        # Snapshot the per-beam pending skip (analogue of greedy TDT's ``time_jumps``) BEFORE
-        # resetting ``next_timestamp``. ``add_results_no_checks_`` and ``recombine_hyps_`` keep
-        # ``next_timestamp`` synced with the per-beam global frame index, so
-        # ``next_timestamp - encoder_output_length`` is exactly how many frames each beam wants to
-        # step into the next chunk's window. Clamp at 0 so padded/never-emitted beams don't
-        # underflow.
+        # Snapshot per-beam pending skip (TDT ``time_jumps`` analogue) BEFORE resetting
+        # ``next_timestamp``; clamp at 0 for padded/never-emitted beams.
         time_jumps = torch.clamp(
             self.state.batched_hyps.next_timestamp[:current_batch_size]
             - encoder_output_length.unsqueeze(-1),
@@ -1654,13 +1583,13 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
 
         # Reset next_timestamp for next chunk
         self.state.batched_hyps.next_timestamp.fill_(0)
-        
+
         # Calculate accumulated decoded lengths
         if prev_batched_state is None:
             decoded_lengths = encoder_output_length.clone()
         else:
             decoded_lengths = encoder_output_length + prev_batched_state.decoded_lengths[:current_batch_size]
-        
+
         # Handle labels - if nothing decoded this chunk, use previous labels
         if prev_batched_state is not None:
             last_labels = torch.where(
@@ -1668,14 +1597,14 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
                 prev_batched_state.labels,
                 last_labels
             )
-        
+
         # Get fusion states if present
         fusion_states_list = None
         if self.fusion_models is not None and self.state.fusion_states_list is not None:
             fusion_states_list = [
                 state[:current_batch_size].clone() for state in self.state.fusion_states_list
             ]
-        
+
         return BatchedBeamLoopingState(
             predictor_states=(
                 self.state.decoder_state[0][:, :current_batch_size * self.beam_size].clone(),

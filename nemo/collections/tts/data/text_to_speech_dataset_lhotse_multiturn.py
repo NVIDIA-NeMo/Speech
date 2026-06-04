@@ -74,6 +74,11 @@ def _strip_timestamps(
     return _SPACE_PATTERN.sub(" ", text).strip()
 
 
+def _count_words_ignoring_punctuation(text: str, _PUNCTUATION_PATTERN=re.compile(r"[^\w\s]+")) -> int:
+    text = _PUNCTUATION_PATTERN.sub("", _strip_timestamps(text))
+    return len(text.split())
+
+
 def _get_supervision_ipa_text(supervision) -> str:
     """Return IPA for a supervision, preferring top-level field over custom."""
     ipa_text = getattr(supervision, "ipa", None)
@@ -828,8 +833,8 @@ def build_phoneme_channel(
             if apply_dropout and random.random() < phoneme_turn_dropout_turn_prob:
                 dropout_applied = True
                 continue
-            
-            if len(_strip_timestamps(supervision.text).split()) <= phoneme_turn_max_words_to_drop:
+
+            if _count_words_ignoring_punctuation(supervision.text) <= phoneme_turn_max_words_to_drop:
                 continue
 
             if isinstance(phoneme_tokenizer, IPABPETokenizer):

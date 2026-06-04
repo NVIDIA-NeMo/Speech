@@ -888,7 +888,7 @@ class BeamBatchedTDTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs)
         if search_type == "malsd_batch":
             # Depending on availability of `blank_as_pad` support
             # switch between more efficient batch decoding technique
-            self._decoding_computer = ModifiedALSDBatchedTDTComputer(
+            self.decoding_computer = ModifiedALSDBatchedTDTComputer(
                 decoder=self.decoder,
                 joint=self.joint,
                 durations=durations,
@@ -907,14 +907,14 @@ class BeamBatchedTDTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs)
 
     def disable_cuda_graphs(self) -> bool:
         """Disable CUDA graphs (e.g., for decoding in training)"""
-        if isinstance(self._decoding_computer, WithOptionalCudaGraphs):
-            return self._decoding_computer.disable_cuda_graphs()
+        if isinstance(self.decoding_computer, WithOptionalCudaGraphs):
+            return self.decoding_computer.disable_cuda_graphs()
         return False
 
     def maybe_enable_cuda_graphs(self) -> bool:
         """Enable CUDA graphs (if allowed)"""
-        if isinstance(self._decoding_computer, WithOptionalCudaGraphs):
-            return self._decoding_computer.maybe_enable_cuda_graphs()
+        if isinstance(self.decoding_computer, WithOptionalCudaGraphs):
+            return self.decoding_computer.maybe_enable_cuda_graphs()
         return False
 
     @property
@@ -961,7 +961,7 @@ class BeamBatchedTDTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs)
             self.joint.eval()
 
             inseq = encoder_output  # [B, T, D]
-            batched_beam_hyps = self._decoding_computer(x=inseq, out_len=logitlen)
+            batched_beam_hyps, _, _ = self.decoding_computer(x=inseq, out_len=logitlen)
 
             # Ensures the correct number of hypotheses (batch_size) for CUDA Graphs compatibility
             batch_size = encoder_output.shape[0]

@@ -39,7 +39,7 @@ class SeparateGraphsLabelLooping:
 
 @dataclass
 class BatchedLabelLoopingState:
-    """Decoding state to pass between invocations"""
+    """Decoding state to pass between invocations of greedy label-looping decoders."""
 
     predictor_states: Any
     predictor_outputs: torch.Tensor
@@ -47,6 +47,24 @@ class BatchedLabelLoopingState:
     decoded_lengths: torch.Tensor
     fusion_states_list: list[torch.Tensor] = field(default_factory=list)
     time_jumps: torch.Tensor | None = None
+
+
+@dataclass
+class BatchedBeamLoopingState(BatchedLabelLoopingState):
+    """Decoding state passed between invocations of batched beam-search decoders.
+
+    Extends :class:`BatchedLabelLoopingState` with ``batched_hyps``, a
+    :class:`BatchedBeamHyps` object that carries cross-chunk per-beam state
+    (``scores``, ``last_label``, ``transcript_hash``, ``current_lengths_nb``,
+    ``last_timestamp_lasts``) across streaming chunk boundaries. Greedy
+    decoders never need this and use the base class directly.
+
+    ``batched_hyps`` is typed ``Any`` to avoid a hard import of
+    :class:`BatchedBeamHyps` from this module (which would create a cycle
+    via :mod:`batched_beam_decoding_utils`).
+    """
+
+    batched_hyps: Any = None
 
 
 @dataclass

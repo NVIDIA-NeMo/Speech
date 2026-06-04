@@ -22,6 +22,16 @@ from tests.collections.asr.decoding.utils import make_preprocessor_deterministic
 CHECKPOINTS_PATH = Path("/home/TestData/asr")
 
 
+# LOCAL-ONLY (do not commit): per-file fallback to HuggingFace when the specific
+# checkpoint under CHECKPOINTS_PATH is missing. Upstream conftest only checks
+# whether the directory exists, which fails on partial local snapshots.
+def _load_asr_model(local_filename: str, pretrained_name: str) -> ASRModel:
+    local_path = CHECKPOINTS_PATH / local_filename
+    if local_path.is_file():
+        return ASRModel.restore_from(str(local_path), map_location="cpu")
+    return ASRModel.from_pretrained(pretrained_name, map_location="cpu")
+
+
 @pytest.fixture(scope="session")
 def an4_val_manifest_corrected(tmp_path_factory, test_data_dir):
     """
@@ -58,39 +68,30 @@ def an4_train_manifest_corrected(tmp_path_factory, test_data_dir):
 
 @pytest.fixture(scope="package")
 def _stt_en_conformer_transducer_small_raw():
-    if CHECKPOINTS_PATH.exists():
-        model = ASRModel.restore_from(
-            str(CHECKPOINTS_PATH / "stt_en_conformer_transducer_small.nemo"), map_location="cpu"
-        )
-    else:
-        model_name = "stt_en_conformer_transducer_small"
-        model = ASRModel.from_pretrained(model_name, map_location="cpu")
+    model = _load_asr_model(
+        local_filename="stt_en_conformer_transducer_small.nemo",
+        pretrained_name="stt_en_conformer_transducer_small",
+    )
     make_preprocessor_deterministic(model)
     return model
 
 
 @pytest.fixture(scope="package")
 def _stt_en_fastconformer_transducer_large_raw():
-    if CHECKPOINTS_PATH.exists():
-        model = ASRModel.restore_from(
-            str(CHECKPOINTS_PATH / "stt_en_fastconformer_transducer_large.nemo"), map_location="cpu"
-        )
-    else:
-        model_name = "stt_en_fastconformer_transducer_large"
-        model = ASRModel.from_pretrained(model_name, map_location="cpu")
+    model = _load_asr_model(
+        local_filename="stt_en_fastconformer_transducer_large.nemo",
+        pretrained_name="stt_en_fastconformer_transducer_large",
+    )
     make_preprocessor_deterministic(model)
     return model
 
 
 @pytest.fixture(scope="package")
 def _stt_en_fastconformer_tdt_large_raw():
-    if CHECKPOINTS_PATH.exists():
-        model = ASRModel.restore_from(
-            str(CHECKPOINTS_PATH / "stt_en_fastconformer_tdt_large.nemo"), map_location="cpu"
-        )
-    else:
-        model_name = "nvidia/stt_en_fastconformer_tdt_large"
-        model = ASRModel.from_pretrained(model_name, map_location="cpu")
+    model = _load_asr_model(
+        local_filename="stt_en_fastconformer_tdt_large.nemo",
+        pretrained_name="nvidia/stt_en_fastconformer_tdt_large",
+    )
     make_preprocessor_deterministic(model)
     return model
 

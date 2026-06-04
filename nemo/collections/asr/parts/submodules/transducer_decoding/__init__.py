@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from nemo.collections.asr.parts.submodules.transducer_decoding.label_looping_base import (
+    BatchedBeamLoopingState,
     BatchedLabelLoopingState,
     GreedyBatchedLabelLoopingComputerBase,
 )
@@ -28,4 +29,5 @@ __all__ = [
     "GreedyBatchedRNNTLabelLoopingComputer",
     "GreedyBatchedTDTLabelLoopingComputer",
     "BatchedLabelLoopingState",
+    "BatchedBeamLoopingState",
 ]

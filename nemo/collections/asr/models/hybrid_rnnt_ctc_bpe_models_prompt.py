@@ -935,9 +935,11 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(PromptStreamingMixin, EncDecHybridRN
     def setup_training_data(self, train_data_config: Optional[DictConfig]):
         """
         Sets up the training data loader via a Dict-like object.
+
         Args:
             train_data_config: A config that contains the information regarding construction
                 of an ASR Training dataset.
+
         Supported Datasets:
             -   :class:`~nemo.collections.asr.data.audio_to_text_lhotse_prompt.LhotseSpeechToTextBpeDatasetWithPrompt`
         """
@@ -968,9 +970,11 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(PromptStreamingMixin, EncDecHybridRN
     def setup_validation_data(self, val_data_config: Optional[Union[DictConfig, Dict]]):
         """
         Sets up the validation data loader via a Dict-like object.
+
         Args:
             val_data_config: A config that contains the information regarding construction
                 of an ASR Training dataset.
+
         Supported Datasets:
             -   :class:`~nemo.collections.asr.data.audio_to_text_lhotse_prompt.LhotseSpeechToTextBpeDatasetWithPrompt`
         """
@@ -984,9 +988,11 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(PromptStreamingMixin, EncDecHybridRN
     def setup_test_data(self, test_data_config: Optional[Union[DictConfig, Dict]]):
         """
         Sets up the test data loader via a Dict-like object.
+
         Args:
             test_data_config: A config that contains the information regarding construction
                 of an ASR Training dataset.
+
         Supported Datasets:
             -   :class:`~nemo.collections.asr.data.audio_to_text_lhotse_prompt.LhotseSpeechToTextBpeDatasetWithPrompt`
         """

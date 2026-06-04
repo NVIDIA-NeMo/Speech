@@ -900,9 +900,9 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         build the head with the same Automodel factory the model would use internally, then
         attach it. The head's weights are fresh (not in the checkpoint).
 
-        NOTE: this head is NOT FSDP/EP-sharded. That's fine for single-node runs and the
-        VERIFY-3 smoke test, but real multi-rank training should also shard/replicate it so
-        its gradients sync across the data-parallel group (TODO before scaling out).
+        NOTE: the head is built unsharded here; ``configure_model`` then ``fully_shard``s it
+        over the DP mesh (right after the perception module) so its gradients reduce-scatter
+        across the data-parallel group like every other parameter.
         """
         from nemo_automodel.components.models.nemotron_v3.mtp import (
             build_mtp_config_from_hf,
@@ -1140,6 +1140,14 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         if fsdp_mesh.size() > 1:
             self._use_fsdp = True
             self.perception = fully_shard(self.perception, mesh=fsdp_mesh)
+            # The MTP head was attached AFTER the LLM's own FSDP/EP wrapping (the base
+            # checkpoint has no MTP), so it's still unsharded. Shard it over the same DP
+            # mesh — otherwise its parameters are replicated and its gradients never
+            # reduce-scatter across the DP group, so each rank would diverge on real
+            # (per-rank-different) data. The head is attention-only (no experts), so plain
+            # FSDP2 over the DP mesh is the right wrapping.
+            if getattr(self.llm, "mtp", None) is not None:
+                self.llm.mtp = fully_shard(self.llm.mtp, mesh=fsdp_mesh)
 
         # Enable MoE FSDP gradient accumulation optimization.
         # The MoEFSDPSyncMixin on the LLM defers gradient sync/resharding on

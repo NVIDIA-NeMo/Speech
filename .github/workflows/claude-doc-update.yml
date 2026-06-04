@@ -4,8 +4,9 @@
 #   1. Automatic: When a PR is merged to main, Claude analyzes the diff and
 #      decides whether documentation updates are needed. If yes, it opens a
 #      new PR with the doc changes and requests review from @Ssofja.
-#   2. On-demand: A speech_team member comments "/claude docs" on any PR to
-#      trigger a doc analysis for that specific PR's changes.
+#   2. On-demand: A speech_team member comments "/claude docs" on an upstream
+#      (non-fork) PR to trigger doc analysis. If updates are needed, Claude
+#      creates a branch and opens a follow-up PR (same as automatic mode).
 #
 # Authorization: restricted to NVIDIA-NeMo/speech_team members.
 # The workflow never runs for PRs from forks.
@@ -52,10 +53,34 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       authorized: ${{ steps.authz.outputs.authorized }}
+      is_upstream_pr: ${{ steps.fork.outputs.is_upstream_pr }}
       pr_number: ${{ github.event.issue.number }}
     steps:
+      - name: Verify PR is from upstream repo (not a fork)
+        id: fork
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const prNumber = context.payload.issue.number;
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+            const isUpstream = pr.head.repo.full_name === context.repo.full_name;
+            core.setOutput('is_upstream_pr', isUpstream ? 'true' : 'false');
+            if (!isUpstream) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body: 'The on-demand doc updater does not run on fork PRs. Please comment `/claude docs` on an upstream branch PR in `NVIDIA-NeMo/NeMo`, or request doc updates manually.',
+              });
+            }
+
       - name: Verify commenter is speech_team
         id: authz
+        if: steps.fork.outputs.is_upstream_pr == 'true'
         uses: actions/github-script@v8
         with:
           github-token: ${{ secrets.ORG_TEAM_READ_TOKEN }}
@@ -73,7 +98,9 @@ jobs:
             }
 
       - name: Refuse non-speech_team
-        if: steps.authz.outputs.authorized != 'true'
+        if: >-
+          steps.fork.outputs.is_upstream_pr == 'true' &&
+          steps.authz.outputs.authorized != 'true'
         uses: actions/github-script@v8
         with:
           script: |
@@ -105,12 +132,13 @@ jobs:
         uses: actions/github-script@v8
         with:
           script: |
-            const { data: files } = await github.rest.pulls.listFiles({
+            const files = await github.paginate(github.rest.pulls.listFiles, {
               owner: context.repo.owner,
               repo: context.repo.repo,
               pull_number: context.payload.pull_request.number,
               per_page: 100,
             });
+            core.info(`Fetched ${files.length} changed file(s).`);
             const filenames = files.map(f => f.filename);
 
             // Skip PRs that ONLY touch docs (they're already doc PRs)
@@ -160,6 +188,8 @@ jobs:
           echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
 
       - uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt: |
@@ -244,13 +274,20 @@ jobs:
 
             Be conservative: only propose changes you are confident about.
             When in doubt, mention the uncertainty in the PR description.
-          claude_args: "--max-turns 15 --model claude-sonnet-4-6"
+          claude_args: |
+            --max-turns 15
+            --model claude-sonnet-4-6
+            --allowedTools "Read,Edit,Write,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*),Bash(gh issue comment:*),Bash(gh pr create:*),Bash(gh pr edit:*),Bash(git status:*),Bash(git diff:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*)"
 
-  # ---- On-demand analysis (same logic, triggered by /claude docs) ----
+  # ---- On-demand analysis (triggered by /claude docs on upstream PRs only) ----
+  # Not dry-run: when doc updates are needed, creates docs/auto-update-pr-<N>,
+  # commits, pushes, and opens a follow-up PR (same behavior as analyze-and-propose).
 
   analyze-on-demand:
     needs: authorize-command
-    if: needs.authorize-command.outputs.authorized == 'true'
+    if: >-
+      needs.authorize-command.outputs.is_upstream_pr == 'true' &&
+      needs.authorize-command.outputs.authorized == 'true'
     runs-on: ubuntu-latest
     concurrency:
       group: doc-update-${{ github.event.issue.number }}
@@ -270,6 +307,8 @@ jobs:
           echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
 
       - uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt: |
@@ -318,7 +357,7 @@ jobs:
             - Speaker Diarization (docs/source/asr/speaker_diarization/): @tango4j, @ipmedenn
             - Audio Codec: @Edresson
             - TTS (docs/source/tts/): @subhankar-ghosh, @blisc
-            - Speech Enhancement (docs/source/audio/): @acoiaws
+            - Speech Enhancement (docs/source/audio/): @racoiaws
             - Dataloaders: @pzelasko
             - SSL (docs/source/asr/ssl/): @stevehuang52
 
@@ -348,7 +387,10 @@ jobs:
             - docs/source/checkpoints/ — checkpoint loading
 
             Be conservative: only propose changes you are confident about.
-          claude_args: "--max-turns 15 --model claude-sonnet-4-6"
+          claude_args: |
+            --max-turns 15
+            --model claude-sonnet-4-6
+            --allowedTools "Read,Edit,Write,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*),Bash(gh issue comment:*),Bash(gh pr create:*),Bash(gh pr edit:*),Bash(git status:*),Bash(git diff:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*)"
 
   # ---- Notify on failure ----
 

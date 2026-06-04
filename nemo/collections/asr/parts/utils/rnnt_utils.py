@@ -184,6 +184,10 @@ class Hypothesis:
         # Invalidated. Need to rerun decode_hypothesis here.
         self.text = None
         self.biasing_cfg = other.biasing_cfg or self.biasing_cfg
+        if self.non_blank_step_confidence_precomputed is None:
+            self.non_blank_step_confidence_precomputed = other.non_blank_step_confidence_precomputed
+        else:
+            self.non_blank_step_confidence_precomputed.extend(other.non_blank_step_confidence_precomputed)
         return self
 
     def clean_decoding_state_(self):

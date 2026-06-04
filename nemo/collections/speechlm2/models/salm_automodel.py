@@ -891,6 +891,50 @@ class SALMAutomodel(LightningModule, HFHubMixin):
     def configure_optimizers(self):
         return configure_optimizers(self)
 
+    def _build_and_attach_mtp_head(self, mtp_cfg, dtype) -> None:
+        """Construct the NemotronV3 MTP head and attach it as ``self.llm.mtp``.
+
+        The base 30B checkpoint has no MTP head, and neither the config-override nor the
+        ``config=`` from_pretrained path can inject the pattern for this model (its
+        ``__init__`` swallows ``**kwargs``). So we set the pattern on the live HF config and
+        build the head with the same Automodel factory the model would use internally, then
+        attach it. The head's weights are fresh (not in the checkpoint).
+
+        NOTE: this head is NOT FSDP/EP-sharded. That's fine for single-node runs and the
+        VERIFY-3 smoke test, but real multi-rank training should also shard/replicate it so
+        its gradients sync across the data-parallel group (TODO before scaling out).
+        """
+        from nemo_automodel.components.models.nemotron_v3.mtp import (
+            build_mtp_config_from_hf,
+            build_nemotron_v3_mtp,
+        )
+
+        llm = self.llm
+        cfg_obj = llm.config
+        cfg_obj.mtp_hybrid_override_pattern = str(mtp_cfg.get("hybrid_override_pattern", "*"))
+        mtp_config = build_mtp_config_from_hf(
+            cfg_obj,
+            loss_scaling_factor=self._mtp_loss_scaling_factor,
+            num_nextn_predict_layers=int(mtp_cfg.get("num_nextn_predict_layers", 1)),
+            use_repeated_layer=bool(mtp_cfg.get("use_repeated_layer", False)),
+        )
+        llm.mtp_config = mtp_config
+        mtp = build_nemotron_v3_mtp(
+            cfg_obj,
+            mtp_config=mtp_config,
+            backend=llm.backend,
+            moe_config=llm.model.moe_config,
+            dtype=dtype,
+        )
+        device = (
+            torch.device("cuda", torch.cuda.current_device()) if torch.cuda.is_available() else torch.device("cpu")
+        )
+        llm.mtp = mtp.to(device=device, dtype=dtype)
+        warnings.warn(
+            f"MTP head attached (unsharded): num_layers={mtp_config.num_layers} "
+            f"pattern={cfg_obj.mtp_hybrid_override_pattern!r}"
+        )
+
     def configure_model(
         self,
         device_mesh=None,
@@ -1013,11 +1057,13 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         if sdpa_method is not None:
             automodel_kwargs["sdpa_method"] = list(OmegaConf.to_container(sdpa_method, resolve=True))
 
-        # Multi-Token Prediction (MTP) auxiliary head. When enabled, forward the head
-        # settings to Automodel's NemotronHForCausalLM so it builds (and, under a
-        # device_mesh, parallelizes) ``self.llm.mtp`` during loading. The hybrid pattern
-        # is read only from the HF config (no __init__ kwarg) so we pass it as a config
-        # override; the count / scaling / repeated-layer flag are __init__ kwargs.
+        # Multi-Token Prediction (MTP): we ADD an auxiliary head to a base model that ships
+        # without one. We cannot inject the head's settings through from_pretrained:
+        #   * mtp_hybrid_override_pattern is read ONLY from the HF config, but the base
+        #     config class doesn't declare it, so HF drops it as an unknown kwarg;
+        #   * passing config= collides — NemotronHForCausalLM.__init__ has **kwargs, so
+        #     Automodel's _filter_kwargs_for_init can't strip the positional ``config``.
+        # So we load the LLM normally and then construct + attach the head ourselves.
         mtp_cfg = self.cfg.get("mtp", None)
         self._mtp_enabled = bool(mtp_cfg is not None and mtp_cfg.get("enabled", False))
         if self._mtp_enabled:
@@ -1029,10 +1075,6 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             from nemo_automodel.components.loss.masked_ce import MaskedCrossEntropy
 
             self._mtp_loss_fn = MaskedCrossEntropy(reduction="sum")
-            automodel_kwargs["num_nextn_predict_layers"] = int(mtp_cfg.get("num_nextn_predict_layers", 1))
-            automodel_kwargs["mtp_hybrid_override_pattern"] = str(mtp_cfg.get("hybrid_override_pattern", "*"))
-            automodel_kwargs["mtp_loss_scaling_factor"] = self._mtp_loss_scaling_factor
-            automodel_kwargs["mtp_use_repeated_layer"] = bool(mtp_cfg.get("use_repeated_layer", False))
 
         self.llm = load_pretrained_automodel_llm(
             self.cfg.pretrained_llm,
@@ -1042,14 +1084,11 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             **automodel_kwargs,
         )
 
-        # Fail loudly if MTP was requested but the head did not get built (e.g. the
-        # config override for the pattern didn't take) — otherwise we'd silently train
-        # without the auxiliary objective.
+        # Build + attach the MTP head ourselves (the base checkpoint has none).
         if self._mtp_enabled and getattr(self.llm, "mtp", None) is None:
-            raise RuntimeError(
-                "MTP was enabled (cfg.mtp.enabled=true) but self.llm.mtp is None after loading. "
-                "Check that num_nextn_predict_layers and hybrid_override_pattern reached the model config."
-            )
+            self._build_and_attach_mtp_head(mtp_cfg, dtype)
+        if self._mtp_enabled and getattr(self.llm, "mtp", None) is None:
+            raise RuntimeError("MTP enabled but self.llm.mtp is still None after _build_and_attach_mtp_head.")
 
         # Apply MoE options (aux_loss_coeff override, load balance tracking)
         self.setup_moe_options()

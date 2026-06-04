@@ -326,20 +326,16 @@ class BatchedBeamHyps:
     def get_last_labels(self, pad_id: int = -1) -> torch.Tensor:
         """
         Get last labels for each hypothesis in the beam.
-        
+
         Args:
             pad_id: Value to use for padding (for hypotheses without labels). Defaults to -1.
-            
+
         Returns:
             Tensor of shape [batch_size, beam_size] with the last label for each hypothesis.
         """
         # last_label already contains the last label for each beam
         # Replace NON_EXISTENT_LABEL_VALUE with pad_id
-        return torch.where(
-            self.last_label != NON_EXISTENT_LABEL_VALUE,
-            self.last_label,
-            pad_id
-        )
+        return torch.where(self.last_label != NON_EXISTENT_LABEL_VALUE, self.last_label, pad_id)
 
     def _allocate_more(self):
         """
@@ -417,7 +413,7 @@ class BatchedBeamHyps:
         is_extended = next_labels >= 0
         extended_with_blank = next_labels == self.blank_index
         extended_with_label = (is_extended) & (~extended_with_blank)
-        
+
         if self.model_type == ASRModelTypeEnum.CTC:
             # for CTC last non-blank and non-repeated label
             extended_with_label = (extended_with_label) & (next_labels != last_labels)  # non-repeated non-blank label
@@ -854,40 +850,38 @@ class BatchedBeamHyps:
             Self (modified in-place)
         """
         max_other_len = other.current_lengths_wb.max().item()
-        
+
         # Early return if other has nothing to merge
         if max_other_len == 0:
             return self
-        
+
         # Check if we need more storage (using allocated buffer size, not current shape)
         # Compute max needed length: current max + other max
         max_needed = self.current_lengths_wb.max().item() + max_other_len
-        
+
         # Expand storage if needed - use existing _allocate_more() method
         while max_needed > self._max_length:
             self._allocate_more()
-        
+
         # Create a range tensor: [0, 1, 2, ..., max_other_len-1]
         other_indices = torch.arange(max_other_len, device=self.device, dtype=torch.long)
-        
+
         # Create shifted indices: current_lengths + [0, 1, 2, ...]
         # Shape: [batch_size, beam_size, max_other_len]
         shifted_indices = self.current_lengths_wb.unsqueeze(-1) + other_indices.unsqueeze(0).unsqueeze(0)
-        
+
         # Scatter other's transcripts into self at shifted positions
         self.transcript_wb.scatter_(
             dim=-1,
             index=shifted_indices,
             src=other.transcript_wb[..., :max_other_len],
         )
-        
+
         # Update pointers: in the merged region every position points to its own beam
         # (identity), except the *first* merged position which optionally encodes the
         # cross-chunk root permutation so the final flatten walk redirects from the new
         # region back to the right beam in the old region.
-        identity_src = self.beam_indices.view(1, self.beam_size, 1).expand(
-            self.batch_size, -1, max_other_len
-        )
+        identity_src = self.beam_indices.view(1, self.beam_size, 1).expand(self.batch_size, -1, max_other_len)
         if boundary_prev_ptr is not None:
             ptr_src = identity_src.clone()
             ptr_src[..., 0] = boundary_prev_ptr
@@ -898,7 +892,7 @@ class BatchedBeamHyps:
             index=shifted_indices,
             src=ptr_src,
         )
-        
+
         # Scatter timestamps
         self.timestamps.scatter_(
             dim=-1,
@@ -923,17 +917,17 @@ class BatchedBeamHyps:
         # Update transcript hash by combining hashes
         # The hash of the merged transcript should account for all non-blank labels
         self.transcript_hash.copy_(other.transcript_hash)
-        
+
         # Update prefix hashes if used
         if self.store_prefix_hashes:
             self.transcript_prefix_hash.copy_(other.transcript_prefix_hash)
-        
+
         # Update tracking fields from other (they reflect the end state after other chunk)
         self.last_label.copy_(other.last_label)
-        
+
         # Only update timestamp tracking fields for transducer models
         if self.model_type != ASRModelTypeEnum.CTC:
             self.next_timestamp.copy_(other.next_timestamp)
             self.last_timestamp_lasts.copy_(other.last_timestamp_lasts)
-        
+
         return self

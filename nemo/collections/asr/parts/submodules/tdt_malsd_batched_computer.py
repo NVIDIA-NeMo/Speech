@@ -1120,9 +1120,7 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
                 [loop_conditional_handle.getPtr(), active_mask_any_ptr.ctypes.data],
                 dtype=np.uint64,
             )
-            with with_conditional_node(
-                cond_kernel, loop_args, loop_conditional_handle, device=self.state.device
-            ):
+            with with_conditional_node(cond_kernel, loop_args, loop_conditional_handle, device=self.state.device):
                 self._loop_body()
                 self._loop_update_decoder()
 
@@ -1405,9 +1403,7 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
         torch.less_equal(self.state.time_indices, self.state.last_timestamps, out=self.state.active_mask)
         torch.any(self.state.active_mask, out=self.state.active_mask_any)
 
-    def _init_decoding_state(
-        self, prev_batched_state: Optional[BatchedBeamState], current_batch_size: int
-    ):
+    def _init_decoding_state(self, prev_batched_state: Optional[BatchedBeamState], current_batch_size: int):
         """Python-side per-chunk state setup, run before the captured graph replays.
 
         Handles the first-chunk-vs-continuation branching outside the graph so the
@@ -1503,8 +1499,7 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
         # Snapshot per-beam pending skip (TDT ``time_jumps`` analogue) BEFORE resetting
         # ``next_timestamp``; clamp at 0 for padded/never-emitted beams.
         time_jumps = torch.clamp(
-            self.state.batched_hyps.next_timestamp[:current_batch_size]
-            - encoder_output_length.unsqueeze(-1),
+            self.state.batched_hyps.next_timestamp[:current_batch_size] - encoder_output_length.unsqueeze(-1),
             min=0,
         ).clone()
 
@@ -1519,25 +1514,19 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
 
         # Handle labels - if nothing decoded this chunk, use previous labels
         if prev_batched_state is not None:
-            last_labels = torch.where(
-                last_labels == self._SOS,
-                prev_batched_state.labels,
-                last_labels
-            )
+            last_labels = torch.where(last_labels == self._SOS, prev_batched_state.labels, last_labels)
 
         # Get fusion states if present
         fusion_states_list = None
         if self.fusion_models is not None and self.state.fusion_states_list is not None:
-            fusion_states_list = [
-                state[:current_batch_size].clone() for state in self.state.fusion_states_list
-            ]
+            fusion_states_list = [state[:current_batch_size].clone() for state in self.state.fusion_states_list]
 
         return BatchedBeamState(
             predictor_states=(
-                self.state.decoder_state[0][:, :current_batch_size * self.beam_size].clone(),
-                self.state.decoder_state[1][:, :current_batch_size * self.beam_size].clone(),
+                self.state.decoder_state[0][:, : current_batch_size * self.beam_size].clone(),
+                self.state.decoder_state[1][:, : current_batch_size * self.beam_size].clone(),
             ),
-            predictor_outputs=self.state.decoder_output[:current_batch_size * self.beam_size].clone(),
+            predictor_outputs=self.state.decoder_output[: current_batch_size * self.beam_size].clone(),
             labels=last_labels,
             decoded_lengths=decoded_lengths,
             fusion_states_list=fusion_states_list,

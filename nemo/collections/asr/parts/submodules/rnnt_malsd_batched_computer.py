@@ -757,7 +757,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         if self.state is None or self.state.need_reinit(encoder_output):
             self._graph_reinitialize(encoder_output, encoder_output_length)
 
-        # Python-side per-chunk initialization (decoder, fusion, batched_hyps cross-chunk state). 
+        # Python-side per-chunk initialization (decoder, fusion, batched_hyps cross-chunk state).
         self._init_decoding_state(prev_batched_state, current_batch_size)
 
         # set length to zero for elements outside the current batch
@@ -1024,9 +1024,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
                 [loop_conditional_handle.getPtr(), active_mask_any_ptr.ctypes.data],
                 dtype=np.uint64,
             )
-            with with_conditional_node(
-                cond_kernel, loop_args, loop_conditional_handle, device=self.state.device
-            ):
+            with with_conditional_node(cond_kernel, loop_args, loop_conditional_handle, device=self.state.device):
                 self._loop_body()
                 self._loop_update_decoder()
 
@@ -1263,9 +1261,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         torch.less_equal(self.state.time_indices, self.state.last_timesteps, out=self.state.active_mask)
         torch.any(self.state.active_mask, out=self.state.active_mask_any)
 
-    def _init_decoding_state(
-        self, prev_batched_state: Optional[BatchedBeamState], current_batch_size: int
-    ):
+    def _init_decoding_state(self, prev_batched_state: Optional[BatchedBeamState], current_batch_size: int):
         """Python-side per-chunk state setup, run before the captured graph replays.
 
         Handles the first-chunk-vs-continuation branching outside the graph so the

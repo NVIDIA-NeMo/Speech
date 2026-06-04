@@ -52,8 +52,7 @@ class BatchedLabelLoopingState:
 
 @dataclass
 class BatchedBeamState(BatchedLabelLoopingState):
-    """Decoding state passed between invocations of batched beam-search decoders.
-    """
+    """Decoding state passed between invocations of batched beam-search decoders."""
 
     beam_state: Optional[BatchedBeamHypsState] = None
 

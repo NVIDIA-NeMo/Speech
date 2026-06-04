@@ -185,9 +185,7 @@ class ModifiedAESBatchedRNNTComputer(ConfidenceMethodMixin):
         safe_time_indices = torch.zeros_like(time_indices)  # time indices, guaranteed to be < out_len
         # In mixed batches some rows may have `encoder_output_length == 0`.
         last_timesteps = torch.clamp_min(encoder_output_length - 1, 0)[:, None].expand_as(batch_indices)
-        active_mask = (encoder_output_length > 0)[:, None].expand_as(batch_indices) & (
-            time_indices <= last_timesteps
-        )
+        active_mask = (encoder_output_length > 0)[:, None].expand_as(batch_indices) & (time_indices <= last_timesteps)
 
         # setup N-gram LM if available
         if self.ngram_lm_batch is not None:

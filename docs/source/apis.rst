@@ -1,3 +1,5 @@
+:orphan:
+
 =========
 NeMo APIs
 =========
@@ -43,4 +45,3 @@ Alternatively, you can jump straight to the documentation for the individual col
 * :doc:`Audio Processing <../audio/intro>`
 
 * :doc:`SpeechLM2 <../speechlm2/intro>`
-

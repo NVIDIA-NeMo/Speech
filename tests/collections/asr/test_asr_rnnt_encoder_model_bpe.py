@@ -20,7 +20,7 @@ import pytest
 import torch
 from lhotse import CutSet, MonoCut
 from lhotse.testing.dummies import DummyManifest
-from omegaconf import DictConfig
+from omegaconf import DictConfig, open_dict
 
 from nemo.collections.asr.data.audio_to_text_lhotse import LhotseSpeechToTextBpeDataset
 from nemo.collections.asr.models import ASRModel
@@ -193,6 +193,31 @@ class TestEncDecRNNTBPEModel:
         assert len(outputs[0]) == 2
         assert isinstance(outputs[0][0], MonoCut)
         assert isinstance(outputs[0][1], Hypothesis)
+
+    @pytest.mark.unit
+    def test_transcribe_dataloader_allows_missing_validation_ds(self, asr_model, monkeypatch):
+        """Some pretrained RNNT BPE checkpoints are shipped without validation_ds."""
+        with open_dict(asr_model.cfg):
+            asr_model.cfg.validation_ds = None
+        captured = {}
+
+        def capture_dataloader_config(config):
+            captured["config"] = config
+            return object()
+
+        monkeypatch.setattr(asr_model, "_setup_dataloader_from_config", capture_dataloader_config)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dataloader = asr_model._setup_transcribe_dataloader(
+                {
+                    "paths2audio_files": ["audio.wav"],
+                    "batch_size": 1,
+                    "temp_dir": tmpdir,
+                }
+            )
+
+        assert dataloader is not None
+        assert captured["config"]["use_start_end_token"] is False
 
     @pytest.mark.with_downloads()
     @pytest.mark.skipif(

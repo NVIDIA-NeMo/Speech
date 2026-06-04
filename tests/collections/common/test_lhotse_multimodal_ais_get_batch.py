@@ -20,6 +20,7 @@ exercised — we validate cut metadata and loader-call semantics only.
 
 import tarfile
 from pathlib import Path
+from unittest.mock import patch
 
 import lhotse
 import pytest
@@ -367,13 +368,14 @@ class _FakeTokenizer:
 
 @pytest.mark.unit
 def test_salm_dataset_batch_loader_enabled(monkeypatch):
-    pytest.importorskip("aistore")  # AISBatchLoader requires the aistore client.
     monkeypatch.setenv("USE_AIS_GET_BATCH", "true")
     from nemo.collections.speechlm2.data.salm_dataset import SALMDataset
 
-    ds = SALMDataset(tokenizer=_FakeTokenizer())
-    assert isinstance(ds.load_audio, AudioSamples)
-    assert ds.load_audio.use_batch_loader is True
+    with patch("nemo.collections.speechlm2.data.salm_dataset.AudioSamples") as audio_samples:
+        ds = SALMDataset(tokenizer=_FakeTokenizer())
+
+    audio_samples.assert_called_once_with(fault_tolerant=True, use_batch_loader=True, mono_downmix=True)
+    assert ds.load_audio is audio_samples.return_value
 
 
 @pytest.mark.unit
@@ -381,6 +383,8 @@ def test_salm_dataset_batch_loader_disabled(monkeypatch):
     monkeypatch.delenv("USE_AIS_GET_BATCH", raising=False)
     from nemo.collections.speechlm2.data.salm_dataset import SALMDataset
 
-    ds = SALMDataset(tokenizer=_FakeTokenizer())
-    assert isinstance(ds.load_audio, AudioSamples)
-    assert ds.load_audio.use_batch_loader is False
+    with patch("nemo.collections.speechlm2.data.salm_dataset.AudioSamples") as audio_samples:
+        ds = SALMDataset(tokenizer=_FakeTokenizer())
+
+    audio_samples.assert_called_once_with(fault_tolerant=True, use_batch_loader=False, mono_downmix=True)
+    assert ds.load_audio is audio_samples.return_value

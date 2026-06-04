@@ -82,13 +82,30 @@ case "${BASE_IMAGE}" in
         exit 1
         ;;
 esac
+cuda_major_minor="$(sed -n 's/.*cuda\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' <<<"${BASE_IMAGE}")"
+if [[ -z "${cuda_major_minor}" ]]; then
+    echo "Cannot derive CUDA major.minor from BASE_IMAGE='${BASE_IMAGE}'. Expected image tag containing e.g. 'cuda12.9' or 'cuda13.2'."
+    exit 1
+fi
 cat >/usr/local/bin/nemo-cuda-flavor <<SCRIPT
 #!/usr/bin/env bash
 set -euo pipefail
 echo "${cuda_flavor}"
 SCRIPT
-chmod +x /usr/local/bin/nemo-cuda-flavor
+cat >/usr/local/bin/nemo-install-cuda-python <<SCRIPT
+#!/usr/bin/env bash
+set -euo pipefail
+cuda_major_minor="${cuda_major_minor}"
+cuda_major="\${cuda_major_minor%%.*}"
+cuda_minor="\${cuda_major_minor#*.}"
+cuda_next_minor="\$((cuda_minor + 1))"
+uv pip install \
+    "cuda-bindings>=\${cuda_major_minor}.0,<\${cuda_major}.\${cuda_next_minor}" \
+    "cuda-python>=\${cuda_major_minor}.0,<\${cuda_major}.\${cuda_next_minor}"
+SCRIPT
+chmod +x /usr/local/bin/nemo-cuda-flavor /usr/local/bin/nemo-install-cuda-python
 echo "Derived CUDA flavor: ${cuda_flavor}"
+echo "Derived CUDA Python major.minor: ${cuda_major_minor}"
 EOF
 
 WORKDIR /workspace
@@ -97,6 +114,7 @@ COPY nemo/__init__.py nemo/package_info.py /workspace/nemo/
 RUN <<"EOF" bash -ex
 cuda_flavor="$(nemo-cuda-flavor)"
 uv sync --link-mode copy --locked --extra all --extra "${cuda_flavor}" --group test
+nemo-install-cuda-python
 EOF
 
 RUN <<"EOF" bash -ex
@@ -204,6 +222,7 @@ uv sync \
     --extra "${cuda_flavor}" \
     --extra "${automodel_extra}" \
     --group test
+nemo-install-cuda-python
 
 if [[ "${GPU_TARGET}" == "a100" ]]; then
     git clone "${DEEPEP_REPO}" /opt/automodel-src/DeepEP

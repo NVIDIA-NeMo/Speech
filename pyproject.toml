@@ -233,7 +233,7 @@ all = [
 cu12 = [
     "torch==2.12.0+cu126 ; sys_platform == 'linux'",
     "numba-cuda[cu12] ; platform_system != 'Darwin'",
-    "cuda-python>=12.9.0,<13 ; platform_system != 'Darwin'",
+    "cuda-python>=12,<13 ; platform_system != 'Darwin'",
 ]
 
 cu13 = [

@@ -1,0 +1,33 @@
+name: "codec"
+platform: "tensorrt_plan"
+max_batch_size: 32
+
+# Stacked model codes (clamp + unstack + index-convert are baked into the engine).
+# Frame axis is static at the exported chunk size (15 model frames).
+input [
+  {
+    name: "audio_codes"
+    data_type: TYPE_INT64
+    dims: [ 15, 16 ]
+  }
+]
+
+output [
+  {
+    name: "audio_values"
+    data_type: TYPE_FP32
+    dims: [ -1 ]
+  }
+]
+
+dynamic_batching {
+  max_queue_delay_microseconds: 1000
+  preferred_batch_size: [ 32 ]
+}
+
+instance_group [
+  {
+    count: 1
+    kind: KIND_GPU
+  }
+]

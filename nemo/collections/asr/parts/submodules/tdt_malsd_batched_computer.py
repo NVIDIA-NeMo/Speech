@@ -425,9 +425,8 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
             .clone()
         )  # size: batch_size x beam_size x beam_size
 
-        if prev_batched_state is not None and prev_batched_state.batched_hyps is not None:
-            batched_hyps.copy_from_(prev_batched_state.batched_hyps)
-            batched_hyps.clear_chunk_local_()
+        if prev_batched_state is not None and prev_batched_state.beam_state is not None:
+            batched_hyps.restore_cross_chunk_state_(prev_batched_state.beam_state)
         # Resume per-beam time from previous-chunk overshoot (TDT ``time_jumps``).
         if prev_batched_state is not None and prev_batched_state.time_jumps is not None:
             time_indices = prev_batched_state.time_jumps.clone()
@@ -711,7 +710,7 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
             ),
             fusion_states_list=fusion_states_list if self.fusion_models is not None else None,
             time_jumps=time_jumps,
-            batched_hyps=batched_hyps,  # Save batched_hyps object for next chunk
+            beam_state=batched_hyps.export_cross_chunk_state(),
         )
 
         return batched_hyps, None, decoding_state
@@ -1552,9 +1551,11 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
                         fusion_states_candidates.view(current_batch_size, self.beam_size, -1)
                     )
 
-        # Restore batched_hyps from previous state
-        if prev_batched_state.batched_hyps is not None:
-            self.state.batched_hyps.copy_from_(prev_batched_state.batched_hyps)
+        # Restore cross-chunk per-beam state (scores, last_label, transcript_hash,
+        # current_lengths_nb, last_timestamp_lasts). Chunk-local prefix-tree buffers
+        # are cleared by the captured ``_before_loop_continuation`` so we don't touch them.
+        if prev_batched_state.beam_state is not None:
+            self.state.batched_hyps.restore_cross_chunk_state_(prev_batched_state.beam_state)
 
         # Stage per-beam pending skip into a stable buffer for the captured continuation prologue.
         self.state.time_jumps_carry.fill_(0)
@@ -1616,7 +1617,8 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
             decoded_lengths=decoded_lengths,
             fusion_states_list=fusion_states_list,
             time_jumps=time_jumps,
-            batched_hyps=self.state.batched_hyps.clone(),
+            # Trim to current batch (graph buffers sized to capture-time max).
+            beam_state=self.state.batched_hyps.export_cross_chunk_state(batch_size=current_batch_size),
         )
 
     def __call__(

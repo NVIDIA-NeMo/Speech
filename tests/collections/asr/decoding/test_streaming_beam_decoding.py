@@ -54,10 +54,7 @@ from tqdm.auto import tqdm
 
 from nemo.collections.asr.models import ASRModel
 from nemo.collections.asr.parts.submodules.transducer_decoding.label_looping_base import BatchedBeamLoopingState
-from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import (
-    BatchedBeamHyps,
-    batched_beam_hyps_to_hypotheses,
-)
+from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import BatchedBeamHyps
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
 from tests.collections.asr.decoding.utils import load_audio, make_preprocessor_deterministic
 
@@ -252,7 +249,6 @@ def _run_streaming_batched_state(
             encoder_output, encoder_output_len = get_batch_encoder_outputs_from_records(
                 manifest[i : i + batch_size], model=model, device=device
             )
-            local_batch_size = encoder_output_len.shape[0]
             state: Optional[BatchedBeamLoopingState] = None
             current_batched_hyps: BatchedBeamHyps | None = None
             encoder_output = encoder_output.transpose(1, 2)  # (B, T, D)
@@ -279,7 +275,9 @@ def _run_streaming_batched_state(
                         boundary_prev_ptr=chunk_root_ptrs,
                     )
             assert current_batched_hyps is not None
-            all_hyps.extend(batched_beam_hyps_to_hypotheses(current_batched_hyps, batch_size=local_batch_size))
+            # ``to_hyps_list`` mutates the prefix tree via ``flatten_sort_``, but we're done
+            # with ``current_batched_hyps`` here so an in-place call is fine.
+            all_hyps.extend(current_batched_hyps.to_hyps_list(score_norm=True))
 
     streaming_transcripts = [model.tokenizer.ids_to_text(hyp.y_sequence.tolist()) for hyp in all_hyps]
     return ref_transcripts, streaming_transcripts

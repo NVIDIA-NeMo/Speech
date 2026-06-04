@@ -21,6 +21,7 @@ import torch
 from nemo.collections.asr.parts.context_biasing.biasing_multi_model import GPUBiasingMultiModelBase
 from nemo.collections.asr.parts.submodules.ngram_lm import NGramGPULanguageModel
 from nemo.collections.asr.parts.utils import rnnt_utils
+from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import BatchedBeamHypsState
 from nemo.collections.common.parts.optional_cuda_graphs import WithOptionalCudaGraphs
 from nemo.core.utils.cuda_python_utils import check_cuda_python_cuda_graphs_conditional_nodes_supported
 from nemo.utils import logging
@@ -53,18 +54,16 @@ class BatchedLabelLoopingState:
 class BatchedBeamLoopingState(BatchedLabelLoopingState):
     """Decoding state passed between invocations of batched beam-search decoders.
 
-    Extends :class:`BatchedLabelLoopingState` with ``batched_hyps``, a
-    :class:`BatchedBeamHyps` object that carries cross-chunk per-beam state
+    Extends :class:`BatchedLabelLoopingState` with ``beam_state``, a
+    :class:`BatchedBeamHypsState` holding only the cross-chunk per-beam tensors
     (``scores``, ``last_label``, ``transcript_hash``, ``current_lengths_nb``,
-    ``last_timestamp_lasts``) across streaming chunk boundaries. Greedy
-    decoders never need this and use the base class directly.
-
-    ``batched_hyps`` is typed ``Any`` to avoid a hard import of
-    :class:`BatchedBeamHyps` from this module (which would create a cycle
-    via :mod:`batched_beam_decoding_utils`).
+    optionally ``transcript_prefix_hash`` / ``last_timestamp_lasts``) -- the
+    chunk-local prefix tree, write cursor and per-step timestamps are NOT carried
+    here; they reach the caller as the first element of the computer's 3-tuple
+    return. Greedy decoders never need this and use the base class directly.
     """
 
-    batched_hyps: Any = None
+    beam_state: Optional[BatchedBeamHypsState] = None
 
 
 @dataclass

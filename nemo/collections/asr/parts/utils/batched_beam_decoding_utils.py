@@ -11,7 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import List, Optional
+from dataclasses import dataclass
+from typing import Optional
 
 import torch
 
@@ -73,6 +74,24 @@ class ASRModelTypeEnum(PrettyStrEnum):
     RNNT = "rnnt"
     TDT = "tdt"
     CTC = "ctc"
+
+
+@dataclass
+class BatchedBeamHypsState:
+    """Minimal cross-chunk per-beam state extracted from :class:`BatchedBeamHyps`.
+
+    Holds only the fields that need to survive across streaming chunk boundaries.
+    The chunk-local prefix tree (``transcript_wb`` / ``transcript_wb_prev_ptr`` /
+    ``timestamps`` / ``current_lengths_wb`` / ``next_timestamp``) is intentionally
+    excluded.
+    """
+
+    scores: torch.Tensor
+    last_label: torch.Tensor
+    transcript_hash: torch.Tensor
+    current_lengths_nb: torch.Tensor
+    last_timestamp_lasts: Optional[torch.Tensor] = None
+    transcript_prefix_hash: Optional[torch.Tensor] = None
 
 
 class BatchedBeamHyps:
@@ -229,56 +248,60 @@ class BatchedBeamHyps:
             self.timestamps.fill_(0)
             self.next_timestamp.fill_(0)
 
-    def copy_from_(self, other: "BatchedBeamHyps"):
+    def export_cross_chunk_state(self, batch_size: Optional[int] = None) -> "BatchedBeamHypsState":
         """
-        Copy state from another BatchedBeamHyps object (in-place).
-        Used for streaming/chunked decoding to restore state from previous chunk.
-        
+        Snapshot the cross-chunk per-beam state into a :class:`BatchedBeamHypsState`.
+
+        Only the fields preserved by :meth:`clear_chunk_local_` are exported (scores,
+        last_label, transcript_hash, current_lengths_nb, and optionally
+        last_timestamp_lasts / transcript_prefix_hash). The chunk-local prefix tree
+        and timestamps are NOT exported -- they reach the caller via the first
+        element of the computer's 3-tuple return.
+
         Args:
-            other: Source BatchedBeamHyps to copy from
+            batch_size: optional number of rows to export. Defaults to
+                ``self.batch_size``. Used by the CUDA-graphs paths to trim
+                capture-time buffers down to the live batch.
+
+        Returns:
+            A new :class:`BatchedBeamHypsState` with cloned tensors (safe to keep
+            across subsequent in-place mutations of this object).
         """
-        batch_size = min(self.batch_size, other.batch_size)
-        beam_size = min(self.beam_size, other.beam_size)
-        max_length = min(self._max_length, other._max_length)
-        
-        self.current_lengths_nb[:batch_size, :beam_size].copy_(
-            other.current_lengths_nb[:batch_size, :beam_size]
+        out_batch = self.batch_size if batch_size is None else batch_size
+        if out_batch <= 0 or out_batch > self.batch_size:
+            raise ValueError(f"batch_size must be in (0, {self.batch_size}], got {out_batch}")
+        return BatchedBeamHypsState(
+            scores=self.scores[:out_batch].clone(),
+            last_label=self.last_label[:out_batch].clone(),
+            transcript_hash=self.transcript_hash[:out_batch].clone(),
+            current_lengths_nb=self.current_lengths_nb[:out_batch].clone(),
+            last_timestamp_lasts=(
+                self.last_timestamp_lasts[:out_batch].clone() if self.model_type != ASRModelTypeEnum.CTC else None
+            ),
+            transcript_prefix_hash=(
+                self.transcript_prefix_hash[:out_batch].clone() if self.store_prefix_hashes else None
+            ),
         )
-        self.current_lengths_wb[:batch_size, :beam_size].copy_(
-            other.current_lengths_wb[:batch_size, :beam_size]
-        )
-        self.transcript_wb[:batch_size, :beam_size, :max_length].copy_(
-            other.transcript_wb[:batch_size, :beam_size, :max_length]
-        )
-        self.transcript_wb_prev_ptr[:batch_size, :beam_size, :max_length].copy_(
-            other.transcript_wb_prev_ptr[:batch_size, :beam_size, :max_length]
-        )
-        self.scores[:batch_size, :beam_size].copy_(
-            other.scores[:batch_size, :beam_size]
-        )
-        self.last_label[:batch_size, :beam_size].copy_(
-            other.last_label[:batch_size, :beam_size]
-        )
-        self.transcript_hash[:batch_size, :beam_size].copy_(
-            other.transcript_hash[:batch_size, :beam_size]
-        )
-        
-        if self.store_prefix_hashes and other.store_prefix_hashes:
-            self.transcript_prefix_hash[:batch_size, :beam_size].copy_(
-                other.transcript_prefix_hash[:batch_size, :beam_size]
-            )
-        
-        self.timestamps[:batch_size, :beam_size, :max_length].copy_(
-            other.timestamps[:batch_size, :beam_size, :max_length]
-        )
-        
-        if self.model_type != ASRModelTypeEnum.CTC:
-            self.next_timestamp[:batch_size, :beam_size].copy_(
-                other.next_timestamp[:batch_size, :beam_size]
-            )
-            self.last_timestamp_lasts[:batch_size, :beam_size].copy_(
-                other.last_timestamp_lasts[:batch_size, :beam_size]
-            )
+
+    def restore_cross_chunk_state_(self, state: "BatchedBeamHypsState"):
+        """
+        Restore cross-chunk per-beam state from a :class:`BatchedBeamHypsState` (in-place).
+
+        Inverse of :meth:`export_cross_chunk_state`. Writes only the cross-chunk
+        fields; the prefix tree / timestamps stay at their (presumably just-reset)
+        chunk-local values, so callers typically pair this with
+        :meth:`clear_chunk_local_` first (eager path) or rely on the captured
+        ``_before_loop_continuation`` to clear chunk-local buffers (CUDA-graphs path).
+        """
+        batch_size = min(self.batch_size, state.scores.shape[0])
+        self.scores[:batch_size].copy_(state.scores[:batch_size])
+        self.last_label[:batch_size].copy_(state.last_label[:batch_size])
+        self.transcript_hash[:batch_size].copy_(state.transcript_hash[:batch_size])
+        self.current_lengths_nb[:batch_size].copy_(state.current_lengths_nb[:batch_size])
+        if self.store_prefix_hashes and state.transcript_prefix_hash is not None:
+            self.transcript_prefix_hash[:batch_size].copy_(state.transcript_prefix_hash[:batch_size])
+        if self.model_type != ASRModelTypeEnum.CTC and state.last_timestamp_lasts is not None:
+            self.last_timestamp_lasts[:batch_size].copy_(state.last_timestamp_lasts[:batch_size])
 
     def clone(self, batch_size: Optional[int] = None) -> "BatchedBeamHyps":
         """
@@ -308,119 +331,22 @@ class BatchedBeamHyps:
             store_prefix_hashes=self.store_prefix_hashes,
             model_type=self.model_type,
         )
-        new_hyps.copy_from_(self)
-        return new_hyps
-
-    def keep_beam_(self, beam_indices: torch.Tensor) -> None:
-        """
-        In-place: collapse each row to a single surviving beam, replicated across all
-        ``beam_size`` slots, with the other slots' scores set to ``-inf``.
-        Args:
-            beam_indices: ``[batch_size]`` long tensor giving the beam to keep for
-                each row in the batch.
-        """
-        if self.beam_size <= 1:
-            return
-        # Build [batch_size, beam_size] permutation: every slot points at the chosen beam.
-        permutation = beam_indices.to(dtype=torch.long, device=self.device).unsqueeze(-1).expand(
-            self.batch_size, self.beam_size
-        ).contiguous()
-        self._flatten_with_permutation_(permutation)
-        # Mark all but the first slot as inactive so the next iteration's top-k repopulates them.
-        self.scores[:, 1:].fill_(INACTIVE_SCORE)
-
-    def slice_row(self, idx: int) -> "BatchedBeamHyps":
-        """
-        Return a deep copy of one row (stream) of this batched object as a new
-        ``BatchedBeamHyps`` with ``batch_size == 1``.
-
-        Used by streaming pipelines to split a batched beam-search state into per-stream
-        states (mirrors ``decoder.batch_split_states`` for the prefix-tree buffer).
-
-        Args:
-            idx: index in the batch dimension to slice.
-
-        Returns:
-            A new ``BatchedBeamHyps`` with ``batch_size=1`` holding row ``idx``.
-        """
-        new_hyps = BatchedBeamHyps(
-            batch_size=1,
-            beam_size=self.beam_size,
-            init_length=self._max_length,
-            blank_index=self.blank_index,
-            device=self.device,
-            float_dtype=self.scores.dtype,
-            store_prefix_hashes=self.store_prefix_hashes,
-            model_type=self.model_type,
-        )
-        new_hyps.current_lengths_nb.copy_(self.current_lengths_nb[idx : idx + 1])
-        new_hyps.current_lengths_wb.copy_(self.current_lengths_wb[idx : idx + 1])
-        new_hyps.transcript_wb.copy_(self.transcript_wb[idx : idx + 1])
-        new_hyps.transcript_wb_prev_ptr.copy_(self.transcript_wb_prev_ptr[idx : idx + 1])
-        new_hyps.scores.copy_(self.scores[idx : idx + 1])
-        new_hyps.last_label.copy_(self.last_label[idx : idx + 1])
-        new_hyps.transcript_hash.copy_(self.transcript_hash[idx : idx + 1])
+        # Destination is freshly allocated at exactly [out_batch, beam_size, _max_length],
+        # so we can copy whole rows of `self` directly without per-axis trimming.
+        new_hyps.current_lengths_nb.copy_(self.current_lengths_nb[:out_batch])
+        new_hyps.current_lengths_wb.copy_(self.current_lengths_wb[:out_batch])
+        new_hyps.transcript_wb.copy_(self.transcript_wb[:out_batch])
+        new_hyps.transcript_wb_prev_ptr.copy_(self.transcript_wb_prev_ptr[:out_batch])
+        new_hyps.scores.copy_(self.scores[:out_batch])
+        new_hyps.last_label.copy_(self.last_label[:out_batch])
+        new_hyps.transcript_hash.copy_(self.transcript_hash[:out_batch])
         if self.store_prefix_hashes:
-            new_hyps.transcript_prefix_hash.copy_(self.transcript_prefix_hash[idx : idx + 1])
-        new_hyps.timestamps.copy_(self.timestamps[idx : idx + 1])
+            new_hyps.transcript_prefix_hash.copy_(self.transcript_prefix_hash[:out_batch])
+        new_hyps.timestamps.copy_(self.timestamps[:out_batch])
         if self.model_type != ASRModelTypeEnum.CTC:
-            new_hyps.next_timestamp.copy_(self.next_timestamp[idx : idx + 1])
-            new_hyps.last_timestamp_lasts.copy_(self.last_timestamp_lasts[idx : idx + 1])
+            new_hyps.next_timestamp.copy_(self.next_timestamp[:out_batch])
+            new_hyps.last_timestamp_lasts.copy_(self.last_timestamp_lasts[:out_batch])
         return new_hyps
-
-    @classmethod
-    def stack_rows(cls, items: list["BatchedBeamHyps"]) -> "BatchedBeamHyps":
-        """
-        Concatenate a list of single-row ``BatchedBeamHyps`` objects (each with
-        ``batch_size == 1``) into a single batched object.
-
-        All items must share ``beam_size``, ``blank_index``, ``device``, ``model_type``,
-        ``store_prefix_hashes`` and ``scores.dtype``. The output's ``_max_length`` is
-        the maximum across items; shorter items are right-padded with the same fill
-        values used at construction time.
-
-        Mirrors ``decoder.batch_unsplit_states`` for the prefix-tree buffer.
-
-        Args:
-            items: list of single-row ``BatchedBeamHyps``.
-
-        Returns:
-            A new ``BatchedBeamHyps`` of size ``len(items)`` on the batch axis.
-        """
-        if len(items) == 0:
-            raise ValueError("stack_rows requires at least one item")
-        ref = items[0]
-        max_length = max(it._max_length for it in items)
-
-        out = cls(
-            batch_size=len(items),
-            beam_size=ref.beam_size,
-            init_length=max_length,
-            blank_index=ref.blank_index,
-            device=ref.device,
-            float_dtype=ref.scores.dtype,
-            store_prefix_hashes=ref.store_prefix_hashes,
-            model_type=ref.model_type,
-        )
-        for i, it in enumerate(items):
-            assert it.batch_size == 1, "stack_rows expects single-row items"
-            assert it.beam_size == ref.beam_size, "all items must share beam_size"
-            assert it.model_type == ref.model_type, "all items must share model_type"
-            L = it._max_length
-            out.current_lengths_nb[i : i + 1].copy_(it.current_lengths_nb)
-            out.current_lengths_wb[i : i + 1].copy_(it.current_lengths_wb)
-            out.transcript_wb[i : i + 1, :, :L].copy_(it.transcript_wb)
-            out.transcript_wb_prev_ptr[i : i + 1, :, :L].copy_(it.transcript_wb_prev_ptr)
-            out.scores[i : i + 1].copy_(it.scores)
-            out.last_label[i : i + 1].copy_(it.last_label)
-            out.transcript_hash[i : i + 1].copy_(it.transcript_hash)
-            if ref.store_prefix_hashes:
-                out.transcript_prefix_hash[i : i + 1].copy_(it.transcript_prefix_hash)
-            out.timestamps[i : i + 1, :, :L].copy_(it.timestamps)
-            if ref.model_type != ASRModelTypeEnum.CTC:
-                out.next_timestamp[i : i + 1].copy_(it.next_timestamp)
-                out.last_timestamp_lasts[i : i + 1].copy_(it.last_timestamp_lasts)
-        return out
 
     def get_last_labels(self, pad_id: int = -1) -> torch.Tensor:
         """
@@ -1036,39 +962,3 @@ class BatchedBeamHyps:
             self.last_timestamp_lasts.copy_(other.last_timestamp_lasts)
         
         return self
-
-
-def batched_beam_hyps_to_hypotheses(
-    batched_beam_hyps: BatchedBeamHyps,
-    batch_size: Optional[int] = None,
-) -> List[Hypothesis]:
-    """
-    Convert a ``BatchedBeamHyps`` object to a list of best-per-batch ``Hypothesis``.
-
-    Beam-search analogue of :func:`nemo.collections.asr.parts.utils.rnnt_utils.batched_hyps_to_hypotheses`.
-    Differs from calling :meth:`BatchedBeamHyps.to_hyps_list` directly in two ways:
-
-    1. The call is made on a deep copy so the underlying prefix tree (which the streaming
-       pipeline stores in the decoding state across chunks) is not mutated by
-       ``flatten_sort_``.
-    2. ``y_sequence`` / ``timestamp`` are converted from numpy to ``torch.Tensor`` so the
-       returned hypotheses match the format produced by the greedy path and can be used
-       with ``Hypothesis.merge_`` and the downstream streaming pipeline without any
-       beam-specific branching.
-
-    Args:
-        batched_beam_hyps: source ``BatchedBeamHyps``; not modified.
-        batch_size: real batch size when CUDA-graph capture pads the underlying tensors.
-
-    Returns:
-        list of ``Hypothesis`` objects (one per batch element).
-    """
-    hyps = batched_beam_hyps.clone().to_hyps_list()
-    for h in hyps:
-        if h.y_sequence is not None and not isinstance(h.y_sequence, torch.Tensor):
-            h.y_sequence = torch.as_tensor(h.y_sequence, dtype=torch.long)
-        if h.timestamp is not None and not isinstance(h.timestamp, torch.Tensor):
-            h.timestamp = torch.as_tensor(h.timestamp, dtype=torch.long)
-    if batch_size is not None and batch_size < len(hyps):
-        hyps = hyps[:batch_size]
-    return hyps

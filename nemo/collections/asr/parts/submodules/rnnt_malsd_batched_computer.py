@@ -405,9 +405,8 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             .clone()
         )  # size: batch_size x beam_size x beam_size
 
-        if prev_batched_state is not None and prev_batched_state.batched_hyps is not None:
-            batched_hyps.copy_from_(prev_batched_state.batched_hyps)
-            batched_hyps.clear_chunk_local_()
+        if prev_batched_state is not None and prev_batched_state.beam_state is not None:
+            batched_hyps.restore_cross_chunk_state_(prev_batched_state.beam_state)
 
         time_indices = torch.zeros_like(batch_beam_indices)
         safe_time_indices = torch.zeros_like(time_indices)  # time indices, guaranteed to be < out_len
@@ -652,7 +651,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             ),
             fusion_states_list=fusion_states_list if self.fusion_models is not None else None,
             time_jumps=None,
-            batched_hyps=batched_hyps,  # Save batched_hyps object for next chunk
+            beam_state=batched_hyps.export_cross_chunk_state(),
         )
 
         return batched_hyps, None, decoding_state
@@ -1407,9 +1406,11 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
                 )
                 self.state.fusion_scores_list[fusion_idx].copy_(fusion_scores)
 
-        # Restore batched_hyps from previous state
-        if prev_batched_state.batched_hyps is not None:
-            self.state.batched_hyps.copy_from_(prev_batched_state.batched_hyps)
+        # Restore cross-chunk per-beam state (scores, last_label, transcript_hash, ...).
+        # Chunk-local prefix-tree buffers are cleared by the captured
+        # ``_before_loop_continuation`` so we don't touch them here.
+        if prev_batched_state.beam_state is not None:
+            self.state.batched_hyps.restore_cross_chunk_state_(prev_batched_state.beam_state)
 
     def _create_decoding_state(
         self,
@@ -1454,7 +1455,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             fusion_states_list=fusion_states_list,
             time_jumps=None,
             # Trim to current batch (graph buffers sized to capture-time max).
-            batched_hyps=self.state.batched_hyps.clone(batch_size=current_batch_size),
+            beam_state=self.state.batched_hyps.export_cross_chunk_state(batch_size=current_batch_size),
         )
 
     def __call__(

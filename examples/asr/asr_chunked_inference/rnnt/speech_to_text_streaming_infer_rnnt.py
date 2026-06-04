@@ -479,12 +479,14 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
                     # Flatten this chunk's prefix tree and thread the cross-chunk beam
                     # permutation (``root_ptrs``) into the accumulator so the final
                     # ``flatten_sort_`` walks back through the right beam history.
-                    chunk_root_ptrs = state.batched_hyps.flatten_()
+                    # ``chunk_batched_hyps`` is the per-chunk BatchedBeamHyps (the
+                    # cross-chunk per-beam scalars live on ``state.beam_state`` now).
+                    chunk_root_ptrs = chunk_batched_hyps.flatten_()
                     if current_batched_hyps is None:
-                        current_batched_hyps = state.batched_hyps
+                        current_batched_hyps = chunk_batched_hyps
                     else:
                         current_batched_hyps.merge_(
-                            state.batched_hyps,
+                            chunk_batched_hyps,
                             is_chunk_continuation=True,
                             boundary_prev_ptr=chunk_root_ptrs,
                         )

@@ -175,9 +175,8 @@ class ModifiedAESBatchedRNNTComputer(ConfidenceMethodMixin):
             store_prefix_hashes=True,
         )
 
-        if prev_batched_state is not None and prev_batched_state.batched_hyps is not None:
-            batched_hyps.copy_from_(prev_batched_state.batched_hyps)
-            batched_hyps.clear_chunk_local_()
+        if prev_batched_state is not None and prev_batched_state.beam_state is not None:
+            batched_hyps.restore_cross_chunk_state_(prev_batched_state.beam_state)
 
         time_indices = torch.zeros_like(batch_indices)
         safe_time_indices = torch.zeros_like(time_indices)  # time indices, guaranteed to be < out_len
@@ -376,7 +375,7 @@ class ModifiedAESBatchedRNNTComputer(ConfidenceMethodMixin):
                 else encoder_output_length + prev_batched_state.decoded_lengths
             ),
             time_jumps=None,
-            batched_hyps=batched_hyps,
+            beam_state=batched_hyps.export_cross_chunk_state(),
         )
 
         return batched_hyps, None, decoding_state

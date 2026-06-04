@@ -26,7 +26,7 @@ output to ``model.decoding.decoding.decoding_computer`` in chunks and threading
   - :func:`test_malsd_streaming_batched_state_with_word_boosting` -- same MALSD matrix
     but with a ``GPUBoostingTreeModel`` fusion model plugged in (``boosting_tree.
     key_phrases_list``); exercises cross-chunk restoration of per-beam fusion states
-    in :meth:`_restore_state_from_prev`.
+    in :meth:`_init_decoding_state`.
   - :func:`test_maes_streaming_batched_state` -- covers RNNT MAES
     (:class:`ModifiedAESBatchedRNNTComputer`); MAES is RNNT-only and pure-PyTorch,
     so there is no ``is_tdt`` / ``cuda_graphs_mode`` axis.
@@ -176,7 +176,7 @@ def _configure_malsd_decoding(
 
     When ``key_phrases_list`` is given, a ``boosting_tree`` fusion model is plugged in
     (``BoostingTreeModelConfig.key_phrases_list``) so the streaming path exercises
-    cross-chunk fusion-state restoration in :meth:`_restore_state_from_prev`.
+    cross-chunk fusion-state restoration in :meth:`_init_decoding_state`.
     """
     decoding_cfg = copy.deepcopy(model.cfg.decoding)
     decoding_cfg.strategy = "malsd_batch"
@@ -399,7 +399,7 @@ def test_malsd_streaming_batched_state_with_word_boosting(
     Adds a ``GPUBoostingTreeModel`` fusion model on top of the standard streaming MALSD
     test. The reference (``model.transcribe``) and the streaming path are configured
     identically, so the boosting tree's per-beam fusion states must be restored across
-    chunks via ``_restore_state_from_prev`` for the two transcripts to match.
+    chunks via ``_init_decoding_state`` for the two transcripts to match.
     """
     model = stt_en_fastconformer_tdt_large if is_tdt else stt_en_fastconformer_transducer_large
     model.eval()

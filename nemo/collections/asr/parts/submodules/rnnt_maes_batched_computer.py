@@ -25,6 +25,7 @@ from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import (
     BatchedBeamHyps,
     BlankLMScoreMode,
     PruningMode,
+    seed_batched_hyps_from_state,
 )
 from nemo.utils import logging
 
@@ -176,7 +177,9 @@ class ModifiedAESBatchedRNNTComputer(ConfidenceMethodMixin):
         )
 
         if prev_batched_state is not None and prev_batched_state.beam_state is not None:
-            batched_hyps.restore_cross_chunk_state_(prev_batched_state.beam_state)
+            # Seed cross-chunk per-beam fields from the previous chunk's snapshot;
+            # batched_hyps was just allocated, so the rest is already at init values.
+            seed_batched_hyps_from_state(batched_hyps, prev_batched_state.beam_state)
 
         time_indices = torch.zeros_like(batch_indices)
         safe_time_indices = torch.zeros_like(time_indices)  # time indices, guaranteed to be < out_len

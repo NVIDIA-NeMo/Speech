@@ -88,6 +88,37 @@ class BatchedBeamHypsState:
     transcript_prefix_hash: Optional[torch.Tensor] = None
 
 
+def seed_batched_hyps_from_state(
+    hyps: "BatchedBeamHyps",
+    state: BatchedBeamHypsState,
+    batch_size: Optional[int] = None,
+) -> None:
+    """Copy cross-chunk per-beam fields from a :class:`BatchedBeamHypsState` snapshot
+    into ``hyps`` (in-place). Inverse of
+    :meth:`BatchedBeamHyps.export_cross_chunk_state`.
+
+    Used by streaming beam-search decoders to seed a ``BatchedBeamHyps`` from the previous
+    chunk's snapshot. Chunk-local buffers (prefix tree / timestamps / write cursor)
+    and the per-beam time cursor are NOT touched -- the caller is responsible for
+    wiping them.
+
+    Args:
+        hyps: destination ``BatchedBeamHyps`` (modified in place).
+        state: source snapshot.
+        batch_size: optional number of leading rows to copy. Defaults to
+            ``state.scores.shape[0]``.
+    """
+    bs = state.scores.shape[0] if batch_size is None else batch_size
+    hyps.scores[:bs].copy_(state.scores[:bs])
+    hyps.last_label[:bs].copy_(state.last_label[:bs])
+    hyps.transcript_hash[:bs].copy_(state.transcript_hash[:bs])
+    hyps.current_lengths_nb[:bs].copy_(state.current_lengths_nb[:bs])
+    if hyps.store_prefix_hashes and state.transcript_prefix_hash is not None:
+        hyps.transcript_prefix_hash[:bs].copy_(state.transcript_prefix_hash[:bs])
+    if hyps.model_type != ASRModelTypeEnum.CTC and state.last_timestamp_lasts is not None:
+        hyps.last_timestamp_lasts[:bs].copy_(state.last_timestamp_lasts[:bs])
+
+
 class BatchedBeamHyps:
     """Class to store batch of beam hypotheses (labels, time_indices, scores) for efficient batched beam decoding"""
 
@@ -212,28 +243,11 @@ class BatchedBeamHyps:
             self.next_timestamp.fill_(0)
             self.last_timestamp_lasts.fill_(0)
 
-    def clear_chunk_local_(self):
-        """In-place reset of the chunk-local prefix tree / timestamps / write cursor.
-
-        Cross-chunk per-beam fields (those in :class:`BatchedBeamHypsState`) are left
-        untouched. CUDA-graphs-only: the torch path allocates a fresh object instead.
-        """
-        self.current_lengths_wb.fill_(0)
-
-        self.transcript_wb.fill_(NON_EXISTENT_LABEL_VALUE)
-        self.transcript_wb_prev_ptr.fill_(INIT_POINTER_VALUE)
-
-        if self.model_type == ASRModelTypeEnum.CTC:
-            self.timestamps.copy_(self._create_timestamps_tensor(self._max_length))
-        else:
-            self.timestamps.fill_(0)
-            self.next_timestamp.fill_(0)
-
     def export_cross_chunk_state(self, batch_size: Optional[int] = None) -> "BatchedBeamHypsState":
         """
         Snapshot the cross-chunk per-beam state into a :class:`BatchedBeamHypsState`.
 
-        Only the fields preserved by :meth:`clear_chunk_local_` are exported (scores,
+        Exports the fields needed to seed beam search on the next chunk (scores,
         last_label, transcript_hash, current_lengths_nb, and optionally
         last_timestamp_lasts / transcript_prefix_hash). The chunk-local prefix tree
         and timestamps are NOT exported -- they reach the caller via the first
@@ -263,26 +277,6 @@ class BatchedBeamHyps:
                 self.transcript_prefix_hash[:out_batch].clone() if self.store_prefix_hashes else None
             ),
         )
-
-    def restore_cross_chunk_state_(self, state: "BatchedBeamHypsState"):
-        """
-        Restore cross-chunk per-beam state from a :class:`BatchedBeamHypsState` (in-place).
-
-        Inverse of :meth:`export_cross_chunk_state`. Writes only the cross-chunk
-        fields; the prefix tree / timestamps stay at their (presumably just-reset)
-        chunk-local values, so callers typically pair this with
-        :meth:`clear_chunk_local_` first (eager path) or rely on the captured
-        ``_before_loop_continuation`` to clear chunk-local buffers (CUDA-graphs path).
-        """
-        batch_size = min(self.batch_size, state.scores.shape[0])
-        self.scores[:batch_size].copy_(state.scores[:batch_size])
-        self.last_label[:batch_size].copy_(state.last_label[:batch_size])
-        self.transcript_hash[:batch_size].copy_(state.transcript_hash[:batch_size])
-        self.current_lengths_nb[:batch_size].copy_(state.current_lengths_nb[:batch_size])
-        if self.store_prefix_hashes and state.transcript_prefix_hash is not None:
-            self.transcript_prefix_hash[:batch_size].copy_(state.transcript_prefix_hash[:batch_size])
-        if self.model_type != ASRModelTypeEnum.CTC and state.last_timestamp_lasts is not None:
-            self.last_timestamp_lasts[:batch_size].copy_(state.last_timestamp_lasts[:batch_size])
 
     def clone(self, batch_size: Optional[int] = None) -> "BatchedBeamHyps":
         """

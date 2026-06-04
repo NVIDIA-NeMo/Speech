@@ -246,6 +246,7 @@ class ModelMeta:
     audio_eos_id: int
     speech_delay: int
     frame_stacking_factor: int
+    stop_token_id: int  # backbone stop token the model emits at the audio-EOS frame
 
 
 def _load_model_meta(
@@ -302,6 +303,7 @@ def _load_model_meta(
         audio_eos_id=int(arch.audio_eos_id),
         speech_delay=int(getattr(arch, "streaming_speech_delay", 0) or 0),
         frame_stacking_factor=int(arch.frame_stacking_factor),
+        stop_token_id=EasyMagpieTTSForConditionalGeneration.audio_eos_stop_token_id(type("Cfg", (), config)),
     )
 
 
@@ -462,7 +464,9 @@ async def run_one_request(
                     and isinstance(audio_codes, torch.Tensor)
                     and audio_codes.numel() > 0
                 ):
-                    if int(audio_codes[-1, 0]) == meta.audio_eos_id:
+                    # audio EOS in ANY codebook (not just codebook 0) — mirrors the
+                    # reference EOS check and the model's own stop signal.
+                    if bool((audio_codes[-1] == meta.audio_eos_id).any()):
                         eos_decode_idx = newest_frame_idx
                         result.eos_reached = True
 
@@ -798,6 +802,10 @@ async def main(args):
         max_tokens=args.max_new_tokens,
         detokenize=False,
         ignore_eos=True,
+        # The model emits this backbone token at the audio-EOS frame (audio EOS in
+        # any codebook), so vLLM stops the request there instead of decoding the
+        # full budget. stop_token_ids is honored even with ignore_eos.
+        stop_token_ids=[meta.stop_token_id],
     )
 
     try:

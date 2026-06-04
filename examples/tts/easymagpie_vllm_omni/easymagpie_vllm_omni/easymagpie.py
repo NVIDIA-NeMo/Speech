@@ -260,9 +260,35 @@ class EasyMagpieTTSForConditionalGeneration(
 
         self._out_codes = torch.zeros(max_num_tokens, self.num_codebooks, dtype=torch.long)
 
+        # ── Audio-EOS → engine stop ─────────────────────────────────────
+        # The model signals end-of-speech inside the audio codebooks.
+        # To make vLLM terminate the request at the EOS frame,
+        # we flags decode positions with ``audio_eos_id`` emit designated ``stop_token_id``
+        # in ``compute_logits``.
+        # Callers must pass ``SamplingParams(stop_token_ids=[stop_id])`` with
+        # ``stop_id = audio_eos_stop_token_id(hf_config)``.
+        self.audio_eos_id = int(arch.audio_eos_id)
+        self._stop_token_id = self.audio_eos_stop_token_id(hf_config)
+        # flags frames in which ``_out_codes`` contain ``audio_eos_id``
+        self._token_stop = torch.zeros(max_num_tokens, dtype=torch.bool)
+        # slice of ``token_stop`` based on ``logit_idx`` that can be used in
+        # ``compute_logits``
+        self._sample_stop = torch.zeros(max_num_tokens, dtype=torch.bool)
+
     # ------------------------------------------------------------------
     # Embedding helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def audio_eos_stop_token_id(hf_config: Any) -> int:
+        """Backbone token id this model emits when audio EOS is reached.
+
+        Audio end-of-speech lives in the codebooks, not the backbone token
+        stream, so the dummy backbone vocab is repurposed as a 2-way stop
+        signal: index ``0`` == "continue", the last index == "stop". Callers
+        must pass ``SamplingParams(stop_token_ids=[this])``
+        """
+        return max(1, int(getattr(hf_config, "vocab_size", 2)) - 1)
 
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         """Compatibility shim — unused at runtime (everything goes via inputs_embeds)."""
@@ -368,7 +394,7 @@ class EasyMagpieTTSForConditionalGeneration(
         positions: torch.Tensor,
         intermediate_tensors: Optional[IntermediateTensors] = None,
         inputs_embeds: Optional[torch.Tensor] = None,
-        **_: Any,
+        **kwargs: Any,
     ) -> torch.Tensor:
         """Assemble the per-token embedding, run the backbone, then the codes.
 
@@ -384,6 +410,11 @@ class EasyMagpieTTSForConditionalGeneration(
             combined.copy_(inputs_embeds)
         else:
             combined.zero_()
+
+        # Reset per-token stop flags for this step (so prefill / warm-up rows stay
+        # "continue"); decode positions get set below by :meth:`_flag_audio_eos`.
+        self._token_stop[:num_tokens].zero_()
+        logits_index = kwargs.get("logits_index")
 
         decode_idx, num_req = self._get_decode_idxs()
 
@@ -406,6 +437,7 @@ class EasyMagpieTTSForConditionalGeneration(
         if decode_idx is None:
             codes = self.code_predictor.generate_codes(hidden_states)
             self._out_codes[:num_tokens].copy_(codes)
+            self._flag_audio_eos(codes, slice(0, num_tokens))
             if self.has_phoneme:
                 self._predict_phonemes(hidden_states, slice(0, num_tokens))
         elif num_req > 0:
@@ -416,10 +448,29 @@ class EasyMagpieTTSForConditionalGeneration(
             ctx.batch_descriptor = orig_bd
             valid = decode_idx[:num_req]
             self._out_codes[valid] = codes[:num_req]
+            self._flag_audio_eos(codes[:num_req], valid)
             if self.has_phoneme:
                 self._predict_phonemes(hidden_states, valid)
 
+        # Re-index _token_stop into _sample_stop.
+        # this only happens for mixed/prefill, since for capture logits_index is None,
+        # so during decode-only the branch for logits_index is None will be executed.        
+        if logits_index is not None:
+            self._sample_stop[:logits_index.shape[0]] = self._token_stop[logits_index]
+        else:
+            self._sample_stop[:num_tokens].copy_(self._token_stop[:num_tokens])
+
         return hidden_states
+
+    def _flag_audio_eos(self, codes: torch.Tensor, idx) -> None:
+        """Flag decode positions whose newly sampled frame ends speech.
+        Checks codes for eos and assigns token_stop[idx]
+
+        Note: this uses the *sampled* codes. NeMo also checks armax(logits) == eos_idx,
+        i.e. checks if EOS is emited without sampling. Skip for now.
+        """
+        eos = (codes == self.audio_eos_id).any(dim=1) & (self._dec_audio_valid[idx] == 1)
+        self._token_stop[idx] = eos
 
     def _assemble_decode_embeddings(self, combined: torch.Tensor, idx) -> None:
         """Add ``text + phoneme + audio`` embeddings into ``combined`` at ``idx``."""
@@ -477,18 +528,25 @@ class EasyMagpieTTSForConditionalGeneration(
     # ------------------------------------------------------------------
 
     def compute_logits(self, hidden_states, sampling_metadata: Any = None) -> Optional[torch.Tensor]:
-        """Return zero logits so vLLM's sampler always picks index 0.
-
-        The width is taken from ``hf_config.vocab_size`` so the sampler's working
-        buffers match. The sampled id is irrelevant — audio is surfaced via
-        :meth:`make_omni_output`.
+        f"""Dummy backbone logits, repurposed as a 2-way continue/stop signal.
+        ``_sample_stop`` indicates which frames contain EOS. We set logits,
+        based on that: logits[sample_stop == True, stop_token_id] = 30 or -30 otherwise.
+        SamplingParams should set stop_token_id as EOS token though.
         """
         if isinstance(hidden_states, OmniOutput):
             hidden_states = hidden_states.text_hidden_states
         if hidden_states is None:
             return None
         batch_size = hidden_states.shape[0]
-        return hidden_states.new_zeros(batch_size, int(self.hf_config.vocab_size))
+        logits = hidden_states.new_zeros(batch_size, int(self.hf_config.vocab_size))
+        if self._stop_token_id < logits.shape[1]:
+            stop_rows = self._sample_stop[:batch_size]
+            logits[:, self._stop_token_id] = torch.where(
+                stop_rows,
+                logits.new_full((), 30.0),
+                logits.new_full((), -30.0),
+            )
+        return logits
 
     # ------------------------------------------------------------------
     # multimodal output plumbing

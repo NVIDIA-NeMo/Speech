@@ -3817,8 +3817,8 @@ wheels = [
 
 [[package]]
 name = "nemo-automodel"
-version = "0.4.0+9eccbb61"
-source = { git = "https://github.com/NVIDIA-NeMo/Automodel.git?rev=9eccbb6102a260efd7cbdffa890fc57b94f94528#9eccbb6102a260efd7cbdffa890fc57b94f94528" }
+version = "0.4.0+2f7c7e5a"
+source = { git = "https://github.com/NVIDIA-NeMo/Automodel.git?rev=2f7c7e5ad39601c8cd20cd6b747950ebe8355b12#2f7c7e5ad39601c8cd20cd6b747950ebe8355b12" }
 dependencies = [
     { name = "datasets" },
     { name = "flashoptim" },
@@ -4266,9 +4266,9 @@ requires-dist = [
     { name = "matplotlib", marker = "extra == 'audio'" },
     { name = "matplotlib", marker = "extra == 'speechlm2'" },
     { name = "matplotlib", marker = "extra == 'tts'" },
-    { name = "nemo-automodel", marker = "extra == 'all'", git = "https://github.com/NVIDIA-NeMo/Automodel.git?rev=9eccbb6102a260efd7cbdffa890fc57b94f94528" },
-    { name = "nemo-automodel", marker = "extra == 'speechlm2'", git = "https://github.com/NVIDIA-NeMo/Automodel.git?rev=9eccbb6102a260efd7cbdffa890fc57b94f94528" },
-    { name = "nemo-automodel", marker = "extra == 'speechlm2-only'", git = "https://github.com/NVIDIA-NeMo/Automodel.git?rev=9eccbb6102a260efd7cbdffa890fc57b94f94528" },
+    { name = "nemo-automodel", marker = "extra == 'all'", git = "https://github.com/NVIDIA-NeMo/Automodel.git?rev=2f7c7e5ad39601c8cd20cd6b747950ebe8355b12" },
+    { name = "nemo-automodel", marker = "extra == 'speechlm2'", git = "https://github.com/NVIDIA-NeMo/Automodel.git?rev=2f7c7e5ad39601c8cd20cd6b747950ebe8355b12" },
+    { name = "nemo-automodel", marker = "extra == 'speechlm2-only'", git = "https://github.com/NVIDIA-NeMo/Automodel.git?rev=2f7c7e5ad39601c8cd20cd6b747950ebe8355b12" },
     { name = "nemo-text-processing", marker = "'aarch' not in platform_machine and 'arm' not in platform_machine and sys_platform != 'darwin' and extra == 'all'" },
     { name = "nemo-text-processing", marker = "'aarch' not in platform_machine and 'arm' not in platform_machine and sys_platform != 'darwin' and extra == 'speechlm2'" },
     { name = "nemo-text-processing", marker = "'aarch' not in platform_machine and 'arm' not in platform_machine and sys_platform != 'darwin' and extra == 'tts'" },

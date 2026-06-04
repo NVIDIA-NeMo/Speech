@@ -15,6 +15,7 @@
 import sys
 import types
 from contextlib import contextmanager
+from importlib import import_module
 
 import pytest
 import torch
@@ -30,8 +31,10 @@ def install_fake_module(monkeypatch, name, module):
         if idx == len(parts):
             current_module = module
         else:
-            current_module = sys.modules.get(full_name, types.ModuleType(full_name))
-            current_module.__path__ = []
+            current_module = sys.modules.get(full_name)
+            if current_module is None:
+                current_module = types.ModuleType(full_name)
+                current_module.__path__ = []
         monkeypatch.setitem(sys.modules, full_name, current_module)
 
     for idx in range(1, len(parts)):
@@ -39,6 +42,22 @@ def install_fake_module(monkeypatch, name, module):
         child_name = parts[idx]
         child_full_name = ".".join(parts[: idx + 1])
         monkeypatch.setattr(sys.modules[parent_name], child_name, sys.modules[child_full_name], raising=False)
+
+
+def test_install_fake_module_preserves_real_package_paths():
+    nemo_automodel = pytest.importorskip("nemo_automodel")
+    original_path = list(nemo_automodel.__path__)
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        fake_te_patches = types.ModuleType("nemo_automodel.shared.te_patches")
+        fake_te_patches.apply_te_patches = lambda: None
+        install_fake_module(monkeypatch, "nemo_automodel.shared.te_patches", fake_te_patches)
+
+        assert list(nemo_automodel.__path__) == original_path
+        import_module("nemo_automodel.components.distributed.config")
+
+    assert list(nemo_automodel.__path__) == original_path
+    import_module("nemo_automodel.components.distributed.config")
 
 
 @contextmanager

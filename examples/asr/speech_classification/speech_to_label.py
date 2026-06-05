@@ -30,7 +30,8 @@ python <NEMO_ROOT>/scripts/dataset_processing/process_speech_commands_data.py \
 ## Train to convergence
 ```sh
 python speech_to_label.py \
-    # (Optional: --config-path=<path to dir of configs> --config-name=<name of config without .yaml>) \
+    --config-path="../conf/marblenet" \
+    --config-name="marblenet_3x2x64" \
     model.train_ds.manifest_filepath="<path to train manifest>" \
     model.validation_ds.manifest_filepath=["<path to val manifest>","<path to test manifest>"] \
     trainer.devices=2 \
@@ -38,10 +39,9 @@ python speech_to_label.py \
     strategy="ddp" \
     trainer.max_epochs=200 \
     exp_manager.create_wandb_logger=True \
-    exp_manager.wandb_logger_kwargs.name="MatchboxNet-3x1x64-v1" \
-    exp_manager.wandb_logger_kwargs.project="MatchboxNet-v1" \
-    +trainer.precision=16 \
-    +trainer.amp_level=O1  # needed if using PyTorch < 1.6
+    exp_manager.wandb_logger_kwargs.name="MarbleNet-3x2x64" \
+    exp_manager.wandb_logger_kwargs.project="MarbleNet" \
+    +trainer.precision=16
 ```
 
 
@@ -64,7 +64,7 @@ python process_vad_data.py \
 ```sh
 python speech_to_label.py \
     --config-path=<path to dir of configs e.g. "conf">
-    --config-name=<name of config without .yaml e.g. "matchboxnet_3x1x64_vad"> \
+    --config-name=<name of config without .yaml e.g. "marblenet_3x2x64"> \
     model.train_ds.manifest_filepath="<path to train manifest>" \
     model.validation_ds.manifest_filepath=["<path to val manifest>","<path to test manifest>"] \
     trainer.devices=2 \
@@ -72,10 +72,9 @@ python speech_to_label.py \
     strategy="ddp" \
     trainer.max_epochs=200 \
     exp_manager.create_wandb_logger=True \
-    exp_manager.wandb_logger_kwargs.name="MatchboxNet-3x1x64-vad" \
-    exp_manager.wandb_logger_kwargs.project="MatchboxNet-vad" \
-    +trainer.precision=16 \
-    +trainer.amp_level=O1  # needed if using PyTorch < 1.6
+    exp_manager.wandb_logger_kwargs.name="MarbleNet-3x2x64-vad" \
+    exp_manager.wandb_logger_kwargs.project="MarbleNet-vad" \
+    +trainer.precision=16
 ```
 
 # Task 3: Language Identification
@@ -116,7 +115,7 @@ python speech_to_label.py \
 
 python speech_to_label.py \
     --config-path=<path to dir of configs e.g. "conf">
-    --config-name=<name of config without .yaml e.g. "matchboxnet_3x1x64_vad"> \
+    --config-name=<name of config without .yaml e.g. "marblenet_3x2x64"> \
     model.train_ds.manifest_filepath=<path to train tarred_audio_manifest.json> \
     model.train_ds.is_tarred=True \
     model.train_ds.tarred_audio_filepaths=<path to train tarred audio dataset e.g. audio_{0..2}.tar> \
@@ -124,13 +123,12 @@ python speech_to_label.py \
     model.validation_ds.manifest_filepath=<path to validation audio_manifest.json>\
     trainer.devices=2 \
     trainer.accelerator="gpu" \
-    strategy="ddp" \ \
+    strategy="ddp" \
     trainer.max_epochs=200 \
     exp_manager.create_wandb_logger=True \
-    exp_manager.wandb_logger_kwargs.name="MatchboxNet-3x1x64-vad" \
-    exp_manager.wandb_logger_kwargs.project="MatchboxNet-vad" \
-    +trainer.precision=16 \
-    +trainer.amp_level=O1  # needed if using PyTorch < 1.6
+    exp_manager.wandb_logger_kwargs.name="MarbleNet-3x2x64-vad" \
+    exp_manager.wandb_logger_kwargs.project="MarbleNet-vad" \
+    +trainer.precision=16
 
 # Fine-tune a model
 
@@ -153,7 +151,7 @@ from nemo.utils import logging
 from nemo.utils.exp_manager import exp_manager
 
 
-@hydra_runner(config_path="../conf/matchboxnet", config_name="matchboxnet_3x1x64_v1")
+@hydra_runner(config_path="../conf/marblenet", config_name="marblenet_3x2x64")
 def main(cfg):
 
     logging.info(f'Hydra config: {OmegaConf.to_yaml(cfg)}')

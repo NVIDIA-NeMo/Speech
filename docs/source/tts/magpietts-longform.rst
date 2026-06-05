@@ -36,6 +36,10 @@ Longform inference is automatically triggered based on word count thresholds (ap
      - 53 words
    * - Vietnamese
      - 50 words
+   * - Japanese
+     - 50 words
+   * - Hindi
+     - 50 words
 
 .. note::
 
@@ -64,7 +68,7 @@ The input text is split into individual sentences using punctuation markers (``.
 Step 2: State Initialization
 ----------------------------
 
-A ``LongformChunkState`` object is created to track information across sentence chunks:
+A ``ChunkState`` object is created to track information across sentence chunks:
 
 - **History text tokens**: Text from previous chunks for context
 - **History encoder context**: Encoder outputs that provide continuity
@@ -108,7 +112,7 @@ Key Components
 
 1. **Sentence Splitting** (``split_by_sentence``): Intelligently splits text on sentence boundaries while handling abbreviations (e.g., "Dr.", "Mr.").
 
-2. **Chunk State** (``LongformChunkState``): Maintains context across chunks:
+2. **Chunk State** (``ChunkState``): Maintains context across chunks:
 
    - ``history_text``: Text tokens from previous chunks
    - ``history_context_tensor``: Encoder outputs for continuity
@@ -207,24 +211,24 @@ Configuration Dataclasses
 #########################
 
 
-``LongformConfig``
-------------------
+``ChunkedInferenceConfig``
+--------------------------
 
 Immutable tuning parameters (set in model):
 
 .. literalinclude:: ../../../nemo/collections/tts/models/magpietts.py
    :language: python
-   :pyobject: LongformConfig
+   :pyobject: ChunkedInferenceConfig
 
 
-``LongformChunkState``
-----------------------
+``ChunkState``
+--------------
 
 Mutable state passed between chunk iterations:
 
 .. literalinclude:: ../../../nemo/collections/tts/models/magpietts.py
    :language: python
-   :pyobject: LongformChunkState
+   :pyobject: ChunkState
 
 
 Best Practices

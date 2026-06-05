@@ -17,7 +17,6 @@ import os
 from pathlib import Path
 from typing import List, Optional, Tuple, Union
 
-import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.metrics import (
     PrecisionRecallDisplay,
@@ -190,6 +189,8 @@ def auc_yc(
 
 
 def save_confidence_hist(y_score: Union[List[float], np.ndarray], plot_dir: Union[str, Path], name: str = "hist"):
+    import matplotlib.pyplot as plt
+
     os.makedirs(plot_dir, exist_ok=True)
     plt.hist(np.array(y_score), 50, range=(0, 1))
     plt.title(name)
@@ -205,6 +206,8 @@ def save_roc_curve(
     plot_dir: Union[str, Path],
     name: str = "roc",
 ):
+    import matplotlib.pyplot as plt
+
     assert len(y_true) == len(y_score)
     os.makedirs(plot_dir, exist_ok=True)
     fpr, tpr, _ = roc_curve(1 - np.array(y_true), 1 - np.array(y_score))
@@ -220,6 +223,8 @@ def save_pr_curve(
     plot_dir: Union[str, Path],
     name: str = "pr",
 ):
+    import matplotlib.pyplot as plt
+
     assert len(y_true) == len(y_score)
     os.makedirs(plot_dir, exist_ok=True)
     precision, recall, _ = precision_recall_curve(np.array(y_true), np.array(y_score))
@@ -235,6 +240,8 @@ def save_nt_curve(
     plot_dir: Union[str, Path],
     name: str = "nt",
 ):
+    import matplotlib.pyplot as plt
+
     assert len(y_true) == len(y_score)
     os.makedirs(plot_dir, exist_ok=True)
     precision, recall, _ = precision_recall_curve(1 - np.array(y_true), 1 - np.array(y_score))
@@ -252,6 +259,8 @@ def save_custom_confidence_curve(
     xlabel: Optional[str] = None,
     ylabel: Optional[str] = None,
 ):
+    import matplotlib.pyplot as plt
+
     assert len(thresholds) == len(values)
     os.makedirs(plot_dir, exist_ok=True)
     plt.plot(thresholds, values)

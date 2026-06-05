@@ -308,6 +308,8 @@ class TransformerAEDBeamInfer(AEDBeamInfer, Typing):
                         break  # empty sequence
                 if pos < -1:
                     hyp.y_sequence = ids[: pos + 1]
+                    if hyp.xatt_scores is not None:
+                        hyp.xatt_scores = [xatt_layer[:, : pos + 1, :] for xatt_layer in hyp.xatt_scores]
 
 
 @dataclass

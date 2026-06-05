@@ -32,7 +32,11 @@ from tqdm import tqdm
 
 parser = argparse.ArgumentParser(description="Prepare HUB5 data for training/eval")
 parser.add_argument(
-    "--data_root", default=None, type=str, required=True, help="The path to the root LDC HUB5 dataset directory.",
+    "--data_root",
+    default=None,
+    type=str,
+    required=True,
+    help="The path to the root LDC HUB5 dataset directory.",
 )
 parser.add_argument(
     "--dest_root",
@@ -44,13 +48,25 @@ parser.add_argument(
 
 # Optional arguments
 parser.add_argument(
-    "--min_slice_duration", default=10.0, type=float, help="Minimum audio slice duration after processing.",
+    "--min_slice_duration",
+    default=10.0,
+    type=float,
+    help="Minimum audio slice duration after processing.",
 )
 
 args = parser.parse_args()
 
 StmUtterance = namedtuple(
-    'StmUtterance', ['filename', 'channel', 'speaker_id', 'begin', 'end', 'label', 'transcript',],
+    'StmUtterance',
+    [
+        'filename',
+        'channel',
+        'speaker_id',
+        'begin',
+        'end',
+        'label',
+        'transcript',
+    ],
 )
 STM_LINE_FMT = re.compile(r"^(\w+)\s+(\w+)\s+(\w+)\s+([0-9.]+)\s+([0-9.]+)\s+(<.*>)?\s+(.+)$")
 
@@ -62,7 +78,12 @@ def get_utt_id(segment):
     """
     Gives utterance IDs in a form like: en_4156-a-36558-37113
     """
-    return "{}-{}-{}-{}".format(segment.filename, segment.channel, int(segment.begin * 100), int(segment.end * 100),)
+    return "{}-{}-{}-{}".format(
+        segment.filename,
+        segment.channel,
+        int(segment.begin * 100),
+        int(segment.end * 100),
+    )
 
 
 def convert_utterances(sph_path, wav_path):
@@ -92,7 +113,12 @@ def process_transcripts(dataset_root):
     """
     Reads in transcripts for each audio segment and processes them.
     """
-    stm_path = os.path.join(dataset_root, "2000_hub5_eng_eval_tr", "reference", "hub5e00.english.000405.stm",)
+    stm_path = os.path.join(
+        dataset_root,
+        "2000_hub5_eng_eval_tr",
+        "reference",
+        "hub5e00.english.000405.stm",
+    )
     results = []
     chars = set()
 
@@ -198,7 +224,10 @@ def segment_audio(info_list, dest_root, min_slice_duration):
         transcript_buffer += info.transcript
         channel = 0 if info.channel.lower() == 'a' else 1
         audio_buffer.append(
-            audio_data[floor(info.begin * sample_rate) : ceil(info.end * sample_rate), channel,]
+            audio_data[
+                floor(info.begin * sample_rate) : ceil(info.end * sample_rate),
+                channel,
+            ]
         )
         buffer_duration += info.end - info.begin
 

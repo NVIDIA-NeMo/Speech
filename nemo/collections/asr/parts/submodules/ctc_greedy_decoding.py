@@ -35,15 +35,12 @@ from nemo.core.utils.cuda_python_utils import (
     run_nvrtc,
     with_conditional_node,
 )
+from nemo.core.utils.optional_libs import CUDA_PYTHON_AVAILABLE, cuda_python_required
 from nemo.utils import logging, logging_mode
 from nemo.utils.enum import PrettyStrEnum
 
-try:
+if CUDA_PYTHON_AVAILABLE:
     from cuda.bindings import runtime as cudart
-
-    HAVE_CUDA_PYTHON = True
-except ImportError:
-    HAVE_CUDA_PYTHON = False
 
 NEG_INF = float("-inf")
 
@@ -862,6 +859,7 @@ class GreedyBatchedCTCInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraph
         else:
             raise NotImplementedError(f"Unknown graph mode: {self.cuda_graphs_mode}")
 
+    @cuda_python_required
     def _full_graph_compile(self):
         """Compiling full graph"""
         stream_for_graph = torch.cuda.Stream(self.state.device)
@@ -874,7 +872,8 @@ class GreedyBatchedCTCInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraph
         ):
             self._before_loop()
 
-            capture_status, _, graph, _, _, _ = cu_call(
+            # NB: depending on cuda-python version, cudaStreamGetCaptureInfo can return either 5 or 6 elements
+            capture_status, _, graph, *_ = cu_call(
                 cudart.cudaStreamGetCaptureInfo(torch.cuda.current_stream(device=self.state.device).cuda_stream)
             )
             assert capture_status == cudart.cudaStreamCaptureStatus.cudaStreamCaptureStatusActive

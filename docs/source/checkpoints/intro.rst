@@ -1,64 +1,76 @@
 Checkpoints
 ===========
 
+In this section, we present the checkpoint formats supported by NVIDIA NeMo.
 
-In this section, we present key functionalities of NVIDIA NeMo related to checkpoint management.
+NeMo Checkpoints (.nemo)
+-------------------------
 
-Checkpoint Formats
-------------------
+A ``.nemo`` checkpoint is a tar archive that bundles model configurations (YAML), model weights (``.ckpt``),
+and other artifacts like tokenizer models or vocabulary files. This consolidated design streamlines
+sharing, loading, tuning, evaluating, and inference.
 
-A ``.nemo`` checkpoint is fundamentally a tar file that bundles the model configurations (specified inside a YAML file), model weights (inside a ``.ckpt`` file), and other artifacts like tokenizer models or vocabulary files. This consolidated design streamlines sharing, loading, tuning, evaluating, and inference.
-
-In contrast, the ``.ckpt`` file, created during PyTorch Lightning training, contains both the model weights and the optimizer states, and is usually used to resume training.
-
-Sharded Model Weights
----------------------
-
-Within ``.nemo`` or ``.ckpt`` checkpoints, the model weights could be saved in either a regular format (one file called ``model_weights.ckpt`` inside model parallelism folders) or a sharded format (a folder called ``model_weights``).
-
-With sharded model weights, you can save and load the state of your training script with multiple GPUs or nodes more efficiently and avoid the need to change model partitions when you resume tuning with a different model parallelism setup.
-
-NeMo supports the distributed (sharded) checkpoint format from Megatron Core. Megatron Core supports two checkpoint backends: PyTorch-based (recommended) and Zarr-based (deprecated).
-For a detailed explanation check the :doc:`dist_ckpt` guide.
-
-
-Quantized Checkpoints
----------------------
-
-NeMo provides a :doc:`Post-Training Quantization <../nlp/quantization>` workflow that allows you to convert regular ``.nemo`` models into a `TensorRT-LLM checkpoint <https://nvidia.github.io/TensorRT-LLM/latest/legacy/architecture/checkpoint.html>`_, commonly referred to as ``.qnemo`` checkpoints in NeMo. These ``.qnemo`` checkpoints can then be used with the `NVIDIA TensorRT-LLM library <https://nvidia.github.io/TensorRT-LLM/index.html>`_ for efficient inference.
-
-A ``.qnemo`` checkpoint, similar to ``.nemo`` checkpoints, is a tar file that bundles the model configuration specified in the ``config.json`` file along with the ``rank{i}.safetensors`` files. These ``.safetensors`` files store the model weights for each rank individually. In addition, a ``tokenizer_config.yaml`` file is saved, containing only the tokenizer section from the original NeMo ``model_config.yaml`` file. This configuration file defines the tokenizer used by the given model.
-
-When working with large quantized LLMs, it is recommended that you leave the checkpoint uncompressed as a directory rather than a tar file. You can control this behavior by setting the ``compress`` flag when exporting quantized models in `PTQ configuration file <https://github.com/NVIDIA/NeMo/blob/main/examples/nlp/language_modeling/conf/megatron_gpt_ptq.yaml>`_.
-
-The following example shows the contents of a quantized model intended to be served using two GPUs (ranks):
+Because ``.nemo`` files are standard tar archives, you can unpack them, inspect or modify their contents,
+and repack them:
 
 .. code-block:: bash
 
-    model-qnemo
-    ├── config.json
-    ├── rank0.safetensors
-    ├── rank1.safetensors
-    ├── tokenizer.model
-    └── tokenizer_config.yaml
+    # Unpack
+    mkdir model_contents && tar xf model.nemo -C model_contents/
 
-Community Checkpoint Converter
-------------------------------
-We provide easy-to-use tools that enable users to convert community checkpoints into the NeMo format. These tools facilitate various operations, including resuming training, Supervised Fine-Tuning (SFT), Parameter-Efficient Fine-Tuning (PEFT), and deployment. For detailed instructions and guidelines, please refer to our documentation.
+    # Inspect / edit files inside
+    ls model_contents/
 
-We offer comprehensive guides to assist both end users and developers:
+    # Repack
+    cd model_contents && tar cf ../model_modified.nemo * && cd ..
 
-- **User Guide**: Detailed steps on how to convert community model checkpoints for further training or deployment within NeMo. For more information, please see our :doc:`user_guide`.
+This is useful for inspecting model configs, swapping tokenizer files, or modifying configuration
+without reloading the model in Python.
 
-- **Developer Guide**: Instructions for developers on how to implement converters for community model checkpoints, allowing for broader compatibility and integration within the NeMo ecosystem. For development details, refer to our :doc:`dev_guide`.
+``.nemo`` checkpoints are the primary format for ASR, TTS, and Audio pretrained models.
 
-- **Megatron-LM Checkpoint Conversion**: NVIDIA NeMo and NVIDIA Megatron-LM share several foundational technologies. You can convert your GPT-style model checkpoints trained with Megatron-LM into the NeMo Framework using our scripts, see our :doc:`convert_mlm`.
+PyTorch Lightning Checkpoints (.ckpt)
+--------------------------------------
 
-.. toctree::
-   :maxdepth: 1
-   :caption: NeMo Checkpoints
+During training, PyTorch Lightning saves ``.ckpt`` files that contain model weights, optimizer
+states, and training metadata (epoch, step, scheduler state). These are used to resume training
+from where it left off.
 
-   dist_ckpt
-   user_guide
-   dev_guide
-   convert_mlm
+SafeTensors (.safetensors)
+--------------------------
+
+`SafeTensors <https://huggingface.co/docs/safetensors>`_ is a format for storing tensors that is
+safe (no arbitrary code execution, unlike pickle-based formats), fast (supports zero-copy and
+lazy loading of individual tensors), and widely adopted across the HuggingFace ecosystem.
+
+SpeechLM2 models use ``.safetensors`` as their primary checkpoint format, following the HuggingFace
+model conventions. SpeechLM2 models are saved and loaded via HuggingFace Hub integration
+(``save_pretrained`` / ``from_pretrained``), and their weights are stored in ``.safetensors`` files.
+
+.. note::
+
+    SpeechLM2 models do not use the ``.nemo`` format for their own checkpoints. The ``.nemo`` format
+    is only used in the SpeechLM2 collection to load pretrained ASR checkpoints that initialize
+    the speech encoder component.
+
+Distributed Checkpoints
+-----------------------
+
+When training with ``ModelParallelStrategy`` (FSDP2 / Tensor Parallelism), PyTorch Lightning
+automatically saves **distributed checkpoints**. Instead of gathering all shards onto a single
+process, each process saves its own shard to a directory. This is significantly faster and uses
+less memory than consolidating into a single file.
+
+Distributed checkpoints are saved as a directory containing:
+
+- A ``.metadata`` file describing the tensor layout across shards
+- Numbered ``.distcp`` files with per-rank weight shards
+
+PyTorch Lightning handles loading distributed checkpoints transparently -- you resume training
+with the same ``ckpt_path`` argument regardless of whether the checkpoint is a single file or a
+sharded directory.
+
+.. code-block:: python
+
+    # Resuming from a distributed checkpoint works the same as a regular checkpoint
+    trainer.fit(model, ckpt_path="path/to/distributed_checkpoint_dir")

@@ -31,7 +31,7 @@ SALM Configuration
 ------------------
 
 The SALM (Speech-Augmented Language Model) configuration includes settings for the pretrained LLM, audio perception module, and training parameters.
-See the `SALM paper<https://arxiv.org/abs/2310.09424>`_ for more details.
+See the `SALM paper <https://arxiv.org/abs/2310.09424>`_ for more details.
 
 .. code-block:: yaml
 
@@ -40,7 +40,10 @@ See the `SALM paper<https://arxiv.org/abs/2310.09424>`_ for more details.
       pretrained_llm: "TinyLlama/TinyLlama_v1.1"  # HF model path
       pretrained_asr: "stt_en_fastconformer_hybrid_large_streaming_80ms"  # NeMo checkpoint name
       pretrained_weights: True  # Whether to load weights or just architecture
-      
+
+      # Fine-tune from a previous training checkpoint (weights only, fresh optimizer)
+      init_from_checkpoint: null  # path to .ckpt, DCP dir, or HF dir
+
       # Special token settings
       audio_locator_tag: "<audio>"  # Tag to replace with audio embeddings
       
@@ -94,8 +97,166 @@ See the `SALM paper<https://arxiv.org/abs/2310.09424>`_ for more details.
           dropout_pre_encoder: 0
           dropout_emb: 0.0
 
+SALMAutomodel Configuration
+----------------------------
+
+The SALMAutomodel configuration extends the SALM configuration with NeMo Automodel
+support. The key difference is ``use_nemo_automodel: true`` and the use of
+``AutomodelParallelStrategy`` instead of ``DDPStrategy``.
+
+The example below shows a configuration for training with NVIDIA Nemotron Nano V3
+MoE as the LLM backbone, with Expert Parallelism across 8 GPUs:
+
+.. code-block:: yaml
+
+    model:
+      use_nemo_automodel: true  # Selects SALMAutomodel in salm_train.py
+      pretrained_llm: nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
+      pretrained_asr: "nvidia/canary-1b-flash"
+      pretrained_weights: True
+      encoder_chunk_size_seconds: 30.0
+
+      freeze_params:
+        - "^llm\\..+$"
+        - "^perception\\.preprocessor\\..+$"
+        - "^perception\\.encoder\\..+$"
+      prevent_freeze_params: []
+
+      # LoRA uses Automodel-native format (not HF PEFT):
+      # lora:
+      #   dim: 128
+      #   alpha: 256
+      #   dropout: 0.01
+      #   target_modules: ["q_proj", "v_proj"]
+
+      perception:
+        target: nemo.collections.speechlm2.modules.perception.AudioPerceptionModule
+        output_dim: 2048
+        modality_adapter:
+          _target_: nemo.collections.speechlm2.modules.perception.IdentityConnector
+          d_model: 1024
+
+    trainer:
+      strategy:
+        _target_: nemo.collections.speechlm2.parts.parallel.AutomodelParallelStrategy
+        ep_size: 8  # Expert Parallelism across 8 GPUs for MoE
+        # tp_size: 1
+        # dp_size: null  # inferred
+
+NeMo Automodel applies MoE-specific optimizations automatically when an MoE model
+is detected:
+
+* **Grouped GEMM** — fuses expert computations into a single batched matrix multiply
+  for higher GPU throughput.
+* **DeepEP** (Deep Expert Parallelism) — efficient all-to-all expert routing across
+  GPUs, minimizing communication overhead for MoE layers.
+
+Note the differences from the SALM configuration:
+
+* ``model.use_nemo_automodel: true`` — selects ``SALMAutomodel`` in the training script.
+* ``model.pretrained_llm`` can point to MoE models like ``nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16``.
+* ``trainer.strategy._target_`` uses ``AutomodelParallelStrategy`` instead of ``ModelParallelStrategy``.
+* ``ep_size`` controls Expert Parallelism on the FSDP data-parallel axis — dense layers are sharded via FSDP2, while MoE layers use EP for expert routing on the same GPUs.
+* LoRA config uses ``dim``/``alpha`` keys (Automodel native) instead of ``r``/``lora_alpha`` (HF PEFT).
+* No ``embed_tokens`` freeze pattern — embeddings stay inside the LLM.
+* ``encoder_chunk_size_seconds`` controls long-audio chunking for the speech encoder.
+  Audio rows longer than this value are split on the time axis, encoded as a chunk
+  batch, and concatenated back into one embedding sequence before the LLM forward.
+  Set it to ``null`` to disable chunking.
+
+SALMAutomodel-Specific Options
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The SALMAutomodel config exposes a few extra knobs that pass through to NeMo
+Automodel. All are optional — defaults preserve standard behavior.
+
+**MoE training:**
+
+.. code-block:: yaml
+
+    model:
+      # MoE auxiliary load-balancing loss coefficient. > 0 to enable.
+      # Gradients are injected during backward; reported CE loss is unchanged.
+      aux_loss_coeff: 0.0
+
+      # When true, unfreezes Gate.weight so the router can adapt to new data.
+      # Default false keeps pretrained routing frozen.
+      train_gate: false
+
+      # Per-step expert balance / utilization metrics.
+      moe_metrics:
+        enabled: true
+        mode: brief                  # "brief" or "detailed"
+        detailed_every_steps: null   # null = every step when mode=detailed
+        top_k_experts: 5             # top/bottom utilization experts to report
+
+When ``aux_loss_coeff > 0``, SALMAutomodel sets ``MoEAuxLossAutoScaler.main_loss_backward_scale``
+to the DP group size at ``on_fit_start`` so FSDP's gradient averaging cancels out and the
+net aux-loss gradient scale stays at 1.
+
+**torch.compile:**
+
+.. code-block:: yaml
+
+    model:
+      compile:
+        enabled: false
+        mode: default          # "default" | "reduce-overhead" | "max-autotune"
+        fullgraph: false
+        dynamic: true          # Recommended for variable-length audio
+        backend: null          # null = inductor
+        dynamo_cache_size_limit: 256
+
+**Backend dispatch (attention / linear / norm / MoE kernels):**
+
+.. code-block:: yaml
+
+    model:
+      automodel_backend:
+        attn: te                  # "te" | "sdpa" | "flex"
+        linear: te                # "torch" | "te"
+        rms_norm: torch_fp32      # "torch" | "torch_fp32" | "te"
+        rope_fusion: true
+        experts: torch_mm         # "torch" | "te" | "gmm" | "torch_mm"
+        dispatcher: deepep        # "torch" | "deepep" | "hybridep" | "uccl_ep"
+        dispatcher_num_sms: 20
+
+      # Pin SDPA kernel when automodel_backend.attn=sdpa.
+      # E.g. ["flash_attention"] forces FA2 and errors if unavailable.
+      sdpa_method: null
+
+Defaults come from Automodel's ``BackendConfig`` and auto-select TransformerEngine /
+DeepEP when available; override here to pin a specific backend (for example,
+``attn: sdpa`` to bypass TE).
+
+**Packed sequences (THD):**
+
+.. code-block:: yaml
+
+    model:
+      packed_sequences: true   # default false (right-padded BSHD path)
+      automodel_backend:
+        attn: te               # THD path dispatches TE varlen FlashAttention
+
+When ``packed_sequences`` is true, ``SALMAutomodel.prepare_inputs`` packs
+each minibatch into a single flat ``[T_total, H]`` sequence with a
+``cu_seqlens`` index instead of right-padding to ``[B, T_max, H]``.
+``SALMAutomodel`` then forwards the THD metadata (``qkv_format``,
+``cu_seqlens``, ``position_ids``, ``max_seqlen``) through ``forward()`` to
+the LLM. The TE attention preprocessor splits the singular ``max_seqlen``
+into the ``max_seqlen_q`` / ``max_seqlen_kv`` pair that
+``DotProductAttention`` requires for ``qkv_format="thd"``. The packing also
+rounds each utterance's flat length up to a multiple of ``2 * cp_size`` so
+the same THD batch satisfies TE's CP DualChunkSwap contract — see the
+"Context Parallelism (CP)" subsection in
+:doc:`training_and_scaling` for the recommended pairing with ``cp_size > 1``.
+
+Padding overhead drops from ``O(B * (T_max - T_avg))`` to
+``O(per-utt rounding to 2*cp_size)``. Throughput improvement scales with
+the variance of utterance lengths in your bucketing.
+
 DuplexS2SModel Configuration
---------------------------
+-----------------------------
 
 The DuplexS2SModel adds speech generation capabilities to the configuration:
 
@@ -117,7 +278,7 @@ The DuplexS2SModel adds speech generation capabilities to the configuration:
         # ... (similar to SALM perception module)
 
 DuplexS2SSpeechDecoderModel Configuration
---------------------------------------
+-----------------------------------------
 
 The DuplexS2SSpeechDecoderModel is similar to DuplexS2SModel, but focuses on an additional speech generation transformer decoder:
 
@@ -128,7 +289,7 @@ The DuplexS2SSpeechDecoderModel is similar to DuplexS2SModel, but focuses on an 
       pretrained_llm: "TinyLlama/TinyLlama_v1.1"
       pretrained_audio_codec: "path/to/audio_codec.nemo"
       pretrained_asr: "stt_en_fastconformer_hybrid_large_streaming_80ms"
-      
+
       # Speech decoder settings
       speech_decoder:
         target: nemo.collections.speechlm2.modules.speech_generation.TransformerARSpeechDecoder
@@ -143,11 +304,25 @@ The DuplexS2SSpeechDecoderModel is similar to DuplexS2SModel, but focuses on an 
         activation_function: "gelu_new"
         init_method_std: 0.02
         use_cache: True
+
+      # ... other settings
+
+DuplexSTTModel Configuration
+--------------------------------------
+
+The DuplexSTTModel is a speech-to-text model that processes duplex audio conversations and generates agent text responses:
+
+.. code-block:: yaml
+
+    model:
+      # Pretrained model paths
+      pretrained_llm: "TinyLlama/TinyLlama_v1.1"
+      pretrained_asr: "stt_en_fastconformer_hybrid_large_streaming_80ms"
         
       # ... other settings
 
 Trainer Configuration
-------------------
+---------------------
 
 The trainer section contains PyTorch Lightning Trainer settings:
 
@@ -169,7 +344,7 @@ The trainer section contains PyTorch Lightning Trainer settings:
       gradient_clip_val: 1.0
 
 Experiment Manager Configuration
------------------------------
+--------------------------------
 
 The exp_manager section contains settings for experiment logging and model checkpointing:
 
@@ -242,19 +417,23 @@ For example, S2S models have:
       train_ds: ...
 
 Important Configuration Parameters
--------------------------------
+-----------------------------------
 
 Model Parameters
-^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^
 
 - **pretrained_llm**: Path to the pretrained HuggingFace LLM
 - **pretrained_asr**: Name of the pretrained NeMo ASR model used for perception
+- **encoder_chunk_size_seconds**: Speech-encoder chunk size in seconds for long audio inputs
+  (supported by both ``SALM`` and ``SALMAutomodel``). Leave as ``null`` to encode each audio
+  row directly
 - **pretrained_audio_codec**: Path to the pretrained audio codec model (for speech generation)
+- **init_from_checkpoint**: Path to a training checkpoint to initialize model weights from (see :ref:`fine-tuning-from-checkpoint` below)
 - **freeze_params**: Regex patterns of parameters to freeze during training
 - **audio_loss_weight/text_loss_weight**: Weighting of different loss components
 
 Perception Module
-^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^
 
 - **self_attention_model**: Type of attention mechanism ("rel_pos" or "abs_pos")
 - **att_context_size**: Context window size for attention ([left, right])
@@ -263,7 +442,7 @@ Perception Module
 - **d_model**: Model dimension size
 
 Data Parameters
-^^^^^^^^^^^^
+^^^^^^^^^^^^^^^
 
 - **frame_length**: Frame duration in seconds
 - **source_sample_rate/target_sample_rate**: Sample rates for input/output audio
@@ -272,16 +451,18 @@ Data Parameters
 - **use_bucketing**: Whether to use length-based bucketing for efficient batching
 
 Example Configuration Files
--------------------------
+---------------------------
 
 Example configurations for all model types can be found in the example directory:
 
 - SALM: `examples/speechlm2/conf/salm.yaml`
+- SALMAutomodel: `examples/speechlm2/conf/salm_automodel.yaml`
 - DuplexS2SModel: `examples/speechlm2/conf/s2s_duplex.yaml`
 - DuplexS2SSpeechDecoderModel: `examples/speechlm2/conf/s2s_duplex_speech_decoder.yaml`
+- DuplexSTTModel: `examples/speechlm2/conf/duplex_stt.yaml`
 
 Using Configuration Files
------------------------
+-------------------------
 
 You can use these configurations with the training scripts by specifying the config path:
 
@@ -292,6 +473,10 @@ You can use these configurations with the training scripts by specifying the con
       --config-path=conf \
       --config-name=salm
 
+    # Train SALMAutomodel
+    python examples/speechlm2/salm_train.py \
+      --config-name=salm_automodel
+
 You can also override configuration values from the command line:
 
 .. code-block:: bash
@@ -301,4 +486,59 @@ You can also override configuration values from the command line:
       --config-name=salm \
       model.pretrained_llm="different/llm/path" \
       trainer.max_steps=1000 \
-      data.train_ds.batch_size=8 
+      data.train_ds.batch_size=8
+
+.. _fine-tuning-from-checkpoint:
+
+Fine-Tuning from a Previous Checkpoint
+---------------------------------------
+
+To start a new training run initialized from a previous checkpoint — with a fresh
+optimizer, LR scheduler, and step counter — set ``model.init_from_checkpoint``:
+
+.. code-block:: yaml
+
+    model:
+      init_from_checkpoint: /path/to/checkpoints/step=6375.ckpt
+
+Or pass it as a Hydra override:
+
+.. code-block:: bash
+
+    python examples/speechlm2/salm_train.py \
+      --config-name=salm_automodel \
+      ++model.init_from_checkpoint=/path/to/checkpoints/step=6375.ckpt
+
+This differs from ``exp_manager.resume_from_checkpoint`` which restores the
+**full** training state (optimizer, scheduler, step counter) to continue an
+interrupted run. ``init_from_checkpoint`` only loads model weights, giving you a
+clean starting point for fine-tuning on different data or with different
+hyperparameters.
+
+Supported Checkpoint Formats
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Three checkpoint formats are supported:
+
+* **Distributed checkpoints (DCP)**: Directories with a ``.metadata`` file, produced
+  by ``ModelParallelStrategy`` / ``AutomodelParallelStrategy``. This is the default
+  format when training with FSDP2 or TP. DCP loading handles automatic resharding
+  when the parallelism configuration differs between the source and target runs.
+
+* **HuggingFace model directories**: Directories containing ``model.safetensors``,
+  such as the output of ``to_hf.py``.
+
+* **Single-file checkpoints**: Standard ``.ckpt`` or ``.pt`` files with a
+  ``state_dict`` key.
+
+The model architecture is still defined by ``pretrained_llm`` and ``pretrained_asr``
+(needed for config and tokenizer initialization), but all weights are overridden by
+the checkpoint.
+
+This feature works with both ``SALM`` and ``SALMAutomodel``.
+
+.. note::
+   ``init_from_checkpoint`` requires the source and target models to use the
+   same model class (e.g., both ``SALMAutomodel``). Cross-model loading
+   (e.g., ``SALM`` checkpoint into ``SALMAutomodel``) will encounter state dict
+   key mismatches because the two classes structure the embedding layer differently.

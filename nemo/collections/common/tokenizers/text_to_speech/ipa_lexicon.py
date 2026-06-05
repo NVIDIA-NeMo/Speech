@@ -15,8 +15,27 @@
 
 # fmt: off
 
-SUPPORTED_LOCALES = ["en-US", "de-DE", "es-ES", "it-IT", "fr-FR", "vi-VN", "ja-JP"]
+# TODO: pt-BR and ko-KR are missing from GRAPHEME_CHARACTER_SETS and IPA_CHARACTER_SETS below.
+#  They work with IPATokenizer (which builds vocab from g2p.symbols), but get_grapheme_character_set()
+#  and get_ipa_character_set() will raise ValueError for these locales until entries are added.
+#  These functions are used by locale-specific tokenizers (e.g., HindiCharsTokenizer uses
+#  get_grapheme_character_set("hi-IN")). If someone later creates PortugueseCharsTokenizer or
+#  KoreanCharsTokenizer, they'd hit this.
+SUPPORTED_LOCALES = [
+    "en-US",
+    "de-DE",
+    "es-ES",
+    "it-IT",
+    "fr-FR",
+    "vi-VN",
+    "ja-JP",
+    "hi-IN",
+    "ar-MSA",
+    "pt-BR",
+    "ko-KR",
+]
 
+# Derived from LJSpeech and "/" additionally
 DEFAULT_PUNCTUATION = (
     ',', '.', '!', '?', '-',
     ':', ';', '/', '"', '(',
@@ -26,7 +45,7 @@ DEFAULT_PUNCTUATION = (
 VITS_PUNCTUATION = (
     ',', '.', '!', '?', '-',
     ':', ';', '"', '«', '»',
-    '“', '”', '¡', '¿', '—', 
+    '“', '”', '¡', '¿', '—',
     '…',
 )
 
@@ -50,21 +69,21 @@ GRAPHEME_CHARACTER_SETS = {
     ),
     # ref: https://en.wikipedia.org/wiki/Vietnamese_alphabet
     "vi-VN": (
-        'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 
-        'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 
-        'U', 'V', 'W', 'X', 'Y', 'Z', 'Đ', 'Á', 'À', 'Ã', 
-        'Ả', 'Ạ', 'Ă', 'Ắ', 'Ằ', 'Ẵ', 'Ẳ', 'Ặ', 'Â', 'Ấ', 
-        'Ầ', 'Ẫ', 'Ẩ', 'Ậ', 'Ó', 'Ò', 'Õ', 'Ỏ', 'Ọ', 'Ô', 
-        'Ố', 'Ồ', 'Ỗ', 'Ổ', 'Ộ', 'Ơ', 'Ớ', 'Ờ', 'Ỡ', 'Ở', 
-        'Ợ', 'É', 'È', 'Ẽ', 'Ẻ', 'Ẹ', 'Ê', 'Ế', 'Ề', 'Ễ', 
-        'Ể', 'Ệ', 'Ú', 'Ù', 'Ũ', 'Ủ', 'Ụ', 'Ư', 'Ứ', 'Ừ', 
-        'Ữ', 'Ử', 'Ự', 'Í', 'Ì', 'Ĩ', 'Ỉ', 'Ị', 'Ý', 'Ỳ', 
+        'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J',
+        'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T',
+        'U', 'V', 'W', 'X', 'Y', 'Z', 'Đ', 'Á', 'À', 'Ã',
+        'Ả', 'Ạ', 'Ă', 'Ắ', 'Ằ', 'Ẵ', 'Ẳ', 'Ặ', 'Â', 'Ấ',
+        'Ầ', 'Ẫ', 'Ẩ', 'Ậ', 'Ó', 'Ò', 'Õ', 'Ỏ', 'Ọ', 'Ô',
+        'Ố', 'Ồ', 'Ỗ', 'Ổ', 'Ộ', 'Ơ', 'Ớ', 'Ờ', 'Ỡ', 'Ở',
+        'Ợ', 'É', 'È', 'Ẽ', 'Ẻ', 'Ẹ', 'Ê', 'Ế', 'Ề', 'Ễ',
+        'Ể', 'Ệ', 'Ú', 'Ù', 'Ũ', 'Ủ', 'Ụ', 'Ư', 'Ứ', 'Ừ',
+        'Ữ', 'Ử', 'Ự', 'Í', 'Ì', 'Ĩ', 'Ỉ', 'Ị', 'Ý', 'Ỳ',
         'Ỹ', 'Ỷ', 'Ỵ',
     ),
     "fr-FR": (
-        'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 
-        'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 
-        'U', 'V', 'W', 'X', 'Y', 'Z', 'À', 'Â', 'Ä', 'Æ', 
+        'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J',
+        'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T',
+        'U', 'V', 'W', 'X', 'Y', 'Z', 'À', 'Â', 'Ä', 'Æ',
         'Ç', 'È', 'É', 'Ê', 'Ë', 'Í', 'Î', 'Ï', 'Ñ', 'Ô', 
         'Ö', 'Ù', 'Û', 'Ü', 'Ō', 'Œ',
     ),
@@ -90,7 +109,32 @@ GRAPHEME_CHARACTER_SETS = {
         'ヵ', 'ヶ',
         # Special
         'ー',
-    )
+    ),
+    # ref: https://en.wikipedia.org/wiki/Devanagari
+    "hi-IN": (
+        # Independent Vowels
+        'अ', 'आ', 'इ', 'ई', 'उ', 'ऊ', 'ऋ', 'ॠ', 'ए', 'ऐ',
+        'ओ', 'औ', 'ऍ', 'ऑ',
+        # Consonants
+        'क', 'ख', 'ग', 'घ', 'ङ', 'च', 'छ', 'ज', 'झ', 'ञ',
+        'ट', 'ठ', 'ड', 'ढ', 'ण', 'त', 'थ', 'द', 'ध', 'न',
+        'प', 'फ', 'ब', 'भ', 'म', 'य', 'र', 'ल', 'व', 'श',
+        'ष', 'स', 'ह', 'ळ', 'ऩ', 'ऱ',
+        # Dependent Vowels
+        'ा', 'ि', 'ी', 'ु', 'ू', 'ृ', 'ॄ', 'े', 'ै', 'ो', 'ौ',
+        'ॅ', 'ॉ', 'ँ', 'ं', 'ः', '्', '़', 'ॊ', 'ॢ', 'ॣ', 'ॆ',
+        # Danda (period)
+        '।',
+    ),
+    # ref: https://en.wikipedia.org/wiki/Arabic_alphabet
+    "ar-MSA": (
+        'ء', 'آ', 'أ', 'إ', 'ؤ', 'ئ', 'ا', 'ب', 'ة', 'ت',
+        'ث', 'ج', 'ح', 'خ', 'د', 'ذ', 'ر', 'ز', 'س', 'ش',
+        'ص', 'ض', 'ط', 'ظ', 'ع', 'غ', 'ف', 'ق', 'ك', 'ل',
+        'م', 'ن', 'ه', 'و', 'ى', 'ي', 
+        # Diacritics
+        'ً', 'ٌ', 'ٍ', 'َ', 'ُ', 'ِ', 'ّ', 'ٰ', 'ْ',
+    ),
 }
 
 IPA_CHARACTER_SETS = {
@@ -126,7 +170,7 @@ IPA_CHARACTER_SETS = {
         'm', 'n', 'o', 'p', 'r', 's', 't', 'u', 'v', 'w',
         'x', 'z', 'æ', 'ɐ', 'ɑ', 'ɔ', 'ə', 'ɚ',
         'ɜ', 'ɬ', 'ɹ', 'ʌ', 'ʔ', 'ʲ', '̃', '̩', 'ᵻ',
-        'ð', 'ŋ', 'ɛ', 'ɡ', 'ɣ', 'ɪ', 'ɲ', 'ɾ', 'ʃ', 
+        'ð', 'ŋ', 'ɛ', 'ɡ', 'ɣ', 'ɪ', 'ɲ', 'ɾ', 'ʃ',
         'ʊ', 'ʎ', 'ʒ', 'ʝ', 'β', 'θ', 'd͡', 't͡', 'ø', 'ɒ',
         'ɕ', 'ɓ', 'ç', 'ɖ', 'ɘ', 'ɝ', 'ɞ', 'ɟ','ʄ','ɡ','ɠ',
         'ɢ','ʛ','ɦ','ɧ','ħ','ɥ','ʜ','ɨ','ɬ','ɫ','ɮ','ʟ',
@@ -143,19 +187,29 @@ IPA_CHARACTER_SETS = {
         '˧', 'ː', 'ɯ', '̀', '̄', '̌', '̂', 'ˀ', '͡', '˥',
         '˩', '̤', '˨', 'ɹ', 'ʲ', '̯', 'ă', 'ə̆', 'ǐ',
         '˦', 'æ', 'ɐ',
-        'ɜ', 'ɡ', 'ɪ', 'ɬ' 'ɾ', 'ʊ', 'ʌ', 'ʒ', '̃',
+        'ɜ', 'ɡ', 'ɪ', 'ɬ', 'ɾ', 'ʊ', 'ʌ', 'ʒ', '̃',
         '̩', 'θ', 'ᵻ',
     ),
     "ja-JP": (
-        'a', 'i', 'u', 'e', 'o', 'ɯ', 'I', 'ɑ' , 'ɨ ', 'ɒ',  
+        'a', 'i', 'u', 'e', 'o', 'ɯ', 'I', 'ɑ' , 'ɨ ', 'ɒ',
         'ɔ', 'iᵑ', 'eᵑ', 'a', 'ʊ', 'ə', 'eᵝ', 'ɐ', 'ɛ',
-        'w', 'k', 'ɾ', 's', 't', 'ʃ', 'r', 'h', 'n', 'nʲ', 
+        'w', 'k', 'ɾ', 's', 't', 'ʃ', 'r', 'h', 'n', 'nʲ',
         'ɲ', 'ç', 'b', 'm', 'j', 'ɸ', 'z', 'p', 'd', 'N',
         'ʒ', 'ŋ', 'g', 'f', 'ʔ', 'y', 'ɟ', 'v', 'ɥ', 'ɰ',
         'ɰᵝ', 'ɣ', 'ʄ', 'ʑ', 'c', 'ɕ', 'ɠ', 'x', 'l', 'β',
         'ð', 'ø', 'ʁ', 'ts', 'tʃ', 'dʒ', 'y', 'dʑ', 't͡s',
-        'ɑ̃', 'ĩ', 'ũ', 'ẽ', 'õ', 'ɑ̃', 'ĩ', 'ũ', 'w̃',  
-        'ẽ', 'õ', 'hʲ', 'ɪ', 'ː', 'o̞', 'e̞', 
+        'ɑ̃', 'ĩ', 'ũ', 'ẽ', 'õ', 'ɑ̃', 'ĩ', 'ũ', 'w̃',
+        'ẽ', 'õ', 'hʲ', 'ɪ', 'ː', 'o̞', 'e̞',
+    ),
+    # Note: '.' is intentionally included for Hindi IPA. It is used in the
+    # Hindi pronunciation lexicon/transcriptions (e.g., as a boundary or
+    # prosodic marker) and therefore must be part of the allowed phoneme set.
+    "hi-IN": (
+        '.', 'a', 'b', 'c', 'd', 'e', 'f', 'h', 'i', 'j',
+        'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't',
+        'u', 'w', 'x', 'z', 'ŋ', 'ɔ', 'ɖ', 'ə', 'ɛ', 'ɟ',
+        'ɡ', 'ɣ', 'ɪ', 'ɭ', 'ɲ', 'ɳ', 'ɾ', 'ʂ', 'ʃ', 'ʈ',
+        'ʊ', 'ʋ', 'ʌ', 'ʰ', 'ː', '̃', '̩', 'χ',
     ),
 }
 
@@ -165,11 +219,13 @@ GRAPHEME_CHARACTER_CASES = ["upper", "lower", "mixed"]
 
 
 def validate_locale(locale):
+    """Check if locale is supported"""
     if locale not in SUPPORTED_LOCALES:
         raise ValueError(f"Unsupported locale '{locale}'. " f"Supported locales {SUPPORTED_LOCALES}")
 
 
 def get_grapheme_character_set(locale: str, case: str = "upper") -> str:
+    """Gets set of graphemes for given 'locale' and 'case'"""
     if locale not in GRAPHEME_CHARACTER_SETS:
         raise ValueError(
             f"Grapheme character set not found for locale '{locale}'. "
@@ -193,6 +249,7 @@ def get_grapheme_character_set(locale: str, case: str = "upper") -> str:
 
 
 def get_ipa_character_set(locale):
+    """Gets set of phones for given 'locale'"""
     if locale not in IPA_CHARACTER_SETS:
         raise ValueError(
             f"IPA character set not found for locale '{locale}'. " f"Supported locales {IPA_CHARACTER_SETS.keys()}"
@@ -202,6 +259,7 @@ def get_ipa_character_set(locale):
 
 
 def get_ipa_punctuation_list(locale):
+    """Gets set of punctuation for given 'locale'"""
     if locale is None:
         return sorted(list(DEFAULT_PUNCTUATION))
 
@@ -210,7 +268,7 @@ def get_ipa_punctuation_list(locale):
     punct_set = set(DEFAULT_PUNCTUATION)
     # TODO @xueyang: verify potential mismatches with locale-specific punctuation sets used
     #  in nemo_text_processing.text_normalization.en.taggers.punctuation.py
-    if locale in ["de-DE", "es-ES", "it-IT", "fr-FR", "ja-JP"]:
+    if locale in ["de-DE", "es-ES", "it-IT", "fr-FR", "ja-JP", "pt-BR"]:
         # ref: https://en.wikipedia.org/wiki/Guillemet#Uses
         punct_set.update(['«', '»', '‹', '›'])
     if locale == "de-DE":
@@ -315,6 +373,51 @@ def get_ipa_punctuation_list(locale):
                 '！',
                 '？',
                 '・',
+            ]
+        )
+    elif locale == "ar-MSA":
+        punct_set.update(
+            [
+                '،',
+                '؛',
+                '؟',
+            ]
+        )
+    elif locale == "hi-IN":
+        punct_set.update(
+            [
+                '।',
+                '॥',
+            ]
+        )
+    elif locale == "pt-BR":
+        # ref: https://en.wikipedia.org/wiki/Portuguese_orthography#Punctuation
+        # Guillemets (« » ‹ ›) are already added by the shared block above.
+        punct_set.update(
+            [
+                '\u201c',  # " left double quotation mark
+                '\u201d',  # " right double quotation mark
+                '\u2018',  # ' left single quotation mark
+                '\u2019',  # ' right single quotation mark
+                '\u2013',  # – en dash
+                '\u2014',  # — em dash
+                '\u2026',  # … horizontal ellipsis
+            ]
+        )
+    elif locale == "ko-KR":
+        punct_set.update(
+            [
+                '『',
+                '』',
+                '「',
+                '」',
+                '《',
+                '》',
+                '…',
+                '·',
+                '—',
+                '–',
+                '〜',
             ]
         )
     punct_list = sorted(list(punct_set))

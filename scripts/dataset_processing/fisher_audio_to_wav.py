@@ -30,10 +30,18 @@ from tqdm import tqdm
 
 parser = argparse.ArgumentParser(description='Convert Fisher .sph to .wav')
 parser.add_argument(
-    "--data_root", default=None, type=str, required=True, help="The path to the root Fisher dataset folder.",
+    "--data_root",
+    default=None,
+    type=str,
+    required=True,
+    help="The path to the root Fisher dataset folder.",
 )
 parser.add_argument(
-    "--dest_root", default=None, type=str, required=True, help="Path to the destination root directory.",
+    "--dest_root",
+    default=None,
+    type=str,
+    required=True,
+    help="Path to the destination root directory.",
 )
 args = parser.parse_args()
 
@@ -85,13 +93,27 @@ def main():
 
     logging.info("\n\nConverting audio for Part 1")
     __process_set(
-        os.path.join(data_root, "LDC2004S13-Part1", "fisher_eng_tr_sp_d*", "audio", "*", "*.sph",),
+        os.path.join(
+            data_root,
+            "LDC2004S13-Part1",
+            "fisher_eng_tr_sp_d*",
+            "audio",
+            "*",
+            "*.sph",
+        ),
         os.path.join(dest_root, "LDC2004S13-Part1", "audio_wav"),
     )
 
     logging.info("\n\nConverting audio for Part 2")
     __process_set(
-        os.path.join(data_root, "LDC2005S13-Part2", "fe_03_p2_sph*", "audio", "*", "*.sph",),
+        os.path.join(
+            data_root,
+            "LDC2005S13-Part2",
+            "fe_03_p2_sph*",
+            "audio",
+            "*",
+            "*.sph",
+        ),
         os.path.join(dest_root, "LDC2005S13-Part2", "audio_wav"),
     )
 

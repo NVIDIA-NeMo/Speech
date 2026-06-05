@@ -17,7 +17,15 @@ import contextlib
 import numpy as np
 import torch
 from packaging.version import Version
+
+from nemo.core.utils.optional_libs import CUDA_PYTHON_AVAILABLE, cuda_python_required
 from nemo.utils.exceptions import NeMoBaseException
+
+if CUDA_PYTHON_AVAILABLE:
+    from cuda.bindings import __version__ as cuda_python_version
+    from cuda.bindings import driver as cuda
+    from cuda.bindings import nvrtc
+    from cuda.bindings import runtime as cudart
 
 __CUDA_PYTHON_MINIMUM_VERSION_CUDA_GRAPH_CONDITIONAL_NODES_SUPPORTED__ = (12, 6)  # 12060
 
@@ -26,6 +34,11 @@ class NeMoCUDAPythonException(NeMoBaseException):
     """Exception caused by python-cuda in NeMo"""
 
     pass
+
+
+CUDA_GRAPH_COMPILE_ERROR_TYPES = (NeMoCUDAPythonException,)
+if hasattr(torch, "AcceleratorError"):
+    CUDA_GRAPH_COMPILE_ERROR_TYPES += (torch.AcceleratorError,)
 
 
 def check_cuda_python_cuda_graphs_conditional_nodes_supported():
@@ -76,14 +89,11 @@ def skip_cuda_python_test_if_cuda_graphs_conditional_nodes_not_supported():
         )
 
 
+@cuda_python_required
 def assert_drv(err):
     """
     Throws an exception if the return value of a cuda-python call is not success.
     """
-    from cuda.bindings import driver as cuda
-    from cuda.bindings import nvrtc
-    from cuda.bindings import runtime as cudart
-
     if isinstance(err, cuda.CUresult):
         if err != cuda.CUresult.CUDA_SUCCESS:
             raise NeMoCUDAPythonException("Cuda Error: {}".format(err))
@@ -97,13 +107,12 @@ def assert_drv(err):
         raise NeMoCUDAPythonException("Unknown error type: {}".format(err))
 
 
+@cuda_python_required
 def cu_call(f_call_out):
     """
     Makes calls to cuda-python's functions inside cuda.cuda more python by throwing an exception
     if they return a status which is not cudaSuccess
     """
-    from cuda.bindings import runtime as cudart
-
     error, *others = f_call_out
     if error != cudart.cudaError_t.cudaSuccess:
         raise NeMoCUDAPythonException(f"CUDA failure! {error}")
@@ -112,6 +121,7 @@ def cu_call(f_call_out):
 
 
 @contextlib.contextmanager
+@cuda_python_required
 def with_conditional_node(while_loop_kernel, while_loop_args, while_loop_conditional_handle, device):
     """
     Even though we add a conditional node only once, we need to
@@ -121,11 +131,8 @@ def with_conditional_node(while_loop_kernel, while_loop_args, while_loop_conditi
     to decide both whether to enter the loop, and also whether to
     execute the next iteration of the loop).
     """
-    from cuda.bindings import __version__ as cuda_python_version
-    from cuda.bindings import driver as cuda
-    from cuda.bindings import runtime as cudart
-
-    capture_status, _, graph, _, _, _ = cu_call(
+    # NB: depending on cuda-python version, cudaStreamGetCaptureInfo can return either 5 or 6 elements
+    capture_status, _, graph, *_ = cu_call(
         cudart.cudaStreamGetCaptureInfo(torch.cuda.current_stream(device=device).cuda_stream)
     )
     assert capture_status == cudart.cudaStreamCaptureStatus.cudaStreamCaptureStatusActive
@@ -144,7 +151,8 @@ def with_conditional_node(while_loop_kernel, while_loop_args, while_loop_conditi
         0,
     )
 
-    capture_status, _, graph, dependencies, _, _ = cu_call(
+    # NB: depending on cuda-python version, cudaStreamGetCaptureInfo can return either 5 or 6 elements
+    capture_status, _, graph, dependencies, *_ = cu_call(
         cudart.cudaStreamGetCaptureInfo(torch.cuda.current_stream(device=device).cuda_stream)
     )
     assert capture_status == cudart.cudaStreamCaptureStatus.cudaStreamCaptureStatusActive
@@ -168,18 +176,34 @@ def with_conditional_node(while_loop_kernel, while_loop_args, while_loop_conditi
     # Use driver API here because of bug in cuda-python runtime API: https://github.com/NVIDIA/cuda-python/issues/55
     # TODO: Change call to this after fix goes in (and we bump minimum cuda-python version to 12.4.0):
     # node, = cu_call(cudart.cudaGraphAddNode(graph, dependencies, len(dependencies), driver_params))
-    (node,) = cu_call(cuda.cuGraphAddNode(graph, dependencies, None, len(dependencies), driver_params))
+    # CUDA 13 (cuda-python >= 13.0.0) adds an edgeData parameter to cuGraphAddNode and
+    # cudaStreamUpdateCaptureDependencies; CUDA 12 does not accept it.
+    _cuda13 = Version(cuda_python_version) >= Version("13.0.0")
+    if _cuda13:
+        (node,) = cu_call(cuda.cuGraphAddNode(graph, dependencies, None, len(dependencies), driver_params))
+    else:
+        (node,) = cu_call(cuda.cuGraphAddNode(graph, dependencies, len(dependencies), driver_params))
     body_graph = driver_params.conditional.phGraph_out[0]
 
-    cu_call(
-        cudart.cudaStreamUpdateCaptureDependencies(
-            torch.cuda.current_stream(device=device).cuda_stream,
-            [node],
-            None,
-            1,
-            cudart.cudaStreamUpdateCaptureDependenciesFlags.cudaStreamSetCaptureDependencies,
+    if _cuda13:
+        cu_call(
+            cudart.cudaStreamUpdateCaptureDependencies(
+                torch.cuda.current_stream(device=device).cuda_stream,
+                [node],
+                None,
+                1,
+                cudart.cudaStreamUpdateCaptureDependenciesFlags.cudaStreamSetCaptureDependencies,
+            )
         )
-    )
+    else:
+        cu_call(
+            cudart.cudaStreamUpdateCaptureDependencies(
+                torch.cuda.current_stream(device=device).cuda_stream,
+                [node],
+                1,
+                cudart.cudaStreamUpdateCaptureDependenciesFlags.cudaStreamSetCaptureDependencies,
+            )
+        )
     body_stream = torch.cuda.Stream(device)
     previous_stream = torch.cuda.current_stream(device=device)
     cu_call(
@@ -205,11 +229,9 @@ def with_conditional_node(while_loop_kernel, while_loop_args, while_loop_conditi
     torch.cuda.set_stream(previous_stream)
 
 
+@cuda_python_required
 def run_nvrtc(kernel_string: str, kernel_name: bytes, program_name: bytes):
     """Run CUDA kernel using CUDA-Python"""
-    from cuda.bindings import driver as cuda
-    from cuda.bindings import nvrtc
-
     err, prog = nvrtc.nvrtcCreateProgram(str.encode(kernel_string), program_name, 0, [], [])
     assert_drv(err)
     # Compile program

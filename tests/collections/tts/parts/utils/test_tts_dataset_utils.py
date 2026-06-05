@@ -20,11 +20,15 @@ import pytest
 import torch
 
 from nemo.collections.tts.parts.utils.tts_dataset_utils import (
+    LanguageThresholds,
+    _get_sentence_separators_for_language,
+    chunk_and_tokenize_text_by_sentence,
     filter_dataset_by_duration,
     get_abs_rel_paths,
     get_audio_filepaths,
     load_audio,
     normalize_volume,
+    split_by_sentence,
     stack_tensors,
 )
 
@@ -208,3 +212,608 @@ class TestTTSDatasetUtils:
         assert filtered_entries[1]["duration"] == 5.0
         assert total_hours == (135.6 / 3600.0)
         assert filtered_hours == (15.0 / 3600.0)
+
+
+class TestLanguageThresholds:
+    """Test cases for LanguageThresholds dataclass."""
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_default_thresholds(self):
+        """Test default language thresholds are set correctly."""
+
+        thresholds = LanguageThresholds()
+
+        assert thresholds.thresholds["en"] == 45
+        assert thresholds.thresholds["es"] == 73
+        assert thresholds.thresholds["fr"] == 69
+        assert thresholds.thresholds["de"] == 50
+        assert thresholds.thresholds["zh"] == 100
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_get_word_count_english(self):
+        """Test word count for English (word-based)."""
+
+        thresholds = LanguageThresholds()
+        text = "Hello world this is a test"
+
+        count = thresholds.get_word_count(text, "en")
+
+        assert count == 6
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_get_word_count_chinese(self):
+        """Test character count for Chinese (character-based)."""
+
+        thresholds = LanguageThresholds()
+        text = "你好世界"  # 4 characters
+
+        count = thresholds.get_word_count(text, "zh")
+
+        assert count == 4
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_exceeds_threshold_short_text(self):
+        """Test that short text does not exceed threshold."""
+
+        thresholds = LanguageThresholds()
+        short_text = "Hello world."  # 2 words, below 45
+
+        assert not thresholds.exceeds_threshold(short_text, "en")
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_exceeds_threshold_long_text(self):
+        """Test that long text exceeds threshold."""
+
+        thresholds = LanguageThresholds()
+        # Generate text with more than 45 words
+        long_text = " ".join(["word"] * 50)
+
+        assert thresholds.exceeds_threshold(long_text, "en")
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_exceeds_threshold_boundary(self):
+        """Test boundary case exactly at threshold."""
+
+        thresholds = LanguageThresholds()
+        # Generate text with exactly 45 words (threshold)
+        boundary_text = " ".join(["word"] * 45)
+
+        # At threshold should be True (>= comparison)
+        assert thresholds.exceeds_threshold(boundary_text, "en")
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_exceeds_threshold_fallback_to_english(self):
+        """Test fallback to English threshold for unknown language."""
+
+        thresholds = LanguageThresholds()
+        # Unknown language should use English threshold (45)
+        text = " ".join(["word"] * 50)
+
+        assert thresholds.exceeds_threshold(text, "unknown_lang")
+
+
+class TestChunkTextForInference:
+    """Test cases for chunk_text_for_inference function."""
+
+    @pytest.fixture
+    def mock_tokenizer(self):
+        """Create a simple mock tokenizer for testing."""
+
+        class MockTokenizer:
+            def encode(self, text, tokenizer_name):
+                # Simple mock: return list of integers based on word count
+                return list(range(len(text.split())))
+
+        return MockTokenizer()
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_short_text_single_chunk(self, mock_tokenizer):
+        """Test that short text returns as single chunk."""
+        from nemo.collections.tts.parts.utils.tts_dataset_utils import chunk_text_for_inference
+
+        short_text = "Hello world."
+        eos_id = 999
+
+        tokens, lens, texts = chunk_text_for_inference(
+            text=short_text,
+            language="en",
+            tokenizer_name="english_phoneme",
+            text_tokenizer=mock_tokenizer,
+            eos_token_id=eos_id,
+        )
+
+        assert len(tokens) == 1  # Single chunk
+        assert len(lens) == 1
+        assert len(texts) == 1
+        assert texts[0] == short_text
+        assert tokens[0][-1].item() == eos_id  # EOS token appended
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_long_text_multiple_chunks(self, mock_tokenizer):
+        """Test that long text is split into multiple sentence chunks."""
+        from nemo.collections.tts.parts.utils.tts_dataset_utils import chunk_text_for_inference
+
+        # Create long text with multiple sentences (> 45 words)
+        long_text = "This is sentence one. " * 20 + "This is sentence two."
+        eos_id = 999
+
+        tokens, lens, texts = chunk_text_for_inference(
+            text=long_text,
+            language="en",
+            tokenizer_name="english_phoneme",
+            text_tokenizer=mock_tokenizer,
+            eos_token_id=eos_id,
+        )
+
+        assert len(tokens) > 1  # Multiple chunks
+        assert len(tokens) == len(lens) == len(texts)
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_custom_language_threshold(self, mock_tokenizer):
+        """Test with different language thresholds."""
+        from nemo.collections.tts.parts.utils.tts_dataset_utils import chunk_text_for_inference
+
+        # German has threshold of 50 words
+        text = " ".join(["wort"] * 40)  # 40 words, below German threshold
+        eos_id = 999
+
+        tokens, lens, texts = chunk_text_for_inference(
+            text=text,
+            language="de",
+            tokenizer_name="german_phoneme",
+            text_tokenizer=mock_tokenizer,
+            eos_token_id=eos_id,
+        )
+
+        # 40 words is below German threshold (50), so should be single chunk
+        assert len(tokens) == 1
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_empty_text(self, mock_tokenizer):
+        """Test handling of empty text."""
+        from nemo.collections.tts.parts.utils.tts_dataset_utils import chunk_text_for_inference
+
+        empty_text = ""
+        eos_id = 999
+
+        tokens, lens, texts = chunk_text_for_inference(
+            text=empty_text,
+            language="en",
+            tokenizer_name="english_phoneme",
+            text_tokenizer=mock_tokenizer,
+            eos_token_id=eos_id,
+        )
+
+        # Empty text should still return something valid
+        assert len(tokens) == 1
+        assert tokens[0][-1].item() == eos_id
+
+
+class TestSentenceSplitting:
+    """Tests for sentence splitting and tokenization functions."""
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_get_sentence_separators_english(self):
+        """Test that English uses default Western punctuation."""
+        separators = _get_sentence_separators_for_language("en")
+        assert '.' in separators
+        assert '?' in separators
+        assert '!' in separators
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_get_sentence_separators_japanese(self):
+        """Test that Japanese includes Japanese punctuation."""
+        separators = _get_sentence_separators_for_language("ja")
+        assert '。' in separators  # Japanese period
+        assert '？' in separators  # Japanese question mark
+        assert '！' in separators  # Japanese exclamation mark
+        # Also includes Western for mixed text
+        assert '.' in separators
+        assert '?' in separators
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_get_sentence_separators_hindi(self):
+        """Test that Hindi includes Devanagari Danda."""
+        separators = _get_sentence_separators_for_language("hi")
+        assert '।' in separators  # Devanagari Danda (primary Hindi sentence ender)
+        assert '॥' in separators  # Double Danda
+        # Also includes Western punctuation
+        assert '?' in separators
+        assert '!' in separators
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_get_sentence_separators_chinese(self):
+        """Test that Chinese includes CJK punctuation."""
+        separators = _get_sentence_separators_for_language("zh")
+        assert '。' in separators  # Chinese period
+        assert '？' in separators
+        assert '！' in separators
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_get_sentence_separators_unknown_language(self):
+        """Test that unknown languages fall back to Western punctuation defaults."""
+        separators = _get_sentence_separators_for_language("xyz")
+        assert separators == ['.', '?', '!']
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_split_by_sentence_english(self):
+        """Test English sentence splitting."""
+        text = "Hello world. How are you? I am fine!"
+        sentences = split_by_sentence(text)
+
+        assert len(sentences) == 3
+        assert sentences[0] == "Hello world."
+        assert sentences[1] == "How are you?"
+        assert sentences[2] == "I am fine!"
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_split_by_sentence_title_abbreviations(self):
+        """Test that title abbreviations (Dr., Mr., etc.) don't cause splits."""
+        text = "Dr. Smith is here. He arrived early."
+        sentences = split_by_sentence(text)
+
+        # "Dr." is a title - should not cause split
+        assert len(sentences) == 2
+        assert sentences[0] == "Dr. Smith is here."
+        assert sentences[1] == "He arrived early."
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_split_by_sentence_multiple_titles(self):
+        """Test multiple title abbreviations in one sentence."""
+        text = "Mr. and Mrs. Johnson met Prof. Lee yesterday."
+        sentences = split_by_sentence(text)
+
+        # All titles should be preserved
+        assert len(sentences) == 1
+        assert "Mr. and Mrs. Johnson met Prof. Lee" in sentences[0]
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_split_by_sentence_time_abbreviations(self):
+        """Test that time abbreviations (a.m., p.m.) can end sentences."""
+        # "a.m." followed by new sentence should split
+        text = "The meeting is at 9 a.m. Please arrive early."
+        sentences = split_by_sentence(text)
+        assert len(sentences) == 2
+        assert sentences[0] == "The meeting is at 9 a.m."
+        assert sentences[1] == "Please arrive early."
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_split_by_sentence_japanese(self):
+        """Test Japanese sentence splitting with Japanese punctuation."""
+        text = "こんにちは。 お元気ですか？ 私は元気です！"
+        sentences = split_by_sentence(text, language="ja")
+
+        assert len(sentences) == 3
+        assert sentences[0] == "こんにちは。"
+        assert sentences[1] == "お元気ですか？"
+        assert sentences[2] == "私は元気です！"
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_split_by_sentence_hindi(self):
+        """Test Hindi sentence splitting with Devanagari Danda."""
+        text = "नमस्ते। आप कैसे हैं? मैं ठीक हूँ।"
+        sentences = split_by_sentence(text, language="hi")
+
+        assert len(sentences) == 3
+        assert "नमस्ते" in sentences[0]
+        assert "आप कैसे हैं" in sentences[1]
+        assert "मैं ठीक हूँ" in sentences[2]
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_split_by_sentence_japanese_no_spaces(self):
+        """Test Japanese sentence splitting WITHOUT spaces between sentences."""
+        # This is the common case in Japanese - no spaces after punctuation
+        text = "こんにちは。元気ですか？私は元気です！"
+        sentences = split_by_sentence(text, language="ja")
+
+        assert len(sentences) == 3
+        assert sentences[0] == "こんにちは。"
+        assert sentences[1] == "元気ですか？"
+        assert sentences[2] == "私は元気です！"
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_split_by_sentence_chinese_no_spaces(self):
+        """Test Chinese sentence splitting WITHOUT spaces between sentences."""
+        text = "你好。你好吗？我很好！"
+        sentences = split_by_sentence(text, language="zh")
+
+        assert len(sentences) == 3
+        assert sentences[0] == "你好。"
+        assert sentences[1] == "你好吗？"
+        assert sentences[2] == "我很好！"
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_split_by_sentence_hindi_no_spaces(self):
+        """Test Hindi sentence splitting WITHOUT spaces after Danda.
+
+        Note: Danda (।) splits regardless of following whitespace.
+        Western punctuation (? !) still requires whitespace in Hindi text.
+        """
+        # Danda followed by no space - should still split
+        text = "नमस्ते।आप कैसे हैं।मैं ठीक हूँ।"
+        sentences = split_by_sentence(text, language="hi")
+
+        assert len(sentences) == 3
+        assert "नमस्ते" in sentences[0]
+        assert "आप कैसे हैं" in sentences[1]
+        assert "मैं ठीक हूँ" in sentences[2]
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_split_by_sentence_english_with_newline(self):
+        """Test English sentence splitting with newline after punctuation."""
+        text = "Hello world.\nHow are you?"
+        sentences = split_by_sentence(text)
+
+        assert len(sentences) == 2
+        assert sentences[0] == "Hello world."
+        assert sentences[1] == "How are you?"
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_split_by_sentence_english_end_of_string(self):
+        """Test that sentence at end of string (no following char) is handled."""
+        text = "Hello world."
+        sentences = split_by_sentence(text)
+
+        assert len(sentences) == 1
+        assert sentences[0] == "Hello world."
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_split_by_sentence_empty(self):
+        """Test that empty text returns empty list."""
+        sentences = split_by_sentence("")
+        assert sentences == []
+
+        sentences = split_by_sentence("   ")
+        assert sentences == []
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_split_by_sentence_single_sentence(self):
+        """Test single sentence without ending punctuation."""
+        text = "Hello world"
+        sentences = split_by_sentence(text)
+
+        assert len(sentences) == 1
+        assert sentences[0] == "Hello world"
+
+
+class TestChunkAndTokenizeTextBySentence:
+    """Tests for chunk_and_tokenize_text_by_sentence function."""
+
+    class MockTokenizer:
+        """Mock tokenizer for testing."""
+
+        def encode(self, text: str, tokenizer_name: str):
+            """Simple mock that returns character codes."""
+            return [ord(c) for c in text]
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_chunk_and_tokenize_english(self):
+        """Test tokenization with English text."""
+        text = "Hello. World."
+        tokenizer = self.MockTokenizer()
+        eos_id = 0
+
+        tokens, lens, texts = chunk_and_tokenize_text_by_sentence(
+            text=text,
+            tokenizer_name="test",
+            text_tokenizer=tokenizer,
+            eos_token_id=eos_id,
+            language="en",
+        )
+
+        assert len(tokens) == 2
+        assert len(lens) == 2
+        assert len(texts) == 2
+        assert texts[0] == "Hello."
+        assert texts[1] == "World."
+        # Each token tensor should end with EOS
+        assert tokens[0][-1].item() == eos_id
+        assert tokens[1][-1].item() == eos_id
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_chunk_and_tokenize_japanese(self):
+        """Test tokenization with Japanese text."""
+        text = "こんにちは。 世界。"
+        tokenizer = self.MockTokenizer()
+        eos_id = 0
+
+        tokens, lens, texts = chunk_and_tokenize_text_by_sentence(
+            text=text,
+            tokenizer_name="test",
+            text_tokenizer=tokenizer,
+            eos_token_id=eos_id,
+            language="ja",
+        )
+
+        assert len(tokens) == 2
+        assert len(texts) == 2
+        assert "こんにちは" in texts[0]
+        assert "世界" in texts[1]
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_chunk_and_tokenize_hindi(self):
+        """Test tokenization with Hindi text."""
+        text = "नमस्ते। दुनिया।"
+        tokenizer = self.MockTokenizer()
+        eos_id = 0
+
+        tokens, lens, texts = chunk_and_tokenize_text_by_sentence(
+            text=text,
+            tokenizer_name="test",
+            text_tokenizer=tokenizer,
+            eos_token_id=eos_id,
+            language="hi",
+        )
+
+        assert len(tokens) == 2
+        assert len(texts) == 2
+        assert "नमस्ते" in texts[0]
+        assert "दुनिया" in texts[1]
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_chunk_and_tokenize_returns_tensors(self):
+        """Test that returned tokens are torch tensors."""
+        text = "Hello. World."
+        tokenizer = self.MockTokenizer()
+        eos_id = 0
+
+        tokens, lens, texts = chunk_and_tokenize_text_by_sentence(
+            text=text,
+            tokenizer_name="test",
+            text_tokenizer=tokenizer,
+            eos_token_id=eos_id,
+            language="en",
+        )
+
+        for token_tensor in tokens:
+            assert isinstance(token_tensor, torch.Tensor)
+            assert token_tensor.dtype == torch.int32
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_chunk_and_tokenize_lens_match_tensors(self):
+        """Test that lengths match tensor sizes."""
+        text = "Hello. World. Test."
+        tokenizer = self.MockTokenizer()
+        eos_id = 0
+
+        tokens, lens, texts = chunk_and_tokenize_text_by_sentence(
+            text=text,
+            tokenizer_name="test",
+            text_tokenizer=tokenizer,
+            eos_token_id=eos_id,
+            language="en",
+        )
+
+        for token_tensor, length in zip(tokens, lens):
+            assert token_tensor.shape[0] == length
+
+
+class TestGetWordCount:
+    """Tests for get_word_count function with language-aware word counting."""
+
+    def setup_method(self):
+        self.thresholds = LanguageThresholds()
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_word_count_english(self):
+        """Test English word count using whitespace splitting."""
+        text = "Hello world how are you"
+        assert self.thresholds.get_word_count(text, "en") == 5
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_word_count_english_with_punctuation(self):
+        """Test English word count with punctuation."""
+        text = "Hello, world! How are you?"
+        assert self.thresholds.get_word_count(text, "en") == 5
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_word_count_chinese_characters(self):
+        """Test Chinese character count (no word segmentation)."""
+        text = "你好世界"
+        assert self.thresholds.get_word_count(text, "zh") == 4
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_word_count_chinese_with_spaces(self):
+        """Test Chinese ignores spaces for character count."""
+        text = "你好 世界"
+        assert self.thresholds.get_word_count(text, "zh") == 4
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_word_count_hindi(self):
+        """Test Hindi word count using whitespace splitting."""
+        text = "नमस्ते दुनिया कैसे हो"
+        assert self.thresholds.get_word_count(text, "hi") == 4
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_word_count_empty_string(self):
+        """Test empty string returns 0."""
+        assert self.thresholds.get_word_count("", "en") == 0
+        assert self.thresholds.get_word_count("", "ja") == 0
+        assert self.thresholds.get_word_count("", "zh") == 0
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_word_count_whitespace_only(self):
+        """Test whitespace-only string returns 0."""
+        assert self.thresholds.get_word_count("   ", "en") == 0
+        assert self.thresholds.get_word_count("\t\n", "en") == 0
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_word_count_japanese_with_pyopenjtalk(self):
+        """Test Japanese word count using pyopenjtalk morphological analysis."""
+        try:
+            import pyopenjtalk  # noqa: F401
+
+            # "こんにちは世界" should be segmented into morphemes
+            text = "こんにちは世界"
+            word_count = self.thresholds.get_word_count(text, "ja")
+            # pyopenjtalk typically segments this into ~2-3 morphemes
+            assert word_count >= 2
+
+            # Longer sentence with more words
+            text2 = "今日はいい天気ですね"
+            word_count2 = self.thresholds.get_word_count(text2, "ja")
+            # Should have multiple morphemes
+            assert word_count2 >= 4
+
+        except ImportError:
+            pytest.skip("pyopenjtalk not installed")
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_word_count_japanese_fallback(self):
+        """Test Japanese fallback when pyopenjtalk analysis returns empty."""
+        # This tests the fallback path - if pyopenjtalk returns no words,
+        # it should fall back to character count
+        text = "テスト"
+        word_count = self.thresholds.get_word_count(text, "ja")
+        # Should return something > 0 regardless of pyopenjtalk availability
+        assert word_count >= 1
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_word_count_unknown_language_fallback(self):
+        """Test unknown language falls back to whitespace splitting."""
+        text = "word1 word2 word3"
+        assert self.thresholds.get_word_count(text, "unknown") == 3

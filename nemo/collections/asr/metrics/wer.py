@@ -12,11 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from copy import deepcopy
 from typing import List, Optional, Tuple, Union
 
-import editdistance
-import jiwer
 import torch
+from kaldialign import edit_distance
 from torchmetrics import Metric
 
 from nemo.collections.asr.parts.submodules.ctc_decoding import AbstractCTCDecoding
@@ -63,9 +63,7 @@ def word_error_rate(hypotheses: List[str], references: List[str], use_cer=False)
             h_list = h.split()
             r_list = r.split()
         words += len(r_list)
-        # May deprecate using editdistance in future release for here and rest of codebase
-        # once we confirm jiwer is reliable.
-        scores += editdistance.eval(h_list, r_list)
+        scores += edit_distance(r_list, h_list)['total']
     if words != 0:
         wer = 1.0 * scores / words
     else:
@@ -113,23 +111,11 @@ def word_error_rate_detail(
             h_list = h.split()
             r_list = r.split()
 
-        # To get rid of the issue that jiwer does not allow empty string
-        if len(r_list) == 0:
-            if len(h_list) != 0:
-                errors = len(h_list)
-                ops_count['insertions'] += errors
-            else:
-                errors = 0
-        else:
-            if use_cer:
-                measures = jiwer.cer(r, h, return_dict=True)
-            else:
-                measures = jiwer.compute_measures(r, h)
-
-            errors = measures['insertions'] + measures['deletions'] + measures['substitutions']
-            ops_count['insertions'] += measures['insertions']
-            ops_count['deletions'] += measures['deletions']
-            ops_count['substitutions'] += measures['substitutions']
+        measures = edit_distance(r_list, h_list)
+        errors = measures['total']
+        ops_count['insertions'] += measures['ins']
+        ops_count['deletions'] += measures['del']
+        ops_count['substitutions'] += measures['sub']
 
         scores += errors
         words += len(r_list)
@@ -180,21 +166,12 @@ def word_error_rate_per_utt(hypotheses: List[str], references: List[str], use_ce
             h_list = h.split()
             r_list = r.split()
 
-        # To get rid of the issue that jiwer does not allow empty string
+        measures = edit_distance(r_list, h_list)
+        errors = measures['total']
         if len(r_list) == 0:
-            if len(h_list) != 0:
-                errors = len(h_list)
-                wer_per_utt.append(float('inf'))
+            wer_per_utt.append(float('inf') if errors > 0 else 0.0)
         else:
-            if use_cer:
-                measures = jiwer.cer(r, h, return_dict=True)
-                er = measures['cer']
-            else:
-                measures = jiwer.compute_measures(r, h)
-                er = measures['wer']
-
-            errors = measures['insertions'] + measures['deletions'] + measures['substitutions']
-            wer_per_utt.append(er)
+            wer_per_utt.append(errors / len(r_list))
 
         scores += errors
         words += len(r_list)
@@ -238,6 +215,7 @@ class WER(Metric):
         log_prediction: Whether to log a single decoded sample per call.
         batch_dim_index: Index corresponding to batch dimension. (For RNNT.)
         dist_dync_on_step: Whether to perform reduction on forward pass of metric.
+        return_hypotheses: Whether to return the hypotheses.
 
     Returns:
         res: a tuple of 3 zero dimensional float32 ``torch.Tensor` objects: a WER score, a sum of Levenstein's
@@ -255,6 +233,7 @@ class WER(Metric):
         batch_dim_index=0,
         dist_sync_on_step=False,
         sync_on_compute=True,
+        return_hypotheses=False,
         **kwargs,
     ):
         super().__init__(dist_sync_on_step=dist_sync_on_step, sync_on_compute=sync_on_compute)
@@ -264,30 +243,33 @@ class WER(Metric):
         self.log_prediction = log_prediction
         self.fold_consecutive = fold_consecutive
         self.batch_dim_index = batch_dim_index
+        self.return_hypotheses = return_hypotheses
 
         self.decode = None
         if isinstance(self.decoding, AbstractRNNTDecoding):
             self.decode = lambda predictions, predictions_lengths, predictions_mask, input_ids: self.decoding.rnnt_decoder_predictions_tensor(
-                encoder_output=predictions, encoded_lengths=predictions_lengths
+                encoder_output=predictions, encoded_lengths=predictions_lengths, return_hypotheses=return_hypotheses
             )
         elif isinstance(self.decoding, AbstractCTCDecoding):
             self.decode = lambda predictions, predictions_lengths, predictions_mask, input_ids: self.decoding.ctc_decoder_predictions_tensor(
                 decoder_outputs=predictions,
                 decoder_lengths=predictions_lengths,
                 fold_consecutive=self.fold_consecutive,
+                return_hypotheses=return_hypotheses,
             )
         elif isinstance(self.decoding, AbstractMultiTaskDecoding):
             self.decode = lambda predictions, prediction_lengths, predictions_mask, input_ids: self.decoding.decode_predictions_tensor(
                 encoder_hidden_states=predictions,
                 encoder_input_mask=predictions_mask,
                 decoder_input_ids=input_ids,
-                return_hypotheses=False,
+                return_hypotheses=return_hypotheses,
             )
         else:
             raise TypeError(f"WER metric does not support decoding of type {type(self.decoding)}")
 
         self.add_state("scores", default=torch.tensor(0), dist_reduce_fx='sum', persistent=False)
         self.add_state("words", default=torch.tensor(0), dist_reduce_fx='sum', persistent=False)
+        self.hypotheses = None
 
     def update(
         self,
@@ -347,13 +329,26 @@ class WER(Metric):
                 h_list = h.text.split()
                 r_list = r.split()
             words += len(r_list)
-            # Compute Levenstein's distance
-            scores += editdistance.eval(h_list, r_list)
+            scores += edit_distance(r_list, h_list)['total']
 
         self.scores = torch.tensor(scores, device=self.scores.device, dtype=self.scores.dtype)
         self.words = torch.tensor(words, device=self.words.device, dtype=self.words.dtype)
+        self.hypotheses = hypotheses
+        return None
 
     def compute(self):
         scores = self.scores.detach().float()
         words = self.words.detach().float()
         return scores / words, scores, words
+
+    def reset(self):
+        super().reset()
+        self.hypotheses = None
+
+    def get_hypotheses(self):
+        """
+        Returns the hypotheses generated during the last call to update.
+        """
+        if self.hypotheses is None:
+            raise ValueError("No hypotheses available. Please call update() first.")
+        return deepcopy(self.hypotheses)

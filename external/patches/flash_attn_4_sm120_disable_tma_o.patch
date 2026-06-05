@@ -1,0 +1,13 @@
+diff --git a/flash_fwd.py b/flash_fwd.py
+index 7c8cb53..d516e2b 100644
+--- a/flash_fwd.py
++++ b/flash_fwd.py
+@@ -655,7 +655,7 @@ class FlashAttentionForwardSm80:
+         self.num_Q_load_threads = self.num_threads
+         self.num_epilogue_threads = self.num_threads
+         # self.use_tma_O = self.arch >= 90 and mCuSeqlensQ is None
+-        self.use_tma_O = self.arch >= Arch.sm_90
++        self.use_tma_O = self.arch >= Arch.sm_90 and self.arch < Arch.sm_120
+         self._setup_attributes()
+         SharedStorage = self._get_shared_storage_cls()
+         mQ, mK, mV, mO = [assume_tensor_aligned(t) for t in (mQ, mK, mV, mO)]

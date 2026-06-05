@@ -18,6 +18,7 @@ from lhotse.testing.dummies import DummyManifest
 from lightning.pytorch.utilities import CombinedLoader
 from omegaconf import DictConfig
 
+from nemo.collections.common.data.lhotse.broadcasting import BroadcastingDataLoader
 from nemo.collections.common.tokenizers.sentencepiece_tokenizer import SentencePieceTokenizer, create_spt_model
 from nemo.collections.speechlm2.data import DataModule
 
@@ -90,7 +91,7 @@ class Identity(torch.utils.data.Dataset):
 def test_datamodule_train_dataloader(data_config, tokenizer):
     data = DataModule(data_config, tokenizer=tokenizer, dataset=Identity())
     dl = data.train_dataloader()
-    assert isinstance(dl, torch.utils.data.DataLoader)
+    assert isinstance(dl, (BroadcastingDataLoader, torch.utils.data.DataLoader))
     dli = iter(dl)
 
     batch = next(dli)

@@ -1,0 +1,114 @@
+name: Claude Fix Issue
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  id-token: write
+
+jobs:
+  authorize:
+    if: >-
+      !github.event.issue.pull_request &&
+      contains(github.event.comment.body, '/claude fix')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check team membership
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.ORG_TEAM_READ_TOKEN }}
+          script: |
+            const username = context.payload.comment.user.login;
+            try {
+              const res = await github.rest.teams.getMembershipForUserInOrg({
+                org: 'NVIDIA-NeMo',
+                team_slug: 'speech_team',
+                username,
+              });
+              if (res.data.state !== 'active') {
+                core.setFailed(`${username} is not an active member of NVIDIA Speech Team`);
+              }
+            } catch (e) {
+              core.setFailed(`${username} is not a member of NVIDIA Speech Team`);
+            }
+
+  acknowledge:
+    needs: authorize
+    runs-on: ubuntu-latest
+    steps:
+      - name: Add eyes reaction to comment
+        uses: actions/github-script@v8
+        with:
+          script: |
+            await github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: context.payload.comment.id,
+              content: 'eyes'
+            });
+
+  claude-fix:
+    needs: acknowledge
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: anthropics/claude-code-action@v1
+        id: claude
+        with:
+          prompt: |
+            You are a developer working on the NeMo repository.
+            Implement a focused fix for the issue based on the issue description and comments.
+
+            Requirements:
+            - Always use `git commit -s` to sign off all commits (DCO requirement).
+            - Prioritize correctness and minimal scope; avoid unrelated refactors.
+            - Reproduce or reason about the failure first, then implement the smallest robust fix.
+            - If required, add or update tests for the changed behavior. If tests are not feasible, explain why.
+            - If required, update related docs or comments when behavior or usage changes.
+
+            PR expectations:
+            - Create a new branch and open a pull request with your changes.
+            - Include a concise summary of root cause and fix based on the following PR template:
+              ```
+              # What does this PR do ?
+              Add a one line overview of what this PR aims to accomplish.
+
+              # Changelog
+              Add specific line by line info of high level changes in this PR.
+
+              # Usage
+              Add a usage example of the changed functionality.
+              
+              Related to #${{ github.event.issue.number }}
+
+              This PR is created by Claude. 
+              ```
+
+            
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+
+      - name: Label PR with agent-contribution
+        if: steps.claude.outputs.branch_name
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const prs = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              head: `${context.repo.owner}:${process.env.BRANCH_NAME}`,
+              state: 'open'
+            });
+            if (prs.data.length > 0) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prs.data[0].number,
+                labels: ['agent-contribution']
+              });
+            }
+        env:
+          BRANCH_NAME: ${{ steps.claude.outputs.branch_name }}

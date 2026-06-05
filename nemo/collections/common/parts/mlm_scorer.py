@@ -24,6 +24,8 @@ __all__ = ['MLMScorer']
 
 
 class MLMScorer:
+    """Masked language model scorer."""
+
     def __init__(self, model_name: str, device: str = 'cpu'):
         """
         Creates MLM scorer from https://arxiv.org/abs/1910.14659.
@@ -86,7 +88,7 @@ class MLMScorer:
 
     def __mask_text__(self, idx: int, tokens: List[str]):
         """
-        replaces string at index idx in list `tokens` with a masked token and returns the modified list. 
+        replaces string at index idx in list `tokens` with a masked token and returns the modified list.
         """
         masked = tokens.copy()
         masked[idx] = self.MASK_LABEL

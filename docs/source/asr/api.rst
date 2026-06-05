@@ -25,6 +25,16 @@ Model Classes
     :members: transcribe, change_vocabulary, setup_training_data, setup_optimization, setup_validation_data, setup_test_data, register_artifact
 
 
+.. autoclass:: nemo.collections.asr.models.EncDecRNNTBPEModelWithPrompt
+    :show-inheritance:
+    :members: transcribe, set_inference_prompt, initialize_prompt_feature, change_vocabulary, setup_training_data, setup_optimization, setup_validation_data, setup_test_data, register_artifact
+
+
+.. autoclass:: nemo.collections.asr.models.EncDecHybridRNNTCTCBPEModelWithPrompt
+    :show-inheritance:
+    :members: transcribe, set_inference_prompt, initialize_prompt_feature, change_vocabulary, setup_training_data, setup_optimization, setup_validation_data, setup_test_data, register_artifact
+
+
 .. autoclass:: nemo.collections.asr.models.EncDecMultiTalkerRNNTBPEModel
     :show-inheritance:
     :members: transcribe, change_vocabulary, setup_training_data, setup_optimization, setup_validation_data, setup_test_data, register_artifact
@@ -39,10 +49,6 @@ Model Classes
     :show-inheritance:
     :members: setup_training_data, setup_optimization, setup_validation_data, setup_test_data, register_artifact
 
-
-.. autoclass:: nemo.collections.asr.models.hybrid_asr_tts_models.ASRWithTTSModel
-    :show-inheritance:
-    :members: from_asr_config, from_pretrained_models, save_asr_model_to, setup_training_data
 
 .. _asr-api-modules:
 
@@ -71,11 +77,6 @@ Modules
     :show-inheritance:
     :members:
 
-.. _squeezeformer-encoder-api:
-
-.. autoclass:: nemo.collections.asr.modules.SqueezeformerEncoder
-    :show-inheritance:
-    :members:
 
 .. _rnn-encoder-api:
 
@@ -100,15 +101,6 @@ Modules
     :members:
 
 .. autoclass:: nemo.collections.asr.modules.SampledRNNTJoint
-    :show-inheritance:
-    :members:
-
-
-
-Parts
------
-
-.. autoclass:: nemo.collections.asr.parts.submodules.jasper.JasperBlock
     :show-inheritance:
     :members:
 
@@ -157,8 +149,8 @@ Character Encoding Datasets
     :members:
 
 
-Text-to-Text Datasets for Hybrid ASR-TTS models
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Text-to-Text Datasets
+~~~~~~~~~~~~~~~~~~~~~
 
 .. autoclass:: nemo.collections.asr.data.text_to_text.TextToTextDataset
     :show-inheritance:

@@ -11,3 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+from nemo.collections.audio.losses.audio import MAELoss, MSELoss, SDRLoss
+
+__all__ = ["MAELoss", "MSELoss", "SDRLoss"]

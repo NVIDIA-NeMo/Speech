@@ -12,5 +12,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import nemo.collections.tts.losses.tacotron2loss
-import nemo.collections.tts.losses.waveglowloss
+import nemo.collections.tts.losses.moe_loss

@@ -99,9 +99,7 @@ class TranscriptionConfig:
 
     # Chunked configs
     chunk_len_in_secs: float = 40.0  # Chunk length in seconds
-    model_stride: int = (
-        8  # Model downsampling factor, 8 for Citrinet and FasConformer models and 4 for Conformer models.
-    )
+    model_stride: int = 8  # Model downsampling factor, 8 for FastConformer models and 4 for Conformer models.
 
     # Decoding strategy for MultitaskAED models
     decoding: MultiTaskDecodingConfig = field(default_factory=MultiTaskDecodingConfig)

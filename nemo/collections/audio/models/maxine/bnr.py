@@ -26,7 +26,6 @@ BNR 2.0 uses the SEASR architecture described in https://ieeexplore.ieee.org/sta
 
 from typing import Dict, Optional
 
-import einops
 import lightning.pytorch as plt
 import torch
 import torch.nn as nn
@@ -157,15 +156,7 @@ class BNR2(AudioToAudioModel):
     """Implementation of the BNR 2 model"""
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
-        self.world_size = 1
-        if trainer is not None:
-            self.world_size = trainer.world_size
-
         super().__init__(cfg=cfg, trainer=trainer)
-        self.sample_rate = self._cfg.sample_rate
-
-        # Setup optional Optimization flags
-        self.setup_optimization_flags()
 
         self.seasr = _Seasr(self.sample_rate)
         if (
@@ -214,46 +205,26 @@ class BNR2(AudioToAudioModel):
                 )
             )
 
-        if input_signal.shape[-1] % SUPPORTED_INPUT_ALIGN_SAMPLES != 0:
-            raise ValueError("Input samples must be a multiple of {}".format(SUPPORTED_INPUT_ALIGN_SAMPLES))
+        # Pad input to nearest multiple of SUPPORTED_INPUT_ALIGN_SAMPLES
+        original_length = input_signal.shape[-1]
+        remainder = original_length % SUPPORTED_INPUT_ALIGN_SAMPLES
+        if remainder != 0:
+            pad_length = SUPPORTED_INPUT_ALIGN_SAMPLES - remainder
+            input_signal = F.pad(input_signal, (0, pad_length))
+        output = self.seasr.forward(x0=input_signal)
 
-        return self.seasr.forward(x0=input_signal)
+        # Trim output back to original length
+        if remainder != 0:
+            output = output[..., :original_length]
 
-    def training_step(self, batch, batch_idx):
-        if isinstance(batch, dict):
-            input_signal = batch['input_signal']
-            input_length = batch['input_length']
-            target_signal = batch['target_signal']
-        else:
-            input_signal, input_length, target_signal, _ = batch
+        return output
 
-        if input_signal.ndim == 2:
-            input_signal = einops.rearrange(input_signal, 'B T -> B 1 T')
-        if target_signal.ndim == 2:
-            target_signal = einops.rearrange(target_signal, 'B T -> B 1 T')
-
+    def _compute_train_loss(self, input_signal, target_signal, input_length):
         predicted_audio = self.forward(input_signal=input_signal)
-
-        loss = self.loss(target=target_signal, estimate=predicted_audio, input_length=input_length)
-
-        self.log('train_loss', loss)
-        self.log('learning_rate', self._optimizer.param_groups[0]['lr'])
-        self.log('global_step', torch.tensor(self.trainer.global_step, dtype=torch.float32))
-
-        return loss
+        return self.loss(target=target_signal, estimate=predicted_audio, input_length=input_length)
 
     def evaluation_step(self, batch, batch_idx, dataloader_idx: int = 0, tag: str = 'val'):
-        if isinstance(batch, dict):
-            input_signal = batch['input_signal']
-            input_length = batch['input_length']
-            target_signal = batch['target_signal']
-        else:
-            input_signal, input_length, target_signal, _ = batch
-
-        if input_signal.ndim == 2:
-            input_signal = einops.rearrange(input_signal, 'B T -> B 1 T')
-        if target_signal.ndim == 2:
-            target_signal = einops.rearrange(target_signal, 'B T -> B 1 T')
+        input_signal, target_signal, input_length = self._parse_batch(batch)
 
         # Process input
         processed_signal = self(input_signal=input_signal)

@@ -66,7 +66,7 @@ def stft(x, fft_size, hop_size, win_length, window):
     imag = x_stft[..., 1]
 
     # NOTE(kan-bayashi): clamp is needed to avoid nan or inf
-    return torch.sqrt(torch.clamp(real ** 2 + imag ** 2, min=1e-7)).transpose(2, 1)
+    return torch.sqrt(torch.clamp(real**2 + imag**2, min=1e-7)).transpose(2, 1)
 
 
 class SpectralConvergenceLoss(Loss):

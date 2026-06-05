@@ -130,46 +130,44 @@ model:
     bucket_buffer_size: 10000
     shuffle_buffer_size: 10000
     #prompt configs
-    prompt_field: target_lang
     prompt_dictionary: ${model.model_defaults.prompt_dictionary}
     num_prompts: ${model.model_defaults.num_prompts}
     subsampling_factor: ${model.encoder.subsampling_factor}
+    lang_field: target_lang
 
   validation_ds:
     manifest_filepath: ???
     sample_rate: ${model.sample_rate}
     batch_size: 16
     shuffle: false
-    use_start_end_token: false
     num_workers: 8
     pin_memory: true
     batch_duration: null
     use_lhotse: true
     use_bucketing: false
     max_cuts: 8
-    
+
     # prompt configurations for validation
-    prompt_field: target_lang
     prompt_dictionary: ${model.model_defaults.prompt_dictionary}
     num_prompts: ${model.model_defaults.num_prompts}
     subsampling_factor: ${model.encoder.subsampling_factor}
+    lang_field: target_lang
 
   test_ds:
     manifest_filepath: ???
     sample_rate: ${model.sample_rate}
     batch_size: 16
     shuffle: false
-    use_start_end_token: false
     num_workers: 8
     pin_memory: true
     use_lhotse: true
     use_bucketing: false
     # prompt configurations for testing
-    prompt_field: target_lang
     prompt_dictionary: ${model.model_defaults.prompt_dictionary}
     num_prompts: ${model.model_defaults.num_prompts}
     subsampling_factor: ${model.encoder.subsampling_factor}
-
+    lang_field: target_lang
+    default_prompt_mode: langID
   # You may find more detail on how to train a tokenizer at: /scripts/tokenizers/process_asr_text_tokenizer.py
   # We recommend to use vocab size of 1024 with SPE Unigram for most languages
   tokenizer:

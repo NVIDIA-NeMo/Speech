@@ -20,10 +20,8 @@ import glob
 import logging
 import os
 import tarfile
+import urllib.request
 from pathlib import Path
-
-import wget
-from sox import Transformer
 
 from nemo.collections.asr.parts.utils.manifest_utils import create_manifest
 
@@ -31,6 +29,17 @@ train_url = "https://www.openslr.org/resources/111/train_{}.tar.gz"
 train_datasets = ["S", "M", "L"]
 
 eval_url = "https://www.openslr.org/resources/111/test.tar.gz"
+
+
+def _load_sox_transformer():
+    try:
+        from sox import Transformer
+    except ImportError:
+        raise ImportError(
+            "Optional dependency 'sox' is required by this script. Install it with: pip install sox"
+        ) from None
+
+    return Transformer
 
 
 def extract_file(filepath: str, data_dir: str):
@@ -46,7 +55,7 @@ def __process_data(dataset_url: str, dataset_path: Path, manifest_output_path: P
     os.makedirs(dataset_path, exist_ok=True)
     tar_file_path = os.path.join(dataset_path, os.path.basename(dataset_url))
     if not os.path.exists(tar_file_path):
-        wget.download(dataset_url, tar_file_path)
+        urllib.request.urlretrieve(dataset_url, filename=tar_file_path)
     extract_file(tar_file_path, str(dataset_path))
     wav_path = dataset_path / 'converted_wav/'
     extracted_dir = Path(tar_file_path).stem.replace('.tar', '')
@@ -64,11 +73,14 @@ def __process_data(dataset_url: str, dataset_path: Path, manifest_output_path: P
     with open(rttm_list, 'w') as f:
         f.write('\n'.join(rttm_files))
     create_manifest(
-        str(audio_list), manifest_output_path, rttm_path=str(rttm_list),
+        str(audio_list),
+        manifest_output_path,
+        rttm_path=str(rttm_list),
     )
 
 
 def __process_flac_audio(flac_path, wav_path):
+    Transformer = _load_sox_transformer()
     os.makedirs(wav_path, exist_ok=True)
     flac_files = os.listdir(flac_path)
     for flac_file in flac_files:

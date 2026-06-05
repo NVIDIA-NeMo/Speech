@@ -85,13 +85,11 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 from io import BytesIO
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Union
 
-import numpy as np
 import soundfile
 from joblib import Parallel, delayed
 from omegaconf import DictConfig, OmegaConf, open_dict
-from tabulate import tabulate
 from tqdm import tqdm
 
 try:
@@ -218,34 +216,15 @@ class ASRTarredDatasetBuilder:
         # Read the existing manifest
         entries, total_duration, filtered_entries, filtered_duration = self._read_manifest(manifest_path, config)
 
-        header = [
-            "Min.\nduration",
-            "Max.\nduration",
-            "Entries amount\nafter filtration",
-            "Total duration\nafter filtration",
-            "Shards\namount",
-            "Entries\nper shard",
-            "Remainded\nentries",
-        ]
-
-        entires_amount = f'{len(entries)} / {len(entries) + len(filtered_entries)}'
-        entries_duration = f'{total_duration:.2f} / {total_duration + filtered_duration:.2f} s'
-        entries_per_shard = len(entries) // config.num_shards
-        remainder = len(entries) % config.num_shards
-
-        data = [
-            [
-                f"{config.min_duration} s",
-                f"{config.max_duration} s",
-                f"{entires_amount}",
-                f"{entries_duration}",
-                f"{config.num_shards}",
-                f"{entries_per_shard}",
-                f"{remainder}",
-            ]
-        ]
-
-        print('\n' + tabulate(data, headers=header, tablefmt="grid", colalign=["center"] * len(header)))
+        print(
+            f"\n  Min duration:              {config.min_duration} s"
+            f"\n  Max duration:              {config.max_duration} s"
+            f"\n  Entries after filtration:   {len(entries)} / {len(entries) + len(filtered_entries)}"
+            f"\n  Duration after filtration:  {total_duration:.2f} / {total_duration + filtered_duration:.2f} s"
+            f"\n  Shards:                    {config.num_shards}"
+            f"\n  Entries per shard:         {len(entries) // config.num_shards}"
+            f"\n  Remainder entries:         {len(entries) % config.num_shards}"
+        )
         if dry_run:
             return
 
@@ -563,15 +542,42 @@ class ASRTarredDatasetBuilder:
         metadata_yaml = OmegaConf.structured(metadata)
         OmegaConf.save(metadata_yaml, new_metadata_path, resolve=True)
 
-    def _read_manifest(self, manifest_path: str, config: ASRTarredDatasetConfig):
+    def _read_manifest(self, manifest_path: Union[str, List[str]], config: ASRTarredDatasetConfig):
         """Read and filters data from the manifest"""
+        entries = []
+        total_duration = 0.0
+        filtered_entries = []
+        filtered_duration = 0.0
+
+        if isinstance(manifest_path, str):
+            manifest_paths = manifest_path.split(",")
+        else:
+            manifest_paths = manifest_path
+
+        print(f"Found {len(manifest_paths)} manifest files to be processed")
+        for manifest_file in manifest_paths:
+            entries_i, total_dur_i, filtered_ent_i, filtered_dur_i = self._read_single_manifest(
+                str(manifest_file), config
+            )
+            entries.extend(entries_i)
+            total_duration += total_dur_i
+            filtered_entries.extend(filtered_ent_i)
+            filtered_duration += filtered_dur_i
+
+        return entries, total_duration, filtered_entries, filtered_duration
+
+    def _read_single_manifest(self, manifest_path: str, config: ASRTarredDatasetConfig):
         # Read the existing manifest
         entries = []
         total_duration = 0.0
         filtered_entries = []
         filtered_duration = 0.0
+        print(f"Reading manifest: {manifest_path}")
         with open(manifest_path, 'r', encoding='utf-8') as m:
             for line in m:
+                line = line.strip()
+                if not line:
+                    continue
                 entry = json.loads(line)
                 audio_key = "audio_filepath" if "audio_filepath" in entry else "audio_file"
                 if config.slice_with_offset and "offset" not in entry:

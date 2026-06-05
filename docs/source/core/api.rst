@@ -31,7 +31,6 @@ Base Mixin classes
     :exclude-members: _abc_impl
     :noindex:
 
------
 
 .. autoclass:: nemo.core.Serialization
     :show-inheritance:
@@ -39,7 +38,6 @@ Base Mixin classes
     :member-order: bysource
     :noindex:
 
------
 
 .. autoclass:: nemo.core.FileIO
     :show-inheritance:
@@ -65,7 +63,6 @@ Base Mixin Classes
     :members:
     :member-order: bysource
 
------
 
 .. autoclass:: nemo.core.classes.mixins.hf_io_mixin.HuggingFaceFileIO
     :show-inheritance:
@@ -91,21 +88,18 @@ Neural Type classes
     :members:
     :member-order: bysource
 
------
 
 .. autoclass:: nemo.core.neural_types.axes.AxisType
     :show-inheritance:
     :members:
     :member-order: bysource
 
------
 
 .. autoclass:: nemo.core.neural_types.elements.ElementType
     :show-inheritance:
     :members:
     :member-order: bysource
 
------
 
 .. autoclass:: nemo.core.neural_types.comparison.NeuralTypeComparisonResult
     :show-inheritance:

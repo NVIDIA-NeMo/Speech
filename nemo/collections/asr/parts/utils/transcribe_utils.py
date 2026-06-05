@@ -450,6 +450,7 @@ def write_transcription(
     filepaths: List[str] = None,
     compute_langs: bool = False,
     timestamps: bool = False,
+    confidence: bool = False,
 ) -> Tuple[str, str]:
     """Write generated transcription to output file."""
     if cfg.append_pred:
@@ -503,6 +504,10 @@ def write_transcription(
                             for key in timestamps.keys():
                                 values = normalize_timestamp_output(timestamps[key])
                                 item[f'{key}'] = values
+                    if confidence:
+                        if hasattr(transcription, "word_confidence"):
+                            item["word_confidence"] = transcription.word_confidence
+                            item["words"] = transcription.words
 
                     if compute_langs:
                         item['pred_lang'] = transcription.langs
@@ -531,6 +536,12 @@ def write_transcription(
                                 for key in timestamps.keys():
                                     values = normalize_timestamp_output(timestamps[key])
                                     item[f'{key}'] = values
+
+                        if confidence:
+                            hyp = best_hyps[idx]
+                            if hasattr(hyp, "word_confidence"):
+                                item["word_confidence"] = hyp.word_confidence
+                                item["words"] = hyp.words
 
                         if compute_langs:
                             item['pred_lang'] = best_hyps[idx].langs

@@ -22,6 +22,48 @@ from nemo.collections.asr.parts.submodules.causal_convs import CausalConv1D, Cau
 from nemo.utils import logging
 
 
+class FeatureStacking(nn.Module):
+    """Stacks consecutive input frames and projects to model dimension.
+
+    Reduces the temporal resolution by ``subsampling_factor`` while increasing
+    the feature dimension proportionally, then linearly projects back to
+    ``feat_out``.
+
+    Args:
+        subsampling_factor: Number of consecutive frames to stack.
+        feat_in: Input feature dimension.
+        feat_out: Output feature dimension.
+    """
+
+    def __init__(self, subsampling_factor: int, feat_in: int, feat_out: int):
+        super().__init__()
+        self.subsampling_factor = subsampling_factor
+        self.proj = nn.Linear(subsampling_factor * feat_in, feat_out, bias=False)
+
+    def compute_num_out_frames(self, in_frames):
+        return (in_frames + self.subsampling_factor - 1) // self.subsampling_factor
+
+    def forward(self, x, lengths):
+        """
+        Args:
+            x: (B, C, T) input features.
+            lengths: (B,) valid lengths per sample.
+        Returns:
+            x: (B, T', feat_out) stacked and projected features.
+            lengths: (B,) updated lengths after subsampling.
+        """
+        x = x.transpose(1, 2)  # (B, C, T) -> (B, T, C)
+        b, t, c = x.size()
+        pad_size = (self.subsampling_factor - (t % self.subsampling_factor)) % self.subsampling_factor
+        if pad_size > 0:
+            x = nn.functional.pad(x, (0, 0, 0, pad_size))
+        t_new = (t + pad_size) // self.subsampling_factor
+        x = x.reshape(b, t_new, c * self.subsampling_factor)
+        x = self.proj(x)
+        lengths = self.compute_num_out_frames(lengths)
+        return x, lengths
+
+
 class StackingSubsampling(torch.nn.Module):
     """Stacking subsampling which simply stacks consecutive frames to reduce the sampling rate
     Args:
@@ -584,76 +626,6 @@ def calc_length(lengths, all_paddings, kernel_size, stride, ceil_mode, repeat_nu
         else:
             lengths = torch.floor(lengths)
     return lengths.to(dtype=torch.int)
-
-
-class TimeReductionModule(nn.Module):
-    """
-    Squeezeformer Time Reduction procedure. Downsamples the audio by `stride` in the time dimension.
-
-    Args:
-        d_model (int): input dimension of MultiheadAttentionMechanism and PositionwiseFeedForward
-        out_dim (int): Output dimension of the module.
-        kernel_size (int): Conv kernel size for depthwise convolution in convolution module
-        stride (int): Downsampling factor in time dimension.
-    """
-
-    def __init__(self, d_model: int, out_dim: int, kernel_size: int = 5, stride: int = 2):
-        super().__init__()
-
-        self.d_model = d_model
-        self.out_dim = out_dim
-        self.kernel_size = kernel_size
-        self.stride = stride
-        self.padding = max(0, self.kernel_size - self.stride)
-
-        self.dw_conv = nn.Conv1d(
-            in_channels=d_model,
-            out_channels=d_model,
-            kernel_size=kernel_size,
-            stride=stride,
-            padding=self.padding,
-            groups=d_model,
-        )
-
-        self.pw_conv = nn.Conv1d(
-            in_channels=d_model,
-            out_channels=out_dim,
-            kernel_size=1,
-            stride=1,
-            padding=0,
-            groups=1,
-        )
-
-        self.reset_parameters()
-
-    def forward(self, x, att_mask=None, pad_mask=None):
-        x = x.transpose(1, 2)  # [B, C, T]
-        if pad_mask is not None:
-            x = x.float().masked_fill(pad_mask.unsqueeze(1), 0.0)
-
-        x = self.dw_conv(x)
-        x = self.pw_conv(x)
-
-        x = x.transpose(1, 2)  # [B, T, C]
-
-        B, T, D = x.size()
-        if att_mask is not None and pad_mask is not None:
-            att_mask = att_mask[:, :: self.stride, :: self.stride]
-            pad_mask = pad_mask[:, :: self.stride]
-            L = pad_mask.size(-1)
-            x = torch.nn.functional.pad(x, (0, 0, 0, L - T))
-
-        return x, att_mask, pad_mask
-
-    def reset_parameters(self):
-        dw_max = self.kernel_size**-0.5
-        pw_max = self.d_model**-0.5
-
-        with torch.no_grad():
-            torch.nn.init.uniform_(self.dw_conv.weight, -dw_max, dw_max)
-            torch.nn.init.uniform_(self.dw_conv.bias, -dw_max, dw_max)
-            torch.nn.init.uniform_(self.pw_conv.weight, -pw_max, pw_max)
-            torch.nn.init.uniform_(self.pw_conv.bias, -pw_max, pw_max)
 
 
 class SubsamplingReductionModule(nn.Module):

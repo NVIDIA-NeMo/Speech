@@ -17,13 +17,10 @@
 
 """Setup for pip package."""
 
-import codecs
 import importlib.util
-import os
 import subprocess
 from distutils import cmd as distutils_cmd
 from distutils import log as distutils_log
-from itertools import chain
 
 import setuptools
 
@@ -47,102 +44,6 @@ __version__ = package_info.__version__
 with open("README.md", "r", encoding='utf-8') as fh:
     long_description = fh.read()
     long_description_content_type = "text/markdown"
-
-
-###############################################################################
-#                             Dependency Loading                              #
-# %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% #
-
-
-def req_file(filename, folder="requirements"):
-    files = [filename] if not isinstance(filename, list) else filename
-    ans = []
-    for file in files:
-        with open(os.path.join(folder, file), encoding='utf-8') as f:
-            ans.extend(list(map(str.strip, f.readlines())))
-    return ans
-
-
-install_requires = req_file("requirements.txt")
-
-extras_require = {
-    # User packages
-    'test': req_file("requirements_test.txt"),
-    'run': req_file("requirements_run.txt"),
-    # Lightning Collections Packages
-    'core': req_file(["requirements_lightning.txt"]),
-    'lightning': req_file(["requirements_lightning.txt"]),
-    'common-only': req_file('requirements_common.txt'),
-    # domain packages
-    'asr-only': req_file("requirements_asr.txt"),
-    'nlp-only': req_file("requirements_nlp.txt"),
-    'tts': req_file("requirements_tts.txt"),
-    'slu': req_file("requirements_slu.txt"),
-    'multimodal-only': req_file("requirements_multimodal.txt"),
-    'audio': req_file("requirements_audio.txt"),
-}
-
-
-extras_require['all'] = list(chain(val for key, val in extras_require.items()))
-
-# Add lightning requirements as needed
-extras_require['common'] = extras_require['common-only']
-
-extras_require['common'] = list(
-    chain(
-        extras_require['common'],
-        extras_require['core'],
-    )
-)
-extras_require['test'] = list(
-    chain(
-        extras_require['test'],
-        extras_require['tts'],
-        extras_require['common'],
-    )
-)
-extras_require['asr'] = extras_require['asr-only']
-extras_require['asr'] = list(
-    chain(
-        extras_require['asr'],
-        extras_require['common'],
-    )
-)
-extras_require['nlp'] = extras_require['nlp-only']
-extras_require['nlp'] = list(
-    chain(
-        extras_require['nlp'],
-        extras_require['common'],
-    )
-)
-extras_require['llm'] = extras_require['nlp']
-extras_require['tts'] = list(
-    chain(
-        extras_require['tts'],
-        extras_require['asr'],
-        extras_require['common'],
-    )
-)
-extras_require['multimodal'] = extras_require['multimodal-only']
-extras_require['multimodal'] = list(
-    chain(
-        extras_require['multimodal'],
-        extras_require['nlp'],
-        extras_require['common'],
-    )
-)
-extras_require['audio'] = list(
-    chain(
-        extras_require['audio'],
-        extras_require['common'],
-    )
-)
-extras_require['slu'] = list(
-    chain(
-        extras_require['slu'],
-        extras_require['asr'],
-    )
-)
 
 
 ###############################################################################
@@ -272,12 +173,6 @@ setuptools.setup(
     ],
     packages=setuptools.find_packages(),
     python_requires='>=3.10',
-    install_requires=install_requires,
-    # List additional groups of dependencies here (e.g. development
-    # dependencies). You can install these using the following syntax,
-    # $ pip install -e ".[all]"
-    # $ pip install nemo_toolkit[all]
-    extras_require=extras_require,
     # Add in any packaged data.
     include_package_data=True,
     exclude=['tools', 'tests'],
@@ -287,9 +182,4 @@ setuptools.setup(
     keywords=__keywords__,
     # Custom commands.
     cmdclass={'style': StyleCommand},
-    entry_points={
-        "nemo_run.cli": [
-            "llm = nemo.collections.llm",
-        ],
-    },
 )

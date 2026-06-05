@@ -50,8 +50,8 @@ Then run:
                             estimate frequency bandwidth and signal level of audio recordings
     --debug, -d           enable debug mode
     --audio-base-path A base path for the relative paths in manifest. It defaults to manifest path.
-    --names_compared, -nc names of the two fields that will be compared, example: pred_text_contextnet pred_text_conformer.
-    --show_statistics, -shst field name for which you want to see statistics (optional). Example: pred_text_contextnet.
+    --names_compared, -nc names of the two fields that will be compared, example: pred_text_model1 pred_text_model2.
+    --show_statistics, -shst field name for which you want to see statistics (optional). Example: pred_text_model1.
 
 CT takes a JSON manifest file (that describes speech datasets in NeMo) as an input. It should contain the following fields:
 

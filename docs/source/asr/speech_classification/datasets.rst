@@ -11,7 +11,7 @@ If you have your own data and want to preprocess it to use with NeMo ASR models,
 Freesound
 -----------
 
-`Freesound <http://www.freesound.org/>`_ is a website that aims to create a huge open collaborative database of audio snippets, samples, recordings, bleeps. 
+`Freesound <https://freesound.org/>`_ is a website that aims to create a huge open collaborative database of audio snippets, samples, recordings, bleeps. 
 Most audio samples are released under Creative Commons licenses that allow their reuse. 
 Researchers and developers can access Freesound content using the Freesound API to retrieve meaningful sound information such as metadata, analysis files, and the sounds themselves. 
 

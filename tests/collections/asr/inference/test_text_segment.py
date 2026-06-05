@@ -15,12 +15,7 @@
 
 import pytest
 
-from nemo.collections.asr.inference.utils.text_segment import (
-    TextSegment,
-    Word,
-    join_segments,
-    normalize_segments_inplace,
-)
+from nemo.collections.asr.inference.utils.text_segment import TextSegment, Word, join_segments
 
 
 class TestTextSegment:
@@ -51,14 +46,6 @@ class TestTextSegment:
             ]
             transcriptions = join_segments(segments, sep=' ')
             assert transcriptions == ['hello world', 'how are you']
-
-    @pytest.mark.unit
-    def test_normalize_segments_inplace(self):
-        for cls in [Word, TextSegment]:
-            segments = [cls('Hello!', 0, 1, 0.5), cls('world?', 1, 2, 0.5)]
-            normalize_segments_inplace(segments, punct_marks=set("!?"), sep=' ')
-            assert segments[0].text == 'hello'
-            assert segments[1].text == 'world'
 
     @pytest.mark.unit
     @pytest.mark.parametrize("text, expected_text", [("hello", "Hello"), ("World!", "World!")])

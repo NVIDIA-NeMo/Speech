@@ -32,7 +32,7 @@ from transformers import DynamicCache
 from nemo.collections.audio.parts.utils.transforms import resample
 from nemo.collections.common.tokenizers import AutoTokenizer
 from nemo.collections.speechlm2.data.utils import get_pad_id
-from nemo.collections.speechlm2.models.duplex_s2s_model import replace_control_speech_codes, tokens_to_str
+from nemo.collections.speechlm2.models.duplex_s2s_model import replace_control_speech_codes
 from nemo.collections.speechlm2.modules import TransformerARSpeechDecoder
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
 from nemo.collections.speechlm2.parts.lora import maybe_install_lora
@@ -41,6 +41,7 @@ from nemo.collections.speechlm2.parts.metrics.bleu import BLEU
 from nemo.collections.speechlm2.parts.optim_setup import configure_optimizers, is_frozen
 from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.speechlm2.parts.pretrained import load_pretrained_hf, setup_audio_codec, setup_speech_encoder
+from nemo.collections.speechlm2.parts.text_utils import tokens_to_str
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, NeuralType
 from nemo.utils import logging
 
@@ -63,7 +64,8 @@ class DuplexS2SSpeechDecoderModel(LightningModule, HFHubMixin):
         # pretrained LM head weights.
         # However, for S2S we need to access the activations before LM head directly
         # to feed them to the audio codec head.
-        self.tokenizer = AutoTokenizer(self.cfg.pretrained_llm, use_fast=True)
+        tokenizer_src = self.cfg.get("tokenizer_path", None) or self.cfg.pretrained_llm
+        self.tokenizer = AutoTokenizer(tokenizer_src, use_fast=True)
         llm = load_pretrained_hf(self.cfg.pretrained_llm, pretrained_weights=self.cfg.pretrained_weights).train()
         self.llm = llm.model  # fetch PretrainedBaseModel from model "ForCausalLM"
         self.lm_head = llm.lm_head

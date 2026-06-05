@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TTS Evaluation Comparison Report</title>
+  <style>
+    :root {
+      --bg: #f7f8fa;
+      --card: #fafafa;
+      --card-shadow: 0 1px 8px rgba(0, 0, 0, 0.045);
+      --sub-card: #ffffff;
+      --sub-card-shadow: 0 1px 4px rgba(0, 0, 0, 0.03);
+      --sub-card-hover: #cfd6dd;
+      --sub-card-hover-shadow: 0 2px 10px rgba(0, 0, 0, 0.06);
+      --text: #36454F;
+      --highlighted: #7393B3;
+      --border: #e5e7eb;
+      --header: #111827;
+      --sub-header: #36454F;
+      --accent: #708090;
+      --strong: #36454F;
+      --table-header: #f3f4f6;
+      --expiration-comment: #CD5C5C;
+      --link-decoration: rgba(115, 147, 179, 0.45);
+      --radius: 8px;
+    }
+
+    html {
+      scroll-behavior: auto;
+    }
+
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 32px;
+      line-height: 1.5;
+    }
+
+    .container {
+      max-width: 1500px;
+      margin: 0 auto;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 200px minmax(0, 1050px) 200px;
+      column-gap: 40px;
+      align-items: start;
+    }
+
+    .main-content {
+      grid-column: 2;
+      min-width: 0;
+    }
+
+    .sidebar {
+      position: sticky;
+      top: 32px;
+      align-self: start;
+      margin-top: 145px;
+      padding-top: 0;
+    }
+
+    .sidebar-left {
+      grid-column: 1;
+      padding-right: 20px;
+    }
+
+    .sidebar-right {
+      grid-column: 3;
+      padding-left: 20px;
+    }
+
+    @media (max-width: 1500px) {
+      .layout {
+        grid-template-columns: 1fr;
+      }
+
+      .main-content {
+        grid-column: 1;
+      }
+
+      .sidebar {
+        display: none;
+      }
+    }
+
+    .sidebar h2 {
+      display: inline-block;
+      font-size: 1rem;
+      margin-top: 2rem;
+      margin-bottom: 1rem;
+      border-bottom: 2px solid var(--border);
+      padding-right: 40px;
+      padding-bottom: 0.35rem;
+      color: var(--sub-header);
+    }
+
+    .sidebar ul {
+      list-style: none;
+      padding-left: 0;
+      margin: 0;
+    }
+
+    .sidebar li {
+      margin-bottom: 8px;
+      color: var(--accent);
+      font-size: 1rem;
+    }
+
+    .sidebar ul ul {
+      margin-top: 8px;
+      margin-left: 14px;
+      padding-left: 12px;
+      border-left: 1px solid var(--border);
+    }
+
+    .sidebar a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    .sidebar a:hover {
+      color: var(--sub-header);
+      text-decoration: none;
+    }
+
+    .sidebar a.active {
+      color: var(--sub-header);
+      text-decoration: underline;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--card-shadow);
+      padding: 20px 24px;
+      margin-bottom: 24px;
+    }
+
+    .sub-card {
+      background: var(--sub-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--sub-card-shadow);
+      padding: 20px 24px;
+      margin-bottom: 24px;
+      transition: background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .sub-card:hover {
+      border-color: var(--sub-card-hover);
+      box-shadow: var(--sub-card-hover-shadow);
+    }
+
+    h1 {
+      color: var(--header);
+      margin-top: 0;
+      font-size: 2rem;
+      margin-bottom: 0.5rem;
+    }
+
+    h2, h3, h4 {
+      color: var(--sub-header);
+      margin-top: 0;
+    }
+
+    h2 {
+      font-size: 1.5rem;
+      margin-top: 2rem;
+      margin-bottom: 1rem;
+      border-bottom: 2px solid var(--border);
+      padding-bottom: 0.35rem;
+    }
+
+    h3 {
+      font-size: 1.2rem;
+      margin-top: 1.5rem;
+      margin-bottom: 0.75rem;
+    }
+
+    h4 {
+      font-size: 1rem;
+      margin-top: 1rem;
+      margin-bottom: 0.75rem;
+      color: var(--accent);
+    }
+
+    .title-tag {
+      color: var(--accent);
+      opacity: 0.9;
+      white-space: nowrap;
+    }
+
+    p {
+      margin: 0.5rem 0 1rem 0;
+    }
+
+    .subtitle {
+      color: var(--sub-header);
+      margin-bottom: 1.5rem;
+    }
+
+    p.expiration_comment {
+      color: var(--expiration-comment);
+      font-style: italic;
+      margin-top: 30px;
+      margin-bottom: 25px;
+    }
+
+    .config-text {
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    .link-comment {
+      color: var(--highlighted);
+      font-size: 1rem;
+    }
+
+    .link-comment a {
+      color: inherit;
+      text-decoration: underline;
+      text-decoration-color: var(--link-decoration);
+    }
+
+    .link-comment a:hover {
+      color: var(--sub-header);
+      text-decoration-color: var(--sub-header);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+      margin-top: 0.75rem;
+      margin-bottom: 1rem;
+      background: white;
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+
+    th, td {
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      text-align: left;
+      vertical-align: top;
+      overflow-wrap: anywhere;
+    }
+
+    th {
+      background: var(--table-header);
+      font-weight: 600;
+    }
+
+    tr:hover td {
+      background: var(--card);
+    }
+
+    strong {
+      color: var(--strong);
+    }
+
+    .strong-highlighted {
+      color: var(--highlighted);
+      font-weight: 700;
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+    }
+
+    .plot-wrap {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      width: 100%;
+      overflow-x: auto;
+    }
+
+    .report-plot {
+      display: block;
+      max-width: 95%;
+      height: auto;
+      background: white;
+    }
+
+    .notes-list {
+      list-style: none;
+      padding-left: 0;
+    }
+
+    .notes-list li {
+      position: relative;
+      padding-left: 20px;
+      margin-bottom: 25px;
+    }
+
+    .notes-list li::before {
+      content: "›";
+      position: absolute;
+      left: 0;
+      top: 0;
+      color: var(--accent);
+      font-weight: 700;
+    }
+  </style>
+</head>
+
+<body>
+<div class="container">
+  <div class="layout">
+    <aside class="sidebar sidebar-left">
+      <h2>Content</h2>
+      <ul>
+        <li><a href="#configuration">Configuration</a></li>
+        <li><a href="#summary">Summary</a></li>
+        <li>
+          <a href="#per-test-set-results">Per-Test-Set Results</a>
+          <ul>
+            {% for section_id, section_name in benchmark_section_info %}
+            <li><a href="#{{ section_id }}">{{ section_name }}</a></li>
+            {% endfor %}
+          </ul>
+        </li>
+        <li><a href="#notes">Notes</a></li>
+      </ul>
+    </aside>
+
+    <main class="main-content">
+      {{ header_block|safe }}
+
+      {% if not is_self_comparison %}
+        <h2 id="configuration">Configuration</h2>
+      {% else %}
+        <h2 id="configuration">
+          Configuration
+          <span class="title-tag">[⚠ identical models]</span>
+        </h2>
+      {% endif %}
+
+      {{ configuration_block|safe }}
+
+      <h2 id="summary">Summary (Aggregated Across Test Sets)</h2>
+      {{ summary_block|safe }}
+
+      <h2 id="per-test-set-results">Per-Test-Set Results</h2>
+      {% for block in benchmark_blocks %}
+        {{ block|safe }}
+      {% endfor %}
+
+      <h2 id="notes">Notes</h2>
+      <div class="card">
+        <div class="sub-card">
+          <ul class="notes-list">
+            <li>
+              Lower WER/CER is better, higher UTMOS/SSIM is better.
+              <strong>Highlighted values</strong> indicate the better result.
+            </li>
+
+            <li>
+              In statistical tests, <strong>less</strong> means the baseline tends 
+              to have smaller values than the candidate, <strong>greater</strong> means 
+              the baseline tends to have larger values than the candidate, and
+              <strong>two-sided</strong> means the alternative hypothesis is that 
+              the two distributions differ without specifying direction.
+            </li>
+
+            <li>
+              In box plots, the statistically better model is 
+              <strong class="strong-highlighted">highlighted by color</strong>. 
+              Mean values and approximate 95% confidence intervals are also shown.
+            </li>
+          </ul>
+        </div>
+      </div>
+    </main>
+
+    <aside class="sidebar sidebar-right">
+      <h2>Links ↗</h2>
+      <ul>
+        <li class="link-comment">
+        <a href="{{ jira_url }}" target="_blank" rel="noopener noreferrer">Jira {{ jira_id }}</a>
+        </li>
+        {% if audio_report_url %}
+            <li class="link-comment">
+            <a href="{{ audio_report_url }}" target="_blank" rel="noopener noreferrer">Audio comparison report</a>
+            </li>
+        {% endif %}
+      </ul>
+    </aside>
+
+  </div>
+</div>
+
+<script>
+  const ACTIVE_SECTION_OFFSET = 140;
+  const BOTTOM_THRESHOLD = 20;
+
+  const sections = [...document.querySelectorAll("h2[id], h3[id]")];
+  const navLinks = [...document.querySelectorAll('.sidebar-left a[href^="#"]')];
+
+  const linkMap = new Map();
+  navLinks.forEach(link => {
+    const href = link.getAttribute("href");
+    linkMap.set(href.slice(1), link);
+
+    link.addEventListener("click", () => {
+      navLinks.forEach(l => l.classList.remove("active"));
+      link.classList.add("active");
+    });
+  });
+
+  function updateActiveLink() {
+    let currentSection = null;
+
+    for (const section of sections) {
+      const rect = section.getBoundingClientRect();
+      if (rect.top <= ACTIVE_SECTION_OFFSET) {
+        currentSection = section.id;
+      }
+    }
+
+    const nearBottom = window.innerHeight + window.scrollY >= document.body.offsetHeight - BOTTOM_THRESHOLD;
+
+    if (nearBottom && sections.length > 0) {
+      currentSection = sections[sections.length - 1].id;
+    }
+
+    if (currentSection) {
+      navLinks.forEach(link => link.classList.remove("active"));
+      const activeLink = linkMap.get(currentSection);
+      if (activeLink) {
+        activeLink.classList.add("active");
+      }
+    }
+  }
+
+  window.addEventListener("scroll", updateActiveLink, { passive: true });
+  window.addEventListener("load", updateActiveLink);
+</script>
+
+</body>
+</html>

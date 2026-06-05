@@ -25,8 +25,8 @@ from nemo.utils import logging
 
 
 def process_collection(id, col):
-    """ Helper function processing the collection.
-    
+    """Helper function processing the collection.
+
     Args:
         id: (short) name of the collection.
         col: a collection (python module).
@@ -41,7 +41,7 @@ def process_collection(id, col):
 
 
 def main():
-    """ Main function generating a JSON file with list of NeMo collections. """
+    """Main function generating a JSON file with list of NeMo collections."""
     # Parse filename.
     parser = argparse.ArgumentParser()
     parser.add_argument('--filename', help='Name of the output JSON file', type=str, default="collections.json")

@@ -133,6 +133,10 @@ class TranscriptionConfig:
     )
     right_context_secs: float = 2  # right context
 
+    att_context_size_as_chunk: bool = (
+        True  # whether to use the att_context_size as chunk size (important for extra-low latency)
+    )
+
     # Set `cuda` to int to define CUDA device. If 'None', will look for CUDA
     # device anyway, and do inference on CPU only if CUDA device is not found.
     # If `cuda` is a negative number, inference will be on CPU only.
@@ -153,6 +157,7 @@ class TranscriptionConfig:
     use_per_stream_biasing: bool = False
 
     timestamps: bool = False  # output timestamps
+    confidence: bool = False  # output word confidence
 
     # Config for word / character error rate calculation
     calculate_wer: bool = True
@@ -238,6 +243,10 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
         cfg.decoding.beam.return_best_hypothesis = True  # return and write the best hypothsis only
         if use_per_stream_biasing:
             cfg.decoding.greedy.enable_per_stream_biasing = use_per_stream_biasing
+        if cfg.confidence:
+            cfg.decoding.greedy.preserve_frame_confidence = True
+            cfg.decoding.confidence_cfg.preserve_frame_confidence = True
+            cfg.decoding.confidence_cfg.preserve_word_confidence = True
 
     # Setup decoding strategy
     if hasattr(asr_model, 'change_decoding_strategy'):
@@ -297,6 +306,12 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
         chunk=context_encoder_frames.chunk * encoder_subsampling_factor * features_frame2audio_samples,
         right=context_encoder_frames.right * encoder_subsampling_factor * features_frame2audio_samples,
     )
+
+    # unified ASR model: use the att_context_size as chunk size (important for extra-low latency)
+    if asr_model.cfg.encoder.att_context_style == 'chunked_limited_with_rc' and cfg.att_context_size_as_chunk:
+        asr_model.encoder.set_default_att_context_size(
+            att_context_size=[context_encoder_frames.left, context_encoder_frames.chunk, context_encoder_frames.right]
+        )
 
     logging.info(
         "Corrected contexts (sec): "
@@ -359,12 +374,13 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
                 multi_biasing_ids = torch.full([batch_size], fill_value=-1, dtype=torch.long, device=map_location)
                 if audio_data.biasing_requests is not None:
                     for batch_i, request in enumerate(audio_data.biasing_requests):
-                        if request is not None:
-                            biasing_model = request.get_model(tokenizer=asr_model.tokenizer)
-                            if biasing_model is not None:
-                                multi_model_id = decoding_computer.biasing_multi_model.add_model(biasing_model)
-                                request.multi_model_id = multi_model_id
-                                multi_biasing_ids[batch_i] = multi_model_id
+                        if request is not None and not request.is_empty():
+                            request.add_to_multi_model(
+                                tokenizer=asr_model.tokenizer,
+                                biasing_multi_model=decoding_computer.biasing_multi_model,
+                            )
+                            if request.multi_model_id is not None:
+                                multi_biasing_ids[batch_i] = request.multi_model_id
             else:
                 multi_biasing_ids = None
 
@@ -414,7 +430,7 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
                 encoder_output = encoder_output[:, encoder_context.left :]
 
                 # decode only chunk frames
-                chunk_batched_hyps, _, state = decoding_computer(
+                chunk_batched_hyps, state = decoding_computer(
                     x=encoder_output,
                     out_len=torch.where(
                         is_last_chunk_batch,
@@ -441,7 +457,7 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
                     if request is not None and request.multi_model_id is not None:
                         decoding_computer.biasing_multi_model.remove_model(request.multi_model_id)
                         request.multi_model_id = None
-            all_hyps.extend(batched_hyps_to_hypotheses(current_batched_hyps, None, batch_size=batch_size))
+            all_hyps.extend(batched_hyps_to_hypotheses(current_batched_hyps, batch_size=batch_size))
         timer.stop(device=map_location)
 
     # convert text
@@ -455,6 +471,8 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
                 window_stride=asr_model.cfg['preprocessor']['window_stride'],
             )
             all_hyps[i] = hyp
+    if cfg.confidence:
+        all_hyps = asr_model.decoding.compute_confidence(all_hyps)
 
     if cfg.sort_by_duration:
         # restore order for all_hyps and records (all_hyps are consistent with records)
@@ -464,7 +482,13 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
         records, all_hyps = map(list, zip(*order_restored))
 
     output_filename, pred_text_attr_name = write_transcription(
-        all_hyps, cfg, model_name, filepaths=filepaths, compute_langs=False, timestamps=cfg.timestamps
+        all_hyps,
+        cfg,
+        model_name,
+        filepaths=filepaths,
+        compute_langs=False,
+        timestamps=cfg.timestamps,
+        confidence=cfg.confidence,
     )
     logging.info(f"Finished writing predictions to {output_filename}!")
 
@@ -484,6 +508,8 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
             langid=cfg.langid,
             use_cer=cfg.use_cer,
             output_filename=None,
+            ignore_punctuation=True,
+            ignore_capitalization=True,
         )
         if output_manifest_w_wer:
             logging.info(f"Writing prediction and error rate of each sample to {output_manifest_w_wer}!")

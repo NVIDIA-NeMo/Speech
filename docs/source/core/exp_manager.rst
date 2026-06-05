@@ -4,7 +4,7 @@
 Experiment Manager
 ==================
 
-The NeMo Framework Experiment Manager leverages PyTorch Lightning for model checkpointing, TensorBoard Logging, Weights and Biases, DLLogger and MLFlow logging. The
+The NeMo Toolkit Experiment Manager leverages PyTorch Lightning for model checkpointing, TensorBoard Logging, Weights and Biases, DLLogger and MLFlow logging. The
 Experiment Manager is included by default in all NeMo example scripts.
 
 To use the Experiment Manager, call :class:`~nemo.utils.exp_manager.exp_manager` and pass in the PyTorch Lightning ``Trainer``.

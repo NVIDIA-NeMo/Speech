@@ -1,3 +1,5 @@
+:orphan:
+
 Checkpoints
 ===========
 
@@ -27,16 +29,6 @@ If there is a local ``.nemo`` checkpoint that you'd like to load, use the :code:
 Where the model base class is the ASR model class of the original checkpoint, or the general ``ASRModel`` class.
 
 
-Hybrid ASR-TTS Models Checkpoints
----------------------------------
-
-:ref:`Hybrid ASR-TTS model <Hybrid-ASR-TTS_model>` is a transparent wrapper for the ASR model, text-to-mel-spectrogram generator, and optional enhancer.
-The model is saved as a solid ``.nemo`` checkpoint containing all these parts.
-Due to transparency, the ASR model can be extracted after training/finetuning separately by using the ``asr_model`` attribute (NeMo submodel)
-:code:`hybrid_model.asr_model.save_to(<asr_checkpoint_path>.nemo)` or by using a wrapper
-made for convenience purpose :code:`hybrid_model.save_asr_model_to(<asr_checkpoint_path>.nemo)`
-
-
 Pretrained Checkpoints
 --------------------------
 
@@ -54,14 +46,14 @@ the ASR Model class. In general, you can load any of these models with code in t
 
 Where the model name is the value under "Model Name" entry in the tables below.
 
-For example, to load the base English QuartzNet model for speech recognition, run:
+For example, to load the Parakeet TDT model for speech recognition, run:
 
 .. code-block:: python
 
-  model = nemo_asr.models.ASRModel.from_pretrained(model_name="QuartzNet15x5Base-En")
+  model = nemo_asr.models.ASRModel.from_pretrained(model_name="nvidia/parakeet-tdt-0.6b-v2")
 
-You can also call :code:`from_pretrained()` from the specific model class (such as :code:`EncDecCTCModel`
-for QuartzNet) if you need to access a specific model functionality.
+You can also call :code:`from_pretrained()` from the specific model class (such as :code:`EncDecRNNTBPEModel`
+for Parakeet) if you need to access a specific model functionality.
 
 If you would like to programmatically list the models available for a particular base class, you can use the
 :code:`list_available_models()` method.
@@ -269,7 +261,7 @@ Automatic Speech Recognition Models
 
 Speech Recognition
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-Below is a list of the high quality ASR models available in NeMo for specific languages, all ASR models can be found in :doc:`All checkpoints <./all_chkpt>`. 
+Below is a list of the high quality ASR models available in NeMo for specific languages. All ASR models can be found in :doc:`ASR Model Checkpoints <./asr_checkpoints>`. 
 
 Multilingual Multitask
 ^^^^^^^^^^^^^^^^^^^^^^
@@ -307,6 +299,7 @@ The Hybrid-Transducer-CTC model with prompt conditioning (``EncDecHybridRNNTCTCB
 - **Scalable architecture** can support multilingual ASR and AST tasks
 
 **Key Features:**
+
 - Prompt-based language conditioning using one-hot embeddings
 - Concatenation-based feature fusion with learned projection networks
 - Compatible with existing FastConformer hybrid architecture
@@ -328,10 +321,57 @@ The Hybrid-Transducer-CTC model with prompt conditioning (``EncDecHybridRNNTCTCB
   )
 
 **Configuration and Training:**
+
 - Training script: ``<NeMo_git_root>/examples/asr/asr_hybrid_transducer_ctc/speech_to_text_hybrid_rnnt_ctc_bpe_prompt.py``
 - Config file: ``<NeMo_git_root>/examples/asr/conf/fastconformer/hybrid_transducer_ctc/fastconformer_hybrid_transducer_ctc_bpe_prompt.yaml``
 
 For detailed configuration parameters, see :ref:`Hybrid-Transducer-CTC with Prompt Conditioning Configuration <Hybrid-Transducer-CTC-Prompt_model__Config>`.
+
+Fast Conformer RNN-T (Streaming) with Prompt Feature
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The RNN-T-only prompt model (``EncDecRNNTBPEModelWithPrompt``) is the cache-aware streaming
+counterpart of the hybrid prompt model — same one-hot language-ID prompt mechanism, no
+auxiliary CTC head. 
+
+**Key Features:**
+
+- Cache-aware streaming RNN-T with language-ID prompt conditioning
+- Concatenation-based feature fusion with learned projection (shared with the hybrid variant)
+- Per-sample dynamic language selection from the manifest (``target_lang=auto``) or
+  fixed-language batches (e.g. ``target_lang=en-US``)
+- Optional automatic stripping of language tags from decoded text via ``strip_lang_tags``
+
+**Usage Example:**
+
+.. code-block:: python
+
+  import nemo.collections.asr as nemo_asr
+
+  # Load the model
+  model = nemo_asr.models.EncDecRNNTBPEModelWithPrompt.restore_from("path/to/model.nemo")
+
+  # Cache-aware streaming inference with a fixed language
+  model.set_inference_prompt("en-US")
+
+For batched offline transcription via the cache-aware streaming simulation script, pass
+``target_lang`` on the command line:
+
+.. code-block:: bash
+
+  python <NeMo_git_root>/examples/asr/asr_cache_aware_streaming/speech_to_text_cache_aware_streaming_infer.py \
+      model_path=<path_to_nemo_checkpoint> \
+      dataset_manifest=<path_to_manifest> \
+      target_lang=en-US \
+      decoder_type=rnnt \
+      strip_lang_tags=true
+
+**Configuration and Training:**
+
+- Training script: ``examples/asr/asr_transducer/speech_to_text_rnnt_bpe_prompt.py``
+- Config file: ``examples/asr/conf/fastconformer/cache_aware_streaming/fastconformer_transducer_bpe_streaming_prompt.yaml``
+
+For detailed configuration parameters, see :ref:`RNN-T with Prompt Conditioning Configuration <RNNT-Prompt_model__Config>`.
 
 Code-Switching
 ^^^^^^^^^^^^^^

@@ -53,6 +53,7 @@ test_eartts_config = {
         "inference_guidance_enabled": False,
         "subword_mask_exactly_as_eartts": False,
         "context_hidden_mask_exactly_as_eartts": False,
+        "exclude_norm_from_wd": True,
         "optimizer": {
             "_target_": "torch.optim.AdamW",
             "lr": 4e-5,
@@ -190,7 +191,7 @@ test_eartts_config = {
 }
 
 # set CI cached path
-if os.path.exists("/home/TestData/"):
+if os.path.exists("/home/TestData/nvidia--NVIDIA-Nemotron-Nano-9B-v2/"):
     test_eartts_config["model"]["pretrained_lm_name"] = "/home/TestData/nvidia--NVIDIA-Nemotron-Nano-9B-v2/"
 
 
@@ -277,7 +278,7 @@ def test_eartts_dataset(dataset, training_cutset_batch):
         "target_texts",
         "audio_prompt",
         "audio_prompt_lens",
-        "formatter",
+        "task",
     }
 
     for key in expected_keys:
@@ -416,8 +417,8 @@ def test_eartts_dataset(dataset, training_cutset_batch):
         ]
     ]
 
-    # Check formatter
-    assert batch["formatter"] == ["s2s_duplex"]
+    # Check task
+    assert batch["task"] == ["s2s_duplex"]
 
 
 # test extra functions inside of eartts dataset

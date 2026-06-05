@@ -20,10 +20,7 @@ from pathlib import Path
 from pprint import pprint
 from typing import Dict
 
-import matplotlib.pyplot as plt
 import numpy as np
-import seaborn as sns
-import sox
 from scipy.stats import expon
 from tqdm import tqdm
 
@@ -32,6 +29,7 @@ from nemo.collections.asr.parts.utils.vad_utils import (
     load_speech_overlap_segments_from_rttm,
     plot_sample_from_rttm,
 )
+from nemo.utils.dependency import import_optional_dependency
 
 """
 This script analyzes multi-speaker speech dataset and generates statistics.
@@ -78,6 +76,7 @@ def process_sample(sess_dict: Dict) -> Dict:
     session_dur = sess_dict["session_dur"]
     precise = sess_dict["precise"]
     if precise or session_dur is None:
+        sox = import_optional_dependency("sox")
         wav_file = rttm_file.parent / Path(rttm_file.stem + ".wav")
         session_dur = sox.file_info.duration(str(wav_file))
 
@@ -134,6 +133,9 @@ def run_multispeaker_data_analysis(
     Returns:
         stats (dict): dictionary containing the statistics of the analyzed data
     """
+    import matplotlib.pyplot as plt
+
+    sns = import_optional_dependency("seaborn")
 
     print(f"Found {len(rttm_list)} files to be processed")
     if len(rttm_list) == 0:
@@ -151,14 +153,25 @@ def run_multispeaker_data_analysis(
     queue = []
     for rttm_file in tqdm(rttm_list):
         queue.append(
-            {"rttm_file": rttm_file, "session_dur": session_dur, "precise": precise,}
+            {
+                "rttm_file": rttm_file,
+                "session_dur": session_dur,
+                "precise": precise,
+            }
         )
 
     if num_workers <= 1:
         results = [process_sample(sess_dict) for sess_dict in tqdm(queue)]
     else:
         with multiprocessing.Pool(processes=num_workers) as p:
-            results = list(tqdm(p.imap(process_sample, queue), total=len(queue), desc='Processing', leave=True,))
+            results = list(
+                tqdm(
+                    p.imap(process_sample, queue),
+                    total=len(queue),
+                    desc='Processing',
+                    leave=True,
+                )
+            )
 
     for item in results:
         total_duration += item["session_dur"]

@@ -81,6 +81,16 @@ class Canary2PromptFormatter(PromptFormatter):
                 "decodercontext": Modality.Text,
             },
         },
+        # User prompt.
+        # This role is used for injecting partial transcription for the current audio input.
+        # Use it as the last turn in the prompt to allow for resuming the transcription after a ceratin point.
+        # https://github.com/openai/whisper/discussions/117
+        "user_prefix": {
+            "template": "|prefix|",
+            "slots": {
+                "prefix": Modality.Text,
+            },
+        },
         # System's reponse.
         OUTPUT_ROLE: {
             "template": f"|text|{CANARY_EOS}",

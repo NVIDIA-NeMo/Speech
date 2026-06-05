@@ -47,6 +47,7 @@ class BatchedLabelLoopingState:
     decoded_lengths: torch.Tensor
     fusion_states_list: list[torch.Tensor] = field(default_factory=list)
     time_jumps: torch.Tensor | None = None
+    batched_hyps: Any = None  # For beam search: BatchedBeamHyps object to continue across chunks
 
 
 @dataclass

@@ -955,13 +955,13 @@ class BeamBatchedTDTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs)
         with torch.inference_mode():
             # Apply optional preprocessing
             encoder_output = encoder_output.transpose(1, 2)  # (B, T, D)
-            logitlen = encoded_lengths
 
             self.decoder.eval()
             self.joint.eval()
 
-            inseq = encoder_output  # [B, T, D]
-            batched_beam_hyps = self._decoding_computer(x=inseq, out_len=logitlen)
+            encoder_output_projected = self.joint.project_encoder(encoder_output)
+            encoder_output_projected_len = encoded_lengths
+            batched_beam_hyps, alignments, decoding_state = self._decoding_computer(x=encoder_output_projected, out_len=encoder_output_projected_len)
 
             # Ensures the correct number of hypotheses (batch_size) for CUDA Graphs compatibility
             batch_size = encoder_output.shape[0]

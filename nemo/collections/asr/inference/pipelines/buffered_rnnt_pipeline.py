@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 import numpy as np
 import torch
@@ -38,6 +38,10 @@ from nemo.collections.asr.inference.utils.pipeline_utils import (
     get_confidence_utils,
     normalize_features,
     update_punctuation_and_language_tokens_timestamps,
+)
+from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import (
+    BatchedBeamHyps,
+    batched_beam_hyps_to_hypotheses,
 )
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis as NemoHypothesis
 from nemo.collections.asr.parts.utils.rnnt_utils import batched_hyps_to_hypotheses
@@ -131,6 +135,13 @@ class BufferedRNNTPipeline(BasePipeline):
         self.word_boundary_tolerance = cfg.streaming.word_boundary_tolerance
         self.return_tail_result = cfg.return_tail_result
         self.tokens_to_move = self.punctuation_ids.union(self.language_token_ids)
+
+        # Beam-search collapse strategy. ``False`` (default): commit the chunk's top
+        # beam at every chunk boundary. ``True``: keep ``beam_size`` divergent beams in
+        # the carried state across all chunks of an utterance and only collapse them at
+        # end-of-utterance. Published transcripts use the per-chunk argmax beam in both
+        # modes; no effect for greedy.
+        self.collapse_on_eou_only = bool(cfg.streaming.get("collapse_on_eou_only", False))
 
         self.zero_encoded = self.init_zero_enc() if self.right_padding else None
 
@@ -562,6 +573,12 @@ class BufferedRNNTPipeline(BasePipeline):
             multi_biasing_ids = torch.from_numpy(multi_biasing_ids).to(device=enc_lens_chunk.device)
 
         encs_dim_last = encs.transpose(1, 2)
+
+        def _to_hypotheses(out):
+            if isinstance(out, BatchedBeamHyps):
+                return batched_beam_hyps_to_hypotheses(out, batch_size=enc_lens.shape[0])
+            return batched_hyps_to_hypotheses(out, batch_size=enc_lens.shape[0])
+
         # decode chunk
         with torch.inference_mode(), torch.no_grad():
             best_batched_hyps_chunk, _, batched_state = self.decoding_computer(
@@ -570,10 +587,39 @@ class BufferedRNNTPipeline(BasePipeline):
                 batched_rnnt_states,
                 multi_biasing_ids=multi_biasing_ids,
             )
-        best_hyps = batched_hyps_to_hypotheses(best_batched_hyps_chunk, batch_size=enc_lens.shape[0])
 
-        # save state (after chunk)
-        for state, rnnt_state in zip(states, self.decoding_computer.split_batched_state(batched_state)):
+            is_beam = isinstance(best_batched_hyps_chunk, BatchedBeamHyps)
+
+            # In on_eou mode, snapshot the K beams' chunk-local tokens, chunk-local
+            # delta scores, and chunk-local delta lengths BEFORE the publish collapse.
+            # Used at EOU detection (inside ``decode_step``) to rerank the K beams by
+            # chunk-local length-normalised score and replace just the chunk-N portion
+            # of ``state.tokens`` with the norm-winner's chunk-N tokens. For all
+            # non-EOU chunks the standard raw-argmax winner publishes unchanged.
+            if is_beam and self.collapse_on_eou_only:
+                self._snapshot_eou_rerank_candidates(best_batched_hyps_chunk, batched_rnnt_states, states)
+
+            # Collapse ``batched_state`` to the per-chunk raw-argmax beam. Drives the
+            # published transcript, seeds the RC pass, and is what gets carried to the
+            # next chunk. Same code path used by per_chunk and on_eou modes - the only
+            # difference is that on_eou mode may later override the chunk-N portion of
+            # ``state.tokens`` inside ``decode_step`` when EOU is flagged. No-op for
+            # greedy.
+            if is_beam:
+                beam_indices = best_batched_hyps_chunk.scores.argmax(dim=-1)
+                self.decoding_computer.collapse_batched_state_to_beams_(
+                    batched_state, best_batched_hyps_chunk, beam_indices
+                )
+
+        best_hyps = _to_hypotheses(best_batched_hyps_chunk)
+
+        # Carry forward the collapsed (single-winner) state, both for per_chunk and
+        # on_eou modes. on_eou mode no longer keeps a K-diverse cross-chunk carry:
+        # the K beams only live within the chunk that produced them, the snapshot
+        # above is consumed inside ``decode_step`` if EOU fires, and discarded
+        # otherwise (the next chunk starts from a single committed prefix).
+        carry_items = self.decoding_computer.split_batched_state(batched_state)
+        for state, rnnt_state in zip(states, carry_items):
             state.hyp_decoding_state = rnnt_state
 
         if self.tokens_per_right_padding > 0:
@@ -593,12 +639,22 @@ class BufferedRNNTPipeline(BasePipeline):
                     batched_state,
                     multi_biasing_ids=multi_biasing_ids,
                 )
-                best_hyps_rc = batched_hyps_to_hypotheses(best_batched_hyps_rc, batch_size=enc_lens.shape[0])
+                # Collapse the right-context beam too, so the merged published transcript
+                # and timestamps come from a single hypothesis per stream. Right-context
+                # state is not carried forward (it's a lookahead-only decode), so we only
+                # need to collapse the prefix tree itself.
+                if isinstance(best_batched_hyps_rc, BatchedBeamHyps):
+                    rc_beam_indices = best_batched_hyps_rc.scores.argmax(dim=-1)
+                    best_batched_hyps_rc.keep_beam_(rc_beam_indices)
+                best_hyps_rc = _to_hypotheses(best_batched_hyps_rc)
             # merge right context to chunk hypothesis
             for hyp, hyp_rc in zip(best_hyps, best_hyps_rc):
                 hyp.merge_(hyp_rc)
 
         ready_states = self.decode_step(best_hyps, requests, states)
+        # ``_collapse_eou_state`` is no longer needed: ``stateful_transcribe_step``
+        # always carries the collapsed (single-winner) state, so the next
+        # utterance already starts conditioned on a single committed prefix.
         for curr_state in states:
             curr_state.timestamp_offset += self.tokens_per_frame_float
         ready_state_ids.update(ready_states)
@@ -652,6 +708,18 @@ class BufferedRNNTPipeline(BasePipeline):
                 tokens, timestamp, self.tokens_to_move, self.underscore_id
             )
             vad_segments = request.vad_segments
+
+            # Snapshot the cumulative-buffer length before the greedy decoder appends
+            # this chunk's raw-argmax tokens. Used by ``_maybe_rerank_eou_transcript``
+            # to (a) detect "this is the first chunk of the current utterance"
+            # via ``prev_tokens_len == 0`` (``state.tokens`` is cleared by
+            # ``cleanup_after_eou`` after every EOU commit, and starts empty for
+            # the stream's very first utterance) and (b) overwrite *just* the
+            # just-appended chunk-N segment of ``state.tokens`` when the
+            # length-norm rerank picks a non-raw winner among the K beams of
+            # the EOU chunk.
+            prev_tokens_len = len(state.tokens)
+
             eou_detected = self.run_greedy_decoder(
                 state=state,
                 request=request,
@@ -665,10 +733,152 @@ class BufferedRNNTPipeline(BasePipeline):
             )
 
             if eou_detected:
+                # In ``collapse_on_eou_only`` mode, replace the chunk-N portion of
+                # ``state.tokens`` (just appended by ``run_greedy_decoder``) with the
+                # chunk-local length-normalised winner among the K beams of the EOU
+                # chunk. No-op when no EOU snapshot is available (greedy / per_chunk
+                # mode, or stream without a beam search step this chunk).
+                self._maybe_rerank_eou_transcript(state, request, prev_tokens_len)
                 self.bpe_decoder.decode_bpe_tokens(state)
                 state.cleanup_after_eou()
                 ready_state_ids.add(request.stream_id)
         return ready_state_ids
+
+    def _snapshot_eou_rerank_candidates(
+        self,
+        batched_hyps,
+        batched_rnnt_states,
+        states: list[RNNTStreamingState],
+    ) -> None:
+        """Snapshot the K beams' chunk-local hypotheses for use by
+        ``_maybe_rerank_eou_transcript`` if EOU later fires for this chunk.
+
+        Each beam ends up as a small dict on ``state._eou_rerank``:
+
+        - ``tokens``     : chunk-local non-blank token ids
+        - ``timesteps``  : chunk-local non-blank timestamps
+        - ``delta_score``: chunk-local score change vs the carry-in
+        - ``delta_len_nb``: chunk-local non-blank count (= ``len(tokens)``)
+
+        Implementation notes:
+        - We delegate the prefix-tree walk + blank-filter to the existing
+          ``to_nbest_hyps_list`` helper. The ``BatchedBeamHyps.transcript_wb``
+          buffer is reset at the start of each chunk by ``clear_chunk_local_``,
+          so ``y_sequence`` from that helper is *already* chunk-local; the only
+          subtraction we need is for the score.
+        - With per_chunk-style carry (now used unconditionally) all K beams of
+          chunk-N descend from slot 0 of the carry-in, so a single per-stream
+          carry-in score is enough.
+        - We clone first so ``flatten_sort_`` (inside ``to_nbest_hyps_list``)
+          does not mutate the live tree that the publish-collapse + RC pass +
+          carry-out still need.
+        - When the underlying MALSD computer is running with
+          ``allow_cuda_graphs=true``, the kernels launched here (clone's
+          ``copy_from_``, ``flatten_sort_``'s many small per-token ``copy_``
+          ops, and the ``.tolist()`` CPU readbacks) interleave badly with the
+          captured graph's mempool: the next replay (RC pass for this chunk,
+          and the next chunk's main pass) sees corrupted tail-row state, which
+          leaks back into the active rows via the captured top-k kernel and
+          produces a large WER regression specific to ``on_eou`` mode. A full
+          device sync at the end of the snapshot fixes this. It is cheap
+          relative to the snapshot itself (we already do many CPU syncs via
+          ``.tolist()``) and is a no-op when CUDA is not in use.
+        """
+        from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import BatchedBeamHyps
+
+        live_b = min(int(batched_hyps.batch_size), len(states)) if isinstance(batched_hyps, BatchedBeamHyps) else 0
+        if live_b <= 0:
+            for state in states:
+                state._eou_rerank = None
+            return
+
+        # Clone first so ``flatten_sort_`` (inside ``to_nbest_hyps_list``) does not
+        # mutate the live tree that the publish-collapse + RC pass + carry-out still
+        # need. Trim to ``live_b`` so the returned list aligns 1:1 with ``states``.
+        nbest = batched_hyps.clone(batch_size=live_b).to_nbest_hyps_list(score_norm=False)
+
+        if batched_rnnt_states is not None and batched_rnnt_states.batched_hyps is not None:
+            carry_scores = batched_rnnt_states.batched_hyps.scores[:live_b, 0].tolist()
+        else:
+            carry_scores = [0.0] * live_b
+
+        for b in range(live_b):
+            candidates: list[dict] = []
+            for hyp in nbest[b].n_best_hypotheses:
+                tokens = [int(t) for t in hyp.y_sequence.tolist()]
+                timesteps = [float(t) for t in hyp.timestamp.tolist()] if hyp.timestamp is not None else []
+                candidates.append(
+                    {
+                        "tokens": tokens,
+                        "timesteps": timesteps,
+                        "delta_score": float(hyp.score) - carry_scores[b],
+                        "delta_len_nb": len(tokens),
+                    }
+                )
+            states[b]._eou_rerank = candidates
+
+        for state in states[live_b:]:
+            state._eou_rerank = None
+
+        # See docstring: required to keep the captured MALSD graph's mempool consistent
+        # across replays. Removing this re-introduces the on_eou+cuda_graphs regression.
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+
+    def _maybe_rerank_eou_transcript(self, state: RNNTStreamingState, request: Request, prev_tokens_len: int) -> None:
+        """At EOU, replace the chunk-N portion of ``state.tokens`` with the
+        chunk-local length-normalised winner among the K beams of the EOU chunk.
+
+        Non-EOU chunks already published the raw-argmax winner unchanged via
+        ``run_greedy_decoder`` (it sits in ``state.tokens[prev_tokens_len:]``);
+        this only fires when EOU has been flagged for the current chunk and a
+        snapshot is available. Candidates are sorted raw-descending (the
+        ``to_nbest_hyps_list`` upstream uses ``score_norm=False``), so the
+        raw winner is index 0 by construction.
+
+        Args:
+            state: stream whose EOU is being committed.
+            request: the EOU request (used for debug logging only).
+            prev_tokens_len: length of ``state.tokens`` immediately BEFORE
+                ``run_greedy_decoder`` appended chunk-N's raw-argmax tokens.
+        """
+        candidates = state._eou_rerank
+        state._eou_rerank = None
+        if not candidates:
+            return
+
+        # First-chunk-of-utterance guard: when EOU fires on the first chunk of
+        # a fresh utterance (``state.tokens`` was empty before
+        # ``run_greedy_decoder`` ran, i.e. ``prev_tokens_len == 0``) the K
+        # chunk-local beams differ mostly by a hallucinated leading filler
+        # ("okay yeah ...") emitted on leading silence/noise, and the linear
+        # ``delta_score / (delta_len_nb + 1)`` denominator reliably picks the
+        # longer decoy. Skip the rerank there and publish the raw-argmax
+        # top-1 instead (same as the per_chunk path). The rerank still runs
+        # for EOUs that fire on chunk N>0 of an utterance, where the K beams
+        # share a real-speech prefix already committed earlier in the
+        # utterance and the length bias is much weaker.
+        if prev_tokens_len == 0:
+            return
+
+        # Chunk-local length-norm: chunk's score delta / (chunk's non-blank
+        # delta + 1). Applied to every EOU after the stream's first one.
+        # Non-EOU chunks always publish the raw-argmax top-1 via the
+        # per-chunk collapse and never see this rerank.
+        norms = [c["delta_score"] / (c["delta_len_nb"] + 1) for c in candidates]
+        norm_winner = max(range(len(candidates)), key=norms.__getitem__)
+
+        if norm_winner == 0:
+            return
+
+        winner = candidates[norm_winner]
+        state.tokens = state.tokens[:prev_tokens_len] + winner["tokens"]
+        state.timesteps = state.timesteps[:prev_tokens_len] + winner["timesteps"]
+        if state.confidences is not None:
+            state.confidences = state.confidences[:prev_tokens_len] + [0.0] * len(winner["tokens"])
+        if winner["tokens"]:
+            state.last_token = winner["tokens"][-1]
+            state.last_token_idx = winner["timesteps"][-1] if winner["timesteps"] else state.last_token_idx
 
     def shared_transcribe_step_stateful(self, requests: list[Request], encs: Tensor, enc_lens: Tensor) -> None:
         """

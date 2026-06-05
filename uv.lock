@@ -4456,8 +4456,8 @@ requires-dist = [
     { name = "torchmetrics", marker = "extra == 'speechlm2'", specifier = ">=0.11.0" },
     { name = "torchmetrics", marker = "extra == 'tts'", specifier = ">=0.11.0" },
     { name = "tqdm", specifier = ">=4.41.0" },
-    { name = "transformer-engine", marker = "extra == 'compiled'", git = "https://github.com/NVIDIA/TransformerEngine.git?tag=v2.15" },
-    { name = "transformer-engine", marker = "extra == 'compiled-a100'", git = "https://github.com/NVIDIA/TransformerEngine.git?tag=v2.15" },
+    { name = "transformer-engine", marker = "extra == 'compiled'", specifier = "==2.15" },
+    { name = "transformer-engine", marker = "extra == 'compiled-a100'", specifier = "==2.15" },
     { name = "transformers", marker = "extra == 'all'" },
     { name = "transformers", marker = "extra == 'asr'" },
     { name = "transformers", marker = "extra == 'audio'" },
@@ -4952,18 +4952,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/c5/21/016fa067967734d52f1ccf5a2a37a1a65216f2d7053bc2b85872cce956ca/nv_one_logger_training_telemetry-2.3.1.tar.gz", hash = "sha256:8c67940ea71799afaf1f46df3ba2f52f93aea26321c6f1c1d54aae02efc2a4af", size = 44435, upload-time = "2025-10-29T21:21:42.035Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e5/15/97e6e4ddfe5fc35bcee74a45b7c33fb73abb83713c7dfa26420b971a86c3/nv_one_logger_training_telemetry-2.3.1-py3-none-any.whl", hash = "sha256:5319443829b59378a498c3c62ac98973e14f31be675c229ff2b14e2fe109aa0b", size = 44140, upload-time = "2025-10-29T21:21:40.72Z" },
-]
-
-[[package]]
-name = "nvdlfw-inspect"
-version = "0.2.2"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "pyyaml" },
-    { name = "torch", marker = "sys_platform == 'linux'" },
-]
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/8a/86/94188e03e5d4dd7b73c390b0cddcde5618b3799c18e327b2bf15763f6137/nvdlfw_inspect-0.2.2-py3-none-any.whl", hash = "sha256:8a4dc2814c5a4cd19ae304170b9bfa514538ef3c3eb243a45a82404ec3cb279d", size = 30964, upload-time = "2025-12-03T10:52:01.933Z" },
 ]
 
 [[package]]
@@ -8120,17 +8108,10 @@ wheels = [
 
 [[package]]
 name = "transformer-engine"
-version = "2.15.0+42b84005"
-source = { git = "https://github.com/NVIDIA/TransformerEngine.git?tag=v2.15#42b840051647eef89761a16dfdff87e82bb253ab" }
-dependencies = [
-    { name = "einops" },
-    { name = "importlib-metadata" },
-    { name = "nvdlfw-inspect" },
-    { name = "onnx" },
-    { name = "onnxscript" },
-    { name = "packaging" },
-    { name = "pydantic" },
-    { name = "torch", marker = "sys_platform == 'linux'" },
+version = "2.15.0"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ce/cd/9febfe6ea848541ffede5b8bc87aa8900e6cc8182eb847ca636bb5001ded/transformer_engine-2.15.0-py3-none-any.whl", hash = "sha256:4015c5b9a7aa420f4f123e49ea795de31ae6f781fa1180c118d0ee40525eed8d", size = 875175, upload-time = "2026-05-11T17:58:23.756Z" },
 ]
 
 [[package]]

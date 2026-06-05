@@ -843,7 +843,12 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                 hyp.non_blank_step_confidence_precomputed is not None for hyp in hypotheses_list
             ):
                 for hyp in hypotheses_list:
-                    hyp.token_confidence = hyp.non_blank_step_confidence_precomputed
+                    if self.tdt_include_duration_confidence:
+                        hyp.token_confidence = [
+                            self._aggregate_confidence(c) for c in hyp.non_blank_step_confidence_precomputed
+                        ]
+                    else:
+                        hyp.token_confidence = hyp.non_blank_step_confidence_precomputed
             else:
                 maybe_pre_aggregate = (
                     (lambda x: self._aggregate_confidence(x))

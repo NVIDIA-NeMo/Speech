@@ -437,6 +437,7 @@ class TestEncDecRNNTModel:
             'decoder_model',
             'joint_model',
             'blank_index',
+            'exclude_blank_from_confidence',
             'tdt_include_duration_confidence',
             'tdt_include_token_duration',
             'boosting_tree',

@@ -38,6 +38,7 @@ def my_app(cfg):
     print(OmegaConf.to_yaml(cfg))
     # Get dataset_name.
     dataset_name = cfg.dataset_name
+    assert isinstance(dataset_name, str), f"dataset_name must be a str, got {type(dataset_name)}"
 
 
 if __name__ == "__main__":

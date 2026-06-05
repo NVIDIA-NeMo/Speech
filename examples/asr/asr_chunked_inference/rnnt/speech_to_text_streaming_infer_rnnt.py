@@ -234,6 +234,7 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
     use_per_stream_biasing = cfg.use_per_stream_biasing
 
     # Change Decoding Config
+    is_tdt_model = cfg.decoding.get("durations", None) not in (None, [])
     with open_dict(cfg.decoding):
         if cfg.decoding.strategy == "greedy_batch":
             if cfg.decoding.greedy.loop_labels is not True:
@@ -244,10 +245,12 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
         elif cfg.decoding.strategy == "malsd_batch":
             pass
         elif cfg.decoding.strategy == "maes_batch":
-            pass
+            if is_tdt_model:
+                raise NotImplementedError("`maes_batch` is RNN-T only; use `malsd_batch` for TDT models.")
         else:
             raise NotImplementedError(
-                "This script currently supports only `greedy_batch` with Label-Looping or `malsd_batch` strategy with MALSD"
+                f"Unsupported decoding strategy `{cfg.decoding.strategy}`. "
+                "Supported: `greedy_batch`, `malsd_batch`, `maes_batch` (RNN-T only)."
             )
         cfg.decoding.tdt_include_token_duration = cfg.timestamps
         cfg.decoding.greedy.preserve_alignments = False

@@ -1283,7 +1283,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
 
                 # EOS: stop WITHOUT feeding to LLM. Append a chunk separator so
                 # decode_with_blank can join per-chunk outputs correctly.
-                if self._eos_id is not None and tid == self._eos_id:
+                if tid == self._eos_id and self._eos_id is not None:
                     finished[b] = True
                     # Blank token when enabled, else EOS id itself (matches decode_with_blank).
                     generated[b].append(self.blank_token_id if self.has_blank else self._eos_id)
@@ -1301,7 +1301,6 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                 if tid == self.blank_token_id:
                     if stop_on_blank is True or (stop_on_blank == "first" and len(generated[b]) == 1):
                         finished[b] = True
-
                 # Footer sequence match
                 elif flen > 0 and len(generated[b]) >= flen and generated[b][-flen:] == footer:
                     generated[b] = generated[b][:-flen]

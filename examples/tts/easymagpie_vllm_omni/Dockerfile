@@ -26,4 +26,7 @@ RUN pip install --no-cache-dir \
     "tritonclient[grpc]"
 RUN pip install --no-cache-dir --force-reinstall --no-deps "numpy==2.3.5"
 
+# 5. Restrict vLLM plugin auto-discovery to the EasyMagpie plugin only.
+ENV VLLM_PLUGINS=easymagpie_omni
+
 WORKDIR /workspace

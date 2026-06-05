@@ -53,6 +53,7 @@ COPY nemo/__init__.py nemo/package_info.py /workspace/nemo/
 RUN <<"EOF" bash -ex
 uv sync --link-mode copy --locked --extra all --extra cu13 --group test
 EOF
+COPY nemo /workspace/nemo
 
 FROM base-image AS automodel-deps
 ARG GPU_TARGET=h100plus
@@ -188,13 +189,13 @@ EOF
 FROM base-image
 COPY --from=automodel-deps /opt/venv /opt/venv
 
-ENV NEMO_HOME="/home/TestData/nemo_home"
+ENV NVIDIA_BUILD_ID=${NVIDIA_BUILD_ID:-<unknown>}
+LABEL com.nvidia.build.id="${NVIDIA_BUILD_ID}"
+ARG NVIDIA_BUILD_REF
+LABEL com.nvidia.build.ref="${NVIDIA_BUILD_REF}"
+ARG RC_DATE=00.00
+ARG TARGETARCH
 
-ARG IMAGE_LABEL
-LABEL "nemo.library"=${IMAGE_LABEL}
-
-ARG PR_NUMBER
-LABEL "nemo.pr_number"=${PR_NUMBER}
-
-ARG NVIDIA_BUILD_ID
-LABEL "NVIDIA_BUILD_ID"=${NVIDIA_BUILD_ID}
+# NOTICES.txt file points to where the OSS source code is archived
+RUN echo "This distribution includes open source which is archived at the following URL: https://opensource.nvidia.com/oss/teams/nvidia/nemo/${RC_DATE}:linux-${TARGETARCH}/index.html" > NOTICES.txt && \
+    echo "For further inquiries or assistance, contact us at oss-requests@nvidia.com" >> NOTICES.txt

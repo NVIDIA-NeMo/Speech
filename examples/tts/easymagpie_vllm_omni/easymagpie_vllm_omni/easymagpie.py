@@ -612,7 +612,18 @@ class EasyMagpieTTSForConditionalGeneration(
 
         if span_len > 1:
             return self._preprocess_prefill(input_ids, span_len, device, info_dict)
+
+        start = self._batch_slot_offset(input_ids, start)
         return self._preprocess_decode(input_ids, start, device, info_dict)
+
+    @staticmethod
+    def _batch_slot_offset(input_ids_view: torch.Tensor, fallback: int) -> int:
+        """Recover a request's batch-row offset from its 1-D ``input_ids`` view.
+        The runner passes ``input_ids = input_ids_buffer[s:e]``
+        """
+        if input_ids_view.dim() == 1 and input_ids_view.is_contiguous():
+            return int(input_ids_view.storage_offset())
+        return int(fallback)
 
     def _preprocess_prefill(
         self,

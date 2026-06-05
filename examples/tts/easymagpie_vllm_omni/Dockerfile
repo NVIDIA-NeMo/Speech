@@ -9,7 +9,13 @@ RUN pip install --no-cache-dir \
     "vllm==0.21.0" \
     "vllm_omni==0.21.0rc1"
 
-# 3. TODO install NeMo/examples/tts/easymagpie_vllm_omni
+# 3. Install easymagpie vllm omni model definition
+# TODO: replace this clone with the upstream NeMo repo once the code is merged
+RUN git clone --depth 1 --branch easymp_vllm_omni \
+        https://github.com/vklimkov-nvidia/NeMoDuplexRealtime.git \
+        /tmp/NeMoDuplexRealtime && \
+    pip install --no-cache-dir /tmp/NeMoDuplexRealtime/examples/tts/easymagpie_vllm_omni && \
+    rm -rf /tmp/NeMoDuplexRealtime
 
 # 4. Extra python requirements needed to compile the model
 RUN pip install --no-cache-dir \

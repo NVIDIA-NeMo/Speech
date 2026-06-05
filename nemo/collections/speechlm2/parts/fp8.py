@@ -14,7 +14,7 @@
 
 from collections.abc import Mapping
 from contextlib import nullcontext
-from math import gcd
+from math import gcd, lcm
 from typing import Any
 
 import torch
@@ -129,11 +129,15 @@ def validate_te_fp8_hidden_size(te_fp8_config: Any, hidden_size: int) -> None:
         )
 
 
-def get_te_fp8_bshd_sequence_multiple(batch_size: int) -> int:
-    """Return the minimal sequence-length multiple so B*T is divisible by 8."""
+def get_te_fp8_bshd_sequence_multiple(batch_size: int, tp_size: int = 1) -> int:
+    """Return the minimal BSHD sequence multiple for local TE FP8 Linear inputs."""
     if batch_size <= 0:
         raise ValueError(f"batch_size must be positive; got {batch_size}.")
-    return 8 // gcd(batch_size, 8)
+    if tp_size <= 0:
+        raise ValueError(f"tp_size must be positive; got {tp_size}.")
+
+    fp8_multiple = (8 * tp_size) // gcd(batch_size, 8 * tp_size)
+    return lcm(tp_size, fp8_multiple)
 
 
 def maybe_pad_bshd_inputs_for_te_fp8(
@@ -141,13 +145,17 @@ def maybe_pad_bshd_inputs_for_te_fp8(
     input_embeds: torch.Tensor,
     attention_mask: torch.Tensor | None,
     llm_kwargs: Mapping[str, Any] | None = None,
+    *,
+    tp_size: int = 1,
 ) -> tuple[torch.Tensor, torch.Tensor | None, dict[str, Any], int]:
     """Pad BSHD LLM inputs for TE FP8 and return the original sequence length.
 
     TE FP8 Linear requires the product of all input dimensions except the last
-    to be divisible by 8 and the last dimension to be divisible by 16. For
-    BSHD inputs this means ``B * T`` must be divisible by 8. Padding is appended
-    on the sequence dimension and can be trimmed from logits after the LLM.
+    to be divisible by 8 and the last dimension to be divisible by 16. With
+    BSHD sequence parallelism, local TE Linear inputs see ``B * T / TP`` rows,
+    so padding must keep ``T`` divisible by ``TP`` and ``B * T / TP`` divisible
+    by 8. Padding is appended on the sequence dimension and can be trimmed from
+    logits after the LLM.
     """
     llm_kwargs = dict(llm_kwargs or {})
     if input_embeds.dim() != 3:
@@ -159,7 +167,7 @@ def maybe_pad_bshd_inputs_for_te_fp8(
     batch_size, seq_len, hidden_size = input_embeds.shape
     validate_te_fp8_hidden_size(te_fp8_config, hidden_size)
 
-    seq_multiple = get_te_fp8_bshd_sequence_multiple(batch_size)
+    seq_multiple = get_te_fp8_bshd_sequence_multiple(batch_size, tp_size=tp_size)
     pad = (-seq_len) % seq_multiple
     if pad == 0:
         return input_embeds, attention_mask, llm_kwargs, original_seq_len

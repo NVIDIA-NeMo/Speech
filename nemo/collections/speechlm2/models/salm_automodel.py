@@ -179,11 +179,13 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         te_fp8_config = (automodel_backend_config or {}).get("te_fp8", None)
         original_seq_len = input_embeds.shape[1] if input_embeds.dim() == 3 else input_embeds.shape[0]
         if cache is None and llm_kwargs.get("qkv_format", None) != "thd":
+            tp_size = self.device_mesh["tp"].size() if self._use_tp else 1
             input_embeds, attention_mask, llm_kwargs, original_seq_len = maybe_pad_bshd_inputs_for_te_fp8(
                 te_fp8_config,
                 input_embeds,
                 attention_mask,
                 llm_kwargs,
+                tp_size=tp_size,
             )
         with te_fp8_context(automodel_backend_config):
             out = self.llm(
@@ -462,7 +464,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
 
     def backward(self, *args, **kwargs):
         self._setup_moe_fsdp_sync()
-        with loss_parallel(), te_fp8_context(self.cfg.get("automodel_backend", None)):
+        with loss_parallel():
             super().backward(*args, **kwargs)
 
     def on_before_zero_grad(self, optimizer) -> None:

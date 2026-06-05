@@ -178,6 +178,25 @@ def test_maybe_pad_bshd_inputs_for_te_fp8_noops_without_te_fp8():
     assert original_seq_len == 5
 
 
+@pytest.mark.parametrize(
+    ("batch_size", "tp_size", "expected_multiple"),
+    [
+        (1, 1, 8),
+        (2, 1, 4),
+        (16, 4, 4),
+        (1, 4, 32),
+        (2, 4, 16),
+        (8, 4, 4),
+    ],
+)
+def test_get_te_fp8_bshd_sequence_multiple_accounts_for_tp(batch_size, tp_size, expected_multiple):
+    multiple = fp8.get_te_fp8_bshd_sequence_multiple(batch_size, tp_size=tp_size)
+
+    assert multiple == expected_multiple
+    assert multiple % tp_size == 0
+    assert (batch_size * multiple // tp_size) % 8 == 0
+
+
 def test_maybe_pad_bshd_inputs_for_te_fp8_pads_sequence_tensors():
     input_embeds = torch.ones(2, 5, 16)
     attention_mask = torch.ones(2, 5, dtype=torch.bool)
@@ -198,6 +217,25 @@ def test_maybe_pad_bshd_inputs_for_te_fp8_pads_sequence_tensors():
     assert (padded[:, 5:] == 0).all()
     assert padded_mask.all()
     assert (llm_kwargs["position_ids"][:, 5:] == 0).all()
+
+
+def test_maybe_pad_bshd_inputs_for_te_fp8_accounts_for_tp():
+    input_embeds = torch.ones(16, 5, 16)
+    attention_mask = torch.ones(16, 5, dtype=torch.bool)
+
+    padded, padded_mask, llm_kwargs, original_seq_len = fp8.maybe_pad_bshd_inputs_for_te_fp8(
+        DictConfig({"recipe": "block"}),
+        input_embeds,
+        attention_mask,
+        tp_size=4,
+    )
+
+    assert original_seq_len == 5
+    assert padded.shape == (16, 8, 16)
+    assert padded.shape[1] % 4 == 0
+    assert (padded.shape[0] * padded.shape[1] // 4) % 8 == 0
+    assert padded_mask.shape == (16, 8)
+    assert llm_kwargs == {}
 
 
 def test_te_fp8_hidden_size_validation():

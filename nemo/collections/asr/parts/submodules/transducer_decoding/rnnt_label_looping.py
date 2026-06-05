@@ -923,8 +923,8 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
                 self._full_graph_compile()
             except CUDA_GRAPH_COMPILE_ERROR_TYPES as e:
                 self._raise_or_warn_no_while_loop_cuda_graphs(e)
-            self.cuda_graphs_mode = self.CudaGraphsMode.NO_WHILE_LOOPS
-            self._partial_graphs_compile()
+                self.cuda_graphs_mode = self.CudaGraphsMode.NO_WHILE_LOOPS
+                self._partial_graphs_compile()
         elif self.cuda_graphs_mode is self.CudaGraphsMode.NO_WHILE_LOOPS:
             self._partial_graphs_compile()
         elif self.cuda_graphs_mode is self.CudaGraphsMode.NO_GRAPHS:

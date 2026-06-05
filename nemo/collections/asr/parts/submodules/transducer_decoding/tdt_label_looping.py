@@ -459,10 +459,6 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
             jump_durations_indices = logits[:, -num_durations:].argmax(dim=-1)
             durations = model_durations[jump_durations_indices]
 
-            # store non-blank logits
-            if need_nb_logits:
-                nb_logits = unbiased_logits
-
             # search for non-blank labels using joint, advancing time indices for blank labels
             # checking max_symbols is not needed, since we already forced advancing time indices for such cases
             blank_mask = labels == self._blank_index
@@ -991,8 +987,8 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
                 self._full_graph_compile()
             except CUDA_GRAPH_COMPILE_ERROR_TYPES as e:
                 self._raise_or_warn_no_while_loop_cuda_graphs(e)
-            self.cuda_graphs_mode = self.CudaGraphsMode.NO_WHILE_LOOPS
-            self._partial_graphs_compile()
+                self.cuda_graphs_mode = self.CudaGraphsMode.NO_WHILE_LOOPS
+                self._partial_graphs_compile()
         elif self.cuda_graphs_mode is self.CudaGraphsMode.NO_WHILE_LOOPS:
             self._partial_graphs_compile()
         elif self.cuda_graphs_mode is self.CudaGraphsMode.NO_GRAPHS:

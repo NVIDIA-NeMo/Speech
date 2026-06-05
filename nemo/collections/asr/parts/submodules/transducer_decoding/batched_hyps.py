@@ -291,7 +291,8 @@ class BatchedHyps:
             # optional (3) logits
             if self.with_logits:
                 self.logits = torch.cat(
-                    self.logits, torch.zeros(add_shape + [self.logits_dim], dtype=torch.long, device=device), dim=-1
+                    (self.logits, torch.zeros(add_shape + [self.logits_dim], dtype=self.float_dtype, device=device)),
+                    dim=-1,
                 )
             self._max_length += add_len
 

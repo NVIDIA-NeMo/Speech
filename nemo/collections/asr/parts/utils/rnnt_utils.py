@@ -187,6 +187,9 @@ class Hypothesis:
         if self.non_blank_step_confidence_precomputed is None:
             self.non_blank_step_confidence_precomputed = other.non_blank_step_confidence_precomputed
         else:
+            # non_blank_step_confidence_precomputed should be filled in by the decoding algorithm
+            # should be consistent between hyps
+            assert other.non_blank_step_confidence_precomputed is not None
             self.non_blank_step_confidence_precomputed.extend(other.non_blank_step_confidence_precomputed)
         return self
 

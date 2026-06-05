@@ -471,7 +471,7 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
                     encoder_output_aggregated.append_(data=encoder_output, lengths=encoder_output_len_to_decode)
                 else:
                     # decode only chunk frames
-                    chunk_batched_hyps, _, state = decoding_computer(
+                    chunk_batched_hyps, state = decoding_computer(
                         x=encoder_output,
                         out_len=encoder_output_len_to_decode,
                         prev_batched_state=state,
@@ -490,7 +490,7 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
 
             if use_simulated_decoding:
                 if decoding_computer is not None:
-                    current_batched_hyps, _, _ = decoding_computer(
+                    current_batched_hyps, _ = decoding_computer(
                         x=encoder_output_aggregated.data,
                         out_len=encoder_output_aggregated.lengths,
                         prev_batched_state=state,

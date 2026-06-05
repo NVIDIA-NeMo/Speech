@@ -386,6 +386,130 @@ class TestBatchedHyps:
         assert hyps_a.transcript[1, :3].tolist() == [4, 8, 9]
         assert hyps_a.scores.tolist() == pytest.approx([1.3, 1.4])
 
+    @pytest.mark.unit
+    @pytest.mark.parametrize("device", DEVICES)
+    def test_merge_with_logits(self, device: torch.device):
+        # Regression test: merge_ must use dim=1 (sequence axis) for logits scatter/cat,
+        # not dim=-1 (logits-dim axis), which would silently corrupt the data.
+        logits_dim = 5
+        blank_id = NON_COLLIDING_BLANK_ID
+
+        def build_with_logits(labels_per_step, times_per_step, masks_per_step, scores_per_step, logits_per_step):
+            hyps = BatchedHyps(
+                batch_size=2,
+                init_length=4,
+                blank_id=blank_id,
+                logits_dim=logits_dim,
+                device=device,
+                float_dtype=torch.float32,
+                with_logits=True,
+            )
+            for labels, times, mask, scores, logits in zip(
+                labels_per_step, times_per_step, masks_per_step, scores_per_step, logits_per_step
+            ):
+                hyps.add_results_masked_(
+                    active_mask=torch.tensor(mask, device=device),
+                    labels=torch.tensor(labels, device=device),
+                    time_indices=torch.tensor(times, device=device),
+                    scores=torch.tensor(scores, device=device),
+                    logits=logits,
+                )
+            return hyps
+
+        # Fixed logits so we can assert exact values after merge
+        logits_a0 = torch.full((2, logits_dim), 1.0, device=device)  # step for seq0=[5], seq1=[4]
+        logits_a1 = torch.full((2, logits_dim), 2.0, device=device)  # step for seq0=[2], seq1 inactive
+
+        logits_b0 = torch.full((2, logits_dim), 3.0, device=device)  # step for seq0=[7], seq1=[8]
+        logits_b1 = torch.full((2, logits_dim), 4.0, device=device)  # step for seq0 inactive, seq1=[9]
+
+        # A: seq0=[5, 2], seq1=[4]
+        hyps_a = build_with_logits(
+            labels_per_step=[[5, 4], [2, 0]],
+            times_per_step=[[0, 0], [1, 0]],
+            masks_per_step=[[True, True], [True, False]],
+            scores_per_step=[[0.5, 0.7], [0.5, 0.0]],
+            logits_per_step=[logits_a0, logits_a1],
+        )
+        # B: seq0=[7], seq1=[8, 9]
+        hyps_b = build_with_logits(
+            labels_per_step=[[7, 8], [0, 9]],
+            times_per_step=[[2, 2], [0, 3]],
+            masks_per_step=[[True, True], [False, True]],
+            scores_per_step=[[0.3, 0.3], [0.0, 0.4]],
+            logits_per_step=[logits_b0, logits_b1],
+        )
+
+        hyps_a.merge_(hyps_b)
+
+        # Sequence lengths: seq0=2+1=3, seq1=1+2=3
+        assert hyps_a.current_lengths.tolist() == [3, 3]
+
+        # seq0 logits: positions [0,1] from A (value=1 then 2), position [2] from B (value=3)
+        assert torch.allclose(hyps_a.logits[0, 0], torch.full((logits_dim,), 1.0, device=device))
+        assert torch.allclose(hyps_a.logits[0, 1], torch.full((logits_dim,), 2.0, device=device))
+        assert torch.allclose(hyps_a.logits[0, 2], torch.full((logits_dim,), 3.0, device=device))
+
+        # seq1 logits: position [0] from A (value=1), positions [1,2] from B (value=3 then 4)
+        assert torch.allclose(hyps_a.logits[1, 0], torch.full((logits_dim,), 1.0, device=device))
+        assert torch.allclose(hyps_a.logits[1, 1], torch.full((logits_dim,), 3.0, device=device))
+        assert torch.allclose(hyps_a.logits[1, 2], torch.full((logits_dim,), 4.0, device=device))
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("device", DEVICES)
+    def test_merge_with_logits_triggers_reallocation(self, device: torch.device):
+        # When the combined length exceeds _max_length, merge_ must reallocate logits along dim=1
+        # (sequence axis). With the dim=-1 bug, the reallocation would expand the logits-dim
+        # axis instead, causing a shape mismatch on the subsequent scatter_.
+        logits_dim = 5
+        blank_id = NON_COLLIDING_BLANK_ID
+
+        # Use init_length=1 to force reallocation during merge
+        hyps_a = BatchedHyps(
+            batch_size=1,
+            init_length=1,
+            blank_id=blank_id,
+            logits_dim=logits_dim,
+            device=device,
+            float_dtype=torch.float32,
+            with_logits=True,
+        )
+        hyps_b = BatchedHyps(
+            batch_size=1,
+            init_length=1,
+            blank_id=blank_id,
+            logits_dim=logits_dim,
+            device=device,
+            float_dtype=torch.float32,
+            with_logits=True,
+        )
+
+        logits_a = torch.full((1, logits_dim), 1.0, device=device)
+        logits_b = torch.full((1, logits_dim), 2.0, device=device)
+
+        hyps_a.add_results_masked_(
+            active_mask=torch.tensor([True], device=device),
+            labels=torch.tensor([5], device=device),
+            time_indices=torch.tensor([0], device=device),
+            scores=torch.tensor([1.0], device=device),
+            logits=logits_a,
+        )
+        hyps_b.add_results_masked_(
+            active_mask=torch.tensor([True], device=device),
+            labels=torch.tensor([7], device=device),
+            time_indices=torch.tensor([1], device=device),
+            scores=torch.tensor([1.0], device=device),
+            logits=logits_b,
+        )
+
+        # cur_len=1, other_len=1 -> combined=2 >= init_length=1, so reallocation is triggered
+        hyps_a.merge_(hyps_b)
+
+        assert hyps_a.current_lengths.tolist() == [2]
+        assert hyps_a.logits.shape == (1, hyps_a._max_length, logits_dim)
+        assert torch.allclose(hyps_a.logits[0, 0], torch.full((logits_dim,), 1.0, device=device))
+        assert torch.allclose(hyps_a.logits[0, 1], torch.full((logits_dim,), 2.0, device=device))
+
 
 class TestConvertToHypotheses:
     @pytest.mark.unit

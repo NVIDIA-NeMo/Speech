@@ -292,7 +292,7 @@ class BatchedHyps:
             if self.with_logits:
                 self.logits = torch.cat(
                     (self.logits, torch.zeros(add_shape + [self.logits_dim], dtype=self.float_dtype, device=device)),
-                    dim=-1,
+                    dim=1,
                 )
             self._max_length += add_len
 
@@ -311,7 +311,7 @@ class BatchedHyps:
         # optional (3) logits
         if self.with_logits:
             self.logits.scatter_(
-                dim=-1, index=shifted_indices[..., None].expand([-1, -1, self.logits_dim]), src=other.logits
+                dim=1, index=shifted_indices[..., None].expand([-1, -1, self.logits_dim]), src=other.logits
             )
         self.current_lengths += other.current_lengths
         self.scores += other.scores

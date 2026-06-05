@@ -57,13 +57,13 @@ streaming requests.
    ```
 
 5. **Build the TensorRT engine from the ONNX** (inside the container) and drop
-   it into the Triton repo as `model.plan`.
+   it into the Triton repo as `model.plan`. For now fp32 seems to be mandatory.
 
    ```bash
    python examples/tts/easymagpie_vllm_omni/export_codec_decoder_trt.py \
        --onnx-path examples/tts/easymagpie_vllm_omni/codec.onnx \
        --trt-path  examples/tts/easymagpie_vllm_omni/model_repository/codec/1/model.plan \
-       --batch-profile 1 8 32 --frames-profile 15 15 15
+       --batch-profile 1 8 32 --frames-profile 15 15 15 --fp32
    ```
 
 6. **Start the Triton inference server** against
@@ -75,5 +75,5 @@ streaming requests.
    ```
 
 7. **Send a request.** End-to-end gRPC streaming example in
-   [`run_server_request.ipynb`](run_server_request.ipynb) — sends `text`,
+   [`run_server_request.ipynb`](run_service_request.ipynb) — sends `text`,
    receives streamed `audio` chunks at 22.05 kHz.

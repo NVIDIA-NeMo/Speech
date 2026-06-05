@@ -116,7 +116,7 @@ def _build_easymagpie_stage_config(
     torch_profiler_dir: str = "./profiler_traces",
     with_stack: bool = False,
     record_shapes: bool = False,
-    gpu_memory_utilization: float = 0.8,
+    gpu_memory_utilization: float = 0.5,
     max_model_len: int = 1024,
     max_num_batched_tokens: int = 1024,
     enforce_eager: bool = False,
@@ -1042,7 +1042,7 @@ def parse_args():
     )
 
     engine = parser.add_argument_group("engine")
-    engine.add_argument("--gpu-memory-utilization", type=float, default=0.8)
+    engine.add_argument("--gpu-memory-utilization", type=float, default=0.5)
     engine.add_argument("--max-model-len", type=int, default=1024)
     engine.add_argument("--max-num-batched-tokens", type=int, default=1024)
     engine.add_argument("--dtype", type=str, default="float16", help="Model dtype (float16 / bfloat16)")

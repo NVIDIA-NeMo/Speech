@@ -66,7 +66,7 @@ parameters {
 }
 parameters {
   key: "max_num_batched_tokens"
-  value: { string_value: "1024" }
+  value: { string_value: "4096" }
 }
 parameters {
   key: "max_new_tokens"

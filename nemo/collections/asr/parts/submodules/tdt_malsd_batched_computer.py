@@ -1493,8 +1493,8 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
         """Create BatchedBeamState for the next chunk."""
         current_batch_size = encoder_output_length.shape[0]
 
-        # Get last labels from batched_hyps
-        last_labels = self.state.batched_hyps.get_last_labels(pad_id=self._SOS)
+        # Get last labels and slice to real batch (graph state's batch dim is sized to capture-time max).
+        last_labels = self.state.batched_hyps.get_last_labels(pad_id=self._SOS)[:current_batch_size]
 
         # Snapshot per-beam pending skip (TDT ``time_jumps`` analogue) BEFORE resetting
         # ``next_timestamp``; clamp at 0 for padded/never-emitted beams.
@@ -1514,7 +1514,11 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
 
         # Handle labels - if nothing decoded this chunk, use previous labels
         if prev_batched_state is not None:
-            last_labels = torch.where(last_labels == self._SOS, prev_batched_state.labels, last_labels)
+            last_labels = torch.where(
+                last_labels == self._SOS,
+                prev_batched_state.labels[:current_batch_size],
+                last_labels,
+            )
 
         # Get fusion states if present
         fusion_states_list = None

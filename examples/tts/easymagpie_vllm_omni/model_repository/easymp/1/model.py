@@ -295,59 +295,68 @@ class TritonPythonModel:
         t_start = time.perf_counter()
         request_id = f"easymp-{uuid.uuid4().hex[:8]}"
         prompt = self._build_prompt(text, context_text, speaker)
-        prompt_len = len(prompt["prompt_token_ids"])
 
         codec_q: queue.Queue = queue.Queue()
         state: dict = {"t_first_audio": None, "error": None}
         codec_future = self._codec_pool.submit(self._codec_worker, codec_q, response_sender, state)
 
+        # The omni accumulator yields a tensor for the prefill (first) and the
+        # consolidated (final) steps, but a growing list during decode (one
+        # (1, C*S) row appended per AR step). We only consume the list yields;
+        # ``mm_codes[0]`` is the prefill prefix, ``mm_codes[1 + d]`` is decode
+        # frame d. Real audio starts after ``speech_delay`` warm-up frames.
         L = self.codec_left_context
-        sent = 0  # real frames (post speech-delay, pre EOS) already queued
+        base = 1 + self.speech_delay  # mm_codes index of the first real frame
+        sent = 0  # real frames already queued to the codec
         threshold = self.first_chunk_frames
-        real: torch.Tensor | None = None
-        real_count = 0
-        eos_found = False
+        mm_codes: list | None = None
+        produced_final = False
+
+        def emit_ready(codes_list: list, real_count: int, final: bool) -> None:
+            """Queue overlap-save windows of newly-ready real frames."""
+            nonlocal sent, threshold, produced_final
+            while sent < real_count:
+                remaining = real_count - sent
+                if not final and remaining < threshold:
+                    break
+                take = min(threshold, remaining)
+                ctx = min(sent, L)
+                chunk = torch.cat(codes_list[base + sent - ctx : base + sent + take], dim=0)
+                sent += take
+                threshold = self.codec_chunk_size - L
+                is_final = final and sent >= real_count
+                codec_q.put((chunk, ctx, is_final))
+                produced_final = produced_final or is_final
 
         try:
             async for out in self.omni.generate(prompt, request_id=request_id):
                 if state["error"] is not None:
                     break
-                mm = getattr(out, "multimodal_output", None) or {}
-                audio_codes = mm.get("audio_codes")
-                if not isinstance(audio_codes, torch.Tensor):
+                payload = (getattr(out, "multimodal_output", None) or {}).get("audio_codes")
+                if not isinstance(payload, list):
                     continue
-                # audio_codes accumulates one row per flat-batch token: prompt_len
-                # prefill rows + one per decode step. Count decoded frames from the
-                # tensor (token_ids on a streaming step is a delta, not cumulative).
-                num_decoded = audio_codes.shape[0] - prompt_len
-                if num_decoded <= self.speech_delay:
-                    continue
+                mm_codes = payload
+                # Hold back the most recent decode frame: the audio-EOS frame is
+                # always the last one, and must not be vocoded.
+                real_avail = (len(mm_codes) - 1) - self.speech_delay - 1
+                if real_avail > sent:
+                    emit_ready(mm_codes, real_avail, final=False)
 
-                # Decoded rows are everything after prefill; drop the leading
-                # speech-delay warm-up frames.
-                real = audio_codes[prompt_len + self.speech_delay :]
-                eos_rows = (real == self.audio_eos_id).any(dim=1).nonzero()
-                if eos_rows.numel() > 0:
-                    real_count = int(eos_rows[0].item())  # exclude the EOS frame
-                    eos_found = True
-                else:
-                    real_count = real.shape[0]
-
-                while real_count - sent >= threshold:
-                    ctx = min(sent, L)
-                    chunk = real[sent - ctx : sent + threshold]
-                    codec_q.put((chunk, ctx, False))
-                    sent += threshold
-                    threshold = self.codec_chunk_size - L
-                if eos_found:
-                    break
-
-            if state["error"] is None:
-                if real is not None and real_count > sent:
-                    ctx = min(sent, L)
-                    codec_q.put((real[sent - ctx : real_count], ctx, True))
-                else:
+            if state["error"] is None and mm_codes is not None:
+                # Authoritative tail: scan for the audio-EOS frame (only it carries
+                # audio_eos_id > codebook_size) and vocode every real frame before it.
+                eos_idx = None
+                for i in range(len(mm_codes) - 1, 0, -1):
+                    if bool((mm_codes[i] == self.audio_eos_id).any()):
+                        eos_idx = i
+                        break
+                last_excl = eos_idx if eos_idx is not None else len(mm_codes)
+                real_count = (last_excl - 1) - self.speech_delay
+                emit_ready(mm_codes, real_count, final=True)
+                if not produced_final:
                     codec_q.put(None)
+            elif state["error"] is None:
+                codec_q.put(None)
 
             await asyncio.wrap_future(codec_future)
             if state["error"] is not None:

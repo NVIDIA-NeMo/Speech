@@ -2401,7 +2401,7 @@ class SimpleAudioDataset(Dataset):
         return len(self.audio_filenames)
 
 
-class DynamicTensor:
+class DynamicLengthTensor:
     def __init__(
         self,
         batch_size: int,
@@ -2441,12 +2441,15 @@ class DynamicTensor:
         self.data = torch.cat((self.data, self.data.new_zeros(add_shape)), dim=1)
         self._max_length += add_len
 
-    def to_device(self, device: str | torch.device):
+    def to_device(self, device: str | torch.device) -> "DynamicLengthTensor":
+        """Move storage to device"""
         self.device = device
         self.data.to(device=device)
         self.lengths.to(device=device)
+        return self
 
     def append_(self, data: torch.Tensor, lengths: torch.Tensor | None = None):
+        """Append new data along length dimension"""
         cur_len = self.lengths.max().item()
         other_len = data.shape[1] if lengths is None else lengths.max().item()
         if cur_len + other_len >= self._max_length:
@@ -2454,6 +2457,7 @@ class DynamicTensor:
         self.append_no_checks_(data=data[:, :other_len], lengths=lengths)
 
     def append_no_checks_(self, data: torch.Tensor, lengths: torch.Tensor | None = None):
+        """Append new data along length dimension without checks"""
         other_len = data.shape[1]
         indices = torch.arange(other_len, device=self.device)
         shifted_indices = self.lengths[:, None] + indices[None, :]
@@ -2463,9 +2467,9 @@ class DynamicTensor:
         else:
             self.lengths += lengths
 
-    def clone(self) -> "DynamicTensor":
+    def clone(self) -> "DynamicLengthTensor":
         """Return a copy of self"""
-        new_dynamic_tensor = DynamicTensor(
+        new_dynamic_tensor = DynamicLengthTensor(
             batch_size=self.batch_size,
             init_length=self._max_length,
             device=self.device,
@@ -2475,13 +2479,13 @@ class DynamicTensor:
         new_dynamic_tensor.data.copy_(self.lengths)
         return new_dynamic_tensor
 
-    def merge_(self, other: "DynamicTensor") -> "DynamicTensor":
+    def merge_(self, other: "DynamicLengthTensor") -> "DynamicLengthTensor":
         """
         Merge two dynamic tensors
         NB: this will reallocate memory
 
         Args:
-            other: DynamicTensor
+            other: DynamicLengthTensor
         """
         self.append_(data=other.data, lengths=other.lengths)
         return self

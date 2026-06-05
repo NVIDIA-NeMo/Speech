@@ -84,7 +84,7 @@ from nemo.collections.asr.parts.utils.rnnt_utils import BatchedHyps, batched_hyp
 from nemo.collections.asr.parts.utils.streaming_utils import (
     AudioBatch,
     ContextSize,
-    DynamicTensor,
+    DynamicLengthTensor,
     SimpleAudioDataset,
     StreamingBatchedAudioBuffer,
 )
@@ -421,7 +421,7 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
                 device=device,
             )
             rest_audio_lengths = audio_batch_lengths.clone()
-            encoder_output_aggregated: DynamicTensor | None = None
+            encoder_output_aggregated: DynamicLengthTensor | None = None
 
             # iterate over audio samples
             while left_sample < audio_batch.shape[1]:
@@ -461,7 +461,7 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
                 if use_simulated_decoding:
                     # store encoder output
                     if encoder_output_aggregated is None:
-                        encoder_output_aggregated = DynamicTensor(
+                        encoder_output_aggregated = DynamicLengthTensor(
                             batch_size=batch_size,
                             init_length=encoder_output.shape[1],
                             dim_shape=encoder_output.shape[2],

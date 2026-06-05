@@ -573,7 +573,11 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
                     time_indices=time_indices_current_labels,
                     scores=scores,
                     token_durations=durations if self.include_duration else None,
-                    confidence=self._get_step_confidence(logits=nb_logits) if self.preserve_step_confidence else None,
+                    confidence=(
+                        self._get_step_confidence(logits=nb_logits, num_durations=num_durations)
+                        if self.preserve_step_confidence
+                        else None
+                    ),
                     logits=nb_logits if self.preserve_logits else None,
                     check_lengths=dynamic_hyp_storage,
                 )

@@ -438,6 +438,13 @@ conflicts = [
         { extra = "compiled-a100" },
     ],
 ]
+override-dependencies = [
+    "mlflow>=3.9.0rc0",
+    "cryptography>=46.0.5",
+    "wandb>=0.27.1",
+    "urllib3>=2.6.0",
+    "opencv-python-headless; sys_platform == 'never'"
+]
 no-binary-package = [
     "causal-conv1d",
     "flash-attn",
@@ -510,7 +517,7 @@ requires-dist = [
 
 [dependency-groups]
 test = [
-    "black~=24.3",
+    "black>=26.3.1",
     "click>=8.1",
     "coverage",
     "isort>5.1.0,<6.0.0",

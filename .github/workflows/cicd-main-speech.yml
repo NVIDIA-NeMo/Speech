@@ -38,7 +38,7 @@ jobs:
     uses: ./.github/workflows/_build_container.yml
     with:
       image-name: ${{ inputs.image-name }}
-      dockerfile: docker/Dockerfile.ci
+      dockerfile: docker/Dockerfile
       runner: ${{ inputs.runner }}
 
   unit-tests:

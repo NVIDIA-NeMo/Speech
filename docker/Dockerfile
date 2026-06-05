@@ -26,10 +26,10 @@
 # not contain either token, the build fails early.
 #
 # Example CUDA 13 H100+ build:
-#   docker buildx build -f docker/Dockerfile.ci \
+#   docker buildx build -f docker/Dockerfile \
 #     --build-arg GPU_TARGET=h100plus .
 # Example CUDA 12 A100 build:
-#   docker buildx build -f docker/Dockerfile.ci \
+#   docker buildx build -f docker/Dockerfile \
 #     --build-arg BASE_IMAGE=nvcr.io/nvidia/cuda-dl-base:25.06-cuda12.9-devel-ubuntu24.04 \
 #     --build-arg GPU_TARGET=a100 .
 #
@@ -130,6 +130,7 @@ case "$(nemo-cuda-flavor)" in
 esac
 uv pip install --index-url "${torchcodec_index}" torchcodec
 EOF
+COPY nemo /workspace/nemo
 
 FROM base-image AS automodel-deps
 ARG GPU_TARGET=h100plus
@@ -273,6 +274,13 @@ EOF
 FROM base-image
 COPY --from=automodel-deps /opt/venv /opt/venv
 
+ENV NVIDIA_BUILD_ID=${NVIDIA_BUILD_ID:-<unknown>}
+LABEL com.nvidia.build.id="${NVIDIA_BUILD_ID}"
+ARG NVIDIA_BUILD_REF
+LABEL com.nvidia.build.ref="${NVIDIA_BUILD_REF}"
+ARG RC_DATE=00.00
+ARG TARGETARCH
+
 ARG INSTALL_FFMPEG=false
 RUN <<"EOF" bash -ex
 if [ "${INSTALL_FFMPEG}" = "true" ]; then
@@ -285,11 +293,6 @@ EOF
 
 ENV NEMO_HOME="/home/TestData/nemo_home"
 
-ARG IMAGE_LABEL
-LABEL "nemo.library"=${IMAGE_LABEL}
-
-ARG PR_NUMBER
-LABEL "nemo.pr_number"=${PR_NUMBER}
-
-ARG NVIDIA_BUILD_ID
-LABEL "NVIDIA_BUILD_ID"=${NVIDIA_BUILD_ID}
+# NOTICES.txt file points to where the OSS source code is archived
+RUN echo "This distribution includes open source which is archived at the following URL: https://opensource.nvidia.com/oss/teams/nvidia/nemo/${RC_DATE}:linux-${TARGETARCH}/index.html" > NOTICES.txt && \
+    echo "For further inquiries or assistance, contact us at oss-requests@nvidia.com" >> NOTICES.txt

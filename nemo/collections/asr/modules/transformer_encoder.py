@@ -170,20 +170,6 @@ class MultiHeadAttention(nn.Module):
             self.pos_bias_u = None
             self.pos_bias_v = None
 
-        # Per-forward Transformer-XL (b)+(d) bias of shape (B, H, T, T), set by ``forward`` and
-        # read by ``_rel_pos_score_mod`` while FlexAttention is executing.
-        self._rel_pos_bias = None
-
-    def _rel_pos_score_mod(self, score, b, h, q_idx, kv_idx):
-        """FlexAttention ``score_mod`` adding the Transformer-XL (b)+(d) bias.
-
-        FlexAttention's ``score_mod`` API expects a callable with a fixed signature, so the
-        per-forward bias tensor is passed in via ``self._rel_pos_bias`` rather than as an
-        explicit argument; ``forward`` populates that attribute immediately before invoking
-        ``flex_attention``.
-        """
-        return score + self._rel_pos_bias[b, h, q_idx, kv_idx]
-
     def _rel_shift(self, x):
         """Transformer-XL relative-position shift.
 
@@ -202,11 +188,12 @@ class MultiHeadAttention(nn.Module):
         - Matrices (b) + (d) — the position-dependent score bias ``(Q + v) @ R^T`` rel-
           shifted into ``(q_idx, kv_idx)`` coordinates — are precomputed into a
           ``(B, H, T, T)`` tensor, scaled by ``1/sqrt(D)`` (to match FlexAttention's
-          already-scaled ``QK^T`` scores), and stashed on ``self._rel_pos_bias``. The
-          bound closure ``self._rel_pos_score_mod`` reads that buffer while FlexAttention
-          is executing. The state-passing detour is necessary because FlexAttention's
-          ``score_mod`` API fixes the callable signature, so the per-forward tensor
-          cannot be threaded through as an explicit argument.
+          already-scaled ``QK^T`` scores), and captured by a local ``score_mod`` closure.
+          FlexAttention's ``score_mod`` API fixes the callable signature, so the per-forward
+          tensor is threaded in via closure capture rather than as an explicit argument.
+          Keeping it local (instead of on ``self``) lets the ``(B, H, T, T)`` bias be freed
+          as soon as the layer's attention call returns, so peak memory holds at most one
+          layer's bias rather than all layers' biases at once.
         - Matrix (c) — the global-content bias ``u @ K^T`` — is folded into FlexAttention
           by rewriting the query as ``Q + pos_bias_u``, which is returned.
 
@@ -234,9 +221,13 @@ class MultiHeadAttention(nn.Module):
         matrix_bd = torch.matmul(q_with_bias_v, p.transpose(-2, -1))  # (B, H, T, 2T - 1)
         # rel_shift converts absolute-relative-position columns into (query, key) columns;
         # keep the first T to land in (B, H, T, T) bias space.
-        self._rel_pos_bias = self._rel_shift(matrix_bd)[..., :T] * (D**-0.5)
+        rel_pos_bias = self._rel_shift(matrix_bd)[..., :T] * (D**-0.5)
+
+        def score_mod(score, b, h, q_idx, kv_idx):
+            return score + rel_pos_bias[b, h, q_idx, kv_idx]
+
         # Matrix c: fold u @ K^T into FlexAttention by rewriting Q as (Q + u).
-        return self._rel_pos_score_mod, q + bias_u
+        return score_mod, q + bias_u
 
     def forward(self, x, block_mask=None, pos_emb=None):
         B, T, _ = x.shape

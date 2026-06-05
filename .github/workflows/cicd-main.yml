@@ -176,7 +176,7 @@ jobs:
       && !cancelled()
     with:
       image-name: nemo_container
-      dockerfile: docker/Dockerfile.ci
+      dockerfile: docker/Dockerfile
       runner: ${{ needs.pre-flight.outputs.runner_prefix }}
       registry: ${{ needs.pre-flight.outputs.registry }}
 

@@ -481,7 +481,7 @@ def oomptimizer(
 
             def step():
                 click.echo(
-                    f"\t[BEGIN step] [CUDA RAM CURRENT: {torch.cuda.memory_allocated() / (1024 * 1024):.1f}MB] [CUDA RAM MAX: {torch.cuda.max_memory_allocated() / (1024*1024):.1f}MB]"
+                    f"\t[BEGIN step] [input={seq_len_in}] [output={seq_len_out}] [CUDA RAM CURRENT: {torch.cuda.memory_allocated() / (1024 * 1024):.1f}MB] [CUDA RAM MAX: {torch.cuda.max_memory_allocated() / (1024*1024):.1f}MB]"
                 )
                 batch = gen(seq_len_in, seq_len_out)
                 oom = False
@@ -495,7 +495,9 @@ def oomptimizer(
                     click.secho(f"OOM!", fg="yellow")
                     oom = True
                 except RuntimeError as e:
-                    if "cuFFT error: CUFFT_INTERNAL_ERROR" not in str(e):
+                    if "cuFFT error: CUFFT_INTERNAL_ERROR" not in str(
+                        e
+                    ) and "cuFFT error: CUFFT_INVALID_SIZE" not in str(e):
                         raise
                     click.secho(f"OOM!", fg="yellow")
                     oom = True

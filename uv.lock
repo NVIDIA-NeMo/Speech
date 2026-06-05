@@ -1666,7 +1666,7 @@ wheels = [
 [[package]]
 name = "deep-ep"
 version = "1.2.1+9af0e0d"
-source = { git = "https://github.com/deepseek-ai/DeepEP.git?rev=v1.2.1#9af0e0d0e74f3577af1979c9b9e1ac2cad0104ee" }
+source = { git = "https://github.com/deepseek-ai/DeepEP.git?tag=v1.2.1#9af0e0d0e74f3577af1979c9b9e1ac2cad0104ee" }
 
 [[package]]
 name = "dill"
@@ -4271,7 +4271,7 @@ requires-dist = [
     { name = "datasets", marker = "extra == 'common-only'", specifier = ">=3.2.0" },
     { name = "datasets", marker = "extra == 'speechlm2'", specifier = ">=3.2.0" },
     { name = "datasets", marker = "extra == 'tts'", specifier = ">=3.2.0" },
-    { name = "deep-ep", marker = "extra == 'compiled'", git = "https://github.com/deepseek-ai/DeepEP.git?rev=v1.2.1" },
+    { name = "deep-ep", marker = "extra == 'compiled'", git = "https://github.com/deepseek-ai/DeepEP.git?tag=v1.2.1" },
     { name = "einops", marker = "extra == 'all'" },
     { name = "einops", marker = "extra == 'asr'" },
     { name = "einops", marker = "extra == 'asr-only'" },
@@ -4456,8 +4456,8 @@ requires-dist = [
     { name = "torchmetrics", marker = "extra == 'speechlm2'", specifier = ">=0.11.0" },
     { name = "torchmetrics", marker = "extra == 'tts'", specifier = ">=0.11.0" },
     { name = "tqdm", specifier = ">=4.41.0" },
-    { name = "transformer-engine", marker = "extra == 'compiled'", git = "https://github.com/NVIDIA/TransformerEngine.git?rev=v2.15" },
-    { name = "transformer-engine", marker = "extra == 'compiled-a100'", git = "https://github.com/NVIDIA/TransformerEngine.git?rev=v2.15" },
+    { name = "transformer-engine", marker = "extra == 'compiled'", git = "https://github.com/NVIDIA/TransformerEngine.git?tag=v2.15" },
+    { name = "transformer-engine", marker = "extra == 'compiled-a100'", git = "https://github.com/NVIDIA/TransformerEngine.git?tag=v2.15" },
     { name = "transformers", marker = "extra == 'all'" },
     { name = "transformers", marker = "extra == 'asr'" },
     { name = "transformers", marker = "extra == 'audio'" },
@@ -8121,7 +8121,7 @@ wheels = [
 [[package]]
 name = "transformer-engine"
 version = "2.15.0+42b84005"
-source = { git = "https://github.com/NVIDIA/TransformerEngine.git?rev=v2.15#42b840051647eef89761a16dfdff87e82bb253ab" }
+source = { git = "https://github.com/NVIDIA/TransformerEngine.git?tag=v2.15#42b840051647eef89761a16dfdff87e82bb253ab" }
 dependencies = [
     { name = "einops" },
     { name = "importlib-metadata" },

@@ -2444,8 +2444,8 @@ class DynamicLengthTensor:
     def to_device(self, device: str | torch.device) -> "DynamicLengthTensor":
         """Move storage to device"""
         self.device = device
-        self.data.to(device=device)
-        self.lengths.to(device=device)
+        self.data = self.data.to(device=device)
+        self.lengths = self.lengths.to(device=device)
         return self
 
     def append_(self, data: torch.Tensor, lengths: torch.Tensor | None = None):
@@ -2472,11 +2472,12 @@ class DynamicLengthTensor:
         new_dynamic_tensor = DynamicLengthTensor(
             batch_size=self.batch_size,
             init_length=self._max_length,
+            dim_shape=self.dim_shape,
             device=self.device,
             dtype=self.dtype,
         )
         new_dynamic_tensor.data.copy_(self.data)
-        new_dynamic_tensor.data.copy_(self.lengths)
+        new_dynamic_tensor.lengths.copy_(self.lengths)
         return new_dynamic_tensor
 
     def merge_(self, other: "DynamicLengthTensor") -> "DynamicLengthTensor":

@@ -24,7 +24,12 @@ import math
 import pytest
 import torch
 
-from nemo.collections.asr.parts.utils.streaming_utils import ContextSize, ContextSizeBatch, StreamingBatchedAudioBuffer
+from nemo.collections.asr.parts.utils.streaming_utils import (
+    ContextSize,
+    ContextSizeBatch,
+    DynamicLengthTensor,
+    StreamingBatchedAudioBuffer,
+)
 
 # -----------------------------------------------------------------------------
 # Helper constants / fixtures
@@ -214,3 +219,202 @@ def test_streaming_batched_audio_buffer_raises_on_too_long_chunk(device: torch.d
             is_last_chunk=False,
             is_last_chunk_batch=torch.tensor([False], dtype=torch.bool, device=device),
         )
+
+
+# -----------------------------------------------------------------------------
+# Tests for DynamicLengthTensor
+# -----------------------------------------------------------------------------
+
+
+def _make_chunk(batch_size: int, length: int, channels: int, start: float, device: torch.device) -> torch.Tensor:
+    """Create a deterministic chunk of shape (batch_size, length, channels)."""
+    n = batch_size * length * channels
+    return (start + torch.arange(n, device=device, dtype=torch.float32)).view(batch_size, length, channels)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize(
+    "dim_shape, expected_dim_shape",
+    [
+        (None, []),
+        (3, [3]),
+        ([4, 5], [4, 5]),
+    ],
+)
+def test_dynamic_length_tensor_init(device, dim_shape, expected_dim_shape):
+    batch_size, init_length = 2, 5
+    t = DynamicLengthTensor(
+        batch_size=batch_size,
+        init_length=init_length,
+        dim_shape=dim_shape,
+        device=device,
+        dtype=torch.float32,
+    )
+
+    assert t.dim_shape == expected_dim_shape
+    assert list(t.data.shape) == [batch_size, init_length, *expected_dim_shape]
+    assert list(t.lengths.shape) == [batch_size]
+    assert t.lengths.dtype == torch.long
+    assert t.data.dtype == torch.float32
+    # Freshly created storage is zeroed and reports no content.
+    assert torch.count_nonzero(t.lengths) == 0
+    assert torch.count_nonzero(t.data) == 0
+
+
+@pytest.mark.unit
+def test_dynamic_length_tensor_init_minimum_length():
+    """`init_length` is clamped to at least 1 so doubling-based growth works."""
+    t = DynamicLengthTensor(batch_size=2, init_length=0, dim_shape=1)
+    assert t._max_length == 1
+    assert t.data.shape[1] == 1
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("device", DEVICES)
+def test_dynamic_length_tensor_append_with_lengths(device):
+    """Per-batch `lengths` control how many frames become valid for each item."""
+    t = DynamicLengthTensor(batch_size=2, init_length=4, dim_shape=1, device=device, dtype=torch.float32)
+
+    # First chunk: batch item 0 keeps 2 frames, item 1 keeps 1 frame.
+    chunk1 = _make_chunk(batch_size=2, length=2, channels=1, start=10.0, device=device)
+    # chunk1 == [[[10], [11]], [[12], [13]]]
+    t.append_(data=chunk1, lengths=torch.tensor([2, 1], device=device))
+    assert t.lengths.tolist() == [2, 1]
+
+    # Second chunk: item 0 keeps 1 frame, item 1 keeps 2 frames. Item 1 should
+    # overwrite the previously written "garbage" frame at position 1.
+    chunk2 = _make_chunk(batch_size=2, length=2, channels=1, start=30.0, device=device)
+    # chunk2 == [[[30], [31]], [[32], [33]]]
+    t.append_(data=chunk2, lengths=torch.tensor([1, 2], device=device))
+    assert t.lengths.tolist() == [3, 3]
+
+    # Valid frames are everything up to the per-item length.
+    item0 = t.data[0, : t.lengths[0], 0].tolist()
+    item1 = t.data[1, : t.lengths[1], 0].tolist()
+    assert item0 == [10.0, 11.0, 30.0]
+    assert item1 == [12.0, 32.0, 33.0]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("device", DEVICES)
+def test_dynamic_length_tensor_append_without_lengths(device):
+    """Without `lengths`, every frame in the chunk is appended for all items."""
+    t = DynamicLengthTensor(batch_size=2, init_length=2, dim_shape=1, device=device, dtype=torch.float32)
+
+    chunk = _make_chunk(batch_size=2, length=3, channels=1, start=0.0, device=device)
+    t.append_(data=chunk)
+
+    assert t.lengths.tolist() == [3, 3]
+    assert torch.equal(t.data[:, :3], chunk)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("device", DEVICES)
+def test_dynamic_length_tensor_growth_preserves_data(device):
+    """Appending more than the initial capacity reallocates and keeps content."""
+    t = DynamicLengthTensor(batch_size=1, init_length=2, dim_shape=1, device=device, dtype=torch.float32)
+    initial_capacity = t._max_length
+
+    big_len = 10
+    chunk = _make_chunk(batch_size=1, length=big_len, channels=1, start=0.0, device=device)
+    t.append_(data=chunk, lengths=torch.tensor([big_len], device=device))
+
+    assert t._max_length > initial_capacity
+    assert t._max_length >= big_len
+    assert t.lengths.tolist() == [big_len]
+    assert t.data[0, :big_len, 0].tolist() == list(range(big_len))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("device", DEVICES)
+def test_dynamic_length_tensor_incremental_appends_double_capacity(device):
+    """Repeated single-frame appends grow capacity geometrically (amortized O(1))."""
+    n_appends = 9
+    t = DynamicLengthTensor(batch_size=1, init_length=1, dim_shape=1, device=device, dtype=torch.float32)
+
+    capacities = []
+    for i in range(n_appends):
+        frame = torch.full((1, 1, 1), float(i), device=device)
+        t.append_(data=frame)
+        capacities.append(t._max_length)
+
+    # Everything that was appended is retained, in order.
+    assert t.lengths.tolist() == [n_appends]
+    assert t.data[0, :n_appends, 0].tolist() == [float(i) for i in range(n_appends)]
+    # Capacity is always at least what is stored, and grew far less than linearly.
+    assert t._max_length >= n_appends
+    assert len(set(capacities)) < n_appends  # capacity reused across appends, not bumped every time
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("device", DEVICES)
+def test_dynamic_length_tensor_clear(device):
+    """`clear_` resets both lengths and storage to zero while keeping capacity."""
+    t = DynamicLengthTensor(batch_size=2, init_length=4, dim_shape=1, device=device, dtype=torch.float32)
+    t.append_(data=_make_chunk(2, 3, 1, start=1.0, device=device), lengths=torch.tensor([3, 3], device=device))
+
+    capacity_before = t._max_length
+    t.clear_()
+
+    assert t.lengths.tolist() == [0, 0]
+    assert torch.count_nonzero(t.data) == 0
+    assert t._max_length == capacity_before
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("device", DEVICES)
+def test_dynamic_length_tensor_merge(device):
+    """`merge_` concatenates another tensor's content along the length dim."""
+    a = DynamicLengthTensor(batch_size=2, init_length=2, dim_shape=1, device=device, dtype=torch.float32)
+    a.append_(data=_make_chunk(2, 2, 1, start=1.0, device=device), lengths=torch.tensor([2, 2], device=device))
+
+    b = DynamicLengthTensor(batch_size=2, init_length=2, dim_shape=1, device=device, dtype=torch.float32)
+    b.append_(data=_make_chunk(2, 2, 1, start=100.0, device=device), lengths=torch.tensor([1, 2], device=device))
+
+    a_item0_before = a.data[0, : a.lengths[0], 0].tolist()
+    a_item1_before = a.data[1, : a.lengths[1], 0].tolist()
+    b_item0 = b.data[0, : b.lengths[0], 0].tolist()
+    b_item1 = b.data[1, : b.lengths[1], 0].tolist()
+
+    ret = a.merge_(b)
+    assert ret is a  # in-place, returns self
+    assert a.lengths.tolist() == [3, 4]
+    assert a.data[0, : a.lengths[0], 0].tolist() == a_item0_before + b_item0
+    assert a.data[1, : a.lengths[1], 0].tolist() == a_item1_before + b_item1
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("device", DEVICES)
+def test_dynamic_length_tensor_clone_is_independent(device):
+    """`clone` returns a deep copy: same data/lengths, but independent storage."""
+    t = DynamicLengthTensor(batch_size=2, init_length=4, dim_shape=3, device=device, dtype=torch.float32)
+    t.append_(data=_make_chunk(2, 2, 3, start=1.0, device=device), lengths=torch.tensor([2, 1], device=device))
+
+    clone = t.clone()
+    assert clone is not t
+    assert clone.dim_shape == t.dim_shape
+    assert clone.data.shape == t.data.shape
+    assert torch.equal(clone.lengths, t.lengths)
+    assert torch.equal(clone.data, t.data)
+
+    # Mutating the clone must not affect the original.
+    clone.append_(data=_make_chunk(2, 1, 3, start=50.0, device=device), lengths=torch.tensor([1, 1], device=device))
+    assert clone.lengths.tolist() == [3, 2]
+    assert t.lengths.tolist() == [2, 1]
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA to verify cross-device move")
+def test_dynamic_length_tensor_to_device():
+    """`to_device` moves the underlying storage (not just the bookkeeping attr)."""
+    t = DynamicLengthTensor(batch_size=2, init_length=4, dim_shape=1, device=torch.device("cpu"), dtype=torch.float32)
+    t.append_(data=_make_chunk(2, 2, 1, start=1.0, device=torch.device("cpu")), lengths=torch.tensor([2, 2]))
+
+    ret = t.to_device("cuda:0")
+    assert ret is t
+    assert t.device == "cuda:0"
+    assert t.data.device.type == "cuda"
+    assert t.lengths.device.type == "cuda"
+    # Content survives the move.
+    assert t.data[0, :2, 0].tolist() == [1.0, 2.0]

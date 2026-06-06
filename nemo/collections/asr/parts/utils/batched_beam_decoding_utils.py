@@ -16,6 +16,7 @@ from typing import Optional
 
 import torch
 
+from nemo.collections.asr.parts.submodules.transducer_decoding.label_looping_base import BatchedBeamHypsState
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis, NBestHypotheses
 from nemo.utils.enum import PrettyStrEnum
 
@@ -74,18 +75,6 @@ class ASRModelTypeEnum(PrettyStrEnum):
     RNNT = "rnnt"
     TDT = "tdt"
     CTC = "ctc"
-
-
-@dataclass
-class BatchedBeamHypsState:
-    """Per-beam state carried across streaming chunk boundaries."""
-
-    scores: torch.Tensor
-    last_label: torch.Tensor
-    transcript_hash: torch.Tensor
-    current_lengths_nb: torch.Tensor
-    last_timestamp_lasts: Optional[torch.Tensor] = None
-    transcript_prefix_hash: Optional[torch.Tensor] = None
 
 
 def seed_batched_hyps_from_state(

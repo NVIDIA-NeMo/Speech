@@ -21,7 +21,6 @@ import torch
 from nemo.collections.asr.parts.context_biasing.biasing_multi_model import GPUBiasingMultiModelBase
 from nemo.collections.asr.parts.submodules.ngram_lm import NGramGPULanguageModel
 from nemo.collections.asr.parts.submodules.transducer_decoding.batched_hyps import BatchedHyps
-from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import BatchedBeamHypsState
 from nemo.collections.common.parts.optional_cuda_graphs import WithOptionalCudaGraphs
 from nemo.core.utils.cuda_python_utils import check_cuda_python_cuda_graphs_conditional_nodes_supported
 from nemo.utils import logging
@@ -48,6 +47,18 @@ class BatchedLabelLoopingState:
     decoded_lengths: torch.Tensor
     fusion_states_list: list[torch.Tensor] = field(default_factory=list)
     time_jumps: torch.Tensor | None = None
+
+
+@dataclass
+class BatchedBeamHypsState:
+    """Per-beam state carried across streaming chunk boundaries."""
+
+    scores: torch.Tensor
+    last_label: torch.Tensor
+    transcript_hash: torch.Tensor
+    current_lengths_nb: torch.Tensor
+    last_timestamp_lasts: Optional[torch.Tensor] = None
+    transcript_prefix_hash: Optional[torch.Tensor] = None
 
 
 @dataclass

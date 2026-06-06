@@ -53,6 +53,14 @@ def _make_chunk(batch_size: int, length: int, channels: int, start: float, devic
     return (start + torch.arange(n, device=device, dtype=torch.float32)).view(batch_size, length, channels)
 
 
+def _make_ndim_chunk(
+    batch_size: int, length: int, dim_shape: list[int], start: float, device: torch.device
+) -> torch.Tensor:
+    """Create a deterministic chunk of shape (batch_size, length, *dim_shape)."""
+    n = batch_size * length * math.prod(dim_shape)
+    return (start + torch.arange(n, device=device, dtype=torch.float32)).view(batch_size, length, *dim_shape)
+
+
 # -----------------------------------------------------------------------------
 # Tests for ContextSize and ContextSizeBatch
 # -----------------------------------------------------------------------------
@@ -306,6 +314,50 @@ class TestDynamicLengthTensor:
 
         assert t.lengths.tolist() == [3, 3]
         assert torch.equal(t.data[:, :3], chunk)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("device", DEVICES)
+    @pytest.mark.parametrize("dim_shape", [[], [3], [2, 3], [2, 3, 4]])
+    def test_append_without_lengths_multidim(self, device, dim_shape):
+        """Append must scatter the whole feature vector for arbitrary trailing `dim_shape`."""
+        batch_size = 2
+        # init_length < appended length so this also exercises the growth path with multi-dim shapes.
+        t = DynamicLengthTensor(
+            batch_size=batch_size, init_length=2, dim_shape=dim_shape, device=device, dtype=torch.float32
+        )
+
+        chunk = _make_ndim_chunk(batch_size, length=3, dim_shape=dim_shape, start=0.0, device=device)
+        t.append_(data=chunk)
+
+        assert t.lengths.tolist() == [3, 3]
+        assert torch.equal(t.data[:, :3], chunk)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("device", DEVICES)
+    def test_append_with_lengths_multidim(self, device):
+        """Per-batch `lengths` must place the full multi-dim feature vectors at the right offsets."""
+        dim_shape = [2, 3]
+        t = DynamicLengthTensor(batch_size=2, init_length=4, dim_shape=dim_shape, device=device, dtype=torch.float32)
+
+        # First chunk: item 0 keeps 2 frames, item 1 keeps 1 frame.
+        chunk1 = _make_ndim_chunk(2, length=2, dim_shape=dim_shape, start=10.0, device=device)
+        t.append_(data=chunk1, lengths=torch.tensor([2, 1], device=device))
+        assert t.lengths.tolist() == [2, 1]
+
+        # Second chunk: item 0 keeps 1 frame, item 1 keeps 2 frames. Item 1's second frame
+        # must overwrite the previously written "garbage" frame at position 1.
+        chunk2 = _make_ndim_chunk(2, length=2, dim_shape=dim_shape, start=100.0, device=device)
+        t.append_(data=chunk2, lengths=torch.tensor([1, 2], device=device))
+        assert t.lengths.tolist() == [3, 3]
+
+        # Item 0: chunk1[0, 0], chunk1[0, 1], chunk2[0, 0]; each is a full (2, 3) feature vector.
+        assert torch.equal(t.data[0, 0], chunk1[0, 0])
+        assert torch.equal(t.data[0, 1], chunk1[0, 1])
+        assert torch.equal(t.data[0, 2], chunk2[0, 0])
+        # Item 1: chunk1[1, 0], chunk2[1, 0] (overwrites garbage at pos 1), chunk2[1, 1].
+        assert torch.equal(t.data[1, 0], chunk1[1, 0])
+        assert torch.equal(t.data[1, 1], chunk2[1, 0])
+        assert torch.equal(t.data[1, 2], chunk2[1, 1])
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)

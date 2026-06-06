@@ -46,6 +46,7 @@ from nemo.collections.asr.inference.utils.pipeline_utils import (
 from nemo.collections.asr.inference.utils.progressbar import ProgressBar
 from nemo.collections.asr.inference.utils.text_segment import TextSegment
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
+from nemo.utils import logging
 
 if TYPE_CHECKING:
     from nemo.collections.asr.inference.itn.inverse_normalizer import AlignmentPreservingInverseNormalizer
@@ -478,12 +479,15 @@ class BasePipeline(PipelineInterface):
     def init_context_manager(self) -> None:
         """Initialize the context manager."""
         check_existance_of_required_attributes(self, ['asr_model', 'num_slots', 'use_cache'])
+        cache_dtype = getattr(self, 'cache_dtype', 'bf16')
+        model_dtype = getattr(self.asr_model, 'compute_dtype', None)
+        logging.info(f"Cache-aware streaming: cache dtype = {cache_dtype}, model compute dtype = {model_dtype}")
         self.context_manager = CacheAwareContextManager(
             cache_aware_model=self.asr_model,
             num_slots=self.num_slots,
             use_cache=self.use_cache,
-            cache_dtype=getattr(self, 'cache_dtype', 'bf16'),
-            working_dtype=getattr(self.asr_model, 'compute_dtype', None),
+            cache_dtype=cache_dtype,
+            working_dtype=model_dtype,
         )
 
     def init_prompt_support(self) -> None:

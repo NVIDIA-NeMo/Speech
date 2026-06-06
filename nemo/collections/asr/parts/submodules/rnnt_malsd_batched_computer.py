@@ -354,7 +354,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         encoder_output: torch.Tensor,
         encoder_output_length: torch.Tensor,
         prev_batched_state: Optional[BatchedBeamState] = None,
-    ) -> tuple[BatchedBeamHyps, Optional[rnnt_utils.BatchedAlignments], BatchedBeamState]:
+    ) -> tuple[BatchedBeamHyps, BatchedBeamState]:
         """
         Pytorch implementation of the batched ALSD algorithm for RNN-T.
         Args:
@@ -646,7 +646,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             beam_state=batched_hyps.export_cross_chunk_state(),
         )
 
-        return batched_hyps, None, decoding_state
+        return batched_hyps, decoding_state
 
     def topk_fusion_model(self, fusion_scores_list, log_probs, eps=1e-2):
         """
@@ -723,7 +723,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         encoder_output: torch.Tensor,
         encoder_output_length: torch.Tensor,
         prev_batched_state: Optional[BatchedBeamState] = None,
-    ) -> tuple[BatchedBeamHyps, Optional[rnnt_utils.BatchedAlignments], BatchedBeamState]:
+    ) -> tuple[BatchedBeamHyps, BatchedBeamState]:
         """
         Cuda-Graphs implementation of the batched ALSD algorithm.
         Args:
@@ -788,7 +788,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         # create decoding state for next chunk
         decoding_state = self._create_decoding_state(encoder_output_length, prev_batched_state)
 
-        return self.state.batched_hyps.clone(batch_size=current_batch_size), None, decoding_state
+        return self.state.batched_hyps.clone(batch_size=current_batch_size), decoding_state
 
     @classmethod
     def _create_loop_body_kernel(cls):
@@ -1388,7 +1388,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         x: torch.Tensor,
         out_len: torch.Tensor,
         prev_batched_state: Optional[BatchedBeamState] = None,
-    ) -> tuple[BatchedBeamHyps, Optional[rnnt_utils.BatchedAlignments], BatchedBeamState]:
+    ) -> tuple[BatchedBeamHyps, BatchedBeamState]:
         if self.cuda_graphs_mode is not None and x.device.type == "cuda":
             with torch.amp.autocast(device_type="cuda", enabled=False):
                 return self.modified_alsd_cuda_graphs(

@@ -257,7 +257,7 @@ def _run_streaming_batched_state(
                 current_len = torch.full_like(encoder_output_len, fill_value=chunk_size)
                 current_len = torch.minimum(current_len, rest_len)
                 current_len = torch.maximum(current_len, torch.zeros_like(current_len))
-                chunk_batched_hyps, _, state = decoding_computer(
+                chunk_batched_hyps, state = decoding_computer(
                     x=encoder_output[:, t : t + chunk_size],
                     out_len=current_len,
                     prev_batched_state=state,

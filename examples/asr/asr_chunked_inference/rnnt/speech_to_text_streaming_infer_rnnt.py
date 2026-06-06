@@ -462,7 +462,7 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
                 )
                 if is_beam_search:
                     # Beam-search computers don't accept ``multi_biasing_ids`` yet.
-                    chunk_batched_hyps, _, state = decoding_computer(
+                    chunk_batched_hyps, state = decoding_computer(
                         x=encoder_output, out_len=out_len, prev_batched_state=state
                     )
                 else:

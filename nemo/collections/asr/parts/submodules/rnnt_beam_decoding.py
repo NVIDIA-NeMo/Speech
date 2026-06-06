@@ -1689,7 +1689,7 @@ class BeamBatchedRNNTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs
             self.joint.eval()
 
             inseq = encoder_output  # [B, T, D]
-            batched_beam_hyps, alignments, decoding_state = self.decoding_computer(x=inseq, out_len=logitlen)
+            batched_beam_hyps, _ = self.decoding_computer(x=inseq, out_len=logitlen)
 
             batch_size = encoder_output.shape[0]
             if self.return_best_hypothesis:

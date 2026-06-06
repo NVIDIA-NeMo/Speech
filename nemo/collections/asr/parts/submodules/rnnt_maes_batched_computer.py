@@ -131,7 +131,7 @@ class ModifiedAESBatchedRNNTComputer(ConfidenceMethodMixin):
         encoder_output: torch.Tensor,
         encoder_output_length: torch.Tensor,
         prev_batched_state: Optional[BatchedBeamState] = None,
-    ) -> tuple[BatchedBeamHyps, Optional[rnnt_utils.BatchedAlignments], BatchedBeamState]:
+    ) -> tuple[BatchedBeamHyps, BatchedBeamState]:
         """
         Pure PyTorch implementation of batched modified adaptive expansion search for RNN-T.
 
@@ -379,7 +379,7 @@ class ModifiedAESBatchedRNNTComputer(ConfidenceMethodMixin):
             beam_state=batched_hyps.export_cross_chunk_state(),
         )
 
-        return batched_hyps, None, decoding_state
+        return batched_hyps, decoding_state
 
     def combine_scores(self, log_probs, lm_scores):
         """
@@ -497,7 +497,7 @@ class ModifiedAESBatchedRNNTComputer(ConfidenceMethodMixin):
         x: torch.Tensor,
         out_len: torch.Tensor,
         prev_batched_state: Optional[BatchedBeamState] = None,
-    ) -> tuple[BatchedBeamHyps, Optional[rnnt_utils.BatchedAlignments], BatchedBeamState]:
+    ) -> tuple[BatchedBeamHyps, BatchedBeamState]:
         return self.batched_modified_adaptive_expansion_search_torch(
             encoder_output=x,
             encoder_output_length=out_len,

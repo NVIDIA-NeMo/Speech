@@ -24,6 +24,7 @@ readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.10"
 dependencies = [
+    "aistore",
     "fsspec>=2024.12.0",
     "huggingface_hub>=0.24",
     "numba ; platform_system == 'Darwin'",
@@ -32,6 +33,7 @@ dependencies = [
     "onnx>=1.7.0",
     "scikit-learn",
     "setuptools>=70.0.0",
+    "smart-open",
     "tensorboard",
     "text-unidecode",
     "torch>=2.6.0",
@@ -87,7 +89,6 @@ core = [
     "nv_one_logger_core>=2.3.1",
     "nv_one_logger_training_telemetry>=2.3.1",
     "nv_one_logger_pytorch_lightning_integration>=2.3.1",
-    "aistore",
 ]
 
 lightning = [
@@ -194,6 +195,7 @@ all = [
     "omegaconf<=2.3",
     "torchmetrics>=0.11.0",
     "transformers",
+    "wandb",
     "webdataset>=0.2.86",
     "nv_one_logger_core>=2.3.1",
     "nv_one_logger_training_telemetry>=2.3.1",
@@ -229,11 +231,13 @@ all = [
 ]
 
 cu12 = [
+    "torch==2.12.0+cu126 ; sys_platform == 'linux'",
     "numba-cuda[cu12] ; platform_system != 'Darwin'",
-    "cuda-python>=12.6.0,<13 ; platform_system != 'Darwin'",
+    "cuda-python>=12,<13 ; platform_system != 'Darwin'",
 ]
 
 cu13 = [
+    "torch==2.12.0+cu132 ; sys_platform == 'linux'",
     "numba-cuda[cu13] ; platform_system != 'Darwin'",
     "cuda-python>=13,<14 ; platform_system != 'Darwin'",
 ]
@@ -430,20 +434,11 @@ conflicts = [
         { extra = "cu13" },
     ],
     [
-        { extra = "cu12" },
-        { extra = "compiled" },
-    ],
-    [
-        { extra = "cu12" },
-        { extra = "compiled-a100" },
-    ],
-    [
         { extra = "compiled" },
         { extra = "compiled-a100" },
     ],
 ]
 override-dependencies = [
-    "torch==2.12.0+cu132 ; sys_platform == 'linux'",
     "mlflow>=3.9.0rc0",
     "cryptography>=46.0.5",
     "wandb>=0.27.1",
@@ -466,14 +461,14 @@ no-build-isolation-package = [
 ]
 
 # --- uv configuration ---
-# Match nemo_automodel's torch index sources so uv doesn't see conflicting
-# indexes when resolving the speechlm2 extra (which pulls nemo_automodel
-# from git as a source dependency — uv treats these as workspace members).
+# Keep Torch wheel indexes explicit per CUDA extra. The pinned Automodel git
+# dependency also carries Torch source metadata; see the static metadata below.
 [tool.uv.sources]
 nemo_automodel = { git = "https://github.com/NVIDIA-NeMo/Automodel.git", rev = "9eccbb6102a260efd7cbdffa890fc57b94f94528" }
 torch = [
   { index = "pytorch-cpu", marker = "sys_platform != 'linux' and sys_platform != 'darwin'" },
-  { index = "pytorch-cu132", marker = "sys_platform == 'linux'" },
+  { index = "pytorch-cu126", extra = "cu12", marker = "sys_platform == 'linux'" },
+  { index = "pytorch-cu132", extra = "cu13", marker = "sys_platform == 'linux'" },
   { index = "pypi", marker = "sys_platform == 'darwin'" },
 ]
 
@@ -488,9 +483,37 @@ url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
 [[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[[tool.uv.index]]
 name = "pytorch-cu132"
 url = "https://download.pytorch.org/whl/cu132"
 explicit = true
+
+[[tool.uv.dependency-metadata]]
+name = "nemo-automodel"
+version = "0.4.0+9eccbb61"
+requires-python = ">=3.10"
+# The pinned Automodel git revision carries its own Torch source table. Keep
+# its core dependency metadata static here so this repo controls the CUDA wheel index.
+requires-dist = [
+    "datasets>=4.0.0",
+    "megatron-fsdp>=0.2.3",
+    "mistral-common[audio,hf-hub,image,sentencepiece]",
+    "opencv-python-headless==4.10.0.84",
+    "pybind11",
+    "pyyaml",
+    "tiktoken",
+    "torch>=2.6.0",
+    "torchdata",
+    "transformers==5.5.0",
+    "wandb",
+    "torchao",
+    "mlflow",
+    "flashoptim>=0.1.3",
+]
 
 [dependency-groups]
 test = [

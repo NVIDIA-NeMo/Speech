@@ -2242,9 +2242,9 @@ class ContextSizeBatch:
             factor: subsampling factor
         """
         return ContextSizeBatch(
-            left=torch.div(self.left / factor).to(dtype=torch.long),
-            chunk=torch.div(self.chunk / factor).to(dtype=torch.long),
-            right=torch.div(self.right / factor).to(dtype=torch.long),
+            left=torch.div(self.left, factor, rounding_mode="floor"),
+            chunk=torch.div(self.chunk, factor, rounding_mode="floor"),
+            right=torch.div(self.right, factor, rounding_mode="floor"),
         )
 
     def add_frames_(

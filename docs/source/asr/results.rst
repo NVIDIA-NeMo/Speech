@@ -332,7 +332,7 @@ Fast Conformer RNN-T (Streaming) with Prompt Feature
 
 The RNN-T-only prompt model (``EncDecRNNTBPEModelWithPrompt``) is the cache-aware streaming
 counterpart of the hybrid prompt model — same one-hot language-ID prompt mechanism, no
-auxiliary CTC head. 
+auxiliary CTC head.
 
 **Key Features:**
 
@@ -381,5 +381,4 @@ Code-Switching
    :align: left
    :widths: 50,50
    :header-rows: 1
-
 

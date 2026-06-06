@@ -96,6 +96,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
 
         self.use_cache = cfg.streaming.use_cache
         self.use_feat_cache = cfg.streaming.use_feat_cache
+        self.cache_dtype = cfg.streaming.get("cache_dtype", "bf16")
 
         if cfg.streaming.get("chunk_size_in_secs", None) is not None:
             self.chunk_size_in_secs = cfg.streaming.chunk_size_in_secs

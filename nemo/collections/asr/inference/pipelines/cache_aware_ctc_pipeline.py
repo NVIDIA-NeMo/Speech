@@ -88,6 +88,7 @@ class CacheAwareCTCPipeline(BasePipeline):
 
         self.use_cache = cfg.streaming.use_cache
         self.use_feat_cache = cfg.streaming.use_feat_cache
+        self.cache_dtype = cfg.streaming.get("cache_dtype", "bf16")
         self.batch_size = cfg.streaming.batch_size
         self.num_slots = cfg.streaming.num_slots
         if self.num_slots < self.batch_size:

@@ -95,6 +95,7 @@ streaming:
   att_context_size: [70,13]                   # Attention context size: [70,13],[70,6],[70,1],[70,0]
   use_cache: true                             # Whether to use cache for streaming
   use_feat_cache: true                        # Whether to cache mel-spec features, set false to re-calculate all mel-spec features in audio buffer
+  cache_dtype: bf16                           # Cache float precision: "fp32" (full) | "fp16" | "bf16" (2x compression)
   chunk_size_in_secs: null                    # Amount of audio to load for each streaming step, e.g., 0.08s for FastConformer. Set to `null` for using default size equal to 1+lookahead frames.
   request_type: frame                         # Type of request: frame or feature_buffer
   num_slots: 256                             # Number of slots in the context manager: must be >= batch_size

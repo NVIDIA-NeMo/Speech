@@ -19,6 +19,16 @@ from typing import Any
 import torch
 from torch import Tensor
 
+from nemo.collections.asr.inference.utils.cache import CastCache
+
+
+_CAST_DTYPES: dict[str, torch.dtype] = {
+    "fp32": torch.float32,
+    "fp16": torch.float16,
+    "bf16": torch.bfloat16,
+}
+_VALID_CACHE_DTYPES = tuple(_CAST_DTYPES)
+
 
 class CacheAwareContext:
     """
@@ -52,6 +62,8 @@ class CacheAwareContextManager:
         cache_aware_model: Any,
         num_slots: int,
         use_cache: bool = True,
+        cache_dtype: str = "bf16",
+        working_dtype: torch.dtype | None = None,
     ):
         """
         Initialize the CacheAwareContextManager.
@@ -59,7 +71,16 @@ class CacheAwareContextManager:
             cache_aware_model (Any): Cache-Aware model object. It should have the get_initial_cache_state method.
             num_slots (int): Number of slots to use for the cache. It should be greater than or equal to the batch size.
             use_cache (bool): Whether to use the cache. Default is True. If False, the cache is disabled.
+            cache_dtype (str): Float precision for the backing storage of `cache_last_channel` /
+                `cache_last_time`. One of "fp32" (full precision), "fp16" or "bf16" (2x compression).
+                `cache_last_channel_len` is always stored raw. Default "bf16".
+            working_dtype (torch.dtype | None): dtype the caches return on gather, i.e. the
+                precision the encoder consumes. Defaults to the initial cache dtype (fp32) when
+                None. Set to the model compute dtype (e.g. bf16) so a "bf16" cache is a lossless,
+                half-memory no-op round trip.
         """
+        if cache_dtype not in _VALID_CACHE_DTYPES:
+            raise ValueError(f"cache_dtype must be one of {_VALID_CACHE_DTYPES}, got {cache_dtype!r}")
         self.cache_aware_model = cache_aware_model
         # Cache aware model should have the following methods:
         if not hasattr(self.cache_aware_model, "get_initial_cache_state"):
@@ -67,9 +88,14 @@ class CacheAwareContextManager:
 
         self.num_slots = num_slots
         self.cache_disabled = not use_cache
-        self.cache_last_channel = None
-        self.cache_last_time = None
+        self.cache_dtype = cache_dtype
+        self.working_dtype = working_dtype
+        self.cache_last_channel: CastCache | None = None
+        self.cache_last_time: CastCache | None = None
         self.cache_last_channel_len = None
+        # Reusable gather output buffers, refreshed when the active-slot count changes.
+        self._channel_gather_buf: Tensor | None = None
+        self._time_gather_buf: Tensor | None = None
         self.reset()
 
     def reset(self) -> None:
@@ -82,11 +108,35 @@ class CacheAwareContextManager:
         self.free_slots = Queue(self.num_slots)
         for i in range(self.num_slots):
             self.free_slots.put(i)
+        self._channel_gather_buf = None
+        self._time_gather_buf = None
         (
-            self.cache_last_channel,  # [17, B, 70, 512]
-            self.cache_last_time,  # [17, B, 512, 8]
+            initial_cache_last_channel,  # [17, B, 70, 512]
+            initial_cache_last_time,  # [17, B, 512, 8]
             self.cache_last_channel_len,  # B
         ) = self.cache_aware_model.get_initial_cache_state(self.num_slots)
+
+        # Caches return `working_dtype` (the compute precision) on gather when set, else the fp32 seed.
+        channel_source_dtype = self.working_dtype or initial_cache_last_channel.dtype
+        time_source_dtype = self.working_dtype or initial_cache_last_time.dtype
+
+        # `cache_dtype` is validated to be one of fp32/fp16/bf16, so a CastCache always applies.
+        storage_dtype = _CAST_DTYPES[self.cache_dtype]
+        self.cache_last_channel = CastCache.empty(
+            shape=tuple(initial_cache_last_channel.shape),
+            source_dtype=channel_source_dtype,
+            storage_dtype=storage_dtype,
+            device=initial_cache_last_channel.device,
+        )
+        self.cache_last_time = CastCache.empty(
+            shape=tuple(initial_cache_last_time.shape),
+            source_dtype=time_source_dtype,
+            storage_dtype=storage_dtype,
+            device=initial_cache_last_time.device,
+        )
+        del initial_cache_last_channel
+        del initial_cache_last_time
+
         self.device = self.cache_last_channel.device
 
     def _reset_slots(self, slot_ids: list[int]) -> None:
@@ -99,8 +149,8 @@ class CacheAwareContextManager:
             return
 
         slot_ids_tensor = torch.tensor(slot_ids, device=self.device, dtype=torch.long)
-        self.cache_last_channel.index_fill_(1, slot_ids_tensor, 0.0)
-        self.cache_last_time.index_fill_(1, slot_ids_tensor, 0.0)
+        self.cache_last_channel.reset_slots(slot_ids_tensor)
+        self.cache_last_time.reset_slots(slot_ids_tensor)
         self.cache_last_channel_len.index_fill_(0, slot_ids_tensor, 0)
 
         # free the slot, so that it can be used by other streams
@@ -131,11 +181,25 @@ class CacheAwareContextManager:
         )
 
         # In-place copy along batch/slot dimension
-        self.cache_last_channel.index_copy_(1, slot_ids, new_context.cache_last_channel.index_select(1, tgt_slot_ids))
-        self.cache_last_time.index_copy_(1, slot_ids, new_context.cache_last_time.index_select(1, tgt_slot_ids))
+        self.cache_last_channel.update_slots(slot_ids, new_context.cache_last_channel, tgt_slot_ids)
+        self.cache_last_time.update_slots(slot_ids, new_context.cache_last_time, tgt_slot_ids)
         self.cache_last_channel_len.index_copy_(
             0, slot_ids, new_context.cache_last_channel_len.index_select(0, tgt_slot_ids)
         )
+
+    def _gather_reuse(self, cache: CastCache, slot_ids: list[int], buf_attr: str) -> Tensor:
+        """Gather slots, reusing a persistent output buffer when the active-slot count is stable.
+
+        The buffer is the tensor handed to the previous step's context; the encoder has finished
+        reading it by the time the next gather runs, so writing into it in place is safe. The
+        buffer is rebuilt whenever the number of active slots changes.
+        """
+        buf = getattr(self, buf_attr)
+        if buf is not None and buf.shape[1] == len(slot_ids):
+            return cache.gather_slots(slot_ids, out=buf)
+        result = cache.gather_slots(slot_ids)
+        setattr(self, buf_attr, result)
+        return result
 
     def reset_slots(self, stream_ids: list[int], eos_flags: list[bool]) -> None:
         """
@@ -181,8 +245,8 @@ class CacheAwareContextManager:
 
         # get the cache for the particular stream_ids
         slot_ids = [self.streamidx2slotidx[stream_id] for stream_id in stream_ids]
-        cache_last_channel = self.cache_last_channel[:, slot_ids, :, :]
-        cache_last_time = self.cache_last_time[:, slot_ids, :, :]
+        cache_last_channel = self._gather_reuse(self.cache_last_channel, slot_ids, "_channel_gather_buf")
+        cache_last_time = self._gather_reuse(self.cache_last_time, slot_ids, "_time_gather_buf")
         cache_last_channel_len = self.cache_last_channel_len[slot_ids]
 
         # create a context object

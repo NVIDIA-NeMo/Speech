@@ -17,7 +17,6 @@ from typing import Optional
 import torch
 
 from nemo.collections.asr.parts.submodules.transducer_decoding.label_looping_base import BatchedBeamState
-from nemo.collections.asr.parts.utils import rnnt_utils
 from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMethodMixin
 from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import (
     INACTIVE_SCORE,

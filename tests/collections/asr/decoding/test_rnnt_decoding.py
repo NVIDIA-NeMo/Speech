@@ -20,7 +20,7 @@ from typing import Optional
 
 import pytest
 import torch
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.asr.models import ASRModel
 from nemo.collections.asr.modules import RNNTDecoder, RNNTJoint
@@ -519,6 +519,87 @@ class TestRNNTDecoding:
             boosting_tree=boosting_tree,
             enable_per_stream_biasing=enable_per_stream_biasing,
         )
+
+    @pytest.mark.skipif(
+        not NUMBA_RNNT_LOSS_AVAILABLE,
+        reason='RNNTLoss has not been compiled with appropriate numba version.',
+    )
+    @pytest.mark.with_downloads
+    @pytest.mark.unit
+    @pytest.mark.parametrize("use_lm", [True, False])
+    @pytest.mark.parametrize("use_boosting_tree", [True, False])
+    def test_tdt_greedy_decoding_preserve_alignments_with_fusion(
+        self,
+        test_data_dir,
+        use_lm: bool,
+        use_boosting_tree: bool,
+    ):
+        """
+        Test that alignments are correctly preserved when using TDT greedy decoding
+        with fusion models (LM and/or boosting tree).
+
+        This test ensures that the labels are coherent with the logits when using fusion models.
+        Meaning that the label should match the argmax of the vocab logits (excluding duration logits at the end).
+        """
+        if not use_lm and not use_boosting_tree:
+            pytest.skip("At least one fusion model must be enabled for this test")
+
+        model, encoded, encoded_len = get_model_encoder_output(test_data_dir, 'nvidia/parakeet-tdt_ctc-110m')
+        model_config = model.to_config_dict()
+
+        assert model.decoding._is_tdt, "Model is not a TDT model"
+
+        kenlm_model_path = Path(test_data_dir) / "asr/kenlm_ngram_lm/parakeet-tdt_ctc-110m-libri-1024.kenlm.tmp.arpa"
+
+        fusion_models = []
+        fusion_models_alpha = []
+
+        if use_lm:
+            fusion_models.append(
+                NGramGPULanguageModel.from_file(lm_path=kenlm_model_path, vocab_size=model.decoder.blank_idx)
+            )
+            fusion_models_alpha.append(10)
+        if use_boosting_tree:
+            boosting_tree = BoostingTreeModelConfig(key_phrases_list=["hello", "nvidia"])
+            fusion_models.append(GPUBoostingTreeModel.from_config(boosting_tree, tokenizer=model.tokenizer))
+            fusion_models_alpha.append(10)
+
+        # Decoder WITH fusion models and alignments
+        decoding_algo_with_fusion = greedy_decode.GreedyBatchedTDTInfer(
+            model.decoder,
+            model.joint,
+            blank_index=model.decoder.blank_idx,
+            durations=list(model_config["model_defaults"]["tdt_durations"]),
+            max_symbols_per_step=10,
+            preserve_alignments=True,
+            preserve_frame_confidence=False,
+            use_cuda_graph_decoder=False,  # Use torch impl for this test
+            fusion_models=fusion_models,
+            fusion_models_alpha=fusion_models_alpha,
+        )
+
+        durations_list = OmegaConf.to_container(model.decoding.durations, resolve=True)
+        num_durations = len(durations_list)
+
+        with torch.no_grad():
+            hyps_with_fusion = decoding_algo_with_fusion(encoder_output=encoded, encoded_lengths=encoded_len)[0]
+            hyp_with_fusion = decode_text_from_greedy_hypotheses(hyps_with_fusion, model.decoding)[0]
+
+            # Verify alignments exist
+            assert hyp_with_fusion.alignments is not None, "Alignments should be preserved with fusion models"
+
+            # Verify alignment structure is valid
+            for t, timestep_alignments in enumerate(hyp_with_fusion.alignments):
+                for u, (logp, label) in enumerate(timestep_alignments):
+                    assert torch.is_tensor(logp), f"Logits at t={t}, u={u} should be a tensor"
+                    assert torch.is_tensor(label), f"Label at t={t}, u={u} should be a tensor"
+
+                    # Key assertion: the label should match the argmax of the vocab logits
+                    vocab_logits = logp[:-num_durations]
+                    assert vocab_logits.argmax() == int(label), (
+                        f"Label should match argmax of vocab logits. "
+                        f"Got argmax={vocab_logits.argmax()}, label={int(label)} at t={t}, u={u}"
+                    )
 
     @pytest.mark.skipif(
         not NUMBA_RNNT_LOSS_AVAILABLE,

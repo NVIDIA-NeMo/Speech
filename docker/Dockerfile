@@ -130,7 +130,6 @@ case "$(nemo-cuda-flavor)" in
 esac
 uv pip install --index-url "${torchcodec_index}" torchcodec
 EOF
-COPY nemo /workspace/nemo
 
 FROM base-image AS automodel-deps
 ARG GPU_TARGET=h100plus
@@ -291,7 +290,7 @@ if [ "${INSTALL_FFMPEG}" = "true" ]; then
 fi
 EOF
 
-ENV NEMO_HOME="/home/TestData/nemo_home"
+COPY nemo /workspace/nemo
 
 # NOTICES.txt file points to where the OSS source code is archived
 RUN echo "This distribution includes open source which is archived at the following URL: https://opensource.nvidia.com/oss/teams/nvidia/nemo/${RC_DATE}:linux-${TARGETARCH}/index.html" > NOTICES.txt && \

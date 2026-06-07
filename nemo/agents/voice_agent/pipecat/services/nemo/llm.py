@@ -671,22 +671,19 @@ class VLLMService(OpenAILLMService, LLMUtilsMixin):
 class MiniMaxService(OpenAILLMService):
     """
     LLM service that connects to MiniMax API using the OpenAI-compatible interface.
-    Supports MiniMax-M2.7 and MiniMax-M2.7-highspeed models.
+    Defaults to MiniMax-M3 (512K context, 128K max output, image input support);
+    earlier models such as MiniMax-M2.7 and MiniMax-M2.7-highspeed remain selectable.
 
     Requires the MINIMAX_API_KEY environment variable or passing api_key explicitly.
     API documentation: https://platform.minimax.io/docs/api-reference/text-openai-api
     """
 
-    SUPPORTED_MODELS = [
-        "MiniMax-M2.7",
-        "MiniMax-M2.7-highspeed",
-    ]
     DEFAULT_BASE_URL = "https://api.minimax.io/v1"
 
     def __init__(
         self,
         *,
-        model: str = "MiniMax-M2.7",
+        model: str = "MiniMax-M3",
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         params: Optional[OpenAILLMService.InputParams] = None,
@@ -798,7 +795,7 @@ def get_llm_service_from_config(config: DictConfig) -> OpenAILLMService:
             vllm_server_params=vllm_server_params,
         )
     elif backend == "minimax":
-        llm_model = config.get("model", "MiniMax-M2.7")
+        llm_model = config.get("model", "MiniMax-M3")
         llm_api_key = config.get("api_key", None)
         llm_base_url = config.get("base_url", None)
         llm_params = config.get("minimax_generation_params", None)

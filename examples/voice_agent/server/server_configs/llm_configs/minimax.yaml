@@ -3,7 +3,7 @@
 # MiniMax API documentation: https://platform.minimax.io/docs/api-reference/text-openai-api
 
 # type: minimax
-# model: "MiniMax-M2.7"  # choices: ["MiniMax-M2.7", "MiniMax-M2.7-highspeed"]
+# model: "MiniMax-M3"  # choices: ["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed"]
 
 ##################################
 ######## MiniMax config ##########

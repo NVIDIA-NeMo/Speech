@@ -42,14 +42,14 @@ class TestMiniMaxService:
     def test_instantiation_with_api_key(self):
         """MiniMaxService can be created with an explicit api_key."""
         with patch("pipecat.services.openai.llm.OpenAILLMService.__init__", return_value=None):
-            svc = MiniMaxService(model="MiniMax-M2.7", api_key="test-key-123")
+            svc = MiniMaxService(model="MiniMax-M3", api_key="test-key-123")
         assert svc is not None
 
     def test_instantiation_uses_env_var(self):
         """MiniMaxService reads MINIMAX_API_KEY from environment when api_key is not provided."""
         with patch.dict(os.environ, {"MINIMAX_API_KEY": "env-key-456"}):
             with patch("pipecat.services.openai.llm.OpenAILLMService.__init__", return_value=None):
-                svc = MiniMaxService(model="MiniMax-M2.7")
+                svc = MiniMaxService(model="MiniMax-M3")
         assert svc is not None
 
     def test_missing_api_key_raises(self):
@@ -57,7 +57,7 @@ class TestMiniMaxService:
         env_without_key = {k: v for k, v in os.environ.items() if k != "MINIMAX_API_KEY"}
         with patch.dict(os.environ, env_without_key, clear=True):
             with pytest.raises(ValueError, match="MINIMAX_API_KEY"):
-                MiniMaxService(model="MiniMax-M2.7")
+                MiniMaxService(model="MiniMax-M3")
 
     def test_default_base_url(self):
         """MiniMaxService uses the MiniMax overseas API base URL by default."""
@@ -67,30 +67,24 @@ class TestMiniMaxService:
         """MiniMaxService accepts a custom base_url."""
         custom_url = "https://custom.minimax.io/v1"
         with patch("pipecat.services.openai.llm.OpenAILLMService.__init__", return_value=None) as mock_init:
-            MiniMaxService(model="MiniMax-M2.7", api_key="test-key", base_url=custom_url)
+            MiniMaxService(model="MiniMax-M3", api_key="test-key", base_url=custom_url)
             call_kwargs = mock_init.call_args[1]
             assert call_kwargs.get("base_url") == custom_url
-
-    def test_supported_models_list(self):
-        """MiniMaxService exposes the two supported models."""
-        assert "MiniMax-M2.7" in MiniMaxService.SUPPORTED_MODELS
-        assert "MiniMax-M2.7-highspeed" in MiniMaxService.SUPPORTED_MODELS
-        assert len(MiniMaxService.SUPPORTED_MODELS) == 2
 
     def test_api_key_passed_to_super(self):
         """The resolved API key is forwarded to OpenAILLMService."""
         with patch("pipecat.services.openai.llm.OpenAILLMService.__init__", return_value=None) as mock_init:
-            MiniMaxService(model="MiniMax-M2.7", api_key="my-secret-key")
+            MiniMaxService(model="MiniMax-M3", api_key="my-secret-key")
             call_kwargs = mock_init.call_args[1]
             assert call_kwargs.get("api_key") == "my-secret-key"
 
-    def test_default_model_is_m27(self):
-        """MiniMaxService defaults to MiniMax-M2.7 model."""
+    def test_default_model_is_m3(self):
+        """MiniMaxService defaults to MiniMax-M3 model."""
         with patch("pipecat.services.openai.llm.OpenAILLMService.__init__", return_value=None) as mock_init:
             with patch.dict(os.environ, {"MINIMAX_API_KEY": "key"}):
                 MiniMaxService()
                 call_kwargs = mock_init.call_args[1]
-                assert call_kwargs.get("model") == "MiniMax-M2.7"
+                assert call_kwargs.get("model") == "MiniMax-M3"
 
     def test_highspeed_model(self):
         """MiniMaxService accepts MiniMax-M2.7-highspeed model."""
@@ -108,7 +102,7 @@ class TestGetLLMServiceFromConfigMiniMax:
         cfg = OmegaConf.create(
             {
                 "type": "minimax",
-                "model": "MiniMax-M2.7",
+                "model": "MiniMax-M3",
                 "api_key": "test-factory-key",
             }
         )
@@ -118,7 +112,7 @@ class TestGetLLMServiceFromConfigMiniMax:
 
     def test_factory_minimax_uses_env_key(self):
         """Factory resolves MINIMAX_API_KEY when api_key is not in config."""
-        cfg = OmegaConf.create({"type": "minimax", "model": "MiniMax-M2.7"})
+        cfg = OmegaConf.create({"type": "minimax", "model": "MiniMax-M3"})
         with patch.dict(os.environ, {"MINIMAX_API_KEY": "env-key"}):
             with patch("pipecat.services.openai.llm.OpenAILLMService.__init__", return_value=None):
                 svc = get_llm_service_from_config(cfg)
@@ -150,12 +144,12 @@ class TestGetLLMServiceFromConfigMiniMax:
         cfg = OmegaConf.create(
             {
                 "type": "minimax",
-                "model": "MiniMax-M2.7",
+                "model": "MiniMax-M3",
                 "api_key": "key",
                 "base_url": "https://custom.minimax.io/v1",
             }
         )
         with patch("pipecat.services.openai.llm.OpenAILLMService.__init__", return_value=None) as mock_init:
-            svc = get_llm_service_from_config(cfg)
+            get_llm_service_from_config(cfg)
         call_kwargs = mock_init.call_args[1]
         assert call_kwargs.get("base_url") == "https://custom.minimax.io/v1"

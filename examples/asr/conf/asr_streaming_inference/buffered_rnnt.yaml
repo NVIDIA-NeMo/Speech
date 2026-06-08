@@ -10,11 +10,11 @@ asr:
   decoding:
     strategy: "greedy_batch"
     preserve_alignments: false
-    preserve_frame_confidence: false
     fused_batch_size: -1
     greedy:
       use_cuda_graph_decoder: true
       enable_per_stream_biasing: true  # Per-stream biasing in decoder
+      preserve_frame_confidence: false
       max_symbols: 10
       # n-gram LM
       ngram_lm_model: null  # The path to built '.nemo' NGPU-LM model

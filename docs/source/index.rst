@@ -57,11 +57,11 @@ What is NeMo?
 - **Scalable training** — multi-GPU/multi-node via PyTorch Lightning with mixed-precision support
 - **Simple configuration** — YAML-based experiment configs with `Hydra <https://hydra.cc/>`__
 
-Get started in 30 seconds:
+Get started (install the PyTorch build for your platform first):
 
 .. code-block:: bash
 
-   pip install nemo_toolkit[asr,tts]
+   uv pip install 'nemo-toolkit[asr,tts]'
 
 .. code-block:: python
 

@@ -11,8 +11,9 @@ Prerequisites
 NeMo Speech works with the **Python, PyTorch, and CUDA versions of your choosing**:
 
 #. **Python** 3.10 or above
-#. **PyTorch** 2.6 or above
+#. **PyTorch** 2.6 or above, for your chosen target (CPU, CUDA, ROCm, or Apple Silicon)
 #. **NVIDIA GPU + CUDA** (required for training; CPU-only inference is possible but slow)
+#. **uv** for the fastest source/PyPI workflow (``pip`` also works in a prepared environment)
 
 .. admonition:: Bring your own Python / PyTorch / CUDA
    :class: important
@@ -45,7 +46,7 @@ The recommended way to install NeMo Speech is from source with `uv <https://docs
    # uv sync --extra all --extra cu13 --group test
    # uv sync --group docs
 
-``uv sync`` creates a virtual environment in ``.venv/`` with NeMo installed in editable mode, matching our supported stack (Python 3.13, PyTorch 2.12, CUDA 13.2 by default). Run commands with ``uv run <cmd>`` or activate the environment with ``source .venv/bin/activate``.
+``uv sync`` creates a virtual environment in ``.venv/`` with NeMo installed in editable mode, matching our supported stack (Python 3.13, PyTorch 2.12, CUDA 13.2 by default). Run commands with ``uv run <cmd>`` or activate the environment with ``source .venv/bin/activate``. For the **exact** container baseline, add ``--locked --python 3.13`` (i.e. ``uv sync --locked --python 3.13 --extra all --extra cu13``) — this is the path the Dockerfile and CI use.
 
 On Linux, pass exactly one of ``--extra cu13`` (recommended) or ``--extra cu12`` — they are mutually exclusive. If you omit both, uv installs the generic PyPI PyTorch wheel instead of NVIDIA's CUDA-matched build.
 
@@ -68,7 +69,7 @@ Available collection extras (combine with one CUDA extra above):
    * - ``all``
      - All of the collections above
    * - ``cu12`` / ``cu13``
-     - Our pinned CUDA 12.x / 13.x PyTorch build (Linux; pick at most one)
+     - Our pinned CUDA 12.x / 13.x PyTorch build **plus** the matching CUDA Python deps (``cuda-python``, ``numba-cuda``). Linux; pick at most one.
 
 .. note::
 
@@ -134,26 +135,46 @@ To build the container from source, use the provided ``docker/Dockerfile`` (CUDA
 
    git clone https://github.com/NVIDIA-NeMo/NeMo.git
    cd NeMo
-   docker buildx build -f docker/Dockerfile -t nemo-speech .
+   docker buildx build -f docker/Dockerfile -t nemo-speech .          # CUDA 13 / H100+ (default)
+   docker run --rm -it --gpus all -v "$PWD:/workspace" nemo-speech bash
 
-See the header of ``docker/Dockerfile`` for CUDA 12 / A100 build arguments (``BASE_IMAGE``, ``GPU_TARGET``).
+For A100, set ``GPU_TARGET=a100``. A100 works with **both CUDA 12 and CUDA 13** — CUDA 13 (the default base image) is recommended; the CUDA 12 base is offered only as a convenience:
+
+.. code-block:: bash
+
+   # A100 on CUDA 13 (recommended) — uses the default CUDA 13 base image
+   docker buildx build -f docker/Dockerfile --build-arg GPU_TARGET=a100 -t nemo-speech:a100 .
+
+   # A100 on CUDA 12 (convenience)
+   docker buildx build -f docker/Dockerfile \
+     --build-arg BASE_IMAGE=nvcr.io/nvidia/cuda-dl-base:25.06-cuda12.9-devel-ubuntu24.04 \
+     --build-arg GPU_TARGET=a100 -t nemo-speech:a100-cu12 .
+
+See the header of ``docker/Dockerfile`` for all build arguments (``BASE_IMAGE``, ``GPU_TARGET``).
 
 .. _install-from-pypi:
 
 Install from PyPI with pip (fallback — bring your own versions)
 ---------------------------------------------------------------
 
-Prefer your own Python/PyTorch/CUDA? Install your preferred PyTorch first (any version ≥ 2.6, built for your CUDA — see `PyTorch's install matrix <https://pytorch.org/get-started/locally/>`_), then add NeMo with the collections you need. Because ``nemo-toolkit`` only requires ``torch>=2.6``, your pre-installed PyTorch is kept, not replaced:
+Prefer your own Python/PyTorch/CUDA? Install your preferred PyTorch first (any version ≥ 2.6 for your CPU/CUDA/ROCm/Apple Silicon target — see `PyTorch's install matrix <https://pytorch.org/get-started/locally/>`_), then add NeMo. Because ``nemo-toolkit`` only requires ``torch>=2.6``, your pre-installed PyTorch is kept, not replaced. ``uv pip`` (uv's fast, pip-compatible installer) works just like ``pip``:
 
 .. code-block:: bash
 
+   uv venv --python 3.12          # any Python >= 3.10 your PyTorch supports — or use your own env
+   source .venv/bin/activate
+
    # 1) Your choice of PyTorch (example: CUDA 12.6 build). Skip if you already have one.
-   pip install torch --index-url https://download.pytorch.org/whl/cu126
+   uv pip install torch --index-url https://download.pytorch.org/whl/cu126
 
-   # 2) NeMo — your PyTorch above is kept
-   pip install nemo_toolkit[asr,tts]        # also: [asr,tts,audio], [speechlm2], etc.
+   # 2) NeMo — your PyTorch above is kept (plain `pip install` works identically)
+   uv pip install 'nemo-toolkit[asr,tts]'        # also: [asr,tts,audio], [speechlm2], etc.
 
-To have pip install our pinned PyTorch build instead, add the matching CUDA extra **and** the PyTorch wheel index. pip does not read uv's index configuration, so the ``--extra-index-url`` is required:
+.. warning::
+
+   Do **not** use ``uv sync --locked`` for a bring-your-own stack — it intentionally applies ``uv.lock`` and replaces your Python/PyTorch/CUDA with the supported container baseline. Use ``uv pip`` (or ``pip``) here; reserve ``uv sync --locked`` for reproducing the supported stack (above).
+
+To instead have the installer pull *our* pinned PyTorch build, add the matching CUDA extra **and** the PyTorch wheel index (``pip`` / ``uv pip`` do not read uv's project index config, so ``--extra-index-url`` is required):
 
 .. code-block:: bash
 
@@ -167,16 +188,19 @@ To have pip install our pinned PyTorch build instead, add the matching CUDA extr
 Verify Installation
 -------------------
 
-After installing, verify that NeMo is working:
+After installing, verify that the chosen collection imports:
+
+.. code-block:: bash
+
+   python -c "import nemo.collections.asr as nemo_asr; print('NeMo ASR installed')"
+
+If you installed with ``uv sync`` and have not activated ``.venv``, run the check through ``uv run python``. To also exercise a model download:
 
 .. code-block:: python
 
    import nemo.collections.asr as nemo_asr
-   print("NeMo ASR installed successfully!")
-
-   # Quick test: load a pretrained model
    model = nemo_asr.models.ASRModel.from_pretrained("nvidia/parakeet-tdt-0.6b-v2")
-   print(f"Model loaded: {model.__class__.__name__}")
+   print(f"Loaded: {model.__class__.__name__}")
 
 What's Next?
 ------------

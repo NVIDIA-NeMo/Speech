@@ -45,7 +45,7 @@ Markers: `unit`, `integration`, `system`, `pleasefixme` (broken — skip), `skip
 Sphinx-based docs live in `docs/source/`. Build with:
 
 ```bash
-uv sync --group docs                                 # one-time setup
+uv sync --locked --group docs                        # one-time setup (matches CI)
 uv run make -C docs clean html                       # full rebuild
 uv run make -C docs html                             # incremental rebuild
 ```

@@ -294,7 +294,6 @@ class TritonPythonModel:
     async def _synthesize(self, text: str, context_text: str, speaker: str, response_sender):
         t_start = time.perf_counter()
         request_id = f"easymp-{uuid.uuid4().hex[:8]}"
-        prompt = self._build_prompt(text, context_text, speaker)
 
         codec_q: queue.Queue = queue.Queue()
         state: dict = {"t_first_audio": None, "error": None}
@@ -329,6 +328,7 @@ class TritonPythonModel:
                 produced_final = produced_final or is_final
 
         try:
+            prompt = self._build_prompt(text, context_text, speaker)
             async for out in self.omni.generate(prompt, request_id=request_id):
                 if state["error"] is not None:
                     break
@@ -388,6 +388,15 @@ class TritonPythonModel:
             self._send_error(response_sender, e)
 
     @staticmethod
+    def _log_future_exception(future: concurrent.futures.Future) -> None:
+        try:
+            exc = future.exception()
+        except concurrent.futures.CancelledError:
+            return
+        if exc is not None:
+            logger.error("_synthesize task crashed: %s", exc, exc_info=exc)
+
+    @staticmethod
     def _read_str(request, name: str, default: str) -> str:
         tensor = pb_utils.get_input_tensor_by_name(request, name)
         if tensor is None:
@@ -401,10 +410,11 @@ class TritonPythonModel:
                 text = self._read_str(request, "text", "")
                 context_text = self._read_str(request, "context_text", self.default_context_text)
                 speaker = self._read_str(request, "speaker", self.default_speaker)
-                asyncio.run_coroutine_threadsafe(
+                future = asyncio.run_coroutine_threadsafe(
                     self._synthesize(text, context_text, speaker, response_sender),
                     self._loop,
                 )
+                future.add_done_callback(self._log_future_exception)
             except Exception as e:
                 logger.error("Request parse failed: %s", e, exc_info=True)
                 self._send_error(response_sender, e)

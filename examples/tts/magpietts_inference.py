@@ -60,6 +60,7 @@ import json
 import os
 import random
 import shutil
+import time
 from dataclasses import fields
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -82,6 +83,8 @@ from nemo.collections.tts.modules.magpietts_inference.inference import (
     BaseInferenceRunner,
     EasyMagpieInferenceConfig,
     EasyMagpieInferenceRunner,
+    EasyMagpieMultiturnUserAudioInferenceConfig,
+    EasyMagpieMultiturnUserAudioInferenceRunner,
     MagpieInferenceConfig,
     MagpieInferenceRunner,
 )
@@ -169,6 +172,127 @@ def filter_datasets(
         return datasets
 
 
+def _runner_eval_manifest_and_audio_dir(runner: BaseInferenceRunner, default_manifest: str, default_audio_dir: str):
+    """Return evaluation manifest/audio dir produced by the runner, if any."""
+    eval_manifest = getattr(runner, "evaluation_manifest_path", None) or default_manifest
+    eval_audio_dir = getattr(runner, "evaluation_audio_dir", None) or default_audio_dir
+    return eval_manifest, eval_audio_dir
+
+
+def _get_torchrun_rank_info() -> Tuple[int, int, int]:
+    """Return (rank, world_size, local_rank) from torchrun/SLURM env vars.
+
+    We intentionally do not initialize torch.distributed here. The inference
+    script only needs env-based sharding, while NeMo evaluation models can run
+    without distributed collectives.
+    """
+    rank = int(os.environ.get("RANK", os.environ.get("SLURM_PROCID", "0")))
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    local_rank = int(os.environ.get("LOCAL_RANK", os.environ.get("SLURM_LOCALID", "0")))
+    return rank, world_size, local_rank
+
+
+def _configure_cuda_for_rank() -> Tuple[int, int, int]:
+    rank, world_size, local_rank = _get_torchrun_rank_info()
+    if torch.cuda.is_available():
+        device_count = torch.cuda.device_count()
+        if device_count > 0:
+            torch.cuda.set_device(local_rank % device_count)
+            logging.info(
+                f"Using CUDA device {local_rank % device_count}; "
+                f"rank={rank}, local_rank={local_rank}, world_size={world_size}"
+            )
+    return rank, world_size, local_rank
+
+
+def _wait_for_multiturn_rank_manifests(repeat_audio_dir: str, world_size: int, timeout_sec: int = 7200) -> None:
+    deadline = time.time() + timeout_sec
+    while time.time() < deadline:
+        missing = []
+        for rank in range(world_size):
+            path = os.path.join(
+                repeat_audio_dir,
+                f"rank_{rank:04d}",
+                f"multiturn_user_audio_turn_manifest_rank{rank:04d}.jsonl",
+            )
+            if not os.path.exists(path):
+                missing.append(path)
+        if not missing:
+            return
+        time.sleep(5)
+    raise RuntimeError(f"Timed out waiting for multiturn rank manifests: {missing}")
+
+
+def _copy_or_link(src: str, dst: str) -> None:
+    if src is None or not os.path.exists(src):
+        return
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    try:
+        if os.path.lexists(dst):
+            os.remove(dst)
+        os.symlink(os.path.abspath(src), dst)
+    except Exception:
+        shutil.copyfile(src, dst)
+
+
+def _merge_multiturn_rank_outputs(repeat_audio_dir: str, world_size: int, save_predicted_codes: bool) -> str:
+    """Merge rank-local multiturn outputs into one EasyMagpie-compatible dir.
+
+    Each rank writes local files named predicted_audio_0.wav, target_audio_0.wav,
+    context_audio_0.wav, predicted_codes_0.pt, ... inside rank_XXXX/. This
+    function remaps them to contiguous global indices in repeat_audio_dir/ and
+    writes a merged turn-level manifest.
+    """
+    merged_records = []
+    global_idx = 0
+
+    for rank in range(world_size):
+        rank_dir = os.path.join(repeat_audio_dir, f"rank_{rank:04d}")
+        rank_manifest = os.path.join(rank_dir, f"multiturn_user_audio_turn_manifest_rank{rank:04d}.jsonl")
+        if not os.path.exists(rank_manifest):
+            raise FileNotFoundError(f"Missing rank manifest: {rank_manifest}")
+
+        with open(rank_manifest, "r", encoding="utf-8") as f:
+            rank_records = [json.loads(line) for line in f if line.strip()]
+
+        for local_idx, record in enumerate(rank_records):
+            pred_src = os.path.join(rank_dir, f"predicted_audio_{local_idx}.wav")
+            pred_dst = os.path.join(repeat_audio_dir, f"predicted_audio_{global_idx}.wav")
+            _copy_or_link(pred_src, pred_dst)
+
+            if save_predicted_codes:
+                code_src = os.path.join(rank_dir, f"predicted_codes_{local_idx}.pt")
+                code_dst = os.path.join(repeat_audio_dir, f"predicted_codes_{global_idx}.pt")
+                _copy_or_link(code_src, code_dst)
+
+            target_src = os.path.join(rank_dir, record.get("audio_filepath", f"target_audio_{local_idx}.wav"))
+            target_dst = os.path.join(repeat_audio_dir, f"target_audio_{global_idx}.wav")
+            _copy_or_link(target_src, target_dst)
+
+            context_src = os.path.join(
+                rank_dir,
+                record.get("context_audio_filepath", f"context_audio_{local_idx}.wav"),
+            )
+            context_dst = os.path.join(repeat_audio_dir, f"context_audio_{global_idx}.wav")
+            _copy_or_link(context_src, context_dst)
+
+            merged = dict(record)
+            merged["audio_filepath"] = f"target_audio_{global_idx}.wav"
+            merged["context_audio_filepath"] = f"context_audio_{global_idx}.wav"
+            merged["rank"] = rank
+            merged["rank_local_idx"] = local_idx
+            merged_records.append(merged)
+            global_idx += 1
+
+    merged_manifest = os.path.join(repeat_audio_dir, "multiturn_user_audio_turn_manifest.jsonl")
+    with open(merged_manifest, "w", encoding="utf-8") as f:
+        for record in merged_records:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    logging.info(f"Merged {len(merged_records)} multiturn turn records into {merged_manifest}")
+    return merged_manifest
+
+
 def run_inference_and_evaluation(
     runner: BaseInferenceRunner,
     checkpoint_name: str,
@@ -216,6 +340,13 @@ def run_inference_and_evaluation(
     if not eval_config.with_utmosv2 and 'utmosv2' in violin_plot_metrics:
         violin_plot_metrics.remove('utmosv2')
 
+    rank, world_size, _ = _get_torchrun_rank_info()
+    is_distributed = world_size > 1
+    is_multiturn_user_audio = getattr(runner, "produces_turn_level_evaluation", False)
+
+    if hasattr(runner, "set_distributed_context"):
+        runner.set_distributed_context(rank=rank, world_size=world_size)
+
     # Build full checkpoint identifier (include MoE info if present)
     full_checkpoint_name = (
         f"{checkpoint_name}_{moe_info}{inference_config.build_identifier()}_SV_{eval_config.sv_model}"
@@ -255,13 +386,17 @@ def run_inference_and_evaluation(
 
         # Setup CSV files
         per_run_csv = os.path.join(eval_dir, "all_experiment_metrics.csv")
-        write_csv_header_if_needed(per_run_csv, csv_header)
+        if rank == 0:
+            write_csv_header_if_needed(per_run_csv, csv_header)
 
         metrics_all_repeats = []
         filewise_metrics_all_repeats = []
 
         for repeat_idx in range(num_repeats):
-            logging.info(f"Repeat {repeat_idx + 1}/{num_repeats} for dataset {dataset}")
+            repeat_log_msg = f"Repeat {repeat_idx + 1}/{num_repeats} for dataset {dataset}"
+            if is_distributed:
+                repeat_log_msg += f", rank {rank}/{world_size}"
+            logging.info(repeat_log_msg)
 
             repeat_audio_dir = os.path.join(audio_dir, f"repeat_{repeat_idx}")
             os.makedirs(repeat_audio_dir, exist_ok=True)
@@ -274,9 +409,21 @@ def run_inference_and_evaluation(
                     f"Dataset length mismatch: {len(test_dataset)} vs {len(manifest_records)} manifest records"
                 )
 
+            if is_distributed and not is_multiturn_user_audio:
+                raise RuntimeError(
+                    "torchrun multi-GPU sharding is currently implemented for "
+                    "--easy_magpie_inference_mode multiturn_user_audio only. "
+                    "Use the existing single-process path for single_turn/magpie, or add a "
+                    "rank-safe merge path for those runners."
+                )
+
+            inference_output_dir = repeat_audio_dir
+            if is_distributed and is_multiturn_user_audio:
+                inference_output_dir = os.path.join(repeat_audio_dir, f"rank_{rank:04d}")
+
             rtf_metrics_list, _, codec_file_paths = runner.run_inference_on_dataset(
                 dataset=test_dataset,
-                output_dir=repeat_audio_dir,
+                output_dir=inference_output_dir,
                 manifest_records=manifest_records,
                 audio_base_dir=meta['audio_dir'],
                 save_cross_attention_maps=True,
@@ -293,7 +440,10 @@ def run_inference_and_evaluation(
                     mean_rtf[f"{component_name}_{key}"] = value
                 logging.info(f"{component_name} FLOPs per token: {component_flops['total_flops_per_token']:,}")
 
-            with open(os.path.join(eval_dir, f"{dataset}_rtf_metrics_{repeat_idx}.json"), "w") as f:
+            rtf_metrics_filename = f"{dataset}_rtf_metrics_{repeat_idx}.json"
+            if is_distributed:
+                rtf_metrics_filename = f"{dataset}_rtf_metrics_{repeat_idx}_rank{rank:04d}.json"
+            with open(os.path.join(eval_dir, rtf_metrics_filename), "w") as f:
                 json.dump(mean_rtf, f, indent=4)
 
             if skip_evaluation:
@@ -301,6 +451,26 @@ def run_inference_and_evaluation(
                 continue
 
             # Run evaluation
+            if is_distributed and is_multiturn_user_audio:
+                if rank != 0:
+                    # Non-zero ranks only generate. Rank 0 waits and evaluates merged outputs.
+                    continue
+
+                _wait_for_multiturn_rank_manifests(repeat_audio_dir, world_size)
+                merged_manifest_path = _merge_multiturn_rank_outputs(
+                    repeat_audio_dir=repeat_audio_dir,
+                    world_size=world_size,
+                    save_predicted_codes=eval_config.with_fcd,
+                )
+                eval_manifest_path = merged_manifest_path
+                eval_audio_dir = repeat_audio_dir
+            else:
+                eval_manifest_path, eval_audio_dir = _runner_eval_manifest_and_audio_dir(
+                    runner,
+                    default_manifest=meta['manifest_path'],
+                    default_audio_dir=meta['audio_dir'],
+                )
+
             eval_config_for_dataset = EvaluationConfig(
                 sv_model=eval_config.sv_model,
                 asr_model_name=eval_config.asr_model_name,
@@ -313,8 +483,8 @@ def run_inference_and_evaluation(
             )
 
             metrics, filewise_metrics = evaluate_generated_audio_dir(
-                manifest_path=meta['manifest_path'],
-                audio_dir=meta['audio_dir'],
+                manifest_path=eval_manifest_path,
+                audio_dir=eval_audio_dir,
                 generated_audio_dir=repeat_audio_dir,
                 config=eval_config_for_dataset,
             )
@@ -338,8 +508,16 @@ def run_inference_and_evaluation(
             create_violin_plot(filewise_metrics, violin_plot_metrics, violin_path)
 
             # Delete temporary predicted codes files
-            for codec_file_path in codec_file_paths:
-                os.remove(codec_file_path)
+            if is_distributed and is_multiturn_user_audio:
+                for codec_file_path in Path(repeat_audio_dir).glob("predicted_codes_*.pt"):
+                    if os.path.exists(codec_file_path):
+                        os.remove(codec_file_path)
+            else:
+                for codec_file_path in codec_file_paths:
+                    os.remove(codec_file_path)
+
+        if rank != 0:
+            continue
 
         if skip_evaluation or not metrics_all_repeats:
             continue
@@ -367,17 +545,17 @@ def run_inference_and_evaluation(
         cer_per_dataset.append(np.mean(cer_values))
 
     # Create combined plot if we have multiple datasets
-    if len(all_datasets_filewise_metrics) > 1:
+    if rank == 0 and len(all_datasets_filewise_metrics) > 1:
         combined_plot_path = os.path.join(out_dir, f"{full_checkpoint_name}_combined_violin_plot.png")
         create_combined_box_plot(all_datasets_filewise_metrics, violin_plot_metrics, combined_plot_path)
 
     # Clean up if requested
-    if clean_up_disk:
+    if rank == 0 and clean_up_disk:
         logging.info(f"Cleaning up output directory: {out_dir}")
         shutil.rmtree(out_dir)
 
     # Return averaged metrics
-    if ssim_per_dataset and cer_per_dataset:
+    if rank == 0 and ssim_per_dataset and cer_per_dataset:
         return np.mean(cer_per_dataset), np.mean(ssim_per_dataset)
     return None, None
 
@@ -581,6 +759,14 @@ def _add_easy_magpie_args(parser: argparse.ArgumentParser) -> None:
     """Add arguments specific to decoder-only EasyMagpieTTSInferenceModel."""
     group = parser.add_argument_group('EasyMagpieTTS-specific Parameters')
     group.add_argument(
+        '--easy_magpie_inference_mode',
+        type=str,
+        default='single_turn',
+        choices=['single_turn', 'multiturn_user_audio'],
+    )
+    group.add_argument('--max_eval_turns', type=int, default=6)
+    group.add_argument('--no_save_debug_multiturn_audio', action='store_true')
+    group.add_argument(
         '--phoneme_input_type',
         type=str,
         default='gt',
@@ -591,7 +777,7 @@ def _add_easy_magpie_args(parser: argparse.ArgumentParser) -> None:
         '--phoneme_sampling_method',
         type=str,
         default='argmax',
-        choices=['argmax', 'multinomial'],
+        choices=['argmax', 'multinomial', 'greedy'],
         help='Sampling method for phoneme prediction',
     )
     group.add_argument('--dropout_text_input', action='store_true', help='Force dropout on text input')
@@ -649,7 +835,12 @@ def _build_magpie_config(args) -> MagpieInferenceConfig:
 
 
 def _build_easy_magpie_config(args) -> EasyMagpieInferenceConfig:
-    return EasyMagpieInferenceConfig(
+    cfg_cls = (
+        EasyMagpieMultiturnUserAudioInferenceConfig
+        if args.easy_magpie_inference_mode == 'multiturn_user_audio'
+        else EasyMagpieInferenceConfig
+    )
+    kwargs = dict(
         model_inference_parameters=_build_inference_params_from_args(EasyModelInferenceParameters, args),
         batch_size=args.batch_size,
         use_cfg=args.use_cfg,
@@ -658,12 +849,33 @@ def _build_easy_magpie_config(args) -> EasyMagpieInferenceConfig:
         phoneme_sampling_method=args.phoneme_sampling_method,
         dropout_text_input=args.dropout_text_input,
     )
+    if cfg_cls is EasyMagpieMultiturnUserAudioInferenceConfig:
+        kwargs.update(
+            max_eval_turns=args.max_eval_turns,
+            save_debug_multiturn_audio=not args.no_save_debug_multiturn_audio,
+        )
+    return cfg_cls(**kwargs)
+
+
+def _select_runner_cls(args):
+    if args.model_type == 'magpie':
+        if args.easy_magpie_inference_mode != 'single_turn':
+            raise ValueError('--easy_magpie_inference_mode is only supported with --model_type easy_magpie')
+        return MagpieInferenceRunner
+    if args.easy_magpie_inference_mode == 'multiturn_user_audio':
+        return EasyMagpieMultiturnUserAudioInferenceRunner
+    return EasyMagpieInferenceRunner
 
 
 def main(argv=None):
     """Entry point for TTS inference and evaluation."""
     parser = create_argument_parser()
     args = parser.parse_args(argv)
+    if args.model_type == 'easy_magpie' and args.easy_magpie_inference_mode == 'multiturn_user_audio':
+        _configure_cuda_for_rank()
+        if args.batch_size > 1:
+            parser.error("--easy_magpie_inference_mode multiturn_user_audio requires --batch_size 1.")
+
     if args.deterministic:
         seed_all(seed=9)
 
@@ -689,7 +901,7 @@ def main(argv=None):
     is_easy_magpie = args.model_type == 'easy_magpie'
     load_fn = load_easy_magpie_model if is_easy_magpie else load_magpie_model
     inference_config = _build_easy_magpie_config(args) if is_easy_magpie else _build_magpie_config(args)
-    runner_cls = EasyMagpieInferenceRunner if is_easy_magpie else MagpieInferenceRunner
+    runner_cls = _select_runner_cls(args)
 
     eval_config = EvaluationConfig(
         sv_model=args.sv_model,

@@ -451,6 +451,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                     ),
                     preserve_alignments=self.preserve_alignments,
                     preserve_frame_confidence=self.preserve_frame_confidence,
+                    exclude_blank_from_confidence=self.exclude_blank_from_confidence,
                     confidence_method_cfg=self.confidence_method_cfg,
                     loop_labels=self.cfg.greedy.get('loop_labels', True),
                     use_cuda_graph_decoder=self.cfg.greedy.get('use_cuda_graph_decoder', True),
@@ -469,6 +470,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                     ),
                     preserve_alignments=self.preserve_alignments,
                     preserve_frame_confidence=self.preserve_frame_confidence,
+                    exclude_blank_from_confidence=self.exclude_blank_from_confidence,
                     include_duration=self.tdt_include_token_duration,
                     include_duration_confidence=self.tdt_include_duration_confidence,
                     confidence_method_cfg=self.confidence_method_cfg,
@@ -837,18 +839,45 @@ class AbstractRNNTDecoding(ConfidenceMixin):
         """
         if self._is_tdt:
             # if self.tdt_include_duration_confidence is True then frame_confidence elements consist of two numbers
-            maybe_pre_aggregate = (
-                (lambda x: self._aggregate_confidence(x)) if self.tdt_include_duration_confidence else (lambda x: x)
-            )
-            for hyp in hypotheses_list:
-                token_confidence = []
-                # trying to recover frame_confidence according to alignments
-                subsequent_blank_confidence = []
-                # going backwards since <blank> tokens are considered belonging to the last non-blank token.
-                for fc, fa in zip(hyp.frame_confidence[::-1], hyp.alignments[::-1]):
-                    # there is only one score per frame most of the time
-                    if len(fa) > 1:
-                        for i, a in reversed(list(enumerate(fa))):
+            if self.exclude_blank_from_confidence and all(
+                hyp.non_blank_step_confidence_precomputed is not None for hyp in hypotheses_list
+            ):
+                for hyp in hypotheses_list:
+                    if self.tdt_include_duration_confidence:
+                        hyp.token_confidence = [
+                            self._aggregate_confidence(c) for c in hyp.non_blank_step_confidence_precomputed
+                        ]
+                    else:
+                        hyp.token_confidence = hyp.non_blank_step_confidence_precomputed
+            else:
+                maybe_pre_aggregate = (
+                    (lambda x: self._aggregate_confidence(x))
+                    if self.tdt_include_duration_confidence
+                    else (lambda x: x)
+                )
+                for hyp in hypotheses_list:
+                    token_confidence = []
+                    # trying to recover frame_confidence according to alignments
+                    subsequent_blank_confidence = []
+                    # going backwards since <blank> tokens are considered belonging to the last non-blank token.
+                    for fc, fa in zip(hyp.frame_confidence[::-1], hyp.alignments[::-1]):
+                        # there is only one score per frame most of the time
+                        if len(fa) > 1:
+                            for i, a in reversed(list(enumerate(fa))):
+                                if a[-1] == self.blank_id:
+                                    if not self.exclude_blank_from_confidence:
+                                        subsequent_blank_confidence.append(maybe_pre_aggregate(fc[i]))
+                                elif not subsequent_blank_confidence:
+                                    token_confidence.append(maybe_pre_aggregate(fc[i]))
+                                else:
+                                    token_confidence.append(
+                                        self._aggregate_confidence(
+                                            [maybe_pre_aggregate(fc[i])] + subsequent_blank_confidence
+                                        )
+                                    )
+                                    subsequent_blank_confidence = []
+                        else:
+                            i, a = 0, fa[0]
                             if a[-1] == self.blank_id:
                                 if not self.exclude_blank_from_confidence:
                                     subsequent_blank_confidence.append(maybe_pre_aggregate(fc[i]))
@@ -861,20 +890,8 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                                     )
                                 )
                                 subsequent_blank_confidence = []
-                    else:
-                        i, a = 0, fa[0]
-                        if a[-1] == self.blank_id:
-                            if not self.exclude_blank_from_confidence:
-                                subsequent_blank_confidence.append(maybe_pre_aggregate(fc[i]))
-                        elif not subsequent_blank_confidence:
-                            token_confidence.append(maybe_pre_aggregate(fc[i]))
-                        else:
-                            token_confidence.append(
-                                self._aggregate_confidence([maybe_pre_aggregate(fc[i])] + subsequent_blank_confidence)
-                            )
-                            subsequent_blank_confidence = []
-                token_confidence = token_confidence[::-1]
-                hyp.token_confidence = token_confidence
+                    token_confidence = token_confidence[::-1]
+                    hyp.token_confidence = token_confidence
         else:
             if self.exclude_blank_from_confidence:
                 for hyp in hypotheses_list:

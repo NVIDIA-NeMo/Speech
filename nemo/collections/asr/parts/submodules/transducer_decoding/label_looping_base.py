@@ -20,7 +20,7 @@ import torch
 
 from nemo.collections.asr.parts.context_biasing.biasing_multi_model import GPUBiasingMultiModelBase
 from nemo.collections.asr.parts.submodules.ngram_lm import NGramGPULanguageModel
-from nemo.collections.asr.parts.utils import rnnt_utils
+from nemo.collections.asr.parts.submodules.transducer_decoding.batched_hyps import BatchedHyps
 from nemo.collections.common.parts.optional_cuda_graphs import WithOptionalCudaGraphs
 from nemo.core.utils.cuda_python_utils import check_cuda_python_cuda_graphs_conditional_nodes_supported
 from nemo.utils import logging
@@ -140,16 +140,14 @@ class GreedyBatchedLabelLoopingComputerBase(WithOptionalCudaGraphs, ABC):
         self.reset_cuda_graphs_state()
         return True
 
-    def _fallback_to_no_while_loop_cuda_graphs(self, error: Exception):
-        """Fallback when full CUDA graph compilation fails."""
+    def _raise_or_warn_no_while_loop_cuda_graphs(self, error: Exception):
+        """Raise error or warn when full CUDA graph compilation fails."""
         if not self.cuda_graphs_allow_fallback:
             raise RuntimeError("Full CUDA graph decoding failed. Mode is forced, raising exception") from error
         logging.warning(
             f"Full CUDA graph compilation failed: {error}. "
             "Falling back to native PyTorch CUDA graphs. Decoding will be slower."
         )
-        self.cuda_graphs_mode = self.CudaGraphsMode.NO_WHILE_LOOPS
-        self._partial_graphs_compile()
 
     # fusion models-related methods
     @property
@@ -216,7 +214,7 @@ class GreedyBatchedLabelLoopingComputerBase(WithOptionalCudaGraphs, ABC):
         encoder_output_length: torch.Tensor,
         prev_batched_state: Optional[BatchedLabelLoopingState] = None,
         multi_biasing_ids: Optional[torch.Tensor] = None,
-    ) -> tuple[rnnt_utils.BatchedHyps, Optional[rnnt_utils.BatchedAlignments], BatchedLabelLoopingState]:
+    ) -> tuple[BatchedHyps, BatchedLabelLoopingState]:
         """
         Pure PyTorch implementation
 
@@ -235,7 +233,7 @@ class GreedyBatchedLabelLoopingComputerBase(WithOptionalCudaGraphs, ABC):
         encoder_output_length: torch.Tensor,
         prev_batched_state: Optional[BatchedLabelLoopingState] = None,
         multi_biasing_ids: Optional[torch.Tensor] = None,
-    ) -> tuple[rnnt_utils.BatchedHyps, Optional[rnnt_utils.BatchedAlignments], BatchedLabelLoopingState]:
+    ) -> tuple[BatchedHyps, BatchedLabelLoopingState]:
         """
         Implementation with CUDA graphs.
 
@@ -291,7 +289,7 @@ class GreedyBatchedLabelLoopingComputerBase(WithOptionalCudaGraphs, ABC):
         out_len: torch.Tensor,
         prev_batched_state: Optional[BatchedLabelLoopingState] = None,
         multi_biasing_ids: Optional[torch.Tensor] = None,
-    ) -> tuple[rnnt_utils.BatchedHyps, Optional[rnnt_utils.BatchedAlignments], BatchedLabelLoopingState]:
+    ) -> tuple[BatchedHyps, BatchedLabelLoopingState]:
         """
         Entry point for the decoding algorithm
 

@@ -610,6 +610,7 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
         max_symbols_per_step: Optional[int] = None,
         preserve_alignments: bool = False,
         preserve_frame_confidence: bool = False,
+        exclude_blank_from_confidence: bool = False,
         confidence_method_cfg: Optional[DictConfig] = None,
         loop_labels: bool = True,
         use_cuda_graph_decoder: bool = True,
@@ -629,6 +630,7 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
 
         self.use_cuda_graph_decoder = use_cuda_graph_decoder
         self.loop_labels = loop_labels
+        self.exclude_blank_from_confidence = exclude_blank_from_confidence
 
         # Depending on availability of `blank_as_pad` support
         # switch between more efficient batch decoding technique
@@ -643,7 +645,8 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
                     blank_index=self._blank_index,
                     max_symbols_per_step=self.max_symbols,
                     preserve_alignments=preserve_alignments,
-                    preserve_frame_confidence=preserve_frame_confidence,
+                    preserve_step_confidence=preserve_frame_confidence,
+                    exclude_blank_from_confidence=self.exclude_blank_from_confidence,
                     confidence_method_cfg=confidence_method_cfg,
                     allow_cuda_graphs=self.use_cuda_graph_decoder,
                     fusion_models=fusion_models,
@@ -812,13 +815,13 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
             multi_biasing_ids = torch.from_numpy(multi_biasing_ids).to(device=x.device)
         else:
             multi_biasing_ids = None
-        batched_hyps, alignments, batched_state = self.decoding_computer(
+        batched_hyps, batched_state = self.decoding_computer(
             x=x,
             out_len=out_len,
             prev_batched_state=batched_state,
             multi_biasing_ids=multi_biasing_ids,
         )
-        hyps = rnnt_utils.batched_hyps_to_hypotheses(batched_hyps, alignments, batch_size=x.shape[0])
+        hyps = rnnt_utils.batched_hyps_to_hypotheses(batched_hyps, batch_size=x.shape[0])
         for hyp, state_item in zip(hyps, self.decoding_computer.split_batched_state(batched_state)):
             hyp.dec_state = state_item
 
@@ -2839,6 +2842,7 @@ class GreedyBatchedTDTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
         max_symbols_per_step: Optional[int] = None,
         preserve_alignments: bool = False,
         preserve_frame_confidence: bool = False,
+        exclude_blank_from_confidence: bool = False,
         include_duration: bool = False,
         include_duration_confidence: bool = False,
         confidence_method_cfg: Optional[DictConfig] = None,
@@ -2859,6 +2863,7 @@ class GreedyBatchedTDTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
         self.durations = durations
         self.include_duration = include_duration
         self.include_duration_confidence = include_duration_confidence
+        self.exclude_blank_from_confidence = exclude_blank_from_confidence
 
         # Depending on availability of `blank_as_pad` support
         # switch between more efficient batch decoding technique
@@ -2873,7 +2878,8 @@ class GreedyBatchedTDTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
                 durations=self.durations,
                 max_symbols_per_step=self.max_symbols,
                 preserve_alignments=preserve_alignments,
-                preserve_frame_confidence=preserve_frame_confidence,
+                preserve_step_confidence=preserve_frame_confidence,
+                exclude_blank_from_confidence=self.exclude_blank_from_confidence,
                 include_duration=include_duration,
                 include_duration_confidence=include_duration_confidence,
                 confidence_method_cfg=confidence_method_cfg,
@@ -2978,13 +2984,13 @@ class GreedyBatchedTDTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
             multi_biasing_ids = torch.from_numpy(multi_biasing_ids).to(device=x.device)
         else:
             multi_biasing_ids = None
-        batched_hyps, alignments, batched_state = self.decoding_computer(
+        batched_hyps, batched_state = self.decoding_computer(
             x=x,
             out_len=out_len,
             prev_batched_state=batched_state,
             multi_biasing_ids=multi_biasing_ids,
         )
-        hyps = rnnt_utils.batched_hyps_to_hypotheses(batched_hyps, alignments, batch_size=x.shape[0])
+        hyps = rnnt_utils.batched_hyps_to_hypotheses(batched_hyps, batch_size=x.shape[0])
         for hyp, state_item in zip(hyps, self.decoding_computer.split_batched_state(batched_state)):
             hyp.dec_state = state_item
 

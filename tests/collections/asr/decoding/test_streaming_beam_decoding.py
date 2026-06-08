@@ -291,7 +291,6 @@ def _run_streaming_batched_state(
 @pytest.mark.parametrize("beam_size", [4])
 @pytest.mark.parametrize("max_symbols", [10])
 def test_malsd_streaming_batched_state(
-    tmp_path_factory,
     an4_val_manifest_corrected,
     stt_en_fastconformer_transducer_large,
     stt_en_fastconformer_tdt_large,
@@ -329,7 +328,6 @@ def test_malsd_streaming_batched_state(
 @pytest.mark.parametrize("maes_expansion_beta", [2])
 @pytest.mark.parametrize("maes_expansion_gamma", [2.3])
 def test_maes_streaming_batched_state(
-    tmp_path_factory,
     an4_val_manifest_corrected,
     stt_en_fastconformer_transducer_large,
     device: torch.device,
@@ -382,7 +380,6 @@ _WB_KEY_PHRASES: list[str] = ["nineteen", "forty", "fifty", "repeat", "stop", "y
 @pytest.mark.parametrize("beam_size", [4])
 @pytest.mark.parametrize("max_symbols", [10])
 def test_malsd_streaming_batched_state_with_word_boosting(
-    tmp_path_factory,
     an4_val_manifest_corrected,
     stt_en_fastconformer_transducer_large,
     stt_en_fastconformer_tdt_large,

@@ -15,7 +15,7 @@ from typing import Optional
 
 import torch
 
-from nemo.collections.asr.parts.submodules.transducer_decoding.label_looping_base import BatchedBeamHypsState
+from nemo.collections.asr.parts.submodules.transducer_decoding.label_looping_base import BatchedBeamState
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis, NBestHypotheses
 from nemo.utils.enum import PrettyStrEnum
 
@@ -78,10 +78,10 @@ class ASRModelTypeEnum(PrettyStrEnum):
 
 def seed_batched_hyps_from_state(
     hyps: "BatchedBeamHyps",
-    state: BatchedBeamHypsState,
+    state: BatchedBeamState,
     batch_size: Optional[int] = None,
 ) -> None:
-    """Copy cross-chunk per-beam fields from a :class:`BatchedBeamHypsState` snapshot
+    """Copy cross-chunk per-beam fields from a :class:`BatchedBeamState` snapshot
     into ``hyps`` (in-place). Inverse of
     :meth:`BatchedBeamHyps.export_cross_chunk_state`.
 
@@ -92,13 +92,15 @@ def seed_batched_hyps_from_state(
 
     Args:
         hyps: destination ``BatchedBeamHyps`` (modified in place).
-        state: source snapshot.
+        state: source snapshot. No-op when ``state.scores`` is ``None`` (first chunk).
         batch_size: optional number of leading rows to copy. Defaults to
             ``state.scores.shape[0]``.
     """
+    if state.scores is None:
+        return
     bs = state.scores.shape[0] if batch_size is None else batch_size
     hyps.scores[:bs].copy_(state.scores[:bs])
-    hyps.last_label[:bs].copy_(state.last_label[:bs])
+    hyps.last_label[:bs].copy_(state.labels[:bs])
     hyps.transcript_hash[:bs].copy_(state.transcript_hash[:bs])
     hyps.current_lengths_nb[:bs].copy_(state.current_lengths_nb[:bs])
     if hyps.store_prefix_hashes and state.transcript_prefix_hash is not None:
@@ -231,15 +233,16 @@ class BatchedBeamHyps:
             self.next_timestamp.fill_(0)
             self.last_timestamp_lasts.fill_(0)
 
-    def export_cross_chunk_state(self, batch_size: Optional[int] = None) -> "BatchedBeamHypsState":
+    def export_cross_chunk_state(self, batch_size: Optional[int] = None) -> dict[str, Optional[torch.Tensor]]:
         """
-        Snapshot the cross-chunk per-beam state into a :class:`BatchedBeamHypsState`.
+        Snapshot cross-chunk per-beam fields for :class:`BatchedBeamState`.
 
         Exports the fields needed to seed beam search on the next chunk (scores,
-        last_label, transcript_hash, current_lengths_nb, and optionally
-        last_timestamp_lasts / transcript_prefix_hash). The chunk-local prefix tree
-        and timestamps are NOT exported -- they reach the caller via the first
-        element of the computer's 3-tuple return.
+        transcript_hash, current_lengths_nb, and optionally last_timestamp_lasts /
+        transcript_prefix_hash). Per-beam last labels are stored on
+        ``BatchedBeamState.labels`` by the caller. The chunk-local prefix tree and
+        timestamps are NOT exported -- they reach the caller via the first element
+        of the computer's return tuple.
 
         Args:
             batch_size: optional number of rows to export. Defaults to
@@ -247,24 +250,24 @@ class BatchedBeamHyps:
                 capture-time buffers down to the live batch.
 
         Returns:
-            A new :class:`BatchedBeamHypsState` with cloned tensors (safe to keep
-            across subsequent in-place mutations of this object).
+            Keyword arguments with cloned tensors (safe to keep across subsequent
+            in-place mutations of this object).
         """
         out_batch = self.batch_size if batch_size is None else batch_size
         if out_batch <= 0 or out_batch > self.batch_size:
             raise ValueError(f"batch_size must be in (0, {self.batch_size}], got {out_batch}")
-        return BatchedBeamHypsState(
-            scores=self.scores[:out_batch].clone(),
-            last_label=self.last_label[:out_batch].clone(),
-            transcript_hash=self.transcript_hash[:out_batch].clone(),
-            current_lengths_nb=self.current_lengths_nb[:out_batch].clone(),
-            last_timestamp_lasts=(
+        cross_chunk_state = {
+            "scores": self.scores[:out_batch].clone(),
+            "transcript_hash": self.transcript_hash[:out_batch].clone(),
+            "current_lengths_nb": self.current_lengths_nb[:out_batch].clone(),
+            "last_timestamp_lasts": (
                 self.last_timestamp_lasts[:out_batch].clone() if self.model_type != ASRModelTypeEnum.CTC else None
             ),
-            transcript_prefix_hash=(
+            "transcript_prefix_hash": (
                 self.transcript_prefix_hash[:out_batch].clone() if self.store_prefix_hashes else None
             ),
-        )
+        }
+        return cross_chunk_state
 
     def clone(self, batch_size: Optional[int] = None) -> "BatchedBeamHyps":
         """

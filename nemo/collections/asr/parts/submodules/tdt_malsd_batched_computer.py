@@ -410,9 +410,8 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
             .clone()
         )  # size: batch_size x beam_size x beam_size
 
-        if prev_batched_state is not None and prev_batched_state.beam_state is not None:
-            # Seed cross-chunk per-beam fields from the previous chunk's snapshot;
-            seed_batched_hyps_from_state(batched_hyps, prev_batched_state.beam_state)
+        if prev_batched_state is not None and prev_batched_state.scores is not None:
+            seed_batched_hyps_from_state(batched_hyps, prev_batched_state)
         # Resume per-beam time from previous-chunk overshoot (TDT ``time_jumps``).
         if prev_batched_state is not None and prev_batched_state.time_jumps is not None:
             time_indices = prev_batched_state.time_jumps.clone()
@@ -696,7 +695,7 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
             ),
             fusion_states_list=fusion_states_list if self.fusion_models is not None else None,
             time_jumps=time_jumps,
-            beam_state=batched_hyps.export_cross_chunk_state(),
+            **batched_hyps.export_cross_chunk_state(),
         )
 
         return batched_hyps, decoding_state
@@ -1443,10 +1442,8 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
         # Continuation chunk: seed cross-chunk per-beam batched_hyps fields, the TDT
         # per-beam duration overshoot, and decoder/fusion live buffers from the
         # previous chunk's snapshot.
-        if prev_batched_state.beam_state is not None:
-            seed_batched_hyps_from_state(
-                self.state.batched_hyps, prev_batched_state.beam_state, batch_size=current_batch_size
-            )
+        if prev_batched_state.scores is not None:
+            seed_batched_hyps_from_state(self.state.batched_hyps, prev_batched_state, batch_size=current_batch_size)
 
         if prev_batched_state.time_jumps is not None:
             self.state.batched_hyps.next_timestamp[:current_batch_size].copy_(
@@ -1533,8 +1530,7 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
             decoded_lengths=decoded_lengths,
             fusion_states_list=fusion_states_list,
             time_jumps=time_jumps,
-            # Trim to current batch (graph buffers sized to capture-time max).
-            beam_state=self.state.batched_hyps.export_cross_chunk_state(batch_size=current_batch_size),
+            **self.state.batched_hyps.export_cross_chunk_state(batch_size=current_batch_size),
         )
 
     def __call__(

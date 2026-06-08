@@ -253,23 +253,10 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
                     " non-simulated streaming decoding for now."
                 )
     else:
-        is_tdt_model = cfg.decoding.get("durations", None) not in (None, [])
         with open_dict(cfg.decoding):
-            if cfg.decoding.strategy == "greedy_batch":
-                if cfg.decoding.greedy.loop_labels is not True:
-                    raise NotImplementedError(
-                        "This script supports `greedy_batch` strategy only with Label-Looping algorithm"
-                    )
-                cfg.decoding.greedy.preserve_alignments = False
-            elif cfg.decoding.strategy == "malsd_batch":
-                pass
-            elif cfg.decoding.strategy == "maes_batch":
-                if is_tdt_model:
-                    raise NotImplementedError("`maes_batch` is RNN-T only; use `malsd_batch` for TDT models.")
-            else:
+            if cfg.decoding.strategy == "greedy_batch" and cfg.decoding.greedy.loop_labels is not True:
                 raise NotImplementedError(
-                    f"Unsupported decoding strategy `{cfg.decoding.strategy}`. "
-                    "Supported: `greedy_batch`, `malsd_batch`, `maes_batch` (RNN-T only)."
+                    "This script supports `greedy_batch` strategy only with Label-Looping algorithm"
                 )
             cfg.decoding.tdt_include_token_duration = cfg.timestamps
             cfg.decoding.greedy.preserve_alignments = False
@@ -519,11 +506,7 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
                             out_len=encoder_output_len_to_decode,
                             prev_batched_state=state,
                         )
-                        # Flatten this chunk's prefix tree and thread the cross-chunk beam
-                        # permutation (``root_ptrs``) into the accumulator so the final
-                        # ``flatten_sort_`` walks back through the right beam history.
-                        # ``chunk_batched_hyps`` is the per-chunk BatchedBeamHyps (the
-                        # cross-chunk per-beam scalars live on ``state.beam_state`` now).
+                        # flatten_ to flatten the prefix tree and link beams to prior chunks in merge_ using root_ptrs.
                         chunk_root_ptrs = chunk_batched_hyps.flatten_()
                         if current_batched_hyps is None:
                             current_batched_hyps = chunk_batched_hyps

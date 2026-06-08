@@ -140,7 +140,7 @@ class ModifiedAESBatchedRNNTComputer(ConfidenceMethodMixin):
             prev_batched_state: optional state from a previous chunk (streaming).
 
         Returns:
-            (batched_hyps, None, decoding_state).
+            (batched_hyps, decoding_state).
         """
         batch_size, max_time, _unused = encoder_output.shape
         device = encoder_output.device
@@ -175,10 +175,10 @@ class ModifiedAESBatchedRNNTComputer(ConfidenceMethodMixin):
             store_prefix_hashes=True,
         )
 
-        if prev_batched_state is not None and prev_batched_state.beam_state is not None:
+        if prev_batched_state is not None and prev_batched_state.scores is not None:
             # Seed cross-chunk per-beam fields from the previous chunk's snapshot;
             # batched_hyps was just allocated, so the rest is already at init values.
-            seed_batched_hyps_from_state(batched_hyps, prev_batched_state.beam_state)
+            seed_batched_hyps_from_state(batched_hyps, prev_batched_state)
 
         time_indices = torch.zeros_like(batch_indices)
         safe_time_indices = torch.zeros_like(time_indices)  # time indices, guaranteed to be < out_len
@@ -375,7 +375,7 @@ class ModifiedAESBatchedRNNTComputer(ConfidenceMethodMixin):
                 else encoder_output_length + prev_batched_state.decoded_lengths
             ),
             time_jumps=None,
-            beam_state=batched_hyps.export_cross_chunk_state(),
+            **batched_hyps.export_cross_chunk_state(),
         )
 
         return batched_hyps, decoding_state

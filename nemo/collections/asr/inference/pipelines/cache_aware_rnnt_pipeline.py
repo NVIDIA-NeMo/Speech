@@ -724,11 +724,9 @@ class CacheAwareRNNTPipeline(BasePipeline):
 
         if len(ready_state_ids) > 0:
             self.text_processor.process([self.get_state(stream_id) for stream_id in ready_state_ids])
-            self._debug_print_finals(ready_state_ids)
             ready_state_ids.clear()
 
         self.update_partial_transcript(fbuffers, self.tokenizer, self.leading_regex_pattern)
-        self._debug_print_partials(fbuffers)
 
     def transcribe_step_for_frames(self, frames: list[Frame]) -> None:
         """
@@ -772,11 +770,9 @@ class CacheAwareRNNTPipeline(BasePipeline):
         # post-process the ready states
         if len(ready_state_ids) > 0:
             self.text_processor.process([self.get_state(stream_id) for stream_id in ready_state_ids])
-            self._debug_print_finals(ready_state_ids)
             ready_state_ids.clear()
 
         self.update_partial_transcript(frames, self.tokenizer, self.leading_regex_pattern)
-        self._debug_print_partials(frames)
 
     def get_request_generator(self) -> ContinuousBatchedRequestStreamer:
         """

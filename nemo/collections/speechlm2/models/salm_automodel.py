@@ -1077,7 +1077,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             # so calculate_mtp_loss can normalize by our global token count.
             from nemo_automodel.components.loss.masked_ce import MaskedCrossEntropy
 
-            self._mtp_loss_fn = MaskedCrossEntropy(reduction="sum")
+            self._mtp_loss_fn = MaskedCrossEntropy(reduction="sum", fp32_upcast=False)
 
         self.llm = load_pretrained_automodel_llm(
             self.cfg.pretrained_llm,

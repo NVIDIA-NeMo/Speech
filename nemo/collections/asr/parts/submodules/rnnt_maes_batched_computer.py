@@ -16,6 +16,7 @@ from typing import Optional
 
 import torch
 
+from nemo.collections.asr.parts.submodules.transducer_decoding.label_looping_base import BatchedBeamState
 from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMethodMixin
 from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import (
     INACTIVE_SCORE,
@@ -23,6 +24,7 @@ from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import (
     BatchedBeamHyps,
     BlankLMScoreMode,
     PruningMode,
+    seed_batched_hyps_from_state,
 )
 from nemo.utils import logging
 
@@ -33,6 +35,10 @@ class ModifiedAESBatchedRNNTComputer(ConfidenceMethodMixin):
     Based on https://ieeexplore.ieee.org/document/9250505 with the following modficiations:
         - does not support prediction network caching
         - supports prefix search with only longest prefix
+
+    Note: RNN-T only. TDT is not supported by this computer (use ``ModifiedALSDBatchedTDTComputer``
+    instead). Unlike :class:`ModifiedALSDBatchedRNNTComputer` this is a pure-PyTorch decoder;
+    CUDA graphs are not implemented.
     """
 
     def __init__(
@@ -44,7 +50,7 @@ class ModifiedAESBatchedRNNTComputer(ConfidenceMethodMixin):
         maes_num_steps: int,
         maes_expansion_beta: int,
         maes_expansion_gamma: int,
-        preserve_alignments=False,
+        preserve_alignments: bool = False,
         ngram_lm_model: Optional[str | Path] = None,
         ngram_lm_alpha: float = 0.0,
         blank_lm_score_mode: Optional[str | BlankLMScoreMode] = BlankLMScoreMode.NO_SCORE,
@@ -75,7 +81,8 @@ class ModifiedAESBatchedRNNTComputer(ConfidenceMethodMixin):
             ngram_lm_alpha: weight for the n-gram LM scores
             blank_lm_score_mode: mode for scoring blank symbol with LM
             pruning_mode: mode for pruning hypotheses with LM
-            allow_cuda_graphs: whether to allow CUDA graphs
+            allow_cuda_graphs: accepted for API parity with :class:`ModifiedALSDBatchedRNNTComputer`,
+                but ignored - this computer does not implement CUDA graphs.
         """
 
         super().__init__()
@@ -114,6 +121,7 @@ class ModifiedAESBatchedRNNTComputer(ConfidenceMethodMixin):
             )
         else:
             self.ngram_lm_batch = None
+            self.pruning_mode = None
             self.blank_lm_score_mode = None
         self.ngram_lm_alpha = ngram_lm_alpha
 
@@ -121,19 +129,40 @@ class ModifiedAESBatchedRNNTComputer(ConfidenceMethodMixin):
         self,
         encoder_output: torch.Tensor,
         encoder_output_length: torch.Tensor,
-    ) -> BatchedBeamHyps:
+        prev_batched_state: Optional[BatchedBeamState] = None,
+    ) -> tuple[BatchedBeamHyps, BatchedBeamState]:
         """
-        Pure PyTorch implementation
+        Pure PyTorch implementation of batched modified adaptive expansion search for RNN-T.
 
         Args:
-            encoder_output: output from the encoder
-            encoder_output_length: lengths of the utterances in `encoder_output`
+            encoder_output: output from the encoder, shape [batch_size, max_time, encoder_dim].
+            encoder_output_length: lengths of the utterances in ``encoder_output``, shape [batch_size].
+            prev_batched_state: optional state from a previous chunk (streaming).
+
+        Returns:
+            (batched_hyps, decoding_state).
         """
         batch_size, max_time, _unused = encoder_output.shape
         device = encoder_output.device
 
         encoder_output_projected = self.joint.project_encoder(encoder_output)
         float_dtype = encoder_output_projected.dtype
+
+        batch_indices = (
+            torch.arange(batch_size, dtype=torch.long, device=device)[:, None]
+            .expand(batch_size, self.beam_size)
+            .clone()
+        )  # size: batch_size x beam_size
+        beam_indices = (
+            torch.arange(self.beam_size, dtype=torch.long, device=device)[None, :]
+            .expand(batch_size, self.beam_size)
+            .clone()
+        )  # size: batch_size x beam_size
+        expansion_beam_indices = (
+            torch.arange(self.beam_size, dtype=torch.long, device=device)[None, :, None]
+            .expand(batch_size, self.beam_size, self.maes_num_expansions)
+            .clone()
+        )  # size: batch_size x beam_size x (beam_size + maes_expansion_beta)
 
         # init empty batched hypotheses
         batched_hyps = BatchedBeamHyps(
@@ -146,26 +175,16 @@ class ModifiedAESBatchedRNNTComputer(ConfidenceMethodMixin):
             store_prefix_hashes=True,
         )
 
-        last_labels_wb = torch.full(
-            [batch_size, self.beam_size], fill_value=self._SOS, device=device, dtype=torch.long
-        )
-
-        batch_indices = (
-            torch.arange(batch_size, device=device)[:, None].expand(batch_size, self.beam_size).clone()
-        )  # size: batch_size x beam_size
-        beam_indices = (
-            torch.arange(self.beam_size, device=device)[None, :].expand(batch_size, self.beam_size).clone()
-        )  # size: batch_size x beam_size
-        expansion_beam_indices = (
-            torch.arange(self.beam_size, device=device)[None, :, None]
-            .expand(batch_size, self.beam_size, self.maes_num_expansions)
-            .clone()
-        )  # size: batch_size x beam_size x beam_size + maes_expansion_beta
+        if prev_batched_state is not None and prev_batched_state.scores is not None:
+            # Seed cross-chunk per-beam fields from the previous chunk's snapshot;
+            # batched_hyps was just allocated, so the rest is already at init values.
+            seed_batched_hyps_from_state(batched_hyps, prev_batched_state)
 
         time_indices = torch.zeros_like(batch_indices)
-        safe_time_indices = torch.zeros_like(time_indices)
-        last_timesteps = (encoder_output_length - 1)[:, None].expand(batch_size, self.beam_size)
-        active_mask = time_indices <= last_timesteps
+        safe_time_indices = torch.zeros_like(time_indices)  # time indices, guaranteed to be < out_len
+        # In mixed batches some rows may have `encoder_output_length == 0`.
+        last_timesteps = torch.clamp_min(encoder_output_length - 1, 0)[:, None].expand_as(batch_indices)
+        active_mask = (encoder_output_length > 0)[:, None].expand_as(batch_indices) & (time_indices <= last_timesteps)
 
         # setup N-gram LM if available
         if self.ngram_lm_batch is not None:
@@ -176,11 +195,23 @@ class ModifiedAESBatchedRNNTComputer(ConfidenceMethodMixin):
             )  # vocab_size_no_blank
             lm_scores = lm_scores.to(dtype=float_dtype).view(batch_size, self.beam_size, -1) * self.ngram_lm_alpha
 
-        decoder_output, decoder_state, *_ = self.decoder.predict(
-            last_labels_wb.view(-1, 1), None, add_sos=False, batch_size=batch_size * self.beam_size
-        )
-        # do not recalculate joint projection
-        decoder_output = self.joint.project_prednet(decoder_output)
+        if prev_batched_state is None:
+            last_labels_wb = torch.full(
+                [batch_size, self.beam_size], fill_value=self._SOS, device=device, dtype=torch.long
+            )
+            decoder_state = self.decoder.initialize_state(
+                torch.empty([batch_size * self.beam_size], dtype=float_dtype, device=device)
+            )
+            decoder_output, state, *_ = self.decoder.predict(
+                last_labels_wb.view(-1, 1), None, add_sos=False, batch_size=batch_size * self.beam_size
+            )
+            # do not recalculate joint projection
+            decoder_output = self.joint.project_prednet(decoder_output)  # size: [(batch_size x beam_size), 1, Dim]
+            self.decoder.batch_replace_states_all(state, dst_states=decoder_state)
+        else:
+            # Continuing from previous chunk - batched_hyps already contains all state
+            decoder_output = prev_batched_state.predictor_outputs
+            decoder_state = prev_batched_state.predictor_states
 
         while active_mask.any():  # frames loop
             to_update = active_mask.clone()  # mask for expansions loop
@@ -321,7 +352,33 @@ class ModifiedAESBatchedRNNTComputer(ConfidenceMethodMixin):
             active_mask = time_indices <= last_timesteps
             safe_time_indices = torch.where(active_mask, time_indices, last_timesteps)
 
-        return batched_hyps
+        # NB: last labels can not exist (nothing decoded on this step).
+        # Return the last labels from the previous state in this case.
+        last_labels = batched_hyps.get_last_labels(pad_id=self._SOS)
+        batched_hyps.next_timestamp.fill_(0)
+
+        # Make ``batched_hyps.timestamps`` global by adding the cumulative encoder frame offset.
+        if prev_batched_state is not None:
+            batched_hyps.timestamps += prev_batched_state.decoded_lengths.unsqueeze(1).unsqueeze(2)
+
+        decoding_state = BatchedBeamState(
+            predictor_states=decoder_state,
+            predictor_outputs=decoder_output,
+            labels=(
+                torch.where(last_labels == self._SOS, prev_batched_state.labels, last_labels)
+                if prev_batched_state is not None
+                else last_labels
+            ),
+            decoded_lengths=(
+                encoder_output_length.clone()
+                if prev_batched_state is None
+                else encoder_output_length + prev_batched_state.decoded_lengths
+            ),
+            time_jumps=None,
+            **batched_hyps.export_cross_chunk_state(),
+        )
+
+        return batched_hyps, decoding_state
 
     def combine_scores(self, log_probs, lm_scores):
         """
@@ -438,5 +495,10 @@ class ModifiedAESBatchedRNNTComputer(ConfidenceMethodMixin):
         self,
         x: torch.Tensor,
         out_len: torch.Tensor,
-    ) -> BatchedBeamHyps:
-        return self.batched_modified_adaptive_expansion_search_torch(encoder_output=x, encoder_output_length=out_len)
+        prev_batched_state: Optional[BatchedBeamState] = None,
+    ) -> tuple[BatchedBeamHyps, BatchedBeamState]:
+        return self.batched_modified_adaptive_expansion_search_torch(
+            encoder_output=x,
+            encoder_output_length=out_len,
+            prev_batched_state=prev_batched_state,
+        )

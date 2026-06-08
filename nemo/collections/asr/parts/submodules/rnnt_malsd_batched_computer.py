@@ -1661,6 +1661,55 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
 
         batched_hyps.keep_beam_(beam_indices)
 
+    def collapse_state_item_to_top1_(self, item: MALSDStateItem, beam_index: int) -> None:
+        """
+        In-place per-stream variant of :meth:`collapse_batched_state_to_beams_`.
+
+        Replicates beam ``beam_index`` across all ``beam_size`` slots of ``item``
+        and sets ``score[1:] = INACTIVE_SCORE`` so the next chunk's top-k expands
+        the surviving beam. Used by streaming pipelines to collapse a single
+        stream's MALSD carry at its EOU boundary without disturbing other rows
+        of a batched run.
+
+        Wraps mutations in :func:`torch.inference_mode` so it can be called from
+        outside the encoder/decoder inference region (the per-stream tensors are
+        inference tensors produced by :meth:`split_batched_state`).
+        """
+        beam_size = self.beam_size
+        if not 0 <= beam_index < beam_size:
+            raise ValueError(f"beam_index must be in [0, {beam_size}), got {beam_index}")
+
+        with torch.inference_mode():
+            per_row = self.decoder.batch_split_states(item.predictor_state)
+            if len(per_row) != beam_size:
+                raise AssertionError(
+                    f"Expected per-stream predictor state with batch dim {beam_size}, got {len(per_row)}"
+                )
+            item.predictor_state = self.decoder.batch_unsplit_states([per_row[beam_index]] * beam_size)
+
+            item.predictor_output = (
+                item.predictor_output[beam_index : beam_index + 1]
+                .expand(beam_size, *item.predictor_output.shape[1:])
+                .contiguous()
+            )
+
+            idx = torch.full([beam_size], fill_value=beam_index, dtype=torch.long, device=item.label.device)
+            item.label = item.label.index_select(0, idx).contiguous()
+            if item.score is not None:
+                item.score = item.score.index_select(0, idx).contiguous()
+                item.score[1:].fill_(INACTIVE_SCORE)
+            if item.transcript_hash is not None:
+                item.transcript_hash = item.transcript_hash.index_select(0, idx).contiguous()
+            if item.current_lengths_nb is not None:
+                item.current_lengths_nb = item.current_lengths_nb.index_select(0, idx).contiguous()
+            if item.last_timestamp_lasts is not None:
+                item.last_timestamp_lasts = item.last_timestamp_lasts.index_select(0, idx).contiguous()
+            if item.transcript_prefix_hash is not None:
+                item.transcript_prefix_hash = item.transcript_prefix_hash.index_select(0, idx).contiguous()
+
+            for fi, fs in enumerate(item.fusion_state_list):
+                item.fusion_state_list[fi] = fs.index_select(0, idx).contiguous()
+
     def __call__(
         self,
         x: torch.Tensor,

@@ -234,14 +234,14 @@ cu12 = [
     "torch==2.12.0+cu126 ; sys_platform == 'linux'",
     "numba-cuda[cu12] ; platform_system != 'Darwin'",
     "cuda-python>=12,<13 ; platform_system != 'Darwin'",
-    "transformer-engine[pytorch,core_cu12]==2.15"
+    "transformer-engine-cu12==2.15"
 ]
 
 cu13 = [
     "torch==2.12.0+cu132 ; sys_platform == 'linux'",
     "numba-cuda[cu13] ; platform_system != 'Darwin'",
     "cuda-python>=13,<14 ; platform_system != 'Darwin'",
-    "transformer-engine[pytorch,core_cu13]==2.15"
+    "transformer-engine-cu13==2.15"
 ]
 
 compiled = [
@@ -254,6 +254,7 @@ compiled = [
     # v2.8.3 release assets do not include a cu13/torch2.12/cp313 wheel,
     # so uv builds this from source under the Dockerfile build environment.
     "flash-attn==2.8.3",
+    "transformer-engine[pytorch]==2.15"
 ]
 
 compiled-a100 = [
@@ -265,6 +266,7 @@ compiled-a100 = [
     # v2.8.3 release assets do not include a cu13/torch2.12/cp313 wheel,
     # so uv builds this from source under the Dockerfile build environment.
     "flash-attn==2.8.3",
+    "transformer-engine[pytorch]==2.15"
 ]
 
 common = [

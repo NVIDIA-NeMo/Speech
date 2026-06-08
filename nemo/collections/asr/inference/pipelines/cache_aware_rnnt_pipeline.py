@@ -249,11 +249,14 @@ class CacheAwareRNNTPipeline(BasePipeline):
             (bool) Whether EOU is detected.
         """
         eou_detected = request.is_last
+        # Per-token non-blank confidence precomputed during RNN-T decoding (aligned with `hyp.y_sequence`).
+        # Populated only when `asr.decoding.greedy.preserve_frame_confidence=true`; otherwise None.
         cur_output, cur_labels, new_offset = self.greedy_rnnt_decoder(
             global_timestamps=hyp.timestamp,
             tokens=hyp.y_sequence,
             length=self.tokens_per_frame,
             offset=state.offset,
+            confidences=hyp.non_blank_step_confidence_precomputed,
         )
         state.set_offset(new_offset)
 

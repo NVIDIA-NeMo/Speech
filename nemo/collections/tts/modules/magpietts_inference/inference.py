@@ -749,20 +749,17 @@ class EasyMagpieMultiturnUserAudioDataset(torch.utils.data.Dataset):
             raise FileNotFoundError(f"Missing audio path: {path}")
 
         audio, sr = sf.read(path, dtype="float32", always_2d=False)
-        wav = torch.as_tensor(audio, dtype=torch.float32)
-        if wav.ndim == 2:
-            wav = wav.mean(dim=1)
-        wav = wav.flatten()
+
+        if audio.ndim == 2:
+            audio = audio.mean(axis=1)
+
+        if self.normalize_audio:
+            audio = normalize_volume(audio)
+
+        wav = torch.as_tensor(audio, dtype=torch.float32).flatten()
 
         if sr != sample_rate:
             wav = resample(wav.unsqueeze(0), sr, sample_rate).squeeze(0)
-
-        if self.normalize_audio:
-            try:
-                wav = normalize_volume(wav)
-            except Exception:
-                # Keep evaluation robust across normalize_volume signature changes.
-                pass
 
         return wav.contiguous()
 
@@ -1151,7 +1148,8 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
             codes, codes_lens = model._codec_helper.audio_to_codes(wav, wav_len)
 
             use_lang = bool(getattr(model, "add_language_to_context_text", False))
-            ctx_text = "[EN]" if use_lang else "[NO TEXT CONTEXT]"
+            language = getattr(self.config, "language", "en")
+            ctx_text = f"[{language.upper()}]" if use_lang else "[NO TEXT CONTEXT]"
             ctx_text_ids = model.tokenizer.encode(ctx_text, tokenizer_name=model.text_conditioning_tokenizer_name)
             ctx_toks = torch.tensor([ctx_text_ids], dtype=torch.long, device=device).expand(B, -1)
             ctx_toks_lens = torch.tensor([len(ctx_text_ids)] * B, dtype=torch.long, device=device)
@@ -1226,7 +1224,7 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
                     )
 
                     user_audio_embedded = model.embed_audio_tokens(user_audio_codes)
-                    boundary_trim = model.cfg.get("user_audio_boundary_trim", 4)
+                    boundary_trim = model.cfg.get("user_audio_boundary_trim", 0)
                     boundary_trim = 0 if boundary_trim is None else int(boundary_trim)
 
                     if boundary_trim == 0:

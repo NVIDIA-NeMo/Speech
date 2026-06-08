@@ -62,7 +62,34 @@ class BufferedPipelineBuilder(BaseBuilder):
         base_cfg_structured = OmegaConf.structured(RNNTDecodingConfig)
         base_cfg = OmegaConf.create(OmegaConf.to_container(base_cfg_structured))
         decoding_cfg = OmegaConf.merge(base_cfg, cfg.asr.decoding)
+        cls._apply_confidence_cfg(cfg, decoding_cfg)
         return decoding_cfg
+
+    @staticmethod
+    def _apply_confidence_cfg(cfg: DictConfig, decoding_cfg: RNNTDecodingConfig) -> None:
+        """
+        Wire the separately-stored `confidence` block into the RNNT decoding confidence config so the
+        greedy decoder computes per-token confidence with the configured method. The streaming pipeline
+        only supports non-blank confidence (`confidence.exclude_blank=true`).
+        Args:
+            cfg: (DictConfig) Full pipeline config (provides the top-level `confidence` block).
+            decoding_cfg: (RNNTDecodingConfig) Decoding config to update in place.
+        """
+        if not decoding_cfg.greedy.get("preserve_frame_confidence", False):
+            return
+        confidence_cfg = cfg.get("confidence", None)
+        if confidence_cfg is None:
+            return
+        if not confidence_cfg.get("exclude_blank", True):
+            raise ValueError(
+                "Streaming confidence supports only non-blank confidence (`confidence.exclude_blank=true`)."
+            )
+        decoding_cfg.confidence_cfg.preserve_frame_confidence = True
+        decoding_cfg.confidence_cfg.exclude_blank = True
+        decoding_cfg.confidence_cfg.aggregation = confidence_cfg.get("aggregation", "mean")
+        decoding_cfg.confidence_cfg.method_cfg = OmegaConf.merge(
+            decoding_cfg.confidence_cfg.method_cfg, confidence_cfg.method_cfg
+        )
 
     @classmethod
     def get_ctc_decoding_cfg(cls) -> CTCDecodingConfig:

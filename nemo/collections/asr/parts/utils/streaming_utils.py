@@ -2464,7 +2464,9 @@ class DynamicLengthTensor:
         indices = torch.arange(other_len, device=self.device)
         shifted_indices = self.lengths[:, None] + indices[None, :]
         # add trailing len(dim_shape) axes to shifted_indices
-        shifted_indices = shifted_indices[..., *[None for _ in range(len(self.dim_shape))]]
+        # NB: ``a[..., *unpack]`` subscript-unpacking is Python 3.11+; loop ``unsqueeze`` for 3.10.
+        for _ in range(len(self.dim_shape)):
+            shifted_indices = shifted_indices.unsqueeze(-1)
         self.data.scatter_(dim=1, index=shifted_indices.expand([-1, -1] + self.dim_shape), src=data)
         if lengths is None:
             self.lengths += other_len

@@ -323,6 +323,32 @@ class BatchedBeamHyps:
                 new_hyps.token_durations.copy_(self.token_durations[:out_batch])
         return new_hyps
 
+    def keep_beam_(self, beam_indices: torch.Tensor) -> None:
+        """
+        In-place: collapse each row to a single surviving beam, replicated across all
+        ``beam_size`` slots, with the other slots' scores set to ``INACTIVE_SCORE``.
+
+        Used by streaming pipelines to commit the per-chunk best beam as the
+        definitive history before the next chunk, so the carried predictor state and
+        the published transcript stay consistent.
+
+        Args:
+            beam_indices: ``[batch_size]`` long tensor giving the beam to keep for
+                each row in the batch.
+        """
+        if self.beam_size <= 1:
+            return
+        permutation = (
+            beam_indices.to(dtype=torch.long, device=self.device)
+            .unsqueeze(-1)
+            .expand(self.batch_size, self.beam_size)
+            .contiguous()
+        )
+        self._flatten_with_permutation_(permutation)
+        # Mark all but the first slot as inactive so the next iteration's top-k repopulates them.
+        self.scores[:, 1:].fill_(INACTIVE_SCORE)
+
+
     def get_last_labels(self, pad_id: int = -1) -> torch.Tensor:
         """
         Get last labels for each hypothesis in the beam.
@@ -608,57 +634,20 @@ class BatchedBeamHyps:
         to_update_mask = torch.logical_and(active_mask, self.scores != INACTIVE_SCORE)
         self.scores = torch.where(to_update_mask, torch.logaddexp(self.scores, prefix_label_logps), self.scores)
 
-    def _export_hypothesis_timestamps(
-        self,
-        beam_timestamps: torch.Tensor,
-        beam_durations: Optional[torch.Tensor],
-        mask: torch.Tensor,
-    ) -> tuple:
-        """Convert internal beam timestamps into Hypothesis timestamp fields."""
-        end_times = beam_timestamps[mask]
-        if self.model_type == ASRModelTypeEnum.TDT:
-            durations = beam_durations[mask]
-            start_times = end_times - durations
-            return (
-                start_times.cpu().detach().numpy(),
-                durations.cpu().detach().numpy(),
-            )
-        return end_times.cpu().detach().numpy(), None
-
     def to_hyps_list(self, score_norm: bool = True) -> list[Hypothesis]:
         """
-        Converts the batched beam search results into a list of signle best hypotheses for each batch.
+        Converts the batched beam search results into a list of single best hypotheses for each batch.
         Args:
             score_norm (bool):  If True, normalize the scores before sorting. Defaults to True.
         Returns:
             list[Hypothesis]: A list where each element corresponds to a batch and contains
             best hypothesis.
         """
-        self.flatten_sort_(score_norm)
-
-        scores = self.scores[self.batch_indices, 0].tolist()
-
-        max_idx = self.current_lengths_wb.max() - 1
-        timestamps = self.timestamps[..., 0, : max_idx + 1]
-        transcripts = self.transcript_wb[..., 0, : max_idx + 1]
-        durations = self.token_durations[..., 0, : max_idx + 1] if self.model_type == ASRModelTypeEnum.TDT else None
-        hypotheses = []
-        for batch_idx in range(self.batch_size):
-            mask = self._create_transcripts_mask(transcripts[batch_idx])
-            timestamp, token_duration = self._export_hypothesis_timestamps(
-                timestamps[batch_idx], durations[batch_idx] if durations is not None else None, mask
-            )
-            hypotheses.append(
-                Hypothesis(
-                    score=scores[batch_idx],
-                    y_sequence=transcripts[batch_idx][mask].cpu().detach().numpy(),
-                    timestamp=timestamp,
-                    token_duration=token_duration,
-                    alignments=None,
-                    dec_state=None,
-                )
-            )
-        return hypotheses
+        scores, transcripts, timestamps, durations, _ = self._export(sort=True, score_norm=score_norm)
+        return [
+            self._hypothesis_from_flat(b, 0, scores, transcripts, timestamps, durations)
+            for b in range(self.batch_size)
+        ]
 
     def to_nbest_hyps_list(self, score_norm: bool = True) -> list[NBestHypotheses]:
         """
@@ -669,41 +658,80 @@ class BatchedBeamHyps:
             list[NBestHypotheses]: A list where each element corresponds to a batch and contains
             N-best hypotheses.
         """
-
-        self.flatten_sort_(score_norm)
-
-        scores = self.scores.tolist()
-
-        max_idx = self.current_lengths_wb.max() - 1
-        transcripts = self.transcript_wb[..., : max_idx + 1]
-        timestamps = self.timestamps[..., : max_idx + 1]
-        durations = self.token_durations[..., : max_idx + 1] if self.model_type == ASRModelTypeEnum.TDT else None
+        scores, transcripts, timestamps, durations, _ = self._export(sort=True, score_norm=score_norm)
         hypotheses = []
         for batch_idx in range(self.batch_size):
             nbest = []
             for beam_idx in range(self.beam_size):
                 if scores[batch_idx][beam_idx] <= INACTIVE_SCORE:
                     continue
-                mask = self._create_transcripts_mask(transcripts[batch_idx][beam_idx])
-                timestamp, token_duration = self._export_hypothesis_timestamps(
-                    timestamps[batch_idx][beam_idx],
-                    durations[batch_idx][beam_idx] if durations is not None else None,
-                    mask,
-                )
                 nbest.append(
-                    Hypothesis(
-                        score=scores[batch_idx][beam_idx],
-                        y_sequence=transcripts[batch_idx][beam_idx][mask].cpu().detach().numpy(),
-                        timestamp=timestamp,
-                        token_duration=token_duration,
-                        alignments=None,
-                        dec_state=None,
-                    )
+                    self._hypothesis_from_flat(batch_idx, beam_idx, scores, transcripts, timestamps, durations)
                 )
             hypotheses.append(NBestHypotheses(nbest))
         return hypotheses
 
-    def flatten_sort_(self, score_norm: bool = True):
+    def _export(
+        self, sort: bool = True, score_norm: bool = True
+    ) -> tuple[list[list[float]], torch.Tensor, torch.Tensor, Optional[torch.Tensor], torch.Tensor]:
+        """
+        Flatten the prefix tree and return per-(batch, beam) views.
+
+        Args:
+            sort: if True, flatten by descending (normalized) score; otherwise
+                flatten while preserving slot order.
+            score_norm: passed to :meth:`flatten_sort_` when ``sort=True``.
+
+        Returns:
+            (scores, transcripts, timestamps, durations, root_ptrs). The first four
+            are inputs for :meth:`_hypothesis_from_flat`; ``root_ptrs`` is the
+            chunk-start -> chunk-end slot descent map (``[batch, beam]`` long
+            tensor) for the current beam ordering.
+        """
+        if sort:
+            root_ptrs = self.flatten_sort_(score_norm)
+        else:
+            root_ptrs = self.flatten_()
+        scores = self.scores.tolist()
+        max_idx = self.current_lengths_wb.max() - 1
+        transcripts = self.transcript_wb[..., : max_idx + 1]
+        timestamps = self.timestamps[..., : max_idx + 1]
+        durations = (
+            self.token_durations[..., : max_idx + 1] if self.model_type == ASRModelTypeEnum.TDT else None
+        )
+        return scores, transcripts, timestamps, durations, root_ptrs
+
+    def _hypothesis_from_flat(
+        self,
+        batch_idx: int,
+        beam_idx: int,
+        scores: list[list[float]],
+        transcripts: torch.Tensor,
+        timestamps: torch.Tensor,
+        durations: Optional[torch.Tensor],
+    ) -> Hypothesis:
+        """Build one ``Hypothesis`` from already-flattened per-(batch, beam) views."""
+        transcript = transcripts[batch_idx][beam_idx]
+        mask = self._create_transcripts_mask(transcript)
+        end_times = timestamps[batch_idx][beam_idx][mask]
+        if durations is not None:
+            # TDT: report per-token start times and durations.
+            token_duration = durations[batch_idx][beam_idx][mask]
+            timestamp = (end_times - token_duration).cpu().detach().numpy()
+            token_duration = token_duration.cpu().detach().numpy()
+        else:
+            timestamp = end_times.cpu().detach().numpy()
+            token_duration = None
+        return Hypothesis(
+            score=scores[batch_idx][beam_idx],
+            y_sequence=transcript[mask].cpu().detach().numpy(),
+            timestamp=timestamp,
+            token_duration=token_duration,
+            alignments=None,
+            dec_state=None,
+        )
+
+    def flatten_sort_(self, score_norm: bool = True) -> torch.Tensor:
         """
         Sorts and flattens the tree structure of hypotheses in a batched beam search decoding process.
         Args:
@@ -715,6 +743,11 @@ class BatchedBeamHyps:
         3. Iteratively reconstructs the tokens and timestamps for each hypothesis in reverse order.
         4. Updates the internal state of the object, including transcripts, timestamps, scores,
            lengths, labels, and other metadata, based on the sorted order.
+
+        Returns:
+            ``root_ptrs`` of shape ``[batch_size, beam_size]``: the chunk-start beam index
+            (before the first ``add_results_*`` write) from which each sorted output beam
+            descends. Same semantics as :meth:`flatten_`, but for the sorted ordering.
         """
 
         # add one for consistency with non-batched decodings, that use SOS.
@@ -722,7 +755,7 @@ class BatchedBeamHyps:
             self.scores / (self.current_lengths_nb.to(self.scores.dtype) + 1) if score_norm else self.scores
         )
         _, indices = torch.sort(normalized_scores, dim=-1, descending=True)
-        self._flatten_with_permutation_(indices)
+        return self._flatten_with_permutation_(indices)
 
     def flatten_(self) -> torch.Tensor:
         """
@@ -974,3 +1007,40 @@ class BatchedBeamHyps:
             self.last_timestamp_lasts.copy_(other.last_timestamp_lasts)
 
         return self
+
+
+def export_batched_beam_hyps_to_cpu_lists(
+    bbh: BatchedBeamHyps,
+) -> tuple[list[list[list[int]]], list[list[list[int]]], list[list[int]]]:
+    """
+    Streaming-pipeline helper: flatten ``bbh`` in-place (identity permutation) and
+    return CPU-side per-(batch, beam) chunk-local emissions plus the chunk-start
+    descent map. Intended for windowed-beam aggregation outside the engine.
+
+    Returns:
+        (tokens, timestamps, root_ptrs):
+            * ``tokens``: ``[batch_size][beam_size]`` non-blank/non-padding token
+              IDs for this chunk.
+            * ``timestamps``: ``[batch_size][beam_size]`` matching step indices.
+            * ``root_ptrs``: ``[batch_size][beam_size]`` chunk-start beam index
+              from which each current slot descends.
+    """
+    _, transcripts, timestamps, _, root_ptrs = bbh._export(sort=False)
+    # One sync to CPU; per-slot masking + .tolist() stays on CPU.
+    root_ptrs_list = root_ptrs.detach().cpu().tolist()
+    transcripts_cpu = transcripts.detach().cpu()
+    timestamps_cpu = timestamps.detach().cpu()
+
+    tokens: list[list[list[int]]] = []
+    timestamps_out: list[list[list[int]]] = []
+    for b in range(bbh.batch_size):
+        bt: list[list[int]] = []
+        bts: list[list[int]] = []
+        for k in range(bbh.beam_size):
+            t = transcripts_cpu[b, k]
+            mask = bbh._create_transcripts_mask(t)
+            bt.append(t[mask].tolist())
+            bts.append(timestamps_cpu[b, k][mask].tolist())
+        tokens.append(bt)
+        timestamps_out.append(bts)
+    return tokens, timestamps_out, root_ptrs_list

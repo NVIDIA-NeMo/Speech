@@ -31,13 +31,21 @@ from nemo.collections.asr.inference.streaming.endpointing.greedy.greedy_rnnt_end
 from nemo.collections.asr.inference.streaming.framing.multi_stream import ContinuousBatchedRequestStreamer
 from nemo.collections.asr.inference.streaming.framing.request import FeatureBuffer, Frame, Request
 from nemo.collections.asr.inference.streaming.framing.request_options import ASRRequestOptions
-from nemo.collections.asr.inference.streaming.state.cache_aware_rnnt_state import CacheAwareRNNTStreamingState
+from nemo.collections.asr.inference.streaming.state.cache_aware_rnnt_state import (
+    CacheAwareRNNTMALSDStreamingState,
+    CacheAwareRNNTStreamingState,
+)
 from nemo.collections.asr.inference.utils.endpointing_utils import millisecond_to_frames
 from nemo.collections.asr.inference.utils.enums import RequestType
 from nemo.collections.asr.inference.utils.pipeline_utils import (
     check_existance_of_required_attributes,
     drop_trailing_features,
     get_confidence_utils,
+)
+from nemo.collections.asr.parts.submodules.rnnt_malsd_batched_computer import ModifiedALSDBatchedRNNTComputer
+from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import (
+    BatchedBeamHyps,
+    export_batched_beam_hyps_to_cpu_lists,
 )
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.utils import logging
@@ -76,7 +84,30 @@ class CacheAwareRNNTPipeline(BasePipeline):
         self.init_endpointer()
         self.init_text_processor(cfg, itn_model)
         self.init_nmt_model(nmt_model)
+        self.init_decoding_computer()
         super().__init__()
+
+    def init_decoding_computer(self) -> None:
+        """
+        Probe the model's decoding stack once and stash the resulting computer
+        on ``self`` so per-chunk code can branch on it without re-doing the
+        attribute-chain dive.
+
+        Exactly one of ``self.decoding_computer`` (MALSD beam-search) and
+        ``self.greedy_decoding_computer`` (greedy, used for per-stream biasing
+        detection) is non-``None`` for any supported decoding stack; both are
+        ``None`` if the stack exposes no ``decoding_computer`` at all.
+        """
+        try:
+            decoding_computer = self.asr_model.asr_model.decoding.decoding.decoding_computer
+        except AttributeError:
+            decoding_computer = None
+        if isinstance(decoding_computer, ModifiedALSDBatchedRNNTComputer):
+            self.decoding_computer: ModifiedALSDBatchedRNNTComputer | None = decoding_computer
+            self.greedy_decoding_computer = None
+        else:
+            self.decoding_computer = None
+            self.greedy_decoding_computer = decoding_computer
 
     def init_parameters(self, cfg: DictConfig) -> None:
         """
@@ -149,6 +180,13 @@ class CacheAwareRNNTPipeline(BasePipeline):
 
         self.request_type = RequestType.from_str(cfg.streaming.request_type)
 
+        # MALSD beam-search streaming knobs. ``chunks_per_beam_reset == 1`` collapses
+        # the K-beam state down to a single top-1 hypothesis after every chunk, which
+        # matches the original cache-aware behaviour. Higher values preserve beam
+        # diversity across multiple chunks before collapsing - currently only the
+        # ``== 1`` path is fully wired up; larger values fall back to it.
+        self.chunks_per_beam_reset = int(cfg.streaming.get("chunks_per_beam_reset", 1))
+
     def init_greedy_rnnt_decoder(self) -> None:
         """Initialize the RNNT decoder."""
         check_existance_of_required_attributes(self, ['vocabulary', 'conf_func'])
@@ -179,9 +217,12 @@ class CacheAwareRNNTPipeline(BasePipeline):
         Args:
             options: (ASRRequestOptions) Request options for particular stream.
         Returns:
-            (CacheAwareRNNTStreamingState) New empty state.
+            (CacheAwareRNNTStreamingState) New empty state. Returns the MALSD subclass
+            when the pipeline is configured for beam-search decoding.
         """
-        state = CacheAwareRNNTStreamingState()
+        state = (
+            CacheAwareRNNTMALSDStreamingState() if self.decoding_computer is not None else CacheAwareRNNTStreamingState()
+        )
         state.set_global_offset(0)
         new_options = options.fill_defaults(
             default_enable_itn=self.text_processor.itn_enabled,
@@ -297,19 +338,17 @@ class CacheAwareRNNTPipeline(BasePipeline):
         2. Merge per-stream ``MALSDStateItem``s into a batched MALSD state.
         3. Run :class:`ModifiedALSDBatchedRNNTComputer` for this chunk.
         4. Update per-stream windowed-beam tracking from this chunk's emissions.
-        5. Split the batched MALSD state back into per-stream carries.
-        6. Build a cumulative ``Hypothesis`` per stream from
+        5. Optionally collapse to the chunk's top-1 (current default behaviour).
+        6. Split the batched MALSD state back into per-stream carries.
+        7. Build a cumulative ``Hypothesis`` per stream from
            ``window_committed + window_beam_tokens[top1]``.
-
-        Collapse to the chunk's top-1 is NOT performed here - beams stay
-        diverged across chunks and are collapsed per-stream at the EOU
-        boundary inside :meth:`run_malsd_decoder`.
 
         Returns a list of cumulative ``Hypothesis`` per stream and the new
         encoder cache context, matching the shape of ``stream_step``.
         """
         # Per-stream multi-biasing ids: not yet supported on the MALSD streaming
         # path. Greedy-side per-stream biasing knobs stay independent.
+        multi_biasing_ids = None
         if biasing_enabled:
             logging.warning(
                 "Per-stream biasing is not yet wired up on the MALSD cache-aware "
@@ -324,10 +363,11 @@ class CacheAwareRNNTPipeline(BasePipeline):
         else:
             batched_state = self.decoding_computer.merge_to_batched_state(carries)
 
-        # All MALSD GPU work (encoder, decoder, windowed walk, split) shares one
-        # ``inference_mode`` region: ``split_batched_state`` mutates the inference
-        # tensors returned by ``decoding_computer(...)`` in place, which is illegal
-        # once we've left the captured ``inference_mode`` region.
+        # All MALSD GPU work (encoder, decoder, windowed walk, collapse, split)
+        # shares one ``inference_mode`` region: ``collapse_batched_state_to_beams_``
+        # and ``split_batched_state`` mutate the inference tensors returned by
+        # ``decoding_computer(...)`` in place, which is illegal once we've left
+        # the captured ``inference_mode`` region.
         with (
             torch.amp.autocast(
                 device_type=self.asr_model.device_str,
@@ -355,36 +395,64 @@ class CacheAwareRNNTPipeline(BasePipeline):
 
             self._update_windowed_beam_state(states=states, best_batched_hyps=best_batched_hyps)
 
-            # Per-stream top-1 beam slot. Indexes ``window_beam_tokens`` (which was
-            # just appended against the diverged beam slots) to build the publishable
-            # cumulative hypothesis below.
+            # Capture pre-collapse argmax + scores. After ``collapse_batched_state_to_beams_``
+            # runs, ``scores[:, 1:]`` is forced to ``INACTIVE_SCORE`` and ``scores[:, 0]``
+            # carries the winner - so any post-collapse argmax returns 0 unconditionally.
+            # We need the PRE-collapse slot index to index ``window_beam_tokens`` (which
+            # was just computed against the diverged pre-collapse slots).
             beam_indices_cpu = best_batched_hyps.scores.argmax(dim=-1).detach().cpu().tolist()
-            scores_cpu = best_batched_hyps.scores.detach().cpu()
+            scores_pre_collapse = best_batched_hyps.scores.detach().cpu()
+
+            # Collapse the K-beam state at the configured cadence. For now we always
+            # collapse every chunk (``chunks_per_beam_reset == 1``); the multi-chunk
+            # window is a follow-up that needs full prefix-tree carry across chunks.
+            for state in states:
+                state._malsd_chunk_count += 1
+            do_collapse = self.chunks_per_beam_reset <= 1 or any(
+                state._malsd_chunk_count >= self.chunks_per_beam_reset for state in states
+            )
+            if do_collapse:
+                beam_indices = best_batched_hyps.scores.argmax(dim=-1).to(torch.long)
+                self.decoding_computer.collapse_batched_state_to_beams_(
+                    batched_state, best_batched_hyps, beam_indices
+                )
 
             carry_items = self.decoding_computer.split_batched_state(batched_state)
             for state, carry in zip(states, carry_items):
                 state.hyp_decoding_state = carry
 
-        # Build per-stream cumulative ``Hypothesis`` from the windowed state.
-        # Collapse + window promotion is deferred to ``run_malsd_decoder`` and
-        # triggered by EOU, so the published hyp is the current top-1's path
-        # but the K-beam state continues to diverge across chunks.
+        # Build per-stream cumulative ``Hypothesis`` from the windowed state,
+        # then (on collapse chunks) promote the chosen beam's window tokens into
+        # the committed prefix and clear the window. The published hypothesis
+        # is identical pre/post-collapse promotion - just with everything moved
+        # into ``committed`` afterwards.
         hyps: list[Hypothesis] = []
         for b, state in enumerate(states):
             top1_slot = beam_indices_cpu[b]
-            window_tokens = state.window_beam_tokens[top1_slot] if state.window_beam_tokens else []
-            window_ts = state.window_beam_timestamps[top1_slot] if state.window_beam_timestamps else []
+            window_tokens = (
+                state.window_beam_tokens[top1_slot] if state.window_beam_tokens else []
+            )
+            window_ts = (
+                state.window_beam_timestamps[top1_slot] if state.window_beam_timestamps else []
+            )
             cum_tokens = state.window_committed_tokens + list(window_tokens)
             cum_ts = state.window_committed_timestamps + list(window_ts)
 
             hyps.append(
                 Hypothesis(
-                    score=float(scores_cpu[b, top1_slot].item()),
+                    score=float(scores_pre_collapse[b, top1_slot].item()),
                     y_sequence=cum_tokens,
                     timestamp=cum_ts,
                     length=len(cum_tokens),
                 )
             )
+
+            if do_collapse:
+                state._malsd_chunk_count = 0
+                state.window_committed_tokens = list(cum_tokens)
+                state.window_committed_timestamps = list(cum_ts)
+                state.window_beam_tokens = None
+                state.window_beam_timestamps = None
 
         return hyps, new_context
 
@@ -431,9 +499,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
 
         On EOU we bump ``_malsd_utterance_start`` to the current cumulative
         length so the next utterance's resync slice starts past the cleared
-        previous utterance, then collapse the per-stream MALSD carry to its
-        top-1 beam: the K-beam state diverges intra-utterance and snaps to the
-        chosen path at the natural utterance boundary.
+        previous utterance.
         """
         eou_detected = self.run_greedy_decoder(state, request, hyp)
 
@@ -454,21 +520,9 @@ class CacheAwareRNNTPipeline(BasePipeline):
             state.last_token_idx = timestamps_list[-1] if timestamps_list else None
 
         if eou_detected:
-            # Mark the boundary so the next utterance's slice starts past the
-            # tokens we just finalised.
+            # mark the boundary so the next utterance's slice starts past the
+            # tokens we just finalised
             state._malsd_utterance_start = len(all_tokens)
-
-            # EOU-driven collapse: promote the chosen window into the committed
-            # prefix and replicate the winning beam across all K slots of the
-            # per-stream carry. The predictor stays warm at the top-1's last
-            # label so the next utterance benefits from cross-utterance context.
-            if state.hyp_decoding_state is not None:
-                top1 = int(state.hyp_decoding_state.score.argmax().item())
-                self.decoding_computer.collapse_state_item_to_top1_(state.hyp_decoding_state, top1)
-            state.window_committed_tokens = list(all_tokens)
-            state.window_committed_timestamps = list(all_timestamps)
-            state.window_beam_tokens = None
-            state.window_beam_timestamps = None
         return eou_detected
 
     def run_greedy_decoder(self, state: CacheAwareRNNTStreamingState, request: Request, hyp: Hypothesis) -> bool:
@@ -543,12 +597,13 @@ class CacheAwareRNNTPipeline(BasePipeline):
 
         previous_hypotheses = [state.get_previous_hypothesis() for state in states]
 
-        try:
-            decoding_computer = self.asr_model.asr_model.decoding.decoding.decoding_computer
-            biasing_enabled = decoding_computer.per_stream_biasing_enabled
-        except AttributeError:
-            decoding_computer = None
-            biasing_enabled = False
+        # Per-stream biasing is only wired up on the greedy decoder. When MALSD
+        # is active ``self.greedy_decoding_computer`` is ``None`` (see
+        # :meth:`init_decoding_computer`) so ``biasing_enabled`` falls back to
+        # ``False`` and the warning in ``_malsd_stream_step`` covers the rest.
+        biasing_enabled = (
+            self.greedy_decoding_computer is not None and self.greedy_decoding_computer.per_stream_biasing_enabled
+        )
 
         if not biasing_enabled and any(state.has_biasing_request() for state in states):
             logging.warning("Biasing request is not empty, but decoder does not support per-stream biasing. Skipping")
@@ -561,7 +616,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
                         if state.options.biasing_cfg.auto_manage_multi_model:
                             state.options.biasing_cfg.add_to_multi_model(
                                 tokenizer=self.asr_model.tokenizer,
-                                biasing_multi_model=decoding_computer.biasing_multi_model,
+                                biasing_multi_model=self.greedy_decoding_computer.biasing_multi_model,
                             )
                         else:
                             logging.warning(
@@ -579,38 +634,49 @@ class CacheAwareRNNTPipeline(BasePipeline):
             prompt_vectors = self._build_prompt_vectors(states)
 
         drop_extra_pre_encoded = 0 if not self.use_cache else self.asr_model.drop_extra_pre_encoded
-        best_hyp, new_context = self.asr_model.stream_step(
-            processed_signal=feature_buffers,
-            processed_signal_length=feature_buffer_lens,
+        best_hyp, new_context = self._streaming_step(
+            states=states,
+            feature_buffers=feature_buffers,
+            feature_buffer_lens=feature_buffer_lens,
             context=context,
             previous_hypotheses=previous_hypotheses,
             drop_extra_pre_encoded=drop_extra_pre_encoded,
             keep_all_outputs=keep_all_outputs,
-            drop_left_context=self.drop_left_context,
-            valid_out_len=self.valid_out_len,
             prompt_vectors=prompt_vectors,
+            biasing_enabled=biasing_enabled,
         )
 
         # update the cache and reset the cache slots for the streams that has ended
         self.context_manager.update_cache(stream_ids, new_context, mapping)
         self.context_manager.reset_slots(stream_ids, eos_flags)
 
-        # update the previous hypothesis and reset the previous hypothesis for the streams that has ended
+        # update the previous hypothesis for non-eos streams. For greedy this is the
+        # ``Hypothesis`` returned by ``rnnt_decoder_predictions_tensor``; for MALSD
+        # it is the cumulative ``Hypothesis`` built in ``_malsd_stream_step``. The
+        # eos reset is deferred to *after* the per-request decoder loop below so
+        # that ``run_malsd_decoder`` can still see the current utterance start.
         for state, hyp, eos in zip(states, best_hyp, eos_flags):
-            if eos:
-                state.reset_previous_hypothesis()
-            else:
+            if not eos:
                 state.set_previous_hypothesis(hyp)
 
-        # run greedy decoder for each request-state-hypothesis tuple
+        # run per-request decoder for each request-state-hypothesis tuple
         for request, state, hyp in zip(requests, states, best_hyp):
-            eou_detected = self.run_greedy_decoder(state, request, hyp)
+            if self.decoding_computer is not None:
+                eou_detected = self.run_malsd_decoder(state, request, hyp)
+            else:
+                eou_detected = self.run_greedy_decoder(state, request, hyp)
             if eou_detected:
                 self.bpe_decoder.decode_bpe_tokens(state)
                 state.cleanup_after_eou()
                 ready_state_ids.add(request.stream_id)
 
-        # Cleanup per-stream biasing models when stream ends
+        # Deferred eos reset - now safe to clear MALSD per-stream carry too.
+        for state, eos in zip(states, eos_flags):
+            if eos:
+                state.reset_previous_hypothesis()
+
+        # Cleanup per-stream biasing models when stream ends (greedy path only;
+        # ``biasing_enabled`` is True only when ``self.greedy_decoding_computer`` is set).
         if biasing_enabled:
             for request, state in zip(requests, states):
                 # only the first request contains biasing options; biasing options for the stream are stored in state
@@ -619,27 +685,6 @@ class CacheAwareRNNTPipeline(BasePipeline):
                         state.options.biasing_cfg.remove_from_multi_model(
                             biasing_multi_model=self.greedy_decoding_computer.biasing_multi_model
                         )
-
-    def _debug_print_finals(self, ready_state_ids: set) -> None:
-        """DEBUG: print finalised transcripts so greedy vs MALSD logs can be diffed."""
-        strategy = "malsd" if self.decoding_computer is not None else "greedy"
-        for sid in sorted(ready_state_ids):
-            state = self.get_state(sid)
-            print(
-                f"[CMP][FINAL] strategy={strategy} stream={sid} text={state.final_transcript!r}",
-                flush=True,
-            )
-
-    def _debug_print_partials(self, requests: list[Request]) -> None:
-        """DEBUG: print partial / current-step transcripts so greedy vs MALSD logs can be diffed."""
-        strategy = "malsd" if self.decoding_computer is not None else "greedy"
-        for req in requests:
-            state = self.get_state(req.stream_id)
-            print(
-                f"[CMP][PARTIAL] strategy={strategy} stream={req.stream_id} "
-                f"partial={state.partial_transcript!r} step={state.current_step_transcript!r}",
-                flush=True,
-            )
 
     def transcribe_step_for_feature_buffers(self, fbuffers: list[FeatureBuffer]) -> None:
         """

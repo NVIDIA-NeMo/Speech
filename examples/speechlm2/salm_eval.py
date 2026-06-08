@@ -87,6 +87,99 @@ class SalmEvalConfig:
     ep_size: int = 1
     pp_size: int = 1
     cp_size: int = 1
+    # When True and the model has an MTP head, report the estimated average
+    # acceptance length (how many speculative tokens would be accepted per step).
+    report_mtp_acceptance: bool = False
+
+
+@torch.no_grad()
+def _compute_mtp_acceptance(model, answer_ids: torch.Tensor) -> Optional[dict]:
+    """Estimate MTP acceptance length on a batch of generated sequences.
+
+    Runs the LLM in teacher-forced mode on ``answer_ids``, activates the MTP
+    head (which requires ``model.llm.training=True``), and computes per-depth
+    prediction accuracy.  Returns ``None`` when the model has no MTP head,
+    when distributed FSDP2 sharding is active (DTensor forward outside a
+    collective is unsupported), or when the sequences are too short.
+
+    Acceptance-length formula (geometric approximation, depth-independent):
+        E[accept_len] ≈ Σ_{d=0}^{D-1}  Π_{k=0}^{d} accuracy_k
+
+    where ``accuracy_k`` = fraction of positions where MTP depth k correctly
+    predicted the actual next token.
+
+    Args:
+        model: SALMAutomodel with ``_mtp_enabled=True``.
+        answer_ids: ``[B, T]`` tensor of generated token IDs (no prompt tokens).
+
+    Returns:
+        Dict with keys ``per_depth_accuracy`` (list[float]) and
+        ``avg_acceptance_length`` (float), or ``None``.
+    """
+    if not getattr(model, '_mtp_enabled', False):
+        return None
+    if getattr(model, '_use_fsdp', False):
+        # DTensor forward outside a collective context is unsupported.
+        return None
+    llm = model.llm
+    if getattr(llm, 'mtp', None) is None:
+        return None
+
+    B, T = answer_ids.shape
+    D = llm.mtp.num_depths
+    # Need at least D+3 tokens: input slice [0..T-2] + D targets starting at t+2.
+    if T < D + 3:
+        return None
+
+    # Input: positions 0..T-2 → teacher-forced to predict positions 1..T-1.
+    input_ids = answer_ids[:, :-1]  # [B, T-1]
+
+    # Temporarily switch LLM to train mode so the MTP module fires.
+    # Most production models use dropout=0.0, so the forward is deterministic.
+    was_training = llm.training
+    llm.train()
+    try:
+        inputs_embeds = model._embed_tokens(input_ids)
+        out = llm(inputs_embeds=inputs_embeds, input_ids=input_ids, return_dict=True)
+    finally:
+        if not was_training:
+            llm.eval()
+
+    mtp_h = getattr(out, 'mtp_per_depth_h', None)
+    if not mtp_h:
+        return None
+
+    from nemo_automodel.components.loss.utils import _get_lm_head_module
+
+    lm_head = _get_lm_head_module(llm)
+    if lm_head is None:
+        return None
+
+    # MTP depth d, slot i → predicts answer_ids[:, i + d + 2].
+    # Valid slots: 0 .. T - d - 3  (need target at i+d+2 < T).
+    per_depth_accuracy: list[float] = []
+    for d, h_d in enumerate(mtp_h):
+        target_start = d + 2
+        valid_len = T - target_start  # number of valid prediction positions
+        if valid_len <= 0:
+            break
+        logits_d = lm_head(h_d[:, :valid_len])  # [B, valid_len, V]
+        preds_d = logits_d.argmax(-1)  # [B, valid_len]
+        targets = answer_ids[:, target_start : target_start + valid_len]  # [B, valid_len]
+        accuracy = (preds_d == targets).float().mean().item()
+        per_depth_accuracy.append(accuracy)
+
+    if not per_depth_accuracy:
+        return None
+
+    # E[accept_len] = Σ_{d} Π_{k<=d} p_k  (geometric approximation)
+    avg_accept_len = 0.0
+    cumulative = 1.0
+    for p in per_depth_accuracy:
+        cumulative *= p
+        avg_accept_len += cumulative
+
+    return {'per_depth_accuracy': per_depth_accuracy, 'avg_acceptance_length': avg_accept_len}
 
 
 @hydra_runner(config_name="SalmEvalConfig", schema=SalmEvalConfig)
@@ -161,6 +254,10 @@ def main(cfg: SalmEvalConfig):
     hyps = []
     input_durations = []
     infer_durations = []
+    # MTP acceptance tracking: list of per-batch avg_acceptance_length values.
+    mtp_accept_lengths: list[float] = []
+    _report_mtp = cfg.report_mtp_acceptance and getattr(model, '_mtp_enabled', False)
+
     for batch_idx, batch in enumerate(dloader):
         ts = perf_counter()
         answer_ids = model.generate(
@@ -183,6 +280,18 @@ def main(cfg: SalmEvalConfig):
         batch_hyps = [
             normalizer(model.tokenizer.ids_to_text(parse_hyp(ans, eos_tokens)).strip()) for ans in answer_ids
         ]
+
+        if _report_mtp:
+            mtp_stats = _compute_mtp_acceptance(model, answer_ids.to(model.device))
+            if mtp_stats is not None:
+                mtp_accept_lengths.append(mtp_stats['avg_acceptance_length'])
+                if cfg.verbose:
+                    depth_acc = ", ".join(f"{p:.3f}" for p in mtp_stats['per_depth_accuracy'])
+                    logging.info(
+                        f"Batch {batch_idx}: MTP depth accuracies=[{depth_acc}] "
+                        f"avg_accept_len={mtp_stats['avg_acceptance_length']:.3f}"
+                    )
+
         if cfg.verbose:
             batch_wer, _, nins, ndel, nsub = word_error_rate_detail(batch_hyps, batch_refs)
             batch_rtfx = batch_duration / batch_infer_duration
@@ -198,7 +307,11 @@ def main(cfg: SalmEvalConfig):
     wer, _, nins, ndel, nsub = word_error_rate_detail(hypotheses=hyps, references=refs, use_cer=False)
     rtfx = sum(input_durations) / sum(infer_durations)
     logging.info(f"WER: {wer:.2%} [ins={nins:.2%} del={ndel:.2%} sub={nsub:.2%}]")
-    logging.info(f"RTFx: {rtfx:.1f}")
+    # RTFx is baseline inference speed (no MTP speculative decoding).
+    logging.info(f"RTFx (baseline, no speculative decoding): {rtfx:.1f}")
+    if mtp_accept_lengths:
+        avg_accept = sum(mtp_accept_lengths) / len(mtp_accept_lengths)
+        logging.info(f"MTP avg acceptance length: {avg_accept:.3f}")
 
     with _create_output_writer(cfg.output_manifest) as writer:
         for cut, ref, hyp in zip(cuts, refs, hyps):

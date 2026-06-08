@@ -912,6 +912,9 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         llm = self.llm
         cfg_obj = llm.config
         cfg_obj.mtp_hybrid_override_pattern = str(mtp_cfg.get("hybrid_override_pattern", "*"))
+        # Persist depth count on the HF config so save_llm_backbone_config()
+        # writes a config.json that vLLM can use to instantiate MTP heads.
+        cfg_obj.num_nextn_predict_layers = int(mtp_cfg.get("num_nextn_predict_layers", 1))
         mtp_config = build_mtp_config_from_hf(
             cfg_obj,
             loss_scaling_factor=self._mtp_loss_scaling_factor,

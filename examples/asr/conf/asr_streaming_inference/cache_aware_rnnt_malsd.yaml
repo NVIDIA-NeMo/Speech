@@ -96,9 +96,6 @@ streaming:
   chunk_size_in_secs: null                    # Amount of audio to load for each streaming step, e.g., 0.08s for FastConformer. Set to `null` for using default size equal to 1+lookahead frames.
   request_type: frame                         # Type of request: frame or feature_buffer
   num_slots: 256                              # Number of slots in the context manager: must be >= batch_size
-  chunks_per_beam_reset: 20                   # MALSD: number of chunks between full K-beam collapses to a single top-1 hypothesis.
-                                              # 1 (default) reproduces per-chunk collapse behaviour; higher values preserve beam
-                                              # diversity across multiple chunks before collapsing.
 
 
 # ========================

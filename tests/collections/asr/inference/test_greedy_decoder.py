@@ -84,6 +84,55 @@ class TestRNNTGreedyDecoder:
         assert decoder.count_silent_tokens([0, 1, 2, 3, 4], 0, 3) == 0
         assert decoder.first_non_silent_token([1, 2, 3, 4], 0, 5) == 0
 
+    @pytest.mark.unit
+    def test_call_confidence_passthrough(self):
+        """Per-token confidences are propagated to the output, aligned with the decoded tokens."""
+        decoder = RNNTGreedyDecoder(["a", "b", "c", "d"])
+
+        output, _, new_offset = decoder(
+            global_timestamps=torch.tensor([0, 1, 2, 3]),
+            tokens=torch.tensor([0, 1, 2, 3]),
+            length=5,
+            offset=0,
+            confidences=torch.tensor([0.9, 0.8, 0.7, 0.6]),
+        )
+
+        assert output["tokens"] == [0, 1, 2, 3]
+        assert output["confidences"] == pytest.approx([0.9, 0.8, 0.7, 0.6])
+        assert new_offset == 4
+
+    @pytest.mark.unit
+    def test_call_confidence_trimmed_by_offset(self):
+        """Confidences are trimmed by `offset` together with tokens/timestamps."""
+        decoder = RNNTGreedyDecoder(["a", "b", "c", "d"])
+
+        output, _, _ = decoder(
+            global_timestamps=torch.tensor([0, 1, 2, 3]),
+            tokens=torch.tensor([0, 1, 2, 3]),
+            length=5,
+            offset=2,
+            confidences=[0.9, 0.8, 0.7, 0.6],
+        )
+
+        assert output["tokens"] == [2, 3]
+        assert output["confidences"] == pytest.approx([0.7, 0.6])
+
+    @pytest.mark.unit
+    def test_call_confidence_defaults_to_zero(self):
+        """Without confidences, zeros are returned for each decoded token (backward compatible)."""
+        decoder = RNNTGreedyDecoder(["a", "b", "c", "d"])
+
+        output, _, _ = decoder(
+            global_timestamps=torch.tensor([0, 1, 2, 3]),
+            tokens=torch.tensor([0, 1, 2, 3]),
+            length=5,
+            offset=0,
+            confidences=None,
+        )
+
+        assert output["tokens"] == [0, 1, 2, 3]
+        assert output["confidences"] == [0.0, 0.0, 0.0, 0.0]
+
 
 class TestClippedRNNTGreedyDecoder:
 

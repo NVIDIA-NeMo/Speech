@@ -38,6 +38,7 @@ class RNNTGreedyDecoder(GreedyDecoder):
         tokens: torch.Tensor | list[int],
         length: int,
         offset: int = 0,
+        confidences: torch.Tensor | list[float] | None = None,
     ) -> tuple[dict, list[int], int]:
         """
         Decode the RNNT hypothesis using timestamps
@@ -46,6 +47,8 @@ class RNNTGreedyDecoder(GreedyDecoder):
             tokens (torch.Tensor | list[int]): tokens since the start of the stream
             length (int): length of the alignment
             offset (int): offset to apply to the timestamps to make them local
+            confidences (torch.Tensor | list[float] | None): per-token (non-blank) confidence scores aligned
+                with `tokens`. If None, zero confidence is returned for each decoded token.
         Returns:
             tuple[dict, list[int], int]:
                 output: dictionary containing the decoded tokens, timestamps, and confidences
@@ -56,6 +59,8 @@ class RNNTGreedyDecoder(GreedyDecoder):
             global_timestamps = torch.tensor(global_timestamps)
         if isinstance(tokens, list):
             tokens = torch.tensor(tokens)
+        if isinstance(confidences, torch.Tensor):
+            confidences = confidences.tolist()
 
         output = {"tokens": [], "timesteps": [], "confidences": [], "last_token": None, "last_token_idx": None}
         cur_labels = [self.blank_id] * length
@@ -63,16 +68,21 @@ class RNNTGreedyDecoder(GreedyDecoder):
         if offset > 0:
             trimmed_tokens = tokens[offset:].tolist()
             trimmed_timestamps = global_timestamps[offset:].tolist()
+            trimmed_confidences = confidences[offset:] if confidences is not None else None
         else:
             trimmed_tokens = tokens.tolist()
             trimmed_timestamps = global_timestamps.tolist()
+            trimmed_confidences = confidences
 
         if len(trimmed_tokens) == 0:
             return output, cur_labels, new_offset
 
         output["tokens"].extend(trimmed_tokens)
         output["timesteps"].extend(trimmed_timestamps)
-        output["confidences"].extend([0.0] * len(trimmed_tokens))
+        if trimmed_confidences is not None:
+            output["confidences"].extend(trimmed_confidences)
+        else:
+            output["confidences"].extend([0.0] * len(trimmed_tokens))
         output["last_token"] = trimmed_tokens[-1]
         output["last_token_idx"] = trimmed_timestamps[-1]
 

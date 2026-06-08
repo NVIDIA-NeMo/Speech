@@ -507,7 +507,7 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
                             prev_batched_state=state,
                             multi_biasing_ids=multi_biasing_ids,
                         )
-                        
+
                         # merge hyps with previous hyps
                         if current_batched_hyps is None:
                             current_batched_hyps = chunk_batched_hyps
@@ -533,7 +533,6 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
                                 is_chunk_continuation=True,
                                 boundary_prev_ptr=chunk_root_ptrs,
                             )
-                        
 
                 # move to next sample
                 rest_audio_lengths -= chunk_lengths_batch

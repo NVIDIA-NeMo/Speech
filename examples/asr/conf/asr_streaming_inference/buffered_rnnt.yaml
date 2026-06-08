@@ -10,6 +10,7 @@ asr:
   decoding:
     strategy: "greedy_batch"
     preserve_alignments: false
+    preserve_frame_confidence: false
     fused_batch_size: -1
     greedy:
       use_cuda_graph_decoder: true

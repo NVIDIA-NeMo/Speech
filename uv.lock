@@ -4360,7 +4360,7 @@ compiled = [
     { name = "nv-grouped-gemm" },
     { name = "onnx-ir" },
     { name = "onnxscript" },
-    { name = "transformer-engine", extra = ["pytorch"], marker = "extra == 'extra-12-nemo-toolkit-compiled' or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13')" },
+    { name = "transformer-engine", extra = ["core-cu13", "pytorch"], marker = "extra == 'extra-12-nemo-toolkit-compiled' or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13')" },
 ]
 compiled-a100 = [
     { name = "causal-conv1d" },
@@ -4369,7 +4369,7 @@ compiled-a100 = [
     { name = "nv-grouped-gemm" },
     { name = "onnx-ir" },
     { name = "onnxscript" },
-    { name = "transformer-engine", extra = ["pytorch"], marker = "extra == 'extra-12-nemo-toolkit-compiled-a100' or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13')" },
+    { name = "transformer-engine", extra = ["core-cu12", "pytorch"], marker = "extra == 'extra-12-nemo-toolkit-compiled-a100' or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13')" },
 ]
 core = [
     { name = "hydra-core" },
@@ -4389,13 +4389,11 @@ cu12 = [
     { name = "numba-cuda", version = "0.13.0", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'darwin' and sys_platform != 'linux' and extra != 'extra-12-nemo-toolkit-compiled' and extra != 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-cu12') or (sys_platform == 'darwin' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (sys_platform == 'linux' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (extra == 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13')" },
     { name = "numba-cuda", version = "0.30.0", source = { registry = "https://pypi.org/simple" }, extra = ["cu12"], marker = "(sys_platform != 'darwin' and extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-cu12') or (sys_platform != 'darwin' and extra == 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-cu12') or (sys_platform == 'linux' and extra != 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-cu12') or (sys_platform == 'linux' and extra != 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-cu12') or (sys_platform == 'darwin' and extra != 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (extra != 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13')" },
     { name = "torch", version = "2.12.0+cu126", source = { registry = "https://download.pytorch.org/whl/cu126" }, marker = "sys_platform == 'linux' or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100')" },
-    { name = "transformer-engine-cu12" },
 ]
 cu13 = [
     { name = "cuda-python", version = "13.2.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'darwin' or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100')" },
     { name = "numba-cuda", version = "0.30.0", source = { registry = "https://pypi.org/simple" }, extra = ["cu13"], marker = "(sys_platform != 'darwin' and extra != 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-cu13') or (sys_platform != 'darwin' and extra != 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-cu13') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13')" },
     { name = "torch", version = "2.12.0+cu132", source = { registry = "https://download.pytorch.org/whl/cu132" }, marker = "sys_platform == 'linux' or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100')" },
-    { name = "transformer-engine-cu13" },
 ]
 lightning = [
     { name = "hydra-core" },
@@ -4738,10 +4736,8 @@ requires-dist = [
     { name = "torchmetrics", marker = "extra == 'speechlm2'", specifier = ">=0.11.0" },
     { name = "torchmetrics", marker = "extra == 'tts'", specifier = ">=0.11.0" },
     { name = "tqdm", specifier = ">=4.41.0" },
-    { name = "transformer-engine", extras = ["pytorch"], marker = "extra == 'compiled'", specifier = "==2.15" },
-    { name = "transformer-engine", extras = ["pytorch"], marker = "extra == 'compiled-a100'", specifier = "==2.15" },
-    { name = "transformer-engine-cu12", marker = "extra == 'cu12'", specifier = "==2.15" },
-    { name = "transformer-engine-cu13", marker = "extra == 'cu13'", specifier = "==2.15" },
+    { name = "transformer-engine", extras = ["core-cu12", "pytorch"], marker = "extra == 'compiled-a100'", specifier = "==2.15" },
+    { name = "transformer-engine", extras = ["core-cu13", "pytorch"], marker = "extra == 'compiled'", specifier = "==2.15" },
     { name = "transformers", marker = "extra == 'all'" },
     { name = "transformers", marker = "extra == 'asr'" },
     { name = "transformers", marker = "extra == 'audio'" },
@@ -9415,6 +9411,12 @@ wheels = [
 ]
 
 [package.optional-dependencies]
+core-cu12 = [
+    { name = "transformer-engine-cu12" },
+]
+core-cu13 = [
+    { name = "transformer-engine-cu13" },
+]
 pytorch = [
     { name = "transformer-engine-torch" },
 ]
@@ -9438,9 +9440,9 @@ name = "transformer-engine-cu13"
 version = "2.15.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "importlib-metadata", marker = "extra == 'extra-12-nemo-toolkit-compiled' or extra == 'extra-12-nemo-toolkit-compiled-a100' or extra == 'extra-12-nemo-toolkit-cu13'" },
-    { name = "packaging", marker = "extra == 'extra-12-nemo-toolkit-compiled' or extra == 'extra-12-nemo-toolkit-compiled-a100' or extra == 'extra-12-nemo-toolkit-cu13'" },
-    { name = "pydantic", marker = "extra == 'extra-12-nemo-toolkit-compiled' or extra == 'extra-12-nemo-toolkit-compiled-a100' or extra == 'extra-12-nemo-toolkit-cu13'" },
+    { name = "importlib-metadata" },
+    { name = "packaging" },
+    { name = "pydantic" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a3/4b/2496a318dbeba8d79e622582d38ef01040f0d27f362b023a2c91950c086a/transformer_engine_cu13-2.15.0-py3-none-manylinux_2_28_aarch64.whl", hash = "sha256:fc386c8b9d7c6ab284dd5c06e7266633402345536eb57c7380433df03f567383", size = 184620920, upload-time = "2026-05-11T17:58:39.136Z" },

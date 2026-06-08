@@ -73,32 +73,24 @@ class CacheAwareRNNTInferenceWrapper(CacheAwareASRInferenceWrapper):
         """
         return self.asr_model.joint.vocabulary
 
-    def execute_step(
+    def encode_step(
         self,
         processed_signal: Tensor,
         processed_signal_length: Tensor,
         context: CacheAwareContext,
-        previous_hypotheses: list[Hypothesis] | None,
         drop_extra_pre_encoded: int | None,
         keep_all_outputs: bool,
         drop_left_context: int | None = None,
         valid_out_len: int | None = None,
-        prompt_vectors: Tensor | None = None,
-    ) -> tuple[list[Hypothesis], CacheAwareContext]:
+    ) -> tuple[Tensor, Tensor, CacheAwareContext]:
         """
-        Executes a single streaming step.
-        Args:
-            processed_signal: (Tensor) input signal tensor.
-            processed_signal_length: (Tensor) input signal length tensor.
-            context: (CacheAwareContext) context object.
-            previous_hypotheses: (list[Hypothesis] | None) list of previous hypotheses for RNNT decoding.
-            drop_extra_pre_encoded: (int | None) number of extra pre-encoded frames to drop.
-            keep_all_outputs: (bool) whether to keep all outputs or not.
-            drop_left_context: (int | None) number of left context frames to drop.
-            valid_out_len: (int | None) number of valid output frames.
-            prompt_vectors: (Tensor | None) Optional prompt vectors of shape [B, num_prompts].
-        Returns:
-            (tuple[list[Hypothesis], CacheAwareContext]) best hypothesis and new context.
+        Run the cache-aware encoder for one streaming chunk, returning the (trimmed)
+        encoder output and updated streaming context. Decoder is NOT invoked.
+
+        Used by :meth:`execute_step` (greedy decoder runs right after) and by
+        beam-search pipelines that drive the decoder themselves with a
+        per-stream beam carry (they call ``encode_step`` directly inside their
+        own ``autocast`` + ``inference_mode`` region).
         """
         (
             encoded,
@@ -130,6 +122,45 @@ class CacheAwareRNNTInferenceWrapper(CacheAwareASRInferenceWrapper):
             # drop right context if any
             encoded = encoded[:, :, :valid_out_len]
             encoded_len = torch.ones_like(encoded_len) * valid_out_len
+
+        return encoded, encoded_len, new_context
+
+    def execute_step(
+        self,
+        processed_signal: Tensor,
+        processed_signal_length: Tensor,
+        context: CacheAwareContext,
+        previous_hypotheses: list[Hypothesis] | None,
+        drop_extra_pre_encoded: int | None,
+        keep_all_outputs: bool,
+        drop_left_context: int | None = None,
+        valid_out_len: int | None = None,
+        prompt_vectors: Tensor | None = None,
+    ) -> tuple[list[Hypothesis], CacheAwareContext]:
+        """
+        Executes a single streaming step.
+        Args:
+            processed_signal: (Tensor) input signal tensor.
+            processed_signal_length: (Tensor) input signal length tensor.
+            context: (CacheAwareContext) context object.
+            previous_hypotheses: (list[Hypothesis] | None) list of previous hypotheses for RNNT decoding.
+            drop_extra_pre_encoded: (int | None) number of extra pre-encoded frames to drop.
+            keep_all_outputs: (bool) whether to keep all outputs or not.
+            drop_left_context: (int | None) number of left context frames to drop.
+            valid_out_len: (int | None) number of valid output frames.
+            prompt_vectors: (Tensor | None) Optional prompt vectors of shape [B, num_prompts].
+        Returns:
+            (tuple[list[Hypothesis], CacheAwareContext]) best hypothesis and new context.
+        """
+        encoded, encoded_len, new_context = self.encode_step(
+            processed_signal=processed_signal,
+            processed_signal_length=processed_signal_length,
+            context=context,
+            drop_extra_pre_encoded=drop_extra_pre_encoded,
+            keep_all_outputs=keep_all_outputs,
+            drop_left_context=drop_left_context,
+            valid_out_len=valid_out_len,
+        )
 
         best_hyp = self.asr_model.decoding.rnnt_decoder_predictions_tensor(
             encoded, encoded_len, return_hypotheses=True, partial_hypotheses=previous_hypotheses

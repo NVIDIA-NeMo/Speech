@@ -14,7 +14,7 @@ asr:
     greedy:
       use_cuda_graph_decoder: false  # Disabled due to issues with decoding
       enable_per_stream_biasing: true  # Per-stream biasing in decoder
-      preserve_frame_confidence: false
+      preserve_frame_confidence: false  # Set to true to calculate confidence (token/word etc.)
       max_symbols: 10
       # n-gram LM
       ngram_lm_model: null  # The path to built '.nemo' NGPU-LM model

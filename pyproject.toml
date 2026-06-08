@@ -234,18 +234,19 @@ cu12 = [
     "torch==2.12.0+cu126 ; sys_platform == 'linux'",
     "numba-cuda[cu12] ; platform_system != 'Darwin'",
     "cuda-python>=12,<13 ; platform_system != 'Darwin'",
+    "transformer-engine[pytorch,core_cu12]==2.15"
 ]
 
 cu13 = [
     "torch==2.12.0+cu132 ; sys_platform == 'linux'",
     "numba-cuda[cu13] ; platform_system != 'Darwin'",
     "cuda-python>=13,<14 ; platform_system != 'Darwin'",
+    "transformer-engine[pytorch,core_cu13]==2.15"
 ]
 
 compiled = [
     "onnx-ir==0.2.1",
     "onnxscript==0.7.0",
-    "transformer-engine==2.15",
     "deep_ep==1.2.1",
     "nv-grouped-gemm==1.1.4.post8",
     "causal-conv1d==1.6.2.post1",
@@ -258,7 +259,6 @@ compiled = [
 compiled-a100 = [
     "onnx-ir==0.2.1",
     "onnxscript==0.7.0",
-    "transformer-engine==2.15",
     "nv-grouped-gemm==1.1.4.post8",
     "causal-conv1d==1.6.2.post1",
     "mamba-ssm==2.3.2.post1",
@@ -458,6 +458,7 @@ no-build-isolation-package = [
     "mamba-ssm",
     "nv-grouped-gemm",
     "transformer-engine",
+    "transformer-engine-torch"
 ]
 
 # --- uv configuration ---

@@ -1462,7 +1462,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                     dropout_conditional_input=False,
                 )
             )
-                
+
             # Store full context embedding and lens before any CFG manipulation
             full_context_embedding = context_embedding.clone()  # (B, T_max, E)
             full_context_lens = context_lens.clone()  # (B,)
@@ -1635,7 +1635,6 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             if prefill_like_step:
                 # Advance logical streams, keep audio silent, but predict phonemes if enabled.
                 state.context_position += needs_context.long()
-                advance_text = (~needs_context).long()
                 state.text_tokens_seen += (~needs_context).long()
 
                 if hasattr(state, "turn_text_tokens_seen"):
@@ -1824,7 +1823,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 else:
                     first_phoneme_step = needs_phoneme & (state.phoneme_steps == 0)
                     has_last_phoneme = needs_phoneme & (~first_phoneme_step) & (state.last_phoneme_tokens is not None)
-                    
+
                     if first_phoneme_step.any():
                         phoneme_bos = torch.full(
                             (batch_size, self.phoneme_stacking_factor, 1),
@@ -1918,50 +1917,6 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             next_input = torch.cat([next_input, next_input_unconditional], dim=0)
 
         return next_input, needs_context, needs_phoneme, needs_audio
-
-
-    def _embed_one_text_step(
-        self,
-        tokens: torch.Tensor,  # (B,)
-        force_dropout_text: bool = False,
-    ) -> torch.Tensor:
-        """
-        Embed one text step. Returns (B, 1, E).
-        """
-        device = tokens.device
-        tokens_2d = tokens.unsqueeze(1)
-
-        if self.cfg.get("disable_subword_embedding", False):
-            text_embedded = torch.zeros(
-                tokens_2d.size(0),
-                1,
-                self.cfg.embedding_dim,
-                dtype=next(self.parameters()).dtype,
-                device=device,
-            )
-        else:
-            text_embedded = self.decoder.get_input_embeddings()(tokens_2d)
-
-        is_pad = tokens_2d == self.pad_id
-
-        if self.use_bpe_char_tokenizer:
-            if self.cfg.get("use_multiturn_dataset", False):
-                text_mask = ~is_pad
-            else:
-                text_mask = torch.ones_like(tokens_2d, dtype=torch.bool)
-
-            text_embedded = text_embedded + self.cas_encoder(
-                tokens_2d,
-                subword_mask=text_mask,
-            )
-
-        if force_dropout_text:
-            text_embedded = text_embedded * 0.0
-
-        if self.cfg.get("use_multiturn_dataset", False):
-            text_embedded[is_pad] = 0.0
-
-        return text_embedded
 
 
     def _process_predictions(

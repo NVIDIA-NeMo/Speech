@@ -355,8 +355,8 @@ py-modules = ["nemo"]
 nemo_speechlm = "nemo.collections.speechlm2.vllm.salm:register"
 
 [project.urls]
-Download = "https://github.com/NVIDIA/NeMo/releases"
-Homepage = "https://github.com/nvidia/nemo"
+Download = "https://github.com/NVIDIA-NeMo/NeMo/releases"
+Homepage = "https://github.com/NVIDIA-NeMo/NeMo"
 
 [tool.isort]
 profile = "black"  # black-compatible

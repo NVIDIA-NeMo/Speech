@@ -8,60 +8,51 @@ This page covers how to install NVIDIA NeMo for speech AI tasks (ASR, TTS, speak
 Prerequisites
 -------------
 
-Before installing NeMo, ensure you have:
+NeMo Speech works with the **Python, PyTorch, and CUDA versions of your choosing**:
 
-#. **Python** 3.12 or above
-#. **PyTorch** 2.7+ (install **before** NeMo so CUDA wheels match your GPU driver)
-#. **NVIDIA GPU** (required for training; CPU-only inference is possible but slow)
+#. **Python** 3.10 or above
+#. **PyTorch** 2.6 or above
+#. **NVIDIA GPU + CUDA** (required for training; CPU-only inference is possible but slow)
 
-Recommended installation order
-------------------------------
+.. admonition:: Bring your own Python / PyTorch / CUDA
+   :class: important
 
-Install dependencies in this order when setting up a **local GPU** environment:
+   The recommended install path is uv (below), which gives you our actively-tested stack. But NeMo Speech can also install *on top of* an existing environment: the ``nemo-toolkit`` package only requires ``torch>=2.6``, so if you already have a Python, PyTorch, and CUDA stack, your pre-installed PyTorch is **kept, not replaced** (see :ref:`the pip fallback <install-from-pypi>`).
 
-#. Create and activate a Python environment.
-#. Install a **CUDA toolkit** (or rely on a driver + PyTorch bundle that matches your CUDA major version).
-#. Install **PyTorch** (and torchvision if you need it) from the index that matches your CUDA build.
-#. Install **NeMo** (from PyPI or editable source) **with the extras** for the collections you need (``asr``, ``tts``, etc.).
+   The versions pinned in ``uv.lock`` and shipped in the official container — **Python 3.13, PyTorch 2.12, CUDA 12.6/13.2** — are simply the combination we actively test and support. They make setup turnkey and reproducible, but they are **not** a hard requirement.
 
-Putting PyTorch in place first avoids mismatched CUDA runtimes and makes NeMo’s optional GPU-dependent packages resolve correctly.
+.. note::
 
-**Example (conda + pip, CUDA 13.0 PyTorch wheels):**
+   As of `PyTorch 2.6 <https://docs.pytorch.org/docs/stable/notes/serialization.html#torch-load-with-weights-only-true>`_, ``torch.load`` defaults to ``weights_only=True``. Some checkpoints require ``weights_only=False``; in that case set ``TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1`` before loading, and only with trusted files (loading untrusted files with full pickle support risks arbitrary code execution).
 
-.. code-block:: bash
+.. _install-from-source:
 
-   # 1) New environment (adjust Python version if your platform requires it)
-   conda create -n nemo python=3.12 -y
-   conda activate nemo
+Install from Source with uv (recommended)
+------------------------------------------
 
-   # 2) CUDA toolkit from conda (optional if you already have a compatible toolkit via the driver)
-   conda install nvidia::cuda-toolkit
-
-   # 3) PyTorch built for CUDA 13.x — change cu130 / URL if you use cu124 or CPU-only
-   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu130
-
-   # 4) NeMo: use extras for ASR/TTS/etc. For a clone of the repo, use editable install (see below)
-   pip install nemo_toolkit[asr,tts]
-
-Adjust the PyTorch ``--index-url`` (e.g. ``cu124``, ``cu121``, or CPU) to match `PyTorch’s install matrix <https://pytorch.org/get-started/locally/>`_ and your NVIDIA driver.
-
-Install from PyPI
------------------
-
-The quickest way to install NeMo is via pip. Install only the collections you need:
+The recommended way to install NeMo Speech is from source with `uv <https://docs.astral.sh/uv/>`_, which reproduces our actively-tested stack from the committed ``uv.lock``:
 
 .. code-block:: bash
 
-   # Install ASR and TTS (most common)
-   pip install nemo_toolkit[asr,tts]
+   git clone https://github.com/NVIDIA-NeMo/NeMo.git
+   cd NeMo
 
-   # Install everything speech-related
-   pip install nemo_toolkit[asr,tts,audio]
+   # CUDA 13.x (recommended). Use --extra cu12 for CUDA 12.x. uv resolves the
+   # matching PyTorch CUDA wheel automatically from the pinned indexes.
+   uv sync --extra all --extra cu13
 
-Available extras:
+   # Optional: add the test suite tooling, or the docs build dependencies
+   # uv sync --extra all --extra cu13 --group test
+   # uv sync --group docs
+
+``uv sync`` creates a virtual environment in ``.venv/`` with NeMo installed in editable mode, matching our supported stack (Python 3.13, PyTorch 2.12, CUDA 13.2 by default). Run commands with ``uv run <cmd>`` or activate the environment with ``source .venv/bin/activate``.
+
+On Linux, pass exactly one of ``--extra cu13`` (recommended) or ``--extra cu12`` — they are mutually exclusive. If you omit both, uv installs the generic PyPI PyTorch wheel instead of NVIDIA's CUDA-matched build.
+
+Available collection extras (combine with one CUDA extra above):
 
 .. list-table::
-   :widths: 15 85
+   :widths: 18 82
    :header-rows: 1
 
    * - Extra
@@ -72,32 +63,106 @@ Available extras:
      - Text-to-Speech models, vocoders, and audio codecs
    * - ``audio``
      - Audio processing models (enhancement, separation)
+   * - ``speechlm2``
+     - Speech language models (includes NeMo Automodel)
+   * - ``all``
+     - All of the collections above
+   * - ``cu12`` / ``cu13``
+     - Our pinned CUDA 12.x / 13.x PyTorch build (Linux; pick at most one)
 
-.. _install-from-source:
+.. note::
 
-Install from Source
--------------------
+   ``test`` and ``docs`` are dependency *groups* (PEP 735), not extras. Install them with ``--group`` (e.g. ``uv sync --group test``) — the bracket form ``.[test]`` does not work.
 
-For the latest development version or if you plan to contribute, clone the repository and install in editable mode.
+.. _install-compiled-extras:
 
-The ``test`` extra pulls in **pytest and tooling for the test suite**. It does **not** install NeMo collection dependencies (ASR, TTS, audio, etc.). Add those extras explicitly or imports like ``nemo.collections.asr`` will fail.
+Optional compiled dependencies for SpeechLM2 / Automodel (``compiled`` / ``compiled-a100``)
+-------------------------------------------------------------------------------------------
+
+The Automodel backend used for SpeechLM2 **does not require any compiled dependencies — it runs without them.** The ``compiled`` and ``compiled-a100`` extras are an *optional* performance add-on: when their source-built GPU kernels are installed, Automodel can route to dedicated accelerated backends (FP8 Transformer kernels via Transformer Engine, FlashAttention, Mamba/state-space layers, and Mixture-of-Experts ops). They contain:
+
+.. list-table::
+   :widths: 30 70
+   :header-rows: 1
+
+   * - Package
+     - Purpose
+   * - ``transformer-engine``
+     - NVIDIA Transformer Engine — FP8 and accelerated Transformer kernels
+   * - ``flash-attn``
+     - FlashAttention attention kernels
+   * - ``mamba-ssm`` + ``causal-conv1d``
+     - Mamba / state-space-model kernels (hybrid Mamba architectures)
+   * - ``nv-grouped-gemm``
+     - Grouped GEMM kernels for Mixture-of-Experts (MoE) layers
+   * - ``deep_ep`` (DeepEP)
+     - Expert-parallel communication kernels for MoE (``compiled`` only — see below)
+   * - ``onnx-ir`` + ``onnxscript``
+     - Pinned ONNX export tooling
+
+Choose the variant that matches your GPU (the two are mutually exclusive):
+
+* ``compiled`` — Hopper/Blackwell and newer (SM90/SM100/SM120, e.g. H100/H200/B200). Includes DeepEP.
+* ``compiled-a100`` — Ampere A100 (SM80). Omits DeepEP, which requires a separately-built, patched version on A100.
+
+.. warning::
+
+   These packages **build from source** and need a full CUDA build environment — build tools, matching ``TORCH_CUDA_ARCH_LIST`` / ``NVTE_CUDA_ARCHS`` flags, ``--no-build-isolation``, and (for ``compiled``) extra manual build steps that the Dockerfile performs (e.g. flash-attn-4 and DeepEP patches). The supported, reproducible way to get them is the container build, which sets all of this up for you:
+
+   .. code-block:: bash
+
+      # Hopper/Blackwell (default GPU_TARGET=h100plus → compiled)
+      docker buildx build -f docker/Dockerfile -t nemo-speech .
+
+      # Ampere A100 (GPU_TARGET=a100 → compiled-a100)
+      docker buildx build -f docker/Dockerfile \
+        --build-arg BASE_IMAGE=nvcr.io/nvidia/cuda-dl-base:25.06-cuda12.9-devel-ubuntu24.04 \
+        --build-arg GPU_TARGET=a100 -t nemo-speech .
+
+   A bare ``uv sync --extra all --extra cu13 --extra compiled`` outside this environment will likely fail to compile.
+
+Using Docker (turnkey, our supported stack)
+--------------------------------------------
+
+.. note::
+
+   **NGC container:** *Coming soon — the pull command for the prebuilt NeMo Speech container image will be published here.*
+
+To build the container from source, use the provided ``docker/Dockerfile`` (CUDA 13 / H100+ by default):
 
 .. code-block:: bash
 
-   git clone https://github.com/NVIDIA/NeMo.git
+   git clone https://github.com/NVIDIA-NeMo/NeMo.git
    cd NeMo
+   docker buildx build -f docker/Dockerfile -t nemo-speech .
 
-   # After PyTorch is installed (see Recommended installation order above):
-   # Collections you need for development (required for nemo.collections.* imports)
-   pip install -e '.[asr,tts]'
+See the header of ``docker/Dockerfile`` for CUDA 12 / A100 build arguments (``BASE_IMAGE``, ``GPU_TARGET``).
 
-   # Optional: add test to run pytest with NeMo’s dev test dependencies
-   # pip install -e '.[asr,tts,test]'
+.. _install-from-pypi:
 
-Using Docker
-------------
+Install from PyPI with pip (fallback — bring your own versions)
+---------------------------------------------------------------
 
-NVIDIA provides Docker containers with NeMo pre-installed. Check the `NeMo GitHub releases <https://github.com/NVIDIA/NeMo/releases>`_ for the latest container tags.
+Prefer your own Python/PyTorch/CUDA? Install your preferred PyTorch first (any version ≥ 2.6, built for your CUDA — see `PyTorch's install matrix <https://pytorch.org/get-started/locally/>`_), then add NeMo with the collections you need. Because ``nemo-toolkit`` only requires ``torch>=2.6``, your pre-installed PyTorch is kept, not replaced:
+
+.. code-block:: bash
+
+   # 1) Your choice of PyTorch (example: CUDA 12.6 build). Skip if you already have one.
+   pip install torch --index-url https://download.pytorch.org/whl/cu126
+
+   # 2) NeMo — your PyTorch above is kept
+   pip install nemo_toolkit[asr,tts]        # also: [asr,tts,audio], [speechlm2], etc.
+
+To have pip install our pinned PyTorch build instead, add the matching CUDA extra **and** the PyTorch wheel index. pip does not read uv's index configuration, so the ``--extra-index-url`` is required:
+
+.. code-block:: bash
+
+   pip install 'nemo-toolkit[asr,tts,cu13]' --extra-index-url https://download.pytorch.org/whl/cu132   # CUDA 13.x
+   pip install 'nemo-toolkit[asr,tts,cu12]' --extra-index-url https://download.pytorch.org/whl/cu126   # CUDA 12.x
+
+.. tip::
+
+   Prefer a conda environment? Create and activate one (``conda create -n nemo python=3.10 -y && conda activate nemo``), then run the same ``uv`` or ``pip`` commands above inside it. NeMo Speech does not require a separate conda CUDA toolkit or a manual ``torchvision`` install.
 
 Verify Installation
 -------------------

@@ -8,13 +8,9 @@ NeMo Speech — toolkit for training/deploying speech models (ASR, TTS, Speech L
 
 ## Build & Install
 
-```bash
-pip install -e '.[all]'       # Full dev install
-pip install -e '.[asr]'       # ASR only
-pip install -e '.[test]'      # With test deps
-```
+See the canonical installation guide — [`docs/source/starthere/install.rst`](docs/source/starthere/install.rst) (published at https://docs.nvidia.com/nemo/speech/nightly/) — for the uv, pip (bring-your-own Python/PyTorch/CUDA), Docker, and optional `compiled` (SpeechLM2/Automodel) install paths.
 
-Requires Python 3.10+, PyTorch 2.6+.
+Dev quickstart: `uv sync --extra all --extra cu13` (Python 3.10+, PyTorch 2.6+; `test`/`docs` are `--group`s, not extras).
 
 ## Code Style
 

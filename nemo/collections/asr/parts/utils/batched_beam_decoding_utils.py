@@ -204,6 +204,11 @@ class BatchedBeamHyps:
             # tracking last frame index and number of labels for the last frama
             self.next_timestamp = torch.zeros((batch_size, self.beam_size), device=device, dtype=torch.long)
             self.last_timestamp_lasts = torch.zeros((batch_size, self.beam_size), device=device, dtype=torch.long)
+            if self.model_type == ASRModelTypeEnum.TDT:
+                # Per-step label durations; timestamps store end times during decoding.
+                self.token_durations = torch.zeros(
+                    (batch_size, self.beam_size, self._max_length), device=device, dtype=torch.long
+                )
 
     def clear_(self):
         """
@@ -232,6 +237,8 @@ class BatchedBeamHyps:
             self.timestamps.fill_(0)
             self.next_timestamp.fill_(0)
             self.last_timestamp_lasts.fill_(0)
+            if self.model_type == ASRModelTypeEnum.TDT:
+                self.token_durations.fill_(0)
 
     def export_cross_chunk_state(self, batch_size: Optional[int] = None) -> dict[str, Optional[torch.Tensor]]:
         """
@@ -312,6 +319,8 @@ class BatchedBeamHyps:
         if self.model_type != ASRModelTypeEnum.CTC:
             new_hyps.next_timestamp.copy_(self.next_timestamp[:out_batch])
             new_hyps.last_timestamp_lasts.copy_(self.last_timestamp_lasts[:out_batch])
+            if self.model_type == ASRModelTypeEnum.TDT:
+                new_hyps.token_durations.copy_(self.token_durations[:out_batch])
         return new_hyps
 
     def get_last_labels(self, pad_id: int = -1) -> torch.Tensor:
@@ -344,6 +353,8 @@ class BatchedBeamHyps:
             self.timestamps = self._create_timestamps_tensor(2 * self._max_length)
         else:
             self.timestamps = torch.cat((self.timestamps, torch.zeros_like(self.timestamps)), dim=-1)
+            if self.model_type == ASRModelTypeEnum.TDT:
+                self.token_durations = torch.cat((self.token_durations, torch.zeros_like(self.token_durations)), dim=-1)
 
         self._max_length *= 2
 
@@ -437,6 +448,11 @@ class BatchedBeamHyps:
                 self.ZERO_TENSOR,
                 torch.gather(self.last_timestamp_lasts, dim=-1, index=next_indices) + extended_with_label,
                 out=self.last_timestamp_lasts,
+            )
+            self.token_durations.scatter_(
+                dim=-1,
+                index=self.current_lengths_wb.unsqueeze(-1),
+                src=torch.where(is_extended, next_label_durations, 0).unsqueeze(-1).to(self.token_durations.dtype),
             )
 
         self.current_lengths_nb.copy_(
@@ -590,6 +606,23 @@ class BatchedBeamHyps:
         to_update_mask = torch.logical_and(active_mask, self.scores != INACTIVE_SCORE)
         self.scores = torch.where(to_update_mask, torch.logaddexp(self.scores, prefix_label_logps), self.scores)
 
+    def _export_hypothesis_timestamps(
+        self,
+        beam_timestamps: torch.Tensor,
+        beam_durations: Optional[torch.Tensor],
+        mask: torch.Tensor,
+    ) -> tuple:
+        """Convert internal beam timestamps into Hypothesis timestamp fields."""
+        end_times = beam_timestamps[mask]
+        if self.model_type == ASRModelTypeEnum.TDT:
+            durations = beam_durations[mask]
+            start_times = end_times - durations
+            return (
+                start_times.cpu().detach().numpy(),
+                durations.cpu().detach().numpy(),
+            )
+        return end_times.cpu().detach().numpy(), None
+
     def to_hyps_list(self, score_norm: bool = True) -> list[Hypothesis]:
         """
         Converts the batched beam search results into a list of signle best hypotheses for each batch.
@@ -606,19 +639,25 @@ class BatchedBeamHyps:
         max_idx = self.current_lengths_wb.max() - 1
         timestamps = self.timestamps[..., 0, : max_idx + 1]
         transcripts = self.transcript_wb[..., 0, : max_idx + 1]
-        hypotheses = [
-            Hypothesis(
-                score=scores[batch_idx],
-                y_sequence=transcripts[batch_idx][mask := self._create_transcripts_mask(transcripts[batch_idx])]
-                .cpu()
-                .detach()
-                .numpy(),
-                timestamp=timestamps[batch_idx][mask].cpu().detach().numpy(),
-                alignments=None,
-                dec_state=None,
+        durations = (
+            self.token_durations[..., 0, : max_idx + 1] if self.model_type == ASRModelTypeEnum.TDT else None
+        )
+        hypotheses = []
+        for batch_idx in range(self.batch_size):
+            mask = self._create_transcripts_mask(transcripts[batch_idx])
+            timestamp, token_duration = self._export_hypothesis_timestamps(
+                timestamps[batch_idx], durations[batch_idx] if durations is not None else None, mask
             )
-            for batch_idx in range(self.batch_size)
-        ]
+            hypotheses.append(
+                Hypothesis(
+                    score=scores[batch_idx],
+                    y_sequence=transcripts[batch_idx][mask].cpu().detach().numpy(),
+                    timestamp=timestamp,
+                    token_duration=token_duration,
+                    alignments=None,
+                    dec_state=None,
+                )
+            )
         return hypotheses
 
     def to_nbest_hyps_list(self, score_norm: bool = True) -> list[NBestHypotheses]:
@@ -638,27 +677,32 @@ class BatchedBeamHyps:
         max_idx = self.current_lengths_wb.max() - 1
         transcripts = self.transcript_wb[..., : max_idx + 1]
         timestamps = self.timestamps[..., : max_idx + 1]
-        hypotheses = [
-            NBestHypotheses(
-                [
+        durations = (
+            self.token_durations[..., : max_idx + 1] if self.model_type == ASRModelTypeEnum.TDT else None
+        )
+        hypotheses = []
+        for batch_idx in range(self.batch_size):
+            nbest = []
+            for beam_idx in range(self.beam_size):
+                if scores[batch_idx][beam_idx] <= INACTIVE_SCORE:
+                    continue
+                mask = self._create_transcripts_mask(transcripts[batch_idx][beam_idx])
+                timestamp, token_duration = self._export_hypothesis_timestamps(
+                    timestamps[batch_idx][beam_idx],
+                    durations[batch_idx][beam_idx] if durations is not None else None,
+                    mask,
+                )
+                nbest.append(
                     Hypothesis(
                         score=scores[batch_idx][beam_idx],
-                        y_sequence=transcripts[batch_idx][beam_idx][
-                            mask := self._create_transcripts_mask(transcripts[batch_idx][beam_idx])
-                        ]
-                        .cpu()
-                        .detach()
-                        .numpy(),
-                        timestamp=timestamps[batch_idx][beam_idx][mask].cpu().detach().numpy(),
+                        y_sequence=transcripts[batch_idx][beam_idx][mask].cpu().detach().numpy(),
+                        timestamp=timestamp,
+                        token_duration=token_duration,
                         alignments=None,
                         dec_state=None,
                     )
-                    for beam_idx in range(self.beam_size)
-                    if scores[batch_idx][beam_idx] > INACTIVE_SCORE
-                ]
-            )
-            for batch_idx in range(self.batch_size)
-        ]
+                )
+            hypotheses.append(NBestHypotheses(nbest))
         return hypotheses
 
     def flatten_sort_(self, score_norm: bool = True):
@@ -729,6 +773,10 @@ class BatchedBeamHyps:
             self.transcript_wb[..., idx].copy_(self.transcript_wb[self.batch_indices.unsqueeze(-1), ptrs, idx])
             if self.model_type == ASRModelTypeEnum.TDT or self.model_type == ASRModelTypeEnum.RNNT:
                 self.timestamps[..., idx].copy_(self.timestamps[self.batch_indices.unsqueeze(-1), ptrs, idx])
+                if self.model_type == ASRModelTypeEnum.TDT:
+                    self.token_durations[..., idx].copy_(
+                        self.token_durations[self.batch_indices.unsqueeze(-1), ptrs, idx]
+                    )
             ptrs = self.transcript_wb_prev_ptr[self.batch_indices.unsqueeze(-1), ptrs, idx]
         self.transcript_wb_prev_ptr[..., : max_idx + 1].copy_(self.beam_indices.unsqueeze(0).unsqueeze(-1))
 
@@ -890,6 +938,12 @@ class BatchedBeamHyps:
             index=shifted_indices,
             src=other.timestamps[..., :max_other_len],
         )
+        if self.model_type == ASRModelTypeEnum.TDT:
+            self.token_durations.scatter_(
+                dim=-1,
+                index=shifted_indices,
+                src=other.token_durations[..., :max_other_len],
+            )
 
         # Lengths in the chunk-local write cursor are always additive (``other`` always
         # reports a chunk-local ``current_lengths_wb``).

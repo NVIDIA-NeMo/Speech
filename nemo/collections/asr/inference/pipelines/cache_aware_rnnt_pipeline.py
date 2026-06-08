@@ -663,27 +663,6 @@ class CacheAwareRNNTPipeline(BasePipeline):
                             biasing_multi_model=self.greedy_decoding_computer.biasing_multi_model
                         )
 
-    def _debug_print_finals(self, ready_state_ids: set) -> None:
-        """DEBUG: print finalised transcripts so greedy vs MALSD logs can be diffed."""
-        strategy = "malsd" if self.decoding_computer is not None else "greedy"
-        for sid in sorted(ready_state_ids):
-            state = self.get_state(sid)
-            print(
-                f"[CMP][FINAL] strategy={strategy} stream={sid} text={state.final_transcript!r}",
-                flush=True,
-            )
-
-    def _debug_print_partials(self, requests: list[Request]) -> None:
-        """DEBUG: print partial / current-step transcripts so greedy vs MALSD logs can be diffed."""
-        strategy = "malsd" if self.decoding_computer is not None else "greedy"
-        for req in requests:
-            state = self.get_state(req.stream_id)
-            print(
-                f"[CMP][PARTIAL] strategy={strategy} stream={req.stream_id} "
-                f"partial={state.partial_transcript!r} step={state.current_step_transcript!r}",
-                flush=True,
-            )
-
     def transcribe_step_for_feature_buffers(self, fbuffers: list[FeatureBuffer]) -> None:
         """
         Transcribes the feature buffers in a streaming manner.
@@ -722,11 +701,9 @@ class CacheAwareRNNTPipeline(BasePipeline):
 
         if len(ready_state_ids) > 0:
             self.text_processor.process([self.get_state(stream_id) for stream_id in ready_state_ids])
-            self._debug_print_finals(ready_state_ids)
             ready_state_ids.clear()
 
         self.update_partial_transcript(fbuffers, self.tokenizer, self.leading_regex_pattern)
-        self._debug_print_partials(fbuffers)
 
     def transcribe_step_for_frames(self, frames: list[Frame]) -> None:
         """
@@ -770,11 +747,9 @@ class CacheAwareRNNTPipeline(BasePipeline):
         # post-process the ready states
         if len(ready_state_ids) > 0:
             self.text_processor.process([self.get_state(stream_id) for stream_id in ready_state_ids])
-            self._debug_print_finals(ready_state_ids)
             ready_state_ids.clear()
 
         self.update_partial_transcript(frames, self.tokenizer, self.leading_regex_pattern)
-        self._debug_print_partials(frames)
 
     def get_request_generator(self) -> ContinuousBatchedRequestStreamer:
         """

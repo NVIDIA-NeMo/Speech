@@ -36,8 +36,13 @@ Key parameters:
     train_ds:
       manifest_filepath: ???
       session_len_sec: 90
-      soft_label_thres: 0.5
       # ...
+
+    preprocessor:
+      _target_: nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor
+      normalize: "per_feature"
+      window_stride: 0.01
+      features: 80
 
     encoder:
       n_layers: 18
@@ -75,16 +80,19 @@ The Streaming Sortformer config extends the offline config with ``streaming_mode
       fc_d_model: 512
       tf_d_model: 192
 
+    preprocessor:
+      _target_: nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor
+      normalize: "NA"  # Required for streaming (no per-feature normalization)
+      window_stride: 0.01
+      features: 128
+
     sortformer_modules:
       num_spks: ${model.max_num_of_spks}
       # Streaming-specific parameters
       spkcache_len: 188          # Length of speaker cache buffer (frames for all speakers)
       chunk_len: 188             # Number of frames processed per streaming chunk
-      spkcache_update_period: 188
-      chunk_left_context: 1
+       chunk_left_context: 1
       chunk_right_context: 1
-      pred_score_threshold: 0.25
-      sil_threshold: 0.2
       # ...
 
     encoder:

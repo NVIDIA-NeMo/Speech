@@ -34,9 +34,9 @@ Types of Speaker Diarization Systems
 
 1. End-to-End Speaker Diarization System:
 
-End-to-end speaker diarization systems pursue a much more simplified version of a system where a single neural network model accepts raw audio signals and outputs speaker activity for each audio frame. Therefore, end-to-end diarization models have an advantage in ease of optimization and depoloyments.
+End-to-end speaker diarization systems pursue a much more simplified version of a system where a single neural network model accepts raw audio signals and outputs speaker activity for each audio frame. Therefore, end-to-end diarization models have an advantage in ease of optimization and deployments.
 
-Curently, NeMo Speech AI provides the following end-to-end speaker diarization models:
+Currently, NeMo Speech AI provides the following end-to-end speaker diarization models:
 
 - **Sortformer Diarizer** : A transformer-based model that estimates speaker labels from the given audio input giving the speaker indexes in arrival-time order.
 
@@ -59,8 +59,8 @@ Curently, NeMo Speech AI provides the following end-to-end speaker diarization m
 
 2. Cascaded Speaker Diarization System:
 
-Traditional cascaded (also referred to as modular or pipelined) speaker diarization systems consist of multiple modules such as a speaker activity detection (SAD) module and a speaker embedding extractor module.
-On top of the clustering diarizer, target-speaker voice activity detection (VAD) is performed to generate the final speaker labels. Cascaded speaker diarization systems are more challenging to optimize all together and deploy but still has advantage of having less restriction on the number of speakers and session length.
+Traditional cascaded (also referred to as modular or pipelined) speaker diarization systems consist of multiple modules such as voice activity detection (VAD), speaker embedding extraction, and clustering.
+Cascaded speaker diarization systems are more challenging to optimize and deploy together but still have the advantage of fewer restrictions on the number of speakers and session length.
 
 Cascaded NeMo Speech AI speaker diarization system consists of the following modules:
 
@@ -69,8 +69,6 @@ Cascaded NeMo Speech AI speaker diarization system consists of the following mod
 - **Speaker Embedding Extractor**: A trainable model that extracts speaker embedding vectors containing voice characteristics from raw audio signal.
 
 - **Clustering Module**: A non-trainable module that groups speaker embedding vectors into a number of clusters.
-
-- **Neural Diarizer (TS-VAD)**: A trainable model that estimates speaker labels from the given features. In general, this module is performing target-speaker VAD task to generate the final speaker labels.
 
 .. list-table::
    :header-rows: 1
@@ -88,10 +86,6 @@ Cascaded NeMo Speech AI speaker diarization system consists of the following mod
    * - Clustering Module
      - Spectral Clustering
      - Non-trainable (no checkpoint)
-   * - Neural Diarizer (TS-VAD)
-     - MSDD
-     - `NGC <https://ngc.nvidia.com/catalog/models/nvidia:nemo:diar_msdd_telephonic>`__
-
 
 
 The full documentation tree is as follows:

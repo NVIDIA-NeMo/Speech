@@ -346,6 +346,7 @@ class RequestResult:
     text: str = ""
     prompt_len: int = 0
     num_generated: int = 0  # decoded frames (engine tokens) up to EOS
+    delta_frames: int = 0  # decode frames consumed as per-step deltas (should match num_generated)
     audio_frames: int = 0  # codec frames of real audio (post speech-delay, pre-EOS)
     audio_s: float = 0.0  # synthesized audio duration in seconds
     steps: int = 0
@@ -407,6 +408,31 @@ def _extract_request_output(stage_output):
     return getattr(stage_output, "request_output", stage_output)
 
 
+def _new_audio_frames(payload, prev_num_tokens: int, cur_num_tokens: int):
+    """Return the decode frames new since the previous step as a ``(k, C*S)`` tensor.
+
+    Under ``RequestOutputKind.DELTA`` the engine exposes ``audio_codes`` as a
+    *growing list* during decode — ``[prefill_prefix, frame_0, frame_1, ...]`` —
+    where element 0 is the prefill prefix and element ``1 + d`` is decode frame
+    ``d`` (each a ``(1, C*S)`` tensor). The new frames are therefore the list
+    elements past the previously consumed count. The prefill (first) and final
+    (consolidated) steps yield a cumulative *tensor* instead, whose newest
+    ``n_new`` rows are the new frames. Returns ``None`` when there is nothing new.
+    """
+    import torch
+
+    n_new = cur_num_tokens - prev_num_tokens
+    if n_new <= 0:
+        return None
+    if isinstance(payload, list):
+        chunks = [c for c in payload[1 + prev_num_tokens : 1 + cur_num_tokens] if isinstance(c, torch.Tensor)]
+        chunks = [c for c in chunks if c.numel() > 0]
+        return torch.cat(chunks, dim=0) if chunks else None
+    if isinstance(payload, torch.Tensor) and payload.shape[0] >= n_new:
+        return payload[-n_new:]
+    return None
+
+
 async def run_one_request(
     omni,
     prompt: dict,
@@ -419,10 +445,16 @@ async def run_one_request(
     """Submit one TTS request, collect per-token timing and audio length.
 
     Each engine step yields one decoded frame (one layer-0 token). We time the
-    first token (TTFT) and the gaps between subsequent tokens (ITL). The audio
-    EOS lives in codebook 0 of the accumulated ``audio_codes`` (not in the vLLM
-    token stream), so we watch the newest decoded frame and stop at the EOS
-    frame to recover the real synthesized length.
+    first token (TTFT) and the gaps between subsequent tokens (ITL).
+
+    **Delta consumption.** The request runs in ``RequestOutputKind.DELTA``, so the
+    engine exposes ``multimodal_output["audio_codes"]`` as a *growing list* during
+    decode — ``[prefill_prefix, frame_0, frame_1, ...]`` — appending one
+    ``(1, C*S)`` frame per step instead of re-sending the whole cumulative tensor.
+    We consume only the frames new since the previous step (see
+    :func:`_new_audio_frames`). The audio EOS lives in the codebooks (not the vLLM
+    token stream), so we scan only those delta frames and stop at the EOS frame to
+    recover the real synthesized length.
     """
     import torch
 
@@ -431,6 +463,7 @@ async def run_one_request(
     t_last_token = None
     prev_num_tokens = 0
     eos_decode_idx = None  # 0-based decode-frame index where audio EOS appears
+    delta_frames_total = 0  # decode frames consumed as per-step deltas (sanity check)
 
     try:
         gen = omni.generate(
@@ -459,23 +492,26 @@ async def run_one_request(
                     result.inter_token_latencies.append(now - t_last_token)
                 t_last_token = now
 
-                # Audio-EOS detection on the newest decoded frame. The accumulated
-                # audio_codes hold (T_ctx prefill + decode) rows; the last row is
-                # the newest decoded frame. Only meaningful past the speech delay.
+                # ── Delta: process only the audio frames produced *this step* ──
+                # DELTA mode appends one (1, C*S) frame per step to the audio_codes
+                # list, so we pull just the frames new since the previous step.
                 mm = getattr(stage_output, "multimodal_output", None) or {}
-                audio_codes = mm.get("audio_codes")
-                newest_frame_idx = cur_num_tokens - 1  # 0-based decode-frame index
-                if (
-                    eos_decode_idx is None
-                    and newest_frame_idx >= meta.speech_delay
-                    and isinstance(audio_codes, torch.Tensor)
-                    and audio_codes.numel() > 0
-                ):
-                    # audio EOS in ANY codebook (not just codebook 0) — mirrors the
-                    # reference EOS check and the model's own stop signal.
-                    if bool((audio_codes[-1] == meta.audio_eos_id).any()):
-                        eos_decode_idx = newest_frame_idx
-                        result.eos_reached = True
+                new_frames = _new_audio_frames(mm.get("audio_codes"), prev_num_tokens, cur_num_tokens)
+                if new_frames is not None and new_frames.numel() > 0:
+                    delta_frames_total += int(new_frames.shape[0])
+                    # Audio-EOS detection scans only the delta frames. EOS in ANY
+                    # codebook (not just codebook 0) — mirrors the reference EOS
+                    # check and the model's own stop signal. Only meaningful past
+                    # the speech delay.
+                    if eos_decode_idx is None:
+                        for j in range(new_frames.shape[0]):
+                            frame_idx = prev_num_tokens + j  # 0-based decode-frame index
+                            if frame_idx < meta.speech_delay:
+                                continue
+                            if bool((new_frames[j] == meta.audio_eos_id).any()):
+                                eos_decode_idx = frame_idx
+                                result.eos_reached = True
+                                break
 
                 prev_num_tokens = cur_num_tokens
 
@@ -485,6 +521,7 @@ async def run_one_request(
         t_end = time.perf_counter()
         result.e2e_s = t_end - t_start
         result.num_generated = prev_num_tokens
+        result.delta_frames = delta_frames_total
         result.success = True
 
         if result.ttft_s == 0.0 and result.steps > 0:
@@ -643,6 +680,7 @@ def compute_and_print_metrics(
             "e2e_ms": r.e2e_s * 1000,
             "rtx": r.rtx,
             "num_generated": r.num_generated,
+            "delta_frames": r.delta_frames,
             "audio_frames": r.audio_frames,
             "audio_s": r.audio_s,
             "eos_reached": r.eos_reached,
@@ -727,6 +765,7 @@ def compute_and_print_metrics(
 
 async def main(args):
     from vllm import SamplingParams
+    from vllm.sampling_params import RequestOutputKind
     from vllm_omni import AsyncOmni
 
     model_name = args.model
@@ -814,6 +853,11 @@ async def main(args):
         # any codebook), so vLLM stops the request there instead of decoding the
         # full budget. stop_token_ids is honored even with ignore_eos.
         stop_token_ids=[meta.stop_token_id],
+        # DELTA: surface audio_codes as a *growing list* of per-step frame deltas
+        # during decode (element 0 = prefill prefix, element 1+d = decode frame d)
+        # instead of re-sending the whole cumulative tensor every step. This is the
+        # same streaming-consumption pattern the Triton deployment uses.
+        output_kind=RequestOutputKind.DELTA,
     )
 
     try:

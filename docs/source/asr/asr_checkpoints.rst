@@ -172,10 +172,10 @@ Cache-aware models for real-time / low-latency inference.
      - Capabilities
      - Language
      - Size
-   * - `nemotron-speech-streaming-en-0.6b <https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b>`__
+   * - `nemotron-3.5-asr-streaming-0.6b <https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b>`__
      - Hybrid
      - ASR, streaming
-     - English
+     - 40 languages
      - 0.6B
    * - `multitalker-parakeet-streaming-0.6b-v1 <https://huggingface.co/nvidia/multitalker-parakeet-streaming-0.6b-v1>`__
      - RNN-T

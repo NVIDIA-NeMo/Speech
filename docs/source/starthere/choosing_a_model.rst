@@ -25,8 +25,8 @@ ASR: Which Model Should I Use?
      - `Parakeet-TDT 0.6B V3 <https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3>`_
      - 25 European languages in one model; automatic language detection; punctuation, capitalization, and word/segment timestamps; long-form and streaming options. No speech-to-text translation—use Canary-1B V2 if you need translation.
    * - Stream audio in real-time
-     - `Nemotron-Speech-Streaming <https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b>`_
-     - Low-latency streaming English ASR with configurable chunk sizes. Cache-aware FastConformer + RNN-T.
+     - `Nemotron-3.5-ASR-Streaming <https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b>`_
+     - Low-latency streaming ASR with 40 languages, controllable latency (80ms–1s), and configurable chunk sizes. Cache-aware FastConformer.
    * - Minimize model size
      - `Canary-180M Flash <https://huggingface.co/nvidia/canary-180m-flash>`_
      - Smallest multilingual model. Good for edge deployment.
@@ -96,33 +96,6 @@ Speech Language Models: Which Model Should I Use?
    * - Build a speech-to-speech system
      - DuplexS2SModel
      - Full-duplex model that both understands and generates speech.
-
-
-Decision Flowchart
-------------------
-
-.. code-block:: text
-
-   What do you want to do?
-   │
-   ├─ Transcribe speech to text (ASR)
-   │  ├─ Best accuracy on English? → Canary-Qwen 2.5B (or Parakeet-TDT V2/V3 for fast offline)
-   │  ├─ Multiple languages + translation? → Canary-1B V2
-   │  ├─ European multilingual ASR (auto LID)? → Parakeet-TDT 0.6B V3
-   │  ├─ Stream audio in real-time? → Nemotron-Speech-Streaming
-   │  └─ Multi-speaker meeting? → Multitalker Parakeet Streaming
-   │
-   ├─ Generate speech from text (TTS)
-   │  ├─ Multilingual / voice cloning? → MagpieTTS
-   │  └─ English with pitch control? → FastPitch + HiFi-GAN
-   │
-   ├─ Identify speakers
-   │  ├─ Who spoke when? → Streaming Sortformer or Offline Sortformer
-   │  └─ Verify identity? → TitaNet
-   │
-   ├─ Enhance audio quality → See Audio Processing models
-   │
-   └─ Speech-aware LLM → Canary-Qwen 2.5B (SALM)
 
 
 Where to Find Models

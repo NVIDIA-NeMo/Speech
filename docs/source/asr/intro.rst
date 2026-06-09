@@ -72,3 +72,4 @@ Further Reading
    asr_language_modeling_and_customization
    configs
    api
+   featured_community_checkpoints

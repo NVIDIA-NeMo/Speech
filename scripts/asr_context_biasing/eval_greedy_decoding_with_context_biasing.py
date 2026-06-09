@@ -71,9 +71,9 @@ from dataclasses import dataclass, field, is_dataclass
 from pathlib import Path
 from typing import Dict, Optional
 
-import editdistance
 import numpy as np
 import torch
+from kaldialign import edit_distance
 from omegaconf import MISSING, OmegaConf
 from sklearn.model_selection import ParameterGrid
 from tqdm.auto import tqdm
@@ -215,8 +215,8 @@ def decoding_step(
             pred_split_c = list(pred_text)
             target_split_c = list(target_transcripts[batch_idx])
 
-            wer_dist = editdistance.eval(target_split_w, pred_split_w)
-            cer_dist = editdistance.eval(target_split_c, pred_split_c)
+            wer_dist = edit_distance(target_split_w, pred_split_w)['total']
+            cer_dist = edit_distance(target_split_c, pred_split_c)['total']
 
             wer_dist_first += wer_dist
             cer_dist_first += cer_dist
@@ -288,9 +288,9 @@ def decoding_step(
                         pred_text = candidate.text
 
                     pred_split_w = pred_text.split()
-                    wer_dist = editdistance.eval(target_split_w, pred_split_w)
+                    wer_dist = edit_distance(target_split_w, pred_split_w)['total']
                     pred_split_c = list(pred_text)
-                    cer_dist = editdistance.eval(target_split_c, pred_split_c)
+                    cer_dist = edit_distance(target_split_c, pred_split_c)['total']
 
                     if candidate_idx == 0:
                         # first candidate

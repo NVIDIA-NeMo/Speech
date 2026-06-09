@@ -14,11 +14,10 @@
 import copy
 import glob
 
-
-import jiwer
 import lightning.pytorch as ptl
 import pytest
 import torch
+from kaldialign import edit_distance
 from omegaconf import DictConfig, open_dict
 
 from nemo.core.config.pytorch_lightning import TrainerConfig
@@ -27,24 +26,6 @@ from nemo.core.utils.cuda_python_utils import skip_cuda_python_test_if_cuda_grap
 
 # These tests move the model to CUDA before calling transcribe(), so avoid forking DataLoader workers afterwards.
 CUDA_GRAPH_TRANSCRIBE_NUM_WORKERS = 0
-
-
-def test_full_graph_compile_fallback_handles_accelerator_error():
-    from nemo.collections.asr.parts.submodules.transducer_decoding.rnnt_label_looping import (
-        GreedyBatchedRNNTLabelLoopingComputer,
-    )
-
-    accelerator_error = getattr(torch, "AcceleratorError", RuntimeError)
-    computer = GreedyBatchedRNNTLabelLoopingComputer.__new__(GreedyBatchedRNNTLabelLoopingComputer)
-    computer.cuda_graphs_mode = computer.CudaGraphsMode.FULL_GRAPH
-    computer.cuda_graphs_allow_fallback = True
-    partial_graph_compile_calls = []
-    computer._partial_graphs_compile = lambda: partial_graph_compile_calls.append(True)
-
-    computer._fallback_to_no_while_loop_cuda_graphs(accelerator_error("CUDA error: invalid argument"))
-
-    assert computer.cuda_graphs_mode == computer.CudaGraphsMode.NO_WHILE_LOOPS
-    assert partial_graph_compile_calls == [True]
 
 
 def test_forced_full_graph_compile_does_not_fallback():
@@ -57,7 +38,7 @@ def test_forced_full_graph_compile_does_not_fallback():
     computer.cuda_graphs_allow_fallback = False
 
     with pytest.raises(RuntimeError, match="Full CUDA graph decoding failed"):
-        computer._fallback_to_no_while_loop_cuda_graphs(accelerator_error("CUDA error: invalid argument"))
+        computer._raise_or_warn_no_while_loop_cuda_graphs(accelerator_error("CUDA error: invalid argument"))
 
 
 @pytest.mark.with_downloads
@@ -108,7 +89,11 @@ def test_cuda_graph_rnnt_greedy_decoder(model_name, batch_size, enable_bfloat16,
     fast_transcripts = [hyp.text for hyp in fast_hypotheses]
     fast_y_sequences = [hyp.y_sequence for hyp in fast_hypotheses]
 
-    wer = jiwer.wer(actual_transcripts, fast_transcripts)
+    total_dist = sum(
+        edit_distance(r.split(), h.split())['total'] for r, h in zip(actual_transcripts, fast_transcripts)
+    )
+    total_words = sum(len(r.split()) for r in actual_transcripts)
+    wer = total_dist / total_words if total_words > 0 else 0.0
     y_sequence_eq = [torch.equal(act_y, fast_y) for (act_y, fast_y) in zip(actual_y_sequences, fast_y_sequences)]
 
     assert wer <= 1e-3, "Cuda graph greedy decoder should match original decoder implementation."
@@ -175,7 +160,11 @@ def test_loop_labels_cuda_graph_rnnt_greedy_decoder_forced_mode(
             )
         fast_transcripts = [hyp.text for hyp in fast_hypotheses]
 
-        wer = jiwer.wer(actual_transcripts, fast_transcripts)
+        total_dist = sum(
+            edit_distance(r.split(), h.split())['total'] for r, h in zip(actual_transcripts, fast_transcripts)
+        )
+        total_words = sum(len(r.split()) for r in actual_transcripts)
+        wer = total_dist / total_words if total_words > 0 else 0.0
 
         assert wer <= 1e-3, "Cuda graph greedy decoder should match original decoder implementation."
 

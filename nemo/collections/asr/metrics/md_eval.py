@@ -13,8 +13,8 @@
 # limitations under the License.
 
 """
-This script is mostly a Python port of the NIST 'md-eval' (version 22) 
-Perl script originally found in the dscore repository: 
+This script is mostly a Python port of the NIST 'md-eval' (version 22)
+Perl script originally found in the dscore repository:
 https://github.com/nryant/dscore/blob/master/scorelib/md-eval-22.pl
 
 Original Author: NIST (National Institute of Standards and Technology)

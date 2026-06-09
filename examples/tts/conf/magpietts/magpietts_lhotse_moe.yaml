@@ -75,6 +75,7 @@ model:
     use_lhotse: ${model.use_lhotse}
     volume_norm: true
     min_duration: 0.2
+    max_duration: 20.0
     min_context_speaker_similarity: 0.6
     max_cer: 0.03
     batch_duration: ???  # in seconds. Adjust based on your GPU memory.
@@ -107,6 +108,7 @@ model:
     use_lhotse: ${model.use_lhotse}
     volume_norm: true
     min_duration: 0.2
+    max_duration: 20.0
     min_context_speaker_similarity: 0.6
     max_cer: 0.03
     batch_duration: ???   # recommend to use smaller batch_duration for validation dataset than training dataset.

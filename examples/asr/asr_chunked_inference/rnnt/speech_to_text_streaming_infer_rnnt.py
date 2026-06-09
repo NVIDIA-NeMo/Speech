@@ -75,6 +75,9 @@ from tqdm.auto import tqdm
 from nemo.collections.asr.models import EncDecHybridRNNTCTCModel, EncDecRNNTModel
 from nemo.collections.asr.parts.context_biasing.biasing_multi_model import BiasingRequestItemConfig
 from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTDecodingConfig
+from nemo.collections.asr.parts.submodules.rnnt_maes_batched_computer import ModifiedAESBatchedRNNTComputer
+from nemo.collections.asr.parts.submodules.rnnt_malsd_batched_computer import ModifiedALSDBatchedRNNTComputer
+from nemo.collections.asr.parts.submodules.tdt_malsd_batched_computer import ModifiedALSDBatchedTDTComputer
 from nemo.collections.asr.parts.submodules.transducer_decoding.label_looping_base import (
     GreedyBatchedLabelLoopingComputerBase,
 )
@@ -84,6 +87,7 @@ from nemo.collections.asr.parts.utils.rnnt_utils import BatchedHyps, batched_hyp
 from nemo.collections.asr.parts.utils.streaming_utils import (
     AudioBatch,
     ContextSize,
+    DynamicLengthTensor,
     SimpleAudioDataset,
     StreamingBatchedAudioBuffer,
 )
@@ -155,8 +159,15 @@ class TranscriptionConfig:
     decoding: RNNTDecodingConfig = field(default_factory=RNNTDecodingConfig)
     # Per-utterance biasing with biasing config in the manifest
     use_per_stream_biasing: bool = False
+    # simulated decoding (False by default) for faster experiments
+    # + experiments with different decoding algorithms not yet implemented in streaming
+    # encoder is evaluated on chunks, output is concatenated and decoded at one step
+    # expected to provide the same results if the decoding strategy supports
+    # streaming decoding without additional heuristics (e.g., pruning between steps)
+    simulated: bool = False
 
     timestamps: bool = False  # output timestamps
+    confidence: bool = False  # output word confidence
 
     # Config for word / character error rate calculation
     calculate_wer: bool = True
@@ -229,19 +240,34 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
     asr_model.to(compute_dtype)
 
     use_per_stream_biasing = cfg.use_per_stream_biasing
+    use_simulated_decoding = cfg.simulated
 
     # Change Decoding Config
-    with open_dict(cfg.decoding):
-        if cfg.decoding.strategy != "greedy_batch" or cfg.decoding.greedy.loop_labels is not True:
-            raise NotImplementedError(
-                "This script currently supports only `greedy_batch` strategy with Label-Looping algorithm"
-            )
-        cfg.decoding.tdt_include_token_duration = cfg.timestamps
-        cfg.decoding.greedy.preserve_alignments = False
-        cfg.decoding.fused_batch_size = -1  # temporarily stop fused batch during inference.
-        cfg.decoding.beam.return_best_hypothesis = True  # return and write the best hypothsis only
-        if use_per_stream_biasing:
-            cfg.decoding.greedy.enable_per_stream_biasing = use_per_stream_biasing
+    if use_simulated_decoding:
+        # simulated decoding: any config allowed, do not change config
+        with open_dict(cfg.decoding):
+            if cfg.decoding.strategy != "greedy_batch" or cfg.decoding.greedy.loop_labels is not True:
+                logging.warning(
+                    f"Using {cfg.decoding.strategy} in simulated decoding."
+                    " Only greedy_batch with label-looping fully supports"
+                    " non-simulated streaming decoding for now."
+                )
+    else:
+        with open_dict(cfg.decoding):
+            if cfg.decoding.strategy == "greedy_batch" and cfg.decoding.greedy.loop_labels is not True:
+                raise NotImplementedError(
+                    "This script supports `greedy_batch` strategy only with Label-Looping algorithm"
+                )
+            cfg.decoding.tdt_include_token_duration = cfg.timestamps
+            cfg.decoding.greedy.preserve_alignments = False
+            cfg.decoding.fused_batch_size = -1  # temporarily stop fused batch during inference.
+            cfg.decoding.beam.return_best_hypothesis = True  # return and write the best hypothsis only
+            if use_per_stream_biasing:
+                cfg.decoding.greedy.enable_per_stream_biasing = use_per_stream_biasing
+            if cfg.confidence:
+                cfg.decoding.greedy.preserve_frame_confidence = True
+                cfg.decoding.confidence_cfg.preserve_frame_confidence = True
+                cfg.decoding.confidence_cfg.preserve_word_confidence = True
 
     # Setup decoding strategy
     if hasattr(asr_model, 'change_decoding_strategy'):
@@ -278,7 +304,20 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
     asr_model.preprocessor.featurizer.pad_to = 0
     asr_model.eval()
 
-    decoding_computer: GreedyBatchedLabelLoopingComputerBase = asr_model.decoding.decoding.decoding_computer
+    try:
+        if cfg.decoding.strategy == "greedy_batch":
+            decoding_computer: GreedyBatchedLabelLoopingComputerBase = asr_model.decoding.decoding.decoding_computer
+        elif cfg.decoding.strategy == "malsd_batch":
+            decoding_computer = asr_model.decoding.decoding.decoding_computer
+        elif cfg.decoding.strategy == "maes_batch":
+            decoding_computer: ModifiedAESBatchedRNNTComputer = asr_model.decoding.decoding.decoding_computer
+        else:
+            raise ValueError(f"Unsupported decoding strategy: {cfg.decoding.strategy}")
+    except AttributeError:
+        decoding_computer = None
+
+    if (not use_simulated_decoding) or use_per_stream_biasing:
+        assert decoding_computer is not None
 
     audio_sample_rate = model_cfg.preprocessor['sample_rate']
 
@@ -393,6 +432,12 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
                 device=device,
             )
             rest_audio_lengths = audio_batch_lengths.clone()
+            encoder_output_aggregated: DynamicLengthTensor | None = None
+
+            is_beam_search = isinstance(
+                decoding_computer,
+                (ModifiedALSDBatchedRNNTComputer, ModifiedAESBatchedRNNTComputer, ModifiedALSDBatchedTDTComputer),
+            )
 
             # iterate over audio samples
             while left_sample < audio_batch.shape[1]:
@@ -423,28 +468,90 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
                 encoder_context_batch = buffer.context_size_batch.subsample(factor=encoder_frame2audio_samples)
                 # remove left context
                 encoder_output = encoder_output[:, encoder_context.left :]
-
-                # decode only chunk frames
-                chunk_batched_hyps, _, state = decoding_computer(
-                    x=encoder_output,
-                    out_len=torch.where(
-                        is_last_chunk_batch,
-                        encoder_output_len - encoder_context_batch.left,
-                        encoder_context_batch.chunk,
-                    ),
-                    prev_batched_state=state,
-                    multi_biasing_ids=multi_biasing_ids,
+                encoder_output_len_to_decode = torch.where(
+                    is_last_chunk_batch,
+                    encoder_output_len - encoder_context_batch.left,
+                    encoder_context_batch.chunk,
                 )
-                # merge hyps with previous hyps
-                if current_batched_hyps is None:
-                    current_batched_hyps = chunk_batched_hyps
+
+                if use_simulated_decoding:
+                    # store encoder output (accumulate)
+                    if encoder_output_aggregated is None:
+                        encoder_output_aggregated = DynamicLengthTensor(
+                            batch_size=batch_size,
+                            init_length=encoder_output.shape[1],
+                            dim_shape=encoder_output.shape[2],
+                            device=device,
+                            dtype=compute_dtype,
+                        )
+                    encoder_output_aggregated.append_(data=encoder_output, lengths=encoder_output_len_to_decode)
                 else:
-                    current_batched_hyps.merge_(chunk_batched_hyps)
+                    if not is_beam_search:
+                        # decode only chunk frames
+                        chunk_batched_hyps, state = decoding_computer(
+                            x=encoder_output,
+                            out_len=encoder_output_len_to_decode,
+                            prev_batched_state=state,
+                            multi_biasing_ids=multi_biasing_ids,
+                        )
+
+                        # merge hyps with previous hyps
+                        if current_batched_hyps is None:
+                            current_batched_hyps = chunk_batched_hyps
+                        else:
+                            current_batched_hyps.merge_(chunk_batched_hyps)
+                    else:
+                        chunk_batched_hyps, state = decoding_computer(
+                            x=encoder_output,
+                            out_len=encoder_output_len_to_decode,
+                            prev_batched_state=state,
+                        )
+                        # flatten_ to flatten the prefix tree and link beams to prior chunks in merge_ using root_ptrs.
+                        chunk_root_ptrs = chunk_batched_hyps.flatten_()
+                        if current_batched_hyps is None:
+                            current_batched_hyps = chunk_batched_hyps
+                        else:
+                            current_batched_hyps.merge_(
+                                chunk_batched_hyps,
+                                is_chunk_continuation=True,
+                                boundary_prev_ptr=chunk_root_ptrs,
+                            )
 
                 # move to next sample
                 rest_audio_lengths -= chunk_lengths_batch
                 left_sample = right_sample
                 right_sample = min(right_sample + context_samples.chunk, audio_batch.shape[1])  # add next chunk
+
+            if use_simulated_decoding:
+                # decode aggregated streaming encoder output
+                if decoding_computer is not None:
+                    if not is_beam_search:
+                        current_batched_hyps, _ = decoding_computer(
+                            x=encoder_output_aggregated.data,
+                            out_len=encoder_output_aggregated.lengths,
+                            prev_batched_state=state,
+                            multi_biasing_ids=multi_biasing_ids,
+                        )
+                        all_hyps.extend(batched_hyps_to_hypotheses(current_batched_hyps, batch_size=batch_size))
+                    else:
+                        current_batched_hyps, _ = decoding_computer(
+                            x=encoder_output_aggregated.data,
+                            out_len=encoder_output_aggregated.lengths,
+                            prev_batched_state=state,
+                        )
+                        all_hyps.extend(current_batched_hyps.to_hyps_list(score_norm=True))
+                else:
+                    # no decoding computer, fallback to `asr_model.decoding.decoding`
+                    (cur_hyps,) = asr_model.decoding.decoding(
+                        encoder_output=encoder_output_aggregated.data.transpose(1, 2),
+                        encoded_lengths=encoder_output_aggregated.lengths,
+                    )
+                    all_hyps.extend(cur_hyps)
+            else:
+                if not is_beam_search:
+                    all_hyps.extend(batched_hyps_to_hypotheses(current_batched_hyps, batch_size=batch_size))
+                else:
+                    all_hyps.extend(current_batched_hyps.to_hyps_list(score_norm=True))
 
             # remove biasing requests from the decoder
             if use_per_stream_biasing and audio_data.biasing_requests is not None:
@@ -452,7 +559,6 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
                     if request is not None and request.multi_model_id is not None:
                         decoding_computer.biasing_multi_model.remove_model(request.multi_model_id)
                         request.multi_model_id = None
-            all_hyps.extend(batched_hyps_to_hypotheses(current_batched_hyps, None, batch_size=batch_size))
         timer.stop(device=map_location)
 
     # convert text
@@ -466,6 +572,8 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
                 window_stride=asr_model.cfg['preprocessor']['window_stride'],
             )
             all_hyps[i] = hyp
+    if cfg.confidence:
+        all_hyps = asr_model.decoding.compute_confidence(all_hyps)
 
     if cfg.sort_by_duration:
         # restore order for all_hyps and records (all_hyps are consistent with records)
@@ -475,7 +583,13 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
         records, all_hyps = map(list, zip(*order_restored))
 
     output_filename, pred_text_attr_name = write_transcription(
-        all_hyps, cfg, model_name, filepaths=filepaths, compute_langs=False, timestamps=cfg.timestamps
+        all_hyps,
+        cfg,
+        model_name,
+        filepaths=filepaths,
+        compute_langs=False,
+        timestamps=cfg.timestamps,
+        confidence=cfg.confidence,
     )
     logging.info(f"Finished writing predictions to {output_filename}!")
 

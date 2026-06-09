@@ -19,6 +19,12 @@ Fine-tuning is recommended when:
 If you have a large, diverse dataset and want to train from scratch, see :doc:`Configuration Files <./configs>` for full training setup.
 
 
+Working with an agent?
+----------------------
+
+Check out our latest ``/nemo-speech-finetune-asr`` `agent skill <https://github.com/NVIDIA-NeMo/NeMo/tree/main/.claude/skills/nemo-speech-asr-finetune>`_.
+
+
 Fine-Tuning Script
 ------------------
 
@@ -167,4 +173,4 @@ Tips
 1. **Start with a low learning rate** — fine-tuning with too high a learning rate can destroy pretrained features. Typical fine-tuning LRs are 1e-4 to 1e-5. If your pretrained config uses the Noam (warmup + decay) scheduler, override it with a constant or cosine-annealing schedule to avoid the warmup phase resetting to a high LR.
 2. **Use Lhotse dataloading** for efficient training with dynamic batching. See :doc:`Lhotse Dataloading </dataloaders>`.
 3. **Use spec augmentation** during fine-tuning to improve robustness. See :ref:`Augmentation Configurations <asr-configs-augmentation-configurations>`.
-4. **For multilingual fine-tuning**, use a multilingual tokenizer. NeMo supports two approaches: a **unified multilingual SentencePiece tokenizer** — a single BPE model trained on all target languages (as used by Canary v2/Flash), and an ``AggregateTokenizer`` that combines separate monolingual tokenizers with per-language routing (see :doc:`Configs <./configs>` for the ``agg`` tokenizer setup). For prompt-conditioned multilingual models, see the :ref:`Hybrid model with prompt conditioning <Hybrid-Transducer-CTC-Prompt_model__Config>`.
+4. **For multilingual fine-tuning**, use a multilingual tokenizer. NeMo supports two approaches: a **unified multilingual SentencePiece tokenizer** — a single BPE model trained on all target languages (as used by Canary v2/Flash), and an ``AggregateTokenizer`` that combines separate monolingual tokenizers with per-language routing (see :doc:`Configs <./configs>` for the ``agg`` tokenizer setup). For prompt-conditioned multilingual models, see the :ref:`Hybrid model with prompt conditioning <Hybrid-Transducer-CTC-Prompt_model__Config>` or the :ref:`RNN-T-only streaming variant <RNNT-Prompt_model__Config>`.

@@ -18,13 +18,18 @@ import tempfile
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, NamedTuple, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, List, NamedTuple, Optional, Tuple, Union
 
 import torch
-from jiwer import wer as word_error_rate
+from kaldialign import edit_distance
 from omegaconf import DictConfig
 
 from nemo.collections.asr.parts.utils.wfst_utils import TW_BREAK, kaldifst_importer
+
+if TYPE_CHECKING:
+    import kaldifst
+
+    from nemo.collections.asr.parts.utils.wfst_utils import KaldiWordLattice
 
 RIVA_DECODER_INSTALLATION_MESSAGE = (
     "riva decoder is not installed or is installed incorrectly.\n"
@@ -734,7 +739,10 @@ class RivaGpuWfstDecoder(AbstractWFSTDecoder):
         for lm_weight in range(1, 21):  # enough for most cases
             self.lm_weight = lm_weight / 10
             hypotheses = self.decode(log_probs, log_probs_length)
-            wer = word_error_rate([" ".join(h[0].words) for h in hypotheses], reference_texts)
+            hyps = [" ".join(h[0].words) for h in hypotheses]
+            total_dist = sum(edit_distance(r.split(), h.split())['total'] for r, h in zip(reference_texts, hyps))
+            total_words = sum(len(r.split()) for r in reference_texts)
+            wer = total_dist / total_words if total_words > 0 else float('inf')
             print(lm_weight, wer)
             if wer < best_wer:
                 best_lm_weight, best_wer = self.lm_weight, wer

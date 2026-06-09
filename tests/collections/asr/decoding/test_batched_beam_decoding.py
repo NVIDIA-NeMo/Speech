@@ -17,9 +17,9 @@ import glob
 import os
 from pathlib import Path
 
-import jiwer
 import pytest
 import torch
+from kaldialign import edit_distance
 from omegaconf import open_dict
 from tqdm import tqdm
 
@@ -670,7 +670,7 @@ class TestTransducerCudaGraphBeamDecoding:
         # transcribe with use implementation with cuda graphs
         decoding_config["beam"]["allow_cuda_graphs"] = True
         model.change_decoding_strategy(decoding_config)
-        model.decoding.decoding._decoding_computer.force_cuda_graphs_mode(mode=force_mode)
+        model.decoding.decoding.decoding_computer.force_cuda_graphs_mode(mode=force_mode)
 
         cudagraph_hypotheses = model.transcribe(test_audio_filenames, batch_size=batch_size, num_workers=None)
         cudagraph_transcripts = [[hyp.text for hyp in cudagraphs_beam] for cudagraphs_beam in cudagraph_hypotheses]
@@ -686,11 +686,13 @@ class TestTransducerCudaGraphBeamDecoding:
                 cudagraph_timestamps[batch_idx] == actual_timestamps[batch_idx]
             ), f"Timestamps mismatch for batch_idx {batch_idx}"
 
-            wer = jiwer.wer(actual_transcripts[batch_idx], cudagraph_transcripts[batch_idx])
-
-            assert wer <= 1e-3, "Cuda graph greedy decoder should match original decoder implementation."
-
             for actual, fast in zip(actual_transcripts[batch_idx], cudagraph_transcripts[batch_idx]):
+                ref_words = actual.split()
+                hyp_words = fast.split()
+                wer = edit_distance(ref_words, hyp_words)['total'] / max(len(ref_words), 1)
+
+                assert wer <= 1e-3, "Cuda graph beam decoder should match original decoder implementation."
+
                 if actual != fast:
                     print("Erroneous samples in batch:", batch_idx)
                     print("Original transcript:", actual)
@@ -731,7 +733,7 @@ class TestTransducerCudaGraphBeamDecoding:
             # transcribe with use implementation with cuda graphs
             decoding_config["beam"]["allow_cuda_graphs"] = True
             model.change_decoding_strategy(decoding_config)
-            model.decoding.decoding._decoding_computer.force_cuda_graphs_mode(mode=force_mode)
+            model.decoding.decoding.decoding_computer.force_cuda_graphs_mode(mode=force_mode)
 
             with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=True):
                 model.transcribe(test_audio_filenames, batch_size=batch_size, num_workers=None)

@@ -15,8 +15,8 @@
 from itertools import permutations
 from typing import List, Tuple
 
-import editdistance
 import numpy as np
+from kaldialign import edit_distance
 from scipy.optimize import linear_sum_assignment as scipy_linear_sum_assignment
 
 __all__ = [
@@ -72,7 +72,7 @@ def calculate_session_cpWER_bruteforce(spk_hypothesis: List[str], spk_reference:
         total_errors = 0
         hyp_texts = []
         for ref_idx, hyp_idx in enumerate(perm):
-            total_errors += editdistance.eval(ref_word_lists[ref_idx], hyp_word_lists[hyp_idx])
+            total_errors += edit_distance(ref_word_lists[ref_idx], hyp_word_lists[hyp_idx])['total']
             hyp_texts.append(spk_hypothesis[hyp_idx] if hyp_idx < num_hyp else "")
         if total_errors < best_total_errors:
             best_total_errors = total_errors
@@ -136,7 +136,7 @@ def calculate_session_cpWER(spk_hypothesis: List[str], spk_reference: List[str])
     cost_matrix = np.zeros((num_speakers_padded, num_speakers_padded), dtype=np.float64)
     for ref_idx in range(num_speakers_padded):
         for hyp_idx in range(num_speakers_padded):
-            cost_matrix[ref_idx, hyp_idx] = editdistance.eval(ref_word_lists[ref_idx], hyp_word_lists[hyp_idx])
+            cost_matrix[ref_idx, hyp_idx] = edit_distance(ref_word_lists[ref_idx], hyp_word_lists[hyp_idx])['total']
 
     row_ind, col_ind = scipy_linear_sum_assignment(cost_matrix)
 

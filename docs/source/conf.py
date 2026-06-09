@@ -15,10 +15,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import glob
 import os
 import re
 import sys
-import glob
 
 # If extensions (or modules to document with autodoc) are in another directory,
 # add these directories to sys.path here. If the directory is relative to the
@@ -42,14 +42,11 @@ autodoc_mock_imports = [
     'torch.utils.data.sampler',
     'torchtext',
     'torchvision',
-    'ruamel.yaml',  # ruamel.yaml has ., which is troublesome for this regex
     'hydra',  # hydra-core in requirements, hydra during import
-    'dateutil',  # part of core python
     'transformers.tokenization_bert',  # has ., troublesome for this regex
     'sklearn',  # scikit_learn in requirements, sklearn in import
     'nemo_text_processing.inverse_text_normalization',  # Not installed automatically
     'nemo_text_processing.text_normalization',  # Not installed automatically
-    'attr',  # attrdict in requirements, attr in import
     'torchmetrics',  # inherited from PTL
     'lightning_utilities',  # inherited from PTL
     'lightning_fabric',
@@ -146,8 +143,8 @@ bibtex_bibfiles = [
 ]
 
 intersphinx_mapping = {
-    'pytorch': ('https://pytorch.org/docs/stable', None),
-    'pytorch-lightning': ('https://pytorch-lightning.readthedocs.io/en/latest/', None),
+    'pytorch': ('https://docs.pytorch.org/docs/stable', None),
+    'pytorch-lightning': ('https://lightning.ai/docs/pytorch/latest/', None),
 }
 
 # Set default flags for all classes.

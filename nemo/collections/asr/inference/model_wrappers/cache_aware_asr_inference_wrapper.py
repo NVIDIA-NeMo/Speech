@@ -55,7 +55,7 @@ class CacheAwareASRInferenceWrapper(ASRInferenceWrapper):
         Returns:
             (tuple[Tensor, Tensor, Tensor]) the initial cache state of the encoder.
         """
-        return self.asr_model.encoder.get_initial_cache_state(batch_size=batch_size)
+        return self.asr_model.encoder.get_initial_cache_state(batch_size=batch_size, dtype=self.cast_dtype)
 
     def get_drop_extra_pre_encoded(self) -> int:
         """

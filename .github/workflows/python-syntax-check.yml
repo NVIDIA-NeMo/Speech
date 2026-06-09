@@ -1,0 +1,66 @@
+name: Python Syntax Compatibility Check
+
+on:
+  pull_request:
+    paths:
+      - "**.py"
+      - ".github/workflows/python-syntax-check.yml"
+    types: [opened, synchronize, reopened]
+  workflow_call:
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash -x -e -u -o pipefail {0}
+
+jobs:
+  syntax-check:
+    name: Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v6
+
+      - name: Setup Python env
+        uses: actions/setup-python@v6
+        with:
+          python-version: "${{ matrix.python }}"
+
+      - name: Check syntax for tracked Python files
+        run: |
+          python - <<'PY'
+          import subprocess
+          import sys
+          import tokenize
+          import warnings
+          from pathlib import Path
+
+          warnings.simplefilter("ignore", SyntaxWarning)
+
+          result = subprocess.run(["git", "ls-files", "*.py"], check=True, stdout=subprocess.PIPE, text=True)
+          paths = [Path(path) for path in result.stdout.splitlines()]
+          failures = []
+
+          for path in paths:
+              try:
+                  with tokenize.open(path) as f:
+                      source = f.read()
+                  compile(source, str(path), "exec")
+              except SyntaxError as e:
+                  failures.append(f"{path}:{e.lineno}:{e.offset}: {e.msg}")
+              except Exception as e:
+                  failures.append(f"{path}: {type(e).__name__}: {e}")
+
+          if failures:
+              print("Syntax check failed for these files:", file=sys.stderr)
+              print("\n".join(failures), file=sys.stderr)
+              sys.exit(1)
+
+          print(f"Checked {len(paths)} Python files with Python {sys.version.split()[0]}.")
+          PY

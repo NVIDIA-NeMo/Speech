@@ -65,12 +65,20 @@ Per-request I/O (via ``additional_information``):
   appended), so callers never tokenize themselves. The resulting subword ids are
   consumed one per decode step (step ``k`` consumes id ``k``, embedded through
   the precomputed per-subword ``text_embedding`` table); once exhausted the text
-  channel is masked off.
-
-  (Internal: the tokenized ids are stashed as ``text_tokens`` in the per-request
-  info dict between prefill and decode. A future streaming mode will let the
-  caller push subword ids gradually instead of one upfront ``text`` string; for
-  now assume ``text`` is always provided whole at prefill.)
+  channel is masked off. (Internal: the tokenized ids are stashed as
+  ``text_tokens`` in the per-request info dict between prefill and decode.)
+* ``text_token`` (decode only, **streaming-text mode**) — when the caller omits
+  ``text`` at prefill, the request runs in streaming-text mode: the caller pushes
+  one subword id per decode step via ``additional_information`` under
+  ``text_token`` (a single int / 1-element tensor), embedded through the same
+  baked ``text_embedding`` table. This is the per-step counterpart to the whole
+  ``text`` string and is driven by vLLM-Omni's streaming-input API (an async
+  generator of ``StreamingInput`` chunks passed as the prompt, with
+  ``async_chunk=True``). Push the text-EOS id as the last real token; on any step
+  with no id (``text_token`` absent or ``< 0``, e.g. the sentinel ``-1``) the text
+  channel is masked off so the caller can keep pumping decode steps while the
+  audio tail finishes. Caller tokenization mirrors :meth:`_encode_text_stream`
+  (``tokenizer.encode(text, add_special_tokens=False) + [text_eos_id]``).
 * ``temperature`` / ``top_k`` (prefill only, optional) — audio sampling params
   for the local transformer. vLLM's ``SamplingParams.temperature`` drives only
   the dummy backbone token sampler, so the *audio* temperature/top-k are passed
@@ -108,7 +116,11 @@ from vllm.sequence import IntermediateTensors
 
 from vllm_omni.model_executor.models.output_templates import OmniOutput
 
-from easymagpie_vllm_omni.backbone_patches import patch_moe_routed_scale, patch_silu_shared_experts
+from easymagpie_vllm_omni.backbone_patches import (
+    patch_mamba_streaming_decode,
+    patch_moe_routed_scale,
+    patch_silu_shared_experts,
+)
 from easymagpie_vllm_omni.config import EasyMagpieOmniArch
 from easymagpie_vllm_omni.local_transformer import EasyMagpieCodePredictor
 
@@ -122,7 +134,6 @@ _DUMMY_TOKEN_ID = 0
 
 # Context text used when the request omits ``context_text``
 _DEFAULT_CONTEXT_TEXT = "[EN]"
-
 
 # This class is not wrapped in ``@support_torch_compile``: the Nemotron-H
 # backbone and :class:`EasyMagpieCodePredictor` each manage their own
@@ -187,6 +198,12 @@ class EasyMagpieTTSForConditionalGeneration(
         # output is under-scaled by routed_scaling_factor. Restore it (no-op in
         # fp32/bf16 and when there are no MoE layers).
         patch_moe_routed_scale(self.backbone)
+        # The streaming-input path keeps extending the prompt, so vLLM's Mamba2
+        # metadata builder would classify every single-token decode step as a
+        # prefill — breaking the FULL decode cudagraph (stale
+        # state_indices_tensor_d). Force single-token extends to classify as
+        # decodes so FULL/FULL_DECODE_ONLY cudagraphs read the right Mamba slot.
+        patch_mamba_streaming_decode()
 
         # ── Local transformer (its own compile group / CUDA graph) ──────
         with set_model_tag("local_transformer"):
@@ -577,6 +594,34 @@ class EasyMagpieTTSForConditionalGeneration(
             return ""
         return str(value)
 
+    @staticmethod
+    def _coerce_opt_int(value: Any) -> Optional[int]:
+        """Best-effort extract a single int from a scalar / list / tensor / str.
+
+        Used to read a per-step streamed ``text_token`` out of the request's
+        ``additional_information`` (which may wrap the id as a list, a 1-element
+        tensor, or a string depending on how the caller / transport packed it).
+        Returns ``None`` when no usable integer is present.
+        """
+        if value is None:
+            return None
+        if isinstance(value, bool):  # bool is an int subclass — handle explicitly.
+            return int(value)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        if isinstance(value, torch.Tensor):
+            return int(value.reshape(-1)[0].item()) if value.numel() > 0 else None
+        if isinstance(value, (list, tuple)):
+            return EasyMagpieTTSForConditionalGeneration._coerce_opt_int(value[0]) if value else None
+        if isinstance(value, str):
+            try:
+                return int(value.strip())
+            except ValueError:
+                return None
+        return None
+
     def preprocess(
         self,
         input_ids: torch.Tensor,
@@ -662,10 +707,12 @@ class EasyMagpieTTSForConditionalGeneration(
         # Tokenize the caller's ``text`` in-model and stash the subword ids in the
         # per-request info dict (alongside the offsets) so each decode step
         # consumes one id from it without the caller ever running the tokenizer
-        # (see :meth:`_preprocess_decode`). The caller always passes ``text``
-        # whole at prefill; a future streaming mode will instead let the caller
-        # push ``text_tokens`` ids gradually, which is why an already-present
-        # ``text_tokens`` list is left untouched here.
+        # (see :meth:`_preprocess_decode`). When the caller passes ``text`` whole
+        # at prefill we bake the ``text_tokens`` list here; an already-present
+        # ``text_tokens`` list is left untouched. When *neither* ``text`` nor
+        # ``text_tokens`` is provided the request runs in **streaming-text mode**:
+        # no list is baked, and :meth:`_preprocess_decode` instead reads one
+        # subword id per step from the streamed ``additional_information.text_token``.
         if not info_dict.get("text_tokens"):
             text = self._first_str(info_dict.get("text"))
             if text:
@@ -818,17 +865,40 @@ class EasyMagpieTTSForConditionalGeneration(
         decode_offset = int(info_dict.get("decode_offset", 0) or 0)
         info_update: dict[str, Any] = {"decode_offset": decode_offset + 1}
 
-        # ── Text channel ── (delay 0: one subword per step from step 0). Step k
-        # consumes text_tokens[k] (the list ends with the text eos id). Once the
-        # stream is exhausted the channel is masked off (adds nothing) rather than
-        # repeating the last token. The text stream leads the phoneme/audio
-        # streams by their respective delays.
+        # ── Text channel ── (delay 0: one subword per step from step 0). The text
+        # stream leads the phoneme/audio streams by their respective delays. Two
+        # mutually exclusive input modes are supported:
+        #
+        # * **Whole-text (non-streaming)** — the caller passed ``text`` whole at
+        #   prefill; it was tokenized in-model and stashed as the ``text_tokens``
+        #   list (see :meth:`_preprocess_prefill`). Step k consumes
+        #   ``text_tokens[k]`` (the list ends with the text-EOS id); once the
+        #   stream is exhausted the channel is masked off (adds nothing) rather
+        #   than repeating the last token.
+        # * **Streamed** — the caller did *not* pass ``text`` at prefill and
+        #   instead pushes one subword id per decode step via
+        #   ``additional_information`` under ``text_token`` (a single int / 1-elem
+        #   tensor; close the stream by pushing the text-EOS id as the last real
+        #   token). The model embeds that step's id and masks the channel off on
+        #   any step that carries no id (``text_token`` absent or ``< 0``), so the
+        #   caller can keep pumping decode steps after the text ends while the
+        #   audio tail finishes. Because each streamed chunk overwrites the
+        #   previous ``text_token`` in the per-request buffer, every step gets a
+        #   fresh value (or the caller's sentinel ``-1`` to mask).
         text_tokens = info_dict.get("text_tokens")
-        if isinstance(text_tokens, list) and decode_offset < len(text_tokens):
-            self._dec_text_tokens[start] = int(text_tokens[decode_offset])
-            self._dec_text_mask[start] = 1
+        if isinstance(text_tokens, list):
+            if decode_offset < len(text_tokens):
+                self._dec_text_tokens[start] = int(text_tokens[decode_offset])
+                self._dec_text_mask[start] = 1
+            else:
+                self._dec_text_mask[start] = 0
         else:
-            self._dec_text_mask[start] = 0
+            streamed_id = self._coerce_opt_int(info_dict.get("text_token"))
+            if streamed_id is not None and streamed_id >= 0:
+                self._dec_text_tokens[start] = streamed_id
+                self._dec_text_mask[start] = 1
+            else:
+                self._dec_text_mask[start] = 0
 
         # ── Phoneme channel ── opens at decode step == ``phonemes_delay`` (seeded
         # with phoneme BOS), then feeds back the previous step's prediction, and

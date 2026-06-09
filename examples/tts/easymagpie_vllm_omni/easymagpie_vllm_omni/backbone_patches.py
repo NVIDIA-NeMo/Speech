@@ -23,9 +23,67 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import vllm.v1.attention.backends.mamba_attn as _mamba_attn
 from vllm.logger import init_logger
 
 logger = init_logger(__name__)
+
+
+def patch_mamba_streaming_decode() -> None:
+    """Treat 1-token streaming extends as decodes so FULL decode cudagraphs work.
+
+    EasyMagpie's streaming-input path keeps extending each request's prompt with
+    every chunk, so ``num_computed_tokens < num_prompt_tokens`` (the engine's
+    ``is_prefilling`` flag) stays True for the whole stream. vLLM's Mamba2
+    metadata builder calls
+    :func:`vllm.v1.attention.backends.utils.split_decodes_and_prefills` with
+    ``treat_short_extends_as_decodes=False``, so every single-token decode step
+    is classified as a *prefill* (``num_prefills>0``).
+
+    That collides with the cudagraph dispatcher, which keys only on query length:
+    a uniform ``query_len==1`` batch dispatches the **FULL decode** graph
+    regardless of ``is_prefilling``. Two failures result:
+
+    * the replayed decode graph runs the decode Mamba kernels while the metadata
+      says prefill, and
+    * because ``num_prefills>0``, ``_update_metadata_for_cudagraph_capture``
+      never refreshes the persistent ``state_indices_tensor_d`` buffer, so the
+      captured kernel reads the capture-time dummy slot (0) instead of the
+      request's real Mamba-cache slot -> garbage hidden states.
+
+    Forcing ``treat_short_extends_as_decodes=True`` makes single-token extends
+    classify as decodes (``num_prefills==0``), which both matches the dispatched
+    FULL decode graph and re-enables the per-step ``state_indices_tensor_d``
+    refresh. Multi-token context prefills (``query_len>1``) still classify as
+    prefills, so this is safe for mixed batches. Advancing Mamba state by one
+    token via the decode kernels is semantically identical to a 1-token prefill
+    chunk (it reads the slot's state and writes the advanced state back in
+    place), so no state update is lost — the only requirement is exactly one new
+    token per streamed step (``SamplingParams(max_tokens=1)``).
+
+    Idempotent and process-global; the EasyMagpie plugin only ever serves this
+    model so the global patch is acceptable.
+    """
+    orig = _mamba_attn.split_decodes_and_prefills
+    if getattr(orig, "_easymagpie_patched", False):
+        return
+
+    def patched(
+        common_attn_metadata,
+        decode_threshold: int = 1,
+        require_uniform: bool = False,
+        treat_short_extends_as_decodes: bool = True,
+    ):
+        return orig(
+            common_attn_metadata,
+            decode_threshold=decode_threshold,
+            require_uniform=require_uniform,
+            treat_short_extends_as_decodes=True,
+        )
+
+    patched._easymagpie_patched = True
+    _mamba_attn.split_decodes_and_prefills = patched
+    logger.info("Mamba streaming-decode classification patch installed")
 
 
 class _SiluActivation(nn.Module):

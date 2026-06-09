@@ -183,6 +183,44 @@ For distributed inference, launch with ``torchrun``:
       inputs=path/to/manifest \
       ep_size=2
 
+FP8 Training (SALMAutomodel)
+""""""""""""""""""""""""""""
+
+``SALMAutomodel`` supports two FP8 modes through NeMo Automodel. Configure only
+one mode at a time.
+
+For Hopper MoE backbones, prefer Transformer Engine FP8 because it applies to
+TE Linear / GroupedLinear kernels used by the MoE path:
+
+.. code-block:: yaml
+
+    model:
+      automodel_backend:
+        linear: te
+        experts: te
+        dispatcher: deepep
+        te_fp8:
+          recipe: block    # or "current"
+
+TorchAO FP8 is a separate dense-linear path. It should be paired with
+``torch.compile`` for speedup and requires Hopper-class GPUs unless
+``emulate=true`` is set for testing:
+
+.. code-block:: yaml
+
+    model:
+      compile:
+        enabled: true
+        dynamic: true
+      fp8:
+        enabled: true
+        recipe_name: tensorwise
+        enable_fsdp_float8_all_gather: true
+        precompute_float8_dynamic_scale_for_fsdp: true
+        force_recompute_fp8_weight_in_bwd: true
+        filter_fqns: ["lm_head"]
+        emulate: false
+
 Packed Sequences (THD)
 """"""""""""""""""""""
 

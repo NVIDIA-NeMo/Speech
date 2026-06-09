@@ -70,6 +70,12 @@ Get started in 30 seconds:
    print(model.transcribe(["audio.wav"])[0].text)
 
 
+Trying to finetune a model?
+---------------------------
+
+Check out our latest ``/nemo-speech-finetune-asr`` `agent skill <https://github.com/NVIDIA-NeMo/NeMo/tree/main/.claude/skills/nemo-speech-asr-finetune>`_.
+
+
 .. toctree::
    :maxdepth: 1
    :caption: Getting Started
@@ -89,19 +95,7 @@ Get started in 30 seconds:
 
    features/parallelisms
    features/mixed_precision
-
-.. toctree::
-   :maxdepth: 1
-   :caption: Model Checkpoints
-   :name: Checkpoints
-
    checkpoints/intro
-
-.. toctree::
-   :maxdepth: 1
-   :caption: Lhotse Dataloading
-   :name: Lhotse Dataloading
-
    dataloaders
 
 .. toctree::

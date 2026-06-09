@@ -106,6 +106,7 @@ def make_mamba_conv_cache_from_sequence(
 
     return F.pad(x, (conv_kernel_size - x.size(-1), 0)).contiguous()
 
+
 def get_cached_mamba_ssm_state(
     cache_params: "HybridMambaAttentionDynamicCache",
     layer_idx: int,
@@ -131,6 +132,7 @@ def get_cached_mamba_ssm_state(
         state = state.view(batch_size, num_heads, head_dim, ssm_state_size)
 
     return state
+
 
 def get_activation_fn(activation: str):
     """Get activation function by name."""
@@ -537,11 +539,7 @@ class NemotronHMamba2Mixer(nn.Module):
             - self.num_heads
         ) // 2
 
-        has_cache_prefix = (
-            cache_params is not None
-            and cache_position is not None
-            and cache_position[0] > 0
-        )
+        has_cache_prefix = cache_params is not None and cache_position is not None and cache_position[0] > 0
         is_decode_step = has_cache_prefix and seq_len == 1
 
         if is_decode_step:
@@ -645,9 +643,7 @@ class NemotronHMamba2Mixer(nn.Module):
                     raw_for_cache = raw_hidden_states_B_C
 
                 if self.activation not in ["silu", "swish"]:
-                    conv_out = self.act(
-                        self.conv1d(conv_input)[..., : conv_input.size(-1)].transpose(1, 2)
-                    )
+                    conv_out = self.act(self.conv1d(conv_input)[..., : conv_input.size(-1)].transpose(1, 2))
                 else:
                     conv_out = causal_conv1d_fn(
                         x=conv_input,
@@ -747,11 +743,7 @@ class NemotronHMamba2Mixer(nn.Module):
             dim=-1,
         )
 
-        has_cache_prefix = (
-            cache_params is not None
-            and cache_position is not None
-            and cache_position[0] > 0
-        )
+        has_cache_prefix = cache_params is not None and cache_position is not None and cache_position[0] > 0
         is_decode_step = has_cache_prefix and seq_len == 1
 
         # -----------------------
@@ -795,9 +787,7 @@ class NemotronHMamba2Mixer(nn.Module):
                 conv_input = raw_hidden_states_B_C.transpose(1, 2)
                 raw_for_cache = raw_hidden_states_B_C
 
-            conv_out = self.act(
-                self.conv1d(conv_input)[..., : conv_input.size(-1)].transpose(1, 2)
-            )
+            conv_out = self.act(self.conv1d(conv_input)[..., : conv_input.size(-1)].transpose(1, 2))
 
             # Keep only outputs corresponding to the new chunk.
             hidden_states_B_C = conv_out[:, -seq_len:, :].contiguous()
@@ -836,9 +826,7 @@ class NemotronHMamba2Mixer(nn.Module):
             dt = torch.clamp(dt, self.time_step_limit[0], self.time_step_limit[1])
 
             A_expanded = (
-                A[..., None, None]
-                .expand(self.num_heads, self.head_dim, self.ssm_state_size)
-                .to(dtype=torch.float32)
+                A[..., None, None].expand(self.num_heads, self.head_dim, self.ssm_state_size).to(dtype=torch.float32)
             )
             dA = (torch.exp(dt[..., None] * A_expanded)).to(device=cache_device)
 
@@ -1544,8 +1532,8 @@ class NemotronHModel(nn.Module):
                         cache_position=None,
                         attention_mask=layer_mask,
                     )
-                return custom_forward
 
+                return custom_forward
 
             if self.gradient_checkpointing and self.training:
                 hidden_states = torch.utils.checkpoint.checkpoint(

@@ -682,8 +682,6 @@ class MagpieInferenceRunner(BaseInferenceRunner):
         return is_end_of_text
 
 
-
-
 @dataclass
 class EasyMagpieMultiturnUserAudioInferenceConfig(EasyMagpieInferenceConfig):
     """Configuration for EasyMagpie multiturn user-audio inference.
@@ -830,7 +828,6 @@ class EasyMagpieMultiturnUserAudioDataset(torch.utils.data.Dataset):
         }
 
 
-
 class _InferenceSubset(torch.utils.data.Dataset):
     """Subset wrapper that preserves the wrapped dataset collate_fn."""
 
@@ -844,6 +841,7 @@ class _InferenceSubset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx: int):
         return self.dataset[self.indices[idx]]
+
 
 class EasyMagpieInferenceRunner(BaseInferenceRunner):
     """Runner for decoder-only EasyMagpieTTSInferenceModel.
@@ -989,6 +987,7 @@ class EasyMagpieInferenceRunner(BaseInferenceRunner):
 
         return all_rtf_metrics, generated_audio_paths, codec_file_paths
 
+
 class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
     """Runner for decoder-only EasyMagpieTTS multiturn user-audio inference.
 
@@ -1065,7 +1064,9 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
         return out
 
     @staticmethod
-    def _copy_or_link(src: Optional[str], dst: str, required: bool = False, description: str = "audio") -> Optional[str]:
+    def _copy_or_link(
+        src: Optional[str], dst: str, required: bool = False, description: str = "audio"
+    ) -> Optional[str]:
         """Copy/symlink an audio artifact and optionally fail fast if missing.
 
         Evaluation later expects target_audio_*.wav/context_audio_*.wav to exist.
@@ -1384,7 +1385,9 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
         return finalize_output, turn_frame_ranges, decode_start_frame, generated_codes
 
     @staticmethod
-    def _save_code_slice(generated_codes, batch_idx: int, start_frame: int, end_frame: int, path: str) -> Optional[str]:
+    def _save_code_slice(
+        generated_codes, batch_idx: int, start_frame: int, end_frame: int, path: str
+    ) -> Optional[str]:
         if generated_codes is None:
             return None
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -1533,9 +1536,7 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
             os.makedirs(debug_user_dir, exist_ok=True)
             os.makedirs(debug_mixed_dir, exist_ok=True)
             os.makedirs(debug_full_agent_dir, exist_ok=True)
-            logging.info(
-                f"Saving multiturn debug/listening audios under audios_MT: {mt_debug_output_dir}"
-            )
+            logging.info(f"Saving multiturn debug/listening audios under audios_MT: {mt_debug_output_dir}")
 
         rank = int(getattr(self, "distributed_rank", 0))
         world_size = int(getattr(self, "distributed_world_size", 1))
@@ -1703,9 +1704,13 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
                     debug_mixed_dir=debug_mixed_dir,
                 )
 
-            audio_seconds = sum(
-                max(0, int(round((end - start) * samples_per_prediction_frame))) for _, start, end in turn_frame_ranges
-            ) / sample_rate
+            audio_seconds = (
+                sum(
+                    max(0, int(round((end - start) * samples_per_prediction_frame)))
+                    for _, start, end in turn_frame_ranges
+                )
+                / sample_rate
+            )
             all_rtf_metrics.append(
                 {
                     "inference_time": elapsed,
@@ -1716,7 +1721,9 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
 
         self.evaluation_audio_dir = output_dir
         rank = int(getattr(self, "distributed_rank", 0))
-        self.evaluation_manifest_path = os.path.join(output_dir, f"multiturn_user_audio_turn_manifest_rank{rank:04d}.jsonl")
+        self.evaluation_manifest_path = os.path.join(
+            output_dir, f"multiturn_user_audio_turn_manifest_rank{rank:04d}.jsonl"
+        )
         self.evaluation_manifest_records = turn_manifest_records
         with open(self.evaluation_manifest_path, "w", encoding="utf-8") as f:
             for record in turn_manifest_records:
@@ -1776,7 +1783,9 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
             else:
                 prev_turn_end_frame = turn_frame_ranges[turn_id - 1][2]
                 rel_prev_end_frame = prev_turn_end_frame - decode_start_frame
-                user_start_sample = first_user_delay_out + int(round(rel_prev_end_frame * samples_per_prediction_frame))
+                user_start_sample = first_user_delay_out + int(
+                    round(rel_prev_end_frame * samples_per_prediction_frame)
+                )
             user_segments.append((user_start_sample, turn_audio_out))
 
         total_user_len = 0

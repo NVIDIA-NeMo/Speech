@@ -252,7 +252,6 @@ def _group_multiturn_filewise_metrics_by_sample(filewise_metrics: list) -> list:
                 "speaker": group["speaker"],
                 "rank": group["rank"],
                 "num_turns": len(turns),
-
                 # Sample-level averages over all turns.
                 "cer": _mean_finite(cer_turns),
                 "wer": _mean_finite(wer_turns),
@@ -262,7 +261,6 @@ def _group_multiturn_filewise_metrics_by_sample(filewise_metrics: list) -> list:
                 "utmosv2": _mean_finite(utmosv2_turns),
                 "eou_trailing_duration": _mean_finite(eou_trailing_duration_turns),
                 "eou_trail_rms_ratio": _mean_finite(eou_trail_rms_ratio_turns),
-
                 # Turn-by-turn values, old-script style.
                 "turn_ids": [r.get("turn_id", i) for i, r in enumerate(turns)],
                 "cer_turns": cer_turns,

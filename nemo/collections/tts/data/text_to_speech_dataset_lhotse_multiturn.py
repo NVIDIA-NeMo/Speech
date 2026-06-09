@@ -216,7 +216,9 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         self.phoneme_turn_dropout_turn_prob = phoneme_turn_dropout_turn_prob
         self.phoneme_turn_max_words_to_drop = phoneme_turn_max_words_to_drop
 
-        self.frame_length = (self.codec_model_samples_per_frame / codec_model_input_sample_rate) * frame_stacking_factor
+        self.frame_length = (
+            self.codec_model_samples_per_frame / codec_model_input_sample_rate
+        ) * frame_stacking_factor
 
     def get_num_audio_samples_to_slice(self, duration, sample_rate):
         num_codec_frames = int(duration * sample_rate / self.codec_model_samples_per_frame)
@@ -263,7 +265,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             if C < self.num_audio_codebooks:
                 return F.pad(t, (0, self.num_audio_codebooks - C))
             elif C > self.num_audio_codebooks:
-                return t[:, :self.num_audio_codebooks]
+                return t[:, : self.num_audio_codebooks]
             return t
 
         with fp32_precision():
@@ -277,7 +279,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             for i, cut in enumerate(cuts):
 
                 # Extract the raw, unpadded 1D numpy array for this specific cut
-                t_audio = target_audio[i, :target_audio_lens[i]].numpy()
+                t_audio = target_audio[i, : target_audio_lens[i]].numpy()
                 # For tts/single-turn cuts, source audio should be zeros like target audio
                 # For multi-turn cuts, keep loading source audio from the cut recording.
                 if str(getattr(cut, "task", "tts")).lower() == "tts":
@@ -297,32 +299,54 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             # 3. Re-pad the newly stitched arrays to the batch's new maximum length
             target_audio = collate_vectors(target_audio_list, padding_value=0.0)
             target_audio_lens = torch.tensor([len(a) for a in target_audio_list], dtype=torch.long)
-            
+
             source_audio = collate_vectors(source_audio_list, padding_value=0.0)
             source_audio_lens = torch.tensor([len(a) for a in source_audio_list], dtype=torch.long)
 
-            user_audio_turn_splitted, user_audio_turn_splitted_lens, user_audio_turn_splitted_indices = extract_turn_audio_channel(
-                cuts=cuts,
-                source_audio_list=source_audio_list,
-                source_sample_rate=self.source_sample_rate,
-                roles=self.input_roles,
+            user_audio_turn_splitted, user_audio_turn_splitted_lens, user_audio_turn_splitted_indices = (
+                extract_turn_audio_channel(
+                    cuts=cuts,
+                    source_audio_list=source_audio_list,
+                    source_sample_rate=self.source_sample_rate,
+                    roles=self.input_roles,
+                )
             )
 
         target_text_tokens, target_token_lens = collate_token_channel(
-            cuts, self.text_tokenizer, self.frame_length, roles=self.output_roles,
-            add_text_bos=self.add_text_bos, tokenizer_names=batch_tokenizer_names,
-            pad_id=self.pad_id, eos_id=self.eos_id, bos_id=self.bos_id, interruption_token_id=self.interruption_token_id
+            cuts,
+            self.text_tokenizer,
+            self.frame_length,
+            roles=self.output_roles,
+            add_text_bos=self.add_text_bos,
+            tokenizer_names=batch_tokenizer_names,
+            pad_id=self.pad_id,
+            eos_id=self.eos_id,
+            bos_id=self.bos_id,
+            interruption_token_id=self.interruption_token_id,
         )
         source_tokens, source_token_lens = collate_token_channel(
-            cuts, self.text_tokenizer, self.frame_length, roles=self.input_roles,
-            add_text_bos=self.add_text_bos, tokenizer_names=batch_tokenizer_names,
-            pad_id=self.pad_id, eos_id=self.eos_id, bos_id=self.bos_id, interruption_token_id=self.interruption_token_id
+            cuts,
+            self.text_tokenizer,
+            self.frame_length,
+            roles=self.input_roles,
+            add_text_bos=self.add_text_bos,
+            tokenizer_names=batch_tokenizer_names,
+            pad_id=self.pad_id,
+            eos_id=self.eos_id,
+            bos_id=self.bos_id,
+            interruption_token_id=self.interruption_token_id,
         )
 
         if self.phoneme_tokenizer is not None:
             target_phoneme_tokens, target_phoneme_lens, phoneme_turn_dropout = collate_phoneme_channel(
-                cuts, self.phoneme_tokenizer, self.frame_length, roles=self.output_roles,
-                ignore_phoneme_languages=self.ignore_phoneme_languages, pad_id=self.phoneme_tokenizer.pad, eos_id=self.phoneme_tokenizer.eos_token_id, bos_id=self.phoneme_tokenizer.bos_token_id,
+                cuts,
+                self.phoneme_tokenizer,
+                self.frame_length,
+                roles=self.output_roles,
+                ignore_phoneme_languages=self.ignore_phoneme_languages,
+                pad_id=self.phoneme_tokenizer.pad,
+                eos_id=self.phoneme_tokenizer.eos_token_id,
+                bos_id=self.phoneme_tokenizer.bos_token_id,
                 phoneme_turn_dropout_batch_prob=self.phoneme_turn_dropout_batch_prob,
                 phoneme_turn_dropout_turn_prob=self.phoneme_turn_dropout_turn_prob,
                 phoneme_turn_max_words_to_drop=self.phoneme_turn_max_words_to_drop,
@@ -335,10 +359,10 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         audio_list_16khz = []
         audio_len_list_16khz = []
         prior_list = []
-        
+
         target_codes_list = []
         source_codes_list = []
-        
+
         context_audio_list = []
         context_audio_len_list = []
         context_audio_codes_list = []
@@ -366,7 +390,11 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
                 dataset_name = "unknown"
             dataset_name_list.append(dataset_name)
 
-            language = cut.lang if cut.has_custom("lang") else next((sup.language for sup in reversed(cut.supervisions) if sup.has_custom("language")), "en")
+            language = (
+                cut.lang
+                if cut.has_custom("lang")
+                else next((sup.language for sup in reversed(cut.supervisions) if sup.has_custom("language")), "en")
+            )
             language_list.append(language)
 
             # Target and Source Codes
@@ -382,10 +410,14 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             if self.load_cached_codes_if_available and cut.has_custom("context_codes"):
                 context_audio_codes_array = cut.context_codes.load().astype(np.int32)
                 context_audio_codes = torch.from_numpy(context_audio_codes_array)
-                _available_context_duration = (context_audio_codes.shape[1] * self.codec_model_samples_per_frame / self.sample_rate)
+                _available_context_duration = (
+                    context_audio_codes.shape[1] * self.codec_model_samples_per_frame / self.sample_rate
+                )
                 _context_duration_to_slice = _sample_context_duration_with_available_limit(_available_context_duration)
-                _num_frames_to_slice = int(_context_duration_to_slice * self.sample_rate / self.codec_model_samples_per_frame)
-                
+                _num_frames_to_slice = int(
+                    _context_duration_to_slice * self.sample_rate / self.codec_model_samples_per_frame
+                )
+
                 if _num_frames_to_slice < context_audio_codes.shape[1]:
                     start_idx = random.randint(0, context_audio_codes.shape[1] - _num_frames_to_slice)
                     context_audio_codes = context_audio_codes[:, start_idx : start_idx + _num_frames_to_slice]
@@ -396,7 +428,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
                 context_audio_codes = _align_codebooks(context_audio_codes.T)
                 context_audio_codes_list.append(context_audio_codes)
                 context_audio_codes_len_list.append(context_audio_codes.shape[0])
-                
+
             elif cut.has_custom("context_audio"):
                 with fp32_precision():
                     context_audio_array = cut.context_audio.resample(self.sample_rate).load_audio().squeeze(0)
@@ -405,7 +437,9 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
 
                 _available_context_duration = len(context_audio_array) / self.sample_rate
                 _context_duration_to_slice = _sample_context_duration_with_available_limit(_available_context_duration)
-                _num_samples_to_slice = self.get_num_audio_samples_to_slice(_context_duration_to_slice, self.sample_rate)
+                _num_samples_to_slice = self.get_num_audio_samples_to_slice(
+                    _context_duration_to_slice, self.sample_rate
+                )
 
                 if _num_samples_to_slice < len(context_audio_array):
                     start_idx = random.randint(0, len(context_audio_array) - _num_samples_to_slice)
@@ -413,7 +447,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
                 else:
                     _num_repeats = int(np.ceil(_num_samples_to_slice / len(context_audio_array)))
                     context_audio_array = np.tile(context_audio_array, _num_repeats)[:_num_samples_to_slice]
-                    
+
                 context_audio = torch.from_numpy(context_audio_array)
                 context_audio_list.append(context_audio)
                 context_audio_len_list.append(context_audio.shape[0])
@@ -427,7 +461,9 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
                         codes_array = cut.target_codes.load().astype(np.int32)
                         start_frame = int(max(0, sup.start) * self.sample_rate / self.codec_model_samples_per_frame)
                         num_frames = int(sup.duration * self.sample_rate / self.codec_model_samples_per_frame)
-                        context_audio_codes = torch.from_numpy(codes_array)[:, start_frame : start_frame + num_frames].T
+                        context_audio_codes = torch.from_numpy(codes_array)[
+                            :, start_frame : start_frame + num_frames
+                        ].T
                         context_audio_codes = _align_codebooks(context_audio_codes)
                     else:
                         context_audio_codes = torch.zeros([0, self.num_audio_codebooks], dtype=torch.int32)
@@ -437,14 +473,16 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
                     if len(matching_supervisions) > 0:
                         sup = random.choice(matching_supervisions)
                         with fp32_precision():
-                            turn_cut = cut.resample(self.sample_rate, recording_field="target_audio").truncate(offset=max(0, sup.start), duration=sup.duration)
+                            turn_cut = cut.resample(self.sample_rate, recording_field="target_audio").truncate(
+                                offset=max(0, sup.start), duration=sup.duration
+                            )
                             context_audio_array = turn_cut.load_custom("target_audio").squeeze(0)
                         if self.volume_norm:
                             context_audio_array = normalize_volume(context_audio_array)
                         context_audio = torch.from_numpy(context_audio_array)
                     else:
                         context_audio = torch.zeros(self.codec_model_samples_per_frame, dtype=torch.float32)
-                    
+
                     context_audio_list.append(context_audio)
                     context_audio_len_list.append(context_audio.shape[0])
 
@@ -457,7 +495,9 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
                             audio_array_16khz = normalize_volume(audio_array_16khz)
 
                         _available_context_duration = len(audio_array_16khz) / 16_000
-                        _context_duration_to_slice = _sample_context_duration_with_available_limit(_available_context_duration)
+                        _context_duration_to_slice = _sample_context_duration_with_available_limit(
+                            _available_context_duration
+                        )
                         _num_samples_to_slice = int(_context_duration_to_slice * 16_000)
                         if _num_samples_to_slice < len(audio_array_16khz):
                             start_idx = random.randint(0, len(audio_array_16khz) - _num_samples_to_slice)
@@ -466,7 +506,9 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
                         matching_supervisions = [s for s in cut.supervisions if s.speaker in self.output_roles]
                         if len(matching_supervisions) > 0:
                             sup = random.choice(matching_supervisions)
-                            turn_cut = cut.resample(16_000, recording_field="target_audio").truncate(offset=max(0, sup.start), duration=sup.duration)
+                            turn_cut = cut.resample(16_000, recording_field="target_audio").truncate(
+                                offset=max(0, sup.start), duration=sup.duration
+                            )
                             audio_array_16khz = turn_cut.load_custom("target_audio").squeeze(0)
                         else:
                             audio_array_16khz = np.zeros(16000, dtype=np.float32)
@@ -480,20 +522,30 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
 
             # Context Text
             if self.use_text_conditioning_tokenizer:
-                context_text = next((sup.context_text for sup in cut.supervisions if sup.has_custom("context_text")), None)
+                context_text = next(
+                    (sup.context_text for sup in cut.supervisions if sup.has_custom("context_text")), None
+                )
                 if context_text is not None:
                     if self.text_context_remapping is not None and context_text in self.text_context_remapping:
                         if self.dataset_type == 'train' and random.random() < self.text_context_remapping_prob:
                             context_text = self.text_context_remapping[context_text]
-                    context_text_tokens = self.text_tokenizer.encode(context_text, tokenizer_name=self.text_conditioning_tokenizer_name)
+                    context_text_tokens = self.text_tokenizer.encode(
+                        context_text, tokenizer_name=self.text_conditioning_tokenizer_name
+                    )
                     has_text_context = True
                 else:
-                    context_text = f"[{language.upper()}]" if self.add_language_to_context_text else "[NO TEXT CONTEXT]"
-                    context_text_tokens = self.text_tokenizer.encode(context_text, tokenizer_name=self.text_conditioning_tokenizer_name)
+                    context_text = (
+                        f"[{language.upper()}]" if self.add_language_to_context_text else "[NO TEXT CONTEXT]"
+                    )
+                    context_text_tokens = self.text_tokenizer.encode(
+                        context_text, tokenizer_name=self.text_conditioning_tokenizer_name
+                    )
                     has_text_context = False
-                    
+
                 if self.pad_context_text_to_max_duration:
-                    _required_len = int(self.context_duration_max * self.sample_rate / self.codec_model_samples_per_frame) + 2
+                    _required_len = (
+                        int(self.context_duration_max * self.sample_rate / self.codec_model_samples_per_frame) + 2
+                    )
                     if len(context_text_tokens) < _required_len:
                         _pad_id = self.text_tokenizer.tokenizer_pad_ids[self.text_conditioning_tokenizer_name]
                         context_text_tokens += [_pad_id] * (_required_len - len(context_text_tokens))
@@ -508,7 +560,13 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             # Align Prior (Note: Using full target length to preserve shape compatibility)
             if self.include_align_prior:
                 tok_name = batch_tokenizer_names[i]
-                full_text_len = sum([len(self.text_tokenizer.encode(sup.text, tokenizer_name=tok_name)) for sup in cut.supervisions if sup.speaker in self.output_roles])
+                full_text_len = sum(
+                    [
+                        len(self.text_tokenizer.encode(sup.text, tokenizer_name=tok_name))
+                        for sup in cut.supervisions
+                        if sup.speaker in self.output_roles
+                    ]
+                )
 
                 if self.add_text_bos:
                     full_text_len += 2 * sum([1 for sup in cut.supervisions if sup.speaker in self.output_roles])
@@ -521,9 +579,13 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
                 if self.load_cached_codes_if_available and cut.has_custom("target_codes"):
                     spec_len = int(target_codes_list[-1].shape[0]) + 1
                 else:
-                    spec_len = int(target_audio_lens[i] / self.codec_model_samples_per_frame) + 2 # +1 extra in case it was truncated
+                    spec_len = (
+                        int(target_audio_lens[i] / self.codec_model_samples_per_frame) + 2
+                    )  # +1 extra in case it was truncated
 
-                align_prior = beta_binomial_prior_distribution(phoneme_count=full_text_len, mel_count=spec_len, scaling_factor=self.prior_scaling_factor)
+                align_prior = beta_binomial_prior_distribution(
+                    phoneme_count=full_text_len, mel_count=spec_len, scaling_factor=self.prior_scaling_factor
+                )
                 prior_list.append(torch.tensor(align_prior, dtype=torch.float32))
 
             reward = next((sup.reward for sup in reversed(cut.supervisions) if sup.has_custom("reward")), None)
@@ -542,7 +604,9 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             "source_token_lens": source_token_lens,
             "text": target_text_tokens,
             "text_lens": target_token_lens,
-            "raw_texts": [" ".join(s.text for s in cut.supervisions if s.speaker in self.output_roles) for cut in cuts],
+            "raw_texts": [
+                " ".join(s.text for s in cut.supervisions if s.speaker in self.output_roles) for cut in cuts
+            ],
             "task": [getattr(cut, "task", "tts") for cut in cuts],
             "user_audio_turn_splitted": user_audio_turn_splitted,
             "user_audio_turn_splitted_lens": user_audio_turn_splitted_lens,
@@ -552,7 +616,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         if target_codes_list:
             batch_dict["audio_codes"] = collate_matrices(target_codes_list, padding_value=0).transpose(1, 2)
             batch_dict["audio_codes_lens"] = torch.IntTensor([c.shape[0] for c in target_codes_list])
-            
+
         if source_codes_list:
             batch_dict["source_codes"] = collate_matrices(source_codes_list, padding_value=0).transpose(1, 2)
             batch_dict["source_codes_lens"] = torch.IntTensor([c.shape[0] for c in source_codes_list])
@@ -569,9 +633,11 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         if len(context_audio_list) > 0:
             batch_dict["context_audio"] = collate_vectors(context_audio_list, padding_value=0.0)
             batch_dict["context_audio_lens"] = torch.IntTensor(context_audio_len_list)
-            
+
         if len(context_audio_codes_list) > 0:
-            batch_dict["context_audio_codes"] = collate_matrices(context_audio_codes_list, padding_value=0).transpose(1, 2)
+            batch_dict["context_audio_codes"] = collate_matrices(context_audio_codes_list, padding_value=0).transpose(
+                1, 2
+            )
             batch_dict["context_audio_codes_lens"] = torch.IntTensor(context_audio_codes_len_list)
 
         if self.use_text_conditioning_tokenizer:
@@ -628,8 +694,16 @@ def collate_token_channel(
         tok_name = tokenizer_names[i] if tokenizer_names else "english_phoneme"
         tokens.append(
             build_token_channel(
-                c, tokenizer, frame_length, roles, pad_id, eos_id, bos_id, interruption_token_id,
-                add_text_bos, tok_name,
+                c,
+                tokenizer,
+                frame_length,
+                roles,
+                pad_id,
+                eos_id,
+                bos_id,
+                interruption_token_id,
+                add_text_bos,
+                tok_name,
             )
         )
     token_lens = torch.tensor([len(tt) for tt in tokens])
@@ -653,15 +727,13 @@ def build_speaker_mask_channel(
 
     return mask
 
+
 def collate_speaker_mask_channel(
     cuts: CutSet,
     frame_length: Seconds,
     output_roles: set[str],
 ):
-    masks = [
-        build_speaker_mask_channel(cut, frame_length, output_roles)
-        for cut in cuts
-    ]
+    masks = [build_speaker_mask_channel(cut, frame_length, output_roles) for cut in cuts]
     mask_lens = torch.tensor([len(m) for m in masks])
     return collate_vectors(masks, padding_value=0.0), mask_lens
 
@@ -685,7 +757,7 @@ def build_token_channel(
     for supervision in cut.supervisions:
         if supervision.speaker in roles:
             text = supervision.text
-            
+
             if hasattr(tokenizer, "encode"):
                 try:
                     raw_ids = tokenizer.encode(text=text, tokenizer_name=tokenizer_name)
@@ -705,8 +777,8 @@ def build_token_channel(
 
             endpos = pos + len(text_ids)
             if endpos > len(tokens):
-                text_ids = text_ids[:len(tokens) - pos]
-            tokens[pos:pos+len(text_ids)] = text_ids
+                text_ids = text_ids[: len(tokens) - pos]
+            tokens[pos : pos + len(text_ids)] = text_ids
 
             # add interruption token, used for add speech eos and interrupt the model
             interruption_pos = compute_num_frames(supervision.end, frame_length, cut.sampling_rate)
@@ -786,8 +858,14 @@ def collate_phoneme_channel(
     dropout_flags = []
     for i, c in enumerate(cuts):
         token, dropout_applied = build_phoneme_channel(
-            c, phoneme_tokenizer, frame_length, roles,
-            ignore_phoneme_languages, pad_id, eos_id, bos_id,
+            c,
+            phoneme_tokenizer,
+            frame_length,
+            roles,
+            ignore_phoneme_languages,
+            pad_id,
+            eos_id,
+            bos_id,
             phoneme_turn_dropout_batch_prob=phoneme_turn_dropout_batch_prob,
             phoneme_turn_dropout_turn_prob=phoneme_turn_dropout_turn_prob,
             phoneme_turn_max_words_to_drop=phoneme_turn_max_words_to_drop,
@@ -813,7 +891,11 @@ def build_phoneme_channel(
     phoneme_turn_max_words_to_drop: int = 2,
     apply_turn_dropout: bool = False,
 ) -> tuple[torch.Tensor, bool]:
-    language = cut.lang if cut.has_custom("lang") else next((sup.language for sup in cut.supervisions if sup.has_custom("language")), "en")
+    language = (
+        cut.lang
+        if cut.has_custom("lang")
+        else next((sup.language for sup in cut.supervisions if sup.has_custom("language")), "en")
+    )
 
     total = compute_num_frames(cut.duration, frame_length, cut.sampling_rate)
     tokens = torch.ones(total, dtype=torch.long) * pad_id
@@ -850,7 +932,7 @@ def build_phoneme_channel(
 
             endpos = pos + len(phoneme_ids)
             if endpos > len(tokens):
-                phoneme_ids = phoneme_ids[:len(tokens) - pos]
-            tokens[pos:pos+len(phoneme_ids)] = phoneme_ids
+                phoneme_ids = phoneme_ids[: len(tokens) - pos]
+            tokens[pos : pos + len(phoneme_ids)] = phoneme_ids
 
     return tokens, dropout_applied

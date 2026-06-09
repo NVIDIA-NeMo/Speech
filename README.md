@@ -51,11 +51,11 @@ For technical documentation, please see the
 
 NeMo Speech works with the **Python, PyTorch, and CUDA versions of your choosing**:
 
-- Python 3.10 or above
-- PyTorch 2.6 or above (CPU, CUDA, etc. — your choice)
+- Python 3.12 or above
+- PyTorch 2.7 or above (CPU, CUDA, etc. — your choice)
 - NVIDIA GPU + CUDA (required for training; recommended for inference)
 
-If you already have a Python/PyTorch/CUDA stack, NeMo Speech installs on top of it **without replacing it** — the `nemo-toolkit` package only requires `torch>=2.6`, so your existing PyTorch build is kept (see the install options below). The versions pinned in `uv.lock` and shipped in the official container — Python 3.13, PyTorch 2.12, CUDA 12.6/13.2 — are simply the combination we actively test and support. They make setup turnkey and reproducible, but they are **not** a hard requirement.
+If you already have a Python/PyTorch/CUDA stack that satisfies those minimums, NeMo Speech installs on top of it **without replacing it**, so your existing PyTorch build is kept (see the install options below). The versions pinned in `uv.lock` and shipped in the official container — Python 3.13, PyTorch 2.12, CUDA 12.6/13.2 — are simply the combination we actively test and support. They make setup turnkey and reproducible, but they are **not** a hard requirement.
 
 As of [Pytorch 2.6](https://docs.pytorch.org/docs/stable/notes/serialization.html#torch-load-with-weights-only-true),
 `torch.load` defaults to using `weights_only=True`. Some model checkpoints may require using `weights_only=False`.
@@ -103,7 +103,7 @@ For A100, set `GPU_TARGET=a100` — A100 works with **both CUDA 12 and CUDA 13**
 
 ### From PyPI with pip (fallback — bring your own versions)
 
-Prefer your own Python/PyTorch/CUDA? `nemo-toolkit` only requires `torch>=2.6`, so install your PyTorch first (any version ≥ 2.6 for your CPU/CUDA/etc. target — see the [PyTorch install matrix](https://pytorch.org/get-started/locally/)), then add NeMo and it **keeps your build**. `uv pip` (uv's fast, pip-compatible installer) works like `pip`:
+Prefer your own Python/PyTorch/CUDA? Install your PyTorch first (any version ≥ 2.7 for your CPU/CUDA/etc. target — see the [PyTorch install matrix](https://pytorch.org/get-started/locally/)), then add NeMo and it **keeps your build**. `uv pip` (uv's fast, pip-compatible installer) works like `pip`:
 
 ```bash
 uv pip install 'nemo-toolkit[asr,tts]'   # or plain: pip install 'nemo-toolkit[asr,tts]'

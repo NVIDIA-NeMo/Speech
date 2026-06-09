@@ -10,15 +10,15 @@ Prerequisites
 
 NeMo Speech works with the **Python, PyTorch, and CUDA versions of your choosing**:
 
-#. **Python** 3.10 or above
-#. **PyTorch** 2.6 or above, for your chosen target (CPU, CUDA, etc.)
+#. **Python** 3.12 or above
+#. **PyTorch** 2.7 or above, for your chosen target (CPU, CUDA, etc.)
 #. **NVIDIA GPU + CUDA** (required for training; CPU-only inference is possible but slow)
 #. **uv** for the fastest source/PyPI workflow (``pip`` also works in a prepared environment)
 
 .. admonition:: Bring your own Python / PyTorch / CUDA
    :class: important
 
-   The recommended install path is uv (below), which gives you our actively-tested stack. But NeMo Speech can also install *on top of* an existing environment: the ``nemo-toolkit`` package only requires ``torch>=2.6``, so if you already have a Python, PyTorch, and CUDA stack, your pre-installed PyTorch is **kept, not replaced** (see :ref:`the pip fallback <install-from-pypi>`).
+   The recommended install path is uv (below), which gives you our actively-tested stack. But NeMo Speech can also install *on top of* an existing environment: if you already have a Python, PyTorch, and CUDA stack that satisfies the minimums above, your pre-installed PyTorch is **kept, not replaced** (see :ref:`the pip fallback <install-from-pypi>`).
 
    The versions pinned in ``uv.lock`` and shipped in the official container — **Python 3.13, PyTorch 2.12, CUDA 12.6/13.2** — are simply the combination we actively test and support. They make setup turnkey and reproducible, but they are **not** a hard requirement.
 
@@ -157,11 +157,11 @@ See the header of ``docker/Dockerfile`` for all build arguments (``BASE_IMAGE``,
 Install from PyPI with pip (fallback — bring your own versions)
 ---------------------------------------------------------------
 
-Prefer your own Python/PyTorch/CUDA? Install your preferred PyTorch first (any version ≥ 2.6 for your CPU/CUDA/etc. target — see `PyTorch's install matrix <https://pytorch.org/get-started/locally/>`_), then add NeMo. Because ``nemo-toolkit`` only requires ``torch>=2.6``, your pre-installed PyTorch is kept, not replaced. ``uv pip`` (uv's fast, pip-compatible installer) works just like ``pip``:
+Prefer your own Python/PyTorch/CUDA? Install your preferred PyTorch first (any version ≥ 2.7 for your CPU/CUDA/etc. target — see `PyTorch's install matrix <https://pytorch.org/get-started/locally/>`_), then add NeMo. Your pre-installed PyTorch is kept, not replaced. ``uv pip`` (uv's fast, pip-compatible installer) works just like ``pip``:
 
 .. code-block:: bash
 
-   uv venv --python 3.12          # any Python >= 3.10 your PyTorch supports — or use your own env
+   uv venv --python 3.12          # any Python >= 3.12 your PyTorch supports — or use your own env
    source .venv/bin/activate
 
    # 1) Your choice of PyTorch (example: CUDA 12.6 build). Skip if you already have one.
@@ -183,7 +183,7 @@ To instead have the installer pull *our* pinned PyTorch build, add the matching 
 
 .. tip::
 
-   Prefer a conda environment? Create and activate one (``conda create -n nemo python=3.10 -y && conda activate nemo``), then run the same ``uv`` or ``pip`` commands above inside it. NeMo Speech does not require a separate conda CUDA toolkit.
+   Prefer a conda environment? Create and activate one (``conda create -n nemo python=3.12 -y && conda activate nemo``), then run the same ``uv`` or ``pip`` commands above inside it. NeMo Speech does not require a separate conda CUDA toolkit.
 
 Verify Installation
 -------------------

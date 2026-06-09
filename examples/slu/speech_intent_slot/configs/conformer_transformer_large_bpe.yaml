@@ -130,7 +130,7 @@ model:
     ffn_dropout: 0.0
 
   classifier:
-    _target_: nemo.collections.common.parts.MultiLayerPerceptron
+    _target_: nemo.collections.asr.parts.submodules.token_classifier.TokenClassifier
     hidden_size: ${model.encoder.d_model}
     num_classes: -1
     num_layers: 1

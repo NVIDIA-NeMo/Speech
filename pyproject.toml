@@ -473,6 +473,7 @@ torch = [
   { index = "pytorch-cu132", extra = "cu13", marker = "sys_platform == 'linux'" },
   { index = "pypi", marker = "sys_platform == 'darwin'" },
 ]
+transformer-engine = { git = "https://github.com/NVIDIA/TransformerEngine.git", tag = "v2.15" }
 
 [[tool.uv.index]]
 name = "pypi"

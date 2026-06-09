@@ -1376,7 +1376,6 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             D = user_audio_embedded.shape[-1]
 
             user_audio_embedded_restored = user_audio_embedded.new_zeros(B, T, D)
-            user_audio_embedded_mask = torch.zeros(B, T, device=user_audio_embedded.device, dtype=torch.bool)
 
             sample_prob = float(self.cfg.get("user_cond_trim_augmentation_sample_prob", 0.0) or 0.0)
             turn_prob = float(self.cfg.get("user_cond_trim_augmentation_turn_prob", 0.0) or 0.0)
@@ -1421,15 +1420,12 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                     continue
 
                 turn_emb = turn_emb[:copy_len].clone()
-                turn_mask = torch.ones(copy_len, device=user_audio_embedded.device, dtype=torch.bool)
 
                 if boundary_trim > 0:
                     trim = min(boundary_trim, copy_len // 2)
                     if trim > 0:
                         turn_emb[:trim] = 0.0
                         turn_emb[copy_len - trim:] = 0.0
-                        turn_mask[:trim] = False
-                        turn_mask[copy_len - trim:] = False
 
                 if bool(sample_trim_aug[b].item()):
                     do_turn_aug = torch.rand((), device=user_audio_embedded.device).item() < turn_prob
@@ -1454,23 +1450,16 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                         )[0]
 
                         zero_emb_pad = turn_emb.new_zeros(trim_amount, turn_emb.size(-1))
-                        zero_mask_pad = torch.zeros(trim_amount, device=turn_mask.device, dtype=turn_mask.dtype)
 
                         if aug_choice == "left":
                             # Remove tokens from the left, then right-pad zeros.
                             kept_emb = turn_emb[trim_amount:]
-                            kept_mask = turn_mask[trim_amount:]
                             turn_emb = torch.cat([kept_emb, zero_emb_pad], dim=0)
-                            turn_mask = torch.cat([kept_mask, zero_mask_pad], dim=0)
 
                         elif aug_choice == "right":
                             # Remove tokens from the right, then right-pad zeros.
-                            # This preserves timing of the left side and removes the transition/right edge.
                             kept_emb = turn_emb[: copy_len - trim_amount]
-                            kept_mask = turn_mask[: copy_len - trim_amount]
-
                             turn_emb = torch.cat([kept_emb, zero_emb_pad], dim=0)
-                            turn_mask = torch.cat([kept_mask, zero_mask_pad], dim=0)
 
                         else:  # "both"
                             # Remove trim_amount total tokens split across left and right.
@@ -1482,84 +1471,19 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                                 left_trim, right_trim = right_trim, left_trim
 
                             kept_emb = turn_emb[left_trim : copy_len - right_trim]
-                            kept_mask = turn_mask[left_trim : copy_len - right_trim]
-
                             turn_emb = torch.cat([kept_emb, zero_emb_pad], dim=0)
-                            turn_mask = torch.cat([kept_mask, zero_mask_pad], dim=0)
 
                         # Safety: keep exact same length for restore assignment.
                         turn_emb = turn_emb[:copy_len]
-                        turn_mask = turn_mask[:copy_len]
 
                 dst_start = start_frame
                 dst_end = start_frame + copy_len
 
                 user_audio_embedded_restored[b, dst_start:dst_end] = turn_emb
-                user_audio_embedded_mask[b, dst_start:dst_end] = turn_mask
 
             user_audio_embedded = user_audio_embedded_restored
-            user_audio_mask = user_audio_embedded_mask
-
-            # compare these two masks showing count batch level overlaps, left and right overlap per item batch. Consider only where both are ones.
-            """
-            if "agent_mask" in batch and batch["agent_mask"] is not None:
-                user_cmp = user_audio_mask.bool()
-                agent_cmp = batch["agent_mask"].to(user_cmp.device).bool()
-                T_cmp = min(user_cmp.size(1), agent_cmp.size(1))
-                valid = torch.arange(T_cmp, device=user_cmp.device)[None, :] < batch["text_lens"].to(user_cmp.device)[:, None]
-                valid = valid[:, :T_cmp]
-                user_cmp = user_cmp[:, :T_cmp] & valid             
-                agent_cmp = agent_cmp[:, :T_cmp] & valid
-
-                overlap = user_cmp & agent_cmp
-
-                left_overlap = torch.zeros(B, device=user_cmp.device, dtype=torch.long)
-                right_overlap = torch.zeros(B, device=user_cmp.device, dtype=torch.long)
-                middle_overlap = torch.zeros(B, device=user_cmp.device, dtype=torch.long)
-
-                boundary_width = int(self.cfg.get("user_agent_overlap_boundary_width", 10))
-
-                for bi in range(B):
-                    user_idx = user_cmp[bi].nonzero(as_tuple=False).flatten()
-                    if user_idx.numel() == 0:
-                        continue
-
-                    breaks = torch.where(user_idx[1:] != user_idx[:-1] + 1)[0] + 1
-                    spans = torch.tensor_split(user_idx, breaks.cpu().tolist())
-
-                    for span in spans:
-                        s = int(span[0].item())
-                        e = int(span[-1].item()) + 1
-
-                        overlap_span = overlap[bi, s:e]
-                        if not overlap_span.any():
-                            continue
-
-                        left_end = min(e, s + boundary_width)
-                        right_start = max(s, e - boundary_width)
-
-                        left_overlap[bi] += overlap[bi, s:left_end].sum()
-                        right_overlap[bi] += overlap[bi, right_start:e].sum()
-
-                        boundary_mask = torch.zeros_like(overlap_span)
-                        boundary_mask[: left_end - s] = True
-                        boundary_mask[right_start - s :] = True
-
-                        middle_overlap[bi] += (overlap_span & ~boundary_mask).sum()
-
-                logging.info(
-                    "[user/agent-mask overlap debug] "
-                    f"overlap_frames={overlap.sum(dim=1).detach().cpu().tolist()} "
-                    f"left_overlap={left_overlap.detach().cpu().tolist()} "
-                    f"right_overlap={right_overlap.detach().cpu().tolist()} "
-                    f"middle_overlap={middle_overlap.detach().cpu().tolist()} "
-                    f"user_frames={user_cmp.sum(dim=1).detach().cpu().tolist()} "
-                    f"agent_frames={agent_cmp.sum(dim=1).detach().cpu().tolist()}"
-                )
-            """
         else:
             user_audio_embedded = None
-            user_audio_mask = None
 
         batch_output = self.process_batch(
             text=batch['text'],

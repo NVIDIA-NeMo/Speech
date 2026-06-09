@@ -258,9 +258,6 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             # Get all agent supervisions in this cut
             agent_sups = [sup for sup in cut.supervisions if sup.speaker in self.output_roles]
 
-            # It is a multiturn if there's more than 1 agent turn
-            is_multiturn = not (len(agent_sups) <= 1)
-
         def _align_codebooks(t):
             C = t.shape[1]
             if C < self.num_audio_codebooks:

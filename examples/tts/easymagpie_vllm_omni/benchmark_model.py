@@ -124,6 +124,7 @@ def _build_easymagpie_stage_config(
     dtype: str = "float16",
     distributed_executor_backend: str = "uni",
     cudagraph_mode: Optional[str] = None,
+    load_format: Optional[str] = None,
 ) -> dict:
     """Build a single-stage YAML dict containing only the EasyMagpie talker.
 
@@ -169,6 +170,12 @@ def _build_easymagpie_stage_config(
         # AutoTokenizer from the model dir to tokenize context_text + text.
         "skip_tokenizer_init": True,
     }
+
+    # Weight loading strategy. ``dummy`` initializes random weights and skips the
+    # checkpoint entirely — pair it with a dummy config dir (e.g. a Qwen3 backbone
+    # profile) to benchmark a backbone architecture without a trained checkpoint.
+    if load_format is not None:
+        engine_args["load_format"] = load_format
 
     # CUDA-graph capture strategy. ``enforce_eager`` already disables graphs, so
     # only set compilation_config when graphs are enabled (mirrors the sidecar
@@ -787,6 +794,7 @@ async def main(args):
         dtype=args.dtype,
         distributed_executor_backend=args.distributed_executor_backend,
         cudagraph_mode=args.cudagraph_mode,
+        load_format=args.load_format,
     )
     if args.cudagraph_mode is not None and args.enforce_eager:
         logger.warning(
@@ -919,6 +927,19 @@ async def main(args):
             bench.config_name = args.config_name
             all_bench_results.append(asdict(bench))
 
+        # ── Top-level summary (one line per concurrency level) ─────────────
+        print(f"\n{'=' * 56}")
+        print(f"{'Summary (' + args.config_name + ')':^56}")
+        print(f"{'=' * 56}")
+        for r in all_bench_results:
+            print(
+                f"concurrency={r['concurrency']}:  "
+                f"req/s {r['request_throughput']:.2f},  "
+                f"ttft {r['mean_ttft_ms']:.2f}ms,  "
+                f"itl {r['mean_itl_ms']:.2f}ms"
+            )
+        print(f"{'=' * 56}\n")
+
         # ── Save results ──────────────────────────────────────────────────
         if args.result_dir:
             result_dir = Path(args.result_dir)
@@ -1042,6 +1063,15 @@ def parse_args():
     )
 
     engine = parser.add_argument_group("engine")
+    engine.add_argument(
+        "--load-format",
+        type=str,
+        default=None,
+        choices=["auto", "dummy", "safetensors", "pt"],
+        help="Weight loading strategy. Use 'dummy' to initialize random weights and skip the "
+        "checkpoint (pair with a dummy config dir to benchmark a backbone without a trained "
+        "checkpoint). Default: unset (vLLM default 'auto').",
+    )
     engine.add_argument("--gpu-memory-utilization", type=float, default=0.5)
     engine.add_argument("--max-model-len", type=int, default=1024)
     engine.add_argument("--max-num-batched-tokens", type=int, default=1024)

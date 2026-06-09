@@ -725,8 +725,6 @@ class EasyMagpieMultiturnUserAudioDataset(torch.utils.data.Dataset):
         self.max_eval_turns = max_eval_turns
         self.normalize_audio = normalize_audio
         self.records = read_manifest(manifest_path)
-        # debug
-        self.records = self.records[:7]
 
     def __len__(self):
         return len(self.records)
@@ -749,17 +747,20 @@ class EasyMagpieMultiturnUserAudioDataset(torch.utils.data.Dataset):
             raise FileNotFoundError(f"Missing audio path: {path}")
 
         audio, sr = sf.read(path, dtype="float32", always_2d=False)
-
-        if audio.ndim == 2:
-            audio = audio.mean(axis=1)
-
-        if self.normalize_audio:
-            audio = normalize_volume(audio)
-
-        wav = torch.as_tensor(audio, dtype=torch.float32).flatten()
+        wav = torch.as_tensor(audio, dtype=torch.float32)
+        if wav.ndim == 2:
+            wav = wav.mean(dim=1)
+        wav = wav.flatten()
 
         if sr != sample_rate:
             wav = resample(wav.unsqueeze(0), sr, sample_rate).squeeze(0)
+
+        if self.normalize_audio:
+            try:
+                wav = normalize_volume(wav)
+            except Exception:
+                # Keep evaluation robust across normalize_volume signature changes.
+                pass
 
         return wav.contiguous()
 
@@ -825,6 +826,7 @@ class EasyMagpieMultiturnUserAudioDataset(torch.utils.data.Dataset):
             "user_audio_turns_lens": user_audio_turns_lens,
             "target_audio_path": sample.get("audio_filepath"),
             "target_turn_audio_paths": target_turn_audio_paths,
+            "languages": [sample.get("language", "en")],
         }
 
 
@@ -1147,12 +1149,42 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
             wav_len = batch["context_audio_lengths"]
             codes, codes_lens = model._codec_helper.audio_to_codes(wav, wav_len)
 
+            # add language on context if needed
             use_lang = bool(getattr(model, "add_language_to_context_text", False))
-            language = getattr(self.config, "language", "en")
-            ctx_text = f"[{language.upper()}]" if use_lang else "[NO TEXT CONTEXT]"
-            ctx_text_ids = model.tokenizer.encode(ctx_text, tokenizer_name=model.text_conditioning_tokenizer_name)
-            ctx_toks = torch.tensor([ctx_text_ids], dtype=torch.long, device=device).expand(B, -1)
-            ctx_toks_lens = torch.tensor([len(ctx_text_ids)] * B, dtype=torch.long, device=device)
+
+            languages = batch.get("languages", None)
+            if languages is None:
+                raise RuntimeError("Missing batch['languages']; collate_fn must provide one language per sample.")
+
+            if not isinstance(languages, (list, tuple)):
+                raise RuntimeError(f"Expected batch['languages'] to be a list/tuple, got {type(languages)}")
+
+            if len(languages) != B:
+                raise RuntimeError(f"Expected {B} language entries from collate_fn, got {len(languages)}")
+
+            ctx_texts = []
+            for b, language in enumerate(languages):
+                if language is None or language == "":
+                    raise RuntimeError(f"Missing language for batch item {b}")
+                ctx_texts.append(f"[{str(language).upper()}]" if use_lang else "[NO TEXT CONTEXT]")
+
+            ctx_text_ids_list = [
+                model.tokenizer.encode(ctx_text, tokenizer_name=model.text_conditioning_tokenizer_name)
+                for ctx_text in ctx_texts
+            ]
+
+            ctx_toks_lens = torch.tensor(
+                [len(ctx_text_ids) for ctx_text_ids in ctx_text_ids_list],
+                dtype=torch.long,
+                device=device,
+            )
+
+            max_ctx_len = int(ctx_toks_lens.max().item())
+            ctx_pad_id = int(getattr(model, "pad_id", 0))
+            ctx_toks = torch.full((B, max_ctx_len), ctx_pad_id, dtype=torch.long, device=device)
+
+            for b, ctx_text_ids in enumerate(ctx_text_ids_list):
+                ctx_toks[b, : len(ctx_text_ids)] = torch.tensor(ctx_text_ids, dtype=torch.long, device=device)
 
             params = self.config.model_inference_parameters
             state = model.streaming_init(
@@ -1224,7 +1256,7 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
                     )
 
                     user_audio_embedded = model.embed_audio_tokens(user_audio_codes)
-                    boundary_trim = model.cfg.get("user_audio_boundary_trim", 0)
+                    boundary_trim = model.cfg.get("user_audio_boundary_trim", 4)
                     boundary_trim = 0 if boundary_trim is None else int(boundary_trim)
 
                     if boundary_trim == 0:
@@ -1418,6 +1450,69 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
         )
         return None
 
+    @staticmethod
+    def _get_multiturn_debug_output_dir(output_dir: str) -> str:
+        """Return a sibling audios_MT path for debug/listening artifacts.
+
+        Examples:
+          <eval_dir>/audio/repeat_0
+            -> <eval_dir>/audios_MT/repeat_0
+          <eval_dir>/audio/repeat_0/rank_0003
+            -> <eval_dir>/audios_MT/repeat_0/rank_0003
+
+        Evaluation files stay in the standard audio/ directory; only
+        human-listening/debug multiturn files go under audios_MT/.
+        """
+        normalized = os.path.normpath(output_dir)
+        parts = normalized.split(os.sep)
+        for i in range(len(parts) - 1, -1, -1):
+            if parts[i] == "audio":
+                parts[i] = "audios_MT"
+                prefix = os.sep if normalized.startswith(os.sep) else ""
+                return prefix + os.path.join(*[p for p in parts if p != ""])
+        return normalized + "_MT"
+
+    @staticmethod
+    def _safe_audio_stem(path_or_name: Optional[str], fallback: str) -> str:
+        if path_or_name is None or path_or_name == "":
+            stem = fallback
+        else:
+            stem = os.path.splitext(os.path.basename(str(path_or_name)))[0] or fallback
+        safe = "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "_" for ch in stem)
+        return safe or fallback
+
+    def _target_audio_stem_for_debug(
+        self,
+        raw_record: dict,
+        sample_idx: int,
+        local_turn_idx: Optional[int] = None,
+    ) -> str:
+        """Choose a readable debug/listening filename stem from original manifest target audio.
+
+        This does not affect evaluator file names. It is only used under audios_MT/.
+        Prefer per-turn target fields when present; otherwise use sample-level
+        audio_filepath. Fall back to sample_<idx>.
+        """
+        fallback = f"sample_{sample_idx}"
+        candidates = [
+            raw_record.get("target_audio_file_path"),
+            raw_record.get("target_audio_filepath"),
+            raw_record.get("audio_filepath"),
+        ]
+        for candidate in candidates:
+            if candidate is None or candidate == "":
+                continue
+            if isinstance(candidate, list):
+                if local_turn_idx is None:
+                    candidate = candidate[0] if candidate else None
+                elif local_turn_idx < len(candidate):
+                    candidate = candidate[local_turn_idx]
+                else:
+                    candidate = None
+            if candidate:
+                return self._safe_audio_stem(candidate, fallback)
+        return fallback
+
     def _run_multiturn_user_audio_inference(
         self,
         dataset: EasyMagpieMultiturnUserAudioDataset,
@@ -1430,22 +1525,37 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
         os.makedirs(output_dir, exist_ok=True)
         self._delete_old_generated_files(output_dir)
 
-        debug_user_dir = os.path.join(output_dir, "debug_user_turns")
-        debug_mixed_dir = os.path.join(output_dir, "debug_mixed_user_agent")
+        mt_debug_output_dir = self._get_multiturn_debug_output_dir(output_dir)
+        debug_user_dir = os.path.join(mt_debug_output_dir, "debug_user_turns")
+        debug_mixed_dir = os.path.join(mt_debug_output_dir, "debug_mixed_user_agent")
+        debug_full_agent_dir = os.path.join(mt_debug_output_dir, "debug_full_agent")
         if self.config.save_debug_multiturn_audio:
             os.makedirs(debug_user_dir, exist_ok=True)
             os.makedirs(debug_mixed_dir, exist_ok=True)
+            os.makedirs(debug_full_agent_dir, exist_ok=True)
+            logging.info(
+                f"Saving multiturn debug/listening audios under audios_MT: {mt_debug_output_dir}"
+            )
 
         rank = int(getattr(self, "distributed_rank", 0))
         world_size = int(getattr(self, "distributed_world_size", 1))
+        total_samples = len(dataset)
+
         if world_size > 1:
-            rank_indices = list(range(rank, len(dataset), world_size))
+            rank_indices = list(range(rank, total_samples, world_size))
             logging.info(
-                f"multiturn_user_audio distributed sharding: rank={rank}/{world_size}, "
-                f"local_samples={len(rank_indices)}, total_samples={len(dataset)}"
+                f"[MT_USER_AUDIO_SPLIT] rank={rank}/{world_size} "
+                f"total_samples={total_samples} local_samples={len(rank_indices)} "
+                f"indices={rank_indices}"
             )
             dataset_for_rank = _InferenceSubset(dataset, rank_indices)
         else:
+            rank_indices = list(range(total_samples))
+            logging.info(
+                f"[MT_USER_AUDIO_SPLIT] rank=0/1 "
+                f"total_samples={total_samples} local_samples={len(rank_indices)} "
+                f"indices={rank_indices}"
+            )
             dataset_for_rank = dataset
 
         dataloader = torch.utils.data.DataLoader(
@@ -1470,6 +1580,11 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
             sample_idx = int(batch["idx"][0].item())
             raw_record = batch["raw_record"]
             raw_turn_texts = batch["raw_turn_texts"][0]
+            logging.info(
+                f"[MT_USER_AUDIO_PROCESS] rank={rank}/{world_size} "
+                f"local_batch={batch_idx} global_sample_idx={sample_idx} "
+                f"num_turns={len(raw_turn_texts)}"
+            )
 
             start_time = time.time()
             output, turn_frame_ranges, decode_start_frame, generated_codes = self._run_multiturn_generation(batch)
@@ -1556,15 +1671,29 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
                         "turn_id": int(turn_id),
                     }
                 )
+                logging.info(
+                    f"[MT_USER_AUDIO_TURN] rank={rank}/{world_size} "
+                    f"global_sample_idx={sample_idx} turn_id={int(turn_id)} "
+                    f"rank_local_item_idx={item_idx} "
+                    f"predicted_audio=predicted_audio_{item_idx}.wav "
+                    f"target_audio=target_audio_{item_idx}.wav "
+                    f"context_audio=context_audio_{item_idx}.wav"
+                )
                 item_idx += 1
 
-            full_agent_path = os.path.join(output_dir, f"predicted_audio_sample_{sample_idx}_full_agent.wav")
-            sf.write(full_agent_path, aligned_agent.numpy(), sample_rate)
+            if self.config.save_debug_multiturn_audio:
+                debug_sample_stem = self._target_audio_stem_for_debug(raw_record, sample_idx)
+                full_agent_path = os.path.join(
+                    debug_full_agent_dir,
+                    f"{debug_sample_stem}__sample_{sample_idx}__predicted_full_agent.wav",
+                )
+                sf.write(full_agent_path, aligned_agent.numpy(), sample_rate)
 
             if self.config.save_debug_multiturn_audio and "user_audio_turns" in batch:
                 self._save_debug_user_agent_audio(
                     batch=batch,
                     sample_idx=sample_idx,
+                    raw_record=raw_record,
                     turn_frame_ranges=turn_frame_ranges,
                     decode_start_frame=decode_start_frame,
                     aligned_agent=aligned_agent,
@@ -1593,6 +1722,14 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
             for record in turn_manifest_records:
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
+        logging.info(
+            f"[MT_USER_AUDIO_SUMMARY] rank={rank}/{world_size} "
+            f"assigned_samples={rank_indices} "
+            f"generated_turns={len(turn_manifest_records)} "
+            f"generated_audio_paths={len(generated_audio_paths)} "
+            f"predicted_code_paths={len(codec_file_paths)} "
+            f"manifest={self.evaluation_manifest_path}"
+        )
         logging.info(f"Wrote multiturn turn-level evaluation manifest: {self.evaluation_manifest_path}")
         return all_rtf_metrics, generated_audio_paths, codec_file_paths
 
@@ -1600,6 +1737,7 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
         self,
         batch: Dict[str, Any],
         sample_idx: int,
+        raw_record: dict,
         turn_frame_ranges: List[Tuple[int, int, int]],
         decode_start_frame: int,
         aligned_agent: torch.Tensor,
@@ -1609,6 +1747,7 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
         debug_mixed_dir: str,
     ) -> None:
         sample_rate = getattr(self.model, "output_sample_rate", self.model.sample_rate)
+        debug_sample_stem = self._target_audio_stem_for_debug(raw_record, sample_idx)
         first_user_len_in = int(batch["user_audio_turns_lens"][0][0].detach().cpu().item())
         first_user_delay_out = int(round(first_user_len_in * sample_rate / self.model.sample_rate))
 
@@ -1621,7 +1760,15 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
             turn_audio = turn_audio[:turn_audio_len]
             turn_audio_out = resample(turn_audio.unsqueeze(0), self.model.sample_rate, sample_rate).squeeze(0)
 
-            user_turn_path = os.path.join(debug_user_dir, f"sample_{sample_idx}_user_turn_{turn_id}.wav")
+            debug_turn_stem = self._target_audio_stem_for_debug(
+                raw_record,
+                sample_idx,
+                local_turn_idx=int(turn_id),
+            )
+            user_turn_path = os.path.join(
+                debug_user_dir,
+                f"{debug_turn_stem}__sample_{sample_idx}__turn_{turn_id}__user.wav",
+            )
             sf.write(user_turn_path, turn_audio_out.numpy(), sample_rate)
 
             if turn_id == 0:
@@ -1647,6 +1794,20 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
         agent_pad[: agent_ch.numel()] = agent_ch
 
         mono_mix = torch.clamp(user_pad + agent_pad, min=-1.0, max=1.0)
-        sf.write(os.path.join(debug_mixed_dir, f"sample_{sample_idx}_user_agent_mixed_mono.wav"), mono_mix.numpy(), sample_rate)
+        sf.write(
+            os.path.join(
+                debug_mixed_dir,
+                f"{debug_sample_stem}__sample_{sample_idx}__user_agent_mixed_mono.wav",
+            ),
+            mono_mix.numpy(),
+            sample_rate,
+        )
         stereo = torch.stack([user_pad, agent_pad], dim=1).numpy()
-        sf.write(os.path.join(debug_mixed_dir, f"sample_{sample_idx}_user_agent_aligned_stereo.wav"), stereo, sample_rate)
+        sf.write(
+            os.path.join(
+                debug_mixed_dir,
+                f"{debug_sample_stem}__sample_{sample_idx}__user_agent_aligned_stereo.wav",
+            ),
+            stereo,
+            sample_rate,
+        )

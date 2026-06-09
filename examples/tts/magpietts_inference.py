@@ -144,6 +144,224 @@ def append_metrics_to_csv(csv_path: str, checkpoint_name: str, dataset: str, met
     logging.info(f"Metrics appended to: {csv_path}")
 
 
+def _mean_finite(values: list):
+    vals = []
+    for value in values:
+        try:
+            value = float(value)
+        except Exception:
+            continue
+        if np.isfinite(value):
+            vals.append(value)
+    return None if not vals else float(np.mean(vals))
+
+
+def _enrich_filewise_metrics_with_manifest(filewise_metrics: list, manifest_path: str) -> list:
+    """Attach multiturn manifest metadata back to evaluator filewise rows.
+
+    evaluate_generated_audio_dir() returns one filewise row per generated turn,
+    but the filtered row does not preserve source_sample_idx/turn_id. The
+    generated multiturn manifest has the same order as predicted_audio_*.wav, so
+    we merge by list index before grouping.
+    """
+    if manifest_path is None or not os.path.exists(manifest_path):
+        logging.warning(f"Could not enrich multiturn filewise metrics; manifest missing: {manifest_path}")
+        return filewise_metrics
+
+    manifest_records = read_manifest(manifest_path)
+    if len(manifest_records) != len(filewise_metrics):
+        logging.warning(
+            "Could not safely enrich multiturn filewise metrics; "
+            f"manifest rows={len(manifest_records)} filewise rows={len(filewise_metrics)} "
+            f"manifest_path={manifest_path}"
+        )
+        return filewise_metrics
+
+    enriched = []
+    for row, record in zip(filewise_metrics, manifest_records):
+        new_row = dict(row)
+        for key in [
+            "source_sample_idx",
+            "turn_id",
+            "speaker",
+            "rank",
+            "rank_local_idx",
+            "audio_filepath",
+            "context_audio_filepath",
+        ]:
+            if key in record and key not in new_row:
+                new_row[key] = record[key]
+        enriched.append(new_row)
+
+    return enriched
+
+
+def _group_multiturn_filewise_metrics_by_sample(filewise_metrics: list) -> list:
+    """Group turn-level multiturn metrics into one old-style row per sample.
+
+    Each grouped row keeps turn-by-turn CER/WER/SSIM/UTMOS/text/audio lists plus
+    averaged sample-level values. Rows are sorted by averaged CER descending so
+    the worst conversations/samples appear first.
+    """
+    grouped = {}
+
+    for row_idx, row in enumerate(filewise_metrics):
+        source_sample_idx = row.get("source_sample_idx", None)
+        if source_sample_idx is None:
+            source_sample_idx = row.get("speaker", None)
+        if source_sample_idx is None:
+            source_sample_idx = row_idx
+
+        key = str(source_sample_idx)
+        if key not in grouped:
+            grouped[key] = {
+                "source_sample_idx": source_sample_idx,
+                "speaker": row.get("speaker", source_sample_idx),
+                "rank": row.get("rank", None),
+                "target_audio_path": row.get("gt_audio_filepath", row.get("audio_filepath", "")),
+                "context_audio_path": row.get("context_audio_filepath", ""),
+                "turn_rows": [],
+            }
+        grouped[key]["turn_rows"].append(row)
+
+    grouped_rows = []
+    for _, group in grouped.items():
+        turns = group["turn_rows"]
+
+        def turn_sort_key(r):
+            try:
+                return int(r.get("turn_id", 0))
+            except Exception:
+                return 0
+
+        turns = sorted(turns, key=turn_sort_key)
+
+        cer_turns = [r.get("cer") for r in turns]
+        wer_turns = [r.get("wer") for r in turns]
+        pred_context_ssim_turns = [r.get("pred_context_ssim") for r in turns]
+        pred_gt_ssim_turns = [r.get("pred_gt_ssim") for r in turns]
+        gt_context_ssim_turns = [r.get("gt_context_ssim") for r in turns]
+        utmosv2_turns = [r.get("utmosv2") for r in turns]
+        eou_type_turns = [r.get("eou_type") for r in turns]
+        eou_trailing_duration_turns = [r.get("eou_trailing_duration") for r in turns]
+        eou_trail_rms_ratio_turns = [r.get("eou_trail_rms_ratio") for r in turns]
+
+        grouped_rows.append(
+            {
+                "source_sample_idx": group["source_sample_idx"],
+                "speaker": group["speaker"],
+                "rank": group["rank"],
+                "num_turns": len(turns),
+
+                # Sample-level averages over all turns.
+                "cer": _mean_finite(cer_turns),
+                "wer": _mean_finite(wer_turns),
+                "pred_context_ssim": _mean_finite(pred_context_ssim_turns),
+                "pred_gt_ssim": _mean_finite(pred_gt_ssim_turns),
+                "gt_context_ssim": _mean_finite(gt_context_ssim_turns),
+                "utmosv2": _mean_finite(utmosv2_turns),
+                "eou_trailing_duration": _mean_finite(eou_trailing_duration_turns),
+                "eou_trail_rms_ratio": _mean_finite(eou_trail_rms_ratio_turns),
+
+                # Turn-by-turn values, old-script style.
+                "turn_ids": [r.get("turn_id", i) for i, r in enumerate(turns)],
+                "cer_turns": cer_turns,
+                "wer_turns": wer_turns,
+                "pred_context_ssim_turns": pred_context_ssim_turns,
+                "pred_gt_ssim_turns": pred_gt_ssim_turns,
+                "gt_context_ssim_turns": gt_context_ssim_turns,
+                "utmosv2_turns": utmosv2_turns,
+                "eou_type_turns": eou_type_turns,
+                "eou_trailing_duration_turns": eou_trailing_duration_turns,
+                "eou_trail_rms_ratio_turns": eou_trail_rms_ratio_turns,
+                "reference_text": [r.get("gt_text", "") for r in turns],
+                "asr_hyp": [r.get("pred_text", "") for r in turns],
+                "pred_audio_paths": [r.get("pred_audio_filepath", "") for r in turns],
+                "target_audio_path": group["target_audio_path"],
+                "context_audio_path": group["context_audio_path"],
+                "turn_metrics": turns,
+            }
+        )
+
+    grouped_rows.sort(
+        key=lambda r: (
+            r.get("cer") is not None,
+            float(r["cer"]) if r.get("cer") is not None else -1.0,
+        ),
+        reverse=True,
+    )
+    return grouped_rows
+
+
+def _write_grouped_multiturn_filewise_metrics_csv(csv_path: str, grouped_rows: list) -> None:
+    fieldnames = [
+        "source_sample_idx",
+        "speaker",
+        "rank",
+        "num_turns",
+        "cer",
+        "wer",
+        "pred_context_ssim",
+        "pred_gt_ssim",
+        "gt_context_ssim",
+        "utmosv2",
+        "eou_trailing_duration",
+        "eou_trail_rms_ratio",
+        "turn_ids",
+        "cer_turns",
+        "wer_turns",
+        "pred_context_ssim_turns",
+        "pred_gt_ssim_turns",
+        "gt_context_ssim_turns",
+        "utmosv2_turns",
+        "eou_type_turns",
+        "eou_trailing_duration_turns",
+        "eou_trail_rms_ratio_turns",
+        "target_audio_path",
+        "context_audio_path",
+        "pred_audio_paths",
+        "reference_text",
+        "asr_hyp",
+    ]
+
+    def csv_value(value):
+        if isinstance(value, (list, dict)):
+            value = json.dumps(value, ensure_ascii=False)
+        if value is None:
+            value = ""
+        value = str(value).replace('"', '""')
+        if "," in value or "\n" in value or "[" in value or "{" in value:
+            value = f'"{value}"'
+        return value
+
+    with open(csv_path, "w", encoding="utf-8") as f:
+        f.write(",".join(fieldnames) + "\n")
+        for row in grouped_rows:
+            f.write(",".join(csv_value(row.get(k, "")) for k in fieldnames) + "\n")
+
+
+def _save_grouped_multiturn_filewise_metrics(
+    eval_dir: str,
+    dataset: str,
+    repeat_idx: int,
+    filewise_metrics: list,
+    manifest_path: str,
+) -> None:
+    enriched_filewise = _enrich_filewise_metrics_with_manifest(filewise_metrics, manifest_path)
+    grouped_rows = _group_multiturn_filewise_metrics_by_sample(enriched_filewise)
+
+    json_path = os.path.join(eval_dir, f"{dataset}_grouped_filewise_metrics_{repeat_idx}.json")
+    csv_path = os.path.join(eval_dir, f"{dataset}_grouped_filewise_metrics_{repeat_idx}.csv")
+
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(grouped_rows, f, indent=4, ensure_ascii=False)
+
+    _write_grouped_multiturn_filewise_metrics_csv(csv_path, grouped_rows)
+
+    logging.info(f"Saved grouped multiturn filewise metrics JSON to: {json_path}")
+    logging.info(f"Saved grouped multiturn filewise metrics CSV to: {csv_path}")
+
+
 def create_formatted_metrics_mean_ci(metrics_mean_ci: dict) -> dict:
     """Create formatted metrics mean CI."""
     for k, v in metrics_mean_ci.items():
@@ -501,6 +719,15 @@ def run_inference_and_evaluation(
             sorted_filewise = sorted(filewise_metrics, key=lambda x: x.get('cer', 0), reverse=True)
             with open(os.path.join(eval_dir, f"{dataset}_filewise_metrics_{repeat_idx}.json"), "w") as f:
                 json.dump(sorted_filewise, f, indent=4)
+
+            if is_multiturn_user_audio:
+                _save_grouped_multiturn_filewise_metrics(
+                    eval_dir=eval_dir,
+                    dataset=dataset,
+                    repeat_idx=repeat_idx,
+                    filewise_metrics=filewise_metrics,
+                    manifest_path=eval_manifest_path,
+                )
 
             # Append to per-run CSV
             append_metrics_to_csv(per_run_csv, full_checkpoint_name, dataset, metrics)

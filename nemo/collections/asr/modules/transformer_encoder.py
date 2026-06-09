@@ -24,6 +24,7 @@ from nemo.collections.asr.parts.submodules.multi_head_attention import (
     PositionalEncoding,
     RelPositionalEncoding,
     RelPositionMultiHeadAttention,
+    RotaryPositionalEncoding,
 )
 from nemo.collections.asr.parts.submodules.subsampling import FeatureStacking, StackingSubsampling
 from nemo.core.classes.module import freeze, unfreeze
@@ -75,6 +76,13 @@ class TransformerEncoderConfig:
             - ``"no_pos"`` (or ``None``): no positional encoding at all. The pre-encoder output
               is consumed directly by the Transformer blocks. ``xscaling``, ``pos_emb_max_len``,
               ``dropout_pre_encoder`` and ``dropout_emb`` are unused in this mode.
+            - ``"rope"``: rotary position embedding applied to Q and K inside attention. No
+              additive positional embedding is added to the embeddings; the standard scaled
+              dot-product attention runs through FlexAttention with ``score_mod=None``.
+        rope_base: Theta base for the rotary position embedding. Only used when
+            ``self_attention_model='rope'``.
+        rotary_fraction: Fraction of the per-head dim to rotate. Only used when
+            ``self_attention_model='rope'``.
     """
 
     feat_in: int = 128
@@ -91,6 +99,8 @@ class TransformerEncoderConfig:
     # Future: "lookahead", "local", "sliding_window".
     attn_mode: str = "full"
     self_attention_model: str = "rel_pos"
+    rope_base: float = 10000.0
+    rotary_fraction: float = 1.0
 
 
 def _make_padding_mod(lengths):
@@ -112,7 +122,7 @@ def _make_causal_mod():
 
 
 _SUPPORTED_ATTENTION_MODES = ("full", "causal")
-_SUPPORTED_SELF_ATTENTION_MODELS = ("abs_pos", "rel_pos", "no_pos")
+_SUPPORTED_SELF_ATTENTION_MODELS = ("abs_pos", "rel_pos", "no_pos", "rope")
 
 
 class FeedForward(nn.Module):
@@ -132,13 +142,14 @@ class FeedForward(nn.Module):
 
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, cfg: TransformerEncoderConfig):
+    def __init__(self, cfg: TransformerEncoderConfig, pos_enc=None):
         super().__init__()
         self.n_heads = cfg.n_heads
         self.head_dim = cfg.d_model // cfg.n_heads
         self.d_model = cfg.d_model
         self.self_attention_model = cfg.self_attention_model
         self._uses_rel_pos = self.self_attention_model == "rel_pos"
+        self._uses_rope = self.self_attention_model == "rope"
         if self.self_attention_model not in _SUPPORTED_SELF_ATTENTION_MODELS:
             raise ValueError(
                 f"self_attention_model='{self.self_attention_model}' is not supported. "
@@ -149,6 +160,15 @@ class MultiHeadAttention(nn.Module):
                 "PyTorch FlexAttention CUDA backend requires per-head embedding dimension >= 16, "
                 f"but got head_dim={self.head_dim} from d_model={self.d_model}, n_heads={self.n_heads}."
             )
+
+        # Rotary position embedding shared across layers; rotates Q/K before the attention
+        # kernel. The shared module owns the cos/sin buffers (see ``TransformerEncoder``).
+        if self._uses_rope:
+            if pos_enc is None:
+                raise ValueError("'rope' attention requires a RotaryPositionalEncoding via pos_enc.")
+            self.rope = pos_enc
+        else:
+            self.rope = None
 
         self.w_qkv = nn.Linear(cfg.d_model, 3 * cfg.d_model, bias=cfg.qkv_bias)
         self.out_proj = nn.Linear(cfg.d_model, cfg.d_model)
@@ -170,20 +190,6 @@ class MultiHeadAttention(nn.Module):
             self.pos_bias_u = None
             self.pos_bias_v = None
 
-        # Per-forward Transformer-XL (b)+(d) bias of shape (B, H, T, T), set by ``forward`` and
-        # read by ``_rel_pos_score_mod`` while FlexAttention is executing.
-        self._rel_pos_bias = None
-
-    def _rel_pos_score_mod(self, score, b, h, q_idx, kv_idx):
-        """FlexAttention ``score_mod`` adding the Transformer-XL (b)+(d) bias.
-
-        FlexAttention's ``score_mod`` API expects a callable with a fixed signature, so the
-        per-forward bias tensor is passed in via ``self._rel_pos_bias`` rather than as an
-        explicit argument; ``forward`` populates that attribute immediately before invoking
-        ``flex_attention``.
-        """
-        return score + self._rel_pos_bias[b, h, q_idx, kv_idx]
-
     def _rel_shift(self, x):
         """Transformer-XL relative-position shift.
 
@@ -202,11 +208,12 @@ class MultiHeadAttention(nn.Module):
         - Matrices (b) + (d) — the position-dependent score bias ``(Q + v) @ R^T`` rel-
           shifted into ``(q_idx, kv_idx)`` coordinates — are precomputed into a
           ``(B, H, T, T)`` tensor, scaled by ``1/sqrt(D)`` (to match FlexAttention's
-          already-scaled ``QK^T`` scores), and stashed on ``self._rel_pos_bias``. The
-          bound closure ``self._rel_pos_score_mod`` reads that buffer while FlexAttention
-          is executing. The state-passing detour is necessary because FlexAttention's
-          ``score_mod`` API fixes the callable signature, so the per-forward tensor
-          cannot be threaded through as an explicit argument.
+          already-scaled ``QK^T`` scores), and captured by a local ``score_mod`` closure.
+          FlexAttention's ``score_mod`` API fixes the callable signature, so the per-forward
+          tensor is threaded in via closure capture rather than as an explicit argument.
+          Keeping it local (instead of on ``self``) lets the ``(B, H, T, T)`` bias be freed
+          as soon as the layer's attention call returns, so peak memory holds at most one
+          layer's bias rather than all layers' biases at once.
         - Matrix (c) — the global-content bias ``u @ K^T`` — is folded into FlexAttention
           by rewriting the query as ``Q + pos_bias_u``, which is returned.
 
@@ -225,18 +232,21 @@ class MultiHeadAttention(nn.Module):
         p = self.linear_pos(pos_emb).view(pos_emb.size(0), -1, H, D).transpose(1, 2)
         # pos_bias_{u,v}: (H, D) -> (1, H, 1, D) so they broadcast over the (B, H, T, D)
         # Q tensor against the head/depth axes rather than (incorrectly) against time.
-        # Match dtype under AMP so fp32 bias params do not upcast q before FlexAttention.
-        bias_u = self.pos_bias_u.view(1, H, 1, D).to(dtype=q.dtype)
-        bias_v = self.pos_bias_v.view(1, H, 1, D).to(dtype=q.dtype)
+        bias_u = self.pos_bias_u.view(1, H, 1, D).to(q.dtype)
+        bias_v = self.pos_bias_v.view(1, H, 1, D).to(q.dtype)
         # Matrix b + d: ((Q + v) @ R^T) shifted into (q_idx, kv_idx) space, then scaled
         # by 1/sqrt(D) so it can be added directly to FlexAttention's already-scaled scores.
         q_with_bias_v = q + bias_v
         matrix_bd = torch.matmul(q_with_bias_v, p.transpose(-2, -1))  # (B, H, T, 2T - 1)
         # rel_shift converts absolute-relative-position columns into (query, key) columns;
         # keep the first T to land in (B, H, T, T) bias space.
-        self._rel_pos_bias = self._rel_shift(matrix_bd)[..., :T] * (D**-0.5)
+        rel_pos_bias = self._rel_shift(matrix_bd)[..., :T] * (D**-0.5)
+
+        def score_mod(score, b, h, q_idx, kv_idx):
+            return score + rel_pos_bias[b, h, q_idx, kv_idx]
+
         # Matrix c: fold u @ K^T into FlexAttention by rewriting Q as (Q + u).
-        return self._rel_pos_score_mod, q + bias_u
+        return score_mod, q + bias_u
 
     def forward(self, x, block_mask=None, pos_emb=None):
         B, T, _ = x.shape
@@ -249,6 +259,10 @@ class MultiHeadAttention(nn.Module):
             q = self.q_norm(q).to(v.dtype)
             k = self.k_norm(k).to(v.dtype)
 
+        if self._uses_rope:
+            # RoPE rotates Q/K in place; it is orthogonal to FlexAttention's score_mod.
+            q, k = self.rope(q, k)
+
         score_mod = None
         if self._uses_rel_pos:
             score_mod, q = self._build_rel_pos_score_mod(q, pos_emb)
@@ -260,10 +274,10 @@ class MultiHeadAttention(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    def __init__(self, cfg: TransformerEncoderConfig):
+    def __init__(self, cfg: TransformerEncoderConfig, pos_enc=None):
         super().__init__()
         self.norm1 = nn.LayerNorm(cfg.d_model)
-        self.attn = MultiHeadAttention(cfg)
+        self.attn = MultiHeadAttention(cfg, pos_enc=pos_enc)
         self.drop = nn.Dropout(cfg.drop_rate)
         self.norm2 = nn.LayerNorm(cfg.d_model)
         self.ffn = FeedForward(cfg)
@@ -333,8 +347,16 @@ class TransformerEncoder(nn.Module):
               ``pos_emb_max_len``, ``dropout_pre_encoder`` and ``dropout_emb`` have no effect
               in this mode. ``None`` is accepted as a YAML-friendly alias for ``"no_pos"``
               (an unset field in a config maps to ``None``).
+            - ``"rope"``: rotary position embedding applied to Q/K inside attention. No additive
+              positional embedding is added to the embeddings; ``dropout_pre_encoder`` (and
+              ``xscaling`` if set) are still applied to the pre-encoder output, and ``dropout_emb``
+              has no effect in this mode.
 
             ``"rel_pos_local_attn"`` is not implemented yet.
+        rope_base: Theta base for the rotary position embedding. Only used when
+            ``self_attention_model='rope'``. Defaults to 10000.0.
+        rotary_fraction: Fraction of the per-head dim to rotate. Only used when
+            ``self_attention_model='rope'``. Defaults to 1.0.
         pos_emb_max_len: Initial maximum length for sinusoidal positional embeddings.
         xscaling: If True, scale embeddings by ``sqrt(d_model)`` before adding positional encodings,
             following "Attention Is All You Need" article. Originally intended to balance the magnitude
@@ -364,6 +386,8 @@ class TransformerEncoder(nn.Module):
         ff_expansion: float = 4.0,
         pre_block_norm: bool = True,
         self_attention_model: Optional[str] = "rel_pos",
+        rope_base: float = 10000.0,
+        rotary_fraction: float = 1.0,
         pos_emb_max_len: int = 5000,
         xscaling: bool = False,
         attn_mode: str = "full",
@@ -384,7 +408,7 @@ class TransformerEncoder(nn.Module):
         if self_attention_model not in _SUPPORTED_SELF_ATTENTION_MODELS:
             raise ValueError(
                 f"self_attention_model='{self_attention_model}' is not supported. "
-                "Currently only 'abs_pos', 'rel_pos', and 'no_pos' (or None) are available."
+                "Currently only 'abs_pos', 'rel_pos', 'rope', and 'no_pos' (or None) are available."
             )
         if dropout_pre_encoder is None:
             dropout_pre_encoder = drop_rate
@@ -402,6 +426,8 @@ class TransformerEncoder(nn.Module):
             subsampling_factor=subsampling_factor,
             attn_mode=attn_mode,
             self_attention_model=self_attention_model,
+            rope_base=rope_base,
+            rotary_fraction=rotary_fraction,
         )
         self.d_model = d_model
         self.n_layers = n_layers
@@ -452,10 +478,24 @@ class TransformerEncoder(nn.Module):
                 xscale=self.xscale,
                 dropout_rate_emb=dropout_emb,
             )
+        elif self_attention_model == "rope":
+            # 'rope' adds no additive positional embedding to the signal; rotation is applied to
+            # Q/K inside each attention layer. The pre-encoder dropout (normally inside the
+            # positional encoding) is applied separately in forward_internal.
+            self.dropout_pre_encoder = nn.Dropout(dropout_pre_encoder)
+            self.pos_enc = RotaryPositionalEncoding(
+                d_k=d_model // n_heads,
+                rotary_fraction=rotary_fraction,
+                rope_base=rope_base,
+                max_len=pos_emb_max_len,
+            )
         else:  # "no_pos"
             self.pos_enc = None
         self.embed_norm = nn.LayerNorm(d_model) if pre_block_norm else nn.Identity()
-        self.layers = nn.ModuleList([TransformerBlock(cfg) for _ in range(n_layers)])
+        # For 'rope', the shared RotaryPositionalEncoding is passed into each block so the
+        # cos/sin buffers are computed once and reused across all attention modules.
+        layer_pos_enc = self.pos_enc if self_attention_model == "rope" else None
+        self.layers = nn.ModuleList([TransformerBlock(cfg, pos_enc=layer_pos_enc) for _ in range(n_layers)])
         self.final_norm = nn.LayerNorm(d_model)
         if feat_out > 0 and feat_out != self._feat_out:
             self.out_proj = nn.Linear(self._feat_out, feat_out)
@@ -519,7 +559,14 @@ class TransformerEncoder(nn.Module):
             x = audio_signal
             length = length.to(torch.int64)
 
-        if self.pos_enc is not None:
+        if self.self_attention_model == "rope":
+            # 'rope' adds no additive positional embedding; Q/K are rotated inside attention.
+            # Apply xscale (if set) and the pre-encoder dropout to the pre-encoder output here.
+            if self.xscale:
+                x = x * self.xscale
+            x = self.dropout_pre_encoder(x)
+            pos_emb = None
+        elif self.pos_enc is not None:
             x, pos_emb = self.pos_enc(x=x)
         else:  # "no_pos": pre-encoder output flows in unchanged
             pos_emb = None

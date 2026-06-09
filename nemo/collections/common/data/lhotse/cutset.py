@@ -14,8 +14,6 @@
 """Lhotse CutSet utilities and Parquet manifest support for NeMo."""
 
 import io
-import os
-import json
 import logging
 import random
 import re
@@ -25,8 +23,6 @@ from functools import partial
 from itertools import repeat
 from pathlib import Path
 from typing import KeysView, List, Mapping, Sequence, Tuple, Union
-
-from copy import deepcopy
 
 import numpy as np
 import omegaconf
@@ -59,9 +55,6 @@ from nemo.collections.common.data.lhotse.text_adapters import (
 )
 from nemo.collections.common.parts.preprocessing.manifest import get_full_path
 
-from lhotse import Recording, AudioSource, SupervisionSegment, MonoCut, CutSet
-
-from pydub.utils import mediainfo
 
 def temperature_reweighting(weights: List[Union[float, int]], temperature: float = 1.0) -> List[float]:
     """
@@ -946,8 +939,6 @@ def read_lhotse_magpietts_data_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
 
     add_extra_end_sil = config.get("add_extra_end_silence", False)
     extra_end_silence_range = config.get("extra_end_silence_range", [0.5, 6.0])
-    add_extra_begin_sil = config.get("add_extra_begin_sil", False)
-    extra_begin_silence_range = config.get("extra_begin_silence_range", [0.5, 6.0])
     sample_rate = config.get("sample_rate", 22050)
 
     max_cer = config.get("max_cer", 0.03)
@@ -962,53 +953,14 @@ def read_lhotse_magpietts_data_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
             buffer.seek(0)
             return Recording.from_bytes(buffer.read(), recording_id=recording_id)
 
-    def materialize_to_monocut(cut_like: Cut, cut_id: str, sample_rate: int) -> MonoCut:
-        audio = cut_like.load_audio()  # renders mix -> (C, N)
-        rec = create_recording_from_array(audio, sample_rate, recording_id=f"{cut_id}_rec")
-        return MonoCut(
-            id=cut_id,
-            start=0.0,
-            duration=cut_like.duration,
-            channel=0,
-            recording=rec,
-            supervisions=[],
-        ).move_to_memory(audio_format="wav")
-
-    def prepend_silence_monocut(
-        cut: MonoCut,
-        sil_duration: float,
-        sample_rate: int,
-        recording_id: str,
-        cut_id: str,
-    ) -> MonoCut:
-        audio = cut.load_audio()  # (C, N)
-        n_pad = int(round(sil_duration * sample_rate))
-        if n_pad <= 0:
-            return cut
-
-        pad = np.zeros((audio.shape[0], n_pad), dtype=audio.dtype)
-        audio2 = np.concatenate([pad, audio], axis=1)
-
-        rec = create_recording_from_array(audio2, sample_rate, recording_id=recording_id)
-        return MonoCut(
-            id=cut_id,
-            start=0.0,
-            duration=audio2.shape[1] / sample_rate,
-            channel=0,
-            recording=rec,
-            supervisions=[],
-        ).move_to_memory(audio_format="wav")
-    
     def convert_cut_fn(cut: Cut) -> Cut:
         """Convert a single cut into the continuation format."""
-
-        orig_agent_sup = fastcopy(cut.supervisions[0])
+        orig_agent_sup = deepcopy(cut.supervisions[0])
         target_audio_orig_dur = cut.target_audio.duration
 
         # Resample audios
         cut.target_audio = cut.target_audio.resample(sample_rate)
-        if cut.has_custom("context_audio"):
-            cut.context_audio = cut.context_audio.resample(sample_rate)
+        cut.context_audio = cut.context_audio.resample(sample_rate)
         total_duration = cut.target_audio.duration
 
         # Prepare MonoCuts
@@ -1041,7 +993,7 @@ def read_lhotse_magpietts_data_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
         user_sup = fastcopy(orig_agent_sup, start=0.0, duration=0.08, speaker="user", text="dummy text")
         agent_sup = fastcopy(orig_agent_sup, start=0.0, duration=target_audio_orig_dur - 0.08, speaker="agent")
 
-        # Optionally add extra silence on the end
+        # Optionally add extra silence
         if add_extra_end_sil:
             sil_duration = random.uniform(*extra_end_silence_range)
             cut_target = cut_target.pad(duration=total_duration + sil_duration, direction="right")
@@ -1051,41 +1003,12 @@ def read_lhotse_magpietts_data_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
             agent_sup.duration += sil_duration + 1.0
             user_sup.duration += sil_duration
 
-        # Optionally add extra silence on the start
-        if add_extra_begin_sil:
-            sil_duration = random.uniform(*extra_begin_silence_range)
-            # Pad both streams on the left (adds zeros at the start)
-            prev_target_dur = cut_target.duration
-            prev_source_dur = cut_source.duration
-            # prepend zeros explicitly
-            cut_target = prepend_silence_monocut(
-                cut_target, sil_duration, sample_rate,
-                recording_id=f"{cut.id}_target_pre", cut_id=f"{cut.id}_target"
-            )
-            cut_source = prepend_silence_monocut(
-                cut_source, sil_duration, sample_rate,
-                recording_id=f"{cut.id}_source_pre", cut_id=f"{cut.id}_source"
-            )
-
-            # Shift supervision start times forward, because audio got longer at the beginning
-            user_sup.start += sil_duration
-            agent_sup.start += sil_duration
-
         # Assemble final cut
         cut_source.supervisions = [user_sup, agent_sup]
         cut_source.target_audio = cut_target.recording
         cut_source.duration = cut_target.duration
-        if cut.has_custom("context_audio"):
-            cut_source.context_audio = cut.context_audio
-        if cut.has_custom("context_codes"):
-            cut_source.context_codes = cut.context_codes
-        if cut.has_custom("target_codes"):
-            cut_source.target_codes = cut.target_codes
-        if cut.has_custom("lang"):
-            cut_source.lang = cut.lang
-        if cut.has_custom("ipa"):
-            cut_source.ipa = cut.ipa
-        cut_source.formatter = "lhotse_magpietts_data_as_continuation"
+        cut_source.context_audio = cut.context_audio
+        cut_source.task = "lhotse_magpietts_data_as_continuation"
 
         return cut_source
 
@@ -1125,6 +1048,7 @@ def read_lhotse_magpietts_data_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
 def read_s2s_duplex_reverse_role(config) -> Tuple[CutSet, bool]:
     """
     Reverse the speaker roles and swap the source/target audio streams in a Duplex S2S CutSet.
+
     This parser takes an existing conversational dataset and inverts the perspective
     by swapping the "user" and "agent" supervision labels. It also swaps the primary
     `recording` (usually source audio) with the `target_audio` to fully simulate the

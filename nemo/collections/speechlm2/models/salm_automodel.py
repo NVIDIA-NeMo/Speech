@@ -66,7 +66,6 @@ class SALMAutomodel(LightningModule, HFHubMixin):
 
         self._use_fsdp = False
         self._use_tp = False
-        self._mtp_enabled = False  # set in configure_model when cfg.mtp.enabled
 
         if self.cfg.get("init_configure_model", False):
             self.configure_model()
@@ -85,6 +84,11 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             if p is not None:
                 return p._local_tensor.device if isinstance(p, DTensor) else p.device
         return super().device
+
+    @property
+    def _mtp_enabled(self) -> bool:
+        """True when the MTP head is attached, regardless of how the model was loaded."""
+        return getattr(getattr(self, 'llm', None), 'mtp', None) is not None
 
     @property
     def embed_tokens(self):
@@ -1068,8 +1072,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         #     Automodel's _filter_kwargs_for_init can't strip the positional ``config``.
         # So we load the LLM normally and then construct + attach the head ourselves.
         mtp_cfg = self.cfg.get("mtp", None)
-        self._mtp_enabled = bool(mtp_cfg is not None and mtp_cfg.get("enabled", False))
-        if self._mtp_enabled:
+        if mtp_cfg is not None and mtp_cfg.get("enabled", False):
             if self.cfg.get("packed_sequences", False):
                 raise NotImplementedError("MTP is not yet supported with packed_sequences=true (THD path).")
             self._mtp_loss_scaling_factor = float(mtp_cfg.get("loss_scaling_factor", 0.1))
@@ -1088,9 +1091,9 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         )
 
         # Build + attach the MTP head ourselves (the base checkpoint has none).
-        if self._mtp_enabled and getattr(self.llm, "mtp", None) is None:
+        if mtp_cfg is not None and mtp_cfg.get("enabled", False) and getattr(self.llm, "mtp", None) is None:
             self._build_and_attach_mtp_head(mtp_cfg, dtype)
-        if self._mtp_enabled and getattr(self.llm, "mtp", None) is None:
+        if mtp_cfg is not None and mtp_cfg.get("enabled", False) and getattr(self.llm, "mtp", None) is None:
             raise RuntimeError("MTP enabled but self.llm.mtp is still None after _build_and_attach_mtp_head.")
 
         # Apply MoE options (aux_loss_coeff override, load balance tracking)

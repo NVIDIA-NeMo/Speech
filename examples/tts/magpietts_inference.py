@@ -480,6 +480,8 @@ def run_inference_and_evaluation(
                 with_fcd=eval_config.with_fcd,
                 codec_model_path=eval_config.codec_model_path,
                 device=eval_config.device,
+                asr_batch_size=eval_config.asr_batch_size,
+                eou_batch_size=eval_config.eou_batch_size,
             )
 
             metrics, filewise_metrics = evaluate_generated_audio_dir(
@@ -719,6 +721,8 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
         default=['cer', 'pred_context_ssim', 'utmosv2'],
     )
     eval_group.add_argument('--disable_fcd', action='store_true')
+    eval_group.add_argument("--asr_batch_size", type=int, default=32)
+    eval_group.add_argument("--eou_batch_size", type=int, default=32)
 
     # Quality targets
     target_group = parser.add_argument_group('Quality Targets')
@@ -910,6 +914,8 @@ def main(argv=None):
         with_utmosv2=not args.disable_utmosv2,
         with_fcd=not args.disable_fcd,
         codec_model_path=args.codecmodel_path if not args.disable_fcd else None,
+        asr_batch_size=args.asr_batch_size,
+        eou_batch_size=args.eou_batch_size,
     )
 
     cer, ssim = None, None

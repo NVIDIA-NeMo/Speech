@@ -726,7 +726,7 @@ class EasyMagpieMultiturnUserAudioDataset(torch.utils.data.Dataset):
         self.normalize_audio = normalize_audio
         self.records = read_manifest(manifest_path)
         # debug
-        # self.records = self.records[:7]
+        self.records = self.records[:7]
 
     def __len__(self):
         return len(self.records)

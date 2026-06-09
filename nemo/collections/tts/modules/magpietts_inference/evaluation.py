@@ -54,6 +54,8 @@ class EvaluationConfig:
     with_fcd: bool = True
     codec_model_path: str = None
     device: str = "cuda"
+    asr_batch_size: int = 32
+    eou_batch_size: int = 32
 
 
 def evaluate_generated_audio_dir(
@@ -95,6 +97,8 @@ def evaluate_generated_audio_dir(
         codec_model_path=config.codec_model_path,
         device=config.device,
         eou_model_name=config.eou_model_name,
+        asr_batch_size=config.asr_batch_size,
+        eou_batch_size=config.eou_batch_size,
     )
 
     return avg_metrics, filewise_metrics

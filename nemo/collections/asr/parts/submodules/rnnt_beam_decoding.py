@@ -1583,7 +1583,6 @@ class BeamBatchedRNNTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs
             pruning_mode: mode for pruning hypotheses with LM
             allow_cuda_graphs: whether to allow CUDA graphs
             return_best_hypothesis: whether to return the best hypothesis or N-best hypotheses
-            tokenizer: tokenizer for the model
         """
 
         super().__init__()
@@ -1604,7 +1603,7 @@ class BeamBatchedRNNTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs
         if search_type == "malsd_batch":
             # Depending on availability of `blank_as_pad` support
             # switch between more efficient batch decoding technique
-            self._decoding_computer = ModifiedALSDBatchedRNNTComputer(
+            self.decoding_computer = ModifiedALSDBatchedRNNTComputer(
                 decoder=self.decoder,
                 joint=self.joint,
                 beam_size=self.beam_size,
@@ -1618,7 +1617,7 @@ class BeamBatchedRNNTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs
                 allow_cuda_graphs=allow_cuda_graphs,
             )
         elif search_type == "maes_batch":
-            self._decoding_computer = ModifiedAESBatchedRNNTComputer(
+            self.decoding_computer = ModifiedAESBatchedRNNTComputer(
                 decoder=self.decoder,
                 joint=self.joint,
                 beam_size=self.beam_size,
@@ -1636,14 +1635,14 @@ class BeamBatchedRNNTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs
 
     def disable_cuda_graphs(self) -> bool:
         """Disable CUDA graphs (e.g., for decoding in training)"""
-        if isinstance(self._decoding_computer, WithOptionalCudaGraphs):
-            return self._decoding_computer.disable_cuda_graphs()
+        if isinstance(self.decoding_computer, WithOptionalCudaGraphs):
+            return self.decoding_computer.disable_cuda_graphs()
         return False
 
     def maybe_enable_cuda_graphs(self) -> bool:
         """Enable CUDA graphs (if allowed)"""
-        if isinstance(self._decoding_computer, WithOptionalCudaGraphs):
-            return self._decoding_computer.maybe_enable_cuda_graphs()
+        if isinstance(self.decoding_computer, WithOptionalCudaGraphs):
+            return self.decoding_computer.maybe_enable_cuda_graphs()
         return False
 
     @property
@@ -1690,7 +1689,7 @@ class BeamBatchedRNNTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs
             self.joint.eval()
 
             inseq = encoder_output  # [B, T, D]
-            batched_beam_hyps = self._decoding_computer(x=inseq, out_len=logitlen)
+            batched_beam_hyps, _ = self.decoding_computer(x=inseq, out_len=logitlen)
 
             batch_size = encoder_output.shape[0]
             if self.return_best_hypothesis:

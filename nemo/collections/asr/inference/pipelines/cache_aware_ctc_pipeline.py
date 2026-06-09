@@ -177,9 +177,8 @@ class CacheAwareCTCPipeline(BasePipeline):
         """
         state = CacheAwareCTCStreamingState()
         state.set_global_offset(0)
-        new_options = options.augment_with_defaults(
-            default_enable_itn=self.text_processor.is_itn_enabled(),
-            default_enable_pnc=self.text_processor.is_pnc_enabled(),
+        new_options = options.fill_defaults(
+            default_enable_itn=self.text_processor.itn_enabled,
             default_enable_nmt=self.nmt_enabled,
             default_source_language=self.nmt_model.source_language if self.nmt_enabled else None,
             default_target_language=self.nmt_model.target_language if self.nmt_enabled else None,

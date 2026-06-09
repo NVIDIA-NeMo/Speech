@@ -45,7 +45,6 @@ from tempfile import NamedTemporaryFile
 from typing import Dict, List, Optional, Union
 
 import lightning.pytorch as pl
-import optuna
 import torch
 from omegaconf import OmegaConf
 from pytorch_lightning import seed_everything
@@ -55,7 +54,7 @@ from nemo.collections.asr.models import SortformerEncLabelModel
 from nemo.collections.asr.parts.utils.speaker_utils import (
     audio_rttm_map,
     get_uniqname_from_filepath,
-    timestamps_to_pyannote_object,
+    timestamps_to_supervisions,
 )
 from nemo.collections.asr.parts.utils.transcribe_utils import read_and_maybe_sort_manifest
 from nemo.collections.asr.parts.utils.vad_utils import (
@@ -65,6 +64,7 @@ from nemo.collections.asr.parts.utils.vad_utils import (
 )
 from nemo.collections.common.parts.preprocessing.manifest import get_full_path
 from nemo.core.config import hydra_runner
+from nemo.utils.dependency import import_optional_dependency
 
 seed_everything(42)
 torch.backends.cudnn.deterministic = True
@@ -121,7 +121,7 @@ class DiarizationConfig:
     optuna_n_trials: int = 100000
 
 
-def optuna_suggest_params(postprocessing_cfg: PostProcessingParams, trial: optuna.Trial) -> PostProcessingParams:
+def optuna_suggest_params(postprocessing_cfg: PostProcessingParams, trial) -> PostProcessingParams:
     """
     Suggests hyperparameters for postprocessing using Optuna.
     See the following link for `trial` instance in Optuna framework.
@@ -164,7 +164,7 @@ def get_tensor_path(cfg: DiarizationConfig) -> str:
 
 
 def diarization_objective(
-    trial: optuna.Trial,
+    trial,
     postprocessing_cfg: PostProcessingParams,
     temp_out_dir: str,
     infer_audio_rttm_dict: Dict[str, Dict[str, str]],
@@ -235,6 +235,8 @@ def run_optuna_hyperparam_search(
             Dimension: [(1, num_frames, num_speakers), ..., (1, num_frames, num_speakers)]
         temp_out_dir (str): temporary directory for storing intermediate outputs.
     """
+    optuna = import_optional_dependency("optuna")
+
     worker_function = lambda trial: diarization_objective(
         trial=trial,
         postprocessing_cfg=postprocessing_cfg,
@@ -274,9 +276,9 @@ def convert_pred_mat_to_segments(
         bypass_postprocessing (bool, optional): if True, postprocessing will be bypassed. Defaults to False.
 
     Returns:
-       all_hypothesis (list): list of pyannote objects for each audio file.
-       all_reference (list): list of pyannote objects for each audio file.
-       all_uems (list): list of pyannote objects for each audio file.
+       all_hypothesis (list): list of (uniq_id, list[SupervisionSegment]) per audio file.
+       all_reference (list): list of (uniq_id, list[SupervisionSegment]) per audio file.
+       all_uems (list): list of (uniq_id, list[SupervisionSegment]) per audio file.
     """
     all_hypothesis, all_reference, all_uems = [], [], []
     cfg_vad_params = OmegaConf.structured(postprocessing_cfg)
@@ -294,7 +296,7 @@ def convert_pred_mat_to_segments(
                 uniq_id = audio_rttm_values["uniq_id"]
             else:
                 uniq_id = get_uniqname_from_filepath(audio_rttm_values["audio_filepath"])
-        all_hypothesis, all_reference, all_uems = timestamps_to_pyannote_object(
+        all_hypothesis, all_reference, all_uems = timestamps_to_supervisions(
             speaker_timestamps,
             uniq_id,
             audio_rttm_values,

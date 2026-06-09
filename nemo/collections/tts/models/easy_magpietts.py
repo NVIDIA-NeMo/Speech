@@ -119,6 +119,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         self.phoneme_loss_weight = cfg.get('phoneme_loss_weight', 1.0)
         self.parallel_codebook_loss_scale = cfg.get('parallel_codebook_loss_scale', 1.0)
         self.local_transformer_loss_scale = cfg.get('local_transformer_loss_scale', 1.0)
+        self.phoneme_as_text_prob = cfg.get('phoneme_as_text_prob', 0.0)
 
         self.cross_entropy_loss = nn.CrossEntropyLoss(reduction='none')
 
@@ -348,14 +349,8 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         batch_size = text.size(0)
         device = text.device
 
-        # Embed text tokens
-        text_embedded = self.decoder.get_input_embeddings()(text)  # (B, L, E)
-
-        # Apply CAS encoding if using BPE char tokenizer
-        if self.use_bpe_char_tokenizer:
-            text_mask = get_mask_from_lengths(text_lens)
-            cas_embedding = self.cas_encoder(text, subword_mask=text_mask)  # (B, L, E)
-            text_embedded = text_embedded + cas_embedding
+        # Embed text tokens (CAS-only when disable_subword_embedding=True).
+        text_embedded = self.embed_text_tokens(text, text_lens=text_lens)  # (B, L, E)
 
         # Handle text dropout - zero out the embeddings
         if dropout_text_input:
@@ -1107,7 +1102,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
 
             # Get audio output directory
             audio_dir = self.trainer.log_dir
-            audio_dir = os.path.join(audio_dir, 'val_audios', f'epoch_{self.trainer.current_epoch}')
+            audio_dir = os.path.join(audio_dir, 'val_audios')
             os.makedirs(audio_dir, exist_ok=True)
 
             # Save predicted and context audio, collect paths for metrics
@@ -1383,6 +1378,8 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             context_duration_min=self.cfg.context_duration_min,
             context_duration_max=self.cfg.context_duration_max,
             ignore_phoneme_languages=self.cfg.get("ignore_phoneme_languages", []),
+            phoneme_as_text_prob=self.phoneme_as_text_prob if dataset_type == 'train' else 0.0,
+            pronunciation_control_g2p=self.cfg.get("pronunciation_control_g2p", None),
         )
         dataset.load_16khz_audio = False
         dataset.tokenizer_config = (
@@ -1413,6 +1410,8 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             tokenizer_config=self.cfg.text_tokenizers,
             phoneme_tokenizer_config=self.cfg.get("phoneme_tokenizer", None),
             ignore_phoneme_languages=self.cfg.get("ignore_phoneme_languages", []),
+            phoneme_as_text_prob=self.phoneme_as_text_prob if mode == 'train' else 0.0,
+            pronunciation_control_g2p=self.cfg.get("pronunciation_control_g2p", None),
             add_language_to_context_text=self.add_language_to_context_text,
         )
 

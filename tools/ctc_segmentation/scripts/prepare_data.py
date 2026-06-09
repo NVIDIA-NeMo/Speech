@@ -22,7 +22,6 @@ import regex
 from joblib import Parallel, delayed
 from normalization_helpers import LATIN_TO_RU, RU_ABBREVIATIONS
 from num2words import num2words
-from sox import Transformer
 from tqdm import tqdm
 
 from nemo.collections.asr.models import ASRModel
@@ -53,7 +52,10 @@ parser.add_argument(
     help='Add target language based on the num2words list of supported languages',
 )
 parser.add_argument(
-    "--cut_prefix", type=int, default=0, help="Number of seconds to cut from the beginning of the audio files.",
+    "--cut_prefix",
+    type=int,
+    default=0,
+    help="Number of seconds to cut from the beginning of the audio files.",
 )
 parser.add_argument(
     "--model", type=str, default="QuartzNet15x5Base-En", help="Pre-trained model name or path to model checkpoint"
@@ -75,8 +77,22 @@ parser.add_argument(
     help="Set to True to use NeMo Normalization tool to convert numbers from written to spoken format.",
 )
 parser.add_argument(
-    "--batch_size", type=int, default=100, help="Batch size for NeMo Normalization tool.",
+    "--batch_size",
+    type=int,
+    default=100,
+    help="Batch size for NeMo Normalization tool.",
 )
+
+
+def _load_sox_transformer():
+    try:
+        from sox import Transformer
+    except ImportError:
+        raise ImportError(
+            "Optional dependency 'sox' is required by this script. Install it with: pip install sox"
+        ) from None
+
+    return Transformer
 
 
 def process_audio(
@@ -94,6 +110,7 @@ def process_audio(
     try:
         if not os.path.exists(in_file):
             raise ValueError(f'{in_file} not found')
+        Transformer = _load_sox_transformer()
         tfm = Transformer()
         tfm.convert(samplerate=sample_rate, n_channels=1, bitdepth=bit_depth)
         tfm.trim(cut_prefix)

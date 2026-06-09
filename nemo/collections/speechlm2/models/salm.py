@@ -38,10 +38,17 @@ from transformers import GenerationConfig
 from nemo.collections.common.prompts import PromptFormatter
 from nemo.collections.common.tokenizers import AutoTokenizer
 from nemo.collections.speechlm2.data.salm_dataset import left_collate_vectors
+from nemo.collections.speechlm2.parts.encoder_chunking import encode_audio_with_optional_chunking
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
+from nemo.collections.speechlm2.parts.input_utils import _unpad_inputs
 from nemo.collections.speechlm2.parts.lora import maybe_install_lora
 from nemo.collections.speechlm2.parts.optim_setup import configure_optimizers, is_frozen
-from nemo.collections.speechlm2.parts.pretrained import load_pretrained_hf, move_embedding, setup_speech_encoder
+from nemo.collections.speechlm2.parts.pretrained import (
+    load_pretrained_hf,
+    maybe_load_pretrained_models,
+    move_embedding,
+    setup_speech_encoder,
+)
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, MaskType, NeuralType
 from nemo.utils import logging
 
@@ -57,9 +64,16 @@ class SALM(LightningModule, HFHubMixin):
         self.cfg = DictConfig(cfg)
         self.audio_locator_tag = self.cfg.audio_locator_tag
 
-        self.tokenizer = AutoTokenizer(self.cfg.pretrained_llm, use_fast=True)
+        tokenizer_src = self.cfg.get("tokenizer_path", None) or self.cfg.pretrained_llm
+        self.tokenizer = AutoTokenizer(
+            tokenizer_src, use_fast=True, trust_remote_code=self.cfg.get("trust_remote_code", False)
+        )
         self.tokenizer.add_special_tokens({"additional_special_tokens": [self.audio_locator_tag]})
-        self.llm = load_pretrained_hf(self.cfg.pretrained_llm, pretrained_weights=self.cfg.pretrained_weights)
+        self.llm = load_pretrained_hf(
+            self.cfg.pretrained_llm,
+            pretrained_weights=self.cfg.pretrained_weights,
+            trust_remote_code=self.cfg.get("trust_remote_code", False),
+        )
         # Note: we have to "move out" the token embedding outside of LLM to avoid
         #       messing up FSDP/TP hooks.
         self.embed_tokens = self.llm.model.embed_tokens
@@ -68,6 +82,9 @@ class SALM(LightningModule, HFHubMixin):
         maybe_install_lora(self)
         # Load the pretrained streaming ASR model and copy its parameters into the audio perception module.
         setup_speech_encoder(self, pretrained_weights=self.cfg.pretrained_weights)
+        # Optionally initialize weights from a previous checkpoint (fresh optimizer/scheduler).
+        # Set model.pretrained_s2s_model or model.pretrained_perception_from_s2s in the config.
+        maybe_load_pretrained_models(self)
 
         self._use_fsdp = False
         self._use_tp = False
@@ -143,6 +160,7 @@ class SALM(LightningModule, HFHubMixin):
         Performs additional processing on the mini-batch collected from dataloader.
         Notably:
         * Convert source audio to speech representations.
+        * Optionally chunk long source audio for the encoder and recombine the encoded chunks.
         * Convert target audio to target audio tokens.
         * Convert target text to embeddings.
         * Combine the input audio and target text embeddings.
@@ -152,10 +170,13 @@ class SALM(LightningModule, HFHubMixin):
         # Source audio encoding.
         # Input audio: (B, T_samples)
         # Audio embeddings: (B, T, H)
-        audio_embs, audio_emb_lens = self.perception(
-            input_signal=batch["audios"], input_signal_length=batch["audio_lens"]
+        audio_embs = encode_audio_with_optional_chunking(
+            self.perception,
+            batch["audios"],
+            batch["audio_lens"],
+            chunk_size_seconds=self.cfg.get("encoder_chunk_size_seconds", None),
+            sampling_rate=self.sampling_rate,
         )
-        audio_embs = [emb[:emblen] for emb, emblen in zip(audio_embs, audio_emb_lens)]
         input_ids_to_embed = torch.where(batch["input_ids"] == self.audio_locator_tag_id, 0, batch["input_ids"])
         text_embs = self.embed_tokens(input_ids_to_embed)
         input_embs, target_ids, attention_mask = replace_placeholders_and_build_targets(
@@ -220,7 +241,8 @@ class SALM(LightningModule, HFHubMixin):
             "target_to_input_ratio": num_frames / (B * T),
             "padding_ratio": (batch["input_ids"] != self.text_pad_id).long().sum() / batch["input_ids"].numel(),
         }
-        self.log_dict(ans, on_step=True)
+        self.log("loss", loss, on_step=True, prog_bar=True)
+        self.log_dict({k: v for k, v in ans.items() if k != "loss"}, on_step=True)
         return ans
 
     def on_validation_epoch_start(self) -> None:
@@ -292,6 +314,7 @@ class SALM(LightningModule, HFHubMixin):
         audios: torch.Tensor = None,
         audio_lens: torch.Tensor = None,
         generation_config: GenerationConfig = None,
+        enable_thinking: bool | None = None,
         **generation_kwargs,
     ) -> torch.Tensor:
         """
@@ -355,6 +378,8 @@ class SALM(LightningModule, HFHubMixin):
                 Each prompt can have multiple audios.
             audio_lens: Optional. Length of each audio example.
             generation_config: Optional HuggingFace GenerationConfig object.
+            enable_thinking: Optional prompt-formatter hint forwarded to ``encode_dialog``.
+                Relevant for prompt formats that support thinking/reasoning mode.
             generation_kwargs: Keyword arguments passed directly to the underlying LLM's ``generate`` method.
         """
         # Encode prompt dicts into int token ids.
@@ -369,8 +394,11 @@ class SALM(LightningModule, HFHubMixin):
                 ), "Audios cannot be provided via ``prompts`` and ``audios``/``audio_lens`` arguments simultaneously."
                 audios, audio_lens = maybe_audio
             formatter = PromptFormatter.resolve(self.cfg.prompt_format)(self.tokenizer)
+            formatter_kwargs = {}
+            if enable_thinking is not None:
+                formatter_kwargs["enable_thinking"] = enable_thinking
             tokens = left_collate_vectors(
-                [formatter.encode_dialog(turns=prompt)["input_ids"] for prompt in prompts],
+                [formatter.encode_dialog(turns=prompt, **formatter_kwargs)["input_ids"] for prompt in prompts],
                 padding_value=self.text_pad_id,
             ).to(self.device)
         if audios is not None:
@@ -378,10 +406,13 @@ class SALM(LightningModule, HFHubMixin):
             # Prepare token embeddings and audio embeddings.
             tokens_to_embed = tokens.where(tokens != self.audio_locator_tag_id, 0)
             token_embeds = self.embed_tokens(tokens_to_embed)
-            # TODO: temporary workaround to perform batch_size=1 inference for audio encoder
-            #   due to accuracy issues at bs>1
-            audio_embeds, audio_embed_lens = self.perception(audios, audio_lens)
-            audio_embeds = [audio_embeds[i, :elen] for i, elen in enumerate(audio_embed_lens)]
+            audio_embeds = encode_audio_with_optional_chunking(
+                self.perception,
+                audios,
+                audio_lens,
+                chunk_size_seconds=self.cfg.get("encoder_chunk_size_seconds", None),
+                sampling_rate=self.sampling_rate,
+            )
             # Insert audio embeddings into relevant positions in text embeddings.
             input_embeds, _, attention_mask = replace_placeholders_and_build_targets(
                 input_ids=tokens,
@@ -667,31 +698,6 @@ def replace_placeholders_and_build_targets(
         attention_masks[i, -seq_len:] = att
 
     return output, new_target_ids, attention_masks
-
-
-def _unpad_inputs(
-    input_ids: torch.Tensor,
-    embeds: torch.Tensor,
-    target_ids: Optional[torch.Tensor],
-    padding_id: int,
-) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
-    def first_index_not_value(tensor, value):
-        mask = tensor != value
-        indices = torch.nonzero(mask, as_tuple=False)
-        if indices.numel() > 0:
-            return indices[0].item()
-        else:
-            return -1
-
-    input_ids_unpad, embeds_unpad = [], []
-    target_ids_unpad = [] if target_ids is not None else None
-    for i in range(input_ids.shape[0]):
-        idx = first_index_not_value(input_ids[i], padding_id)
-        input_ids_unpad.append(input_ids[i, idx:])
-        embeds_unpad.append(embeds[i, idx:])
-        if target_ids is not None:
-            target_ids_unpad.append(target_ids[i, idx:])
-    return input_ids_unpad, embeds_unpad, target_ids_unpad
 
 
 def _resolve_audios_in_prompt(

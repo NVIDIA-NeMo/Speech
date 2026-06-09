@@ -783,6 +783,7 @@ class ModelPT(LightningModule, Model):
 
             self._optimizer = optimizer
 
+        optim.patch_flashoptim_uneven_shard_support(self._optimizer)
         self._scheduler = prepare_lr_scheduler(
             optimizer=self._optimizer, scheduler_config=scheduler_config, train_dataloader=self._train_dl
         )

@@ -14,6 +14,8 @@
 import re
 from typing import List
 
+from nemo.utils.dependency import assert_optional_dependency_available
+
 try:
     import ipadic
     import MeCab
@@ -33,6 +35,7 @@ class EnJaProcessor:
     """
 
     def __init__(self, lang_id: str):
+        assert_optional_dependency_available("sacremoses")
         from sacremoses import MosesDetokenizer, MosesPunctNormalizer, MosesTokenizer
 
         self.lang_id = lang_id
@@ -60,6 +63,7 @@ class EnJaProcessor:
         return ' '.join(tokens)
 
     def normalize(self, text) -> str:
+        """Normalize English text while leaving Japanese text unchanged."""
         # Normalization doesn't handle Japanese periods correctly;
         # '。'becomes '.'.
         if self.lang_id == 'en':
@@ -80,10 +84,14 @@ class JaMecabProcessor:
         self.mecab_tokenizer = MeCab.Tagger(ipadic.MECAB_ARGS + " -Owakati")
 
     def detokenize(self, text: List[str]) -> str:
+        """Detokenize Japanese text and remove whitespace inside full-width spans."""
         from pangu import spacing
 
         RE_WS_IN_FW = re.compile(
-            r'([\u2018\u2019\u201c\u201d\u2e80-\u312f\u3200-\u32ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef])\s+(?=[\u2018\u2019\u201c\u201d\u2e80-\u312f\u3200-\u32ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef])'
+            r'([\u2018\u2019\u201c\u201d\u2e80-\u312f\u3200-\u32ff\u3400-\u4dbf'
+            r'\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef])\s+(?=[\u2018\u2019'
+            r'\u201c\u201d\u2e80-\u312f\u3200-\u32ff\u3400-\u4dbf\u4e00-\u9fff'
+            r'\uf900-\ufaff\uff00-\uffef])'
         )
 
         detokenize = lambda s: spacing(RE_WS_IN_FW.sub(r'\1', s)).strip()
@@ -96,4 +104,5 @@ class JaMecabProcessor:
         return self.mecab_tokenizer.parse(text).strip()
 
     def normalize(self, text) -> str:
+        """Return text unchanged."""
         return text

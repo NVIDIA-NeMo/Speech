@@ -1,0 +1,186 @@
+name: "Transformer-Stacking-TDT-BPE"
+
+model:
+  sample_rate: 16000
+  compute_eval_loss: false
+  log_prediction: true
+  rnnt_reduction: 'mean_volume'
+  skip_nan_grad: false
+
+  model_defaults:
+    enc_hidden: ${model.encoder.d_model}
+    pred_hidden: 640
+    joint_hidden: 640
+    tdt_durations: [0, 1, 2, 3, 4]
+    num_tdt_durations: 5
+
+  train_ds:
+    manifest_filepath: ???
+    sample_rate: ${model.sample_rate}
+    batch_size: 16
+    shuffle: true
+    num_workers: 8
+    pin_memory: true
+    max_duration: 20
+    min_duration: 0.1
+    is_tarred: false
+    tarred_audio_filepaths: null
+    shuffle_n: 2048
+    bucketing_strategy: "fully_randomized"
+    bucketing_batch_size: null
+
+  validation_ds:
+    manifest_filepath: ???
+    sample_rate: ${model.sample_rate}
+    batch_size: 16
+    shuffle: false
+    use_start_end_token: false
+    num_workers: 8
+    pin_memory: true
+
+  test_ds:
+    manifest_filepath: null
+    sample_rate: ${model.sample_rate}
+    batch_size: 16
+    shuffle: false
+    use_start_end_token: false
+    num_workers: 8
+    pin_memory: true
+
+  tokenizer:
+    dir: ???
+    type: bpe
+
+  preprocessor:
+    _target_: nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor
+    sample_rate: ${model.sample_rate}
+    normalize: "per_feature"
+    window_size: 0.025
+    window_stride: 0.01
+    window: "hann"
+    features: 128
+    n_fft: 512
+    frame_splicing: 1
+    dither: 0.00001
+    pad_to: 0
+
+  spec_augment:
+    _target_: nemo.collections.asr.modules.SpectrogramAugmentation
+    freq_masks: 2
+    time_masks: 10
+    freq_width: 27
+    time_width: 0.05
+
+  encoder:
+    _target_: nemo.collections.asr.modules.transformer_encoder.TransformerEncoder
+    feat_in: ${model.preprocessor.features}
+    d_model: 1280
+    n_heads: 16
+    n_layers: 32
+    drop_rate: 0.1
+    qkv_bias: false
+    qk_norm: true
+    ff_expansion: 4
+    pre_block_norm: true
+    subsampling_factor: 8
+
+  decoder:
+    _target_: nemo.collections.asr.modules.RNNTDecoder
+    normalization_mode: null
+    random_state_sampling: false
+    blank_as_pad: true
+
+    prednet:
+      pred_hidden: ${model.model_defaults.pred_hidden}
+      pred_rnn_layers: 1
+      t_max: null
+      dropout: 0.2
+
+  joint:
+    _target_: nemo.collections.asr.modules.RNNTJoint
+    log_softmax: null
+    preserve_memory: false
+    fuse_loss_wer: false
+    fused_batch_size: 4
+
+    jointnet:
+      joint_hidden: ${model.model_defaults.joint_hidden}
+      activation: "relu"
+      dropout: 0.2
+
+  decoding:
+    strategy: "greedy_batch"
+    model_type: "tdt"
+    durations: ${model.model_defaults.tdt_durations}
+
+    greedy:
+      max_symbols: 10
+      use_cuda_graph_decoder: true
+
+    beam:
+      beam_size: 2
+      return_best_hypothesis: false
+      score_norm: true
+      tsd_max_sym_exp: 50
+      alsd_max_target_len: 2.0
+
+  loss:
+    loss_name: "tdt"
+    tdt_kwargs:
+      fastemit_lambda: 0.0
+      clamp: -1.0
+      durations: ${model.model_defaults.tdt_durations}
+      sigma: 0.02
+      omega: 0.1
+
+  optim:
+    name: adamw
+    lr: 5e-4
+    betas: [0.9, 0.95]
+    weight_decay: 1e-2
+
+    sched:
+      name: CosineAnnealing
+      warmup_steps: 25000
+      warmup_ratio: null
+      min_lr: 5e-5
+
+trainer:
+  devices: -1
+  num_nodes: 1
+  max_epochs: 500
+  max_steps: -1
+  val_check_interval: 1.0
+  accelerator: auto
+  strategy:
+    _target_: lightning.pytorch.strategies.DDPStrategy
+    gradient_as_bucket_view: true
+  accumulate_grad_batches: 1
+  gradient_clip_val: 1.0
+  precision: bf16
+  log_every_n_steps: 10
+  enable_progress_bar: true
+  num_sanity_val_steps: 0
+  check_val_every_n_epoch: 1
+  sync_batchnorm: true
+  enable_checkpointing: false
+  logger: false
+  benchmark: false
+
+exp_manager:
+  exp_dir: null
+  name: ${name}
+  create_tensorboard_logger: false
+  create_checkpoint_callback: true
+  checkpoint_callback_params:
+    monitor: "val_wer"
+    mode: "min"
+    save_top_k: 5
+    always_save_nemo: true
+  resume_from_checkpoint: null
+  resume_if_exists: false
+  resume_ignore_no_checkpoint: false
+  create_wandb_logger: false
+  wandb_logger_kwargs:
+    name: null
+    project: null

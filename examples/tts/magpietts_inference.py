@@ -151,7 +151,10 @@ def create_formatted_metrics_mean_ci(metrics_mean_ci: dict) -> dict:
     return metrics_mean_ci
 
 
-def filter_datasets(dataset_meta_info: dict, datasets: Optional[List[str]]) -> List[str]:
+def filter_datasets(
+    dataset_meta_info: dict,
+    datasets: Optional[List[str]],
+) -> List[str]:
     """Select datasets from the dataset meta info."""
     if datasets is None:
         # Dataset filtering not specified, return all datasets.
@@ -489,6 +492,12 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
         help='Path to dataset configuration JSON file',
     )
     data_group.add_argument(
+        '--datasets_base_path',
+        type=Path,
+        default=None,
+        help='Optional base path that paths in the "datasets_json_path" file are relative to',
+    )
+    data_group.add_argument(
         '--datasets',
         type=str,
         default=None,
@@ -592,6 +601,11 @@ def _add_easy_magpie_args(parser: argparse.ArgumentParser) -> None:
         default=None,
         help='Override path to the phoneme tokenizer file (overrides the path stored in the checkpoint config)',
     )
+    group.add_argument(
+        '--disable_cas_for_context_text',
+        action='store_true',
+        help='Skip CAS embeddings for context text when loading legacy EasyMagpieTTS models',
+    )
 
 
 def create_argument_parser() -> argparse.ArgumentParser:
@@ -653,7 +667,9 @@ def main(argv=None):
     if args.deterministic:
         seed_all(seed=9)
 
-    dataset_meta_info = load_evalset_config(args.datasets_json_path)
+    dataset_meta_info = load_evalset_config(
+        config_path=args.datasets_json_path, dataset_base_path=args.datasets_base_path
+    )
     datasets = filter_datasets(dataset_meta_info, args.datasets)
     logging.info(f"Loaded {len(datasets)} datasets: {', '.join(datasets)}")
 
@@ -705,6 +721,7 @@ def main(argv=None):
                 legacy_text_conditioning=args.legacy_text_conditioning,
                 hparams_from_wandb=args.hparams_file_from_wandb,
                 phoneme_tokenizer_path=getattr(args, 'phoneme_tokenizer_path', None),
+                disable_cas_for_context_text=args.disable_cas_for_context_text,
             )
 
             # Load model
@@ -747,6 +764,7 @@ def main(argv=None):
                 legacy_codebooks=args.legacy_codebooks,
                 legacy_text_conditioning=args.legacy_text_conditioning,
                 phoneme_tokenizer_path=getattr(args, 'phoneme_tokenizer_path', None),
+                disable_cas_for_context_text=args.disable_cas_for_context_text,
             )
 
             # Load model

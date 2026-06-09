@@ -12,6 +12,9 @@ model:
   # Decoder backend selection
   # Options: "huggingface" (default), "nemotron_h"
   decoder_type: "huggingface"
+  disable_lm_text_head: false
+  disable_subword_embedding: false
+  use_bpe_char_tokenizer: true
   
   # HuggingFace backend config (used when decoder_type: "huggingface")
   transformer_hf_backend: "Qwen/Qwen2.5-1.5B"
@@ -93,7 +96,21 @@ model:
   phoneme_corruption_timestep_ratio: 0.15
   phoneme_corruption_unk_mode_prob: 0.5
   phoneme_corruption_type: "repeat_skip_unk" # "repeat_skip_unk" or "complete_channel"
+  phoneme_as_text_prob: 0.0 # Probability of replacing training text with pronunciation-control G2P output.
+  ignore_phoneme_languages: [] # Languages for which missing IPA phoneme fields are allowed during training.
+  add_language_to_context_text: false # Prefix context text with language metadata for multilingual conditioning.
   
+  pronunciation_control_g2p:
+    en:
+      _target_: nemo.collections.tts.g2p.models.i18n_ipa.IpaG2p
+      phoneme_dict: "scripts/tts_dataset_files/ipa_cmudict-0.7b_nv23.01.txt"
+      heteronyms: "scripts/tts_dataset_files/heteronyms-052722"
+      phoneme_probability: 0.3
+      ignore_ambiguous_words: false
+      use_chars: true
+      use_stresses: true
+      grapheme_case: mixed
+
   phoneme_tokenizer:
     _target_: nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.IPABPETokenizer
     tokenizer_path: ???
@@ -109,6 +126,7 @@ model:
 
     dataset:
       min_duration: 0.2
+      max_duration: 20.0
       min_context_speaker_similarity: 0.6
       max_cer: 0.03
       batch_duration : ???  # in seconds. Adjust based on your GPU memory.
@@ -138,6 +156,7 @@ model:
 
     dataset:
       min_duration: 0.2
+      max_duration: 20.0
       min_context_speaker_similarity: 0.6
       max_cer: 0.03
       batch_duration: ???   # recommend to use smaller batch_duration for validation dataset than training dataset.

@@ -1,11 +1,13 @@
+boto3
+braceexpand
 dash>=2.1.0
 dash_bootstrap_components>=1.0.3
 diff_match_patch
-editdistance
-jiwer>=3.1.0,<4.0.0
+kaldialign
 librosa>=0.9.1
 numpy
+pandas
 plotly
+requests
 SoundFile
-sox
 tqdm

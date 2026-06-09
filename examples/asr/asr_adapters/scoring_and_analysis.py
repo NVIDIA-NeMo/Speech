@@ -202,7 +202,12 @@ def display_results(df_all: pd.DataFrame, category: str, best_config: pd.Series,
 
 
 def get_best_config(
-    df_exp: pd.DataFrame, dataset_type_col: str, key_info: dict, topk: int, show_analysis: bool, exp_type: str,
+    df_exp: pd.DataFrame,
+    dataset_type_col: str,
+    key_info: dict,
+    topk: int,
+    show_analysis: bool,
+    exp_type: str,
 ):
     """Get the best hyperparameter configuration for a given subset of experiments.
 

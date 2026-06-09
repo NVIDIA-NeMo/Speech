@@ -16,6 +16,7 @@
 
 from nemo.core.optim.adafactor import Adafactor
 from nemo.core.optim.adan import Adan
+from nemo.core.optim.flash_optim import patch_flashoptim_uneven_shard_support
 from nemo.core.optim.lr_scheduler import (
     CosineAnnealing,
     InverseSquareRootAnnealing,

@@ -16,8 +16,9 @@ from collections import defaultdict
 from typing import Any
 
 import torch
+import torch.distributed as dist
 from lightning import LightningModule
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from torch import Tensor
 from torch.distributed.fsdp import fully_shard
 from torch.distributed.tensor import DTensor
@@ -29,6 +30,7 @@ from nemo.collections.common.tokenizers import AutoTokenizer
 from nemo.collections.speechlm2.data.salm_dataset import left_collate_vectors
 from nemo.collections.speechlm2.models.salm import _resolve_audios_in_prompt, replace_placeholders_and_build_targets
 from nemo.collections.speechlm2.parts.automodel_lora import ensure_lora_trainable, make_peft_config, maybe_install_lora
+from nemo.collections.speechlm2.parts.encoder_chunking import encode_audio_with_optional_chunking
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
 from nemo.collections.speechlm2.parts.optim_setup import configure_optimizers, is_frozen
 from nemo.collections.speechlm2.parts.pretrained import (
@@ -51,8 +53,9 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         self.cfg = DictConfig(cfg)
         self.audio_locator_tag = self.cfg.audio_locator_tag
 
+        tokenizer_src = self.cfg.get("tokenizer_path", None) or self.cfg.pretrained_llm
         self.tokenizer = AutoTokenizer(
-            self.cfg.pretrained_llm, use_fast=True, trust_remote_code=self.cfg.get("trust_remote_code", False)
+            tokenizer_src, use_fast=True, trust_remote_code=self.cfg.get("trust_remote_code", False)
         )
         self.tokenizer.add_special_tokens({"additional_special_tokens": [self.audio_locator_tag]})
         self.llm = None  # populated by configure_model
@@ -147,6 +150,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         input_embeds: Tensor,
         attention_mask: Tensor = None,
         cache=None,
+        **llm_kwargs,
     ) -> dict[str, Tensor]:
         """
         Implements a fully offline forward pass through the entire model.
@@ -154,14 +158,21 @@ class SALMAutomodel(LightningModule, HFHubMixin):
 
         |speech and text embeddings| -> |llm| -> |lm_head| -> |token ids|
 
+        ``llm_kwargs`` carries optional THD/packed-sequence metadata
+        (``qkv_format``, ``cu_seqlens``, ``position_ids``, ``max_seqlen``);
+        it is empty for the BSHD path.
         """
-        # input_embeds and out: (B, T, H)
+        # input_embeds: (B, T, H) for BSHD or (T_total, H) for THD packed
+        # (the THD shape mirrors Automodel's _shard_thd_chunk_for_te output —
+        # the model squeezes 3D inputs internally when qkv_format=="thd", so
+        # passing 2D directly skips that hop)
         out = self.llm(
             inputs_embeds=input_embeds,
             attention_mask=attention_mask,
             past_key_values=cache,
             use_cache=cache is not None,
             return_dict=True,
+            **llm_kwargs,
         )
         if not isinstance(out, dict):
             # NeMo Automodel doesn't respect return_dict=True yet
@@ -177,42 +188,65 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         Performs additional processing on the mini-batch collected from dataloader.
         Notably:
         * Convert source audio to speech representations.
+        * Optionally chunk long source audio for the encoder and recombine the encoded chunks.
         * Convert target audio to target audio tokens.
         * Convert target text to embeddings.
         * Combine the input audio and target text embeddings.
         * Take care of any necessary slicing to align the shapes of source audio,
             target audio, and target token ids.
         """
-        # Source audio encoding.
-        # Input audio: (B, T_samples)
-        # Audio embeddings: (B, T, H)
-        audio_embs, audio_emb_lens = self.perception(
-            input_signal=batch["audios"], input_signal_length=batch["audio_lens"]
+        from nemo.collections.speechlm2.parts.cp_helpers import encode_audio_with_cp_distribution, get_cp_mesh
+
+        cp_mesh, _, _ = get_cp_mesh(getattr(self, "_device_mesh", None))
+
+        # Source audio encoding (distributed across CP ranks when CP is active).
+        # Input audio: (B_aud, T_samples) → list of (L_i, H) embeddings.
+        audio_embs = encode_audio_with_cp_distribution(
+            self.perception,
+            batch["audios"],
+            batch["audio_lens"],
+            chunk_size_seconds=self.cfg.get("encoder_chunk_size_seconds", None),
+            sampling_rate=self.sampling_rate,
+            cp_mesh=cp_mesh,
         )
-        audio_embs = [emb[:emblen] for emb, emblen in zip(audio_embs, audio_emb_lens)]
         input_ids_to_embed = torch.where(batch["input_ids"] == self.audio_locator_tag_id, 0, batch["input_ids"])
         text_embs = self._embed_tokens(input_ids_to_embed)
+        target_ids_full = batch["input_ids"].where(batch["loss_mask"], -100)  # CrossEntropyLoss().ignore_index
+
+        # Packed-sequence (THD) path — used for both training and validation when enabled.
+        # Generate stays on the BSHD path (it doesn't go through prepare_inputs).
+        if self.cfg.get("packed_sequences", False):
+            from nemo.collections.speechlm2.parts.packed_sequences import prepare_packed_llm_inputs
+
+            return prepare_packed_llm_inputs(
+                input_ids=batch["input_ids"],
+                text_embs=text_embs,
+                audio_embs=audio_embs,
+                target_ids=target_ids_full,
+                padding_id=self.text_pad_id,
+                placeholder_id=self.audio_locator_tag_id,
+                device_mesh=getattr(self, "_device_mesh", None),
+            )
+
         input_embs, target_ids, attention_mask = replace_placeholders_and_build_targets(
             input_ids=batch["input_ids"],
             embeds=text_embs,
             padding_id=self.text_pad_id,
             placeholder_id=self.audio_locator_tag_id,
             replacements=audio_embs,
-            target_ids=batch["input_ids"].where(batch["loss_mask"], -100),  # CrossEntropyLoss().ignore_index
+            target_ids=target_ids_full,
         )
         input_embs = input_embs[:, :-1]
         attention_mask = attention_mask[:, :-1]
         target_ids = target_ids[:, 1:]
 
-        # Combine target audio and text into a single tensor to slice them together.
-        # It will also help us truncate the sequence lengths to be divisible by TP world size,
-        # when TP is enabled.
-        # Input ids: (B, T, K+1)
+        # BSHD path runs only when CP is inactive (the fit-start validator
+        # rejects BSHD + CP > 1, see _validate_parallelism_compatibility).
+        # Truncate the seq dim to be divisible by tp_size so sequence
+        # parallelism doesn't reshape the input under us.
         if self._use_tp:
-            tp_world_size = self.device_mesh["tp"].size()
-            if (remainder := (input_embs.shape[1] - 1) % tp_world_size) != 0:
-                # Truncate some tokens from the end to make the sequence length shape divisible by tensor parallelism
-                # world size. Otherwise, sequence parallelism will change the input shape making leading to mismatches.
+            tp_size = self.device_mesh["tp"].size()
+            if (remainder := (input_embs.shape[1] - 1) % tp_size) != 0:
                 input_embs = input_embs[:, :-remainder]
                 attention_mask = attention_mask[:, :-remainder]
                 target_ids = target_ids[:, :-remainder]
@@ -221,7 +255,43 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             "input_embeds": input_embs,
             "attention_mask": attention_mask,
             "target_ids": target_ids,
+            "llm_kwargs": {},
         }
+
+    def on_fit_start(self) -> None:
+        """Configure the MoE aux-loss backward scaler to cancel FSDP's gradient
+        averaging (see ``_configure_moe_aux_loss_scaler``)."""
+        self._validate_parallelism_compatibility()
+        self._configure_moe_aux_loss_scaler()
+
+    def _validate_parallelism_compatibility(self) -> None:
+        """Raise on known-incompatible THD/CP/backend configurations.
+
+        Delegates to :func:`nemo.collections.speechlm2.parts.parallel.validate_parallelism_compatibility`
+        with the runtime-derived values from this model's config and device mesh.
+        """
+        import os
+
+        from nemo.collections.speechlm2.parts.parallel import validate_parallelism_compatibility
+
+        cp_size = 1
+        device_mesh = getattr(self, "_device_mesh", None)
+        if device_mesh is not None:
+            names = device_mesh.mesh_dim_names or ()
+            if "cp" in names:
+                cp_size = device_mesh["cp"].size()
+
+        attn_backend = self.cfg.get("automodel_backend", {}).get("attn", "te")
+        nvte_fused_attn = os.environ.get("NVTE_FUSED_ATTN")
+        device_capability = torch.cuda.get_device_capability() if torch.cuda.is_available() else None
+
+        validate_parallelism_compatibility(
+            packed_sequences=bool(self.cfg.get("packed_sequences", False)),
+            cp_size=cp_size,
+            attn_backend=attn_backend,
+            nvte_fused_attn=nvte_fused_attn,
+            device_capability=device_capability,
+        )
 
     def training_step(self, batch: dict, batch_idx: int):
         self._current_batch_idx = batch_idx
@@ -230,20 +300,49 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 m.eval()
 
         inputs = self.prepare_inputs(batch)
-        forward_outputs = self(inputs["input_embeds"], attention_mask=inputs["attention_mask"])
+        forward_outputs = self(
+            inputs["input_embeds"],
+            attention_mask=inputs["attention_mask"],
+            **inputs.get("llm_kwargs", {}),
+        )
         num_frames = (inputs["target_ids"] != -100).long().sum()
-        with loss_parallel():
-            loss = (
-                torch.nn.functional.cross_entropy(
-                    forward_outputs["logits"].flatten(0, 1),  # (B, T, Vt) -> (*, Vt)
-                    inputs["target_ids"].flatten(0, 1),
-                    reduction="sum",
-                    ignore_index=-100,
-                )
-                / num_frames
-            )
 
-        B, T = inputs["input_embeds"].shape[:2]
+        # Match Automodel's training recipe: normalize CE by the *global* token count across
+        # the DP group rather than each rank's local count. With variable-length speech batches
+        # a local normalizer makes every rank contribute a differently-scaled gradient, and
+        # FSDP's gradient averaging doesn't recover the true global mean. All-reduce the
+        # labeled-token count and scale the per-rank loss by ``dp_size`` so that FSDP's
+        # gradient averaging yields ``sum(rank_CE_sum) / num_frames_global``.
+        dp_group = self._get_moe_dp_group()
+        dp_size = dp_group.size() if dp_group is not None else 1
+        if dp_group is not None and dist.is_available() and dist.is_initialized():
+            num_frames_global = num_frames.clone()
+            dist.all_reduce(num_frames_global, op=dist.ReduceOp.SUM, group=dp_group)
+        else:
+            num_frames_global = num_frames
+        num_frames_global = num_frames_global.clamp(min=1)
+
+        with loss_parallel():
+            logits = forward_outputs["logits"]
+            loss_sum = torch.nn.functional.cross_entropy(
+                logits.reshape(-1, logits.size(-1)),  # BSHD (B,T,V) or THD (1,T,V) -> (*, V)
+                inputs["target_ids"].reshape(-1),  # BSHD (B,T) or THD (T,) -> (*,)
+                reduction="sum",
+                ignore_index=-100,
+            )
+            loss = loss_sum * dp_size / num_frames_global
+
+        # Display the local per-token CE so logged values stay on the same scale as before
+        # this fix. The gradient-carrying ``loss`` above is the globally-normalized quantity.
+        with torch.no_grad():
+            loss_display = loss_sum.detach() / num_frames.clamp(min=1)
+
+        # Input embeds shape is (B, T, H) for BSHD or (T, H) for THD packed.
+        input_embeds = inputs["input_embeds"]
+        if input_embeds.dim() == 2:
+            B, T = 1, input_embeds.shape[0]
+        else:
+            B, T = input_embeds.shape[:2]
         ans = {
             "loss": loss,
             "learning_rate": (
@@ -252,62 +351,83 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             "batch_size": B,
             "sequence_length": T,
             "num_frames": num_frames.to(torch.float32),  # avoid warning
+            "num_frames_global": num_frames_global.to(torch.float32),
             "target_to_input_ratio": num_frames / (B * T),
             "padding_ratio": (batch["input_ids"] != self.text_pad_id).long().sum() / batch["input_ids"].numel(),
         }
-        self.log("loss", loss, on_step=True, prog_bar=True)
+        self.log("loss", loss_display, on_step=True, prog_bar=True)
         self.log_dict({k: v for k, v in ans.items() if k != "loss"}, on_step=True)
         self.maybe_log_moe_metrics(batch_idx)
         return ans
 
     def on_validation_epoch_start(self) -> None:
-        self._partial_val_losses = defaultdict(list)
-        self._partial_accuracies = defaultdict(list)
+        self._partial_val_loss_sums = defaultdict(list)
+        self._partial_val_corrects = defaultdict(list)
+        self._partial_val_num_frames = defaultdict(list)
 
     def on_validation_epoch_end(self) -> None:
         val_losses = []
-        for name, vals in self._partial_val_losses.items():
-            val_loss = torch.stack(vals).mean()
+        accuracies = []
+        reduction_group = self._get_moe_dp_group()
+        for name, vals in self._partial_val_loss_sums.items():
+            loss_sum = torch.stack(vals).sum()
+            correct = torch.stack(self._partial_val_corrects[name]).sum().to(loss_sum.dtype)
+            num_frames = torch.stack(self._partial_val_num_frames[name]).sum().to(loss_sum.dtype)
+            metric_sums = self._reduce_validation_metric_sums(
+                torch.stack([loss_sum, correct, num_frames]), reduction_group
+            )
+            num_frames = metric_sums[2].clamp(min=1)
+            val_loss = metric_sums[0] / num_frames
+            val_acc = metric_sums[1] / num_frames
+
             self.log(f"val_loss_{name}", val_loss, on_epoch=True, sync_dist=True)
             val_losses.append(val_loss)
-        self.log("val_loss", torch.stack(val_losses).mean(), on_epoch=True, sync_dist=True)
 
-        accuracies = []
-        for name, accs in self._partial_accuracies.items():
-            val_acc = torch.stack(accs).mean()
             self.log(f"val_acc_{name}", val_acc, on_epoch=True, sync_dist=True)
             accuracies.append(val_acc)
+
+        self.log("val_loss", torch.stack(val_losses).mean(), on_epoch=True, sync_dist=True)
         self.log("val_acc", torch.stack(accuracies).mean(), on_epoch=True, sync_dist=True)
 
-        self._partial_val_losses.clear()
-        self._partial_accuracies.clear()
+        self._partial_val_loss_sums.clear()
+        self._partial_val_corrects.clear()
+        self._partial_val_num_frames.clear()
+
+    def _reduce_validation_metric_sums(self, metric_sums: Tensor, group) -> Tensor:
+        if group is not None and dist.is_available() and dist.is_initialized():
+            metric_sums = metric_sums.clone()
+            dist.all_reduce(metric_sums, op=dist.ReduceOp.SUM, group=group)
+        return metric_sums
 
     def validation_step(self, batch: dict, batch_idx: int):
         for name, dataset_batch in batch.items():
             if dataset_batch is None:
                 continue  # some dataset is exhausted
             inputs = self.prepare_inputs(dataset_batch)
-            forward_outputs = self(inputs["input_embeds"], attention_mask=inputs["attention_mask"])
+            forward_outputs = self(
+                inputs["input_embeds"],
+                attention_mask=inputs["attention_mask"],
+                **inputs.get("llm_kwargs", {}),
+            )
             num_frames = (inputs["target_ids"] != -100).long().sum()
             with loss_parallel():
-                loss = (
-                    torch.nn.functional.cross_entropy(
-                        forward_outputs["logits"].flatten(0, 1),
-                        inputs["target_ids"].flatten(0, 1),
-                        reduction="sum",
-                        ignore_index=-100,
-                    )
-                    / num_frames
+                logits = forward_outputs["logits"]
+                loss_sum = torch.nn.functional.cross_entropy(
+                    logits.reshape(-1, logits.size(-1)),
+                    inputs["target_ids"].reshape(-1),
+                    reduction="sum",
+                    ignore_index=-100,
                 )
 
             preds = forward_outputs["logits"].argmax(dim=-1).view(-1)
             refs = inputs["target_ids"].reshape(-1)
             preds = preds[refs != -100]
             refs = refs[refs != -100]
-            accuracy = preds.eq(refs).float().mean()
+            correct = preds.eq(refs).sum()
 
-            self._partial_accuracies[name].append(accuracy)
-            self._partial_val_losses[name].append(loss)
+            self._partial_val_loss_sums[name].append(loss_sum.detach())
+            self._partial_val_corrects[name].append(correct.detach().to(loss_sum.dtype))
+            self._partial_val_num_frames[name].append(num_frames.detach().to(loss_sum.dtype))
 
     def on_test_epoch_start(self) -> None:
         return self.on_validation_epoch_start()
@@ -469,10 +589,13 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             # Prepare token embeddings and audio embeddings.
             tokens_to_embed = tokens.where(tokens != self.audio_locator_tag_id, 0)
             token_embeds = self._embed_tokens(tokens_to_embed)
-            # TODO: temporary workaround to perform batch_size=1 inference for audio encoder
-            #   due to accuracy issues at bs>1
-            audio_embeds, audio_embed_lens = self.perception(audios, audio_lens)
-            audio_embeds = [audio_embeds[i, :elen] for i, elen in enumerate(audio_embed_lens)]
+            audio_embeds = encode_audio_with_optional_chunking(
+                self.perception,
+                audios,
+                audio_lens,
+                chunk_size_seconds=self.cfg.get("encoder_chunk_size_seconds", None),
+                sampling_rate=self.sampling_rate,
+            )
             # Insert audio embeddings into relevant positions in text embeddings.
             input_embeds, _, attention_mask = replace_placeholders_and_build_targets(
                 input_ids=tokens,
@@ -575,7 +698,10 @@ class SALMAutomodel(LightningModule, HFHubMixin):
 
         Mirrors Automodel's ``_get_dp_group(include_cp=True)`` pattern: prefers
         the ``dp_cp`` submesh (includes context parallelism) for the broadest
-        reduction, falling back to ``dp``.
+        reduction, falling back to ``dp``. ``dp`` and ``dp_cp`` are flattened
+        submeshes registered in ``device_mesh._flatten_mapping`` — they are not
+        in ``mesh_dim_names`` of the root mesh, so resolve them via
+        ``get_flat_mesh`` (same helper Automodel's ``base_recipe`` uses).
 
         Returns ``None`` when no device mesh is available (e.g. DDP training),
         causing ``collect_expert_loads`` to skip all-reduce (rank-local view).
@@ -583,12 +709,35 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         device_mesh = getattr(self, "_device_mesh", None)
         if device_mesh is None:
             return None
-        dim_names = device_mesh.mesh_dim_names
-        if "dp_cp" in dim_names:
-            return device_mesh["dp_cp"].get_group()
-        if "dp" in dim_names:
-            return device_mesh["dp"].get_group()
-        return None
+        from nemo_automodel.components.distributed.mesh_utils import get_flat_mesh
+
+        try:
+            if "cp" in device_mesh.mesh_dim_names and device_mesh["cp"].size() > 1:
+                return get_flat_mesh(device_mesh, "dp_cp").get_group()
+            return get_flat_mesh(device_mesh, "dp").get_group()
+        except KeyError:
+            return None
+
+    def _configure_moe_aux_loss_scaler(self) -> None:
+        """Cancel FSDP's gradient averaging on MoE aux-loss grads.
+
+        ``MoEAuxLossAutoScaler`` multiplies aux-loss-derived gradients by
+        ``main_loss_backward_scale`` during backward. FSDP's all-reduce then
+        divides every gradient by ``dp_group_size``. Setting the scaler to
+        ``dp_group_size`` (non-PP case) cancels that division out, matching the
+        intent in ``nemo_automodel/recipes/llm/train_ft.py`` — otherwise the
+        aux-loss contribution to the gradient would be under-scaled by a factor
+        of ``dp_group_size``.
+
+        No-op when ``nemo_automodel`` isn't available (non-MoE builds).
+        """
+        try:
+            from nemo_automodel.components.moe.megatron.moe_utils import MoEAuxLossAutoScaler
+        except ImportError:
+            return
+        dp_group = self._get_moe_dp_group()
+        dp_size = dp_group.size() if dp_group is not None else 1
+        MoEAuxLossAutoScaler.main_loss_backward_scale = torch.tensor(float(dp_size))
 
     def configure_optimizers(self):
         return configure_optimizers(self)
@@ -599,6 +748,8 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         distributed_config=None,
         moe_config=None,
         moe_mesh=None,
+        activation_checkpointing_llm: bool | None = None,
+        activation_checkpointing_perception: bool | None = None,
     ) -> None:
         # Use provided device_mesh, or fall back to LightningModule property
         if device_mesh is not None:
@@ -625,6 +776,16 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             moe_mesh = getattr(self._trainer.strategy, "moe_mesh", None)
         if moe_config is None and self._trainer is not None:
             moe_config = getattr(self._trainer.strategy, "moe_config", None)
+        if activation_checkpointing_llm is None and self._trainer is not None:
+            activation_checkpointing_llm = getattr(self._trainer.strategy, "activation_checkpointing_llm", None)
+        if activation_checkpointing_llm is None:
+            activation_checkpointing_llm = False
+        if activation_checkpointing_perception is None and self._trainer is not None:
+            activation_checkpointing_perception = getattr(
+                self._trainer.strategy, "activation_checkpointing_perception", None
+            )
+        if activation_checkpointing_perception is None:
+            activation_checkpointing_perception = False
 
         automodel_kwargs = {}
         if device_mesh is not None:
@@ -639,8 +800,16 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 from nemo_automodel.components.moe.config import MoEParallelizerConfig
 
                 moe_config = MoEParallelizerConfig()
+            # Route the single LLM AC flag to both paths: the EP/MoE parallelizer
+            # reads ``activation_checkpointing`` directly (MoEParallelizerConfig
+            # has no such field), while FSDP2's AC wrapping reads the field on
+            # FSDP2Config. Forcing both keeps behavior identical regardless of
+            # whether ep_size is 1 (FSDP2 path) or > 1 (EP path).
+            if activation_checkpointing_llm:
+                distributed_config.activation_checkpointing = True
             automodel_kwargs["distributed_config"] = distributed_config
             automodel_kwargs["moe_config"] = moe_config
+            automodel_kwargs["activation_checkpointing"] = activation_checkpointing_llm
         if moe_mesh is not None:
             automodel_kwargs["moe_mesh"] = moe_mesh
 
@@ -659,6 +828,20 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             compile_dict = dict(compile_cfg)
             automodel_kwargs["compile_config"] = CompileConfig(**compile_dict)
 
+        # Pass backend through to automodel — lets YAML pick attn/linear/rms_norm/MoE
+        # dispatcher backends (e.g. set attn=sdpa to bypass TransformerEngine).
+        backend_cfg = self.cfg.get("automodel_backend", None)
+        if backend_cfg is not None:
+            from nemo_automodel.components.models.common import BackendConfig
+
+            automodel_kwargs["backend"] = BackendConfig(**OmegaConf.to_container(backend_cfg, resolve=True))
+
+        # Pin the SDPA kernel used by attn=sdpa (e.g. [flash_attention] to force FA2
+        # and error out if unavailable). Accepts strings; resolved by automodel.
+        sdpa_method = self.cfg.get("sdpa_method", None)
+        if sdpa_method is not None:
+            automodel_kwargs["sdpa_method"] = list(OmegaConf.to_container(sdpa_method, resolve=True))
+
         self.llm = load_pretrained_automodel_llm(
             self.cfg.pretrained_llm,
             pretrained_weights=self.cfg.pretrained_weights,
@@ -675,6 +858,11 @@ class SALMAutomodel(LightningModule, HFHubMixin):
 
         # Fix projection dim for pretrained_weights=False (config output_dim may not match LLM)
         update_perception_output_dim(self)
+
+        # Activation checkpointing on perception encoder layers. Must run BEFORE
+        # FSDP2 wrapping (see LLM path in automodel) so checkpoint_wrapper sees
+        # the pristine layer objects and fully_shard indexes the final structure.
+        self.perception.set_activation_checkpointing(activation_checkpointing_perception)
 
         # Apply LoRA adapters to the LLM.
         # When device_mesh is set, LoRA was already applied inside automodel's

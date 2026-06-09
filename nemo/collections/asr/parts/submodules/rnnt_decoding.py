@@ -329,6 +329,11 @@ class AbstractRNNTDecoding(ConfidenceMixin):
             punct_pattern = '|'.join([re.escape(p) for p in self.supported_punctuation])
             self.space_before_punct_pattern = re.compile(r'(\s)(' + punct_pattern + ')')
 
+        self.set_strip_lang_tags(
+            self.cfg.get('strip_lang_tags', False),
+            lang_tag_pattern=self.cfg.get('lang_tag_pattern', None),
+        )
+
         # initialize confidence-related fields
         self._init_confidence(self.cfg.get('confidence_cfg', None))
 
@@ -446,6 +451,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                     ),
                     preserve_alignments=self.preserve_alignments,
                     preserve_frame_confidence=self.preserve_frame_confidence,
+                    exclude_blank_from_confidence=self.exclude_blank_from_confidence,
                     confidence_method_cfg=self.confidence_method_cfg,
                     loop_labels=self.cfg.greedy.get('loop_labels', True),
                     use_cuda_graph_decoder=self.cfg.greedy.get('use_cuda_graph_decoder', True),
@@ -464,6 +470,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                     ),
                     preserve_alignments=self.preserve_alignments,
                     preserve_frame_confidence=self.preserve_frame_confidence,
+                    exclude_blank_from_confidence=self.exclude_blank_from_confidence,
                     include_duration=self.tdt_include_token_duration,
                     include_duration_confidence=self.tdt_include_duration_confidence,
                     confidence_method_cfg=self.confidence_method_cfg,
@@ -682,6 +689,23 @@ class AbstractRNNTDecoding(ConfidenceMixin):
         # Update the joint fused batch size or disable it entirely if needed.
         self.update_joint_fused_batch_size()
 
+    def set_strip_lang_tags(self, strip_lang_tags: bool, lang_tag_pattern: Optional[str] = None):
+        """
+        Toggle language-tag stripping on decoded text.
+
+        Args:
+            strip_lang_tags: Whether ``decode_tokens_to_str_with_strip_punctuation``
+                should remove language tags from its output.
+            lang_tag_pattern: Optional regex (as a string) describing the tag to
+                strip. Defaults to ``\\s*<[a-z]{2}-[A-Z]{2}>`` (``<xx-XX>``).
+                Ignored when ``strip_lang_tags`` is False.
+        """
+        self.strip_lang_tags = strip_lang_tags
+        if strip_lang_tags:
+            pattern = lang_tag_pattern if lang_tag_pattern is not None else r'\s*<[a-z]{2}-[A-Z]{2}>'
+            logging.info(f"Setting strip_lang_tags to True with lang_tag_pattern={pattern!r}")
+            self.lang_tag_pattern = re.compile(pattern)
+
     @abstractproperty
     def tokenizer_type(self):
         """
@@ -815,18 +839,45 @@ class AbstractRNNTDecoding(ConfidenceMixin):
         """
         if self._is_tdt:
             # if self.tdt_include_duration_confidence is True then frame_confidence elements consist of two numbers
-            maybe_pre_aggregate = (
-                (lambda x: self._aggregate_confidence(x)) if self.tdt_include_duration_confidence else (lambda x: x)
-            )
-            for hyp in hypotheses_list:
-                token_confidence = []
-                # trying to recover frame_confidence according to alignments
-                subsequent_blank_confidence = []
-                # going backwards since <blank> tokens are considered belonging to the last non-blank token.
-                for fc, fa in zip(hyp.frame_confidence[::-1], hyp.alignments[::-1]):
-                    # there is only one score per frame most of the time
-                    if len(fa) > 1:
-                        for i, a in reversed(list(enumerate(fa))):
+            if self.exclude_blank_from_confidence and all(
+                hyp.non_blank_step_confidence_precomputed is not None for hyp in hypotheses_list
+            ):
+                for hyp in hypotheses_list:
+                    if self.tdt_include_duration_confidence:
+                        hyp.token_confidence = [
+                            self._aggregate_confidence(c) for c in hyp.non_blank_step_confidence_precomputed
+                        ]
+                    else:
+                        hyp.token_confidence = hyp.non_blank_step_confidence_precomputed
+            else:
+                maybe_pre_aggregate = (
+                    (lambda x: self._aggregate_confidence(x))
+                    if self.tdt_include_duration_confidence
+                    else (lambda x: x)
+                )
+                for hyp in hypotheses_list:
+                    token_confidence = []
+                    # trying to recover frame_confidence according to alignments
+                    subsequent_blank_confidence = []
+                    # going backwards since <blank> tokens are considered belonging to the last non-blank token.
+                    for fc, fa in zip(hyp.frame_confidence[::-1], hyp.alignments[::-1]):
+                        # there is only one score per frame most of the time
+                        if len(fa) > 1:
+                            for i, a in reversed(list(enumerate(fa))):
+                                if a[-1] == self.blank_id:
+                                    if not self.exclude_blank_from_confidence:
+                                        subsequent_blank_confidence.append(maybe_pre_aggregate(fc[i]))
+                                elif not subsequent_blank_confidence:
+                                    token_confidence.append(maybe_pre_aggregate(fc[i]))
+                                else:
+                                    token_confidence.append(
+                                        self._aggregate_confidence(
+                                            [maybe_pre_aggregate(fc[i])] + subsequent_blank_confidence
+                                        )
+                                    )
+                                    subsequent_blank_confidence = []
+                        else:
+                            i, a = 0, fa[0]
                             if a[-1] == self.blank_id:
                                 if not self.exclude_blank_from_confidence:
                                     subsequent_blank_confidence.append(maybe_pre_aggregate(fc[i]))
@@ -839,20 +890,8 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                                     )
                                 )
                                 subsequent_blank_confidence = []
-                    else:
-                        i, a = 0, fa[0]
-                        if a[-1] == self.blank_id:
-                            if not self.exclude_blank_from_confidence:
-                                subsequent_blank_confidence.append(maybe_pre_aggregate(fc[i]))
-                        elif not subsequent_blank_confidence:
-                            token_confidence.append(maybe_pre_aggregate(fc[i]))
-                        else:
-                            token_confidence.append(
-                                self._aggregate_confidence([maybe_pre_aggregate(fc[i])] + subsequent_blank_confidence)
-                            )
-                            subsequent_blank_confidence = []
-                token_confidence = token_confidence[::-1]
-                hyp.token_confidence = token_confidence
+                    token_confidence = token_confidence[::-1]
+                    hyp.token_confidence = token_confidence
         else:
             if self.exclude_blank_from_confidence:
                 for hyp in hypotheses_list:
@@ -949,10 +988,13 @@ class AbstractRNNTDecoding(ConfidenceMixin):
     def decode_tokens_to_str_with_strip_punctuation(self, tokens: List[int]) -> str:
         """
         Decodes a list of tokens to a string and removes a space before supported punctuation marks.
+        Optionally strips language-ID tags (e.g. ``<en-US>``) when ``strip_lang_tags`` is enabled.
         """
         text = self.decode_ids_to_str(tokens)
         if self.supported_punctuation:
             text = self.space_before_punct_pattern.sub(r'\2', text)
+        if self.strip_lang_tags:
+            text = self.lang_tag_pattern.sub('', text).strip()
         return text
 
     def update_joint_fused_batch_size(self):
@@ -1854,6 +1896,14 @@ class RNNTDecodingConfig:
 
     # config for multiblank decoding.
     big_blank_durations: Optional[List[int]] = field(default_factory=list)
+
+    # Strip language-ID tags (e.g. <en-US>) from decoded output.
+    # Enable for prompt-conditioned models that emit locale tags after punctuation.
+    strip_lang_tags: bool = False
+
+    # Optional regex (as a string) describing the language tag to strip.
+    # When None, defaults to ``DEFAULT_LANG_TAG_PATTERN`` (``\s*<[a-z]{2}-[A-Z]{2}>``).
+    lang_tag_pattern: Optional[str] = None
 
 
 @dataclass

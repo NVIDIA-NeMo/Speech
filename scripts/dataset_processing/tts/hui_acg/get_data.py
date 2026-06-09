@@ -127,7 +127,14 @@ def __save_json(json_file, dict_list):
 
 
 def __process_data(
-    dataset_path, stat_path_root, speaker_id, min_duration, max_duration, val_size, test_size, seed_for_ds_split,
+    dataset_path,
+    stat_path_root,
+    speaker_id,
+    min_duration,
+    max_duration,
+    val_size,
+    test_size,
+    seed_for_ds_split,
 ):
     logging.info(f"Preparing JSON split for speaker {speaker_id}.")
     # parse statistic.txt
@@ -190,7 +197,10 @@ def __text_normalization(json_file, num_workers=-1):
         "punct_post_process": True,
     }
     text_normalizer = Normalizer(
-        lang="de", input_case="cased", overwrite_cache=True, cache_dir=str(json_file.parent / "cache_dir"),
+        lang="de",
+        input_case="cased",
+        overwrite_cache=True,
+        cache_dir=str(json_file.parent / "cache_dir"),
     )
 
     def normalizer_call(x):

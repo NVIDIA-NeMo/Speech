@@ -22,6 +22,48 @@ from nemo.collections.asr.parts.submodules.causal_convs import CausalConv1D, Cau
 from nemo.utils import logging
 
 
+class FeatureStacking(nn.Module):
+    """Stacks consecutive input frames and projects to model dimension.
+
+    Reduces the temporal resolution by ``subsampling_factor`` while increasing
+    the feature dimension proportionally, then linearly projects back to
+    ``feat_out``.
+
+    Args:
+        subsampling_factor: Number of consecutive frames to stack.
+        feat_in: Input feature dimension.
+        feat_out: Output feature dimension.
+    """
+
+    def __init__(self, subsampling_factor: int, feat_in: int, feat_out: int):
+        super().__init__()
+        self.subsampling_factor = subsampling_factor
+        self.proj = nn.Linear(subsampling_factor * feat_in, feat_out, bias=False)
+
+    def compute_num_out_frames(self, in_frames):
+        return (in_frames + self.subsampling_factor - 1) // self.subsampling_factor
+
+    def forward(self, x, lengths):
+        """
+        Args:
+            x: (B, C, T) input features.
+            lengths: (B,) valid lengths per sample.
+        Returns:
+            x: (B, T', feat_out) stacked and projected features.
+            lengths: (B,) updated lengths after subsampling.
+        """
+        x = x.transpose(1, 2)  # (B, C, T) -> (B, T, C)
+        b, t, c = x.size()
+        pad_size = (self.subsampling_factor - (t % self.subsampling_factor)) % self.subsampling_factor
+        if pad_size > 0:
+            x = nn.functional.pad(x, (0, 0, 0, pad_size))
+        t_new = (t + pad_size) // self.subsampling_factor
+        x = x.reshape(b, t_new, c * self.subsampling_factor)
+        x = self.proj(x)
+        lengths = self.compute_num_out_frames(lengths)
+        return x, lengths
+
+
 class StackingSubsampling(torch.nn.Module):
     """Stacking subsampling which simply stacks consecutive frames to reduce the sampling rate
     Args:

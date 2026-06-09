@@ -13,10 +13,10 @@
 # limitations under the License.
 
 import os
+import urllib.request
 from pathlib import Path
 from time import sleep
 
-import wget
 from lightning.pytorch.plugins.environments import LightningEnvironment
 from lightning.pytorch.strategies import DDPStrategy, StrategyRegistry
 
@@ -72,7 +72,7 @@ def maybe_download_from_cloud(url, filename, subfolder=None, cache_dir=None, ref
     while i < max_attempts:
         i += 1
         try:
-            wget.download(wget_uri, str(destination_file))
+            urllib.request.urlretrieve(wget_uri, str(destination_file))
             if os.path.exists(destination_file):
                 return destination_file
             else:

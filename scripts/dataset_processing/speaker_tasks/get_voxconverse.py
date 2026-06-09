@@ -17,10 +17,9 @@
 import argparse
 import logging
 import os
+import urllib.request
 import zipfile
 from pathlib import Path
-
-import wget
 
 from nemo.collections.asr.parts.utils.manifest_utils import create_manifest
 
@@ -37,6 +36,11 @@ def extract_file(filepath: Path, data_dir: Path):
         logging.info("Not extracting. Maybe already there?")
 
 
+def download_file(url: str, destination: Path) -> Path:
+    urllib.request.urlretrieve(url, filename=str(destination))
+    return destination
+
+
 def _generate_manifest(data_root: Path, audio_path: Path, rttm_path: Path, manifest_output_path: Path):
     audio_list = str(data_root / 'audio_file.txt')
     rttm_list = str(data_root / 'rttm_file.txt')
@@ -45,7 +49,9 @@ def _generate_manifest(data_root: Path, audio_path: Path, rttm_path: Path, manif
     with open(rttm_list, 'w') as f:
         f.write('\n'.join([str(os.path.join(rttm_path, x)) for x in os.listdir(rttm_path)]))
     create_manifest(
-        audio_list, str(manifest_output_path), rttm_path=rttm_list,
+        audio_list,
+        str(manifest_output_path),
+        rttm_path=rttm_list,
     )
 
 
@@ -61,11 +67,11 @@ def main():
     rttm_path = data_root / os.path.basename(rttm_annotations_url)
 
     if not os.path.exists(test_path):
-        test_path = wget.download(test_url, str(data_root))
+        test_path = download_file(test_url, test_path)
     if not os.path.exists(dev_path):
-        dev_path = wget.download(dev_url, str(data_root))
+        dev_path = download_file(dev_url, dev_path)
     if not os.path.exists(rttm_path):
-        rttm_path = wget.download(rttm_annotations_url, str(data_root))
+        rttm_path = download_file(rttm_annotations_url, rttm_path)
 
     extract_file(test_path, data_root / 'test/')
     extract_file(dev_path, data_root / 'dev/')

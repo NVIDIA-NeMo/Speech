@@ -23,6 +23,10 @@ model:
 
   prompt_format: qwen
   audio_locator_tag: "<|audioplaceholder|>"  # placeholder token for audio turn is expected
+  # Optional: split audios longer than this before the speech encoder forward, then
+  # concatenate the encoded chunks back into one sequence before passing them to the LLM.
+  # Leave as null (default) to encode each audio row directly and preserve existing behavior.
+  encoder_chunk_size_seconds: null
 
   # Note: Uncomment the block below to enable LoRA on LLM via HuggingFace PEFT library.
   #   It will automatically freeze LLM parameters even if freeze_params was unused,

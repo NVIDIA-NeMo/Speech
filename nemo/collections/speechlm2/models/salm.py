@@ -38,7 +38,9 @@ from transformers import GenerationConfig
 from nemo.collections.common.prompts import PromptFormatter
 from nemo.collections.common.tokenizers import AutoTokenizer
 from nemo.collections.speechlm2.data.salm_dataset import left_collate_vectors
+from nemo.collections.speechlm2.parts.encoder_chunking import encode_audio_with_optional_chunking
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
+from nemo.collections.speechlm2.parts.input_utils import _unpad_inputs
 from nemo.collections.speechlm2.parts.lora import maybe_install_lora
 from nemo.collections.speechlm2.parts.optim_setup import configure_optimizers, is_frozen
 from nemo.collections.speechlm2.parts.pretrained import (
@@ -62,8 +64,9 @@ class SALM(LightningModule, HFHubMixin):
         self.cfg = DictConfig(cfg)
         self.audio_locator_tag = self.cfg.audio_locator_tag
 
+        tokenizer_src = self.cfg.get("tokenizer_path", None) or self.cfg.pretrained_llm
         self.tokenizer = AutoTokenizer(
-            self.cfg.pretrained_llm, use_fast=True, trust_remote_code=self.cfg.get("trust_remote_code", False)
+            tokenizer_src, use_fast=True, trust_remote_code=self.cfg.get("trust_remote_code", False)
         )
         self.tokenizer.add_special_tokens({"additional_special_tokens": [self.audio_locator_tag]})
         self.llm = load_pretrained_hf(
@@ -157,6 +160,7 @@ class SALM(LightningModule, HFHubMixin):
         Performs additional processing on the mini-batch collected from dataloader.
         Notably:
         * Convert source audio to speech representations.
+        * Optionally chunk long source audio for the encoder and recombine the encoded chunks.
         * Convert target audio to target audio tokens.
         * Convert target text to embeddings.
         * Combine the input audio and target text embeddings.
@@ -166,10 +170,13 @@ class SALM(LightningModule, HFHubMixin):
         # Source audio encoding.
         # Input audio: (B, T_samples)
         # Audio embeddings: (B, T, H)
-        audio_embs, audio_emb_lens = self.perception(
-            input_signal=batch["audios"], input_signal_length=batch["audio_lens"]
+        audio_embs = encode_audio_with_optional_chunking(
+            self.perception,
+            batch["audios"],
+            batch["audio_lens"],
+            chunk_size_seconds=self.cfg.get("encoder_chunk_size_seconds", None),
+            sampling_rate=self.sampling_rate,
         )
-        audio_embs = [emb[:emblen] for emb, emblen in zip(audio_embs, audio_emb_lens)]
         input_ids_to_embed = torch.where(batch["input_ids"] == self.audio_locator_tag_id, 0, batch["input_ids"])
         text_embs = self.embed_tokens(input_ids_to_embed)
         input_embs, target_ids, attention_mask = replace_placeholders_and_build_targets(
@@ -399,10 +406,13 @@ class SALM(LightningModule, HFHubMixin):
             # Prepare token embeddings and audio embeddings.
             tokens_to_embed = tokens.where(tokens != self.audio_locator_tag_id, 0)
             token_embeds = self.embed_tokens(tokens_to_embed)
-            # TODO: temporary workaround to perform batch_size=1 inference for audio encoder
-            #   due to accuracy issues at bs>1
-            audio_embeds, audio_embed_lens = self.perception(audios, audio_lens)
-            audio_embeds = [audio_embeds[i, :elen] for i, elen in enumerate(audio_embed_lens)]
+            audio_embeds = encode_audio_with_optional_chunking(
+                self.perception,
+                audios,
+                audio_lens,
+                chunk_size_seconds=self.cfg.get("encoder_chunk_size_seconds", None),
+                sampling_rate=self.sampling_rate,
+            )
             # Insert audio embeddings into relevant positions in text embeddings.
             input_embeds, _, attention_mask = replace_placeholders_and_build_targets(
                 input_ids=tokens,
@@ -688,31 +698,6 @@ def replace_placeholders_and_build_targets(
         attention_masks[i, -seq_len:] = att
 
     return output, new_target_ids, attention_masks
-
-
-def _unpad_inputs(
-    input_ids: torch.Tensor,
-    embeds: torch.Tensor,
-    target_ids: Optional[torch.Tensor],
-    padding_id: int,
-) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
-    def first_index_not_value(tensor, value):
-        mask = tensor != value
-        indices = torch.nonzero(mask, as_tuple=False)
-        if indices.numel() > 0:
-            return indices[0].item()
-        else:
-            return -1
-
-    input_ids_unpad, embeds_unpad = [], []
-    target_ids_unpad = [] if target_ids is not None else None
-    for i in range(input_ids.shape[0]):
-        idx = first_index_not_value(input_ids[i], padding_id)
-        input_ids_unpad.append(input_ids[i, idx:])
-        embeds_unpad.append(embeds[i, idx:])
-        if target_ids is not None:
-            target_ids_unpad.append(target_ids[i, idx:])
-    return input_ids_unpad, embeds_unpad, target_ids_unpad
 
 
 def _resolve_audios_in_prompt(

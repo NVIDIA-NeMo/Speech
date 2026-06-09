@@ -18,13 +18,19 @@ model:
   freeze_params:
     # Frozen LLM (embed_tokens stays inside llm, so this pattern covers it too)
     - "^llm\\..+$"
-    # Frozen pretrained ASR (only the modality adapter layers are trainable)
+    # Frozen pretrained ASR (only the modality adapter layers are trainable).
+    # The second alternation matches the MultiLayerProjectionConnector path where the encoder
+    # is wrapped inside ``perception.encoder_multilayer.encoder`` instead of ``perception.encoder``.
     - "^perception\\.preprocessor\\..+$"
-    - "^perception\\.encoder\\..+$"
+    - "^perception\\.encoder(_multilayer\\.encoder)?\\..+$"
   prevent_freeze_params: []  # Use to make specific submodules trainable; overrides freeze_params
 
   prompt_format: nemotron-nano-v3
   audio_locator_tag: "<|audio|>"  # placeholder token for audio turn is expected
+  # Split audios longer than this before the speech encoder forward, then concatenate
+  # the encoded chunks back into one sequence before passing them to the LLM.
+  # Set to null to disable encoder chunking and encode each audio row directly.
+  encoder_chunk_size_seconds: 30.0
 
   # Uncomment the block below to enable LoRA on the LLM via Automodel.
   # LoRA parameters are kept trainable even when the LLM is frozen.
@@ -66,6 +72,32 @@ model:
   #   dynamic: true          # Enable dynamic shapes (recommended for variable-length audio)
   #   backend: null           # Compilation backend (null = inductor)
   #   dynamo_cache_size_limit: 256  # Triton compilation cache limit
+
+  # Automodel backend dispatch. Selects the kernel/backend for each major module
+  # in the LLM (attention, linear, rms_norm, MoE experts/dispatcher). Defaults
+  # come from Automodel's BackendConfig and auto-select TE/DeepEP when available;
+  # override here to pin a specific backend (e.g. attn=sdpa to bypass TE).
+  # automodel_backend:
+  #   attn: te                  # "te" | "sdpa" | "flex"
+  #   linear: te                # "torch" | "te"
+  #   rms_norm: torch_fp32      # "torch" | "torch_fp32" | "te"
+  #   rope_fusion: true         # Fused RoPE (requires TE)
+  #   experts: torch_mm         # MoE expert GEMM: "torch" | "te" | "gmm" | "torch_mm"
+  #   dispatcher: deepep        # MoE token dispatcher: "torch" | "deepep" | "hybridep" | "uccl_ep"
+  #   dispatcher_num_sms: 20    # SM count for DeepEP/UCCL-EP kernels
+  #   fake_balanced_gate: false # Replace learned Gate with balanced fake gate (debug/bench)
+  #   fake_gate_noise: 0.0      # [0, 1] — noise for FakeBalancedGate routing
+  #   enable_hf_state_dict_adapter: true
+  #   enable_fsdp_optimizations: false
+  #   gate_precision: null      # e.g. "float32" to force fp32 gate compute
+  #   te_fp8: null              # {recipe: "current"} or {recipe: "block"} to enable TE FP8
+  #                             # (requires linear=te or experts=te)
+
+  # Pin the SDPA kernel list used when automodel_backend.attn=sdpa. Accepts
+  # strings from: "flash_attention", "efficient_attention", "math", "cudnn_attention".
+  # None = auto-select based on CP / activation checkpointing. Set to
+  # ["flash_attention"] to force FA2 and error out if unavailable.
+  # sdpa_method: null
 
   perception:
      target: nemo.collections.speechlm2.modules.perception.AudioPerceptionModule
@@ -123,16 +155,24 @@ trainer:
     cp_size: 1          # Context parallel size
     ep_size: 8          # Expert parallel size (for MoE models)
 
+    # --- Activation checkpointing ---
+    # Two independent knobs: one for the LLM, one for the perception encoder.
+    # ``activation_checkpointing_llm`` is a single switch that covers both the
+    # non-EP FSDP2 path (via FSDP2Config.activation_checkpointing) and the
+    # EP/MoE parallelizer path.
+    # ``activation_checkpointing_perception`` wraps each layer in ``perception.encoder.layers`` 
+    # with ``checkpoint_wrapper`` before FSDP2 sharding.
+    activation_checkpointing_llm: false
+    activation_checkpointing_perception: false
+
     # --- FSDP2 distributed config (plain dict, resolved to FSDP2Config automatically) ---
     # distributed_config:
     #   sequence_parallel: false    # Enable sequence parallelism (requires tp_size > 1)
-    #   activation_checkpointing: false  # Checkpoint activations to save memory
     #   # offload_policy:           # Uncomment to enable CPU offloading
     #   #   _target_: torch.distributed.fsdp.CPUOffloadPolicy
 
     # --- MoE config (plain dict, resolved to MoEParallelizerConfig automatically) ---
     # moe_config:
-    #   activation_checkpointing: false   # Checkpoint activations in MoE transformer blocks
     #   ignore_router_for_ac: false       # Selective AC: save router outputs, recompute the rest
     #   reshard_after_forward: false       # Reshard params after forward (saves memory, more comms)
     #   lm_head_precision: null            # Override LM head precision (e.g., "float32" for stability)

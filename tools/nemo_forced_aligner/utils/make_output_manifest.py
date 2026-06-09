@@ -16,7 +16,8 @@ import json
 
 
 def write_manifest_out_line(
-    f_manifest_out, utt_obj,
+    f_manifest_out,
+    utt_obj,
 ):
 
     data = {"audio_filepath": utt_obj.audio_filepath}

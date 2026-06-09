@@ -68,6 +68,19 @@ def assert_hyps_timestamps_equal(
     assert_nested_lists_approx(actual, expected, rel_tol, abs_tol)
 
 
+def assert_hyps_durations_equal(
+    actual: Union[List[int], torch.Tensor], expected: list[int], rel_tol: float = 1e-4, abs_tol: float = 1e-4
+):
+    """
+    Asserts that two sequences of token duration values are approximately equal.
+    """
+    if actual is None:
+        raise AssertionError("Expected token durations, got None")
+    if isinstance(actual, torch.Tensor):
+        actual = actual.cpu().tolist()
+    assert_nested_lists_approx(actual, expected, rel_tol, abs_tol)
+
+
 DEVICES: List[torch.device] = [torch.device("cpu")]
 
 if torch.cuda.is_available():
@@ -885,6 +898,10 @@ class TestConvertToHypotheses:
             [[0, 2, 3, 0], [3, 7, 7, 0], [3, 4, 7, 0]],
             [[3, 4, 6, 0], [4, 4, 4, 0], [2, 3, 5, 0]],
         ]
+        assert hyps.token_durations.tolist() == [
+            [[0, 2, 1, 0], [3, 4, 0, 0], [3, 1, 3, 0]],
+            [[3, 1, 2, 0], [4, 0, 0, 0], [2, 1, 2, 0]],
+        ]
 
     @pytest.mark.unit
     @pytest.mark.parametrize("device", DEVICES)
@@ -980,8 +997,10 @@ class TestConvertToHypotheses:
         assert_hyps_sequence_equal(hypotheses[0].y_sequence, [0, 3, 7])
         assert_hyps_sequence_equal(hypotheses[1].y_sequence, [9])
 
-        assert_hyps_timestamps_equal(hypotheses[0].timestamp, [0, 2, 3])
-        assert_hyps_timestamps_equal(hypotheses[1].timestamp, [6])
+        assert_hyps_timestamps_equal(hypotheses[0].timestamp, [0, 0, 2])
+        assert_hyps_timestamps_equal(hypotheses[1].timestamp, [4])
+        assert_hyps_durations_equal(hypotheses[0].token_duration, [0, 2, 1])
+        assert_hyps_durations_equal(hypotheses[1].token_duration, [2])
 
         assert hypotheses[0].score == pytest.approx(0.4)
         assert hypotheses[1].score == pytest.approx(0.6)
@@ -1031,12 +1050,18 @@ class TestConvertToHypotheses:
         assert_hyps_sequence_equal(hypotheses[1].n_best_hypotheses[1].y_sequence, [5])
         assert_hyps_sequence_equal(hypotheses[1].n_best_hypotheses[2].y_sequence, [2, 6, 10])
 
-        assert_hyps_timestamps_equal(hypotheses[0].n_best_hypotheses[0].timestamp, [0, 2, 3])
-        assert_hyps_timestamps_equal(hypotheses[0].n_best_hypotheses[1].timestamp, [7])
-        assert_hyps_timestamps_equal(hypotheses[0].n_best_hypotheses[2].timestamp, [7])
-        assert_hyps_timestamps_equal(hypotheses[1].n_best_hypotheses[0].timestamp, [6])
+        assert_hyps_timestamps_equal(hypotheses[0].n_best_hypotheses[0].timestamp, [0, 0, 2])
+        assert_hyps_timestamps_equal(hypotheses[0].n_best_hypotheses[1].timestamp, [3])
+        assert_hyps_timestamps_equal(hypotheses[0].n_best_hypotheses[2].timestamp, [4])
+        assert_hyps_timestamps_equal(hypotheses[1].n_best_hypotheses[0].timestamp, [4])
         assert_hyps_timestamps_equal(hypotheses[1].n_best_hypotheses[1].timestamp, [4])
-        assert_hyps_timestamps_equal(hypotheses[1].n_best_hypotheses[2].timestamp, [2, 3, 5])
+        assert_hyps_timestamps_equal(hypotheses[1].n_best_hypotheses[2].timestamp, [0, 2, 3])
+        assert_hyps_durations_equal(hypotheses[0].n_best_hypotheses[0].token_duration, [0, 2, 1])
+        assert_hyps_durations_equal(hypotheses[0].n_best_hypotheses[1].token_duration, [4])
+        assert_hyps_durations_equal(hypotheses[0].n_best_hypotheses[2].token_duration, [3])
+        assert_hyps_durations_equal(hypotheses[1].n_best_hypotheses[0].token_duration, [2])
+        assert_hyps_durations_equal(hypotheses[1].n_best_hypotheses[1].token_duration, [0])
+        assert_hyps_durations_equal(hypotheses[1].n_best_hypotheses[2].token_duration, [2, 1, 2])
 
         assert hypotheses[0].n_best_hypotheses[0].score == pytest.approx(0.4)
         assert hypotheses[0].n_best_hypotheses[1].score == pytest.approx(0.35)

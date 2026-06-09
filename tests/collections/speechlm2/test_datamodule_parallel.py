@@ -116,17 +116,15 @@ def _extract_rank_mapping(sym_val, world_size):
     ],
 )
 def test_dp_rank_via_strategy(fake_dist, pp, dp_rep, dp_shard, cp, tp):
-    """Verify the DP rank formula using the real AutomodelParallelStrategy.
+    """Verify DataModule DP rank using the real AutomodelParallelStrategy.
 
     Uses ``LocalTensorMode`` to obtain per-rank symbolic results for every
     global rank in a single process and checks that:
 
-    * The DataModule formula (``dp_replicate.local_rank * dp_shard.size +
-      dp_shard.local_rank``) agrees with the flattened ``"dp"`` submesh.
+    * The DataModule rank agrees with the strategy's flattened ``"dp"`` submesh.
     * The correct number of unique DP ranks exists.
     * All DP ranks are in ``[0, dp_size)``.
-    * Ranks that share the same ``(dp_replicate, dp_shard)`` coordinates are
-      assigned the same DP rank.
+    * Each DP rank covers exactly the non-DP ranks assigned to it.
     """
     dp_size = dp_rep * dp_shard
     world_size = pp * dp_size * cp * tp
@@ -144,39 +142,32 @@ def test_dp_rank_via_strategy(fake_dist, pp, dp_rep, dp_shard, cp, tp):
     with LocalTensorMode(world_size):
         device_mesh, _ = strategy.create_device_mesh()
 
-        # Method 1: DataModule._get_dp_rank formula
-        dp_rank_manual = (
-            device_mesh["dp_replicate"].get_local_rank() * device_mesh["dp_shard"].size()
-            + device_mesh["dp_shard"].get_local_rank()
-        )
-        # Method 2: flattened "dp" submesh (used by distributed_sampler_kwargs)
-        dp_rank_flat = device_mesh["dp"].get_local_rank()
-        dp_world_size = device_mesh["dp_replicate", "dp_shard"].size()
+        data = DataModule(DictConfig({"train_ds": {"batch_size": 2}}), tokenizer=None, dataset=Identity())
+        data.trainer = SimpleNamespace(model=SimpleNamespace(device_mesh=device_mesh))
+
+        dp_rank_data = data._get_dp_rank()
+        dp_world_size = data._get_world_size()
+        sampler_kwargs = strategy.distributed_sampler_kwargs
 
     assert dp_world_size == dp_size
+    assert sampler_kwargs["num_replicas"] == dp_size
 
-    manual = _extract_rank_mapping(dp_rank_manual, world_size)
-    flat = _extract_rank_mapping(dp_rank_flat, world_size)
+    data_rank = _extract_rank_mapping(dp_rank_data, world_size)
+    sampler_rank = _extract_rank_mapping(sampler_kwargs["rank"], world_size)
 
-    # The two computation methods must agree for every global rank.
-    assert manual == flat
+    # DataModule and strategy sampler rank must agree for every global rank.
+    assert data_rank == sampler_rank
 
     # Correct number of unique dp ranks.
-    assert len(set(manual.values())) == dp_size
+    assert len(set(data_rank.values())) == dp_size
 
     # All dp_ranks in valid range.
-    assert all(0 <= v < dp_size for v in manual.values())
+    assert all(0 <= v < dp_size for v in data_rank.values())
 
-    # Ranks sharing the same (dp_replicate, dp_shard) coordinates must have
-    # the same dp_rank; different coordinates must differ.
-    mesh_tensor = torch.arange(world_size).reshape(pp, dp_rep, dp_shard, cp, tp)
-    for dr in range(dp_rep):
-        for ds in range(dp_shard):
-            ranks_in_group = mesh_tensor[:, dr, ds, :, :].flatten().tolist()
-            dp_ranks_in_group = {manual[r] for r in ranks_in_group}
-            assert (
-                len(dp_ranks_in_group) == 1
-            ), f"DP group (dp_rep={dr}, dp_shard={ds}) maps to multiple dp_ranks: {dp_ranks_in_group}"
+    ranks_per_dp = {dp_rank: [] for dp_rank in range(dp_size)}
+    for rank, dp_rank in data_rank.items():
+        ranks_per_dp[dp_rank].append(rank)
+    assert all(len(ranks) == pp * cp * tp for ranks in ranks_per_dp.values())
 
 
 def test_non_dp_dims_share_dp_rank(fake_dist):
@@ -196,10 +187,10 @@ def test_non_dp_dims_share_dp_rank(fake_dist):
             distributed_config=FSDP2Config(backend="gloo"),
         )
         device_mesh, _ = strategy.create_device_mesh()
-        dp_rank_sym = (
-            device_mesh["dp_replicate"].get_local_rank() * device_mesh["dp_shard"].size()
-            + device_mesh["dp_shard"].get_local_rank()
-        )
+
+        data = DataModule(DictConfig({"train_ds": {"batch_size": 2}}), tokenizer=None, dataset=Identity())
+        data.trainer = SimpleNamespace(model=SimpleNamespace(device_mesh=device_mesh))
+        dp_rank_sym = data._get_dp_rank()
 
     rank_to_dp = _extract_rank_mapping(dp_rank_sym, world_size)
 

@@ -99,11 +99,10 @@ Get started in 30 seconds:
 
 .. toctree::
    :maxdepth: 1
-   :caption: APIs
-   :name: APIs
-   :titlesonly:
+   :caption: Lhotse Dataloading
+   :name: Lhotse Dataloading
 
-   apis
+   dataloaders
 
 .. toctree::
    :maxdepth: 1
@@ -111,7 +110,14 @@ Get started in 30 seconds:
    :name: Collections
    :titlesonly:
 
-   collections
+   asr/intro
+   tts/intro
+   speechlm2/intro
+   asr/speaker_diarization/intro
+   asr/speaker_recognition/intro
+   audio/intro
+   asr/ssl/intro
+   asr/speech_classification/intro
 
 .. toctree::
    :maxdepth: 1
@@ -119,4 +125,26 @@ Get started in 30 seconds:
    :name: Speech AI Tools
    :titlesonly:
 
-   tools/intro
+   tools/nemo_forced_aligner
+   tools/ctc_segmentation
+   tools/speech_data_explorer
+   tools/comparison_tool
+   tools/asr_evaluator
+   tools/speech_data_processor
+
+.. toctree::
+   :maxdepth: 1
+   :caption: APIs
+   :name: APIs
+   :titlesonly:
+
+   core/core
+   core/neural_modules
+   core/exp_manager
+   core/neural_types
+   core/adapters/intro
+   core/api
+   common/intro
+   asr/api
+   tts/api
+   audio/api

@@ -38,6 +38,7 @@ class RNNTGreedyDecoder(GreedyDecoder):
         tokens: torch.Tensor | list[int],
         length: int,
         offset: int = 0,
+        confidences: torch.Tensor | list[float] | None = None,
     ) -> tuple[dict, list[int], int]:
         """
         Decode the RNNT hypothesis using timestamps
@@ -46,6 +47,8 @@ class RNNTGreedyDecoder(GreedyDecoder):
             tokens (torch.Tensor | list[int]): tokens since the start of the stream
             length (int): length of the alignment
             offset (int): offset to apply to the timestamps to make them local
+            confidences (torch.Tensor | list[float] | None): per-token (non-blank) confidence scores aligned
+                with `tokens`. If None, zero confidence is returned for each decoded token.
         Returns:
             tuple[dict, list[int], int]:
                 output: dictionary containing the decoded tokens, timestamps, and confidences
@@ -56,6 +59,8 @@ class RNNTGreedyDecoder(GreedyDecoder):
             global_timestamps = torch.tensor(global_timestamps)
         if isinstance(tokens, list):
             tokens = torch.tensor(tokens)
+        if isinstance(confidences, torch.Tensor):
+            confidences = confidences.tolist()
 
         output = {"tokens": [], "timesteps": [], "confidences": [], "last_token": None, "last_token_idx": None}
         cur_labels = [self.blank_id] * length
@@ -63,16 +68,21 @@ class RNNTGreedyDecoder(GreedyDecoder):
         if offset > 0:
             trimmed_tokens = tokens[offset:].tolist()
             trimmed_timestamps = global_timestamps[offset:].tolist()
+            trimmed_confidences = confidences[offset:] if confidences is not None else None
         else:
             trimmed_tokens = tokens.tolist()
             trimmed_timestamps = global_timestamps.tolist()
+            trimmed_confidences = confidences
 
         if len(trimmed_tokens) == 0:
             return output, cur_labels, new_offset
 
         output["tokens"].extend(trimmed_tokens)
         output["timesteps"].extend(trimmed_timestamps)
-        output["confidences"].extend([0.0] * len(trimmed_tokens))
+        if trimmed_confidences is not None:
+            output["confidences"].extend(trimmed_confidences)
+        else:
+            output["confidences"].extend([0.0] * len(trimmed_tokens))
         output["last_token"] = trimmed_tokens[-1]
         output["last_token_idx"] = trimmed_timestamps[-1]
 
@@ -102,23 +112,34 @@ class ClippedRNNTGreedyDecoder:
 
     @staticmethod
     def extract_clipped_and_tail_single_pass(
-        timesteps: torch.Tensor, tokens: torch.Tensor, start_idx: int, end_idx: int, return_tail_result: bool
-    ) -> tuple[list[int], list[int], list[int]]:
+        timesteps: torch.Tensor,
+        tokens: torch.Tensor,
+        start_idx: int,
+        end_idx: int,
+        return_tail_result: bool,
+        confidences: torch.Tensor | None = None,
+    ) -> tuple[list[int], list[int], list[float], list[int]]:
         """
-        Extract clipped and tail data using tensor operations - no conversion overhead
+        Extract clipped and tail data using tensor operations - no conversion overhead.
+        Confidences (if provided) are clipped with the same mask as tokens/timesteps;
+        otherwise zero confidence is returned for each clipped token.
         """
         if len(timesteps) == 0:
-            return [], [], []
+            return [], [], [], []
         clipped_mask = (timesteps >= start_idx) & (timesteps < end_idx)
         clipped_timesteps = timesteps[clipped_mask].tolist()
         clipped_tokens = tokens[clipped_mask].tolist()
+        if confidences is not None:
+            clipped_confidences = confidences[clipped_mask].tolist()
+        else:
+            clipped_confidences = [0.0] * len(clipped_tokens)
         tail_tokens = []
         if return_tail_result:
             tail_mask = timesteps >= end_idx
             if tail_mask.any():
                 tail_tokens = tokens[tail_mask].tolist()
 
-        return clipped_timesteps, clipped_tokens, tail_tokens
+        return clipped_timesteps, clipped_tokens, clipped_confidences, tail_tokens
 
     def __call__(
         self,
@@ -135,6 +156,7 @@ class ClippedRNNTGreedyDecoder:
         timestamp_offset: int = 0,
         vad_segments: torch.Tensor = None,
         stop_history_eou: int = None,
+        confidences: torch.Tensor | None = None,
     ) -> tuple[dict, dict, bool, int, int]:
         """
         Decode using timestamps instead of dense alignment
@@ -153,6 +175,8 @@ class ClippedRNNTGreedyDecoder:
             timestamp_offset (int): offset to apply to the timestamps to make them local
             vad_segments (torch.Tensor): Optional VAD segments to use for end-of-utterance detection
             stop_history_eou (int): stop history of EOU, if None then use the default stop history
+            confidences (torch.Tensor | None): Optional per-token (non-blank) confidence scores aligned with
+                `tokens`. If None, zero confidence is returned for each clipped token.
         Returns:
             tuple[dict, dict, bool, int, int]:
                 clipped output, tail output, is_eou, updated start_idx, updated end_idx
@@ -210,8 +234,10 @@ class ClippedRNNTGreedyDecoder:
         if clip_start <= end_idx < clip_end:
             end_idx = clip_end
             is_eou = False
-        clipped_timesteps, clipped_tokens, tail_tokens = self.extract_clipped_and_tail_single_pass(
-            timesteps, tokens, start_idx, end_idx, return_tail_result
+        clipped_timesteps, clipped_tokens, clipped_confidences, tail_tokens = (
+            self.extract_clipped_and_tail_single_pass(
+                timesteps, tokens, start_idx, end_idx, return_tail_result, confidences=confidences
+            )
         )
         # Make timestamps global again
         if timestamp_offset:
@@ -220,7 +246,7 @@ class ClippedRNNTGreedyDecoder:
         clipped_output = {
             "tokens": clipped_tokens,
             "timesteps": clipped_timesteps,
-            "confidences": [0.0] * len(clipped_tokens) if len(clipped_tokens) > 0 else [],
+            "confidences": clipped_confidences,
             "last_token": None,
             "last_token_idx": None,
         }

@@ -23,6 +23,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+import torch
+from safetensors.torch import load_file
 
 _TO_HF_PATH = Path(__file__).parents[3] / "examples" / "speechlm2" / "to_hf.py"
 _spec = importlib.util.spec_from_file_location("to_hf_for_test", _TO_HF_PATH)
@@ -101,6 +103,73 @@ def _seed_output_dir(tmp_path, llm_arch="Qwen2ForCausalLM"):
     return tmp_path
 
 
+class _FakeLLMConfig:
+    def save_pretrained(self, output_dir):
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "config.json").write_text(
+            json.dumps(
+                {
+                    "model_type": "qwen2",
+                    "architectures": ["Qwen2ForCausalLM"],
+                    "hidden_size": 2048,
+                }
+            )
+        )
+
+
+class _FakeExportModel:
+    cfg = {
+        "pretrained_llm": "fake-model",
+        "pretrained_asr": "fake-asr",
+        "pretrained_weights": False,
+        "dtype": "bf16",
+        "torch_dtype": "bf16",
+        "audio_locator_tag": AUDIO_TOKEN,
+    }
+    llm = type("_FakeLLM", (), {"config": _FakeLLMConfig()})()
+
+
+def test_save_hf_checkpoint_writes_llm_backbone_config(tmp_path):
+    cfg = to_hf.HfExportConfig(
+        class_path="fake.Class",
+        ckpt_path="fake.ckpt",
+        ckpt_config="fake.yaml",
+        output_dir=str(tmp_path),
+        dtype="bfloat16",
+    )
+    to_hf.save_hf_checkpoint(_FakeExportModel(), {"weight": torch.zeros(1)}, cfg)
+
+    root_cfg = json.loads((tmp_path / "config.json").read_text())
+    llm_cfg = json.loads((tmp_path / "llm_backbone" / "config.json").read_text())
+
+    assert "llm_config" not in root_cfg
+    assert root_cfg["pretrained_llm"] == "fake-model"
+    assert root_cfg["dtype"] == "bfloat16"
+    assert root_cfg["torch_dtype"] == "bfloat16"
+    assert llm_cfg["model_type"] == "qwen2"
+    assert llm_cfg["architectures"] == ["Qwen2ForCausalLM"]
+    assert _FakeExportModel.cfg["dtype"] == "bf16"
+
+
+def test_save_hf_checkpoint_accepts_bf16_export_dtype(tmp_path):
+    cfg = to_hf.HfExportConfig(
+        class_path="fake.Class",
+        ckpt_path="fake.ckpt",
+        ckpt_config="fake.yaml",
+        output_dir=str(tmp_path),
+        dtype="bf16",
+    )
+    to_hf.save_hf_checkpoint(_FakeExportModel(), {"weight": torch.zeros(1)}, cfg)
+
+    root_cfg = json.loads((tmp_path / "config.json").read_text())
+    state_dict = load_file(tmp_path / "model.safetensors")
+
+    assert root_cfg["dtype"] == "bfloat16"
+    assert root_cfg["torch_dtype"] == "bfloat16"
+    assert state_dict["weight"].dtype == torch.bfloat16
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Error paths (no mocking required — checks run before any HF calls)
 # ──────────────────────────────────────────────────────────────────────
@@ -136,14 +205,10 @@ def _run_prepare(tmp_path, fake_tok, arch="NeMoSpeechLMForConditionalGeneration"
 
 def test_prepare_for_vllm_patches_config_json(tmp_path):
     """config.json gets model_type, architectures, and audio_locator_tag."""
-    output_dir = _run_prepare(
-        tmp_path,
-        _FakeTokenizer(),
-        arch="NeMoSpeechLMHybridForConditionalGeneration",
-    )
+    output_dir = _run_prepare(tmp_path, _FakeTokenizer())
     cfg = json.loads((output_dir / "config.json").read_text())
     assert cfg["model_type"] == "nemo_speechlm"
-    assert cfg["architectures"] == ["NeMoSpeechLMHybridForConditionalGeneration"]
+    assert cfg["architectures"] == ["NeMoSpeechLMForConditionalGeneration"]
     assert cfg["audio_locator_tag"] == AUDIO_TOKEN
     # Original LLM fields are preserved.
     assert cfg["hidden_size"] == 2048

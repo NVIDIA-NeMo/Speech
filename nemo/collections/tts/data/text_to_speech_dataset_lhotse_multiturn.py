@@ -257,9 +257,6 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             else:
                 batch_tokenizer_names.append("english_phoneme")
 
-            # Get all agent supervisions in this cut
-            agent_sups = [sup for sup in cut.supervisions if sup.speaker in self.output_roles]
-
         def _align_codebooks(t):
             C = t.shape[1]
             if C < self.num_audio_codebooks:

@@ -122,7 +122,7 @@ parameters {
 }
 parameters {
   key: "first_chunk_frames"
-  value: { string_value: "2" }
+  value: { string_value: "1" }
 }
 
 # Audio (local-transformer) sampling, forwarded via additional_information.

@@ -19,10 +19,10 @@ from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
 from importlib.metadata import version as _dist_version
 
 
-MAJOR = 3
+MAJOR = 4
 MINOR = 0
 PATCH = 0
-PRE_RELEASE = ""
+PRE_RELEASE = ''
 
 # Use the following formatting: (major, minor, patch, pre-release)
 VERSION = (MAJOR, MINOR, PATCH, PRE_RELEASE)

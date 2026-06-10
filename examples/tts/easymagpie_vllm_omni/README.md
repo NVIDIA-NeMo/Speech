@@ -45,7 +45,7 @@ streaming requests.
    vllm-omni 0.21.0rc1 + this plugin).
 
    ```bash
-   docker build -t easymp-vllm-omni examples/tts/easymagpie_vllm_omni/
+   docker build --network=host -t easymp-vllm-omni examples/tts/easymagpie_vllm_omni/
    ```
 
 4. **Launch the container** with the workspace and a GPU mounted.

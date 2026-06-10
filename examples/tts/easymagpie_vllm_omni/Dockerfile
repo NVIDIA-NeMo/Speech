@@ -25,7 +25,12 @@ RUN pip install --no-cache-dir \
     onnx-graphsurgeon \
     "tritonclient[grpc]"
 # have to force numpy after previous installations otherwise vllm_omni doesnt work
-RUN pip install --no-cache-dir "numpy==2.3.5"
+RUN pip uninstall -y numpy || true
+RUN rm -rf \
+    /usr/local/lib/python3.12/dist-packages/numpy \
+    /usr/local/lib/python3.12/dist-packages/numpy.libs \
+    /usr/local/lib/python3.12/dist-packages/numpy-*.dist-info
+RUN pip install --no-cache-dir numpy==2.3.5
 
 # 5. Restrict vLLM plugin auto-discovery to the EasyMagpie plugin only.
 ENV VLLM_PLUGINS=easymagpie_omni

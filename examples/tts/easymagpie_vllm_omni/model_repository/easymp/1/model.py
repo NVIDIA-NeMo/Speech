@@ -449,7 +449,6 @@ class TritonPythonModel:
                 codec_q.put((chunk, ctx, is_final))
                 produced_final = produced_final or is_final
 
-        step = 0
         try:
             async for out in gen:
                 # Release the next input chunk for each decode-step output (one chunk
@@ -458,7 +457,6 @@ class TritonPythonModel:
                     pace_q.put_nowait(True)
                 if state["error"] is not None:
                     break
-                step += 1
                 payload = (getattr(out, "multimodal_output", None) or {}).get("audio_codes")
                 cum_now = self._cumulative_codes(payload)
                 if cum_now is None:
@@ -468,20 +466,8 @@ class TritonPythonModel:
                 # Hold back the most recent decode row: the audio-EOS frame is always
                 # the last one and must not be vocoded.
                 real_avail = cum.shape[0] - head - 1
-                if pace_q is not None:
-                    logger.info(
-                        "rid=%s STEP %d: got acoustic codes (cum_rows=%d, real_avail=%d, sent=%d) -> released pace",
-                        request_id,
-                        step,
-                        cum.shape[0],
-                        max(0, real_avail),
-                        sent,
-                    )
                 if real_avail > sent:
-                    before = sent
                     emit_ready(cum, real_avail, final=False)
-                    if pace_q is not None and sent > before:
-                        logger.info("rid=%s STEP %d: queued %d new frame(s) to codec", request_id, step, sent - before)
 
             if state["error"] is None and cum is not None:
                 # Authoritative tail: scan for the audio-EOS row (only it carries
@@ -564,7 +550,6 @@ class TritonPythonModel:
         client actually having sent them.
         """
         StreamingInput = self._StreamingInput
-        rid = session.request_id
         speaker_embedding = self._get_speaker_embedding(session.speaker)
         prompt_len = self._prompt_len(speaker_embedding, session.context_text)
         sp1 = self._make_sampling_params(1)
@@ -577,7 +562,6 @@ class TritonPythonModel:
         }
         # Prefill is released immediately; its decode-step output unblocks the first
         # text token (mirrors the demo's go_queue handshake).
-        logger.info("rid=%s STREAM: releasing prefill (prompt_len=%d, speaker=%s)", rid, prompt_len, session.speaker)
         yield StreamingInput(
             prompt={"prompt_token_ids": [0] * prompt_len, "additional_information": prefill_info},
             sampling_params=sp1,
@@ -589,35 +573,26 @@ class TritonPythonModel:
         while True:
             # Refill from the client; block only while we have nothing buffered.
             while not pending and not ended:
-                logger.info("rid=%s STREAM: waiting for client text tokens...", rid)
                 item = await session.token_q.get()
                 if item is _STREAM_END:
                     ended = True
-                    logger.info("rid=%s STREAM: client signalled stream_end", rid)
                 else:
                     pending.extend(int(t) for t in item)
-                    logger.info("rid=%s STREAM: client sent tokens=%s (buffered=%d)", rid, list(item), len(pending))
             if not pending:
                 break
             await session.pace_q.get()
             tok = pending.pop(0)
-            logger.info(
-                "rid=%s STREAM: feeding text_token=%d (n_text=%d, buffered_left=%d)", rid, tok, n_text, len(pending)
-            )
             yield self._text_chunk(tok, sp1)
             n_text += 1
 
         await session.pace_q.get()
-        logger.info("rid=%s STREAM: feeding text_eos=%d (n_text=%d)", rid, self.text_eos_id, n_text)
         yield self._text_chunk(self.text_eos_id, sp1)
         n_text += 1
 
         await session.pace_q.get()
         tail_budget = self.max_new_tokens - n_text
-        logger.info("rid=%s STREAM: feeding mask sentinel text_token=-1 (acoustic tail budget=%d)", rid, tail_budget)
         tail_params = self._make_sampling_params(tail_budget)
         yield self._text_chunk(-1, tail_params)
-        logger.info("rid=%s STREAM: input generator exhausted (fed %d text tokens incl. eos)", rid, n_text)
 
     async def _synthesize_streaming(self, session: _StreamingSession):
         prompt_len = self._prompt_len(self._get_speaker_embedding(session.speaker), session.context_text)
@@ -713,9 +688,6 @@ class TritonPythonModel:
         start = self._read_bool(request, "stream_start", False)
         end = self._read_bool(request, "stream_end", False)
         tokens = self._read_int_list(request, "text_token")
-        logger.info(
-            "CLIENT chunk: stream_id=%s start=%s end=%s tokens=%s", stream_id, start, end, tokens
-        )
 
         if start:
             context_text = self._read_str(request, "context_text", self.default_context_text)
@@ -731,7 +703,6 @@ class TritonPythonModel:
             )
             with self._sessions_lock:
                 self._sessions[stream_id] = session
-            logger.info("rid=%s STREAM: opened session for stream_id=%s", session.request_id, stream_id)
             # All audio for the stream is sent on this (stream_start) sender by the
             # coroutine; do NOT complete it here.
             self._launch(self._synthesize_streaming(session))

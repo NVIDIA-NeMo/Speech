@@ -189,9 +189,9 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             ans = {"logits": out['logits']}  # (B, T, text_vocab_size)
             if cache is not None:
                 ans["cache"] = out["past_key_values"]
-            # MTP per-depth hidden states (present only when the LLM built an MTP head,
-            # is in training mode, and received input_ids). Attribute access is None-safe;
-            # out['mtp_per_depth_h'] would KeyError when the field is None.
+            # MTP per-depth hidden states (present only when the LLM has an MTP head and
+            # is in training mode). Attribute access is None-safe; out['mtp_per_depth_h']
+            # would KeyError when the field is absent.
             mtp_h = getattr(out, "mtp_per_depth_h", None)
             if mtp_h is not None:
                 ans["mtp_per_depth_h"] = mtp_h
@@ -297,34 +297,17 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 device_mesh=getattr(self, "_device_mesh", None),
             )
 
-        # When MTP is on, also build the expanded token-id sequence (text=id, audio=pad)
-        # aligned 1:1 with input_embs, so the LLM's MTP head can embed the future tokens.
-        if self._mtp_enabled:
-            input_embs, target_ids, attention_mask, mtp_input_ids = replace_placeholders_and_build_targets(
-                input_ids=batch["input_ids"],
-                embeds=text_embs,
-                padding_id=self.text_pad_id,
-                placeholder_id=self.audio_locator_tag_id,
-                replacements=audio_embs,
-                target_ids=target_ids_full,
-                return_input_ids=True,
-            )
-        else:
-            input_embs, target_ids, attention_mask = replace_placeholders_and_build_targets(
-                input_ids=batch["input_ids"],
-                embeds=text_embs,
-                padding_id=self.text_pad_id,
-                placeholder_id=self.audio_locator_tag_id,
-                replacements=audio_embs,
-                target_ids=target_ids_full,
-            )
-            mtp_input_ids = None
+        input_embs, target_ids, attention_mask = replace_placeholders_and_build_targets(
+            input_ids=batch["input_ids"],
+            embeds=text_embs,
+            padding_id=self.text_pad_id,
+            placeholder_id=self.audio_locator_tag_id,
+            replacements=audio_embs,
+            target_ids=target_ids_full,
+        )
         input_embs = input_embs[:, :-1]
         attention_mask = attention_mask[:, :-1]
         target_ids = target_ids[:, 1:]
-        # mtp_input_ids stays input-aligned (like input_embs): slice [:, :-1], NOT [:, 1:].
-        if mtp_input_ids is not None:
-            mtp_input_ids = mtp_input_ids[:, :-1]
 
         # BSHD path runs only when CP is inactive (the fit-start validator
         # rejects BSHD + CP > 1, see _validate_parallelism_compatibility).
@@ -336,14 +319,12 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 input_embs = input_embs[:, :-remainder]
                 attention_mask = attention_mask[:, :-remainder]
                 target_ids = target_ids[:, :-remainder]
-                if mtp_input_ids is not None:
-                    mtp_input_ids = mtp_input_ids[:, :-remainder]
 
         return {
             "input_embeds": input_embs,
             "attention_mask": attention_mask,
             "target_ids": target_ids,
-            "llm_kwargs": {"input_ids": mtp_input_ids} if mtp_input_ids is not None else {},
+            "llm_kwargs": {},
         }
 
     def on_fit_start(self) -> None:

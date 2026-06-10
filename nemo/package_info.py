@@ -13,16 +13,45 @@
 # limitations under the License.
 
 
-MAJOR = 2
-MINOR = 8
+import os as _os  # noqa: I001
+import subprocess as _subprocess
+from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
+from importlib.metadata import version as _dist_version
+
+
+MAJOR = 3
+MINOR = 0
 PATCH = 0
-PRE_RELEASE = 'rc0'
+PRE_RELEASE = ""
 
 # Use the following formatting: (major, minor, patch, pre-release)
 VERSION = (MAJOR, MINOR, PATCH, PRE_RELEASE)
 
 __shortversion__ = ".".join(map(str, VERSION[:3]))
-__version__ = ".".join(map(str, VERSION[:3])) + "".join(VERSION[3:])
+_BASE_VERSION = __shortversion__ + "".join(VERSION[3:])
+
+
+def _source_tree_version() -> str:
+    if int(_os.getenv("NO_VCS_VERSION", "0")):
+        return _BASE_VERSION
+
+    try:
+        git_sha = _subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            cwd=_os.path.dirname(_os.path.abspath(__file__)),
+            check=True,
+            text=True,
+        ).stdout.strip()
+    except (_subprocess.CalledProcessError, OSError):
+        return _BASE_VERSION
+    return f"{_BASE_VERSION}+{git_sha}"
+
+
+try:
+    __version__ = _dist_version("nemo-toolkit")
+except _PackageNotFoundError:
+    __version__ = _source_tree_version()
 
 __package_name__ = "nemo_toolkit"
 __contact_names__ = "NVIDIA"

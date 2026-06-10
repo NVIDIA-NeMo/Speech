@@ -1603,6 +1603,12 @@ class BeamBatchedRNNTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs
         self.max_symbols = max_symbols_per_step
         self.preserve_alignments = preserve_alignments
 
+        if enable_per_stream_biasing and search_type == "maes_batch":
+            logging.warning(
+                "Per-stream biasing is not supported with `maes_batch` decoding; use `malsd_batch` instead. "
+                "Ignoring `enable_per_stream_biasing`."
+            )
+
         if search_type == "malsd_batch":
             # Depending on availability of `blank_as_pad` support
             # switch between more efficient batch decoding technique
@@ -1695,9 +1701,12 @@ class BeamBatchedRNNTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs
             self.joint.eval()
 
             inseq = encoder_output  # [B, T, D]
-            batched_beam_hyps, _ = self.decoding_computer(
-                x=inseq, out_len=logitlen, multi_biasing_ids=multi_biasing_ids
-            )
+            if isinstance(self.decoding_computer, ModifiedALSDBatchedRNNTComputer):
+                batched_beam_hyps, _ = self.decoding_computer(
+                    x=inseq, out_len=logitlen, multi_biasing_ids=multi_biasing_ids
+                )
+            else:
+                batched_beam_hyps, _ = self.decoding_computer(x=inseq, out_len=logitlen)
 
             batch_size = encoder_output.shape[0]
             if self.return_best_hypothesis:

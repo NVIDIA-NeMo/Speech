@@ -66,7 +66,7 @@ jobs:
           git status
 
       - name: Create PR
-        uses: peter-evans/create-pull-request@v6
+        uses: peter-evans/create-pull-request@v8
         id: create-pull-request
         if: ${{ inputs.dry-run != true }}
         with:

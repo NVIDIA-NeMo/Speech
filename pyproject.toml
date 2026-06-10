@@ -443,7 +443,9 @@ override-dependencies = [
     "cryptography>=46.0.5",
     "wandb>=0.27.1",
     "urllib3>=2.6.0",
-    "opencv-python-headless; sys_platform == 'never'"
+    "opencv-python-headless; sys_platform == 'never'",
+    "lxml>=6.1.0",
+    "gitpython>=3.1.50"
 ]
 no-binary-package = [
     "causal-conv1d",

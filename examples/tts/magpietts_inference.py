@@ -439,16 +439,21 @@ def _wait_for_multiturn_rank_manifests(repeat_audio_dir: str, world_size: int, t
     raise RuntimeError(f"Timed out waiting for multiturn rank manifests: {missing}")
 
 
-def _copy_or_link(src: str, dst: str) -> None:
+def _copy_or_link(src: str, dst: str, required: bool = False) -> None:
     if src is None or not os.path.exists(src):
-        return
-    os.makedirs(os.path.dirname(dst), exist_ok=True)
-    try:
         if os.path.lexists(dst):
             os.remove(dst)
-        os.symlink(os.path.abspath(src), dst)
-    except Exception:
-        shutil.copyfile(src, dst)
+        if required:
+            raise FileNotFoundError(f"Missing required merge source: {src} -> {dst}")
+        return
+
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+
+    if os.path.lexists(dst):
+        os.remove(dst)
+
+    # Prefer real files for evaluator inputs; broken symlinks confuse librosa/UTMOS.
+    shutil.copyfile(src, dst)
 
 
 def _merge_multiturn_rank_outputs(repeat_audio_dir: str, world_size: int, save_predicted_codes: bool) -> str:
@@ -459,6 +464,17 @@ def _merge_multiturn_rank_outputs(repeat_audio_dir: str, world_size: int, save_p
     function remaps them to contiguous global indices in repeat_audio_dir/ and
     writes a merged turn-level manifest.
     """
+    # clean previous merged files
+    for pattern in [
+        "predicted_audio_*.wav",
+        "target_audio_*.wav",
+        "context_audio_*.wav",
+        "predicted_codes_*.pt",
+    ]:
+        for path in Path(repeat_audio_dir).glob(pattern):
+            if path.is_symlink() or path.exists():
+                path.unlink(missing_ok=True)
+
     merged_records = []
     global_idx = 0
 
@@ -474,23 +490,23 @@ def _merge_multiturn_rank_outputs(repeat_audio_dir: str, world_size: int, save_p
         for local_idx, record in enumerate(rank_records):
             pred_src = os.path.join(rank_dir, f"predicted_audio_{local_idx}.wav")
             pred_dst = os.path.join(repeat_audio_dir, f"predicted_audio_{global_idx}.wav")
-            _copy_or_link(pred_src, pred_dst)
+            _copy_or_link(pred_src, pred_dst, required=True)
 
             if save_predicted_codes:
                 code_src = os.path.join(rank_dir, f"predicted_codes_{local_idx}.pt")
                 code_dst = os.path.join(repeat_audio_dir, f"predicted_codes_{global_idx}.pt")
-                _copy_or_link(code_src, code_dst)
+                _copy_or_link(code_src, code_dst, required=False)
 
             target_src = os.path.join(rank_dir, record.get("audio_filepath", f"target_audio_{local_idx}.wav"))
             target_dst = os.path.join(repeat_audio_dir, f"target_audio_{global_idx}.wav")
-            _copy_or_link(target_src, target_dst)
+            _copy_or_link(target_src, target_dst, required=True)
 
             context_src = os.path.join(
                 rank_dir,
                 record.get("context_audio_filepath", f"context_audio_{local_idx}.wav"),
             )
             context_dst = os.path.join(repeat_audio_dir, f"context_audio_{global_idx}.wav")
-            _copy_or_link(context_src, context_dst)
+            _copy_or_link(context_src, context_dst, required=True)
 
             merged = dict(record)
             merged["audio_filepath"] = f"target_audio_{global_idx}.wav"

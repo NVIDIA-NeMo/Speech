@@ -233,38 +233,38 @@ all = [
 cu12 = [
     "torch==2.12.0+cu126 ; sys_platform == 'linux'",
     "numba-cuda[cu12] ; platform_system != 'Darwin'",
-    "cuda-python>=12,<13 ; platform_system != 'Darwin'",
+    "cuda-python>=12,<13 ; platform_system != 'Darwin'"
 ]
 
 cu13 = [
     "torch==2.12.0+cu132 ; sys_platform == 'linux'",
     "numba-cuda[cu13] ; platform_system != 'Darwin'",
-    "cuda-python>=13,<14 ; platform_system != 'Darwin'",
+    "cuda-python>=13,<14 ; platform_system != 'Darwin'"
 ]
 
 compiled = [
     "onnx-ir==0.2.1",
     "onnxscript==0.7.0",
-    "transformer-engine @ git+https://github.com/NVIDIA/TransformerEngine.git@v2.15",
-    "deep_ep @ git+https://github.com/deepseek-ai/DeepEP.git@v1.2.1",
+    "deep_ep==1.2.1",
     "nv-grouped-gemm==1.1.4.post8",
     "causal-conv1d==1.6.2.post1",
     "mamba-ssm==2.3.2.post1",
     # v2.8.3 release assets do not include a cu13/torch2.12/cp313 wheel,
     # so uv builds this from source under the Dockerfile build environment.
     "flash-attn==2.8.3",
+    "transformer-engine[pytorch,core_cu13]==2.15"
 ]
 
 compiled-a100 = [
     "onnx-ir==0.2.1",
     "onnxscript==0.7.0",
-    "transformer-engine @ git+https://github.com/NVIDIA/TransformerEngine.git@v2.15",
     "nv-grouped-gemm==1.1.4.post8",
     "causal-conv1d==1.6.2.post1",
     "mamba-ssm==2.3.2.post1",
     # v2.8.3 release assets do not include a cu13/torch2.12/cp313 wheel,
     # so uv builds this from source under the Dockerfile build environment.
     "flash-attn==2.8.3",
+    "transformer-engine[pytorch,core_cu12]==2.15"
 ]
 
 common = [
@@ -355,8 +355,8 @@ py-modules = ["nemo"]
 nemo_speechlm = "nemo.collections.speechlm2.vllm.salm:register"
 
 [project.urls]
-Download = "https://github.com/NVIDIA/NeMo/releases"
-Homepage = "https://github.com/nvidia/nemo"
+Download = "https://github.com/NVIDIA-NeMo/NeMo/releases"
+Homepage = "https://github.com/NVIDIA-NeMo/NeMo"
 
 [tool.isort]
 profile = "black"  # black-compatible
@@ -458,6 +458,7 @@ no-build-isolation-package = [
     "mamba-ssm",
     "nv-grouped-gemm",
     "transformer-engine",
+    "transformer-engine-torch"
 ]
 
 # --- uv configuration ---
@@ -465,12 +466,14 @@ no-build-isolation-package = [
 # dependency also carries Torch source metadata; see the static metadata below.
 [tool.uv.sources]
 nemo_automodel = { git = "https://github.com/NVIDIA-NeMo/Automodel.git", rev = "9eccbb6102a260efd7cbdffa890fc57b94f94528" }
+deep_ep = { git = "https://github.com/deepseek-ai/DeepEP.git", tag = "v1.2.1" }
 torch = [
   { index = "pytorch-cpu", marker = "sys_platform != 'linux' and sys_platform != 'darwin'" },
   { index = "pytorch-cu126", extra = "cu12", marker = "sys_platform == 'linux'" },
   { index = "pytorch-cu132", extra = "cu13", marker = "sys_platform == 'linux'" },
   { index = "pypi", marker = "sys_platform == 'darwin'" },
 ]
+transformer-engine = { git = "https://github.com/NVIDIA/TransformerEngine.git", tag = "v2.15" }
 
 [[tool.uv.index]]
 name = "pypi"

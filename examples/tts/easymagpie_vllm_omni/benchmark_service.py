@@ -12,18 +12,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""
-Benchmark script for the EasyMagpie TTS Triton server (decoupled mode, gRPC).
+"""Benchmark the EasyMagpie TTS Triton server (decoupled mode, gRPC, whole-text).
 
-Spawns N concurrent workers that send TTS requests in parallel against the
-``easymp`` Triton model (see ``model_repository/easymp/config.pbtxt``).
-Each line of the text file is parsed as ``<uttid>\\t<text>``.
-Texts are randomly sampled for each request.
+Spawns N concurrent workers that send TTS requests against the ``easymp`` Triton
+model. Each line of the text file is ``<uttid>\\t<text>``; texts are sampled at
+random per request. Multiple concurrency levels can be benchmarked in sequence.
 
 Usage:
-    python benchmark_easymagpie_triton.py --text-file vctk_subset.txt --num-requests 100 --num-workers 8
-    python benchmark_easymagpie_triton.py --text-file vctk_subset.txt --num-requests 50 \
-        --output-dir out_wavs
+    python benchmark_service.py --text-file vctk_subset.txt -n 100 -c 8
+    python benchmark_service.py --text-file vctk_subset.txt -n 50 -c 1 4 8
 """
 
 import argparse
@@ -38,7 +35,7 @@ from pathlib import Path
 import numpy as np
 import tritonclient.grpc as grpcclient
 
-SAMPLE_RATE = 22_050  # codec output_sample_rate (matches run_server_request.ipynb)
+SAMPLE_RATE = 22_050
 MODEL_NAME = "easymp"
 
 
@@ -77,10 +74,6 @@ def synthesize(
     text: str,
     chunk_timeout: float,
 ):
-    """Send one TTS request and collect streamed chunks.
-
-    Returns ``(audio, ttfa_s, elapsed_s, error)``.
-    """
     text_input = grpcclient.InferInput("text", [1, 1], "BYTES")
     text_input.set_data_from_numpy(np.array([[text]], dtype=object))
 
@@ -131,6 +124,7 @@ def worker(
     stats: BenchmarkStats,
     chunk_timeout: float,
     output_dir: Path | None,
+    verbose: bool,
 ):
     result_q: queue.Queue = queue.Queue()
     client = grpcclient.InferenceServerClient(url=triton_url)
@@ -147,39 +141,23 @@ def worker(
             audio, ttfa, elapsed, error = synthesize(client, result_q, text, chunk_timeout)
 
             if error is not None:
-                # Reset the stream so late chunks don't bleed into the next
-                # request.
                 client.stop_stream()
                 client.start_stream(callback=lambda result, error: result_q.put((result, error)))
-                stats.add(
-                    RequestResult(
-                        uttid=uttid,
-                        num_samples=0,
-                        duration_s=elapsed,
-                        ttfa_s=ttfa,
-                        error=error,
-                    )
-                )
-                print(f"[worker {worker_id:02d}] request {task_idx} ({uttid}) FAILED ({elapsed:.1f}s) — {error}")
+                stats.add(RequestResult(uttid=uttid, num_samples=0, duration_s=elapsed, ttfa_s=ttfa, error=error))
+                if verbose:
+                    print(f"[worker {worker_id:02d}] req {task_idx} ({uttid}) FAILED ({elapsed:.1f}s) — {error}")
                 continue
 
             num_samples = len(audio)
             if output_dir is not None and num_samples > 0:
                 _save_wav(output_dir / f"{uttid}.wav", audio)
 
-            stats.add(
-                RequestResult(
-                    uttid=uttid,
-                    num_samples=num_samples,
-                    duration_s=elapsed,
-                    ttfa_s=ttfa,
+            stats.add(RequestResult(uttid=uttid, num_samples=num_samples, duration_s=elapsed, ttfa_s=ttfa))
+            if verbose:
+                print(
+                    f"[worker {worker_id:02d}] req {task_idx} ({uttid}) — "
+                    f"{num_samples / SAMPLE_RATE:.2f}s audio in {elapsed:.2f}s (TTFA {ttfa * 1000:.0f}ms)"
                 )
-            )
-            print(
-                f"[worker {worker_id:02d}] request {task_idx} ({uttid}) done — "
-                f"{num_samples / SAMPLE_RATE:.2f}s audio in {elapsed:.2f}s "
-                f"(TTFA: {ttfa:.3f}s)"
-            )
     finally:
         client.stop_stream()
 
@@ -208,6 +186,7 @@ def _run_workers(
     num_tasks: int,
     chunk_timeout: float,
     output_dir: Path | None,
+    verbose: bool,
 ) -> tuple[BenchmarkStats, float]:
     task_queue = list(range(num_tasks))
     queue_lock = threading.Lock()
@@ -216,7 +195,7 @@ def _run_workers(
     threads = [
         threading.Thread(
             target=worker,
-            args=(i, triton_url, items, task_queue, queue_lock, stats, chunk_timeout, output_dir),
+            args=(i, triton_url, items, task_queue, queue_lock, stats, chunk_timeout, output_dir, verbose),
         )
         for i in range(num_workers)
     ]
@@ -228,21 +207,51 @@ def _run_workers(
     return stats, time.perf_counter() - wall_start
 
 
+def _percentile(sorted_vals: list[float], pct: float) -> float:
+    if not sorted_vals:
+        return 0.0
+    idx = min(len(sorted_vals) - 1, int(len(sorted_vals) * pct))
+    return sorted_vals[idx]
+
+
+def _summarize(stats: BenchmarkStats, wall_s: float, concurrency: int) -> dict:
+    successes = [r for r in stats.results if r.error is None]
+    failures = [r for r in stats.results if r.error is not None]
+    audio_s = sum(r.num_samples for r in successes) / SAMPLE_RATE
+    ttfas_ms = sorted(r.ttfa_s * 1000 for r in successes)
+    return {
+        "concurrency": concurrency,
+        "failed": len(failures),
+        "wall_s": wall_s,
+        "audio_s": audio_s,
+        "rtx": audio_s / wall_s if wall_s > 0 else 0.0,
+        "tput": len(successes) / wall_s if wall_s > 0 else 0.0,
+        "ttfa_mean_ms": (sum(ttfas_ms) / len(ttfas_ms)) if ttfas_ms else 0.0,
+        "ttfa_p95_ms": _percentile(ttfas_ms, 0.95),
+    }
+
+
+def _print_summary(s: dict):
+    print(
+        f"[concurrency={s['concurrency']}] rtx = synt / time = "
+        f"{s['rtx']:.2f}x = {s['audio_s']:.0f} / {s['wall_s']:.2f}"
+    )
+    print(
+        f"throughput={s['tput']:.2f} req/s; failed = {s['failed']}; "
+        f"TTFA={s['ttfa_mean_ms']:.1f} / {s['ttfa_p95_ms']:.1f} (p95)"
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Benchmark EasyMagpie TTS Triton server")
     parser.add_argument("--text-file", required=True, help="Path to file with '<uttid>\\t<text>' per line")
-    parser.add_argument("--num-requests", type=int, required=True, help="Total number of requests to send")
-    parser.add_argument("--num-workers", type=int, default=4, help="Number of concurrent workers (default: 4)")
-    parser.add_argument(
-        "--triton-url", default="localhost:8001", help="Triton gRPC endpoint (default: localhost:8001)"
-    )
+    parser.add_argument("-n", "--num-requests", type=int, required=True, help="Requests per concurrency level")
+    parser.add_argument("-c", "--concurrency", type=int, nargs="+", default=[4], help="Concurrency levels to test")
+    parser.add_argument("--triton-url", default="localhost:8001", help="Triton gRPC endpoint (default localhost:8001)")
     parser.add_argument("--no-warmup", action="store_true", help="Skip warmup phase (3 requests per worker)")
-    parser.add_argument(
-        "--chunk-timeout", type=float, default=60, help="Per-chunk receive timeout in seconds (default: 60)"
-    )
-    parser.add_argument(
-        "--output-dir", default=None, help="If set, write each generated waveform to <output-dir>/<uttid>.wav"
-    )
+    parser.add_argument("--chunk-timeout", type=float, default=60, help="Per-chunk receive timeout, s (default: 60)")
+    parser.add_argument("--output-dir", default=None, help="If set, write each waveform to <output-dir>/<uttid>.wav")
+    parser.add_argument("--verbose", action="store_true", help="Print per-request lines")
     args = parser.parse_args()
 
     items = _load_items(args.text_file)
@@ -255,62 +264,26 @@ def main():
         output_dir = Path(args.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"Loaded {len(items)} utterances from {args.text_file}")
-    print(f"Sending {args.num_requests} requests with {args.num_workers} workers to {args.triton_url}")
-    if output_dir is not None:
-        print(f"Writing WAVs to {output_dir.resolve()}")
-    print("-" * 70)
+    print(f"Loaded {len(items)} utterances; {args.num_requests} req/level; concurrency {args.concurrency}")
 
-    if not args.no_warmup:
-        total_warmup = args.num_workers * 3
-        print(f"Warmup: {total_warmup} requests (3 per worker) ...")
-        _run_workers(
-            args.num_workers,
-            args.triton_url,
-            items,
-            total_warmup,
-            args.chunk_timeout,
-            output_dir=None,
+    summaries = []
+    for concurrency in args.concurrency:
+        if not args.no_warmup:
+            _run_workers(
+                concurrency, args.triton_url, items, concurrency * 3, args.chunk_timeout, None, args.verbose
+            )
+
+        stats, wall_elapsed = _run_workers(
+            concurrency, args.triton_url, items, args.num_requests, args.chunk_timeout, output_dir, args.verbose
         )
-        print("Warmup complete.")
-        print("-" * 70)
+        summary = _summarize(stats, wall_elapsed, concurrency)
+        summaries.append(summary)
+        _print_summary(summary)
 
-    stats, wall_elapsed = _run_workers(
-        args.num_workers,
-        args.triton_url,
-        items,
-        args.num_requests,
-        args.chunk_timeout,
-        output_dir,
-    )
-
-    successes = [r for r in stats.results if r.error is None]
-    failures = [r for r in stats.results if r.error is not None]
-    total_audio_seconds = sum(r.num_samples for r in successes) / SAMPLE_RATE
-
-    print()
-    print("=" * 70)
-    print("BENCHMARK RESULTS")
-    print("=" * 70)
-    print(f"  Total requests sent:      {args.num_requests}")
-    print(f"  Successful:               {len(successes)}")
-    print(f"  Failed:                   {len(failures)}")
-    print(f"  Concurrent workers:       {args.num_workers}")
-    print()
-    print(f"  Wall-clock time:          {wall_elapsed:.2f} s")
-    print(f"  Total audio synthesized:  {total_audio_seconds:.2f} s")
-    print(f"  Real-time factor (RTF):   {total_audio_seconds / wall_elapsed:.2f}x")
-    print(f"  Throughput:               {len(successes) / wall_elapsed:.2f} requests/s")
-
-    if successes:
-        ttfas_ms = sorted(r.ttfa_s * 1000 for r in successes)
-        mean_ttfa = sum(ttfas_ms) / len(ttfas_ms)
-        print()
-        print("  Time to first audio (TTFA):")
-        print(f"    mean:   {mean_ttfa:.1f} ms")
-        print(f"    p95:    {ttfas_ms[int(len(ttfas_ms) * 0.95)]:.1f} ms")
-
-    print("=" * 70)
+    if len(summaries) > 1:
+        print("\n=== Summary ===")
+        for s in summaries:
+            _print_summary(s)
 
 
 if __name__ == "__main__":

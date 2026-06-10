@@ -2,11 +2,20 @@ name: "easymp"
 backend: "python"
 max_batch_size: 32
 
+# Two request flavours share this model:
+#  * whole-text   : send "text" (+ optional context_text/speaker).
+#  * streaming-text: send "stream_id" plus "text_token" chunks across several
+#                    requests; mark the first with stream_start=true and the last
+#                    with stream_end=true. context_text/speaker are read from the
+#                    stream_start request. All audio is streamed back on the
+#                    stream_start request's response; follow-up chunk requests get
+#                    an empty final response.
 input [
   {
     name: "text"
     data_type: TYPE_STRING
     dims: [ 1 ]
+    optional: true
   },
   {
     name: "context_text"
@@ -17,6 +26,30 @@ input [
   {
     name: "speaker"
     data_type: TYPE_STRING
+    dims: [ 1 ]
+    optional: true
+  },
+  {
+    name: "stream_id"
+    data_type: TYPE_STRING
+    dims: [ 1 ]
+    optional: true
+  },
+  {
+    name: "text_token"
+    data_type: TYPE_INT32
+    dims: [ -1 ]
+    optional: true
+  },
+  {
+    name: "stream_start"
+    data_type: TYPE_BOOL
+    dims: [ 1 ]
+    optional: true
+  },
+  {
+    name: "stream_end"
+    data_type: TYPE_BOOL
     dims: [ 1 ]
     optional: true
   }

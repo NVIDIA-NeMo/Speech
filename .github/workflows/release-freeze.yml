@@ -26,13 +26,15 @@ on:
 
 jobs:
   code-freeze:
-    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_code_freeze.yml@v0.86.0
+    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_code_freeze.yml@v1.5.1
     with:
       library-name: NeMo-Toolkit
       python-package: nemo
       release-type: ${{ inputs.type_of_release }}
       freeze-commit: ${{ inputs.freeze-commit }}
       dry-run: ${{ inputs.dry-run }}
+      next-pre-release: ""
+      next-dev: ""
       use-pat: true
     secrets:
       SLACK_WEBHOOK: ${{ secrets.SLACK_RELEASE_ENDPOINT }}

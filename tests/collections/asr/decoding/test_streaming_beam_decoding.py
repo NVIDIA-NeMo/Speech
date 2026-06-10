@@ -305,20 +305,15 @@ def _run_streaming_batched_state(
 ) -> tuple[list[str], list[str]]:
     transcriptions = model.transcribe(audio=str(manifest_path.absolute()), batch_size=batch_size)
     ref_transcripts = [hyp.text for hyp in transcriptions]
-    streaming_transcripts = _run_malsd_streaming_manifest(
-        model, manifest_path, device, chunk_size, batch_size
-    )
+    streaming_transcripts = _run_malsd_streaming_manifest(model, manifest_path, device, chunk_size, batch_size)
     return ref_transcripts, streaming_transcripts
 
 
 def _assert_transcripts_equal(ref_transcripts: list[str], streaming_transcripts: list[str], context: str) -> None:
-    assert ref_transcripts == streaming_transcripts, (
-        f"{context}\n"
-        + "\n".join(
-            f"  [{i}] ref: {ref!r} != streaming: {stream!r}"
-            for i, (ref, stream) in enumerate(zip(ref_transcripts, streaming_transcripts))
-            if ref != stream
-        )
+    assert ref_transcripts == streaming_transcripts, f"{context}\n" + "\n".join(
+        f"  [{i}] ref: {ref!r} != streaming: {stream!r}"
+        for i, (ref, stream) in enumerate(zip(ref_transcripts, streaming_transcripts))
+        if ref != stream
     )
 
 
@@ -372,9 +367,7 @@ def test_maes_streaming_batched_state(
     maes_expansion_gamma: float,
 ):
     model = _prepare_model(stt_en_fastconformer_transducer_large, device)
-    _configure_maes_decoding(
-        model, beam_size, maes_num_steps, maes_expansion_beta, maes_expansion_gamma
-    )
+    _configure_maes_decoding(model, beam_size, maes_num_steps, maes_expansion_beta, maes_expansion_gamma)
     ref_transcripts, streaming_transcripts = _run_streaming_batched_state(
         model, an4_val_manifest_corrected, device, chunk_size, batch_size
     )
@@ -404,9 +397,7 @@ def test_malsd_streaming_batched_state_with_word_boosting(
         _select_transducer_model(is_tdt, stt_en_fastconformer_transducer_large, stt_en_fastconformer_tdt_large),
         device,
     )
-    _configure_malsd_decoding(
-        model, cuda_graphs_mode, beam_size, max_symbols, key_phrases_list=_WB_KEY_PHRASES
-    )
+    _configure_malsd_decoding(model, cuda_graphs_mode, beam_size, max_symbols, key_phrases_list=_WB_KEY_PHRASES)
     ref_transcripts, streaming_transcripts = _run_streaming_batched_state(
         model, an4_val_manifest_corrected, device, chunk_size, batch_size
     )
@@ -442,13 +433,10 @@ def test_malsd_streaming_boosting_with_ref_transcripts(
 
     _configure_malsd_decoding(model, cuda_graphs_mode, beam_size, max_symbols)
     ref_transcripts = [
-        hyp.text
-        for hyp in model.transcribe(audio=str(an4_val_manifest_corrected.absolute()), batch_size=batch_size)
+        hyp.text for hyp in model.transcribe(audio=str(an4_val_manifest_corrected.absolute()), batch_size=batch_size)
     ]
 
-    _configure_malsd_decoding(
-        model, cuda_graphs_mode, beam_size, max_symbols, enable_per_stream_biasing=True
-    )
+    _configure_malsd_decoding(model, cuda_graphs_mode, beam_size, max_symbols, enable_per_stream_biasing=True)
     _reset_decoding_computer_state(model)
 
     streaming_transcripts = _run_malsd_streaming_manifest(

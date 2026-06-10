@@ -718,7 +718,9 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
                 else encoder_output_length + prev_batched_state.decoded_lengths
             ),
             fusion_states_list=(
-                [s.clone() for s in fusion_states_list] if self.has_fusion_models and fusion_states_list is not None else None
+                [s.clone() for s in fusion_states_list]
+                if self.has_fusion_models and fusion_states_list is not None
+                else None
             ),
             time_jumps=None,
             **batched_hyps.export_cross_chunk_state(),

@@ -796,9 +796,7 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
 
             case PruningMode.LATE, BlankLMScoreMode.LM_WEIGHTED_FULL:
                 blank_logprob = log_probs[..., -1]
-                non_blank_logprob = torch.log1p(
-                    -torch.clamp(torch.exp(blank_logprob), max=1.0 - eps)
-                )
+                non_blank_logprob = torch.log1p(-torch.clamp(torch.exp(blank_logprob), max=1.0 - eps))
                 log_probs[..., :-1] += (
                     non_blank_logprob.unsqueeze(-1)
                     * (
@@ -1270,9 +1268,7 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
                 multi_biasing_ids=self.state.multi_biasing_ids,
             )
         else:
-            log_probs_top_k, labels_top_k = torch.topk(
-                log_probs, self.beam_size, dim=-1, largest=True, sorted=True
-            )
+            log_probs_top_k, labels_top_k = torch.topk(log_probs, self.beam_size, dim=-1, largest=True, sorted=True)
             log_probs_top_k, labels_top_k, durations_top_k = self._attach_argmax_duration_to_token_topk(
                 log_probs_top_k, labels_top_k, duration_log_probs
             )

@@ -463,9 +463,16 @@ class TritonPythonModel:
                     continue
                 if cum is None or cum_now.shape[0] > cum.shape[0]:
                     cum = cum_now
-                # Hold back the most recent decode row: the audio-EOS frame is always
-                # the last one and must not be vocoded.
-                real_avail = cum.shape[0] - head - 1
+                # The audio-EOS frame is always the most recent decoded row, so it is
+                # the only row that might be EOS. Inspect just that row: if it is not
+                # EOS, vocode it immediately instead of unconditionally holding one row
+                # back. This removes a full decode step (~1 ITL) from TTFA and from
+                # every chunk boundary; the authoritative tail scan below still catches
+                # the real EOS row.
+                if bool((cum[-1] == self.audio_eos_id).any()):
+                    real_avail = cum.shape[0] - head - 1
+                else:
+                    real_avail = cum.shape[0] - head
                 if real_avail > sent:
                     emit_ready(cum, real_avail, final=False)
 

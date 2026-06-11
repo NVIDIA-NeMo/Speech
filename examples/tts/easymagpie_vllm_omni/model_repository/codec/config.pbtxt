@@ -20,8 +20,11 @@ output [
   }
 ]
 
+# max_queue_delay=0: form a batch immediately with whatever is queued. At low
+# concurrency the old 1ms delay was pure added TTFA latency with no batching
+# benefit; under load requests still pile up fast enough to batch.
 dynamic_batching {
-  max_queue_delay_microseconds: 1000
+  max_queue_delay_microseconds: 500
   preferred_batch_size: [ 32 ]
 }
 

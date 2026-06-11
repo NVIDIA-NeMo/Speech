@@ -60,7 +60,7 @@ def encode_audio_with_optional_chunking(
         audio_embs, audio_emb_lens = perception(input_signal=input_signal, input_signal_length=input_signal_length)
         return _unpad_audio_embeddings(audio_embs, audio_emb_lens)
 
-    chunks, chunk_lens, chunks_per_audio = _split_audio_into_chunks(
+    chunks, chunk_lens, chunk_start_samples, chunks_per_audio = _split_audio_into_chunks(
         input_signal=input_signal,
         input_signal_lengths=input_signal_lengths,
         chunk_size_samples=chunk_size_samples,
@@ -68,7 +68,13 @@ def encode_audio_with_optional_chunking(
     )
     chunked_signal = pad_sequence(chunks, batch_first=True)
     chunked_lens = torch.as_tensor(chunk_lens, device=input_signal_length.device, dtype=input_signal_length.dtype)
-    chunked_embs, chunked_emb_lens = perception(input_signal=chunked_signal, input_signal_length=chunked_lens)
+    # Absolute start time (seconds) of each chunk within its source audio. 
+    # RoTE (when enabled) uses this so a chunked long audio keeps a continuous time index across chunk boundaries.
+    time_offset = torch.as_tensor(chunk_start_samples, device=input_signal_length.device, dtype=torch.float32)
+    time_offset = time_offset / float(sampling_rate)
+    chunked_embs, chunked_emb_lens = perception(
+        input_signal=chunked_signal, input_signal_length=chunked_lens, time_offset=time_offset
+    )
     return _recombine_chunked_audio_embeddings(chunked_embs, chunked_emb_lens, chunks_per_audio)
 
 
@@ -119,7 +125,7 @@ def _split_audio_into_chunks(
     input_signal_lengths: list[int],
     chunk_size_samples: int,
     min_chunk_size_samples: int,
-) -> tuple[list[Tensor], list[int], list[int]]:
+) -> tuple[list[Tensor], list[int], list[int], list[int]]:
     """Split each row of ``input_signal`` into contiguous chunks of up to ``chunk_size_samples`` samples.
 
     A tail chunk shorter than ``min_chunk_size_samples`` is folded into the previous
@@ -136,16 +142,19 @@ def _split_audio_into_chunks(
             into its predecessor.
 
     Returns:
-        A tuple ``(chunks, chunk_lens, chunks_per_audio)`` where ``chunks`` is a flat
-        list of 1D audio tensors across the whole batch, ``chunk_lens`` holds the
-        sample count of each chunk (parallel to ``chunks``), and ``chunks_per_audio``
+        A tuple ``(chunks, chunk_lens, chunk_start_samples, chunks_per_audio)`` where
+        ``chunks`` is a flat list of 1D audio tensors across the whole batch,
+        ``chunk_lens`` holds the sample count of each chunk (parallel to ``chunks``),
+        ``chunk_start_samples`` holds each chunk's start sample within its source audio
+        (reset to 0 at every new audio, parallel to ``chunks``), and ``chunks_per_audio``
         holds the number of chunks produced for each original input row (length ``B``).
     """
-    chunks, chunk_lens, chunks_per_audio = [], [], []
+    chunks, chunk_lens, chunk_start_samples, chunks_per_audio = [], [], [], []
     for audio, audio_len in zip(input_signal, input_signal_lengths):
         if audio_len == 0:
             chunks.append(audio[:0])
             chunk_lens.append(0)
+            chunk_start_samples.append(0)
             chunks_per_audio.append(1)
             continue
 
@@ -164,8 +173,9 @@ def _split_audio_into_chunks(
         for begin, end in spans:
             chunks.append(audio[begin:end])
             chunk_lens.append(end - begin)
+            chunk_start_samples.append(begin)
         chunks_per_audio.append(len(spans))
-    return chunks, chunk_lens, chunks_per_audio
+    return chunks, chunk_lens, chunk_start_samples, chunks_per_audio
 
 
 def _unpad_audio_embeddings(audio_embs: Tensor, audio_emb_lens: Tensor) -> list[Tensor]:

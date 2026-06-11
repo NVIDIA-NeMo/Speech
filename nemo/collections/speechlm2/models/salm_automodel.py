@@ -190,12 +190,11 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             if cache is not None:
                 ans["cache"] = out["past_key_values"]
             # MTP per-depth hidden states (present only when the LLM has an MTP head and
-            # is in training mode). Attribute access is None-safe; out['mtp_per_depth_h']
-            # would KeyError when the field is absent.
+            # is in training mode). Use getattr rather than out['mtp_per_depth_h'] to avoid
+            # a KeyError when the field is absent.
             mtp_h = getattr(out, "mtp_per_depth_h", None)
             if mtp_h is not None:
                 ans["mtp_per_depth_h"] = mtp_h
-                ans["mtp_loss_scaling_factor"] = getattr(out, "mtp_loss_scaling_factor", None)
         return ans
 
     def _uses_parallel_expert_encoder(self) -> bool:
@@ -424,16 +423,13 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         if mtp_h is not None:
             from nemo_automodel.components.loss.mtp import calculate_mtp_loss
 
-            scaling = forward_outputs.get("mtp_loss_scaling_factor", None)
-            if scaling is None:
-                scaling = getattr(self, "_mtp_loss_scaling_factor", 0.1)
             with loss_parallel():
                 mtp_loss = dp_size * calculate_mtp_loss(
                     self._mtp_loss_fn,
                     mtp_per_depth_h=mtp_h,
                     labels=inputs["target_ids"],
                     model=self.llm,
-                    scaling_factor=scaling,
+                    scaling_factor=self._mtp_loss_scaling_factor,
                     num_label_tokens=num_frames_global,
                 )
             loss = loss + mtp_loss
@@ -903,7 +899,6 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         mtp_config = build_mtp_config_from_hf(
             cfg_obj,
             loss_scaling_factor=self._mtp_loss_scaling_factor,
-            num_nextn_predict_layers=int(mtp_cfg.get("num_nextn_predict_layers", 1)),
             use_repeated_layer=bool(mtp_cfg.get("use_repeated_layer", False)),
         )
         llm.mtp_config = mtp_config
@@ -1053,7 +1048,8 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         #     Automodel's _filter_kwargs_for_init can't strip the positional ``config``.
         # So we load the LLM normally and then construct + attach the head ourselves.
         mtp_cfg = self.cfg.get("mtp", None)
-        if mtp_cfg is not None and mtp_cfg.get("enabled", False):
+        mtp_requested = mtp_cfg is not None and mtp_cfg.get("enabled", False)
+        if mtp_requested:
             if self.cfg.get("packed_sequences", False):
                 raise NotImplementedError("MTP is not yet supported with packed_sequences=true (THD path).")
             self._mtp_loss_scaling_factor = float(mtp_cfg.get("loss_scaling_factor", 0.1))
@@ -1072,9 +1068,9 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         )
 
         # Build + attach the MTP head ourselves (the base checkpoint has none).
-        if mtp_cfg is not None and mtp_cfg.get("enabled", False) and getattr(self.llm, "mtp", None) is None:
+        if mtp_requested and not self._mtp_enabled:
             self._build_and_attach_mtp_head(mtp_cfg, dtype)
-        if mtp_cfg is not None and mtp_cfg.get("enabled", False) and getattr(self.llm, "mtp", None) is None:
+        if mtp_requested and not self._mtp_enabled:
             raise RuntimeError("MTP enabled but self.llm.mtp is still None after _build_and_attach_mtp_head.")
 
         # Apply MoE options (aux_loss_coeff override, load balance tracking)
@@ -1133,7 +1129,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             # reduce-scatter across the DP group, so each rank would diverge on real
             # (per-rank-different) data. The head is attention-only (no experts), so plain
             # FSDP2 over the DP mesh is the right wrapping.
-            if getattr(self.llm, "mtp", None) is not None:
+            if self._mtp_enabled:
                 self.llm.mtp = fully_shard(self.llm.mtp, mesh=fsdp_mesh)
 
         # Enable MoE FSDP gradient accumulation optimization.

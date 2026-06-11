@@ -247,9 +247,6 @@ class HybridBackend(_BaseBackend):
         for name, tensor in weights:
             hf_name = name.replace("llm.model.", "backbone.")
             hf_name = hf_name.replace("llm.lm_head", "lm_head")
-            # MTP layers are stored under llm.mtp.* in the NeMo checkpoint;
-            # vLLM's NemotronHForCausalLM expects them at the top-level mtp.*.
-            hf_name = hf_name.replace("llm.mtp.", "mtp.")
             if hf_name == "backbone.norm.weight":
                 hf_name = "backbone.norm_f.weight"
 

@@ -89,7 +89,6 @@ class SalmEvalConfig:
     cp_size: int = 1
 
 
-
 @hydra_runner(config_name="SalmEvalConfig", schema=SalmEvalConfig)
 def main(cfg: SalmEvalConfig):
     logging.info(f'Hydra config:\n{OmegaConf.to_yaml(cfg)}')
@@ -162,7 +161,6 @@ def main(cfg: SalmEvalConfig):
     hyps = []
     input_durations = []
     infer_durations = []
-
     for batch_idx, batch in enumerate(dloader):
         ts = perf_counter()
         answer_ids = model.generate(
@@ -185,7 +183,6 @@ def main(cfg: SalmEvalConfig):
         batch_hyps = [
             normalizer(model.tokenizer.ids_to_text(parse_hyp(ans, eos_tokens)).strip()) for ans in answer_ids
         ]
-
         if cfg.verbose:
             batch_wer, _, nins, ndel, nsub = word_error_rate_detail(batch_hyps, batch_refs)
             batch_rtfx = batch_duration / batch_infer_duration
@@ -201,8 +198,7 @@ def main(cfg: SalmEvalConfig):
     wer, _, nins, ndel, nsub = word_error_rate_detail(hypotheses=hyps, references=refs, use_cer=False)
     rtfx = sum(input_durations) / sum(infer_durations)
     logging.info(f"WER: {wer:.2%} [ins={nins:.2%} del={ndel:.2%} sub={nsub:.2%}]")
-    # RTFx is baseline inference speed (no MTP speculative decoding).
-    logging.info(f"RTFx (baseline, no speculative decoding): {rtfx:.1f}")
+    logging.info(f"RTFx: {rtfx:.1f}")
 
     with _create_output_writer(cfg.output_manifest) as writer:
         for cut, ref, hyp in zip(cuts, refs, hyps):

@@ -13,6 +13,7 @@
 # limitations under the License.
 import copy
 import glob
+import types
 
 import lightning.pytorch as ptl
 import pytest
@@ -39,6 +40,93 @@ def test_forced_full_graph_compile_does_not_fallback():
 
     with pytest.raises(RuntimeError, match="Full CUDA graph decoding failed"):
         computer._raise_or_warn_no_while_loop_cuda_graphs(accelerator_error("CUDA error: invalid argument"))
+
+
+def test_conditional_node_restores_previous_stream_on_body_error(monkeypatch):
+    from nemo.core.utils import cuda_python_utils
+
+    if not cuda_python_utils.CUDA_PYTHON_AVAILABLE:
+        pytest.skip("cuda-python is required to test with_conditional_node")
+
+    class FakeStream:
+        def __init__(self, name):
+            self.name = name
+            self.cuda_stream = name
+
+    class FakeTorchCuda:
+        def __init__(self):
+            self.parent_stream = FakeStream("parent")
+            self.body_stream = FakeStream("body")
+            self.current = self.parent_stream
+            self.set_calls = []
+
+        def current_stream(self, device=None):
+            return self.current
+
+        def Stream(self, device=None):
+            return self.body_stream
+
+        def set_stream(self, stream):
+            self.current = stream
+            self.set_calls.append(stream)
+
+    class FakeCudart:
+        cudaStreamCaptureStatus = types.SimpleNamespace(cudaStreamCaptureStatusActive="active")
+        cudaStreamUpdateCaptureDependenciesFlags = types.SimpleNamespace(cudaStreamSetCaptureDependencies="set")
+        cudaStreamCaptureMode = types.SimpleNamespace(cudaStreamCaptureModeThreadLocal="thread_local")
+
+        def __init__(self):
+            self.ended_streams = []
+
+        def cudaStreamGetCaptureInfo(self, stream):
+            return ("active", None, "graph", ["dependency"])
+
+        def cudaStreamUpdateCaptureDependencies(self, *args):
+            return ()
+
+        def cudaStreamBeginCaptureToGraph(self, *args):
+            return ()
+
+        def cudaStreamEndCapture(self, stream):
+            self.ended_streams.append(stream)
+            return ()
+
+    class FakeCuda:
+        CUgraphNodeType = types.SimpleNamespace(CU_GRAPH_NODE_TYPE_CONDITIONAL="conditional")
+        CUgraphConditionalNodeType = types.SimpleNamespace(CU_GRAPH_COND_TYPE_WHILE="while")
+
+        class CUgraphNodeParams:
+            def __init__(self):
+                self.conditional = types.SimpleNamespace(phGraph_out=["body_graph"])
+
+        def cuGraphAddNode(self, *args):
+            return ("node",)
+
+        def cuCtxGetCurrent(self):
+            return ("ctx",)
+
+        def cuLaunchKernel(self, *args):
+            return ()
+
+    fake_torch_cuda = FakeTorchCuda()
+    fake_cudart = FakeCudart()
+    fake_args = types.SimpleNamespace(ctypes=types.SimpleNamespace(data=1234))
+    fake_handle = types.SimpleNamespace(getPtr=lambda: 5678)
+
+    monkeypatch.setattr(cuda_python_utils, "cu_call", lambda result: result)
+    monkeypatch.setattr(cuda_python_utils, "cuda", FakeCuda())
+    monkeypatch.setattr(cuda_python_utils, "cudart", fake_cudart)
+    monkeypatch.setattr(cuda_python_utils, "cuda_python_version", "13.0.0")
+    monkeypatch.setattr(cuda_python_utils.torch, "cuda", fake_torch_cuda)
+
+    with pytest.raises(RuntimeError, match="body failed"):
+        with cuda_python_utils.with_conditional_node("kernel", fake_args, fake_handle, device="cuda"):
+            assert fake_torch_cuda.current_stream(device="cuda") is fake_torch_cuda.body_stream
+            raise RuntimeError("body failed")
+
+    assert fake_torch_cuda.current_stream(device="cuda") is fake_torch_cuda.parent_stream
+    assert fake_torch_cuda.set_calls == [fake_torch_cuda.body_stream, fake_torch_cuda.parent_stream]
+    assert fake_cudart.ended_streams == ["body"]
 
 
 @pytest.mark.with_downloads

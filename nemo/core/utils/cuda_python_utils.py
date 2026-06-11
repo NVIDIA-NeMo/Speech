@@ -206,6 +206,7 @@ def with_conditional_node(while_loop_kernel, while_loop_args, while_loop_conditi
         )
     body_stream = torch.cuda.Stream(device)
     previous_stream = torch.cuda.current_stream(device=device)
+    body_capture_active = False
     cu_call(
         cudart.cudaStreamBeginCaptureToGraph(
             body_stream.cuda_stream,
@@ -216,17 +217,28 @@ def with_conditional_node(while_loop_kernel, while_loop_args, while_loop_conditi
             cudart.cudaStreamCaptureMode.cudaStreamCaptureModeThreadLocal,
         )
     )
-    torch.cuda.set_stream(body_stream)
+    body_capture_active = True
 
-    yield body_stream, body_graph
+    try:
+        torch.cuda.set_stream(body_stream)
+        yield body_stream, body_graph
 
-    cuda.cuLaunchKernel(
-        while_loop_kernel, 1, 1, 1, 1, 1, 1, 0, body_stream.cuda_stream, while_loop_args.ctypes.data, 0
-    )
+        cuda.cuLaunchKernel(
+            while_loop_kernel, 1, 1, 1, 1, 1, 1, 0, body_stream.cuda_stream, while_loop_args.ctypes.data, 0
+        )
 
-    cudart.cudaStreamEndCapture(body_stream.cuda_stream)
-
-    torch.cuda.set_stream(previous_stream)
+        end_capture_out = cudart.cudaStreamEndCapture(body_stream.cuda_stream)
+        body_capture_active = False
+        cu_call(end_capture_out)
+    finally:
+        if body_capture_active:
+            try:
+                end_capture_out = cudart.cudaStreamEndCapture(body_stream.cuda_stream)
+                body_capture_active = False
+                cu_call(end_capture_out)
+            except Exception:
+                pass
+        torch.cuda.set_stream(previous_stream)
 
 
 @cuda_python_required

@@ -495,9 +495,7 @@ def oomptimizer(
                     click.secho(f"OOM!", fg="yellow")
                     oom = True
                 except RuntimeError as e:
-                    if "cuFFT error: CUFFT_INTERNAL_ERROR" not in str(
-                        e
-                    ) and "cuFFT error: CUFFT_INVALID_SIZE" not in str(e):
+                    if "cuFFT error: CUFFT_INTERNAL_ERROR" not in str(e):
                         raise
                     click.secho(f"OOM!", fg="yellow")
                     oom = True

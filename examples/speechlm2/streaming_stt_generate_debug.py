@@ -181,6 +181,10 @@ class StreamingSTTEvalConfig:
     # decision (legacy behavior). +K frames adds K * frame_length_in_secs
     # of latency per emit.
     emit_delay_frames: int = 0
+    # K-frame grouping for dynamic-chunking read/write decisions. When None,
+    # falls back to model.core_cfg.dynamic_chunk_step (= the value the model
+    # was trained with). Override for ablations only.
+    dynamic_chunk_step: Optional[int] = None
     # num_delay_frames used during training. Boundary GT emit position is
     # computed as ceil(end_time / frame_length) + num_delay_frames so it
     # matches where the dataset supervised the model to fire. Mismatched
@@ -323,6 +327,7 @@ def main(cfg: StreamingSTTEvalConfig):
             use_chunk_classifier_at_inference=cfg.use_chunk_classifier_at_inference,
             emit_threshold=cfg.emit_threshold,
             emit_delay_frames=cfg.emit_delay_frames,
+            dynamic_chunk_step=cfg.dynamic_chunk_step,
             debug_logs=batch_debug_logs,
             disable_emit_for_debug=cfg.disable_emit_for_debug,
         )

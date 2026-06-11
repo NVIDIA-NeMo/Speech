@@ -124,6 +124,29 @@ def interleave_embeddings(
     return {"input_embeds": embeds, "attention_mask": attention_mask}
 
 
+def _build_k_aligned_audio_mask(audio_mask: Tensor, K: int) -> Tensor:
+    """Return a (B, L) bool mask that is True only at positions whose 1-indexed
+    position within their contiguous audio-mask run is a positive multiple of K.
+
+    Non-audio positions are always False. For K <= 1, returns audio_mask
+    unchanged. Used to gate per-frame supervision (aux BCE / LM CE at audio
+    positions) and inference read/write decisions to the last frame of each
+    K-frame group within each audio run.
+    """
+    if K <= 1:
+        return audio_mask
+    a = audio_mask.to(torch.int64)
+    cum_a = a.cumsum(dim=1)  # cumulative audio count up to each position
+    prev_a = F.pad(a[:, :-1], (1, 0), value=0)
+    is_run_start = audio_mask & (prev_a == 0)
+    # Forward-fill the cum_a value (minus 1) at each run start to obtain the
+    # offset needed to convert global cumulative count → within-run index.
+    offset_at_starts = torch.where(is_run_start, cum_a - 1, torch.zeros_like(cum_a))
+    offset = offset_at_starts.cummax(dim=1).values
+    within_run = (cum_a - offset) * a  # zero outside audio runs
+    return (within_run > 0) & (within_run % K == 0)
+
+
 def _repr_chunk_size(chunk_size) -> int:
     """Representative scalar chunk size for a config value that may be a list.
 
@@ -156,6 +179,11 @@ class StreamingSTTModelConfig:
     # attention look-ahead is matched per batch as ``[att_context_size[0],
     # chunk_size - 1]``.
     chunk_size: Union[int, List[int]]
+    # K-frame grouping for dynamic chunking (chunk_size == 0). When > 1, the
+    # model makes one read/write decision per K-frame group, at the last frame
+    # of each group. Must match data.chunk_step in the dataset config. Ignored
+    # for fixed chunking. Default 1 = decision per frame (current behavior).
+    dynamic_chunk_step: int = 1
     audio_tag: str = "<audio>"
     att_context_size: Optional[List[int]] = None
     audio_pad_to: Optional[int] = None
@@ -632,14 +660,28 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         # head (below) handles the boundary decision via BCE. Use the input-axis
         # audio mask — NOT a target-value mask — so end-of-chunk blanks at
         # text positions (line 1696/1701 in inference) remain supervised.
-        if use_aux:
-            audio_mask = batch.input_tokens == AUDIO_TOKEN_IDX  # (B, L)
-            if not self.core_cfg.chunk_classifier_keep_lm_supervision_at_audio:
-                target_ids = torch.where(audio_mask, torch.full_like(target_ids, IGNORE_INDEX), target_ids)
-            # else: keep blank / user_footer_first targets at audio positions —
-            # LM head is co-supervised alongside the aux BCE.
-        else:
-            audio_mask = None
+        audio_mask = batch.input_tokens == AUDIO_TOKEN_IDX  # (B, L)
+        if use_aux and not self.core_cfg.chunk_classifier_keep_lm_supervision_at_audio:
+            target_ids = torch.where(audio_mask, torch.full_like(target_ids, IGNORE_INDEX), target_ids)
+        # else: keep blank / user_footer_first targets at audio positions —
+        # LM head is the boundary predictor (when not use_aux), or co-supervised
+        # alongside the aux BCE (when use_aux + keep_lm_supervision_at_audio).
+
+        # K-aligned read/write gating for dynamic chunking. When the dataset
+        # groups frames into K-frame chunks (`chunk_step > 1`), only the last
+        # frame of each K-group carries the boundary signal; the other K-1
+        # frames have trivial blank targets. Mask them out so neither the LM
+        # head (when boundary-supervised at audio) nor the aux BCE wastes
+        # capacity on them. No-op for K <= 1.
+        K = int(getattr(self.core_cfg, "dynamic_chunk_step", 1))
+        k_aligned_mask: Optional[Tensor] = None
+        if K > 1:
+            k_aligned_mask = _build_k_aligned_audio_mask(audio_mask, K)  # (B, L)
+            # Drop LM-CE supervision at non-K-aligned audio positions. Only
+            # matters when audio positions still carry targets (= when use_aux
+            # is False, OR use_aux + keep_lm_supervision_at_audio).
+            drop_at_audio = audio_mask & ~k_aligned_mask
+            target_ids = target_ids.masked_fill(drop_at_audio, IGNORE_INDEX)
 
         num_targets = (target_ids != IGNORE_INDEX).long().sum()
 
@@ -701,6 +743,11 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
             audio_mask_flat = audio_mask.flatten(0, 1)  # (B*L,)
             orig_targets_flat = batch.target_tokens.flatten(0, 1)  # pre-LM-CE-masking
             decision_mask = audio_mask_flat & (orig_targets_flat != IGNORE_INDEX)
+            # K-gate: only supervise at the last frame of each K-group. K-1 of
+            # every K audio frames carry trivial zero (blank) targets and would
+            # dilute the boundary signal.
+            if k_aligned_mask is not None:
+                decision_mask = decision_mask & k_aligned_mask.flatten(0, 1)
             num_decisions = decision_mask.sum()
             if num_decisions > 0:
                 aux_input = outputs["hidden_states"]  # (B, L, H)
@@ -848,6 +895,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         )
 
         target_ids = batch.target_tokens
+        audio_mask_for_lm = batch.input_tokens == AUDIO_TOKEN_IDX
         # Mirror training-time LM-CE masking: when the aux head owns the
         # boundary decision, audio positions are not LM-supervised in
         # training, so they must also be excluded from val_loss / val_acc —
@@ -855,8 +903,14 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         # trained on. If keep_lm_supervision_at_audio is True, the LM IS
         # supervised at audio positions during training, so don't mask in val.
         if aux_active and not self.core_cfg.chunk_classifier_keep_lm_supervision_at_audio:
-            audio_mask_for_lm = batch.input_tokens == AUDIO_TOKEN_IDX
             target_ids = torch.where(audio_mask_for_lm, torch.full_like(target_ids, IGNORE_INDEX), target_ids)
+        # Mirror training-time K-gate at audio positions.
+        K = int(getattr(self.core_cfg, "dynamic_chunk_step", 1))
+        k_aligned_mask: Optional[Tensor] = None
+        if K > 1:
+            k_aligned_mask = _build_k_aligned_audio_mask(audio_mask_for_lm, K)
+            drop_at_audio = audio_mask_for_lm & ~k_aligned_mask
+            target_ids = target_ids.masked_fill(drop_at_audio, IGNORE_INDEX)
         num_targets = (target_ids != IGNORE_INDEX).long().sum()
 
         with loss_parallel():
@@ -882,6 +936,8 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
             audio_mask_flat = audio_mask.flatten(0, 1)
             orig_targets_flat = batch.target_tokens.flatten(0, 1)
             decision_mask = audio_mask_flat & (orig_targets_flat != IGNORE_INDEX)
+            if k_aligned_mask is not None:
+                decision_mask = decision_mask & k_aligned_mask.flatten(0, 1)
             if decision_mask.any():
                 aux_out = self.chunk_classifier_backbone(
                     inputs_embeds=outputs["hidden_states"],
@@ -1801,6 +1857,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         use_chunk_classifier_at_inference: bool = False,
         emit_threshold: Optional[float] = None,
         emit_delay_frames: int = 0,
+        dynamic_chunk_step: Optional[int] = None,
         debug_logs: Optional[list] = None,
         disable_emit_for_debug: bool = False,
         alignments_out: Optional[list] = None,
@@ -1846,6 +1903,19 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         else:
             N = inference_chunk_size
         chunk_samples = math.ceil(N * self.core_cfg.frame_length_in_secs * self.core_cfg.sample_rate)
+
+        # K-frame grouping for dynamic-chunking read/write decisions.
+        # Defaults to the training-time `dynamic_chunk_step` from the model
+        # config; override per-call for ablations. Only meaningful when
+        # chunk_size == 0 (dynamic); ignored in fixed-chunk and offline modes.
+        dyn_K = max(
+            1,
+            int(
+                dynamic_chunk_step
+                if dynamic_chunk_step is not None
+                else getattr(self.core_cfg, "dynamic_chunk_step", 1)
+            ),
+        )
 
         # --- Init state ---
         state = self.get_init_streaming_state(
@@ -2121,38 +2191,19 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                             # In [min, max] window — use model prediction.
                             # Either the aux classifier head (when enabled) or
                             # the LM head's vocab sample (legacy path).
-                            if use_aux and aux_last_hidden is not None:
-                                # Aux head decision: threshold the sigmoid output.
-                                # Use the runtime emit_threshold if provided,
-                                # else default to 0.5.
-                                h_last = aux_last_hidden[b, -1, :]  # (H,)
-                                aux_logit_b = self.chunk_classifier_head(h_last)
-                                aux_p_log = float(torch.sigmoid(aux_logit_b).item())
-                                thr_eff = emit_threshold if emit_threshold is not None else 0.5
-                                emit = aux_p_log >= thr_eff
-                            elif emit_threshold is not None:
-                                # LM head decision with explicit threshold: fire
-                                # when p(user_footer_first_id) ≥ emit_threshold.
-                                # Lower values catch boundaries where the LM is
-                                # moderately confident but loses argmax to blank.
-                                lm_probs_emit = torch.softmax(out.logits[b, -1, :].float(), dim=-1)
-                                p_ufid_emit = (
-                                    float(lm_probs_emit[user_footer_first_id].item())
-                                    if user_footer_first_id is not None
-                                    else 0.0
-                                )
-                                emit = p_ufid_emit >= emit_threshold
-                            else:
-                                token = self._sample_token(
-                                    out.logits[b : b + 1, -1, :],
-                                    None,
-                                    generation_config,
-                                    **generation_kwargs,
-                                ).item()
-                                emit = token == user_footer_first_id
-                            # If we already have a pending emit from an earlier
-                            # frame (emit_delay_frames > 0), decrement first;
-                            # if the countdown reaches zero on this frame, commit.
+                            audio_exhausted_now = not audio_emb_buf[b] and audio_sample_idx[b] >= n_samples_list[b]
+                            # K-aligned read/write gate: the heads were trained
+                            # to predict positives only at K-aligned frames
+                            # within each audio run (data snapped boundaries to
+                            # multiples of K via chunk_step). Off-grid frames
+                            # are OOD for the heads — querying them produces
+                            # spurious mid-word fires. Only consult heads at
+                            # frames_in_segment ∈ {K, 2K, 3K, ...} OR at audio
+                            # end (where the final partial chunk must be
+                            # committable regardless of alignment).
+                            on_decision_frame = dyn_K <= 1 or (frames_in_segment[b] % dyn_K) == 0
+                            # Pending emit countdown ticks on EVERY frame
+                            # (frame-granular delay), regardless of K-gate.
                             if pending_emit_countdown[b] >= 0:
                                 pending_emit_countdown[b] -= 1
                                 if pending_emit_countdown[b] < 0:
@@ -2162,49 +2213,80 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                                     decision_str = "emit_model_delayed"
                                 else:
                                     decision_str = "emit_pending"
-                            elif emit:
-                                if emit_delay_frames > 0:
-                                    # Defer the actual FOOTER transition by K
-                                    # LISTENING frames so the chunk break aligns
-                                    # with the training-supervised position
-                                    # (compensates for aux-head early bias) and
-                                    # GENERATING starts with K more frames of
-                                    # audio context in the KV cache.
-                                    pending_emit_countdown[b] = emit_delay_frames - 1
-                                    decision_str = "emit_pending"
+                            elif not on_decision_frame and not audio_exhausted_now:
+                                # K-gate: skip head consultation between K-group
+                                # boundaries. Equivalent to forcing emit=False
+                                # without spending the FLOPs on an OOD head call.
+                                decision_str = "skip_non_K"
+                            else:
+                                # On a K-aligned frame or at audio end.
+                                if use_aux and aux_last_hidden is not None:
+                                    # Aux head decision: threshold the sigmoid
+                                    # output. Use the runtime emit_threshold if
+                                    # provided, else default to 0.5.
+                                    h_last = aux_last_hidden[b, -1, :]  # (H,)
+                                    aux_logit_b = self.chunk_classifier_head(h_last)
+                                    aux_p_log = float(torch.sigmoid(aux_logit_b).item())
+                                    thr_eff = emit_threshold if emit_threshold is not None else 0.5
+                                    emit = aux_p_log >= thr_eff
+                                elif emit_threshold is not None:
+                                    # LM head decision with explicit threshold:
+                                    # fire when p(user_footer_first_id) ≥
+                                    # emit_threshold. Lower values catch
+                                    # boundaries where the LM is moderately
+                                    # confident but loses argmax to blank.
+                                    lm_probs_emit = torch.softmax(out.logits[b, -1, :].float(), dim=-1)
+                                    p_ufid_emit = (
+                                        float(lm_probs_emit[user_footer_first_id].item())
+                                        if user_footer_first_id is not None
+                                        else 0.0
+                                    )
+                                    emit = p_ufid_emit >= emit_threshold
                                 else:
+                                    token = self._sample_token(
+                                        out.logits[b : b + 1, -1, :],
+                                        None,
+                                        generation_config,
+                                        **generation_kwargs,
+                                    ).item()
+                                    emit = token == user_footer_first_id
+                                if emit:
+                                    if emit_delay_frames > 0:
+                                        # Defer the actual FOOTER transition by
+                                        # K LISTENING frames so the chunk break
+                                        # aligns with the training-supervised
+                                        # position (compensates for aux-head
+                                        # early bias) and GENERATING starts with
+                                        # K more frames of audio context in the
+                                        # KV cache.
+                                        pending_emit_countdown[b] = emit_delay_frames - 1
+                                        decision_str = "emit_pending"
+                                    else:
+                                        stream_state[b] = FOOTER
+                                        template_pos[b] = 0
+                                        frames_in_segment[b] = 0
+                                        decision_str = "emit_model"
+                                elif audio_exhausted_now and not all_tokens[b]:
+                                    # Audio exhausted in [min, max] window AND
+                                    # no text emitted yet for this stream —
+                                    # force a final FOOTER → GENERATING sweep
+                                    # so we don't produce an empty prediction.
+                                    # Once any chunk has been emitted, the
+                                    # model's "keep listening at end of audio"
+                                    # signal is trustworthy ("I'm done"), so we
+                                    # go to DONE without forcing — avoiding
+                                    # the trailing-hallucination failure mode
+                                    # where forced-emit invents extra text.
                                     stream_state[b] = FOOTER
                                     template_pos[b] = 0
                                     frames_in_segment[b] = 0
-                                    decision_str = "emit_model"
-                            elif (
-                                not audio_emb_buf[b] and audio_sample_idx[b] >= n_samples_list[b] and not all_tokens[b]
-                            ):
-                                # Audio exhausted in [min, max] window AND no
-                                # text emitted yet for this stream — force a
-                                # final FOOTER → GENERATING sweep so we don't
-                                # produce an empty prediction. Once any chunk
-                                # has been emitted, the model's "keep listening
-                                # at end of audio" signal is trustworthy ("I'm
-                                # done"), so we go to DONE without forcing —
-                                # avoiding the trailing-hallucination failure
-                                # mode where forced-emit invents extra text.
-                                stream_state[b] = FOOTER
-                                template_pos[b] = 0
-                                frames_in_segment[b] = 0
-                                decision_str = "emit_forced_audio_end"
-                            elif not audio_emb_buf[b] and audio_sample_idx[b] >= n_samples_list[b]:
-                                # Already emitted at least once and model says
-                                # blank at end-of-audio: trust it and stop.
-                                # Also force-fire any pending delayed emit before
-                                # exiting (no point losing the chunk).
-                                if pending_emit_countdown[b] >= 0:
-                                    stream_state[b] = FOOTER
-                                    template_pos[b] = 0
-                                    frames_in_segment[b] = 0
-                                    pending_emit_countdown[b] = -1
-                                    decision_str = "emit_model_delayed_at_end"
-                                else:
+                                    decision_str = "emit_forced_audio_end"
+                                elif audio_exhausted_now:
+                                    # Already emitted at least once and model
+                                    # says blank at end-of-audio: trust it and
+                                    # stop. (Any pending delayed emit was
+                                    # already handled in the outer pending
+                                    # branch above.)
                                     stream_state[b] = DONE
                                     decision_str = "done_audio_end"
 
@@ -2573,6 +2655,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         use_chunk_classifier_at_inference: bool = False,
         emit_threshold: Optional[float] = None,
         emit_delay_frames: int = 0,
+        dynamic_chunk_step: Optional[int] = None,
         debug_logs: Optional[list] = None,
         disable_emit_for_debug: bool = False,
         alignments_out: Optional[list] = None,
@@ -2644,6 +2727,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                     use_chunk_classifier_at_inference=use_chunk_classifier_at_inference,
                     emit_threshold=emit_threshold,
                     emit_delay_frames=emit_delay_frames,
+                    dynamic_chunk_step=dynamic_chunk_step,
                     debug_logs=debug_logs,
                     disable_emit_for_debug=disable_emit_for_debug,
                     alignments_out=alignments_out,

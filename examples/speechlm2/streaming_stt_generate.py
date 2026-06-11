@@ -118,6 +118,10 @@ class StreamingSTTEvalConfig:
     # sibling JSONL alongside output_manifest. Slows inference; use on
     # small eval sets when debugging boundary-decision behavior.
     emit_delay_frames: int = 0
+    # K-frame grouping for dynamic-chunking read/write decisions. When None,
+    # falls back to model.core_cfg.dynamic_chunk_step (= the value the model
+    # was trained with). Override for ablations only.
+    dynamic_chunk_step: Optional[int] = None
     disable_emit_for_debug: bool = False
     debug_log_audio_frames: bool = False
     use_chunk_classifier_at_inference: bool = False
@@ -209,6 +213,7 @@ def main(cfg: StreamingSTTEvalConfig):
             debug_logs=batch_debug_logs,
             alignments_out=batch_alignments,
             emit_delay_frames=cfg.emit_delay_frames,
+            dynamic_chunk_step=cfg.dynamic_chunk_step,
             disable_emit_for_debug=cfg.disable_emit_for_debug,
             use_chunk_classifier_at_inference=cfg.use_chunk_classifier_at_inference,
             chunk_size_override=cfg.chunk_size_override,

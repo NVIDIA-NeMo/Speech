@@ -53,9 +53,9 @@ except ImportError:
     raise ImportError(
         "Missing required dependency for NFA. "
         "Install NeMo with NFA utilities support:\n"
-        "  pip install 'nemo_toolkit[all]>=2.5.0'\n"
+        "  pip install 'nemo-toolkit[all]>=2.5.0'\n"
         "Or install the latest development version:\n"
-        "  pip install git+https://github.com/NVIDIA/NeMo.git"
+        "  pip install git+https://github.com/NVIDIA-NeMo/NeMo.git"
     )
 
 """

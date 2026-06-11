@@ -28,7 +28,7 @@ populates ``text_config.layer_types`` with all-attention markers (vLLM's
 granite-4.0-micro escape hatch).
 
 Requires NeMo toolkit for the audio encoder:
-    pip install nemo_toolkit[asr]
+    pip install 'nemo-toolkit[asr]'
 """
 
 from collections.abc import Iterable

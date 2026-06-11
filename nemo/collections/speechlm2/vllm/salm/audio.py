@@ -95,7 +95,7 @@ def _load_nemo_perception(perception_cfg: dict) -> nn.Module:
         from nemo.collections.speechlm2.modules import AudioPerceptionModule
     except ImportError as e:
         raise ImportError(
-            "NeMo is required for the audio encoder. " "Install with: pip install nemo_toolkit[asr]"
+            "NeMo is required for the audio encoder. " "Install with: pip install 'nemo-toolkit[asr]'"
         ) from e
 
     cfg = DictConfig(perception_cfg)

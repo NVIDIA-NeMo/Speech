@@ -19,6 +19,12 @@ Fine-tuning is recommended when:
 If you have a large, diverse dataset and want to train from scratch, see :doc:`Configuration Files <./configs>` for full training setup.
 
 
+Working with an agent?
+----------------------
+
+Check out our latest ``/nemo-speech-finetune-asr`` `agent skill <https://github.com/NVIDIA-NeMo/NeMo/tree/main/.claude/skills/nemo-speech-asr-finetune>`_.
+
+
 Fine-Tuning Script
 ------------------
 

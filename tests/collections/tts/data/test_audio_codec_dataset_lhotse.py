@@ -88,16 +88,16 @@ def cutset(tmp_path) -> CutSet:
 def dataset() -> AudioCodecLhotseDataset:
     return AudioCodecLhotseDataset(
         sample_rate=TARGET_SAMPLE_RATE,
-        min_samples_for_sanity=DEFAULT_DURATION * TARGET_SAMPLE_RATE,
+        segment_duration=DEFAULT_DURATION,
     )
 
 
 class TestAudioCodecLhotseDataset:
     @pytest.mark.unit
     def test_init(self):
-        ds = AudioCodecLhotseDataset(sample_rate=22050, min_samples_for_sanity=512)
+        ds = AudioCodecLhotseDataset(sample_rate=22050, segment_duration=1.0)
         assert ds.sample_rate == 22050
-        assert ds.min_samples_for_sanity == 512
+        assert ds.min_samples_for_sanity == 22050 - 5
 
     @pytest.mark.unit
     def test_getitem_returns_expected_keys_and_shapes(self, dataset, cutset):
@@ -137,3 +137,32 @@ class TestAudioCodecLhotseDataset:
             # FFT bin width is TARGET_SAMPLE_RATE / n; allow ~1 bin of tolerance.
             bin_width_hz = TARGET_SAMPLE_RATE / n
             assert abs(peak_freq_hz - cutset[i].target_tone_frequency) <= bin_width_hz
+
+    @pytest.mark.unit
+    def test_getitem_extracts_subset_of_longer_audio(self, tmp_path, dataset, monkeypatch):
+        # A cut longer than segment_duration should yield a segment of exactly segment_samples
+        # that is a contiguous slice taken from inside the longer source signal.
+        # Use the target sample rate as the source rate so no resampling is involved.
+        cut = _make_cut(tmp_path, "long", duration=3.0, sample_rate=TARGET_SAMPLE_RATE, tone_frequency=440.0)
+        cuts = CutSet.from_cuts([cut])
+
+        # Load the full target audio the same way the dataset does (no resampling needed).
+        full = cut.target_audio.load_audio().squeeze(0)
+        segment_samples = int(DEFAULT_DURATION * TARGET_SAMPLE_RATE)
+
+        # Pin the random start so we can compare against the exact source slice.
+        fixed_start = 7000
+        monkeypatch.setattr(
+            "nemo.collections.tts.data.audio_codec_dataset_lhotse.random.randint",
+            lambda low, high: fixed_start,
+        )
+
+        batch = dataset[cuts]
+        segment = batch["audio"][0].numpy()
+
+        assert segment.shape == (segment_samples,)
+        assert batch["audio_lens"][0].item() == segment_samples
+        # Exact match holds only because source rate == target rate (no resampling) and the
+        # dataset currently applies no augmentation. Once we add augmentation it makes
+        # sense to remove this assertion.
+        assert np.allclose(segment, full[fixed_start : fixed_start + segment_samples])

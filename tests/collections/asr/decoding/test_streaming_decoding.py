@@ -141,7 +141,7 @@ def test_label_looping_streaming_batched_state(
                 current_len = torch.full_like(encoder_output_len, fill_value=chunk_size)
                 current_len = torch.minimum(current_len, rest_len)
                 current_len = torch.maximum(current_len, torch.zeros_like(current_len))
-                batched_hyps_chunk, _, state = decoding_computer(
+                batched_hyps_chunk, state = decoding_computer(
                     x=encoder_output[:, t : t + chunk_size],
                     out_len=current_len,
                     prev_batched_state=state,
@@ -151,7 +151,7 @@ def test_label_looping_streaming_batched_state(
                 else:
                     batched_hyps.merge_(batched_hyps_chunk)
             assert batched_hyps is not None
-            all_hyps.extend(batched_hyps_to_hypotheses(batched_hyps, None, batch_size=local_batch_size))
+            all_hyps.extend(batched_hyps_to_hypotheses(batched_hyps, batch_size=local_batch_size))
 
     streaming_transcripts = []
     for hyp in all_hyps:
@@ -295,12 +295,12 @@ def test_label_looping_continuous_streaming_batched_state(
             current_len = torch.full_like(encoder_output_len, fill_value=chunk_size)
             current_len = torch.minimum(current_len, rest_len)
             encoder_frames = encoder_output[expanded_batch_indices, :, frame_indices]
-            batched_hyps, _, state = decoding_computer(
+            batched_hyps, state = decoding_computer(
                 x=encoder_frames,
                 out_len=current_len,
                 prev_batched_state=state,
             )
-            hyps_continuations = batched_hyps_to_hypotheses(batched_hyps, None, batch_size=batch_size)
+            hyps_continuations = batched_hyps_to_hypotheses(batched_hyps, batch_size=batch_size)
             for i, (hyp, hyp_continuation) in enumerate(zip(hyps, hyps_continuations)):
                 if hyp is None:
                     hyps[i] = hyp_continuation
@@ -570,7 +570,7 @@ def test_label_looping_streaming_boosting_with_ref_transcripts(
                 current_len = torch.minimum(current_len, rest_len)
                 current_len = torch.maximum(current_len, torch.zeros_like(current_len))
 
-                batched_hyps_chunk, _, state = decoding_computer(
+                batched_hyps_chunk, state = decoding_computer(
                     x=encoder_output[:, t : t + chunk_size],
                     out_len=current_len,
                     prev_batched_state=state,
@@ -589,7 +589,7 @@ def test_label_looping_streaming_boosting_with_ref_transcripts(
                     request.multi_model_id = None
 
             assert batched_hyps is not None
-            all_hyps.extend(batched_hyps_to_hypotheses(batched_hyps, None, batch_size=local_batch_size))
+            all_hyps.extend(batched_hyps_to_hypotheses(batched_hyps, batch_size=local_batch_size))
 
     streaming_transcripts = []
     for hyp in all_hyps:

@@ -2385,17 +2385,23 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         # Format matches the GT manifest's `alignments` field:
         #   [{"text": "word", "start_time": float_s, "end_time": float_s}, ...]
         if alignments_out is not None:
-            blank_id = self.blank_token_id
+            # Per-chunk separator in all_tokens matches the emission/decoding
+            # convention (see _autoregressive_decode and decode_with_blank):
+            # the blank token when enabled, else EOS. Using blank_id
+            # unconditionally collapses every word into the first chunk for
+            # no-blank models (blank_id == -1 never matches), zeroing out all
+            # word timestamps.
+            sep_id = self.blank_token_id if self.has_blank else self._eos_id
             frame_len_s = float(self.core_cfg.frame_length_in_secs)
             hf_tok = self.tokenizer.tokenizer
             for b in range(B):
-                # Split all_tokens[b] by blank_id into per-chunk token lists.
+                # Split all_tokens[b] by sep_id into per-chunk token lists.
                 # Preserves empty chunks so positional alignment with
                 # chunk_intervals[b] stays correct.
                 chunks_toks: list[list[int]] = []
                 cur: list[int] = []
                 for tid in all_tokens[b]:
-                    if tid == blank_id:
+                    if tid == sep_id:
                         chunks_toks.append(cur)
                         cur = []
                     else:

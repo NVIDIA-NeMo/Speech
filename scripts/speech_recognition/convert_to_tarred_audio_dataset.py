@@ -100,11 +100,16 @@ try:
 
     DALI_INDEX_SCRIPT_AVAILABLE = True
 except (ImportError, ModuleNotFoundError, FileNotFoundError):
+    dali_index = None
     DALI_INDEX_SCRIPT_AVAILABLE = False
 
 
 def is_s3_path(path: Optional[str]) -> bool:
     return path is not None and str(path).startswith("s3://")
+
+
+def dali_index_available() -> bool:
+    return DALI_INDEX_SCRIPT_AVAILABLE and dali_index is not None and dali_index.INDEX_CREATOR_AVAILABLE
 
 
 def _is_not_found_error(exc: Exception) -> bool:
@@ -340,6 +345,9 @@ class ASRTarredDatasetBuilder:
         if self.output_target is not None:
             return self.output_target.display_path(local_path)
         return local_path
+
+    def _keep_local_tar_for_index(self) -> bool:
+        return self.output_target is not None and self.output_target.is_s3 and dali_index_available()
 
     def create_new_dataset(
         self,
@@ -1113,7 +1121,7 @@ class ASRTarredDatasetBuilder:
 
         if write_tar:
             tar.close()
-            self._upload_output_file(tar_filepath, remove_after=True)
+            self._upload_output_file(tar_filepath, remove_after=not self._keep_local_tar_for_index())
         return new_entries
 
     @classmethod
@@ -1270,12 +1278,15 @@ def create_tar_datasets(
             dry_run=dry_run,
         )
 
-    if not dry_run and output_target.is_s3:
-        print("Skipping DALI Tarfile Index construction for S3 target_dir.")
-    elif not dry_run and (DALI_INDEX_SCRIPT_AVAILABLE and dali_index.INDEX_CREATOR_AVAILABLE):
-        print("Constructing DALI Tarfile Index - ", target_dir)
+    if not dry_run and dali_index_available():
+        print("Constructing DALI Tarfile Index - ", output_target.target_dir if output_target.is_s3 else target_dir)
         index_config = dali_index.DALITarredIndexConfig(tar_dir=target_dir, workers=workers)
         dali_index.main(index_config)
+        if output_target.is_s3:
+            index_dir = os.path.join(target_dir, "dali_index")
+            for root, _, files in os.walk(index_dir):
+                for filename in sorted(files):
+                    output_target.upload_file(os.path.join(root, filename), remove_after=True)
 
     output_target.cleanup()
 

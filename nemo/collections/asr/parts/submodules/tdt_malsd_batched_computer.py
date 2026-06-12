@@ -345,10 +345,7 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
         float_dtype: torch.dtype,
         multi_biasing_ids_expanded: Optional[torch.Tensor] = None,
     ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
-        """Advance all fusion models (including biasing multi-model) and return lists of (scores, states_candidates).
-
-        Scores are returned with shape [batch_size, beam_size, vocab], with alpha already applied.
-        """
+        """Advance all fusion models; scores have shape [B, beam, vocab] with alpha applied."""
         batch_size = fusion_states_list[0].shape[0] // self.beam_size
         all_scores = []
         all_states_candidates = []
@@ -373,14 +370,7 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
         batch_size: int,
         multi_biasing_ids: Optional[torch.Tensor] = None,
     ) -> Union[float, torch.Tensor]:
-        """Alpha sum for blank LM weighting in ``LM_WEIGHTED_FULL`` mode.
-
-        Regular fusion model alphas are summed as a scalar. Per-stream biasing alpha
-        (``boosting_model_alpha`` from ``BiasingRequestItemConfig``, stored in
-        ``biasing_multi_model.model2alpha``) is added per utterance when biasing is enabled.
-        Biasing fusion scores still have alpha applied in ``advance()``; this value is
-        used only for the blank LM interaction terms in ``topk_fusion_model``.
-        """
+        """Alpha sum for blank LM weighting; per-stream biasing returns [batch_size, 1]."""
         lm_alpha = sum(self.fusion_models_alpha)
         if not self.per_stream_biasing_enabled or multi_biasing_ids is None:
             return lm_alpha

@@ -831,8 +831,8 @@ class BeamBatchedTDTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs)
         return {
             "encoder_output": NeuralType(('B', 'D', 'T'), AcousticEncodedRepresentation()),
             "encoded_lengths": NeuralType(tuple('B'), LengthsType()),
-            "partial_hypotheses": [NeuralType(elements_type=HypothesisType(), optional=True)],
             "multi_biasing_ids": NeuralType(tuple('B'), optional=True),
+            "partial_hypotheses": [NeuralType(elements_type=HypothesisType(), optional=True)],  # must always be last
         }
 
     def __init__(

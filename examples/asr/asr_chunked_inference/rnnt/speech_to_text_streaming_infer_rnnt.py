@@ -266,9 +266,6 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
             cfg.decoding.greedy.preserve_alignments = False
             cfg.decoding.fused_batch_size = -1  # temporarily stop fused batch during inference.
             cfg.decoding.beam.return_best_hypothesis = True  # return and write the best hypothsis only
-            if use_per_stream_biasing:
-                cfg.decoding.greedy.enable_per_stream_biasing = use_per_stream_biasing
-                cfg.decoding.beam.enable_per_stream_biasing = use_per_stream_biasing
             if cfg.confidence:
                 cfg.decoding.greedy.preserve_frame_confidence = True
                 cfg.decoding.confidence_cfg.preserve_frame_confidence = True

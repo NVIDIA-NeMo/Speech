@@ -277,6 +277,7 @@ class BeamRNNTInfer(Typing):
         blank_lm_score_mode: Optional[str] = "no_score",
         pruning_mode: Optional[str] = "early",
         allow_cuda_graphs: bool = False,
+        enable_per_stream_biasing: bool = False,
     ):
         self.decoder = decoder_model
         self.joint = joint_model
@@ -322,6 +323,12 @@ class BeamRNNTInfer(Typing):
             logging.warning(
                 f"""Cuda Graphs are not supported for the decoding strategy {self.search_algorithm}.
                                 Decoding will proceed without Cuda Graphs."""
+            )
+
+        if enable_per_stream_biasing:
+            logging.warning(
+                f"Per-stream biasing is not supported for the decoding strategy {self.search_algorithm}. "
+                "Use `malsd_batch` beam search instead."
             )
 
         strategies = ["default", "tsd", "alsd", "maes", "nsc"]
@@ -1530,8 +1537,8 @@ class BeamBatchedRNNTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs
         return {
             "encoder_output": NeuralType(('B', 'D', 'T'), AcousticEncodedRepresentation()),
             "encoded_lengths": NeuralType(tuple('B'), LengthsType()),
-            "partial_hypotheses": [NeuralType(elements_type=HypothesisType(), optional=True)],
             "multi_biasing_ids": NeuralType(tuple('B'), optional=True),
+            "partial_hypotheses": [NeuralType(elements_type=HypothesisType(), optional=True)],  # must always be last
         }
 
     def __init__(

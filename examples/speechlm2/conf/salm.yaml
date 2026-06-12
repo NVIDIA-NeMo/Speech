@@ -40,28 +40,26 @@ model:
   #   target_modules: ["q_proj", "v_proj"]
 
   perception:
-     target: nemo.collections.speechlm2.modules.perception.AudioPerceptionModule
-     output_dim: 2048
-     modality_adapter:
-       _target_: nemo.collections.speechlm2.modules.perception.IdentityConnector
-       d_model: 1024
-     # Optional Rotary Time Embedding (ROTE): encodes absolute time into the encoder output
-     # features (at the modality-adapter entrance). Omit this block to disable (default).
-     # rote:
-     #   _target_: nemo.collections.speechlm2.modules.rote.RotaryTimeEmbedding
-     #   dim: 1024             # must match the encoder output feature dim
-     #   rotary_fraction: 0.2  # Audio Flamingo Next default value
-     #   max_time: null        # OmniVinci default (None): raw seconds, length-agnostic.
-     #                         #   Set to a duration in seconds to enable OmniVinci normalization
-     #                         #   (alias-free phase over [0, max_time]); theta then derives as max_time/2π.
-     #   theta: 1200.0         # Audio Flamingo Next default value
-     
-     # spec_augment:
-     #   _target_: nemo.collections.asr.modules.SpectrogramAugmentation
-     #   freq_masks: 2 # set to zero to disable it
-     #   time_masks: 10 # set to zero to disable it
-     #   freq_width: 27
-     #   time_width: 5  # 5 frames = 50ms
+    target: nemo.collections.speechlm2.modules.perception.AudioPerceptionModule
+    output_dim: 2048
+    modality_adapter:
+      _target_: nemo.collections.speechlm2.modules.perception.IdentityConnector
+      d_model: 1024
+    
+    # Optional Rotary Time Embedding (RoTE, https://arxiv.org/abs/2410.12109): encodes absolute time into the encoder output
+    # features (at the modality-adapter entrance). Omit this block to disable (default).
+    # rote:
+    #   _target_: nemo.collections.speechlm2.modules.rote.RotaryTimeEmbedding
+    #   dim: 1024             # must match the encoder output feature dim (must be even)
+    #   theta: 1200.0         # base of the geometric frequency bank
+    #   rotary_fraction: 0.2  # fraction of dim to rotate
+    
+    # spec_augment:
+    #   _target_: nemo.collections.asr.modules.SpectrogramAugmentation
+    #   freq_masks: 2 # set to zero to disable it
+    #   time_masks: 10 # set to zero to disable it
+    #   freq_width: 27
+    #   time_width: 5  # 5 frames = 50ms
 
   optimizer:
     _target_: torch.optim.AdamW

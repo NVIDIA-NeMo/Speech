@@ -134,7 +134,7 @@ def _vllm_teacher_forced_logits(
     """
     num_tokens = dec_hidden.shape[0]
     n = cp.num_codebooks
-    lt_hidden = cp._buf_inputs.shape[-1]
+    lt_hidden = cp.lt_hidden
     buf = torch.zeros(num_tokens, n, lt_hidden, dtype=dec_hidden.dtype, device=dec_hidden.device)
     buf[:, 0, :] = cp.local_transformer_in_projection(dec_hidden)
     for k in range(n - 1):
@@ -154,8 +154,14 @@ def _copy_nemo_into_vllm(nemo: NeMoLocalTransformerStack, cp: EasyMagpieCodePred
     missing = []
     for name, param in cp.named_parameters():
         if name in nemo_sd:
-            assert param.shape == nemo_sd[name].shape, f"shape mismatch {name}"
-            param.data.copy_(nemo_sd[name].to(param.dtype))
+            src = nemo_sd[name]
+            # The FFN ships as kernel-1 Conv1d (``[out, in, 1]``) in NeMo but is a
+            # plain ``nn.Linear`` (``[out, in]``) here; squeeze the conv dim to
+            # match (mirrors ``EasyMagpieTTS.load_weights``).
+            if src.ndim == param.ndim + 1 and src.shape[-1] == 1:
+                src = src.squeeze(-1)
+            assert param.shape == src.shape, f"shape mismatch {name}"
+            param.data.copy_(src.to(param.dtype))
         else:
             missing.append(name)
     assert not missing, f"vLLM params with no NeMo counterpart: {missing}"

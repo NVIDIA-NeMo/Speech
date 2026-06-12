@@ -43,51 +43,15 @@ from vllm.config import VllmConfig
 from easymagpie_vllm_omni.config import EasyMagpieOmniArch
 
 
-def _gumbel_argmax(logits: torch.Tensor) -> torch.Tensor:
-    """Gumbel-max categorical draw — CUDA-graph safe.
+# Default top-k width for audio-codebook sampling. Because ``torch.topk``'s ``k``
+# shapes tensors inside the captured graph, this becomes a capture-time constant.
+_DEFAULT_TOP_K = 80
 
-    Equivalent to sampling from ``softmax(logits)`` but uses only
-    ``uniform_`` + ``log`` + ``argmax`` (all legal inside a captured graph)
-    and degrades gracefully on degenerate warmup logits instead of triggering
-    a device-side assert the way ``multinomial`` does.
-    """
-    u = torch.empty_like(logits).uniform_(1e-20, 1.0 - 1e-20)
-    return (logits - torch.log(-torch.log(u))).argmax(dim=-1)
-
-
-def sample_codebook(
-    logits: torch.Tensor,
-    *,
-    temperature: float,
-    top_k: int,
-    forbidden_mask: torch.Tensor | None,
-) -> torch.Tensor:
-    """Sample one codebook's tokens from logits (CUDA-graph safe).
-
-    Args:
-        logits: ``[num_tokens, vocab]`` raw codebook logits.
-        temperature: Sampling temperature; ``<= 0`` falls back to argmax.
-        top_k: Top-k truncation width (``<= 0`` disables truncation).
-        forbidden_mask: Optional ``[vocab]`` bool mask; ``True`` entries are
-            set to ``-inf`` before sampling (reserved/special tokens).
-
-    Returns:
-        ``[num_tokens]`` int64 sampled token ids.
-    """
-    if forbidden_mask is not None:
-        logits = logits.masked_fill(forbidden_mask, float("-inf"))
-
-    if temperature <= 0.0:
-        return logits.argmax(dim=-1)
-
-    logits = logits / temperature
-
-    if top_k is not None and top_k > 0:
-        vals, idxs = torch.topk(logits, k=min(top_k, logits.size(-1)), dim=-1)
-        sampled_in_k = _gumbel_argmax(vals)
-        return idxs.gather(-1, sampled_in_k.unsqueeze(-1)).squeeze(-1)
-
-    return _gumbel_argmax(logits)
+# Minimum sampling temperature used inside the compiled graph. The old eager
+# sampler special-cased ``temperature <= 0`` as exact argmax, but a
+# data-dependent branch is illegal inside a captured graph, so we clamp to a tiny
+# value (near-argmax) and always take the Gumbel-top-k path.
+_MIN_SAMPLING_TEMPERATURE = 1e-4
 
 
 class EasyMagpieLTSelfAttention(nn.Module):
@@ -185,21 +149,14 @@ class EasyMagpieLTLayer(nn.Module):
         return x
 
 
-# NOTE: ``dynamic_arg_dims`` is passed explicitly rather than relying on
-# vLLM's annotation-based inference. This file uses
-# ``from __future__ import annotations`` (PEP 563), so ``forward``'s
-# annotations are stored as strings (``"torch.Tensor"``) and vLLM's
-# ``v.annotation in [torch.Tensor, ...]`` check would never match, raising
-# "No dynamic dimensions found...". ``inputs_embeds`` is
-# ``[num_tokens, num_codebooks, hidden]`` -> dim 0 (num_tokens) is dynamic.
-@support_torch_compile(dynamic_arg_dims={"inputs_embeds": 0})
 class EasyMagpieLocalTransformer(nn.Module):
-    """Compiled causal transformer stack with learnable positional embeddings.
+    """Causal transformer stack with learnable positional embeddings.
 
-    Decorated with ``@support_torch_compile`` so vLLM captures a single CUDA
-    graph for the fixed ``(num_tokens, num_stacked_codebooks, d_model)`` input
-    shape. Holds learnable ``position_embeddings``, the stacked ``layers.{i}.*``
-    and a no-op ``norm_out``.
+    Plain (uncompiled) module: it is invoked from inside
+    :class:`EasyMagpieCodeLoop`'s compiled forward, so it gets *inlined* into
+    that single captured graph rather than being compiled / replayed on its own.
+    Holds learnable ``position_embeddings``, the stacked ``layers.{i}.*`` and a
+    no-op ``norm_out`` (names match the training checkpoint).
     """
 
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = "") -> None:
@@ -230,6 +187,95 @@ class EasyMagpieLocalTransformer(nn.Module):
         for layer in self.layers:
             x = layer(x)
         return self.norm_out(x)
+
+
+# NOTE: ``dynamic_arg_dims`` is passed explicitly rather than relying on vLLM's
+# annotation-based inference. This file uses ``from __future__ import
+# annotations`` (PEP 563), so ``forward``'s annotations are stored as strings
+# (``"torch.Tensor"``) and vLLM's ``v.annotation in [torch.Tensor, ...]`` check
+# would never match, raising "No dynamic dimensions found...". Both ``dec_hidden``
+# and ``gumbel_noise`` are ``[num_tokens, ...]`` -> dim 0 (num_tokens) is dynamic.
+@support_torch_compile(dynamic_arg_dims={"dec_hidden": 0, "gumbel_noise": 0})
+class EasyMagpieCodeLoop(nn.Module):
+    """Compiled single-graph autoregressive codebook loop.
+
+    Runs the *entire* per-frame loop — transformer stack, per-codebook projection
+    heads, and (graph-safe) sampling — under one ``@support_torch_compile`` graph,
+    so vLLM captures a single CUDA graph replayed once per frame instead of
+    replaying the transformer ``N`` times with eager projection / sampling in
+    between. (Total FLOPs are unchanged — this removes per-step Python and
+    kernel-launch overhead, which dominates at low concurrency.)
+
+    It owns **no parameters**: the projection / embedding / out-projection modules
+    and the forbidden mask live on the parent :class:`EasyMagpieCodePredictor` (so
+    the checkpoint still loads 1:1) and are reached through a non-registered
+    reference set by :meth:`bind_predictor`.
+
+    Sampling is kept graph-safe by construction:
+
+    * the Gumbel noise is drawn eagerly *outside* the graph and injected as
+      ``gumbel_noise`` — running ``uniform_`` inside the capture would otherwise
+      reuse the captured random numbers on every replay;
+    * ``temperature`` is a runtime tensor, so per-request temperature works
+      without recompiling;
+    * ``top_k`` shapes the ``topk`` / noise tensors and is therefore a
+      **capture-time constant** (per-request ``top_k`` changes are not honored
+      once the graph is captured).
+    """
+
+    def __init__(self, *, vllm_config: VllmConfig, prefix: str = "") -> None:
+        super().__init__()
+        arch = EasyMagpieOmniArch.from_hf_config(vllm_config.model_config.hf_config)
+        self.num_codebooks = arch.num_stacked_codebooks
+        self.lt_hidden = arch.local_transformer_hidden_dim
+        self.top_k = min(_DEFAULT_TOP_K, arch.num_all_tokens_per_codebook)
+        # Set by :meth:`bind_predictor`; held in a tuple so nn.Module does not
+        # register the parent as a submodule (which would duplicate params).
+        self._predictor_ref: tuple = ()
+
+    def bind_predictor(self, predictor: "EasyMagpieCodePredictor") -> None:
+        self._predictor_ref = (predictor,)
+        self.top_k = predictor._sample_top_k
+
+    def forward(
+        self,
+        dec_hidden: torch.Tensor,
+        gumbel_noise: torch.Tensor,
+        temperature: torch.Tensor,
+    ) -> torch.Tensor:
+        """Sample all ``num_codebooks`` codes for every frame in one graph.
+
+        Args:
+            dec_hidden: ``[num_tokens, embedding_dim]`` backbone hidden state.
+            gumbel_noise: ``[num_tokens, num_codebooks, top_k]`` pre-drawn
+                Gumbel noise (``-log(-log(u))``), one slice per codebook.
+            temperature: ``[1]`` sampling temperature (already clamped > 0).
+
+        Returns:
+            ``[num_tokens, num_codebooks]`` int64 sampled codes.
+        """
+        cp = self._predictor_ref[0]
+        num_tokens = dec_hidden.shape[0]
+        n = self.num_codebooks
+
+        buf = dec_hidden.new_zeros(num_tokens, n, self.lt_hidden)
+        buf[:, 0, :] = cp.local_transformer_in_projection(dec_hidden)
+
+        forbidden = cp.forbidden_mask
+        codes: list[torch.Tensor] = []
+        for k in range(n):
+            hidden = cp.local_transformer(buf)
+            row = cp.local_transformer_audio_out_projection(hidden[:, k, :])
+            logits = cp.local_transformer_out_projections[k](row)
+            logits = logits.masked_fill(forbidden, float("-inf")) / temperature
+            vals, idxs = torch.topk(logits, self.top_k, dim=-1)
+            picked = (vals + gumbel_noise[:, k, :]).argmax(dim=-1, keepdim=True)
+            code_k = idxs.gather(-1, picked).squeeze(-1)
+            codes.append(code_k)
+            if k + 1 < n:
+                emb = cp.audio_in_projection(cp.audio_embeddings[k](code_k))
+                buf[:, k + 1, :] = cp.local_transformer_in_projection(emb)
+        return torch.stack(codes, dim=1)
 
 
 class EasyMagpieCodePredictor(nn.Module):
@@ -304,15 +350,30 @@ class EasyMagpieCodePredictor(nn.Module):
             persistent=False,
         )
 
-        # Sampling knobs (overridable from the outer model / request).
+        # Sampling knobs (overridable from the outer model / request). ``top_k``
+        # is captured into the compiled loop graph (see ``EasyMagpieCodeLoop``),
+        # so per-request ``top_k`` changes are not honored once captured;
+        # per-request ``temperature`` is, since it is fed as a runtime tensor.
         self.temperature: float = 0.7
-        self.top_k: int = 80
+        self.top_k: int = _DEFAULT_TOP_K
+        self.lt_hidden = lt_hidden
+        self._sample_top_k = min(self.top_k, self.num_tokens_per_codebook)
+
+        # Compiled single-graph autoregressive loop (owns no params; reaches the
+        # projection heads / embeddings / mask on ``self`` via a bound reference).
+        self._code_loop = EasyMagpieCodeLoop(vllm_config=vllm_config, prefix=f"{prefix}.code_loop")
+        self._code_loop.bind_predictor(self)
 
         # ── Persistent address-stable scratch buffers ──────────────────
+        # (created on the CUDA default device that vLLM sets during model init).
         max_num_tokens = vllm_config.scheduler_config.max_num_batched_tokens
         dtype = vllm_config.model_config.dtype
-        self._buf_inputs = torch.zeros(max_num_tokens, self.num_codebooks, lt_hidden, dtype=dtype)
-        self._out_codes = torch.zeros(max_num_tokens, self.num_codebooks, dtype=torch.long)
+        # Stable-address input for the captured loop graph.
+        self._dec_hidden_buf = torch.zeros(max_num_tokens, self.embedding_dim, dtype=dtype)
+        # Gumbel noise drawn eagerly each frame and injected into the graph; fp32
+        # so the small ``-log(-log(u))`` values don't underflow in fp16.
+        self._gumbel_buf = torch.zeros(max_num_tokens, self.num_codebooks, self._sample_top_k, dtype=torch.float32)
+        self._temperature_buf = torch.zeros(1, dtype=torch.float32)
 
     @torch.no_grad()
     def init_forbidden_mask(self) -> None:
@@ -352,13 +413,14 @@ class EasyMagpieCodePredictor(nn.Module):
         acc = acc / self.num_codebooks
         return self.audio_in_projection(acc)
 
-    def forward(self, inputs_embeds: torch.Tensor) -> torch.Tensor:
-        """Run the compiled local transformer over the input buffer."""
-        return self.local_transformer(inputs_embeds)
-
     @torch.no_grad()
     def generate_codes(self, dec_hidden: torch.Tensor) -> torch.Tensor:
         """Autoregressively sample all ``C * S`` codebooks for each frame.
+
+        Draws this frame's Gumbel noise eagerly into a stable buffer (fresh
+        randomness per frame, outside the captured graph) and stages the inputs
+        at fixed addresses, then runs the whole loop as a single captured graph
+        via :class:`EasyMagpieCodeLoop`.
 
         Args:
             dec_hidden: ``[num_tokens, hidden]`` backbone hidden state (one row
@@ -368,31 +430,13 @@ class EasyMagpieCodePredictor(nn.Module):
             ``[num_tokens, num_codebooks]`` int64 sampled codes.
         """
         num_tokens = dec_hidden.shape[0]
-        buf = self._buf_inputs[:num_tokens]
-        out = self._out_codes[:num_tokens]
-        buf.zero_()
+        in_buf = self._dec_hidden_buf[:num_tokens]
+        in_buf.copy_(dec_hidden)
 
-        # Row 0: projected backbone hidden state (the AR "prompt").
-        buf[:, 0, :] = self.local_transformer_in_projection(dec_hidden)
+        # ``-log(-log(u))`` Gumbel noise, computed in place in fp32.
+        noise = self._gumbel_buf[:num_tokens]
+        noise.uniform_(1e-20, 1.0 - 1e-20)
+        noise.log_().neg_().log_().neg_()
 
-        # Always pass the mask unconditionally. An all-False mask makes
-        # ``masked_fill`` a no-op, so there's no need to guard with
-        # ``forbidden_mask.any()`` — and that guard is a data-dependent
-        # host sync that is illegal during CUDA-graph capture.
-        forbidden = self.forbidden_mask
-        for k in range(self.num_codebooks):
-            hidden = self(buf)  # compiled transformer over the fixed buffer
-            row = self.local_transformer_audio_out_projection(hidden[:, k, :])
-            logits = self.local_transformer_out_projections[k](row)
-            code_k = sample_codebook(
-                logits,
-                temperature=self.temperature,
-                top_k=self.top_k,
-                forbidden_mask=forbidden,
-            )
-            out[:, k] = code_k
-            if k + 1 < self.num_codebooks:
-                emb = self.audio_in_projection(self.audio_embeddings[k](code_k))
-                buf[:, k + 1, :] = self.local_transformer_in_projection(emb)
-
-        return out[:num_tokens]
+        self._temperature_buf.fill_(max(float(self.temperature), _MIN_SAMPLING_TEMPERATURE))
+        return self._code_loop(in_buf, noise, self._temperature_buf)

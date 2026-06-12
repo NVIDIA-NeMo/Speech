@@ -1021,6 +1021,11 @@ class EasyMagpieTTSForConditionalGeneration(
             if target is None:
                 logger.warning("EasyMagpieTTS: no parameter for checkpoint key %s -> %s", name, mapped)
                 continue
+            # The local-transformer FFN ships as kernel-1 ``Conv1d`` weights
+            # (``[out, in, 1]``) but now lives as ``nn.Linear`` (``[out, in]``).
+            # Squeeze the trailing singleton conv dim so the dense layer loads 1:1.
+            if tensor.ndim == target.ndim + 1 and tensor.shape[-1] == 1:
+                tensor = tensor.squeeze(-1)
             if target.shape != tensor.shape:
                 raise RuntimeError(
                     f"EasyMagpieTTS weight shape mismatch at {mapped!r}: "

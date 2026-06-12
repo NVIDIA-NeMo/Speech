@@ -127,32 +127,39 @@ class EasyMagpieLTSelfAttention(nn.Module):
 class EasyMagpieLTFeedForward(nn.Module):
     """Positionwise feed-forward network.
 
-    Uses ``Conv1d(kernel_size=1)`` layers named ``proj.conv`` and ``o_net.conv``
-    (no bias). A kernel-1 conv is a plain linear over the channel dim, applied
-    with a single transpose and GELU(tanh) in between. The ``Conv1d`` submodule
-    names match the training checkpoint so weights load 1:1.
+    A ``Conv1d(kernel_size=1)`` over the channel dim is mathematically identical
+    to an ``nn.Linear`` applied on the last dim, but the conv form forces a
+    ``[b, t, c] -> [b, c, t]`` transpose on the way in and out (which torch
+    cannot fuse away and which showed up as ``*_transpose_*`` /
+    ``*_convolution_*`` triton kernels in profiling). We therefore use plain
+    bias-free ``nn.Linear`` layers and operate directly on the ``[b, t, c]``
+    layout. The ``conv`` submodule attribute is kept so the kernel-1 conv
+    weights from the training checkpoint (shape ``[out, in, 1]``) still map 1:1;
+    :meth:`EasyMagpieTTS.load_weights` squeezes the trailing singleton dim.
     """
 
     def __init__(self, d_model: int, d_ffn: int) -> None:
         super().__init__()
-        self.proj = _Conv1dWrapper(d_model, d_ffn)
-        self.o_net = _Conv1dWrapper(d_ffn, d_model)
+        self.proj = _LinearWrapper(d_model, d_ffn)
+        self.o_net = _LinearWrapper(d_ffn, d_model)
         self.act = nn.GELU(approximate="tanh")
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: [b, t, c] -> conv expects [b, c, t]
-        h = x.transpose(1, 2)
-        h = self.act(self.proj(h))
-        h = self.o_net(h)
-        return h.transpose(1, 2)
+        # x: [b, t, c]; no transpose needed for a kernel-1 conv == linear.
+        return self.o_net(self.act(self.proj(x)))
 
 
-class _Conv1dWrapper(nn.Module):
-    """Holds a kernel-1 ``Conv1d`` under attribute name ``conv`` (no bias)."""
+class _LinearWrapper(nn.Module):
+    """Holds a bias-free ``nn.Linear`` under attribute name ``conv``.
+
+    The attribute is named ``conv`` purely so the parameter path matches the
+    training checkpoint's kernel-1 ``Conv1d`` (``...proj.conv.weight``); the math
+    is a plain dense projection on the channel dim.
+    """
 
     def __init__(self, in_ch: int, out_ch: int) -> None:
         super().__init__()
-        self.conv = nn.Conv1d(in_ch, out_ch, kernel_size=1, bias=False)
+        self.conv = nn.Linear(in_ch, out_ch, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.conv(x)
@@ -206,6 +213,11 @@ class EasyMagpieLocalTransformer(nn.Module):
         max_len = arch.num_stacked_codebooks + 2
 
         self.position_embeddings = nn.Embedding(max_len, d_model)
+        # Cache a constant ``arange`` so we don't re-materialize it (and re-run an
+        # embedding gather) on every autoregressive step. The positional table is
+        # tiny and fixed; gathering once per forward over a cached index avoids
+        # the ``arange + embedding`` triton kernel seen in profiling.
+        self.register_buffer("_positions", torch.arange(max_len), persistent=False)
         self.layers = nn.ModuleList(
             [EasyMagpieLTLayer(d_model, d_ffn, n_heads) for _ in range(n_layers)]
         )
@@ -213,8 +225,8 @@ class EasyMagpieLocalTransformer(nn.Module):
 
     def forward(self, inputs_embeds: torch.Tensor) -> torch.Tensor:
         seq_len = inputs_embeds.shape[1]
-        positions = torch.arange(seq_len, device=inputs_embeds.device)
-        x = inputs_embeds + self.position_embeddings(positions).unsqueeze(0)
+        pos_emb = self.position_embeddings(self._positions[:seq_len])
+        x = inputs_embeds + pos_emb.unsqueeze(0)
         for layer in self.layers:
             x = layer(x)
         return self.norm_out(x)

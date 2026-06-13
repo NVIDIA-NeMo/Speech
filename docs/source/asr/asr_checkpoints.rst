@@ -7,6 +7,8 @@ ASR Model Checkpoints
 This page lists all supported ASR model checkpoints released by NVIDIA NeMo.
 Benchmark scores for each model can be found on its `HuggingFace model card <https://huggingface.co/nvidia>`__.
 
+For community fine-tunes built on these checkpoints, see :doc:`Featured Community Checkpoints <./featured_community_checkpoints>`.
+
 Glossary
 --------
 
@@ -170,10 +172,10 @@ Cache-aware models for real-time / low-latency inference.
      - Capabilities
      - Language
      - Size
-   * - `nemotron-speech-streaming-en-0.6b <https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b>`__
+   * - `nemotron-3.5-asr-streaming-0.6b <https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b>`__
      - Hybrid
      - ASR, streaming
-     - English
+     - 40 languages
      - 0.6B
    * - `multitalker-parakeet-streaming-0.6b-v1 <https://huggingface.co/nvidia/multitalker-parakeet-streaming-0.6b-v1>`__
      - RNN-T

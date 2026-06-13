@@ -39,7 +39,7 @@ class SeparateGraphsLabelLooping:
 
 @dataclass
 class BatchedLabelLoopingState:
-    """Decoding state to pass between invocations"""
+    """Decoding state to pass between invocations."""
 
     predictor_states: Any
     predictor_outputs: torch.Tensor
@@ -47,6 +47,24 @@ class BatchedLabelLoopingState:
     decoded_lengths: torch.Tensor
     fusion_states_list: list[torch.Tensor] = field(default_factory=list)
     time_jumps: torch.Tensor | None = None
+
+
+@dataclass
+class BatchedBeamState(BatchedLabelLoopingState):
+    """Decoding state passed between invocations of batched beam-search decoders.
+
+    Inherits predictor/fusion carry-over from :class:`BatchedLabelLoopingState`.
+    For beam search, ``labels`` holds per-beam last labels with shape
+    ``[batch_size, beam_size]``. The optional cross-chunk per-beam fields below are
+    populated after each chunk and used to seed :class:`~nemo.collections.asr.parts.utils.batched_beam_decoding_utils.BatchedBeamHyps`
+    on the next chunk.
+    """
+
+    scores: Optional[torch.Tensor] = None
+    transcript_hash: Optional[torch.Tensor] = None
+    current_lengths_nb: Optional[torch.Tensor] = None
+    last_timestamp_lasts: Optional[torch.Tensor] = None
+    transcript_prefix_hash: Optional[torch.Tensor] = None
 
 
 @dataclass

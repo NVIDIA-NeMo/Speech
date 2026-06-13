@@ -15,6 +15,7 @@
 
 from nemo.collections.asr.parts.submodules.transducer_decoding.batched_hyps import BatchedHyps
 from nemo.collections.asr.parts.submodules.transducer_decoding.label_looping_base import (
+    BatchedBeamState,
     BatchedLabelLoopingState,
     GreedyBatchedLabelLoopingComputerBase,
 )
@@ -30,5 +31,6 @@ __all__ = [
     "GreedyBatchedRNNTLabelLoopingComputer",
     "GreedyBatchedTDTLabelLoopingComputer",
     "BatchedLabelLoopingState",
+    "BatchedBeamState",
     "BatchedHyps",
 ]

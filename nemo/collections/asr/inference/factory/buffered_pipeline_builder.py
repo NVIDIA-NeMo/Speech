@@ -62,6 +62,7 @@ class BufferedPipelineBuilder(BaseBuilder):
         base_cfg_structured = OmegaConf.structured(RNNTDecodingConfig)
         base_cfg = OmegaConf.create(OmegaConf.to_container(base_cfg_structured))
         decoding_cfg = OmegaConf.merge(base_cfg, cfg.asr.decoding)
+        cls._apply_confidence_cfg(cfg, decoding_cfg)
         return decoding_cfg
 
     @classmethod

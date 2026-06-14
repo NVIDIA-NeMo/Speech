@@ -56,6 +56,10 @@ class GreedyDecoder:
         Returns:
             bool: True if the token is the start of a word, False otherwise
         """
+        # Tokens outside the base vocabulary (blank or model-specific special tokens, e.g. prompt
+        # tokens that some models can emit) are not word starts.
+        if token_id < 0 or token_id >= len(self.is_start_tokens):
+            return False
         return self.is_start_tokens[token_id]
 
     def is_token_silent(self, token_id: int) -> bool:

@@ -44,6 +44,19 @@ class CacheAwareStreamingState(StreamingState):
         self.label_buffer_size = 0
         self.offset = 0
 
+        # Number of label-frames shifted into the buffer so far. The rightmost buffer slot
+        # (index label_buffer_size - 1) maps to the global frame `label_buffer_global_end - 1`.
+        self.label_buffer_global_end = 0
+        # Global frame index from which to start searching for the next EoU. Advanced past a
+        # detected EoU so that the same silence is not re-detected as the buffer slides.
+        self.eou_search_start_global = 0
+
+        # Tokens that survive past a detected EoU (the start of the next utterance). They are
+        # temporarily stashed here while the finalized portion is decoded, then restored.
+        self._carryover_tokens = []
+        self._carryover_timesteps = []
+        self._carryover_confidences = []
+
     def set_offset(self, offset: int) -> None:
         """
         Set the offset
@@ -64,13 +77,15 @@ class CacheAwareStreamingState(StreamingState):
 
     def update_label_buffer(self, labels: list[int]) -> None:
         """
-        Update the label buffer
+        Update the label buffer with the labels of the current chunk and advance the global frame
+        counter that maps buffer positions to global timesteps.
         Args:
             labels: (list[int]) list of labels
         """
         shift = len(labels)
         if shift == 0:
             return
+        self.label_buffer_global_end += shift
         if shift >= len(self.label_buffer):
             self.label_buffer[:] = labels[-len(self.label_buffer) :]
             return
@@ -84,6 +99,68 @@ class CacheAwareStreamingState(StreamingState):
             list[int]: current state of the label buffer
         """
         return self.label_buffer.copy()
+
+    def buffer_local_to_global(self, local_idx: int) -> int:
+        """
+        Convert a label-buffer-local index to a global frame index.
+        Args:
+            local_idx: (int) index within the label buffer
+        Returns:
+            int: corresponding global frame index
+        """
+        return self.label_buffer_global_end - self.label_buffer_size + local_idx
+
+    def get_local_search_start(self) -> int:
+        """
+        Convert the stored global EoU search start into a label-buffer-local index, clamped to the
+        current buffer window.
+        Returns:
+            int: buffer-local index to start searching for the next EoU
+        """
+        left_edge = self.label_buffer_global_end - self.label_buffer_size
+        return max(0, self.eou_search_start_global - left_edge)
+
+    def set_eou_search_start(self, global_frame: int) -> None:
+        """
+        Set the global frame index from which to start searching for the next EoU.
+        Args:
+            global_frame: (int) global frame index
+        """
+        self.eou_search_start_global = global_frame
+
+    def prepare_finalize(self, resume_global_frame: int) -> None:
+        """
+        Split the accumulated tokens at `resume_global_frame`. Tokens before it (including absorbed
+        punctuation/language tokens) stay in the state to be finalized; tokens at or after it are the
+        next utterance and are stashed as carryover to be restored after the finalized portion is
+        decoded and cleaned up.
+        Args:
+            resume_global_frame: (int) global frame index marking the start of the next utterance
+        """
+        k = 0
+        n = len(self.timesteps)
+        while k < n and self.timesteps[k] < resume_global_frame:
+            k += 1
+
+        self._carryover_tokens = self.tokens[k:]
+        self._carryover_timesteps = self.timesteps[k:]
+        self._carryover_confidences = self.confidences[k:]
+
+        self.tokens = self.tokens[:k]
+        self.timesteps = self.timesteps[:k]
+        self.confidences = self.confidences[:k]
+
+    def restore_carryover(self) -> None:
+        """
+        Restore the tokens that survived past the EoU as the start of the next utterance. Must be
+        called after `cleanup_after_eou` (which clears the finalized tokens).
+        """
+        self.tokens = self._carryover_tokens
+        self.timesteps = self._carryover_timesteps
+        self.confidences = self._carryover_confidences
+        self._carryover_tokens = []
+        self._carryover_timesteps = []
+        self._carryover_confidences = []
 
     def update_state(self, completed_output: dict, eou_detected: bool) -> None:
         """

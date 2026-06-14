@@ -19,6 +19,161 @@ from nemo.collections.asr.inference.streaming.endpointing.greedy.greedy_ctc_endp
 from nemo.collections.asr.inference.streaming.endpointing.greedy.greedy_rnnt_endpointing import RNNTGreedyEndpointing
 from nemo.collections.asr.inference.utils.endpointing_utils import millisecond_to_frames
 
+# Vocabulary used by the detect_eou tests below.
+# Indices: 0="▁hello" (start of word), 1="world" (mid-word), 2="▁the" (start of word),
+#          3="." (punctuation/absorb), 4="," (punctuation/absorb). blank_id = 5.
+EOU_VOCAB = ["▁hello", "world", "▁the", ".", ","]
+EOU_BLANK = len(EOU_VOCAB)
+EOU_ABSORB_IDS = {3, 4}
+ENDPOINTING_CLASSES = [CTCGreedyEndpointing, RNNTGreedyEndpointing]
+
+
+def _make_detect_eou_endpointer(endpointing_cls, ms_per_timestep=20, stop_history_eou=80):
+    """Build an endpointer with the shared EoU vocabulary and absorb token ids."""
+    return endpointing_cls(
+        vocabulary=EOU_VOCAB,
+        ms_per_timestep=ms_per_timestep,
+        stop_history_eou=stop_history_eou,
+        absorb_token_ids=EOU_ABSORB_IDS,
+    )
+
+
+class TestDetectEou:
+    """Tests for the full-buffer EoU detection (GreedyEndpointing.detect_eou)."""
+
+    @pytest.mark.unit
+    def test_trailing_silence(self):
+        # stop_history_eou=80ms, ms_per_timestep=20ms -> threshold = 4 frames.
+        # silence run [2..6] has length 5 > 4 and reaches the buffer end.
+        b = EOU_BLANK
+        emissions = [0, 1, b, b, b, b, b]
+        for cls in ENDPOINTING_CLASSES:
+            ep = _make_detect_eou_endpointer(cls)
+            eou, center, resume = ep.detect_eou_in_buffer(emissions)
+            assert eou is True
+            assert center == 2 + 4 // 2  # silence_start + stop_history // 2
+            assert resume == len(emissions)
+
+    @pytest.mark.unit
+    def test_start_of_word_after_silence_is_valid(self):
+        b = EOU_BLANK
+        # token, 5 blanks (idx 1..5), then "▁the" (start of word) at idx 6.
+        emissions = [0, b, b, b, b, b, 2, 1]
+        for cls in ENDPOINTING_CLASSES:
+            ep = _make_detect_eou_endpointer(cls)
+            eou, center, resume = ep.detect_eou_in_buffer(emissions)
+            assert eou is True
+            assert center == 1 + 4 // 2
+            assert resume == 6
+
+    @pytest.mark.unit
+    def test_mid_word_after_silence_is_rejected(self):
+        b = EOU_BLANK
+        # "world" (mid-word continuation) right after the silence -> not a valid EoU.
+        emissions = [0, b, b, b, b, b, 1]
+        for cls in ENDPOINTING_CLASSES:
+            ep = _make_detect_eou_endpointer(cls)
+            assert ep.detect_eou_in_buffer(emissions) == (False, -1, -1)
+
+    @pytest.mark.unit
+    def test_punctuation_after_silence_is_absorbed(self):
+        b = EOU_BLANK
+        # "." after the silence is absorbed into the pre-EoU side; resume points past it
+        # to the next start-of-word token "▁the".
+        emissions = [0, b, b, b, b, b, 3, 2, 1]
+        for cls in ENDPOINTING_CLASSES:
+            ep = _make_detect_eou_endpointer(cls)
+            eou, center, resume = ep.detect_eou_in_buffer(emissions)
+            assert eou is True
+            assert center == 1 + 4 // 2
+            assert resume == 7  # punctuation at idx 6 stays with the finalized text
+
+    @pytest.mark.unit
+    def test_punctuation_then_mid_word_is_rejected(self):
+        b = EOU_BLANK
+        emissions = [0, b, b, b, b, b, 3, 1]
+        for cls in ENDPOINTING_CLASSES:
+            ep = _make_detect_eou_endpointer(cls)
+            assert ep.detect_eou_in_buffer(emissions) == (False, -1, -1)
+
+    @pytest.mark.unit
+    def test_only_punctuation_after_silence_to_end(self):
+        b = EOU_BLANK
+        emissions = [0, b, b, b, b, b, 3]
+        for cls in ENDPOINTING_CLASSES:
+            ep = _make_detect_eou_endpointer(cls)
+            eou, center, resume = ep.detect_eou_in_buffer(emissions)
+            assert eou is True
+            assert center == 1 + 4 // 2
+            assert resume == len(emissions)
+
+    @pytest.mark.unit
+    def test_silence_not_exceeding_threshold(self):
+        b = EOU_BLANK
+        # Exactly 4 silent frames -> not strictly greater than threshold (4) -> no EoU.
+        emissions = [0, b, b, b, b, 1]
+        for cls in ENDPOINTING_CLASSES:
+            ep = _make_detect_eou_endpointer(cls)
+            assert ep.detect_eou_in_buffer(emissions) == (False, -1, -1)
+
+    @pytest.mark.unit
+    def test_search_start_point_skips_earlier_silence(self):
+        b = EOU_BLANK
+        emissions = [0, b, b, b, b, b, 2, 1]
+        for cls in ENDPOINTING_CLASSES:
+            ep = _make_detect_eou_endpointer(cls)
+            # Start searching at the resumed word; the earlier silence is ignored.
+            assert ep.detect_eou_in_buffer(emissions, search_start_point=6) == (False, -1, -1)
+
+    @pytest.mark.unit
+    def test_disabled_stop_history(self):
+        b = EOU_BLANK
+        emissions = [0, b, b, b, b, b, b]
+        for cls in ENDPOINTING_CLASSES:
+            ep = _make_detect_eou_endpointer(cls, stop_history_eou=-1)
+            assert ep.detect_eou_in_buffer(emissions) == (False, -1, -1)
+
+    @pytest.mark.unit
+    def test_zero_stop_history_finalizes_whole_buffer(self):
+        b = EOU_BLANK
+        emissions = [0, 1, b, 2]
+        for cls in ENDPOINTING_CLASSES:
+            ep = _make_detect_eou_endpointer(cls, stop_history_eou=0)
+            eou, center, resume = ep.detect_eou_in_buffer(emissions)
+            assert eou is True
+            assert center == len(emissions) - 1
+            assert resume == len(emissions)
+
+    @pytest.mark.unit
+    def test_empty_emissions(self):
+        for cls in ENDPOINTING_CLASSES:
+            ep = _make_detect_eou_endpointer(cls)
+            assert ep.detect_eou_in_buffer([]) == (False, -1, -1)
+
+    @pytest.mark.unit
+    def test_out_of_vocab_special_token_after_silence_does_not_crash(self):
+        # Some models can emit token ids beyond the base vocabulary (e.g. prompt/special tokens).
+        # Such tokens are not word starts, so the EoU is conservatively not validated (and no crash).
+        special_token = EOU_BLANK + 1  # id beyond the vocabulary and the blank
+        emissions = [0, EOU_BLANK, EOU_BLANK, EOU_BLANK, EOU_BLANK, EOU_BLANK, special_token, 1]
+        for cls in ENDPOINTING_CLASSES:
+            ep = _make_detect_eou_endpointer(cls)
+            assert ep.detect_eou_in_buffer(emissions) == (False, -1, -1)
+
+    @pytest.mark.unit
+    def test_per_request_stop_history_override(self):
+        b = EOU_BLANK
+        # Default threshold would be huge (800ms -> 40 frames), but per-request override (80ms -> 4)
+        # makes the 5-frame trailing silence trigger an EoU.
+        emissions = [0, 1, b, b, b, b, b]
+        for cls in ENDPOINTING_CLASSES:
+            ep = _make_detect_eou_endpointer(cls, stop_history_eou=800)
+            assert ep.detect_eou_in_buffer(emissions) == (False, -1, -1)
+            eou, center, resume = ep.detect_eou_in_buffer(emissions, stop_history_eou=80)
+            assert eou is True
+            assert center == 2 + 4 // 2
+            assert resume == len(emissions)
+
 
 class TestGreedyEndpointing:
 

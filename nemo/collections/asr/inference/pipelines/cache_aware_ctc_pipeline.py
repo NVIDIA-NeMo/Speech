@@ -97,8 +97,10 @@ class CacheAwareCTCPipeline(BasePipeline):
         self.request_type = RequestType.from_str(cfg.streaming.request_type)
         self.word_boundary_tolerance = cfg.streaming.word_boundary_tolerance
         self.stop_history_eou_in_milliseconds = cfg.endpointing.stop_history_eou
-        self.residue_tokens_at_end = cfg.endpointing.residue_tokens_at_end
+        self.eou_buffer_size_in_milliseconds = cfg.endpointing.eou_buffer_size
         self.return_tail_result = cfg.return_tail_result
+
+        self._validate_endpointing_buffer_size()
 
         self.pre_encode_cache_size = self.asr_model.get_pre_encode_cache_size()
         self.model_chunk_size = self.asr_model.get_chunk_size()
@@ -143,6 +145,19 @@ class CacheAwareCTCPipeline(BasePipeline):
         # Expected feature buffer length for trimming (safeguard for feature buffer inputs)
         self.expected_feature_buffer_len = int(self.buffer_size_in_secs / self.window_stride)
 
+    def _validate_endpointing_buffer_size(self) -> None:
+        """Validate that the EoU label buffer is large enough to hold the silence window."""
+        if self.stop_history_eou_in_milliseconds > 0:
+            ms_per_timestep = math.ceil(self.model_stride_in_milliseconds)
+            buffer_frames = millisecond_to_frames(self.eou_buffer_size_in_milliseconds, ms_per_timestep)
+            stop_history_frames = millisecond_to_frames(self.stop_history_eou_in_milliseconds, ms_per_timestep)
+            if buffer_frames <= stop_history_frames:
+                raise ValueError(
+                    f"endpointing.eou_buffer_size ({self.eou_buffer_size_in_milliseconds} ms -> {buffer_frames} "
+                    f"frames) must be larger than endpointing.stop_history_eou "
+                    f"({self.stop_history_eou_in_milliseconds} ms -> {stop_history_frames} frames)."
+                )
+
     def init_greedy_ctc_decoder(self) -> None:
         """Initialize the CTC decoder."""
         check_existance_of_required_attributes(self, ['vocabulary', 'conf_func'])
@@ -156,7 +171,7 @@ class CacheAwareCTCPipeline(BasePipeline):
                 'vocabulary',
                 'model_stride_in_milliseconds',
                 'stop_history_eou_in_milliseconds',
-                'residue_tokens_at_end',
+                'punctuation_ids',
             ],
         )
 
@@ -164,7 +179,7 @@ class CacheAwareCTCPipeline(BasePipeline):
             vocabulary=self.vocabulary,
             ms_per_timestep=self.model_stride_in_milliseconds,
             stop_history_eou=self.stop_history_eou_in_milliseconds,
-            residue_tokens_at_end=self.residue_tokens_at_end,
+            absorb_token_ids=self.punctuation_ids,
         )
 
     def create_state(self, options: ASRRequestOptions) -> CacheAwareCTCStreamingState:
@@ -189,9 +204,8 @@ class CacheAwareCTCPipeline(BasePipeline):
         eou_label_buffer_size = 0
         if new_options.stop_history_eou > 0:
             eou_label_buffer_size = millisecond_to_frames(
-                new_options.stop_history_eou, math.ceil(self.model_stride_in_milliseconds)
+                self.eou_buffer_size_in_milliseconds, math.ceil(self.model_stride_in_milliseconds)
             )
-            eou_label_buffer_size += self.residue_tokens_at_end
         state.setup_label_buffer(eou_label_buffer_size, self.blank_id)
         state.set_options(new_options)
         return state
@@ -231,20 +245,28 @@ class CacheAwareCTCPipeline(BasePipeline):
         Returns:
             (bool) Whether EOU is detected.
         """
-        eou_detected = request.is_last
+        is_last = request.is_last
         last_token = state.label_buffer[-1] if len(state.label_buffer) > 0 else self.blank_id
         cur_output = self.greedy_ctc_decoder(log_probs, compute_confidence=True, previous=last_token)
         state.update_label_buffer(cur_output["labels"])
-
-        if not eou_detected:
-            emissions = state.get_label_buffer()
-            pivot_point = len(emissions) - 1
-            eou_detected, _ = self.endpointer.detect_eou_near_pivot(
-                emissions, pivot_point, stop_history_eou=state.options.stop_history_eou
-            )
-
-        state.update_state(cur_output, eou_detected=eou_detected)
+        state.update_state(cur_output, eou_detected=is_last)
         state.increment_global_offset(self.tokens_per_frame)
+
+        # Final frame: flush everything, no detection and no carryover.
+        if is_last:
+            return True
+
+        emissions = state.get_label_buffer()
+        eou_detected, _, resume_local = self.endpointer.detect_eou_in_buffer(
+            emissions,
+            search_start_point=state.get_local_search_start(),
+            stop_history_eou=state.options.stop_history_eou,
+        )
+        if eou_detected:
+            # Keep valid tokens emitted after the EoU point (the next utterance) instead of dropping them.
+            resume_global = state.buffer_local_to_global(resume_local)
+            state.prepare_finalize(resume_global)
+            state.set_eou_search_start(resume_global)
         return eou_detected
 
     def decode_log_probs(
@@ -270,6 +292,8 @@ class CacheAwareCTCPipeline(BasePipeline):
             if eou_detected:
                 self.bpe_decoder.decode_bpe_tokens(state)
                 state.cleanup_after_eou()
+                # Restore tokens that survived past the EoU as the start of the next utterance.
+                state.restore_carryover()
                 ready_state_ids.add(request.stream_id)
 
             if tail_log_probs is not None:

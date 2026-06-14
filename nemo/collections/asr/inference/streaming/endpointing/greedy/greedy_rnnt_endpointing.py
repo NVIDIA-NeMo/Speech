@@ -27,6 +27,7 @@ class RNNTGreedyEndpointing(GreedyEndpointing):
         effective_buffer_size_in_secs: float = None,
         stop_history_eou: int = -1,
         residue_tokens_at_end: int = 0,
+        absorb_token_ids: set[int] | None = None,
     ) -> None:
         """
         Initialize the RNNTGreedyEndpointing class
@@ -36,9 +37,15 @@ class RNNTGreedyEndpointing(GreedyEndpointing):
             effective_buffer_size_in_secs: (float, optional) Effective buffer size for VAD-based EOU detection for stateless and stateful RNNT. If None, VAD functionality is disabled.
             stop_history_eou: (int) Number of silent tokens to trigger a EOU, if -1 then it is disabled
             residue_tokens_at_end: (int) Number of residue tokens at the end, if 0 then it is disabled
+            absorb_token_ids: (set[int] | None) Token ids absorbed into the text preceding the EoU.
         """
         super().__init__(
-            vocabulary, ms_per_timestep, effective_buffer_size_in_secs, stop_history_eou, residue_tokens_at_end
+            vocabulary,
+            ms_per_timestep,
+            effective_buffer_size_in_secs,
+            stop_history_eou,
+            residue_tokens_at_end,
+            absorb_token_ids,
         )
         self.greedy_rnnt_decoder = RNNTGreedyDecoder(self.vocabulary, conf_func=None)
 

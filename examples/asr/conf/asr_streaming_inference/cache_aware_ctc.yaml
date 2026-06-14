@@ -60,8 +60,8 @@ confidence:
 # Endpointing settings
 # ========================
 endpointing:
-  stop_history_eou: 800                       # Time window (ms) for evaluating EoU
-  residue_tokens_at_end: 2                    # Number of residual tokens used for EoU
+  stop_history_eou: 800                       # Minimum trailing/internal silence (ms) that triggers an EoU
+  eou_buffer_size: 1600                        # EoU label-buffer window (ms); must be > stop_history_eou
 
 
 # ========================

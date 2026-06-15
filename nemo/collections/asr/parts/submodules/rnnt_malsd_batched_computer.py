@@ -360,11 +360,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         lm_alpha = sum(self.fusion_models_alpha)
         if not self.per_stream_biasing_enabled or multi_biasing_ids is None:
             return lm_alpha
-        ids = multi_biasing_ids[:batch_size, 0]
-        valid = ids >= 0
-        safe_ids = ids.clamp(min=0)
-        gathered = self.biasing_multi_model.model2alpha[safe_ids]
-        biasing_alpha = torch.where(valid, gathered, torch.zeros_like(gathered))
+        biasing_alpha = self.biasing_multi_model.get_alphas(multi_biasing_ids[:batch_size, 0])
         return lm_alpha + biasing_alpha.view(batch_size, 1)
 
     def force_cuda_graphs_mode(self, mode: Optional[Union[str, CudaGraphsMode]]):

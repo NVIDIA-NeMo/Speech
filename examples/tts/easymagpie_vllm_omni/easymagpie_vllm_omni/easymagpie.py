@@ -613,43 +613,6 @@ class EasyMagpieTTSForConditionalGeneration(
     # preprocess / postprocess
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _first_str(value: Any) -> str:
-        """Return the first element of a list-wrapped scalar, or the scalar itself, as a string."""
-        if isinstance(value, list):
-            return str(value[0]) if value else ""
-        if value is None:
-            return ""
-        return str(value)
-
-    @staticmethod
-    def _coerce_opt_int(value: Any) -> Optional[int]:
-        """Best-effort extract a single int from a scalar / list / tensor / str.
-
-        Used to read a per-step streamed ``text_token`` out of the request's
-        ``additional_information`` (which may wrap the id as a list, a 1-element
-        tensor, or a string depending on how the caller / transport packed it).
-        Returns ``None`` when no usable integer is present.
-        """
-        if value is None:
-            return None
-        if isinstance(value, bool):  # bool is an int subclass — handle explicitly.
-            return int(value)
-        if isinstance(value, int):
-            return value
-        if isinstance(value, float):
-            return int(value)
-        if isinstance(value, torch.Tensor):
-            return int(value.reshape(-1)[0].item()) if value.numel() > 0 else None
-        if isinstance(value, (list, tuple)):
-            return EasyMagpieTTSForConditionalGeneration._coerce_opt_int(value[0]) if value else None
-        if isinstance(value, str):
-            try:
-                return int(value.strip())
-            except ValueError:
-                return None
-        return None
-
     def preprocess(
         self,
         input_ids: torch.Tensor,
@@ -744,7 +707,7 @@ class EasyMagpieTTSForConditionalGeneration(
         # no list is baked, and :meth:`_preprocess_decode` instead reads one
         # subword id per step from the streamed ``additional_information.text_token``.
         if not info_dict.get("text_tokens"):
-            text = self._first_str(info_dict.get("text"))
+            text = info_dict.get("text")
             if text:
                 info_update["text_tokens"] = self._encode_text_stream(text)
         input_ids_out = torch.full_like(input_ids, _DUMMY_TOKEN_ID)
@@ -787,7 +750,7 @@ class EasyMagpieTTSForConditionalGeneration(
         parts.append(self._resolve_speaker_embedding(device, info_dict))
 
         # Context text: tokenized in-model and embedded through the baked table.
-        context_text = self._first_str(info_dict.get("context_text")) or _DEFAULT_CONTEXT_TEXT
+        context_text = info_dict.get("context_text") or _DEFAULT_CONTEXT_TEXT
         ctx_ids = self._encode_context_text(context_text, device)
         if ctx_ids.numel() > 0:
             parts.append(self.text_embedding(ctx_ids).to(dtype))
@@ -803,7 +766,7 @@ class EasyMagpieTTSForConditionalGeneration(
         here. Exactly one of the two must be supplied.
         """
         dtype = self._combined_embeddings.dtype
-        speaker_id = self._first_str(info_dict.get("speaker_id"))
+        speaker_id = info_dict.get("speaker_id")
         if speaker_id:
             embedding = self._speaker_embeddings.get(speaker_id)
             assert embedding is not None, (
@@ -866,10 +829,10 @@ class EasyMagpieTTSForConditionalGeneration(
         """
         temperature = info_dict.get("temperature")
         if temperature is not None:
-            self.code_predictor.temperature = float(self._first_str(temperature) or 0.0)
+            self.code_predictor.temperature = float(temperature)
         top_k = info_dict.get("top_k", info_dict.get("topk"))
         if top_k is not None:
-            self.code_predictor.top_k = int(float(self._first_str(top_k) or 0))
+            self.code_predictor.top_k = int(top_k)
 
     def _get_text_tokenizer(self):
         """Lazily load the context-text tokenizer from the model directory.
@@ -989,39 +952,45 @@ class EasyMagpieTTSForConditionalGeneration(
         info_update: dict[str, Any] = {"decode_offset": decode_offset + 1}
 
         # ── Text channel ── (delay 0: one subword per step from step 0). The text
-        # stream leads the phoneme/audio streams by their respective delays. Two
-        # mutually exclusive input modes are supported:
+        # stream leads the phoneme/audio streams by their respective delays. The
+        # model always consumes exactly one buffered subword id per decode step,
+        # indexed by ``decode_offset`` from a persistent ``text_tokens`` list. That
+        # list is populated by one of two mutually exclusive input modes:
         #
         # * **Whole-text (non-streaming)** — the caller passed ``text`` whole at
         #   prefill; it was tokenized in-model and stashed as the ``text_tokens``
-        #   list (see :meth:`_preprocess_prefill`). Step k consumes
-        #   ``text_tokens[k]`` (the list ends with the text-EOS id); once the
-        #   stream is exhausted the channel is masked off (adds nothing) rather
-        #   than repeating the last token.
-        # * **Streamed** — the caller did *not* pass ``text`` at prefill and
-        #   instead pushes one subword id per decode step via
-        #   ``additional_information`` under ``text_token`` (a single int / 1-elem
-        #   tensor; close the stream by pushing the text-EOS id as the last real
-        #   token). The model embeds that step's id and masks the channel off on
-        #   any step that carries no id (``text_token`` absent or ``< 0``), so the
-        #   caller can keep pumping decode steps after the text ends while the
-        #   audio tail finishes. Because each streamed chunk overwrites the
-        #   previous ``text_token`` in the per-request buffer, every step gets a
-        #   fresh value (or the caller's sentinel ``-1`` to mask).
-        text_tokens = info_dict.get("text_tokens")
-        if isinstance(text_tokens, list):
-            if decode_offset < len(text_tokens):
-                self._dec_text_tokens[start] = int(text_tokens[decode_offset])
-                self._dec_text_mask[start] = 1
-            else:
-                self._dec_text_mask[start] = 0
+        #   list (see :meth:`_preprocess_prefill`). No per-step ``text_token``
+        #   arrives, so the buffer never grows here.
+        # * **Streamed** — the caller did *not* pass ``text`` at prefill and instead
+        #   pushes subword ids during decode via ``additional_information`` under
+        #   ``text_token`` (always a ``list[int]``). Each chunk may carry a single id
+        #   (``[id]`` with ``max_tokens == 1``, one frame per chunk) or several ids at
+        #   once (``max_tokens == N``, so the engine free-runs N frames off one chunk —
+        #   fewer round-trips). Those ids are appended to ``text_tokens`` and consumed
+        #   one per step.
+        #
+        # In both modes, once the buffer is exhausted the channel is masked off
+        # (adds nothing) rather than repeating the last token, so the caller can keep
+        # pumping decode steps (passing an empty ``text_token`` list) while the audio
+        # tail finishes.
+        #
+        # Append-once: a streamed chunk's ``text_token`` payload stays identical on
+        # every decode step of that chunk, so we extend the buffer only when it has
+        # been fully consumed (``decode_offset`` caught up to its length). This is
+        # safe because the chunk's segment stops at ``max_tokens`` and ``preprocess``
+        # is not called again until a fresh chunk has replaced ``text_token`` — hence
+        # the caller must size each chunk's ``max_tokens`` to the number of ids it
+        # carries.
+        text_tokens = info_dict.get("text_tokens") or []
+        incoming = info_dict.get("text_token") or []
+        if incoming and decode_offset >= len(text_tokens):
+            text_tokens = text_tokens + [int(t) for t in incoming]
+            info_update["text_tokens"] = text_tokens
+        if decode_offset < len(text_tokens):
+            self._dec_text_tokens[start] = int(text_tokens[decode_offset])
+            self._dec_text_mask[start] = 1
         else:
-            streamed_id = self._coerce_opt_int(info_dict.get("text_token"))
-            if streamed_id is not None and streamed_id >= 0:
-                self._dec_text_tokens[start] = streamed_id
-                self._dec_text_mask[start] = 1
-            else:
-                self._dec_text_mask[start] = 0
+            self._dec_text_mask[start] = 0
 
         # ── Phoneme channel ── opens at decode step == ``phonemes_delay`` (seeded
         # with phoneme BOS), then feeds back the previous step's prediction, and

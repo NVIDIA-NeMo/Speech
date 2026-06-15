@@ -62,6 +62,7 @@ ENFORCE_EAGER = False
 DTYPE = "float16"
 STAGE_INIT_TIMEOUT = 300
 # vLLM CUDA-graph capture strategy; None == vLLM default (FULL_AND_PIECEWISE).
+#CUDAGRAPH_MODE: Optional[str] = "PIECEWISE"
 CUDAGRAPH_MODE: Optional[str] = None
 
 DEFAULT_PROMPTS = [
@@ -166,7 +167,8 @@ def _write_temp_stage_config(cfg: dict) -> str:
 @dataclass
 class ModelMeta:
     tokenizer: Any
-    speaker_embedding: Any  # torch.Tensor (T_audio, embedding_dim)
+    speaker_embedding: Any  # torch.Tensor (T_audio, embedding_dim); None in speaker_id mode
+    speaker_id: Optional[str]  # known-speaker id (None => pass raw speaker_embedding)
     prompt_len: int
     audio_eos_id: int
     speech_delay: int
@@ -175,7 +177,12 @@ class ModelMeta:
     text_eos_id: int  # appended to streamed subword ids
 
 
-def _load_model_meta(model_dir: str) -> ModelMeta:
+def _load_model_meta(
+    model_dir: str,
+    lim_prefill: Optional[int] = None,
+    speaker_id: str = SPEAKER,
+    use_spkr_emb: bool = False,
+) -> ModelMeta:
     import torch
     from transformers import AutoTokenizer
 
@@ -186,23 +193,45 @@ def _load_model_meta(model_dir: str) -> ModelMeta:
     config = json.loads((model_path / "config.json").read_text())
     arch = EasyMagpieOmniArch.from_hf_config(type("Cfg", (), config))
 
-    emb_path = model_path / "speaker_embeddings" / f"{SPEAKER}.pt"
-    if not emb_path.exists():
-        raise FileNotFoundError(f"Speaker embedding not found: {emb_path}")
-    loaded = torch.load(emb_path, map_location="cpu")
-    speaker_embedding = (loaded["speaker_encoding"] if isinstance(loaded, dict) else loaded).to(torch.float32)
-
+    # Default: pass the known ``speaker_id`` (the model holds the embedding as
+    # precomputed state). Ship the raw tensor instead when explicitly requested
+    # (--use-spkr-emb) or when ``lim_prefill`` truncates it (so it no longer
+    # matches the registered embedding).
+    use_id = not (use_spkr_emb or lim_prefill is not None)
     tokenizer = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
-    prompt_len = EasyMagpieTTSForConditionalGeneration.estimate_prompt_len(
-        speaker_embedding,
-        tokenize=lambda t: tokenizer.encode(t),
-        context_text=CONTEXT_TEXT,
-        has_task_embedding=arch.num_task_embeddings > 0,
-    )
+
+    if use_id:
+        # Known-speaker flow: the caller never loads the embedding tensor — it
+        # passes the speaker_id and the model holds the embedding as state.
+        speaker_embedding = None
+        prompt_len = EasyMagpieTTSForConditionalGeneration.get_prompt_len(
+            speaker_id,
+            model_dir,
+            tokenize=lambda t: tokenizer.encode(t),
+        )
+    else:
+        emb_path = model_path / "speaker_embeddings" / f"{speaker_id}.pt"
+        if not emb_path.exists():
+            raise FileNotFoundError(f"Speaker embedding not found: {emb_path}")
+        loaded = torch.load(emb_path, map_location="cpu")
+        speaker_embedding = (loaded["speaker_encoding"] if isinstance(loaded, dict) else loaded).to(torch.float32)
+        # Optionally cap the speaker-embedding prefill to the first ``lim_prefill``
+        # frames (mimics a single-token custom-voice prefill, cf. Qwen3-TTS).
+        if lim_prefill is not None:
+            orig_frames = int(speaker_embedding.shape[0])
+            speaker_embedding = speaker_embedding[: max(1, int(lim_prefill))].contiguous()
+            logger.info("Limiting speaker-embedding prefill: %d -> %d frames", orig_frames, speaker_embedding.shape[0])
+        prompt_len = EasyMagpieTTSForConditionalGeneration.estimate_prompt_len(
+            speaker_embedding,
+            tokenize=lambda t: tokenizer.encode(t),
+            context_text=CONTEXT_TEXT,
+            has_task_embedding=arch.num_task_embeddings > 0,
+        )
 
     return ModelMeta(
         tokenizer=tokenizer,
         speaker_embedding=speaker_embedding,
+        speaker_id=speaker_id if use_id else None,
         prompt_len=int(prompt_len),
         audio_eos_id=int(arch.audio_eos_id),
         speech_delay=int(getattr(arch, "streaming_speech_delay", 0) or 0),
@@ -213,16 +242,25 @@ def _load_model_meta(model_dir: str) -> ModelMeta:
 
 
 def build_prompt(text: str, meta: ModelMeta) -> dict:
-    return {
-        "prompt_token_ids": [0] * meta.prompt_len,
-        "additional_information": {
-            "speaker_embedding": meta.speaker_embedding,
-            "context_text": CONTEXT_TEXT,
-            "text": text,
-            "temperature": LT_TEMPERATURE,
-            "top_k": LT_TOPK,
-        },
+    # Known-speaker path: pass ``speaker_id`` (the model holds the speaker's
+    # context-audio embedding as precomputed state) instead of shipping the
+    # ``(T_audio, embedding_dim)`` tensor per request. Falls back to a raw
+    # ``speaker_embedding`` tensor only when ``--use-spkr-emb`` is set.
+    info: dict = {
+        "context_text": CONTEXT_TEXT,
+        "text": text,
+        "temperature": LT_TEMPERATURE,
+        "top_k": LT_TOPK,
     }
+    info.update(_speaker_info(meta))
+    return {"prompt_token_ids": [0] * meta.prompt_len, "additional_information": info}
+
+
+def _speaker_info(meta: ModelMeta) -> dict:
+    """Speaker identifier passed in ``additional_information`` (id vs. raw tensor)."""
+    if meta.speaker_id is not None:
+        return {"speaker_id": meta.speaker_id}
+    return {"speaker_embedding": meta.speaker_embedding}
 
 
 # ---------------------------------------------------------------------------
@@ -249,26 +287,14 @@ def _extract_request_output(stage_output):
     return getattr(stage_output, "request_output", stage_output)
 
 
-def _new_audio_frames(payload, prev: int, cur: int):
-    """New decode frames since the previous step as a ``(k, C*S)`` tensor (or None).
-
-    DELTA mode exposes ``audio_codes`` as a growing list ``[prefill, frame_0, ...]``
-    during decode; prefill/final steps yield a cumulative tensor instead.
-    """
-    import torch
-
-    if cur - prev <= 0:
-        return None
-    if isinstance(payload, list):
-        chunks = [c for c in payload[1 + prev : 1 + cur] if isinstance(c, torch.Tensor) and c.numel() > 0]
-        return torch.cat(chunks, dim=0) if chunks else None
-    if isinstance(payload, torch.Tensor) and payload.shape[0] >= cur - prev:
-        return payload[-(cur - prev) :]
-    return None
-
-
 class StepMeter:
-    """Shared per-request measurement: TTFT, ITL, audio length, audio-EOS."""
+    """Cheap per-request measurement: TTFT, ITL, generated-frame count.
+
+    Deliberately does **no** per-step tensor work. End-of-generation (audio-EOS /
+    backbone stop token) is detected engine-side via ``stop_token_ids``; here we
+    only read timestamps and the running token count so the measurement loop never
+    blocks the engine and the throughput number reflects the model, not the harness.
+    """
 
     def __init__(self, meta: ModelMeta):
         self.meta = meta
@@ -277,22 +303,21 @@ class StepMeter:
         self._t_start = time.perf_counter()
         self._t_last = None
         self._prev_tokens = 0
-        self._eos_idx = None
-
-    @property
-    def eos_reached(self) -> bool:
-        return self._eos_idx is not None
+        self._finish_reason = None
 
     def observe(self, stage_output) -> None:
         now = time.perf_counter()
         ro = _extract_request_output(stage_output)
         self.steps += 1
 
-        cur = self._prev_tokens
-        if getattr(ro, "outputs", None):
-            out0 = ro.outputs[0]
-            cum = getattr(out0, "cumulative_token_ids", None)
-            cur = len(cum) if cum is not None else len(getattr(out0, "token_ids", []) or [])
+        out0 = ro.outputs[0] if getattr(ro, "outputs", None) else None
+        if out0 is None:
+            return
+        fr = getattr(out0, "finish_reason", None)
+        if fr is not None:
+            self._finish_reason = fr
+        cum = getattr(out0, "cumulative_token_ids", None)
+        cur = len(cum) if cum is not None else self._prev_tokens + len(getattr(out0, "token_ids", []) or [])
         if cur <= self._prev_tokens:
             return
 
@@ -301,16 +326,6 @@ class StepMeter:
         else:
             self.result.inter_token_latencies.append(now - self._t_last)
         self._t_last = now
-
-        mm = getattr(stage_output, "multimodal_output", None) or {}
-        new_frames = _new_audio_frames(mm.get("audio_codes"), self._prev_tokens, cur)
-        if new_frames is not None and new_frames.numel() > 0 and self._eos_idx is None:
-            for j in range(new_frames.shape[0]):
-                frame_idx = self._prev_tokens + j
-                if frame_idx >= self.meta.speech_delay and bool((new_frames[j] == self.meta.audio_eos_id).any()):
-                    self._eos_idx = frame_idx
-                    self.result.eos_reached = True
-                    break
         self._prev_tokens = cur
 
     def finalize(self) -> RequestResult:
@@ -318,8 +333,10 @@ class StepMeter:
         self.result.success = True
         if self.result.ttft_s == 0.0 and self.steps > 0:
             self.result.ttft_s = e2e_s
-        last_frame = self._eos_idx if self._eos_idx is not None else self._prev_tokens
-        audio_frames = max(0, last_frame - self.meta.speech_delay)
+        # "stop" => generation ended on the backbone stop token (audio-EOS);
+        # "length" => hit max_tokens without reaching EOS.
+        self.result.eos_reached = self._finish_reason == "stop"
+        audio_frames = max(0, self._prev_tokens - self.meta.speech_delay)
         self.result.audio_s = audio_frames * self.meta.frame_stacking_factor / CODEC_FRAME_RATE
         return self.result
 
@@ -341,7 +358,10 @@ async def run_one_request(
 
     ``inputs`` is the prompt dict (whole-text) or an async generator of
     ``StreamingInput`` chunks; ``pace`` (streaming only) is awaited after each
-    frame to release the next chunk. Stops at audio-EOS / backbone stop token.
+    frame to release the next chunk. Termination is engine-driven: vLLM stops the
+    request at the backbone stop token (audio-EOS) or ``max_tokens``, which ends
+    the output stream — we just iterate to completion. ``max_steps`` is a streaming
+    safety valve only.
     """
     meter = StepMeter(meta)
     gen = None
@@ -349,10 +369,6 @@ async def run_one_request(
         gen = omni.generate(inputs, sampling_params_list=[sampling_params], request_id=request_id)
         async for stage_output in gen:
             meter.observe(stage_output)
-            ro = _extract_request_output(stage_output)
-            co = ro.outputs[0] if getattr(ro, "outputs", None) else None
-            if meter.eos_reached or getattr(co, "stop_reason", None) == meta.stop_token_id:
-                break
             if max_steps is not None and meter.steps >= max_steps:
                 break
             if pace is not None:
@@ -391,11 +407,11 @@ def build_streaming_request(text: str, meta: ModelMeta, stream_params, max_new_t
         from vllm.v1.engine.async_llm import StreamingInput
 
     prefill_info = {
-        "speaker_embedding": meta.speaker_embedding,
         "context_text": CONTEXT_TEXT,
         "temperature": LT_TEMPERATURE,
         "top_k": LT_TOPK,
     }
+    prefill_info.update(_speaker_info(meta))
     text_ids = list(meta.tokenizer.encode(text, add_special_tokens=False)) + [meta.text_eos_id]
     tail_params = _clone_sampling_params(stream_params, max_new_tokens - len(text_ids))
     go_queue: asyncio.Queue = asyncio.Queue()
@@ -560,7 +576,13 @@ async def main(args):
         return
     logger.info("Loaded %d texts", len(texts))
 
-    meta = _load_model_meta(args.model)
+    meta = _load_model_meta(
+        args.model, lim_prefill=args.lim_prefill, speaker_id=args.speaker_id, use_spkr_emb=args.use_spkr_emb
+    )
+    logger.info(
+        "Speaker mode: %s",
+        f"known speaker_id={meta.speaker_id!r}" if meta.speaker_id else "raw speaker_embedding tensor per request",
+    )
     logger.info(
         "prompt_len=%d  audio_eos_id=%d  speech_delay=%d  frame_stacking=%d",
         meta.prompt_len, meta.audio_eos_id, meta.speech_delay, meta.frame_stacking_factor,
@@ -580,12 +602,26 @@ async def main(args):
     )
     tmp_config_path = _write_temp_stage_config(stage_cfg)
 
+    # With dummy (random) weights the backbone emits the audio-EOS stop token at
+    # random steps, so requests finish early at random lengths. To force every
+    # request to run the full, fixed number of decode steps we DROP the stop
+    # token (instead of pinning min_tokens): the model repurposes a 2-token dummy
+    # backbone vocab, and vLLM's min_tokens processor would -inf-mask the whole
+    # ``all_stop_token_ids`` set — which includes the tokenizer's real eos id
+    # (~151k) — indexing far outside the 2-wide logits tensor and tripping a CUDA
+    # device-side assert. With no stop token and ignore_eos, only max_tokens ends
+    # the request, giving exactly ``max_new_tokens`` steps.
+    is_dummy = args.load_format == "dummy"
+    stop_token_ids = [] if is_dummy else [meta.stop_token_id]
+    if is_dummy:
+        logger.info("Dummy weights: dropping stop token; every request runs exactly %d steps", args.max_new_tokens)
+
     sampling_params = SamplingParams(
         temperature=0.0,
         max_tokens=args.max_new_tokens,
         detokenize=False,
         ignore_eos=True,
-        stop_token_ids=[meta.stop_token_id],
+        stop_token_ids=stop_token_ids,
         output_kind=RequestOutputKind.DELTA,
     )
     # Streaming: max_tokens=1 -> one chunk per decoded frame.
@@ -594,7 +630,7 @@ async def main(args):
         max_tokens=1,
         detokenize=False,
         ignore_eos=True,
-        stop_token_ids=[meta.stop_token_id],
+        stop_token_ids=stop_token_ids,
         output_kind=RequestOutputKind.DELTA,
     )
 
@@ -664,8 +700,28 @@ def parse_args():
     parser.add_argument("--num-warmups", type=int, default=3, help="Warmup rounds (total = concurrency * this)")
     parser.add_argument("--no-warmup", action="store_true", help="Skip warmup")
     parser.add_argument("--max-new-tokens", type=int, default=256, help="Max decode frames per request")
+    parser.add_argument(
+        "--lim-prefill",
+        type=int,
+        default=None,
+        help="Cap the speaker-embedding prefill to the first N frames (default: no limit). "
+        "Use e.g. --lim-prefill 1 to mimic a single-token custom-voice prefill.",
+    )
+    parser.add_argument(
+        "--speaker-id",
+        type=str,
+        default=SPEAKER,
+        help="Known speaker id (string) passed in the prompt; the model holds its embedding as "
+        "precomputed state (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--use-spkr-emb",
+        action="store_true",
+        help="Ship the raw speaker_embedding tensor per request instead of the known speaker_id "
+        "(exercises the custom-voice path).",
+    )
     parser.add_argument("--max-model-len", type=int, default=1024)
-    parser.add_argument("--max-num-batched-tokens", type=int, default=1024)
+    parser.add_argument("--max-num-batched-tokens", type=int, default=4096)
     parser.add_argument(
         "--load-format",
         type=str,

@@ -69,8 +69,10 @@ class _PerceptionStub:
 
     def __init__(self, hidden_size: int = 4):
         self.hidden_size = hidden_size
+        self.spk_targets_calls = []
 
-    def __call__(self, *, input_signal, input_signal_length):
+    def __call__(self, *, input_signal, input_signal_length, spk_targets=None):
+        self.spk_targets_calls.append(None if spk_targets is None else spk_targets.detach().clone())
         # Pretend each audio of length L produces L // 2 frames of embeddings;
         # encode the row index into the first column so we can verify ordering.
         B, T = input_signal.shape
@@ -99,6 +101,7 @@ def test_encode_audio_no_cp_returns_unpadded_list():
     )
     # 3 audios → 3 embedding tensors with row-specific lengths.
     assert len(embs) == 3
+    assert perception.spk_targets_calls[-1] is None
     expected_lens = [400, 600, 800]
     for i, e in enumerate(embs):
         assert e.shape == (expected_lens[i], 4)
@@ -121,6 +124,23 @@ def test_encode_audio_empty_batch_returns_empty():
     assert embs == []
 
 
+def test_encode_audio_no_cp_forwards_spk_targets():
+    perception = _PerceptionStub(hidden_size=4)
+    audios = torch.zeros(2, 1600, dtype=torch.float32)
+    audio_lens = torch.tensor([800, 1600], dtype=torch.long)
+    spk_targets = torch.arange(16, dtype=torch.float32).reshape(2, 4, 2)
+    encode_audio_with_cp_distribution(
+        perception,
+        audios,
+        audio_lens,
+        chunk_size_seconds=None,
+        sampling_rate=16000,
+        cp_mesh=None,
+        spk_targets=spk_targets,
+    )
+    assert torch.equal(perception.spk_targets_calls[-1], spk_targets)
+
+
 class _FakeCpMesh:
     def size(self):
         return 2
@@ -133,8 +153,10 @@ class _TrainablePerceptionStub(torch.nn.Module):
     def __init__(self):
         super().__init__()
         self.scale = torch.nn.Parameter(torch.tensor(2.0))
+        self.spk_targets_calls = []
 
-    def forward(self, *, input_signal, input_signal_length):
+    def forward(self, *, input_signal, input_signal_length, spk_targets=None):
+        self.spk_targets_calls.append(None if spk_targets is None else spk_targets.detach().clone())
         B = input_signal.shape[0]
         embs = input_signal[:, :2].unsqueeze(-1) * self.scale
         lens = torch.full((B,), 2, dtype=input_signal_length.dtype, device=input_signal_length.device)
@@ -160,6 +182,7 @@ def test_encode_audio_cp_distribution_preserves_local_autograd(monkeypatch):
     monkeypatch.setattr("nemo.collections.speechlm2.parts.cp_helpers.dist.all_reduce", lambda *args, **kwargs: None)
     monkeypatch.setattr("nemo.collections.speechlm2.parts.cp_helpers.dist.all_gather", fake_lens_all_gather)
     monkeypatch.setattr("nemo.collections.speechlm2.parts.cp_helpers.differentiable_all_gather", fake_all_gather)
+    spk_targets = torch.arange(8, dtype=torch.float32).reshape(2, 2, 2)
 
     embs = encode_audio_with_cp_distribution(
         perception,
@@ -168,8 +191,10 @@ def test_encode_audio_cp_distribution_preserves_local_autograd(monkeypatch):
         chunk_size_seconds=None,
         sampling_rate=16000,
         cp_mesh=_FakeCpMesh(),
+        spk_targets=spk_targets,
     )
 
+    assert torch.equal(perception.spk_targets_calls[-1], spk_targets[:1])
     assert embs[0].requires_grad
     embs[0].sum().backward()
     assert perception.scale.grad is not None

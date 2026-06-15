@@ -57,17 +57,23 @@ What is NeMo?
 - **Scalable training** — multi-GPU/multi-node via PyTorch Lightning with mixed-precision support
 - **Simple configuration** — YAML-based experiment configs with `Hydra <https://hydra.cc/>`__
 
-Get started in 30 seconds:
+Get started (install the PyTorch build for your platform first):
 
 .. code-block:: bash
 
-   pip install nemo_toolkit[asr,tts]
+   uv pip install 'nemo-toolkit[asr,tts]'
 
 .. code-block:: python
 
    import nemo.collections.asr as nemo_asr
    model = nemo_asr.models.ASRModel.from_pretrained("nvidia/parakeet-tdt-0.6b-v2")
    print(model.transcribe(["audio.wav"])[0].text)
+
+
+Trying to finetune a model?
+---------------------------
+
+Check out our latest ``/nemo-speech-finetune-asr`` `agent skill <https://github.com/NVIDIA-NeMo/NeMo/tree/main/.claude/skills/nemo-speech-asr-finetune>`_.
 
 
 .. toctree::
@@ -89,19 +95,7 @@ Get started in 30 seconds:
 
    features/parallelisms
    features/mixed_precision
-
-.. toctree::
-   :maxdepth: 1
-   :caption: Model Checkpoints
-   :name: Checkpoints
-
    checkpoints/intro
-
-.. toctree::
-   :maxdepth: 1
-   :caption: Lhotse Dataloading
-   :name: Lhotse Dataloading
-
    dataloaders
 
 .. toctree::

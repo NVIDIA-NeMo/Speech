@@ -39,13 +39,6 @@ class PhraseItem:
     # custom weight can be further added
 
 
-@dataclass
-class PhraseItem:
-    phrase: str  # phrase itself
-    lang: str  # per-phrase language (for aggregate tokenizer)
-    # custom weight can be further added
-
-
 class TokenWithLength(NamedTuple):
     token_id: int
     length: int = 1

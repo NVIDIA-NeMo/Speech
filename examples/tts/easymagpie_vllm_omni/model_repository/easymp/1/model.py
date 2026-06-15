@@ -69,6 +69,10 @@ logger = logging.getLogger("easymp_triton")
 # (``stream_end``): the input generator then appends text-EOS + the mask sentinel.
 _STREAM_END = object()
 
+# Sentinel pushed onto a request's codec queue when the engine generator is fully
+# drained (clean end): the codec worker flushes the trailing window as final.
+_GEN_DONE = object()
+
 
 class _StreamingSession:
     """Per-``stream_id`` state for a streaming-text request.
@@ -106,6 +110,17 @@ def _require_param(parameters: dict, key: str) -> str:
     return str(val)
 
 
+def _optional_param(parameters: dict, key: str, default: str) -> str:
+    val = parameters.get(key)
+    if isinstance(val, dict):
+        val = val.get("string_value")
+    return str(val) if val is not None else default
+
+
+def _as_bool(val: str) -> bool:
+    return str(val).strip().lower() in ("1", "true", "yes", "on")
+
+
 class TritonPythonModel:
     def initialize(self, args):
         os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
@@ -130,9 +145,17 @@ class TritonPythonModel:
         self.lt_temperature = float(_require_param(params, "lt_temperature"))
         self.lt_top_k = int(_require_param(params, "lt_top_k"))
 
+        # Benchmark toggle: when set, skip the codec BLS entirely (no GPU->CPU copy,
+        # no codec inference, no audio) so the AR/orchestration path in this model can
+        # be measured in isolation against benchmark_model.py. Returns silence chunks.
+        self.codec_noop = _as_bool(_optional_param(params, "codec_noop", "false"))
+        # Samples emitted per model frame in codec_noop mode, used only to size the
+        # silence chunks. One model frame = 2 codec frames @ 12.5 fps -> 24000/12.5 is
+        # the codec rate; here 22050/12.5 = 1764 samples per model frame.
+        self.codec_noop_spf = int(_optional_param(params, "codec_noop_spf", "1764"))
+
         self._load_arch_and_tokenizer()
         self._init_sampling_helpers()
-        self._speaker_cache: dict = {}
         # Inferred from the first codec decode (audio_len / codec_chunk_size).
         self._spf: int | None = None
 
@@ -155,7 +178,13 @@ class TritonPythonModel:
         )
 
         self._start_omni_engine()
-        logger.info("EasyMagpie initialized (default_speaker=%s)", self.default_speaker)
+        logger.info(
+            "EasyMagpie initialized (default_speaker=%s, codec_noop=%s)",
+            self.default_speaker,
+            self.codec_noop,
+        )
+        if self.codec_noop:
+            logger.warning("codec_noop=True: codec decode is DISABLED; responses carry silence (benchmark mode).")
 
     def _load_arch_and_tokenizer(self):
         from transformers import AutoTokenizer
@@ -170,14 +199,13 @@ class TritonPythonModel:
         self.audio_eos_id = int(arch.audio_eos_id)
         self.speech_delay = int(getattr(arch, "streaming_speech_delay", 0) or 0)
         self.num_stacked_codebooks = int(arch.num_stacked_codebooks)
-        self.has_task_embedding = arch.num_task_embeddings > 0
         self.stop_token_id = EasyMagpieTTSForConditionalGeneration.audio_eos_stop_token_id(cfg_obj)
         # Appended after the client's streamed subword ids to close the text channel
         # before the free-running acoustic tail (matches the demo / benchmark).
         self.text_eos_id = int(config.get("text_vocab_size", config.get("vocab_size", 0))) - 2
 
         self.tokenizer = AutoTokenizer.from_pretrained(self.vllm_model_path, trust_remote_code=True)
-        self._estimate_prompt_len = EasyMagpieTTSForConditionalGeneration.estimate_prompt_len
+        self._get_prompt_len = EasyMagpieTTSForConditionalGeneration.get_prompt_len
 
     def _init_sampling_helpers(self):
         """Cache the vLLM sampling/streaming types used by both request flavours."""
@@ -280,33 +308,28 @@ class TritonPythonModel:
             stage_init_timeout=300,
         )
 
-    def _get_speaker_embedding(self, speaker: str) -> torch.Tensor:
-        if speaker not in self._speaker_cache:
-            emb_path = Path(self.vllm_model_path) / "speaker_embeddings" / f"{speaker}.pt"
-            if not emb_path.exists():
-                raise FileNotFoundError(f"Speaker embedding not found: {emb_path}")
-            loaded = torch.load(emb_path, map_location="cpu")
-            emb = loaded["speaker_encoding"] if isinstance(loaded, dict) else loaded
-            self._speaker_cache[speaker] = emb.to(torch.float32)
-        return self._speaker_cache[speaker]
+    def _prompt_len(self, speaker: str) -> int:
+        """Placeholder ``prompt_token_ids`` length for a known speaker.
 
-    def _prompt_len(self, speaker_embedding: torch.Tensor, context_text: str) -> int:
+        Resolves everything from the checkpoint dir (speaker embedding +
+        ``has_task_embedding``), so the caller only holds a ``speaker_id`` and
+        never loads / ships the embedding itself (the engine sources it from its
+        precomputed speaker table via ``speaker_id``).
+        """
         return int(
-            self._estimate_prompt_len(
-                speaker_embedding,
+            self._get_prompt_len(
+                speaker,
+                self.vllm_model_path,
                 tokenize=lambda t: self.tokenizer.encode(t),
-                context_text=context_text,
-                has_task_embedding=self.has_task_embedding,
             )
         )
 
     def _build_prompt(self, text: str, context_text: str, speaker: str) -> dict:
-        speaker_embedding = self._get_speaker_embedding(speaker)
-        prompt_len = self._prompt_len(speaker_embedding, context_text)
+        prompt_len = self._prompt_len(speaker)
         return {
             "prompt_token_ids": [0] * prompt_len,
             "additional_information": {
-                "speaker_embedding": speaker_embedding,
+                "speaker_id": speaker,
                 "context_text": context_text,
                 "text": text,
                 "temperature": self.lt_temperature,
@@ -316,7 +339,17 @@ class TritonPythonModel:
 
     def _decode_codec(self, codes: torch.Tensor, left_context_frames: int) -> np.ndarray:
         """Decode one ``(<=codec_chunk_size, C*S)`` window, trim left context + pad."""
-        codes_np = codes.detach().cpu().to(torch.int64).numpy()
+        if self.codec_noop:
+            # Benchmark mode: skip the GPU->CPU copy and codec BLS entirely; return
+            # silence sized to the real (post-left-context) frames so the streaming
+            # cadence and response sizes stay roughly representative.
+            spf = self._spf or self.codec_noop_spf
+            n_frames = max(0, int(codes.shape[0]) - int(left_context_frames))
+            return np.zeros(n_frames * spf, dtype=np.float32)
+
+        # Cast on the host (codec wants int64): the window is tiny so this is cheap,
+        # and it avoids an extra GPU cast kernel + a wider device->host copy.
+        codes_np = codes.detach().cpu().numpy().astype(np.int64, copy=False)
         pad = self.codec_chunk_size - codes_np.shape[0]
         if pad > 0:
             codes_np = np.pad(codes_np, ((0, pad), (0, 0)))
@@ -359,23 +392,82 @@ class TritonPythonModel:
         except Exception:
             pass
 
-    def _codec_worker(self, codec_q: queue.Queue, response_sender, state: dict) -> None:
-        """Pop ``(chunk, ctx, is_final)`` tuples; ``None`` == send empty final + exit."""
+    def _codec_worker(self, codec_q: queue.Queue, response_sender, state: dict, head: int) -> None:
+        """Per-request codec pump: runs the whole accumulate -> chunk -> decode -> send
+        pipeline on a pool thread so the shared asyncio loop does no per-step tensor
+        work at all.
+
+        Queue protocol (pushed by :meth:`_drive_codec`):
+          * ``(cum_codes, hit_eos)`` — the latest cumulative ``(T, C*S)`` codes tensor
+            and whether the backbone audio-EOS stop token fired on that step (a cheap
+            CPU flag, never a tensor scan). We keep the largest cumulative seen.
+          * ``_GEN_DONE`` — the engine generator drained cleanly; flush the tail final.
+          * ``None`` — error/abort; send an empty final and exit.
+
+        Rows ``[0, head)`` are prefill + ``speech_delay`` warm-up; the first real audio
+        frame is at ``head``. When the EOS step is seen its last row is the audio-EOS
+        frame, so we never vocode it.
+        """
+        L = self.codec_left_context
+        sent = 0  # real frames already vocoded + sent
+        threshold = self.first_chunk_frames
+        cum = None  # largest cumulative codes tensor seen
+        saw_eos = False
         finalized = False
-        try:
-            while True:
-                item = codec_q.get()
-                if item is None:
-                    self._send_audio(response_sender, np.array([], dtype=np.float32), final=True)
-                    finalized = True
-                    return
-                chunk, ctx, is_final = item
+
+        def emit_ready(real_count: int, final: bool) -> None:
+            """Vocode + send overlap-save windows of newly-ready real frames."""
+            nonlocal sent, threshold, finalized
+            while sent < real_count:
+                remaining = real_count - sent
+                if not final and remaining < threshold:
+                    break
+                take = min(threshold, remaining)
+                ctx = min(sent, L)
+                chunk = cum[head + sent - ctx : head + sent + take]
+                sent += take
+                threshold = self.codec_chunk_size - L
+                is_final = final and sent >= real_count
                 audio = self._decode_codec(chunk, ctx)
                 self._send_audio(response_sender, audio, final=is_final)
                 if state["t_first_audio"] is None:
                     state["t_first_audio"] = time.perf_counter()
-                if is_final:
-                    finalized = True
+                finalized = finalized or is_final
+
+        try:
+            done = False
+            while True:
+                # Block for the next item, then drain any backlog so we only act on the
+                # most recent cumulative codes (older snapshots are subsets of it).
+                batch = [codec_q.get()]
+                while True:
+                    try:
+                        batch.append(codec_q.get_nowait())
+                    except queue.Empty:
+                        break
+                for item in batch:
+                    if item is _GEN_DONE:
+                        done = True
+                    elif item is None:
+                        self._send_audio(response_sender, np.array([], dtype=np.float32), final=True)
+                        finalized = True
+                        return
+                    else:
+                        cum_now, hit_eos = item
+                        if cum is None or cum_now.shape[0] > cum.shape[0]:
+                            cum = cum_now
+                        saw_eos = saw_eos or hit_eos
+
+                if state["error"] is not None:
+                    return
+                if cum is not None:
+                    real_avail = max(0, cum.shape[0] - head - (1 if saw_eos else 0))
+                    if done or real_avail > sent:
+                        emit_ready(real_avail, final=done)
+                if done:
+                    if not finalized:
+                        self._send_audio(response_sender, np.array([], dtype=np.float32), final=True)
+                        finalized = True
                     return
         except Exception as e:
             state["error"] = e
@@ -408,10 +500,19 @@ class TritonPythonModel:
         streaming-text); from here on both flavours are identical. All audio is sent
         on ``response_sender`` (for streaming that is the ``stream_start`` sender).
 
+        This coroutine stays deliberately thin: per step it only reads the cumulative
+        ``audio_codes`` reference and a cheap CPU end-of-stream flag, then hands both
+        to the per-request :meth:`_codec_worker` thread. All tensor slicing, the
+        device->host copy, codec inference and ``response_sender.send`` happen on that
+        pool thread, so the single shared event loop never does per-step tensor work
+        (and never blocks on a GPU sync) — that is what lets many requests share the
+        loop without serializing.
+
         Each step yields the *cumulative* codes ``(prompt_len prefill rows + decoded
         frames, C*S)`` (as a list to cat or an already-consolidated tensor); the first
-        real audio frame is at row ``prompt_len + speech_delay`` and the last decoded
-        row is the audio-EOS frame.
+        real audio frame is at row ``prompt_len + speech_delay``. End of stream is the
+        backbone audio-EOS stop token, surfaced as ``outputs[0].stop_reason`` (a CPU
+        attribute) — no per-step scan of the codes tensor is needed.
 
         For streaming-text, ``pace_q`` carries one token per observed decode-step
         output so the input feeder releases the next chunk only after the previous one
@@ -421,33 +522,9 @@ class TritonPythonModel:
 
         codec_q: queue.Queue = queue.Queue()
         state: dict = {"t_first_audio": None, "error": None}
-        codec_future = self._codec_pool.submit(self._codec_worker, codec_q, response_sender, state)
-
-        # Codes are a cumulative ``(T, C*S)`` tensor: rows [0, prompt_len) are the
-        # prefill prefix, the next ``speech_delay`` rows are warm-up, so the first
-        # real audio frame is at ``head`` and the last decoded row is audio-EOS.
-        L = self.codec_left_context
         head = prompt_len + self.speech_delay  # cumulative row of the first real frame
-        sent = 0  # real frames already queued to the codec
-        threshold = self.first_chunk_frames
-        cum = None  # largest cumulative codes tensor seen
-        produced_final = False
-
-        def emit_ready(cum_codes, real_count: int, final: bool) -> None:
-            """Queue overlap-save windows of newly-ready real frames (by cum row)."""
-            nonlocal sent, threshold, produced_final
-            while sent < real_count:
-                remaining = real_count - sent
-                if not final and remaining < threshold:
-                    break
-                take = min(threshold, remaining)
-                ctx = min(sent, L)
-                chunk = cum_codes[head + sent - ctx : head + sent + take]
-                sent += take
-                threshold = self.codec_chunk_size - L
-                is_final = final and sent >= real_count
-                codec_q.put((chunk, ctx, is_final))
-                produced_final = produced_final or is_final
+        codec_future = self._codec_pool.submit(self._codec_worker, codec_q, response_sender, state, head)
+        sent = 0  # forwarded steps (for the log line only)
 
         try:
             async for out in gen:
@@ -461,35 +538,17 @@ class TritonPythonModel:
                 cum_now = self._cumulative_codes(payload)
                 if cum_now is None:
                     continue
-                if cum is None or cum_now.shape[0] > cum.shape[0]:
-                    cum = cum_now
-                # The audio-EOS frame is always the most recent decoded row, so it is
-                # the only row that might be EOS. Inspect just that row: if it is not
-                # EOS, vocode it immediately instead of unconditionally holding one row
-                # back. This removes a full decode step (~1 ITL) from TTFA and from
-                # every chunk boundary; the authoritative tail scan below still catches
-                # the real EOS row.
-                if bool((cum[-1] == self.audio_eos_id).any()):
-                    real_avail = cum.shape[0] - head - 1
-                else:
-                    real_avail = cum.shape[0] - head
-                if real_avail > sent:
-                    emit_ready(cum, real_avail, final=False)
+                # The request truly ends at the backbone audio-EOS stop token; vLLM
+                # already detected it and reports it as the matched stop_reason. When it
+                # fires this step's last row is the EOS frame (which the worker drops).
+                co = out.outputs[0] if getattr(out, "outputs", None) else None
+                hit_eos = getattr(co, "stop_reason", None) == self.stop_token_id
+                sent += 1
+                codec_q.put((cum_now, hit_eos))
 
-            if state["error"] is None and cum is not None:
-                # Authoritative tail: scan for the audio-EOS row (only it carries
-                # audio_eos_id > codebook_size) and vocode every real frame before it.
-                eos_row = None
-                for i in range(cum.shape[0] - 1, head - 1, -1):
-                    if bool((cum[i] == self.audio_eos_id).any()):
-                        eos_row = i
-                        break
-                last_excl = eos_row if eos_row is not None else cum.shape[0]
-                real_count = max(0, last_excl - head)
-                emit_ready(cum, real_count, final=True)
-                if not produced_final:
-                    codec_q.put(None)
-            elif state["error"] is None:
+            if state["error"] is None:
+                codec_q.put(_GEN_DONE)
+            else:
                 codec_q.put(None)
 
             await asyncio.wrap_future(codec_future)
@@ -499,7 +558,7 @@ class TritonPythonModel:
             t_end = time.perf_counter()
             ttfa_ms = ((state["t_first_audio"] or t_end) - t_start) * 1000
             logger.info(
-                "rid=%s ttfa=%.1fms total=%.1fms frames=%d speaker=%s text=%r",
+                "rid=%s ttfa=%.1fms total=%.1fms steps=%d speaker=%s text=%r",
                 request_id,
                 ttfa_ms,
                 (t_end - t_start) * 1000,
@@ -557,12 +616,11 @@ class TritonPythonModel:
         client actually having sent them.
         """
         StreamingInput = self._StreamingInput
-        speaker_embedding = self._get_speaker_embedding(session.speaker)
-        prompt_len = self._prompt_len(speaker_embedding, session.context_text)
+        prompt_len = self._prompt_len(session.speaker)
         sp1 = self._make_sampling_params(1)
 
         prefill_info = {
-            "speaker_embedding": speaker_embedding,
+            "speaker_id": session.speaker,
             "context_text": session.context_text,
             "temperature": self.lt_temperature,
             "top_k": self.lt_top_k,
@@ -602,7 +660,7 @@ class TritonPythonModel:
         yield self._text_chunk(-1, tail_params)
 
     async def _synthesize_streaming(self, session: _StreamingSession):
-        prompt_len = self._prompt_len(self._get_speaker_embedding(session.speaker), session.context_text)
+        prompt_len = self._prompt_len(session.speaker)
         inputs_gen = self._stream_inputs(session)
         gen = self.omni.generate(
             inputs_gen, sampling_params_list=[self._make_sampling_params(1)], request_id=session.request_id

@@ -134,3 +134,12 @@ parameters {
   key: "lt_top_k"
   value: { string_value: "80" }
 }
+
+# Benchmark-only toggle. When "true", the codec BLS is skipped entirely (no
+# GPU->CPU copy, no codec inference); responses carry silence. Use this to
+# measure the AR / orchestration path of model.py in isolation and compare it
+# against benchmark_model.py. Leave "false" for real serving.
+parameters {
+  key: "codec_noop"
+  value: { string_value: "false" }
+}

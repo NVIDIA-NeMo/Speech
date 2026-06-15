@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+import string
 from typing import List, Union
 
 import numpy as np
@@ -22,6 +23,14 @@ from nemo.collections.asr.parts.context_biasing.ctc_based_word_spotter import WS
 from nemo.collections.asr.parts.utils import rnnt_utils
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
 from nemo.utils import logging
+
+_VALID_CHARS = set(string.ascii_lowercase + "'")
+
+
+def clean_text(text):
+    text = text.lower()
+    text = ''.join([c for c in text if c in _VALID_CHARS or c.isspace()])
+    return " ".join(text.split()).strip()
 
 
 def merge_alignment_with_ws_hyps(
@@ -169,6 +178,7 @@ def compute_fscore(
     """
 
     assert key_words_list, "key_words_list is empty"
+    key_words_list = [clean_text(key_word) for key_word in key_words_list]
 
     # get data from manifest
     assert os.path.isfile(recognition_results_manifest), f"manifest file {recognition_results_manifest} doesn't exist"
@@ -185,8 +195,8 @@ def compute_fscore(
 
     for item in data:
         # get alignment by texterrors
-        ref = item['text'].split()
-        hyp = item['pred_text'].split()
+        ref = clean_text(item['text']).split()
+        hyp = clean_text(item['pred_text']).split()
         ali = align(ref, hyp, eps)
 
         # 1-grams

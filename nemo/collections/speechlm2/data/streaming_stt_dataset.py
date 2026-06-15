@@ -77,6 +77,10 @@ class StreamingSTTBatch:
     # to the chunk size actually used. ``None`` / non-positive for dynamic
     # (0) or offline (-1) chunking.
     chunk_size: Optional[int] = None
+    # K-frame grouping for dynamic chunking (effective only when
+    # ``chunk_size == 0``). With a list ``data.chunk_step`` config, one K is
+    # drawn per batch and stored here. ``None`` / 1 → no K-grouping.
+    chunk_step: Optional[int] = None
 
 
 @dataclass
@@ -102,7 +106,9 @@ class StreamingSTTDataConfig:
     # padded to K-multiple). The model implicitly learns to emit only at
     # K-aligned positions; deploy-time K' (any multiple of K_train) is set via
     # dynamic_min_chunk_size / dynamic_max_chunk_size. Default 1 = no-op.
-    chunk_step: int = 1
+    # May also be a list of positive ints (e.g. ``[1, 3, 7]``) for multi
+    # chunk-step training; one K is drawn per batch and recorded on the batch.
+    chunk_step: Union[int, List[int]] = 1
 
 
 def decode_with_blank(
@@ -836,6 +842,19 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
         else:
             self._chunk_size_candidates = None
 
+        # Normalize chunk_step into a list of candidate K values for per-batch
+        # random selection (multi chunk-step training). Scalar → ``None`` (the
+        # single value is used directly). Only effective for dynamic chunking
+        # (chunk_size == 0); ignored otherwise.
+        cs_step = getattr(self.cfg, "chunk_step", 1)
+        if isinstance(cs_step, (list, tuple, ListConfig)):
+            self._chunk_step_candidates = [max(int(x), 1) for x in cs_step]
+            if not self._chunk_step_candidates:
+                raise ValueError("chunk_step list must be non-empty")
+            logging.info(f"Multi chunk-step training enabled: candidates={self._chunk_step_candidates}")
+        else:
+            self._chunk_step_candidates = None
+
         # Tokenize the full audio chunk string (audio_tag * chunk_size) to get
         # its token ID sequence, one entry per positive fixed-chunk size.  We must
         # encode the full chunk as a single string because BPE may merge tokens
@@ -952,7 +971,12 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
         # multiple of K frames so the encoder produces exactly that many
         # embeddings, matching the K-snapped segment lengths the dataset will
         # construct below. K=1 → no-op.
-        K = max(int(getattr(self.cfg, "chunk_step", 1)), 1)
+        # With a list ``chunk_step`` config, draw one K per batch (multi
+        # chunk-step training); otherwise use the scalar.
+        if self._chunk_step_candidates is not None:
+            K = random.choice(self._chunk_step_candidates)
+        else:
+            K = max(int(getattr(self.cfg, "chunk_step", 1)), 1)
         if K > 1 and chunk_size == 0:
             new_lens = []
             for dur in audio_durations_secs:
@@ -1068,4 +1092,5 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
             target_token_lens=target_token_lens,
             text=text,
             chunk_size=chunk_size,
+            chunk_step=K,
         )

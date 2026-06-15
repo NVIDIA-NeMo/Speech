@@ -159,6 +159,23 @@ def _repr_chunk_size(chunk_size) -> int:
     return int(chunk_size)
 
 
+def _repr_chunk_step(chunk_step) -> int:
+    """Representative scalar K for a ``dynamic_chunk_step`` value that may be
+    a list. Returns the longest entry (multi chunk-step training defaults to
+    the largest K at inference — closest to fixed-chunking behavior and the
+    lowest mid-word fire risk). Scalar values pass through unchanged. Returns
+    at least 1.
+    """
+    if isinstance(chunk_step, (list, tuple, ListConfig)):
+        return max(max(int(x), 1) for x in chunk_step)
+    return max(int(chunk_step), 1)
+
+
+def _is_multi_chunk_step(chunk_step) -> bool:
+    """Whether ``dynamic_chunk_step`` is configured as a list (multi-K)."""
+    return isinstance(chunk_step, (list, tuple, ListConfig))
+
+
 @dataclass
 class StreamingSTTModelConfig:
     pretrained_llm: str
@@ -183,7 +200,11 @@ class StreamingSTTModelConfig:
     # model makes one read/write decision per K-frame group, at the last frame
     # of each group. Must match data.chunk_step in the dataset config. Ignored
     # for fixed chunking. Default 1 = decision per frame (current behavior).
-    dynamic_chunk_step: int = 1
+    # May also be a list of positive ints (e.g. ``[1, 3, 7]``) for multi
+    # chunk-step training; inference then defaults to the longest K (override
+    # via ``generate(dynamic_chunk_step=...)``). With a list, the encoder's
+    # attention look-ahead is matched per batch as ``[att_context_size[0], K - 1]``.
+    dynamic_chunk_step: Union[int, List[int]] = 1
     audio_tag: str = "<audio>"
     att_context_size: Optional[List[int]] = None
     audio_pad_to: Optional[int] = None
@@ -643,7 +664,11 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         # Match the encoder's attention look-ahead to the per-batch chunk size
         # the dataset used (no-op unless chunk_size is a list and att_context_size
         # is set). The non-cached training forward only reads att_context_size.
-        self._set_encoder_att_context(batch.chunk_size)
+        # Multi-K dynamic training also drives the look-ahead off batch.chunk_step.
+        cs_step_train = (
+            batch.chunk_step if _is_multi_chunk_step(getattr(self.core_cfg, "dynamic_chunk_step", 1)) else None
+        )
+        self._set_encoder_att_context(batch.chunk_size, chunk_step=cs_step_train)
 
         inputs = self._build_input_embeds(batch.input_tokens, batch.audios, batch.audio_lens)
         use_aux = self.core_cfg.use_chunk_classifier
@@ -673,7 +698,14 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         # frames have trivial blank targets. Mask them out so neither the LM
         # head (when boundary-supervised at audio) nor the aux BCE wastes
         # capacity on them. No-op for K <= 1.
-        K = int(getattr(self.core_cfg, "dynamic_chunk_step", 1))
+        # With multi-K training, K is sampled per-batch by the dataset and
+        # carried on the batch. Fall back to the config value (longest K when
+        # multi-K) when batch.chunk_step is unset.
+        K = (
+            int(batch.chunk_step)
+            if getattr(batch, "chunk_step", None) is not None
+            else _repr_chunk_step(getattr(self.core_cfg, "dynamic_chunk_step", 1))
+        )
         k_aligned_mask: Optional[Tensor] = None
         if K > 1:
             k_aligned_mask = _build_k_aligned_audio_mask(audio_mask, K)  # (B, L)
@@ -884,7 +916,11 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
             batch = move_data_to_device(batch, self.device)
 
         # Match the encoder's attention look-ahead to the per-batch chunk size.
-        self._set_encoder_att_context(batch.chunk_size)
+        # Multi-K dynamic also derives look-ahead from batch.chunk_step.
+        cs_step_val = (
+            batch.chunk_step if _is_multi_chunk_step(getattr(self.core_cfg, "dynamic_chunk_step", 1)) else None
+        )
+        self._set_encoder_att_context(batch.chunk_size, chunk_step=cs_step_val)
 
         inputs = self._build_input_embeds(batch.input_tokens, batch.audios, batch.audio_lens)
         aux_active = self.core_cfg.use_chunk_classifier and self.has_blank and self._user_footer_first_id is not None
@@ -904,8 +940,13 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         # supervised at audio positions during training, so don't mask in val.
         if aux_active and not self.core_cfg.chunk_classifier_keep_lm_supervision_at_audio:
             target_ids = torch.where(audio_mask_for_lm, torch.full_like(target_ids, IGNORE_INDEX), target_ids)
-        # Mirror training-time K-gate at audio positions.
-        K = int(getattr(self.core_cfg, "dynamic_chunk_step", 1))
+        # Mirror training-time K-gate at audio positions. With multi-K, the
+        # per-batch K lives on batch.chunk_step.
+        K = (
+            int(batch.chunk_step)
+            if getattr(batch, "chunk_step", None) is not None
+            else _repr_chunk_step(getattr(self.core_cfg, "dynamic_chunk_step", 1))
+        )
         k_aligned_mask: Optional[Tensor] = None
         if K > 1:
             k_aligned_mask = _build_k_aligned_audio_mask(audio_mask_for_lm, K)
@@ -1065,24 +1106,43 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
             list(self._user_header_ids) + [AUDIO_TOKEN_IDX] * chunk_size + list(self._user_footer_and_asst_header_ids)
         )
 
-    def _set_encoder_att_context(self, chunk_size: Optional[int], recompute_streaming: bool = False) -> None:
-        """Match the Conformer encoder's attention look-ahead to ``chunk_size``.
+    def _set_encoder_att_context(
+        self,
+        chunk_size: Optional[int],
+        chunk_step: Optional[int] = None,
+        recompute_streaming: bool = False,
+    ) -> None:
+        """Match the Conformer encoder's attention look-ahead to the per-batch
+        decision-group granularity.
 
-        The left context is taken from ``att_context_size[0]`` (fixed) and the
-        right context (look-ahead) is set to ``chunk_size - 1``.  No-op for
-        dynamic (0) / offline (<0) chunking or when ``att_context_size`` is unset.
+        - **Fixed chunking** (``chunk_size > 0``): right context = ``chunk_size - 1``.
+        - **Dynamic chunking + multi-K** (``chunk_size == 0`` AND
+          ``chunk_step > 1``): right context = ``chunk_step - 1``. Only triggered
+          when the caller passes ``chunk_step`` — by convention, only when multi-K
+          training is active (``dynamic_chunk_step`` is a list). Single-K dynamic
+          checkpoints pass ``chunk_step=None`` and retain their config look-ahead.
+        - **Otherwise**: no-op (offline mode, scalar-K dynamic, or att_context_size unset).
 
         Args:
-            chunk_size: Fixed-chunk size in encoder frames.
+            chunk_size: Fixed-chunk size in encoder frames (0 = dynamic, <0 = offline).
+            chunk_step: K for dynamic chunking. Pass only when overriding the
+                encoder's right context based on K (multi-K training or
+                inference under multi-K-trained model).
             recompute_streaming: When True, also recompute the cache-aware
                 streaming config (needed for streaming inference). During
                 training the offline (non-cached) forward only consults
                 ``att_context_size``, so leave it False to avoid the overhead.
         """
-        if chunk_size is None or chunk_size <= 0 or self.core_cfg.att_context_size is None:
+        if self.core_cfg.att_context_size is None:
+            return
+        if chunk_size is not None and chunk_size > 0:
+            right_source = int(chunk_size)
+        elif chunk_size == 0 and chunk_step is not None and int(chunk_step) > 1:
+            right_source = int(chunk_step)
+        else:
             return
         left = int(self.core_cfg.att_context_size[0])
-        new_ctx = [left, int(chunk_size) - 1]
+        new_ctx = [left, right_source - 1]
         encoder = self.perception.encoder
         # Set att_context_size directly (rather than set_default_att_context_size)
         # to avoid per-batch "not among supported look-aheads" warnings and to
@@ -1908,14 +1968,13 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         # Defaults to the training-time `dynamic_chunk_step` from the model
         # config; override per-call for ablations. Only meaningful when
         # chunk_size == 0 (dynamic); ignored in fixed-chunk and offline modes.
-        dyn_K = max(
-            1,
-            int(
-                dynamic_chunk_step
-                if dynamic_chunk_step is not None
-                else getattr(self.core_cfg, "dynamic_chunk_step", 1)
-            ),
+        dyn_K = (
+            int(dynamic_chunk_step)
+            if dynamic_chunk_step is not None
+            else _repr_chunk_step(getattr(self.core_cfg, "dynamic_chunk_step", 1))
         )
+        if dyn_K < 1:
+            dyn_K = 1
 
         # --- Init state ---
         state = self.get_init_streaming_state(
@@ -2697,7 +2756,17 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         # default; explicit override wins) and match the encoder's streaming
         # look-ahead to it (no-op for dynamic/offline modes).
         chunk_size = self._resolve_inference_chunk_size(chunk_size_override)
-        self._set_encoder_att_context(chunk_size, recompute_streaming=True)
+        # For multi-K dynamic inference, drive the encoder look-ahead off the
+        # selected K (mirrors how multi-chunk-size selects chunk_size).
+        if chunk_size == 0 and _is_multi_chunk_step(getattr(self.core_cfg, "dynamic_chunk_step", 1)):
+            inference_K = (
+                int(dynamic_chunk_step)
+                if dynamic_chunk_step is not None
+                else _repr_chunk_step(self.core_cfg.dynamic_chunk_step)
+            )
+            self._set_encoder_att_context(chunk_size, chunk_step=inference_K, recompute_streaming=True)
+        else:
+            self._set_encoder_att_context(chunk_size, recompute_streaming=True)
 
         with move_embedding(self):
             B = audios.shape[0]

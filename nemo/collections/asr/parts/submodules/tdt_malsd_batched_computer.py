@@ -109,9 +109,8 @@ class MALSDState:
     init_fusion_states_candidates_list: Optional[List[torch.Tensor]] = None
     init_fusion_scores_list: Optional[List[torch.Tensor]] = None
 
-    # per-stream biasing: model IDs (kept separate from fusion state lists)
-    multi_biasing_ids: Optional[torch.Tensor] = None  # model IDs for per-stream biasing [batch_size]
-    multi_biasing_ids_expanded: Optional[torch.Tensor] = None  # multi_biasing_ids expanded from [B] to [B * beam_size]
+    # per-stream biasing model IDs [batch_size, beam_size] (same id across beams)
+    multi_biasing_ids: Optional[torch.Tensor] = None
 
     def __init__(
         self,
@@ -343,7 +342,7 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
         self,
         fusion_states_list: list[torch.Tensor],
         float_dtype: torch.dtype,
-        multi_biasing_ids_expanded: Optional[torch.Tensor] = None,
+        multi_biasing_ids: Optional[torch.Tensor] = None,
     ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
         """Advance all fusion models; scores have shape [B, beam, vocab] with alpha applied."""
         batch_size = fusion_states_list[0].shape[0] // self.beam_size
@@ -353,8 +352,8 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
         for idx, fusion_model in enumerate(self._all_fusion_models()):
             states = fusion_states_list[idx]
             if idx == biasing_index:
-                # biasing multi-model: pass model_ids, alpha is applied internally
-                scores, states_candidates = fusion_model.advance(states=states, model_ids=multi_biasing_ids_expanded)
+                model_ids = multi_biasing_ids[:batch_size].reshape(-1)
+                scores, states_candidates = fusion_model.advance(states=states, model_ids=model_ids)
                 scores = scores.to(dtype=float_dtype).view(batch_size, self.beam_size, -1)
             else:
                 scores, states_candidates = fusion_model.advance(states=states)
@@ -374,7 +373,7 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
         lm_alpha = sum(self.fusion_models_alpha)
         if not self.per_stream_biasing_enabled or multi_biasing_ids is None:
             return lm_alpha
-        ids = multi_biasing_ids[:batch_size]
+        ids = multi_biasing_ids[:batch_size, 0]
         valid = ids >= 0
         safe_ids = ids.clamp(min=0)
         gathered = self.biasing_multi_model.model2alpha[safe_ids]
@@ -500,9 +499,7 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
         if self.per_stream_biasing_enabled:
             if multi_biasing_ids is None:
                 multi_biasing_ids = torch.full([batch_size], fill_value=-1, dtype=torch.long, device=device)
-            multi_biasing_ids_expanded = multi_biasing_ids.repeat_interleave(self.beam_size)
-        else:
-            multi_biasing_ids_expanded = None
+            multi_biasing_ids = multi_biasing_ids.unsqueeze(1).expand(-1, self.beam_size)
 
         if self.has_fusion_models:
             for fusion_model in self._all_fusion_models():
@@ -517,7 +514,7 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
                 init_fusion_states = [s.reshape(-1).clone() for s in prev_batched_state.fusion_states_list]
 
             fusion_scores_list, fusion_states_candidates_list = self._advance_all_fusion_models(
-                init_fusion_states, float_dtype, multi_biasing_ids_expanded
+                init_fusion_states, float_dtype, multi_biasing_ids
             )
             fusion_states_list = [
                 init_fusion_states[i].view(batch_size, self.beam_size) for i in range(len(init_fusion_states))
@@ -709,7 +706,7 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
                         ).squeeze(-1),
                     )
                 fusion_scores_list, fusion_states_candidates_list = self._advance_all_fusion_models(
-                    [s.reshape(-1) for s in fusion_states_list], float_dtype, multi_biasing_ids_expanded
+                    [s.reshape(-1) for s in fusion_states_list], float_dtype, multi_biasing_ids
                 )
 
             # step 6: update time indices + active mask
@@ -917,13 +914,10 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
                 multi_biasing_ids = torch.full(
                     [current_batch_size], fill_value=-1, dtype=torch.long, device=encoder_output.device
                 )
-            self.state.multi_biasing_ids[:current_batch_size].copy_(multi_biasing_ids)
-            self.state.multi_biasing_ids[current_batch_size:].fill_(-1)
-            # Expand model IDs from [B] to [B * beam_size] for the active batch slice.
-            self.state.multi_biasing_ids_expanded[: current_batch_size * self.beam_size].copy_(
-                self.state.multi_biasing_ids[:current_batch_size].repeat_interleave(self.beam_size)
+            self.state.multi_biasing_ids[:current_batch_size, :].copy_(
+                multi_biasing_ids[:current_batch_size].unsqueeze(1).expand(-1, self.beam_size)
             )
-            self.state.multi_biasing_ids_expanded[current_batch_size * self.beam_size :].fill_(-1)
+            self.state.multi_biasing_ids[current_batch_size:, :].fill_(-1)
 
         # Python-side per-chunk initialization (decoder, fusion, batched_hyps cross-chunk
         # state, plus per-beam TDT carry into ``next_timestamp``).
@@ -1046,10 +1040,7 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
         device = encoder_output_projected.device
         if self.per_stream_biasing_enabled:
             self.state.multi_biasing_ids = torch.full(
-                [self.state.batch_size], fill_value=-1, dtype=torch.long, device=device
-            )
-            self.state.multi_biasing_ids_expanded = torch.full(
-                [self.state.batch_size * self.beam_size], fill_value=-1, dtype=torch.long, device=device
+                [self.state.batch_size, self.beam_size], fill_value=-1, dtype=torch.long, device=device
             )
 
         if self.has_fusion_models:
@@ -1065,7 +1056,7 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
                 self._advance_all_fusion_models(
                     [s.view(-1) for s in self.state.init_fusion_states_list],
                     self.state.float_dtype,
-                    self.state.multi_biasing_ids_expanded,
+                    self.state.multi_biasing_ids,
                 )
             )
 
@@ -1450,7 +1441,7 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
             scores_list, candidates_list = self._advance_all_fusion_models(
                 [self.state.fusion_states_list[i].view(-1) for i in range(len(self.state.fusion_states_list))],
                 self.state.float_dtype,
-                self.state.multi_biasing_ids_expanded,
+                self.state.multi_biasing_ids,
             )
             for fusion_idx in range(len(self.state.fusion_states_list)):
                 self.state.fusion_states_candidates_list[fusion_idx].copy_(candidates_list[fusion_idx])
@@ -1492,13 +1483,17 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
             if self.has_fusion_models:
                 for fusion_idx in range(len(self.state.fusion_states_list)):
                     self.state.fusion_states_list[fusion_idx].copy_(self.state.init_fusion_states_list[fusion_idx])
-                    self.state.fusion_states_candidates_list[fusion_idx].copy_(
-                        self.state.init_fusion_states_candidates_list[fusion_idx]
-                    )
-                    self.state.fusion_scores_list[fusion_idx].copy_(self.state.init_fusion_scores_list[fusion_idx])
                     self.state.fusion_states_prev_list[fusion_idx].copy_(
                         self.state.init_fusion_states_list[fusion_idx]
                     )
+                scores_list, candidates_list = self._advance_all_fusion_models(
+                    [s.view(-1) for s in self.state.fusion_states_list],
+                    self.state.float_dtype,
+                    self.state.multi_biasing_ids,
+                )
+                for fusion_idx in range(len(self.state.fusion_states_list)):
+                    self.state.fusion_states_candidates_list[fusion_idx].copy_(candidates_list[fusion_idx])
+                    self.state.fusion_scores_list[fusion_idx].copy_(scores_list[fusion_idx])
             return
 
         # Continuation chunk: seed cross-chunk per-beam batched_hyps fields, the TDT
@@ -1532,7 +1527,7 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
                     self.state.fusion_states_list[fusion_idx][:current_batch_size].copy_(
                         fusion_state[:current_batch_size]
                     )
-            multi_ids = self.state.multi_biasing_ids_expanded if self.per_stream_biasing_enabled else None
+            multi_ids = self.state.multi_biasing_ids if self.per_stream_biasing_enabled else None
             scores_list, candidates_list = self._advance_all_fusion_models(
                 [s.view(-1) for s in self.state.fusion_states_list],
                 self.state.float_dtype,

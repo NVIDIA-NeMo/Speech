@@ -18,7 +18,7 @@ from typing import Tuple
 
 import pytest
 import torch
-from hydra.utils import instantiate
+from nemo.core.classes.common import safe_instantiate
 from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.common.parts.adapter_modules import LinearAdapter

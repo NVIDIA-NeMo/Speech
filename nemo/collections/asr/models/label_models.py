@@ -23,7 +23,7 @@ import librosa
 import numpy as np
 import soundfile as sf
 import torch
-from hydra.utils import instantiate
+from nemo.core.classes.common import safe_instantiate
 from lightning.pytorch import Trainer
 from omegaconf import DictConfig, OmegaConf, open_dict
 from sklearn.metrics import roc_curve
@@ -154,16 +154,16 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel, VerificationMixin)
                 cfg_eval_loss.weight = None
 
             # May need a general check for arguments of loss
-            self.loss = instantiate(cfg.loss)
-            self.eval_loss = instantiate(cfg_eval_loss)
+            self.loss = safe_instantiate(cfg.loss)
+            self.eval_loss = safe_instantiate(cfg_eval_loss)
 
         else:
             tmp_loss_cfg = OmegaConf.create(
                 {"_target_": "nemo.collections.common.losses.cross_entropy.CrossEntropyLoss"}
             )
 
-            self.loss = instantiate(tmp_loss_cfg)
-            self.eval_loss = instantiate(tmp_loss_cfg)
+            self.loss = safe_instantiate(tmp_loss_cfg)
+            self.eval_loss = safe_instantiate(tmp_loss_cfg)
 
         self._accuracy = TopKClassificationAccuracy(top_k=[1])
 

@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 import torch
 import torch.distributed as dist
-from hydra.utils import instantiate
+from nemo.core.classes.common import safe_instantiate
 from omegaconf import DictConfig
 from pytorch_lightning import Trainer
 from torch.utils.data import DataLoader
@@ -136,7 +136,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
 
         self.eps = self._cfg.get("eps", 1e-3)
         self.negative_init_val = self._cfg.get("negative_init_val", -99)
-        self.loss = instantiate(self._cfg.loss)
+        self.loss = safe_instantiate(self._cfg.loss)
 
         self.async_streaming = self._cfg.get("async_streaming", False)
         self.streaming_mode = self._cfg.get("streaming_mode", False)

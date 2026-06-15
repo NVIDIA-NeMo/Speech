@@ -30,7 +30,7 @@ $ python <nemo_root_path>/scripts/dataset_processing/tts/preprocess_text.py \
 import argparse
 from pathlib import Path
 
-from hydra.utils import instantiate
+from nemo.core.classes.common import safe_instantiate
 from joblib import Parallel, delayed
 from omegaconf import OmegaConf
 from tqdm import tqdm
@@ -150,7 +150,7 @@ def main():
 
     if args.normalizer_config_path:
         normalizer_config = OmegaConf.load(args.normalizer_config_path)
-        normalizer = instantiate(normalizer_config)
+        normalizer = safe_instantiate(normalizer_config)
         lower_case_norm = normalizer.input_case == "lower_cased"
     else:
         normalizer = None

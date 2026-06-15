@@ -14,7 +14,7 @@
 
 
 import torch
-from hydra.utils import instantiate
+from nemo.core.classes.common import safe_instantiate
 from tqdm import tqdm
 
 from nemo.core.config import hydra_runner
@@ -46,7 +46,7 @@ CFG_NAME2FUNC = {
 
 @hydra_runner(config_path='ljspeech/ds_conf', config_name='ds_for_fastpitch_align')
 def main(cfg):
-    dataset = instantiate(cfg.dataset)
+    dataset = safe_instantiate(cfg.dataset)
     dataloader = torch.utils.data.DataLoader(
         dataset=dataset,
         batch_size=1,

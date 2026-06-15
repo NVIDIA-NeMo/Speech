@@ -21,7 +21,7 @@ import numpy as np
 import soundfile as sf
 import torch
 import wandb
-from hydra.utils import instantiate
+from nemo.core.classes.common import safe_instantiate
 from lightning.pytorch import Trainer
 from lightning.pytorch.loggers import TensorBoardLogger, WandbLogger
 from omegaconf import DictConfig
@@ -1361,7 +1361,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         self.validation_step_outputs.clear()  # free memory
 
     def get_dataset(self, dataset_cfg, dataset_type):
-        dataset = instantiate(
+        dataset = safe_instantiate(
             dataset_cfg.dataset,
             sample_rate=self.sample_rate,
             bos_id=None,
@@ -1440,7 +1440,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                     mode='train',
                 )
                 if self.cfg.get("phoneme_tokenizer", None) is not None:
-                    dataset.phoneme_tokenizer = instantiate(self.cfg.phoneme_tokenizer)
+                    dataset.phoneme_tokenizer = safe_instantiate(self.cfg.phoneme_tokenizer)
 
             self._train_dl = torch.utils.data.DataLoader(
                 dataset,
@@ -1462,7 +1462,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 # For num workers > 0 tokenizer will be assigned in worker_init_fn (since it is not picklable)
                 dataset.text_tokenizer = setup_tokenizers(all_tokenizers_config=self.cfg.text_tokenizers, mode='test')
                 if self.cfg.get("phoneme_tokenizer", None) is not None:
-                    dataset.phoneme_tokenizer = instantiate(self.cfg.phoneme_tokenizer)
+                    dataset.phoneme_tokenizer = safe_instantiate(self.cfg.phoneme_tokenizer)
 
             data_loader = torch.utils.data.DataLoader(
                 dataset,

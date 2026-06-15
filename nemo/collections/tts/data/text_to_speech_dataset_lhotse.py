@@ -18,7 +18,7 @@ from typing import Dict, List, Optional, Union
 
 import numpy as np
 import torch
-from hydra.utils import instantiate
+from nemo.core.classes.common import safe_instantiate
 from lhotse import CutSet
 from lhotse.dataset.collation import collate_matrices, collate_vectors
 from omegaconf import DictConfig, open_dict
@@ -54,7 +54,7 @@ def setup_tokenizers(all_tokenizers_config, mode='train'):
         else:
             text_tokenizer_kwargs = {}
             if "g2p" in tokenizer_config:
-                text_tokenizer_kwargs["g2p"] = instantiate(tokenizer_config.g2p)
+                text_tokenizer_kwargs["g2p"] = safe_instantiate(tokenizer_config.g2p)
             # Ensure locale_specific_punct is persisted so it survives .nemo save/restore.
             # New training for locales with extended punctuation should use the full set (True).
             if (
@@ -77,7 +77,7 @@ def setup_tokenizers(all_tokenizers_config, mode='train'):
             ):
                 with open_dict(tokenizer_config):
                     tokenizer_config.punct_version = 2
-            tokenizer = instantiate(tokenizer_config, **text_tokenizer_kwargs)
+            tokenizer = safe_instantiate(tokenizer_config, **text_tokenizer_kwargs)
             # TODO @xueyang: is it really necessary to set phone probability to 1.0 for test mode?
             if mode == 'test' and hasattr(tokenizer, "set_phone_prob"):
                 tokenizer.set_phone_prob(1.0)
@@ -243,7 +243,7 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
 
         # initialize the phoneme tokenizer once per dataset/worker when config is available.
         if self.phoneme_tokenizer is None and self.phoneme_tokenizer_config is not None:
-            self.phoneme_tokenizer = instantiate(self.phoneme_tokenizer_config)
+            self.phoneme_tokenizer = safe_instantiate(self.phoneme_tokenizer_config)
         if (
             self.pronunciation_control_g2p is None
             and self.pronunciation_control_g2p_config is not None

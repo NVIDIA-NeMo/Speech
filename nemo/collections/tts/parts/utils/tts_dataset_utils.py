@@ -27,7 +27,7 @@ import librosa
 import numpy as np
 import torch
 from einops import rearrange
-from hydra.utils import instantiate
+from nemo.core.classes.common import safe_instantiate
 from scipy import ndimage
 from torch.special import gammaln
 
@@ -112,7 +112,7 @@ def setup_pronunciation_control_g2p(pronunciation_control_g2p_config):
         return g2p_modules
 
     for language in pronunciation_control_g2p_config:
-        g2p_modules[language] = instantiate(pronunciation_control_g2p_config[language])
+        g2p_modules[language] = safe_instantiate(pronunciation_control_g2p_config[language])
 
     return g2p_modules
 

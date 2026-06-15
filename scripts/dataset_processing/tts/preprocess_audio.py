@@ -46,7 +46,7 @@ from typing import Tuple
 
 import librosa
 import soundfile as sf
-from hydra.utils import instantiate
+from nemo.core.classes.common import safe_instantiate
 from joblib import Parallel, delayed
 from omegaconf import OmegaConf
 from tqdm import tqdm
@@ -218,7 +218,7 @@ def main():
 
     if args.trim_config_path:
         audio_trimmer_config = OmegaConf.load(args.trim_config_path)
-        audio_trimmer = instantiate(audio_trimmer_config)
+        audio_trimmer = safe_instantiate(audio_trimmer_config)
     else:
         audio_trimmer = None
 

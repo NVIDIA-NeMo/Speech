@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Union
 
 import torch
-from hydra.utils import instantiate
+from nemo.core.classes.common import safe_instantiate
 from lightning.pytorch import Trainer
 from omegaconf import DictConfig, OmegaConf
 from transformers import AutoTokenizer, T5ForConditionalGeneration
@@ -250,7 +250,7 @@ class T5G2PModel(G2PModel, Exportable):
         if "dataloader_params" not in cfg or not isinstance(cfg.dataloader_params, DictConfig):
             raise ValueError(f"No dataloader_params for {name}")
 
-        dataset = instantiate(
+        dataset = safe_instantiate(
             cfg.dataset,
             manifest_filepath=cfg.manifest_filepath,
             tokenizer=self._tokenizer,

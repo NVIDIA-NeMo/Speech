@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import List, Optional
 
 import torch
-from hydra.utils import instantiate
+from nemo.core.classes.common import safe_instantiate
 from lightning.pytorch import Trainer
 from lightning.pytorch.loggers import TensorBoardLogger
 from omegaconf import DictConfig, OmegaConf, open_dict
@@ -135,18 +135,18 @@ class FastPitchModel(SpectrogramGenerator, Exportable, FastPitchAdapterModelMixi
         self.aligner = None
         if self.learn_alignment:
             aligner_loss_scale = cfg.get("aligner_loss_scale", 1.0)
-            self.aligner = instantiate(self._cfg.alignment_module)
+            self.aligner = safe_instantiate(self._cfg.alignment_module)
             self.forward_sum_loss_fn = ForwardSumLoss(loss_scale=aligner_loss_scale)
             self.bin_loss_fn = BinLoss(loss_scale=aligner_loss_scale)
 
-        self.preprocessor = instantiate(self._cfg.preprocessor)
-        input_fft = instantiate(self._cfg.input_fft, **input_fft_kwargs)
-        output_fft = instantiate(self._cfg.output_fft)
-        duration_predictor = instantiate(self._cfg.duration_predictor)
-        pitch_predictor = instantiate(self._cfg.pitch_predictor)
-        speaker_encoder = instantiate(self._cfg.get("speaker_encoder", None))
+        self.preprocessor = safe_instantiate(self._cfg.preprocessor)
+        input_fft = safe_instantiate(self._cfg.input_fft, **input_fft_kwargs)
+        output_fft = safe_instantiate(self._cfg.output_fft)
+        duration_predictor = safe_instantiate(self._cfg.duration_predictor)
+        pitch_predictor = safe_instantiate(self._cfg.pitch_predictor)
+        speaker_encoder = safe_instantiate(self._cfg.get("speaker_encoder", None))
         energy_embedding_kernel_size = cfg.get("energy_embedding_kernel_size", 0)
-        energy_predictor = instantiate(self._cfg.get("energy_predictor", None))
+        energy_predictor = safe_instantiate(self._cfg.get("energy_predictor", None))
 
         # [TODO] may remove if we change the pre-trained config
         # cfg: condition_types = [ "add" ]
@@ -230,10 +230,10 @@ class FastPitchModel(SpectrogramGenerator, Exportable, FastPitchAdapterModelMixi
                 )
 
             # for backward compatability
-            text_tokenizer_kwargs["g2p"] = instantiate(cfg.text_tokenizer.g2p, **g2p_kwargs)
+            text_tokenizer_kwargs["g2p"] = safe_instantiate(cfg.text_tokenizer.g2p, **g2p_kwargs)
 
         # TODO @xueyang: rename the instance of tokenizer because vocab is misleading.
-        self.vocab = instantiate(cfg.text_tokenizer, **text_tokenizer_kwargs)
+        self.vocab = safe_instantiate(cfg.text_tokenizer, **text_tokenizer_kwargs)
 
     @property
     def tb_logger(self):
@@ -605,7 +605,7 @@ class FastPitchModel(SpectrogramGenerator, Exportable, FastPitchAdapterModelMixi
             phon_mode = self.vocab.set_phone_prob(self.vocab.phoneme_probability)
 
         with phon_mode:
-            dataset = instantiate(
+            dataset = safe_instantiate(
                 cfg.dataset,
                 text_tokenizer=self.vocab,
             )
@@ -621,7 +621,7 @@ class FastPitchModel(SpectrogramGenerator, Exportable, FastPitchAdapterModelMixi
             phon_mode = self.vocab.set_phone_prob(0.0)
 
         with phon_mode:
-            dataset = instantiate(
+            dataset = safe_instantiate(
                 cfg.dataset,
                 text_tokenizer=self.vocab,
             )
@@ -652,14 +652,14 @@ class FastPitchModel(SpectrogramGenerator, Exportable, FastPitchAdapterModelMixi
                 phon_mode = self.vocab.set_phone_prob(prob=None if name == "val" else self.vocab.phoneme_probability)
 
             with phon_mode:
-                dataset = instantiate(
+                dataset = safe_instantiate(
                     cfg.dataset,
                     text_normalizer=self.normalizer,
                     text_normalizer_call_kwargs=self.text_normalizer_call_kwargs,
                     text_tokenizer=self.vocab,
                 )
         else:
-            dataset = instantiate(cfg.dataset)
+            dataset = safe_instantiate(cfg.dataset)
 
         return torch.utils.data.DataLoader(dataset, collate_fn=dataset.collate_fn, **cfg.dataloader_params)
 
@@ -689,7 +689,7 @@ class FastPitchModel(SpectrogramGenerator, Exportable, FastPitchAdapterModelMixi
 
         data_loader = self._setup_test_dataloader(self.log_config)
 
-        generators = instantiate(self.log_config.generators)
+        generators = safe_instantiate(self.log_config.generators)
         log_dir = Path(self.log_config.log_dir) if self.log_config.log_dir else None
         log_callback = LoggingCallback(
             generators=generators,

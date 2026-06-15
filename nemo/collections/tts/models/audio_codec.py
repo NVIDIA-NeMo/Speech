@@ -20,7 +20,7 @@ from typing import Dict, Iterable, List, Tuple
 import torch
 import torch.nn.functional as F
 from einops import rearrange
-from hydra.utils import instantiate
+from nemo.core.classes.common import safe_instantiate
 from lightning.pytorch import Trainer
 from omegaconf import DictConfig, OmegaConf
 
@@ -87,7 +87,7 @@ class AudioCodecModel(ModelPT):
             )
 
         # Encoder setup
-        self.audio_encoder = instantiate(cfg.audio_encoder)
+        self.audio_encoder = safe_instantiate(cfg.audio_encoder)
 
         # Optionally, add gaussian noise to encoder output as an information bottleneck
         encoder_noise_stdev = cfg.get("encoder_noise_stdev", 0.0)
@@ -97,7 +97,7 @@ class AudioCodecModel(ModelPT):
             self.encoder_noise = None
 
         if "vector_quantizer" in cfg:
-            self.vector_quantizer = instantiate(cfg.vector_quantizer)
+            self.vector_quantizer = safe_instantiate(cfg.vector_quantizer)
 
             vq_output_types = list(self.vector_quantizer.output_types.keys())
 
@@ -113,11 +113,11 @@ class AudioCodecModel(ModelPT):
             self.vector_quantizer = None
 
         # Decoder setup
-        self.audio_decoder = instantiate(cfg.audio_decoder)
+        self.audio_decoder = safe_instantiate(cfg.audio_decoder)
 
         # Discriminator setup
         if cfg.get("discriminator"):
-            self.discriminator = instantiate(cfg.discriminator)
+            self.discriminator = safe_instantiate(cfg.discriminator)
         else:
             self.discriminator = None
 
@@ -142,10 +142,10 @@ class AudioCodecModel(ModelPT):
         # Optional config for using semantic distillation loss
         self.use_slm_loss = cfg.get("use_slm_loss", False)
         if self.use_slm_loss:
-            self.slm_encoder = instantiate(cfg.get("slm_encoder"))
+            self.slm_encoder = safe_instantiate(cfg.get("slm_encoder"))
             self.slm_encoder.eval()
             self.slm_encoder.freeze()
-            self.slm_predictor = instantiate(cfg.slm_predictor)
+            self.slm_predictor = safe_instantiate(cfg.slm_predictor)
             self.slm_loss_fn = torch.nn.MSELoss()
             self.slm_loss_scale = cfg.get("slm_loss_scale", 1.0)
         else:
@@ -184,20 +184,20 @@ class AudioCodecModel(ModelPT):
         # Discriminator loss setup
         self.gen_loss_scale = cfg.get("gen_loss_scale", 1.0)
         self.feature_loss_scale = cfg.get("feature_loss_scale", 1.0)
-        self.gen_loss_fn = instantiate(cfg.generator_loss)
-        self.disc_loss_fn = instantiate(cfg.discriminator_loss)
+        self.gen_loss_fn = safe_instantiate(cfg.generator_loss)
+        self.disc_loss_fn = safe_instantiate(cfg.discriminator_loss)
 
         self.mmd_loss_start_epoch = cfg.get("mmd_loss_start_epoch", 0)
 
         if "mmd_loss" in cfg:
-            self.mmd_loss_fn = instantiate(cfg.mmd_loss)
+            self.mmd_loss_fn = safe_instantiate(cfg.mmd_loss)
             self.mmd_loss_scale = cfg.get("mmd_loss_scale", 1.0)
         else:
             self.mmd_loss_fn = None
             self.mmd_loss_scale = None
 
         if "mmd_time_loss" in cfg:
-            self.mmd_time_loss_fn = instantiate(cfg.mmd_time_loss)
+            self.mmd_time_loss_fn = safe_instantiate(cfg.mmd_time_loss)
             self.mmd_time_loss_scale = cfg.get("mmd_time_loss_scale", 1.0)
         else:
             self.mmd_time_loss_fn = None
@@ -804,7 +804,7 @@ class AudioCodecModel(ModelPT):
 
     def get_dataset(self, cfg):
         if '_target_' in cfg.dataset:
-            dataset = instantiate(cfg.dataset)
+            dataset = safe_instantiate(cfg.dataset)
         else:
             dataset = VocoderDataset(**cfg.dataset.dataset_args)
 
@@ -942,13 +942,13 @@ class AudioCodecModel(ModelPT):
         self.gen_params = list(
             itertools.chain(self.audio_encoder.parameters(), self.audio_decoder.parameters(), vq_params, se_params)
         )
-        optim_g = instantiate(optim_config, params=self.gen_params)
+        optim_g = safe_instantiate(optim_config, params=self.gen_params)
 
         if self.discriminator is None:
             optim_d = None
         else:
             self.disc_params = list(self.discriminator.parameters())
-            optim_d = instantiate(optim_config, params=self.disc_params)
+            optim_d = safe_instantiate(optim_config, params=self.disc_params)
 
         if sched_config is None:
             logging.debug('Scheduler is not used')
@@ -992,7 +992,7 @@ class AudioCodecModel(ModelPT):
             return []
 
         data_loader = self._setup_test_dataloader(self.log_config)
-        generators = instantiate(self.log_config.generators)
+        generators = safe_instantiate(self.log_config.generators)
         log_dir = Path(self.log_config.log_dir) if self.log_config.log_dir else None
         log_callback = LoggingCallback(
             generators=generators,

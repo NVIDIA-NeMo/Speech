@@ -27,7 +27,7 @@ import numpy as np
 import soundfile as sf
 import torch
 import wandb
-from hydra.utils import instantiate
+from nemo.core.classes.common import safe_instantiate
 from lhotse.serialization import load_yaml
 from lightning.pytorch import Trainer
 from lightning.pytorch.loggers import TensorBoardLogger, WandbLogger
@@ -363,7 +363,7 @@ class MagpieTTSModel(ModelPT):
         # that is different than in the audio codec checkpoint.
         vector_quantizer = cfg.get('vector_quantizer')
         if vector_quantizer is not None:
-            vector_quantizer = instantiate(vector_quantizer)
+            vector_quantizer = safe_instantiate(vector_quantizer)
             num_audio_codebooks = vector_quantizer.num_codebooks
             codebook_size = vector_quantizer.codebook_size
             codec_converter = VectorQuantizerIndexConverter(
@@ -3441,7 +3441,7 @@ class MagpieTTSModel(ModelPT):
                 f"Got keys: {list(dataset_cfg.keys())}"
             )
 
-        dataset = instantiate(
+        dataset = safe_instantiate(
             dataset_cfg.datasets,
             sample_rate=self.sample_rate,
             bos_id=self.bos_id,

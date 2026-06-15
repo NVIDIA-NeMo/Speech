@@ -62,7 +62,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 import torch
-from hydra.utils import instantiate
+from nemo.core.classes.common import safe_instantiate
 from omegaconf import OmegaConf
 from tqdm import tqdm
 
@@ -176,7 +176,7 @@ def main():
             raise ValueError(f"Stats path already exists: {stats_path}")
 
     feature_config = OmegaConf.load(feature_config_path)
-    feature_config = instantiate(feature_config)
+    feature_config = safe_instantiate(feature_config)
     featurizer_dict = feature_config.featurizers
 
     print(f"Found featurizers for {list(featurizer_dict.keys())}.")

@@ -18,7 +18,7 @@ from typing import List, Optional, Tuple
 
 import pytest
 import torch
-from hydra.utils import instantiate
+from nemo.core.classes.common import safe_instantiate
 from omegaconf import DictConfig, OmegaConf, open_dict
 
 from nemo.core import ModelPT, NeuralModule
@@ -248,8 +248,8 @@ class DefaultAdapterModel(ModelPT, DefaultModelAdapterMixin):
     def __init__(self, cfg, trainer=None):
         super().__init__(cfg, trainer=trainer)
 
-        self.encoder = instantiate(cfg.encoder)  # type: DefaultModuleAdapter
-        self.decoder = instantiate(cfg.decoder)  # type: DefaultModuleAdapter
+        self.encoder = safe_instantiate(cfg.encoder)  # type: DefaultModuleAdapter
+        self.decoder = safe_instantiate(cfg.decoder)  # type: DefaultModuleAdapter
 
         # Required to be called for adapter support
         self.setup_adapters()

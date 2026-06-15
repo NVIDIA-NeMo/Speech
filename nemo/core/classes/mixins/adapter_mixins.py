@@ -19,7 +19,7 @@ from typing import Iterable, List, Optional, Set, Tuple, Union
 
 import torch
 import torch.nn as nn
-from hydra.utils import instantiate
+from nemo.core.classes.common import safe_instantiate
 from omegaconf import DictConfig, OmegaConf, open_dict
 
 from nemo.utils import logging, model_utils
@@ -271,7 +271,7 @@ class AdapterModuleMixin(ABC):
         # Update internal config and instantiate the Adapter module
         with open_dict(cfg), open_dict(self.adapter_cfg):
             adapter_enabled = cfg.pop('enabled', True)
-            self.adapter_layer[adapter_name] = instantiate(cfg, **kwargs)
+            self.adapter_layer[adapter_name] = safe_instantiate(cfg, **kwargs)
 
             cfg['enabled'] = adapter_enabled
             self.adapter_cfg[adapter_name] = cfg

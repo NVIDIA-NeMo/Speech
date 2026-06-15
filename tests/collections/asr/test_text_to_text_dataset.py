@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
-from hydra.utils import instantiate
+from nemo.core.classes.common import safe_instantiate
 from omegaconf import OmegaConf
 
 nemo_text_processing = pytest.importorskip("nemo_text_processing", reason="Requires nemo_text_processing to run")
@@ -128,7 +128,7 @@ def tts_tokenizer():
         g2p: G2PConfig = field(default_factory=lambda: G2PConfig())
 
     config = OmegaConf.create(OmegaConf.to_yaml(TextTokenizerCfg()))
-    return instantiate(config)
+    return safe_instantiate(config)
 
 
 class TestTextToTextDataset:

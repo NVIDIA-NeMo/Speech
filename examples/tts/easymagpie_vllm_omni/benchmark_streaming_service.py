@@ -48,12 +48,13 @@ MODEL_NAME = "easymp"
 class RequestResult:
     uttid: str
     num_samples: int = 0
-    elapsed_s: float = 0.0
+    duration_s: float = 0.0
     ttfa_s: float = 0.0
-    reached_eos: bool = False
-    keepup_ratios: list[float] = field(default_factory=list)
-    audio: np.ndarray | None = None
     error: str | None = None
+    # Arrival time (relative to request start) and playback duration of each audio chunk.
+    chunk_arrivals: list[float] = field(default_factory=list)
+    chunk_durations: list[float] = field(default_factory=list)
+    audio: np.ndarray | None = None
 
 
 @dataclass
@@ -146,8 +147,8 @@ def synthesize_streaming(
 
     num_samples = 0
     t_first: float | None = None
-    t_prev: float | None = None
-    keepup: list[float] = []
+    chunk_arrivals: list[float] = []
+    chunk_durations: list[float] = []
     audio_chunks: list[np.ndarray] = []
     reached_eos = False
 
@@ -159,11 +160,13 @@ def synthesize_streaming(
             result, error = result_q.get(timeout=chunk_timeout)
         except queue.Empty:
             elapsed = time.perf_counter() - t0
-            return RequestResult(uttid=uttid, elapsed_s=elapsed, ttfa_s=elapsed, error="no chunk within chunk_timeout")
+            return RequestResult(
+                uttid=uttid, duration_s=elapsed, ttfa_s=elapsed, error="no chunk within chunk_timeout"
+            )
 
         if error:
             elapsed = time.perf_counter() - t0
-            return RequestResult(uttid=uttid, elapsed_s=elapsed, ttfa_s=elapsed, error=str(error))
+            return RequestResult(uttid=uttid, duration_s=elapsed, ttfa_s=elapsed, error=str(error))
 
         response = result.get_response()
         if response.id != start_rid:
@@ -176,9 +179,8 @@ def synthesize_streaming(
                 now = time.perf_counter()
                 if t_first is None:
                     t_first = now
-                else:
-                    keepup.append((now - t_prev) / (audio.size / SAMPLE_RATE))
-                t_prev = now
+                chunk_arrivals.append(now - t0)
+                chunk_durations.append(audio.size / SAMPLE_RATE)
                 num_samples += int(audio.size)
                 if save_audio:
                     audio_chunks.append(np.asarray(audio, dtype=np.float32).reshape(-1))
@@ -201,10 +203,11 @@ def synthesize_streaming(
     return RequestResult(
         uttid=uttid,
         num_samples=num_samples,
-        elapsed_s=elapsed,
+        duration_s=elapsed,
         ttfa_s=ttfa,
-        reached_eos=reached_eos,
-        keepup_ratios=keepup,
+        error=None if reached_eos else "stream ended without final response",
+        chunk_arrivals=chunk_arrivals,
+        chunk_durations=chunk_durations,
         audio=(np.concatenate(audio_chunks) if save_audio and audio_chunks else None),
     )
 
@@ -263,7 +266,7 @@ def worker(
                 if verbose:
                     print(
                         f"[worker {worker_id:02d}] req {task_idx} ({uttid}) — "
-                        f"{result.num_samples / SAMPLE_RATE:.2f}s audio in {result.elapsed_s:.2f}s "
+                        f"{result.num_samples / SAMPLE_RATE:.2f}s audio in {result.duration_s:.2f}s "
                         f"(TTFA {result.ttfa_s * 1000:.0f}ms)"
                     )
     finally:
@@ -342,34 +345,98 @@ def _percentile(sorted_vals: list[float], pct: float) -> float:
     return sorted_vals[idx]
 
 
+def _mean(vals: list[float]) -> float:
+    return (sum(vals) / len(vals)) if vals else 0.0
+
+
+def _playback_metrics(arrivals: list[float], durations: list[float]) -> dict:
+    """Simulate gapless playback and detect buffer underruns.
+
+    Playback starts when the first chunk arrives. An underrun occurs whenever a
+    chunk has not arrived yet by the time we finish playing everything buffered
+    so far (i.e. the player would stall waiting for it). Also reports the
+    inter-chunk gaps and the per-chunk realtime factor (playback time of a chunk
+    divided by the time it took to fetch it; >1 means we receive faster than we
+    play, so the stream is sustainable).
+    """
+    n = len(arrivals)
+    if n == 0:
+        return {"chunks": 0, "underruns": 0, "gaps": [], "chunk_rtfs": []}
+
+    underruns = 0
+    gaps: list[float] = []
+    chunk_rtfs: list[float] = []
+    playback_end = arrivals[0] + durations[0]
+    for i in range(1, n):
+        gap = arrivals[i] - arrivals[i - 1]
+        gaps.append(gap)
+        if gap > 0:
+            chunk_rtfs.append(durations[i] / gap)
+        if arrivals[i] > playback_end:
+            underruns += 1
+            playback_end = arrivals[i]
+        playback_end += durations[i]
+    return {"chunks": n, "underruns": underruns, "gaps": gaps, "chunk_rtfs": chunk_rtfs}
+
+
 def _summarize(stats: BenchmarkStats, wall_s: float, concurrency: int) -> dict:
-    eos = [r for r in stats.results if r.reached_eos]
-    audio_s = sum(r.num_samples for r in eos) / SAMPLE_RATE
-    ttfas_ms = sorted(r.ttfa_s * 1000 for r in eos)
-    keepup = sorted(ratio for r in eos for ratio in r.keepup_ratios)
+    successes = [r for r in stats.results if r.error is None]
+    failures = [r for r in stats.results if r.error is not None]
+    audio_s = sum(r.num_samples for r in successes) / SAMPLE_RATE
+    ttfts_ms = sorted(r.ttfa_s * 1000 for r in successes)
+
+    itl_ms: list[float] = []
+    chunk_rtfs: list[float] = []
+    total_chunks = 0
+    total_underruns = 0
+    reqs_with_underrun = 0
+    for r in successes:
+        pm = _playback_metrics(r.chunk_arrivals, r.chunk_durations)
+        total_chunks += pm["chunks"]
+        total_underruns += pm["underruns"]
+        if pm["underruns"] > 0:
+            reqs_with_underrun += 1
+        itl_ms.extend(g * 1000 for g in pm["gaps"])
+        chunk_rtfs.extend(pm["chunk_rtfs"])
+    itl_ms.sort()
+
     return {
         "concurrency": concurrency,
-        "failed": len(stats.results) - len(eos),
+        "ok": len(successes),
+        "failed": len(failures),
         "wall_s": wall_s,
         "audio_s": audio_s,
-        "rtx": audio_s / wall_s if wall_s > 0 else 0.0,
-        "tput": len(eos) / wall_s if wall_s > 0 else 0.0,
-        "ttfa_mean_ms": (sum(ttfas_ms) / len(ttfas_ms)) if ttfas_ms else 0.0,
-        "ttfa_p95_ms": _percentile(ttfas_ms, 0.95),
-        "keepup_mean": (sum(keepup) / len(keepup)) if keepup else 0.0,
-        "keepup_p95": _percentile(keepup, 0.95),
+        "rtf": audio_s / wall_s if wall_s > 0 else 0.0,
+        "tput": len(successes) / wall_s if wall_s > 0 else 0.0,
+        "ttft_mean_ms": _mean(ttfts_ms),
+        "ttft_p95_ms": _percentile(ttfts_ms, 0.95),
+        "itl_mean_ms": _mean(itl_ms),
+        "itl_p95_ms": _percentile(itl_ms, 0.95),
+        "total_chunks": total_chunks,
+        "total_underruns": total_underruns,
+        "reqs_with_underrun": reqs_with_underrun,
+        "underrun_pct": (100.0 * total_underruns / total_chunks) if total_chunks else 0.0,
+        "playback_rtf_mean": _mean(chunk_rtfs),
     }
 
 
 def _print_summary(s: dict):
     print(
-        f"[concurrency={s['concurrency']}] rtx = synt / wall = "
-        f"{s['rtx']:.2f}x = {s['audio_s']:.2f} / {s['wall_s']:.0f}"
+        f"concurrency={s['concurrency']}:  req/s {s['tput']:.2f},  "
+        f"ttft {s['ttft_mean_ms']:.1f}ms,  itl {s['itl_mean_ms']:.1f}ms,  "
+        f"rtf {s['rtf']:.2f}x,  underrun {s['underrun_pct']:.1f}%"
     )
+
+
+def _print_detailed(s: dict):
+    print(f"[concurrency={s['concurrency']}]  {s['ok']} ok / {s['failed']} failed")
+    print(f"    req/s {s['tput']:.2f}  |  rtf {s['rtf']:.2f}x  (audio {s['audio_s']:.0f}s / wall {s['wall_s']:.2f}s)")
+    print(f"    ttft  mean {s['ttft_mean_ms']:.1f}ms  p95 {s['ttft_p95_ms']:.1f}ms")
+    print(f"    itl   mean {s['itl_mean_ms']:.1f}ms  p95 {s['itl_p95_ms']:.1f}ms")
     print(
-        f"throughput={s['tput']:.2f} req/s; failed = {s['failed']}; "
-        f"TTFA={s['ttfa_mean_ms']:.1f} / {s['ttfa_p95_ms']:.1f} (p95); "
-        f"keepup={s['keepup_mean']:.3f} / {s['keepup_p95']:.3f} (p95)"
+        f"    playback  underruns {s['total_underruns']}/{s['total_chunks']} chunks "
+        f"({s['underrun_pct']:.2f}%) in {s['reqs_with_underrun']}/{s['ok']} reqs  |  "
+        f"realtime factor mean {s['playback_rtf_mean']:.2f}x (chunk play / fetch)"
     )
 
 
@@ -444,12 +511,11 @@ def main():
         )
         summary = _summarize(stats, wall_elapsed, concurrency)
         summaries.append(summary)
-        _print_summary(summary)
+        _print_detailed(summary)
 
-    if len(summaries) > 1:
-        print("\n=== Summary ===")
-        for s in summaries:
-            _print_summary(s)
+    print("\n=== Summary ===")
+    for s in summaries:
+        _print_summary(s)
 
 
 if __name__ == "__main__":

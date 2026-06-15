@@ -16,9 +16,10 @@
 Two input modes, selectable with ``--streaming``:
 
 * whole-text (default) — the full target text is handed to the engine up front.
-* streaming-text — subword ids are pushed one at a time as the model decodes
-  (prefill chunk, then one ``StreamingInput`` chunk per subword with
-  ``max_tokens=1``, then a free-running acoustic tail).
+* streaming-text — subword ids are pushed as the model decodes, ``--tokens-per-chunk``
+  ids at a time (prefill chunk, then one ``StreamingInput`` per chunk carrying a
+  ``list[int]`` of ids with ``max_tokens == len(chunk)`` so the engine free-runs
+  that many frames off one message, then a free-running acoustic tail).
 
 Both run on the same engine config. Reports throughput, TTFT, ITL (mean + p95),
 EOS hit rate and overall RTF.
@@ -26,6 +27,7 @@ EOS hit rate and overall RTF.
 Usage:
     python benchmark_model.py --model ./easymp_vllm_model --num-requests 50
     python benchmark_model.py --model ./easymp_vllm_model -n 50 --streaming
+    python benchmark_model.py --model ./easymp_vllm_model -n 50 --streaming --tokens-per-chunk 3
     python benchmark_model.py --model ./easymp_vllm_model -n 50 -c 1 4 8
 """
 
@@ -394,12 +396,19 @@ def _clone_sampling_params(sampling_params, max_tokens: int):
     return sp
 
 
-def build_streaming_request(text: str, meta: ModelMeta, stream_params, max_new_tokens: int):
+def build_streaming_request(
+    text: str, meta: ModelMeta, stream_params, max_new_tokens: int, tokens_per_chunk: int = 1
+):
     """Async ``StreamingInput`` feed + pacing coroutine (§5 of the demo).
 
-    Prefill (speaker + context, no text), one chunk per subword with
-    ``max_tokens=1``, then a ``-1`` mask sentinel with a larger tail budget so the
-    model free-runs to audio-EOS. Input is paced by output via the queue.
+    Prefill (speaker + context, no text), then one ``StreamingInput`` per chunk of
+    up to ``tokens_per_chunk`` subword ids: ``text_token`` is the whole chunk (a
+    ``list[int]``) and the chunk's ``max_tokens`` equals its length, so the engine
+    free-runs that many frames off one message (fewer round-trips; the model still
+    consumes one id per frame internally). Finally an empty chunk (``text_token=[]``)
+    with a larger tail budget lets the model free-run to audio-EOS. Input is paced by
+    output via the queue: the next chunk is released only after the previous segment's
+    frames have all been emitted (one ``go_queue`` token per output frame).
     """
     try:
         from vllm.engine.protocol import StreamingInput
@@ -413,23 +422,38 @@ def build_streaming_request(text: str, meta: ModelMeta, stream_params, max_new_t
     }
     prefill_info.update(_speaker_info(meta))
     text_ids = list(meta.tokenizer.encode(text, add_special_tokens=False)) + [meta.text_eos_id]
+    n = max(1, int(tokens_per_chunk))
+    chunks = [text_ids[i : i + n] for i in range(0, len(text_ids), n)]
+    # Reuse a few fixed sampling_params instead of cloning per chunk: full-size
+    # chunks share ``chunk_params``; only a trailing partial chunk needs a one-off
+    # clone. ``stream_params`` (max_tokens=1) serves the prefill.
+    chunk_params = _clone_sampling_params(stream_params, n)
     tail_params = _clone_sampling_params(stream_params, max_new_tokens - len(text_ids))
     go_queue: asyncio.Queue = asyncio.Queue()
 
     async def inputs():
+        # Prefill emits one frame (stream_params.max_tokens == 1).
         yield StreamingInput(
             prompt={"prompt_token_ids": [0] * meta.prompt_len, "additional_information": prefill_info},
             sampling_params=stream_params,
         )
-        for tok in text_ids:
-            await go_queue.get()
+        prev_frames = 1
+        for chunk in chunks:
+            for _ in range(prev_frames):
+                await go_queue.get()
+            params = chunk_params if len(chunk) == n else _clone_sampling_params(stream_params, len(chunk))
             yield StreamingInput(
-                prompt={"prompt_token_ids": [0], "additional_information": {"text_token": int(tok)}},
-                sampling_params=stream_params,
+                prompt={
+                    "prompt_token_ids": [0],
+                    "additional_information": {"text_token": [int(t) for t in chunk]},
+                },
+                sampling_params=params,
             )
-        await go_queue.get()
+            prev_frames = len(chunk)
+        for _ in range(prev_frames):
+            await go_queue.get()
         yield StreamingInput(
-            prompt={"prompt_token_ids": [0], "additional_information": {"text_token": -1}},
+            prompt={"prompt_token_ids": [0], "additional_information": {"text_token": []}},
             sampling_params=tail_params,
         )
 
@@ -453,6 +477,7 @@ async def worker(
     stream_params,
     streaming: bool,
     max_new_tokens: int,
+    tokens_per_chunk: int,
     results: list,
     counter: dict,
     lock: asyncio.Lock,
@@ -469,7 +494,9 @@ async def worker(
         request_id = f"bench-easymp-w{worker_id}-{uuid.uuid4().hex[:8]}"
 
         if streaming:
-            inputs, pace = build_streaming_request(text, meta, stream_params, max_new_tokens)
+            inputs, pace = build_streaming_request(
+                text, meta, stream_params, max_new_tokens, tokens_per_chunk
+            )
             result = await run_one_request(
                 omni, inputs, stream_params, request_id, meta, pace=pace, max_steps=4 * max_new_tokens + 16
             )
@@ -544,7 +571,7 @@ async def _run_workers(omni, texts, meta, sampling_params, stream_params, args, 
         asyncio.create_task(
             worker(
                 i, omni, texts, meta, sampling_params, stream_params,
-                args.streaming, args.max_new_tokens, results, counter, lock,
+                args.streaming, args.max_new_tokens, args.tokens_per_chunk, results, counter, lock,
             )
         )
         for i in range(concurrency)
@@ -589,7 +616,10 @@ async def main(args):
     )
     if meta.prompt_len + args.max_new_tokens > args.max_model_len:
         logger.warning("prompt_len + max_new_tokens exceeds max_model_len (%d)", args.max_model_len)
-    logger.info("Mode: %s", "streaming-text" if args.streaming else "whole-text")
+    if args.streaming:
+        logger.info("Mode: streaming-text  tokens_per_chunk=%d", max(1, args.tokens_per_chunk))
+    else:
+        logger.info("Mode: whole-text")
 
     stage_cfg = _build_stage_config(
         max_num_seqs=max(args.concurrency),
@@ -695,6 +725,13 @@ def parse_args():
     parser.add_argument("--model", type=str, default="./easymp_vllm_model", help="Converted EasyMagpie model dir")
     parser.add_argument("--text-file", type=str, default=None, help="One utterance per line (optionally tab-sep)")
     parser.add_argument("--streaming", action="store_true", help="Benchmark the token-streamed input path")
+    parser.add_argument(
+        "--tokens-per-chunk",
+        type=int,
+        default=1,
+        help="Streaming only: number of subword ids to feed per StreamingInput chunk "
+        "(the engine free-runs that many frames off one message). Default: %(default)s.",
+    )
     parser.add_argument("-c", "--concurrency", type=int, nargs="+", default=[1], help="Concurrency levels to test")
     parser.add_argument("-n", "--num-requests", type=int, default=50, help="Requests per concurrency level")
     parser.add_argument("--num-warmups", type=int, default=3, help="Warmup rounds (total = concurrency * this)")

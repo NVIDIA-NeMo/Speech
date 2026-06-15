@@ -25,6 +25,7 @@ def encode_audio_with_optional_chunking(
     *,
     chunk_size_seconds: float | None,
     sampling_rate: int,
+    spk_targets: Tensor | None = None,
 ) -> list[Tensor]:
     """Encode audio rows, splitting long rows into time chunks before the perception forward.
 
@@ -41,6 +42,9 @@ def encode_audio_with_optional_chunking(
         input_signal_length: Per-row valid sample counts with shape ``(B,)`` (int64).
         chunk_size_seconds: Target chunk length in seconds; ``None`` disables chunking.
         sampling_rate: Audio sampling rate, used to convert ``chunk_size_seconds`` to samples.
+        spk_targets: Optional speaker-activity targets with shape ``(B, T_spk, N)``.
+            When present, targets are forwarded to ``perception`` and split to match
+            audio chunks.
 
     Returns:
         List of length ``B`` of fp32 embedding tensors with shape ``(T_emb_i, D)`` and
@@ -49,18 +53,21 @@ def encode_audio_with_optional_chunking(
         original audio row.
     """
     chunk_size_samples = _get_chunk_size_samples(chunk_size_seconds, sampling_rate)
+    perception_kwargs = {"input_signal": input_signal, "input_signal_length": input_signal_length}
+    if spk_targets is not None:
+        perception_kwargs["spk_targets"] = spk_targets
     if chunk_size_samples is None or input_signal_length.numel() == 0:
-        audio_embs, audio_emb_lens = perception(input_signal=input_signal, input_signal_length=input_signal_length)
+        audio_embs, audio_emb_lens = perception(**perception_kwargs)
         return _unpad_audio_embeddings(audio_embs, audio_emb_lens)
 
     min_chunk_size_samples = _get_min_chunk_size_samples(perception)
     chunk_size_samples = max(chunk_size_samples, min_chunk_size_samples)
     input_signal_lengths = input_signal_length.tolist()
     if max(input_signal_lengths) <= chunk_size_samples:
-        audio_embs, audio_emb_lens = perception(input_signal=input_signal, input_signal_length=input_signal_length)
+        audio_embs, audio_emb_lens = perception(**perception_kwargs)
         return _unpad_audio_embeddings(audio_embs, audio_emb_lens)
 
-    chunks, chunk_lens, chunks_per_audio = _split_audio_into_chunks(
+    chunks, chunk_lens, chunks_per_audio, chunk_spans = _split_audio_into_chunks(
         input_signal=input_signal,
         input_signal_lengths=input_signal_lengths,
         chunk_size_samples=chunk_size_samples,
@@ -68,7 +75,11 @@ def encode_audio_with_optional_chunking(
     )
     chunked_signal = pad_sequence(chunks, batch_first=True)
     chunked_lens = torch.as_tensor(chunk_lens, device=input_signal_length.device, dtype=input_signal_length.dtype)
-    chunked_embs, chunked_emb_lens = perception(input_signal=chunked_signal, input_signal_length=chunked_lens)
+    chunked_spk_targets = _split_spk_targets_into_chunks(spk_targets, input_signal_lengths, chunk_spans)
+    chunked_perception_kwargs = {"input_signal": chunked_signal, "input_signal_length": chunked_lens}
+    if chunked_spk_targets is not None:
+        chunked_perception_kwargs["spk_targets"] = chunked_spk_targets
+    chunked_embs, chunked_emb_lens = perception(**chunked_perception_kwargs)
     return _recombine_chunked_audio_embeddings(chunked_embs, chunked_emb_lens, chunks_per_audio)
 
 
@@ -119,7 +130,7 @@ def _split_audio_into_chunks(
     input_signal_lengths: list[int],
     chunk_size_samples: int,
     min_chunk_size_samples: int,
-) -> tuple[list[Tensor], list[int], list[int]]:
+) -> tuple[list[Tensor], list[int], list[int], list[tuple[int, int, int]]]:
     """Split each row of ``input_signal`` into contiguous chunks of up to ``chunk_size_samples`` samples.
 
     A tail chunk shorter than ``min_chunk_size_samples`` is folded into the previous
@@ -136,17 +147,19 @@ def _split_audio_into_chunks(
             into its predecessor.
 
     Returns:
-        A tuple ``(chunks, chunk_lens, chunks_per_audio)`` where ``chunks`` is a flat
-        list of 1D audio tensors across the whole batch, ``chunk_lens`` holds the
-        sample count of each chunk (parallel to ``chunks``), and ``chunks_per_audio``
-        holds the number of chunks produced for each original input row (length ``B``).
+        A tuple ``(chunks, chunk_lens, chunks_per_audio, chunk_spans)`` where ``chunks`` is
+        a flat list of 1D audio tensors across the whole batch, ``chunk_lens`` holds the
+        sample count of each chunk (parallel to ``chunks``), ``chunks_per_audio`` holds the
+        number of chunks produced for each original input row (length ``B``), and
+        ``chunk_spans`` stores ``(audio_idx, begin_sample, end_sample)`` for each chunk.
     """
-    chunks, chunk_lens, chunks_per_audio = [], [], []
-    for audio, audio_len in zip(input_signal, input_signal_lengths):
+    chunks, chunk_lens, chunks_per_audio, chunk_spans = [], [], [], []
+    for audio_idx, (audio, audio_len) in enumerate(zip(input_signal, input_signal_lengths)):
         if audio_len == 0:
             chunks.append(audio[:0])
             chunk_lens.append(0)
             chunks_per_audio.append(1)
+            chunk_spans.append((audio_idx, 0, 0))
             continue
 
         spans = []
@@ -164,8 +177,61 @@ def _split_audio_into_chunks(
         for begin, end in spans:
             chunks.append(audio[begin:end])
             chunk_lens.append(end - begin)
+            chunk_spans.append((audio_idx, begin, end))
         chunks_per_audio.append(len(spans))
-    return chunks, chunk_lens, chunks_per_audio
+    return chunks, chunk_lens, chunks_per_audio, chunk_spans
+
+
+def _split_spk_targets_into_chunks(
+    spk_targets: Tensor | None,
+    input_signal_lengths: list[int],
+    chunk_spans: list[tuple[int, int, int]],
+) -> Tensor | None:
+    """Slice speaker-activity targets to match previously computed audio chunks.
+
+    Args:
+        spk_targets: Optional speaker-activity targets with shape ``(B, T_spk, N)``.
+        input_signal_lengths: Per-row audio lengths in samples, used to map sample
+            spans to proportional speaker-target frame spans.
+        chunk_spans: Flat list of ``(audio_idx, begin_sample, end_sample)`` entries,
+            parallel to the chunks emitted by :func:`_split_audio_into_chunks`.
+
+    Returns:
+        A padded tensor of chunk-level speaker targets with shape
+        ``(num_chunks, max_chunk_target_len, N)``, or ``None`` when ``spk_targets``
+        is ``None``.
+    """
+    if spk_targets is None:
+        return None
+    if spk_targets.shape[0] != len(input_signal_lengths):
+        raise ValueError(
+            f"spk_targets batch size ({spk_targets.shape[0]}) must match input_signal batch size "
+            f"({len(input_signal_lengths)})."
+        )
+
+    max_audio_len = max(input_signal_lengths) if input_signal_lengths else 0
+    max_target_len = spk_targets.shape[1]
+    target_chunks = []
+    for audio_idx, begin, end in chunk_spans:
+        if max_audio_len == 0 or max_target_len == 0:
+            target_chunks.append(spk_targets[audio_idx, :0])
+            continue
+        target_begin = round(begin * max_target_len / max_audio_len)
+        target_end = round(end * max_target_len / max_audio_len)
+        target_begin = min(max(target_begin, 0), max_target_len)
+        target_end = min(max(target_end, target_begin), max_target_len)
+        if end > begin and target_end == target_begin:
+            target_end = min(target_begin + 1, max_target_len)
+        target_chunks.append(spk_targets[audio_idx, target_begin:target_end])
+
+    max_len = max(chunk.shape[0] for chunk in target_chunks)
+    padded = spk_targets.new_zeros(len(target_chunks), max_len, spk_targets.shape[-1])
+    for idx, chunk in enumerate(target_chunks):
+        chunk_len = chunk.shape[0]
+        padded[idx, :chunk_len] = chunk
+        if 0 < chunk_len < max_len:
+            padded[idx, chunk_len:] = chunk[-1]
+    return padded
 
 
 def _unpad_audio_embeddings(audio_embs: Tensor, audio_emb_lens: Tensor) -> list[Tensor]:

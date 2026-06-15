@@ -22,13 +22,16 @@ Two request flavours share one engine (``async_chunk=True`` +
 
 * **whole-text** (default) — a request carries the full ``text``; we build a single
   prompt and run ``AsyncOmni.generate(prompt, ...)``.
-* **streaming-text** — the client pushes subword ``text_token`` ids one (or a few)
-  at a time across several requests sharing a ``stream_id`` (``stream_start`` on the
-  first, ``stream_end`` on the last). We feed those tokens as ``StreamingInput``
-  chunks (prefill, then one chunk per subword with ``max_tokens=1``, then a free-
-  running acoustic tail) into a single ``AsyncOmni.generate(<async-gen>, ...)`` call.
-  All audio for the stream is sent back on the ``stream_start`` request's response
-  sender; the follow-up requests just feed tokens and close with no output.
+* **streaming-text** — the client pushes subword ``text_token`` ids across several
+  requests sharing a ``stream_id`` (``stream_start`` on the first, ``stream_end`` on
+  the last), with however many ids it wants per request. We forward each client
+  message verbatim as one ``StreamingInput`` chunk — ``text_token`` is the whole
+  ``list[int]`` and ``max_tokens == len(chunk)`` so the engine free-runs that many
+  frames off the single message (prefill first, then one chunk per client message,
+  then a free-running acoustic tail) into a single
+  ``AsyncOmni.generate(<async-gen>, ...)`` call. All audio for the stream is sent
+  back on the ``stream_start`` request's response sender; the follow-up requests
+  just feed tokens and close with no output.
 
 Both flavours converge on the same accumulator/codec pipeline:
   1. Each engine step yields the *cumulative* ``audio_codes`` ``(T_total, C*S)``
@@ -220,6 +223,20 @@ class TritonPythonModel:
         self._SamplingParams = SamplingParams
         self._RequestOutputKind = RequestOutputKind
         self._StreamingInput = StreamingInput
+
+        # Streaming chunks reuse SamplingParams keyed by max_tokens (== chunk len):
+        # one int per distinct chunk size the client sends, instead of cloning per
+        # chunk. Shared read-only across requests (the scheduler only reads them).
+        self._sp_cache: dict[int, object] = {}
+
+    def _sampling_params(self, max_tokens: int):
+        """Return a cached :class:`SamplingParams` for ``max_tokens`` (>=1)."""
+        key = max(1, int(max_tokens))
+        sp = self._sp_cache.get(key)
+        if sp is None:
+            sp = self._make_sampling_params(key)
+            self._sp_cache[key] = sp
+        return sp
 
     def _make_sampling_params(self, max_tokens: int):
         """SamplingParams shared by both paths (audio sampling happens in the LT).
@@ -596,28 +613,35 @@ class TritonPythonModel:
         )
         await self._drive_codec(gen, response_sender, request_id, speaker, text, prompt_len)
 
-    def _text_chunk(self, text_token: int, sampling_params):
+    def _text_chunk(self, text_tokens, sampling_params):
+        """One ``StreamingInput`` carrying a whole chunk of ids as a ``list[int]``."""
         return self._StreamingInput(
-            prompt={"prompt_token_ids": [0], "additional_information": {"text_token": int(text_token)}},
+            prompt={
+                "prompt_token_ids": [0],
+                "additional_information": {"text_token": [int(t) for t in text_tokens]},
+            },
             sampling_params=sampling_params,
         )
 
     async def _stream_inputs(self, session: _StreamingSession):
         """Yield ``StreamingInput`` chunks for a streaming-text session.
 
-        Prefill (speaker + context, no text), then one ``max_tokens=1`` chunk per
-        subword id, then — once the client signals ``stream_end`` — the text-EOS id
-        and a ``-1`` mask sentinel whose raised ``max_tokens`` lets the model free-run
-        the acoustic tail to audio-EOS.
+        Prefill (speaker + context, no text) emits one frame, then we forward each
+        client message verbatim as one chunk: ``text_token`` is the whole
+        ``list[int]`` and ``max_tokens == len(chunk)`` so the engine free-runs that
+        many frames off the single message (the model appends the ids to its buffer
+        and consumes one per frame). Once the client signals ``stream_end`` we append
+        the text-EOS id and then a ``[]`` tail chunk whose raised ``max_tokens`` lets
+        the model free-run the acoustic tail to audio-EOS.
 
-        Every post-prefill chunk is gated on ``session.pace_q`` (one decode-step
-        output == one chunk released) so the eagerly-drained feed can't overwrite a
-        not-yet-consumed ``text_token``; content tokens are additionally gated on the
-        client actually having sent them.
+        Each post-prefill chunk is gated on ``session.pace_q`` — one decode-step
+        output per emitted frame, ``prev_frames`` of them — so the eagerly-drained
+        feed can't overwrite a chunk's ``text_token`` before the model has consumed
+        all of it.
         """
         StreamingInput = self._StreamingInput
         prompt_len = self._prompt_len(session.speaker)
-        sp1 = self._make_sampling_params(1)
+        sp1 = self._sampling_params(1)
 
         prefill_info = {
             "speaker_id": session.speaker,
@@ -625,45 +649,48 @@ class TritonPythonModel:
             "temperature": self.lt_temperature,
             "top_k": self.lt_top_k,
         }
-        # Prefill is released immediately; its decode-step output unblocks the first
-        # text token (mirrors the demo's go_queue handshake).
+        # Prefill is released immediately; its single decode-step output unblocks the
+        # first text chunk (mirrors the demo's go_queue handshake).
         yield StreamingInput(
             prompt={"prompt_token_ids": [0] * prompt_len, "additional_information": prefill_info},
             sampling_params=sp1,
         )
+        # Frames the last-yielded segment will emit (prefill -> 1); each gates the
+        # next chunk on that many pace_q tokens.
+        prev_frames = 1
 
         n_text = 0
-        pending: list = []
         ended = False
-        while True:
-            # Refill from the client; block only while we have nothing buffered.
-            while not pending and not ended:
-                item = await session.token_q.get()
-                if item is _STREAM_END:
-                    ended = True
-                else:
-                    pending.extend(int(t) for t in item)
-            if not pending:
+        while not ended:
+            item = await session.token_q.get()
+            if item is _STREAM_END:
+                ended = True
                 break
-            await session.pace_q.get()
-            tok = pending.pop(0)
-            yield self._text_chunk(tok, sp1)
-            n_text += 1
+            chunk = [int(t) for t in item]
+            if not chunk:
+                continue
+            for _ in range(prev_frames):
+                await session.pace_q.get()
+            yield self._text_chunk(chunk, self._sampling_params(len(chunk)))
+            prev_frames = len(chunk)
+            n_text += len(chunk)
 
-        await session.pace_q.get()
-        yield self._text_chunk(self.text_eos_id, sp1)
+        for _ in range(prev_frames):
+            await session.pace_q.get()
+        yield self._text_chunk([self.text_eos_id], sp1)
+        prev_frames = 1
         n_text += 1
 
-        await session.pace_q.get()
+        for _ in range(prev_frames):
+            await session.pace_q.get()
         tail_budget = self.max_new_tokens - n_text
-        tail_params = self._make_sampling_params(tail_budget)
-        yield self._text_chunk(-1, tail_params)
+        yield self._text_chunk([], self._sampling_params(tail_budget))
 
     async def _synthesize_streaming(self, session: _StreamingSession):
         prompt_len = self._prompt_len(session.speaker)
         inputs_gen = self._stream_inputs(session)
         gen = self.omni.generate(
-            inputs_gen, sampling_params_list=[self._make_sampling_params(1)], request_id=session.request_id
+            inputs_gen, sampling_params_list=[self._sampling_params(1)], request_id=session.request_id
         )
         try:
             await self._drive_codec(

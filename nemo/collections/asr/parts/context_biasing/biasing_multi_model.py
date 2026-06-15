@@ -243,9 +243,8 @@ class GPUBiasingMultiModelReference(GPUBiasingMultiModelBase):
         valid = model_ids >= 0
         if not self.alphas:
             return torch.zeros(model_ids.shape[0], device=model_ids.device, dtype=torch.float32)
-        safe_ids = model_ids.clamp(min=0)
         alphas = torch.tensor(self.alphas, device=model_ids.device, dtype=torch.float32)
-        gathered = alphas[safe_ids]
+        gathered = alphas[model_ids]
         return torch.where(valid, gathered, torch.zeros_like(gathered))
 
     def advance(
@@ -599,8 +598,7 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
 
     def get_alphas(self, model_ids: torch.Tensor) -> torch.Tensor:
         valid = model_ids >= 0
-        safe_ids = model_ids.clamp(min=0)
-        gathered = self.model2alpha[safe_ids]
+        gathered = self.model2alpha[model_ids]
         return torch.where(valid, gathered, torch.zeros_like(gathered))
 
     def advance(

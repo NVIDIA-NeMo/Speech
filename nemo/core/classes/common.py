@@ -74,7 +74,7 @@ ALLOWED_TARGET_PREFIXES = [
     "megatron.",
 ]
 
-ALLOWED_NEMO_SUBMODULE_PREFIXES = [
+ALLOWED_CALLABLE_PREFIXES = [
     "nemo.collections.common.tokenizers",
     "nemo.collections.common.parts",
     "nemo.collections.asr.modules",
@@ -82,14 +82,14 @@ ALLOWED_NEMO_SUBMODULE_PREFIXES = [
     "nemo.collections.audio.parts",
     "nemo.collections.speechlm",
     "nemo.collections.llm",
-    "nemo.core.classes.mixins.adapter_mixin_strategies",
     "nemo.lightning",
-    "lightning.pytorch.accelerators",
-    "lightning.pytorch.callbacks",
-    "lightning.pytorch.loggers",
-    "lightning.pytorch.strategies",
     "megatron.core",
     "tests.collections.llm.common",
+]
+
+ALLOWED_ADAPTER_STRATEGY_PREFIXES = [
+    "nemo.core.classes.mixins.adapter_mixin_strategies",
+    "nemo.collections.asr.parts.submodules.adapters",
 ]
 
 
@@ -120,8 +120,10 @@ def _is_target_allowed(target: str) -> bool:
                     target_parts = target.split('.')
                     if len(target_parts) >= 3:  # e.g., nemo.collections.asr
                         module_path = '.'.join(target_parts[:-1])  # Remove function/class name
-                        # Check if the module path is in our approved prefixes
-                        if any(module_path.startswith(p) for p in ALLOWED_NEMO_SUBMODULE_PREFIXES):
+                        # Check if the module path is in our approved callable or adapter strategy prefixes.
+                        if any(module_path.startswith(p) for p in ALLOWED_CALLABLE_PREFIXES) or any(
+                            module_path.startswith(p) for p in ALLOWED_ADAPTER_STRATEGY_PREFIXES
+                        ):
                             # This is likely a legitimate NeMo function/class that we can't import
                             # due to missing dependencies. We'll assume it's safe.
                             return True
@@ -129,7 +131,7 @@ def _is_target_allowed(target: str) -> bool:
 
     # If it's a class: allow only subclasses of safe bases
     if isinstance(obj, type):
-        if is_dataclass(obj):
+        if target.startswith("nemo.core.config.") and is_dataclass(obj):
             return True
 
         from nemo.core.classes.modelPT import ModelPT
@@ -142,13 +144,39 @@ def _is_target_allowed(target: str) -> bool:
             return False
 
         module_name = getattr(obj, "__module__", "") or ""
-        if any(module_name.startswith(p) for p in ALLOWED_NEMO_SUBMODULE_PREFIXES):
-            return True
+        if any(module_name.startswith(p) for p in ALLOWED_ADAPTER_STRATEGY_PREFIXES):
+            from nemo.core.classes.mixins.adapter_mixin_strategies import AbstractAdapterStrategy
 
-    # If it's a callable function: allow only if in approved NeMo submodules
-    if callable(obj):
+            try:
+                return issubclass(obj, AbstractAdapterStrategy)
+            except TypeError:
+                return False
+
+        if target.startswith("lightning.pytorch."):
+            try:
+                if target.startswith("lightning.pytorch.accelerators."):
+                    from lightning.pytorch.accelerators import Accelerator
+
+                    return issubclass(obj, Accelerator)
+                if target.startswith("lightning.pytorch.callbacks."):
+                    from lightning.pytorch.callbacks import Callback
+
+                    return issubclass(obj, Callback)
+                if target.startswith("lightning.pytorch.loggers."):
+                    from lightning.pytorch.loggers.logger import Logger
+
+                    return issubclass(obj, Logger)
+                if target.startswith("lightning.pytorch.strategies."):
+                    from lightning.pytorch.strategies import Strategy
+
+                    return issubclass(obj, Strategy)
+            except (ImportError, TypeError):
+                return False
+
+    # If it's a callable function: allow only if in approved submodules.
+    if callable(obj) and not isinstance(obj, type):
         module_name = getattr(obj, "__module__", "") or ""
-        if any(module_name.startswith(p) for p in ALLOWED_NEMO_SUBMODULE_PREFIXES):
+        if any(module_name.startswith(p) for p in ALLOWED_CALLABLE_PREFIXES):
             return True
         return False
 

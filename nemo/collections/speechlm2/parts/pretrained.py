@@ -270,7 +270,7 @@ def _load_checkpoint_state(checkpoint_path: str) -> dict:
 
         return load_file(os.path.join(checkpoint_path, "model.safetensors"))
     else:
-        return torch.load(checkpoint_path, weights_only=False, map_location='cpu')['state_dict']
+        return torch.load(checkpoint_path, map_location='cpu')['state_dict']
 
 
 def init_perception_from_checkpoint(model: torch.nn.Module, checkpoint_path: str):

@@ -84,7 +84,7 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
             self._reference_model = EasyMagpieTTSModel(cfg=ref_model_cfg)
             logging.info("Loading EasyMagpie reference model from checkpoint")
             self._reference_model.load_state_dict(
-                torch.load(cfg.reference_model_ckpt_path, map_location="cpu", weights_only=False)['state_dict']
+                torch.load(cfg.reference_model_ckpt_path, map_location="cpu")['state_dict']
             )
             self._reference_model.freeze()
             self._reference_model._no_state_dict = True

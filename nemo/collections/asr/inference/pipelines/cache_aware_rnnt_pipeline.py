@@ -32,7 +32,7 @@ from nemo.collections.asr.inference.streaming.framing.multi_stream import Contin
 from nemo.collections.asr.inference.streaming.framing.request import FeatureBuffer, Frame, Request
 from nemo.collections.asr.inference.streaming.framing.request_options import ASRRequestOptions
 from nemo.collections.asr.inference.streaming.state.cache_aware_rnnt_state import (
-    CacheAwareRNNTMALSDStreamingState,
+    CacheAwareRNNTBeamStreamingState,
     CacheAwareRNNTStreamingState,
 )
 from nemo.collections.asr.inference.utils.endpointing_utils import millisecond_to_frames
@@ -88,26 +88,19 @@ class CacheAwareRNNTPipeline(BasePipeline):
         super().__init__()
 
     def init_decoding_computer(self) -> None:
-        """
-        Probe the model's decoding stack once and stash the resulting computer
-        on ``self`` so per-chunk code can branch on it without re-doing the
-        attribute-chain dive.
-
-        Exactly one of ``self.decoding_computer`` (MALSD beam-search) and
-        ``self.greedy_decoding_computer`` (greedy, used for per-stream biasing
-        detection) is non-``None`` for any supported decoding stack; both are
-        ``None`` if the stack exposes no ``decoding_computer`` at all.
-        """
+        """Initialize ``decoding_computer``."""
+        self.decoding_computer = None
         try:
-            decoding_computer = self.asr_model.asr_model.decoding.decoding.decoding_computer
+            self.decoding_computer = self.asr_model.asr_model.decoding.decoding.decoding_computer
         except AttributeError:
-            decoding_computer = None
-        if isinstance(decoding_computer, ModifiedALSDBatchedRNNTComputer):
-            self.decoding_computer: ModifiedALSDBatchedRNNTComputer | None = decoding_computer
-            self.greedy_decoding_computer = None
-        else:
-            self.decoding_computer = None
-            self.greedy_decoding_computer = decoding_computer
+            pass
+
+    @property
+    def malsd_decoding_computer(self) -> ModifiedALSDBatchedRNNTComputer | None:
+        """Return ``decoding_computer`` when beam-search MALSD is active."""
+        if isinstance(self.decoding_computer, ModifiedALSDBatchedRNNTComputer):
+            return self.decoding_computer
+        return None
 
     def init_parameters(self, cfg: DictConfig) -> None:
         """
@@ -210,12 +203,12 @@ class CacheAwareRNNTPipeline(BasePipeline):
         Args:
             options: (ASRRequestOptions) Request options for particular stream.
         Returns:
-            (CacheAwareRNNTStreamingState) New empty state. Returns the MALSD subclass
+            (CacheAwareRNNTStreamingState) New empty state. Returns the beam-search subclass
             when the pipeline is configured for beam-search decoding.
         """
         state = (
-            CacheAwareRNNTMALSDStreamingState()
-            if self.decoding_computer is not None
+            CacheAwareRNNTBeamStreamingState()
+            if self.malsd_decoding_computer is not None
             else CacheAwareRNNTStreamingState()
         )
         state.set_global_offset(0)
@@ -287,13 +280,10 @@ class CacheAwareRNNTPipeline(BasePipeline):
         biasing_enabled: bool,
     ) -> tuple[list[Hypothesis], object]:
         """
-        Dispatcher between the greedy single-shot path and the MALSD beam path.
-
-        For greedy (``self.decoding_computer is None``) this just calls the existing
-        ``asr_model.stream_step``. For MALSD it runs the encoder once and drives
-        :class:`ModifiedALSDBatchedRNNTComputer` with the per-stream beam carry.
+        Run one cache-aware encode/decode step for the current chunk.
+        Returns per-stream hypotheses and the updated encoder cache context.
         """
-        if self.decoding_computer is None:
+        if self.malsd_decoding_computer is None:
             return self.asr_model.stream_step(
                 processed_signal=feature_buffers,
                 processed_signal_length=feature_buffer_lens,
@@ -306,6 +296,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
                 prompt_vectors=prompt_vectors,
             )
         return self._malsd_stream_step(
+            malsd_computer=self.malsd_decoding_computer,
             states=states,
             feature_buffers=feature_buffers,
             feature_buffer_lens=feature_buffer_lens,
@@ -317,7 +308,8 @@ class CacheAwareRNNTPipeline(BasePipeline):
 
     def _malsd_stream_step(
         self,
-        states: list[CacheAwareRNNTMALSDStreamingState],
+        malsd_computer: ModifiedALSDBatchedRNNTComputer,
+        states: list[CacheAwareRNNTBeamStreamingState],
         feature_buffers: Tensor,
         feature_buffer_lens: Tensor,
         context,
@@ -358,12 +350,8 @@ class CacheAwareRNNTPipeline(BasePipeline):
         if all(c is None for c in carries):
             batched_state = None
         else:
-            batched_state = self.decoding_computer.merge_to_batched_state(carries)
-
-        # All MALSD GPU work (encoder, decoder, windowed walk, split) shares one
-        # ``inference_mode`` region: ``split_batched_state`` mutates the inference
-        # tensors returned by ``decoding_computer(...)`` in place, which is illegal
-        # once we've left the captured ``inference_mode`` region.
+            batched_state = malsd_computer.merge_to_batched_state(carries)
+            
         with (
             torch.amp.autocast(
                 device_type=self.asr_model.device_str,
@@ -386,7 +374,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
             # computer expects [B, T, D] (matches the rest of the decoding stack).
             encs_dim_last = encoded.transpose(1, 2).contiguous()
 
-            best_batched_hyps, batched_state = self.decoding_computer(encs_dim_last, encoded_len, batched_state)
+            best_batched_hyps, batched_state = malsd_computer(encs_dim_last, encoded_len, batched_state)
 
             self._update_windowed_beam_state(states=states, best_batched_hyps=best_batched_hyps)
 
@@ -396,7 +384,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
             beam_indices_cpu = best_batched_hyps.scores.argmax(dim=-1).detach().cpu().tolist()
             scores_cpu = best_batched_hyps.scores.detach().cpu()
 
-            carry_items = self.decoding_computer.split_batched_state(batched_state)
+            carry_items = malsd_computer.split_batched_state(batched_state)
             for state, carry in zip(states, carry_items):
                 state.hyp_decoding_state = carry
 
@@ -425,7 +413,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
 
     def _update_windowed_beam_state(
         self,
-        states: list[CacheAwareRNNTMALSDStreamingState],
+        states: list[CacheAwareRNNTBeamStreamingState],
         best_batched_hyps: BatchedBeamHyps,
     ) -> None:
         """
@@ -444,7 +432,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
             state.window_beam_tokens = [prev_t[int(rp[k])] + ct[k] for k in range(beam_size)]
             state.window_beam_timestamps = [prev_ts[int(rp[k])] + cts[k] for k in range(beam_size)]
 
-    def run_malsd_decoder(self, state: CacheAwareRNNTMALSDStreamingState, request: Request, hyp: Hypothesis) -> bool:
+    def run_malsd_decoder(self, state: CacheAwareRNNTBeamStreamingState, request: Request, hyp: Hypothesis) -> bool:
         """
         MALSD counterpart to :meth:`run_greedy_decoder`.
 
@@ -497,7 +485,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
             # label so the next utterance benefits from cross-utterance context.
             if state.hyp_decoding_state is not None:
                 top1 = int(state.hyp_decoding_state.score.argmax().item())
-                self.decoding_computer.collapse_state_item_to_top1_(state.hyp_decoding_state, top1)
+                self.malsd_decoding_computer.collapse_state_item_to_top1_(state.hyp_decoding_state, top1)
             state.window_committed_tokens = list(all_tokens)
             state.window_committed_timestamps = list(all_timestamps)
             state.window_beam_tokens = None
@@ -576,12 +564,11 @@ class CacheAwareRNNTPipeline(BasePipeline):
 
         previous_hypotheses = [state.get_previous_hypothesis() for state in states]
 
-        # Per-stream biasing is only wired up on the greedy decoder. When MALSD
-        # is active ``self.greedy_decoding_computer`` is ``None`` (see
-        # :meth:`init_decoding_computer`) so ``biasing_enabled`` falls back to
-        # ``False`` and the warning in ``_malsd_stream_step`` covers the rest.
+        # Per-stream biasing is only wired up on the greedy decoder.
         biasing_enabled = (
-            self.greedy_decoding_computer is not None and self.greedy_decoding_computer.per_stream_biasing_enabled
+            self.decoding_computer is not None
+            and self.malsd_decoding_computer is None
+            and self.decoding_computer.per_stream_biasing_enabled
         )
 
         if not biasing_enabled and any(state.has_biasing_request() for state in states):
@@ -595,7 +582,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
                         if state.options.biasing_cfg.auto_manage_multi_model:
                             state.options.biasing_cfg.add_to_multi_model(
                                 tokenizer=self.asr_model.tokenizer,
-                                biasing_multi_model=self.greedy_decoding_computer.biasing_multi_model,
+                                biasing_multi_model=self.decoding_computer.biasing_multi_model,
                             )
                         else:
                             logging.warning(
@@ -640,7 +627,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
 
         # run per-request decoder for each request-state-hypothesis tuple
         for request, state, hyp in zip(requests, states, best_hyp):
-            if self.decoding_computer is not None:
+            if self.malsd_decoding_computer is not None:
                 eou_detected = self.run_malsd_decoder(state, request, hyp)
             else:
                 eou_detected = self.run_greedy_decoder(state, request, hyp)
@@ -654,15 +641,14 @@ class CacheAwareRNNTPipeline(BasePipeline):
             if eos:
                 state.reset_previous_hypothesis()
 
-        # Cleanup per-stream biasing models when stream ends (greedy path only;
-        # ``biasing_enabled`` is True only when ``self.greedy_decoding_computer`` is set).
+        # Cleanup per-stream biasing models when stream ends (greedy path only).
         if biasing_enabled:
             for request, state in zip(requests, states):
                 # only the first request contains biasing options; biasing options for the stream are stored in state
                 if request.is_last and state.has_biasing_request():
                     if state.options.biasing_cfg.auto_manage_multi_model:
                         state.options.biasing_cfg.remove_from_multi_model(
-                            biasing_multi_model=self.greedy_decoding_computer.biasing_multi_model
+                            biasing_multi_model=self.decoding_computer.biasing_multi_model
                         )
 
     def transcribe_step_for_feature_buffers(self, fbuffers: list[FeatureBuffer]) -> None:

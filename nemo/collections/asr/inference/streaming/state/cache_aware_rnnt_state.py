@@ -71,9 +71,9 @@ class CacheAwareRNNTStreamingState(CacheAwareStreamingState):
         self.previous_hypothesis = None
 
 
-class CacheAwareRNNTMALSDStreamingState(CacheAwareRNNTStreamingState):
+class CacheAwareRNNTBeamStreamingState(CacheAwareRNNTStreamingState):
     """
-    Cache-aware RNNT state for MALSD beam-search streaming.
+    Cache-aware RNNT state for beam-search streaming.
 
     Transcript assembly is ``committed prefix + live beam suffix``. Beams may
     disagree within an utterance; at EOU the top-1 path is promoted into the

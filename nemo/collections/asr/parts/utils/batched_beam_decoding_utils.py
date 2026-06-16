@@ -348,7 +348,6 @@ class BatchedBeamHyps:
         # Mark all but the first slot as inactive so the next iteration's top-k repopulates them.
         self.scores[:, 1:].fill_(INACTIVE_SCORE)
 
-
     def get_last_labels(self, pad_id: int = -1) -> torch.Tensor:
         """
         Get last labels for each hypothesis in the beam.
@@ -696,9 +695,7 @@ class BatchedBeamHyps:
         max_idx = self.current_lengths_wb.max() - 1
         transcripts = self.transcript_wb[..., : max_idx + 1]
         timestamps = self.timestamps[..., : max_idx + 1]
-        durations = (
-            self.token_durations[..., : max_idx + 1] if self.model_type == ASRModelTypeEnum.TDT else None
-        )
+        durations = self.token_durations[..., : max_idx + 1] if self.model_type == ASRModelTypeEnum.TDT else None
         return scores, transcripts, timestamps, durations, root_ptrs
 
     def _hypothesis_from_flat(

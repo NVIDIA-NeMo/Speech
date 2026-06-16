@@ -354,7 +354,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
             batched_state = None
         else:
             batched_state = malsd_computer.merge_to_batched_state(carries)
-            
+
         with (
             torch.amp.autocast(
                 device_type=self.asr_model.device_str,

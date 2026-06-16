@@ -21,7 +21,6 @@ import torch
 import torch.nn as nn
 from omegaconf import DictConfig, OmegaConf, open_dict
 
-from nemo.core.classes.common import safe_instantiate
 from nemo.utils import logging, model_utils
 
 # Global registry of all adapters
@@ -270,6 +269,8 @@ class AdapterModuleMixin(ABC):
 
         # Update internal config and instantiate the Adapter module
         with open_dict(cfg), open_dict(self.adapter_cfg):
+            from nemo.core.classes.common import safe_instantiate
+
             adapter_enabled = cfg.pop('enabled', True)
             self.adapter_layer[adapter_name] = safe_instantiate(cfg, **kwargs)
 

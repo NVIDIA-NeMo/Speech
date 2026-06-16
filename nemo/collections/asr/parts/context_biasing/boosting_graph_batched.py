@@ -152,7 +152,7 @@ class BoostingTreeModelConfig:
     source_lang: str = "en"  # The source language of the context-biasing phrases (for aggregate tokenizer)
     use_triton: bool = True  # Whether to use Triton for inference.
     uniform_weights: bool = False  # Whether to use uniform weights for the context-biasing tree as in Icefall
-    use_variative_bpe: bool = False
+    use_variative_bpe: bool = False  # Use variative BPE - primarily for case-insensitive boosting
     use_bpe_dropout: bool = False  # Whether to use BPE dropout for generating alternative transcriptions
     num_of_transcriptions: int = (
         5  # The number of alternative transcriptions to generate for each context-biasing phrase

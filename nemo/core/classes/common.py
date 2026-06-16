@@ -64,8 +64,10 @@ ALLOWED_TARGET_PREFIXES = [
     "tests.collections.",
     "tests.core.",
     "torch.nn.",
+    "torch.distributed.fsdp.",
     "torch.optim.",
     "torch.utils.data.",
+    "torchmetrics.",
     "lightning.pytorch.callbacks.",
     "lightning.pytorch.loggers.",
     "lightning.pytorch.strategies.",
@@ -90,6 +92,13 @@ ALLOWED_CALLABLE_PREFIXES = [
 ALLOWED_ADAPTER_STRATEGY_PREFIXES = [
     "nemo.core.classes.mixins.adapter_mixin_strategies",
     "nemo.collections.asr.parts.submodules.adapters",
+]
+
+ALLOWED_CLASS_PREFIXES_WITH_OPTIONAL_DEPENDENCIES = [
+    "nemo.collections.audio.parts.submodules.flow",
+    "nemo.collections.common.tokenizers",
+    "nemo.collections.speechlm2.parts.parallel",
+    "nemo.collections.tts.g2p",
 ]
 
 
@@ -120,9 +129,11 @@ def _is_target_allowed(target: str) -> bool:
                     target_parts = target.split('.')
                     if len(target_parts) >= 3:  # e.g., nemo.collections.asr
                         module_path = '.'.join(target_parts[:-1])  # Remove function/class name
-                        # Check if the module path is in our approved callable or adapter strategy prefixes.
+                        # Check if the module path is in one of our approved prefixes.
                         if any(module_path.startswith(p) for p in ALLOWED_CALLABLE_PREFIXES) or any(
                             module_path.startswith(p) for p in ALLOWED_ADAPTER_STRATEGY_PREFIXES
+                        ) or any(
+                            module_path.startswith(p) for p in ALLOWED_CLASS_PREFIXES_WITH_OPTIONAL_DEPENDENCIES
                         ):
                             # This is likely a legitimate NeMo function/class that we can't import
                             # due to missing dependencies. We'll assume it's safe.
@@ -143,6 +154,23 @@ def _is_target_allowed(target: str) -> bool:
         except TypeError:
             return False
 
+        if target.startswith("torch.optim."):
+            try:
+                return issubclass(obj, torch.optim.Optimizer)
+            except TypeError:
+                return False
+
+        if target.startswith("torchmetrics."):
+            try:
+                from torchmetrics import Metric
+
+                return issubclass(obj, Metric)
+            except (ImportError, TypeError):
+                return False
+
+        if target == "torch.distributed.fsdp.MixedPrecisionPolicy":
+            return is_dataclass(obj)
+
         module_name = getattr(obj, "__module__", "") or ""
         if any(module_name.startswith(p) for p in ALLOWED_ADAPTER_STRATEGY_PREFIXES):
             from nemo.core.classes.mixins.adapter_mixin_strategies import AbstractAdapterStrategy
@@ -151,6 +179,39 @@ def _is_target_allowed(target: str) -> bool:
                 return issubclass(obj, AbstractAdapterStrategy)
             except TypeError:
                 return False
+
+        if target.startswith("nemo.collections.common.tokenizers."):
+            try:
+                from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import BaseTokenizer
+                from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
+
+                return issubclass(obj, (BaseTokenizer, TokenizerSpec))
+            except (ImportError, TypeError):
+                return False
+
+        if target.startswith("nemo.collections.tts.g2p."):
+            try:
+                from nemo.collections.tts.g2p.models.base import BaseG2p
+
+                return issubclass(obj, BaseG2p)
+            except (ImportError, TypeError):
+                return False
+
+        if target.startswith("nemo.collections.audio.parts.submodules.flow."):
+            try:
+                from nemo.collections.audio.parts.submodules.flow import ConditionalFlow
+
+                return issubclass(obj, ConditionalFlow)
+            except (ImportError, TypeError):
+                return False
+
+        try:
+            from lightning.pytorch.strategies import Strategy
+
+            if issubclass(obj, Strategy):
+                return True
+        except (ImportError, TypeError):
+            pass
 
         if target.startswith("lightning.pytorch."):
             try:

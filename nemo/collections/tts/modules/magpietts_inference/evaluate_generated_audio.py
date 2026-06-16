@@ -35,7 +35,7 @@ import nemo.collections.asr as nemo_asr
 from nemo.collections.asr.metrics.wer import word_error_rate_detail
 from nemo.collections.tts.metrics.eou_classifier import EoUClassification, EoUClassifier, EoUType
 from nemo.collections.tts.metrics.frechet_codec_distance import FrechetCodecDistance
-from nemo.collections.tts.parts.utils.tts_dataset_utils import get_text_processor
+from nemo.collections.tts.parts.utils.tts_dataset_utils import get_text_processor, normalize_volume as normalize_audio_volume
 from nemo.utils import logging
 
 # Optional import for UTMOSv2 (audio quality metric)
@@ -51,11 +51,25 @@ except (ImportError, ModuleNotFoundError) as e:
         "To install utmosv2 run `pip install git+https://github.com/sarulab-speech/UTMOSv2.git@v1.2.1`."
     )
 
+try:
+    from huggingface_hub import hf_hub_download
+
+    HF_HUB_AVAILABLE = True
+except (ImportError, ModuleNotFoundError) as e:
+    HF_HUB_AVAILABLE = False
+    logging.warning(
+        f"huggingface_hub not available: {e}. "
+        "ECAPA2 speaker similarity metrics will be disabled."
+    )
+
 
 FILEWISE_METRICS_TO_SAVE = [
     'cer',
     'wer',
     'pred_context_ssim',
+    'pred_gt_ssim_ecapa2',
+    'pred_context_ssim_ecapa2',
+    'gt_context_ssim_ecapa2',
     'pred_text',
     'gt_text',
     'gt_audio_filepath',
@@ -209,6 +223,28 @@ def pad_audio_to_min_length(audio_np: np.ndarray, sampling_rate: int, min_second
     return audio_np
 
 
+def _normalize_audio_for_metrics(audio_path: Optional[str], output_path: str) -> Optional[str]:
+    if audio_path is None or audio_path == "":
+        return None
+
+    audio_np, sampling_rate = sf.read(audio_path, dtype="float32", always_2d=False)
+    if audio_np.ndim == 2:
+        audio_np = audio_np.mean(axis=1)
+    audio_np = normalize_audio_volume(audio_np.flatten().astype(np.float32))
+    audio_np = np.asarray(audio_np, dtype=np.float32)
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    sf.write(output_path, audio_np, sampling_rate)
+    return output_path
+
+
+def _normalize_audio_paths_for_metrics(audio_paths: list, output_dir: str, prefix: str) -> list:
+    return [
+        _normalize_audio_for_metrics(audio_path, os.path.join(output_dir, f"{prefix}_{idx}.wav"))
+        for idx, audio_path in enumerate(audio_paths)
+    ]
+
+
 def extract_embedding(model, extractor, audio_path, device, sv_model_type):
     speech_array, sampling_rate = librosa.load(audio_path, sr=16000)
     # pad to 0.5 seconds as the extractor may not be able to handle very short signals
@@ -225,6 +261,27 @@ def extract_embedding(model, extractor, audio_path, device, sv_model_type):
                 embeddings = model.get_embedding(temp_file.name).squeeze()
 
     return embeddings.squeeze()
+
+
+def load_ecapa2_model(device, cache_dir=None):
+    if not HF_HUB_AVAILABLE:
+        raise ImportError("huggingface_hub is required to download/load ECAPA2")
+
+    # automatically checks for cached file, optionally set `cache_dir` location
+    ecapa2_file = hf_hub_download(repo_id='Jenthe/ECAPA2', filename='ecapa2.pt', cache_dir=cache_dir)
+    return torch.jit.load(ecapa2_file, map_location='cpu').to(device).eval()
+
+
+def extract_ecapa2_embedding(model, audio_path, device, model_sr=16000):
+    speech_array, sampling_rate = librosa.load(audio_path, sr=model_sr)
+    # pad to 0.5 seconds as the extractor may not be able to handle very short signals
+    speech_array = pad_audio_to_min_length(speech_array, int(sampling_rate), min_seconds=0.5)
+    audio = torch.from_numpy(speech_array).float().unsqueeze(0).to(device)
+
+    with torch.inference_mode():
+        embeddings = model(audio)
+    embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
+    return embeddings.cpu().detach().squeeze()
 
 
 def compute_utmosv2_scores(audio_dir, device):
@@ -265,7 +322,12 @@ def transcribed_batched(
 
 
 def load_evaluation_models(
-    language="en", sv_model_type="titanet", asr_model_name="stt_en_conformer_transducer_large", device="cuda"
+    language="en",
+    sv_model_type="titanet",
+    asr_model_name="stt_en_conformer_transducer_large",
+    device="cuda",
+    with_ecapa2=False,
+    ecapa2_cache_dir=None,
 ):
     """Load ASR and speaker verification models used for evaluation.
 
@@ -284,6 +346,7 @@ def load_evaluation_models(
         'whisper_model': None,
         'whisper_processor': None,
         'feature_extractor': None,
+        'ecapa2_model': None,
     }
 
     if language == "en":
@@ -313,6 +376,16 @@ def load_evaluation_models(
             model_name='titanet_small'
         )
     models['sv_model_alternate'] = models['sv_model_alternate'].to(device).eval()
+
+    if with_ecapa2:
+        if HF_HUB_AVAILABLE:
+            logging.info("Loading ECAPA2 model...")
+            try:
+                models['ecapa2_model'] = load_ecapa2_model(device=device, cache_dir=ecapa2_cache_dir)
+            except Exception as e:
+                logging.warning(f"ECAPA2 model could not be loaded: {e}. ECAPA2 metrics will be set to NaN.")
+        else:
+            logging.warning("ECAPA2 requested but huggingface_hub is not available. ECAPA2 metrics will be set to NaN.")
 
     return models
 
@@ -345,6 +418,9 @@ def evaluate_dir(
     sv_model_type="titanet",
     asr_model_name="stt_en_conformer_transducer_large",
     with_utmosv2=True,
+    normalize_volume=False,
+    with_ecapa2=False,
+    ecapa2_cache_dir=None,
     asr_batch_size=32,
     eou_batch_size=32,
     device="cuda",
@@ -375,9 +451,36 @@ def evaluate_dir(
     # Resolve ground-truth and context audio paths for all records
     gt_audio_paths = [_resolve_path(audio_dir, r.get('audio_filepath')) for r in records]
     context_audio_paths = [_resolve_path(audio_dir, r.get('context_audio_filepath')) for r in records]
+    original_audio_file_lists = list(audio_file_lists)
+    original_gt_audio_paths = list(gt_audio_paths)
+    original_context_audio_paths = list(context_audio_paths)
+    generated_audio_dir_for_metrics = generated_audio_dir
+    normalization_temp_dir = None
+
+    if normalize_volume:
+        logging.info("Normalizing audio volume before metric computation...")
+        normalization_temp_dir = tempfile.TemporaryDirectory()
+        normalized_generated_audio_dir = os.path.join(normalization_temp_dir.name, "generated_audio")
+        audio_file_lists = _normalize_audio_paths_for_metrics(
+            audio_file_lists, normalized_generated_audio_dir, "predicted_audio"
+        )
+        gt_audio_paths = _normalize_audio_paths_for_metrics(
+            gt_audio_paths, os.path.join(normalization_temp_dir.name, "gt_audio"), "gt_audio"
+        )
+        context_audio_paths = _normalize_audio_paths_for_metrics(
+            context_audio_paths, os.path.join(normalization_temp_dir.name, "context_audio"), "context_audio"
+        )
+        generated_audio_dir_for_metrics = normalized_generated_audio_dir
 
     # 2. Load models
-    models = load_evaluation_models(language, sv_model_type, asr_model_name, device)
+    models = load_evaluation_models(
+        language,
+        sv_model_type,
+        asr_model_name,
+        device,
+        with_ecapa2=with_ecapa2,
+        ecapa2_cache_dir=ecapa2_cache_dir,
+    )
 
     asr_model = models['asr_model']
     whisper_model = models['whisper_model']
@@ -385,6 +488,7 @@ def evaluate_dir(
     feature_extractor = models['feature_extractor']
     speaker_verification_model = models['sv_model']
     speaker_verification_model_alternate = models['sv_model_alternate']
+    ecapa2_model = models['ecapa2_model']
 
     # 3. EoU classifier (support for English only)
     if language == "en":
@@ -403,7 +507,7 @@ def evaluate_dir(
                 "UTMOSv2 was requested (with_utmosv2=True) but the UTMOSv2 library is not available. "
                 "UTMOSv2 scores will be set to NaN for all files."
             )
-        utmosv2_scores = compute_utmosv2_scores(generated_audio_dir, device)
+        utmosv2_scores = compute_utmosv2_scores(generated_audio_dir_for_metrics, device)
 
     # 5. ASR transcription in batches
     logging.info(f"Doing batched ASR transcription with batch size {asr_batch_size}...")
@@ -496,6 +600,13 @@ def evaluate_dir(
                 device=device,
                 sv_model_type=sv_model_type,
             )
+            extract_ecapa2_embedding_fn = None
+            if ecapa2_model is not None:
+                extract_ecapa2_embedding_fn = partial(
+                    extract_ecapa2_embedding,
+                    model=ecapa2_model,
+                    device=device,
+                )
 
             # Initialize SSIMs with a default since the context or ground truth audio
             # may be unavailable.
@@ -505,6 +616,14 @@ def evaluate_dir(
             gt_context_ssim_alternate = float('NaN')
             pred_gt_ssim = float('NaN')
             pred_gt_ssim_alternate = float('NaN')
+            pred_context_ssim_ecapa2 = float('NaN')
+            gt_context_ssim_ecapa2 = float('NaN')
+            pred_gt_ssim_ecapa2 = float('NaN')
+            pred_speaker_embedding_ecapa2 = None
+            gt_speaker_embedding_ecapa2 = None
+
+            if extract_ecapa2_embedding_fn is not None and (gt_audio_filepath is not None or context_audio_filepath is not None):
+                pred_speaker_embedding_ecapa2 = extract_ecapa2_embedding_fn(audio_path=pred_audio_filepath)
 
             if gt_audio_filepath is not None:
                 # Ground truth vs. predicted
@@ -520,6 +639,12 @@ def evaluate_dir(
                 pred_gt_ssim_alternate = torch.nn.functional.cosine_similarity(
                     gt_speaker_embedding_alternate, pred_speaker_embedding_alternate, dim=0
                 ).item()
+
+                if extract_ecapa2_embedding_fn is not None:
+                    gt_speaker_embedding_ecapa2 = extract_ecapa2_embedding_fn(audio_path=gt_audio_filepath)
+                    pred_gt_ssim_ecapa2 = torch.nn.functional.cosine_similarity(
+                        gt_speaker_embedding_ecapa2, pred_speaker_embedding_ecapa2, dim=0
+                    ).item()
 
             if context_audio_filepath is not None:
                 context_speaker_embedding = extract_embedding_fn(audio_path=context_audio_filepath)
@@ -544,6 +669,16 @@ def evaluate_dir(
                     gt_context_ssim_alternate = torch.nn.functional.cosine_similarity(
                         gt_speaker_embedding_alternate, context_speaker_embedding_alternate, dim=0
                     ).item()
+
+                if extract_ecapa2_embedding_fn is not None:
+                    context_speaker_embedding_ecapa2 = extract_ecapa2_embedding_fn(audio_path=context_audio_filepath)
+                    pred_context_ssim_ecapa2 = torch.nn.functional.cosine_similarity(
+                        pred_speaker_embedding_ecapa2, context_speaker_embedding_ecapa2, dim=0
+                    ).item()
+                    if gt_audio_filepath is not None:
+                        gt_context_ssim_ecapa2 = torch.nn.functional.cosine_similarity(
+                            gt_speaker_embedding_ecapa2, context_speaker_embedding_ecapa2, dim=0
+                        ).item()
             file_duration = get_wav_file_duration(pred_audio_filepath)
             total_generated_audio_seconds += file_duration
 
@@ -576,9 +711,12 @@ def evaluate_dir(
                 'pred_gt_ssim_alternate': pred_gt_ssim_alternate,
                 'pred_context_ssim_alternate': pred_context_ssim_alternate,
                 'gt_context_ssim_alternate': gt_context_ssim_alternate,
-                'gt_audio_filepath': gt_audio_filepath,
-                'pred_audio_filepath': pred_audio_filepath,
-                'context_audio_filepath': context_audio_filepath,
+                'pred_gt_ssim_ecapa2': pred_gt_ssim_ecapa2,
+                'pred_context_ssim_ecapa2': pred_context_ssim_ecapa2,
+                'gt_context_ssim_ecapa2': gt_context_ssim_ecapa2,
+                'gt_audio_filepath': original_gt_audio_paths[ridx],
+                'pred_audio_filepath': original_audio_file_lists[ridx],
+                'context_audio_filepath': original_context_audio_paths[ridx],
                 'utmosv2': utmosv2_score,
                 'eou_type': eou_type,
                 'eou_trailing_duration': eou_trailing,
@@ -587,6 +725,9 @@ def evaluate_dir(
                 'predicted_codes_path': codes_file_lists[ridx] if has_codes else None,
             }
         )
+
+    if normalization_temp_dir is not None:
+        normalization_temp_dir.cleanup()
 
     return filewise_metrics
 
@@ -601,6 +742,9 @@ def evaluate(
     with_utmosv2=True,
     with_fcd=True,
     codec_model_path=None,
+    normalize_volume=False,
+    with_ecapa2=False,
+    ecapa2_cache_dir=None,
     asr_batch_size=32,
     eou_batch_size=32,
     device="cuda",
@@ -636,6 +780,9 @@ def evaluate(
         sv_model_type=sv_model_type,
         asr_model_name=asr_model_name,
         with_utmosv2=with_utmosv2,
+        normalize_volume=normalize_volume,
+        with_ecapa2=with_ecapa2,
+        ecapa2_cache_dir=ecapa2_cache_dir,
         asr_batch_size=asr_batch_size,
         eou_batch_size=eou_batch_size,
         device=device,
@@ -725,6 +872,11 @@ def compute_global_metrics(
         sum(m['pred_context_ssim_alternate'] for m in filewise_metrics) / n
     )
     avg_metrics['ssim_gt_context_avg_alternate'] = sum(m['gt_context_ssim_alternate'] for m in filewise_metrics) / n
+    avg_metrics['ssim_pred_gt_avg_ecapa2'] = sum(m.get('pred_gt_ssim_ecapa2', float('nan')) for m in filewise_metrics) / n
+    avg_metrics['ssim_pred_context_avg_ecapa2'] = (
+        sum(m.get('pred_context_ssim_ecapa2', float('nan')) for m in filewise_metrics) / n
+    )
+    avg_metrics['ssim_gt_context_avg_ecapa2'] = sum(m.get('gt_context_ssim_ecapa2', float('nan')) for m in filewise_metrics) / n
 
     # Cumulative WER/CER on ground-truth audio transcriptions (if available)
     gt_audio_texts = [m['gt_audio_text'] for m in filewise_metrics]
@@ -778,6 +930,9 @@ def main():
     parser.add_argument('--generated_audio_dir', type=str, default=None)
     parser.add_argument('--whisper_language', type=str, default="en")
     parser.add_argument('--evalset', type=str, default=None)
+    parser.add_argument('--normalize_volume', action='store_true')
+    parser.add_argument('--use_ecapa2', action='store_true', help='Compute ECAPA2 speaker similarity metrics')
+    parser.add_argument('--ecapa2_cache_dir', type=str, default=None)
     args = parser.parse_args()
 
     if args.evalset is not None:
@@ -793,6 +948,9 @@ def main():
         args.whisper_language,
         sv_model_type="wavlm",
         asr_model_name="nvidia/parakeet-ctc-0.6b",
+        normalize_volume=args.normalize_volume,
+        with_ecapa2=args.use_ecapa2,
+        ecapa2_cache_dir=args.ecapa2_cache_dir,
     )
 
 

@@ -129,9 +129,6 @@ def append_metrics_to_csv(csv_path: str, checkpoint_name: str, dataset: str, met
         metrics.get('ssim_pred_gt_avg_alternate', ''),
         metrics.get('ssim_pred_context_avg_alternate', ''),
         metrics.get('ssim_gt_context_avg_alternate', ''),
-        metrics.get('ssim_pred_gt_avg_ecapa2', ''),
-        metrics.get('ssim_pred_context_avg_ecapa2', ''),
-        metrics.get('ssim_gt_context_avg_ecapa2', ''),
         metrics.get('cer_gt_audio_cumulative', ''),
         metrics.get('wer_gt_audio_cumulative', ''),
         metrics.get('utmosv2_avg', ''),
@@ -244,9 +241,6 @@ def _group_multiturn_filewise_metrics_by_sample(filewise_metrics: list) -> list:
         pred_context_ssim_turns = [r.get("pred_context_ssim") for r in turns]
         pred_gt_ssim_turns = [r.get("pred_gt_ssim") for r in turns]
         gt_context_ssim_turns = [r.get("gt_context_ssim") for r in turns]
-        pred_context_ssim_ecapa2_turns = [r.get("pred_context_ssim_ecapa2") for r in turns]
-        pred_gt_ssim_ecapa2_turns = [r.get("pred_gt_ssim_ecapa2") for r in turns]
-        gt_context_ssim_ecapa2_turns = [r.get("gt_context_ssim_ecapa2") for r in turns]
         utmosv2_turns = [r.get("utmosv2") for r in turns]
         eou_type_turns = [r.get("eou_type") for r in turns]
         eou_trailing_duration_turns = [r.get("eou_trailing_duration") for r in turns]
@@ -264,9 +258,6 @@ def _group_multiturn_filewise_metrics_by_sample(filewise_metrics: list) -> list:
                 "pred_context_ssim": _mean_finite(pred_context_ssim_turns),
                 "pred_gt_ssim": _mean_finite(pred_gt_ssim_turns),
                 "gt_context_ssim": _mean_finite(gt_context_ssim_turns),
-                "pred_context_ssim_ecapa2": _mean_finite(pred_context_ssim_ecapa2_turns),
-                "pred_gt_ssim_ecapa2": _mean_finite(pred_gt_ssim_ecapa2_turns),
-                "gt_context_ssim_ecapa2": _mean_finite(gt_context_ssim_ecapa2_turns),
                 "utmosv2": _mean_finite(utmosv2_turns),
                 "eou_trailing_duration": _mean_finite(eou_trailing_duration_turns),
                 "eou_trail_rms_ratio": _mean_finite(eou_trail_rms_ratio_turns),
@@ -277,9 +268,6 @@ def _group_multiturn_filewise_metrics_by_sample(filewise_metrics: list) -> list:
                 "pred_context_ssim_turns": pred_context_ssim_turns,
                 "pred_gt_ssim_turns": pred_gt_ssim_turns,
                 "gt_context_ssim_turns": gt_context_ssim_turns,
-                "pred_context_ssim_ecapa2_turns": pred_context_ssim_ecapa2_turns,
-                "pred_gt_ssim_ecapa2_turns": pred_gt_ssim_ecapa2_turns,
-                "gt_context_ssim_ecapa2_turns": gt_context_ssim_ecapa2_turns,
                 "utmosv2_turns": utmosv2_turns,
                 "eou_type_turns": eou_type_turns,
                 "eou_trailing_duration_turns": eou_trailing_duration_turns,
@@ -314,9 +302,6 @@ def _write_grouped_multiturn_filewise_metrics_csv(csv_path: str, grouped_rows: l
         "pred_context_ssim",
         "pred_gt_ssim",
         "gt_context_ssim",
-        "pred_context_ssim_ecapa2",
-        "pred_gt_ssim_ecapa2",
-        "gt_context_ssim_ecapa2",
         "utmosv2",
         "eou_trailing_duration",
         "eou_trail_rms_ratio",
@@ -326,9 +311,6 @@ def _write_grouped_multiturn_filewise_metrics_csv(csv_path: str, grouped_rows: l
         "pred_context_ssim_turns",
         "pred_gt_ssim_turns",
         "gt_context_ssim_turns",
-        "pred_context_ssim_ecapa2_turns",
-        "pred_gt_ssim_ecapa2_turns",
-        "gt_context_ssim_ecapa2_turns",
         "utmosv2_turns",
         "eou_type_turns",
         "eou_trailing_duration_turns",
@@ -612,9 +594,7 @@ def run_inference_and_evaluation(
         "checkpoint_name,dataset,cer_filewise_avg,wer_filewise_avg,cer_cumulative,"
         "wer_cumulative,ssim_pred_gt_avg,ssim_pred_context_avg,ssim_gt_context_avg,"
         "ssim_pred_gt_avg_alternate,ssim_pred_context_avg_alternate,"
-        "ssim_gt_context_avg_alternate,ssim_pred_gt_avg_ecapa2,"
-        "ssim_pred_context_avg_ecapa2,ssim_gt_context_avg_ecapa2,"
-        "cer_gt_audio_cumulative,wer_gt_audio_cumulative,"
+        "ssim_gt_context_avg_alternate,cer_gt_audio_cumulative,wer_gt_audio_cumulative,"
         "utmosv2_avg,total_gen_audio_seconds,frechet_codec_distance,"
         "eou_cutoff_rate,eou_silence_rate,eou_noise_rate,eou_error_rate"
     )
@@ -731,9 +711,6 @@ def run_inference_and_evaluation(
                 with_utmosv2=eval_config.with_utmosv2,
                 with_fcd=eval_config.with_fcd,
                 codec_model_path=eval_config.codec_model_path,
-                normalize_volume=eval_config.normalize_volume,
-                with_ecapa2=eval_config.with_ecapa2,
-                ecapa2_cache_dir=eval_config.ecapa2_cache_dir,
                 device=eval_config.device,
                 asr_batch_size=eval_config.asr_batch_size,
                 eou_batch_size=eval_config.eou_batch_size,
@@ -978,9 +955,6 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     eval_group.add_argument('--num_repeats', type=int, default=1)
     eval_group.add_argument('--confidence_level', type=float, default=0.95)
     eval_group.add_argument('--disable_utmosv2', action='store_true')
-    eval_group.add_argument('--normalize_volume', action='store_true')
-    eval_group.add_argument('--use_ecapa2', action='store_true', help='Compute ECAPA2 speaker similarity metrics')
-    eval_group.add_argument('--ecapa2_cache_dir', type=str, default=None)
     eval_group.add_argument(
         '--violin_plot_metrics',
         type=str,
@@ -1181,9 +1155,6 @@ def main(argv=None):
         with_utmosv2=not args.disable_utmosv2,
         with_fcd=not args.disable_fcd,
         codec_model_path=args.codecmodel_path if not args.disable_fcd else None,
-        normalize_volume=args.normalize_volume,
-        with_ecapa2=args.use_ecapa2,
-        ecapa2_cache_dir=args.ecapa2_cache_dir,
         asr_batch_size=args.asr_batch_size,
         eou_batch_size=args.eou_batch_size,
     )

@@ -43,9 +43,6 @@ class EvaluationConfig:
         with_utmosv2: Whether to compute UTMOSv2 (Mean Opinion Score) metrics.
         with_fcd: Whether to compute Frechet Codec Distance metric.
         codec_model_path: Path to the audio codec model. If None, will skip computing Frechet Codec Distance metric.
-        normalize_volume: Whether to apply normalize_volume before computing evaluation metrics.
-        with_ecapa2: Whether to compute ECAPA2 speaker similarity metrics. Disabled by default.
-        ecapa2_cache_dir: Optional Hugging Face cache directory for the ECAPA2 checkpoint.
         device: Device to use for running models used during evaluation.
     """
 
@@ -56,9 +53,6 @@ class EvaluationConfig:
     with_utmosv2: bool = True
     with_fcd: bool = True
     codec_model_path: str = None
-    normalize_volume: bool = False
-    with_ecapa2: bool = False
-    ecapa2_cache_dir: str = None
     device: str = "cuda"
     asr_batch_size: int = 32
     eou_batch_size: int = 32
@@ -101,9 +95,6 @@ def evaluate_generated_audio_dir(
         with_utmosv2=config.with_utmosv2,
         with_fcd=config.with_fcd,
         codec_model_path=config.codec_model_path,
-        normalize_volume=config.normalize_volume,
-        with_ecapa2=config.with_ecapa2,
-        ecapa2_cache_dir=config.ecapa2_cache_dir,
         device=config.device,
         eou_model_name=config.eou_model_name,
         asr_batch_size=config.asr_batch_size,

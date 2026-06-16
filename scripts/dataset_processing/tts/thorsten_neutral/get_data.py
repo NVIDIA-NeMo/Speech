@@ -181,7 +181,7 @@ def __process_data(
                     continue
 
                 # skip audios if their duration is out of range.
-                duration = subprocess.check_output(f"soxi -D {wav_file}", shell=True)
+                duration = subprocess.check_output(["soxi", "-D", str(wav_file)])
                 duration = float(duration)
                 if min_duration <= duration <= max_duration:
                     entry = {

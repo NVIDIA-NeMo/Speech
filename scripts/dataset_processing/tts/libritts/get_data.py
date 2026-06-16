@@ -72,7 +72,7 @@ def __process_transcript(file_path: str):
         wav_file = file_path.replace(".normalized.txt", ".wav")
         speaker_id = file_path.split('/')[-3]
         assert os.path.exists(wav_file), f"{wav_file} not found!"
-        duration = subprocess.check_output(f"soxi -D {wav_file}", shell=True)
+        duration = subprocess.check_output(["soxi", "-D", wav_file])
         entry = {
             'audio_filepath': os.path.abspath(wav_file),
             'duration': float(duration),

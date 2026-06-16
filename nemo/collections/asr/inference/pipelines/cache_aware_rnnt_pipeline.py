@@ -370,6 +370,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
             ),
             torch.inference_mode(),
         ):
+            feature_buffers = feature_buffers.to(self.asr_model.cast_dtype)
             encoded, encoded_len, new_context = self.asr_model.encode_step(
                 processed_signal=feature_buffers,
                 processed_signal_length=feature_buffer_lens,

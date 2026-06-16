@@ -102,12 +102,12 @@ def __process_transcript(file_path: str):
             speakers.add(speaker)
             wav_file = file_path / "train" / "wav" / speaker / wav_name
             assert os.path.exists(wav_file), f"{wav_file} not found!"
-            duration = subprocess.check_output(f"soxi -D {wav_file}", shell=True)
+            duration = subprocess.check_output(["soxi", "-D", str(wav_file)])
             if float(duration) <= 3.0:  # filter out wav files shorter than 3 seconds
                 continue
             processed_file = file_path / "processed" / wav_name
             # convert wav to mono 22050HZ, 16 bit (as SFSpeech dataset)
-            subprocess.run(f"sox {wav_file} -r 22050 -c 1 -b 16 {processed_file}", shell=True)
+            subprocess.run(["sox", str(wav_file), "-r", "22050", "-c", "1", "-b", "16", str(processed_file)])
             candidates.append((processed_file, duration, text, speaker))
 
     # remapping the speakder to speaker_id (start from 1)

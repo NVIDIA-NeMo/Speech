@@ -132,7 +132,7 @@ def __process_data(data_folder: str, dst_folder: str):
                 text = transcript_dict[audio_id]
                 for li in text:
                     vocab_count[li] = vocab_count.get(li, 0) + 1
-                duration = subprocess.check_output("soxi -D {0}".format(audio_path), shell=True)
+                duration = subprocess.check_output(["soxi", "-D", audio_path])
                 duration = float(duration)
                 json_lines.append(
                     json.dumps(

@@ -650,11 +650,14 @@ class SaveRestoreConnector:
         extract_to = os.path.realpath(out_folder)
         if members is None:
             members = tar.getmembers()
+        extracted_members = []
         for member in members:
             if SaveRestoreConnector._is_safe_path(member, extract_to):
                 tar.extract(member, extract_to)
+                extracted_members.append(member)
             else:
                 logging.warning(f"Skipping potentially unsafe member: {member.name}")
+        return extracted_members
 
     @staticmethod
     def _filtered_tar_info(tar_path: str, filter_fn: Optional[Callable[[str], bool]] = None) -> list[tarfile.TarInfo]:

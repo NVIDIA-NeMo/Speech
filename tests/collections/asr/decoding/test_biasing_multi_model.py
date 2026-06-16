@@ -255,3 +255,25 @@ class TestGPUBiasingMultiModel:
         init_states = multi_model.get_init_states(batch_size=4, bos=True)
         assert init_states.shape == (4,)
         assert (init_states == GPUBiasingMultiModel.START_STATE).all()
+
+    @pytest.mark.unit
+    @pytest.mark.with_downloads
+    @pytest.mark.parametrize("device", DEVICES)
+    def test_get_alphas(self, stt_en_conformer_transducer_small, device: torch.device):
+        """Per-stream alpha lookup returns model weight or 0 for invalid ids."""
+        tokenizer = stt_en_conformer_transducer_small.tokenizer
+        vocab_size = tokenizer.vocab_size
+        multi_model = GPUBiasingMultiModel(vocab_size=vocab_size).to(device)
+        model1 = create_boosting_model(["hello"], tokenizer, device)
+        model2 = create_boosting_model(["world"], tokenizer, device)
+        model_id1 = multi_model.add_model(model1, alpha=1.0)
+        model_id2 = multi_model.add_model(model2, alpha=2.5)
+
+        model_ids = torch.tensor([model_id1, model_id2, -1, model_id1], device=device, dtype=torch.long)
+        alphas = multi_model.get_alphas(model_ids)
+
+        assert alphas.shape == (4,)
+        assert alphas[0].item() == pytest.approx(1.0)
+        assert alphas[1].item() == pytest.approx(2.5)
+        assert alphas[2].item() == pytest.approx(0.0)
+        assert alphas[3].item() == pytest.approx(1.0)

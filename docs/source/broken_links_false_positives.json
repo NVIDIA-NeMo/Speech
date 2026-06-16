@@ -89,3 +89,4 @@
 { "filename": "asr/api.rst", "lineno": 1, "status": "broken", "code": 0, "uri": "https://docs.pytorch.org/docs/stable/tensor_attributes.html#torch.device", "info": "Anchor 'torch.device' not found" }
 { "filename": "asr/api.rst", "lineno": 11, "status": "broken", "code": 0, "uri": "https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor", "info": "Anchor 'torch.Tensor' not found" }
 { "filename": "audio/api.rst", "lineno": 1, "status": "broken", "code": 0, "uri": "https://docs.pytorch.org/docs/stable/tensor_attributes.html#torch.dtype", "info": "Anchor 'torch.dtype' not found" }
+{ "filename": "starthere/install.rst", "lineno": 27, "status": "broken", "code": 0, "uri": "https://docs.pytorch.org/docs/stable/notes/serialization.html#torch-load-with-weights-only-true", "info": "Anchor 'torch-load-with-weights-only-true' not found" }

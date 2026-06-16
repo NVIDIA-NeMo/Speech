@@ -243,6 +243,10 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
     use_simulated_decoding = cfg.simulated
 
     # Change Decoding Config
+    if use_per_stream_biasing:
+        with open_dict(cfg.decoding):
+            cfg.decoding.greedy.enable_per_stream_biasing = use_per_stream_biasing
+            cfg.decoding.beam.enable_per_stream_biasing = use_per_stream_biasing
     if use_simulated_decoding:
         # simulated decoding: any config allowed, do not change config
         with open_dict(cfg.decoding):
@@ -262,8 +266,6 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
             cfg.decoding.greedy.preserve_alignments = False
             cfg.decoding.fused_batch_size = -1  # temporarily stop fused batch during inference.
             cfg.decoding.beam.return_best_hypothesis = True  # return and write the best hypothsis only
-            if use_per_stream_biasing:
-                cfg.decoding.greedy.enable_per_stream_biasing = use_per_stream_biasing
             if cfg.confidence:
                 cfg.decoding.greedy.preserve_frame_confidence = True
                 cfg.decoding.confidence_cfg.preserve_frame_confidence = True
@@ -505,6 +507,7 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
                             x=encoder_output,
                             out_len=encoder_output_len_to_decode,
                             prev_batched_state=state,
+                            multi_biasing_ids=multi_biasing_ids,
                         )
                         # flatten_ to flatten the prefix tree and link beams to prior chunks in merge_ using root_ptrs.
                         chunk_root_ptrs = chunk_batched_hyps.flatten_()
@@ -538,6 +541,7 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
                             x=encoder_output_aggregated.data,
                             out_len=encoder_output_aggregated.lengths,
                             prev_batched_state=state,
+                            multi_biasing_ids=multi_biasing_ids,
                         )
                         all_hyps.extend(current_batched_hyps.to_hyps_list(score_norm=True))
                 else:

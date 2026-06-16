@@ -49,7 +49,7 @@ sizes, or pass a frames profile to the TRT builder for a dynamic frame axis.
 Stage 2 (TRT engine build) lives in ``export_codec_decoder_trt.py``.
 
 Example:
-    python examples/tts/easymagpie_vllm_omni/export_codec_decoder_onnx.py \\
+    python examples/tts/easymagpie_vllm_omni/scripts/export_codec_decoder_onnx.py \\
         --codec_model_path /path/to/25fps_spectral_codec_with_bandwidth_extension.nemo \\
         --nemo_file /path/to/easymagpie.nemo \\
         --onnx-path codec/codec_decoder.onnx \\

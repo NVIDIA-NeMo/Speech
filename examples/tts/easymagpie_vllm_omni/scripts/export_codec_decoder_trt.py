@@ -23,7 +23,7 @@ The input tensor is ``audio_codes`` with shape ``(batch, frames, num_codebooks)`
 profile flags.
 
 Example:
-    python examples/tts/easymagpie_vllm_omni/export_codec_decoder_trt.py \\
+    python examples/tts/easymagpie_vllm_omni/scripts/export_codec_decoder_trt.py \\
         --onnx-path codec/codec_decoder.onnx \\
         --trt-path  codec/codec_decoder.plan \\
         --batch-profile 1 8 32 \\

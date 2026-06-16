@@ -19,7 +19,7 @@ streaming requests.
    text tokenizer, and optional reference speaker embeddings.
 
    ```bash
-   python examples/tts/easymagpie_vllm_omni/easy_magpietts_convert_to_vllm.py \
+   python examples/tts/easymagpie_vllm_omni/scripts/easy_magpietts_convert_to_vllm.py \
        --nemo_file <ckpt>/2605_EMTTS_SmallMamba_Step150k_posttrained_epoch12.nemo \
        --codec_model_path <ckpt>/25fps_spectral_codec_with_bandwidth_extension.nemo \
        --outdir examples/tts/easymagpie_vllm_omni/easymp_vllm_model \
@@ -34,7 +34,7 @@ streaming requests.
    waveform (clamp specials → unstack → FSQ index-convert → decode baked in).
 
    ```bash
-   python examples/tts/easymagpie_vllm_omni/export_codec_decoder_onnx.py \
+   python examples/tts/easymagpie_vllm_omni/scripts/export_codec_decoder_onnx.py \
        --codec_model_path <ckpt>/25fps_spectral_codec_with_bandwidth_extension.nemo \
        --nemo_file <ckpt>/2605_EMTTS_SmallMamba_Step150k_posttrained_epoch12.nemo \
        --onnx-path examples/tts/easymagpie_vllm_omni/codec.onnx \
@@ -60,7 +60,7 @@ streaming requests.
    it into the Triton repo as `model.plan`. For now fp32 seems to be mandatory.
 
    ```bash
-   python examples/tts/easymagpie_vllm_omni/export_codec_decoder_trt.py \
+   python examples/tts/easymagpie_vllm_omni/scripts/export_codec_decoder_trt.py \
        --onnx-path examples/tts/easymagpie_vllm_omni/codec.onnx \
        --trt-path  examples/tts/easymagpie_vllm_omni/model_repository/codec/1/model.plan \
        --batch-profile 1 8 32 --frames-profile 15 15 15 --fp32
@@ -75,5 +75,5 @@ streaming requests.
    ```
 
 7. **Send a request.** End-to-end gRPC streaming example in
-   [`run_server_request.ipynb`](run_service_request.ipynb) — sends `text`,
-   receives streamed `audio` chunks at 22.05 kHz.
+   [`scripts/run_service_request.ipynb`](scripts/run_service_request.ipynb) —
+   sends `text`, receives streamed `audio` chunks at 22.05 kHz.

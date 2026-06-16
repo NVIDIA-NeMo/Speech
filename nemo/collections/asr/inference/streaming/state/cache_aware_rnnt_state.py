@@ -24,11 +24,7 @@ if TYPE_CHECKING:
 
 class CacheAwareRNNTStreamingState(CacheAwareStreamingState):
     """
-    State of the cache aware RNNT streaming pipelines (greedy decoder).
-
-    Extends :class:`CacheAwareStreamingState` with greedy-decoding bookkeeping
-    (``previous_hypothesis``). The MALSD beam-search variant adds its own
-    per-stream carry in :class:`CacheAwareRNNTMALSDStreamingState`.
+    State of the cache aware RNNT streaming pipelines
     """
 
     def __init__(self):
@@ -70,7 +66,7 @@ class CacheAwareRNNTStreamingState(CacheAwareStreamingState):
 
     def reset_previous_hypothesis(self) -> None:
         """
-        Reset the previous hypothesis.
+        Reset the previous hypothesis to None
         """
         self.previous_hypothesis = None
 

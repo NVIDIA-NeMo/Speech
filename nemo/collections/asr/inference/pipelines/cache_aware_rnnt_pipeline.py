@@ -214,7 +214,9 @@ class CacheAwareRNNTPipeline(BasePipeline):
             when the pipeline is configured for beam-search decoding.
         """
         state = (
-            CacheAwareRNNTMALSDStreamingState() if self.decoding_computer is not None else CacheAwareRNNTStreamingState()
+            CacheAwareRNNTMALSDStreamingState()
+            if self.decoding_computer is not None
+            else CacheAwareRNNTStreamingState()
         )
         state.set_global_offset(0)
         new_options = options.fill_defaults(
@@ -384,9 +386,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
             # computer expects [B, T, D] (matches the rest of the decoding stack).
             encs_dim_last = encoded.transpose(1, 2).contiguous()
 
-            best_batched_hyps, batched_state = self.decoding_computer(
-                encs_dim_last, encoded_len, batched_state
-            )
+            best_batched_hyps, batched_state = self.decoding_computer(encs_dim_last, encoded_len, batched_state)
 
             self._update_windowed_beam_state(states=states, best_batched_hyps=best_batched_hyps)
 
@@ -444,9 +444,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
             state.window_beam_tokens = [prev_t[int(rp[k])] + ct[k] for k in range(beam_size)]
             state.window_beam_timestamps = [prev_ts[int(rp[k])] + cts[k] for k in range(beam_size)]
 
-    def run_malsd_decoder(
-        self, state: CacheAwareRNNTMALSDStreamingState, request: Request, hyp: Hypothesis
-    ) -> bool:
+    def run_malsd_decoder(self, state: CacheAwareRNNTMALSDStreamingState, request: Request, hyp: Hypothesis) -> bool:
         """
         MALSD counterpart to :meth:`run_greedy_decoder`.
 

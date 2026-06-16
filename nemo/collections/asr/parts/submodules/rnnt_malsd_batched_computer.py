@@ -1511,9 +1511,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         batched = self._get_batched_state_after_sos(device=device, batch_size=1)
         return self.split_batched_state(batched)[0]
 
-    def _get_batched_state_after_sos(
-        self, device: torch.device | str, batch_size: int
-    ) -> BatchedBeamState:
+    def _get_batched_state_after_sos(self, device: torch.device | str, batch_size: int) -> BatchedBeamState:
         """
         Build a fresh batched MALSD state after ``<SOS>``.
 
@@ -1593,9 +1591,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             )
             # ``state.fusion_states_list[k]`` is stored as ``[B, K]`` (see
             # ``modified_alsd_torch``'s ``s.view(batch_size, self.beam_size)`` step).
-            fusion_state_list = (
-                [fs[i].clone() for fs in state.fusion_states_list] if state.fusion_states_list else []
-            )
+            fusion_state_list = [fs[i].clone() for fs in state.fusion_states_list] if state.fusion_states_list else []
             items.append(
                 MALSDStateItem(
                     predictor_state=stream_predictor_state,
@@ -1603,9 +1599,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
                     label=state.labels[i].clone(),
                     decoded_length=state.decoded_lengths[i].clone(),
                     score=state.scores[i].clone() if state.scores is not None else None,
-                    transcript_hash=(
-                        state.transcript_hash[i].clone() if state.transcript_hash is not None else None
-                    ),
+                    transcript_hash=(state.transcript_hash[i].clone() if state.transcript_hash is not None else None),
                     current_lengths_nb=(
                         state.current_lengths_nb[i].clone() if state.current_lengths_nb is not None else None
                     ),
@@ -1613,9 +1607,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
                         state.last_timestamp_lasts[i].clone() if state.last_timestamp_lasts is not None else None
                     ),
                     transcript_prefix_hash=(
-                        state.transcript_prefix_hash[i].clone()
-                        if state.transcript_prefix_hash is not None
-                        else None
+                        state.transcript_prefix_hash[i].clone() if state.transcript_prefix_hash is not None else None
                     ),
                     fusion_state_list=fusion_state_list,
                 )
@@ -1736,9 +1728,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         if state.current_lengths_nb is not None:
             state.current_lengths_nb = torch.gather(state.current_lengths_nb, dim=1, index=beam_perm).contiguous()
         if state.last_timestamp_lasts is not None:
-            state.last_timestamp_lasts = torch.gather(
-                state.last_timestamp_lasts, dim=1, index=beam_perm
-            ).contiguous()
+            state.last_timestamp_lasts = torch.gather(state.last_timestamp_lasts, dim=1, index=beam_perm).contiguous()
         if state.transcript_prefix_hash is not None:
             state.transcript_prefix_hash = torch.gather(
                 state.transcript_prefix_hash, dim=1, index=beam_perm

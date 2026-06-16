@@ -25,7 +25,7 @@ import traceback
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, is_dataclass
 from enum import Enum
 from functools import total_ordering
 from pathlib import Path, PurePosixPath
@@ -62,6 +62,7 @@ ALLOWED_TARGET_PREFIXES = [
     "nemo.utils.",
     "nemo.lightning.",
     "tests.collections.",
+    "tests.core.",
     "torch.nn.",
     "torch.optim.",
     "torch.utils.data.",
@@ -81,7 +82,12 @@ ALLOWED_NEMO_SUBMODULE_PREFIXES = [
     "nemo.collections.audio.parts",
     "nemo.collections.speechlm",
     "nemo.collections.llm",
+    "nemo.core.classes.mixins.adapter_mixin_strategies",
     "nemo.lightning",
+    "lightning.pytorch.accelerators",
+    "lightning.pytorch.callbacks",
+    "lightning.pytorch.loggers",
+    "lightning.pytorch.strategies",
     "megatron.core",
     "tests.collections.llm.common",
 ]
@@ -123,6 +129,9 @@ def _is_target_allowed(target: str) -> bool:
 
     # If it's a class: allow only subclasses of safe bases
     if isinstance(obj, type):
+        if is_dataclass(obj):
+            return True
+
         from nemo.core.classes.modelPT import ModelPT
 
         SAFE_BASES = (torch.nn.Module, ModelPT)
@@ -131,6 +140,10 @@ def _is_target_allowed(target: str) -> bool:
                 return True
         except TypeError:
             return False
+
+        module_name = getattr(obj, "__module__", "") or ""
+        if any(module_name.startswith(p) for p in ALLOWED_NEMO_SUBMODULE_PREFIXES):
+            return True
 
     # If it's a callable function: allow only if in approved NeMo submodules
     if callable(obj):

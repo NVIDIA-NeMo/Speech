@@ -76,7 +76,7 @@ class CacheAwareRNNTInferenceWrapper(CacheAwareASRInferenceWrapper):
         """
         return self.asr_model.joint.vocabulary
 
-    def encode_step(
+    def encoder_step(
         self,
         processed_signal: Tensor,
         processed_signal_length: Tensor,
@@ -89,11 +89,6 @@ class CacheAwareRNNTInferenceWrapper(CacheAwareASRInferenceWrapper):
         """
         Run the cache-aware encoder for one streaming chunk, returning the (trimmed)
         encoder output and updated streaming context. Decoder is NOT invoked.
-
-        Used by :meth:`execute_step` (greedy decoder runs right after) and by
-        beam-search pipelines that drive the decoder themselves with a
-        per-stream beam carry (they call ``encode_step`` directly inside their
-        own ``autocast`` + ``inference_mode`` region).
         """
         (
             encoded,
@@ -155,7 +150,7 @@ class CacheAwareRNNTInferenceWrapper(CacheAwareASRInferenceWrapper):
         Returns:
             (tuple[list[Hypothesis], CacheAwareContext]) best hypothesis and new context.
         """
-        encoded, encoded_len, new_context = self.encode_step(
+        encoded, encoded_len, new_context = self.encoder_step(
             processed_signal=processed_signal,
             processed_signal_length=processed_signal_length,
             context=context,

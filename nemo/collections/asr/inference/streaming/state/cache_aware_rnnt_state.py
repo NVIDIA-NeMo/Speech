@@ -13,10 +13,13 @@
 # limitations under the License.
 
 
-from typing import Any
+from typing import TYPE_CHECKING
 
 from nemo.collections.asr.inference.streaming.state.cache_aware_state import CacheAwareStreamingState
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
+
+if TYPE_CHECKING:
+    from nemo.collections.asr.parts.submodules.rnnt_malsd_batched_computer import MALSDStateItem
 
 
 class CacheAwareRNNTStreamingState(CacheAwareStreamingState):
@@ -67,27 +70,20 @@ class CacheAwareRNNTStreamingState(CacheAwareStreamingState):
 
     def reset_previous_hypothesis(self) -> None:
         """
-        Reset the previous hypothesis. Called at utterance end (EOU).
+        Reset the previous hypothesis.
         """
         self.previous_hypothesis = None
 
 
 class CacheAwareRNNTMALSDStreamingState(CacheAwareRNNTStreamingState):
     """
-    Cache-aware RNNT state with MALSD beam-search per-stream bookkeeping.
+    Cache-aware RNNT state for MALSD beam-search streaming.
 
-    Adds the following fields on top of the greedy state:
+    Transcript assembly is ``committed prefix + live beam suffix``. Beams may
+    disagree within an utterance; at EOU the top-1 path is promoted into the
+    committed prefix and per-beam suffixes are cleared.
 
-    - ``hyp_decoding_state``: per-stream beam carry (``MALSDStateItem``-like)
-      shuttled between :meth:`merge_to_batched_state` and :meth:`split_batched_state`.
-    - ``window_committed_tokens`` / ``window_committed_timestamps``: cumulative
-      prefix shared by all surviving beams at the most recent EOU boundary.
-    - ``window_beam_tokens`` / ``window_beam_timestamps``: per-slot chunk-local
-      cumulative emissions since the last EOU (one list per beam slot). Beams
-      stay diverged across chunks; the chosen path is committed at EOU.
-    - ``_malsd_utterance_start``: position in the cumulative ``hyp.y_sequence``
-      where the current utterance begins, so EOU + ``cleanup_after_eou`` can
-      correctly slice past previously emitted (and cleared) utterances.
+    See :class:`CacheAwareRNNTPipeline` (``_malsd_stream_step``, ``run_malsd_decoder``).
     """
 
     def _additional_params_reset(self) -> None:
@@ -95,11 +91,19 @@ class CacheAwareRNNTMALSDStreamingState(CacheAwareRNNTStreamingState):
         Reset MALSD per-stream carry on top of the greedy state.
         """
         super()._additional_params_reset()
-        self.hyp_decoding_state: Any = None
+        # Per-stream MALSD decoder carry (``MALSDStateItem``); Shuttled through
+        # ``merge_to_batched_state`` / ``split_batched_state`` each chunk.
+        self.hyp_decoding_state: "MALSDStateItem | None" = None
+        # Finalized transcript prefix at the last EOU; identical for every beam slot.
         self.window_committed_tokens: list[int] = []
+        # Frame timestamps aligned with ``window_committed_tokens``.
         self.window_committed_timestamps: list[int] = []
+        # Per-beam suffix since last EOU; slot k may differ while beams compete.
         self.window_beam_tokens: list[list[int]] | None = None
+        # Per-beam frame timestamps aligned with ``window_beam_tokens`` (same slot layout).
         self.window_beam_timestamps: list[list[int]] | None = None
+        # Index into cumulative ``hyp.y_sequence`` where the current utterance starts
+        # (skips tokens from prior utterances still present in the cumulative hyp).
         self._malsd_utterance_start: int = 0
 
     def reset_previous_hypothesis(self) -> None:

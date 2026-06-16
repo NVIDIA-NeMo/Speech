@@ -130,10 +130,12 @@ def _is_target_allowed(target: str) -> bool:
                     if len(target_parts) >= 3:  # e.g., nemo.collections.asr
                         module_path = '.'.join(target_parts[:-1])  # Remove function/class name
                         # Check if the module path is in one of our approved prefixes.
-                        if any(module_path.startswith(p) for p in ALLOWED_CALLABLE_PREFIXES) or any(
-                            module_path.startswith(p) for p in ALLOWED_ADAPTER_STRATEGY_PREFIXES
-                        ) or any(
-                            module_path.startswith(p) for p in ALLOWED_CLASS_PREFIXES_WITH_OPTIONAL_DEPENDENCIES
+                        if (
+                            any(module_path.startswith(p) for p in ALLOWED_CALLABLE_PREFIXES)
+                            or any(module_path.startswith(p) for p in ALLOWED_ADAPTER_STRATEGY_PREFIXES)
+                            or any(
+                                module_path.startswith(p) for p in ALLOWED_CLASS_PREFIXES_WITH_OPTIONAL_DEPENDENCIES
+                            )
                         ):
                             # This is likely a legitimate NeMo function/class that we can't import
                             # due to missing dependencies. We'll assume it's safe.

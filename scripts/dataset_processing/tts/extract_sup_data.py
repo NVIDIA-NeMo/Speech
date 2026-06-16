@@ -14,9 +14,9 @@
 
 
 import torch
-from nemo.core.classes.common import safe_instantiate
 from tqdm import tqdm
 
+from nemo.core.classes.common import safe_instantiate
 from nemo.core.config import hydra_runner
 
 

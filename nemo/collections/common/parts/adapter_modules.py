@@ -15,11 +15,11 @@
 from dataclasses import dataclass, field, is_dataclass
 from typing import Any, Optional
 
-from nemo.core.classes.common import safe_instantiate
 from omegaconf import OmegaConf
 from torch import nn as nn
 
 from nemo.collections.common.parts.utils import activation_registry
+from nemo.core.classes.common import safe_instantiate
 from nemo.core.classes.mixins import access_mixins, adapter_mixin_strategies
 
 

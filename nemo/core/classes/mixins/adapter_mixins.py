@@ -19,9 +19,9 @@ from typing import Iterable, List, Optional, Set, Tuple, Union
 
 import torch
 import torch.nn as nn
-from nemo.core.classes.common import safe_instantiate
 from omegaconf import DictConfig, OmegaConf, open_dict
 
+from nemo.core.classes.common import safe_instantiate
 from nemo.utils import logging, model_utils
 
 # Global registry of all adapters

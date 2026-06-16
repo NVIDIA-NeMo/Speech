@@ -28,9 +28,9 @@ from tqdm import tqdm
 
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
 from nemo.collections.tts.models import ssl_tts
-from nemo.core.classes.common import safe_instantiate
 from nemo.collections.tts.parts.utils.tts_dataset_utils import get_base_dir
 from nemo.core.classes import Dataset
+from nemo.core.classes.common import safe_instantiate
 from nemo.utils import logging
 
 

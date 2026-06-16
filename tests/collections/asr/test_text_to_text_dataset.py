@@ -19,8 +19,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
-from nemo.core.classes.common import safe_instantiate
 from omegaconf import OmegaConf
+
+from nemo.core.classes.common import safe_instantiate
 
 nemo_text_processing = pytest.importorskip("nemo_text_processing", reason="Requires nemo_text_processing to run")
 

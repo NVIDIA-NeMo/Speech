@@ -21,7 +21,6 @@ import numpy as np
 import soundfile as sf
 import torch
 import wandb
-from nemo.core.classes.common import safe_instantiate
 from lightning.pytorch import Trainer
 from lightning.pytorch.loggers import TensorBoardLogger, WandbLogger
 from omegaconf import DictConfig
@@ -48,6 +47,7 @@ from nemo.collections.tts.parts.utils.helpers import (
     transcribe_with_whisper,
     transcribe_with_whisper_from_filepaths,
 )
+from nemo.core.classes.common import safe_instantiate
 from nemo.utils import logging
 
 try:

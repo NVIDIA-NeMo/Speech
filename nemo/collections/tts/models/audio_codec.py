@@ -20,7 +20,6 @@ from typing import Dict, Iterable, List, Tuple
 import torch
 import torch.nn.functional as F
 from einops import rearrange
-from nemo.core.classes.common import safe_instantiate
 from lightning.pytorch import Trainer
 from omegaconf import DictConfig, OmegaConf
 
@@ -46,7 +45,7 @@ from nemo.collections.tts.parts.utils.callbacks import LoggingCallback
 from nemo.collections.tts.parts.utils.helpers import get_batch_size, get_num_workers
 from nemo.collections.tts.parts.utils.tts_dataset_utils import resample_batch
 from nemo.core import ModelPT
-from nemo.core.classes.common import PretrainedModelInfo, typecheck
+from nemo.core.classes.common import PretrainedModelInfo, safe_instantiate, typecheck
 from nemo.core.neural_types.elements import (
     AudioSignal,
     EncodedRepresentation,

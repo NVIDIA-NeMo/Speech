@@ -16,7 +16,6 @@ from typing import Iterable, Optional
 
 import librosa
 import torch
-from nemo.core.classes.common import safe_instantiate
 from kaldialign import edit_distance
 from lightning.pytorch import Trainer
 from lightning.pytorch.loggers import TensorBoardLogger
@@ -28,7 +27,7 @@ from nemo.collections.tts.data.dataset import TTSDataset
 from nemo.collections.tts.modules.ssl_tts import GreedyCTCDecoder
 from nemo.collections.tts.torch.tts_tokenizers import BaseTokenizer, EnglishCharsTokenizer
 from nemo.core.classes import ModelPT
-from nemo.core.classes.common import PretrainedModelInfo
+from nemo.core.classes.common import PretrainedModelInfo, safe_instantiate
 from nemo.core.optim.lr_scheduler import WarmupPolicy
 from nemo.utils import logging
 from nemo.utils.decorators import experimental

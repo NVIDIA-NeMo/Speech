@@ -18,7 +18,6 @@ from typing import Dict, List, Optional, Union
 
 import numpy as np
 import torch
-from nemo.core.classes.common import safe_instantiate
 from lhotse import CutSet
 from lhotse.dataset.collation import collate_matrices, collate_vectors
 from omegaconf import DictConfig, open_dict
@@ -37,6 +36,7 @@ from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     stack_tensors,
     tokenize_text_with_pronunciation_control,
 )
+from nemo.core.classes.common import safe_instantiate
 from nemo.utils import logging
 
 

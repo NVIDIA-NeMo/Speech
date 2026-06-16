@@ -11,8 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from nemo.core.classes.common import safe_instantiate
 from omegaconf import DictConfig, open_dict
+
+from nemo.core.classes.common import safe_instantiate
 
 
 def build_speaker_tokens(speaker_cfg: DictConfig | dict | None, tokenizer) -> list[int]:

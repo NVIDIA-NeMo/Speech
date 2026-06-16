@@ -27,13 +27,13 @@ import librosa
 import numpy as np
 import torch
 from einops import rearrange
-from nemo.core.classes.common import safe_instantiate
 from scipy import ndimage
 from torch.special import gammaln
 
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
 from nemo.collections.audio.parts.utils.transforms import resample
 from nemo.collections.common.parts.utils import mask_sequence_tensor
+from nemo.core.classes.common import safe_instantiate
 
 try:
     from nemo_text_processing.text_normalization.normalize import Normalizer

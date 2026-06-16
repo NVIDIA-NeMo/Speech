@@ -17,7 +17,6 @@ from pathlib import Path
 
 import torch
 import torch.nn.functional as F
-from nemo.core.classes.common import safe_instantiate
 from lightning.pytorch.loggers.wandb import WandbLogger
 from omegaconf import DictConfig, OmegaConf, open_dict
 
@@ -27,7 +26,7 @@ from nemo.collections.tts.modules.hifigan_modules import MultiPeriodDiscriminato
 from nemo.collections.tts.parts.utils.callbacks import LoggingCallback
 from nemo.collections.tts.parts.utils.helpers import get_batch_size, get_num_workers, plot_spectrogram_to_numpy
 from nemo.core.classes import Exportable
-from nemo.core.classes.common import PretrainedModelInfo, typecheck
+from nemo.core.classes.common import PretrainedModelInfo, safe_instantiate, typecheck
 from nemo.core.neural_types.elements import AudioSignal, MelSpectrogramType
 from nemo.core.neural_types.neural_type import NeuralType
 from nemo.core.optim.lr_scheduler import compute_max_steps, prepare_lr_scheduler

@@ -20,7 +20,6 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import soundfile as sf
 import torch
-from nemo.core.classes.common import safe_instantiate
 from lightning.pytorch import Trainer
 from omegaconf import DictConfig
 from torch import nn
@@ -40,7 +39,7 @@ from nemo.collections.tts.modules.magpietts_modules import (
 )
 from nemo.collections.tts.parts.utils.helpers import get_mask_from_lengths
 from nemo.core.classes import ModelPT
-from nemo.core.classes.common import PretrainedModelInfo
+from nemo.core.classes.common import PretrainedModelInfo, safe_instantiate
 from nemo.utils import logging
 from nemo.utils.exceptions import NeMoBaseException
 

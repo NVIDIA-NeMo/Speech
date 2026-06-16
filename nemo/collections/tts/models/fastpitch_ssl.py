@@ -15,7 +15,6 @@ import random
 from typing import Iterable
 
 import torch
-from nemo.core.classes.common import safe_instantiate
 from lightning.pytorch import Trainer
 from lightning.pytorch.loggers import TensorBoardLogger
 from omegaconf import DictConfig
@@ -25,7 +24,7 @@ from nemo.collections.tts.modules.fastpitch import FastPitchSSLModule, average_f
 from nemo.collections.tts.modules.transformer import mask_from_lens
 from nemo.collections.tts.parts.utils.helpers import plot_multipitch_to_numpy, plot_spectrogram_to_numpy
 from nemo.core.classes import ModelPT
-from nemo.core.classes.common import PretrainedModelInfo
+from nemo.core.classes.common import PretrainedModelInfo, safe_instantiate
 from nemo.utils import logging, model_utils
 from nemo.utils.decorators import experimental
 

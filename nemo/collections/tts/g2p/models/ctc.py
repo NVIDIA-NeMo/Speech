@@ -18,14 +18,13 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Union
 
 import torch
-from nemo.core.classes.common import safe_instantiate
 from lightning.pytorch import Trainer
 from omegaconf import DictConfig, ListConfig, OmegaConf, open_dict
 from transformers import AutoConfig, AutoModel, AutoTokenizer
 
 from nemo.collections.tts.g2p.data.ctc import CTCG2PBPEDataset
 from nemo.collections.tts.models.base import G2PModel
-from nemo.core.classes.common import PretrainedModelInfo
+from nemo.core.classes.common import PretrainedModelInfo, safe_instantiate
 from nemo.core.classes.exportable import Exportable
 from nemo.core.neural_types import LengthsType, LossType, NeuralType, TokenIndex
 from nemo.utils import logging

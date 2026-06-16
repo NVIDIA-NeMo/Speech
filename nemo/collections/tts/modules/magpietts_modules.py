@@ -19,12 +19,12 @@ from typing import Dict, List, Optional
 
 import numpy as np
 import torch
-from nemo.core.classes.common import safe_instantiate
 from torch import Tensor
 from torch.utils.data import get_worker_info
 
 from nemo.collections.tts.modules import transformer_2501
 from nemo.collections.tts.parts.utils.helpers import get_mask_from_lengths
+from nemo.core.classes.common import safe_instantiate
 from nemo.core.classes.module import NeuralModule
 from nemo.utils import logging
 from nemo.utils.enum import PrettyStrEnum

@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import List, Optional
 
 import torch
-from nemo.core.classes.common import safe_instantiate
 from lightning.pytorch import Trainer
 from lightning.pytorch.loggers import TensorBoardLogger
 from omegaconf import DictConfig, OmegaConf, open_dict
@@ -39,7 +38,7 @@ from nemo.collections.tts.parts.utils.helpers import (
     sample_tts_input,
 )
 from nemo.core.classes import Exportable
-from nemo.core.classes.common import PretrainedModelInfo, typecheck
+from nemo.core.classes.common import PretrainedModelInfo, safe_instantiate, typecheck
 from nemo.core.neural_types.elements import (
     Index,
     LengthsType,

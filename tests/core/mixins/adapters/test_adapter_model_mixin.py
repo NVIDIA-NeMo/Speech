@@ -18,10 +18,10 @@ from typing import List, Optional, Tuple
 
 import pytest
 import torch
-from nemo.core.classes.common import safe_instantiate
 from omegaconf import DictConfig, OmegaConf, open_dict
 
 from nemo.core import ModelPT, NeuralModule
+from nemo.core.classes.common import safe_instantiate
 from nemo.core.classes.mixins import adapter_mixin_strategies, adapter_mixins
 from nemo.core.classes.mixins.adapter_mixins import AdapterModelPTMixin, AdapterModuleMixin
 from nemo.utils import logging, logging_mode

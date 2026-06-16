@@ -17,7 +17,6 @@ from typing import List
 import numpy as np
 import omegaconf
 import torch
-from nemo.core.classes.common import safe_instantiate
 from lightning.pytorch import Trainer
 from lightning.pytorch.loggers import WandbLogger
 from omegaconf import DictConfig
@@ -32,7 +31,7 @@ from nemo.collections.tts.parts.utils.helpers import (
     plot_alignment_to_numpy,
 )
 from nemo.core.classes import ModelPT
-from nemo.core.classes.common import PretrainedModelInfo
+from nemo.core.classes.common import PretrainedModelInfo, safe_instantiate
 from nemo.utils import logging, model_utils
 
 HAVE_WANDB = True

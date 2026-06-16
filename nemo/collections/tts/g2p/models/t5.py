@@ -16,7 +16,6 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Union
 
 import torch
-from nemo.core.classes.common import safe_instantiate
 from lightning.pytorch import Trainer
 from omegaconf import DictConfig, OmegaConf
 from transformers import AutoTokenizer, T5ForConditionalGeneration
@@ -24,7 +23,7 @@ from transformers import AutoTokenizer, T5ForConditionalGeneration
 from nemo.collections.asr.metrics.wer import word_error_rate
 from nemo.collections.tts.g2p.data.t5 import T5G2PDataset
 from nemo.collections.tts.models.base import G2PModel
-from nemo.core.classes.common import PretrainedModelInfo, typecheck
+from nemo.core.classes.common import PretrainedModelInfo, safe_instantiate, typecheck
 from nemo.core.classes.exportable import Exportable
 from nemo.core.neural_types import LabelsType, LossType, MaskType, NeuralType, TokenIndex
 from nemo.utils import logging

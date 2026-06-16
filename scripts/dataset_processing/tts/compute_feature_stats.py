@@ -62,11 +62,11 @@ from pathlib import Path
 from typing import List, Tuple
 
 import torch
-from nemo.core.classes.common import safe_instantiate
 from omegaconf import OmegaConf
 from tqdm import tqdm
 
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
+from nemo.core.classes.common import safe_instantiate
 
 
 def get_args():

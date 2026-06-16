@@ -23,7 +23,6 @@ import librosa
 import numpy as np
 import soundfile as sf
 import torch
-from nemo.core.classes.common import safe_instantiate
 from lightning.pytorch import Trainer
 from omegaconf import DictConfig, OmegaConf, open_dict
 from sklearn.metrics import roc_curve
@@ -47,7 +46,7 @@ from nemo.collections.asr.parts.preprocessing.perturb import process_augmentatio
 from nemo.collections.common.metrics import TopKClassificationAccuracy
 from nemo.collections.common.parts.preprocessing.collections import ASRSpeechLabel
 from nemo.core.classes import ModelPT
-from nemo.core.classes.common import PretrainedModelInfo
+from nemo.core.classes.common import PretrainedModelInfo, safe_instantiate
 from nemo.core.neural_types import *
 from nemo.utils import logging
 

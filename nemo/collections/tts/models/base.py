@@ -18,13 +18,12 @@ from contextlib import ExitStack, contextmanager
 from typing import List, Optional
 
 import torch
-from nemo.core.classes.common import safe_instantiate
 from omegaconf import DictConfig
 from tqdm import tqdm
 
 from nemo.collections.tts.parts.utils.helpers import OperationMode
 from nemo.core.classes import ModelPT
-from nemo.core.classes.common import PretrainedModelInfo, typecheck
+from nemo.core.classes.common import PretrainedModelInfo, safe_instantiate, typecheck
 from nemo.core.neural_types.elements import AudioSignal
 from nemo.core.neural_types.neural_type import NeuralType
 from nemo.utils import logging, model_utils

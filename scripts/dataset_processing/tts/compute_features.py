@@ -28,12 +28,12 @@ $ python <nemo_root_path>/scripts/dataset_processing/tts/compute_features.py \
 import argparse
 from pathlib import Path
 
-from nemo.core.classes.common import safe_instantiate
 from joblib import Parallel, delayed
 from omegaconf import OmegaConf
 from tqdm import tqdm
 
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
+from nemo.core.classes.common import safe_instantiate
 
 
 def get_args():

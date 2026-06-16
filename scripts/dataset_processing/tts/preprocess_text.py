@@ -30,10 +30,11 @@ $ python <nemo_root_path>/scripts/dataset_processing/tts/preprocess_text.py \
 import argparse
 from pathlib import Path
 
-from nemo.core.classes.common import safe_instantiate
 from joblib import Parallel, delayed
 from omegaconf import OmegaConf
 from tqdm import tqdm
+
+from nemo.core.classes.common import safe_instantiate
 
 try:
     from nemo_text_processing.text_normalization.normalize import Normalizer

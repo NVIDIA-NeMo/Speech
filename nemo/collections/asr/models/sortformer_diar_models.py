@@ -23,7 +23,6 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 import torch
 import torch.distributed as dist
-from nemo.core.classes.common import safe_instantiate
 from omegaconf import DictConfig
 from pytorch_lightning import Trainer
 from torch.utils.data import DataLoader
@@ -41,7 +40,7 @@ from nemo.collections.asr.parts.utils.speaker_utils import generate_diarization_
 from nemo.collections.asr.parts.utils.vad_utils import ts_vad_post_processing
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
 from nemo.core.classes import ModelPT
-from nemo.core.classes.common import PretrainedModelInfo
+from nemo.core.classes.common import PretrainedModelInfo, safe_instantiate
 from nemo.core.neural_types import AudioSignal, LengthsType, NeuralType
 from nemo.core.neural_types.elements import ProbsType
 from nemo.utils import logging

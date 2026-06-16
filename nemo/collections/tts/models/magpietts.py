@@ -27,7 +27,6 @@ import numpy as np
 import soundfile as sf
 import torch
 import wandb
-from nemo.core.classes.common import safe_instantiate
 from lhotse.serialization import load_yaml
 from lightning.pytorch import Trainer
 from lightning.pytorch.loggers import TensorBoardLogger, WandbLogger
@@ -70,7 +69,7 @@ from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     stack_tensors,
 )
 from nemo.core.classes import ModelPT
-from nemo.core.classes.common import PretrainedModelInfo
+from nemo.core.classes.common import PretrainedModelInfo, safe_instantiate
 from nemo.utils import logging
 from nemo.utils.exceptions import NeMoBaseException
 

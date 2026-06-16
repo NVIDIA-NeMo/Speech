@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import inspect
+
 import torch
 from omegaconf import DictConfig, open_dict
 from torch import nn
@@ -108,6 +110,15 @@ class AudioPerceptionModule(NeuralModule, Exportable):
             )
         return processed_signal, processed_signal_length
 
+    @staticmethod
+    def _encoder_accepts_spk_targets(encoder: nn.Module) -> bool:
+        if hasattr(encoder, "diarization_model") or hasattr(encoder, "diar_kernel"):
+            return True
+        try:
+            return "spk_targets" in inspect.signature(encoder.forward).parameters
+        except (TypeError, ValueError):
+            return False
+
     # disable type checks to avoid type-check errors when using Conformer as modality adapter
     @typecheck.disable_checks()
     def forward(
@@ -117,6 +128,7 @@ class AudioPerceptionModule(NeuralModule, Exportable):
         processed_signal=None,
         processed_signal_length=None,
         return_encoder_emb=False,
+        spk_targets=None,
     ):
         processed_signal, processed_signal_length = self.maybe_preprocess_audio(
             input_signal, input_signal_length, processed_signal, processed_signal_length
@@ -131,7 +143,16 @@ class AudioPerceptionModule(NeuralModule, Exportable):
                 audio_signal=processed_signal, length=processed_signal_length
             )
         else:
-            encoder_emb, encoded_len = self.encoder(audio_signal=processed_signal, length=processed_signal_length)
+            encoder_kwargs = {"audio_signal": processed_signal, "length": processed_signal_length}
+            if spk_targets is not None:
+                if not self._encoder_accepts_spk_targets(self.encoder):
+                    raise ValueError(
+                        "`spk_targets` were provided, but the mounted perception encoder "
+                        f"({type(self.encoder).__name__}) does not support speaker-target inputs. "
+                        "spk_targets has no effect when the encoder does not support it."
+                    )
+                encoder_kwargs["spk_targets"] = spk_targets
+            encoder_emb, encoded_len = self.encoder(**encoder_kwargs)
         encoded, encoded_len = self.modality_adapter(audio_signal=encoder_emb, length=encoded_len)
 
         # b, c, t -> b, t, c

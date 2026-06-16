@@ -19,7 +19,7 @@ Demos & Tutorials
 Quickstart
 ----------
 
-1. Install `NeMo <https://github.com/NVIDIA/NeMo#installation>`__.
+1. Install NeMo with the ASR collection. See :ref:`installation`.
 2. Prepare a NeMo-style manifest containing the paths of audio files you would like to proces, and (optionally) their text.
 3. Run NFA's ``align.py`` script with the desired config, e.g.:
 

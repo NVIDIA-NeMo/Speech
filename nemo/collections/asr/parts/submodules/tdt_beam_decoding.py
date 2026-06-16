@@ -831,6 +831,7 @@ class BeamBatchedTDTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs)
         return {
             "encoder_output": NeuralType(('B', 'D', 'T'), AcousticEncodedRepresentation()),
             "encoded_lengths": NeuralType(tuple('B'), LengthsType()),
+            "multi_biasing_ids": NeuralType(tuple('B'), optional=True),
             "partial_hypotheses": [NeuralType(elements_type=HypothesisType(), optional=True)],  # must always be last
         }
 
@@ -851,6 +852,7 @@ class BeamBatchedTDTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs)
         pruning_mode: Optional[str | PruningMode] = PruningMode.EARLY,
         allow_cuda_graphs: Optional[bool] = True,
         return_best_hypothesis: Optional[str] = True,
+        enable_per_stream_biasing: bool = False,
     ):
         """
         Init method.
@@ -868,6 +870,7 @@ class BeamBatchedTDTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs)
             pruning_mode: mode for pruning hypotheses with LM
             allow_cuda_graphs: whether to allow CUDA graphs
             score_norm: whether to normalize scores before best hypothesis extraction
+            enable_per_stream_biasing: whether to enable per-stream biasing via multi-boosting tree
         """
         super().__init__()
         self.decoder = decoder_model
@@ -901,6 +904,7 @@ class BeamBatchedTDTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs)
                 blank_lm_score_mode=blank_lm_score_mode,
                 pruning_mode=pruning_mode,
                 allow_cuda_graphs=allow_cuda_graphs,
+                enable_per_stream_biasing=enable_per_stream_biasing,
             )
         else:
             raise Exception(f"Decoding strategy {search_type} nor implemented.")
@@ -931,6 +935,7 @@ class BeamBatchedTDTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs)
         encoder_output: torch.Tensor,
         encoded_lengths: torch.Tensor,
         partial_hypotheses: Optional[list[Hypothesis]] = None,
+        multi_biasing_ids: Optional[torch.Tensor] = None,
     ) -> Tuple[list[Hypothesis] | List[NBestHypotheses]]:
         """Returns a list of hypotheses given an input batch of the encoder hidden embedding.
         Output token is generated auto-regressively.
@@ -961,7 +966,9 @@ class BeamBatchedTDTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs)
             self.joint.eval()
 
             inseq = encoder_output  # [B, T, D]
-            batched_beam_hyps, _ = self.decoding_computer(x=inseq, out_len=logitlen)
+            batched_beam_hyps, _ = self.decoding_computer(
+                x=inseq, out_len=logitlen, multi_biasing_ids=multi_biasing_ids
+            )
 
             # Ensures the correct number of hypotheses (batch_size) for CUDA Graphs compatibility
             batch_size = encoder_output.shape[0]

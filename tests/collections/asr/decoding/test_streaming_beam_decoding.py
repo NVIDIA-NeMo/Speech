@@ -53,6 +53,8 @@ from omegaconf import open_dict
 from tqdm.auto import tqdm
 
 from nemo.collections.asr.models import ASRModel
+from nemo.collections.asr.parts.context_biasing.biasing_multi_model import BiasingRequestItemConfig
+from nemo.collections.asr.parts.context_biasing.boosting_graph_batched import BoostingTreeModelConfig
 from nemo.collections.asr.parts.submodules.transducer_decoding.label_looping_base import BatchedBeamState
 from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import BatchedBeamHyps
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
@@ -164,6 +166,7 @@ def _configure_malsd_decoding(
     max_symbols: int,
     key_phrases_list: Optional[list[str]] = None,
     boosting_tree_alpha: float = 1.0,
+    enable_per_stream_biasing: bool = False,
 ) -> None:
     """Switch ``model`` to the ``malsd_batch`` beam-search strategy used by the streaming tests.
 
@@ -189,6 +192,8 @@ def _configure_malsd_decoding(
         if key_phrases_list is not None:
             decoding_cfg.beam.boosting_tree = {"key_phrases_list": list(key_phrases_list)}
             decoding_cfg.beam.boosting_tree_alpha = boosting_tree_alpha
+        if enable_per_stream_biasing:
+            decoding_cfg.beam.enable_per_stream_biasing = True
     model.change_decoding_strategy(decoding_cfg)
     if cuda_graphs_mode is not None:
         model.decoding.decoding.decoding_computer.force_cuda_graphs_mode(cuda_graphs_mode)
@@ -220,6 +225,139 @@ def _configure_maes_decoding(
     model.change_decoding_strategy(decoding_cfg)
 
 
+def _reset_decoding_computer_state(model: ASRModel) -> None:
+    decoding_computer = model.decoding.decoding.decoding_computer
+    if hasattr(decoding_computer, "reset_cuda_graphs_state"):
+        decoding_computer.reset_cuda_graphs_state()
+
+
+def _decode_malsd_encoder_in_chunks(
+    decoding_computer,
+    encoder_output: torch.Tensor,
+    encoder_output_len: torch.Tensor,
+    chunk_size: int,
+    multi_biasing_ids: Optional[torch.Tensor] = None,
+) -> BatchedBeamHyps:
+    encoder_output = encoder_output.transpose(1, 2)
+    state: Optional[BatchedBeamState] = None
+    current_batched_hyps: BatchedBeamHyps | None = None
+    decode_kwargs = {}
+    if multi_biasing_ids is not None:
+        decode_kwargs["multi_biasing_ids"] = multi_biasing_ids
+
+    for t in range(0, encoder_output.shape[1], chunk_size):
+        rest_len = encoder_output_len - t
+        current_len = torch.full_like(encoder_output_len, fill_value=chunk_size)
+        current_len = torch.minimum(current_len, rest_len)
+        current_len = torch.maximum(current_len, torch.zeros_like(current_len))
+        chunk_batched_hyps, state = decoding_computer(
+            x=encoder_output[:, t : t + chunk_size],
+            out_len=current_len,
+            prev_batched_state=state,
+            **decode_kwargs,
+        )
+        chunk_root_ptrs = chunk_batched_hyps.flatten_()
+        if current_batched_hyps is None:
+            current_batched_hyps = chunk_batched_hyps
+        else:
+            current_batched_hyps.merge_(
+                chunk_batched_hyps,
+                is_chunk_continuation=True,
+                boundary_prev_ptr=chunk_root_ptrs,
+            )
+
+    assert current_batched_hyps is not None
+    return current_batched_hyps
+
+
+def _register_per_stream_biasing(
+    decoding_computer,
+    tokenizer,
+    boost_texts: list[str],
+    device: torch.device,
+    boosting_model_alpha: float = 10.0,
+) -> tuple[torch.Tensor, list[BiasingRequestItemConfig | None]]:
+    batch_size = len(boost_texts)
+    multi_biasing_ids = torch.full([batch_size], fill_value=-1, dtype=torch.long, device=device)
+    biasing_requests: list[BiasingRequestItemConfig | None] = []
+
+    for batch_idx, boost_text in enumerate(boost_texts):
+        if not boost_text:
+            biasing_requests.append(None)
+            continue
+        request = BiasingRequestItemConfig(
+            boosting_model_cfg=BoostingTreeModelConfig(key_phrases_list=[boost_text], unk_score=-100),
+            boosting_model_alpha=boosting_model_alpha,
+        )
+        request.add_to_multi_model(
+            tokenizer=tokenizer,
+            biasing_multi_model=decoding_computer.biasing_multi_model,
+        )
+        if request.multi_model_id is not None:
+            multi_biasing_ids[batch_idx] = request.multi_model_id
+        biasing_requests.append(request)
+
+    return multi_biasing_ids, biasing_requests
+
+
+def _unregister_per_stream_biasing(decoding_computer, biasing_requests: list[BiasingRequestItemConfig | None]) -> None:
+    for request in biasing_requests:
+        if request is not None and request.multi_model_id is not None:
+            decoding_computer.biasing_multi_model.remove_model(request.multi_model_id)
+            request.multi_model_id = None
+
+
+def _run_malsd_streaming_manifest(
+    model: ASRModel,
+    manifest_path,
+    device: torch.device,
+    chunk_size: int,
+    batch_size: int,
+    boost_texts: Optional[list[str]] = None,
+    boosting_model_alpha: float = 10.0,
+) -> list[str]:
+    manifest = read_manifest(manifest_path)
+    decoding_computer = model.decoding.decoding.decoding_computer
+    all_transcripts: list[str] = []
+
+    with torch.no_grad(), torch.inference_mode():
+        for i in range(0, len(manifest), batch_size):
+            batch_records = manifest[i : i + batch_size]
+            encoder_output, encoder_output_len = get_batch_encoder_outputs_from_records(
+                batch_records, model=model, device=device
+            )
+
+            multi_biasing_ids = None
+            biasing_requests: list[BiasingRequestItemConfig | None] = []
+            if boost_texts is not None:
+                assert decoding_computer.biasing_multi_model is not None
+                batch_boost_texts = boost_texts[i : i + batch_size]
+                multi_biasing_ids, biasing_requests = _register_per_stream_biasing(
+                    decoding_computer,
+                    model.tokenizer,
+                    batch_boost_texts,
+                    device,
+                    boosting_model_alpha=boosting_model_alpha,
+                )
+
+            batched_hyps = _decode_malsd_encoder_in_chunks(
+                decoding_computer,
+                encoder_output,
+                encoder_output_len,
+                chunk_size,
+                multi_biasing_ids=multi_biasing_ids,
+            )
+            if boost_texts is not None:
+                _unregister_per_stream_biasing(decoding_computer, biasing_requests)
+
+            all_transcripts.extend(
+                model.tokenizer.ids_to_text(hyp.y_sequence.tolist())
+                for hyp in batched_hyps.to_hyps_list(score_norm=True)
+            )
+
+    return all_transcripts
+
+
 def _run_streaming_batched_state(
     model: ASRModel,
     manifest_path,
@@ -243,7 +381,6 @@ def _run_streaming_batched_state(
 
     all_hyps = []
     decoding_computer = model.decoding.decoding.decoding_computer
-    print(f"decoding_computer: {type(decoding_computer)}")
     with torch.no_grad(), torch.inference_mode():
         for i in range(0, len(manifest), batch_size):
             encoder_output, encoder_output_len = get_batch_encoder_outputs_from_records(
@@ -416,5 +553,48 @@ def test_malsd_streaming_batched_state_with_word_boosting(
         device=device,
         chunk_size=chunk_size,
         batch_size=batch_size,
+    )
+    assert ref_transcripts == streaming_transcripts
+
+
+@pytest.mark.with_downloads
+@pytest.mark.parametrize("device,cuda_graphs_mode", DEVICE_PARAM_MATRIX)
+@pytest.mark.parametrize("is_tdt", [False, True])
+@pytest.mark.parametrize("chunk_size", [1])
+@pytest.mark.parametrize("batch_size", [4])
+@pytest.mark.parametrize("beam_size", [4])
+@pytest.mark.parametrize("max_symbols", [10])
+def test_malsd_streaming_boosting_with_ref_transcripts(
+    an4_val_manifest_corrected,
+    stt_en_fastconformer_transducer_large,
+    stt_en_fastconformer_tdt_large,
+    device: torch.device,
+    cuda_graphs_mode: Optional[str],
+    is_tdt: bool,
+    chunk_size: int,
+    batch_size: int,
+    beam_size: int,
+    max_symbols: int,
+):
+    """Metamorphic test analogous to ``test_label_looping_streaming_boosting_with_ref_transcripts``."""
+    model = stt_en_fastconformer_tdt_large if is_tdt else stt_en_fastconformer_transducer_large
+    model.eval()
+    model.to(device=device)
+
+    _configure_malsd_decoding(model, cuda_graphs_mode, beam_size, max_symbols)
+    ref_transcripts = [
+        hyp.text for hyp in model.transcribe(audio=str(an4_val_manifest_corrected.absolute()), batch_size=batch_size)
+    ]
+
+    _configure_malsd_decoding(model, cuda_graphs_mode, beam_size, max_symbols, enable_per_stream_biasing=True)
+    _reset_decoding_computer_state(model)
+
+    streaming_transcripts = _run_malsd_streaming_manifest(
+        model,
+        an4_val_manifest_corrected,
+        device,
+        chunk_size,
+        batch_size,
+        boost_texts=ref_transcripts,
     )
     assert ref_transcripts == streaming_transcripts

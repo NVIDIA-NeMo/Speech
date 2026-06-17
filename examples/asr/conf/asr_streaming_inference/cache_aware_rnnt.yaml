@@ -33,7 +33,7 @@ asr:
   per_stream_biasing_defaults:
     boosting_model_alpha: 1.0
     boosting_model_cfg:
-      use_variative_bpe: false
+      bpe_mode: default  # use "case_insensitive" to enable case-insensitive boosting; valid modes: [default, bpe_dropout, var_bpe, case_insensitive]
 
 # ==========================================
 # Inverse Text Normalization Configuration

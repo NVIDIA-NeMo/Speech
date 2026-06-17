@@ -29,6 +29,7 @@ from nemo.collections.asr.parts.submodules.ngram_lm import DEFAULT_TOKEN_OFFSET,
 from nemo.collections.common.tokenizers import AggregateTokenizer
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.utils import logging
+from nemo.utils.enum import PrettyStrEnum
 from nemo.utils.exceptions import NeMoBaseException
 
 
@@ -44,6 +45,13 @@ class TokenWithLength(NamedTuple):
     length: int = 1
 
 
+class BPEMode(PrettyStrEnum):
+    DEFAULT = "default"
+    BPE_DROPOUT = "bpe_dropout"
+    VAR_BPE = "var_bpe"
+    CASE_INSENSITIVE = "case_insensitive"
+
+
 @dataclass
 class TokenizerExtras:
     vocab: list[str]
@@ -53,7 +61,7 @@ class TokenizerExtras:
     token_id2canonical_split: dict[int, tuple[int, ...]]
     max_token_len: int
 
-    def __init__(self, tokenizer):
+    def __init__(self, tokenizer, case_insensitive: bool = True):
         # vocab + inversed vocab (id2token/token2id)
         vocab = tokenizer.vocab
         vocab_len_no_special = tokenizer.tokenizer.get_piece_size()
@@ -152,8 +160,10 @@ class BoostingTreeModelConfig:
     source_lang: str = "en"  # The source language of the context-biasing phrases (for aggregate tokenizer)
     use_triton: bool = True  # Whether to use Triton for inference.
     uniform_weights: bool = False  # Whether to use uniform weights for the context-biasing tree as in Icefall
-    use_variative_bpe: bool = False  # Use variative BPE - primarily for case-insensitive boosting
-    use_bpe_dropout: bool = False  # Whether to use BPE dropout for generating alternative transcriptions
+    bpe_mode: str = "default"  # BPE Mode: default, bpe_dropout, var_bpe, case_insensitive
+    use_bpe_dropout: bool | None = (
+        None  # Deprecated: whether to use BPE dropout for generating alternative transcriptions; use bpe_mode isntead
+    )
     num_of_transcriptions: int = (
         5  # The number of alternative transcriptions to generate for each context-biasing phrase
     )
@@ -669,29 +679,36 @@ class GPUBoostingTreeModel(NGramGPULanguageModel):
         phrases_dict = {}
         is_aggregate_tokenizer = isinstance(tokenizer, AggregateTokenizer)
 
-        use_bpe_dropout = cfg.use_bpe_dropout
-        if cfg.use_variative_bpe:
-            use_bpe_dropout = False
-            assert not is_aggregate_tokenizer
-            tokenizer_extras = TokenizerExtras(tokenizer)
-        if use_bpe_dropout:
+        bpe_mode = BPEMode(cfg.bpe_mode)  # validate BPE mode
+        if cfg.use_bpe_dropout is not None:
+            logging.warning("`use_bpe_dropout` is deprecated, use `bpe_mode` instead")
+            if cfg.use_bpe_dropout:
+                logging.warning("Setting `bpe_mode` from deprecated `use_bpe_dropout` param")
+                bpe_mode = BPEMode.BPE_DROPOUT
+
+        if bpe_mode in {BPEMode.VAR_BPE, BPEMode.CASE_INSENSITIVE}:
             if is_aggregate_tokenizer:
-                logging.warning(
-                    "Aggregated tokenizer does not support BPE dropout, only one default transcription will be used..."
+                raise NotImplementedError(
+                    "Aggregated tokenizer does not support var_bpe/case_insensitive boosting yet"
                 )
+            tokenizer_extras = TokenizerExtras(tokenizer, case_insensitive=(bpe_mode is BPEMode.CASE_INSENSITIVE))
+
+        if bpe_mode is BPEMode.BPE_DROPOUT:
+            if is_aggregate_tokenizer:
+                raise NotImplementedError("Aggregated tokenizer does not support BPE dropout yet")
                 use_bpe_dropout = False
             spm.set_random_generator_seed(1234)  # fix random seed for reproducibility of BPE dropout
 
         for phrase_item in phrase_items_list:
             phrase = phrase_item.phrase
-            if use_bpe_dropout:
+            if bpe_mode is BPEMode.BPE_DROPOUT:
                 phrases_dict[phrase] = cls.get_alternative_transcripts(cfg, tokenizer, phrase)
             else:
                 if is_aggregate_tokenizer:
                     phrases_dict[phrase] = tokenizer.text_to_ids(phrase, phrase_item.lang)
                 else:
                     token_ids = tokenizer.text_to_ids(phrase)
-                    if cfg.use_variative_bpe:
+                    if bpe_mode in {BPEMode.VAR_BPE, BPEMode.CASE_INSENSITIVE}:
                         phrases_dict[phrase] = tokenizer_extras.ids_to_all_representations(token_ids)
                     else:
                         phrases_dict[phrase] = token_ids
@@ -699,7 +716,7 @@ class GPUBoostingTreeModel(NGramGPULanguageModel):
         # 3. build python context graph
         contexts, scores, phrases = [], [], []
         for phrase in phrases_dict:
-            if use_bpe_dropout:
+            if bpe_mode is BPEMode.BPE_DROPOUT:
                 for transcript in phrases_dict[phrase]:
                     contexts.append(transcript)
                     scores.append(round(cfg.score_per_phrase / len(phrase), 2))
@@ -710,7 +727,7 @@ class GPUBoostingTreeModel(NGramGPULanguageModel):
                 phrases.append(phrase)
 
         context_graph = ContextGraph(context_score=cfg.context_score, depth_scaling=cfg.depth_scaling)
-        if cfg.use_variative_bpe:
+        if bpe_mode in {BPEMode.VAR_BPE, BPEMode.CASE_INSENSITIVE}:
             context_graph.build_from_variative_bpe(
                 token_ids=contexts,
                 scores=scores,

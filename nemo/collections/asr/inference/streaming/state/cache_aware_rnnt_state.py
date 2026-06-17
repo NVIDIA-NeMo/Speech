@@ -12,8 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from nemo.collections.asr.inference.streaming.state.cache_aware_state import CacheAwareStreamingState
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
+
+if TYPE_CHECKING:
+    from nemo.collections.asr.parts.submodules.rnnt_malsd_batched_computer import MALSDStateItem
 
 
 class CacheAwareRNNTStreamingState(CacheAwareStreamingState):
@@ -70,17 +77,17 @@ class CacheAwareRNNTBeamStreamingState(CacheAwareRNNTStreamingState):
 
     def _additional_params_reset(self) -> None:
         super()._additional_params_reset()
-        self.hyp_decoding_state: "MALSDStateItem | None" = None
+        self.hyp_decoding_state: MALSDStateItem | None = None
         # Finalized transcript prefix at the last EOU; identical for every beam slot.
         self.window_committed_tokens: list[int] = []
         # Frame timestamps aligned with ``window_committed_tokens``.
         self.window_committed_timestamps: list[int] = []
-        
+
         # Per-beam suffix since last EOU; slot k may differ while beams compete.
         self.window_beam_tokens: list[list[int]] | None = None
         # Per-beam frame timestamps aligned with ``window_beam_tokens``.
         self.window_beam_timestamps: list[list[int]] | None = None
-        
+
         # Index into cumulative ``hyp.y_sequence`` where the current utterance starts
         # (skips tokens from prior utterances still present in the cumulative hyp).
         self._malsd_utterance_start: int = 0

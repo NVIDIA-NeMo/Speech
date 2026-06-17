@@ -90,10 +90,12 @@ class CacheAwareRNNTPipeline(BasePipeline):
     def init_decoding_computer(self) -> None:
         """Initialize ``decoding_computer``."""
         self.decoding_computer = None
-        try:
-            self.decoding_computer = self.asr_model.asr_model.decoding.decoding.decoding_computer
-        except AttributeError:
-            pass
+        asr_model = getattr(self.asr_model, "asr_model", None)
+        if asr_model is None:
+            return
+        decoding = getattr(getattr(asr_model, "decoding", None), "decoding", None)
+        if decoding is not None:
+            self.decoding_computer = getattr(decoding, "decoding_computer", None)
 
     @property
     def beam_decoder_computer(self) -> ModifiedALSDBatchedRNNTComputer | None:

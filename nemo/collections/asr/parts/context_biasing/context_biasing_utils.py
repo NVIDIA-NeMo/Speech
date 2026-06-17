@@ -29,7 +29,7 @@ _VALID_CHARS = set(string.ascii_lowercase + "'")
 
 def clean_text(text):
     text = text.lower()
-    text = ''.join([c for c in text if c in _VALID_CHARS or c.isspace()])
+    text = ''.join([c if c in _VALID_CHARS or c.isspace() else " " for c in text])
     return " ".join(text.split()).strip()
 
 

@@ -236,6 +236,14 @@ def _is_target_allowed(target: str) -> bool:
             except (ImportError, TypeError):
                 return False
 
+        if target.startswith("nemo.collections.speechlm2.parts.parallel."):
+            try:
+                from lightning.pytorch.strategies.model_parallel import ModelParallelStrategy
+
+                return issubclass(obj, ModelParallelStrategy)
+            except (ImportError, TypeError):
+                return False
+
         if target.startswith("lightning.pytorch."):
             try:
                 if target.startswith("lightning.pytorch.accelerators."):

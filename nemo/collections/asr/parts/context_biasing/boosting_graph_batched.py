@@ -90,7 +90,7 @@ class TokenizerExtras:
         self.max_token_len = 1
         self.token_id2canonical_split = dict()
         for token, token_id in self.token2id.items():
-            if len(token) == 1:
+            if len(token) == 1 or (token.startswith("<") and token.endswith(">")):
                 canonical_split = (self.token_id2canonical_id[token_id],)
             else:
                 try:
@@ -98,7 +98,7 @@ class TokenizerExtras:
                         self.token_id2canonical_id[self.token2id[sub_token]] for sub_token in token
                     )
                 except KeyError:
-                    print(f"No split for token {token}:{token_id}")
+                    logging.warning(f"No split for token {token} - {token_id}")
                     canonical_split = (self.token_id2canonical_id[token_id],)
             self.token_id2canonical_split[token_id] = canonical_split
             self.max_token_len = max(self.max_token_len, len(canonical_split))

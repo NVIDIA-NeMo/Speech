@@ -236,14 +236,6 @@ def _is_target_allowed(target: str) -> bool:
             except (ImportError, TypeError):
                 return False
 
-        try:
-            from lightning.pytorch.strategies import Strategy
-
-            if issubclass(obj, Strategy):
-                return True
-        except (ImportError, TypeError):
-            pass
-
         if target.startswith("lightning.pytorch."):
             try:
                 if target.startswith("lightning.pytorch.accelerators."):

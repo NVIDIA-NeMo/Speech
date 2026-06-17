@@ -68,13 +68,17 @@ class TokenizerExtras:
         self.vocab = vocab[:vocab_len_no_special]
         self.token2id = dict(zip(vocab, range(len(vocab))))
 
-        # mapping: token_id -> canonical_id (lowercase)
-        self.token_id2canonical_id = dict()
-        for token, token_id in self.token2id.items():
-            if token.lower() != token and token.lower() in self.token2id:
-                self.token_id2canonical_id[token_id] = self.token2id[token.lower()]
-            else:
-                self.token_id2canonical_id[token_id] = token_id
+        # mapping: token_id -> canonical_id (lowercase if case_insensitive)
+        if case_insensitive:
+            self.token_id2canonical_id = dict()
+            for token, token_id in self.token2id.items():
+                if token.lower() != token and token.lower() in self.token2id:
+                    self.token_id2canonical_id[token_id] = self.token2id[token.lower()]
+                else:
+                    self.token_id2canonical_id[token_id] = token_id
+        else:
+            # identity mapping
+            self.token_id2canonical_id = dict(zip(range(len(vocab)), range(len(vocab))))
 
         # inverse mapping: canonical_id -> list of token_id alternatives
         # TODO: fix (not necessary exists!)
@@ -696,7 +700,6 @@ class GPUBoostingTreeModel(NGramGPULanguageModel):
         if bpe_mode is BPEMode.BPE_DROPOUT:
             if is_aggregate_tokenizer:
                 raise NotImplementedError("Aggregated tokenizer does not support BPE dropout yet")
-                use_bpe_dropout = False
             spm.set_random_generator_seed(1234)  # fix random seed for reproducibility of BPE dropout
 
         for phrase_item in phrase_items_list:

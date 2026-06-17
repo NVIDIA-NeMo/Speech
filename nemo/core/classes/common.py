@@ -168,6 +168,12 @@ def _is_target_allowed(target: str) -> bool:
         except TypeError:
             return False
 
+        try:
+            if issubclass(obj, torch.utils.data.Dataset):
+                return True
+        except TypeError:
+            return False
+
         if target.startswith("torch.optim."):
             try:
                 return issubclass(obj, torch.optim.Optimizer)

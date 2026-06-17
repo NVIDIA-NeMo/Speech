@@ -201,7 +201,10 @@ def _is_target_allowed(target: str) -> bool:
 
         if target.startswith("nemo.collections.audio.parts.submodules.flow."):
             try:
-                from nemo.collections.audio.parts.submodules.flow import ConditionalFlow, ConditionalFlowMatchingSampler
+                from nemo.collections.audio.parts.submodules.flow import (
+                    ConditionalFlow,
+                    ConditionalFlowMatchingSampler,
+                )
 
                 return issubclass(obj, (ConditionalFlow, ConditionalFlowMatchingSampler))
             except (ImportError, TypeError):

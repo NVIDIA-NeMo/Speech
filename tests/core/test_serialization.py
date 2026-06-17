@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from unittest.mock import patch
+
 import pytest
 from omegaconf import DictConfig
 
@@ -151,6 +153,15 @@ class TestSerialization:
         assert config == new_config
         assert isinstance(obj, MockSerializationImplV2)
         assert obj.value == "MockSerializationImplV2"
+
+    @pytest.mark.unit
+    def test_unsafe_legacy_target_is_rejected_before_import(self):
+        config = DictConfig({'target': 'subprocess.Popen'})
+        with patch('nemo.core.classes.common.import_class_by_path') as import_class_mock:
+            with pytest.raises(ValueError, match="Instantiation of unsafe target 'subprocess.Popen' is blocked"):
+                Serialization.from_config_dict(config=config)
+
+        import_class_mock.assert_not_called()
 
     @pytest.mark.unit
     def test_self_class_instantiation(self):

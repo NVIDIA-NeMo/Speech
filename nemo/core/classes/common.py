@@ -102,6 +102,10 @@ ALLOWED_CLASS_PREFIXES_WITH_OPTIONAL_DEPENDENCIES = [
 ]
 
 
+class UnsafeTargetError(ValueError):
+    """Raised when config-driven instantiation requests a disallowed target."""
+
+
 def _is_target_allowed(target: str) -> bool:
     """
     Return True if the Hydra `_target_` should be allowed to be instantiated.
@@ -148,6 +152,14 @@ def _is_target_allowed(target: str) -> bool:
             return True
 
         from nemo.core.classes.modelPT import ModelPT
+
+        serialization_cls = globals().get("Serialization")
+        if serialization_cls is not None:
+            try:
+                if issubclass(obj, serialization_cls):
+                    return True
+            except TypeError:
+                return False
 
         SAFE_BASES = (torch.nn.Module, ModelPT)
         try:
@@ -258,16 +270,26 @@ def _is_target_allowed(target: str) -> bool:
     return False
 
 
+def _unsafe_target_error(target_path: str, config_key: str) -> ValueError:
+    return UnsafeTargetError(
+        f"Instantiation of unsafe target '{target_path}' is blocked. "
+        f"The '{config_key}' must point to a class or function within an approved namespace. "
+        f"This restriction is in place to prevent potential arbitrary code execution."
+    )
+
+
+def _get_allowed_target_class(target_path: str):
+    if not _is_target_allowed(target_path):
+        raise _unsafe_target_error(target_path, "target")
+    return import_class_by_path(target_path)
+
+
 def _validate_config_targets_recursive(config_node: Any):
     if isinstance(config_node, Mapping):  # Handles DictConfig and dict
         if "_target_" in config_node:
             target_path = config_node["_target_"]
             if not _is_target_allowed(target_path):
-                raise ValueError(
-                    f"Instantiation of unsafe target '{target_path}' is blocked. "
-                    f"The '_target_' must point to a class or function within an approved namespace. "
-                    f"This restriction is in place to prevent potential arbitrary code execution."
-                )
+                raise _unsafe_target_error(target_path, "_target_")
         for key, value in config_node.items():
             _validate_config_targets_recursive(value)
     elif isinstance(config_node, Sequence) and not isinstance(config_node, str):  # Handles ListConfig and list
@@ -726,7 +748,7 @@ class Serialization(ABC):  # pylint: disable=C0115
                 imported_cls = None
                 try:
                     # try to import the target class
-                    imported_cls = import_class_by_path(target_cls_path)
+                    imported_cls = _get_allowed_target_class(target_cls_path)
                     # if calling class (cls) is subclass of imported class,
                     # use subclass instead
                     if issubclass(cls, imported_cls):
@@ -736,6 +758,8 @@ class Serialization(ABC):  # pylint: disable=C0115
                         instance = imported_cls(cfg=config, trainer=trainer)
                     else:
                         instance = imported_cls(cfg=config)
+                except UnsafeTargetError:
+                    raise
                 except Exception as e:
                     # record previous error
                     tb = traceback.format_exc()

@@ -30,6 +30,10 @@ asr:
         source_lang: "en"  # The source language of the context-biasing phrases (for aggregate tokenizer),
         # used with `key_phrases_file` and `key_phrases_list`
       boosting_tree_alpha: 0.0
+  per_stream_biasing_defaults:
+    boosting_model_alpha: 1.0
+    boosting_model_cfg:
+      use_variative_bpe: false
 
 
 # ==========================================

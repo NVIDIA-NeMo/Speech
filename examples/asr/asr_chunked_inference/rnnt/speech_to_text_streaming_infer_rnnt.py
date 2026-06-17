@@ -363,13 +363,11 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
 
     biasing_requests: list[BiasingRequestItemConfig | None] | None
     if use_per_stream_biasing:
-        default_request_config = OmegaConf.structured(cfg.per_stream_biasing_defaults)
+        default_biasing_request_cfg = OmegaConf.structured(cfg.per_stream_biasing_defaults)
         biasing_requests = [
             (
                 BiasingRequestItemConfig(
-                    **OmegaConf.to_container(
-                        OmegaConf.merge(default_request_config, record["biasing_request"])
-                    )
+                    **OmegaConf.to_container(OmegaConf.merge(default_biasing_request_cfg, record["biasing_request"]))
                 )
                 if "biasing_request" in record
                 else None

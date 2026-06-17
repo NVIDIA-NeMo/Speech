@@ -201,9 +201,17 @@ def _is_target_allowed(target: str) -> bool:
 
         if target.startswith("nemo.collections.audio.parts.submodules.flow."):
             try:
-                from nemo.collections.audio.parts.submodules.flow import ConditionalFlow
+                from nemo.collections.audio.parts.submodules.flow import ConditionalFlow, ConditionalFlowMatchingSampler
 
-                return issubclass(obj, ConditionalFlow)
+                return issubclass(obj, (ConditionalFlow, ConditionalFlowMatchingSampler))
+            except (ImportError, TypeError):
+                return False
+
+        if target.startswith("nemo.core.optim.lr_scheduler."):
+            try:
+                from torch.optim.lr_scheduler import _LRScheduler
+
+                return issubclass(obj, _LRScheduler)
             except (ImportError, TypeError):
                 return False
 

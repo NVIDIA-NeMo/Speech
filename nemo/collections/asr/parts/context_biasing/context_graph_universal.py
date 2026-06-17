@@ -35,9 +35,11 @@
 import os
 import shutil
 from collections import deque
-from typing import Any, Dict, List, Optional
+from typing import Optional
 
 import numpy as np
+
+from nemo.collections.common.tokenizers.tokenizer_spec import VarBPERepresentation
 
 
 def softmax(x):
@@ -206,10 +208,10 @@ class ContextGraph:
 
     def build(
         self,
-        token_ids: List[List[int]],
-        phrases: Optional[List[str]] = None,
-        scores: Optional[List[float]] = None,
-        ac_thresholds: Optional[List[float]] = None,
+        token_ids: list[list[int]],
+        phrases: Optional[list[str]] = None,
+        scores: Optional[list[float]] = None,
+        ac_thresholds: Optional[list[float]] = None,
         uniform_weights: Optional[bool] = False,
     ):
         """Build the ContextGraph from a list of token list.
@@ -295,14 +297,14 @@ class ContextGraph:
                 node = node.next[token]
         self._fill_fail_output()
 
-    def build_from_variative_bpe(
+    def build_from_var_bpe(
         self,
-        token_ids: list[tuple[list[int], list[list[Any]]]],
-        phrases: Optional[List[str]] = None,
-        scores: Optional[List[float]] = None,
-        ac_thresholds: Optional[List[float]] = None,
+        token_ids: list[VarBPERepresentation],
+        phrases: Optional[list[str]] = None,
+        scores: Optional[list[float]] = None,
+        ac_thresholds: Optional[list[float]] = None,
         uniform_weights: Optional[bool] = False,
-        variative_bpe_scoring: bool = True,
+        var_bpe_scoring: bool = True,
     ):
         """Build the ContextGraph from a list of token list.
         It first build a trie from the given token lists, then fill the fail arc
@@ -344,7 +346,7 @@ class ContextGraph:
         if ac_thresholds is not None:
             assert len(ac_thresholds) == num_phrases, (len(ac_thresholds), num_phrases)
 
-        for index, tokens in enumerate(token_ids):
+        for index, var_bpe_representation in enumerate(token_ids):
             phrase = "" if phrases is None else phrases[index]
             score = 0.0 if scores is None else scores[index]
             ac_threshold = 0.0 if ac_thresholds is None else ac_thresholds[index]
@@ -354,7 +356,7 @@ class ContextGraph:
             context_score = self.context_score if score == 0.0 else score
             threshold = self.ac_threshold if ac_threshold == 0.0 else ac_threshold
 
-            orig_lengths, tokens = tokens
+            orig_lengths, tokens = var_bpe_representation
             token_scores = [0.0 for _ in range(len(tokens))]
             node_path_to_primary = [False for _ in range(len(tokens))]
             primary_context_scores = [0.0 for _ in range(len(tokens))]
@@ -366,7 +368,7 @@ class ContextGraph:
                 token_score = self._get_token_score(
                     depth=depth, uniform_weights=uniform_weights, context_score=context_score
                 )  # / cur_len
-                if variative_bpe_scoring:
+                if var_bpe_scoring:
                     probs = softmax(np.asarray([np.log(p + 1) for p in range(cur_len)]))
                     for t in range(k, k + cur_len):
                         token_scores[t] = token_score * probs[t - k]
@@ -430,7 +432,7 @@ class ContextGraph:
         self,
         title: Optional[str] = None,
         filename: Optional[str] = "",
-        symbol_table: Optional[Dict[int, str]] = None,
+        symbol_table: Optional[dict[int, str]] = None,
     ) -> "Digraph":  # noqa
         """Visualize a ContextGraph via graphviz.
 

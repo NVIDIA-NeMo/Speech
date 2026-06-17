@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import os
-from collections import defaultdict, deque
+from collections import deque
 from dataclasses import InitVar, dataclass, field
 from pathlib import Path
 from typing import NamedTuple, Optional
@@ -40,99 +40,11 @@ class PhraseItem:
     # custom weight can be further added
 
 
-class TokenWithLength(NamedTuple):
-    token_id: int
-    length: int = 1
-
-
 class BPEMode(PrettyStrEnum):
     DEFAULT = "default"
     BPE_DROPOUT = "bpe_dropout"
     VAR_BPE = "var_bpe"
     CASE_INSENSITIVE = "case_insensitive"
-
-
-@dataclass
-class TokenizerExtras:
-    vocab: list[str]
-    token2id: dict[str, int]
-    token_id2canonical_id: dict[int, int]
-    canonical_id2alternatives: dict[int, list[int]]
-    token_id2canonical_split: dict[int, tuple[int, ...]]
-    max_token_len: int
-
-    def __init__(self, tokenizer, case_insensitive: bool = True):
-        # vocab + inversed vocab (id2token/token2id)
-        vocab = tokenizer.vocab
-        vocab_len_no_special = tokenizer.tokenizer.get_piece_size()
-        self.vocab = vocab[:vocab_len_no_special]
-        self.token2id = dict(zip(vocab, range(len(vocab))))
-
-        # mapping: token_id -> canonical_id (lowercase if case_insensitive)
-        if case_insensitive:
-            self.token_id2canonical_id = dict()
-            for token, token_id in self.token2id.items():
-                if token.lower() != token and token.lower() in self.token2id:
-                    self.token_id2canonical_id[token_id] = self.token2id[token.lower()]
-                else:
-                    self.token_id2canonical_id[token_id] = token_id
-        else:
-            # identity mapping
-            self.token_id2canonical_id = dict(zip(range(len(vocab)), range(len(vocab))))
-
-        # inverse mapping: canonical_id -> list of token_id alternatives
-        # TODO: fix (not necessary exists!)
-        self.canonical_id2alternatives = defaultdict(list)
-        for token_id, canonical_id in self.token_id2canonical_id.items():
-            self.canonical_id2alternatives[canonical_id].append(token_id)
-
-        # mapping: token_id -> canonical split + inverse
-        self.max_token_len = 1
-        self.token_id2canonical_split = dict()
-        for token, token_id in self.token2id.items():
-            if len(token) == 1 or (token.startswith("<") and token.endswith(">")):
-                canonical_split = (self.token_id2canonical_id[token_id],)
-            else:
-                try:
-                    canonical_split = tuple(
-                        self.token_id2canonical_id[self.token2id[sub_token]] for sub_token in token
-                    )
-                except KeyError:
-                    logging.warning(f"No split for token {token} - {token_id}")
-                    canonical_split = (self.token_id2canonical_id[token_id],)
-            self.token_id2canonical_split[token_id] = canonical_split
-            self.max_token_len = max(self.max_token_len, len(canonical_split))
-        # self.canonical_split2token_id = dict(zip(self.token_id2canonical_split.values(), self.token_id2canonical_split.keys()))
-        self.canonical_split2token_ids = defaultdict(list)
-        for token_id, canonical_split in self.token_id2canonical_split.items():
-            self.canonical_split2token_ids[canonical_split].append(token_id)
-            # if canonical_split in self.canonical_split2token_id: continue
-            # token_id = self.token_id2canonical_id[token_id]
-            # self.canonical_split2token_id[canonical_split] = token_id
-
-    def ids_to_canonical(self, token_ids: list[int]) -> list[int]:
-        canonical_ids = []
-        for token_id in token_ids:
-            canonical_ids.extend(self.token_id2canonical_split[token_id])
-        return canonical_ids
-
-    def ids_to_all_representations(self, token_ids: list[int]) -> tuple[list[int], list[list[TokenWithLength]]]:
-        orig_len = [len(self.token_id2canonical_split[token_id]) for token_id in token_ids]
-        canonical_ids = self.ids_to_canonical(token_ids=token_ids)
-        if len(canonical_ids) != sum(orig_len):
-            logging.warning(f"unequal len: {len(canonical_ids)} != {sum(orig_len)}")
-        representations: list[list[TokenWithLength]] = [[] for _ in range(len(canonical_ids))]
-        for i, canonical_token_id in enumerate(canonical_ids):
-            # add alternatives to canonical tokens
-            for token_id in self.canonical_id2alternatives[canonical_token_id]:
-                representations[i].append(TokenWithLength(token_id=token_id, length=1))
-            # add merges
-            # TODO: can be optimized with tree
-            for start in range(max(0, i - self.max_token_len), i):
-                if tuple(canonical_ids[start : i + 1]) in self.canonical_split2token_ids:
-                    for merged_token_id in self.canonical_split2token_ids[tuple(canonical_ids[start : i + 1])]:
-                        representations[i].append(TokenWithLength(token_id=merged_token_id, length=i - start + 1))
-        return orig_len, representations
 
 
 @dataclass
@@ -690,13 +602,6 @@ class GPUBoostingTreeModel(NGramGPULanguageModel):
                 logging.warning("Setting `bpe_mode` from deprecated `use_bpe_dropout` param")
                 bpe_mode = BPEMode.BPE_DROPOUT
 
-        if bpe_mode in {BPEMode.VAR_BPE, BPEMode.CASE_INSENSITIVE}:
-            if is_aggregate_tokenizer:
-                raise NotImplementedError(
-                    "Aggregated tokenizer does not support var_bpe/case_insensitive boosting yet"
-                )
-            tokenizer_extras = TokenizerExtras(tokenizer, case_insensitive=(bpe_mode is BPEMode.CASE_INSENSITIVE))
-
         if bpe_mode is BPEMode.BPE_DROPOUT:
             if is_aggregate_tokenizer:
                 raise NotImplementedError("Aggregated tokenizer does not support BPE dropout yet")
@@ -708,13 +613,19 @@ class GPUBoostingTreeModel(NGramGPULanguageModel):
                 phrases_dict[phrase] = cls.get_alternative_transcripts(cfg, tokenizer, phrase)
             else:
                 if is_aggregate_tokenizer:
-                    phrases_dict[phrase] = tokenizer.text_to_ids(phrase, phrase_item.lang)
-                else:
-                    token_ids = tokenizer.text_to_ids(phrase)
                     if bpe_mode in {BPEMode.VAR_BPE, BPEMode.CASE_INSENSITIVE}:
-                        phrases_dict[phrase] = tokenizer_extras.ids_to_all_representations(token_ids)
+                        phrases_dict[phrase] = tokenizer.text_to_ids_var_bpe(
+                            phrase, lang_id=phrase_item.lang, case_insensitive=(bpe_mode is BPEMode.CASE_INSENSITIVE)
+                        )
                     else:
-                        phrases_dict[phrase] = token_ids
+                        phrases_dict[phrase] = tokenizer.text_to_ids(phrase, lang_id=phrase_item.lang)
+                else:
+                    if bpe_mode in {BPEMode.VAR_BPE, BPEMode.CASE_INSENSITIVE}:
+                        phrases_dict[phrase] = tokenizer.text_to_ids_var_bpe(
+                            phrase, case_insensitive=(bpe_mode is BPEMode.CASE_INSENSITIVE)
+                        )
+                    else:
+                        phrases_dict[phrase] = tokenizer.text_to_ids(phrase)
 
         # 3. build python context graph
         contexts, scores, phrases = [], [], []
@@ -731,7 +642,7 @@ class GPUBoostingTreeModel(NGramGPULanguageModel):
 
         context_graph = ContextGraph(context_score=cfg.context_score, depth_scaling=cfg.depth_scaling)
         if bpe_mode in {BPEMode.VAR_BPE, BPEMode.CASE_INSENSITIVE}:
-            context_graph.build_from_variative_bpe(
+            context_graph.build_from_var_bpe(
                 token_ids=contexts,
                 scores=scores,
                 phrases=phrases,

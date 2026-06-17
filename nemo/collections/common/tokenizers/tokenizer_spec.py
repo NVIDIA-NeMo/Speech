@@ -14,9 +14,19 @@
 
 from abc import ABC, abstractmethod
 from collections import OrderedDict
-from typing import List
+from typing import List, NamedTuple
 
 __all__ = ['TokenizerSpec']
+
+
+class TokenWithLength(NamedTuple):
+    token_id: int
+    length: int = 1
+
+
+class VarBPERepresentation(NamedTuple):
+    canonical_lengths: list[int]
+    token_ids_multi: list[list[TokenWithLength]]
 
 
 class TokenizerSpec(ABC):
@@ -53,6 +63,10 @@ class TokenizerSpec(ABC):
     def ids_to_text(self, ids):
         """Converts token IDs back to text."""
         pass
+
+    def text_to_ids_var_bpe(self, text: str, *args, **kwargs):
+        """Converts text to token ids using var-BPE approach"""
+        raise NotImplementedError("Not yet implemented by tokenizer")
 
     def add_special_tokens(self, special_tokens: List[str]):
         """Adds special tokens (eos, pad, cls...) to vocab."""

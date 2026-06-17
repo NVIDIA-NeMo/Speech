@@ -32,7 +32,7 @@ from nemo.collections.asr.inference.streaming.framing.multi_stream import Contin
 from nemo.collections.asr.inference.streaming.framing.request import FeatureBuffer, Frame, Request
 from nemo.collections.asr.inference.streaming.framing.request_options import ASRRequestOptions
 from nemo.collections.asr.inference.streaming.state.cache_aware_rnnt_state import CacheAwareRNNTStreamingState
-from nemo.collections.asr.inference.utils.endpointing_utils import millisecond_to_frames
+from nemo.collections.asr.inference.utils.endpointing_utils import derive_eou_buffer_size, validate_eou_thresholds
 from nemo.collections.asr.inference.utils.enums import RequestType
 from nemo.collections.asr.inference.utils.pipeline_utils import (
     check_existance_of_required_attributes,
@@ -143,26 +143,12 @@ class CacheAwareRNNTPipeline(BasePipeline):
         self.expected_feature_buffer_len = int(self.buffer_size_in_secs / self.window_stride)
 
         self.stop_history_eou_in_milliseconds = cfg.endpointing.stop_history_eou
-        self.eou_buffer_size_in_milliseconds = cfg.endpointing.eou_buffer_size
+        self.stop_history_eou_end_in_milliseconds = cfg.endpointing.stop_history_eou_end
+        validate_eou_thresholds(self.stop_history_eou_in_milliseconds, self.stop_history_eou_end_in_milliseconds)
         self.word_boundary_tolerance = cfg.streaming.word_boundary_tolerance
         self.return_tail_result = cfg.return_tail_result
 
-        self._validate_endpointing_buffer_size()
-
         self.request_type = RequestType.from_str(cfg.streaming.request_type)
-
-    def _validate_endpointing_buffer_size(self) -> None:
-        """Validate that the EoU label buffer is large enough to hold the silence window."""
-        if self.stop_history_eou_in_milliseconds > 0:
-            ms_per_timestep = math.ceil(self.model_stride_in_milliseconds)
-            buffer_frames = millisecond_to_frames(self.eou_buffer_size_in_milliseconds, ms_per_timestep)
-            stop_history_frames = millisecond_to_frames(self.stop_history_eou_in_milliseconds, ms_per_timestep)
-            if buffer_frames <= stop_history_frames:
-                raise ValueError(
-                    f"endpointing.eou_buffer_size ({self.eou_buffer_size_in_milliseconds} ms -> {buffer_frames} "
-                    f"frames) must be larger than endpointing.stop_history_eou "
-                    f"({self.stop_history_eou_in_milliseconds} ms -> {stop_history_frames} frames)."
-                )
 
     def init_greedy_rnnt_decoder(self) -> None:
         """Initialize the RNNT decoder."""
@@ -177,6 +163,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
                 'vocabulary',
                 'model_stride_in_milliseconds',
                 'stop_history_eou_in_milliseconds',
+                'stop_history_eou_end_in_milliseconds',
                 'punctuation_ids',
             ],
         )
@@ -185,6 +172,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
             vocabulary=self.vocabulary,
             ms_per_timestep=self.model_stride_in_milliseconds,
             stop_history_eou=self.stop_history_eou_in_milliseconds,
+            stop_history_eou_end=self.stop_history_eou_end_in_milliseconds,
             absorb_token_ids=self.punctuation_ids,
         )
 
@@ -206,12 +194,17 @@ class CacheAwareRNNTPipeline(BasePipeline):
             default_stop_history_eou=self.stop_history_eou_in_milliseconds,
             default_asr_output_granularity=self.asr_output_granularity,
             default_language_code="en-US" if self.prompt_enabled else None,
+            default_stop_history_eou_end=self.stop_history_eou_end_in_milliseconds,
         )
 
         eou_label_buffer_size = 0
         if new_options.stop_history_eou > 0:
-            eou_label_buffer_size = millisecond_to_frames(
-                self.eou_buffer_size_in_milliseconds, math.ceil(self.model_stride_in_milliseconds)
+            # Size the buffer for the largest run we may need to detect (the end-of-buffer threshold).
+            buffer_threshold_ms = max(new_options.stop_history_eou, new_options.stop_history_eou_end)
+            eou_label_buffer_size = derive_eou_buffer_size(
+                buffer_threshold_ms,
+                self.tokens_per_frame,
+                math.ceil(self.model_stride_in_milliseconds),
             )
         state.setup_label_buffer(eou_label_buffer_size, self.blank_id)
         state.set_previous_hypothesis(None)
@@ -287,6 +280,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
             emissions,
             search_start_point=state.get_local_search_start(),
             stop_history_eou=state.options.stop_history_eou,
+            stop_history_eou_end=state.options.stop_history_eou_end,
         )
         if eou_detected:
             # Keep valid tokens emitted after the EoU point (the next utterance) instead of dropping them.

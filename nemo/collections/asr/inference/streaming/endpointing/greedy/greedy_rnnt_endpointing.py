@@ -28,6 +28,7 @@ class RNNTGreedyEndpointing(GreedyEndpointing):
         stop_history_eou: int = -1,
         residue_tokens_at_end: int = 0,
         absorb_token_ids: set[int] | None = None,
+        stop_history_eou_end: int | None = None,
     ) -> None:
         """
         Initialize the RNNTGreedyEndpointing class
@@ -46,6 +47,7 @@ class RNNTGreedyEndpointing(GreedyEndpointing):
             stop_history_eou,
             residue_tokens_at_end,
             absorb_token_ids,
+            stop_history_eou_end,
         )
         self.greedy_rnnt_decoder = RNNTGreedyDecoder(self.vocabulary, conf_func=None)
 

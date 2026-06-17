@@ -28,13 +28,14 @@ EOU_ABSORB_IDS = {3, 4}
 ENDPOINTING_CLASSES = [CTCGreedyEndpointing, RNNTGreedyEndpointing]
 
 
-def _make_detect_eou_endpointer(endpointing_cls, ms_per_timestep=20, stop_history_eou=80):
+def _make_detect_eou_endpointer(endpointing_cls, ms_per_timestep=20, stop_history_eou=80, stop_history_eou_end=None):
     """Build an endpointer with the shared EoU vocabulary and absorb token ids."""
     return endpointing_cls(
         vocabulary=EOU_VOCAB,
         ms_per_timestep=ms_per_timestep,
         stop_history_eou=stop_history_eou,
         absorb_token_ids=EOU_ABSORB_IDS,
+        stop_history_eou_end=stop_history_eou_end,
     )
 
 
@@ -89,6 +90,42 @@ class TestDetectEou:
             assert resume == 7  # punctuation at idx 6 stays with the finalized text
 
     @pytest.mark.unit
+    def test_punctuation_then_silence_then_word_is_absorbed(self):
+        b = EOU_BLANK
+        # Late punctuation: "." is emitted after the EoU pause and is itself followed by more
+        # silence before the next utterance. The "." is absorbed (stays with the finalized text)
+        # and the EoU is reported at this first qualifying silence run; resume points at "▁the".
+        emissions = [0, b, b, b, b, b, 3, b, b, 2, 1]
+        for cls in ENDPOINTING_CLASSES:
+            ep = _make_detect_eou_endpointer(cls)
+            eou, center, resume = ep.detect_eou_in_buffer(emissions)
+            assert eou is True
+            assert center == 1 + 4 // 2
+            assert resume == 9  # "." (idx 6) and the trailing silence (idx 7-8) stay finalized
+
+    @pytest.mark.unit
+    def test_punctuation_then_silence_to_end_is_absorbed(self):
+        b = EOU_BLANK
+        # Late punctuation followed by silence to the buffer end -> valid EoU, nothing resumes yet.
+        emissions = [0, b, b, b, b, b, 3, b, b]
+        for cls in ENDPOINTING_CLASSES:
+            ep = _make_detect_eou_endpointer(cls)
+            eou, center, resume = ep.detect_eou_in_buffer(emissions)
+            assert eou is True
+            assert center == 1 + 4 // 2
+            assert resume == len(emissions)
+
+    @pytest.mark.unit
+    def test_punctuation_then_silence_then_mid_word_is_rejected(self):
+        b = EOU_BLANK
+        # After absorbing "." and the trailing silence, the next real token is a mid-word
+        # continuation -> not a valid EoU.
+        emissions = [0, b, b, b, b, b, 3, b, b, 1]
+        for cls in ENDPOINTING_CLASSES:
+            ep = _make_detect_eou_endpointer(cls)
+            assert ep.detect_eou_in_buffer(emissions) == (False, -1, -1)
+
+    @pytest.mark.unit
     def test_punctuation_then_mid_word_is_rejected(self):
         b = EOU_BLANK
         emissions = [0, b, b, b, b, b, 3, 1]
@@ -106,6 +143,44 @@ class TestDetectEou:
             assert eou is True
             assert center == 1 + 4 // 2
             assert resume == len(emissions)
+
+    @pytest.mark.unit
+    def test_rightmost_of_two_runs_is_selected(self):
+        b = EOU_BLANK
+        # Two qualifying silence runs in the buffer. The scan is right-to-left, so the most recent
+        # (rightmost) run wins and everything before it is finalized into one segment.
+        emissions = [0, b, b, b, b, b, 2, b, b, b, b, b, 2, 1]
+        for cls in ENDPOINTING_CLASSES:
+            ep = _make_detect_eou_endpointer(cls)
+            eou, center, resume = ep.detect_eou_in_buffer(emissions)
+            assert eou is True
+            assert center == 7 + 4 // 2  # center of the rightmost run, not the earlier one
+            assert resume == 12  # resume at the word after the rightmost run, not at index 6
+
+    @pytest.mark.unit
+    def test_rightmost_run_trailing_silence_finalizes_all(self):
+        b = EOU_BLANK
+        # Two runs, the rightmost being trailing silence -> finalize the whole buffer immediately.
+        emissions = [0, b, b, b, b, b, 2, b, b, b, b, b]
+        for cls in ENDPOINTING_CLASSES:
+            ep = _make_detect_eou_endpointer(cls)
+            eou, center, resume = ep.detect_eou_in_buffer(emissions)
+            assert eou is True
+            assert center == 7 + 4 // 2
+            assert resume == len(emissions)
+
+    @pytest.mark.unit
+    def test_rightmost_run_mid_word_falls_back_to_earlier_run(self):
+        b = EOU_BLANK
+        # The rightmost run is followed by a mid-word continuation -> invalid; the scan falls back
+        # to the next-most-recent run, which is valid (followed by a word start).
+        emissions = [0, b, b, b, b, b, 2, b, b, b, b, b, 1]
+        for cls in ENDPOINTING_CLASSES:
+            ep = _make_detect_eou_endpointer(cls)
+            eou, center, resume = ep.detect_eou_in_buffer(emissions)
+            assert eou is True
+            assert center == 1 + 4 // 2  # the earlier run's center
+            assert resume == 6
 
     @pytest.mark.unit
     def test_silence_not_exceeding_threshold(self):
@@ -163,16 +238,58 @@ class TestDetectEou:
     @pytest.mark.unit
     def test_per_request_stop_history_override(self):
         b = EOU_BLANK
-        # Default threshold would be huge (800ms -> 40 frames), but per-request override (80ms -> 4)
-        # makes the 5-frame trailing silence trigger an EoU.
+        # Default threshold would be huge (800ms -> 40 frames), but per-request overrides (80ms -> 4)
+        # make the 5-frame trailing silence trigger an EoU. This is a trailing (end-of-buffer) run, so
+        # the end threshold must be overridden too.
         emissions = [0, 1, b, b, b, b, b]
         for cls in ENDPOINTING_CLASSES:
             ep = _make_detect_eou_endpointer(cls, stop_history_eou=800)
             assert ep.detect_eou_in_buffer(emissions) == (False, -1, -1)
-            eou, center, resume = ep.detect_eou_in_buffer(emissions, stop_history_eou=80)
+            eou, center, resume = ep.detect_eou_in_buffer(emissions, stop_history_eou=80, stop_history_eou_end=80)
             assert eou is True
             assert center == 2 + 4 // 2
             assert resume == len(emissions)
+
+    @pytest.mark.unit
+    def test_end_of_buffer_uses_higher_threshold(self):
+        b = EOU_BLANK
+        # Regular 80ms -> 4 frames, end-of-buffer 160ms -> 8 frames.
+        for cls in ENDPOINTING_CLASSES:
+            ep = _make_detect_eou_endpointer(cls, stop_history_eou=80, stop_history_eou_end=160)
+            # Trailing silence of 6 frames: exceeds the regular threshold but NOT the end threshold,
+            # so a mid-word pause at the buffer edge is not cut.
+            assert ep.detect_eou_in_buffer([0] + [b] * 6) == (False, -1, -1)
+            # Trailing silence of 9 frames: exceeds the end threshold -> end-of-buffer EoU.
+            emissions = [0] + [b] * 9
+            eou, center, resume = ep.detect_eou_in_buffer(emissions)
+            assert eou is True
+            assert center == 1 + 8 // 2  # centered with the end threshold
+            assert resume == len(emissions)
+
+    @pytest.mark.unit
+    def test_midbuffer_uses_regular_threshold_even_with_high_end(self):
+        b = EOU_BLANK
+        # A mid-buffer run of 5 frames (> regular 4, < end 8) followed by a word start is a valid EoU:
+        # seeing the next word confirms the boundary, so the regular threshold applies.
+        emissions = [0, b, b, b, b, b, 2, 1]
+        for cls in ENDPOINTING_CLASSES:
+            ep = _make_detect_eou_endpointer(cls, stop_history_eou=80, stop_history_eou_end=160)
+            eou, center, resume = ep.detect_eou_in_buffer(emissions)
+            assert eou is True
+            assert center == 1 + 4 // 2  # centered with the regular threshold
+            assert resume == 6
+
+    @pytest.mark.unit
+    def test_end_threshold_clamped_to_regular(self):
+        b = EOU_BLANK
+        # If the end threshold is set below the regular one (160ms->8 vs 80ms->4), it is clamped up to
+        # the regular threshold; end-of-buffer EoUs are never weaker than mid-buffer ones.
+        for cls in ENDPOINTING_CLASSES:
+            ep = _make_detect_eou_endpointer(cls, stop_history_eou=160, stop_history_eou_end=80)
+            assert ep.detect_eou_in_buffer([0] + [b] * 6) == (False, -1, -1)  # 6 not > 8
+            eou, _, resume = ep.detect_eou_in_buffer([0] + [b] * 9)  # 9 > 8
+            assert eou is True
+            assert resume == 10
 
 
 class TestGreedyEndpointing:

@@ -29,6 +29,7 @@ class GreedyEndpointing:
         stop_history_eou: int = -1,
         residue_tokens_at_end: int = 0,
         absorb_token_ids: set[int] | None = None,
+        stop_history_eou_end: int | None = None,
     ) -> None:
         """
         Initialize the GreedyEndpointing class
@@ -41,6 +42,10 @@ class GreedyEndpointing:
             absorb_token_ids: (set[int] | None) Token ids (e.g. punctuation/language tokens) that, when found
                 right after the silence gap, are absorbed into the text preceding the EoU instead of starting
                 a new utterance. Mirrors the buffered-RNNT `update_punctuation_and_language_tokens_timestamps`.
+            stop_history_eou_end: (int | None) Silence threshold (ms) for an EoU detected at the buffer end
+                (trailing silence, no following word observed yet). Should be >= `stop_history_eou`; a brief
+                mid-word pause at the buffer edge then does not trigger a premature cut. If None, the regular
+                `stop_history_eou` is used for end-of-buffer EoUs too (`detect_eou_in_buffer` only).
         """
 
         self.vocabulary = vocabulary
@@ -53,6 +58,10 @@ class GreedyEndpointing:
             self.stop_history_eou = millisecond_to_frames(self.stop_history_eou, ms_per_timestep)
         self.residue_tokens_at_end = residue_tokens_at_end
         self.absorb_token_ids = set(absorb_token_ids) if absorb_token_ids else set()
+        # End-of-buffer silence threshold (frames). None -> fall back to the regular threshold.
+        self.stop_history_eou_end = stop_history_eou_end
+        if self.stop_history_eou_end is not None and self.stop_history_eou_end > 0:
+            self.stop_history_eou_end = millisecond_to_frames(self.stop_history_eou_end, ms_per_timestep)
 
     def detect_eou_given_emissions(
         self,
@@ -262,26 +271,36 @@ class GreedyEndpointing:
         emissions: list[int],
         search_start_point: int = 0,
         stop_history_eou: int | None = None,
+        stop_history_eou_end: int | None = None,
     ) -> tuple[bool, int, int]:
         """
-        Detect end of utterance (EoU) by scanning the full emissions buffer left-to-right.
+        Detect end of utterance (EoU) by scanning the emissions buffer right-to-left and returning
+        at the most recent (rightmost) qualifying silence run, so as much text as possible is
+        committed to the user as soon as the speaker pauses.
 
-        An EoU is considered valid when:
-            1. A run of consecutive silent tokens is strictly longer than `stop_history_eou` frames.
-            2. The first non-silent token after the silence run is the start of a new word
-               (not a mid-word continuation token).
-            3. If the first non-silent token(s) after the silence are punctuation/language tokens
-               (see `absorb_token_ids`), they are absorbed into the text preceding the EoU and the
-               start-of-word check is applied to the next token after them.
+        A silence run qualifies when it is strictly longer than a threshold whose value depends on
+        what follows the run:
+          - Mid-buffer EoU: a real word-start token is observed after the run (possibly past absorbed
+            punctuation/language tokens). The run only needs to exceed `stop_history_eou`; seeing the
+            next word confirms the boundary, so this stays responsive.
+          - End-of-buffer EoU: the run runs to the end of the buffer (trailing silence, or only
+            absorbed punctuation after it), so no following word has been observed yet. The run must
+            exceed the larger `stop_history_eou_end`. This avoids cutting a word when the speaker
+            merely pauses mid-word at the buffer edge -- a short pause no longer triggers a premature
+            end-of-buffer EoU; the cut only happens once the silence is long enough to be a real end.
 
-        The EoU is formalized by its center within the silence run (`silence_start + stop_history_eou // 2`)
-        with a `+/- stop_history_eou // 2` boundary.
+        Punctuation/language tokens (see `absorb_token_ids`) right after the run are absorbed into the
+        text preceding the EoU (with any silence trailing them), so late-emitted sentence punctuation
+        stays with the finalized utterance. A non-absorbable, non-word-start token after the run means
+        the silence fell mid-word: that run is rejected and the scan keeps moving left.
 
         Args:
             emissions (list[int]): dense per-timestep labels (blank == silent) of the label buffer
             search_start_point (int): buffer-local index to start searching from (inclusive)
-            stop_history_eou (int | None): stop history of EOU in milliseconds, if None then use the
-                default (already in frames) from the class
+            stop_history_eou (int | None): regular (mid-buffer) silence threshold in milliseconds; if
+                None use the class default (already in frames)
+            stop_history_eou_end (int | None): end-of-buffer silence threshold in milliseconds; if None
+                use the class default, falling back to the regular threshold. Clamped to be >= regular.
         Returns:
             tuple[bool, int, int]:
                 eou_detected: True if a valid EoU is detected, False otherwise
@@ -300,40 +319,61 @@ class GreedyEndpointing:
         if stop_history_eou == 0:
             return True, sequence_length - 1, sequence_length
 
-        i = max(0, search_start_point)
-        while i < sequence_length:
+        # End-of-buffer threshold: explicit override, else class default, else the regular threshold.
+        end_default = self.stop_history_eou_end if self.stop_history_eou_end is not None else self.stop_history_eou
+        stop_history_eou_end = get_custom_stop_history_eou(stop_history_eou_end, end_default, self.ms_per_timestep)
+        # Never weaker than the regular threshold.
+        stop_history_eou_end = max(stop_history_eou, stop_history_eou_end)
+
+        lower_bound = max(0, search_start_point)
+        # Scan right-to-left so the most recent (rightmost) qualifying silence run wins.
+        i = sequence_length - 1
+        while i >= lower_bound:
             if not self.is_token_silent(emissions[i]):
-                i += 1
+                i -= 1
                 continue
 
-            # Start of a silence run at index `i`.
+            # End of a silence run at index `i`; walk left to its start (not past the search bound).
+            run_end = i
             run_start = i
-            j = i
-            while j < sequence_length and self.is_token_silent(emissions[j]):
-                j += 1
-            run_len = j - run_start
+            while run_start - 1 >= lower_bound and self.is_token_silent(emissions[run_start - 1]):
+                run_start -= 1
+            run_len = run_end - run_start + 1
+            j = run_end + 1
 
-            if run_len > stop_history_eou:
-                eou_center = run_start + stop_history_eou // 2
+            # Trailing silence to the buffer end -> end-of-buffer EoU (no following word observed).
+            if j >= sequence_length:
+                if run_len > stop_history_eou_end:
+                    return True, run_start + stop_history_eou_end // 2, sequence_length
+                i = run_start - 1
+                continue
 
-                # Trailing silence to the end of the buffer -> valid EoU, nothing resumes yet.
-                if j >= sequence_length:
-                    return True, eou_center, sequence_length
-
-                # Rule 3: absorb leading punctuation/language tokens into the pre-EoU side.
-                k = j
-                while k < sequence_length and self.is_token_to_absorb(emissions[k]):
+            # Absorb trailing punctuation/language tokens into the pre-EoU side. Once at least one
+            # such token is absorbed, also skip any silence that follows it: the punctuation closed
+            # the previous utterance, so the next utterance only begins at the next real token. This
+            # keeps late-emitted sentence punctuation with the finalized text.
+            k = j
+            absorbed_any = False
+            while k < sequence_length:
+                if self.is_token_to_absorb(emissions[k]):
+                    absorbed_any = True
                     k += 1
+                elif absorbed_any and self.is_token_silent(emissions[k]):
+                    k += 1
+                else:
+                    break
 
-                # Only absorbable tokens after the silence (still within the buffer) -> valid EoU.
-                if k >= sequence_length:
-                    return True, eou_center, sequence_length
+            if k >= sequence_length:
+                # Only silence/absorbable tokens after the run -> end-of-buffer EoU (no word observed).
+                if run_len > stop_history_eou_end:
+                    return True, run_start + stop_history_eou_end // 2, sequence_length
+            elif self.is_token_start_of_word(emissions[k]):
+                # Mid-buffer EoU: the next word-start is observed, so the regular threshold applies.
+                if run_len > stop_history_eou:
+                    return True, run_start + stop_history_eou // 2, k
+            # Otherwise the run is mid-word or below threshold: not a valid EoU here.
 
-                # Rule 2: the first real token after the silence (and absorbed tokens) must start a word.
-                if self.is_token_start_of_word(emissions[k]):
-                    return True, eou_center, k
-                # Otherwise the silence was mid-word: not a valid EoU, keep scanning after the run.
-
-            i = j
+            # Keep scanning to the left of this run.
+            i = run_start - 1
 
         return False, -1, -1

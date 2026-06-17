@@ -60,8 +60,11 @@ confidence:
 # Endpointing settings
 # ========================
 endpointing:
-  stop_history_eou: 800                       # Minimum trailing/internal silence (ms) that triggers an EoU
-  eou_buffer_size: 1600                        # EoU label-buffer window (ms); must be > stop_history_eou
+  stop_history_eou: 800                       # Silence (ms) for a mid-buffer EoU (a word start is seen after the gap)
+  stop_history_eou_end: 1200                  # Silence (ms) for an end-of-buffer EoU (trailing silence, no next word yet);
+                                              # should be >= stop_history_eou to avoid cutting mid-word at the buffer edge
+  # The EoU label-buffer size is derived automatically from stop_history_eou_end and the chunk size
+  # (see derive_eou_buffer_size); there is no separate buffer-size knob.
 
 
 # ========================

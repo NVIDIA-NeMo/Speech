@@ -29,6 +29,7 @@ class ASRRequestOptions:
 
     enable_itn: bool | None = None
     stop_history_eou: int | None = None
+    stop_history_eou_end: int | None = None
     asr_output_granularity: ASROutputGranularity | str | None = None
     language_code: str | None = None
     enable_nmt: bool | None = None
@@ -83,6 +84,7 @@ class ASRRequestOptions:
         default_asr_output_granularity: ASROutputGranularity | str,
         default_language_code: str | None = None,
         biasing_cfg: BiasingRequestItemConfig | None = None,
+        default_stop_history_eou_end: int | None = None,
     ) -> "ASRRequestOptions":
         """
         Fill unset fields with the passed default values.
@@ -95,6 +97,7 @@ class ASRRequestOptions:
             default_asr_output_granularity (ASROutputGranularity | str): Default output granularity.
             default_language_code (str | None): Default language code for prompt-enabled models.
             biasing_cfg: Default biasing config or None
+            default_stop_history_eou_end (int | None): Default end-of-buffer stop history EOU.
         Returns:
             ASRRequestOptions: Augmented options.
         """
@@ -111,6 +114,7 @@ class ASRRequestOptions:
             target_language = self._with_default(self.target_language, default_target_language)
 
         stop_history_eou = self._with_default(self.stop_history_eou, default_stop_history_eou)
+        stop_history_eou_end = self._with_default(self.stop_history_eou_end, default_stop_history_eou_end)
         granularity = self._with_default(self.asr_output_granularity, default_asr_output_granularity)
         language_code = self._with_default(self.language_code, default_language_code)
 
@@ -120,6 +124,7 @@ class ASRRequestOptions:
             source_language=source_language,
             target_language=target_language,
             stop_history_eou=stop_history_eou,
+            stop_history_eou_end=stop_history_eou_end,
             asr_output_granularity=granularity,
             language_code=language_code,
             biasing_cfg=self.biasing_cfg or biasing_cfg,

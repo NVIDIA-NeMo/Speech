@@ -25,8 +25,16 @@ class TokenWithLength(NamedTuple):
 
 
 class VarBPERepresentation(NamedTuple):
+    """
+    Var-BPE representation.
+    - list of length of tokens from canonical representation;
+    - token ids with merges:
+        token_ids_with_merges[i][0] - minimal possible token (length=1)
+        token_ids_with_merges[i][1...k] - merged tokens ending on the current minimal token position
+    """
+
     canonical_lengths: list[int]
-    token_ids_multi: list[list[TokenWithLength]]
+    token_ids_with_merges: list[list[TokenWithLength]]
 
 
 class TokenizerSpec(ABC):

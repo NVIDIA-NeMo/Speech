@@ -110,7 +110,7 @@ class VarBPEExtension:
                 if tuple(canonical_ids[start : i + 1]) in self.canonical_split2token_ids:
                     for merged_token_id in self.canonical_split2token_ids[tuple(canonical_ids[start : i + 1])]:
                         representations[i].append(TokenWithLength(token_id=merged_token_id, length=i - start + 1))
-        return VarBPERepresentation(canonical_lengths=orig_len, token_ids_multi=representations)
+        return VarBPERepresentation(canonical_lengths=orig_len, token_ids_with_merges=representations)
 
 
 class SentencePieceTokenizer(TokenizerSpec, ChatTemplateMixin):
@@ -182,6 +182,7 @@ class SentencePieceTokenizer(TokenizerSpec, ChatTemplateMixin):
         return self._var_bpe_extension
 
     def text_to_ids_var_bpe(self, text: str, case_insensitive: bool = True) -> VarBPERepresentation:
+        """Transform import text to Var-BPE representation"""
         token_ids = self.text_to_ids(text)
         var_bpe_ext = self.get_var_bpe_extension(case_insensitive=case_insensitive)
         return var_bpe_ext.ids_to_all_representations(token_ids=token_ids)

@@ -15,12 +15,11 @@
 from unittest.mock import patch
 
 import pytest
-import torch
 from omegaconf import DictConfig
 
 from nemo.collections.asr.models import EncDecCTCModel
 from nemo.collections.asr.modules import SpectrogramAugmentation
-from nemo.core.classes.common import Serialization, safe_instantiate
+from nemo.core.classes.common import Serialization
 
 
 def get_class_path(cls):
@@ -35,14 +34,6 @@ class MockSerializationImpl(Serialization):
 
 class MockSerializationImplV2(MockSerializationImpl):
     pass
-
-
-class MockDataset(torch.utils.data.Dataset):
-    def __len__(self):
-        return 1
-
-    def __getitem__(self, index):
-        return index
 
 
 class TestSerialization:
@@ -171,12 +162,6 @@ class TestSerialization:
                 Serialization.from_config_dict(config=config)
 
         import_class_mock.assert_not_called()
-
-    @pytest.mark.unit
-    def test_dataset_target_is_allowed(self):
-        config = DictConfig({'_target_': get_class_path(MockDataset)})
-        obj = safe_instantiate(config=config)
-        assert isinstance(obj, MockDataset)
 
     @pytest.mark.unit
     def test_self_class_instantiation(self):

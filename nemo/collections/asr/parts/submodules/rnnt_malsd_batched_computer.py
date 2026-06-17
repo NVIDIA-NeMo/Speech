@@ -1536,8 +1536,8 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         scores[:, 0] = 0.0
 
         fusion_states_list: list[torch.Tensor] = []
-        if self.fusion_models is not None:
-            for fm in self.fusion_models:
+        if self.has_fusion_models:
+            for fm in self._all_fusion_models():
                 fs = fm.get_init_states(batch_size=total, bos=True).to(device)
                 fusion_states_list.append(fs.reshape(batch_size, beam_size, *fs.shape[1:]))
 
@@ -1649,13 +1649,23 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             else None
         )
 
-        num_fusion = len(state_items[0].fusion_state_list)
-        # Per-stream ``fusion_state_list[fusion_idx]`` is ``[K]``; stack along a new dim 0
-        # to produce ``[B, K]`` (NOT ``cat`` which would give the flat ``[B*K]`` shape used
-        # by ``predictor_*`` and would trip downstream shape mismatches).
-        fusion_states_list = [
-            torch.stack([item.fusion_state_list[fi] for item in state_items], dim=0) for fi in range(num_fusion)
-        ]
+        num_fusion = max(len(item.fusion_state_list) for item in state_items)
+        if num_fusion > 0:
+            sos_fusion_template: list[torch.Tensor] | None = None
+            for item in state_items:
+                if len(item.fusion_state_list) < num_fusion:
+                    if sos_fusion_template is None:
+                        sos_fusion_template = self._get_state_item_after_sos(
+                            device=item.predictor_output.device
+                        ).fusion_state_list
+                    for fi in range(len(item.fusion_state_list), num_fusion):
+                        item.fusion_state_list.append(sos_fusion_template[fi].clone())
+
+            fusion_states_list = [
+                torch.stack([item.fusion_state_list[fi] for item in state_items], dim=0) for fi in range(num_fusion)
+            ]
+        else:
+            fusion_states_list = []
 
         return BatchedBeamState(
             predictor_states=batched_predictor_state,

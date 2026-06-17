@@ -213,14 +213,7 @@ class SeparateGraphsMALSD:
 
 @dataclass
 class MALSDStateItem:
-    """
-    Per-stream decoding state for ``ModifiedALSDBatchedRNNTComputer``.
-
-    Used by streaming pipelines that maintain per-stream state. Mirrors
-    ``LabelLoopingStateItem`` (greedy) with beam-shaped tensors
-    (``[beam_size, ...]`` instead of scalar/``[D]``) plus the cross-chunk
-    per-beam fields needed to seed the next MALSD chunk.
-    """
+    """Per-stream MALSD carry for cache-aware streaming (beam-shaped tensors)."""
 
     predictor_state: Any  # opaque per-stream predictor state of size beam_size
     predictor_output: torch.Tensor  # [beam_size, 1, D]
@@ -1500,27 +1493,12 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         )
 
     def _get_state_item_after_sos(self, device: torch.device | str) -> MALSDStateItem:
-        """
-        Per-stream after-SOS state. Used by :meth:`merge_to_batched_state` to fill
-        ``None`` items (fresh streams that joined the batch mid-flight).
-
-        Built by constructing a ``batch_size=1`` batched after-SOS state and
-        taking the first item out of :meth:`split_batched_state` - mirrors the
-        greedy ``_get_decoding_state_item_after_sos`` pattern.
-        """
+        """After-SOS per-stream state; used to fill ``None`` entries in merge."""
         batched = self._get_batched_state_after_sos(device=device, batch_size=1)
         return self.split_batched_state(batched)[0]
 
     def _get_batched_state_after_sos(self, device: torch.device | str, batch_size: int) -> BatchedBeamState:
-        """
-        Build a fresh batched MALSD state after ``<SOS>``.
-
-        Shapes follow the contract consumed by :meth:`split_batched_state`:
-        predictor state/outputs are flat ``[B*K, ...]``; per-beam fields are
-        ``[B, K]``; fusion states are ``[B, K, ...]``; ``decoded_lengths`` is ``[B]``.
-        Slot 0 starts active (``score=0.0``); slots ``1..K-1`` start inactive so the
-        next chunk's top-k expands the surviving beam.
-        """
+        """Fresh batched MALSD state after ``<SOS>`` (slot 0 active, others inactive)."""
         beam_size = self.beam_size
         total = batch_size * beam_size
 
@@ -1559,19 +1537,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         )
 
     def split_batched_state(self, state: BatchedBeamState) -> list[MALSDStateItem]:
-        """
-        Split a batched MALSD state into per-stream ``MALSDStateItem``s.
-
-        Mirrors ``GreedyBatchedLabelLoopingComputerBase.split_batched_state`` for
-        beam-search shapes:
-
-        - the predictor state was created with batch dimension ``B * beam_size``;
-          we slice it into ``B`` groups of ``beam_size`` consecutive rows and
-          re-batch each group with ``decoder.batch_unsplit_states``.
-        - ``labels`` / ``decoded_lengths`` and per-beam cross-chunk scalars are
-          split along the batch axis.
-        - ``fusion_states_list`` has each element as ``[B, beam_size, ...]``.
-        """
+        """Split a batched MALSD state into per-stream items."""
         if state is None:
             return []
         batch_size = state.labels.shape[0]
@@ -1589,8 +1555,6 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             stream_predictor_state = self.decoder.batch_unsplit_states(
                 per_row_states[i * beam_size : (i + 1) * beam_size]
             )
-            # ``state.fusion_states_list[k]`` is stored as ``[B, K]`` (see
-            # ``modified_alsd_torch``'s ``s.view(batch_size, self.beam_size)`` step).
             fusion_state_list = [fs[i].clone() for fs in state.fusion_states_list] if state.fusion_states_list else []
             items.append(
                 MALSDStateItem(
@@ -1615,12 +1579,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         return items
 
     def merge_to_batched_state(self, state_items: list[Optional[MALSDStateItem]]) -> BatchedBeamState:
-        """
-        Merge a list of per-stream ``MALSDStateItem``s into a single batched MALSD state.
-
-        ``None`` entries (e.g. fresh streams that joined a batch mid-flight) are
-        replaced with a freshly-initialised after-SOS state.
-        """
+        """Merge per-stream items into one batched state; ``None`` entries get after-SOS fillers."""
         if any(item is None for item in state_items):
             not_none_item = next(item for item in state_items if item is not None)
             device = not_none_item.predictor_output.device
@@ -1687,22 +1646,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         batched_hyps: BatchedBeamHyps,
         beam_indices: torch.Tensor,
     ) -> None:
-        """
-        In-place: collapse each row of a batched MALSD state and its associated
-        :class:`BatchedBeamHyps` to a single surviving beam, replicated across all
-        ``beam_size`` slots.
-
-        After the call, every per-beam tensor on ``state`` and on ``batched_hyps``
-        carries the chosen beam's value at slot 0 and identical clones at slots
-        1..beam_size-1; ``scores[:, 1:]`` is set to ``INACTIVE_SCORE`` so the next
-        chunk's top-k repopulates them through normal expansion of the surviving beam.
-
-        Args:
-            state: batched MALSD state to collapse in place.
-            batched_hyps: prefix-tree object returned alongside ``state``. Mutated
-                in place via :meth:`BatchedBeamHyps.keep_beam_`.
-            beam_indices: ``[batch_size]`` long tensor giving the beam to keep per row.
-        """
+        """Collapse each batch row to one beam, replicated across all slots."""
         batch_size = state.labels.shape[0]
         beam_size = self.beam_size
         if beam_indices.shape != (batch_size,):
@@ -1745,8 +1689,6 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             ).contiguous()
 
         if state.fusion_states_list:
-            # Fusion states are reshaped to ``[B, K]`` inside ``modified_alsd_torch``
-            # so use the per-stream ``beam_perm`` gather along the beam axis.
             for fs in state.fusion_states_list:
                 if fs.ndim != 2:
                     raise NotImplementedError(
@@ -1760,19 +1702,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         batched_hyps.keep_beam_(beam_indices)
 
     def collapse_state_item_to_top1_(self, item: MALSDStateItem, beam_index: int) -> None:
-        """
-        In-place per-stream variant of :meth:`collapse_batched_state_to_beams_`.
-
-        Replicates beam ``beam_index`` across all ``beam_size`` slots of ``item``
-        and sets ``score[1:] = INACTIVE_SCORE`` so the next chunk's top-k expands
-        the surviving beam. Used by streaming pipelines to collapse a single
-        stream's MALSD carry at its EOU boundary without disturbing other rows
-        of a batched run.
-
-        Wraps mutations in :func:`torch.inference_mode` so it can be called from
-        outside the encoder/decoder inference region (the per-stream tensors are
-        inference tensors produced by :meth:`split_batched_state`).
-        """
+        """In-place per-stream collapse to one beam (used at EOU in streaming)."""
         beam_size = self.beam_size
         if not 0 <= beam_index < beam_size:
             raise ValueError(f"beam_index must be in [0, {beam_size}), got {beam_index}")

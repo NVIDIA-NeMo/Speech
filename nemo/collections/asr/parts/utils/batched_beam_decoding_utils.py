@@ -81,21 +81,7 @@ def seed_batched_hyps_from_state(
     state: BatchedBeamState,
     batch_size: Optional[int] = None,
 ) -> None:
-    """Copy cross-chunk per-beam fields from a :class:`BatchedBeamState` snapshot
-    into ``hyps`` (in-place). Inverse of
-    :meth:`BatchedBeamHyps.export_cross_chunk_state`.
-
-    Used by streaming beam-search decoders to seed a ``BatchedBeamHyps`` from the previous
-    chunk's snapshot. Chunk-local buffers (prefix tree / timestamps / write cursor)
-    and the per-beam time cursor are NOT touched -- the caller is responsible for
-    wiping them.
-
-    Args:
-        hyps: destination ``BatchedBeamHyps`` (modified in place).
-        state: source snapshot. No-op when ``state.scores`` is ``None`` (first chunk).
-        batch_size: optional number of leading rows to copy. Defaults to
-            ``state.scores.shape[0]``.
-    """
+    """Seed ``hyps`` cross-chunk fields from a ``BatchedBeamState`` snapshot (in-place)."""
     if state.scores is None:
         return
     bs = state.scores.shape[0] if batch_size is None else batch_size
@@ -324,18 +310,7 @@ class BatchedBeamHyps:
         return new_hyps
 
     def keep_beam_(self, beam_indices: torch.Tensor) -> None:
-        """
-        In-place: collapse each row to a single surviving beam, replicated across all
-        ``beam_size`` slots, with the other slots' scores set to ``INACTIVE_SCORE``.
-
-        Used by streaming pipelines to commit the per-chunk best beam as the
-        definitive history before the next chunk, so the carried predictor state and
-        the published transcript stay consistent.
-
-        Args:
-            beam_indices: ``[batch_size]`` long tensor giving the beam to keep for
-                each row in the batch.
-        """
+        """Collapse each row to one beam, replicated across all slots (in-place)."""
         if self.beam_size <= 1:
             return
         permutation = (
@@ -345,7 +320,6 @@ class BatchedBeamHyps:
             .contiguous()
         )
         self._flatten_with_permutation_(permutation)
-        # Mark all but the first slot as inactive so the next iteration's top-k repopulates them.
         self.scores[:, 1:].fill_(INACTIVE_SCORE)
 
     def get_last_labels(self, pad_id: int = -1) -> torch.Tensor:
@@ -1009,21 +983,8 @@ class BatchedBeamHyps:
 def export_batched_beam_hyps_to_cpu_lists(
     bbh: BatchedBeamHyps,
 ) -> tuple[list[list[list[int]]], list[list[list[int]]], list[list[int]]]:
-    """
-    Streaming-pipeline helper: flatten ``bbh`` in-place (identity permutation) and
-    return CPU-side per-(batch, beam) chunk-local emissions plus the chunk-start
-    descent map. Intended for windowed-beam aggregation outside the engine.
-
-    Returns:
-        (tokens, timestamps, root_ptrs):
-            * ``tokens``: ``[batch_size][beam_size]`` non-blank/non-padding token
-              IDs for this chunk.
-            * ``timestamps``: ``[batch_size][beam_size]`` matching step indices.
-            * ``root_ptrs``: ``[batch_size][beam_size]`` chunk-start beam index
-              from which each current slot descends.
-    """
+    """Export chunk-local per-beam tokens/timestamps and beam descent map to CPU lists."""
     _, transcripts, timestamps, _, root_ptrs = bbh._export(sort=False)
-    # One sync to CPU; per-slot masking + .tolist() stays on CPU.
     root_ptrs_list = root_ptrs.detach().cpu().tolist()
     transcripts_cpu = transcripts.detach().cpu()
     timestamps_cpu = timestamps.detach().cpu()

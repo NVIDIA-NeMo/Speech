@@ -381,31 +381,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
         keep_all_outputs: bool,
         multi_biasing_ids: Tensor | None = None,
     ) -> tuple[list[Hypothesis], object]:
-        """
-        Cache-aware encode/decode step for MALSD beam search.
-
-        Greedy decoding uses ``asr_model.stream_step``, which fuses encoder and
-        label-looping decode and returns a single-path ``Hypothesis``. Beam search
-        instead merges per-stream ``hyp_decoding_state`` into a batched MALSD state,
-        decodes the chunk, and splits the carry back out. That lifecycle is owned
-        here rather than by the model wrapper, so this method calls ``encoder_step``
-        and then ``malsd_computer`` on the encoded frames.
-
-        The MALSD computer returns chunk-local emissions per beam slot, not a full
-        cross-chunk transcript. Beams may diverge within an utterance and the
-        score argmax top-1 can change between chunks. Text is therefore assembled
-        on the CPU: ``window_committed_*`` stores the prefix frozen at the last
-        EOU; ``window_beam_*`` stores per-beam suffixes since then (permuted each
-        chunk in :meth:`_update_windowed_beam_state`). Each returned ``Hypothesis``
-        is ``window_committed + window_beam[top1]``. GPU beams are left diverged
-        until EOU, when :meth:`run_malsd_decoder` collapses ``hyp_decoding_state``.
-
-        Returns:
-            Per-stream hypotheses and the updated encoder cache context (same
-            contract as ``stream_step``).
-        """
-        # Merge per-stream carries into a batched MALSD state. ``None`` entries
-        # (fresh streams) are filled with the after-SOS state inside ``merge_to_batched_state``.
+        """Cache-aware MALSD encode/decode step for one chunk."""
         carries = [state.hyp_decoding_state for state in states]
         if all(c is None for c in carries):
             batched_state = None
@@ -430,8 +406,6 @@ class CacheAwareRNNTPipeline(BasePipeline):
                 drop_left_context=self.drop_left_context,
                 valid_out_len=self.valid_out_len,
             )
-            # ``encoded`` from the encoder wrapper is shaped [B, D, T]; the MALSD
-            # computer expects [B, T, D] (matches the rest of the decoding stack).
             encs_dim_last = encoded.transpose(1, 2).contiguous()
 
             best_batched_hyps, batched_state = malsd_computer(
@@ -478,14 +452,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
         states: list[CacheAwareRNNTBeamStreamingState],
         best_batched_hyps: BatchedBeamHyps,
     ) -> None:
-        """
-        Extend each state's per-slot ``window_beam_tokens[k]`` with the chunk-local
-        emissions of the slot that originated from carry slot ``k`` at chunk start.
-
-        The helper exposes per-(batch, beam) chunk-local tokens/timestamps and the
-        chunk-start -> chunk-end descent map; the permute-then-append windowed-beam
-        policy lives here.
-        """
+        """Append chunk-local beam emissions to each stream's windowed-beam state."""
         chunk_tokens, chunk_timestamps, root_ptrs = export_batched_beam_hyps_to_cpu_lists(best_batched_hyps)
         beam_size = best_batched_hyps.beam_size
         for state, ct, cts, rp in zip(states, chunk_tokens, chunk_timestamps, root_ptrs):
@@ -496,32 +463,11 @@ class CacheAwareRNNTPipeline(BasePipeline):
 
     def run_malsd_decoder(self, state: CacheAwareRNNTBeamStreamingState, request: Request, hyp: Hypothesis) -> bool:
         """
-        MALSD counterpart to :meth:`run_greedy_decoder`.
-
-        Reuses the greedy decoder for EOU detection, label-buffer rolling and
-        offset bookkeeping. Then RESYNCS ``state.tokens`` / ``state.timesteps`` /
-        ``state.confidences`` with the current top-1's cumulative slice
-        (``hyp.y_sequence[_malsd_utterance_start:]``).
-
-        The resync is the load-bearing step that distinguishes MALSD from
-        greedy: between chunks, MALSD's raw-argmax top-1 can switch beams with
-        incompatible token histories (beam A: ``["I"]`` at chunk t, beam B:
-        ``["I", "I"]`` at chunk t+1). ``run_greedy_decoder`` appends
-        ``hyp.y_sequence[offset:]`` onto whatever was already in ``state.tokens``,
-        which would splice A's prefix with B's new tokens into a Frankenstein
-        transcript. Overwriting with the actual current top-1 belief keeps the
-        published transcript consistent with whichever beam currently wins.
-
-        On EOU we bump ``_malsd_utterance_start`` to the current cumulative
-        length so the next utterance's resync slice starts past the cleared
-        previous utterance, then collapse the per-stream MALSD carry to its
-        top-1 beam: the K-beam state diverges intra-utterance and snaps to the
-        chosen path at the natural utterance boundary.
+        Run greedy EOU/label logic, then resync ``state.tokens`` from the current
+        top-1 cumulative hyp. On EOU, collapse the MALSD carry and commit the window.
         """
         eou_detected = self.run_greedy_decoder(state, request, hyp)
 
-        # Resync state.tokens / state.timesteps / state.confidences with the
-        # current top-1's cumulative slice for this utterance.
         all_tokens = list(hyp.y_sequence) if hyp.y_sequence is not None else []
         all_timestamps = list(hyp.timestamp) if hyp.timestamp is not None else []
         start = max(0, int(state._malsd_utterance_start))
@@ -537,14 +483,8 @@ class CacheAwareRNNTPipeline(BasePipeline):
             state.last_token_idx = timestamps_list[-1] if timestamps_list else None
 
         if eou_detected:
-            # Mark the boundary so the next utterance's slice starts past the
-            # tokens we just finalised.
             state._malsd_utterance_start = len(all_tokens)
 
-            # EOU-driven collapse: promote the chosen window into the committed
-            # prefix and replicate the winning beam across all K slots of the
-            # per-stream carry. The predictor stays warm at the top-1's last
-            # label so the next utterance benefits from cross-utterance context.
             if state.hyp_decoding_state is not None:
                 top1 = int(state.hyp_decoding_state.score.argmax().item())
                 self.beam_decoder_computer.collapse_state_item_to_top1_(state.hyp_decoding_state, top1)
@@ -655,16 +595,10 @@ class CacheAwareRNNTPipeline(BasePipeline):
         self.context_manager.update_cache(stream_ids, new_context, mapping)
         self.context_manager.reset_slots(stream_ids, eos_flags)
 
-        # update the previous hypothesis for non-eos streams. For greedy this is the
-        # ``Hypothesis`` returned by ``rnnt_decoder_predictions_tensor``; for MALSD
-        # it is the cumulative ``Hypothesis`` built in ``_malsd_stream_step``. The
-        # eos reset is deferred to *after* the per-request decoder loop below so
-        # that ``run_malsd_decoder`` can still see the current utterance start.
         for state, hyp, eos in zip(states, best_hyp, eos_flags):
             if not eos:
                 state.set_previous_hypothesis(hyp)
 
-        # run per-request decoder for each request-state-hypothesis tuple
         for request, state, hyp in zip(requests, states, best_hyp):
             if self.beam_decoder_computer is not None:
                 eou_detected = self.run_malsd_decoder(state, request, hyp)
@@ -675,7 +609,6 @@ class CacheAwareRNNTPipeline(BasePipeline):
                 state.cleanup_after_eou()
                 ready_state_ids.add(request.stream_id)
 
-        # Deferred eos reset - now safe to clear MALSD per-stream carry too.
         for state, eos in zip(states, eos_flags):
             if eos:
                 state.reset_previous_hypothesis()

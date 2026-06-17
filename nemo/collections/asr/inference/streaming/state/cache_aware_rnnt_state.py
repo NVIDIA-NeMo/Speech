@@ -12,14 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
-from typing import TYPE_CHECKING
-
 from nemo.collections.asr.inference.streaming.state.cache_aware_state import CacheAwareStreamingState
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
-
-if TYPE_CHECKING:
-    from nemo.collections.asr.parts.submodules.rnnt_malsd_batched_computer import MALSDStateItem
 
 
 class CacheAwareRNNTStreamingState(CacheAwareStreamingState):
@@ -72,50 +66,31 @@ class CacheAwareRNNTStreamingState(CacheAwareStreamingState):
 
 
 class CacheAwareRNNTBeamStreamingState(CacheAwareRNNTStreamingState):
-    """
-    Cache-aware RNNT state for beam-search streaming.
-
-    Transcript assembly is ``committed prefix + live beam suffix``. Beams may
-    disagree within an utterance; at EOU the top-1 path is promoted into the
-    committed prefix and per-beam suffixes are cleared.
-
-    See :class:`CacheAwareRNNTPipeline` (``_malsd_stream_step``, ``run_malsd_decoder``).
-    """
+    """Cache-aware RNNT state for MALSD beam-search streaming."""
 
     def _additional_params_reset(self) -> None:
-        """
-        Reset MALSD per-stream carry on top of the greedy state.
-        """
         super()._additional_params_reset()
-        # Per-stream MALSD decoder carry (``MALSDStateItem``); Shuttled through
-        # ``merge_to_batched_state`` / ``split_batched_state`` each chunk.
         self.hyp_decoding_state: "MALSDStateItem | None" = None
         # Finalized transcript prefix at the last EOU; identical for every beam slot.
         self.window_committed_tokens: list[int] = []
         # Frame timestamps aligned with ``window_committed_tokens``.
         self.window_committed_timestamps: list[int] = []
+        
         # Per-beam suffix since last EOU; slot k may differ while beams compete.
         self.window_beam_tokens: list[list[int]] | None = None
-        # Per-beam frame timestamps aligned with ``window_beam_tokens`` (same slot layout).
+        # Per-beam frame timestamps aligned with ``window_beam_tokens``.
         self.window_beam_timestamps: list[list[int]] | None = None
+        
         # Index into cumulative ``hyp.y_sequence`` where the current utterance starts
         # (skips tokens from prior utterances still present in the cumulative hyp).
         self._malsd_utterance_start: int = 0
 
     def reset_previous_hypothesis(self) -> None:
-        """
-        Reset the previous hypothesis and all MALSD beam-search bookkeeping.
-
-        Called at end-of-stream. Zeroes out the MALSD per-stream carry so the
-        next utterance starts from SOS with an empty windowed-beam state.
-        """
+        """Reset carry and windowed-beam state at end-of-stream."""
         super().reset_previous_hypothesis()
         self.hyp_decoding_state = None
         self.window_committed_tokens = []
         self.window_committed_timestamps = []
         self.window_beam_tokens = None
         self.window_beam_timestamps = None
-        # NB: ``_malsd_utterance_start`` is intentionally NOT reset here because
-        # the cumulative ``hyp.y_sequence`` it indexes is owned by the pipeline
-        # and bumped after the call when the previous utterance is being
-        # finalised. The pipeline bumps it explicitly after publishing.
+        # _malsd_utterance_start is bumped by the pipeline on EOU, not here.

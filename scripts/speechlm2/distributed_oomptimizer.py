@@ -378,6 +378,8 @@ class SequenceLengthResolver:
             case unexpected:
                 raise RuntimeError(f"Unexpected modality combination: {unexpected}")
 
+        raise RuntimeError("resolve_one reached an unexpected fall-through path")
+
     def _matches_model_name(self, *suffixes: str) -> bool:
         return self.module_name is not None and any(self.module_name.endswith(suffix) for suffix in suffixes)
 
@@ -945,7 +947,9 @@ class TorchrunProbeLauncher:
             try:
                 os.killpg(proc.pid, signal.SIGKILL)
             except ProcessLookupError:
-                pass
+                # The process group already exited between timeout handling and SIGKILL.
+                # This is expected in racey shutdown paths and requires no further action.
+                return
             proc.wait()
 
 

@@ -74,7 +74,7 @@ def load_model(cfg: DictConfig, trainer: pl.Trainer) -> ASRModel:
         )
     if cfg.get("init_from_ptl_ckpt", None):
         logging.info(f"Loading weights from checkpoint: {cfg.init_from_ptl_ckpt}")
-        state_dict = torch.load(cfg.init_from_ptl_ckpt, map_location='cpu', weights_only=False)['state_dict']
+        state_dict = torch.load(cfg.init_from_ptl_ckpt, map_location='cpu')['state_dict']
         model.load_state_dict(state_dict, strict=True)
     return model
 

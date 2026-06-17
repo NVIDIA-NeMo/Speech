@@ -40,7 +40,7 @@ As of now, we only support English input and output, but more languages will be 
 
 
 ## 📅 Latest Updates
-- 2026-05-15: Added support for [Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4](https://huggingface.co/nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4).
+- 2026-05-15: Added support for [Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4](https://huggingface.co/nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4). See [here](#-multi-modal-llms) for more details.
 - 2026-01-26: Added support for [NVIDIA-Nemotron-3-Nano-30B-A3B-BF16](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16) LLM model, and support for [magpie_tts_multilingual_357m](https://huggingface.co/nvidia/magpie_tts_multilingual_357m) TTS model.
 - 2025-12-31: Added examples for [tool calling](#tool-calling), such as changing the speaking speed, switching between male/female voices and British/American accents, and getting the current weather of a city. Diarization model is updated to [nvidia/diar_streaming_sortformer_4spk-v2.1](https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1) with improved performance.
 - 2025-11-14: Added support for joint ASR and EOU detection with [Parakeet-realtime-eou-120m](https://huggingface.co/nvidia/parakeet_realtime_eou_120m-v1) model.
@@ -140,9 +140,10 @@ Most LLMs from HuggingFace are supported. A few examples are:
         vllm serve nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16 \
             --trust-remote-code --max-num-seqs 1 --gpu-memory-utilization 0.8 --max-model-len 8192 \
             --tensor-parallel-size 2 --enable-auto-tool-choice --tool-call-parser qwen3_coder --enable-prefix-caching \
-            --reasoning-parser nemotron_v3
+            --reasoning-parser nemotron_v3 \
+            --reasoning-config '{"reasoning_start_str": "<think>", "reasoning_end_str": "\nI have to finalize the answer now.</think>"}'
     ```
-    - If you have a GPU with FP8 support, the VRAM requirement is reduced to about 30GB. You can switch to [nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8) by modifying the llm config accordingly.
+    - If you have a GPU with FP8 support, the VRAM requirement is reduced. You can switch to [nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8) or [nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4) by modifying the llm config accordingly.
     - Tool calling is enabled for this model.
 - [Qwen/Qwen2.5-7B-Instruct](https://huggingface.co/Qwen/Qwen2.5-7B-Instruct)
     - Please use `server/server_configs/llm_configs/qwen2.5-7B.yaml` as the server config.

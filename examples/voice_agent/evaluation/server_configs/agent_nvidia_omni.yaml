@@ -7,7 +7,7 @@ server:
   create_new_log: true
   overwrite_existing_log: true
   use_model_registry: false
-  talk_first: false  
+  talk_first: true  
 
 transport:
   audio_out_10ms_chunks: 10
@@ -37,13 +37,13 @@ llm:
   use_stt_transcript: false
   # nvidia inference endpoint doesn't support multiple audio turns so we only keep the last audio turn
   # set keep_only_last_audio_turn=false when using vllm server as it supports multiple audio turns
-  keep_only_last_audio_turn: true  
+  keep_only_last_audio_turn: false  
 
-  base_url: "https://integrate.api.nvidia.com/v1"
-  model: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
+  # base_url: "https://integrate.api.nvidia.com/v1"
+  # model: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
 
-  # base_url: "http://localhost:8000/v1"
-  # model: "nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4"
+  base_url: "http://localhost:8000/v1"
+  model: "nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4"
 
   # system_prompt: "You are a helpful AI agent named Lisa. Start by greeting the user with 'Hi, I'm Lisa, your helpful AI assistant. How can I help you today?'."
   system_role: "system"  # role for system prompt, set it to `user` for models that do not support system prompt

@@ -45,6 +45,6 @@ vllm_generation_params:
   extra:  # additional model specific params can be specified in dict format
     extra_body:
       chat_template_kwargs:
-        enable_thinking: True  # disable thinking
+        enable_thinking: True
       thinking_token_budget: ${llm.thinking_budget}
 

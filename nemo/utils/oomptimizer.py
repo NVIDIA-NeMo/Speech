@@ -25,6 +25,7 @@ from nemo.core.neural_types import LabelsType, NeuralType
 
 
 def is_2d_bucketing(buckets) -> bool:
+    """Return whether the bucket list contains input/output sequence-length pairs."""
     return all(
         isinstance(item, (list, tuple)) and len(item) == 2 and all(isinstance(v, Number) for v in item)
         for item in buckets
@@ -33,6 +34,8 @@ def is_2d_bucketing(buckets) -> bool:
 
 @dataclass
 class SequenceLengthResolver:
+    """Resolve OOMptimizer bucket values into synthetic input and output sequence lengths."""
+
     cfg: object
     ratio: float
     salm_audio_token_ratio: float
@@ -41,9 +44,11 @@ class SequenceLengthResolver:
     schema: dict | None = None
 
     def resolve_many(self, buckets) -> list[tuple[int, int]]:
+        """Resolve a list of OOMptimizer buckets into input and output sequence lengths."""
         return [self.resolve_one(bucket) for bucket in buckets]
 
     def resolve_one(self, bucket) -> tuple[int, int]:
+        """Resolve one OOMptimizer bucket into input and output sequence lengths."""
         if self._uses_audio_locator_expansion():
             return self._audio_locator_lens(bucket)
 

@@ -534,8 +534,11 @@ class CacheAwareRNNTPipeline(BasePipeline):
         self.context_manager.update_cache(stream_ids, new_context, mapping)
         self.context_manager.reset_slots(stream_ids, eos_flags)
 
+        # update the previous hypothesis and reset the previous hypothesis for the streams that has ended
         for state, hyp, eos in zip(states, best_hyp, eos_flags):
-            if not eos:
+            if eos:
+                state.reset_previous_hypothesis()
+            else:
                 state.set_previous_hypothesis(hyp)
 
         for request, state, hyp in zip(requests, states, best_hyp):
@@ -547,9 +550,10 @@ class CacheAwareRNNTPipeline(BasePipeline):
                 state.cleanup_after_eou()
                 ready_state_ids.add(request.stream_id)
 
-        for state, eos in zip(states, eos_flags):
-            if eos:
-                state.reset_previous_hypothesis()
+        if self.beam_decoder_computer is not None:
+            for state, eos in zip(states, eos_flags):
+                if eos:
+                    state.reset_beam_decoding_state_()
 
     def transcribe_step_for_feature_buffers(self, fbuffers: list[FeatureBuffer]) -> None:
         """

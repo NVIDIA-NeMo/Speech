@@ -96,14 +96,14 @@ class CacheAwareRNNTBeamStreamingState(CacheAwareRNNTStreamingState):
         self._cumulative_tokens_len: int = 0
         self.partial_top1_slot: int | None = None
 
-    def reset_previous_hypothesis(self) -> None:
-        """Reset carry and partial-beam state at end-of-stream."""
-        super().reset_previous_hypothesis()
+    def reset_beam_decoding_state_(self) -> None:
+        """Clear MALSD carry and cumulative/partial tokens when a stream ends."""
         self.hyp_decoding_state = None
         self.cumulative_tokens = []
         self.cumulative_timestamps = []
         self.partial_tokens = None
         self.partial_timestamps = None
+        self._cumulative_tokens_len = 0
         self.partial_top1_slot = None
 
     def append_chunk_beam_(

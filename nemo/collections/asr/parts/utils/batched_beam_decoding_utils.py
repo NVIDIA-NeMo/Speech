@@ -81,7 +81,17 @@ def seed_batched_hyps_from_state(
     state: BatchedBeamState,
     batch_size: Optional[int] = None,
 ) -> None:
-    """Seed ``hyps`` cross-chunk fields from a ``BatchedBeamState`` snapshot (in-place)."""
+    """
+    Copy cross-chunk per-beam fields from a :class:`BatchedBeamState` snapshot
+    into ``hyps`` (in-place). Inverse of
+    :meth:`BatchedBeamHyps.export_cross_chunk_state`.
+
+    Args:
+        hyps: destination ``BatchedBeamHyps`` (modified in place).
+        state: source snapshot.
+        batch_size: optional number of leading rows to copy. Defaults to
+            ``state.scores.shape[0]``.
+    """
     if state.scores is None:
         return
     bs = state.scores.shape[0] if batch_size is None else batch_size

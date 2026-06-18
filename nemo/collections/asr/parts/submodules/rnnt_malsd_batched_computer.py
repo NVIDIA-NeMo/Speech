@@ -1701,8 +1701,14 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
 
         batched_hyps.keep_beam_(beam_indices)
 
-    def collapse_state_item_to_top1_(self, item: MALSDStateItem, beam_index: int) -> None:
-        """In-place per-stream collapse to one beam (used at EOU in streaming)."""
+    def select_beam_in_state_item_(self, item: MALSDStateItem, beam_index: int) -> None:
+        """In-place per-stream beam selection (used at EOU in streaming).
+
+        Selects ``beam_index`` and replicates that beam's decoder carry across all
+        ``beam_size`` slots. Beam width is unchanged; every slot holds the same
+        predictor, fusion, and score state so the next decode step starts from one
+        committed hypothesis.
+        """
         beam_size = self.beam_size
         if not 0 <= beam_index < beam_size:
             raise ValueError(f"beam_index must be in [0, {beam_size}), got {beam_index}")

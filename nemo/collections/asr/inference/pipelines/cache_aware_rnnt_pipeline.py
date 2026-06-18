@@ -40,6 +40,7 @@ from nemo.collections.asr.inference.utils.enums import RequestType
 from nemo.collections.asr.inference.utils.per_stream_biasing import (
     build_multi_biasing_ids_np,
     release_all_biasing_models,
+    release_auto_managed_stream_biasing,
 )
 from nemo.collections.asr.inference.utils.pipeline_utils import (
     check_existance_of_required_attributes,
@@ -353,7 +354,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
     def _apply_beam_update_(self, state: CacheAwareRNNTBeamStreamingState, eou_detected: bool) -> None:
         """After endpointing: refresh beam publish tokens and fold cumulative prefix on EOU."""
         if eou_detected and state.hyp_decoding_state is not None:
-            self.beam_decoder_computer.collapse_state_item_to_top1_(state.hyp_decoding_state, state.get_best_hyp_idx())
+            self.beam_decoder_computer.select_beam_in_state_item_(state.hyp_decoding_state, state.get_best_hyp_idx())
         state.update_(eou_detected)
 
     def run_greedy_decoder(self, state: CacheAwareRNNTStreamingState, request: Request, hyp: Hypothesis) -> bool:
@@ -462,6 +463,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
             else:
                 state.set_previous_hypothesis(hyp)
 
+        # run greedy decoder for each request-state-hypothesis tuple
         for request, state, hyp in zip(requests, states, best_hyp):
             eou_detected = self.run_greedy_decoder(state, request, hyp)
             if self.beam_decoder_computer is not None:
@@ -471,10 +473,13 @@ class CacheAwareRNNTPipeline(BasePipeline):
                 state.cleanup_after_eou()
                 ready_state_ids.add(request.stream_id)
 
-        if self.beam_decoder_computer is not None:
-            for state, eos in zip(states, eos_flags):
-                if eos:
-                    state.reset_beam_decoding_state_()
+        for state, eos in zip(states, eos_flags):
+            if not eos:
+                continue
+            if self.decoding_computer is not None and self.decoding_computer.per_stream_biasing_enabled:
+                release_auto_managed_stream_biasing(state, self.decoding_computer.biasing_multi_model)
+            if self.beam_decoder_computer is not None:
+                state.reset_beam_decoding_state_()
 
     def transcribe_step_for_feature_buffers(self, fbuffers: list[FeatureBuffer]) -> None:
         """

@@ -81,14 +81,18 @@ def seed_batched_hyps_from_state(
     state: BatchedBeamState,
     batch_size: Optional[int] = None,
 ) -> None:
-    """
-    Copy cross-chunk per-beam fields from a :class:`BatchedBeamState` snapshot
+    """Copy cross-chunk per-beam fields from a :class:`BatchedBeamState` snapshot
     into ``hyps`` (in-place). Inverse of
     :meth:`BatchedBeamHyps.export_cross_chunk_state`.
 
+    Used by streaming beam-search decoders to seed a ``BatchedBeamHyps`` from the previous
+    chunk's snapshot. Chunk-local buffers (prefix tree / timestamps / write cursor)
+    and the per-beam time cursor are NOT touched -- the caller is responsible for
+    wiping them.
+    
     Args:
         hyps: destination ``BatchedBeamHyps`` (modified in place).
-        state: source snapshot.
+        state: source snapshot. No-op when ``state.scores`` is ``None`` (first chunk).
         batch_size: optional number of leading rows to copy. Defaults to
             ``state.scores.shape[0]``.
     """

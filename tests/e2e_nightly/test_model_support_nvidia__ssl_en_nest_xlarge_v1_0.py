@@ -59,14 +59,17 @@ def test_model_training_step():
     model = _load_model()
     prepare_for_training_step(model)
     d = next(model.parameters()).device
-    torch.manual_seed(0)  # fixed seed to avoid intermittent NaN with random inputs
+    torch.manual_seed(0)
+    audio_len = torch.tensor([16000, 12000], device=d)
+    audio = torch.randn(2, 16000, device=d)
+    noise = torch.randn(2, 16000, device=d)
     batch = AudioNoiseBatch(
-        audio=torch.randn(2, 16000, device=d),
-        audio_len=torch.tensor([16000, 12000], device=d),
-        noise=torch.randn(2, 16000, device=d),
-        noise_len=torch.tensor([16000, 12000], device=d),
-        noisy_audio=torch.randn(2, 16000, device=d),
-        noisy_audio_len=torch.tensor([16000, 12000], device=d),
+        audio=audio,
+        audio_len=audio_len,
+        noise=noise,
+        noise_len=audio_len,
+        noisy_audio=audio + noise,
+        noisy_audio_len=audio_len,
     )
     result = model.training_step(batch, 0)
     loss = result if isinstance(result, torch.Tensor) else result['loss']

@@ -111,7 +111,7 @@ def __process_data(data_folder: str, dst_folder: str, manifest_file: str):
         os.makedirs(real_rir_folder)
     # split multi-channel rir files to single channel
     for rir_f in rirfiles:
-        n_chans = int(subprocess.check_output("soxi -c {0}".format(rir_f), shell=True))
+        n_chans = int(subprocess.check_output(["soxi", "-c", rir_f]))
         if n_chans == 1:
             copy(rir_f, real_rir_folder)
         else:
@@ -120,7 +120,7 @@ def __process_data(data_folder: str, dst_folder: str, manifest_file: str):
                     real_rir_folder,
                     os.path.splitext(os.path.basename(rir_f))[0] + "-" + str(chan) + ".wav",
                 )
-                _ = subprocess.check_output(f"sox {rir_f} {chan_file_name} remix {chan}", shell=True)
+                _ = subprocess.check_output(["sox", rir_f, chan_file_name, "remix", str(chan)])
 
     # move simulated rirs to processed
     if not os.path.exists(os.path.join(dst_folder, "simulated_rirs")):
@@ -132,7 +132,7 @@ def __process_data(data_folder: str, dst_folder: str, manifest_file: str):
         entry = {}
         for rir in all_rirs:
             rir_file = os.path.join(dst_folder, rir)
-            duration = subprocess.check_output("soxi -D {0}".format(rir_file), shell=True)
+            duration = subprocess.check_output(["soxi", "-D", rir_file])
             entry["audio_filepath"] = rir_file
             entry["duration"] = float(duration)
             entry["offset"] = 0

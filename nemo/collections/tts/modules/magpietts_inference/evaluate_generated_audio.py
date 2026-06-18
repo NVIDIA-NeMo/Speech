@@ -494,7 +494,7 @@ def evaluate_dir(
                 model=speaker_verification_model_alternate,
                 extractor=feature_extractor,
                 device=device,
-                sv_model_type=sv_model_type,
+                sv_model_type="titanet", # alternate is always titanet
             )
 
             # Initialize SSIMs with a default since the context or ground truth audio

@@ -24,18 +24,25 @@ if torch.cuda.device_count() < 2:
     raise SystemExit("Distributed OOMptimizer functional test requires at least 2 visible CUDA devices.")
 PY
 
-CONFIG_PATH=/tmp/distributed_oomptimizer_tiny.yaml
+CONFIG_PATH=/tmp/distributed_oomptimizer_transformer.yaml
 PROBE_LOG_DIR=/tmp/distributed_oomptimizer_probes_${RUN_ID:-manual}
 rm -rf "${PROBE_LOG_DIR}"
 
 python - <<'PY'
 from pathlib import Path
 
-Path("/tmp/distributed_oomptimizer_tiny.yaml").write_text(
+Path("/tmp/distributed_oomptimizer_transformer.yaml").write_text(
     """
 model:
-  vocab_size: 32
-  scratch_mb_per_sample: 96
+  vocab_size: 64
+  sample_rate: 32
+  frame_stride: 4
+  hidden_size: 128
+  num_heads: 4
+  ffn_hidden_size: 256
+  dropout: 0.0
+  activation_reserve_mb_per_frame: 7
+  max_activation_reserve_frames: 160
 trainer:
   devices: 2
   accelerator: gpu
@@ -53,15 +60,35 @@ PY
 
 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo scripts/speechlm2/distributed_oomptimizer.py \
   -c "${CONFIG_PATH}" \
-  -m tests.collections.speechlm2.distributed_oomptimizer_model.TinyDistributedOOMptimizerModel \
-  -b "[0.05]" \
+  -m tests.collections.speechlm2.distributed_oomptimizer_model.SingleBlockDistributedOOMptimizerModel \
+  -b "[12.0,14.0,16.0,18.0,20.0]" \
   -r 2.0 \
-  -s 2 \
+  -s 8 \
   -t 0.25 \
-  --memory-fraction 0.01 \
+  --memory-fraction 0.5 \
   --nproc-per-node 2 \
   --probe-log-dir "${PROBE_LOG_DIR}" \
   --probe-timeout-seconds 180 \
   --probe-memory-reclaim-timeout-seconds 0
 
-find "${PROBE_LOG_DIR}" -name 'probe_*.jsonl' -print -quit | grep -q .
+PROBE_LOG_DIR="${PROBE_LOG_DIR}" python - <<'PY'
+import json
+import os
+from pathlib import Path
+
+log_dir = Path(os.environ["PROBE_LOG_DIR"])
+records = []
+for path in sorted(log_dir.glob("probe_*.jsonl")):
+    with path.open() as f:
+        records.extend(json.loads(line) for line in f if line.strip())
+
+if not records:
+    raise SystemExit(f"No distributed OOMptimizer probe records found in {log_dir}.")
+
+buckets = {record["bucket"] for record in records}
+if len(buckets) != 5:
+    raise SystemExit(f"Expected probe records for 5 buckets, found {len(buckets)}: {sorted(buckets)}")
+
+if not any(record["status"] == "memory_target" for record in records):
+    raise SystemExit("Expected at least one probe to stop at the requested memory target.")
+PY

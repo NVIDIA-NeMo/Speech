@@ -25,14 +25,9 @@ from torch.utils.data import DataLoader, IterableDataset
 
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, MaskType, NeuralType
 from nemo.utils import logging
+from nemo.utils.oomptimizer import SequenceLengthResolver
+from nemo.utils.oomptimizer import is_2d_bucketing as _is_2d_bucketing
 from nemo.utils.trainer_utils import resolve_trainer_cfg
-
-try:
-    from oomptimizer_utils import SequenceLengthResolver
-    from oomptimizer_utils import is_2d_bucketing as _is_2d_bucketing
-except ModuleNotFoundError:
-    from scripts.speechlm2.oomptimizer_utils import SequenceLengthResolver
-    from scripts.speechlm2.oomptimizer_utils import is_2d_bucketing as _is_2d_bucketing
 
 
 class ProfilingBatchGenerator:

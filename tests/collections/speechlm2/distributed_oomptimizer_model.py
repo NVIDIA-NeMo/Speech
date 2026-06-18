@@ -14,18 +14,38 @@
 
 import lightning.pytorch as pl
 import torch
+import torch.nn.functional as F
 
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, NeuralType
 
 
-class TinyDistributedOOMptimizerModel(pl.LightningModule):
-    """Tiny CUDA model used by the distributed OOMptimizer functional test."""
+class SingleBlockDistributedOOMptimizerModel(pl.LightningModule):
+    """Single-transformer-block model used by the distributed OOMptimizer functional test."""
 
     def __init__(self, cfg: dict):
         super().__init__()
-        self.vocab_size = int(cfg.get("vocab_size", 32))
-        self.scratch_elements_per_sample = int(cfg.get("scratch_mb_per_sample", 96) * 1024 * 1024 // 4)
-        self.scale = torch.nn.Parameter(torch.ones(()))
+        self.vocab_size = int(cfg.get("vocab_size", 64))
+        self.sample_rate = int(cfg.get("sample_rate", 32))
+        self.frame_stride = int(cfg.get("frame_stride", 4))
+        hidden_size = int(cfg.get("hidden_size", 128))
+        num_heads = int(cfg.get("num_heads", 4))
+        ffn_hidden_size = int(cfg.get("ffn_hidden_size", hidden_size * 4))
+        dropout = float(cfg.get("dropout", 0.0))
+        self.activation_reserve_elements_per_frame = int(
+            float(cfg.get("activation_reserve_mb_per_frame", 0.0)) * 1024 * 1024 // 4
+        )
+        self.max_activation_reserve_frames = int(cfg.get("max_activation_reserve_frames", 160))
+
+        self.input_projection = torch.nn.Linear(self.frame_stride, hidden_size)
+        self.encoder = torch.nn.TransformerEncoderLayer(
+            d_model=hidden_size,
+            nhead=num_heads,
+            dim_feedforward=ffn_hidden_size,
+            dropout=dropout,
+            batch_first=True,
+            norm_first=True,
+        )
+        self.classifier = torch.nn.Linear(hidden_size, self.vocab_size)
 
     @property
     def oomptimizer_schema(self) -> dict:
@@ -45,13 +65,33 @@ class TinyDistributedOOMptimizerModel(pl.LightningModule):
 
     def training_step(self, batch: dict, batch_idx: int) -> dict:
         audio = batch["audio"].float()
-        tokens = batch["tokens"].float()
-        batch_size = int(audio.shape[0])
-        if self.scratch_elements_per_sample > 0:
-            torch.empty((batch_size, self.scratch_elements_per_sample), device=audio.device, dtype=torch.float32)
-        prediction = self.scale * audio.mean()
-        target = tokens.mean() / max(1, self.vocab_size)
-        return {"loss": (prediction - target).square()}
+        tokens = batch["tokens"].long()
+        pad = (-audio.shape[1]) % self.frame_stride
+        if pad:
+            audio = F.pad(audio, (0, pad))
+
+        frames = audio.reshape(audio.shape[0], -1, self.frame_stride)
+        hidden = self.input_projection(frames)
+        hidden = self.encoder(hidden)
+        logits = self.classifier(hidden.mean(dim=1))
+        target = tokens[:, 0].remainder(self.vocab_size)
+        loss = F.cross_entropy(logits, target)
+
+        self._reserve_peak_memory(hidden)
+        return {"loss": loss}
+
+    def _reserve_peak_memory(self, hidden: torch.Tensor) -> None:
+        if self.activation_reserve_elements_per_frame <= 0:
+            return
+        reserve_frames = min(int(hidden.shape[1]), self.max_activation_reserve_frames)
+        if reserve_frames <= 0:
+            return
+
+        # Keep transformer compute small while making memory pressure scale with sequence length.
+        reserve = hidden.new_empty(
+            (int(hidden.shape[0]), reserve_frames, self.activation_reserve_elements_per_frame), dtype=torch.float32
+        )
+        reserve[:, :, :1].zero_()
 
     def configure_optimizers(self) -> dict:
         return {"optimizer": torch.optim.SGD(self.parameters(), lr=1e-3)}

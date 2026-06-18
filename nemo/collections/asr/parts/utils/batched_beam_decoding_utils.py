@@ -89,7 +89,7 @@ def seed_batched_hyps_from_state(
     chunk's snapshot. Chunk-local buffers (prefix tree / timestamps / write cursor)
     and the per-beam time cursor are NOT touched -- the caller is responsible for
     wiping them.
-    
+
     Args:
         hyps: destination ``BatchedBeamHyps`` (modified in place).
         state: source snapshot. No-op when ``state.scores`` is ``None`` (first chunk).

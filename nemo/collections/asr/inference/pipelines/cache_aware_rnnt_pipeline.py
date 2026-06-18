@@ -37,14 +37,14 @@ from nemo.collections.asr.inference.streaming.state.cache_aware_rnnt_state impor
 )
 from nemo.collections.asr.inference.utils.endpointing_utils import millisecond_to_frames
 from nemo.collections.asr.inference.utils.enums import RequestType
+from nemo.collections.asr.inference.utils.per_stream_biasing import (
+    build_multi_biasing_ids_np,
+    release_all_biasing_models,
+)
 from nemo.collections.asr.inference.utils.pipeline_utils import (
     check_existance_of_required_attributes,
     drop_trailing_features,
     get_confidence_utils,
-)
-from nemo.collections.asr.inference.utils.per_stream_biasing import (
-    build_multi_biasing_ids_np,
-    release_all_biasing_models,
 )
 from nemo.collections.asr.parts.submodules.rnnt_malsd_batched_computer import ModifiedALSDBatchedRNNTComputer
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
@@ -353,9 +353,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
     def _apply_beam_update_(self, state: CacheAwareRNNTBeamStreamingState, eou_detected: bool) -> None:
         """After endpointing: refresh beam publish tokens and fold cumulative prefix on EOU."""
         if eou_detected and state.hyp_decoding_state is not None:
-            self.beam_decoder_computer.collapse_state_item_to_top1_(
-                state.hyp_decoding_state, state.get_best_hyp_idx()
-            )
+            self.beam_decoder_computer.collapse_state_item_to_top1_(state.hyp_decoding_state, state.get_best_hyp_idx())
         state.update_(eou_detected)
 
     def run_greedy_decoder(self, state: CacheAwareRNNTStreamingState, request: Request, hyp: Hypothesis) -> bool:

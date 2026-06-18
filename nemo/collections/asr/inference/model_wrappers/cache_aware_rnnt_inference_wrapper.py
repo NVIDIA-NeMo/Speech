@@ -20,9 +20,9 @@ from nemo.collections.asr.inference.model_wrappers.cache_aware_asr_inference_wra
 )
 from nemo.collections.asr.inference.streaming.state.cache_aware_rnnt_state import CacheAwareRNNTBeamStreamingState
 from nemo.collections.asr.inference.utils.context_manager import CacheAwareContext
+from nemo.collections.asr.inference.utils.per_stream_biasing import multi_biasing_ids_tensor_from_states
 from nemo.collections.asr.models import EncDecHybridRNNTCTCModel, EncDecRNNTModel
 from nemo.collections.asr.parts.mixins.streaming import StreamingEncoder
-from nemo.collections.asr.inference.utils.per_stream_biasing import multi_biasing_ids_tensor_from_states
 from nemo.collections.asr.parts.submodules.rnnt_malsd_batched_computer import ModifiedALSDBatchedRNNTComputer
 from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import export_batched_beam_hyps_to_cpu_lists
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis

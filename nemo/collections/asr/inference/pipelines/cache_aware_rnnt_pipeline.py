@@ -422,10 +422,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
                 state.append_chunk_beam_(ct, cts, rp, best_batched_hyps.beam_size, top1)
                 state.hyp_decoding_state = carry
 
-        hyps = [
-            state.get_hypothesis(float(scores_cpu[b, beam_indices[b]].item()))
-            for b, state in enumerate(states)
-        ]
+        hyps = [state.get_hypothesis(float(scores_cpu[b, beam_indices[b]].item())) for b, state in enumerate(states)]
         return hyps, new_context
 
     def _apply_beam_update_(self, state: CacheAwareRNNTBeamStreamingState, eou_detected: bool) -> None:

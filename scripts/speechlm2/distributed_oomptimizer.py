@@ -31,8 +31,9 @@ and optimizer from the provided config, creates synthetic batches through the mo
 more candidate batch sizes, records the observed peak CUDA memory, and exits. If a candidate succeeds, rank 0 writes a
 JSONL record with the batch size, bucket, peak allocated memory, peak reserved memory, and target memory. If a
 candidate reaches the requested memory fraction, the worker records ``memory_target`` and stops probing that session.
-If a candidate OOMs, hangs, crashes, or loses the distributed process group, the child process is allowed to die and
-the supervisor interprets the missing or failed result as the first bad candidate.
+If a candidate OOMs and records that fact, the supervisor marks it as the first bad candidate. If a child job dies
+without a result record, the supervisor treats the candidate as indeterminate, retries it, and refuses to use that
+failure as a memory bound until there is enough evidence to avoid corrupting the search.
 
 Example single-node invocation using one ``torchrun`` supervisor process that launches 8-rank child probes::
 
@@ -70,9 +71,10 @@ The main control flow is:
    filesystem barrier and a rendezvous endpoint.
 5. Probe workers run the actual model training step under the requested dtype. In distributed mode, workers reduce
    the maximum observed CUDA memory across ranks so the profile reflects the most memory-constrained rank.
-6. The supervisor merges successful, memory-target, timeout, and failed-child observations into the same search state:
-   ``max_ok`` tracks the largest usable batch size and ``min_err`` tracks the smallest known bad batch size. The search
-   finishes when the relative gap between those bounds is below ``--threshold`` or the bounds differ by one.
+6. The supervisor merges successful, memory-target, and explicit OOM observations into the same search state:
+   ``max_ok`` tracks the largest usable batch size and ``min_err`` tracks the smallest known bad batch size.
+   No-record child failures are retried instead of being interpreted as memory bounds. The search finishes when the
+   relative gap between those bounds is below ``--threshold`` or the bounds differ by one.
 7. The primary supervisor emits the same style of final ``bucket_duration_bins`` and ``bucket_batch_size`` output as
    the original tool, while preserving the per-probe logs for debugging.
 """
@@ -87,21 +89,24 @@ import sys
 import time
 from dataclasses import dataclass, field
 from datetime import timedelta
-from numbers import Number
 from pathlib import Path
-from typing import Literal
 
 import click
 import lightning.pytorch as pl
 import torch
-from lhotse import compute_num_samples
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader, IterableDataset
 
-from nemo.collections.speechlm2 import SALM, SALMAutomodel, SALMWithAsrDecoder
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, MaskType, NeuralType
 from nemo.utils import logging
 from nemo.utils.trainer_utils import resolve_trainer_cfg
+
+try:
+    from oomptimizer_utils import SequenceLengthResolver
+    from oomptimizer_utils import is_2d_bucketing as _is_2d_bucketing
+except ModuleNotFoundError:
+    from scripts.speechlm2.oomptimizer_utils import SequenceLengthResolver
+    from scripts.speechlm2.oomptimizer_utils import is_2d_bucketing as _is_2d_bucketing
 
 
 class ProfilingBatchGenerator:
@@ -220,8 +225,9 @@ class ProfilingBatchGenerator:
             elif isinstance(nt.elements_type, LabelsType):
                 seq_length = select_seq_length[item["seq_length"]]
                 tnsr = torch.randint(0, item["vocab_size"], size=(B, seq_length), device=self.device)
+                replacement_id = int(item.get("excluded_token_replacement_id", 0))
                 for token_id in item.get("excluded_token_ids", []):
-                    tnsr.masked_fill_(tnsr == token_id, 0)
+                    tnsr.masked_fill_(tnsr == token_id, replacement_id)
                 for position, token_id in item.get("forced_token_ids", {}).items():
                     position = int(position)
                     if position < 0:
@@ -330,98 +336,6 @@ def _parse_int_list(value: str) -> list[int]:
     return [int(item) for item in value.split(",") if item]
 
 
-def _is_2d_bucketing(buckets) -> bool:
-    return all(
-        isinstance(item, (list, tuple)) and len(item) == 2 and all(isinstance(v, Number) for v in item)
-        for item in buckets
-    )
-
-
-@dataclass
-class SequenceLengthResolver:
-    cfg: object
-    ratio: float
-    salm_audio_token_ratio: float
-    module_name: str | None = None
-    model: object | None = None
-    schema: dict | None = None
-
-    def resolve_many(self, buckets) -> list[tuple[int, int]]:
-        return [self.resolve_one(bucket) for bucket in buckets]
-
-    def resolve_one(self, bucket) -> tuple[int, int]:
-        if self._uses_audio_locator_expansion():
-            return self._audio_locator_lens(bucket)
-
-        if _is_2d_bucketing([bucket]):
-            input_len, output_len = bucket
-            return int(input_len), int(output_len)
-
-        input_len = bucket
-        output_len = int(math.ceil(self.ratio * input_len))
-        if self.schema is None:
-            return compute_num_samples(input_len, sampling_rate=16000), output_len
-
-        sampling_rate = self._sampling_rate()
-        match self._modalities():
-            case ("audio", "audio"):
-                return (
-                    compute_num_samples(input_len, sampling_rate=sampling_rate),
-                    compute_num_samples(output_len, sampling_rate=sampling_rate),
-                )
-            case ("audio", "text"):
-                return compute_num_samples(input_len, sampling_rate=sampling_rate), output_len
-            case ("text", "audio"):
-                return int(input_len), compute_num_samples(output_len, sampling_rate=sampling_rate)
-            case ("text", "text"):
-                return int(input_len), output_len
-            case unexpected:
-                raise RuntimeError(f"Unexpected modality combination: {unexpected}")
-
-        raise RuntimeError("resolve_one reached an unexpected fall-through path")
-
-    def _matches_model_name(self, *suffixes: str) -> bool:
-        return self.module_name is not None and any(self.module_name.endswith(suffix) for suffix in suffixes)
-
-    def _is_model_instance(self, *classes: type) -> bool:
-        return self.model is not None and isinstance(self.model, classes)
-
-    def _uses_audio_locator_expansion(self) -> bool:
-        return self._matches_model_name("SALMAutomodel", "SALM", "SALMWithAsrDecoder") or self._is_model_instance(
-            SALMAutomodel, SALM, SALMWithAsrDecoder
-        )
-
-    def _modalities(self) -> tuple[str, str]:
-        if self.schema is None:
-            return "audio", "text"
-
-        def _modality(direction: Literal["input", "output"]) -> str:
-            for item in self.schema["inputs"]:
-                nt = item["type"]
-                if nt == "dummy":
-                    continue
-                if (
-                    isinstance(nt, NeuralType)
-                    and isinstance(nt.elements_type, LabelsType)
-                    and item["seq_length"] == direction
-                ):
-                    return "text"
-            return "audio"
-
-        return _modality("input"), _modality("output")
-
-    def _sampling_rate(self) -> int:
-        return int(getattr(self.model, "sample_rate", 16000))
-
-    def _audio_locator_lens(self, bucket) -> tuple[int, int]:
-        sampling_rate = OmegaConf.select(self.cfg, "data.train_ds.sample_rate", default=16000)
-        token_equivalent_duration = OmegaConf.select(self.cfg, "data.train_ds.token_equivalent_duration", default=0.08)
-        audio_tokens = max(1, int(math.ceil(self.salm_audio_token_ratio * bucket)))
-        text_tokens = max(2, int(math.ceil((1.0 - self.salm_audio_token_ratio) * bucket)))
-        audio_len = int(math.ceil(audio_tokens * token_equivalent_duration * sampling_rate))
-        return audio_len, text_tokens
-
-
 class GpuMemoryMonitor:
     @staticmethod
     def count_visible_devices() -> int:
@@ -496,11 +410,19 @@ class FileBarrier:
     node_rank: int
     nnodes: int
     timeout_seconds: float = 300.0
+    run_id: str | None = None
+
+    @property
+    def barrier_root(self) -> Path:
+        root = self.log_dir / ".supervisor_barriers"
+        if self.run_id:
+            root = root / self.safe_path_part(self.run_id)
+        return root
 
     def wait(self, name: str) -> None:
         if self.nnodes <= 1:
             return
-        barrier_dir = self.log_dir / ".supervisor_barriers" / name
+        barrier_dir = self.barrier_root / self.safe_path_part(name)
         barrier_dir.mkdir(parents=True, exist_ok=True)
         marker = barrier_dir / f"rank_{self.node_rank}.ready"
         marker.write_text(str(os.getpid()))
@@ -510,6 +432,12 @@ class FileBarrier:
                 return
             time.sleep(1.0)
         raise TimeoutError(f"Timed out in OOMptimizer supervisor barrier {name}.")
+
+    @staticmethod
+    def safe_path_part(value: str) -> str:
+        allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_."
+        safe = "".join(ch if ch in allowed else "_" for ch in str(value))
+        return safe or "run"
 
     @staticmethod
     def wait_for_path(path: Path, timeout_seconds: float, description: str) -> None:
@@ -525,6 +453,9 @@ class FileBarrier:
 class ProbeOutcome:
     records: list[dict] = field(default_factory=list)
     failed_candidate: int | None = None
+    indeterminate_candidate: int | None = None
+    failure_kind: str | None = None
+    failure_summary: str | None = None
     log_path: Path = Path()
     returncode: int | None = None
 
@@ -532,6 +463,9 @@ class ProbeOutcome:
         return {
             "records": self.records,
             "failed_candidate": self.failed_candidate,
+            "indeterminate_candidate": self.indeterminate_candidate,
+            "failure_kind": self.failure_kind,
+            "failure_summary": self.failure_summary,
             "log_path": str(self.log_path),
             "returncode": self.returncode,
         }
@@ -541,6 +475,9 @@ class ProbeOutcome:
         return cls(
             records=data["records"],
             failed_candidate=data["failed_candidate"],
+            indeterminate_candidate=data.get("indeterminate_candidate"),
+            failure_kind=data.get("failure_kind"),
+            failure_summary=data.get("failure_summary"),
             log_path=Path(data["log_path"]),
             returncode=data["returncode"],
         )
@@ -577,6 +514,15 @@ class ProbeStore:
             self.log_dir
             / f"probe_{self.probe_index:04d}_bucket_{self.safe_bucket}_bs_{self.batch_sizes[0]}_outcome.json"
         )
+
+    def log_paths(self) -> list[Path]:
+        if self.nnodes <= 1:
+            return [self.log_path] if self.log_path.exists() else []
+        pattern = f"probe_{self.probe_index:04d}_bucket_{self.safe_bucket}_bs_{self.batch_sizes[0]}_node*.log"
+        paths = sorted(self.log_dir.glob(pattern))
+        if self.log_path.exists() and self.log_path not in paths:
+            paths.append(self.log_path)
+        return paths
 
     def prepare(self) -> None:
         self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -773,6 +719,7 @@ class TorchrunProbeLauncher:
     distributed_timeout_seconds: float
     probe_timeout_seconds: float
     log_dir: Path
+    run_id: str
 
     def run(
         self,
@@ -849,7 +796,7 @@ class TorchrunProbeLauncher:
         env.setdefault("TORCH_NCCL_ASYNC_ERROR_HANDLING", "1")
         env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
-        barrier = FileBarrier(self.log_dir, self.node_rank, self.nnodes)
+        barrier = FileBarrier(self.log_dir, self.node_rank, self.nnodes, run_id=self.run_id)
         barrier.wait(f"probe_{probe_index:04d}_start")
 
         with store.log_path.open("w") as log_f:
@@ -876,16 +823,28 @@ class TorchrunProbeLauncher:
         if self.nnodes <= 1 or self.node_rank == 0:
             records = store.read_records()
             failed_candidate = None
+            indeterminate_candidate = None
+            failure_kind = None
+            failure_summary = None
             if timed_out or returncode != 0:
+                failure_kind, failure_summary = self.classify_failure(store.log_paths(), timed_out=timed_out)
                 if records and records[-1].get("status") not in ("ok", "memory_target"):
                     failed_candidate = None
                 else:
-                    failed_candidate = store.first_unreported_candidate(records)
-                    if failed_candidate is None and records:
-                        failed_candidate = int(records[-1]["batch_size"])
+                    candidate = store.first_unreported_candidate(records)
+                    if candidate is None and records:
+                        candidate = int(records[-1]["batch_size"])
+                    if candidate is not None:
+                        if failure_kind == "oom":
+                            failed_candidate = candidate
+                        else:
+                            indeterminate_candidate = candidate
             outcome = ProbeOutcome(
                 records=records,
                 failed_candidate=failed_candidate,
+                indeterminate_candidate=indeterminate_candidate,
+                failure_kind=failure_kind,
+                failure_summary=failure_summary,
                 log_path=store.log_path,
                 returncode=returncode,
             )
@@ -952,12 +911,67 @@ class TorchrunProbeLauncher:
                 return
             proc.wait()
 
+    @staticmethod
+    def classify_failure(log_paths: list[Path], timed_out: bool) -> tuple[str | None, str | None]:
+        text = "\n".join(TorchrunProbeLauncher.read_log_tail(path) for path in log_paths)
+        if any(
+            pattern in text
+            for pattern in (
+                "CUDA out of memory",
+                "CUDACachingAllocator",
+                "cuFFT error: CUFFT_INTERNAL_ERROR",
+            )
+        ):
+            return "oom", TorchrunProbeLauncher.first_matching_line(
+                text, ("CUDA out of memory", "CUDACachingAllocator")
+            )
+        if "OOMPTIMIZER_PROBE_TIMEOUT" in text or timed_out:
+            return "timeout", TorchrunProbeLauncher.first_matching_line(text, ("OOMPTIMIZER_PROBE_TIMEOUT",))
+        if "Watchdog caught collective operation timeout" in text or "ProcessGroupNCCL" in text:
+            return "distributed", TorchrunProbeLauncher.first_matching_line(
+                text, ("Watchdog caught collective operation timeout", "ProcessGroupNCCL")
+            )
+        if "ChildFailedError" in text or "Traceback (most recent call last)" in text:
+            return "child_error", TorchrunProbeLauncher.first_matching_line(
+                text, ("ChildFailedError", "Traceback (most recent call last)")
+            )
+        if text.strip():
+            return "child_error", text.strip().splitlines()[-1][:500]
+        return None, None
+
+    @staticmethod
+    def read_log_tail(path: Path, max_bytes: int = 512_000) -> str:
+        try:
+            with path.open("rb") as f:
+                try:
+                    f.seek(-max_bytes, os.SEEK_END)
+                except OSError:
+                    pass
+                return f.read().decode("utf-8", errors="replace")
+        except OSError:
+            return ""
+
+    @staticmethod
+    def first_matching_line(text: str, patterns: tuple[str, ...]) -> str | None:
+        for line in text.splitlines():
+            if any(pattern in line for pattern in patterns):
+                return line[:500]
+        return None
+
 
 def _is_torchrun_worker() -> bool:
     return bool(
         os.environ.get("TORCHELASTIC_RUN_ID")
         or ("LOCAL_RANK" in os.environ and "RANK" in os.environ and "GROUP_RANK" in os.environ)
     )
+
+
+def _supervisor_run_id() -> str:
+    explicit = os.environ.get("OOMPTIMIZER_SUPERVISOR_RUN_ID")
+    if explicit:
+        return explicit
+    slurm_id = "_".join(part for part in (os.environ.get("SLURM_JOB_ID"), os.environ.get("SLURM_STEP_ID")) if part)
+    return slurm_id or str(os.getpid())
 
 
 def _run_distributed_supervisor(
@@ -982,6 +996,7 @@ def _run_distributed_supervisor(
     probe_timeout_seconds: float,
     probe_memory_reclaim_timeout_seconds: float,
     probe_memory_tolerance_mb: int,
+    max_probe_retries: int,
 ) -> None:
     assert pretrained_name is None, "--pretrained-name is not supported yet for Duplex S2S"
     assert config_path is not None, "--module-name requires --config-path to be specified as well."
@@ -1033,9 +1048,11 @@ def _run_distributed_supervisor(
         if probe_log_dir
         else Path(config_path).with_suffix("").parent / (Path(config_path).stem + "_oomptimizer_probes")
     )
+    supervisor_run_id = _supervisor_run_id()
     if is_primary_supervisor:
         click.echo("Starting restartable distributed profiling.")
         click.echo(f"Probe logs: {log_dir}")
+        click.echo(f"Supervisor run id: {supervisor_run_id}")
         click.echo(
             f"Using nnodes={supervisor_nnodes}, nproc_per_node={nproc_per_node}; "
             f"target allocated memory={target_memory / (1024 ** 3):.2f}GiB"
@@ -1055,10 +1072,12 @@ def _run_distributed_supervisor(
         distributed_timeout_seconds=distributed_timeout_seconds,
         probe_timeout_seconds=probe_timeout_seconds,
         log_dir=log_dir,
+        run_id=supervisor_run_id,
     )
     profile = {}
     next_start = max(1, start_batch_size)
     probe_index = 0
+    indeterminate_retries: dict[tuple[str, int], int] = {}
     for bucket, (seq_len_in, seq_len_out) in reversed(list(zip(buckets, max_seq_lens))):
         if is_primary_supervisor:
             click.echo(f"The current sequence lengths are: input={seq_len_in} output={seq_len_out}.")
@@ -1076,7 +1095,7 @@ def _run_distributed_supervisor(
                 seq_len_in=seq_len_in,
                 seq_len_out=seq_len_out,
                 batch_sizes=plan,
-                rdzv_id=f"{os.environ.get('SLURM_JOB_ID', os.getpid())}_{probe_index:04d}",
+                rdzv_id=f"{supervisor_run_id}_{probe_index:04d}",
                 probe_index=probe_index,
             )
             probe_index += 1
@@ -1103,6 +1122,41 @@ def _run_distributed_supervisor(
                         status = event["status"]
                         if is_primary_supervisor:
                             click.echo(f"\tFAILED batch={batch_size}; status={status}")
+            if outcome.indeterminate_candidate is not None:
+                candidate = int(outcome.indeterminate_candidate)
+                key = (str(bucket), candidate)
+                indeterminate_retries[key] = indeterminate_retries.get(key, 0) + 1
+                GpuMemoryMonitor.wait_for_reclaim(
+                    probe_memory_reclaim_timeout_seconds,
+                    probe_memory_tolerance_mb,
+                )
+                if indeterminate_retries[key] <= max_probe_retries:
+                    search.current = candidate
+                    if is_primary_supervisor:
+                        click.secho(
+                            f"\tINDETERMINATE batch={candidate}; "
+                            f"child_returncode={outcome.returncode}; kind={outcome.failure_kind}; "
+                            f"retry={indeterminate_retries[key]}/{max_probe_retries}; log={outcome.log_path}",
+                            fg="yellow",
+                        )
+                        if outcome.failure_summary:
+                            click.secho(f"\t  {outcome.failure_summary}", fg="yellow")
+                    continue
+                if search.max_ok is None:
+                    raise click.ClickException(
+                        f"Probe for bucket={bucket} batch={candidate} failed {indeterminate_retries[key]} times "
+                        "without producing a usable result before any lower bound was found. "
+                        "Refusing to treat this as OOM because it would corrupt the search. "
+                        f"Last failure kind={outcome.failure_kind}; log={outcome.log_path}"
+                    )
+                search.mark_failed_candidate(candidate)
+                if is_primary_supervisor:
+                    click.secho(
+                        f"\tFAILED batch={candidate}; child_returncode={outcome.returncode}; "
+                        f"kind={outcome.failure_kind}; retries_exhausted={indeterminate_retries[key]}; "
+                        f"log={outcome.log_path}",
+                        fg="yellow",
+                    )
             if outcome.failed_candidate is not None:
                 search.mark_failed_candidate(outcome.failed_candidate)
                 if is_primary_supervisor:
@@ -1172,7 +1226,6 @@ def _is_oom_like(error: RuntimeError) -> bool:
         "cuFFT error: CUFFT_INTERNAL_ERROR" in error_msg
         or "CUDA out of memory" in error_msg
         or "CUDACachingAllocator" in error_msg
-        or "NCCL" in error_msg
     )
 
 
@@ -1311,6 +1364,12 @@ def _is_oom_like(error: RuntimeError) -> bool:
     default=1024,
     help="GPU memory threshold used by the supervisor reclaim wait.",
 )
+@click.option(
+    "--max-probe-retries",
+    type=int,
+    default=2,
+    help="Number of retries for child probes that fail without an explicit OOM or memory result.",
+)
 @click.option("--probe-batch-sizes", type=str, default=None, hidden=True)
 @click.option("--probe-seq-len-in", type=int, default=None, hidden=True)
 @click.option("--probe-seq-len-out", type=int, default=None, hidden=True)
@@ -1338,6 +1397,7 @@ def oomptimizer(
     probe_timeout_seconds: float,
     probe_memory_reclaim_timeout_seconds: float,
     probe_memory_tolerance_mb: int,
+    max_probe_retries: int,
     probe_batch_sizes: str | None,
     probe_seq_len_in: int | None,
     probe_seq_len_out: int | None,
@@ -1414,6 +1474,7 @@ def oomptimizer(
                 probe_timeout_seconds=probe_timeout_seconds,
                 probe_memory_reclaim_timeout_seconds=probe_memory_reclaim_timeout_seconds,
                 probe_memory_tolerance_mb=probe_memory_tolerance_mb,
+                max_probe_retries=max_probe_retries,
             )
             return
     logging.setLevel(logging.CRITICAL)

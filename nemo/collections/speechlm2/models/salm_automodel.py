@@ -1032,6 +1032,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                     "seq_length": "output",
                     "vocab_size": vocab_size,
                     "excluded_token_ids": [self.audio_locator_tag_id],
+                    "excluded_token_replacement_id": self.text_pad_id,
                     "forced_token_ids": {0: self.audio_locator_tag_id},
                 },
                 {"name": "loss_mask", "type": NeuralType(("B", "T"), MaskType()), "seq_length": "output"},

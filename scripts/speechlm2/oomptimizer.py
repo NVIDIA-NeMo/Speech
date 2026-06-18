@@ -14,22 +14,25 @@
 # limitations under the License.
 
 import importlib
-import math
 import os
 import sys
-from numbers import Number
-from typing import Literal
 
 import click
 import lightning.pytorch as pl
 import torch
-from lhotse import compute_num_samples
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader, IterableDataset
 
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, MaskType, NeuralType
 from nemo.utils import logging
 from nemo.utils.trainer_utils import resolve_trainer_cfg
+
+try:
+    from oomptimizer_utils import SequenceLengthResolver
+    from oomptimizer_utils import is_2d_bucketing as _is_2d_bucketing
+except ModuleNotFoundError:
+    from scripts.speechlm2.oomptimizer_utils import SequenceLengthResolver
+    from scripts.speechlm2.oomptimizer_utils import is_2d_bucketing as _is_2d_bucketing
 
 
 class ProfilingBatchGenerator:
@@ -148,8 +151,9 @@ class ProfilingBatchGenerator:
             elif isinstance(nt.elements_type, LabelsType):
                 seq_length = select_seq_length[item["seq_length"]]
                 tnsr = torch.randint(0, item["vocab_size"], size=(B, seq_length), device=self.device)
+                replacement_id = int(item.get("excluded_token_replacement_id", 0))
                 for token_id in item.get("excluded_token_ids", []):
-                    tnsr.masked_fill_(tnsr == token_id, 0)
+                    tnsr.masked_fill_(tnsr == token_id, replacement_id)
                 for position, token_id in item.get("forced_token_ids", {}).items():
                     position = int(position)
                     if position < 0:
@@ -318,6 +322,12 @@ class FloatList(click.Option):
     default=True,
     help="Whether we should simulate DDP GPU RAM usage. Stores an extra copy of the model in GPU memory. Enabled by default.",
 )
+@click.option(
+    "--salm-audio-token-ratio",
+    type=float,
+    default=0.75,
+    help="For SALM-style 1D token buckets, fraction of the bucket represented by audio-equivalent tokens.",
+)
 def oomptimizer(
     pretrained_name: str | None,
     module_name: str | None,
@@ -329,6 +339,7 @@ def oomptimizer(
     memory_fraction: float,
     dtype: str,
     ddp: bool,
+    salm_audio_token_ratio: float,
 ):
     """
     OOMptimizer finds the optimal batch sizes for training your model with bucketing dataloading.
@@ -402,60 +413,18 @@ def oomptimizer(
         sys.exit(1)
 
     schema = model.oomptimizer_schema
-
-    is_2d_bucketing = all(
-        isinstance(item, (list, tuple)) and len(item) == 2 and all(isinstance(v, Number) for v in item)
-        for item in buckets
+    is_2d_bucketing = _is_2d_bucketing(buckets)
+    length_resolver = SequenceLengthResolver(
+        cfg=cfg,
+        ratio=ratio,
+        salm_audio_token_ratio=salm_audio_token_ratio,
+        module_name=module_name,
+        model=model,
+        schema=schema,
     )
-    # Determine modality for input and output.
-    modalities = [
-        (
-            "text"
-            if any(
-                isinstance(item["type"], NeuralType)
-                and isinstance(item["type"].elements_type, LabelsType)
-                and item["seq_length"] == direction
-                for item in schema["inputs"]
-                if item["type"] != "dummy"
-            )
-            else "audio"
-        )
-        for direction in ("input", "output")
-    ]
-
-    def get_max_seq_lens(buckets):
-
-        def _determine_lens_for_bucket(bin):
-            if is_2d_bucketing:
-                input_len, output_len = bin
-            else:
-                input_len = bin
-                output_len = math.ceil(ratio * input_len)
-            sampling_rate = getattr(
-                model, "sample_rate", 16000
-            )  # TODO: may need to extend schema for broader model coverage
-            match modalities:
-                case "audio", "audio":
-                    return (
-                        compute_num_samples(input_len, sampling_rate=sampling_rate),
-                        compute_num_samples(output_len, sampling_rate=sampling_rate),
-                    )
-                case "audio", "text":
-                    return (compute_num_samples(input_len, sampling_rate=sampling_rate), output_len)
-                case "text", "audio":
-                    return (
-                        input_len,
-                        compute_num_samples(output_len, sampling_rate=sampling_rate),
-                    )
-                case "text", "text":
-                    return input_len, output_len
-                case _:
-                    raise RuntimeError(f"Unexpected modality combination: {_}")
-
-        return [_determine_lens_for_bucket(bin) for bin in buckets]
 
     click.echo("Starting profiling.")
-    max_seq_lens = get_max_seq_lens(buckets)
+    max_seq_lens = length_resolver.resolve_many(buckets)
     gen = ProfilingBatchGenerator(
         schema=schema, start_batch_size=start_batch_size, rel_gap_thresh=threshold, device=device, float_dtype=dtype
     )
@@ -465,7 +434,7 @@ def oomptimizer(
         def __iter__(self):
             gen.reset()
             gen._current = 1
-            yield gen(33, 33)
+            yield gen(*length_resolver.resolve_one(33))
             # yield gen(16000, 13)
             gen.reset()
 

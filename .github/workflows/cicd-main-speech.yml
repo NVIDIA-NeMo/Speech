@@ -186,6 +186,9 @@ jobs:
           - runner: ${{ inputs.runner }}
             script: L2_Speech_Batch_Size_OOMptimizer
           - runner: ${{ inputs.runner }}
+            script: L2_Speech_Distributed_Batch_Size_OOMptimizer
+            timeout: 15
+          - runner: ${{ inputs.runner }}
             script: Optional_L2_Speech_Batch_Size_OOMptimizer_Canary
             is-optional: true
           - runner: ${{ inputs.runner }}

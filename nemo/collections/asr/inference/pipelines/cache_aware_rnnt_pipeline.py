@@ -374,7 +374,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
         """After endpointing: refresh beam publish tokens and fold cumulative prefix on EOU."""
         if eou_detected and state.hyp_decoding_state is not None:
             self.beam_decoder_computer.collapse_state_item_to_top1_(
-                state.hyp_decoding_state, state.get_top1_beam_index()
+                state.hyp_decoding_state, state.get_best_hyp_idx()
             )
         state.update_(eou_detected)
 

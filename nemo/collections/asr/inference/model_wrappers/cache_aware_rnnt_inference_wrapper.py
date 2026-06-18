@@ -220,10 +220,10 @@ class CacheAwareRNNTInferenceWrapper(CacheAwareASRInferenceWrapper):
             scores_cpu = best_batched_hyps.scores.detach().cpu()
 
             carry_items = malsd_computer.split_batched_state(batched_state)
-            for state, ct, cts, rp, top1, carry in zip(
+            for state, ct, cts, rp, best_hyp_idx, carry in zip(
                 states, chunk_tokens, chunk_timestamps, root_ptrs, beam_indices, carry_items
             ):
-                state.append_chunk_beam_(ct, cts, rp, best_batched_hyps.beam_size, top1)
+                state.append_chunk_beam_(ct, cts, rp, best_batched_hyps.beam_size, best_hyp_idx)
                 state.hyp_decoding_state = carry
 
         hyps = [state.get_hypothesis(float(scores_cpu[b, beam_indices[b]].item())) for b, state in enumerate(states)]

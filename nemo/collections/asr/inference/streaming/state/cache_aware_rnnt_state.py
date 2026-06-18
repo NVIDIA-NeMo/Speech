@@ -73,17 +73,12 @@ class CacheAwareRNNTStreamingState(CacheAwareStreamingState):
 
 
 class CacheAwareRNNTBeamStreamingState(CacheAwareRNNTStreamingState):
-    """MALSD beam-search streaming state; decoder carry + cumulative/partial tokens.
+    """Beam search streaming state; decoder carry + cumulative/partial tokens.
 
-    ``hyp_decoding_state``: K-beam MALSD carry across chunks (collapsed to top1 on EOU in the pipeline).
+    ``hyp_decoding_state``: K-beam carry across chunks (collapsed to top1 on EOU in the pipeline).
     ``cumulative_*``: tokens/timestamps sealed at each EOU (prior utterances in a stream).
     ``partial_*[k]``: per-beam in-flight suffix since last EOU (chunk-local exports merged via lineage).
-    ``partial_top1_slot``: beam index for publish (chunk argmax).
-
-    Chunk overlap is handled inside MALSD carry (same as greedy label-looping); Python only
-    concatenates chunk-local exports onto ``partial_*`` following ``root_ptrs`` beam lineage.
-    ``_cumulative_tokens_len`` slices ``state.tokens`` to the current utterance for publish.
-    On EOU: ``update_(eou_detected=True)`` folds tokens into ``cumulative_*``, clears ``partial_*``.
+    ``best_hyp_idx``: index into ``partial_*`` for the chunk argmax beam used to publish.
     """
 
     def _additional_params_reset(self) -> None:
@@ -94,17 +89,17 @@ class CacheAwareRNNTBeamStreamingState(CacheAwareRNNTStreamingState):
         self.partial_tokens: list[list[int]] | None = None
         self.partial_timestamps: list[list[int]] | None = None
         self._cumulative_tokens_len: int = 0
-        self.partial_top1_slot: int | None = None
+        self.best_hyp_idx: int | None = None
 
     def reset_beam_decoding_state_(self) -> None:
-        """Clear MALSD carry and cumulative/partial tokens when a stream ends."""
+        """Clear beam search carry and cumulative/partial tokens when a stream ends."""
         self.hyp_decoding_state = None
         self.cumulative_tokens = []
         self.cumulative_timestamps = []
         self.partial_tokens = None
         self.partial_timestamps = None
         self._cumulative_tokens_len = 0
-        self.partial_top1_slot = None
+        self.best_hyp_idx = None
 
     def append_chunk_beam_(
         self,
@@ -112,7 +107,7 @@ class CacheAwareRNNTBeamStreamingState(CacheAwareRNNTStreamingState):
         chunk_timestamps: list[list[int]],
         root_ptrs: list[int],
         beam_size: int,
-        top1_slot: int,
+        best_hyp_idx: int,
     ) -> None:
         """Append chunk-local beam exports into state."""
         prev_t = self.partial_tokens or [[] for _ in range(beam_size)]
@@ -125,12 +120,12 @@ class CacheAwareRNNTBeamStreamingState(CacheAwareRNNTStreamingState):
             next_timestamps.append(prev_ts[lineage] + list(chunk_timestamps[k]))
         self.partial_tokens = next_tokens
         self.partial_timestamps = next_timestamps
-        self.partial_top1_slot = top1_slot
+        self.best_hyp_idx = best_hyp_idx
 
-    def get_top1_beam_index(self) -> int:
-        """Beam slot used for publish (chunk argmax, or score argmax from carry)."""
-        if self.partial_top1_slot is not None:
-            return int(self.partial_top1_slot)
+    def get_best_hyp_idx(self) -> int:
+        """Index into ``partial_*`` for publish (chunk argmax, or score argmax from carry)."""
+        if self.best_hyp_idx is not None:
+            return int(self.best_hyp_idx)
         if self.hyp_decoding_state is None:
             raise RuntimeError("Cannot resolve top-1 beam index without decoding carry.")
         return int(self.hyp_decoding_state.score.argmax().item())
@@ -139,10 +134,10 @@ class CacheAwareRNNTBeamStreamingState(CacheAwareRNNTStreamingState):
         """``cumulative_*`` plus the current top-1 ``partial_*`` suffix."""
         if self.partial_tokens is None or self.hyp_decoding_state is None:
             return [], []
-        top1 = self.get_top1_beam_index()
+        best_hyp_idx = self.get_best_hyp_idx()
         return (
-            self.cumulative_tokens + list(self.partial_tokens[top1]),
-            self.cumulative_timestamps + list(self.partial_timestamps[top1]),
+            self.cumulative_tokens + list(self.partial_tokens[best_hyp_idx]),
+            self.cumulative_timestamps + list(self.partial_timestamps[best_hyp_idx]),
         )
 
     def get_hypothesis(self, score: float) -> Hypothesis:
@@ -178,4 +173,4 @@ class CacheAwareRNNTBeamStreamingState(CacheAwareRNNTStreamingState):
             self.cumulative_timestamps = list(cum_ts)
         self.partial_tokens = None
         self.partial_timestamps = None
-        self.partial_top1_slot = None
+        self.best_hyp_idx = None

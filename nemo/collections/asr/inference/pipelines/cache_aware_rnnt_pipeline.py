@@ -85,6 +85,12 @@ class CacheAwareRNNTPipeline(BasePipeline):
         self.init_text_processor(cfg, itn_model)
         self.init_nmt_model(nmt_model)
         self.init_decoding_computer()
+        strategy = str(getattr(cfg.asr.decoding, "strategy", "greedy_batch"))
+        if strategy in {"beam", "tsd", "alsd", "maes", "maes_batch"}:
+            logging.warning(
+                "Cache-aware RNNT streaming supports MALSD beam search only (`malsd_batch`); "
+                f"configured decoding strategy is `{strategy}`."
+            )
         super().__init__()
 
     def init_decoding_computer(self) -> None:

@@ -43,10 +43,7 @@ from nemo.collections.asr.inference.utils.pipeline_utils import (
     get_confidence_utils,
 )
 from nemo.collections.asr.parts.submodules.rnnt_malsd_batched_computer import ModifiedALSDBatchedRNNTComputer
-from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import (
-    BatchedBeamHyps,
-    export_batched_beam_hyps_to_cpu_lists,
-)
+from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import export_batched_beam_hyps_to_cpu_lists
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.utils import logging
 
@@ -414,87 +411,30 @@ class CacheAwareRNNTPipeline(BasePipeline):
                 encs_dim_last, encoded_len, batched_state, multi_biasing_ids=multi_biasing_ids
             )
 
-            self._update_windowed_beam_state(states=states, best_batched_hyps=best_batched_hyps)
-
-            # Per-stream top-1 beam slot. Indexes ``window_beam_tokens`` (which was
-            # just appended against the diverged beam slots) to build the publishable
-            # cumulative hypothesis below.
-            beam_indices_cpu = best_batched_hyps.scores.argmax(dim=-1).detach().cpu().tolist()
+            chunk_tokens, chunk_timestamps, root_ptrs = export_batched_beam_hyps_to_cpu_lists(best_batched_hyps)
+            beam_indices = best_batched_hyps.scores.argmax(dim=-1).detach().cpu().tolist()
             scores_cpu = best_batched_hyps.scores.detach().cpu()
 
             carry_items = malsd_computer.split_batched_state(batched_state)
-            for state, carry in zip(states, carry_items):
+            for state, ct, cts, rp, top1, carry in zip(
+                states, chunk_tokens, chunk_timestamps, root_ptrs, beam_indices, carry_items
+            ):
+                state.append_chunk_beam_(ct, cts, rp, best_batched_hyps.beam_size, top1)
                 state.hyp_decoding_state = carry
 
-        # Build per-stream cumulative ``Hypothesis`` from the windowed state.
-        # Collapse + window promotion is deferred to ``run_malsd_decoder`` and
-        # triggered by EOU, so the published hyp is the current top-1's path
-        # but the K-beam state continues to diverge across chunks.
-        hyps: list[Hypothesis] = []
-        for b, state in enumerate(states):
-            top1_slot = beam_indices_cpu[b]
-            window_tokens = state.window_beam_tokens[top1_slot] if state.window_beam_tokens else []
-            window_ts = state.window_beam_timestamps[top1_slot] if state.window_beam_timestamps else []
-            cum_tokens = state.window_committed_tokens + list(window_tokens)
-            cum_ts = state.window_committed_timestamps + list(window_ts)
-
-            hyps.append(
-                Hypothesis(
-                    score=float(scores_cpu[b, top1_slot].item()),
-                    y_sequence=cum_tokens,
-                    timestamp=cum_ts,
-                    length=len(cum_tokens),
-                )
-            )
-
+        hyps = [
+            state.get_hypothesis(float(scores_cpu[b, beam_indices[b]].item()))
+            for b, state in enumerate(states)
+        ]
         return hyps, new_context
 
-    def _update_windowed_beam_state(
-        self,
-        states: list[CacheAwareRNNTBeamStreamingState],
-        best_batched_hyps: BatchedBeamHyps,
-    ) -> None:
-        """Append chunk-local beam emissions to each stream's windowed-beam state."""
-        chunk_tokens, chunk_timestamps, root_ptrs = export_batched_beam_hyps_to_cpu_lists(best_batched_hyps)
-        beam_size = best_batched_hyps.beam_size
-        for state, ct, cts, rp in zip(states, chunk_tokens, chunk_timestamps, root_ptrs):
-            prev_t = state.window_beam_tokens or [[] for _ in range(beam_size)]
-            prev_ts = state.window_beam_timestamps or [[] for _ in range(beam_size)]
-            state.window_beam_tokens = [prev_t[int(rp[k])] + ct[k] for k in range(beam_size)]
-            state.window_beam_timestamps = [prev_ts[int(rp[k])] + cts[k] for k in range(beam_size)]
-
-    def run_malsd_decoder(self, state: CacheAwareRNNTBeamStreamingState, request: Request, hyp: Hypothesis) -> bool:
-        """
-        Run greedy EOU/label logic, then resync ``state.tokens`` from the current
-        top-1 cumulative hyp. On EOU, collapse the MALSD carry and commit the window.
-        """
-        eou_detected = self.run_greedy_decoder(state, request, hyp)
-
-        all_tokens = list(hyp.y_sequence) if hyp.y_sequence is not None else []
-        all_timestamps = list(hyp.timestamp) if hyp.timestamp is not None else []
-        start = max(0, int(state._malsd_utterance_start))
-        start = min(start, len(all_tokens))
-        tokens_list = all_tokens[start:]
-        timestamps_list = all_timestamps[start:]
-
-        state.tokens = list(tokens_list)
-        state.timesteps = list(timestamps_list)
-        state.confidences = [0.0] * len(tokens_list)
-        if tokens_list:
-            state.last_token = tokens_list[-1]
-            state.last_token_idx = timestamps_list[-1] if timestamps_list else None
-
-        if eou_detected:
-            state._malsd_utterance_start = len(all_tokens)
-
-            if state.hyp_decoding_state is not None:
-                top1 = int(state.hyp_decoding_state.score.argmax().item())
-                self.beam_decoder_computer.collapse_state_item_to_top1_(state.hyp_decoding_state, top1)
-            state.window_committed_tokens = list(all_tokens)
-            state.window_committed_timestamps = list(all_timestamps)
-            state.window_beam_tokens = None
-            state.window_beam_timestamps = None
-        return eou_detected
+    def _apply_beam_update_(self, state: CacheAwareRNNTBeamStreamingState, eou_detected: bool) -> None:
+        """After endpointing: refresh beam publish tokens and fold cumulative prefix on EOU."""
+        if eou_detected and state.hyp_decoding_state is not None:
+            self.beam_decoder_computer.collapse_state_item_to_top1_(
+                state.hyp_decoding_state, state.get_top1_beam_index()
+            )
+        state.update_(eou_detected)
 
     def run_greedy_decoder(self, state: CacheAwareRNNTStreamingState, request: Request, hyp: Hypothesis) -> bool:
         """
@@ -602,10 +542,9 @@ class CacheAwareRNNTPipeline(BasePipeline):
                 state.set_previous_hypothesis(hyp)
 
         for request, state, hyp in zip(requests, states, best_hyp):
+            eou_detected = self.run_greedy_decoder(state, request, hyp)
             if self.beam_decoder_computer is not None:
-                eou_detected = self.run_malsd_decoder(state, request, hyp)
-            else:
-                eou_detected = self.run_greedy_decoder(state, request, hyp)
+                self._apply_beam_update_(state, eou_detected)
             if eou_detected:
                 self.bpe_decoder.decode_bpe_tokens(state)
                 state.cleanup_after_eou()

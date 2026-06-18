@@ -93,9 +93,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
                 f"configured decoding strategy is `{strategy}`."
             )
         if self.beam_decoder_computer is not None and self.prompt_enabled:
-            raise ValueError(
-                "Cache-aware RNNT MALSD beam search does not yet support prompt vectors."
-            )
+            raise ValueError("Cache-aware RNNT MALSD beam search does not yet support prompt vectors.")
         super().__init__()
 
     def init_decoding_computer(self) -> None:

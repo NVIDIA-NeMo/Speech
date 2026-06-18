@@ -45,6 +45,8 @@ from typing import List
 
 from tqdm import tqdm
 
+from nemo.utils.tar_utils import safe_extract
+
 parser = argparse.ArgumentParser(description='Downloads and processes Mozilla Common Voice dataset.')
 parser.add_argument("--data_root", default='CommonVoice_dataset/', type=str, help="Directory to store the dataset.")
 parser.add_argument('--manifest_dir', default='./', type=str, help='Output directory for manifests')
@@ -192,9 +194,8 @@ def main():
 
         os.makedirs(target_unpacked_dir, exist_ok=True)
         logging.info("Unpacking corpus to {} ...".format(target_unpacked_dir))
-        tar = tarfile.open(target_file)
-        tar.extractall(target_unpacked_dir)
-        tar.close()
+        with tarfile.open(target_file) as tar:
+            safe_extract(tar, target_unpacked_dir)
         if args.cleanup:
             logging.info("removing tar archive to save space")
             os.remove(target_file)

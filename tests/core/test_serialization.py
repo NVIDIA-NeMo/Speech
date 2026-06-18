@@ -164,6 +164,16 @@ class TestSerialization:
         import_class_mock.assert_not_called()
 
     @pytest.mark.unit
+    def test_legacy_model_support_target_falls_back_to_calling_class(self):
+        config = DictConfig({'target': 'src.multi_classification_models.EncDecMultiClassificationModel'})
+        with patch('nemo.core.classes.common.import_class_by_path') as import_class_mock:
+            obj = MockSerializationImpl.from_config_dict(config=config)
+
+        import_class_mock.assert_not_called()
+        assert isinstance(obj, MockSerializationImpl)
+        assert obj.value == "MockSerializationImpl"
+
+    @pytest.mark.unit
     def test_self_class_instantiation(self):
         # Target class is V1 impl, calling class is V1 (same class)
         config = DictConfig({'target': get_class_path(MockSerializationImpl)})

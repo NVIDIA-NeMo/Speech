@@ -62,7 +62,6 @@ ALLOWED_TARGET_PREFIXES = [
     "nemo.utils.",
     "nemo.lightning.",
     "nemo_text_processing.text_normalization.normalize.Normalizer",
-    "src.multi_classification_models.EncDecMultiClassificationModel",
     "tests.collections.",
     "tests.core.",
     "torch.nn.",
@@ -107,7 +106,7 @@ ALLOWED_EXACT_CLASS_TARGETS = {
     "nemo_text_processing.text_normalization.normalize.Normalizer",
 }
 
-ALLOWED_EXACT_MODELPT_TARGETS = {
+ALLOWED_LEGACY_FALLBACK_TARGETS = {
     "src.multi_classification_models.EncDecMultiClassificationModel",
 }
 
@@ -166,12 +165,6 @@ def _is_target_allowed(target: str) -> bool:
         if target in ALLOWED_EXACT_CLASS_TARGETS:
             return True
 
-        if target in ALLOWED_EXACT_MODELPT_TARGETS:
-            try:
-                return issubclass(obj, ModelPT)
-            except TypeError:
-                return False
-
         serialization_cls = globals().get("Serialization")
         if serialization_cls is not None:
             try:
@@ -228,7 +221,7 @@ def _is_target_allowed(target: str) -> bool:
             except (ImportError, TypeError):
                 return False
 
-        if target.startswith("nemo.collections.tts.g2p."):
+        if target.startswith("nemo.collections.tts.g2p.") or target == "nemo.collections.tts.torch.g2ps.EnglishG2p":
             try:
                 from nemo.collections.tts.g2p.models.base import BaseG2p
 
@@ -772,12 +765,15 @@ class Serialization(ABC):  # pylint: disable=C0115
                 target_cls_path = config["target"]  # No guarantee that this is a omegaconf class
                 imported_cls = None
                 try:
-                    # try to import the target class
-                    imported_cls = _get_allowed_target_class(target_cls_path)
-                    # if calling class (cls) is subclass of imported class,
-                    # use subclass instead
-                    if issubclass(cls, imported_cls):
+                    if target_cls_path in ALLOWED_LEGACY_FALLBACK_TARGETS:
                         imported_cls = cls
+                    else:
+                        # try to import the target class
+                        imported_cls = _get_allowed_target_class(target_cls_path)
+                        # if calling class (cls) is subclass of imported class,
+                        # use subclass instead
+                        if issubclass(cls, imported_cls):
+                            imported_cls = cls
                     accepts_trainer = Serialization._inspect_signature_for_trainer(imported_cls)
                     if accepts_trainer:
                         instance = imported_cls(cfg=config, trainer=trainer)

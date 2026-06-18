@@ -21,8 +21,8 @@ from lightning.pytorch.strategies import DDPStrategy
 from omegaconf import DictConfig
 from torch.distributed.fsdp import MixedPrecisionPolicy
 
+from nemo.collections.tts.g2p.models.base import BaseG2p
 from nemo.core.classes.common import safe_instantiate
-from nemo.core.classes.modelPT import ModelPT
 
 
 class MockDataset(torch.utils.data.Dataset):
@@ -35,6 +35,11 @@ class MockDataset(torch.utils.data.Dataset):
 
 def get_class_path(cls):
     return f"{cls.__module__}.{cls.__name__}"
+
+
+class MockG2p(BaseG2p):
+    def __call__(self, text: str) -> str:
+        return text
 
 
 @pytest.mark.unit
@@ -58,7 +63,7 @@ def test_safe_instantiate_allows_approved_targets(config, expected_type):
     "target,target_type",
     [
         ("nemo_text_processing.text_normalization.normalize.Normalizer", type("MockNormalizer", (), {})),
-        ("src.multi_classification_models.EncDecMultiClassificationModel", ModelPT),
+        ("nemo.collections.tts.torch.g2ps.EnglishG2p", MockG2p),
     ],
 )
 def test_safe_instantiate_allows_exact_exception_targets(target, target_type):

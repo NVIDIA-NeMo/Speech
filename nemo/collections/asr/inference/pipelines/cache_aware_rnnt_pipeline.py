@@ -477,13 +477,17 @@ class CacheAwareRNNTPipeline(BasePipeline):
                 state.cleanup_after_eou()
                 ready_state_ids.add(request.stream_id)
 
-        for state, eos in zip(states, eos_flags):
-            if not eos:
-                continue
-            if self.decoding_computer is not None and self.decoding_computer.per_stream_biasing_enabled:
-                release_auto_managed_stream_biasing(state, self.decoding_computer.biasing_multi_model)
-            if self.beam_decoder_computer is not None:
-                state.reset_beam_decoding_state_()
+        # Cleanup per-stream biasing models when stream ends
+        if self.decoding_computer is not None and self.decoding_computer.per_stream_biasing_enabled:
+            for request, state in zip(requests, states):
+                # only the first request contains biasing options; biasing options for the stream are stored in state
+                if request.is_last and state.has_biasing_request():
+                    release_auto_managed_stream_biasing(state, self.decoding_computer.biasing_multi_model)
+
+        if self.beam_decoder_computer is not None:
+            for state, eos in zip(states, eos_flags):
+                if eos:
+                    state.reset_beam_decoding_state_()
 
     def transcribe_step_for_feature_buffers(self, fbuffers: list[FeatureBuffer]) -> None:
         """

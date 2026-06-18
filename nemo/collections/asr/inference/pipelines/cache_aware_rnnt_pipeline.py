@@ -43,7 +43,6 @@ from nemo.collections.asr.inference.utils.pipeline_utils import (
     get_confidence_utils,
 )
 from nemo.collections.asr.parts.submodules.rnnt_malsd_batched_computer import ModifiedALSDBatchedRNNTComputer
-from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import export_batched_beam_hyps_to_cpu_lists
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.utils import logging
 
@@ -202,7 +201,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
         Args:
             options: (ASRRequestOptions) Request options for particular stream.
         Returns:
-            (CacheAwareRNNTStreamingState) New empty state. New empty state.
+            (CacheAwareRNNTStreamingState) New empty state.
         """
         state = (
             CacheAwareRNNTBeamStreamingState()
@@ -310,14 +309,16 @@ class CacheAwareRNNTPipeline(BasePipeline):
                 valid_out_len=self.valid_out_len,
                 prompt_vectors=prompt_vectors,
             )
-        return self._malsd_stream_step(
+        return self.asr_model.malsd_stream_step(
             malsd_computer=self.beam_decoder_computer,
             states=states,
-            feature_buffers=feature_buffers,
-            feature_buffer_lens=feature_buffer_lens,
+            processed_signal=feature_buffers,
+            processed_signal_length=feature_buffer_lens,
             context=context,
             drop_extra_pre_encoded=drop_extra_pre_encoded,
             keep_all_outputs=keep_all_outputs,
+            drop_left_context=self.drop_left_context,
+            valid_out_len=self.valid_out_len,
             multi_biasing_ids=multi_biasing_ids,
         )
 
@@ -368,62 +369,6 @@ class CacheAwareRNNTPipeline(BasePipeline):
         if self.beam_decoder_computer is not None:
             multi_biasing_ids = torch.from_numpy(multi_biasing_ids_np).to(device=device)
         return previous_hypotheses, multi_biasing_ids
-
-    def _malsd_stream_step(
-        self,
-        malsd_computer: ModifiedALSDBatchedRNNTComputer,
-        states: list[CacheAwareRNNTBeamStreamingState],
-        feature_buffers: Tensor,
-        feature_buffer_lens: Tensor,
-        context,
-        drop_extra_pre_encoded: int,
-        keep_all_outputs: bool,
-        multi_biasing_ids: Tensor | None = None,
-    ) -> tuple[list[Hypothesis], object]:
-        """Cache-aware MALSD encode/decode step for one chunk."""
-        carries = [state.hyp_decoding_state for state in states]
-        if all(c is None for c in carries):
-            batched_state = None
-        else:
-            batched_state = malsd_computer.merge_to_batched_state(carries)
-
-        with (
-            torch.amp.autocast(
-                device_type=self.asr_model.device_str,
-                dtype=self.asr_model.compute_dtype,
-                enabled=self.asr_model.use_amp,
-            ),
-            torch.inference_mode(),
-        ):
-            feature_buffers = feature_buffers.to(self.asr_model.cast_dtype)
-            encoded, encoded_len, new_context = self.asr_model.encoder_step(
-                processed_signal=feature_buffers,
-                processed_signal_length=feature_buffer_lens,
-                context=context,
-                drop_extra_pre_encoded=drop_extra_pre_encoded,
-                keep_all_outputs=keep_all_outputs,
-                drop_left_context=self.drop_left_context,
-                valid_out_len=self.valid_out_len,
-            )
-            encs_dim_last = encoded.transpose(1, 2).contiguous()
-
-            best_batched_hyps, batched_state = malsd_computer(
-                encs_dim_last, encoded_len, batched_state, multi_biasing_ids=multi_biasing_ids
-            )
-
-            chunk_tokens, chunk_timestamps, root_ptrs = export_batched_beam_hyps_to_cpu_lists(best_batched_hyps)
-            beam_indices = best_batched_hyps.scores.argmax(dim=-1).detach().cpu().tolist()
-            scores_cpu = best_batched_hyps.scores.detach().cpu()
-
-            carry_items = malsd_computer.split_batched_state(batched_state)
-            for state, ct, cts, rp, top1, carry in zip(
-                states, chunk_tokens, chunk_timestamps, root_ptrs, beam_indices, carry_items
-            ):
-                state.append_chunk_beam_(ct, cts, rp, best_batched_hyps.beam_size, top1)
-                state.hyp_decoding_state = carry
-
-        hyps = [state.get_hypothesis(float(scores_cpu[b, beam_indices[b]].item())) for b, state in enumerate(states)]
-        return hyps, new_context
 
     def _apply_beam_update_(self, state: CacheAwareRNNTBeamStreamingState, eou_detected: bool) -> None:
         """After endpointing: refresh beam publish tokens and fold cumulative prefix on EOU."""

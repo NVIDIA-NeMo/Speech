@@ -22,6 +22,7 @@ from omegaconf import DictConfig
 from torch.distributed.fsdp import MixedPrecisionPolicy
 
 from nemo.core.classes.common import safe_instantiate
+from nemo.core.classes.modelPT import ModelPT
 
 
 class MockDataset(torch.utils.data.Dataset):
@@ -50,6 +51,28 @@ def get_class_path(cls):
 def test_safe_instantiate_allows_approved_targets(config, expected_type):
     obj = safe_instantiate(DictConfig(config))
     assert isinstance(obj, expected_type)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "target,target_type",
+    [
+        ("nemo_text_processing.text_normalization.normalize.Normalizer", type("MockNormalizer", (), {})),
+        ("src.multi_classification_models.EncDecMultiClassificationModel", ModelPT),
+    ],
+)
+def test_safe_instantiate_allows_exact_exception_targets(target, target_type):
+    sentinel = object()
+    config = DictConfig({"_target_": target})
+
+    with (
+        patch("hydra.utils.get_class", return_value=target_type),
+        patch("hydra.utils.instantiate", return_value=sentinel) as instantiate_mock,
+    ):
+        obj = safe_instantiate(config)
+
+    assert obj is sentinel
+    instantiate_mock.assert_called_once_with(config)
 
 
 @pytest.mark.unit

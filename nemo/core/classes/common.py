@@ -61,6 +61,8 @@ ALLOWED_TARGET_PREFIXES = [
     "nemo.core.",
     "nemo.utils.",
     "nemo.lightning.",
+    "nemo_text_processing.text_normalization.normalize.Normalizer",
+    "src.multi_classification_models.EncDecMultiClassificationModel",
     "tests.collections.",
     "tests.core.",
     "torch.nn.",
@@ -100,6 +102,14 @@ ALLOWED_CLASS_PREFIXES_WITH_OPTIONAL_DEPENDENCIES = [
     "nemo.collections.speechlm2.parts.parallel",
     "nemo.collections.tts.g2p",
 ]
+
+ALLOWED_EXACT_CLASS_TARGETS = {
+    "nemo_text_processing.text_normalization.normalize.Normalizer",
+}
+
+ALLOWED_EXACT_MODELPT_TARGETS = {
+    "src.multi_classification_models.EncDecMultiClassificationModel",
+}
 
 
 class UnsafeTargetError(ValueError):
@@ -152,6 +162,15 @@ def _is_target_allowed(target: str) -> bool:
             return True
 
         from nemo.core.classes.modelPT import ModelPT
+
+        if target in ALLOWED_EXACT_CLASS_TARGETS:
+            return True
+
+        if target in ALLOWED_EXACT_MODELPT_TARGETS:
+            try:
+                return issubclass(obj, ModelPT)
+            except TypeError:
+                return False
 
         serialization_cls = globals().get("Serialization")
         if serialization_cls is not None:

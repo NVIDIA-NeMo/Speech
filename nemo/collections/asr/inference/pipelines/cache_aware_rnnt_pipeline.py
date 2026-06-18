@@ -42,6 +42,10 @@ from nemo.collections.asr.inference.utils.pipeline_utils import (
     drop_trailing_features,
     get_confidence_utils,
 )
+from nemo.collections.asr.inference.utils.per_stream_biasing import (
+    build_multi_biasing_ids_np,
+    release_all_biasing_models,
+)
 from nemo.collections.asr.parts.submodules.rnnt_malsd_batched_computer import ModifiedALSDBatchedRNNTComputer
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.utils import logging
@@ -242,18 +246,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
     def close_session(self) -> None:
         """Close the session and release per-stream biasing models held in the decoder."""
         if self.decoding_computer is not None and self.decoding_computer.per_stream_biasing_enabled:
-            biasing_multi_model = self.decoding_computer.biasing_multi_model
-            active_model_ids = [
-                model_id
-                for model_id in range(biasing_multi_model.num_models)
-                if biasing_multi_model.model2active[model_id].item()
-            ]
-            with torch.inference_mode():
-                for model_id in sorted(active_model_ids, reverse=True):
-                    biasing_multi_model.remove_model(model_id)
-            for state in self._state_pool.values():
-                if state.has_biasing_request():
-                    state.options.biasing_cfg.multi_model_id = None
+            release_all_biasing_models(self.decoding_computer.biasing_multi_model, self._state_pool.values())
         super().close_session()
 
     def get_sep(self) -> str:
@@ -291,7 +284,6 @@ class CacheAwareRNNTPipeline(BasePipeline):
         drop_extra_pre_encoded: int,
         keep_all_outputs: bool,
         prompt_vectors: Tensor | None,
-        multi_biasing_ids: Tensor | None = None,
     ) -> tuple[list[Hypothesis], object]:
         """
         Run one cache-aware encode/decode step for the current chunk.
@@ -319,56 +311,38 @@ class CacheAwareRNNTPipeline(BasePipeline):
             keep_all_outputs=keep_all_outputs,
             drop_left_context=self.drop_left_context,
             valid_out_len=self.valid_out_len,
-            multi_biasing_ids=multi_biasing_ids,
         )
 
     def _prepare_per_stream_biasing(
         self,
         states: list[CacheAwareRNNTStreamingState],
         previous_hypotheses: list[Hypothesis | None],
-        device: torch.device,
-    ) -> tuple[list[Hypothesis | None], Tensor | None]:
+    ) -> list[Hypothesis | None]:
         if self.decoding_computer is None or not self.decoding_computer.per_stream_biasing_enabled:
             if any(state.has_biasing_request() for state in states):
                 logging.warning(
                     "Biasing request is not empty, but decoder does not support per-stream biasing. Skipping"
                 )
-            return previous_hypotheses, None
+            return previous_hypotheses
 
-        biasing_multi_model = self.decoding_computer.biasing_multi_model
-        multi_biasing_ids_np = np.full([len(states)], fill_value=-1)
-        for i, (state, previous_hyp) in enumerate(zip(states, previous_hypotheses)):
-            if not state.has_biasing_request():
-                continue
+        multi_biasing_ids_np = build_multi_biasing_ids_np(
+            states,
+            self.decoding_computer.biasing_multi_model,
+            self.asr_model.tokenizer,
+        )
 
-            biasing_cfg = state.options.biasing_cfg
-            model_id = biasing_cfg.multi_model_id
-            if model_id is not None and not biasing_multi_model.model2active[model_id].item():
-                model_id = biasing_cfg.multi_model_id = None
-
-            if model_id is None:
-                if biasing_cfg.auto_manage_multi_model:
-                    with torch.inference_mode():
-                        biasing_cfg.add_to_multi_model(
-                            tokenizer=self.asr_model.tokenizer,
-                            biasing_multi_model=biasing_multi_model,
-                        )
-                else:
-                    logging.warning("Biasing request is not empty, not auto managed and not compiled. Skipping")
-                    continue
-
-            multi_biasing_ids_np[i] = biasing_cfg.multi_model_id
-
-            if self.beam_decoder_computer is None:
-                if previous_hyp is None:
-                    previous_hypotheses[i] = Hypothesis.empty_with_biasing_cfg(biasing_cfg)
-                else:
-                    previous_hyp.biasing_cfg = biasing_cfg
-
-        multi_biasing_ids = None
         if self.beam_decoder_computer is not None:
-            multi_biasing_ids = torch.from_numpy(multi_biasing_ids_np).to(device=device)
-        return previous_hypotheses, multi_biasing_ids
+            return previous_hypotheses
+
+        for i, (state, previous_hyp) in enumerate(zip(states, previous_hypotheses)):
+            if multi_biasing_ids_np[i] < 0:
+                continue
+            biasing_cfg = state.options.biasing_cfg
+            if previous_hyp is None:
+                previous_hypotheses[i] = Hypothesis.empty_with_biasing_cfg(biasing_cfg)
+            else:
+                previous_hyp.biasing_cfg = biasing_cfg
+        return previous_hypotheses
 
     def _apply_beam_update_(self, state: CacheAwareRNNTBeamStreamingState, eou_detected: bool) -> None:
         """After endpointing: refresh beam publish tokens and fold cumulative prefix on EOU."""
@@ -450,10 +424,9 @@ class CacheAwareRNNTPipeline(BasePipeline):
 
         previous_hypotheses = [state.get_previous_hypothesis() for state in states]
 
-        previous_hypotheses, multi_biasing_ids = self._prepare_per_stream_biasing(
+        previous_hypotheses = self._prepare_per_stream_biasing(
             states=states,
             previous_hypotheses=previous_hypotheses,
-            device=feature_buffers.device,
         )
 
         context, mapping = self.context_manager.get_context(stream_ids)
@@ -472,7 +445,6 @@ class CacheAwareRNNTPipeline(BasePipeline):
             drop_extra_pre_encoded=drop_extra_pre_encoded,
             keep_all_outputs=keep_all_outputs,
             prompt_vectors=prompt_vectors,
-            multi_biasing_ids=multi_biasing_ids,
         )
 
         # update the cache and reset the cache slots for the streams that has ended

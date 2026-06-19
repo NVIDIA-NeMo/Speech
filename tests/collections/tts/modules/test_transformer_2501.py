@@ -1051,6 +1051,50 @@ class TestMoERouter:
 class TestPositionwiseConvFFMoE:
     """Test the PositionwiseConvFFMoE class."""
 
+    # Golden expected values captured from the original sequential implementation
+    # with set_seed(42), d_model=8, d_ffn=32, batch_size=2, seq_len=10.
+    # Each entry: (num_experts, top_k, bias, padding, expected_output_sum,
+    #              expected_logits_sum, expected_first_expert_indices,
+    #              expected_output_first_4_elements)
+    _GOLDEN_VALUES = {
+        "E4_top1_nobias_nopad": {
+            "output_sum": 1.4807705879211426,
+            "logits_sum": -1.4070085287094116,
+            "first_idx": [2],
+            "output_0_0": [-0.031408119946718216, 0.14679314196109772, -0.021915754303336143, 0.12932124733924866],
+        },
+        "E4_top2_nobias_nopad": {
+            "output_sum": 1.6757168769836426,
+            "logits_sum": -1.4070085287094116,
+            "first_idx": [2, 0],
+            "output_0_0": [-0.12169260531663895, -0.0002511143684387207, -0.09718462079763412, -0.017200887203216553],
+        },
+        "E8_top1_nobias_pad": {
+            "output_sum": 3.700800895690918,
+            "logits_sum": 8.973369598388672,
+            "first_idx": [4],
+            "output_0_0": [-0.28720206022262573, 0.20689748227596283, 0.40565282106399536, -0.021458642557263374],
+        },
+        "E8_top2_nobias_pad": {
+            "output_sum": 3.0652523040771484,
+            "logits_sum": 8.973369598388672,
+            "first_idx": [4, 1],
+            "output_0_0": [-0.2828606963157654, 0.1696583479642868, 0.2753525376319885, -0.041214004158973694],
+        },
+        "E4_top2_bias_pad": {
+            "output_sum": -1.1706292629241943,
+            "logits_sum": -1.2999919652938843,
+            "first_idx": [1, 3],
+            "output_0_0": [-0.10531097650527954, 0.14638465642929077, -0.1260562241077423, -0.11432743072509766],
+        },
+        "E16_top1_bias_pad": {
+            "output_sum": -0.7250787019729614,
+            "logits_sum": 6.78455924987793,
+            "first_idx": [8],
+            "output_0_0": [0.480951189994812, -0.3138628602027893, -0.010073505342006683, -0.05126545578241348],
+        },
+    }
+
     @classmethod
     def setup_class(cls):
         cls.d_model = 8
@@ -1164,6 +1208,124 @@ class TestPositionwiseConvFFMoE:
                         output, router_logits, router_probs, expert_indices = moe_ffn(x, x_mask)
 
                     assert output.shape == x.shape
+
+    def test_gradient_flow(self):
+        """Backward pass must produce non-zero gradients for router and expert weights."""
+        set_seed(42)
+        moe_ffn = PositionwiseConvFFMoE(
+            d_model=self.d_model,
+            d_ffn=self.d_ffn,
+            p_dropout=0.0,
+            num_experts=self.num_experts,
+            top_k_experts=self.top_k_experts,
+            kernel_size=1,
+        )
+        moe_ffn.train()
+
+        x = torch.randn(self.batch_size, self.seq_len, self.d_model, requires_grad=True)
+        x_mask = torch.ones(self.batch_size, self.seq_len)
+        output, _, _, _ = moe_ffn(x, x_mask)
+        loss = output.sum()
+        loss.backward()
+
+        assert x.grad is not None and x.grad.abs().sum() > 0, "Input grad must be non-zero"
+        assert moe_ffn.router.router.weight.grad is not None, "Router weight grad must exist"
+        assert moe_ffn.router.router.weight.grad.abs().sum() > 0, "Router weight grad must be non-zero"
+
+        has_expert_grad = False
+        for expert in moe_ffn.experts:
+            for name in ('proj', 'o_net'):
+                g = expert[name].conv.weight.grad
+                if g is not None and g.abs().sum() > 0:
+                    has_expert_grad = True
+                    break
+        assert has_expert_grad, "At least one expert weight must receive a gradient"
+
+    def test_all_padding_produces_zeros(self):
+        """When x_mask is all zeros, output and routing info must be all zeros."""
+        set_seed(42)
+        moe_ffn = PositionwiseConvFFMoE(
+            d_model=self.d_model,
+            d_ffn=self.d_ffn,
+            p_dropout=0.0,
+            num_experts=self.num_experts,
+            top_k_experts=self.top_k_experts,
+            kernel_size=1,
+        )
+        moe_ffn.eval()
+
+        x = torch.randn(self.batch_size, self.seq_len, self.d_model)
+        x_mask = torch.zeros(self.batch_size, self.seq_len)
+
+        with torch.no_grad():
+            output, router_logits, router_probs, expert_indices = moe_ffn(x, x_mask)
+
+        assert torch.all(output == 0), "Output must be all zeros when fully padded"
+        assert torch.all(router_logits == 0), "Router logits must be all zeros when fully padded"
+        assert torch.all(expert_indices == -1), "Expert indices must be -1 when fully padded"
+
+    @pytest.mark.parametrize(
+        "num_experts,top_k,use_bias,use_padding",
+        [
+            (4, 1, False, False),
+            (4, 2, False, False),
+            (8, 1, False, True),
+            (8, 2, False, True),
+            (4, 2, True, True),
+            (16, 1, True, True),
+        ],
+        ids=[
+            "E4_top1_nobias_nopad",
+            "E4_top2_nobias_nopad",
+            "E8_top1_nobias_pad",
+            "E8_top2_nobias_pad",
+            "E4_top2_bias_pad",
+            "E16_top1_bias_pad",
+        ],
+    )
+    def test_forward_golden_values(self, num_experts, top_k, use_bias, use_padding, request):
+        """Verify forward() output matches golden expected values.
+
+        Golden values were captured from the original sequential implementation.
+        Any refactoring of forward() must reproduce these exact values (within
+        floating-point tolerance) to guarantee numerical equivalence.
+        """
+        golden = self._GOLDEN_VALUES[request.node.callspec.id]
+
+        set_seed(42)
+        moe_ffn = PositionwiseConvFFMoE(
+            d_model=self.d_model,
+            d_ffn=self.d_ffn,
+            p_dropout=0.0,
+            num_experts=num_experts,
+            top_k_experts=top_k,
+            kernel_size=1,
+            bias=use_bias,
+        )
+        moe_ffn.eval()
+
+        x = torch.randn(self.batch_size, self.seq_len, self.d_model)
+        x_mask = torch.ones(self.batch_size, self.seq_len)
+        if use_padding:
+            x_mask[0, 7:] = 0
+            x_mask[1, 5:] = 0
+
+        with torch.no_grad():
+            output, router_logits, router_probs, expert_indices = moe_ffn(x, x_mask)
+
+        assert (
+            expert_indices[0, 0].tolist() == golden["first_idx"]
+        ), f"Expert indices mismatch: got {expert_indices[0, 0].tolist()}, expected {golden['first_idx']}"
+        assert torch.allclose(
+            router_logits.sum(), torch.tensor(golden["logits_sum"]), atol=1e-5
+        ), f"Logits sum mismatch: got {router_logits.sum().item()}, expected {golden['logits_sum']}"
+        assert torch.allclose(
+            output.sum(), torch.tensor(golden["output_sum"]), atol=1e-5
+        ), f"Output sum mismatch: got {output.sum().item()}, expected {golden['output_sum']}"
+        expected_elems = torch.tensor(golden["output_0_0"])
+        assert torch.allclose(
+            output[0, 0, :4], expected_elems, atol=1e-5
+        ), f"Output[0,0,:4] mismatch: got {output[0, 0, :4].tolist()}, expected {golden['output_0_0']}"
 
 
 @pytest.mark.unit

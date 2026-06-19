@@ -43,6 +43,7 @@ python3 ngram_merge.py  --kenlm_bin_path /workspace/nemo/decoders/kenlm/build/bi
 
 import argparse
 import os
+import shlex
 import subprocess
 import sys
 from typing import Tuple
@@ -280,33 +281,31 @@ def farcompile(symbols: str, text_file: str, tmp_path: str, nemo_model_file: str
         "--fst_type=compact",
         "--symbols=" + symbols,
         "--keep_symbols",
-        ">",
-        test_far,
     ]
 
     tokenizer, encoding_level, is_aggregate_tokenizer, _ = kenlm_utils.setup_tokenizer(nemo_model_file)
 
-    ps = subprocess.Popen(
-        " ".join(sh_args),
-        shell=True,
-        stdin=subprocess.PIPE,
-        stdout=sys.stdout,
-        stderr=sys.stderr,
-    )
+    with open(test_far, "wb") as test_far_stdout:
+        ps = subprocess.Popen(
+            sh_args,
+            stdin=subprocess.PIPE,
+            stdout=test_far_stdout,
+            stderr=sys.stderr,
+        )
 
-    kenlm_utils.iter_files(
-        source_path=[text_file],
-        dest_path=ps.stdin,
-        tokenizer=tokenizer,
-        encoding_level=encoding_level,
-        is_aggregate_tokenizer=is_aggregate_tokenizer,
-        verbose=1,
-    )
-    stdout, stderr = ps.communicate()
+        kenlm_utils.iter_files(
+            source_path=[text_file],
+            dest_path=ps.stdin,
+            tokenizer=tokenizer,
+            encoding_level=encoding_level,
+            is_aggregate_tokenizer=is_aggregate_tokenizer,
+            verbose=1,
+        )
+        stdout, stderr = ps.communicate()
 
     exit_code = ps.returncode
 
-    command = " ".join(sh_args)
+    command = f"{shlex.join(sh_args)} > {shlex.quote(test_far)}"
     assert exit_code == 0, f"Exit_code must be 0.\n bash command: {command} \n stdout: {stdout} \n stderr: {stderr}"
     return test_far
 

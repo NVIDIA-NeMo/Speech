@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for perception-module activation checkpointing.
+"""Unit tests for perception-module helpers.
 
 These tests exercise:
   * ``_set_encoder_activation_checkpointing`` (the module-level helper that
@@ -23,6 +23,8 @@ These tests exercise:
     and that it routes through the helper.
 """
 
+import pytest
+import torch
 from torch import nn
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import CheckpointWrapper
 
@@ -65,6 +67,21 @@ class _FakeConformerEncoder(nn.Module):
             pre_encode = _FakeConvSubsampling()
         self.pre_encode = pre_encode
         self.layers = nn.ModuleList([_FakeConformerLayer() for _ in range(num_layers)])
+
+
+class _FakePreprocessor(nn.Module):
+    def forward(self, input_signal, length):
+        return input_signal, length
+
+
+class _FakeUnsupportedEncoder(nn.Module):
+    def forward(self, audio_signal, length):
+        return audio_signal, length
+
+
+class _FakeIdentityAdapter(nn.Module):
+    def forward(self, audio_signal, length):
+        return audio_signal, length
 
 
 # ---------------------------------------------------------------------------
@@ -204,3 +221,21 @@ class TestPerceptionSetActivationCheckpointingMethod:
         assert fake.encoder.pre_encode is original_pre_encode
         for i, layer in enumerate(original_layers):
             assert fake.encoder.layers[i] is layer
+
+
+class TestAudioPerceptionSpeakerTargets:
+    def test_raises_when_spk_targets_are_passed_to_unsupported_encoder(self):
+        module = AudioPerceptionModule.__new__(AudioPerceptionModule)
+        nn.Module.__init__(module)
+        module.preprocessor = _FakePreprocessor()
+        module.encoder = _FakeUnsupportedEncoder()
+        module.modality_adapter = _FakeIdentityAdapter()
+        module.proj = nn.Identity()
+        module.spec_augmentation = None
+
+        with pytest.raises(ValueError, match="spk_targets.*does not support"):
+            module(
+                input_signal=torch.zeros(1, 2, 4),
+                input_signal_length=torch.tensor([4]),
+                spk_targets=torch.zeros(1, 4, 2),
+            )

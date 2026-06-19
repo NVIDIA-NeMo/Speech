@@ -442,6 +442,7 @@ class BufferedRNNTPipeline(BasePipeline):
         alignment_length: int,
         timestamp_offset: int = 0,
         vad_segments: torch.Tensor = None,
+        confidences: torch.Tensor | None = None,
     ) -> bool:
         """
         Greedy RNN-T decoder.
@@ -455,6 +456,7 @@ class BufferedRNNTPipeline(BasePipeline):
             alignment_length: (int) Length of the alignment.
             timestamp_offset: (int) Timestamp offset.
             vad_segments: (Tensor) VAD segments.
+            confidences: (Tensor | None) Per-token (non-blank) confidence scores aligned with `tokens`.
         Returns:
             (bool) Whether EOU is detected.
         """
@@ -475,6 +477,7 @@ class BufferedRNNTPipeline(BasePipeline):
             timestamp_offset=timestamp_offset,
             vad_segments=vad_segments,
             stop_history_eou=state.options.stop_history_eou,
+            confidences=confidences,
         )
         state.update_state(clipped_output, eou_detected)
         state.update_from_decoder_results(start_idx, end_idx)
@@ -564,7 +567,7 @@ class BufferedRNNTPipeline(BasePipeline):
         encs_dim_last = encs.transpose(1, 2)
         # decode chunk
         with torch.inference_mode(), torch.no_grad():
-            best_batched_hyps_chunk, _, batched_state = self.decoding_computer(
+            best_batched_hyps_chunk, batched_state = self.decoding_computer(
                 encs_dim_last,
                 enc_lens_chunk,
                 batched_rnnt_states,
@@ -587,7 +590,7 @@ class BufferedRNNTPipeline(BasePipeline):
             # pad with zeros everything beyond needed context
             shift_indices = torch.where(shift_indices < max_time, shift_indices, torch.zeros_like(shift_indices))
             with torch.inference_mode(), torch.no_grad():
-                best_batched_hyps_rc, _, _ = self.decoding_computer(
+                best_batched_hyps_rc, _ = self.decoding_computer(
                     torch.gather(encs_dim_last, dim=1, index=shift_indices[:, :, None].expand(-1, -1, feat_dim)),
                     enc_lens - enc_lens_chunk,
                     batched_state,
@@ -651,6 +654,11 @@ class BufferedRNNTPipeline(BasePipeline):
             timestamp = update_punctuation_and_language_tokens_timestamps(
                 tokens, timestamp, self.tokens_to_move, self.underscore_id
             )
+            # Per-token non-blank confidence precomputed during RNN-T decoding (aligned with `tokens`).
+            # Populated only when `asr.decoding.greedy.preserve_frame_confidence=true`; otherwise None.
+            confidences = hyp.non_blank_step_confidence_precomputed
+            if confidences is not None:
+                confidences = torch.tensor(confidences, dtype=torch.float32, device=tokens.device)
             vad_segments = request.vad_segments
             eou_detected = self.run_greedy_decoder(
                 state=state,
@@ -662,6 +670,7 @@ class BufferedRNNTPipeline(BasePipeline):
                 alignment_length=alignment_length,
                 timestamp_offset=state.timestamp_offset,
                 vad_segments=vad_segments,
+                confidences=confidences,
             )
 
             if eou_detected:

@@ -57,6 +57,7 @@ def encode_audio_with_cp_distribution(
     chunk_size_seconds: Optional[float],
     sampling_rate: int,
     cp_mesh=None,
+    spk_targets: Tensor | None = None,
 ) -> list[Tensor]:
     """Distribute the audio encoder forward across CP ranks.
 
@@ -86,6 +87,7 @@ def encode_audio_with_cp_distribution(
             audio_lens,
             chunk_size_seconds=chunk_size_seconds,
             sampling_rate=sampling_rate,
+            spk_targets=spk_targets,
         )
 
     cp_size = cp_mesh.size()
@@ -104,11 +106,21 @@ def encode_audio_with_cp_distribution(
         dummy_lens = torch.full((pad_n,), dummy_len, dtype=audio_lens.dtype, device=device)
         audios = torch.cat([audios, dummy_audios], dim=0)
         audio_lens = torch.cat([audio_lens, dummy_lens], dim=0)
+        if spk_targets is not None:
+            dummy_targets = torch.zeros(
+                pad_n,
+                spk_targets.shape[1],
+                spk_targets.shape[2],
+                dtype=spk_targets.dtype,
+                device=spk_targets.device,
+            )
+            spk_targets = torch.cat([spk_targets, dummy_targets], dim=0)
 
     start = cp_rank * per_rank
     end = start + per_rank
     local_audios = audios[start:end]
     local_audio_lens = audio_lens[start:end]
+    local_spk_targets = spk_targets[start:end] if spk_targets is not None else None
 
     local_embs = encode_audio_with_optional_chunking(
         perception,
@@ -116,6 +128,7 @@ def encode_audio_with_cp_distribution(
         local_audio_lens,
         chunk_size_seconds=chunk_size_seconds,
         sampling_rate=sampling_rate,
+        spk_targets=local_spk_targets,
     )
 
     # All-gather across CP. Variable-length: pad to a common max-L first.

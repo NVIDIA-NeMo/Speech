@@ -277,6 +277,7 @@ class BeamRNNTInfer(Typing):
         blank_lm_score_mode: Optional[str] = "no_score",
         pruning_mode: Optional[str] = "early",
         allow_cuda_graphs: bool = False,
+        enable_per_stream_biasing: bool = False,
     ):
         self.decoder = decoder_model
         self.joint = joint_model
@@ -322,6 +323,12 @@ class BeamRNNTInfer(Typing):
             logging.warning(
                 f"""Cuda Graphs are not supported for the decoding strategy {self.search_algorithm}.
                                 Decoding will proceed without Cuda Graphs."""
+            )
+
+        if enable_per_stream_biasing:
+            logging.warning(
+                f"Per-stream biasing is not supported for the decoding strategy {self.search_algorithm}. "
+                "Use `malsd_batch` beam search instead."
             )
 
         strategies = ["default", "tsd", "alsd", "maes", "nsc"]
@@ -1530,6 +1537,7 @@ class BeamBatchedRNNTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs
         return {
             "encoder_output": NeuralType(('B', 'D', 'T'), AcousticEncodedRepresentation()),
             "encoded_lengths": NeuralType(tuple('B'), LengthsType()),
+            "multi_biasing_ids": NeuralType(tuple('B'), optional=True),
             "partial_hypotheses": [NeuralType(elements_type=HypothesisType(), optional=True)],  # must always be last
         }
 
@@ -1552,6 +1560,7 @@ class BeamBatchedRNNTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs
         pruning_mode: Optional[str | PruningMode] = PruningMode.LATE,
         allow_cuda_graphs: Optional[bool] = True,
         return_best_hypothesis: Optional[str] = True,
+        enable_per_stream_biasing: bool = False,
     ):
         """
         Init method.
@@ -1583,7 +1592,7 @@ class BeamBatchedRNNTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs
             pruning_mode: mode for pruning hypotheses with LM
             allow_cuda_graphs: whether to allow CUDA graphs
             return_best_hypothesis: whether to return the best hypothesis or N-best hypotheses
-            tokenizer: tokenizer for the model
+            enable_per_stream_biasing: whether to enable per-stream biasing via multi-boosting tree
         """
 
         super().__init__()
@@ -1601,10 +1610,16 @@ class BeamBatchedRNNTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs
         self.max_symbols = max_symbols_per_step
         self.preserve_alignments = preserve_alignments
 
+        if enable_per_stream_biasing and search_type == "maes_batch":
+            logging.warning(
+                "Per-stream biasing is not supported with `maes_batch` decoding; use `malsd_batch` instead. "
+                "Ignoring `enable_per_stream_biasing`."
+            )
+
         if search_type == "malsd_batch":
             # Depending on availability of `blank_as_pad` support
             # switch between more efficient batch decoding technique
-            self._decoding_computer = ModifiedALSDBatchedRNNTComputer(
+            self.decoding_computer = ModifiedALSDBatchedRNNTComputer(
                 decoder=self.decoder,
                 joint=self.joint,
                 beam_size=self.beam_size,
@@ -1616,9 +1631,10 @@ class BeamBatchedRNNTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs
                 blank_lm_score_mode=blank_lm_score_mode,
                 pruning_mode=pruning_mode,
                 allow_cuda_graphs=allow_cuda_graphs,
+                enable_per_stream_biasing=enable_per_stream_biasing,
             )
         elif search_type == "maes_batch":
-            self._decoding_computer = ModifiedAESBatchedRNNTComputer(
+            self.decoding_computer = ModifiedAESBatchedRNNTComputer(
                 decoder=self.decoder,
                 joint=self.joint,
                 beam_size=self.beam_size,
@@ -1636,14 +1652,14 @@ class BeamBatchedRNNTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs
 
     def disable_cuda_graphs(self) -> bool:
         """Disable CUDA graphs (e.g., for decoding in training)"""
-        if isinstance(self._decoding_computer, WithOptionalCudaGraphs):
-            return self._decoding_computer.disable_cuda_graphs()
+        if isinstance(self.decoding_computer, WithOptionalCudaGraphs):
+            return self.decoding_computer.disable_cuda_graphs()
         return False
 
     def maybe_enable_cuda_graphs(self) -> bool:
         """Enable CUDA graphs (if allowed)"""
-        if isinstance(self._decoding_computer, WithOptionalCudaGraphs):
-            return self._decoding_computer.maybe_enable_cuda_graphs()
+        if isinstance(self.decoding_computer, WithOptionalCudaGraphs):
+            return self.decoding_computer.maybe_enable_cuda_graphs()
         return False
 
     @property
@@ -1660,6 +1676,7 @@ class BeamBatchedRNNTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs
         encoder_output: torch.Tensor,
         encoded_lengths: torch.Tensor,
         partial_hypotheses: Optional[list[Hypothesis]] = None,
+        multi_biasing_ids: Optional[torch.Tensor] = None,
     ) -> Tuple[list[Hypothesis] | List[NBestHypotheses]]:
         """Returns a list of hypotheses given an input batch of the encoder hidden embedding.
         Output token is generated auto-regressively.
@@ -1668,6 +1685,7 @@ class BeamBatchedRNNTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs
             encoder_output: A tensor of size (batch, features, timesteps).
             encoded_lengths: list of int representing the length of each sequence
                 output sequence.
+            multi_biasing_ids: Model IDs for per-stream biasing [batch_size].
 
         Returns:
             Tuple of a list of hypotheses for each batch. Each hypothesis contains
@@ -1690,7 +1708,12 @@ class BeamBatchedRNNTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs
             self.joint.eval()
 
             inseq = encoder_output  # [B, T, D]
-            batched_beam_hyps = self._decoding_computer(x=inseq, out_len=logitlen)
+            if isinstance(self.decoding_computer, ModifiedALSDBatchedRNNTComputer):
+                batched_beam_hyps, _ = self.decoding_computer(
+                    x=inseq, out_len=logitlen, multi_biasing_ids=multi_biasing_ids
+                )
+            else:
+                batched_beam_hyps, _ = self.decoding_computer(x=inseq, out_len=logitlen)
 
             batch_size = encoder_output.shape[0]
             if self.return_best_hypothesis:
@@ -1735,3 +1758,4 @@ class BeamRNNTInferConfig:
     blank_lm_score_mode: Optional[str | BlankLMScoreMode] = BlankLMScoreMode.LM_WEIGHTED_FULL
     pruning_mode: Optional[str | PruningMode] = PruningMode.LATE
     allow_cuda_graphs: Optional[bool] = True
+    enable_per_stream_biasing: bool = False

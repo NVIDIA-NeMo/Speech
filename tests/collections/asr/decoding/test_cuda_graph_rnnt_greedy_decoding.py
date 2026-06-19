@@ -28,24 +28,6 @@ from nemo.core.utils.cuda_python_utils import skip_cuda_python_test_if_cuda_grap
 CUDA_GRAPH_TRANSCRIBE_NUM_WORKERS = 0
 
 
-def test_full_graph_compile_fallback_handles_accelerator_error():
-    from nemo.collections.asr.parts.submodules.transducer_decoding.rnnt_label_looping import (
-        GreedyBatchedRNNTLabelLoopingComputer,
-    )
-
-    accelerator_error = getattr(torch, "AcceleratorError", RuntimeError)
-    computer = GreedyBatchedRNNTLabelLoopingComputer.__new__(GreedyBatchedRNNTLabelLoopingComputer)
-    computer.cuda_graphs_mode = computer.CudaGraphsMode.FULL_GRAPH
-    computer.cuda_graphs_allow_fallback = True
-    partial_graph_compile_calls = []
-    computer._partial_graphs_compile = lambda: partial_graph_compile_calls.append(True)
-
-    computer._fallback_to_no_while_loop_cuda_graphs(accelerator_error("CUDA error: invalid argument"))
-
-    assert computer.cuda_graphs_mode == computer.CudaGraphsMode.NO_WHILE_LOOPS
-    assert partial_graph_compile_calls == [True]
-
-
 def test_forced_full_graph_compile_does_not_fallback():
     from nemo.collections.asr.parts.submodules.transducer_decoding.rnnt_label_looping import (
         GreedyBatchedRNNTLabelLoopingComputer,
@@ -56,7 +38,7 @@ def test_forced_full_graph_compile_does_not_fallback():
     computer.cuda_graphs_allow_fallback = False
 
     with pytest.raises(RuntimeError, match="Full CUDA graph decoding failed"):
-        computer._fallback_to_no_while_loop_cuda_graphs(accelerator_error("CUDA error: invalid argument"))
+        computer._raise_or_warn_no_while_loop_cuda_graphs(accelerator_error("CUDA error: invalid argument"))
 
 
 @pytest.mark.with_downloads

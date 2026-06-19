@@ -22,7 +22,6 @@ from transformers.models.bert.modeling_bert import BertEncoder
 from nemo.collections.asr.models import ASRModel
 from nemo.collections.asr.modules.conformer_encoder import ConformerMultiLayerFeatureExtractor
 from nemo.collections.asr.parts.mixins import TranscribeConfig
-from nemo.collections.speechlm2.modules.rote import RotaryTimeEmbedding
 from nemo.core import Exportable, NeuralModule, typecheck
 
 

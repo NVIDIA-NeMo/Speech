@@ -107,9 +107,21 @@ def _resolve_automodel_configs(strategy) -> None:
         strategy._distributed_config = FSDP2Config(**resolved)
 
     if isinstance(getattr(strategy, '_moe_config', None), Mapping):
-        from nemo_automodel.components.moe.config import MoEParallelizerConfig
+        try:
+            from nemo_automodel.components.distributed.config import MoEParallelizerConfig
+        except ImportError:
+            from nemo_automodel.components.moe.config import MoEParallelizerConfig
 
-        strategy._moe_config = MoEParallelizerConfig(**strategy._moe_config)
+        valid_fields = set(MoEParallelizerConfig.__dataclass_fields__)
+        resolved = {}
+        for k, v in strategy._moe_config.items():
+            if k not in valid_fields:
+                continue
+            if isinstance(v, Mapping) and "_target_" in v:
+                resolved[k] = hydra.utils.instantiate(v)
+            else:
+                resolved[k] = v
+        strategy._moe_config = MoEParallelizerConfig(**resolved)
 
 
 class HalfPrecisionForAudio(HalfPrecision):

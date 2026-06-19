@@ -111,6 +111,20 @@ class TestCacheAwareStreamingStateTokenSurvival:
         assert state.confidences == pytest.approx([0.1, 0.2])
 
     @pytest.mark.unit
+    def test_prepare_finalize_carryover_starts_at_word_start(self):
+        # Token 12 sits at the resume frame and is NOT a word start (late punctuation, a language token,
+        # or a word-continuation sub-token). A new utterance must begin at a word start, so 12 is moved
+        # back into the finalized (previous) utterance; only the word-start token 13 survives.
+        state = self._state_with_tokens()
+        state.prepare_finalize(resume_global_frame=8, is_token_start_of_word=lambda tid: tid == 13)
+        assert state.tokens == [10, 11, 12]
+        assert state.timesteps == [0, 1, 8]
+        state.cleanup_after_eou()
+        state.restore_carryover()
+        assert state.tokens == [13]  # next utterance starts at the first word-start token
+        assert state.timesteps == [9]
+
+    @pytest.mark.unit
     def test_finalize_cleanup_restore_cycle(self):
         state = self._state_with_tokens()
         state.prepare_finalize(resume_global_frame=8)

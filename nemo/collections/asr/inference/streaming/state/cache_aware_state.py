@@ -128,19 +128,33 @@ class CacheAwareStreamingState(StreamingState):
         """
         self.eou_search_start_global = global_frame
 
-    def prepare_finalize(self, resume_global_frame: int) -> None:
+    def prepare_finalize(self, resume_global_frame: int, is_token_start_of_word=None) -> None:
         """
         Split the accumulated tokens at `resume_global_frame`. Tokens before it (including absorbed
         punctuation/language tokens) stay in the state to be finalized; tokens at or after it are the
         next utterance and are stashed as carryover to be restored after the finalized portion is
         decoded and cleaned up.
+
+        A new utterance must begin at a word start. Late tokens (sentence punctuation, language tokens,
+        or a word's continuation sub-tokens) often share the resume frame with the next word -- the dense
+        EoU label buffer keeps only one label per frame, so the detector cannot see them, and the strict
+        timestamp split would push them into the carryover (causing punct-leading segments or mid-word
+        splits). So any leading non-word-start tokens at the head of the carryover are moved back into the
+        finalized (previous) utterance.
         Args:
             resume_global_frame: (int) global frame index marking the start of the next utterance
+            is_token_start_of_word: (Callable[[int], bool] | None) predicate identifying word-start
+                tokens; leading non-word-start carryover tokens are moved back into the finalized portion.
         """
         k = 0
         n = len(self.timesteps)
         while k < n and self.timesteps[k] < resume_global_frame:
             k += 1
+        # The next utterance must start at a word boundary: keep leading punctuation / language tokens /
+        # word-continuation sub-tokens with the finalized utterance.
+        if is_token_start_of_word is not None:
+            while k < n and not is_token_start_of_word(self.tokens[k]):
+                k += 1
 
         self._carryover_tokens = self.tokens[k:]
         self._carryover_timesteps = self.timesteps[k:]

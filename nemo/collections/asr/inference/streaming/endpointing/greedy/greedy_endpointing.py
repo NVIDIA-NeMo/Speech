@@ -46,6 +46,9 @@ class GreedyEndpointing:
                 (trailing silence, no following word observed yet). Should be >= `stop_history_eou`; a brief
                 mid-word pause at the buffer edge then does not trigger a premature cut. If None, the regular
                 `stop_history_eou` is used for end-of-buffer EoUs too (`detect_eou_in_buffer` only).
+                A negative value (e.g. -1) disables only *unconfirmed* end-of-buffer EoUs: pure trailing
+                silence no longer cuts. Confirmed EoUs still fire -- a following word-start (mid-buffer) or
+                trailing punctuation -- so boundaries are only committed when confirmed by a word or punct.
         """
 
         self.vocabulary = vocabulary
@@ -301,6 +304,11 @@ class GreedyEndpointing:
                 None use the class default (already in frames)
             stop_history_eou_end (int | None): end-of-buffer silence threshold in milliseconds; if None
                 use the class default, falling back to the regular threshold. Clamped to be >= regular.
+                A negative value (e.g. -1) disables only *unconfirmed* end-of-buffer EoUs: a run of pure
+                trailing silence (nothing after it) no longer triggers an EoU. CONFIRMED EoUs still fire --
+                a word-start after the run (mid-buffer) or trailing punctuation (the model committed a
+                sentence-final token), both at the regular threshold. So under -1 boundaries are only
+                committed when confirmed by the next word or by punctuation.
         Returns:
             tuple[bool, int, int]:
                 eou_detected: True if a valid EoU is detected, False otherwise
@@ -320,10 +328,14 @@ class GreedyEndpointing:
             return True, sequence_length - 1, sequence_length
 
         # End-of-buffer threshold: explicit override, else class default, else the regular threshold.
+        # A negative value (e.g. -1) DISABLES end-of-buffer EoUs: trailing silence at the buffer edge is
+        # never treated as an EoU; only word-confirmed mid-buffer EoUs can fire.
         end_default = self.stop_history_eou_end if self.stop_history_eou_end is not None else self.stop_history_eou
         stop_history_eou_end = get_custom_stop_history_eou(stop_history_eou_end, end_default, self.ms_per_timestep)
-        # Never weaker than the regular threshold.
-        stop_history_eou_end = max(stop_history_eou, stop_history_eou_end)
+        end_enabled = stop_history_eou_end >= 0
+        if end_enabled:
+            # Never weaker than the regular threshold.
+            stop_history_eou_end = max(stop_history_eou, stop_history_eou_end)
 
         lower_bound = max(0, search_start_point)
         # Scan right-to-left so the most recent (rightmost) qualifying silence run wins.
@@ -343,7 +355,7 @@ class GreedyEndpointing:
 
             # Trailing silence to the buffer end -> end-of-buffer EoU (no following word observed).
             if j >= sequence_length:
-                if run_len > stop_history_eou_end:
+                if end_enabled and run_len > stop_history_eou_end:
                     return True, run_start + stop_history_eou_end // 2, sequence_length
                 i = run_start - 1
                 continue
@@ -364,9 +376,12 @@ class GreedyEndpointing:
                     break
 
             if k >= sequence_length:
-                # Only silence/absorbable tokens after the run -> end-of-buffer EoU (no word observed).
-                if run_len > stop_history_eou_end:
-                    return True, run_start + stop_history_eou_end // 2, sequence_length
+                # Run followed only by punctuation/language tokens (+ trailing silence) to the buffer
+                # end. The punctuation CONFIRMS the utterance end (just like a following word-start
+                # confirms a mid-buffer EoU), so there is no mid-word risk: fire at the regular threshold
+                # and do so even when end-of-buffer EoUs are disabled (`stop_history_eou_end < 0`).
+                if run_len > stop_history_eou:
+                    return True, run_start + stop_history_eou // 2, sequence_length
             elif self.is_token_start_of_word(emissions[k]):
                 # Mid-buffer EoU: the next word-start is observed, so the regular threshold applies.
                 if run_len > stop_history_eou:

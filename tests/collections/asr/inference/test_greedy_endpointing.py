@@ -291,6 +291,40 @@ class TestDetectEou:
             assert eou is True
             assert resume == 10
 
+    @pytest.mark.unit
+    def test_end_disabled_skips_unconfirmed_trailing_only(self):
+        b = EOU_BLANK
+        # stop_history_eou_end=-1 disables ONLY unconfirmed pure-trailing-silence EoUs.
+        for cls in ENDPOINTING_CLASSES:
+            ep = _make_detect_eou_endpointer(cls, stop_history_eou=80, stop_history_eou_end=-1)
+            # Pure trailing silence (nothing after the run) is NOT cut.
+            assert ep.detect_eou_in_buffer([0] + [b] * 9) == (False, -1, -1)
+            # But a run followed by trailing PUNCTUATION is confirmed -> fires at the regular threshold,
+            # even though it reaches the buffer end. (run idx1..5 = 5 frames > 4; then "." then silence.)
+            eou, center, resume = ep.detect_eou_in_buffer([0, b, b, b, b, b, 3, b, b])
+            assert eou is True
+            assert center == 1 + 4 // 2
+            assert resume == 9  # whole buffer finalized; the "." is absorbed into the previous utterance
+            # A word-confirmed mid-buffer run also still fires.
+            eou, center, resume = ep.detect_eou_in_buffer([0, b, b, b, b, b, 2, 1])
+            assert eou is True
+            assert center == 1 + 4 // 2
+            assert resume == 6
+
+    @pytest.mark.unit
+    def test_end_disabled_via_per_request_override(self):
+        b = EOU_BLANK
+        for cls in ENDPOINTING_CLASSES:
+            ep = _make_detect_eou_endpointer(cls, stop_history_eou=80, stop_history_eou_end=160)
+            # Default end threshold fires on long trailing silence...
+            assert ep.detect_eou_in_buffer([0] + [b] * 9)[0] is True
+            # ...but a per-request stop_history_eou_end=-1 disables end-of-buffer EoUs.
+            assert ep.detect_eou_in_buffer([0] + [b] * 9, stop_history_eou_end=-1) == (False, -1, -1)
+            # Mid-buffer EoU still works under the override.
+            eou, _, resume = ep.detect_eou_in_buffer([0, b, b, b, b, b, 2, 1], stop_history_eou_end=-1)
+            assert eou is True
+            assert resume == 6
+
 
 class TestGreedyEndpointing:
 

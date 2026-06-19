@@ -259,7 +259,7 @@ class CacheAwareCTCPipeline(BasePipeline):
         if eou_detected:
             # Keep valid tokens emitted after the EoU point (the next utterance) instead of dropping them.
             resume_global = state.buffer_local_to_global(resume_local)
-            state.prepare_finalize(resume_global)
+            state.prepare_finalize(resume_global, is_token_start_of_word=self.endpointer.is_token_start_of_word)
             state.set_eou_search_start(resume_global)
         return eou_detected
 

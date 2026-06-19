@@ -21,6 +21,7 @@ from lightning.pytorch.strategies import DDPStrategy
 from omegaconf import DictConfig
 from torch.distributed.fsdp import MixedPrecisionPolicy
 
+from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import BaseTokenizer
 from nemo.collections.tts.g2p.models.base import BaseG2p
 from nemo.core.classes.common import safe_instantiate
 
@@ -40,6 +41,14 @@ def get_class_path(cls):
 class MockG2p(BaseG2p):
     def __call__(self, text: str) -> str:
         return text
+
+
+class MockTokenizer(BaseTokenizer):
+    def __init__(self):
+        super().__init__(tokens=["a"])
+
+    def encode(self, text: str) -> list[int]:
+        return [0]
 
 
 @pytest.mark.unit
@@ -64,6 +73,7 @@ def test_safe_instantiate_allows_approved_targets(config, expected_type):
     [
         ("nemo_text_processing.text_normalization.normalize.Normalizer", type("MockNormalizer", (), {})),
         ("nemo.collections.tts.torch.g2ps.EnglishG2p", MockG2p),
+        ("nemo.collections.tts.torch.tts_tokenizers.EnglishPhonemesTokenizer", MockTokenizer),
     ],
 )
 def test_safe_instantiate_allows_exact_exception_targets(target, target_type):

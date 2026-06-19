@@ -212,7 +212,9 @@ def _is_target_allowed(target: str) -> bool:
             except TypeError:
                 return False
 
-        if target.startswith("nemo.collections.common.tokenizers."):
+        if target.startswith("nemo.collections.common.tokenizers.") or target.startswith(
+            "nemo.collections.tts.torch.tts_tokenizers."
+        ):
             try:
                 from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import BaseTokenizer
                 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec

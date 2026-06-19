@@ -938,28 +938,47 @@ class SALMAutomodel(LightningModule, HFHubMixin):
 
         automodel_kwargs = {}
         if device_mesh is not None:
-            automodel_kwargs["device_mesh"] = device_mesh
-            # automodel's instantiate_infrastructure unconditionally calls
-            # .to_dict() on these configs, so we must always provide defaults.
+            # Automodel infrastructure expects typed config objects. Latest
+            # Automodel routes all distributed settings through DistributedSetup,
+            # while older Automodel accepted these pieces as separate kwargs.
             if distributed_config is None:
                 from nemo_automodel.components.distributed.config import FSDP2Config
 
                 distributed_config = FSDP2Config()
             if moe_config is None:
-                from nemo_automodel.components.moe.config import MoEParallelizerConfig
+                try:
+                    from nemo_automodel.components.distributed.config import MoEParallelizerConfig
+                except ImportError:
+                    from nemo_automodel.components.moe.config import MoEParallelizerConfig
 
                 moe_config = MoEParallelizerConfig()
-            # Route the single LLM AC flag to both paths: the EP/MoE parallelizer
-            # reads ``activation_checkpointing`` directly (MoEParallelizerConfig
-            # has no such field), while FSDP2's AC wrapping reads the field on
-            # FSDP2Config. Forcing both keeps behavior identical regardless of
-            # whether ep_size is 1 (FSDP2 path) or > 1 (EP path).
-            if activation_checkpointing_llm:
-                distributed_config.activation_checkpointing = True
-            automodel_kwargs["distributed_config"] = distributed_config
-            automodel_kwargs["moe_config"] = moe_config
-            automodel_kwargs["activation_checkpointing"] = activation_checkpointing_llm
-        if moe_mesh is not None:
+
+            try:
+                from nemo_automodel.components.distributed.config import DistributedSetup
+                from nemo_automodel.components.distributed.mesh import MeshContext
+            except ImportError:
+                DistributedSetup = None
+                MeshContext = None
+
+            if DistributedSetup is not None and MeshContext is not None:
+                if activation_checkpointing_llm:
+                    distributed_config.activation_checkpointing = activation_checkpointing_llm
+                automodel_kwargs["distributed_setup"] = DistributedSetup(
+                    mesh_context=MeshContext.from_meshes(device_mesh, moe_mesh),
+                    strategy_config=distributed_config,
+                    moe_parallel_config=moe_config,
+                    activation_checkpointing=activation_checkpointing_llm,
+                )
+            else:
+                automodel_kwargs["device_mesh"] = device_mesh
+                # Older Automodel used separate kwargs and only understood a bool
+                # strategy flag, while the EP/MoE path consumed the original value.
+                if activation_checkpointing_llm:
+                    distributed_config.activation_checkpointing = True
+                automodel_kwargs["distributed_config"] = distributed_config
+                automodel_kwargs["moe_config"] = moe_config
+                automodel_kwargs["activation_checkpointing"] = activation_checkpointing_llm
+        if moe_mesh is not None and "distributed_setup" not in automodel_kwargs:
             automodel_kwargs["moe_mesh"] = moe_mesh
 
         # When LoRA is configured and we have a device_mesh, pass peft_config

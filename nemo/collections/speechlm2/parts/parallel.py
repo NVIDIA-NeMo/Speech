@@ -274,21 +274,42 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
             Tuple of ``(device_mesh, moe_mesh)``.
         """
         from nemo_automodel.components.distributed.config import FSDP2Config
-        from nemo_automodel.components.distributed.mesh_utils import create_device_mesh
 
         if self._distributed_config is None:
             self._distributed_config = FSDP2Config()
 
-        self._device_mesh, self._moe_mesh = create_device_mesh(
-            self._distributed_config,
-            dp_size=self._dp_size,
-            dp_replicate_size=self._dp_replicate_size,
-            tp_size=self._tp_size,
-            pp_size=self._pp_size,
-            cp_size=self._cp_size,
-            ep_size=self._ep_size,
-            world_size=dist.get_world_size(),
-        )
+        world_size = dist.get_world_size()
+
+        try:
+            from nemo_automodel.components.distributed.mesh_utils import create_device_mesh
+        except ImportError:
+            from nemo_automodel.components.distributed.mesh import ParallelismSizes
+            from nemo_automodel.components.distributed.mesh_utils import _create_device_meshes
+
+            parallelism = ParallelismSizes(
+                dp_size=self._dp_size,
+                dp_replicate_size=self._dp_replicate_size,
+                tp_size=self._tp_size,
+                pp_size=self._pp_size,
+                cp_size=self._cp_size,
+                ep_size=self._ep_size,
+            )
+            self._device_mesh, self._moe_mesh = _create_device_meshes(
+                self._distributed_config,
+                parallelism,
+                world_size=world_size,
+            )
+        else:
+            self._device_mesh, self._moe_mesh = create_device_mesh(
+                self._distributed_config,
+                dp_size=self._dp_size,
+                dp_replicate_size=self._dp_replicate_size,
+                tp_size=self._tp_size,
+                pp_size=self._pp_size,
+                cp_size=self._cp_size,
+                ep_size=self._ep_size,
+                world_size=world_size,
+            )
         return self._device_mesh, self._moe_mesh
 
     @override

@@ -63,7 +63,6 @@ endpointing:
   stop_history_eou: 800                       # Silence (ms) for a mid-buffer EoU (word start after the gap)
   stop_history_eou_end: 1200                  # Silence (ms) for an end-of-buffer EoU; >= stop_history_eou. -1 = only
                                               # confirmed EoUs fire (following word-start or trailing punctuation).
-  # Label-buffer size is derived from stop_history_eou_end and the chunk size (no separate knob).
 
 
 # ========================

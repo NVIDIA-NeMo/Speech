@@ -60,14 +60,10 @@ confidence:
 # Endpointing settings
 # ========================
 endpointing:
-  stop_history_eou: 800                       # Silence (ms) for a mid-buffer EoU (a word start is seen after the gap)
-  stop_history_eou_end: 1200                  # Silence (ms) for an end-of-buffer EoU (trailing silence, no next word yet);
-                                              # should be >= stop_history_eou to avoid cutting mid-word at the buffer edge.
-                                              # Set to -1 to disable UNCONFIRMED end-of-buffer EoUs: pure trailing silence
-                                              # no longer cuts; only CONFIRMED EoUs fire (a following word-start, or trailing
-                                              # punctuation). Boundaries are then committed only when confirmed by word/punct.
-  # The EoU label-buffer size is derived automatically from stop_history_eou_end and the chunk size
-  # (see derive_eou_buffer_size); there is no separate buffer-size knob.
+  stop_history_eou: 800                       # Silence (ms) for a mid-buffer EoU (word start after the gap)
+  stop_history_eou_end: 1200                  # Silence (ms) for an end-of-buffer EoU; >= stop_history_eou. -1 = only
+                                              # confirmed EoUs fire (following word-start or trailing punctuation).
+  # Label-buffer size is derived from stop_history_eou_end and the chunk size (no separate knob).
 
 
 # ========================

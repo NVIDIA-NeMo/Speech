@@ -51,7 +51,7 @@ def validate_eou_thresholds(stop_history_eou_ms: int, stop_history_eou_end_ms: i
         )
 
 
-def derive_eou_buffer_size(
+def derive_cache_aware_eou_buffer_size(
     silence_threshold_ms: int,
     tokens_per_frame: int,
     ms_per_timestep: int,

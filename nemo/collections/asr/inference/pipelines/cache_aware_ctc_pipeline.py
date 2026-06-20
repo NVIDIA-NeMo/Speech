@@ -32,7 +32,10 @@ from nemo.collections.asr.inference.streaming.framing.multi_stream import Contin
 from nemo.collections.asr.inference.streaming.framing.request import FeatureBuffer, Frame, Request
 from nemo.collections.asr.inference.streaming.framing.request_options import ASRRequestOptions
 from nemo.collections.asr.inference.streaming.state.cache_aware_ctc_state import CacheAwareCTCStreamingState
-from nemo.collections.asr.inference.utils.endpointing_utils import derive_eou_buffer_size, validate_eou_thresholds
+from nemo.collections.asr.inference.utils.endpointing_utils import (
+    derive_cache_aware_eou_buffer_size,
+    validate_eou_thresholds,
+)
 from nemo.collections.asr.inference.utils.enums import RequestType
 from nemo.collections.asr.inference.utils.pipeline_utils import (
     check_existance_of_required_attributes,
@@ -194,7 +197,7 @@ class CacheAwareCTCPipeline(BasePipeline):
         if new_options.stop_history_eou > 0:
             # Size the buffer for the largest run we may need to detect (the end-of-buffer threshold).
             buffer_threshold_ms = max(new_options.stop_history_eou, new_options.stop_history_eou_end)
-            eou_label_buffer_size = derive_eou_buffer_size(
+            eou_label_buffer_size = derive_cache_aware_eou_buffer_size(
                 buffer_threshold_ms,
                 self.tokens_per_frame,
                 math.ceil(self.model_stride_in_milliseconds),

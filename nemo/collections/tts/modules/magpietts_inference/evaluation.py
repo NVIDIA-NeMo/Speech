@@ -43,6 +43,10 @@ class EvaluationConfig:
         with_utmosv2: Whether to compute UTMOSv2 (Mean Opinion Score) metrics.
         with_fcd: Whether to compute Frechet Codec Distance metric.
         codec_model_path: Path to the audio codec model. If None, will skip computing Frechet Codec Distance metric.
+        with_emotion_metrics: Whether to compute ESIM and EMS using the emotion encoder.
+        emotion_model_size: Emotion encoder size ("small" or "large").
+        emotion_embedding_type: Emotion embedding type used for ESIM.
+        emotion_cache_dir: Optional Hugging Face cache directory for the emotion encoder.
         device: Device to use for running models used during evaluation.
     """
 
@@ -53,6 +57,10 @@ class EvaluationConfig:
     with_utmosv2: bool = True
     with_fcd: bool = True
     codec_model_path: str = None
+    with_emotion_metrics: bool = False
+    emotion_model_size: str = "small"
+    emotion_embedding_type: str = "head_concat"
+    emotion_cache_dir: str = None
     device: str = "cuda"
     asr_batch_size: int = 32
     eou_batch_size: int = 32
@@ -95,6 +103,10 @@ def evaluate_generated_audio_dir(
         with_utmosv2=config.with_utmosv2,
         with_fcd=config.with_fcd,
         codec_model_path=config.codec_model_path,
+        with_emotion_metrics=config.with_emotion_metrics,
+        emotion_model_size=config.emotion_model_size,
+        emotion_embedding_type=config.emotion_embedding_type,
+        emotion_cache_dir=config.emotion_cache_dir,
         device=config.device,
         eou_model_name=config.eou_model_name,
         asr_batch_size=config.asr_batch_size,

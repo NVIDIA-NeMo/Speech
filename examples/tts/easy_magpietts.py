@@ -58,6 +58,9 @@ def main(cfg):
     if cfg.get("pretrained_model", None):
         model.restore_from_pretrained_checkpoint(cfg.pretrained_model)
 
+    if cfg.get("pretrained_text_model_path", None):
+        model.restore_from_text_pretrained_checkpoint(cfg.pretrained_text_model_path)
+
     model.maybe_init_from_pretrained_checkpoint(cfg=cfg)
 
     if mode in ['train', 'onlinepo_train']:

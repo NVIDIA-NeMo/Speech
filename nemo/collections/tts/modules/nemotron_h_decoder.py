@@ -32,6 +32,7 @@ from torch.nn import CrossEntropyLoss
 
 from nemo.utils import logging
 
+from transformers.activations import ACT2FN
 
 # Try to import optimized kernels, fall back to pure PyTorch if unavailable
 try:
@@ -136,15 +137,7 @@ def get_cached_mamba_ssm_state(
 
 def get_activation_fn(activation: str):
     """Get activation function by name."""
-    if activation == "silu" or activation == "swish":
-        return F.silu
-    elif activation == "gelu":
-        return F.gelu
-    elif activation == "relu":
-        return F.relu
-    else:
-        raise ValueError(f"Unsupported activation: {activation}")
-
+    return ACT2FN[activation]
 
 @dataclass
 class NemotronHConfig:

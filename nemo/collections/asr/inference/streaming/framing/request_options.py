@@ -29,8 +29,6 @@ class ASRRequestOptions:
 
     enable_itn: bool | None = None
     stop_history_eou: int | None = None
-    # End-of-buffer EoU silence threshold (ms). -1 disables only UNCONFIRMED trailing-silence EoUs;
-    # confirmed EoUs (following word-start, or trailing punctuation) still fire.
     stop_history_eou_end: int | None = None
     asr_output_granularity: ASROutputGranularity | str | None = None
     language_code: str | None = None

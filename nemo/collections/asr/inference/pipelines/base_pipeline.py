@@ -633,8 +633,7 @@ class BasePipeline(PipelineInterface):
                 pipeline_output[stream_id]["translation"] = accumulated_translation
                 pipeline_output[stream_id]["segments"].extend(final_segments)
 
-                # Record the text finalized in this step together with the audio elapsed when it was
-                # finalized (ASR LAAL), mirroring `translation_segments` below.
+                # Record the text finalized in this step with the audio elapsed at finalization.
                 if final_transcript:
                     delay = request_generator.get_elapsed_duration(stream_id)
                     pipeline_output[stream_id]["asr_segments"].append((final_transcript, delay))

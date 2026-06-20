@@ -80,16 +80,13 @@ def _compute_pipeline_laal(
     output: dict, durations: dict[str, float], manifest: list[dict], gt_text_attr_name: str, segments_key: str
 ) -> float | None:
     """
-    Shared LAAL core over per-step ``(text, delay)`` segments (used for both translation and ASR).
-
-    Each segment carries the audio elapsed (seconds) when it was emitted; every word in it is treated as
-    committed at that delay (capped at the audio duration). LAAL is averaged over the streams that have a
-    reference in the manifest.
+    Shared LAAL core over per-step ``(text, delay)`` segments, averaged over streams with a reference.
+    Each word inherits its segment's delay (capped at the audio duration).
 
     Args:
         output: Pipeline output; each stream has a `segments_key` list of ``(text, delay_in_seconds)``.
         durations: Duration (seconds) of each audio file.
-        manifest: Ground-truth entries (used for the reference word count via `gt_text_attr_name`).
+        manifest: Ground-truth entries (reference word count via `gt_text_attr_name`).
         gt_text_attr_name: Manifest attribute holding the reference text/translation.
         segments_key: Key of the per-step ``(text, delay)`` list in each stream output.
     Returns:
@@ -102,7 +99,7 @@ def _compute_pipeline_laal(
         audio_filepath = stream_output["audio_filepath"]
         if audio_filepath not in ref_texts:
             continue
-        duration = durations[audio_filepath] * 1000  # ms
+        duration = durations[audio_filepath] * 1000
         num_words_in_ref = len(ref_texts[audio_filepath].split())
 
         lagging = []
@@ -129,14 +126,15 @@ def calculate_translation_laal(
     output: dict, durations: dict[str, float], manifest: list[dict], cfg: DictConfig
 ) -> float | None:
     """
-    Calculate the (translation) LAAL of the pipeline output.
+    Translation LAAL of the pipeline output.
+
     Args:
         output: Dictionary containing the pipeline output.
         durations: Dictionary containing the duration of each audio file.
         manifest: List of dictionaries containing the ground truth translation for each audio file.
         cfg: Configuration object.
     Returns:
-        float | None: Length-Adaptive Average Lagging (LAAL) for Simultaneous Speech Translation in milliseconds
+        float | None: Length-Adaptive Average Lagging (ms), or None if NMT is off or no manifest is given.
     """
 
     if not cfg.enable_nmt:
@@ -156,25 +154,20 @@ def calculate_asr_laal(
     output: dict, durations: dict[str, float], manifest: list[dict], cfg: DictConfig
 ) -> float | None:
     """
-    Calculate the ASR LAAL of the pipeline output.
-
-    Same computation as `calculate_translation_laal` (via the shared `_compute_pipeline_laal`) but over the
-    ASR segments instead of the translation segments: each step that finalizes transcribed text records
-    the audio elapsed at finalization, and LAAL measures how far behind the audio the transcription is
-    committed -- a proxy for end-of-utterance latency.
+    ASR LAAL of the pipeline output: how far behind the audio the transcription is committed -- a proxy
+    for end-of-utterance latency.
 
     Args:
         output: Dictionary containing the pipeline output (each stream has an `asr_segments` list of
-            `(text, delay_in_seconds)` pairs).
+            ``(text, delay_in_seconds)`` pairs).
         durations: Dictionary containing the duration of each audio file.
         manifest: List of dictionaries containing the ground truth text for each audio file.
         cfg: Configuration object.
     Returns:
-        float | None: Length-Adaptive Average Lagging (LAAL) for the ASR stream in milliseconds, or None.
+        float | None: Length-Adaptive Average Lagging (ms), or None if EoU is disabled or no manifest is given.
     """
 
-    # With end-of-utterance detection disabled (stop_history_eou < 0) the whole utterance is emitted as a
-    # single segment finalized at stream end, so ASR LAAL carries no latency signal.
+    # EoU disabled (stop_history_eou < 0): one segment finalized at stream end, so no latency signal.
     if cfg.get("endpointing", {}).get("stop_history_eou", -1) < 0:
         logging.warning("ASR LAAL calculation is skipped because end-of-utterance detection is disabled.")
         return None

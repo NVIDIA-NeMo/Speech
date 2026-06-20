@@ -11,9 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import json
-import os
-
 import random
 import time
 import random
@@ -31,7 +28,6 @@ from lightning.pytorch import Trainer
 from omegaconf import DictConfig
 from torch import nn
 from transformers import AutoConfig, AutoModelForCausalLM
-from safetensors.torch import load_file
 
 from nemo.core.connectors.save_restore_connector import SaveRestoreConnector
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse import setup_tokenizers
@@ -664,117 +660,6 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
             self.load_state_dict(checkpoint_state, strict=True)
             logging.info(f"Model restored from the checkpoint: {checkpoint_path} !")
-
-    def restore_from_text_pretrained_checkpoint(
-        self,
-        checkpoint_dir: str,
-        *,
-        strict: bool = True,
-        allow_partial_copy: bool = False,
-        load_embeddings: bool = True,
-    ):
-        """
-        Restore only the decoder/backbone weights from a text-pretrained HF safetensors checkpoint.
-
-        This is intended for checkpoints laid out like:
-
-            model.safetensors.index.json
-            model-00001-of-00003.safetensors
-            model-00002-of-00003.safetensors
-            model-00003-of-00003.safetensors
-
-        The HF NemotronH checkpoint stores decoder weights under `backbone.*`.
-        This model stores the decoder directly as `self.decoder`, so this method maps:
-
-            backbone.layers.0...      -> layers.0...
-            backbone.norm_f...        -> norm_f...
-            backbone.embeddings...    -> embeddings...  # optional, skipped by default
-
-        Args:
-            checkpoint_dir: Directory containing HF safetensors checkpoint shards.
-            strict: Passed to `self.decoder.load_state_dict`.
-            allow_partial_copy: Whether to use NeMo partial-init helper for compatible partial tensors.
-            load_embeddings: Whether to load `backbone.embeddings.*`.
-                Defaults to False because EasyMagpie replaces decoder embeddings with `self.text_embedding`.
-
-        Returns:
-            The result of `self.decoder.load_state_dict(...)`.
-        """
-
-        if checkpoint_dir is None:
-            raise ValueError("`checkpoint_dir` must not be None.")
-
-        if not os.path.isdir(checkpoint_dir):
-            raise ValueError(f"`checkpoint_dir` must be a directory: {checkpoint_dir}")
-
-        index_path = os.path.join(checkpoint_dir, "model.safetensors.index.json")
-        if not os.path.exists(index_path):
-            raise FileNotFoundError(f"Missing safetensors index file: {index_path}")
-
-        with open(index_path, "r", encoding="utf-8") as f:
-            index = json.load(f)
-
-        weight_map = index.get("weight_map", {})
-        if not weight_map:
-            raise ValueError(f"No `weight_map` found in: {index_path}")
-
-        # Load only shards that contain decoder/backbone weights.
-        shard_to_keys = {}
-        for hf_key, shard_name in weight_map.items():
-            if not hf_key.startswith("backbone."):
-                continue
-
-            decoder_key = hf_key[len("backbone.") :]
-
-            if not load_embeddings and decoder_key.startswith("embeddings."):
-                continue
-
-            shard_to_keys.setdefault(shard_name, []).append((hf_key, decoder_key))
-
-        if not shard_to_keys:
-            raise ValueError(
-                f"No `backbone.*` weights found in safetensors index: {index_path}"
-            )
-
-        decoder_state = {}
-        for shard_name, key_pairs in shard_to_keys.items():
-            shard_path = os.path.join(checkpoint_dir, shard_name)
-            if not os.path.exists(shard_path):
-                raise FileNotFoundError(f"Missing checkpoint shard: {shard_path}")
-
-            shard_state = load_file(shard_path, device="cpu")
-
-            for hf_key, decoder_key in key_pairs:
-                if hf_key in shard_state:
-                    decoder_state[decoder_key] = shard_state[hf_key]
-
-            del shard_state
-
-        target_decoder_state = self.decoder.state_dict()
-
-        # Drop keys that are not present in the current decoder, unless strict=True.
-        # This keeps the method robust to HF-only keys.
-        if not strict:
-            decoder_state = {
-                k: v for k, v in decoder_state.items()
-                if k in target_decoder_state
-            }
-
-        if allow_partial_copy:
-            decoder_state = set_model_dict_for_partial_init(
-                decoder_state,
-                target_decoder_state,
-                allow_partial_copy=True,
-            )
-
-        self.decoder.load_state_dict(decoder_state, strict=strict)
-
-        logging.info(
-            "Decoder restored from text-pretrained safetensors checkpoint: "
-            f"{checkpoint_dir}. "
-            f"Loaded {len(decoder_state)} tensors. "
-            f"load_embeddings={load_embeddings}, strict={strict}."
-        )
 
     def _generate_codec_silence_buffer(self):
         codec_device = next(self._codec_model.parameters()).device

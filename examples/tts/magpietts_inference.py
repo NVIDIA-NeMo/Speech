@@ -977,7 +977,7 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     eval_group.add_argument(
         '--emotion_embedding_type',
         type=str,
-        default="head_concat",
+        default="score_vector",
         choices=["head_concat", "head_mean", "score_vector"],
     )
     eval_group.add_argument('--emotion_cache_dir', type=str, default=None)

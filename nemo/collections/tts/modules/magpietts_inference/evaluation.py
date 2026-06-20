@@ -59,7 +59,7 @@ class EvaluationConfig:
     codec_model_path: str = None
     with_emotion_metrics: bool = False
     emotion_model_size: str = "small"
-    emotion_embedding_type: str = "head_concat"
+    emotion_embedding_type: str = "score_vector"
     emotion_cache_dir: str = None
     device: str = "cuda"
     asr_batch_size: int = 32

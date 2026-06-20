@@ -60,9 +60,9 @@ confidence:
 # Endpointing settings
 # ========================
 endpointing:
-  stop_history_eou: 800                       # Silence (ms) for a mid-buffer EoU (word start after the gap)
-  stop_history_eou_end: 1200                  # Silence (ms) for an end-of-buffer EoU; >= stop_history_eou. -1 = only
-                                              # confirmed EoUs fire (following word-start or trailing punctuation).
+  stop_history_eou: 800                       # silence (ms) needed to end a segment when a new word follows
+  stop_history_eou_end: 1200                  # silence (ms) needed to end a segment on trailing silence (no next word yet);
+                                              # must be >= stop_history_eou. -1 = never end on trailing silence alone
 
 
 # ========================

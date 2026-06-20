@@ -111,15 +111,15 @@ def main(cfg):
     rtfx = data_dur / exec_dur if exec_dur > 0 else float('inf')
     logging.info(f"RTFx: {rtfx:.2f} ({data_dur:.2f}s / {exec_dur:.2f}s)")
 
-    # Calculate LAAL
-    laal = calculate_translation_laal(output, durations, manifest, cfg)
-    if laal is not None:
-        logging.info(f"LAAL: {laal:.2f}ms")
-
-    # Calculate ASR LAAL (transcription commit latency, mirrors translation LAAL)
+    # Calculate ASR LAAL
     asr_laal = calculate_asr_laal(output, durations, manifest, cfg)
     if asr_laal is not None:
         logging.info(f"ASR LAAL: {asr_laal:.2f}ms")
+    
+    # Calculate Translation LAAL
+    st_laal = calculate_translation_laal(output, durations, manifest, cfg)
+    if st_laal is not None:
+        logging.info(f"ST LAAL: {st_laal:.2f}ms")
 
     # Dump the transcriptions to a output file
     dump_output(

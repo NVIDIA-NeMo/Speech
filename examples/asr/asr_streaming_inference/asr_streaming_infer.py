@@ -46,11 +46,7 @@ import hydra
 from nemo.collections.asr.inference.factory.pipeline_builder import PipelineBuilder
 
 from nemo.collections.asr.inference.utils.manifest_io import calculate_duration, dump_output, prepare_audio_data
-from nemo.collections.asr.inference.utils.pipeline_eval import (
-    calculate_asr_laal,
-    calculate_translation_laal,
-    evaluate_pipeline,
-)
+from nemo.collections.asr.inference.utils.pipeline_eval import calculate_pipeline_laal, evaluate_pipeline
 from nemo.collections.asr.inference.utils.progressbar import TQDMProgressBar
 
 from nemo.utils import logging
@@ -111,15 +107,10 @@ def main(cfg):
     rtfx = data_dur / exec_dur if exec_dur > 0 else float('inf')
     logging.info(f"RTFx: {rtfx:.2f} ({data_dur:.2f}s / {exec_dur:.2f}s)")
 
-    # Calculate ASR LAAL
-    asr_laal = calculate_asr_laal(output, durations, manifest, cfg)
-    if asr_laal is not None:
-        logging.info(f"ASR LAAL: {asr_laal:.2f}ms")
-    
-    # Calculate Translation LAAL
-    st_laal = calculate_translation_laal(output, durations, manifest, cfg)
-    if st_laal is not None:
-        logging.info(f"ST LAAL: {st_laal:.2f}ms")
+    # Calculate LAAL
+    laal = calculate_pipeline_laal(output, durations, manifest, cfg)
+    if laal is not None:
+        logging.info(f"LAAL: {laal:.2f}ms")
 
     # Dump the transcriptions to a output file
     dump_output(

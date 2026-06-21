@@ -76,65 +76,18 @@ def evaluate_pipeline(output_path: str, cfg: DictConfig) -> None:
             logging.warning("BLEU calculation is skipped because NMT is not enabled.")
 
 
-def _compute_pipeline_laal(
-    output: dict, durations: dict[str, float], manifest: list[dict], gt_text_attr_name: str, segments_key: str
-) -> float | None:
-    """
-    Shared LAAL core over per-step ``(text, delay)`` segments, averaged over streams with a reference.
-    Each word inherits its segment's delay (capped at the audio duration).
-
-    Args:
-        output: Pipeline output; each stream has a `segments_key` list of ``(text, delay_in_seconds)``.
-        durations: Duration (seconds) of each audio file.
-        manifest: Ground-truth entries (reference word count via `gt_text_attr_name`).
-        gt_text_attr_name: Manifest attribute holding the reference text/translation.
-        segments_key: Key of the per-step ``(text, delay)`` list in each stream output.
-    Returns:
-        float | None: Length-Adaptive Average Lagging (ms), or None if no stream had a reference.
-    """
-    ref_texts = {item["audio_filepath"]: item[gt_text_attr_name] for item in manifest}
-
-    laal_list = []
-    for stream_output in output.values():
-        audio_filepath = stream_output["audio_filepath"]
-        if audio_filepath not in ref_texts:
-            continue
-        duration = durations[audio_filepath] * 1000
-        num_words_in_ref = len(ref_texts[audio_filepath].split())
-
-        lagging = []
-        for text, delay in stream_output.get(segments_key, []):
-            text = text.strip()
-            if not text:
-                continue
-            cur_words = text.split()
-            lag = min(delay * 1000, duration)
-            lagging.extend([lag] * len(cur_words))
-
-        if len(lagging) == 0:
-            lagging.append(0)
-
-        laal_list.append(compute_laal(lagging, duration, num_words_in_ref))
-
-    if not laal_list:
-        return None
-
-    return sum(laal_list) / len(laal_list)
-
-
-def calculate_translation_laal(
+def calculate_pipeline_laal(
     output: dict, durations: dict[str, float], manifest: list[dict], cfg: DictConfig
 ) -> float | None:
     """
-    Translation LAAL of the pipeline output.
-
+    Calculate the LAAL of the pipeline output.
     Args:
         output: Dictionary containing the pipeline output.
         durations: Dictionary containing the duration of each audio file.
         manifest: List of dictionaries containing the ground truth translation for each audio file.
         cfg: Configuration object.
     Returns:
-        float | None: Length-Adaptive Average Lagging (ms), or None if NMT is off or no manifest is given.
+        float | None: Length-Adaptive Average Lagging (LAAL) for Simultaneous Speech Translation in milliseconds
     """
 
     if not cfg.enable_nmt:
@@ -145,35 +98,29 @@ def calculate_translation_laal(
         logging.warning("LAAL calculation is skipped because manifest is not provided.")
         return None
 
-    return _compute_pipeline_laal(
-        output, durations, manifest, cfg.metrics.nmt.gt_text_attr_name, "translation_segments"
-    )
+    gt_text_attr_name = cfg.metrics.nmt.gt_text_attr_name
+    ref_translations = {item["audio_filepath"]: item[gt_text_attr_name] for item in manifest}
 
+    laal_list = []
+    for stream_id, stream_output in output.items():
+        audio_filepath = stream_output["audio_filepath"]
+        duration = durations[audio_filepath] * 1000  # ms
+        num_words_in_ref_translation = len(ref_translations[audio_filepath].split())
+        translation_segments = stream_output["translation_segments"]
 
-def calculate_asr_laal(
-    output: dict, durations: dict[str, float], manifest: list[dict], cfg: DictConfig
-) -> float | None:
-    """
-    ASR LAAL of the pipeline output: how far behind the audio the transcription is committed -- a proxy
-    for end-of-utterance latency.
+        lagging = []
+        for translation, delay in translation_segments:
+            translation = translation.strip()
+            if not translation:
+                continue
+            cur_words = translation.split()
+            lag = min(delay * 1000, duration)
+            lagging.extend([lag] * len(cur_words))
 
-    Args:
-        output: Dictionary containing the pipeline output (each stream has an `asr_segments` list of
-            ``(text, delay_in_seconds)`` pairs).
-        durations: Dictionary containing the duration of each audio file.
-        manifest: List of dictionaries containing the ground truth text for each audio file.
-        cfg: Configuration object.
-    Returns:
-        float | None: Length-Adaptive Average Lagging (ms), or None if EoU is disabled or no manifest is given.
-    """
+        if len(lagging) == 0:
+            lagging.append(0)
 
-    # EoU disabled (stop_history_eou < 0): one segment finalized at stream end, so no latency signal.
-    if cfg.get("endpointing", {}).get("stop_history_eou", -1) < 0:
-        logging.warning("ASR LAAL calculation is skipped because end-of-utterance detection is disabled.")
-        return None
+        laal = compute_laal(lagging, duration, num_words_in_ref_translation)
+        laal_list.append(laal)
 
-    if manifest is None:
-        logging.warning("ASR LAAL calculation is skipped because manifest is not provided.")
-        return None
-
-    return _compute_pipeline_laal(output, durations, manifest, cfg.metrics.asr.gt_text_attr_name, "asr_segments")
+    return sum(laal_list) / len(laal_list)

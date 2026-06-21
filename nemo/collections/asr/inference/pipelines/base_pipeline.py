@@ -610,7 +610,6 @@ class BasePipeline(PipelineInterface):
                         "segments": [],
                         "audio_filepath": request_generator.get_audio_filepath(stream_id),
                         "translation_segments": [],
-                        "asr_segments": [],
                     }
 
                 accumulated_text = pipeline_output[stream_id]["text"]
@@ -632,11 +631,6 @@ class BasePipeline(PipelineInterface):
                 pipeline_output[stream_id]["text"] = accumulated_text
                 pipeline_output[stream_id]["translation"] = accumulated_translation
                 pipeline_output[stream_id]["segments"].extend(final_segments)
-
-                # Record the text finalized in this step with the audio elapsed at finalization.
-                if final_transcript:
-                    delay = request_generator.get_elapsed_duration(stream_id)
-                    pipeline_output[stream_id]["asr_segments"].append((final_transcript, delay))
 
                 if self.nmt_enabled:
                     step_translation = step_output.current_step_translation

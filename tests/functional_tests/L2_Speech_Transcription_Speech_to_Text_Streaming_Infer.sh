@@ -35,6 +35,38 @@ coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     timestamps=true \
     output_filename="/tmp/stt_streaming_test_res.json"
 
+# Boosting ground truth - MALSD beam search with per-stream biasing (RNNT)
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
+    examples/asr/asr_chunked_inference/rnnt/speech_to_text_streaming_infer_rnnt.py \
+    model_path="/home/TestData/asr/stt_en_fastconformer_transducer_large.nemo" \
+    dataset_manifest="/home/TestData/asr/canary/dev-other-wav-10-boost-gt.json" \
+    use_per_stream_biasing=true \
+    decoding.strategy=malsd_batch \
+    decoding.beam.beam_size=4 \
+    decoding.beam.max_symbols_per_step=10 \
+    chunk_secs=2.0 \
+    left_context_secs=10.0 \
+    right_context_secs=2.0 \
+    batch_size=5 \
+    timestamps=true \
+    output_filename="/tmp/stt_streaming_malsd_boost_gt_rnnt_test_res.json"
+
+# Boosting ground truth - MALSD beam search with per-stream biasing (TDT)
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
+    examples/asr/asr_chunked_inference/rnnt/speech_to_text_streaming_infer_rnnt.py \
+    model_path="/home/TestData/asr/stt_en_fastconformer_tdt_large.nemo" \
+    dataset_manifest="/home/TestData/asr/canary/dev-other-wav-10-boost-gt.json" \
+    use_per_stream_biasing=true \
+    decoding.strategy=malsd_batch \
+    decoding.beam.beam_size=4 \
+    decoding.beam.max_symbols_per_step=10 \
+    chunk_secs=2.0 \
+    left_context_secs=10.0 \
+    right_context_secs=2.0 \
+    batch_size=5 \
+    timestamps=true \
+    output_filename="/tmp/stt_streaming_malsd_boost_gt_tdt_test_res.json"
+
 # Streaming MALSD beam search - RNNT model
 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     examples/asr/asr_chunked_inference/rnnt/speech_to_text_streaming_infer_rnnt.py \

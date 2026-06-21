@@ -75,8 +75,17 @@ def encode_audio_with_optional_chunking(
     )
     chunked_signal = pad_sequence(chunks, batch_first=True)
     chunked_lens = torch.as_tensor(chunk_lens, device=input_signal_length.device, dtype=input_signal_length.dtype)
+    # Absolute start time (seconds) of each chunk within its source audio.
+    # RoTE (when enabled) uses this so a chunked long audio keeps a continuous time index across chunk boundaries.
+    chunk_start_samples = [begin for _, begin, _ in chunk_spans]
+    time_offset = torch.as_tensor(chunk_start_samples, device=input_signal_length.device, dtype=torch.float32)
+    time_offset = time_offset / float(sampling_rate)
     chunked_spk_targets = _split_spk_targets_into_chunks(spk_targets, input_signal_lengths, chunk_spans)
-    chunked_perception_kwargs = {"input_signal": chunked_signal, "input_signal_length": chunked_lens}
+    chunked_perception_kwargs = {
+        "input_signal": chunked_signal,
+        "input_signal_length": chunked_lens,
+        "time_offset": time_offset,
+    }
     if chunked_spk_targets is not None:
         chunked_perception_kwargs["spk_targets"] = chunked_spk_targets
     chunked_embs, chunked_emb_lens = perception(**chunked_perception_kwargs)
@@ -152,6 +161,7 @@ def _split_audio_into_chunks(
         sample count of each chunk (parallel to ``chunks``), ``chunks_per_audio`` holds the
         number of chunks produced for each original input row (length ``B``), and
         ``chunk_spans`` stores ``(audio_idx, begin_sample, end_sample)`` for each chunk.
+        RoTE derives each chunk's absolute start time from ``chunk_spans[i][1]``.
     """
     chunks, chunk_lens, chunks_per_audio, chunk_spans = [], [], [], []
     for audio_idx, (audio, audio_len) in enumerate(zip(input_signal, input_signal_lengths)):

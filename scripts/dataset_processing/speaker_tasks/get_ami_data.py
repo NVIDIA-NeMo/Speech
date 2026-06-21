@@ -17,6 +17,7 @@
 # USAGE: python get_ami_data.py
 import argparse
 import os
+import subprocess
 
 from nemo.collections.asr.parts.utils.manifest_utils import create_manifest
 
@@ -68,20 +69,21 @@ if __name__ == "__main__":
         rttm_path = os.path.join(split_path, "rttm")
         uem_path = os.path.join(split_path, "uem")
 
-        os.system(f"wget -P {split_path} {list_url.format(split)}")
+        subprocess.run(["wget", "-P", split_path, list_url.format(split)])
         with open(os.path.join(split_path, f"{split}.meetings.txt")) as f:
             ids = f.read().strip().split('\n')
         for id in [file_id for file_id in ids if file_id not in not_found_ids]:
             for audio_type in audio_types:
                 audio_type_path = os.path.join(audio_path, audio_type)
                 os.makedirs(audio_type_path, exist_ok=True)
-                os.system(
-                    f"wget -P {audio_type_path} https://groups.inf.ed.ac.uk/ami/AMICorpusMirror//amicorpus/{id}/audio/{id}.{audio_type}.wav"
+                audio_download = (
+                    f"https://groups.inf.ed.ac.uk/ami/AMICorpusMirror//amicorpus/{id}/audio/" f"{id}.{audio_type}.wav"
                 )
+                subprocess.run(["wget", "-P", audio_type_path, audio_download])
             rttm_download = rttm_url.format(split, id)
-            os.system(f"wget -P {rttm_path} {rttm_download}")
+            subprocess.run(["wget", "-P", rttm_path, rttm_download])
             uem_download = uem_url.format(split, id)
-            os.system(f"wget -P {uem_path} {uem_download}")
+            subprocess.run(["wget", "-P", uem_path, uem_download])
 
         rttm_files_path = os.path.join(split_path, 'rttm_files.txt')
         with open(rttm_files_path, 'w') as f:

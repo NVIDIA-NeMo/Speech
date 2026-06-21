@@ -100,7 +100,7 @@ def __create_manifest(dst_folder: str):
     os.makedirs(os.path.join(os.path.dirname(dst_folder), "manifests"), exist_ok=True)
     with open(os.path.join(os.path.dirname(dst_folder), "manifests", noise_name + ".json"), "w") as mfst_f:
         for wav_f in wav_files:
-            dur = subprocess.check_output("soxi -D {0}".format(wav_f), shell=True)
+            dur = subprocess.check_output(["soxi", "-D", wav_f])
             row = {"audio_filepath": wav_f, "text": "", "duration": float(dur)}
             mfst_f.write(json.dumps(row) + "\n")
 

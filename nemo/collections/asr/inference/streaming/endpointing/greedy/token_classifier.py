@@ -35,7 +35,7 @@ class TokenClassifier:
 
     @classmethod
     def for_ctc(cls, vocabulary: list[str], absorb_token_ids: set[int] | None = None) -> "TokenClassifier":
-        """Build a classifier backed by the CTC greedy decoder (provides `get_labels` for emission scans)."""
+        """Build a classifier backed by the CTC greedy decoder."""
         return cls(CTCGreedyDecoder(vocabulary, conf_func=None), absorb_token_ids)
 
     @classmethod
@@ -54,7 +54,3 @@ class TokenClassifier:
     def is_token_to_absorb(self, token_id: int) -> bool:
         """True if the token should be absorbed into the text preceding the EoU."""
         return token_id in self.absorb_token_ids
-
-    def get_labels(self, log_probs) -> list[int]:
-        """Greedy argmax labels from log-probs (CTC only; used by the buffered-CTC emission scan)."""
-        return self._decoder.get_labels(log_probs)

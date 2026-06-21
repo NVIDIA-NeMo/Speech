@@ -27,7 +27,9 @@ from nemo.collections.asr.inference.model_wrappers.cache_aware_rnnt_inference_wr
 )
 from nemo.collections.asr.inference.pipelines.base_pipeline import BasePipeline
 from nemo.collections.asr.inference.streaming.decoders.greedy.greedy_rnnt_decoder import RNNTGreedyDecoder
-from nemo.collections.asr.inference.streaming.endpointing.greedy.greedy_rnnt_endpointing import RNNTGreedyEndpointing
+from nemo.collections.asr.inference.streaming.endpointing.greedy.cache_aware_rnnt_endpointer import (
+    CacheAwareRNNTEndpointer,
+)
 from nemo.collections.asr.inference.streaming.framing.multi_stream import ContinuousBatchedRequestStreamer
 from nemo.collections.asr.inference.streaming.framing.request import FeatureBuffer, Frame, Request
 from nemo.collections.asr.inference.streaming.framing.request_options import ASRRequestOptions
@@ -171,7 +173,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
             ],
         )
 
-        self.endpointer = RNNTGreedyEndpointing(
+        self.endpointer = CacheAwareRNNTEndpointer(
             vocabulary=self.vocabulary,
             ms_per_timestep=self.model_stride_in_milliseconds,
             stop_history_eou=self.stop_history_eou_in_milliseconds,

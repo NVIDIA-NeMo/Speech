@@ -24,7 +24,7 @@ from torch import Tensor
 from nemo.collections.asr.inference.model_wrappers.ctc_inference_wrapper import CTCInferenceWrapper
 from nemo.collections.asr.inference.pipelines.base_pipeline import BasePipeline
 from nemo.collections.asr.inference.streaming.decoders.greedy.greedy_ctc_decoder import ClippedCTCGreedyDecoder
-from nemo.collections.asr.inference.streaming.endpointing.greedy.greedy_ctc_endpointing import CTCGreedyEndpointing
+from nemo.collections.asr.inference.streaming.endpointing.greedy.buffered_ctc_endpointer import BufferedCTCEndpointer
 from nemo.collections.asr.inference.streaming.framing.multi_stream import ContinuousBatchedRequestStreamer
 from nemo.collections.asr.inference.streaming.framing.request import FeatureBuffer, Frame, Request
 from nemo.collections.asr.inference.streaming.framing.request_options import ASRRequestOptions
@@ -114,7 +114,7 @@ class BufferedCTCPipeline(BasePipeline):
             ],
         )
 
-        self.endpointer = CTCGreedyEndpointing(
+        self.endpointer = BufferedCTCEndpointer(
             vocabulary=self.vocabulary,
             ms_per_timestep=self.model_stride_in_milliseconds,
             stop_history_eou=self.stop_history_eou_in_milliseconds,

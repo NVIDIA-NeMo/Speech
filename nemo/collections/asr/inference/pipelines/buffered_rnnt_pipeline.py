@@ -25,7 +25,7 @@ from torch import Tensor
 from nemo.collections.asr.inference.model_wrappers.rnnt_inference_wrapper import RNNTInferenceWrapper
 from nemo.collections.asr.inference.pipelines.base_pipeline import BasePipeline
 from nemo.collections.asr.inference.streaming.decoders.greedy.greedy_rnnt_decoder import ClippedRNNTGreedyDecoder
-from nemo.collections.asr.inference.streaming.endpointing.greedy.greedy_rnnt_endpointing import RNNTGreedyEndpointing
+from nemo.collections.asr.inference.streaming.endpointing.greedy.buffered_rnnt_endpointer import BufferedRNNTEndpointer
 from nemo.collections.asr.inference.streaming.framing.multi_stream import ContinuousBatchedRequestStreamer
 from nemo.collections.asr.inference.streaming.framing.request import FeatureBuffer, Frame, Request
 from nemo.collections.asr.inference.streaming.framing.request_options import ASRRequestOptions
@@ -155,7 +155,7 @@ class BufferedRNNTPipeline(BasePipeline):
         else:
             effective_buffer_size_in_secs = self.buffer_size_in_secs
 
-        self.endpointer = RNNTGreedyEndpointing(
+        self.endpointer = BufferedRNNTEndpointer(
             vocabulary=self.vocabulary,
             ms_per_timestep=self.model_stride_in_milliseconds,
             effective_buffer_size_in_secs=effective_buffer_size_in_secs,

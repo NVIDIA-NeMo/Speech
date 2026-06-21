@@ -27,7 +27,9 @@ from nemo.collections.asr.inference.model_wrappers.cache_aware_ctc_inference_wra
 )
 from nemo.collections.asr.inference.pipelines.base_pipeline import BasePipeline
 from nemo.collections.asr.inference.streaming.decoders.greedy.greedy_ctc_decoder import CTCGreedyDecoder
-from nemo.collections.asr.inference.streaming.endpointing.greedy.greedy_ctc_endpointing import CTCGreedyEndpointing
+from nemo.collections.asr.inference.streaming.endpointing.greedy.cache_aware_ctc_endpointer import (
+    CacheAwareCTCEndpointer,
+)
 from nemo.collections.asr.inference.streaming.framing.multi_stream import ContinuousBatchedRequestStreamer
 from nemo.collections.asr.inference.streaming.framing.request import FeatureBuffer, Frame, Request
 from nemo.collections.asr.inference.streaming.framing.request_options import ASRRequestOptions
@@ -165,7 +167,7 @@ class CacheAwareCTCPipeline(BasePipeline):
             ],
         )
 
-        self.endpointer = CTCGreedyEndpointing(
+        self.endpointer = CacheAwareCTCEndpointer(
             vocabulary=self.vocabulary,
             ms_per_timestep=self.model_stride_in_milliseconds,
             stop_history_eou=self.stop_history_eou_in_milliseconds,

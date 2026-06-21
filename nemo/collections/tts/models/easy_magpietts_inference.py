@@ -1700,12 +1700,11 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 state.phoneme_steps += needs_phoneme.long()
                 state.audio_steps += needs_audio.long()
 
-                # Same behavior as your previous code when phoneme is disabled.
+                # Match training: the input slot that predicts the first agent frame after
+                # a user/non-agent region should receive the learned user-speaking-end token.
                 use_end_token = (
                     prefill_like_is_last_step
                     and self.cfg.get("use_user_speaking_end_token", False)
-                    and not self.cfg.get("agent_mask_include_transition_prefix", False)
-                    and self.phoneme_tokenizer is None
                 )
 
                 if use_end_token:

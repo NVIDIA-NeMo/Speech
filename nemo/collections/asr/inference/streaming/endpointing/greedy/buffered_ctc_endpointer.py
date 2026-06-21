@@ -15,6 +15,7 @@
 
 import torch
 
+from nemo.collections.asr.inference.streaming.decoders.greedy.greedy_ctc_decoder import CTCGreedyDecoder
 from nemo.collections.asr.inference.streaming.endpointing.greedy.base import GreedyEndpointerBase
 from nemo.collections.asr.inference.streaming.endpointing.greedy.token_classifier import TokenClassifier
 from nemo.collections.asr.inference.utils.endpointing_utils import get_custom_stop_history_eou
@@ -66,7 +67,7 @@ class BufferedCTCEndpointer(GreedyEndpointerBase):
             bool: True if EOU is detected, False otherwise
             int: index of the EOU detected at
         """
-        emissions = self.token_classifier.get_labels(probs_seq)
+        emissions = CTCGreedyDecoder.get_labels(probs_seq)
         return self.detect_eou_given_emissions(emissions, pivot_point, search_start_point, stop_history_eou)
 
     def detect_eou_given_emissions(

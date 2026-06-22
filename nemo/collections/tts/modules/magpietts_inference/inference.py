@@ -1325,11 +1325,22 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
                     user_audio_channel_embedding = user_audio_embedded
 
                 delay_tokens = int(state.config.training_mode.streaming_speech_delay)
-                delay_tokens = min(delay_tokens, int(turn_lens[0].item()), user_audio_prefill_steps)
+                delay_tokens = min(delay_tokens, user_audio_prefill_steps)
 
-                warmup_tokens = turn_text[:, :delay_tokens]
-                turn_text = turn_text[:, delay_tokens:]
-                turn_lens = torch.clamp(turn_lens - delay_tokens, min=0)
+                num_warmup_text_tokens = min(delay_tokens, int(turn_lens[0].item()), turn_text.size(1))
+                # handle short turns so that it does not advance the text channel and keep the delay_tokens.
+                warmup_tokens = torch.full(
+                    (B, delay_tokens),
+                    model.pad_id,
+                    dtype=turn_text.dtype,
+                    device=device,
+                )
+
+                if num_warmup_text_tokens > 0:
+                    warmup_tokens[:, :num_warmup_text_tokens] = turn_text[:, :num_warmup_text_tokens]
+
+                turn_text = turn_text[:, num_warmup_text_tokens:]
+                turn_lens = torch.clamp(turn_lens - num_warmup_text_tokens, min=0)
 
                 if user_audio_channel_embedding is not None and delay_tokens > 0:
                     warmup_user_audio = user_audio_channel_embedding[:, -delay_tokens:]

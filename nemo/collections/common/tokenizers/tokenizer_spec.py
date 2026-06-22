@@ -20,13 +20,18 @@ __all__ = ['TokenizerSpec']
 
 
 class TokenWithLength(NamedTuple):
+    """
+    Token with length for Variative BPE Representation.
+    length > 2 means that the token produced by merge of other tokens
+    """
+
     token_id: int
     length: int = 1
 
 
 class VarBPERepresentation(NamedTuple):
     """
-    Var-BPE representation.
+    Variative BPE representation.
     - list of length of tokens from canonical representation;
     - token ids with merges:
         token_ids_with_merges[i][0] - token of minimal length (length=1)

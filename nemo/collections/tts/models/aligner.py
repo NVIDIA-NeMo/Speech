@@ -17,7 +17,6 @@ from typing import List
 import numpy as np
 import omegaconf
 import torch
-from hydra.utils import instantiate
 from lightning.pytorch import Trainer
 from lightning.pytorch.loggers import WandbLogger
 from omegaconf import DictConfig
@@ -32,7 +31,7 @@ from nemo.collections.tts.parts.utils.helpers import (
     plot_alignment_to_numpy,
 )
 from nemo.core.classes import ModelPT
-from nemo.core.classes.common import PretrainedModelInfo
+from nemo.core.classes.common import PretrainedModelInfo, safe_instantiate
 from nemo.utils import logging, model_utils
 
 HAVE_WANDB = True
@@ -68,8 +67,8 @@ class AlignerModel(NeedsNormalizer, ModelPT):
         super().__init__(cfg=cfg, trainer=trainer)
 
         self.embed = nn.Embedding(num_tokens, cfg.symbols_embedding_dim)
-        self.preprocessor = instantiate(cfg.preprocessor)
-        self.alignment_encoder = instantiate(cfg.alignment_encoder)
+        self.preprocessor = safe_instantiate(cfg.preprocessor)
+        self.alignment_encoder = safe_instantiate(cfg.alignment_encoder)
 
         self.forward_sum_loss = ForwardSumLoss()
         self.bin_loss = BinLoss()
@@ -105,9 +104,9 @@ class AlignerModel(NeedsNormalizer, ModelPT):
                     cfg.text_tokenizer.g2p.heteronyms,
                 )
 
-            text_tokenizer_kwargs["g2p"] = instantiate(cfg.text_tokenizer.g2p, **g2p_kwargs)
+            text_tokenizer_kwargs["g2p"] = safe_instantiate(cfg.text_tokenizer.g2p, **g2p_kwargs)
 
-        self.tokenizer = instantiate(cfg.text_tokenizer, **text_tokenizer_kwargs)
+        self.tokenizer = safe_instantiate(cfg.text_tokenizer, **text_tokenizer_kwargs)
 
     def forward(self, *, spec, spec_len, text, text_len, attn_prior=None):
         with torch.amp.autocast(self.device.type, enabled=False):
@@ -209,7 +208,7 @@ class AlignerModel(NeedsNormalizer, ModelPT):
             logging.warning("manifest_filepath was skipped. No dataset for this model.")
             return None
 
-        dataset = instantiate(
+        dataset = safe_instantiate(
             cfg.dataset,
             text_normalizer=self.normalizer,
             text_normalizer_call_kwargs=self.text_normalizer_call_kwargs,

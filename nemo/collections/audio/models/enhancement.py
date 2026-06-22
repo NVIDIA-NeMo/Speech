@@ -15,13 +15,12 @@
 from typing import Dict, Optional
 
 import einops
-import hydra
 import torch
 from lightning.pytorch import Trainer
 from omegaconf import DictConfig
 
 from nemo.collections.audio.models.audio_to_audio import AudioToAudioModel
-from nemo.core.classes.common import PretrainedModelInfo, typecheck
+from nemo.core.classes.common import PretrainedModelInfo, safe_instantiate, typecheck
 from nemo.core.neural_types import AudioSignal, LengthsType, LossType, NeuralType
 from nemo.utils import logging
 
@@ -292,7 +291,7 @@ class ScoreBasedGenerativeAudioToAudioModel(AudioToAudioModel):
         if 'score_estimator' in self._cfg.sampler:
             raise ValueError('Score estimator should be defined in the model config, not in the sampler config')
 
-        self.sampler = hydra.utils.instantiate(self._cfg.sampler, sde=self.sde, score_estimator=self.estimator)
+        self.sampler = safe_instantiate(self._cfg.sampler, sde=self.sde, score_estimator=self.estimator)
 
         # Normalization
         self.normalize_input = self._cfg.get('normalize_input', False)
@@ -502,7 +501,7 @@ class FlowMatchingAudioToAudioModel(AudioToAudioModel):
         self.flow = self.from_config_dict(self._cfg.flow)
 
         # Sampler
-        self.sampler = hydra.utils.instantiate(self._cfg.sampler, estimator=self.estimator, flow=self.flow)
+        self.sampler = safe_instantiate(self._cfg.sampler, estimator=self.estimator, flow=self.flow)
 
         # probability that the conditional input will be feed into the
         # estimator in the training stage
@@ -796,7 +795,7 @@ class SchroedingerBridgeAudioToAudioModel(AudioToAudioModel):
         self.noise_schedule = self.from_config_dict(self._cfg.noise_schedule)
 
         # Sampler
-        self.sampler = hydra.utils.instantiate(
+        self.sampler = safe_instantiate(
             self._cfg.sampler,
             noise_schedule=self.noise_schedule,
             estimator=self.estimator,

@@ -24,13 +24,13 @@ import warnings
 from functools import partial
 from typing import Any, Dict, Optional, Union
 
-import hydra
 import torch.optim as optim
 import torch.optim.lr_scheduler as pt_scheduler
 import torch.utils.data.dataloader as dataloader
 from omegaconf import DictConfig, OmegaConf
 from torch.optim.lr_scheduler import _LRScheduler
 
+from nemo.core.classes.common import safe_instantiate
 from nemo.core.config.schedulers import SchedulerParams, get_scheduler_config, register_scheduler_params
 from nemo.utils import logging
 from nemo.utils.model_utils import maybe_update_config_version
@@ -847,7 +847,7 @@ def prepare_lr_scheduler(
     # Try instantiation of scheduler params from config class path
     if '_target_' in scheduler_args:
         scheduler_args_cfg = OmegaConf.create(scheduler_args)
-        scheduler_conf = hydra.utils.instantiate(scheduler_args_cfg)
+        scheduler_conf = safe_instantiate(scheduler_args_cfg)
         scheduler_args = vars(scheduler_conf)
 
         # Get name of the scheduler

@@ -14,10 +14,10 @@
 import re
 from typing import Generator, Iterable
 
-import hydra
 import torch
 from lightning import LightningModule
 
+from nemo.core.classes.common import safe_instantiate
 from nemo.core.optim import patch_flashoptim_uneven_shard_support
 from nemo.utils import logging
 
@@ -57,11 +57,11 @@ def configure_optimizers(model: LightningModule):
         exclude_patterns=model.cfg.get("freeze_params", []),
         keep_patterns=model.cfg.get("prevent_freeze_params", []),
     )
-    optimizer = hydra.utils.instantiate(model.cfg.optimizer, parameters, _convert_='all')
+    optimizer = safe_instantiate(model.cfg.optimizer, parameters, _convert_='all')
     patch_flashoptim_uneven_shard_support(optimizer)
     ans = {"optimizer": optimizer}
     if "lr_scheduler" in model.cfg:
-        lr_scheduler = hydra.utils.instantiate(model.cfg.lr_scheduler, optimizer)
+        lr_scheduler = safe_instantiate(model.cfg.lr_scheduler, optimizer)
         ans["lr_scheduler"] = {"scheduler": lr_scheduler, "interval": "step", "frequency": 1}
     return ans
 
@@ -151,12 +151,12 @@ def configure_optimizers_exclude_norm_from_wd(model: LightningModule):
     ]
 
     # 4. Instantiate via Hydra
-    optimizer = hydra.utils.instantiate(model.cfg.optimizer, optim_groups, _convert_='all')
+    optimizer = safe_instantiate(model.cfg.optimizer, optim_groups, _convert_='all')
     patch_flashoptim_uneven_shard_support(optimizer)
 
     ans = {"optimizer": optimizer}
     if "lr_scheduler" in model.cfg:
-        lr_scheduler = hydra.utils.instantiate(model.cfg.lr_scheduler, optimizer)
+        lr_scheduler = safe_instantiate(model.cfg.lr_scheduler, optimizer)
         ans["lr_scheduler"] = {"scheduler": lr_scheduler, "interval": "step", "frequency": 1}
 
     return ans

@@ -797,6 +797,9 @@ class EasyMagpieMultiturnUserAudioDataset(torch.utils.data.Dataset):
         if not isinstance(user_audio_paths, list):
             user_audio_paths = []
 
+        # make the user audios path absolute if needed
+        user_audio_paths = [self._resolve_path(path) for path in user_audio_paths]
+        
         user_audio_turns = []
         user_audio_turns_lens = []
         for turn_id in range(max_turns):
@@ -807,9 +810,15 @@ class EasyMagpieMultiturnUserAudioDataset(torch.utils.data.Dataset):
             user_audio_turns.append(wav.unsqueeze(0))
             user_audio_turns_lens.append(torch.tensor([wav.numel()], dtype=torch.long))
 
-        target_turn_audio_paths = sample.get("target_audio_file_path", None)
-        if target_turn_audio_paths is not None and not isinstance(target_turn_audio_paths, list):
+        target_turn_audio_paths = sample.get("target_audio_file_path", sample.get("target_audio_filepath", None))
+        if target_turn_audio_paths is None:
+            target_turn_audio_paths = []
+        elif not isinstance(target_turn_audio_paths, list):
             target_turn_audio_paths = [target_turn_audio_paths]
+
+        # make the target audio path absolute if needed
+        target_turn_audio_paths = [self._resolve_path(path) for path in target_turn_audio_paths]
+        target_audio_path = self._resolve_path(sample.get("audio_filepath"))
 
         return {
             "idx": torch.tensor([int(sample["idx"])], dtype=torch.long),
@@ -822,7 +831,7 @@ class EasyMagpieMultiturnUserAudioDataset(torch.utils.data.Dataset):
             "context_audio_lengths": context_audio_lens,
             "user_audio_turns": user_audio_turns,
             "user_audio_turns_lens": user_audio_turns_lens,
-            "target_audio_path": sample.get("audio_filepath"),
+            "target_audio_path": target_audio_path,
             "target_turn_audio_paths": target_turn_audio_paths,
             "languages": [sample.get("language", "en")],
         }
@@ -1064,10 +1073,10 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
         return out
 
     @staticmethod
-    def _copy_or_link(
+    def _copy_file(
         src: Optional[str], dst: str, required: bool = False, description: str = "audio"
     ) -> Optional[str]:
-        """Copy/symlink an audio artifact and optionally fail fast if missing.
+        """Copy an audio artifact and optionally fail fast if missing.
 
         Evaluation later expects target_audio_*.wav/context_audio_*.wav to exist.
         Silently skipping those files makes evaluate_generated_audio_dir fail much
@@ -1086,17 +1095,13 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
             return None
 
         os.makedirs(os.path.dirname(dst), exist_ok=True)
-        try:
-            if os.path.lexists(dst):
-                os.remove(dst)
-            os.symlink(os.path.abspath(src), dst)
-        except Exception:
-            shutil.copyfile(src, dst)
+        if os.path.lexists(dst):
+            os.remove(dst)
+        shutil.copy(src, dst)
 
         if required and not os.path.exists(dst):
             raise FileNotFoundError(
-                f"Failed to materialize required {description}: src={src}, dst={dst}. "
-                "The destination may be a broken symlink."
+                f"Failed to materialize required {description}: src={src}, dst={dst}."
             )
         return dst
 
@@ -1529,13 +1534,9 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
         self._delete_old_generated_files(output_dir)
 
         mt_debug_output_dir = self._get_multiturn_debug_output_dir(output_dir)
-        debug_user_dir = os.path.join(mt_debug_output_dir, "debug_user_turns")
         debug_mixed_dir = os.path.join(mt_debug_output_dir, "debug_mixed_user_agent")
-        debug_full_agent_dir = os.path.join(mt_debug_output_dir, "debug_full_agent")
         if self.config.save_debug_multiturn_audio:
-            os.makedirs(debug_user_dir, exist_ok=True)
             os.makedirs(debug_mixed_dir, exist_ok=True)
-            os.makedirs(debug_full_agent_dir, exist_ok=True)
             logging.info(f"Saving multiturn debug/listening audios under audios_MT: {mt_debug_output_dir}")
 
         rank = int(getattr(self, "distributed_rank", 0))
@@ -1632,7 +1633,7 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
                         codec_file_paths.append(saved_code_path)
 
                 turn_context_path = os.path.join(output_dir, f"context_audio_{item_idx}.wav")
-                self._copy_or_link(
+                self._copy_file(
                     context_audio_path,
                     turn_context_path,
                     required=True,
@@ -1655,7 +1656,7 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
                     target_src = context_audio_path
 
                 target_dst = os.path.join(output_dir, f"target_audio_{item_idx}.wav")
-                self._copy_or_link(
+                self._copy_file(
                     target_src,
                     target_dst,
                     required=True,
@@ -1682,14 +1683,6 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
                 )
                 item_idx += 1
 
-            if self.config.save_debug_multiturn_audio:
-                debug_sample_stem = self._target_audio_stem_for_debug(raw_record, sample_idx)
-                full_agent_path = os.path.join(
-                    debug_full_agent_dir,
-                    f"{debug_sample_stem}__sample_{sample_idx}__predicted_full_agent.wav",
-                )
-                sf.write(full_agent_path, aligned_agent.numpy(), sample_rate)
-
             if self.config.save_debug_multiturn_audio and "user_audio_turns" in batch:
                 self._save_debug_user_agent_audio(
                     batch=batch,
@@ -1700,7 +1693,6 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
                     aligned_agent=aligned_agent,
                     samples_per_prediction_frame=samples_per_prediction_frame,
                     output_dir=output_dir,
-                    debug_user_dir=debug_user_dir,
                     debug_mixed_dir=debug_mixed_dir,
                 )
 
@@ -1750,7 +1742,6 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
         aligned_agent: torch.Tensor,
         samples_per_prediction_frame: float,
         output_dir: str,
-        debug_user_dir: str,
         debug_mixed_dir: str,
     ) -> None:
         sample_rate = getattr(self.model, "output_sample_rate", self.model.sample_rate)
@@ -1758,25 +1749,28 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
         first_user_len_in = int(batch["user_audio_turns_lens"][0][0].detach().cpu().item())
         first_user_delay_out = int(round(first_user_len_in * sample_rate / self.model.sample_rate))
 
+        def load_debug_audio(path: Optional[str]) -> Optional[torch.Tensor]:
+            if path is None or path == "" or not os.path.exists(path):
+                return None
+            audio, sr = sf.read(path, dtype="float32", always_2d=False)
+            wav = torch.as_tensor(audio, dtype=torch.float32)
+            if wav.ndim == 2:
+                wav = wav.mean(dim=1)
+            wav = wav.flatten()
+            if sr != sample_rate:
+                wav = resample(wav.unsqueeze(0), sr, sample_rate).squeeze(0)
+            return wav.contiguous()
+
         user_segments = []
-        for turn_id, _, _ in turn_frame_ranges:
+        user_turns_for_gt = []
+        for local_turn_idx, (turn_id, _, _) in enumerate(turn_frame_ranges):
             if turn_id >= len(batch["user_audio_turns"]):
                 continue
             turn_audio = batch["user_audio_turns"][turn_id][0].detach().cpu().float()
             turn_audio_len = int(batch["user_audio_turns_lens"][turn_id][0].detach().cpu().item())
             turn_audio = turn_audio[:turn_audio_len]
             turn_audio_out = resample(turn_audio.unsqueeze(0), self.model.sample_rate, sample_rate).squeeze(0)
-
-            debug_turn_stem = self._target_audio_stem_for_debug(
-                raw_record,
-                sample_idx,
-                local_turn_idx=int(turn_id),
-            )
-            user_turn_path = os.path.join(
-                debug_user_dir,
-                f"{debug_turn_stem}__sample_{sample_idx}__turn_{turn_id}__user.wav",
-            )
-            sf.write(user_turn_path, turn_audio_out.numpy(), sample_rate)
+            user_turns_for_gt.append((local_turn_idx, turn_audio_out))
 
             if turn_id == 0:
                 user_start_sample = 0
@@ -1802,15 +1796,6 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
         user_pad[: user_ch.numel()] = user_ch
         agent_pad[: agent_ch.numel()] = agent_ch
 
-        mono_mix = torch.clamp(user_pad + agent_pad, min=-1.0, max=1.0)
-        sf.write(
-            os.path.join(
-                debug_mixed_dir,
-                f"{debug_sample_stem}__sample_{sample_idx}__user_agent_mixed_mono.wav",
-            ),
-            mono_mix.numpy(),
-            sample_rate,
-        )
         stereo = torch.stack([user_pad, agent_pad], dim=1).numpy()
         sf.write(
             os.path.join(
@@ -1820,3 +1805,49 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
             stereo,
             sample_rate,
         )
+
+        target_turn_audio_paths = batch.get("target_turn_audio_paths", []) or []
+        if isinstance(target_turn_audio_paths, str):
+            target_turn_audio_paths = [target_turn_audio_paths]
+
+        gt_user_segments = []
+        gt_agent_segments = []
+        cursor = 0
+        for local_turn_idx, user_wav in user_turns_for_gt:
+            gt_user_segments.append((cursor, user_wav))
+            cursor += user_wav.numel()
+
+            target_wav = None
+            if local_turn_idx < len(target_turn_audio_paths):
+                target_wav = load_debug_audio(target_turn_audio_paths[local_turn_idx])
+
+            if target_wav is None:
+                logging.warning(
+                    "Could not load target turn audio for multiturn ground-truth debug stereo; "
+                    f"sample_idx={sample_idx}, local_turn_idx={local_turn_idx}"
+                )
+                continue
+
+            gt_agent_segments.append((cursor, target_wav))
+            cursor += target_wav.numel()
+
+        if gt_user_segments or gt_agent_segments:
+            gt_len = 0
+            for start, wav in gt_user_segments + gt_agent_segments:
+                gt_len = max(gt_len, start + wav.numel())
+            gt_user_ch = torch.zeros(gt_len)
+            gt_agent_ch = torch.zeros(gt_len)
+            for start, wav in gt_user_segments:
+                gt_user_ch[start : start + wav.numel()] += wav
+            for start, wav in gt_agent_segments:
+                gt_agent_ch[start : start + wav.numel()] += wav
+
+            gt_stereo = torch.stack([gt_user_ch, gt_agent_ch], dim=1).numpy()
+            sf.write(
+                os.path.join(
+                    debug_mixed_dir,
+                    f"{debug_sample_stem}__sample_{sample_idx}__user_agent_ground_truth_stereo.wav",
+                ),
+                gt_stereo,
+                sample_rate,
+            )

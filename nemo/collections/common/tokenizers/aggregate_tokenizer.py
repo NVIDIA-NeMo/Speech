@@ -42,8 +42,9 @@ class DummyTokenizer:
 class AggregateTokenizer(TokenizerSpec):
     """
     AggregateTokenizer, allowing one to combine multiple regular monolongual tokenizers into one tokenizer.
-    The intuition is that we can use existing tokenizers "as is", without retraining, and associate each tokenizer with a language id
-    during text processing (language id will be used to route the incoming text sample to the right tokenizer)
+    The intuition is that we can use existing tokenizers "as is", without retraining,
+    and associate each tokenizer with a language id during text processing
+    (language id will be used to route the incoming text sample to the right tokenizer)
     as well as a token id range for detokenization (e.g. [0..127] for tokenizer A, [128..255] for tokenizer B) so
     that the orignal text could be reconstructed. Note that we assume that the incoming dict of langs / tokenizers
     is ordered, e.g. the first tokenizer will be assigned a lower interval of token ids
@@ -259,10 +260,12 @@ class AggregateTokenizer(TokenizerSpec):
 
     @property
     def vocab(self):
+        """Property: get vocabulary"""
         return self.vocabulary
 
     @property
     def langs(self):
+        """Property: get list of languages"""
         return list(self.tokenizers_dict.keys())
 
 

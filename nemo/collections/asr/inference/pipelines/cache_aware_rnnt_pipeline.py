@@ -86,12 +86,6 @@ class CacheAwareRNNTPipeline(BasePipeline):
         self.init_text_processor(cfg, itn_model)
         self.init_nmt_model(nmt_model)
         self.init_decoding_computer()
-        strategy = str(getattr(cfg.asr.decoding, "strategy", "greedy_batch"))
-        if strategy not in {"greedy_batch", "malsd_batch"}:
-            raise ValueError(
-                "Cache-aware RNNT streaming supports `greedy_batch` and `malsd_batch` only; "
-                f"configured decoding strategy is `{strategy}`."
-            )
         if self.beam_decoder_computer is not None and self.prompt_enabled:
             raise ValueError("Cache-aware RNNT MALSD beam search does not yet support prompt vectors.")
         super().__init__()

@@ -91,8 +91,17 @@ class CacheAwareRNNTInferenceWrapper(CacheAwareASRInferenceWrapper):
         valid_out_len: int | None = None,
     ) -> tuple[Tensor, Tensor, CacheAwareContext]:
         """
-        Run the cache-aware encoder for one streaming chunk, returning the (trimmed)
-        encoder output and updated streaming context. Decoder is NOT invoked.
+        Run the cache-aware encoder for one streaming chunk. Decoder is NOT invoked.
+        Args:
+            processed_signal: (Tensor) input signal tensor.
+            processed_signal_length: (Tensor) input signal length tensor.
+            context: (CacheAwareContext) context object.
+            drop_extra_pre_encoded: (int | None) number of extra pre-encoded frames to drop.
+            keep_all_outputs: (bool) whether to keep all outputs or not.
+            drop_left_context: (int | None) number of left context frames to drop.
+            valid_out_len: (int | None) number of valid output frames.
+        Returns:
+            (tuple[Tensor, Tensor, CacheAwareContext]) encoder output, encoder output lengths, and new context.
         """
         (
             encoded,

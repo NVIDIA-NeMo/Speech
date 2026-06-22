@@ -18,6 +18,7 @@ import argparse
 import json
 import os
 import pprint
+import re
 import tempfile
 import time
 from collections import Counter
@@ -51,6 +52,36 @@ except (ImportError, ModuleNotFoundError) as e:
         "To install utmosv2 run `pip install git+https://github.com/sarulab-speech/UTMOSv2.git@v1.2.1`."
     )
 
+
+# Regexes mirrored from the IPA preprocessing script that creates
+# custom["text_without_annotation"]. This is used only for text inputs
+# during metric computation when requested.
+_WS_RE = re.compile(r"\s+")
+_SPACE_BEFORE_PUNCT_RE = re.compile(r"\s+([,.;:!?؟،؛])")
+_TATWEEL_RE = re.compile("\u0640+")
+_ANNOTATION_OR_MARKER_RE = re.compile(
+    r"""
+      \[[^\[\]\n]{1,512}\]          # square annotation: [breath], [نقر]
+    | </?[^<>\n]{1,512}>            # XML/style/language tags
+    | \{/?[^{}\n]{1,512}\}          # curly control/pronunciation tags
+    | [-–—]{2,}                     # multi-dash cutoff: --, ---, ——
+    | (?<=\S)[-–—](?=\s|$)          # trailing single dash after a token: word-
+    | (?:^|(?<=\s))[-–—](?=\s|$)    # standalone dash
+    | \.{3,}                        # ASCII ellipsis
+    | …+                            # Unicode ellipsis
+    | \*+                            # emphasis marker: *word*
+    """,
+    re.VERBOSE,
+)
+
+
+def strip_text_annotations_from_text(text: str) -> str:
+    """Return orthographic text with annotation/control tokens removed."""
+    text = _ANNOTATION_OR_MARKER_RE.sub(" ", str(text))
+    text = _TATWEEL_RE.sub("", text)
+    text = _WS_RE.sub(" ", text).strip()
+    text = _SPACE_BEFORE_PUNCT_RE.sub(r"\1", text)
+    return text.strip()
 
 FILEWISE_METRICS_TO_SAVE = [
     'cer',
@@ -388,6 +419,7 @@ def evaluate_dir(
     sv_model_type="titanet",
     asr_model_name="stt_en_conformer_transducer_large",
     with_utmosv2=True,
+    strip_text_annotations_for_metrics=False,
     with_emotion_metrics=False,
     emotion_model_size="small",
     emotion_embedding_type="score_vector",
@@ -476,6 +508,8 @@ def evaluate_dir(
         asr_batch_size,
         label="predicted",
     )
+    if strip_text_annotations_for_metrics:
+        pred_texts = [strip_text_annotations_from_text(text) for text in pred_texts]
     pred_texts = [text_processor.process_text_for_wer(text) for text in pred_texts]
     # Transcribe ground truth audios
     if len(gt_audio_paths) > 0:
@@ -489,6 +523,8 @@ def evaluate_dir(
             asr_batch_size,
             label="ground truth",
         )
+        if strip_text_annotations_for_metrics:
+            gt_audio_texts = [strip_text_annotations_from_text(text) for text in gt_audio_texts]
         gt_audio_texts = [text_processor.process_text_for_wer(text) for text in gt_audio_texts]
     else:
         gt_audio_texts = [None] * len(records)
@@ -502,7 +538,10 @@ def evaluate_dir(
             text_field = 'normalized_text'
         else:
             text_field = 'text'
-        processed_text = text_processor.process_text_for_wer(record[text_field])
+        text = record[text_field]
+        if strip_text_annotations_for_metrics:
+            text = strip_text_annotations_from_text(text)
+        processed_text = text_processor.process_text_for_wer(text)
         gt_texts_processed.append(processed_text)
 
     # 7. Batched EoU classification
@@ -668,6 +707,7 @@ def evaluate(
     sv_model_type="titanet",
     asr_model_name="stt_en_conformer_transducer_large",
     with_utmosv2=True,
+    strip_text_annotations_for_metrics=False,
     with_fcd=True,
     codec_model_path=None,
     with_emotion_metrics=False,
@@ -709,6 +749,7 @@ def evaluate(
         sv_model_type=sv_model_type,
         asr_model_name=asr_model_name,
         with_utmosv2=with_utmosv2,
+        strip_text_annotations_for_metrics=strip_text_annotations_for_metrics,
         with_emotion_metrics=with_emotion_metrics,
         emotion_model_size=emotion_model_size,
         emotion_embedding_type=emotion_embedding_type,
@@ -859,6 +900,11 @@ def main():
     parser.add_argument('--whisper_language', type=str, default="en")
     parser.add_argument('--evalset', type=str, default=None)
     parser.add_argument('--with_emotion_metrics', action='store_true')
+    parser.add_argument(
+        '--strip_text_annotations_for_metrics',
+        action='store_true',
+        help='Strip bracket/tag/control annotations from reference and ASR hypothesis text while computing text metrics.',
+    )
     parser.add_argument('--emotion_model_size', type=str, default="small", choices=["small", "large"])
     parser.add_argument(
         '--emotion_embedding_type',
@@ -883,6 +929,7 @@ def main():
         sv_model_type="wavlm",
         asr_model_name="nvidia/parakeet-ctc-0.6b",
         with_emotion_metrics=args.with_emotion_metrics,
+        strip_text_annotations_for_metrics=args.strip_text_annotations_for_metrics,
         emotion_model_size=args.emotion_model_size,
         emotion_embedding_type=args.emotion_embedding_type,
         emotion_cache_dir=args.emotion_cache_dir,

@@ -728,6 +728,7 @@ def run_inference_and_evaluation(
                 emotion_model_size=eval_config.emotion_model_size,
                 emotion_embedding_type=eval_config.emotion_embedding_type,
                 emotion_cache_dir=eval_config.emotion_cache_dir,
+                strip_text_annotations_for_metrics=eval_config.strip_text_annotations_for_metrics,
                 device=eval_config.device,
                 asr_batch_size=eval_config.asr_batch_size,
                 eou_batch_size=eval_config.eou_batch_size,
@@ -973,6 +974,11 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     eval_group.add_argument('--confidence_level', type=float, default=0.95)
     eval_group.add_argument('--disable_utmosv2', action='store_true')
     eval_group.add_argument('--with_emotion_metrics', action='store_true')
+    eval_group.add_argument(
+        '--strip_text_annotations_for_metrics',
+        action='store_true',
+        help='Strip bracket/tag/control annotations from reference and ASR hypothesis text while computing text metrics.',
+    )
     eval_group.add_argument('--emotion_model_size', type=str, default="small", choices=["small", "large"])
     eval_group.add_argument(
         '--emotion_embedding_type',
@@ -1185,6 +1191,7 @@ def main(argv=None):
         emotion_model_size=args.emotion_model_size,
         emotion_embedding_type=args.emotion_embedding_type,
         emotion_cache_dir=args.emotion_cache_dir,
+        strip_text_annotations_for_metrics=args.strip_text_annotations_for_metrics,
         asr_batch_size=args.asr_batch_size,
         eou_batch_size=args.eou_batch_size,
     )

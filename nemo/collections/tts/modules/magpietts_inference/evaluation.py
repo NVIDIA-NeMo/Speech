@@ -47,6 +47,7 @@ class EvaluationConfig:
         emotion_model_size: Emotion encoder size ("small" or "large").
         emotion_embedding_type: Emotion embedding type used for ESIM.
         emotion_cache_dir: Optional Hugging Face cache directory for the emotion encoder.
+        strip_text_annotations_for_metrics: Whether to strip annotation/control markers from reference and ASR hypothesis text before text metrics.
         device: Device to use for running models used during evaluation.
     """
 
@@ -61,6 +62,7 @@ class EvaluationConfig:
     emotion_model_size: str = "small"
     emotion_embedding_type: str = "score_vector"
     emotion_cache_dir: str = None
+    strip_text_annotations_for_metrics: bool = False
     device: str = "cuda"
     asr_batch_size: int = 32
     eou_batch_size: int = 32
@@ -107,6 +109,7 @@ def evaluate_generated_audio_dir(
         emotion_model_size=config.emotion_model_size,
         emotion_embedding_type=config.emotion_embedding_type,
         emotion_cache_dir=config.emotion_cache_dir,
+        strip_text_annotations_for_metrics=config.strip_text_annotations_for_metrics,
         device=config.device,
         eou_model_name=config.eou_model_name,
         asr_batch_size=config.asr_batch_size,

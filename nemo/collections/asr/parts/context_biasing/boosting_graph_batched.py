@@ -45,6 +45,7 @@ class BPEMode(PrettyStrEnum):
     BPE_DROPOUT = "bpe_dropout"
     VAR_BPE = "var_bpe"
     CASE_INSENSITIVE = "case_insensitive"
+    CASE_INSENSITIVE_LOWER = "case_insensitive_lower"
 
 
 @dataclass
@@ -607,22 +608,25 @@ class GPUBoostingTreeModel(NGramGPULanguageModel):
                 raise NotImplementedError("Aggregated tokenizer does not support BPE dropout yet")
             spm.set_random_generator_seed(1234)  # fix random seed for reproducibility of BPE dropout
 
+        is_case_insensitive = bpe_mode in {BPEMode.CASE_INSENSITIVE, BPEMode.CASE_INSENSITIVE_LOWER}
         for phrase_item in phrase_items_list:
             phrase = phrase_item.phrase
+            if bpe_mode is BPEMode.CASE_INSENSITIVE_LOWER:
+                phrase = phrase.lower()
             if bpe_mode is BPEMode.BPE_DROPOUT:
                 phrases_dict[phrase] = cls.get_alternative_transcripts(cfg, tokenizer, phrase)
             else:
                 if is_aggregate_tokenizer:
-                    if bpe_mode in {BPEMode.VAR_BPE, BPEMode.CASE_INSENSITIVE}:
+                    if bpe_mode in {BPEMode.VAR_BPE, BPEMode.CASE_INSENSITIVE, BPEMode.CASE_INSENSITIVE_LOWER}:
                         phrases_dict[phrase] = tokenizer.text_to_ids_var_bpe(
-                            phrase, lang_id=phrase_item.lang, case_insensitive=(bpe_mode is BPEMode.CASE_INSENSITIVE)
+                            phrase, lang_id=phrase_item.lang, case_insensitive=is_case_insensitive
                         )
                     else:
                         phrases_dict[phrase] = tokenizer.text_to_ids(phrase, lang_id=phrase_item.lang)
                 else:
-                    if bpe_mode in {BPEMode.VAR_BPE, BPEMode.CASE_INSENSITIVE}:
+                    if bpe_mode in {BPEMode.VAR_BPE, BPEMode.CASE_INSENSITIVE, BPEMode.CASE_INSENSITIVE_LOWER}:
                         phrases_dict[phrase] = tokenizer.text_to_ids_var_bpe(
-                            phrase, case_insensitive=(bpe_mode is BPEMode.CASE_INSENSITIVE)
+                            phrase, case_insensitive=is_case_insensitive
                         )
                     else:
                         phrases_dict[phrase] = tokenizer.text_to_ids(phrase)
@@ -641,7 +645,7 @@ class GPUBoostingTreeModel(NGramGPULanguageModel):
                 phrases.append(phrase)
 
         context_graph = ContextGraph(context_score=cfg.context_score, depth_scaling=cfg.depth_scaling)
-        if bpe_mode in {BPEMode.VAR_BPE, BPEMode.CASE_INSENSITIVE}:
+        if bpe_mode in {BPEMode.VAR_BPE, BPEMode.CASE_INSENSITIVE, BPEMode.CASE_INSENSITIVE_LOWER}:
             context_graph.build_from_var_bpe(
                 token_ids=contexts,
                 scores=scores,

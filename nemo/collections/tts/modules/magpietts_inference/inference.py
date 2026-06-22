@@ -807,7 +807,7 @@ class EasyMagpieMultiturnUserAudioDataset(torch.utils.data.Dataset):
             user_audio_turns.append(wav.unsqueeze(0))
             user_audio_turns_lens.append(torch.tensor([wav.numel()], dtype=torch.long))
 
-        target_turn_audio_paths = sample.get("target_audio_file_path", sample.get("target_audio_filepath", None))
+        target_turn_audio_paths = sample.get("target_audio_file_path", None)
         if target_turn_audio_paths is not None and not isinstance(target_turn_audio_paths, list):
             target_turn_audio_paths = [target_turn_audio_paths]
 

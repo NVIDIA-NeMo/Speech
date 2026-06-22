@@ -32,6 +32,11 @@ __all__ = ['SentencePieceTokenizer', 'create_spt_model']
 
 @dataclass
 class VarBPEExtension:
+    """
+    Var-BPE extension for SentencePiece tokenizer: handles variative token merges.
+    Can map phrase (token ids) to all possible representations using `VarBPERepresentation` structure
+    """
+
     vocab: list[str]
     token2id: dict[str, int]
     token_id2canonical_id: dict[int, int]
@@ -40,10 +45,14 @@ class VarBPEExtension:
     max_token_len: int
 
     def __init__(self, tokenizer, case_insensitive: bool = True):
+        """
+
+        Args:
+            tokenizer: SentencePiece tokenizer
+            case_insensitive: if extension should be case insensitive
+        """
         # vocab + inversed vocab (id2token/token2id)
         vocab = tokenizer.vocab
-        vocab_len_no_special = tokenizer.tokenizer.get_piece_size()
-        self.vocab = vocab[:vocab_len_no_special]
         self.token2id = dict(zip(vocab, range(len(vocab))))
 
         # mapping: token_id -> canonical_id (lowercase if case_insensitive)
@@ -59,12 +68,12 @@ class VarBPEExtension:
             self.token_id2canonical_id = dict(zip(range(len(vocab)), range(len(vocab))))
 
         # inverse mapping: canonical_id -> list of token_id alternatives
-        # TODO: fix (not necessary exists!)
         self.canonical_id2alternatives = defaultdict(list)
         for token_id, canonical_id in self.token_id2canonical_id.items():
             self.canonical_id2alternatives[canonical_id].append(token_id)
 
-        # mapping: token_id -> canonical split + inverse
+        # mapping: token_id -> canonical split
+        # for sentencepiece: each token is a merge of characters; all characters are in the vocab
         self.max_token_len = 1
         self.token_id2canonical_split = dict()
         for token, token_id in self.token2id.items():
@@ -80,37 +89,36 @@ class VarBPEExtension:
                     canonical_split = (self.token_id2canonical_id[token_id],)
             self.token_id2canonical_split[token_id] = canonical_split
             self.max_token_len = max(self.max_token_len, len(canonical_split))
-        # self.canonical_split2token_id = dict(zip(self.token_id2canonical_split.values(), self.token_id2canonical_split.keys()))
+        # inverse mapping: canonical split -> list of token ids
         self.canonical_split2token_ids = defaultdict(list)
         for token_id, canonical_split in self.token_id2canonical_split.items():
             self.canonical_split2token_ids[canonical_split].append(token_id)
-            # if canonical_split in self.canonical_split2token_id: continue
-            # token_id = self.token_id2canonical_id[token_id]
-            # self.canonical_split2token_id[canonical_split] = token_id
 
     def ids_to_canonical(self, token_ids: list[int]) -> list[int]:
+        """Map token ids to list of token ids representing canonical split"""
         canonical_ids = []
         for token_id in token_ids:
             canonical_ids.extend(self.token_id2canonical_split[token_id])
         return canonical_ids
 
     def ids_to_all_representations(self, token_ids: list[int]) -> VarBPERepresentation:
-        orig_len = [len(self.token_id2canonical_split[token_id]) for token_id in token_ids]
+        """Map list of token ids to Var-BPE representation"""
+        canonical_lengths = [len(self.token_id2canonical_split[token_id]) for token_id in token_ids]
         canonical_ids = self.ids_to_canonical(token_ids=token_ids)
-        if len(canonical_ids) != sum(orig_len):
-            logging.warning(f"unequal len: {len(canonical_ids)} != {sum(orig_len)}")
+        if len(canonical_ids) != sum(canonical_lengths):
+            logging.warning(f"unequal len: {len(canonical_ids)} != {sum(canonical_lengths)}")
         representations: list[list[TokenWithLength]] = [[] for _ in range(len(canonical_ids))]
         for i, canonical_token_id in enumerate(canonical_ids):
             # add alternatives to canonical tokens
             for token_id in self.canonical_id2alternatives[canonical_token_id]:
                 representations[i].append(TokenWithLength(token_id=token_id, length=1))
             # add merges
-            # TODO: can be optimized with tree
+            # Potentially can be accelerated: do not check token merges for inter-boundary tokens; use trie
             for start in range(max(0, i - self.max_token_len), i):
                 if tuple(canonical_ids[start : i + 1]) in self.canonical_split2token_ids:
                     for merged_token_id in self.canonical_split2token_ids[tuple(canonical_ids[start : i + 1])]:
                         representations[i].append(TokenWithLength(token_id=merged_token_id, length=i - start + 1))
-        return VarBPERepresentation(canonical_lengths=orig_len, token_ids_with_merges=representations)
+        return VarBPERepresentation(canonical_lengths=canonical_lengths, token_ids_with_merges=representations)
 
 
 class SentencePieceTokenizer(TokenizerSpec, ChatTemplateMixin):

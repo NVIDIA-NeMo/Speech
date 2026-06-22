@@ -30,6 +30,37 @@ _DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 _model = None
 
 
+def _make_training_batch(device):
+    from nemo.collections.asr.data.ssl_dataset import AudioNoiseBatch
+
+    num_samples = 64000  # 4 seconds at 16 kHz; long enough for SSL masking to select frames.
+    audio_len = torch.tensor([num_samples, 48000], device=device)
+    time = torch.arange(num_samples, device=device, dtype=torch.float32) / 16000.0
+    audio = torch.stack(
+        [
+            0.1 * torch.sin(2 * torch.pi * 220.0 * time),
+            0.1 * torch.sin(2 * torch.pi * 330.0 * time),
+        ]
+    )
+    noise = torch.stack(
+        [
+            0.005 * torch.sin(2 * torch.pi * 1800.0 * time),
+            0.005 * torch.sin(2 * torch.pi * 2400.0 * time),
+        ]
+    )
+    audio[1, audio_len[1].item() :] = 0.0
+    noise[1, audio_len[1].item() :] = 0.0
+
+    return AudioNoiseBatch(
+        audio=audio,
+        audio_len=audio_len,
+        noise=noise,
+        noise_len=audio_len,
+        noisy_audio=audio + noise,
+        noisy_audio_len=audio_len,
+    )
+
+
 def _load_model():
     global _model
     if _model is not None:
@@ -54,23 +85,10 @@ def test_model_training_step():
     """Run one training step via direct training_step() call."""
     from e2e_utils import prepare_for_training_step
 
-    from nemo.collections.asr.data.ssl_dataset import AudioNoiseBatch
-
     model = _load_model()
     prepare_for_training_step(model)
-    d = next(model.parameters()).device
+    batch = _make_training_batch(next(model.parameters()).device)
     torch.manual_seed(0)
-    audio_len = torch.tensor([16000, 12000], device=d)
-    audio = torch.randn(2, 16000, device=d)
-    noise = torch.randn(2, 16000, device=d)
-    batch = AudioNoiseBatch(
-        audio=audio,
-        audio_len=audio_len,
-        noise=noise,
-        noise_len=audio_len,
-        noisy_audio=audio + noise,
-        noisy_audio_len=audio_len,
-    )
     result = model.training_step(batch, 0)
     loss = result if isinstance(result, torch.Tensor) else result['loss']
     assert torch.isfinite(loss), f"Loss is not finite: {loss}"

@@ -768,6 +768,10 @@ class EasyMagpieMultiturnUserAudioDataset(torch.utils.data.Dataset):
             return [str(x) for x in value]
         return [str(value)]
 
+    @staticmethod
+    def _has_valid_turn_text(text: str) -> bool:
+        return any(ch.isalnum() for ch in str(text or ""))
+
     def collate_fn(self, batch: List[dict]) -> Dict[str, Any]:
         if len(batch) != 1:
             raise RuntimeError("multiturn_user_audio inference currently requires batch_size=1.")
@@ -780,35 +784,58 @@ class EasyMagpieMultiturnUserAudioDataset(torch.utils.data.Dataset):
         raw_turn_texts = self._as_turn_list(sample["text"])[: self.max_eval_turns]
         max_turns = len(raw_turn_texts)
 
-        batched_turns = []
-        batched_turn_lens = []
-        valid_turn_masks = []
-        for turn_text in raw_turn_texts:
-            ids = model.tokenizer.encode(turn_text, tokenizer_name=main_tokenizer_name) + [model.eos_id]
-            batched_turns.append(torch.tensor([ids], dtype=torch.long))
-            batched_turn_lens.append(torch.tensor([len(ids)], dtype=torch.long))
-            valid_turn_masks.append(torch.tensor([True], dtype=torch.bool))
-
-        context_path = self._resolve_path(sample.get("context_audio_filepath"))
-        context_audio = self._load_audio_1d(context_path, sample_rate).unsqueeze(0)
-        context_audio_lens = torch.tensor([context_audio.size(1)], dtype=torch.long)
-
         user_audio_paths = sample.get("user_audio_file_path", None)
         if not isinstance(user_audio_paths, list):
             user_audio_paths = []
 
         # make the user audios path absolute if needed
         user_audio_paths = [self._resolve_path(path) for path in user_audio_paths]
-        
-        user_audio_turns = []
-        user_audio_turns_lens = []
+
+        raw_user_audio_turns = []
         for turn_id in range(max_turns):
             if turn_id < len(user_audio_paths) and user_audio_paths[turn_id]:
                 wav = self._load_audio_1d(user_audio_paths[turn_id], sample_rate)
             else:
                 wav = torch.zeros(int(2 * sample_rate), dtype=torch.float32)
+            raw_user_audio_turns.append(wav)
+
+        batched_turns = []
+        batched_turn_lens = []
+        valid_turn_masks = []
+        user_audio_turns = []
+        user_audio_turns_lens = []
+        turn_ids = []
+        pending_user_audio_turns = []
+        skipped_turns = 0
+        for turn_id, turn_text in enumerate(raw_turn_texts):
+            pending_user_audio_turns.append(raw_user_audio_turns[turn_id])
+            if not self._has_valid_turn_text(turn_text):
+                skipped_turns += 1
+                continue
+
+            ids = model.tokenizer.encode(turn_text, tokenizer_name=main_tokenizer_name) + [model.eos_id]
+            batched_turns.append(torch.tensor([ids], dtype=torch.long))
+            batched_turn_lens.append(torch.tensor([len(ids)], dtype=torch.long))
+            valid_turn_masks.append(torch.tensor([True], dtype=torch.bool))
+            wav = (
+                torch.cat(pending_user_audio_turns, dim=0)
+                if pending_user_audio_turns
+                else raw_user_audio_turns[turn_id]
+            )
             user_audio_turns.append(wav.unsqueeze(0))
             user_audio_turns_lens.append(torch.tensor([wav.numel()], dtype=torch.long))
+            turn_ids.append(turn_id)
+            pending_user_audio_turns = []
+
+        if skipped_turns > 0:
+            logging.info(
+                f"Skipping {skipped_turns} empty or punctuation-only multiturn agent turns "
+                f"for sample_idx={sample.get('idx')}"
+            )
+
+        context_path = self._resolve_path(sample.get("context_audio_filepath"))
+        context_audio = self._load_audio_1d(context_path, sample_rate).unsqueeze(0)
+        context_audio_lens = torch.tensor([context_audio.size(1)], dtype=torch.long)
 
         target_turn_audio_paths = sample.get("target_audio_file_path", sample.get("target_audio_filepath", None))
         if target_turn_audio_paths is None:
@@ -827,6 +854,7 @@ class EasyMagpieMultiturnUserAudioDataset(torch.utils.data.Dataset):
             "batched_turns": batched_turns,
             "batched_turn_lens": batched_turn_lens,
             "valid_turn_masks": valid_turn_masks,
+            "turn_ids": turn_ids,
             "context_audio": context_audio,
             "context_audio_lengths": context_audio_lens,
             "user_audio_turns": user_audio_turns,
@@ -1212,10 +1240,12 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
             decode_start_frame = 0
             max_decoder_steps = params.max_decoder_steps
 
-            for turn_id in range(len(batch["batched_turns"])):
-                turn_text = batch["batched_turns"][turn_id].to(device)
-                turn_lens = batch["batched_turn_lens"][turn_id].to(device)
-                valid_mask = batch["valid_turn_masks"][turn_id].to(device)
+            turn_ids = batch.get("turn_ids", list(range(len(batch["batched_turns"]))))
+            for local_turn_idx in range(len(batch["batched_turns"])):
+                turn_id = int(turn_ids[local_turn_idx])
+                turn_text = batch["batched_turns"][local_turn_idx].to(device)
+                turn_lens = batch["batched_turn_lens"][local_turn_idx].to(device)
+                valid_mask = batch["valid_turn_masks"][local_turn_idx].to(device)
                 if not bool(valid_mask[0].item()):
                     continue
 
@@ -1233,15 +1263,15 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
                 state.last_phoneme_tokens = None
 
                 if not model.cfg.get("condition_on_user_speech", False):
-                    user_audio = batch["user_audio_turns"][turn_id]
+                    user_audio = batch["user_audio_turns"][local_turn_idx]
                     user_audio_prefill_steps = int(round(user_audio.size(-1) / model.input_samples_per_frame))
                     user_audio_prefill_tokens = torch.full(
                         (1, user_audio_prefill_steps), model.pad_id, dtype=torch.long, device=device
                     )
                     user_audio_channel_embedding = None
                 else:
-                    user_audio = batch["user_audio_turns"][turn_id]
-                    user_audio_lens = batch["user_audio_turns_lens"][turn_id]
+                    user_audio = batch["user_audio_turns"][local_turn_idx]
+                    user_audio_lens = batch["user_audio_turns_lens"][local_turn_idx]
                     user_audio_codes, user_audio_codes_lens = model._codec_helper.audio_to_codes(
                         user_audio, user_audio_lens
                     )
@@ -1329,7 +1359,7 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
                     )
 
                 turn_start_frame = sum(p.size(-1) for p in state.all_predictions)
-                if turn_id == 0:
+                if not turn_frame_ranges:
                     state.audio_prediction_start_idx.fill_(turn_start_frame)
                     decode_start_frame = turn_start_frame
 
@@ -1588,6 +1618,13 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
                 f"num_turns={len(raw_turn_texts)}"
             )
 
+            if not batch["batched_turns"]:
+                logging.warning(
+                    "Skipping multiturn_user_audio sample with no valid agent text turns after filtering; "
+                    f"sample_idx={sample_idx}"
+                )
+                continue
+
             start_time = time.time()
             output, turn_frame_ranges, decode_start_frame, generated_codes = self._run_multiturn_generation(batch)
             elapsed = time.time() - start_time
@@ -1612,6 +1649,7 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
             target_turn_audio_paths = batch.get("target_turn_audio_paths")
 
             for local_turn_idx, (turn_id, start_frame, end_frame) in enumerate(turn_frame_ranges):
+                source_turn_idx = int(turn_id)
                 rel_start_frame = start_frame - decode_start_frame
                 rel_end_frame = end_frame - decode_start_frame
                 start_sample = int(round(rel_start_frame * samples_per_prediction_frame))
@@ -1643,7 +1681,7 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
                 target_src = self._resolve_target_audio_for_turn(
                     raw_record=raw_record,
                     target_turn_audio_paths=target_turn_audio_paths,
-                    local_turn_idx=local_turn_idx,
+                    local_turn_idx=source_turn_idx,
                     audio_base_dir=audio_base_dir,
                 )
                 if target_src is None or not os.path.exists(target_src):
@@ -1667,7 +1705,7 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
                     {
                         "audio_filepath": f"target_audio_{item_idx}.wav",
                         "context_audio_filepath": f"context_audio_{item_idx}.wav",
-                        "text": raw_turn_texts[local_turn_idx] if local_turn_idx < len(raw_turn_texts) else "",
+                        "text": raw_turn_texts[source_turn_idx] if source_turn_idx < len(raw_turn_texts) else "",
                         "speaker": str(sample_idx),
                         "source_sample_idx": sample_idx,
                         "turn_id": int(turn_id),
@@ -1764,18 +1802,18 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
         user_segments = []
         user_turns_for_gt = []
         for local_turn_idx, (turn_id, _, _) in enumerate(turn_frame_ranges):
-            if turn_id >= len(batch["user_audio_turns"]):
+            if local_turn_idx >= len(batch["user_audio_turns"]):
                 continue
-            turn_audio = batch["user_audio_turns"][turn_id][0].detach().cpu().float()
-            turn_audio_len = int(batch["user_audio_turns_lens"][turn_id][0].detach().cpu().item())
+            turn_audio = batch["user_audio_turns"][local_turn_idx][0].detach().cpu().float()
+            turn_audio_len = int(batch["user_audio_turns_lens"][local_turn_idx][0].detach().cpu().item())
             turn_audio = turn_audio[:turn_audio_len]
             turn_audio_out = resample(turn_audio.unsqueeze(0), self.model.sample_rate, sample_rate).squeeze(0)
-            user_turns_for_gt.append((local_turn_idx, turn_audio_out))
+            user_turns_for_gt.append((int(turn_id), turn_audio_out))
 
-            if turn_id == 0:
+            if local_turn_idx == 0:
                 user_start_sample = 0
             else:
-                prev_turn_end_frame = turn_frame_ranges[turn_id - 1][2]
+                prev_turn_end_frame = turn_frame_ranges[local_turn_idx - 1][2]
                 rel_prev_end_frame = prev_turn_end_frame - decode_start_frame
                 user_start_sample = first_user_delay_out + int(
                     round(rel_prev_end_frame * samples_per_prediction_frame)
@@ -1813,18 +1851,18 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
         gt_user_segments = []
         gt_agent_segments = []
         cursor = 0
-        for local_turn_idx, user_wav in user_turns_for_gt:
+        for source_turn_idx, user_wav in user_turns_for_gt:
             gt_user_segments.append((cursor, user_wav))
             cursor += user_wav.numel()
 
             target_wav = None
-            if local_turn_idx < len(target_turn_audio_paths):
-                target_wav = load_debug_audio(target_turn_audio_paths[local_turn_idx])
+            if source_turn_idx < len(target_turn_audio_paths):
+                target_wav = load_debug_audio(target_turn_audio_paths[source_turn_idx])
 
             if target_wav is None:
                 logging.warning(
                     "Could not load target turn audio for multiturn ground-truth debug stereo; "
-                    f"sample_idx={sample_idx}, local_turn_idx={local_turn_idx}"
+                    f"sample_idx={sample_idx}, source_turn_idx={source_turn_idx}"
                 )
                 continue
 

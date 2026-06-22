@@ -36,6 +36,7 @@ from nemo.utils.file_utils import robust_copy
 from nemo.utils.get_rank import is_global_rank_zero
 from nemo.utils.model_utils import inject_model_parallel_rank
 from nemo.utils.msc_utils import import_multistorageclient, is_multistorageclient_url
+from nemo.utils.tar_utils import is_safe_tar_member, safe_extract
 
 
 class SaveRestoreConnector:
@@ -630,34 +631,11 @@ class SaveRestoreConnector:
 
     @staticmethod
     def _is_safe_path(member, extract_to):
-        # Check for path traversal characters or absolute paths
-        member_path = os.path.normpath(member.name)
-        # Ensure the path does not start with a slash or contain ".." after normalization
-        if os.path.isabs(member_path) or ".." in member_path.split(os.sep):
-            return False
-        # Construct the full path where the member would be extracted
-        full_path = os.path.join(extract_to, member_path)
-        # Ensure the member would be extracted within the intended directory
-        if os.path.commonprefix([full_path, extract_to]) != extract_to:
-            return False
-        # Check if the member is a symbolic link
-        if member.issym() or member.islnk():
-            return False
-        return True
+        return is_safe_tar_member(member, os.path.realpath(extract_to))
 
     @staticmethod
     def _safe_extract(tar, out_folder: str, members=None):
-        extract_to = os.path.realpath(out_folder)
-        if members is None:
-            members = tar.getmembers()
-        extracted_members = []
-        for member in members:
-            if SaveRestoreConnector._is_safe_path(member, extract_to):
-                tar.extract(member, extract_to)
-                extracted_members.append(member)
-            else:
-                logging.warning(f"Skipping potentially unsafe member: {member.name}")
-        return extracted_members
+        return safe_extract(tar, out_folder, members=members, skip_unsafe=True)
 
     @staticmethod
     def _filtered_tar_info(tar_path: str, filter_fn: Optional[Callable[[str], bool]] = None) -> list[tarfile.TarInfo]:

@@ -31,6 +31,8 @@ import urllib.request
 
 from tqdm import tqdm
 
+from nemo.utils.tar_utils import safe_extract
+
 parser = argparse.ArgumentParser(description="LibriSpeech Data download")
 parser.add_argument("--data_root", required=True, default=None, type=str)
 parser.add_argument("--data_sets", default="dev_clean", type=str)
@@ -108,9 +110,8 @@ def __maybe_download_file(destination: str, source: str):
 
 def __extract_file(filepath: str, data_dir: str):
     try:
-        tar = tarfile.open(filepath)
-        tar.extractall(data_dir)
-        tar.close()
+        with tarfile.open(filepath) as tar:
+            safe_extract(tar, data_dir)
     except Exception:
         logging.info("Not extracting. Maybe already there?")
 

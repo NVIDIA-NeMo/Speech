@@ -135,6 +135,13 @@ class StreamingSTTEvalConfig:
 
 @hydra_runner(config_name="StreamingSTTEvalConfig", schema=StreamingSTTEvalConfig)
 def main(cfg: StreamingSTTEvalConfig):
+    if cfg.max_new_tokens is not None or cfg.max_new_tokens > 0:
+        cfg.generation_config.max_new_tokens = cfg.max_new_tokens
+        logging.warning(f"Setting generation_config.max_new_tokens to {cfg.max_new_tokens}")
+        logging.warning(
+            f"Using `max_new_tokens` is deprecated, please use `generation_config.max_new_tokens` instead."
+        )
+
     logging.info(f"Hydra config:\n{OmegaConf.to_yaml(cfg)}")
 
     if cfg.seed is not None:
@@ -195,7 +202,6 @@ def main(cfg: StreamingSTTEvalConfig):
 
     for batch_idx, batch in tqdm(enumerate(dloader), total=num_batches):
         ts = perf_counter()
-        cfg.generation_config.max_new_tokens = cfg.max_new_tokens
         generation_config = GenerationConfig(**OmegaConf.to_container(cfg.generation_config))
         batch_debug_logs: Optional[list] = [] if cfg.debug_log_audio_frames else None
         batch_alignments: Optional[list] = [] if cfg.save_alignments else None

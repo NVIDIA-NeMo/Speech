@@ -19,7 +19,6 @@ from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Union
 
 import einops
-import hydra
 import librosa
 import soundfile as sf
 import torch
@@ -34,7 +33,7 @@ from nemo.collections.audio.data.audio_to_audio_lhotse import LhotseAudioToTarge
 from nemo.collections.audio.metrics.audio import AudioMetricWrapper
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
 from nemo.core.classes import ModelPT
-from nemo.core.classes.common import PretrainedModelInfo
+from nemo.core.classes.common import PretrainedModelInfo, safe_instantiate
 from nemo.utils import logging, model_utils
 
 __all__ = ['AudioToAudioModel']
@@ -121,7 +120,7 @@ class AudioToAudioModel(ModelPT, ABC):
                 cfg_channel = cfg_dict.pop('channel', None)
                 cfg_batch_averaging = cfg_dict.pop('metric_using_batch_averaging', None)
                 metrics_dataloader_idx[name] = AudioMetricWrapper(
-                    metric=hydra.utils.instantiate(cfg_dict),
+                    metric=safe_instantiate(cfg_dict),
                     channel=cfg_channel,
                     metric_using_batch_averaging=cfg_batch_averaging,
                 )

@@ -18,7 +18,6 @@ from typing import Tuple
 
 import pytest
 import torch
-from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.common.parts.adapter_modules import LinearAdapter

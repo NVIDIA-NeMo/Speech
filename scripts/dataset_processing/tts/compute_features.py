@@ -28,12 +28,12 @@ $ python <nemo_root_path>/scripts/dataset_processing/tts/compute_features.py \
 import argparse
 from pathlib import Path
 
-from hydra.utils import instantiate
 from joblib import Parallel, delayed
 from omegaconf import OmegaConf
 from tqdm import tqdm
 
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
+from nemo.core.classes.common import safe_instantiate
 
 
 def get_args():
@@ -100,7 +100,7 @@ def main():
         raise ValueError(f"Audio directory {audio_dir} does not exist.")
 
     feature_config = OmegaConf.load(feature_config_path)
-    feature_config = instantiate(feature_config)
+    feature_config = safe_instantiate(feature_config)
     featurizers = feature_config.featurizers
 
     entries = read_manifest(manifest_path)

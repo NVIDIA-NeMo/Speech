@@ -108,6 +108,7 @@ export PYTHONPATH=$NEMO_PATH:$PYTHONPATH
 # export HF_TOKEN="hf_..."  # Use your own HuggingFace API token if needed, as some models may require.
 # export HF_HUB_CACHE="/path/to/your/huggingface/cache"  # change where HF cache is stored if you don't want to use the default cache
 # export SERVER_CONFIG_PATH="/path/to/your/server/config.yaml"  # change to the server config you want to use, otherwise it will use the default config in `server/server_configs/default.yaml`
+# export SERVER_PUBLIC_HOST="127.0.0.1"  # set this to the host/IP clients should use for the WebSocket server
 python ./server/server.py
 ```
 
@@ -308,4 +309,3 @@ For details of available NVIDIA NIM services, please refer to:
 ## Contributing
 
 We welcome contributions to this project. Please feel free to submit a pull request or open an issue.
-

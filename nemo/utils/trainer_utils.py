@@ -16,7 +16,6 @@
 from contextlib import nullcontext
 from typing import Any, ContextManager, Mapping, Sequence
 
-import hydra
 import torch
 from lightning.fabric.plugins.precision.utils import _convert_fp_tensor
 from lightning.pytorch.plugins import HalfPrecision
@@ -25,6 +24,8 @@ from lightning_utilities import apply_to_collection
 from omegaconf import DictConfig, OmegaConf
 from torch import Tensor
 from typing_extensions import override
+
+from nemo.core.classes.common import safe_instantiate
 
 
 _FLASH_PRECISION_ALIASES = {
@@ -65,7 +66,7 @@ def resolve_trainer_cfg(trainer_cfg: DictConfig) -> DictConfig:
 
     # Allows customizable strategies (eg ModelParallelStrategy) in YAML configs.
     if (strategy := trainer_cfg.get("strategy", None)) is not None and isinstance(strategy, Mapping):
-        trainer_cfg["strategy"] = hydra.utils.instantiate(strategy)
+        trainer_cfg["strategy"] = safe_instantiate(strategy)
         # Convert dict-valued nemo_automodel configs to proper dataclass instances.
         # This must happen AFTER Hydra instantiation because Hydra's recursive
         # processing chokes on dataclass fields with Union types (e.g. MoEParallelizerConfig).
@@ -75,7 +76,7 @@ def resolve_trainer_cfg(trainer_cfg: DictConfig) -> DictConfig:
     if (cbs := trainer_cfg.get("callbacks", None)) is not None and isinstance(cbs, Sequence):
         resolved = []
         for cb in cbs:
-            resolved.append(hydra.utils.instantiate(cb))
+            resolved.append(safe_instantiate(cb))
         trainer_cfg["callbacks"] = resolved
 
     return trainer_cfg
@@ -100,7 +101,7 @@ def _resolve_automodel_configs(strategy) -> None:
         resolved = {}
         for k, v in cfg.items():
             if isinstance(v, Mapping) and "_target_" in v:
-                resolved[k] = hydra.utils.instantiate(v)
+                resolved[k] = safe_instantiate(v)
             else:
                 resolved[k] = v
         strategy._distributed_config = FSDP2Config(**resolved)

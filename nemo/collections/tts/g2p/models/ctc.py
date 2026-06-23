@@ -18,14 +18,13 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Union
 
 import torch
-from hydra.utils import instantiate
 from lightning.pytorch import Trainer
 from omegaconf import DictConfig, ListConfig, OmegaConf, open_dict
 from transformers import AutoConfig, AutoModel, AutoTokenizer
 
 from nemo.collections.tts.g2p.data.ctc import CTCG2PBPEDataset
 from nemo.collections.tts.models.base import G2PModel
-from nemo.core.classes.common import PretrainedModelInfo
+from nemo.core.classes.common import PretrainedModelInfo, safe_instantiate
 from nemo.core.classes.exportable import Exportable
 from nemo.core.neural_types import LengthsType, LossType, NeuralType, TokenIndex
 from nemo.utils import logging
@@ -143,7 +142,7 @@ class CTCG2PModel(G2PModel, ASRBPEMixin, Exportable):
                 f.write('"\\""\n')  # add " to the vocab
 
             self.register_artifact("tokenizer_grapheme.vocab_file", vocab_file)
-            grapheme_tokenizer = instantiate(cfg.tokenizer_grapheme.dataset, vocab_file=vocab_file)
+            grapheme_tokenizer = safe_instantiate(cfg.tokenizer_grapheme.dataset, vocab_file=vocab_file)
             self.max_source_len = cfg.get("max_source_len", 512)
             self.max_target_len = cfg.get("max_target_len", 512)
         else:
@@ -379,7 +378,7 @@ class CTCG2PModel(G2PModel, ASRBPEMixin, Exportable):
         if not os.path.exists(cfg.manifest_filepath):
             raise ValueError(f"{cfg.dataset.manifest_filepath} not found")
 
-        dataset = instantiate(
+        dataset = safe_instantiate(
             cfg.dataset,
             manifest_filepath=cfg.manifest_filepath,
             phoneme_field=cfg.dataset.phoneme_field,

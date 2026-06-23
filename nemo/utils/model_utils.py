@@ -23,7 +23,7 @@ import tempfile
 from dataclasses import dataclass, is_dataclass
 from enum import Enum
 from functools import lru_cache
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, List, Optional, Tuple, Type, Union
 
 import wrapt
@@ -36,6 +36,7 @@ from nemo.utils.data_utils import (  # imported for compatibility: model_utils.r
     is_datastore_path,
     resolve_cache_dir,
 )
+from nemo.utils.tar_utils import TarPathTraversalError, safe_extract
 
 if TYPE_CHECKING:
     import lightning.pytorch as pl
@@ -82,7 +83,7 @@ def load_config(model_file: str) -> DictConfig:
     if os.path.isfile(model_file):
         with tempfile.TemporaryDirectory() as tmp, tarfile.open(model_file, "r:") as tar:
             prefix = detect_prefix(tar.getnames())
-            tar.extract(f"{prefix}{MODEL_CONFIG}", path=tmp)
+            safe_extract(tar, tmp, members=[f"{prefix}{MODEL_CONFIG}"])
             model_config = OmegaConf.load(os.path.join(tmp, MODEL_CONFIG))
     elif os.path.isdir(model_file):
         model_config = OmegaConf.load(os.path.join(model_file, MODEL_CONFIG))
@@ -90,6 +91,13 @@ def load_config(model_file: str) -> DictConfig:
         raise FileNotFoundError(model_file)
 
     return model_config
+
+
+def _validate_artifact_path(path: str) -> PurePosixPath:
+    artifact_path = PurePosixPath(path)
+    if artifact_path.is_absolute() or ".." in artifact_path.parts:
+        raise TarPathTraversalError(f"Unsafe artifact path: {path}")
+    return artifact_path
 
 
 def unwrap_model(model, module_instances: Optional[Union[Type, Tuple[Type]]] = None):
@@ -743,12 +751,14 @@ def save_artifacts(model, output_dir: str, use_abspath: bool = False) -> None:
             prefix = detect_prefix(maybe_tar.getnames())
         for arti_name, arti_item in model.artifacts.items():
             _, arti_file = arti_item.path.split("nemo:")
+            artifact_path = _validate_artifact_path(arti_file)
             arti_path = os.path.join(output_dir, arti_name)
             if maybe_tar is not None:
-                maybe_tar.extract(f"{prefix}{arti_file}", path=output_dir)
-                os.rename(os.path.join(output_dir, arti_file), arti_path)
+                member_name = f"{prefix}{artifact_path.as_posix()}"
+                safe_extract(maybe_tar, output_dir, members=[member_name])
+                os.rename(os.path.join(output_dir, *PurePosixPath(member_name).parts), arti_path)
             else:
-                shutil.copy(os.path.join(model_file, arti_file), arti_path)
+                shutil.copy(os.path.join(model_file, *artifact_path.parts), arti_path)
             # Store artifact path as basename by default. Otherwise save absolute path but bear in mind
             # that in this case output directory should be permanent for correct artifact recovery later
             arti_path = os.path.abspath(arti_path) if use_abspath else os.path.basename(arti_path)

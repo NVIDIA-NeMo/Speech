@@ -1068,7 +1068,7 @@ def _add_easy_magpie_args(parser: argparse.ArgumentParser) -> None:
         '--phoneme_sampling_method',
         type=str,
         default='argmax',
-        choices=['argmax', 'multinomial', 'greedy'],
+        choices=['argmax', 'multinomial'],
         help='Sampling method for phoneme prediction',
     )
     group.add_argument('--dropout_text_input', action='store_true', help='Force dropout on text input')

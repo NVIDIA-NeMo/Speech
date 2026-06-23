@@ -779,24 +779,6 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                     audio_codes_input,
                 )
 
-            # Note that consider the current_streaming_speech_delay tokens/user speaking tokens on the loss,
-            # allowing to predict them in autoregressive way
-            transition_prefix = int(current_streaming_speech_delay or 0)
-            if self.cfg.get("agent_mask_include_transition_prefix", False) and transition_prefix > 0:
-                agent_i = target_agent_mask.float().unsqueeze(1)
-
-                agent_i = torch.nn.functional.pad(agent_i, (0, transition_prefix))
-                loss_agent_mask = (
-                    torch.nn.functional.max_pool1d(
-                        agent_i,
-                        kernel_size=transition_prefix + 1,
-                        stride=1,
-                    )
-                    .squeeze(1)
-                    .bool()
-                    & valid
-                )
-
         # Embed audio tokens
         audio_embedded = self.embed_audio_tokens(audio_codes_input)  # (B, T'-1, E)
 
@@ -1224,32 +1206,6 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 custom_mask = None
                 if self.cfg.get("phoneme_loss_mask_padding", False):
                     custom_mask = pb_phoneme_tokens_target[:, 0, :] != self.phoneme_tokenizer.pad  # (B, T')
-                elif self.cfg.get("phoneme_loss_mask_include_transition", False):
-                    # agent_mask is aligned to the speech/audio supervision region.
-                    # Expand it left so phoneme loss also covers the phoneme->speech transition.
-                    # The optional +1 gives one extra supervised boundary step, useful for PAD -> BOS / target-shift robustness.
-                    transition_prefix = max(
-                        0,
-                        int(current_streaming_speech_delay - current_streaming_phonemes_delay) + 1,
-                    )
-                    agent_i = agent_mask.float().unsqueeze(1)  # (B, 1, T)
-
-                    if transition_prefix > 0:
-                        # Right padding + max_pool expands the active region to the left.
-                        agent_i = torch.nn.functional.pad(agent_i, (0, transition_prefix))
-
-                        custom_mask = (
-                            torch.nn.functional.max_pool1d(
-                                agent_i,
-                                kernel_size=transition_prefix + 1,
-                                stride=1,
-                            )
-                            .squeeze(1)
-                            .bool()
-                        )
-                    else:
-                        custom_mask = agent_mask
-
                 elif self.cfg.get("mask_user_on_loss", False):
                     custom_mask = agent_mask
 

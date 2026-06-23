@@ -1364,7 +1364,7 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
                         state=state,
                         text_tokens=warmup_tokens[:, i],
                         user_audio_channel_embedding=user_step_emb,
-                        prefill_like_step=not bool(model.cfg.get("agent_mask_include_transition_prefix", False)),
+                        prefill_like_step=True,
                         prefill_like_is_last_step=(i == delay_tokens - 1),
                         use_inference_mode=True,
                     )

@@ -463,7 +463,6 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
                 text_str = cut.supervisions[0].normalized_text
             else:
                 text_str = cut.supervisions[0].text
-
             raw_text_list.append(text_str)
             if cut.has_custom("tokenizer_names"):
                 # Pick a random tokenizer from the list of tokenizers

@@ -332,7 +332,8 @@ def set_model_dict_for_partial_init(
             dimension 0 differs and all trailing dimensions match. Defaults to False.
 
     Returns:
-        Updated model state dictionary with compatible pretrained weights loaded.
+        Dict[str, torch.Tensor]:
+            The updated model state dictionary with compatible pretrained weights loaded.
 
     Example:
         >>> model_dict = model.state_dict()

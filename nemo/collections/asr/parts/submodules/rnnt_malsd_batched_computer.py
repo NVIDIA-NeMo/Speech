@@ -18,7 +18,12 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from nemo.collections.asr.parts.context_biasing.biasing_multi_model import (
+    GPUBiasingMultiModel,
+    GPUBiasingMultiModelBase,
+)
 from nemo.collections.asr.parts.submodules.ngram_lm import NGramGPULanguageModel
+from nemo.collections.asr.parts.submodules.transducer_decoding.label_looping_base import BatchedBeamState
 from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMethodMixin
 from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import (
     INACTIVE_SCORE,
@@ -26,6 +31,7 @@ from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import (
     BatchedBeamHyps,
     BlankLMScoreMode,
     PruningMode,
+    seed_batched_hyps_from_state,
 )
 from nemo.collections.common.parts.optional_cuda_graphs import WithOptionalCudaGraphs
 from nemo.core.utils.cuda_python_utils import (
@@ -100,6 +106,9 @@ class MALSDState:
     init_fusion_states_list: Optional[List[torch.Tensor]] = None  # list of initial fusion states
     init_fusion_states_candidates_list: Optional[List[torch.Tensor]] = None  # list of initial fusion states candidates
     init_fusion_scores_list: Optional[List[torch.Tensor]] = None  # list of initial fusion scores
+
+    # per-stream biasing model IDs [batch_size, beam_size] (same id across beams)
+    multi_biasing_ids: Optional[torch.Tensor] = None
 
     def __init__(
         self,
@@ -237,6 +246,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         blank_lm_score_mode: Optional[str | BlankLMScoreMode] = None,
         pruning_mode: Optional[str | PruningMode] = None,
         allow_cuda_graphs: bool = True,
+        enable_per_stream_biasing: bool = False,
     ):
         """
         Init method.
@@ -252,6 +262,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             blank_lm_score_mode: mode for scoring blank symbol with fusion models
             pruning_mode: mode for pruning hypotheses with fusion models
             allow_cuda_graphs: whether to allow CUDA graphs
+            enable_per_stream_biasing: whether to enable per-stream biasing via multi-boosting tree
         """
 
         super().__init__()
@@ -276,13 +287,19 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         self.cuda_graphs_allow_fallback = True
         self.maybe_enable_cuda_graphs()
 
-        if fusion_models is not None:
+        self.biasing_multi_model: GPUBiasingMultiModel | None = (
+            GPUBiasingMultiModel(vocab_size=self._blank_index, reallocation_callback_fn=self.reset_cuda_graphs_state)
+            if enable_per_stream_biasing
+            else None
+        )
+
+        self.fusion_models: list[NGramGPULanguageModel] = fusion_models if fusion_models is not None else []
+        self.fusion_models_alpha: list[float] = fusion_models_alpha if fusion_models_alpha is not None else []
+
+        if self.fusion_models or self.per_stream_biasing_enabled:
             expected_blank_index = self.joint.num_classes_with_blank - self.joint.num_extra_outputs - 1
             if self._blank_index != expected_blank_index:
                 raise ValueError(f"Invalid blank index: expected {expected_blank_index}, got {self._blank_index}")
-
-            self.fusion_models = fusion_models
-            self.fusion_models_alpha = fusion_models_alpha
 
             self.pruning_mode = PruningMode.EARLY if pruning_mode is None else PruningMode(pruning_mode)
             self.blank_lm_score_mode = (
@@ -291,8 +308,60 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
                 else BlankLMScoreMode(blank_lm_score_mode)
             )
         else:
-            self.fusion_models = None
             self.blank_lm_score_mode = None
+
+    @property
+    def per_stream_biasing_enabled(self) -> bool:
+        return self.biasing_multi_model is not None
+
+    @property
+    def has_fusion_models(self) -> bool:
+        return bool(self.fusion_models) or self.per_stream_biasing_enabled
+
+    def _all_fusion_models(
+        self, with_multi_model: bool = True
+    ) -> list[NGramGPULanguageModel | GPUBiasingMultiModelBase]:
+        if with_multi_model and self.per_stream_biasing_enabled:
+            return self.fusion_models + [self.biasing_multi_model]
+        return self.fusion_models
+
+    def _advance_all_fusion_models(
+        self,
+        fusion_states_list: list[torch.Tensor],
+        float_dtype: torch.dtype,
+        multi_biasing_ids: Optional[torch.Tensor] = None,
+    ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
+        """Advance all fusion models; scores have shape [B, beam, vocab] with alpha applied."""
+        batch_size = fusion_states_list[0].shape[0] // self.beam_size
+        all_scores = []
+        all_states_candidates = []
+        biasing_index = len(self.fusion_models)  # biasing is always after regular fusion models
+        for idx, fusion_model in enumerate(self._all_fusion_models()):
+            states = fusion_states_list[idx]
+            if idx == biasing_index:
+                model_ids = multi_biasing_ids[:batch_size].reshape(-1)
+                scores, states_candidates = fusion_model.advance(states=states, model_ids=model_ids)
+                scores = scores.to(dtype=float_dtype).view(batch_size, self.beam_size, -1)
+            else:
+                scores, states_candidates = fusion_model.advance(states=states)
+                scores = (
+                    scores.to(dtype=float_dtype).view(batch_size, self.beam_size, -1) * self.fusion_models_alpha[idx]
+                )
+            all_scores.append(scores)
+            all_states_candidates.append(states_candidates.view(batch_size, self.beam_size, -1))
+        return all_scores, all_states_candidates
+
+    def _fusion_scores_alpha_sum(
+        self,
+        batch_size: int,
+        multi_biasing_ids: Optional[torch.Tensor] = None,
+    ) -> Union[float, torch.Tensor]:
+        """Alpha sum for blank LM weighting; per-stream biasing returns [batch_size, 1]."""
+        lm_alpha = sum(self.fusion_models_alpha)
+        if not self.per_stream_biasing_enabled or multi_biasing_ids is None:
+            return lm_alpha
+        biasing_alpha = self.biasing_multi_model.get_alphas(multi_biasing_ids[:batch_size, 0])
+        return lm_alpha + biasing_alpha.view(batch_size, 1)
 
     def force_cuda_graphs_mode(self, mode: Optional[Union[str, CudaGraphsMode]]):
         """
@@ -350,7 +419,9 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         self,
         encoder_output: torch.Tensor,
         encoder_output_length: torch.Tensor,
-    ) -> BatchedBeamHyps:
+        prev_batched_state: Optional[BatchedBeamState] = None,
+        multi_biasing_ids: Optional[torch.Tensor] = None,
+    ) -> tuple[BatchedBeamHyps, BatchedBeamState]:
         """
         Pytorch implementation of the batched ALSD algorithm for RNN-T.
         Args:
@@ -358,6 +429,8 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
                 [batch_size, max_time, encoder_dim].
             encoder_output_length (torch.Tensor): The lengths of the encoder outputs for each batch
                 with shape [batch_size].
+            prev_batched_state (BatchedBeamState, optional): The previous batch state.
+            multi_biasing_ids (torch.Tensor, optional): Model IDs for per-stream biasing [batch_size].
         Returns:
             BatchedBeamHyps: Batched beam hypotheses.
         """
@@ -380,11 +453,6 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             device=device,
             float_dtype=float_dtype,
         )
-
-        last_labels_wb = torch.full(
-            [batch_size, self.beam_size], fill_value=self._SOS, device=device, dtype=torch.long
-        )
-
         batch_beam_indices = (
             torch.arange(batch_size, dtype=torch.long, device=device)[:, None]
             .expand(batch_size, self.beam_size)
@@ -396,47 +464,70 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             .clone()
         )  # size: batch_size x beam_size x beam_size
 
+        if prev_batched_state is not None and prev_batched_state.scores is not None:
+            seed_batched_hyps_from_state(batched_hyps, prev_batched_state)
+
         time_indices = torch.zeros_like(batch_beam_indices)
         safe_time_indices = torch.zeros_like(time_indices)  # time indices, guaranteed to be < out_len
-        last_timesteps = (encoder_output_length - 1)[:, None].expand_as(batch_beam_indices)
-        active_mask = time_indices <= last_timesteps
+        # In mixed batches some rows may have `encoder_output_length == 0`.
+        last_timesteps = torch.clamp_min(encoder_output_length - 1, 0)[:, None].expand_as(batch_beam_indices)
+        active_mask = (encoder_output_length > 0)[:, None].expand_as(batch_beam_indices) & (
+            time_indices <= last_timesteps
+        )
 
-        # setup fusion models if available
-        if self.fusion_models is not None:
-            fusion_states_list = []
-            fusion_states_candidates_list = []
-            fusion_scores_list = []
-            for fusion_model_idx, fusion_model in enumerate(self.fusion_models):
+        # setup fusion models and/or biasing multi-model
+        if self.per_stream_biasing_enabled:
+            if multi_biasing_ids is None:
+                multi_biasing_ids = torch.full([batch_size], fill_value=-1, dtype=torch.long, device=device)
+            multi_biasing_ids = multi_biasing_ids.unsqueeze(1).expand(-1, self.beam_size)
+
+        if self.has_fusion_models:
+            for fusion_model in self._all_fusion_models():
                 fusion_model.to(device)
-                fusion_states = fusion_model.get_init_states(batch_size=batch_size * self.beam_size, bos=True)
-                fusion_scores, fusion_states_candidates = fusion_model.advance(
-                    states=fusion_states
-                )  # vocab_size_no_blank
 
-                fusion_scores = (
-                    fusion_scores.to(dtype=float_dtype).view(batch_size, self.beam_size, -1)
-                    * self.fusion_models_alpha[fusion_model_idx]
-                )
-                fusion_states_list.append(fusion_states)
-                fusion_states_candidates_list.append(fusion_states_candidates)
-                fusion_scores_list.append(fusion_scores)
+            if prev_batched_state is None or not prev_batched_state.fusion_states_list:
+                init_fusion_states = [
+                    fm.get_init_states(batch_size=batch_size * self.beam_size, bos=True)
+                    for fm in self._all_fusion_models()
+                ]
+            else:
+                init_fusion_states = [s.reshape(-1).clone() for s in prev_batched_state.fusion_states_list]
 
-        decoder_state = self.decoder.initialize_state(
-            torch.empty(
-                [
-                    batch_size * self.beam_size,
-                ],
-                dtype=float_dtype,
-                device=device,
+            fusion_scores_list, fusion_states_candidates_list = self._advance_all_fusion_models(
+                init_fusion_states, float_dtype, multi_biasing_ids
             )
-        )
+            fusion_states_list = [
+                init_fusion_states[i].view(batch_size, self.beam_size) for i in range(len(init_fusion_states))
+            ]
+        else:
+            fusion_states_list = None
+            fusion_states_candidates_list = None
+            fusion_scores_list = None
 
-        decoder_output, state, *_ = self.decoder.predict(
-            last_labels_wb.view(-1, 1), None, add_sos=False, batch_size=batch_size * self.beam_size
-        )
-        # do not recalculate joint projection
-        decoder_output = self.joint.project_prednet(decoder_output)  # size: [(batch_size x beam_size), 1, Dim]
-        self.decoder.batch_replace_states_all(state, dst_states=decoder_state)
+        if prev_batched_state is None:
+            last_labels_wb = torch.full(
+                [batch_size, self.beam_size], fill_value=self._SOS, device=device, dtype=torch.long
+            )
+            decoder_state = self.decoder.initialize_state(
+                torch.empty(
+                    [
+                        batch_size * self.beam_size,
+                    ],
+                    dtype=float_dtype,
+                    device=device,
+                )
+            )
+
+            decoder_output, state, *_ = self.decoder.predict(
+                last_labels_wb.view(-1, 1), None, add_sos=False, batch_size=batch_size * self.beam_size
+            )
+            # do not recalculate joint projection
+            decoder_output = self.joint.project_prednet(decoder_output)  # size: [(batch_size x beam_size), 1, Dim]
+            self.decoder.batch_replace_states_all(state, dst_states=decoder_state)
+        else:
+            # Continuing from previous chunk - batched_hyps already contains all state
+            decoder_output = prev_batched_state.predictor_outputs
+            decoder_state = prev_batched_state.predictor_states
 
         while active_mask.any():
             # step 1: get joint output + fuse with fusion models (if present)
@@ -452,8 +543,12 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
                 batch_size, self.beam_size, -1
             )  # [(B x Beam), V]
 
-            if self.fusion_models is not None:
-                log_probs_top_k, labels_top_k = self.topk_fusion_model(fusion_scores_list, log_probs)
+            if self.has_fusion_models:
+                log_probs_top_k, labels_top_k = self.topk_fusion_model(
+                    fusion_scores_list,
+                    log_probs,
+                    multi_biasing_ids=multi_biasing_ids,
+                )
             else:
                 log_probs_top_k, labels_top_k = torch.topk(
                     log_probs, self.beam_size, dim=-1, largest=True, sorted=True
@@ -555,54 +650,88 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
                 src_states=prev_decoder_state, dst_states=decoder_state, mask=preserve_state.view(-1)
             )
 
-            if self.fusion_models is not None:
+            if self.has_fusion_models:
                 # fusion_states: size: [(batch_size x beam_size)]
                 # fusion_states_candidates: [(batch_size x beam_size) x V (without blank)]
-                for fusion_model_idx, fusion_model in enumerate(self.fusion_models):
-                    fusion_states_candidates = torch.gather(
-                        fusion_states_candidates_list[fusion_model_idx].view(batch_size, self.beam_size, -1),
+                last_labels_wb_blank_replaced = torch.where(preserve_state, 0, last_labels_wb)
+                for fusion_model_idx in range(len(fusion_states_list)):
+                    fusion_states_candidates_list[fusion_model_idx] = torch.gather(
+                        fusion_states_candidates_list[fusion_model_idx],
                         dim=1,
                         index=hyps_indices[:, :, None].expand(
                             batch_size, self.beam_size, fusion_states_candidates_list[fusion_model_idx].shape[-1]
                         ),
                     )
-                    fusion_states_prev = torch.gather(
-                        fusion_states_list[fusion_model_idx].view(batch_size, self.beam_size),
-                        dim=1,
-                        index=hyps_indices,
+                    fusion_states_prev = torch.gather(fusion_states_list[fusion_model_idx], dim=1, index=hyps_indices)
+                    fusion_states_list[fusion_model_idx] = torch.where(
+                        preserve_state,
+                        fusion_states_prev,
+                        torch.gather(
+                            fusion_states_candidates_list[fusion_model_idx],
+                            dim=-1,
+                            index=last_labels_wb_blank_replaced.unsqueeze(-1),
+                        ).squeeze(-1),
                     )
-                    last_labels_wb_blank_replaced = torch.where(preserve_state, 0, last_labels_wb)
-
-                    fusion_states = torch.gather(
-                        fusion_states_candidates, dim=-1, index=last_labels_wb_blank_replaced.unsqueeze(-1)
-                    ).squeeze(-1)
-                    fusion_states = torch.where(preserve_state, fusion_states_prev, fusion_states).view(-1)
-
-                    fusion_scores, fusion_states_candidates = fusion_model.advance(states=fusion_states)
-                    fusion_scores = (
-                        fusion_scores.to(dtype=float_dtype).view(batch_size, self.beam_size, -1)
-                        * self.fusion_models_alpha[fusion_model_idx]
-                    )
-                    fusion_states_list[fusion_model_idx] = fusion_states
-                    fusion_states_candidates_list[fusion_model_idx] = fusion_states_candidates
-                    fusion_scores_list[fusion_model_idx] = fusion_scores
+                # advance all fusion models at once
+                fusion_scores_list, fusion_states_candidates_list = self._advance_all_fusion_models(
+                    [s.reshape(-1) for s in fusion_states_list], float_dtype, multi_biasing_ids
+                )
 
             # step 6: update time indices + active mask
-            time_indices = batched_hyps.next_timestamp
+            time_indices = torch.gather(time_indices, dim=-1, index=hyps_indices) + (next_labels == self._blank_index)
             torch.minimum(time_indices, last_timesteps, out=safe_time_indices)
             active_mask = time_indices <= last_timesteps
 
-        return batched_hyps
+        # NB: last labels can not exist (nothing decoded on this step).
+        # return the last labels from the previous state in this case
+        last_labels = batched_hyps.get_last_labels(pad_id=self._SOS)
+        batched_hyps.next_timestamp.fill_(0)
 
-    def topk_fusion_model(self, fusion_scores_list, log_probs, eps=1e-2):
+        # Make ``batched_hyps.timestamps`` global by adding the cumulative encoder frame offset.
+        if prev_batched_state is not None:
+            batched_hyps.timestamps += prev_batched_state.decoded_lengths.unsqueeze(1).unsqueeze(2)
+
+        decoding_state = BatchedBeamState(
+            predictor_states=decoder_state,
+            predictor_outputs=decoder_output,
+            labels=(
+                torch.where(last_labels == self._SOS, prev_batched_state.labels, last_labels)
+                if prev_batched_state is not None
+                else last_labels
+            ),
+            decoded_lengths=(
+                encoder_output_length.clone()
+                if prev_batched_state is None
+                else encoder_output_length + prev_batched_state.decoded_lengths
+            ),
+            fusion_states_list=(
+                [s.clone() for s in fusion_states_list]
+                if self.has_fusion_models and fusion_states_list is not None
+                else None
+            ),
+            time_jumps=None,
+            **batched_hyps.export_cross_chunk_state(),
+        )
+
+        return batched_hyps, decoding_state
+
+    def topk_fusion_model(
+        self,
+        fusion_scores_list,
+        log_probs,
+        eps=1e-2,
+        multi_biasing_ids: Optional[torch.Tensor] = None,
+    ):
         """
         Computes the top-k log probabilities and corresponding labels for hypotheses,
         incorporating fusion models scores based on the pruning and blank scoring modes.
 
         Args:
-            fusion_scores_list (List[torch.Tensor]): List of fusion model scores for hypotheses, shape [batch_size, beam_size, vocab_size].
+            fusion_scores_list (List[torch.Tensor]): List of fusion model scores (including biasing if enabled),
+                shape [batch_size, beam_size, vocab_size].
             log_probs (torch.Tensor): Log probabilities from the joint network, shape [batch_size, beam_size, vocab_size].
             eps (float): Epsilon value for numerical stability. Default is 1e-2 for bf16 precision.
+            multi_biasing_ids (torch.Tensor, optional): Per-stream biasing model IDs [batch_size].
 
         Returns:
             Tuple[torch.Tensor, torch.Tensor]:
@@ -610,8 +739,8 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
                 - labels_top_k: Corresponding top-k labels, shape [batch_size, beam_size, beam_size].
         """
 
+        fusion_scores_alpha_sum = self._fusion_scores_alpha_sum(log_probs.shape[0], multi_biasing_ids)
         fusion_scores_sum = sum(fusion_scores_list)
-        fusion_scores_alpha_sum = sum(self.fusion_models_alpha)
 
         match self.pruning_mode, self.blank_lm_score_mode:
             case PruningMode.LATE, BlankLMScoreMode.NO_SCORE:
@@ -625,8 +754,16 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
                 non_blank_logprob = torch.log1p(
                     -torch.clamp(torch.exp(blank_logprob), max=1.0 - eps)
                 )  # 1e-2 is used here instead of 1e-6 to address numerical instability with bf16 precision.
-                log_probs[..., :-1] += non_blank_logprob.unsqueeze(-1) * fusion_scores_alpha_sum + fusion_scores_sum
-                log_probs[..., -1] *= 1 + fusion_scores_alpha_sum
+                log_probs[..., :-1] += (
+                    non_blank_logprob.unsqueeze(-1)
+                    * (
+                        fusion_scores_alpha_sum.unsqueeze(-1)
+                        if isinstance(fusion_scores_alpha_sum, torch.Tensor)
+                        else fusion_scores_alpha_sum
+                    )
+                    + fusion_scores_sum
+                )
+                log_probs[..., -1] = log_probs[..., -1] * (1 + fusion_scores_alpha_sum)
                 log_probs_top_k, labels_top_k = torch.topk(
                     log_probs, self.beam_size, dim=-1, largest=True, sorted=True
                 )
@@ -653,7 +790,12 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
                     labels_top_k == self._blank_index,
                     log_probs_top_k * (1 + fusion_scores_alpha_sum),
                     log_probs_top_k
-                    + non_blank_logprob.unsqueeze(-1) * fusion_scores_alpha_sum
+                    + non_blank_logprob.unsqueeze(-1)
+                    * (
+                        fusion_scores_alpha_sum.unsqueeze(-1)
+                        if isinstance(fusion_scores_alpha_sum, torch.Tensor)
+                        else fusion_scores_alpha_sum
+                    )
                     + torch.gather(fusion_scores_sum, dim=-1, index=masked_labels),
                 )
 
@@ -668,7 +810,9 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         self,
         encoder_output: torch.Tensor,
         encoder_output_length: torch.Tensor,
-    ) -> BatchedBeamHyps:
+        prev_batched_state: Optional[BatchedBeamState] = None,
+        multi_biasing_ids: Optional[torch.Tensor] = None,
+    ) -> tuple[BatchedBeamHyps, BatchedBeamState]:
         """
         Cuda-Graphs implementation of the batched ALSD algorithm.
         Args:
@@ -676,8 +820,16 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
                 [batch_size, max_time, encoder_dim].
             encoder_output_length (torch.Tensor): The lengths of the encoder outputs for each batch
                 with shape [batch_size].
+            prev_batched_state: optional state from a previous chunk (streaming / chunked decoding).
+                When provided, ``predictor_states``, ``predictor_outputs`` and ``batched_hyps`` are
+                reused so that beam search continues across the chunk boundary.
+            multi_biasing_ids (torch.Tensor, optional): Model IDs for per-stream biasing [batch_size].
         Returns:
-            BathcedBeamHyps: Batched beam hypotheses.
+            A 3-tuple ``(batched_hyps, alignments, decoding_state)``:
+            - ``batched_hyps``: the beam hypotheses for this chunk (and, in streaming, the
+              accumulated prefix carried over from previous chunks).
+            - ``alignments``: place holder for alignments, not implemented yet
+            - ``decoding_state``: decoder states and outputs.
         """
 
         assert self.cuda_graphs_mode is not None
@@ -694,11 +846,26 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         if self.state is None or self.state.need_reinit(encoder_output):
             self._graph_reinitialize(encoder_output, encoder_output_length)
 
+        # copy biasing model IDs before per-chunk init (continuation needs them for fusion score refresh)
+        if self.per_stream_biasing_enabled:
+            if multi_biasing_ids is None:
+                multi_biasing_ids = torch.full(
+                    [current_batch_size], fill_value=-1, dtype=torch.long, device=encoder_output.device
+                )
+            self.state.multi_biasing_ids[:current_batch_size, :].copy_(
+                multi_biasing_ids[:current_batch_size].unsqueeze(1).expand(-1, self.beam_size)
+            )
+            self.state.multi_biasing_ids[current_batch_size:, :].fill_(-1)
+
+        # Python-side per-chunk initialization (decoder, fusion, batched_hyps cross-chunk state).
+        self._init_decoding_state(prev_batched_state, current_batch_size)
+
         # set length to zero for elements outside the current batch
         self.state.encoder_output_length.fill_(0)
         # copy (projected) encoder output and lenghts
         self.state.encoder_output_projected[:current_batch_size, :current_max_time, ...].copy_(encoder_output)
         self.state.encoder_output_length[:current_batch_size].copy_(encoder_output_length.unsqueeze(-1))
+
         if self.cuda_graphs_mode is self.CudaGraphsMode.FULL_GRAPH:
             self.full_graph.replay()
         elif self.cuda_graphs_mode is self.CudaGraphsMode.NO_WHILE_LOOPS:
@@ -707,8 +874,6 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
                 self.separate_graphs.loop_body.replay()
                 self.separate_graphs.loop_update_decoder.replay()
         elif self.cuda_graphs_mode is self.CudaGraphsMode.NO_GRAPHS:
-            # this mode is only for testing purposes
-            # manual loop instead of using graphs
             self._before_loop()
             while self.state.active_mask_any.item():
                 self._loop_body()
@@ -716,7 +881,15 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         else:
             raise NotImplementedError(f"Unknown graph mode: {self.cuda_graphs_mode}")
 
-        return self.state.batched_hyps
+        if prev_batched_state is not None:
+            self.state.batched_hyps.timestamps[:current_batch_size] += (
+                prev_batched_state.decoded_lengths[:current_batch_size].unsqueeze(-1).unsqueeze(-1)
+            )
+
+        # create decoding state for next chunk
+        decoding_state = self._create_decoding_state(encoder_output_length, prev_batched_state)
+
+        return self.state.batched_hyps.clone(batch_size=current_batch_size), decoding_state
 
     @classmethod
     def _create_loop_body_kernel(cls):
@@ -800,43 +973,40 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         self.decoder.batch_replace_states_all(self.state.init_decoder_state, dst_states=self.state.prev_decoder_state)
         self.state.prev_decoder_output = self.state.init_decoder_output.clone()
 
-        if self.fusion_models is not None:
+        device = encoder_output_projected.device
+        if self.per_stream_biasing_enabled:
+            self.state.multi_biasing_ids = torch.full(
+                [self.state.batch_size, self.beam_size], fill_value=-1, dtype=torch.long, device=device
+            )
 
-            device = encoder_output_projected.device
-
+        if self.has_fusion_models:
+            # initialize all fusion models (including multi-biasing as last element)
             self.state.init_fusion_states_list = []
-            self.state.init_fusion_states_candidates_list = []
-            self.state.init_fusion_scores_list = []
-
-            self.state.fusion_states_list = []
-            self.state.fusion_states_candidates_list = []
-            self.state.fusion_scores_list = []
-            self.state.fusion_states_prev_list = []
-
-            for fusion_model_idx, fusion_model in enumerate(self.fusion_models):
+            for fusion_model in self._all_fusion_models():
                 fusion_model.to(device)
+                self.state.init_fusion_states_list.append(
+                    fusion_model.get_init_states(batch_size=self.state.batch_size * self.beam_size, bos=True).view(
+                        self.state.batch_size, self.beam_size
+                    )
+                )
+            self.state.init_fusion_scores_list, self.state.init_fusion_states_candidates_list = (
+                self._advance_all_fusion_models(
+                    [s.view(-1) for s in self.state.init_fusion_states_list],
+                    self.state.float_dtype,
+                    self.state.multi_biasing_ids,
+                )
+            )
 
-                init_fusion_states = fusion_model.get_init_states(
-                    batch_size=self.state.batch_size * self.beam_size, bos=True
-                ).view(self.state.batch_size, self.beam_size)
-                init_fusion_scores, init_fusion_states_candidates = fusion_model.advance(
-                    states=init_fusion_states.view(-1)
-                )
-                self.state.init_fusion_scores_list.append(
-                    init_fusion_scores.to(dtype=self.state.float_dtype).view(self.state.batch_size, self.beam_size, -1)
-                    * self.fusion_models_alpha[fusion_model_idx]
-                )
-                self.state.init_fusion_states_candidates_list.append(
-                    init_fusion_states_candidates.view(self.state.batch_size, self.beam_size, -1)
-                )
-                self.state.init_fusion_states_list.append(init_fusion_states)
+            self.state.fusion_states_list = [s.clone() for s in self.state.init_fusion_states_list]
+            self.state.fusion_states_candidates_list = [
+                s.clone() for s in self.state.init_fusion_states_candidates_list
+            ]
+            self.state.fusion_scores_list = [s.clone() for s in self.state.init_fusion_scores_list]
+            self.state.fusion_states_prev_list = [s.clone() for s in self.state.init_fusion_states_list]
 
-                self.state.fusion_states_list.append(init_fusion_states.clone())
-                self.state.fusion_states_candidates_list.append(
-                    self.state.init_fusion_states_candidates_list[fusion_model_idx].clone()
-                )
-                self.state.fusion_scores_list.append(self.state.init_fusion_scores_list[fusion_model_idx].clone())
-                self.state.fusion_states_prev_list.append(init_fusion_states.clone())
+        # warmup before graph compilation
+        if self.cuda_graphs_mode is not self.CudaGraphsMode.NO_GRAPHS:
+            self._warmup_for_cuda_graphs()
 
         if self.cuda_graphs_mode is self.CudaGraphsMode.FULL_GRAPH:
             try:
@@ -858,12 +1028,31 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         else:
             raise NotImplementedError
 
+    def _warmup_for_cuda_graphs(self):
+        """Warmup the decoding loop before CUDA graph capture."""
+        is_ddp = torch.distributed.is_available() and torch.distributed.is_initialized()
+        # 11 warmup steps required in DDP mode
+        # see https://pytorch.org/docs/stable/notes/cuda.html#usage-with-distributeddataparallel
+        num_runs = 11 if is_ddp else 3
+        self.state.encoder_output_projected.fill_(0.0)
+        self.state.encoder_output_length.fill_(1)
+        s = torch.cuda.Stream(self.state.device)
+        s.wait_stream(torch.cuda.current_stream(device=self.state.device))
+        with torch.cuda.stream(s), torch.inference_mode():
+            for _ in range(num_runs):
+                self._before_loop()
+                self._loop_body()
+                self._loop_update_decoder()
+        torch.cuda.current_stream(device=self.state.device).wait_stream(s)
+        self.state.encoder_output_length.fill_(0)
+
     def _partial_graphs_compile(self):
         """Compile decoding by parts"""
         # Always create a new stream, because the per-thread default stream disallows stream capture to a graph.
         stream_for_graph = torch.cuda.Stream(self.state.device)
         stream_for_graph.wait_stream(torch.cuda.default_stream(self.state.device))
         self.separate_graphs = SeparateGraphsMALSD()
+
         with (
             torch.cuda.stream(stream_for_graph),
             torch.inference_mode(),
@@ -893,9 +1082,17 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
 
     @cuda_python_required
     def _full_graph_compile(self):
-        """Compile full graph for decoding"""
+        """Compile a single CUDA graph: ``_before_loop`` + WHILE(``active_mask_any``) loop body.
+
+        Per-chunk decoder/fusion/batched_hyps state is seeded from Python *before* this
+        graph runs (see ``_init_decoding_state``), so the captured graph is fully chunk-
+        agnostic and contains exactly one conditional node (the main decoding WHILE).
+        """
         # Always create a new stream, because the per-thread default stream disallows stream capture to a graph.
         stream_for_graph = torch.cuda.Stream(self.state.device)
+        # Drain any work pending on the default stream (e.g. the warmup that ran just above in
+        # ``_graph_reinitialize``) before we start capturing.
+        stream_for_graph.wait_stream(torch.cuda.default_stream(self.state.device))
         self.full_graph = torch.cuda.CUDAGraph()
 
         with (
@@ -904,45 +1101,34 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             torch.cuda.graph(self.full_graph, stream=stream_for_graph, capture_error_mode="thread_local"),
         ):
             self._before_loop()
+
+            cond_kernel = self._create_loop_body_kernel()
+
             # NB: depending on cuda-python version, cudaStreamGetCaptureInfo can return either 5 or 6 elements
             capture_status, _, graph, *_ = cu_call(
                 cudart.cudaStreamGetCaptureInfo(torch.cuda.current_stream(device=self.state.device).cuda_stream)
             )
-
             assert capture_status == cudart.cudaStreamCaptureStatus.cudaStreamCaptureStatusActive
 
-            # capture: while self.active_mask_any:
+            # WHILE (active_mask_any): main decoding loop
             (loop_conditional_handle,) = cu_call(cudart.cudaGraphConditionalHandleCreate(graph, 0, 0))
-            loop_kernel = self._create_loop_body_kernel()
             active_mask_any_ptr = np.array([self.state.active_mask_any.data_ptr()], dtype=np.uint64)
             loop_args = np.array(
                 [loop_conditional_handle.getPtr(), active_mask_any_ptr.ctypes.data],
                 dtype=np.uint64,
             )
-            # loop while there are active utterances
-            with with_conditional_node(loop_kernel, loop_args, loop_conditional_handle, device=self.state.device):
+            with with_conditional_node(cond_kernel, loop_args, loop_conditional_handle, device=self.state.device):
                 self._loop_body()
                 self._loop_update_decoder()
 
     def _before_loop(self):
+        """Chunk-agnostic prologue captured into the CUDA graph.
+
+        ``batched_hyps`` has already been cleared and (for continuation chunks) seeded
+        from the previous chunk by Python in :meth:`_init_decoding_state`, so this
+        captured prologue only zeros the loop-body scratch buffers and computes the
+        initial ``active_mask`` from ``encoder_output_length``.
         """
-        Clears state and compute initial active mask
-        """
-
-        self.state.batched_hyps.clear_()
-
-        # initial state for fusion models
-        if self.fusion_models is not None:
-            for fusion_idx, fusion_model in enumerate(self.fusion_models):
-                self.state.fusion_states_list[fusion_idx].copy_(self.state.init_fusion_states_list[fusion_idx])
-                self.state.fusion_states_candidates_list[fusion_idx].copy_(
-                    self.state.init_fusion_states_candidates_list[fusion_idx]
-                )
-                self.state.fusion_scores_list[fusion_idx].copy_(self.state.init_fusion_scores_list[fusion_idx])
-                self.state.fusion_states_prev_list[fusion_idx].copy_(self.state.init_fusion_states_list[fusion_idx])
-
-        # last found labels - initially <SOS> (<blank>) symbol
-        self.state.last_labels_wb.fill_(self._SOS)
         self.state.next_scores.fill_(0.0)
         self.state.next_labels.fill_(0.0)
         self.state.next_idx.fill_(0.0)
@@ -952,6 +1138,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         self.state.safe_time_indices.fill_(0)  # safe time indices: guaranteed to be < encoder_output_length
 
         torch.sub(self.state.encoder_output_length, 1, out=self.state.last_timesteps)
+        torch.clamp_min_(self.state.last_timesteps, 0)
 
         # masks for utterances in batch
         # same as: active_mask = self.encoder_output_length > 0
@@ -959,11 +1146,6 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
 
         # same as: self.active_mask_any = active_mask.any()
         torch.any(self.state.active_mask, out=self.state.active_mask_any)
-
-        # set decoder state and output to initial values
-        self.state.decoder_output.copy_(self.state.init_decoder_output)
-        self.state.decoder_state[0].copy_(self.state.init_decoder_state[0])
-        self.state.decoder_state[1].copy_(self.state.init_decoder_state[1])
 
         # set previous decoder state and output to initial values
         self.state.prev_decoder_output.fill_(0)
@@ -983,8 +1165,12 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             self.state.batch_size, self.beam_size, -1
         )  # [(B x Beam), V]
 
-        if self.fusion_models is not None:
-            log_probs_top_k, labels_top_k = self.topk_fusion_model(self.state.fusion_scores_list, log_probs)
+        if self.has_fusion_models:
+            log_probs_top_k, labels_top_k = self.topk_fusion_model(
+                self.state.fusion_scores_list,
+                log_probs,
+                multi_biasing_ids=self.state.multi_biasing_ids,
+            )
         else:
             log_probs_top_k, labels_top_k = torch.topk(log_probs, self.beam_size, dim=-1, largest=True, sorted=True)
 
@@ -1119,10 +1305,9 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             other_src_states=decoder_state,
         )
 
-        if self.fusion_models is not None:
-            # fusion_states: size: [(batch_size x beam_size)]
-            # fusion_states_candidates: [(batch_size x beam_size) x V (without blank)]
-            for fusion_idx, fusion_model in enumerate(self.fusion_models):
+        if self.has_fusion_models:
+            last_labels_wb_blank_replaced = torch.where(preserve_state, 0, self.state.last_labels_wb)
+            for fusion_idx in range(len(self.state.fusion_states_list)):
                 self.state.fusion_states_candidates_list[fusion_idx].copy_(
                     torch.gather(
                         self.state.fusion_states_candidates_list[fusion_idx],
@@ -1140,8 +1325,6 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
                     index=self.state.next_idx,
                     out=self.state.fusion_states_prev_list[fusion_idx],
                 )
-                last_labels_wb_blank_replaced = torch.where(preserve_state, 0, self.state.last_labels_wb)
-
                 torch.gather(
                     self.state.fusion_states_candidates_list[fusion_idx],
                     dim=-1,
@@ -1154,17 +1337,15 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
                     self.state.fusion_states_list[fusion_idx],
                     out=self.state.fusion_states_list[fusion_idx],
                 )
-                fusion_scores, fusion_states_candidates = fusion_model.advance(
-                    states=self.state.fusion_states_list[fusion_idx].view(-1)
-                )
-                fusion_scores = (
-                    fusion_scores.to(dtype=self.state.float_dtype).view(self.state.batch_size, self.beam_size, -1)
-                    * self.fusion_models_alpha[fusion_idx]
-                )
-                self.state.fusion_states_candidates_list[fusion_idx].copy_(
-                    fusion_states_candidates.view(self.state.batch_size, self.state.beam_size, -1)
-                )
-                self.state.fusion_scores_list[fusion_idx].copy_(fusion_scores)
+            # advance all fusion models at once
+            scores_list, candidates_list = self._advance_all_fusion_models(
+                [self.state.fusion_states_list[i].view(-1) for i in range(len(self.state.fusion_states_list))],
+                self.state.float_dtype,
+                self.state.multi_biasing_ids,
+            )
+            for fusion_idx in range(len(self.state.fusion_states_list)):
+                self.state.fusion_states_candidates_list[fusion_idx].copy_(candidates_list[fusion_idx])
+                self.state.fusion_scores_list[fusion_idx].copy_(scores_list[fusion_idx])
 
         # step 6: update time indices + active mask
         self.state.time_indices.copy_(self.state.batched_hyps.next_timestamp)
@@ -1172,13 +1353,148 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         torch.less_equal(self.state.time_indices, self.state.last_timesteps, out=self.state.active_mask)
         torch.any(self.state.active_mask, out=self.state.active_mask_any)
 
+    def _init_decoding_state(self, prev_batched_state: Optional[BatchedBeamState], current_batch_size: int):
+        """Python-side per-chunk state setup, run before the captured graph replays.
+
+        Handles the first-chunk-vs-continuation branching outside the graph so the
+        captured ``_before_loop`` can stay chunk-agnostic (matches greedy decoders).
+
+        Args:
+            prev_batched_state: ``None`` for the first chunk; the previous chunk's
+                state (as returned by :meth:`_create_decoding_state`) otherwise.
+            current_batch_size: live batch size; graph buffers are sized to the
+                capture-time maximum and only the leading rows are touched.
+        """
+        # Wipe ``batched_hyps`` to a clean slate; continuation chunks then overwrite
+        # the cross-chunk per-beam fields from the previous chunk's snapshot below.
+        self.state.batched_hyps.clear_()
+
+        if prev_batched_state is None:
+            # First chunk: reset decoder live buffers, fusion live buffers, and the
+            # last-emitted label. ``batched_hyps`` is already at init values from clear_().
+            self.state.decoder_output.copy_(self.state.init_decoder_output)
+            self.state.decoder_state[0].copy_(self.state.init_decoder_state[0])
+            self.state.decoder_state[1].copy_(self.state.init_decoder_state[1])
+            self.state.last_labels_wb.fill_(self._SOS)
+            if self.has_fusion_models:
+                for fusion_idx in range(len(self.state.fusion_states_list)):
+                    self.state.fusion_states_list[fusion_idx].copy_(self.state.init_fusion_states_list[fusion_idx])
+                    self.state.fusion_states_prev_list[fusion_idx].copy_(
+                        self.state.init_fusion_states_list[fusion_idx]
+                    )
+                scores_list, candidates_list = self._advance_all_fusion_models(
+                    [s.view(-1) for s in self.state.fusion_states_list],
+                    self.state.float_dtype,
+                    self.state.multi_biasing_ids,
+                )
+                for fusion_idx in range(len(self.state.fusion_states_list)):
+                    self.state.fusion_states_candidates_list[fusion_idx].copy_(candidates_list[fusion_idx])
+                    self.state.fusion_scores_list[fusion_idx].copy_(scores_list[fusion_idx])
+            return
+
+        # Continuation chunk: seed cross-chunk per-beam batched_hyps fields from the
+        # previous chunk's snapshot, then restore decoder/fusion live buffers.
+        if prev_batched_state.scores is not None:
+            seed_batched_hyps_from_state(self.state.batched_hyps, prev_batched_state, batch_size=current_batch_size)
+
+        if prev_batched_state.predictor_outputs is not None:
+            self.state.decoder_output[: current_batch_size * self.beam_size].copy_(
+                prev_batched_state.predictor_outputs.view(-1, 1, prev_batched_state.predictor_outputs.shape[-1])
+            )
+
+        if prev_batched_state.predictor_states is not None:
+            for i, state_tensor in enumerate(prev_batched_state.predictor_states):
+                if state_tensor is not None:
+                    self.state.decoder_state[i][:, : current_batch_size * self.beam_size].copy_(
+                        state_tensor[:, : current_batch_size * self.beam_size]
+                    )
+
+        self.state.last_labels_wb[:current_batch_size].copy_(prev_batched_state.labels[:current_batch_size])
+
+        if prev_batched_state.fusion_states_list is not None and self.has_fusion_models:
+            for fusion_idx, fusion_state in enumerate(prev_batched_state.fusion_states_list):
+                if fusion_state is not None:
+                    self.state.fusion_states_list[fusion_idx][:current_batch_size].copy_(
+                        fusion_state[:current_batch_size]
+                    )
+            multi_ids = self.state.multi_biasing_ids if self.per_stream_biasing_enabled else None
+            scores_list, candidates_list = self._advance_all_fusion_models(
+                [s.view(-1) for s in self.state.fusion_states_list],
+                self.state.float_dtype,
+                multi_ids,
+            )
+            for fusion_idx in range(len(self.state.fusion_states_list)):
+                self.state.fusion_states_candidates_list[fusion_idx].copy_(candidates_list[fusion_idx])
+                self.state.fusion_scores_list[fusion_idx].copy_(scores_list[fusion_idx])
+            for fusion_idx in range(len(self.state.fusion_states_list)):
+                self.state.fusion_states_prev_list[fusion_idx][:current_batch_size].copy_(
+                    self.state.fusion_states_list[fusion_idx][:current_batch_size]
+                )
+
+    def _create_decoding_state(
+        self,
+        encoder_output_length: torch.Tensor,
+        prev_batched_state: Optional[BatchedBeamState],
+    ) -> BatchedBeamState:
+        """Create BatchedBeamState for the next chunk."""
+        current_batch_size = encoder_output_length.shape[0]
+
+        # Get last labels and slice to real batch (graph state's batch dim is sized to capture-time max).
+        last_labels = self.state.batched_hyps.get_last_labels(pad_id=self._SOS)[:current_batch_size]
+
+        # Reset next_timestamp for next chunk
+        self.state.batched_hyps.next_timestamp.fill_(0)
+
+        # Calculate accumulated decoded lengths
+        if prev_batched_state is None:
+            decoded_lengths = encoder_output_length.clone()
+        else:
+            decoded_lengths = encoder_output_length + prev_batched_state.decoded_lengths[:current_batch_size]
+
+        # Handle labels - if nothing decoded this chunk, use previous labels
+        if prev_batched_state is not None:
+            last_labels = torch.where(
+                last_labels == self._SOS,
+                prev_batched_state.labels[:current_batch_size],
+                last_labels,
+            )
+
+        fusion_states_list = None
+        if self.has_fusion_models and self.state.fusion_states_list is not None:
+            fusion_states_list = [state[:current_batch_size].clone() for state in self.state.fusion_states_list]
+
+        return BatchedBeamState(
+            predictor_states=(
+                self.state.decoder_state[0][:, : current_batch_size * self.beam_size].clone(),
+                self.state.decoder_state[1][:, : current_batch_size * self.beam_size].clone(),
+            ),
+            predictor_outputs=self.state.decoder_output[: current_batch_size * self.beam_size].clone(),
+            labels=last_labels,
+            decoded_lengths=decoded_lengths,
+            fusion_states_list=fusion_states_list,
+            time_jumps=None,
+            **self.state.batched_hyps.export_cross_chunk_state(batch_size=current_batch_size),
+        )
+
     def __call__(
         self,
         x: torch.Tensor,
         out_len: torch.Tensor,
-    ) -> BatchedBeamHyps:
+        prev_batched_state: Optional[BatchedBeamState] = None,
+        multi_biasing_ids: Optional[torch.Tensor] = None,
+    ) -> tuple[BatchedBeamHyps, BatchedBeamState]:
         if self.cuda_graphs_mode is not None and x.device.type == "cuda":
             with torch.amp.autocast(device_type="cuda", enabled=False):
-                return self.modified_alsd_cuda_graphs(encoder_output=x, encoder_output_length=out_len)
+                return self.modified_alsd_cuda_graphs(
+                    encoder_output=x,
+                    encoder_output_length=out_len,
+                    prev_batched_state=prev_batched_state,
+                    multi_biasing_ids=multi_biasing_ids,
+                )
 
-        return self.modified_alsd_torch(encoder_output=x, encoder_output_length=out_len)
+        return self.modified_alsd_torch(
+            encoder_output=x,
+            encoder_output_length=out_len,
+            prev_batched_state=prev_batched_state,
+            multi_biasing_ids=multi_biasing_ids,
+        )

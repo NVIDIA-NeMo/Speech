@@ -16,7 +16,6 @@ from typing import Iterable, Optional
 
 import librosa
 import torch
-from hydra.utils import instantiate
 from kaldialign import edit_distance
 from lightning.pytorch import Trainer
 from lightning.pytorch.loggers import TensorBoardLogger
@@ -28,7 +27,7 @@ from nemo.collections.tts.data.dataset import TTSDataset
 from nemo.collections.tts.modules.ssl_tts import GreedyCTCDecoder
 from nemo.collections.tts.torch.tts_tokenizers import BaseTokenizer, EnglishCharsTokenizer
 from nemo.core.classes import ModelPT
-from nemo.core.classes.common import PretrainedModelInfo
+from nemo.core.classes.common import PretrainedModelInfo, safe_instantiate
 from nemo.core.optim.lr_scheduler import WarmupPolicy
 from nemo.utils import logging
 from nemo.utils.decorators import experimental
@@ -215,11 +214,11 @@ class SSLDisentangler(ModelPT):
         sched_downstream_config = optim_downstream_config.pop("sched", None)
         OmegaConf.set_struct(optim_downstream_config, True)
 
-        optim_backbone = instantiate(
+        optim_backbone = safe_instantiate(
             optim_backbone_config,
             params=self.encoder.parameters(),
         )
-        optim_downstream = instantiate(
+        optim_downstream = safe_instantiate(
             optim_downstream_config,
             params=itertools.chain(
                 self.downstream_nets.parameters(),

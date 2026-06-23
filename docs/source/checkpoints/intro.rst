@@ -1,5 +1,5 @@
-Checkpoints
-===========
+Checkpoint Formats
+==================
 
 In this section, we present the checkpoint formats supported by NVIDIA NeMo.
 

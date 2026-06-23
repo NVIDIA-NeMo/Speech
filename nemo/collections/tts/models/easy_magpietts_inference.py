@@ -20,7 +20,6 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import soundfile as sf
 import torch
-from hydra.utils import instantiate
 from lightning.pytorch import Trainer
 from omegaconf import DictConfig
 from torch import nn
@@ -40,7 +39,7 @@ from nemo.collections.tts.modules.magpietts_modules import (
 )
 from nemo.collections.tts.parts.utils.helpers import get_mask_from_lengths
 from nemo.core.classes import ModelPT
-from nemo.core.classes.common import PretrainedModelInfo
+from nemo.core.classes.common import PretrainedModelInfo, safe_instantiate
 from nemo.utils import logging
 from nemo.utils.exceptions import NeMoBaseException
 
@@ -233,7 +232,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         # Set up codebook configuration
         vector_quantizer = cfg.get('vector_quantizer')
         if vector_quantizer is not None:
-            vector_quantizer = instantiate(vector_quantizer)
+            vector_quantizer = safe_instantiate(vector_quantizer)
             num_audio_codebooks = vector_quantizer.num_codebooks
             codebook_size = vector_quantizer.codebook_size
             codec_converter = VectorQuantizerIndexConverter(
@@ -341,7 +340,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         self.cfg_unk_token_id = num_tokens - 1
         self.phoneme_tokenizer = None
         if cfg.get('phoneme_tokenizer', None) is not None:
-            self.phoneme_tokenizer = instantiate(cfg.phoneme_tokenizer)
+            self.phoneme_tokenizer = safe_instantiate(cfg.phoneme_tokenizer)
             self.phoneme_stacking_factor = cfg.get('phoneme_stacking_factor', 1)
             self.phoneme_vocab_size = self.phoneme_tokenizer.vocab_size
             if cfg.get('phoneme_corruption_batch_prob', None) is None:

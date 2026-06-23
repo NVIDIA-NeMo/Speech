@@ -217,12 +217,11 @@ def check_res_nbest_hyps(num_samples, batch_nbest_hyps):
             ]
         )
 
+        # Empty transcript (blank-only beam) is valid; y_sequence and timestamp must stay aligned.
         assert all(
-            [
-                len(batch_nbest_hyps[idx].n_best_hypotheses[hyp_idx].y_sequence) > 0
-                and len(batch_nbest_hyps[idx].n_best_hypotheses[hyp_idx].timestamp) > 0
-                for hyp_idx in range(len(batch_nbest_hyps[idx].n_best_hypotheses))
-            ]
+            len(batch_nbest_hyps[idx].n_best_hypotheses[hyp_idx].y_sequence)
+            == len(batch_nbest_hyps[idx].n_best_hypotheses[hyp_idx].timestamp)
+            for hyp_idx in range(len(batch_nbest_hyps[idx].n_best_hypotheses))
         )
 
 
@@ -670,7 +669,7 @@ class TestTransducerCudaGraphBeamDecoding:
         # transcribe with use implementation with cuda graphs
         decoding_config["beam"]["allow_cuda_graphs"] = True
         model.change_decoding_strategy(decoding_config)
-        model.decoding.decoding._decoding_computer.force_cuda_graphs_mode(mode=force_mode)
+        model.decoding.decoding.decoding_computer.force_cuda_graphs_mode(mode=force_mode)
 
         cudagraph_hypotheses = model.transcribe(test_audio_filenames, batch_size=batch_size, num_workers=None)
         cudagraph_transcripts = [[hyp.text for hyp in cudagraphs_beam] for cudagraphs_beam in cudagraph_hypotheses]
@@ -733,7 +732,7 @@ class TestTransducerCudaGraphBeamDecoding:
             # transcribe with use implementation with cuda graphs
             decoding_config["beam"]["allow_cuda_graphs"] = True
             model.change_decoding_strategy(decoding_config)
-            model.decoding.decoding._decoding_computer.force_cuda_graphs_mode(mode=force_mode)
+            model.decoding.decoding.decoding_computer.force_cuda_graphs_mode(mode=force_mode)
 
             with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=True):
                 model.transcribe(test_audio_filenames, batch_size=batch_size, num_workers=None)

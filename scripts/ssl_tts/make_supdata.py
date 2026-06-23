@@ -20,7 +20,6 @@ import time
 from multiprocessing import Pool
 from pathlib import Path
 
-import hydra.utils
 import librosa
 import numpy as np
 import torch
@@ -31,6 +30,7 @@ from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
 from nemo.collections.tts.models import ssl_tts
 from nemo.collections.tts.parts.utils.tts_dataset_utils import get_base_dir
 from nemo.core.classes import Dataset
+from nemo.core.classes.common import safe_instantiate
 from nemo.utils import logging
 
 
@@ -325,7 +325,7 @@ def main():
     ssl_model = ssl_tts.SSLDisentangler.load_from_checkpoint(ssl_model_ckpt_path, strict=False)
     with open_dict(ssl_model.cfg):
         ssl_model.cfg.preprocessor.exact_pad = True
-    ssl_model.preprocessor = hydra.utils.instantiate(ssl_model.cfg.preprocessor)
+    ssl_model.preprocessor = safe_instantiate(ssl_model.cfg.preprocessor)
     ssl_model.preprocessor_disentangler = ssl_model.preprocessor
     ssl_model.eval()
     ssl_model.to(device)

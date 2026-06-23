@@ -20,7 +20,6 @@ from typing import Dict, Iterable, List, Tuple
 import torch
 import torch.nn.functional as F
 from einops import rearrange
-from hydra.utils import instantiate
 from lightning.pytorch import Trainer
 from omegaconf import DictConfig, OmegaConf
 
@@ -46,7 +45,7 @@ from nemo.collections.tts.parts.utils.callbacks import LoggingCallback
 from nemo.collections.tts.parts.utils.helpers import get_batch_size, get_num_workers
 from nemo.collections.tts.parts.utils.tts_dataset_utils import resample_batch
 from nemo.core import ModelPT
-from nemo.core.classes.common import PretrainedModelInfo, typecheck
+from nemo.core.classes.common import PretrainedModelInfo, safe_instantiate, typecheck
 from nemo.core.neural_types.elements import (
     AudioSignal,
     EncodedRepresentation,
@@ -87,7 +86,7 @@ class AudioCodecModel(ModelPT):
             )
 
         # Encoder setup
-        self.audio_encoder = instantiate(cfg.audio_encoder)
+        self.audio_encoder = safe_instantiate(cfg.audio_encoder)
 
         # Optionally, add gaussian noise to encoder output as an information bottleneck
         encoder_noise_stdev = cfg.get("encoder_noise_stdev", 0.0)
@@ -97,7 +96,7 @@ class AudioCodecModel(ModelPT):
             self.encoder_noise = None
 
         if "vector_quantizer" in cfg:
-            self.vector_quantizer = instantiate(cfg.vector_quantizer)
+            self.vector_quantizer = safe_instantiate(cfg.vector_quantizer)
 
             vq_output_types = list(self.vector_quantizer.output_types.keys())
 
@@ -113,11 +112,11 @@ class AudioCodecModel(ModelPT):
             self.vector_quantizer = None
 
         # Decoder setup
-        self.audio_decoder = instantiate(cfg.audio_decoder)
+        self.audio_decoder = safe_instantiate(cfg.audio_decoder)
 
         # Discriminator setup
         if cfg.get("discriminator"):
-            self.discriminator = instantiate(cfg.discriminator)
+            self.discriminator = safe_instantiate(cfg.discriminator)
         else:
             self.discriminator = None
 
@@ -142,10 +141,10 @@ class AudioCodecModel(ModelPT):
         # Optional config for using semantic distillation loss
         self.use_slm_loss = cfg.get("use_slm_loss", False)
         if self.use_slm_loss:
-            self.slm_encoder = instantiate(cfg.get("slm_encoder"))
+            self.slm_encoder = safe_instantiate(cfg.get("slm_encoder"))
             self.slm_encoder.eval()
             self.slm_encoder.freeze()
-            self.slm_predictor = instantiate(cfg.slm_predictor)
+            self.slm_predictor = safe_instantiate(cfg.slm_predictor)
             self.slm_loss_fn = torch.nn.MSELoss()
             self.slm_loss_scale = cfg.get("slm_loss_scale", 1.0)
         else:
@@ -184,20 +183,20 @@ class AudioCodecModel(ModelPT):
         # Discriminator loss setup
         self.gen_loss_scale = cfg.get("gen_loss_scale", 1.0)
         self.feature_loss_scale = cfg.get("feature_loss_scale", 1.0)
-        self.gen_loss_fn = instantiate(cfg.generator_loss)
-        self.disc_loss_fn = instantiate(cfg.discriminator_loss)
+        self.gen_loss_fn = safe_instantiate(cfg.generator_loss)
+        self.disc_loss_fn = safe_instantiate(cfg.discriminator_loss)
 
         self.mmd_loss_start_epoch = cfg.get("mmd_loss_start_epoch", 0)
 
         if "mmd_loss" in cfg:
-            self.mmd_loss_fn = instantiate(cfg.mmd_loss)
+            self.mmd_loss_fn = safe_instantiate(cfg.mmd_loss)
             self.mmd_loss_scale = cfg.get("mmd_loss_scale", 1.0)
         else:
             self.mmd_loss_fn = None
             self.mmd_loss_scale = None
 
         if "mmd_time_loss" in cfg:
-            self.mmd_time_loss_fn = instantiate(cfg.mmd_time_loss)
+            self.mmd_time_loss_fn = safe_instantiate(cfg.mmd_time_loss)
             self.mmd_time_loss_scale = cfg.get("mmd_time_loss_scale", 1.0)
         else:
             self.mmd_time_loss_fn = None
@@ -804,7 +803,7 @@ class AudioCodecModel(ModelPT):
 
     def get_dataset(self, cfg):
         if '_target_' in cfg.dataset:
-            dataset = instantiate(cfg.dataset)
+            dataset = safe_instantiate(cfg.dataset)
         else:
             dataset = VocoderDataset(**cfg.dataset.dataset_args)
 
@@ -854,23 +853,35 @@ class AudioCodecModel(ModelPT):
         # manually in the dataset class.
         loader_cfg.sample_rate = self.output_sample_rate
 
-        # Set up cut truncation, filtering, and random selection:
-        # `truncate_duration` and `truncate_offset_type` are interpreted by Lhotse.
-        # Together, they configure Lhotse to choose a random segment of this length
-        # from each cut.
-        if loader_cfg.truncate_duration is None:
-            raise ValueError("`truncate_duration` must be set in the config")
-        loader_cfg.truncate_offset_type = "random"
-        # Also filter examples to be at least this long to avoid zero-padding
-        loader_cfg.min_duration = loader_cfg.truncate_duration
+        # Random segment selection is done in AudioCodecLhotseDataset on `target_audio`, not via
+        # Lhotse's `truncate_duration` config (which operates on the parent recording).
+        if cfg.dataloader_params.get("truncate_duration") is not None:
+            raise ValueError(
+                "`truncate_duration` must not be set in `train_ds.dataloader_params`; "
+                "segment extraction is handled in `AudioCodecLhotseDataset` via `segment_duration`."
+            )
+        segment_duration = dataset_args.get("segment_duration")
+        if segment_duration is None:
+            raise ValueError("`segment_duration` must be set in `train_ds.dataset_args` ")
+        existing_min_duration = cfg.dataloader_params.get("min_duration")
+        if existing_min_duration is not None and existing_min_duration != -1:
+            raise ValueError(
+                "`min_duration` must not be set in `train_ds.dataloader_params`; "
+                "it is set automatically from `train_ds.dataset_args.segment_duration`."
+            )
+        # Pre-filter to only include cuts whose parent recording is at least as long as
+        # the training segment duration so the dataset class has enough samples to choose from.
+        loader_cfg.min_duration = segment_duration
+
+        # Make sure batch_size is set
+        if loader_cfg.batch_size is None:
+            raise ValueError("`batch_size` must be set in `train_ds.dataloader_params`.")
 
         # --- Create the dataset ---
 
-        # Error out if the audio is suspiciously short (half the expected length)
-        min_samples_for_sanity = loader_cfg.truncate_duration * self.output_sample_rate // 2
-        # Create the dataset
         dataset = AudioCodecLhotseDataset(
-            sample_rate=self.output_sample_rate, min_samples_for_sanity=min_samples_for_sanity, **dataset_args
+            sample_rate=self.output_sample_rate,
+            **dataset_args,
         )
 
         # Create the dataloader
@@ -930,13 +941,13 @@ class AudioCodecModel(ModelPT):
         self.gen_params = list(
             itertools.chain(self.audio_encoder.parameters(), self.audio_decoder.parameters(), vq_params, se_params)
         )
-        optim_g = instantiate(optim_config, params=self.gen_params)
+        optim_g = safe_instantiate(optim_config, params=self.gen_params)
 
         if self.discriminator is None:
             optim_d = None
         else:
             self.disc_params = list(self.discriminator.parameters())
-            optim_d = instantiate(optim_config, params=self.disc_params)
+            optim_d = safe_instantiate(optim_config, params=self.disc_params)
 
         if sched_config is None:
             logging.debug('Scheduler is not used')
@@ -980,7 +991,7 @@ class AudioCodecModel(ModelPT):
             return []
 
         data_loader = self._setup_test_dataloader(self.log_config)
-        generators = instantiate(self.log_config.generators)
+        generators = safe_instantiate(self.log_config.generators)
         log_dir = Path(self.log_config.log_dir) if self.log_config.log_dir else None
         log_callback = LoggingCallback(
             generators=generators,

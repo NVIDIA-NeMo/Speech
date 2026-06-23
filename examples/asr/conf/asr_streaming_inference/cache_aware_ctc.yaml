@@ -6,7 +6,7 @@ asr:
   device: cuda                                                          # Device for inference: 'cuda' or 'cpu'
   device_id: 0                                                          # GPU device ID
   compute_dtype: bfloat16                                               # Compute precision: 'bfloat16' for Ampere+, 'float16' for older GPUs, or 'float32'
-  use_amp: true                                                         # Enable Automatic Mixed Precision
+  use_amp: false                                                         # Enable Automatic Mixed Precision
 
 
 # ==========================================

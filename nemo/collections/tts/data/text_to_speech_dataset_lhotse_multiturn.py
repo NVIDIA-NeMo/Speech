@@ -22,7 +22,7 @@ import torch.utils.data
 from hydra.utils import instantiate
 from lhotse import CutSet, Seconds, compute_num_frames
 from lhotse.cut import Cut
-from lhotse.dataset.collation import collate_matrices, collate_vectors, collate_audio
+from lhotse.dataset.collation import collate_audio, collate_matrices, collate_vectors
 from lhotse.utils import ifnone
 from omegaconf import DictConfig
 from transformers import AutoTokenizer, T5Tokenizer

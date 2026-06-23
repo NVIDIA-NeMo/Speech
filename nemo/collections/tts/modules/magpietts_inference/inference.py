@@ -39,11 +39,11 @@ import soundfile as sf
 import torch
 
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
+from nemo.collections.audio.parts.utils.transforms import resample
 from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import AggregatedTTSTokenizer, IPATokenizer
 from nemo.collections.tts.data.text_to_speech_dataset import ChunkedTTSInferenceDataset, MagpieTTSDataset
 from nemo.collections.tts.models.easy_magpietts_inference import EasyModelInferenceParameters
 from nemo.collections.tts.models.magpietts import ModelInferenceParameters
-from nemo.collections.audio.parts.utils.transforms import resample
 from nemo.collections.tts.parts.utils.tts_dataset_utils import normalize_volume, stack_tensors
 from nemo.utils import logging
 

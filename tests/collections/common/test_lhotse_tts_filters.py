@@ -19,8 +19,8 @@ from lhotse.cut import MonoCut
 
 from nemo.collections.common.data.lhotse.sampling import (
     CERFilter,
-    SpeakerFilter,
     ContextSpeakerSimilarityFilter,
+    SpeakerFilter,
     ValidationStatusFilter,
 )
 

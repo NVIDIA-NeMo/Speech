@@ -12,14 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import random
-import time
-import random
-import time
 import tempfile
+import time
+from collections import Counter
 from dataclasses import dataclass, fields
 from functools import partial
 from typing import Any, Dict, List, Optional, Sequence, Tuple
-from collections import Counter
 
 import numpy as np
 import soundfile as sf
@@ -29,11 +27,11 @@ from omegaconf import DictConfig
 from torch import nn
 from transformers import AutoConfig, AutoModelForCausalLM
 
-from nemo.core.connectors.save_restore_connector import SaveRestoreConnector
+from nemo.collections.audio.parts.utils.transforms import resample
+from nemo.collections.speechlm2.parts.pretrained import set_model_dict_for_partial_init
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse import setup_tokenizers
 from nemo.collections.tts.models import AudioCodecModel
 from nemo.collections.tts.modules import transformer_2501
-from nemo.collections.audio.parts.utils.transforms import resample
 from nemo.collections.tts.modules.audio_codec_modules import VectorQuantizerIndexConverter
 from nemo.collections.tts.modules.magpietts_modules import (
     CharAwareSubwordEncoder,
@@ -46,10 +44,9 @@ from nemo.collections.tts.modules.magpietts_modules import (
 from nemo.collections.tts.parts.utils.helpers import get_mask_from_lengths
 from nemo.core.classes import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo, safe_instantiate
+from nemo.core.connectors.save_restore_connector import SaveRestoreConnector
 from nemo.utils import logging
 from nemo.utils.exceptions import NeMoBaseException
-
-from nemo.collections.speechlm2.parts.pretrained import set_model_dict_for_partial_init
 
 
 @dataclass

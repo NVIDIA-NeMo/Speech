@@ -254,9 +254,7 @@ def _group_multiturn_filewise_metrics_by_sample(filewise_metrics: list) -> list:
         eou_trail_rms_ratio_turns = [r.get("eou_trail_rms_ratio") for r in turns]
         predicted_phoneme_text_turns = [r.get("predicted_phoneme_text", "") for r in turns]
         predicted_phoneme_tokens_turns = [r.get("predicted_phoneme_tokens", []) for r in turns]
-        predicted_phoneme_token_labels_turns = [
-            r.get("predicted_phoneme_token_labels", []) for r in turns
-        ]
+        predicted_phoneme_token_labels_turns = [r.get("predicted_phoneme_token_labels", []) for r in turns]
 
         grouped_rows.append(
             {

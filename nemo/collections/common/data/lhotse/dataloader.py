@@ -258,6 +258,7 @@ class LhotseDataLoadingConfig:
     # our support of object stores and gzipped files that generally don't have indexes of byte offsets per line.
     slice_length: Optional[int] = None
 
+
 def resolve_excluded_speaker_ids(excluded_speaker_ids):
     if excluded_speaker_ids is None:
         return None
@@ -271,6 +272,7 @@ def resolve_excluded_speaker_ids(excluded_speaker_ids):
         excluded_speaker_ids = excluded_speaker_ids["excluded_speaker_ids"]
 
     return excluded_speaker_ids
+
 
 def determine_use_iterable_dataset(use_iterable_dataset: bool, config: DictConfig) -> bool:
     """Determine whether to use iterable dataset for a given configuration."""
@@ -629,7 +631,11 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
     # validation status filtering
     cuts = cuts.filter(ValidationStatusFilter(config.keep))
     # Exclude cuts that contain known test speakers.
-    cuts = cuts.filter(SpeakerFilter(resolve_excluded_speaker_ids(config.excluded_speaker_ids), speaker_fields=config.speaker_filter_fields))
+    cuts = cuts.filter(
+        SpeakerFilter(
+            resolve_excluded_speaker_ids(config.excluded_speaker_ids), speaker_fields=config.speaker_filter_fields
+        )
+    )
     # CER filtering, same as native NeMo dataloaders.
     cuts = cuts.filter(CERFilter(config.max_cer))
     # Context speaker similarity filtering, same as native NeMo dataloaders.

@@ -83,6 +83,7 @@ def strip_text_annotations_from_text(text: str) -> str:
     text = _SPACE_BEFORE_PUNCT_RE.sub(r"\1", text)
     return text.strip()
 
+
 FILEWISE_METRICS_TO_SAVE = [
     'cer',
     'wer',
@@ -602,7 +603,7 @@ def evaluate_dir(
                 model=speaker_verification_model_alternate,
                 extractor=feature_extractor,
                 device=device,
-                sv_model_type="titanet", # alternate is always titanet
+                sv_model_type="titanet",  # alternate is always titanet
             )
 
             # Initialize SSIMs with a default since the context or ground truth audio

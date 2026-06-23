@@ -1098,9 +1098,7 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
         return out
 
     @staticmethod
-    def _copy_file(
-        src: Optional[str], dst: str, required: bool = False, description: str = "audio"
-    ) -> Optional[str]:
+    def _copy_file(src: Optional[str], dst: str, required: bool = False, description: str = "audio") -> Optional[str]:
         """Copy an audio artifact and optionally fail fast if missing.
 
         Evaluation later expects target_audio_*.wav/context_audio_*.wav to exist.
@@ -1125,9 +1123,7 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
         shutil.copy(src, dst)
 
         if required and not os.path.exists(dst):
-            raise FileNotFoundError(
-                f"Failed to materialize required {description}: src={src}, dst={dst}."
-            )
+            raise FileNotFoundError(f"Failed to materialize required {description}: src={src}, dst={dst}.")
         return dst
 
     def _resolve_audio_path(self, path: Optional[str], audio_base_dir: str) -> Optional[str]:
@@ -1911,9 +1907,7 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
             for local_turn_idx, (turn_id, start_frame, end_frame) in enumerate(turn_frame_ranges):
                 source_turn_idx = int(turn_id)
                 phoneme_output = (
-                    turn_phoneme_outputs[local_turn_idx]
-                    if local_turn_idx < len(turn_phoneme_outputs)
-                    else {}
+                    turn_phoneme_outputs[local_turn_idx] if local_turn_idx < len(turn_phoneme_outputs) else {}
                 )
                 rel_start_frame = start_frame - decode_start_frame
                 rel_end_frame = end_frame - decode_start_frame
@@ -1973,9 +1967,7 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
                         "text": raw_turn_texts[source_turn_idx] if source_turn_idx < len(raw_turn_texts) else "",
                         "predicted_phoneme_text": phoneme_output.get("predicted_phoneme_text", ""),
                         "predicted_phoneme_tokens": phoneme_output.get("predicted_phoneme_tokens", []),
-                        "predicted_phoneme_token_labels": phoneme_output.get(
-                            "predicted_phoneme_token_labels", []
-                        ),
+                        "predicted_phoneme_token_labels": phoneme_output.get("predicted_phoneme_token_labels", []),
                         "speaker": str(sample_idx),
                         "source_sample_idx": sample_idx,
                         "turn_id": int(turn_id),

@@ -1,5 +1,17 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+# Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Lightweight LAION Empathic Insight Voice interface.
 
@@ -137,6 +149,7 @@ MODEL_SPECS: dict[str, dict[str, Any]] = {
 # MLP head
 # =============================================================================
 
+
 class FullEmbeddingMLP(nn.Module):
     """Classifier head used by Empathic Insight Voice.
 
@@ -220,9 +233,7 @@ class FullEmbeddingMLP(nn.Module):
             x = x.squeeze(1)
 
         if x.ndim != 3:
-            raise ValueError(
-                f"Expected x with shape [B, T, C], got shape {tuple(x.shape)}."
-            )
+            raise ValueError(f"Expected x with shape [B, T, C], got shape {tuple(x.shape)}.")
 
         return self.proj(self.flatten(x))
 
@@ -235,6 +246,7 @@ class FullEmbeddingMLP(nn.Module):
 # =============================================================================
 # Main class
 # =============================================================================
+
 
 class EmpathicInsightVoice(nn.Module):
     """Lightweight Hugging Face-style Empathic Insight Voice class.
@@ -280,9 +292,7 @@ class EmpathicInsightVoice(nn.Module):
         super().__init__()
 
         if size not in MODEL_SPECS:
-            raise ValueError(
-                f"Unsupported size={size!r}. Expected one of {sorted(MODEL_SPECS)}."
-            )
+            raise ValueError(f"Unsupported size={size!r}. Expected one of {sorted(MODEL_SPECS)}.")
 
         self.size = size
         self.spec = MODEL_SPECS[size]
@@ -295,11 +305,7 @@ class EmpathicInsightVoice(nn.Module):
             requested_device = torch.device("cpu")
 
         self.device = requested_device
-        self.mlp_device = (
-            torch.device(mlp_device)
-            if mlp_device is not None
-            else self.device
-        )
+        self.mlp_device = torch.device(mlp_device) if mlp_device is not None else self.device
 
         self.sample_rate = int(self.spec["sample_rate"])
         self.max_audio_seconds = float(self.spec["max_audio_seconds"])
@@ -409,9 +415,7 @@ class EmpathicInsightVoice(nn.Module):
         input_features = input_features.to(self.device)
         input_features = input_features.to(self.whisper_model.dtype)
 
-        encoder_outputs = self.whisper_model.get_encoder()(
-            input_features=input_features
-        )
+        encoder_outputs = self.whisper_model.get_encoder()(input_features=input_features)
 
         embedding = encoder_outputs.last_hidden_state
         embedding = self._pad_or_trim_embedding(embedding)
@@ -908,20 +912,14 @@ class EmpathicInsightVoice(nn.Module):
             Restored FullEmbeddingMLP.
         """
         if label not in LAION_LABEL_TO_FILENAME:
-            raise ValueError(
-                f"Unknown label {label!r}. Available labels: "
-                f"{sorted(LAION_LABEL_TO_FILENAME)}"
-            )
+            raise ValueError(f"Unknown label {label!r}. Available labels: " f"{sorted(LAION_LABEL_TO_FILENAME)}")
 
         cache_key = self._cache_key(label)
 
         if cache_key in self.classifiers:
             classifier = self.classifiers[cache_key]
             if not isinstance(classifier, FullEmbeddingMLP):
-                raise TypeError(
-                    f"Cached classifier for {label!r} has unexpected type "
-                    f"{type(classifier)}."
-                )
+                raise TypeError(f"Cached classifier for {label!r} has unexpected type " f"{type(classifier)}.")
             return classifier
 
         filename = LAION_LABEL_TO_FILENAME[label]
@@ -944,10 +942,7 @@ class EmpathicInsightVoice(nn.Module):
         state_dict = torch.load(local_path, map_location="cpu")
 
         if not isinstance(state_dict, dict):
-            raise RuntimeError(
-                f"Expected {local_path} to contain a state_dict, "
-                f"but got {type(state_dict)}."
-            )
+            raise RuntimeError(f"Expected {local_path} to contain a state_dict, " f"but got {type(state_dict)}.")
 
         state_dict = self._strip_orig_mod_prefix_if_needed(state_dict)
 
@@ -990,8 +985,7 @@ class EmpathicInsightVoice(nn.Module):
 
         if unknown:
             raise ValueError(
-                f"Unknown labels: {unknown}. "
-                f"Available labels: {sorted(LAION_LABEL_TO_FILENAME.keys())}"
+                f"Unknown labels: {unknown}. " f"Available labels: {sorted(LAION_LABEL_TO_FILENAME.keys())}"
             )
 
         return labels_list
@@ -1032,16 +1026,10 @@ class EmpathicInsightVoice(nn.Module):
         embed_dim = int(self.spec["embed_dim"])
 
         if embedding.ndim != 3:
-            raise RuntimeError(
-                f"Expected Whisper embedding with shape [B, T, C], "
-                f"got {tuple(embedding.shape)}."
-            )
+            raise RuntimeError(f"Expected Whisper embedding with shape [B, T, C], " f"got {tuple(embedding.shape)}.")
 
         if embedding.shape[-1] != embed_dim:
-            raise RuntimeError(
-                f"Unexpected embedding dim. Expected {embed_dim}, "
-                f"got {embedding.shape[-1]}."
-            )
+            raise RuntimeError(f"Unexpected embedding dim. Expected {embed_dim}, " f"got {embedding.shape[-1]}.")
 
         current_seq_len = embedding.shape[1]
 
@@ -1114,13 +1102,7 @@ class EmpathicInsightVoice(nn.Module):
     @staticmethod
     def _cache_key(label: str) -> str:
         """Convert an arbitrary label into a safe ModuleDict key."""
-        return (
-            label.replace(".", "_")
-            .replace("/", "_")
-            .replace("-", "_")
-            .replace(" ", "_")
-            .replace("&", "and")
-        )
+        return label.replace(".", "_").replace("/", "_").replace("-", "_").replace(" ", "_").replace("&", "and")
 
     def cleanup(self) -> None:
         """Move modules to CPU and clear classifier cache."""
@@ -1138,6 +1120,7 @@ class EmpathicInsightVoice(nn.Module):
 # CLI utilities
 # =============================================================================
 
+
 def _tensor_info(tensor: torch.Tensor) -> dict[str, Any]:
     return {
         "shape": list(tensor.shape),
@@ -1154,9 +1137,7 @@ def _parse_labels(labels: Optional[str]) -> Optional[list[str]]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="LAION Empathic Insight Voice embeddings and similarity."
-    )
+    parser = argparse.ArgumentParser(description="LAION Empathic Insight Voice embeddings and similarity.")
     parser.add_argument(
         "--audio",
         type=str,
@@ -1270,7 +1251,7 @@ def main() -> None:
             embedding_type=args.embedding_type,
             include_auxiliary=args.include_auxiliary,
         )
-    
+
     result = model.compare_emotion_pair(
         audio_path_a=args.audio,
         audio_path_b=args.audio_b,
@@ -1295,7 +1276,6 @@ def main() -> None:
     print(result["top_emotion_match"])
     print(result["emotion_similarity"])
 
-
     print("embedding_type=score_vector")
     print(result_score_vector["audio_a_top_emotion"])
     print(result_score_vector["audio_b_top_emotion"])
@@ -1307,6 +1287,7 @@ def main() -> None:
     print(result_score_mean["audio_b_top_emotion"])
     print(result_score_mean["top_emotion_match"])
     print(result_score_mean["emotion_similarity"])
+
 
 if __name__ == "__main__":
     main()

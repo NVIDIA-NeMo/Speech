@@ -1702,10 +1702,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
                 # Match training: the input slot that predicts the first agent frame after
                 # a user/non-agent region should receive the learned user-speaking-end token.
-                use_end_token = (
-                    prefill_like_is_last_step
-                    and self.cfg.get("use_user_speaking_end_token", False)
-                )
+                use_end_token = prefill_like_is_last_step and self.cfg.get("use_user_speaking_end_token", False)
 
                 if use_end_token:
                     state.last_audio_codes = torch.full(

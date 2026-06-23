@@ -80,7 +80,6 @@ def test_model_init():
         assert cfg is not None
 
 
-@pytest.mark.skip(reason="NEST SSL model produces NaN loss on synthetic random AudioNoiseBatch inputs.")
 def test_model_training_step():
     """Run one training step via direct training_step() call."""
     from e2e_utils import prepare_for_training_step

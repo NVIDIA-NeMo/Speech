@@ -1237,6 +1237,7 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
             )
 
             turn_frame_ranges = []
+            turn_phoneme_outputs = []
             decode_start_frame = 0
             max_decoder_steps = params.max_decoder_steps
 
@@ -1248,6 +1249,8 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
                 valid_mask = batch["valid_turn_masks"][local_turn_idx].to(device)
                 if not bool(valid_mask[0].item()):
                     continue
+
+                phoneme_start_step = len(getattr(state, "all_phoneme_predictions", []) or [])
 
                 state.finished.zero_()
                 state.text_finished.zero_()
@@ -1405,7 +1408,25 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
                 state.audio_prediction_end_idx.fill_(-1)
                 state.finished.zero_()
                 turn_end_frame = sum(p.size(-1) for p in state.all_predictions)
+                phoneme_end_step = len(getattr(state, "all_phoneme_predictions", []) or [])
+                (
+                    predicted_phoneme_text,
+                    predicted_phoneme_tokens,
+                    predicted_phoneme_token_labels,
+                ) = self._decode_phoneme_prediction_slice(
+                    getattr(state, "all_phoneme_predictions", []),
+                    phoneme_start_step,
+                    phoneme_end_step,
+                )
                 turn_frame_ranges.append((turn_id, turn_start_frame, turn_end_frame))
+                turn_phoneme_outputs.append(
+                    {
+                        "turn_id": turn_id,
+                        "predicted_phoneme_text": predicted_phoneme_text,
+                        "predicted_phoneme_tokens": predicted_phoneme_tokens,
+                        "predicted_phoneme_token_labels": predicted_phoneme_token_labels,
+                    }
+                )
 
             codec_sil_codes = self._ensure_codec_silence_codes()
             bos_id = getattr(model, "audio_bos_id", -1)
@@ -1428,7 +1449,224 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
 
             finalize_output = model.streaming_finalize(state, use_inference_mode=True)
 
-        return finalize_output, turn_frame_ranges, decode_start_frame, generated_codes
+        return finalize_output, turn_frame_ranges, turn_phoneme_outputs, decode_start_frame, generated_codes
+
+    @staticmethod
+    def _gpt2_byte_decoder() -> Dict[str, int]:
+        """Return GPT-2/byte-level-BPE unicode-char -> byte lookup.
+
+        Some NeMo tokenizer wrappers expose byte-level BPE pieces instead of
+        fully decoded text. Those pieces look like ``ËĪ``/``Ġ`` in JSON. They
+        are not mojibake from JSON itself; they are the reversible GPT-2 byte
+        alphabet. Reversing that alphabet gives readable IPA again.
+        """
+        byte_values = list(range(ord("!"), ord("~") + 1))
+        byte_values += list(range(ord("¡"), ord("¬") + 1))
+        byte_values += list(range(ord("®"), ord("ÿ") + 1))
+        unicode_values = list(byte_values)
+        n = 0
+        for byte in range(256):
+            if byte not in byte_values:
+                byte_values.append(byte)
+                unicode_values.append(256 + n)
+                n += 1
+        return {chr(unicode_value): byte for byte, unicode_value in zip(byte_values, unicode_values)}
+
+    @classmethod
+    def _decode_byte_level_bpe_text(cls, text: str) -> str:
+        """Decode GPT-2 byte-level BPE artifacts such as ``ËĪ`` and ``Ġ``.
+
+        If ``text`` is already normal Unicode IPA, it is returned unchanged.
+        """
+        if not text:
+            return ""
+
+        byte_artifact_markers = ("Ġ", "Ċ", "Ë", "É", "Ê", "Ã", "Å", "Î")
+        if not any(marker in text for marker in byte_artifact_markers):
+            return text.strip()
+
+        byte_decoder = cls._gpt2_byte_decoder()
+        byte_values = bytearray()
+        for ch in text:
+            value = byte_decoder.get(ch)
+            if value is not None:
+                byte_values.append(value)
+
+        if not byte_values:
+            return text.strip()
+
+        try:
+            decoded = byte_values.decode("utf-8")
+        except UnicodeDecodeError:
+            return text.replace("Ġ", " ").replace("Ċ", "\n").strip()
+
+        return " ".join(decoded.split())
+
+    @staticmethod
+    def _phoneme_special_token_map(tokenizer) -> Dict[int, str]:
+        """Map phoneme special token ids to stable debug labels."""
+        special_attrs = [
+            ("bos_token_id", "<PH_BOS>"),
+            ("eos_token_id", "<PH_EOS>"),
+            ("pad_token_id", "<PH_PAD>"),
+            ("pad", "<PH_PAD>"),
+            ("unk_token_id", "<PH_UNK>"),
+            ("mask_token_id", "<PH_MASK>"),
+        ]
+        special = {}
+        for attr, label in special_attrs:
+            value = getattr(tokenizer, attr, None)
+            if value is None:
+                continue
+            try:
+                token_id = int(value)
+            except Exception:
+                continue
+            special.setdefault(token_id, label)
+        return special
+
+    def _decode_phoneme_id_run(self, token_ids: List[int]) -> str:
+        """Decode a contiguous non-special phoneme-id span to readable text."""
+        if self.model.phoneme_tokenizer is None or not token_ids:
+            return ""
+
+        tokenizer = self.model.phoneme_tokenizer
+        candidates = []
+
+        # Prefer a wrapped HuggingFace tokenizer if present; it knows how to
+        # merge byte-level BPE pieces correctly.
+        for decoder in (getattr(tokenizer, "tokenizer", None), getattr(tokenizer, "_tokenizer", None), tokenizer):
+            if decoder is None or not hasattr(decoder, "decode"):
+                continue
+            try:
+                candidates.append(
+                    decoder.decode(
+                        token_ids,
+                        skip_special_tokens=False,
+                        clean_up_tokenization_spaces=False,
+                    )
+                )
+                continue
+            except TypeError:
+                pass
+            except Exception:
+                continue
+            try:
+                candidates.append(decoder.decode(token_ids))
+            except Exception:
+                continue
+
+        # Fall back to token-piece lookup. Join without spaces because BPE pieces
+        # already encode whitespace via the byte-level ``Ġ`` marker.
+        for converter in (getattr(tokenizer, "tokenizer", None), getattr(tokenizer, "_tokenizer", None), tokenizer):
+            if converter is None or not hasattr(converter, "convert_ids_to_tokens"):
+                continue
+            try:
+                pieces = converter.convert_ids_to_tokens(token_ids)
+                if isinstance(pieces, (list, tuple)):
+                    candidates.append("".join(str(piece) for piece in pieces))
+                elif pieces is not None:
+                    candidates.append(str(pieces))
+            except Exception:
+                continue
+
+        ids_to_tokens = getattr(tokenizer, "ids_to_tokens", None)
+        if ids_to_tokens is not None:
+            try:
+                if callable(ids_to_tokens):
+                    pieces = [ids_to_tokens(int(token_id)) for token_id in token_ids]
+                elif isinstance(ids_to_tokens, dict):
+                    pieces = [ids_to_tokens.get(int(token_id), "") for token_id in token_ids]
+                else:
+                    pieces = [ids_to_tokens[int(token_id)] for token_id in token_ids]
+                candidates.append("".join(str(piece) for piece in pieces))
+            except Exception:
+                pass
+
+        for candidate in candidates:
+            text = self._decode_byte_level_bpe_text(str(candidate or ""))
+            if text:
+                return text
+        return ""
+
+    def _format_phoneme_debug_sequence(self, token_ids: List[int]) -> Tuple[str, List[str]]:
+        """Return readable text and per-token labels while keeping specials.
+
+        ``predicted_phoneme_tokens`` keeps the integer ids, including special
+        markers. This function creates the human-readable companion fields:
+        ``predicted_phoneme_text`` and ``predicted_phoneme_token_labels``.
+        """
+        tokenizer = self.model.phoneme_tokenizer
+        special = self._phoneme_special_token_map(tokenizer)
+        labels: List[str] = []
+        text_parts: List[str] = []
+        run: List[int] = []
+
+        def flush_run() -> None:
+            if not run:
+                return
+            decoded_run = self._decode_phoneme_id_run(run)
+            if decoded_run:
+                text_parts.append(decoded_run)
+            run.clear()
+
+        for token_id in token_ids:
+            token_id = int(token_id)
+            special_label = special.get(token_id)
+            if special_label is not None:
+                flush_run()
+                text_parts.append(special_label)
+                labels.append(f"{special_label}:{token_id}")
+            else:
+                run.append(token_id)
+                decoded_piece = self._decode_phoneme_id_run([token_id])
+                labels.append(f"{token_id}:{decoded_piece}" if decoded_piece else str(token_id))
+        flush_run()
+
+        return " ".join(part for part in text_parts if part), labels
+
+    def _decode_phoneme_prediction_slice(
+        self,
+        phoneme_predictions,
+        start_step: int,
+        end_step: int,
+    ) -> Tuple[str, List[int], List[str]]:
+        if self.model.phoneme_tokenizer is None or not phoneme_predictions:
+            return "", [], []
+
+        start_step = max(0, min(int(start_step), len(phoneme_predictions)))
+        end_step = max(start_step, min(int(end_step), len(phoneme_predictions)))
+        if end_step <= start_step:
+            return "", [], []
+
+        phoneme_tensor = torch.stack(phoneme_predictions[start_step:end_step], dim=-1)
+        raw_tokens = phoneme_tensor[0].detach().cpu().T.reshape(-1).long().tolist()
+
+        tokenizer = self.model.phoneme_tokenizer
+        eos_id = getattr(tokenizer, "eos_token_id", None)
+        bos_id = getattr(tokenizer, "bos_token_id", None)
+
+        # The streaming phoneme predictor is seeded with BOS as input before the
+        # first predicted phoneme. Add it explicitly to the debug sequence so the
+        # exported JSON shows the same boundary condition used by inference.
+        debug_tokens: List[int] = []
+        if bos_id is not None:
+            try:
+                debug_tokens.append(int(bos_id))
+            except Exception:
+                pass
+
+        for token in raw_tokens:
+            token = int(token)
+            debug_tokens.append(token)
+            if eos_id is not None and token == int(eos_id):
+                break
+
+        if not debug_tokens:
+            return "", [], []
+
+        phoneme_text, token_labels = self._format_phoneme_debug_sequence(debug_tokens)
+        return phoneme_text, debug_tokens, token_labels
 
     @staticmethod
     def _save_code_slice(
@@ -1637,7 +1875,9 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
                 continue
 
             start_time = time.time()
-            output, turn_frame_ranges, decode_start_frame, generated_codes = self._run_multiturn_generation(batch)
+            output, turn_frame_ranges, turn_phoneme_outputs, decode_start_frame, generated_codes = (
+                self._run_multiturn_generation(batch)
+            )
             elapsed = time.time() - start_time
 
             predicted_audio = output.audio.float().detach().cpu()
@@ -1661,6 +1901,11 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
 
             for local_turn_idx, (turn_id, start_frame, end_frame) in enumerate(turn_frame_ranges):
                 source_turn_idx = int(turn_id)
+                phoneme_output = (
+                    turn_phoneme_outputs[local_turn_idx]
+                    if local_turn_idx < len(turn_phoneme_outputs)
+                    else {}
+                )
                 rel_start_frame = start_frame - decode_start_frame
                 rel_end_frame = end_frame - decode_start_frame
                 start_sample = int(round(rel_start_frame * samples_per_prediction_frame))
@@ -1717,6 +1962,11 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
                         "audio_filepath": f"target_audio_{item_idx}.wav",
                         "context_audio_filepath": f"context_audio_{item_idx}.wav",
                         "text": raw_turn_texts[source_turn_idx] if source_turn_idx < len(raw_turn_texts) else "",
+                        "predicted_phoneme_text": phoneme_output.get("predicted_phoneme_text", ""),
+                        "predicted_phoneme_tokens": phoneme_output.get("predicted_phoneme_tokens", []),
+                        "predicted_phoneme_token_labels": phoneme_output.get(
+                            "predicted_phoneme_token_labels", []
+                        ),
                         "speaker": str(sample_idx),
                         "source_sample_idx": sample_idx,
                         "turn_id": int(turn_id),

@@ -190,6 +190,9 @@ def _enrich_filewise_metrics_with_manifest(filewise_metrics: list, manifest_path
             "rank_local_idx",
             "audio_filepath",
             "context_audio_filepath",
+            "predicted_phoneme_text",
+            "predicted_phoneme_tokens",
+            "predicted_phoneme_token_labels",
         ]:
             if key in record and key not in new_row:
                 new_row[key] = record[key]
@@ -249,6 +252,11 @@ def _group_multiturn_filewise_metrics_by_sample(filewise_metrics: list) -> list:
         eou_type_turns = [r.get("eou_type") for r in turns]
         eou_trailing_duration_turns = [r.get("eou_trailing_duration") for r in turns]
         eou_trail_rms_ratio_turns = [r.get("eou_trail_rms_ratio") for r in turns]
+        predicted_phoneme_text_turns = [r.get("predicted_phoneme_text", "") for r in turns]
+        predicted_phoneme_tokens_turns = [r.get("predicted_phoneme_tokens", []) for r in turns]
+        predicted_phoneme_token_labels_turns = [
+            r.get("predicted_phoneme_token_labels", []) for r in turns
+        ]
 
         grouped_rows.append(
             {
@@ -280,6 +288,9 @@ def _group_multiturn_filewise_metrics_by_sample(filewise_metrics: list) -> list:
                 "eou_type_turns": eou_type_turns,
                 "eou_trailing_duration_turns": eou_trailing_duration_turns,
                 "eou_trail_rms_ratio_turns": eou_trail_rms_ratio_turns,
+                "predicted_phoneme_text_turns": predicted_phoneme_text_turns,
+                "predicted_phoneme_tokens_turns": predicted_phoneme_tokens_turns,
+                "predicted_phoneme_token_labels_turns": predicted_phoneme_token_labels_turns,
                 "reference_text": [r.get("gt_text", "") for r in turns],
                 "asr_hyp": [r.get("pred_text", "") for r in turns],
                 "pred_audio_paths": [r.get("pred_audio_filepath", "") for r in turns],
@@ -332,6 +343,9 @@ def _write_grouped_multiturn_filewise_metrics_csv(csv_path: str, grouped_rows: l
         "pred_audio_paths",
         "reference_text",
         "asr_hyp",
+        "predicted_phoneme_text_turns",
+        "predicted_phoneme_tokens_turns",
+        "predicted_phoneme_token_labels_turns",
     ]
 
     def csv_value(value):
@@ -451,14 +465,7 @@ def _wait_for_multiturn_rank_manifests(repeat_audio_dir: str, world_size: int, t
     raise RuntimeError(f"Timed out waiting for multiturn rank manifests: {missing}")
 
 
-def _path_is_under_dir(path: str, directory: str) -> bool:
-    try:
-        return os.path.commonpath([os.path.realpath(path), os.path.realpath(directory)]) == os.path.realpath(directory)
-    except ValueError:
-        return False
-
-
-def _move_or_copy_rank_output(src: str, dst: str, required: bool = False, rank_dir: str = None) -> None:
+def _copy_or_link(src: str, dst: str, required: bool = False) -> None:
     if src is None or not os.path.exists(src):
         if os.path.lexists(dst):
             os.remove(dst)
@@ -471,13 +478,8 @@ def _move_or_copy_rank_output(src: str, dst: str, required: bool = False, rank_d
     if os.path.lexists(dst):
         os.remove(dst)
 
-    # Move files produced inside rank_XXXX/ into the merged evaluation directory.
-    # If a manifest unexpectedly points outside rank_XXXX/ (for example an
-    # absolute dataset path), copy instead so original input data is not moved.
-    if rank_dir is not None and not _path_is_under_dir(src, rank_dir):
-        shutil.copyfile(src, dst)
-    else:
-        shutil.move(src, dst)
+    # Prefer real files for evaluator inputs; broken symlinks confuse librosa/UTMOS.
+    shutil.copyfile(src, dst)
 
 
 def _merge_multiturn_rank_outputs(repeat_audio_dir: str, world_size: int, save_predicted_codes: bool) -> str:
@@ -485,8 +487,8 @@ def _merge_multiturn_rank_outputs(repeat_audio_dir: str, world_size: int, save_p
 
     Each rank writes local files named predicted_audio_0.wav, target_audio_0.wav,
     context_audio_0.wav, predicted_codes_0.pt, ... inside rank_XXXX/. This
-    function moves rank-local artifacts to contiguous global indices in
-    repeat_audio_dir/ and writes a merged turn-level manifest.
+    function remaps them to contiguous global indices in repeat_audio_dir/ and
+    writes a merged turn-level manifest.
     """
     # clean previous merged files
     for pattern in [
@@ -514,23 +516,23 @@ def _merge_multiturn_rank_outputs(repeat_audio_dir: str, world_size: int, save_p
         for local_idx, record in enumerate(rank_records):
             pred_src = os.path.join(rank_dir, f"predicted_audio_{local_idx}.wav")
             pred_dst = os.path.join(repeat_audio_dir, f"predicted_audio_{global_idx}.wav")
-            _move_or_copy_rank_output(pred_src, pred_dst, required=True, rank_dir=rank_dir)
+            _copy_or_link(pred_src, pred_dst, required=True)
 
             if save_predicted_codes:
                 code_src = os.path.join(rank_dir, f"predicted_codes_{local_idx}.pt")
                 code_dst = os.path.join(repeat_audio_dir, f"predicted_codes_{global_idx}.pt")
-                _move_or_copy_rank_output(code_src, code_dst, required=False, rank_dir=rank_dir)
+                _copy_or_link(code_src, code_dst, required=False)
 
             target_src = os.path.join(rank_dir, record.get("audio_filepath", f"target_audio_{local_idx}.wav"))
             target_dst = os.path.join(repeat_audio_dir, f"target_audio_{global_idx}.wav")
-            _move_or_copy_rank_output(target_src, target_dst, required=True, rank_dir=rank_dir)
+            _copy_or_link(target_src, target_dst, required=True)
 
             context_src = os.path.join(
                 rank_dir,
                 record.get("context_audio_filepath", f"context_audio_{local_idx}.wav"),
             )
             context_dst = os.path.join(repeat_audio_dir, f"context_audio_{global_idx}.wav")
-            _move_or_copy_rank_output(context_src, context_dst, required=True, rank_dir=rank_dir)
+            _copy_or_link(context_src, context_dst, required=True)
 
             merged = dict(record)
             merged["audio_filepath"] = f"target_audio_{global_idx}.wav"

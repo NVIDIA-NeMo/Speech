@@ -151,7 +151,7 @@ def _mean_finite(values: list):
     for value in values:
         try:
             value = float(value)
-        except Exception:
+        except (TypeError, ValueError):
             continue
         if np.isfinite(value):
             vals.append(value)
@@ -236,7 +236,7 @@ def _group_multiturn_filewise_metrics_by_sample(filewise_metrics: list) -> list:
         def turn_sort_key(r):
             try:
                 return int(r.get("turn_id", 0))
-            except Exception:
+            except (TypeError, ValueError):
                 return 0
 
         turns = sorted(turns, key=turn_sort_key)

@@ -464,16 +464,6 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
             else:
                 text_str = cut.supervisions[0].text
 
-            should_use_ipa_as_text = (
-                self.dataset_type == 'train'
-                and self.ipa_as_text_prob > 0.0
-                and random.random() < self.ipa_as_text_prob
-                and cut.supervisions[0].has_custom("ipa")
-                and language not in self.ignore_phoneme_languages
-            )
-            if should_use_ipa_as_text:
-                text_str = cut.supervisions[0].ipa
-
             raw_text_list.append(text_str)
             if cut.has_custom("tokenizer_names"):
                 # Pick a random tokenizer from the list of tokenizers

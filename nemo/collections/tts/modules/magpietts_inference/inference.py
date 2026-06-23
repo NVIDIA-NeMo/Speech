@@ -745,20 +745,17 @@ class EasyMagpieMultiturnUserAudioDataset(torch.utils.data.Dataset):
             raise FileNotFoundError(f"Missing audio path: {path}")
 
         audio, sr = sf.read(path, dtype="float32", always_2d=False)
-        wav = torch.as_tensor(audio, dtype=torch.float32)
-        if wav.ndim == 2:
-            wav = wav.mean(dim=1)
-        wav = wav.flatten()
+
+        if audio.ndim == 2:
+            audio = audio.mean(axis=1)
+
+        if self.normalize_audio:
+            audio = normalize_volume(audio)
+
+        wav = torch.as_tensor(audio, dtype=torch.float32).flatten()
 
         if sr != sample_rate:
             wav = resample(wav.unsqueeze(0), sr, sample_rate).squeeze(0)
-
-        if self.normalize_audio:
-            try:
-                wav = normalize_volume(wav)
-            except Exception:
-                # Keep evaluation robust across normalize_volume signature changes.
-                pass
 
         return wav.contiguous()
 
@@ -1503,91 +1500,106 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
         return " ".join(decoded.split())
 
     @staticmethod
+    def _token_id_as_int(value) -> Optional[int]:
+        """Return a scalar token id as int, or None when it is not a valid id."""
+        if value is None:
+            return None
+        if isinstance(value, torch.Tensor):
+            if value.numel() != 1:
+                return None
+            value = value.detach().cpu().item()
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                return None
+            signless = value[1:] if value[0] in ("+", "-") else value
+            if signless.isdigit():
+                return int(value)
+        return None
+
+    @staticmethod
     def _phoneme_special_token_map(tokenizer) -> Dict[int, str]:
-        """Map phoneme special token ids to stable debug labels."""
+        """Map phoneme special token ids to stable debug labels.
+
+        IPABPETokenizer stores its specials directly in ``_inv_vocab`` as
+        ``<sp_bos>``, ``<sp_eos>``, and ``<sp_unk>``. Prefer those labels so
+        the exported debug JSON matches the tokenizer vocabulary.
+        """
+        special: Dict[int, str] = {}
+
+        inv_vocab = getattr(tokenizer, "_inv_vocab", None)
+        if isinstance(inv_vocab, dict):
+            for token_id, piece in inv_vocab.items():
+                token_id = EasyMagpieMultiturnUserAudioInferenceRunner._token_id_as_int(token_id)
+                if token_id is None:
+                    continue
+                piece = str(piece)
+                if piece.startswith("<") and piece.endswith(">"):
+                    special[token_id] = piece
+
         special_attrs = [
-            ("bos_token_id", "<PH_BOS>"),
-            ("eos_token_id", "<PH_EOS>"),
-            ("pad_token_id", "<PH_PAD>"),
-            ("pad", "<PH_PAD>"),
-            ("unk_token_id", "<PH_UNK>"),
-            ("mask_token_id", "<PH_MASK>"),
+            ("bos_token_id", "<sp_bos>"),
+            ("bos", "<sp_bos>"),
+            ("eos_token_id", "<sp_eos>"),
+            ("eos", "<sp_eos>"),
+            ("pad_token_id", "<pad>"),
+            ("pad", "<pad>"),
+            ("unk_token_id", "<sp_unk>"),
+            ("mask_token_id", "<sp_mask>"),
         ]
-        special = {}
         for attr, label in special_attrs:
-            value = getattr(tokenizer, attr, None)
-            if value is None:
-                continue
-            try:
-                token_id = int(value)
-            except Exception:
-                continue
-            special.setdefault(token_id, label)
+            token_id = EasyMagpieMultiturnUserAudioInferenceRunner._token_id_as_int(getattr(tokenizer, attr, None))
+            if token_id is not None:
+                special.setdefault(token_id, label)
+
         return special
 
+    @classmethod
+    def _phoneme_token_pieces(cls, tokenizer, token_ids: List[int]) -> List[str]:
+        """Return tokenizer pieces for ids without dropping special tokens."""
+        token_ids = [int(token_id) for token_id in token_ids]
+
+        inv_vocab = getattr(tokenizer, "_inv_vocab", None)
+        if isinstance(inv_vocab, dict):
+            return [str(inv_vocab.get(token_id, "<sp_unk>")) for token_id in token_ids]
+
+        internal_tokenizer = getattr(tokenizer, "_tokenizer", None)
+        if internal_tokenizer is not None and hasattr(internal_tokenizer, "id_to_token"):
+            pieces = []
+            for token_id in token_ids:
+                piece = internal_tokenizer.id_to_token(token_id)
+                pieces.append("<sp_unk>" if piece is None else str(piece))
+            return pieces
+
+        tokens = getattr(tokenizer, "tokens", None)
+        if isinstance(tokens, dict):
+            inv = {int(idx): str(piece) for piece, idx in tokens.items() if cls._token_id_as_int(idx) is not None}
+            return [inv.get(token_id, "<sp_unk>") for token_id in token_ids]
+
+        return [str(token_id) for token_id in token_ids]
+
     def _decode_phoneme_id_run(self, token_ids: List[int]) -> str:
-        """Decode a contiguous non-special phoneme-id span to readable text."""
+        """Decode a contiguous non-special phoneme-id span to readable IPA."""
         if self.model.phoneme_tokenizer is None or not token_ids:
             return ""
 
         tokenizer = self.model.phoneme_tokenizer
-        candidates = []
+        pieces = self._phoneme_token_pieces(tokenizer, token_ids)
+        if pieces:
+            # IPABPETokenizer piece strings are byte-level BPE symbols. Joining
+            # and byte-decoding them produces readable IPA, e.g. ``ËĪÉĳËĲ`` -> ``ˈɑː``.
+            decoded_from_pieces = self._decode_byte_level_bpe_text("".join(pieces))
+            if decoded_from_pieces:
+                return decoded_from_pieces
 
-        # Prefer a wrapped HuggingFace tokenizer if present; it knows how to
-        # merge byte-level BPE pieces correctly.
-        for decoder in (getattr(tokenizer, "tokenizer", None), getattr(tokenizer, "_tokenizer", None), tokenizer):
-            if decoder is None or not hasattr(decoder, "decode"):
-                continue
-            try:
-                candidates.append(
-                    decoder.decode(
-                        token_ids,
-                        skip_special_tokens=False,
-                        clean_up_tokenization_spaces=False,
-                    )
-                )
-                continue
-            except TypeError:
-                pass
-            except Exception:
-                continue
-            try:
-                candidates.append(decoder.decode(token_ids))
-            except Exception:
-                continue
+        decoder = getattr(tokenizer, "decode", None)
+        if callable(decoder):
+            decoded = decoder([int(token_id) for token_id in token_ids])
+            return self._decode_byte_level_bpe_text(str(decoded or ""))
 
-        # Fall back to token-piece lookup. Join without spaces because BPE pieces
-        # already encode whitespace via the byte-level ``Ġ`` marker.
-        for converter in (getattr(tokenizer, "tokenizer", None), getattr(tokenizer, "_tokenizer", None), tokenizer):
-            if converter is None or not hasattr(converter, "convert_ids_to_tokens"):
-                continue
-            try:
-                pieces = converter.convert_ids_to_tokens(token_ids)
-                if isinstance(pieces, (list, tuple)):
-                    candidates.append("".join(str(piece) for piece in pieces))
-                elif pieces is not None:
-                    candidates.append(str(pieces))
-            except Exception:
-                continue
-
-        ids_to_tokens = getattr(tokenizer, "ids_to_tokens", None)
-        if ids_to_tokens is not None:
-            try:
-                if callable(ids_to_tokens):
-                    pieces = [ids_to_tokens(int(token_id)) for token_id in token_ids]
-                elif isinstance(ids_to_tokens, dict):
-                    pieces = [ids_to_tokens.get(int(token_id), "") for token_id in token_ids]
-                else:
-                    pieces = [ids_to_tokens[int(token_id)] for token_id in token_ids]
-                candidates.append("".join(str(piece) for piece in pieces))
-            except Exception:
-                pass
-
-        for candidate in candidates:
-            text = self._decode_byte_level_bpe_text(str(candidate or ""))
-            if text:
-                return text
-        return ""
+        return " ".join(pieces)
 
     def _format_phoneme_debug_sequence(self, token_ids: List[int]) -> Tuple[str, List[str]]:
         """Return readable text and per-token labels while keeping specials.
@@ -1643,23 +1655,20 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
         raw_tokens = phoneme_tensor[0].detach().cpu().T.reshape(-1).long().tolist()
 
         tokenizer = self.model.phoneme_tokenizer
-        eos_id = getattr(tokenizer, "eos_token_id", None)
-        bos_id = getattr(tokenizer, "bos_token_id", None)
+        eos_id = self._token_id_as_int(getattr(tokenizer, "eos_token_id", None))
+        bos_id = self._token_id_as_int(getattr(tokenizer, "bos_token_id", None))
 
         # The streaming phoneme predictor is seeded with BOS as input before the
         # first predicted phoneme. Add it explicitly to the debug sequence so the
         # exported JSON shows the same boundary condition used by inference.
         debug_tokens: List[int] = []
         if bos_id is not None:
-            try:
-                debug_tokens.append(int(bos_id))
-            except Exception:
-                pass
+            debug_tokens.append(bos_id)
 
         for token in raw_tokens:
             token = int(token)
             debug_tokens.append(token)
-            if eos_id is not None and token == int(eos_id):
+            if eos_id is not None and token == eos_id:
                 break
 
         if not debug_tokens:

@@ -150,9 +150,7 @@ def model():
 
 
 def _padded_token_tensor(model, texts):
-    tokenized = [
-        model.tokenizer.encode(text, tokenizer_name=BPE_TOKENIZER_NAME) + [model.eos_id] for text in texts
-    ]
+    tokenized = [model.tokenizer.encode(text, tokenizer_name=BPE_TOKENIZER_NAME) + [model.eos_id] for text in texts]
     lens = torch.tensor([len(tokens) for tokens in tokenized], dtype=torch.long)
     max_len = int(lens.max().item())
     padded = torch.full((len(tokenized), max_len), model.pad_id, dtype=torch.long)
@@ -491,8 +489,9 @@ def test_training_step_smoke(model, toy_batch):
     _seed_everything()
     model.train()
 
-    with patch.object(model, "log", lambda *args, **kwargs: None), patch.object(
-        model, "log_dict", lambda *args, **kwargs: None
+    with (
+        patch.object(model, "log", lambda *args, **kwargs: None),
+        patch.object(model, "log_dict", lambda *args, **kwargs: None),
     ):
         loss = model.training_step(toy_batch, batch_idx=0)
 

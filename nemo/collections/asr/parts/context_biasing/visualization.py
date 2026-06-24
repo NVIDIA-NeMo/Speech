@@ -44,7 +44,7 @@ DEFAULT_FINAL_STATE_ATTR = {
 
 @graphviz_required
 def draw_linear(
-    labels: list[str], title="", merges: list[tuple[int, int, str]] | None = None, case_insensitive: bool = False
+    labels: list[str], title="", merges: list[tuple[str, ...]] | None = None, case_insensitive: bool = False
 ):
     """
     Visualize linear graph from labels with optional merges
@@ -52,9 +52,11 @@ def draw_linear(
     Args:
         labels: list of labels (minimal units, usually characters)
         title: title of the graph
-        merges: list of triples containing start state, end state, label (merged)
+        merges: list tuples containing label that can be merged
         case_insensitive: if the graph should show case-insensitive approach
     """
+    if merges is None:
+        merges = []
     graph_attr = copy.deepcopy(DEFAULT_GRAPH_ATTR)
     if title:
         graph_attr["label"] = title
@@ -72,9 +74,14 @@ def draw_linear(
                 dot.edge(str(i), str(i + 1), label=f"{label.upper()}")
         else:
             dot.edge(str(i), str(i + 1), label=f"{label}")
-    if merges:
-        for b, e, label in merges:
-            dot.edge(str(b), str(e), label=f"{label}")
+        for merge in merges:
+            merge_str = "".join(merge)
+            if case_insensitive:
+                is_valid_merge = ("".join(labels[i + 1 - len(merge) : i + 1])).lower() == merge_str.lower()
+            else:
+                is_valid_merge = "".join(labels[i + 1 - len(merge) : i + 1]) == merge_str
+            if is_valid_merge:
+                dot.edge(str(i + 1 - len(merge)), str(i + 1), label=f"{merge_str}")
     return dot
 
 

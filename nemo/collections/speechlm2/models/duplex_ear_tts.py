@@ -92,10 +92,11 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         self.audio_codec_run_dtype = getattr(torch, self.cfg.get("audio_codec_run_dtype", "float32"), torch.float32)
 
         # Load tokenizer
+        tokenizer_src = self.cfg.get("tokenizer_path", None) or self.cfg.pretrained_lm_name
         self.tokenizer = AutoTokenizer(
-            self.cfg.pretrained_lm_name,
+            tokenizer_src,
             use_fast=True,
-            trust_remote_code=True,
+            trust_remote_code=self.cfg.get("trust_remote_code", False),
             bos_token=self.cfg.get("bos_token", None),
             eos_token=self.cfg.get("eos_token", None),
             pad_token=self.cfg.get("pad_token", None),

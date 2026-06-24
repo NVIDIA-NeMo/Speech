@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from omegaconf import open_dict
+from omegaconf import OmegaConf, open_dict
 from omegaconf.dictconfig import DictConfig
 
 from nemo.collections.asr.inference.model_wrappers.cache_aware_ctc_inference_wrapper import (
@@ -71,6 +71,32 @@ class BaseBuilder:
             )
             logging.info(f"NMT model `{cfg.nmt.model_name}` loaded")
         return nmt_model
+
+    @staticmethod
+    def _apply_confidence_cfg(cfg: DictConfig, decoding_cfg: RNNTDecodingConfig) -> None:
+        """
+        Wire the separately-stored `confidence` block into the RNNT decoding confidence config so the
+        greedy decoder computes per-token confidence with the configured method. The streaming pipelines
+        only support non-blank confidence (`confidence.exclude_blank=true`).
+        Args:
+            cfg: (DictConfig) Full pipeline config (provides the top-level `confidence` block).
+            decoding_cfg: (RNNTDecodingConfig) Decoding config to update in place.
+        """
+        if not decoding_cfg.greedy.get("preserve_frame_confidence", False):
+            return
+        confidence_cfg = cfg.get("confidence", None)
+        if confidence_cfg is None:
+            return
+        if not confidence_cfg.get("exclude_blank", True):
+            raise ValueError(
+                "Streaming confidence supports only non-blank confidence (`confidence.exclude_blank=true`)."
+            )
+        decoding_cfg.confidence_cfg.preserve_frame_confidence = True
+        decoding_cfg.confidence_cfg.exclude_blank = True
+        decoding_cfg.confidence_cfg.aggregation = confidence_cfg.get("aggregation", "mean")
+        decoding_cfg.confidence_cfg.method_cfg = OmegaConf.merge(
+            decoding_cfg.confidence_cfg.method_cfg, confidence_cfg.method_cfg
+        )
 
     @classmethod
     def _build_asr(cls, cfg: DictConfig, decoding_cfg: CTCDecodingConfig | RNNTDecodingConfig | None) -> Any:

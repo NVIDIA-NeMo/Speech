@@ -33,6 +33,7 @@ Public surface used by the rest of the package:
   registry binds to the registered model class.
 """
 
+import os
 import re
 from collections.abc import Mapping
 from typing import Annotated, Literal
@@ -64,6 +65,17 @@ from nemo.collections.speechlm2.vllm.salm.config import _AUDIO_PLACEHOLDER
 _SAMPLING_RATE = 16000
 _AUDIO_CHANNELS = 1
 _DUMMY_AUDIO_DURATION_S = 40.0
+_DUMMY_AUDIO_MAX_DURATION_S = 3600.0
+_DUMMY_AUDIO_TEXT_TOKEN_RESERVE = 64
+# FastConformer preprocessor hop length, used to derive the smallest
+# chunk that produces ≥ 2 feature frames (per-feature normalization
+# breaks on a single frame). Mirrors
+# ``encoder_chunking._get_min_chunk_size_samples`` for the canonical
+# preprocessor we ship; the chunking helper probes the live featurizer
+# at training time, but the prompt processor here runs before the
+# perception module is loaded, so we use the same constant the helper
+# would derive.
+_MIN_CHUNK_SIZE_SAMPLES = 320
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
@@ -84,13 +96,81 @@ def _load_nemo_perception(perception_cfg: dict) -> nn.Module:
         from nemo.collections.speechlm2.modules import AudioPerceptionModule
     except ImportError as e:
         raise ImportError(
-            "NeMo is required for the audio encoder. " "Install with: pip install nemo_toolkit[asr]"
+            "NeMo is required for the audio encoder. " "Install with: pip install 'nemo-toolkit[asr]'"
         ) from e
 
     cfg = DictConfig(perception_cfg)
     perception = AudioPerceptionModule(cfg)
     perception.eval()
     return perception
+
+
+def _maybe_mount_pe_encoder(perception: nn.Module, pe_encoder_path: str | None) -> bool:
+    """Replace ``perception.encoder`` with a ParallelExpertEncoder bundle so PE-trained
+    checkpoints (nested ``asr_encoder.*`` / ``diarization_model.*`` weights) load correctly.
+
+    ``pe_encoder_path`` comes straight from the checkpoint's ``config.json`` (the
+    training recipe's ``model.pe_encoder_path``) and may be **either**:
+
+    * a local ``.nemo`` file -- restored directly, or
+    * a pretrained model identifier (HuggingFace Hub ``{repo}/{name}`` or NGC
+      alias) -- resolved via ``ParallelExpertEncoderPT.load_from_nemo`` ->
+      ``Model.from_pretrained``, which honours the HuggingFace cache and
+      ``HF_HUB_OFFLINE`` so a prefetched cache works on offline compute nodes.
+
+    We therefore defer resolution to ``load_from_nemo`` (which dispatches local
+    vs. model-id) instead of pre-rejecting anything that is not already a local
+    file. The only fail-fast here is a local ``.nemo`` file that exists but is
+    not a PE bundle -- that is an unambiguous user error.
+
+    Args:
+        perception (nn.Module): Perception module whose ``encoder`` is swapped in place.
+        pe_encoder_path (str | None): Local ``.nemo`` path or pretrained model id; no-op if falsy.
+
+    Returns:
+        bool: True if a PE encoder was mounted, False otherwise.
+    """
+    if pe_encoder_path in (None, "", False):
+        return False
+    if not hasattr(perception, "encoder"):
+        raise RuntimeError("pe_encoder_path is set but perception has no `encoder` attribute to replace.")
+
+    from nemo.collections.asr.modules.parallel_expert_encoder import ParallelExpertEncoderPT
+
+    # Only fail-fast for a *local* ``.nemo`` file that is not a PE bundle. A
+    # non-local reference (HF repo id / NGC alias) is resolved offline from the
+    # HuggingFace cache by load_from_nemo -> from_pretrained, so do not reject it.
+    is_local_nemo_file = (
+        isinstance(pe_encoder_path, str) and pe_encoder_path.endswith(".nemo") and os.path.isfile(pe_encoder_path)
+    )
+    if is_local_nemo_file and not ParallelExpertEncoderPT.is_pe_nemo(pe_encoder_path):
+        raise ValueError(f"pe_encoder_path={pe_encoder_path!r} is not a ParallelExpertEncoderPT .nemo bundle.")
+
+    pe_encoder = ParallelExpertEncoderPT.load_from_nemo(pe_encoder_path, map_location="cpu", strict=True)
+
+    existing_d_model = int(getattr(perception.encoder, "d_model", -1))
+    if existing_d_model > 0 and int(pe_encoder.d_model) != existing_d_model:
+        raise ValueError(
+            f"ParallelExpertEncoder d_model={pe_encoder.d_model} does not match the existing "
+            f"perception encoder d_model={existing_d_model}."
+        )
+
+    # load_from_nemo restores onto CPU; copy the replaced encoder's device/dtype to avoid CPU/dtype mismatches.
+    ref_param = next(perception.encoder.parameters(), None)
+    if ref_param is not None:
+        pe_encoder = pe_encoder.to(device=ref_param.device, dtype=ref_param.dtype)
+
+    # PE encoder consumes un-normalised mels and replays ASR norm internally, so disable preprocessor norm.
+    try:
+        perception.preprocessor.featurizer.normalize = None
+    except AttributeError:
+        # Preprocessor/featurizer layout varies across backends; if the attribute is
+        # absent there is no outer normalization to disable, so skipping is correct.
+        pass
+
+    perception.encoder = pe_encoder
+    perception.eval()
+    return True
 
 
 def _pad_to_vocab_size(tensor: torch.Tensor, target_vocab: int) -> torch.Tensor:
@@ -123,11 +203,20 @@ class NeMoSpeechLMProcessingInfo(BaseProcessingInfo):
         )
 
     def get_supported_mm_limits(self) -> Mapping[str, int | None]:
-        return {"audio": 1}
+        return {"audio": None}
+
+    def _get_encoder_chunk_size_seconds(self) -> float | None:
+        """Return the per-encoder-call chunk size baked into the checkpoint.
+
+        Mirrors the training-time ``model.encoder_chunk_size_seconds`` field
+        (see ``encode_audio_with_optional_chunking``). ``None`` means the
+        encoder runs once over the full audio, matching legacy checkpoints.
+        """
+        return getattr(self.get_hf_config(), "encoder_chunk_size_seconds", None)
 
     @staticmethod
-    def _estimate_audio_tokens(audio_length_samples: int) -> int:
-        """Predict the encoder's output frame count for an audio of N samples.
+    def _estimate_audio_tokens_single_pass(audio_length_samples: int) -> int:
+        """Predict the encoder's output frame count for one perception forward.
 
         Mirrors the FastConformer preprocessing chain used by
         ``AudioPerceptionModule``: STFT (n_fft=512, hop_length=160) followed
@@ -150,6 +239,72 @@ class NeMoSpeechLMProcessingInfo(BaseProcessingInfo):
         for _ in range(repeat):
             length = (length + add_pad) / stride + 1.0
         return max(1, int(length))
+
+    @classmethod
+    def _estimate_audio_tokens(
+        cls,
+        audio_length_samples: int,
+        chunk_size_seconds: float | None = None,
+    ) -> int:
+        """Predict the encoder's total output frame count for an audio of N samples.
+
+        When ``chunk_size_seconds`` is ``None`` or the audio fits in a single
+        chunk, returns the single-pass estimate. Otherwise mirrors
+        ``encode_audio_with_optional_chunking``'s split (with the same
+        tail-folding rule) and sums the per-chunk frame counts so the
+        placeholder count matches what the model emits at forward time.
+        """
+        if chunk_size_seconds is None or audio_length_samples <= 0:
+            return cls._estimate_audio_tokens_single_pass(audio_length_samples)
+        if chunk_size_seconds <= 0.0:
+            raise ValueError("encoder_chunk_size_seconds must be positive when set.")
+        chunk_size_samples = max(1, int(round(chunk_size_seconds * _SAMPLING_RATE)))
+        chunk_size_samples = max(chunk_size_samples, _MIN_CHUNK_SIZE_SAMPLES)
+        if audio_length_samples <= chunk_size_samples:
+            return cls._estimate_audio_tokens_single_pass(audio_length_samples)
+
+        spans: list[tuple[int, int]] = []
+        for begin in range(0, audio_length_samples, chunk_size_samples):
+            end = min(begin + chunk_size_samples, audio_length_samples)
+            spans.append((begin, end))
+        if spans[-1][1] - spans[-1][0] < _MIN_CHUNK_SIZE_SAMPLES:
+            spans[-2] = (spans[-2][0], spans[-1][1])
+            spans.pop()
+
+        return sum(cls._estimate_audio_tokens_single_pass(end - begin) for begin, end in spans)
+
+    @classmethod
+    def _samples_for_audio_tokens(cls, target_tokens: int, chunk_size_seconds: float | None = None) -> int:
+        """Return the smallest sample count estimated to produce ``target_tokens``.
+
+        vLLM sizes the multimodal encoder cache from dummy inputs.  The SALM
+        plugin supports arbitrarily long audio by chunking the encoder forward,
+        but the decoder still receives the concatenated full-audio embedding
+        sequence.  This inverse estimator lets ``--limit-mm-per-prompt`` audio
+        length hints reserve cache for that full sequence without hard-coding a
+        single maximum call duration.
+        """
+        target_tokens = max(1, int(target_tokens))
+        max_samples = int(_DUMMY_AUDIO_MAX_DURATION_S * _SAMPLING_RATE)
+        lo, hi = 1, min(_SAMPLING_RATE, max_samples)
+        while hi < max_samples and cls._estimate_audio_tokens(hi, chunk_size_seconds) < target_tokens:
+            hi = min(hi * 2, max_samples)
+
+        hi_tokens = cls._estimate_audio_tokens(hi, chunk_size_seconds)
+        if hi_tokens < target_tokens:
+            raise ValueError(
+                f"Cannot produce {target_tokens} audio tokens within the "
+                f"{_DUMMY_AUDIO_MAX_DURATION_S:g} s dummy-audio cap; "
+                f"maximum is {hi_tokens}."
+            )
+
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if cls._estimate_audio_tokens(mid, chunk_size_seconds) >= target_tokens:
+                hi = mid
+            else:
+                lo = mid + 1
+        return lo
 
 
 class NeMoSpeechLMMultiModalProcessor(
@@ -182,10 +337,11 @@ class NeMoSpeechLMMultiModalProcessor(
         out_mm_kwargs: MultiModalKwargsItems,
     ) -> list[PromptUpdate]:
         audios = mm_items.get_items("audio", AudioProcessorItems)
+        chunk_size_seconds = self.info._get_encoder_chunk_size_seconds()
 
         def get_replacement(item_idx: int):
             audio = audios.get(item_idx)
-            n_tokens = self.info._estimate_audio_tokens(audio.shape[-1])
+            n_tokens = self.info._estimate_audio_tokens(audio.shape[-1], chunk_size_seconds)
             repl_full = _AUDIO_PLACEHOLDER * n_tokens
             return PromptUpdateDetails.select_text(repl_full, _AUDIO_PLACEHOLDER)
 
@@ -210,6 +366,7 @@ class NeMoSpeechLMMultiModalProcessor(
         audios = mm_data.pop("audios", [])
 
         if audios:
+            chunk_size_seconds = self.info._get_encoder_chunk_size_seconds()
             audio_list: list[torch.Tensor] = []
             audio_lengths: list[int] = []
             parts = re.split(f"({re.escape(_AUDIO_PLACEHOLDER)})", prompt)
@@ -229,7 +386,7 @@ class NeMoSpeechLMMultiModalProcessor(
                 )
                 if audio_tensor.dim() > 1:
                     audio_tensor = audio_tensor.squeeze()
-                n_tokens = self.info._estimate_audio_tokens(audio_tensor.shape[-1])
+                n_tokens = self.info._estimate_audio_tokens(audio_tensor.shape[-1], chunk_size_seconds)
                 parts[i] = _AUDIO_PLACEHOLDER * n_tokens
                 audio_list.append(audio_tensor)
                 audio_lengths.append(audio_tensor.shape[-1])
@@ -257,6 +414,25 @@ class NeMoSpeechLMDummyInputsBuilder(
     ) -> MultiModalDataDict:
         num_audios = mm_counts.get("audio", 0)
         dummy_audio_len = int(_DUMMY_AUDIO_DURATION_S * _SAMPLING_RATE)
+        audio_options = mm_options.get("audio") if mm_options else None
+        requested_audio_len = getattr(audio_options, "length", None)
+        if requested_audio_len:
+            chunk_size_seconds = self.info._get_encoder_chunk_size_seconds()
+            if seq_len > _DUMMY_AUDIO_TEXT_TOKEN_RESERVE:
+                max_audio_tokens = seq_len - _DUMMY_AUDIO_TEXT_TOKEN_RESERVE
+                max_audio_len = int(_DUMMY_AUDIO_MAX_DURATION_S * _SAMPLING_RATE)
+                max_supported_audio_tokens = NeMoSpeechLMProcessingInfo._estimate_audio_tokens(
+                    max_audio_len,
+                    chunk_size_seconds,
+                )
+                if max_audio_tokens < max_supported_audio_tokens:
+                    max_audio_len = NeMoSpeechLMProcessingInfo._samples_for_audio_tokens(
+                        max_audio_tokens,
+                        chunk_size_seconds,
+                    )
+            else:
+                max_audio_len = int(_DUMMY_AUDIO_MAX_DURATION_S * _SAMPLING_RATE)
+            dummy_audio_len = min(int(requested_audio_len), max_audio_len)
         return {
             "audio": self._get_dummy_audios(
                 length=dummy_audio_len,

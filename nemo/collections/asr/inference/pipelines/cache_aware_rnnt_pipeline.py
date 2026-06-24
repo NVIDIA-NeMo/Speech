@@ -31,14 +31,23 @@ from nemo.collections.asr.inference.streaming.endpointing.greedy.greedy_rnnt_end
 from nemo.collections.asr.inference.streaming.framing.multi_stream import ContinuousBatchedRequestStreamer
 from nemo.collections.asr.inference.streaming.framing.request import FeatureBuffer, Frame, Request
 from nemo.collections.asr.inference.streaming.framing.request_options import ASRRequestOptions
-from nemo.collections.asr.inference.streaming.state.cache_aware_rnnt_state import CacheAwareRNNTStreamingState
+from nemo.collections.asr.inference.streaming.state.cache_aware_rnnt_state import (
+    CacheAwareRNNTBeamStreamingState,
+    CacheAwareRNNTStreamingState,
+)
 from nemo.collections.asr.inference.utils.endpointing_utils import millisecond_to_frames
 from nemo.collections.asr.inference.utils.enums import RequestType
+from nemo.collections.asr.inference.utils.per_stream_biasing import (
+    build_multi_biasing_ids_np,
+    release_all_biasing_models,
+    release_auto_managed_stream_biasing,
+)
 from nemo.collections.asr.inference.utils.pipeline_utils import (
     check_existance_of_required_attributes,
     drop_trailing_features,
     get_confidence_utils,
 )
+from nemo.collections.asr.parts.submodules.rnnt_malsd_batched_computer import ModifiedALSDBatchedRNNTComputer
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.utils import logging
 
@@ -76,7 +85,27 @@ class CacheAwareRNNTPipeline(BasePipeline):
         self.init_endpointer()
         self.init_text_processor(cfg, itn_model)
         self.init_nmt_model(nmt_model)
+        self.init_decoding_computer()
+        if self.beam_decoder_computer is not None and self.prompt_enabled:
+            raise ValueError("Cache-aware RNNT MALSD beam search does not yet support prompt vectors.")
         super().__init__()
+
+    def init_decoding_computer(self) -> None:
+        """Initialize ``decoding_computer``."""
+        self.decoding_computer = None
+        asr_model = getattr(self.asr_model, "asr_model", None)
+        if asr_model is None:
+            return
+        decoding = getattr(getattr(asr_model, "decoding", None), "decoding", None)
+        if decoding is not None:
+            self.decoding_computer = getattr(decoding, "decoding_computer", None)
+
+    @property
+    def beam_decoder_computer(self) -> ModifiedALSDBatchedRNNTComputer | None:
+        """Return ``decoding_computer`` when beam-search decoding is active."""
+        if isinstance(self.decoding_computer, ModifiedALSDBatchedRNNTComputer):
+            return self.decoding_computer
+        return None
 
     def init_parameters(self, cfg: DictConfig) -> None:
         """
@@ -181,7 +210,11 @@ class CacheAwareRNNTPipeline(BasePipeline):
         Returns:
             (CacheAwareRNNTStreamingState) New empty state.
         """
-        state = CacheAwareRNNTStreamingState()
+        state = (
+            CacheAwareRNNTBeamStreamingState()
+            if self.beam_decoder_computer is not None
+            else CacheAwareRNNTStreamingState()
+        )
         state.set_global_offset(0)
         new_options = options.fill_defaults(
             default_enable_itn=self.text_processor.itn_enabled,
@@ -213,6 +246,12 @@ class CacheAwareRNNTPipeline(BasePipeline):
 
         return state
 
+    def close_session(self) -> None:
+        """Close the session and release per-stream biasing models held in the decoder."""
+        if self.decoding_computer is not None and self.decoding_computer.per_stream_biasing_enabled:
+            release_all_biasing_models(self.decoding_computer.biasing_multi_model, self._state_pool.values())
+        super().close_session()
+
     def get_sep(self) -> str:
         """Return the separator for the text processor."""
         return self.sep
@@ -238,6 +277,83 @@ class CacheAwareRNNTPipeline(BasePipeline):
         feature_buffers = torch.cat(feature_buffers).to(self.device)
         return feature_buffers, feature_buffer_lens
 
+    def _streaming_step(
+        self,
+        states: list[CacheAwareRNNTStreamingState],
+        feature_buffers: Tensor,
+        feature_buffer_lens: Tensor,
+        context,
+        previous_hypotheses: list[Hypothesis | None],
+        drop_extra_pre_encoded: int,
+        keep_all_outputs: bool,
+        prompt_vectors: Tensor | None,
+    ) -> tuple[list[Hypothesis], object]:
+        """
+        Run one cache-aware encode/decode step for the current chunk.
+        Returns per-stream hypotheses and the updated encoder cache context.
+        """
+        if self.beam_decoder_computer is None:
+            return self.asr_model.stream_step(
+                processed_signal=feature_buffers,
+                processed_signal_length=feature_buffer_lens,
+                context=context,
+                previous_hypotheses=previous_hypotheses,
+                drop_extra_pre_encoded=drop_extra_pre_encoded,
+                keep_all_outputs=keep_all_outputs,
+                drop_left_context=self.drop_left_context,
+                valid_out_len=self.valid_out_len,
+                prompt_vectors=prompt_vectors,
+            )
+        return self.asr_model.malsd_stream_step(
+            malsd_computer=self.beam_decoder_computer,
+            states=states,
+            processed_signal=feature_buffers,
+            processed_signal_length=feature_buffer_lens,
+            context=context,
+            drop_extra_pre_encoded=drop_extra_pre_encoded,
+            keep_all_outputs=keep_all_outputs,
+            drop_left_context=self.drop_left_context,
+            valid_out_len=self.valid_out_len,
+        )
+
+    def _prepare_per_stream_biasing(
+        self,
+        states: list[CacheAwareRNNTStreamingState],
+        previous_hypotheses: list[Hypothesis | None],
+    ) -> list[Hypothesis | None]:
+        if self.decoding_computer is None or not self.decoding_computer.per_stream_biasing_enabled:
+            if any(state.has_biasing_request() for state in states):
+                logging.warning(
+                    "Biasing request is not empty, but decoder does not support per-stream biasing. Skipping"
+                )
+            return previous_hypotheses
+
+        multi_biasing_ids_np = build_multi_biasing_ids_np(
+            states,
+            self.decoding_computer.biasing_multi_model,
+            self.asr_model.tokenizer,
+        )
+
+        if self.beam_decoder_computer is not None:
+            return previous_hypotheses
+
+        for i, (state, previous_hyp) in enumerate(zip(states, previous_hypotheses)):
+            if multi_biasing_ids_np[i] < 0:
+                continue
+            biasing_cfg = state.options.biasing_cfg
+            if previous_hyp is None:
+                previous_hypotheses[i] = Hypothesis.empty_with_biasing_cfg(biasing_cfg)
+            else:
+                previous_hyp.biasing_cfg = biasing_cfg
+        return previous_hypotheses
+
+    def _apply_beam_update_(self, state: CacheAwareRNNTBeamStreamingState, eou_detected: bool) -> None:
+        """After endpointing: refresh beam publish tokens and fold cumulative prefix on EOU."""
+        if eou_detected and state.hyp_decoding_state is not None:
+            beam_idx = state.select_best_beam_idx_(score_norm=True)
+            self.beam_decoder_computer.select_beam_in_state_item_(state.hyp_decoding_state, beam_idx)
+        state.update_(eou_detected)
+
     def run_greedy_decoder(self, state: CacheAwareRNNTStreamingState, request: Request, hyp: Hypothesis) -> bool:
         """
         Run the greedy RNNT decoder on the hypothesis and update the state
@@ -249,11 +365,14 @@ class CacheAwareRNNTPipeline(BasePipeline):
             (bool) Whether EOU is detected.
         """
         eou_detected = request.is_last
+        # Per-token non-blank confidence precomputed during RNN-T decoding (aligned with `hyp.y_sequence`).
+        # Populated only when `asr.decoding.greedy.preserve_frame_confidence=true`; otherwise None.
         cur_output, cur_labels, new_offset = self.greedy_rnnt_decoder(
             global_timestamps=hyp.timestamp,
             tokens=hyp.y_sequence,
             length=self.tokens_per_frame,
             offset=state.offset,
+            confidences=hyp.non_blank_step_confidence_precomputed,
         )
         state.set_offset(new_offset)
 
@@ -307,34 +426,10 @@ class CacheAwareRNNTPipeline(BasePipeline):
 
         previous_hypotheses = [state.get_previous_hypothesis() for state in states]
 
-        try:
-            decoding_computer = self.asr_model.asr_model.decoding.decoding.decoding_computer
-            biasing_enabled = decoding_computer.per_stream_biasing_enabled
-        except AttributeError:
-            decoding_computer = None
-            biasing_enabled = False
-
-        if not biasing_enabled and any(state.has_biasing_request() for state in states):
-            logging.warning("Biasing request is not empty, but decoder does not support per-stream biasing. Skipping")
-
-        # Handle per-stream biasing: add biasing models to multi_model if needed
-        if biasing_enabled:
-            for i, (request, state, previous_hyp) in enumerate(zip(requests, states, previous_hypotheses)):
-                if state.has_biasing_request():
-                    if state.options.biasing_cfg.multi_model_id is None:
-                        if state.options.biasing_cfg.auto_manage_multi_model:
-                            state.options.biasing_cfg.add_to_multi_model(
-                                tokenizer=self.asr_model.tokenizer,
-                                biasing_multi_model=decoding_computer.biasing_multi_model,
-                            )
-                        else:
-                            logging.warning(
-                                "Biasing request is not empty, not auto managed and not compiled. Skipping"
-                            )
-                    if previous_hyp is None:
-                        previous_hypotheses[i] = Hypothesis.empty_with_biasing_cfg(state.options.biasing_cfg)
-                    else:
-                        previous_hyp.biasing_cfg = state.options.biasing_cfg
+        previous_hypotheses = self._prepare_per_stream_biasing(
+            states=states,
+            previous_hypotheses=previous_hypotheses,
+        )
 
         context, mapping = self.context_manager.get_context(stream_ids)
 
@@ -343,15 +438,14 @@ class CacheAwareRNNTPipeline(BasePipeline):
             prompt_vectors = self._build_prompt_vectors(states)
 
         drop_extra_pre_encoded = 0 if not self.use_cache else self.asr_model.drop_extra_pre_encoded
-        best_hyp, new_context = self.asr_model.stream_step(
-            processed_signal=feature_buffers,
-            processed_signal_length=feature_buffer_lens,
+        best_hyp, new_context = self._streaming_step(
+            states=states,
+            feature_buffers=feature_buffers,
+            feature_buffer_lens=feature_buffer_lens,
             context=context,
             previous_hypotheses=previous_hypotheses,
             drop_extra_pre_encoded=drop_extra_pre_encoded,
             keep_all_outputs=keep_all_outputs,
-            drop_left_context=self.drop_left_context,
-            valid_out_len=self.valid_out_len,
             prompt_vectors=prompt_vectors,
         )
 
@@ -369,20 +463,24 @@ class CacheAwareRNNTPipeline(BasePipeline):
         # run greedy decoder for each request-state-hypothesis tuple
         for request, state, hyp in zip(requests, states, best_hyp):
             eou_detected = self.run_greedy_decoder(state, request, hyp)
+            if self.beam_decoder_computer is not None:
+                self._apply_beam_update_(state, eou_detected)
             if eou_detected:
                 self.bpe_decoder.decode_bpe_tokens(state)
                 state.cleanup_after_eou()
                 ready_state_ids.add(request.stream_id)
 
         # Cleanup per-stream biasing models when stream ends
-        if biasing_enabled:
+        if self.decoding_computer is not None and self.decoding_computer.per_stream_biasing_enabled:
             for request, state in zip(requests, states):
                 # only the first request contains biasing options; biasing options for the stream are stored in state
                 if request.is_last and state.has_biasing_request():
-                    if state.options.biasing_cfg.auto_manage_multi_model:
-                        state.options.biasing_cfg.remove_from_multi_model(
-                            biasing_multi_model=decoding_computer.biasing_multi_model
-                        )
+                    release_auto_managed_stream_biasing(state, self.decoding_computer.biasing_multi_model)
+
+        if self.beam_decoder_computer is not None:
+            for state, eos in zip(states, eos_flags):
+                if eos:
+                    state.reset_beam_decoding_state_()
 
     def transcribe_step_for_feature_buffers(self, fbuffers: list[FeatureBuffer]) -> None:
         """

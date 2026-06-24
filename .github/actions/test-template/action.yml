@@ -121,6 +121,7 @@ runs:
           --name nemo_container_${{ github.run_id }}_${{ inputs.runner }} ${ARG[@]} \
           --shm-size=64g \
           --env TRANSFORMERS_OFFLINE=0 \
+          --env NEMO_HOME="/home/TestData/nemo_home" \
           --env HYDRA_FULL_ERROR=1 \
           --env HF_HOME=/home/TestData/HF_HOME \
           --env RUN_ID=${{ github.run_id }} \
@@ -153,7 +154,6 @@ runs:
           set -e
 
           docker exec -t nemo_container_${{ github.run_id }}_${{ inputs.runner }} bash -c '\
-            cp -r /opt/Megatron-LM/ /workspace/ && \
             bash tests/${{ inputs.test_dir }}/${{ inputs.script }}.sh && \
             echo "Finished successfully." || echo "Did not finish."'
         ) 2>&1 | tee $DIR/err.log

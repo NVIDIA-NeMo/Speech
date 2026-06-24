@@ -685,3 +685,61 @@ Other, more exotic configurations:
 * With ``seed="trng"``, the base random seed itself will be drawn using a TRNG. It will be different on each GPU training process. This setting is not recommended.
 
 * With ``seed="randomized"``, the base random seed is set to Python's global RNG seed. It might be different on each GPU training process. This setting is not recommended.
+
+CP/TP-safe batches with ``BroadcastingDataLoader``
+---------------------------------------------------
+
+Context-parallel (CP) and tensor-parallel (TP) training require all ranks
+within the same ``(cp, tp)`` sub-mesh of a DP slot to process the **same**
+global batch each step — CP shards the sequence dimension and TP shards
+the feature dimension, so a divergent global batch breaks the per-rank
+shape contract that CP/TP collectives assume.
+
+Independent Lhotse loaders on each rank with ``shard_seed="randomized"``
+guarantee that *seeded* shard cursors line up, but they don't protect
+against background-thread non-determinism (``concurrent_bucketing``,
+worker scheduling jitter, etc.). The empirical signature is per-rank
+``cu_seqlens`` divergence at a fraction of training steps, which then
+deadlocks NCCL collectives with mismatched shapes.
+
+The :class:`~nemo.collections.common.data.lhotse.broadcasting.BroadcastingDataLoader`
+fixes this at the data layer: construct the real Lhotse loader on a
+single DP-source rank (``cp_rank == 0`` and ``tp_rank == 0``) and let the
+wrapper broadcast each batch to the other ranks in the ``(cp, tp)``
+sub-mesh over NCCL. Iteration ends in lockstep via a continue/stop
+broadcast — no length needs to be known up-front.
+
+.. code-block:: python
+
+    from torch.distributed.device_mesh import init_device_mesh
+
+    from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
+    from nemo.collections.common.data.lhotse.broadcasting import (
+        BroadcastingDataLoader,
+        is_dp_source_rank,
+    )
+
+    mesh = init_device_mesh("cuda", (dp, cp, tp), mesh_dim_names=("dp", "cp", "tp"))
+
+    if is_dp_source_rank(mesh):
+        source = get_lhotse_dataloader_from_config(
+            config=cfg.train_ds,
+            global_rank=dp_rank,
+            world_size=dp_size,
+            dataset=dataset,
+            tokenizer=tokenizer,
+        )
+    else:
+        source = None
+
+    return BroadcastingDataLoader(source=source, device_mesh=mesh)
+
+The wrapper delegates ``state_dict`` / ``load_state_dict`` to the source
+loader on the source rank (no-ops on non-source ranks), so checkpoint and
+resume keep working transparently with regular ``DataLoader``,
+``torchdata.StatefulDataLoader``, or any other source object that
+implements those methods.
+
+The wrapper is a no-op when ``device_mesh`` is ``None`` or every named
+axis present in the mesh has size 1, so the same call site works for
+single-GPU, DDP-only, and CP/TP runs without a separate code path.

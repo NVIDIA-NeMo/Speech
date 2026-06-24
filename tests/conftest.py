@@ -27,6 +27,7 @@ from typing import Tuple
 import pytest
 
 from nemo.utils.metaclasses import Singleton
+from nemo.utils.tar_utils import safe_extract
 
 # Those variables probably should go to main NeMo configuration file (config.yaml).
 __TEST_DATA_FILENAME = "test_data.tar.gz"
@@ -172,9 +173,8 @@ def extract_data_from_tar(test_dir, test_data_archive, url=None, local_data=Fals
 
     # Extract tar
     print("Extracting the `{}` test archive, please wait...".format(test_data_archive))
-    tar = tarfile.open(test_data_archive)
-    tar.extractall(path=test_dir)
-    tar.close()
+    with tarfile.open(test_data_archive) as tar:
+        safe_extract(tar, test_dir)
 
 
 @pytest.fixture(scope="session")

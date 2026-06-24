@@ -20,7 +20,6 @@ import time
 from multiprocessing import Pool
 from pathlib import Path
 
-import hydra.utils
 import librosa
 import numpy as np
 import torch
@@ -31,6 +30,7 @@ from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
 from nemo.collections.tts.models import ssl_tts
 from nemo.collections.tts.parts.utils.tts_dataset_utils import get_base_dir
 from nemo.core.classes import Dataset
+from nemo.core.classes.common import safe_instantiate
 from nemo.utils import logging
 
 
@@ -69,7 +69,10 @@ class AudioDataset(Dataset):
 
     def _get_wav_from_filepath(self, audio_filepath):
         features = AudioSegment.segment_from_file(
-            audio_filepath, target_sr=self.sample_rate, n_segments=-1, trim=False,
+            audio_filepath,
+            target_sr=self.sample_rate,
+            n_segments=-1,
+            trim=False,
         )
         audio_samples = features.samples
         audio, audio_length = torch.tensor(audio_samples), torch.tensor(audio_samples.shape[0]).long()
@@ -181,7 +184,12 @@ def get_mel_spectrogram(fb, wav, stft_params):
 
 
 def load_wav(wav_path, sample_rate=22050, pad_multiple=1024):
-    wav = AudioSegment.segment_from_file(wav_path, target_sr=sample_rate, n_segments=-1, trim=False,).samples
+    wav = AudioSegment.segment_from_file(
+        wav_path,
+        target_sr=sample_rate,
+        n_segments=-1,
+        trim=False,
+    ).samples
 
     if wav.shape[0] % pad_multiple != 0:
         wav = np.concatenate([wav, np.zeros(pad_multiple - wav.shape[0] % pad_multiple)])
@@ -269,7 +277,9 @@ def compute_pitch_stats(records):
 def main():
     parser = argparse.ArgumentParser(description='Evaluate the model')
     parser.add_argument(
-        '--ssl_model_ckpt_path', type=str, required=True,
+        '--ssl_model_ckpt_path',
+        type=str,
+        required=True,
     )
     parser.add_argument('--manifest_paths', type=str, required=True)
     parser.add_argument('--sup_data_dir', type=str, default=None)
@@ -315,7 +325,7 @@ def main():
     ssl_model = ssl_tts.SSLDisentangler.load_from_checkpoint(ssl_model_ckpt_path, strict=False)
     with open_dict(ssl_model.cfg):
         ssl_model.cfg.preprocessor.exact_pad = True
-    ssl_model.preprocessor = hydra.utils.instantiate(ssl_model.cfg.preprocessor)
+    ssl_model.preprocessor = safe_instantiate(ssl_model.cfg.preprocessor)
     ssl_model.preprocessor_disentangler = ssl_model.preprocessor
     ssl_model.eval()
     ssl_model.to(device)
@@ -374,7 +384,9 @@ def main():
             audio_seg_len = torch.tensor([len(segment) for segment in audio_segmented]).to(device).long()
 
             _, batch_speaker_embeddings, _, _, _ = ssl_model.forward_for_export(
-                input_signal=audio_segmented.to(device), input_signal_length=audio_seg_len, normalize_content=True,
+                input_signal=audio_segmented.to(device),
+                input_signal_length=audio_seg_len,
+                normalize_content=True,
             )
 
             for idx in range(batch['audio'].shape[0]):

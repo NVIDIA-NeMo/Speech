@@ -92,7 +92,7 @@ def recommend_hyperparameters_human_readable(recommended_hyperparameters):
 def recommend_hyperparameters(df, model=None):
     """
     Makes recommendations on the batch_size to use for training, based on the dataset size
-    
+
     """
     potential_batch_sizes = [2, 4, 8, 12, 16, 32, 64, 128]
 

@@ -33,6 +33,7 @@ from torch.special import gammaln
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
 from nemo.collections.audio.parts.utils.transforms import resample
 from nemo.collections.common.parts.utils import mask_sequence_tensor
+from nemo.core.classes.common import safe_instantiate
 
 try:
     from nemo_text_processing.text_normalization.normalize import Normalizer
@@ -93,6 +94,69 @@ def normalize_volume(audio: np.array, volume_level: float = 0.95) -> np.array:
         return audio
 
     return volume_level * (audio / np.max(np.abs(audio)))
+
+
+def setup_pronunciation_control_g2p(pronunciation_control_g2p_config):
+    """Instantiate per-language G2P modules used for pronunciation-control text augmentation.
+
+    Args:
+        pronunciation_control_g2p_config: Optional mapping from language code to Hydra config for the G2P module
+            that should be used when pronunciation-control augmentation is sampled.
+
+    Returns:
+        A dictionary mapping language code to the instantiated G2P module. Returns an empty dictionary when no
+        pronunciation-control config is provided.
+    """
+    g2p_modules = {}
+    if pronunciation_control_g2p_config is None:
+        return g2p_modules
+
+    for language in pronunciation_control_g2p_config:
+        g2p_modules[language] = safe_instantiate(pronunciation_control_g2p_config[language])
+
+    return g2p_modules
+
+
+def tokenize_text_with_pronunciation_control(
+    text_tokenizer,
+    text_str: str,
+    language: str,
+    tokenizer_name: str,
+    dataset_type: str,
+    phoneme_as_text_prob: float,
+    pronunciation_control_g2p: Optional[Dict],
+) -> List[int]:
+    """Tokenize text, optionally replacing it with G2P output for pronunciation-control training.
+
+    Pronunciation control is only applied for training samples, when ``phoneme_as_text_prob`` is sampled, and when a
+    G2P module is available for the sample language. Otherwise the original text is tokenized.
+
+    Args:
+        text_tokenizer: Aggregated TTS tokenizer used to encode either original text or G2P text.
+        text_str: Input text from the dataset sample.
+        language: Language code for selecting the pronunciation-control G2P module.
+        tokenizer_name: Name of the tokenizer inside ``text_tokenizer`` to use for encoding.
+        dataset_type: Dataset split/type. Pronunciation-control augmentation is restricted to ``"train"``.
+        phoneme_as_text_prob: Probability of replacing the text with G2P output for eligible training samples.
+        pronunciation_control_g2p: Optional mapping from language code to instantiated G2P module.
+
+    Returns:
+        Encoded token ids for either ``text_str`` or the sampled pronunciation-control G2P text.
+    """
+    use_pronunciation_control = (
+        dataset_type == 'train'
+        and phoneme_as_text_prob > 0.0
+        and random.random() < phoneme_as_text_prob
+        and pronunciation_control_g2p is not None
+        and language in pronunciation_control_g2p
+    )
+    if not use_pronunciation_control:
+        return text_tokenizer.encode(text=text_str, tokenizer_name=tokenizer_name)
+
+    g2p_module = pronunciation_control_g2p[language]
+    g2p_text = g2p_module(text_str)
+    text_for_tokens = ''.join(g2p_text) if isinstance(g2p_text, list) else str(g2p_text)
+    return text_tokenizer.encode(text=text_for_tokens, tokenizer_name=tokenizer_name)
 
 
 class BetaBinomialInterpolator:

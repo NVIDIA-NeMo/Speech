@@ -17,15 +17,18 @@ import os
 import os.path
 import subprocess
 import tarfile
+import urllib.request
 from typing import Optional
 
-import wget
+from nemo.utils.dependency import import_optional_dependency
+from nemo.utils.tar_utils import safe_extract
 
 
-# Function to build a manifest
 def build_manifest(transcripts_path, manifest_path, data_dir, mount_dir, wav_path):
+    """Build an AN4 manifest with local or mounted audio paths."""
     # create manifest with reference to this directory. This is useful when mounting the dataset.
     mount_dir = mount_dir if mount_dir else data_dir
+    sox = import_optional_dependency("sox")
     with open(transcripts_path, 'r') as fin:
         with open(manifest_path, 'w') as fout:
             for line in fin:
@@ -43,9 +46,6 @@ def build_manifest(transcripts_path, manifest_path, data_dir, mount_dir, wav_pat
                 mounted_audio_path = os.path.join(
                     mount_dir, wav_path, file_id[file_id.find('-') + 1 : file_id.rfind('-')], file_id + '.wav'
                 )
-                # import sox here to not require sox to be available for importing all utils.
-                import sox
-
                 duration = sox.file_info.duration(audio_path)
 
                 # Write the metadata to the manifest
@@ -69,15 +69,16 @@ def download_an4(data_dir: str = "./", train_mount_dir: Optional[str] = None, te
     os.makedirs(data_dir, exist_ok=True)
     if not os.path.exists(data_dir + '/an4_sphere.tar.gz'):
         an4_url = 'https://dldata-public.s3.us-east-2.amazonaws.com/an4_sphere.tar.gz'
-        an4_path = wget.download(an4_url, data_dir)
+        an4_path = os.path.join(data_dir, 'an4_sphere.tar.gz')
+        urllib.request.urlretrieve(an4_url, an4_path)
         print(f"Dataset downloaded at: {an4_path}")
     else:
         print("Tarfile already exists.")
         an4_path = data_dir + '/an4_sphere.tar.gz'
 
     if not os.path.exists(data_dir + '/an4/'):
-        tar = tarfile.open(an4_path)
-        tar.extractall(path=data_dir)
+        with tarfile.open(an4_path) as tar:
+            safe_extract(tar, data_dir)
 
         print("Converting .sph to .wav...")
         sph_list = glob.glob(data_dir + '/an4/**/*.sph', recursive=True)

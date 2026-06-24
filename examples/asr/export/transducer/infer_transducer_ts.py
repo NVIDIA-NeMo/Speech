@@ -63,7 +63,11 @@ python infer_transducer_ts.py \
 def parse_arguments():
     parser = ArgumentParser()
     parser.add_argument(
-        "--nemo_model", type=str, default=None, required=False, help="Path to .nemo file",
+        "--nemo_model",
+        type=str,
+        default=None,
+        required=False,
+        help="Path to .nemo file",
     )
     parser.add_argument(
         '--pretrained_model', type=str, default=None, required=False, help='Name of a pretrained NeMo file'

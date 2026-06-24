@@ -826,3 +826,100 @@ A complete example configuration can be found at:
       model.validation_ds.manifest_filepath=<path_to_val_manifest> \
       model.tokenizer.dir=<path_to_tokenizer> \
       model.test_ds.manifest_filepath=<path_to_test_manifest>
+
+
+.. _RNNT-Prompt_model__Config:
+
+RNN-T with Prompt Conditioning Configuration
+--------------------------------------------
+
+The :ref:`RNN-T model with prompt conditioning <RNNT-Prompt_model>`
+(``EncDecRNNTBPEModelWithPrompt``) is the RNN-T-only counterpart of the hybrid prompt model
+(no auxiliary CTC head). It targets cache-aware streaming multilingual ASR using the same
+one-hot language-ID prompt concatenation as the hybrid variant.
+
+**Key Configuration Parameters:**
+
+The prompt-specific parameters live in the ``model_defaults`` section, mirroring the hybrid
+variant:
+
+.. code-block:: yaml
+
+  model:
+    model_defaults:
+      # Prompt Feature Configuration
+      initialize_prompt_feature: true  # Enable prompt conditioning
+      num_prompts: 128                 # Number of supported prompt categories
+      prompt_dictionary: {             # Mapping from identifiers to prompt indices
+        'en-US': 0,
+        'de-DE': 1,
+        'fr-FR': 2,
+        'es-ES': 3,
+        # ... additional language codes ...
+        'auto': 127,                   # Per-sample dynamic language (read from manifest)
+      }
+
+**Dataset Configuration:**
+
+The model uses the same index-based Lhotse dataset
+(``LhotseSpeechToTextBpeDatasetWithPromptIndex``) as the hybrid model:
+
+.. code-block:: yaml
+
+  model:
+    train_ds:
+      use_lhotse: true
+      initialize_prompt_feature: true
+      prompt_field: "target_lang"     # Field name for per-sample prompt extraction
+      prompt_dictionary: ${model.model_defaults.prompt_dictionary}
+      num_prompts: ${model.model_defaults.num_prompts}
+
+    validation_ds:
+      use_lhotse: true
+      initialize_prompt_feature: true
+      prompt_field: "target_lang"
+      prompt_dictionary: ${model.model_defaults.prompt_dictionary}
+      num_prompts: ${model.model_defaults.num_prompts}
+
+**Manifest Format:**
+
+Identical to the hybrid model — each entry needs a ``target_lang`` field:
+
+.. code-block:: json
+
+  {
+    "audio_filepath": "/path/to/audio.wav",
+    "text": "transcription text",
+    "duration": 10.5,
+    "target_lang": "en-US"
+  }
+
+**Example Configuration:**
+
+A cache-aware streaming RNN-T prompt config ships at:
+``<NeMo_git_root>/examples/asr/conf/fastconformer/cache_aware_streaming/fastconformer_transducer_bpe_streaming_prompt.yaml``
+
+**Training Command:**
+
+.. code-block:: bash
+
+  python <NeMo_git_root>/examples/asr/asr_transducer/speech_to_text_rnnt_bpe_prompt.py \
+      --config-path=<NeMo_git_root>/examples/asr/conf/fastconformer/cache_aware_streaming/ \
+      --config-name=fastconformer_transducer_bpe_streaming_prompt.yaml \
+      model.train_ds.manifest_filepath=<path_to_train_manifest> \
+      model.validation_ds.manifest_filepath=<path_to_val_manifest> \
+      model.tokenizer.dir=<path_to_tokenizer> \
+      model.test_ds.manifest_filepath=<path_to_test_manifest>
+
+**Streaming Inference:**
+
+The standard cache-aware streaming inference script accepts ``target_lang`` (and the optional
+``strip_lang_tags`` / ``lang_tag_pattern`` flags) for prompt-conditioned models:
+
+.. code-block:: bash
+
+  python <NeMo_git_root>/examples/asr/asr_cache_aware_streaming/speech_to_text_cache_aware_streaming_infer.py \
+      model_path=<path_to_nemo_checkpoint> \
+      dataset_manifest=<path_to_manifest> \
+      target_lang=<en-US|auto|...> \
+      strip_lang_tags=true

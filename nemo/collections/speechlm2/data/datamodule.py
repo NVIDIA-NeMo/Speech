@@ -18,6 +18,7 @@ from omegaconf import DictConfig, OmegaConf, open_dict
 
 from nemo.collections.common.data.fallback import FallbackDataset
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
+from nemo.collections.common.data.lhotse.broadcasting import BroadcastingDataLoader, is_dp_source_rank
 from nemo.collections.common.tokenizers import TokenizerSpec
 
 
@@ -72,13 +73,18 @@ class DataModule(LightningDataModule):
     def train_dataloader(self):
         if "train_ds" not in self.cfg:
             return None
-        return get_lhotse_dataloader_from_config(
-            config=self.cfg.train_ds,
-            global_rank=self._get_dp_rank(),
-            world_size=self._get_world_size(),
-            dataset=FallbackDataset(self.dataset),
-            tokenizer=self.tokenizer,
-        )
+        mesh = self._get_device_mesh()
+        if is_dp_source_rank(mesh):
+            source = get_lhotse_dataloader_from_config(
+                config=self.cfg.train_ds,
+                global_rank=self._get_dp_rank(),
+                world_size=self._get_world_size(),
+                dataset=FallbackDataset(self.dataset),
+                tokenizer=self.tokenizer,
+            )
+        else:
+            source = None
+        return BroadcastingDataLoader(source=source, device_mesh=mesh)
 
     def val_dataloader(self):
         if "validation_ds" not in self.cfg:
@@ -117,13 +123,18 @@ class DataModule(LightningDataModule):
             with open_dict(cfg):
                 cfg.force_finite = True
                 cfg.force_map_dataset = True
-            return get_lhotse_dataloader_from_config(
-                config=cfg,
-                global_rank=self._get_dp_rank(),
-                world_size=self._get_world_size(),
-                dataset=self.dataset,
-                tokenizer=self.tokenizer,
-            )
+            mesh = self._get_device_mesh()
+            if is_dp_source_rank(mesh):
+                source = get_lhotse_dataloader_from_config(
+                    config=cfg,
+                    global_rank=self._get_dp_rank(),
+                    world_size=self._get_world_size(),
+                    dataset=self.dataset,
+                    tokenizer=self.tokenizer,
+                )
+            else:
+                source = None
+            return BroadcastingDataLoader(source=source, device_mesh=mesh)
 
         # Multiple validation/test dataloaders.
         # Config looks like:
@@ -145,6 +156,13 @@ class DataModule(LightningDataModule):
             dloaders[name] = self._build_test_dataloader(item)
         return CombinedLoader(dloaders, mode="max_size")
 
+    def _get_device_mesh(self):
+        if not (torch.distributed.is_available() and torch.distributed.is_initialized()):
+            return None
+        if hasattr(self.trainer, "model") and hasattr(self.trainer.model, "device_mesh"):
+            return self.trainer.model.device_mesh
+        return None
+
     def _get_dp_rank(self):
         if torch.distributed.is_available() and torch.distributed.is_initialized():
             if (
@@ -157,9 +175,14 @@ class DataModule(LightningDataModule):
                 elif (
                     "dp_shard" in dm.mesh_dim_names and "dp_replicate" in dm.mesh_dim_names
                 ):  # AutomodelParallelStrategy
-                    dp_rank = (
-                        dm["dp_replicate"].get_local_rank() * dm["dp_shard"].size() + dm["dp_shard"].get_local_rank()
-                    )
+                    try:
+                        dp_rank = dm["dp"].get_local_rank()
+                    except (KeyError, RuntimeError, ValueError):
+                        # Compatibility for older Automodel/PyTorch meshes without a flattened "dp" submesh.
+                        dp_rank = (
+                            dm["dp_replicate"].get_local_rank() * dm["dp_shard"].size()
+                            + dm["dp_shard"].get_local_rank()
+                        )
                 return dp_rank
             else:
                 return torch.distributed.get_rank()  # plain ol' DDP
@@ -178,7 +201,11 @@ class DataModule(LightningDataModule):
                 elif (
                     "dp_shard" in dm.mesh_dim_names and "dp_replicate" in dm.mesh_dim_names
                 ):  # AutomodelParallelStrategy
-                    dp_size = dm["dp_replicate", "dp_shard"].size()
+                    try:
+                        dp_size = dm["dp"].size()
+                    except (KeyError, RuntimeError, ValueError):
+                        # Compatibility for older Automodel/PyTorch meshes without a flattened "dp" submesh.
+                        dp_size = dm["dp_replicate", "dp_shard"].size()
                 return dp_size
             else:  # plain ol' DDP
                 return torch.distributed.get_world_size()

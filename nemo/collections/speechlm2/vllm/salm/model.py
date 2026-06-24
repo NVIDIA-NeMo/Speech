@@ -28,7 +28,7 @@ populates ``text_config.layer_types`` with all-attention markers (vLLM's
 granite-4.0-micro escape hatch).
 
 Requires NeMo toolkit for the audio encoder:
-    pip install nemo_toolkit[asr]
+    pip install 'nemo-toolkit[asr]'
 """
 
 from collections.abc import Iterable
@@ -49,12 +49,16 @@ from vllm.model_executor.models.utils import AutoWeightsLoader, init_vllm_regist
 from vllm.multimodal import MULTIMODAL_REGISTRY
 from vllm.sequence import IntermediateTensors
 
+from nemo.collections.asr.modules.parallel_expert_encoder import ParallelExpertEncoder
+from nemo.collections.speechlm2.parts.encoder_chunking import encode_audio_with_optional_chunking
 from nemo.collections.speechlm2.vllm.salm.audio import (
+    _SAMPLING_RATE,
     NeMoSpeechLMAudioInputs,
     NeMoSpeechLMDummyInputsBuilder,
     NeMoSpeechLMMultiModalProcessor,
     NeMoSpeechLMProcessingInfo,
     _load_nemo_perception,
+    _maybe_mount_pe_encoder,
 )
 from nemo.collections.speechlm2.vllm.salm.backends import HybridBackend, make_backend
 from nemo.collections.speechlm2.vllm.salm.config import _AUDIO_PLACEHOLDER
@@ -87,6 +91,7 @@ class NeMoSpeechLMForConditionalGeneration(
         super().__init__()
         config = vllm_config.model_config.hf_config
         self.config = config
+        self.encoder_chunk_size_seconds = getattr(config, "encoder_chunk_size_seconds", None)
 
         backend = make_backend(config)
         self._backend = backend
@@ -101,6 +106,9 @@ class NeMoSpeechLMForConditionalGeneration(
 
         with self._mark_tower_model(vllm_config, {"audio"}):
             self.perception = _load_nemo_perception(config.perception)
+            _maybe_mount_pe_encoder(self.perception, getattr(config, "pe_encoder_path", None))
+
+        self._uses_pe_encoder = isinstance(getattr(self.perception, "encoder", None), ParallelExpertEncoder)
 
         self.make_empty_intermediate_tensors = self.language_model.make_empty_intermediate_tensors
 
@@ -142,13 +150,29 @@ class NeMoSpeechLMForConditionalGeneration(
         audio_signal = audio_signal.to(device=device, dtype=_AUDIO_INPUT_DTYPE)
         audio_lengths = audio_input.audio_signal_length.to(device=device)
 
+        # Mirrors training (``encode_audio_with_optional_chunking``): when the
+        # checkpoint was trained with a chunked encoder (e.g. SALMAutomodel
+        # default 30 s), long audios are split into chunks before the perception
+        # forward and the per-chunk embeddings are concatenated. ``None``
+        # disables chunking and runs a single forward over the full batch.
+        # A ParallelExpertEncoder instead runs its own context-preserving online
+        # inference over the full audio, so it bypasses the chunking helper.
         with torch.no_grad():
-            audio_embeds, audio_embed_lens = self.perception(
-                input_signal=audio_signal,
-                input_signal_length=audio_lengths,
-            )
+            if self._uses_pe_encoder:
+                audio_embs, audio_emb_lens = self.perception(
+                    input_signal=audio_signal, input_signal_length=audio_lengths
+                )
+                audio_embeds = [emb[:emblen] for emb, emblen in zip(audio_embs, audio_emb_lens)]
+            else:
+                audio_embeds = encode_audio_with_optional_chunking(
+                    self.perception,
+                    audio_signal,
+                    audio_lengths,
+                    chunk_size_seconds=self.encoder_chunk_size_seconds,
+                    sampling_rate=_SAMPLING_RATE,
+                )
 
-        return tuple(audio_embeds[i, : audio_embed_lens[i]] for i in range(audio_embeds.shape[0]))
+        return tuple(emb.to(_PERCEPTION_DTYPE) for emb in audio_embeds)
 
     def embed_multimodal(self, **kwargs) -> MultiModalEmbeddings:
         audio_input = self._parse_audio_input(**kwargs)

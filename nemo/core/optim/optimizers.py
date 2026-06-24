@@ -16,13 +16,13 @@ import copy
 from functools import partial
 from typing import Any, Dict, Optional, Union
 
-import hydra
 import torch
 import torch.optim as optim
 from omegaconf import DictConfig, OmegaConf
 from torch.optim import adadelta, adagrad, adamax, rmsprop, rprop
 from torch.optim.optimizer import Optimizer
 
+from nemo.core.classes.common import safe_instantiate
 from nemo.core.config.optimizers import OptimizerParams, get_optimizer_config, register_optimizer_params
 from nemo.core.optim.adafactor import Adafactor
 from nemo.core.optim.adan import Adan
@@ -113,7 +113,7 @@ def parse_optimizer_args(
         # Attempt class path resolution
         if '_target_' in optimizer_kwargs:  # captures (target, _target_)
             optimizer_kwargs_config = OmegaConf.create(optimizer_kwargs)
-            optimizer_instance = hydra.utils.instantiate(optimizer_kwargs_config)  # type: DictConfig
+            optimizer_instance = safe_instantiate(optimizer_kwargs_config)  # type: DictConfig
             optimizer_instance = vars(optimizer_instance)
             return optimizer_instance
 

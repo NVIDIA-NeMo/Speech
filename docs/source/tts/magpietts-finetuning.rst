@@ -20,7 +20,7 @@ Before finetuning, you will need:
 - A pretrained Magpie-TTS checkpoint (``pretrained.ckpt`` or ``pretrained.nemo``). Public checkpoints (``https://huggingface.co/nvidia/magpie_tts_multilingual_357m``) are available on Hugging Face.
 - The audio codec model (``https://huggingface.co/nvidia/nemo-nano-codec-22khz-1.89kbps-21.5fps``), available on Hugging Face alongside the TTS checkpoint.
 - A prepared dataset. For faster finetuning audio codec tokens must be pre-extracted from your audio files. See the *Dataset Preparation* section below.
-- NeMo installed from source or via the NeMo container. See the `NeMo GitHub page <https://github.com/NVIDIA/NeMo>`_ for installation instructions.
+- NeMo installed from source or with the local Dockerfile. See :ref:`installation` for installation instructions.
 
 
 Dataset Preparation

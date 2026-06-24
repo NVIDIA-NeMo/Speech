@@ -125,8 +125,14 @@ class LazyNeMoIterator:
             audio_path = get_full_path(str(data.pop("audio_filepath")), str(self.path), force_cache=False)
             duration = data.pop("duration")
             offset = data.pop("offset", None)
+            sampling_rate = data.pop("sampling_rate", None)
+            if sampling_rate is None:
+                sampling_rate = data.pop("sample_rate", None)
             cut = self._create_cut(
-                audio_path=audio_path, offset=offset, duration=duration, sampling_rate=data.pop("sampling_rate", None)
+                audio_path=audio_path,
+                offset=offset,
+                duration=duration,
+                sampling_rate=sampling_rate,
             )
             # Note that start=0 and not start=offset because supervision's start if relative to the
             # start of the cut; and cut.start is already set to offset

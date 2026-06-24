@@ -2202,6 +2202,7 @@ class ContextSize:
                 f"than expected chunk with right context {expected_context}"
             )
         # consider first everything is moved to right/left context, then move to chunk
+        prev_left, prev_chunk, prev_right = self.left, self.chunk, self.right
         self.left += self.chunk
         self.chunk = 0
         self.right += num_frames
@@ -2209,13 +2210,19 @@ class ContextSize:
             # move all samples to chunk, empty right part
             self.chunk = self.right
             self.right = 0
-        else:
+        elif self.right > expected_context.chunk:
             self.chunk = expected_context.chunk
             self.right -= expected_context.chunk
         extra_samples = max(self.total() - expected_context.total(), 0)
         self.left -= extra_samples
         if not is_last_chunk:
-            assert self.right == expected_context.right
+            if self.right != expected_context.right or (self.chunk != expected_context.chunk and self.chunk != 0):
+                logging.warning(
+                    f"Prev: {prev_left} - {prev_chunk} - {prev_right}\n"
+                    f"Added {num_frames}\n"
+                    f"Curr: {self.left} - {self.chunk} - {self.right}\n"
+                    f"Expected context <any> - {expected_context.chunk} - {expected_context.right}"
+                )
         return extra_samples
 
     def __str__(self):
@@ -2392,3 +2399,98 @@ class SimpleAudioDataset(Dataset):
 
     def __len__(self):
         return len(self.audio_filenames)
+
+
+class DynamicLengthTensor:
+    """Data structure to handle [Batch, Length, ...] tensor data with dynamic Length (dim=1) axis"""
+
+    def __init__(
+        self,
+        batch_size: int,
+        init_length: int,
+        dim_shape: int | list[int] | None = None,
+        device: Optional[torch.device] = None,
+        dtype: Optional[torch.dtype] = None,
+    ):
+        self._max_length = init_length if init_length >= 1 else 1  # min 1 required for 2x growth
+        self.batch_size = batch_size
+        self.device = device
+        self.dtype = dtype or torch.get_default_dtype()
+        if dim_shape is None:
+            self.dim_shape = []
+        elif isinstance(dim_shape, int):
+            self.dim_shape = [dim_shape]
+        else:
+            assert isinstance(dim_shape, list)
+            self.dim_shape = dim_shape
+        self.data = torch.zeros([batch_size, self._max_length] + self.dim_shape, dtype=self.dtype, device=device)
+        self.lengths = torch.zeros(batch_size, device=device, dtype=torch.long)
+
+    def clear_(self):
+        """
+        Clears storage
+        """
+        self.lengths.fill_(0)
+        self.data.fill_(0)
+
+    def _allocate_more(self, min_add_length: int | None = None):
+        """
+        Allocate at least 2x space for tensors, similar to common C++ std::vector implementations
+        to maintain O(1) insertion time complexity
+        """
+        add_len = self._max_length if min_add_length is None else max(min_add_length, self._max_length)
+        add_shape = [self.batch_size, add_len] + self.dim_shape
+        self.data = torch.cat((self.data, self.data.new_zeros(add_shape)), dim=1)
+        self._max_length += add_len
+
+    def to_device(self, device: str | torch.device) -> "DynamicLengthTensor":
+        """Move storage to device"""
+        self.device = device
+        self.data = self.data.to(device=device)
+        self.lengths = self.lengths.to(device=device)
+        return self
+
+    def append_(self, data: torch.Tensor, lengths: torch.Tensor | None = None):
+        """Append new data along length dimension"""
+        cur_len = self.lengths.max().item()
+        other_len = data.shape[1] if lengths is None else lengths.max().item()
+        if cur_len + other_len >= self._max_length:
+            self._allocate_more(min_add_length=cur_len + other_len - self._max_length + 1)
+        self.append_no_checks_(data=data[:, :other_len], lengths=lengths)
+
+    def append_no_checks_(self, data: torch.Tensor, lengths: torch.Tensor | None = None):
+        """Append new data along length dimension without checks"""
+        other_len = data.shape[1]
+        indices = torch.arange(other_len, device=self.device)
+        shifted_indices = self.lengths[:, None] + indices[None, :]
+        # add trailing len(dim_shape) axes to shifted_indices
+        shifted_indices = shifted_indices[..., *[None for _ in range(len(self.dim_shape))]]
+        self.data.scatter_(dim=1, index=shifted_indices.expand([-1, -1] + self.dim_shape), src=data)
+        if lengths is None:
+            self.lengths += other_len
+        else:
+            self.lengths += lengths
+
+    def clone(self) -> "DynamicLengthTensor":
+        """Return a copy of self"""
+        new_dynamic_tensor = DynamicLengthTensor(
+            batch_size=self.batch_size,
+            init_length=self._max_length,
+            dim_shape=self.dim_shape,
+            device=self.device,
+            dtype=self.dtype,
+        )
+        new_dynamic_tensor.data.copy_(self.data)
+        new_dynamic_tensor.lengths.copy_(self.lengths)
+        return new_dynamic_tensor
+
+    def merge_(self, other: "DynamicLengthTensor") -> "DynamicLengthTensor":
+        """
+        Merge two dynamic tensors
+        NB: this will reallocate memory
+
+        Args:
+            other: DynamicLengthTensor
+        """
+        self.append_(data=other.data, lengths=other.lengths)
+        return self

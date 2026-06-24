@@ -19,9 +19,11 @@ import torch
 
 def get_forward_hook(name, trainer, rank, logger, dump_to_file=False):
     """
-    A forward hook to dump all of the module input and output norms. It is called at every time after forward() has computed an output.
+    A forward hook to dump all of the module input and output norms.
+    It is called every time after forward() has computed an output.
     Only float type input/output tensor norms are computed.
-    For more details about the forward hook, check https://pytorch.org/docs/stable/generated/torch.nn.modules.module.register_module_forward_hook.html
+    For more details about the forward hook, check
+    https://pytorch.org/docs/stable/generated/torch.nn.modules.module.register_module_forward_hook.html
 
     Args:
         name: tensor name
@@ -76,9 +78,11 @@ def get_forward_hook(name, trainer, rank, logger, dump_to_file=False):
 
 def get_backward_hook(name, trainer, rank, logger, dump_to_file=False):
     """
-    A backward hook to dump all of the module input and output grad norms. The hook will be called every time the gradients with respect to module inputs are computed.
+    A backward hook to dump all of the module input and output grad norms.
+    The hook is called every time gradients with respect to module inputs are computed.
     Only float type input/output grad tensor norms are computed.
-    For more details about the backward hook, check https://pytorch.org/docs/stable/generated/torch.nn.modules.module.register_module_full_backward_hook.html
+    For more details about the backward hook, check
+    https://pytorch.org/docs/stable/generated/torch.nn.modules.module.register_module_full_backward_hook.html
 
     Args:
         name: tensor name
@@ -133,11 +137,12 @@ def get_backward_hook(name, trainer, rank, logger, dump_to_file=False):
 
 def get_tensor_hook(module, name, trainer, rank, logger, dump_to_file=False):
     """
-    A tensor hook to dump all of the tensor weight norms and grad norms at the end of each of the backward steps. 
-    For more details about the tensor hook, check https://pytorch.org/docs/stable/generated/torch.Tensor.register_hook.html 
+    A tensor hook to dump tensor weight norms and grad norms at the end of each backward step.
+    For more details about the tensor hook, check
+    https://pytorch.org/docs/stable/generated/torch.Tensor.register_hook.html
 
     Args:
-        module: the model module 
+        module: the model module
         name: tensor name
         trainer: PTL trainer
         rank: worker rank

@@ -19,7 +19,6 @@ import random
 from typing import Dict, Iterable, List, Optional, Tuple, Union
 
 import librosa
-import matplotlib.pyplot as plt
 import numpy as np
 import soundfile as sf
 from numpy.random import default_rng
@@ -276,6 +275,8 @@ class ArrayGeometry(object):
             azim: azimuth for the view of the plot
             mic_size: size of the microphone marker in the plot
         """
+        import matplotlib.pyplot as plt
+
         fig = plt.figure()
         ax = fig.add_subplot(projection='3d')
 
@@ -993,6 +994,8 @@ def plot_rir_manifest_info(filepath: str, plot_filepath: str = None):
         filepath: path to a RIR corpus manifest file
         plot_filepath: path to save the plot at
     """
+    import matplotlib.pyplot as plt
+
     metadata = read_manifest(filepath)
 
     # source placement
@@ -2294,6 +2297,8 @@ def plot_mix_manifest_info(filepath: str, plot_filepath: str = None):
         filepath: path to a RIR corpus manifest file
         plot_filepath: path to save the plot at
     """
+    import matplotlib.pyplot as plt
+
     metadata = read_manifest(filepath)
 
     # target info

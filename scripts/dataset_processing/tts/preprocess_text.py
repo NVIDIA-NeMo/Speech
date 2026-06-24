@@ -30,10 +30,11 @@ $ python <nemo_root_path>/scripts/dataset_processing/tts/preprocess_text.py \
 import argparse
 from pathlib import Path
 
-from hydra.utils import instantiate
 from joblib import Parallel, delayed
 from omegaconf import OmegaConf
 from tqdm import tqdm
+
+from nemo.core.classes.common import safe_instantiate
 
 try:
     from nemo_text_processing.text_normalization.normalize import Normalizer
@@ -49,13 +50,20 @@ from nemo.collections.asr.parts.utils.manifest_utils import read_manifest, write
 
 def get_args():
     parser = argparse.ArgumentParser(
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter, description="Process and normalize text data.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description="Process and normalize text data.",
     )
     parser.add_argument(
-        "--input_manifest", required=True, type=Path, help="Path to input training manifest.",
+        "--input_manifest",
+        required=True,
+        type=Path,
+        help="Path to input training manifest.",
     )
     parser.add_argument(
-        "--output_manifest", required=True, type=Path, help="Path to output training manifest with processed text.",
+        "--output_manifest",
+        required=True,
+        type=Path,
+        help="Path to output training manifest with processed text.",
     )
     parser.add_argument(
         "--overwrite",
@@ -63,13 +71,21 @@ def get_args():
         help="Whether to overwrite the output manifest file if it exists.",
     )
     parser.add_argument(
-        "--text_key", default="text", type=str, help="Input text field to normalize.",
+        "--text_key",
+        default="text",
+        type=str,
+        help="Input text field to normalize.",
     )
     parser.add_argument(
-        "--normalized_text_key", default="normalized_text", type=str, help="Output field to save normalized text to.",
+        "--normalized_text_key",
+        default="normalized_text",
+        type=str,
+        help="Output field to save normalized text to.",
     )
     parser.add_argument(
-        "--lower_case", action=argparse.BooleanOptionalAction, help="Whether to convert the final text to lower case.",
+        "--lower_case",
+        action=argparse.BooleanOptionalAction,
+        help="Whether to convert the final text to lower case.",
     )
     parser.add_argument(
         "--normalizer_config_path",
@@ -135,7 +151,7 @@ def main():
 
     if args.normalizer_config_path:
         normalizer_config = OmegaConf.load(args.normalizer_config_path)
-        normalizer = instantiate(normalizer_config)
+        normalizer = safe_instantiate(normalizer_config)
         lower_case_norm = normalizer.input_case == "lower_cased"
     else:
         normalizer = None

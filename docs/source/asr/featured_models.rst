@@ -13,7 +13,7 @@ Parakeet is a family of ASR models with a :ref:`FastConformer Encoder <Fast-Conf
 * `Parakeet-TDT-0.6B V3 <https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3>`__ — 25 languages, PnC, blazing fast
 * `Parakeet-TDT-0.6B V2 <https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2>`__ — English-only, PnC, blazing fast
 * `Parakeet-TDT/CTC-110M <https://huggingface.co/nvidia/parakeet-tdt_ctc-110m>`__ — Edge deployment
-* `Nemotron-Speech-Streaming <https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b>`__ — Real-time streaming
+* `Nemotron-3.5-ASR-Streaming <https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b>`__ — Real-time streaming, 40 languages
 * `Multitalker-Parakeet <https://huggingface.co/nvidia/multitalker-parakeet-streaming-0.6b-v1>`__ — Multi-speaker streaming
 
 
@@ -69,6 +69,14 @@ Streaming models trained with limited right context for real-time inference with
 * Supports multiple look-aheads with ``att_context_size`` lists
 
 Configs: ``examples/asr/conf/fastconformer/cache_aware_streaming/``
+
+.. _RNNT-Prompt_model:
+
+**With Prompt Conditioning (RNN-T only):** Cache-aware streaming RNN-T model with language-ID prompt conditioning for multilingual ASR via
+:class:`~nemo.collections.asr.models.EncDecRNNTBPEModelWithPrompt`. The streaming inference
+script accepts a ``target_lang`` flag to select the prompt at runtime
+(see :ref:`RNN-T with Prompt Conditioning Configuration <RNNT-Prompt_model__Config>`).
+Config: ``fastconformer_transducer_bpe_streaming_prompt.yaml``
 
 
 Multitalker Streaming

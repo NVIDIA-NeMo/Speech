@@ -6,7 +6,7 @@ asr:
   device: cuda                                                          # Device for inference: 'cuda' or 'cpu'
   device_id: 0                                                          # GPU device ID
   compute_dtype: bfloat16                                               # Compute precision: 'bfloat16' for Ampere+, 'float16' for older GPUs, or 'float32'               
-  use_amp: true                                                         # Enable Automatic Mixed Precision
+  use_amp: false                                                         # Enable Automatic Mixed Precision
   decoding:
     strategy: "greedy_batch"
     preserve_alignments: false
@@ -14,6 +14,7 @@ asr:
     greedy:
       use_cuda_graph_decoder: false  # Disabled due to issues with decoding
       enable_per_stream_biasing: true  # Per-stream biasing in decoder
+      preserve_frame_confidence: false  # Set to true to calculate confidence (token/word etc.)
       max_symbols: 10
       # n-gram LM
       ngram_lm_model: null  # The path to built '.nemo' NGPU-LM model
@@ -29,6 +30,21 @@ asr:
         source_lang: "en"  # The source language of the context-biasing phrases (for aggregate tokenizer),
         # used with `key_phrases_file` and `key_phrases_list`
       boosting_tree_alpha: 0.0  # Weight of the boosting tree
+    beam:
+      # Cache-aware streaming supports MALSD beam search only (set asr.decoding.strategy: malsd_batch).
+      beam_size: 4
+      allow_cuda_graphs: true
+      # n-gram LM (off by default)
+      ngram_lm_model: null
+      ngram_lm_alpha: 0.0
+      # phrase boosting (off by default)
+      boosting_tree:
+        model_path: null
+        key_phrases_file: null
+        key_phrases_list: null
+        key_phrase_items_list: null
+        source_lang: "en"
+      boosting_tree_alpha: 0.0
 
 # ==========================================
 # Inverse Text Normalization Configuration

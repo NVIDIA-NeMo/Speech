@@ -37,7 +37,11 @@ class Classifier(NeuralModule, Exportable):
         """
         return {"hidden_states": NeuralType(('B', 'T', 'D'), ChannelType())}
 
-    def __init__(self, hidden_size: int, dropout: float = 0.0,) -> None:
+    def __init__(
+        self,
+        hidden_size: int,
+        dropout: float = 0.0,
+    ) -> None:
         """
         Initializes the Classifier base module.
         Args:

@@ -64,7 +64,10 @@ def __process_transcript(file_path: str):
     cc = OpenCC('t2s')
     # Create normalizer
     text_normalizer = Normalizer(
-        lang="zh", input_case="cased", overwrite_cache=True, cache_dir=str(file_path / "cache_dir"),
+        lang="zh",
+        input_case="cased",
+        overwrite_cache=True,
+        cache_dir=str(file_path / "cache_dir"),
     )
     text_normalizer_call_kwargs = {"punct_pre_process": True, "punct_post_process": True}
     normalizer_call = lambda x: text_normalizer.normalize(x, **text_normalizer_call_kwargs)
@@ -80,7 +83,7 @@ def __process_transcript(file_path: str):
             wav_name = wav_name.replace('DL', 'SF')
             wav_file = file_path / "wavs" / (wav_name + ".wav")
             assert os.path.exists(wav_file), f"{wav_file} not found!"
-            duration = subprocess.check_output(f"soxi -D {wav_file}", shell=True)
+            duration = subprocess.check_output(["soxi", "-D", str(wav_file)])
             simplified_text = cc.convert(text)
             normalized_text = normalizer_call(simplified_text)
             entry = {
@@ -122,7 +125,11 @@ def main():
     dataset_root = args.data_root
     dataset_root.mkdir(parents=True, exist_ok=True)
     __process_data(
-        dataset_root, args.val_size, args.test_size, args.seed_for_ds_split, args.manifests_path,
+        dataset_root,
+        args.val_size,
+        args.test_size,
+        args.seed_for_ds_split,
+        args.manifests_path,
     )
 
 

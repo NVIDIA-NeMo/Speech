@@ -8,22 +8,18 @@ NeMo Speech — toolkit for training/deploying speech models (ASR, TTS, Speech L
 
 ## Build & Install
 
-```bash
-pip install -e '.[all]'       # Full dev install
-pip install -e '.[asr]'       # ASR only
-pip install -e '.[test]'      # With test deps
-```
+See the canonical installation guide — [`docs/source/starthere/install.rst`](docs/source/starthere/install.rst) (published at https://docs.nvidia.com/nemo/speech/nightly/) — for the uv, pip (bring-your-own Python/PyTorch/CUDA), Docker, and optional `compiled` (SpeechLM2/Automodel) install paths.
 
-Requires Python 3.10+, PyTorch 2.6+.
+Dev quickstart: `uv sync --extra all --extra cu13` (Python 3.12+, PyTorch 2.7+; `test`/`docs` are `--group`s, not extras).
 
 ## Code Style
 
 - **Line length: 119** (not default 88) — consistent across black, isort, flake8
 - Black with `skip_string_normalization = true`
 - isort with `profile = black`
-- Check: `python setup.py style --scope <path>`
-- Fix: `python setup.py style --scope <path> --fix`
-- **Incremental reformatting**: most collections are excluded from black (see `extend-exclude` in pyproject.toml). The files are reformatted when somebody makes changes to avoid a single big reformatting PR. Do not reformat files outside your changes.
+- Check: `isort --check <path> && black --check <path>` or `isort --check . && black --check .`
+- Fix: `isort <path> && black <path>` or `isort . && black .`
+- Jupyter Notebooks are excluded from automatic black reformatting (see `extend-exclude`), but can be still reformatted when passed directly. Do not reformat notebooks outside your changes.
 
 ## Testing
 
@@ -49,9 +45,9 @@ Markers: `unit`, `integration`, `system`, `pleasefixme` (broken — skip), `skip
 Sphinx-based docs live in `docs/source/`. Build with:
 
 ```bash
-pip install -r requirements/requirements_docs.txt   # one-time setup
-make -C docs clean html                              # full rebuild
-make -C docs html                                    # incremental rebuild
+uv sync --locked --group docs                        # one-time setup (matches CI)
+uv run make -C docs clean html                       # full rebuild
+uv run make -C docs html                             # incremental rebuild
 ```
 
 Output goes to `docs/build/html/`. Open `docs/build/html/index.html` to preview locally.

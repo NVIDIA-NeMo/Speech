@@ -57,6 +57,7 @@ class CacheAwarePipelineBuilder(BaseBuilder):
         base_cfg_structured = OmegaConf.structured(RNNTDecodingConfig)
         base_cfg = OmegaConf.create(OmegaConf.to_container(base_cfg_structured))
         decoding_cfg = OmegaConf.merge(base_cfg, cfg.asr.decoding)
+        cls._apply_confidence_cfg(cfg, decoding_cfg)
         return decoding_cfg
 
     @classmethod
@@ -80,6 +81,13 @@ class CacheAwarePipelineBuilder(BaseBuilder):
         Returns:
             Returns CacheAwareRNNTPipeline object
         """
+        strategy = str(getattr(cfg.asr.decoding, "strategy", "greedy_batch"))
+        if strategy not in {"greedy_batch", "malsd_batch"}:
+            raise ValueError(
+                "Cache-aware RNNT streaming supports `greedy_batch` and `malsd_batch` only; "
+                f"configured decoding strategy is `{strategy}`."
+            )
+
         # building ASR model
         decoding_cfg = cls.get_rnnt_decoding_cfg(cfg)
         asr_model = cls._build_asr(cfg, decoding_cfg)

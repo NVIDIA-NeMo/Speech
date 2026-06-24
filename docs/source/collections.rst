@@ -1,3 +1,5 @@
+:orphan:
+
 ================
 NeMo Collections
 ================
@@ -10,10 +12,10 @@ Documentation for the individual collections
 
    asr/intro
    dataloaders
-   asr/speech_classification/intro
-   asr/speaker_recognition/intro
-   asr/speaker_diarization/intro
-   asr/ssl/intro
    tts/intro
-   audio/intro
    speechlm2/intro
+   asr/speaker_diarization/intro
+   asr/speaker_recognition/intro
+   audio/intro
+   asr/ssl/intro
+   asr/speech_classification/intro

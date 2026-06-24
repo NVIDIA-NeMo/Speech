@@ -28,6 +28,8 @@ import numpy as np
 from nemo_text_processing.text_normalization.normalize import Normalizer
 from opencc import OpenCC
 
+from nemo.utils.tar_utils import safe_extract
+
 URL = "https://www.openslr.org/resources/93/data_aishell3.tgz"
 
 
@@ -67,9 +69,8 @@ def __maybe_download_file(source_url, destination_path):
 
 def __extract_file(filepath, data_dir):
     try:
-        tar = tarfile.open(filepath)
-        tar.extractall(data_dir)
-        tar.close()
+        with tarfile.open(filepath) as tar:
+            safe_extract(tar, str(data_dir))
     except Exception:
         print(f"Error while extracting {filepath}. Already extracted?")
 
@@ -81,7 +82,10 @@ def __process_transcript(file_path: str):
     cc = OpenCC('t2s')
     # Create normalizer
     text_normalizer = Normalizer(
-        lang="zh", input_case="cased", overwrite_cache=True, cache_dir=str(file_path / "cache_dir"),
+        lang="zh",
+        input_case="cased",
+        overwrite_cache=True,
+        cache_dir=str(file_path / "cache_dir"),
     )
     text_normalizer_call_kwargs = {"punct_pre_process": True, "punct_post_process": True}
     normalizer_call = lambda x: text_normalizer.normalize(x, **text_normalizer_call_kwargs)
@@ -99,12 +103,12 @@ def __process_transcript(file_path: str):
             speakers.add(speaker)
             wav_file = file_path / "train" / "wav" / speaker / wav_name
             assert os.path.exists(wav_file), f"{wav_file} not found!"
-            duration = subprocess.check_output(f"soxi -D {wav_file}", shell=True)
+            duration = subprocess.check_output(["soxi", "-D", str(wav_file)])
             if float(duration) <= 3.0:  # filter out wav files shorter than 3 seconds
                 continue
             processed_file = file_path / "processed" / wav_name
             # convert wav to mono 22050HZ, 16 bit (as SFSpeech dataset)
-            subprocess.run(f"sox {wav_file} -r 22050 -c 1 -b 16 {processed_file}", shell=True)
+            subprocess.run(["sox", str(wav_file), "-r", "22050", "-c", "1", "-b", "16", str(processed_file)])
             candidates.append((processed_file, duration, text, speaker))
 
     # remapping the speakder to speaker_id (start from 1)
@@ -160,7 +164,11 @@ def main():
     __extract_file(str(tarred_data_path), str(args.data_root))
 
     __process_data(
-        args.data_root, args.val_size, args.test_size, args.seed_for_ds_split, args.manifests_path,
+        args.data_root,
+        args.val_size,
+        args.test_size,
+        args.seed_for_ds_split,
+        args.manifests_path,
     )
 
 

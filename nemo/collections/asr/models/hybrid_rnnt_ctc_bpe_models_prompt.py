@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import math
 import os
 from dataclasses import dataclass
 from math import ceil
@@ -25,11 +24,11 @@ from pytorch_lightning import Trainer
 from nemo.collections.asr.data import audio_to_text_dataset
 from nemo.collections.asr.data.audio_to_text_dali import AudioToBPEDALIDataset, DALIOutputs
 from nemo.collections.asr.data.audio_to_text_lhotse import LhotseSpeechToTextBpeDataset
-from nemo.collections.asr.data.audio_to_text_lhotse_prompt import LhotseSpeechToTextBpeDatasetWithPrompt
+from nemo.collections.asr.data.audio_to_text_lhotse_prompt_index import LhotseSpeechToTextBpeDatasetWithPromptIndex
 from nemo.collections.asr.metrics.bleu import BLEU
 from nemo.collections.asr.metrics.wer import WER
 from nemo.collections.asr.models.hybrid_rnnt_ctc_bpe_models import EncDecHybridRNNTCTCBPEModel
-from nemo.collections.asr.parts.mixins import ASRTranscriptionMixin, TranscribeConfig
+from nemo.collections.asr.parts.mixins import ASRTranscriptionMixin, PromptStreamingMixin, TranscribeConfig
 from nemo.collections.asr.parts.mixins.transcription import TranscriptionReturnType
 from nemo.collections.asr.parts.preprocessing.segment import ChannelSelectorType
 from nemo.collections.asr.parts.submodules.ctc_decoding import CTCBPEDecoding, CTCBPEDecodingConfig
@@ -55,11 +54,10 @@ class HybridRNNTCTCPromptTranscribeConfig(TranscribeConfig):
     Configuration for Hybrid RNNT-CTC BPE Model with Prompt Transcription
     """
 
-    target_lang: str = "en-US"
-    prompt_field: str = "lang"
+    target_lang: str = "auto"
 
 
-class EncDecHybridRNNTCTCBPEModelWithPrompt(EncDecHybridRNNTCTCBPEModel, ASRTranscriptionMixin):
+class EncDecHybridRNNTCTCBPEModelWithPrompt(PromptStreamingMixin, EncDecHybridRNNTCTCBPEModel, ASRTranscriptionMixin):
     """Base class for encoder decoder RNNT-based models with auxiliary CTC decoder/loss, subword tokenization, and prompt conditioning."""
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
@@ -108,9 +106,11 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(EncDecHybridRNNTCTCBPEModel, ASRTran
             # Setup prompt settings - default to 128 prompts if not specified
             cfg.num_prompts = cfg.model_defaults.get('num_prompts', 128)
 
-            # Make sure prompt_dictionary exists
             if 'prompt_dictionary' not in cfg.model_defaults:
-                raise ValueError("No prompt_dictionary found in config.")
+                logging.warning(
+                    "No prompt_dictionary in config; using empty dict " "(expected during checkpoint restoration)."
+                )
+                cfg.model_defaults.prompt_dictionary = {}
 
             # Set subsampling_factor in a place accessible to the class
             self.subsampling_factor = cfg.get('subsampling_factor', 8)
@@ -133,21 +133,8 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(EncDecHybridRNNTCTCBPEModel, ASRTran
 
     def initialize_prompt_feature(self):
         """Initialize model components for prompt feature via concatenation."""
+        super().initialize_prompt_feature()
         logging.info("Model with prompt feature has been initialized")
-
-        # Enable concatenation mode
-        self.concat = True
-        self.num_prompts = self.cfg.get('num_prompts', 128)
-
-        # Setup projection layers
-        proj_in_size = self.num_prompts + self._cfg.model_defaults.enc_hidden
-        proj_out_size = self._cfg.model_defaults.enc_hidden
-
-        self.prompt_kernel = torch.nn.Sequential(
-            torch.nn.Linear(proj_in_size, proj_out_size * 2),
-            torch.nn.ReLU(),
-            torch.nn.Linear(proj_out_size * 2, proj_out_size),
-        )
 
         # Setup decoding object
         self.decoding = RNNTBPEDecoding(
@@ -196,11 +183,21 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(EncDecHybridRNNTCTCBPEModel, ASRTran
     def _setup_dataloader_from_config(self, config: Optional[Dict]):
         if config.get("use_lhotse"):
             if config.get('initialize_prompt_feature', True):
-                dataset = LhotseSpeechToTextBpeDatasetWithPrompt(tokenizer=self.tokenizer, cfg=config)
-                logging.info("Setting up Lhotse dataset with prompt support")
+                # Use index-based dataset - returns prompt indices instead of full tensors
+                # The model creates prompt tensors after encoding, guaranteeing no size mismatch
+                dataset_config = (
+                    OmegaConf.to_container(config, resolve=True) if isinstance(config, DictConfig) else dict(config)
+                )
+                if hasattr(self, 'cfg') and 'encoder' in self.cfg:
+                    dataset_config['encoder'] = (
+                        OmegaConf.to_container(self.cfg.encoder, resolve=True)
+                        if isinstance(self.cfg.encoder, DictConfig)
+                        else dict(self.cfg.encoder)
+                    )
+                dataset = LhotseSpeechToTextBpeDatasetWithPromptIndex(tokenizer=self.tokenizer, cfg=dataset_config)
+                logging.info("Setting up Lhotse dataset with prompt index support (model creates prompt tensors)")
             else:
                 dataset = LhotseSpeechToTextBpeDataset(tokenizer=self.tokenizer)
-                logging.info("Setting up Lhotse dataset without prompt support")
             return get_lhotse_dataloader_from_config(
                 config,
                 global_rank=self.global_rank,
@@ -287,7 +284,6 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(EncDecHybridRNNTCTCBPEModel, ASRTran
             'use_lhotse': config.get('use_lhotse', True),
             'use_bucketing': False,
             'drop_last': False,
-            'prompt_field': config.get('prompt_field', 'target_lang'),
             'initialize_prompt_feature': True,
             'prompt_dictionary': self.cfg.model_defaults.get('prompt_dictionary'),
             'num_prompts': self.cfg.model_defaults.get('num_prompts', 128),
@@ -317,32 +313,25 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(EncDecHybridRNNTCTCBPEModel, ASRTran
         Returns:
             The model's outputs that are processed by `_transcribe_output_processing()`.
         """
-        # Handling DataLoader batch - should be a tuple of tensors
-        # Expected structure: (audio, audio_lens, tokens, token_lens, prompt_targets)
-        # For transcription, we may only have (audio, audio_lens) or (audio, audio_lens, ..., prompt_targets)
         audio, audio_lens = batch[0], batch[1]
+        prompt, prompt_indices = None, None
+
         if len(batch) >= 5:
-            # Prompt provided by the dataloader (one-hot vectors)
-            prompt = batch[4]  # This should be the prompt_targets from dataset
-        else:
-            # Prompt to be built dynamically.
-            prompt = None
+            prompt_or_indices = batch[4]
+            if prompt_or_indices.dim() == 1:
+                prompt_indices = prompt_or_indices
+            else:
+                prompt = prompt_or_indices
 
         batch_size = audio.shape[0]
 
-        if prompt is None:
-            # The dataloader provided only audio + audio_lens, so we need to construct
-            # the prompt as one-hot vectors dynamically using TranscribeConfig.
+        if prompt is None and prompt_indices is None:
             target_lang = trcfg.target_lang
-
-            # Get prompt dictionary and num_prompts from model config
             prompt_dict = self.cfg.model_defaults.get('prompt_dictionary')
-            num_prompts = self.cfg.model_defaults.get('num_prompts', 128)
 
             if not prompt_dict:
                 raise ValueError("Prompt dictionary is empty. Cannot create dynamic prompts.")
 
-            # Get the prompt index for the target language
             if target_lang not in prompt_dict:
                 available_keys = list(prompt_dict.keys())
                 raise ValueError(
@@ -350,26 +339,11 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(EncDecHybridRNNTCTCBPEModel, ASRTran
                 )
 
             prompt_id = prompt_dict[target_lang]
+            prompt_indices = torch.full((batch_size,), prompt_id, dtype=torch.long, device=audio.device)
 
-            # Preprocess audio to get the actual feature dimensions (like streaming does)
-            processed_signal, processed_signal_length = self.preprocessor(input_signal=audio, length=audio_lens)
-
-            # Calculate exact hidden length using the same approach as streaming
-            time_length = processed_signal.shape[2]  # Feature time dimension
-            subsampling_factor = self.cfg.get('subsampling_factor', 8)
-            hidden_length = math.ceil(time_length / subsampling_factor)
-
-            # Create one-hot prompt tensor: (batch_size, time_steps, num_prompts)
-            prompt = torch.zeros(batch_size, hidden_length, num_prompts, dtype=torch.float32, device=audio.device)
-            prompt[:, :, prompt_id] = 1.0  # Set the target language prompt to 1
-
-            # Now call forward with preprocessed signal and prompt
-            encoded, encoded_len = self.forward(
-                processed_signal=processed_signal, processed_signal_length=processed_signal_length, prompt=prompt
-            )
-        else:
-            # Prompt was provided, use normal forward path
-            encoded, encoded_len = self.forward(input_signal=audio, input_signal_length=audio_lens, prompt=prompt)
+        encoded, encoded_len = self.forward(
+            input_signal=audio, input_signal_length=audio_lens, prompt=prompt, prompt_indices=prompt_indices
+        )
 
         # Prepare output dictionary based on decoder type
         if self.cur_decoder == "rnnt":
@@ -421,7 +395,6 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(EncDecHybridRNNTCTCBPEModel, ASRTran
             override_config: (Optional[HybridRNNTCTCPromptTranscribeConfig]) override transcription config pre-defined by the user.
             **prompt: Optional input to construct the prompts for the model. Accepted formats include:
                 target_lang: (str) target language ID for transcription (e.g., "en-US", "de-DE")
-                prompt_field: (str) field name to use for prompt extraction from manifest
                 Additional prompt parameters can be passed and will be forwarded to the transcription config.
 
         Returns:
@@ -458,8 +431,7 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(EncDecHybridRNNTCTCBPEModel, ASRTran
         # Create transcription config if not provided
         if override_config is None:
             # Extract target_lang from prompt or use default
-            target_lang = prompt.get('target_lang', 'en-US')
-            prompt_field = prompt.get('prompt_field', 'target_lang')
+            target_lang = prompt.get('target_lang', 'auto')
 
             trcfg = HybridRNNTCTCPromptTranscribeConfig(
                 batch_size=batch_size,
@@ -470,7 +442,6 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(EncDecHybridRNNTCTCBPEModel, ASRTran
                 verbose=verbose,
                 timestamps=timestamps,
                 target_lang=target_lang,
-                prompt_field=prompt_field,
             )
 
         else:
@@ -507,7 +478,8 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(EncDecHybridRNNTCTCBPEModel, ASRTran
             "input_signal_length": NeuralType(tuple('B'), LengthsType(), optional=True),
             "processed_signal": NeuralType(('B', 'D', 'T'), SpectrogramType(), optional=True),
             "processed_signal_length": NeuralType(tuple('B'), LengthsType(), optional=True),
-            "prompt": NeuralType(('B', 'T', 'D'), LabelsType()),
+            "prompt": NeuralType(('B', 'T', 'D'), LabelsType(), optional=True),
+            "prompt_indices": NeuralType(tuple('B'), LabelsType(), optional=True),
         }
 
     @property
@@ -525,18 +497,11 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(EncDecHybridRNNTCTCBPEModel, ASRTran
         processed_signal=None,
         processed_signal_length=None,
         prompt=None,
+        prompt_indices=None,
     ):
         """
         Forward pass of the model. Note that for RNNT Models, the forward pass of the model is a 3 step process,
         and this method only performs the first step - forward of the acoustic model.
-
-        Please refer to the `training_step` in order to see the full `forward` step for training - which
-        performs the forward of the acoustic model, the prediction network and then the joint network.
-        Finally, it computes the loss and possibly compute the detokenized text via the `decoding` step.
-
-        Please refer to the `validation_step` in order to see the full `forward` step for inference - which
-        performs the forward of the acoustic model, the prediction network and then the joint network.
-        Finally, it computes the decoded tokens via the `decoding` step and possibly compute the batch metrics.
 
         Args:
             input_signal: Tensor that represents a batch of raw audio signals,
@@ -548,13 +513,16 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(EncDecHybridRNNTCTCBPEModel, ASRTran
                 of shape (B, D, T) that has undergone processing via some DALI preprocessor.
             processed_signal_length: Vector of length B, that contains the individual lengths of the
                 processed audio sequences.
-            prompt: Tensor that represents the prompt embeddings,
-                of shape (B, T, D) where D is the number of supported prompts.
-                Used for prompt-conditioned encoding via concatenation with acoustic features.
+            prompt: (backward-compatible) Pre-built one-hot prompt tensor of shape [B, T, D].
+                If provided, used directly (trimmed to encoder length if needed).
+            prompt_indices: Tensor of shape [B] containing language ID indices per sample.
+                The model creates the prompt tensor after encoding using the actual
+                encoder output length, guaranteeing no size mismatch.
+                Ignored if ``prompt`` is also provided.
 
         Returns:
             A tuple of 2 elements -
-            1) The log probabilities tensor of shape [B, T, D].
+            1) The encoded tensor of shape [B, D, T].
             2) The lengths of the acoustic sequence after propagation through the encoder, of shape [B].
         """
         has_input_signal = input_signal is not None and input_signal_length is not None
@@ -579,17 +547,23 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(EncDecHybridRNNTCTCBPEModel, ASRTran
         encoded = torch.transpose(encoded, 1, 2)  # B * D * T -> B * T * D
 
         if self.concat:
-            if prompt.shape[1] > encoded.shape[1]:
-                prompt = prompt[:, : encoded.shape[1], :]
-            out_dtype = encoded.dtype  # this is dtype, which the decoder previously got from encoder
+            if prompt is not None:
+                # Backward-compatible path: caller provided a pre-built [B, T, D] one-hot tensor
+                if prompt.shape[1] > encoded.shape[1]:
+                    prompt = prompt[:, : encoded.shape[1], :]
+            elif prompt_indices is not None:
+                # New path: build one-hot from per-sample language ID indices
+                batch_size = encoded.shape[0]
+                time_steps = encoded.shape[1]
+                num_prompts = self.num_prompts
+                prompt = torch.zeros(batch_size, time_steps, num_prompts, dtype=encoded.dtype, device=encoded.device)
+                prompt.scatter_(2, prompt_indices.view(batch_size, 1, 1).expand(-1, time_steps, -1), 1.0)
+            else:
+                raise ValueError("Either prompt or prompt_indices must be provided when concat mode is enabled.")
 
-            # Concatenate encoded states with prompt
+            out_dtype = encoded.dtype
             concat_enc_states = torch.cat([encoded, prompt], dim=-1)
-
-            # Apply joint projection
-            encoded = self.prompt_kernel(concat_enc_states).to(
-                out_dtype
-            )  # cast: unexpectedly without cast dtype is different from out_dtype
+            encoded = self.prompt_kernel(concat_enc_states).to(out_dtype)
 
         encoded = torch.transpose(encoded, 1, 2)  # B * T * D -> B * D * T
         return encoded, encoded_len
@@ -602,13 +576,21 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(EncDecHybridRNNTCTCBPEModel, ASRTran
         if self.is_interctc_enabled():
             AccessMixin.set_access_enabled(access_enabled=True)
 
-        signal, signal_len, transcript, transcript_len, prompt = batch
+        signal, signal_len, transcript, transcript_len, prompt_or_indices = batch
 
-        # forward() only performs encoder forward
+        # Detect whether batch[4] is old-style prompt [B, T, D] or new-style indices [B]
+        prompt, prompt_indices = None, None
+        if prompt_or_indices.dim() == 1:
+            prompt_indices = prompt_or_indices
+        else:
+            prompt = prompt_or_indices
+
         if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
             encoded, encoded_len = self.forward(processed_signal=signal, processed_signal_length=signal_len)
         else:
-            encoded, encoded_len = self.forward(input_signal=signal, input_signal_length=signal_len, prompt=prompt)
+            encoded, encoded_len = self.forward(
+                input_signal=signal, input_signal_length=signal_len, prompt=prompt, prompt_indices=prompt_indices
+            )
         del signal
 
         # During training, loss must be computed, so decoder forward is necessary
@@ -714,13 +696,20 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(EncDecHybridRNNTCTCBPEModel, ASRTran
         return {'loss': loss_value}
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
-        signal, signal_len, transcript, transcript_len, prompt = batch
+        signal, signal_len, transcript, transcript_len, prompt_or_indices = batch
 
-        # forward() only performs encoder forward
+        prompt, prompt_indices = None, None
+        if prompt_or_indices.dim() == 1:
+            prompt_indices = prompt_or_indices
+        else:
+            prompt = prompt_or_indices
+
         if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
             encoded, encoded_len = self.forward(processed_signal=signal, processed_signal_length=signal_len)
         else:
-            encoded, encoded_len = self.forward(input_signal=signal, input_signal_length=signal_len, prompt=prompt)
+            encoded, encoded_len = self.forward(
+                input_signal=signal, input_signal_length=signal_len, prompt=prompt, prompt_indices=prompt_indices
+            )
         del signal
 
         if self.cur_decoder == 'rnnt':
@@ -744,13 +733,20 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(EncDecHybridRNNTCTCBPEModel, ASRTran
         if self.is_interctc_enabled():
             AccessMixin.set_access_enabled(access_enabled=True)
 
-        signal, signal_len, transcript, transcript_len, prompt = batch
+        signal, signal_len, transcript, transcript_len, prompt_or_indices = batch
 
-        # forward() only performs encoder forward
+        prompt, prompt_indices = None, None
+        if prompt_or_indices.dim() == 1:
+            prompt_indices = prompt_or_indices
+        else:
+            prompt = prompt_or_indices
+
         if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
             encoded, encoded_len = self.forward(processed_signal=signal, processed_signal_length=signal_len)
         else:
-            encoded, encoded_len = self.forward(input_signal=signal, input_signal_length=signal_len, prompt=prompt)
+            encoded, encoded_len = self.forward(
+                input_signal=signal, input_signal_length=signal_len, prompt=prompt, prompt_indices=prompt_indices
+            )
         del signal
 
         tensorboard_logs = {}
@@ -939,9 +935,11 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(EncDecHybridRNNTCTCBPEModel, ASRTran
     def setup_training_data(self, train_data_config: Optional[DictConfig]):
         """
         Sets up the training data loader via a Dict-like object.
+
         Args:
             train_data_config: A config that contains the information regarding construction
                 of an ASR Training dataset.
+
         Supported Datasets:
             -   :class:`~nemo.collections.asr.data.audio_to_text_lhotse_prompt.LhotseSpeechToTextBpeDatasetWithPrompt`
         """
@@ -972,9 +970,11 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(EncDecHybridRNNTCTCBPEModel, ASRTran
     def setup_validation_data(self, val_data_config: Optional[Union[DictConfig, Dict]]):
         """
         Sets up the validation data loader via a Dict-like object.
+
         Args:
             val_data_config: A config that contains the information regarding construction
                 of an ASR Training dataset.
+
         Supported Datasets:
             -   :class:`~nemo.collections.asr.data.audio_to_text_lhotse_prompt.LhotseSpeechToTextBpeDatasetWithPrompt`
         """
@@ -988,9 +988,11 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(EncDecHybridRNNTCTCBPEModel, ASRTran
     def setup_test_data(self, test_data_config: Optional[Union[DictConfig, Dict]]):
         """
         Sets up the test data loader via a Dict-like object.
+
         Args:
             test_data_config: A config that contains the information regarding construction
                 of an ASR Training dataset.
+
         Supported Datasets:
             -   :class:`~nemo.collections.asr.data.audio_to_text_lhotse_prompt.LhotseSpeechToTextBpeDatasetWithPrompt`
         """

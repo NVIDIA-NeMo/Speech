@@ -63,7 +63,8 @@ class SALMWithAsrDecoder(LightningModule, HFHubMixin):
         self.cfg = DictConfig(cfg)
         self.audio_locator_tag = self.cfg.audio_locator_tag
 
-        self.tokenizer = AutoTokenizer(self.cfg.pretrained_llm, use_fast=True)
+        tokenizer_src = self.cfg.get("tokenizer_path", None) or self.cfg.pretrained_llm
+        self.tokenizer = AutoTokenizer(tokenizer_src, use_fast=True)
         self.tokenizer.add_special_tokens({"additional_special_tokens": [self.audio_locator_tag]})
         self.llm = load_pretrained_hf(self.cfg.pretrained_llm, pretrained_weights=self.cfg.pretrained_weights)
         if not hasattr(self.llm, "model") and hasattr(self.llm, "backbone"):
@@ -666,6 +667,9 @@ class SALMWithAsrDecoder(LightningModule, HFHubMixin):
                     "type": NeuralType(("B", "T"), LabelsType()),
                     "seq_length": "output",
                     "vocab_size": self.text_vocab_size,
+                    "excluded_token_ids": [self.audio_locator_tag_id],
+                    "excluded_token_replacement_id": self.text_pad_id,
+                    "forced_token_ids": {0: self.audio_locator_tag_id},
                 },
                 {"name": "loss_mask", "type": NeuralType(("B", "T"), MaskType()), "seq_length": "output"},
             ],

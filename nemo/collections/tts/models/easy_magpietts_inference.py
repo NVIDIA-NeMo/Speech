@@ -974,22 +974,6 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                     context_audio_embedded=context_audio_embedded, context_audio_lens=context_audio_codes_lens
                 )
 
-        if self.use_speaker_encoder:
-            if (
-                self.training
-                and batch_size > 1
-                and self.train_shuffle_context_embedding_prob > 0
-                and random.random() < self.train_shuffle_context_embedding_prob
-            ):
-                # Feed shuffled raw context embeddings (without speaker encoder) so
-                # the decoder cannot rely on direct unencoded speaker identity cues.
-                shift = random.randint(1, batch_size - 1)
-                context_audio_embedded = context_audio_embedded.roll(shift, dims=0)
-            else:
-                context_audio_embedded = self.encode_context_audio_embeddings(
-                    context_audio_embedded=context_audio_embedded, context_audio_lens=context_audio_codes_lens
-                )
-
         # Context Text
         context_text_lens = context_text_tokens_lens
         context_text_embedded = self.embed_text_tokens(

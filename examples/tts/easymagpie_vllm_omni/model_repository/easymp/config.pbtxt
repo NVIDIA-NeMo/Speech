@@ -1,0 +1,145 @@
+name: "easymp"
+backend: "python"
+max_batch_size: 32
+
+# Two request flavours share this model:
+#  * whole-text   : send "text" (+ optional context_text/speaker).
+#  * streaming-text: send "stream_id" plus "text_token" chunks across several
+#                    requests; mark the first with stream_start=true and the last
+#                    with stream_end=true. context_text/speaker are read from the
+#                    stream_start request. All audio is streamed back on the
+#                    stream_start request's response; follow-up chunk requests get
+#                    an empty final response.
+input [
+  {
+    name: "text"
+    data_type: TYPE_STRING
+    dims: [ 1 ]
+    optional: true
+  },
+  {
+    name: "context_text"
+    data_type: TYPE_STRING
+    dims: [ 1 ]
+    optional: true
+  },
+  {
+    name: "speaker"
+    data_type: TYPE_STRING
+    dims: [ 1 ]
+    optional: true
+  },
+  {
+    name: "stream_id"
+    data_type: TYPE_STRING
+    dims: [ 1 ]
+    optional: true
+  },
+  {
+    name: "text_token"
+    data_type: TYPE_INT32
+    dims: [ -1 ]
+    optional: true
+  },
+  {
+    name: "stream_start"
+    data_type: TYPE_BOOL
+    dims: [ 1 ]
+    optional: true
+  },
+  {
+    name: "stream_end"
+    data_type: TYPE_BOOL
+    dims: [ 1 ]
+    optional: true
+  }
+]
+
+output [
+  {
+    name: "audio"
+    data_type: TYPE_FP32
+    dims: [ -1 ]
+  }
+]
+
+model_transaction_policy {
+  decoupled: true
+}
+
+instance_group [
+  {
+    count: 1
+    kind: KIND_GPU
+  }
+]
+
+# Converted EasyMagpie checkpoint dir (config.json + weights + tokenizer +
+# speaker_embeddings/<name>.pt), produced by easy_magpietts_convert_to_vllm.py.
+parameters {
+  key: "vllm_model_path"
+  value: { string_value: "/workspace/examples/tts/easymagpie_vllm_omni/easymp_vllm_model" }
+}
+parameters {
+  key: "default_speaker"
+  value: { string_value: "eng" }
+}
+parameters {
+  key: "default_context_text"
+  value: { string_value: "[EN]" }
+}
+
+parameters {
+  key: "max_model_len"
+  value: { string_value: "1024" }
+}
+parameters {
+  key: "max_num_seqs"
+  value: { string_value: "32" }
+}
+parameters {
+  key: "max_num_batched_tokens"
+  value: { string_value: "4096" }
+}
+parameters {
+  key: "max_new_tokens"
+  value: { string_value: "512" }
+}
+parameters {
+  key: "gpu_memory_utilization"
+  value: { string_value: "0.5" }
+}
+
+# Codec streaming (overlap-save) in MODEL frames. codec_chunk_size must equal the
+# codec engine's static frame axis (15). new frames / chunk = chunk - left_context.
+parameters {
+  key: "codec_chunk_size"
+  value: { string_value: "15" }
+}
+parameters {
+  key: "codec_left_context"
+  value: { string_value: "12" }
+}
+parameters {
+  key: "first_chunk_frames"
+  value: { string_value: "1" }
+}
+
+# Audio (local-transformer) sampling, forwarded via additional_information.
+parameters {
+  key: "lt_temperature"
+  value: { string_value: "0.7" }
+}
+parameters {
+  key: "lt_top_k"
+  value: { string_value: "80" }
+}
+
+# Benchmark-only toggle. When "true", the codec BLS is skipped entirely (no
+# GPU->CPU copy, no codec inference); responses carry silence. Use this to
+# measure the AR / orchestration path of model.py in isolation and compare it
+# against benchmark_model.py. Leave "false" for real serving.
+parameters {
+  key: "codec_noop"
+  value: { string_value: "false" }
+}

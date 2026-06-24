@@ -30,10 +30,6 @@ from nemo.collections.tts.models.easy_magpietts_inference import EasyModelInfere
 from tests.collections.tts.models.test_audio_codec import create_codec_config
 
 
-if torch.cuda.is_available():
-    torch.set_default_device("cuda")
-
-
 pytestmark = pytest.mark.unit
 
 BPE_TOKENIZER_NAME = "nemotron_bpe"
@@ -41,6 +37,21 @@ BPE_TOKENIZER_MODEL = "nvidia/NVIDIA-Nemotron-Nano-9B-v2"
 BPE_TOKENIZER_CACHED_PATH = Path("/home/TestData/nvidia--NVIDIA-Nemotron-Nano-9B-v2/")
 if BPE_TOKENIZER_CACHED_PATH.exists():
     BPE_TOKENIZER_MODEL = str(BPE_TOKENIZER_CACHED_PATH)
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _default_device_cuda():
+    """Run this module with a CUDA default device without leaking it to later modules."""
+    if not torch.cuda.is_available():
+        yield
+        return
+
+    prev = torch.get_default_device()
+    torch.set_default_device("cuda")
+    try:
+        yield
+    finally:
+        torch.set_default_device(prev)
 
 
 def _restore_codec_as_random_initialized_model(*args, **kwargs):

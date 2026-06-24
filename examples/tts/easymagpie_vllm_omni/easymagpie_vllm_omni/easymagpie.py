@@ -47,10 +47,10 @@ Per-request I/O (via ``additional_information``):
 * speaker context audio (prefill only) — either of:
 
   * ``speaker_id`` — a short string naming a *known* speaker whose
-    ``(T_audio, embedding_dim)`` context-audio embedding is precomputed model
-    state: every ``speaker_embeddings/<id>.pt`` in the checkpoint dir is loaded
-    once at construction into a GPU-resident, model-dtype tensor (see
-    :meth:`_load_speaker_embeddings`). Requests then carry just the id — no
+    ``(T_audio, embedding_dim)`` context-audio embedding lives in the checkpoint
+    as ``speaker_embeddings/<id>.pt``. It is loaded from disk on first use and
+    folded into the cached assembled prefill context (see
+    :meth:`_build_prefill_embeds`), so repeat requests carry just the id — no
     per-request H2D and no serialization of a multi-hundred-KB tensor through the
     engine. This is the recommended path for serving a fixed speaker set.
   * ``speaker_embedding`` — a ``(T_audio, embedding_dim)`` tensor for custom /
@@ -249,10 +249,6 @@ class EasyMagpieTTSForConditionalGeneration(
         # caller passes plain text, never pre-tokenized ids.
         self._text_tokenizer: Any = None
 
-        # Known-speaker embedding table (populated at the end of ``__init__``;
-        # see :meth:`_load_speaker_embeddings`).
-        self._speaker_embeddings: dict[str, torch.Tensor] = {}
-
         # ── Streaming delays (text leads phoneme by ``phonemes_delay`` and audio
         # by ``speech_delay`` decode steps; 0/0 == lock-step). ──
         self.phonemes_delay = int(getattr(arch, "streaming_phonemes_delay", 0) or 0)
@@ -306,19 +302,18 @@ class EasyMagpieTTSForConditionalGeneration(
         # ``compute_logits``
         self._sample_stop = torch.zeros(max_num_tokens, dtype=torch.bool)
 
-        # ── Known-speaker context-audio embeddings (precomputed model state) ──
+        # ── Assembled prefill context embeddings (the only context cache) ──
         # ``preprocess`` runs on the host, once per request, serially on the
-        # runner's critical path, so shipping a per-request
-        # ``(T_audio, embedding_dim)`` speaker tensor (ZMQ serialize/deserialize +
-        # H2D) dominates TTFT under concurrency. For the fixed speaker set we
-        # serve, bake those embeddings into model state instead: load each
-        # ``speaker_embeddings/<id>.pt`` once into a GPU-resident, model-dtype
-        # tensor so a request only carries a short ``speaker_id`` string. Custom /
-        # one-off voices may still pass a raw ``speaker_embedding`` tensor (see
-        # :meth:`_resolve_speaker_embedding`). Loaded here (not in
-        # :meth:`load_weights`) so it is present even under ``--load-format dummy``,
-        # which skips weight loading.
-        self._speaker_embeddings = self._load_speaker_embeddings()
+        # runner's critical path, so per-request speaker-tensor transfer + the
+        # tokenize/embed/cat dominate TTFT under concurrency. Cache the *whole*
+        # assembled context ``[task | speaker | context_text]`` per
+        # ``(task_mode_id, speaker_id, context_text, device)`` (see
+        # :meth:`_build_prefill_embeds`): for a known speaker it is identical on
+        # every request, so the cache subsumes a separate speaker-embedding table
+        # — the speaker ``.pt`` is read from disk only on the (first) cache miss
+        # for that combo (see :meth:`_load_known_speaker_embedding`), then never
+        # again. Custom raw-tensor voices are one-off and skip the cache.
+        self._prefill_cache: dict[tuple, torch.Tensor] = {}
 
     # ------------------------------------------------------------------
     # Embedding helpers
@@ -735,14 +730,34 @@ class EasyMagpieTTSForConditionalGeneration(
 
         Returns the full context embedding; the per-chunk slicing is done by
         :meth:`_preprocess_prefill`.
+
+        For a known ``speaker_id`` the result is a pure function of
+        ``(task_mode_id, speaker_id, context_text)`` and is cached in
+        ``self._prefill_cache``, so the tokenize + embed + cat below run once per
+        distinct combo instead of on every request's prefill. The returned tensor
+        is only ever read (sliced) downstream, never mutated, so sharing the
+        cached instance is safe.
         """
+        speaker_id = info_dict.get("speaker_id")
+        context_text = info_dict.get("context_text") or _DEFAULT_CONTEXT_TEXT
+        if self.task_embedding is not None:
+            task_mode_id = int(info_dict.get("task_mode_id", 0) or 0)
+            task_mode_id = max(0, min(task_mode_id, self.num_task_embeddings - 1))
+        else:
+            task_mode_id = 0
+
+        # Custom raw-tensor voices (no speaker_id) are one-off, so skip the cache.
+        cache_key = (task_mode_id, speaker_id, context_text, str(device)) if speaker_id else None
+        if cache_key is not None:
+            cached = self._prefill_cache.get(cache_key)
+            if cached is not None:
+                return cached
+
         dtype = self._combined_embeddings.dtype
         parts: list[torch.Tensor] = []
 
         # Task / "service token" embedding (prepended), when present.
         if self.task_embedding is not None:
-            task_mode_id = int(info_dict.get("task_mode_id", 0) or 0)
-            task_mode_id = max(0, min(task_mode_id, self.num_task_embeddings - 1))
             task_row = self.task_embedding(torch.tensor([task_mode_id], device=device, dtype=torch.long))
             parts.append(task_row.to(dtype))
 
@@ -750,36 +765,30 @@ class EasyMagpieTTSForConditionalGeneration(
         parts.append(self._resolve_speaker_embedding(device, info_dict))
 
         # Context text: tokenized in-model and embedded through the baked table.
-        context_text = info_dict.get("context_text") or _DEFAULT_CONTEXT_TEXT
         ctx_ids = self._encode_context_text(context_text, device)
         if ctx_ids.numel() > 0:
             parts.append(self.text_embedding(ctx_ids).to(dtype))
 
-        return torch.cat(parts, dim=0)
+        embeds = torch.cat(parts, dim=0)
+        if cache_key is not None:
+            self._prefill_cache[cache_key] = embeds
+        return embeds
 
     def _resolve_speaker_embedding(self, device: torch.device, info_dict: dict[str, Any]) -> torch.Tensor:
         """Return the speaker context-audio embedding on ``device`` in model dtype.
 
-        Prefers a known ``speaker_id`` resolved from precomputed model state (see
-        :meth:`_load_speaker_embeddings`) — no per-request transfer. Falls back to
-        a raw ``speaker_embedding`` tensor (custom / one-off voice), copied H2D
-        here. Exactly one of the two must be supplied.
+        For a known ``speaker_id`` the embedding is read from disk by
+        :meth:`_load_known_speaker_embedding`; this only ever runs on a
+        prefill-cache miss (see :meth:`_build_prefill_embeds`), i.e. once per
+        ``(speaker_id, context_text, task)`` combo, so there is no separate
+        speaker-embedding table — the assembled prefill cache subsumes it. Falls
+        back to a raw ``speaker_embedding`` tensor (custom / one-off voice),
+        copied H2D here. Exactly one of the two must be supplied.
         """
         dtype = self._combined_embeddings.dtype
         speaker_id = info_dict.get("speaker_id")
         if speaker_id:
-            embedding = self._speaker_embeddings.get(speaker_id)
-            assert embedding is not None, (
-                f"EasyMagpieTTS preprocess got unknown speaker_id {speaker_id!r}; known speakers: "
-                f"{sorted(self._speaker_embeddings)}. Register it under the checkpoint's "
-                "speaker_embeddings/ dir, or pass a raw speaker_embedding tensor for a custom voice."
-            )
-            # One-time device pin (no-op once resident) — the table is built in
-            # __init__, but guard in case the module was placed after construction.
-            if embedding.device != device:
-                embedding = embedding.to(device=device, dtype=dtype)
-                self._speaker_embeddings[speaker_id] = embedding
-            return embedding
+            return self._load_known_speaker_embedding(speaker_id, device, dtype)
 
         speaker_embedding = info_dict.get("speaker_embedding")
         assert isinstance(speaker_embedding, torch.Tensor) and speaker_embedding.ndim == 2, (
@@ -790,35 +799,41 @@ class EasyMagpieTTSForConditionalGeneration(
         )
         return speaker_embedding.to(device=device, dtype=dtype)
 
-    def _load_speaker_embeddings(self) -> dict[str, torch.Tensor]:
-        """Load all known-speaker embeddings from ``<model_path>/speaker_embeddings/*.pt``.
+    def _load_known_speaker_embedding(
+        self, speaker_id: str, device: torch.device, dtype: torch.dtype
+    ) -> torch.Tensor:
+        """Read one known speaker's embedding from ``<model_path>/speaker_embeddings/<id>.pt``.
 
-        Each file holds either a bare ``(T_audio, embedding_dim)`` tensor or a dict
-        with a ``speaker_encoding`` key (the converter/caller layout). They are
-        moved to the model's device + dtype once here so per-request prefill only
-        sources the speaker part from this table (no transfer). Returns an empty
-        table when the directory is absent (custom-voice-only deployments).
+        The file holds either a bare ``(T_audio, embedding_dim)`` tensor or a dict
+        with a ``speaker_encoding`` key (the converter/caller layout); it is moved
+        to ``device`` in model dtype. Called only on a prefill-cache miss, so each
+        known speaker is read at most once per ``(context_text, task)`` combo and
+        the result is then baked into ``self._prefill_cache``. Read from disk (not
+        via :meth:`load_weights`) so known speakers work even under
+        ``--load-format dummy``, which skips weight loading.
         """
         import glob
         import os
 
-        out: dict[str, torch.Tensor] = {}
         spk_dir = os.path.join(self.model_path, "speaker_embeddings")
-        if not os.path.isdir(spk_dir):
-            return out
-        device = self._combined_embeddings.device
-        dtype = self._combined_embeddings.dtype
-        for path in sorted(glob.glob(os.path.join(spk_dir, "*.pt"))):
-            name = os.path.splitext(os.path.basename(path))[0]
-            loaded = torch.load(path, map_location="cpu")
-            embedding = loaded["speaker_encoding"] if isinstance(loaded, dict) else loaded
-            if not (isinstance(embedding, torch.Tensor) and embedding.ndim == 2):
-                logger.warning("EasyMagpieTTS: skipping speaker embedding %s (expected a 2-D tensor)", path)
-                continue
-            out[name] = embedding.to(device=device, dtype=dtype)
-        if out:
-            logger.info("EasyMagpieTTS: loaded %d known speaker embedding(s): %s", len(out), ", ".join(sorted(out)))
-        return out
+        path = os.path.join(spk_dir, f"{speaker_id}.pt")
+        if not os.path.exists(path):
+            known = sorted(
+                os.path.splitext(os.path.basename(p))[0] for p in glob.glob(os.path.join(spk_dir, "*.pt"))
+            )
+            raise AssertionError(
+                f"EasyMagpieTTS preprocess got unknown speaker_id {speaker_id!r}; known speakers: {known}. "
+                "Register it under the checkpoint's speaker_embeddings/ dir, or pass a raw "
+                "speaker_embedding tensor for a custom voice."
+            )
+        loaded = torch.load(path, map_location="cpu")
+        embedding = loaded["speaker_encoding"] if isinstance(loaded, dict) else loaded
+        assert isinstance(embedding, torch.Tensor) and embedding.ndim == 2, (
+            f"EasyMagpieTTS: speaker embedding {path} must be a 2-D (T_audio, embedding_dim) tensor; "
+            f"got {type(embedding).__name__}"
+            + (f" with ndim={embedding.ndim}" if isinstance(embedding, torch.Tensor) else "")
+        )
+        return embedding.to(device=device, dtype=dtype)
 
     def _maybe_set_lt_sampling_params(self, info_dict: dict[str, Any]) -> None:
         """Apply per-request audio sampling params to the local transformer.
@@ -915,8 +930,9 @@ class EasyMagpieTTSForConditionalGeneration(
 
         Resolves everything from the checkpoint dir so it cannot disagree with
         what the engine actually uses: loads the speaker embedding from
-        ``speaker_embeddings/<speaker_id>.pt`` (see :meth:`_load_speaker_embeddings`),
-        reads ``has_task_embedding`` from ``config.json`` (``num_task_embeddings``),
+        ``speaker_embeddings/<speaker_id>.pt`` (the same file the engine reads in
+        :meth:`_load_known_speaker_embedding`), reads ``has_task_embedding`` from
+        ``config.json`` (``num_task_embeddings``),
         and conditions on the fixed :data:`_DEFAULT_CONTEXT_TEXT`. Lets a caller
         holding only a ``speaker_id`` size ``prompt_token_ids`` without an engine
         instance (``context_text`` / ``has_task_embedding`` are intentionally not

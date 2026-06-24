@@ -55,7 +55,6 @@ Example usage:
 from __future__ import annotations
 
 import argparse
-import copy
 import json
 import os
 import random
@@ -241,12 +240,24 @@ def run_inference_and_evaluation(
 
         meta = dataset_meta_info[dataset]
         manifest_records = read_manifest(meta['manifest_path'])
-        language = meta.get('whisper_language', 'en')
 
-        # Prepare dataset metadata (remove evaluation-specific keys)
-        dataset_meta_for_dl = copy.deepcopy(meta)
-        for key in ["whisper_language", "load_cached_codes_if_available"]:
-            dataset_meta_for_dl.pop(key, None)
+        if 'asr_model' in meta:
+            asr_model_name = meta['asr_model']['name']
+            asr_model_type = meta['asr_model']['type']
+        else:
+            asr_model_name = eval_config.asr_model_name
+            asr_model_type = eval_config.asr_model_type
+
+        if 'language' in meta:
+            language = meta.get('language')
+        else:
+            language = eval_config.language
+
+        dataset_meta_for_dl = {
+            "manifest_path": meta["manifest_path"],
+            "audio_dir": meta["audio_dir"],
+            "language": language,
+        }
 
         # Setup output directories
         eval_dir = os.path.join(out_dir, f"{full_checkpoint_name}_{dataset}")
@@ -303,7 +314,8 @@ def run_inference_and_evaluation(
             # Run evaluation
             eval_config_for_dataset = EvaluationConfig(
                 sv_model=eval_config.sv_model,
-                asr_model_name=eval_config.asr_model_name,
+                asr_model_name=asr_model_name,
+                asr_model_type=asr_model_type,
                 eou_model_name=eval_config.eou_model_name,
                 language=language,
                 with_utmosv2=eval_config.with_utmosv2,
@@ -503,6 +515,12 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
         default=None,
         help='Comma-separated list of dataset names to process',
     )
+    data_group.add_argument(
+        '--tokenizer_name',
+        type=str,
+        default="english_phoneme",
+        help='Default tokenizer to use when a language or dataset specific tokenizer is not provided.',
+    )
     data_group.add_argument('--out_dir', type=str, required=True, help='Output directory')
     data_group.add_argument('--log_exp_name', action='store_true')
     data_group.add_argument('--clean_up_disk', action='store_true')
@@ -521,7 +539,22 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     eval_group = parser.add_argument_group('Evaluation')
     eval_group.add_argument('--run_evaluation', action='store_true', help='Run evaluation after inference')
     eval_group.add_argument('--sv_model', type=str, default="titanet", choices=["titanet", "wavlm"])
-    eval_group.add_argument('--asr_model_name', type=str, default="nvidia/parakeet-tdt-1.1b")
+    eval_group.add_argument(
+        '--asr_model_name',
+        type=str,
+        default='nvidia/parakeet-tdt-1.1b',
+        help="ASR model to use for WER calculation, when not provided in dataset config",
+    )
+    eval_group.add_argument(
+        '--asr_model_type',
+        type=str,
+        default='nemo',
+        choices=['nemo', 'nemo_with_prompt', 'whisper'],
+        help="Type of ASR model provided in 'asr_model_name'",
+    )
+    eval_group.add_argument(
+        '--language', type=str, default="en", help='Language to use, when not provided in dataset config'
+    )
     eval_group.add_argument(
         '--eou_model_name',
         type=str,
@@ -645,6 +678,7 @@ def _build_magpie_config(args) -> MagpieInferenceConfig:
         maskgit_noise_scale=args.maskgit_noise_scale,
         maskgit_fixed_schedule=args.maskgit_fixed_schedule,
         maskgit_sampling_type=args.maskgit_sampling_type,
+        default_tokenizer_name=args.tokenizer_name,
     )
 
 
@@ -657,6 +691,7 @@ def _build_easy_magpie_config(args) -> EasyMagpieInferenceConfig:
         phoneme_input_type=args.phoneme_input_type,
         phoneme_sampling_method=args.phoneme_sampling_method,
         dropout_text_input=args.dropout_text_input,
+        default_tokenizer_name=args.tokenizer_name,
     )
 
 
@@ -694,7 +729,9 @@ def main(argv=None):
     eval_config = EvaluationConfig(
         sv_model=args.sv_model,
         asr_model_name=args.asr_model_name,
+        asr_model_type=args.asr_model_type,
         eou_model_name=args.eou_model_name,
+        language=args.language,
         with_utmosv2=not args.disable_utmosv2,
         with_fcd=not args.disable_fcd,
         codec_model_path=args.codecmodel_path if not args.disable_fcd else None,

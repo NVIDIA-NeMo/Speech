@@ -29,13 +29,18 @@ import librosa
 import numpy as np
 import soundfile as sf
 import torch
-from transformers import Wav2Vec2FeatureExtractor, WavLMForXVector, WhisperForConditionalGeneration, WhisperProcessor
+from transformers import Wav2Vec2FeatureExtractor, WavLMForXVector
 
 import nemo.collections.asr as nemo_asr
 from nemo.collections.asr.metrics.wer import word_error_rate_detail
 from nemo.collections.tts.metrics.eou_classifier import EoUClassification, EoUClassifier, EoUType
 from nemo.collections.tts.metrics.frechet_codec_distance import FrechetCodecDistance
-from nemo.collections.tts.parts.utils.tts_dataset_utils import get_text_processor
+from nemo.collections.tts.parts.utils.tts_dataset_utils import (
+    NemoTranscriber,
+    NemoTranscriberWithPrompt,
+    WhisperTranscriber,
+    get_text_processor,
+)
 from nemo.utils import logging
 
 # Optional import for UTMOSv2 (audio quality metric)
@@ -82,6 +87,13 @@ def load_evalset_config(config_path: Optional[str] = None, dataset_base_path: Op
         manifest_path = Path(info["manifest_path"])
         audio_dir = Path(info["audio_dir"])
 
+        asr_model_path = None
+        asr_model = info.get("asr_model")
+        if asr_model:
+            asr_model_name = asr_model["name"]
+            if asr_model_name.endswith(".nemo"):
+                asr_model_path = Path(asr_model_name)
+
         if dataset_base_path:
             # Replace relative paths with absolute paths where appropriate
             if not manifest_path.is_absolute():
@@ -92,11 +104,18 @@ def load_evalset_config(config_path: Optional[str] = None, dataset_base_path: Op
                 audio_dir = dataset_base_path / audio_dir
                 info["audio_dir"] = str(audio_dir)
 
+            if asr_model_path and not asr_model_path.is_absolute():
+                asr_model_path = dataset_base_path / asr_model_path
+                info["asr_model"]["name"] = str(asr_model_path)
+
         if not manifest_path.exists():
             raise ValueError(f"Manifest does not exist for dataset {dataset_name}: {manifest_path}")
 
         if not audio_dir.exists():
             raise ValueError(f"Audio directory does not exist for dataset {dataset_name}: {audio_dir}")
+
+        if asr_model_path and not asr_model_path.exists():
+            raise ValueError(f"ASR model file does not exist for dataset {dataset_name}: {asr_model_path}")
 
     return dataset_meta_info
 
@@ -150,48 +169,6 @@ def read_manifest(manifest_path):
     return records
 
 
-def transcribe_with_nemo_asr_batched(asr_model, audio_paths, batch_size=8, label=""):
-    """Transcribe multiple audio files with a NeMo ASR model in batches. Returns list of transcriptions (one per path)."""
-    all_transcriptions = []
-    for start in range(0, len(audio_paths), batch_size):
-        batch_paths = audio_paths[start : start + batch_size]
-        try:
-            with torch.inference_mode():
-                batch_results = asr_model.transcribe(batch_paths, batch_size=len(batch_paths), use_lhotse=False)
-            for r in batch_results:
-                all_transcriptions.append(r.text)
-        except Exception as e:
-            logging.info("Error during batched ASR ({} audio): {}".format(label, e))
-            all_transcriptions.extend([""] * len(batch_paths))
-    return all_transcriptions
-
-
-def transcribe_with_whisper_batched(
-    whisper_model, whisper_processor, audio_paths, language, device, batch_size=8, label=""
-):
-    """Transcribe multiple audio files with Whisper in batches. Returns list of transcriptions (one per path)."""
-    forced_decoder_ids = (
-        whisper_processor.get_decoder_prompt_ids(language=language, task="transcribe") if language else None
-    )
-    all_transcriptions = []
-    for start in range(0, len(audio_paths), batch_size):
-        batch_paths = audio_paths[start : start + batch_size]
-        try:
-            speech_arrays = [librosa.load(p, sr=16000)[0] for p in batch_paths]
-            inputs = whisper_processor(
-                speech_arrays, sampling_rate=16000, return_tensors="pt", padding=True
-            ).input_features
-            inputs = inputs.to(device)
-            with torch.inference_mode():
-                predicted_ids = whisper_model.generate(inputs, forced_decoder_ids=forced_decoder_ids)
-            transcriptions = whisper_processor.batch_decode(predicted_ids, skip_special_tokens=True)
-            all_transcriptions.extend(transcriptions)
-        except Exception as e:
-            logging.info("Error during batched Whisper ASR ({} audio): {}".format(label, e))
-            all_transcriptions.extend([""] * len(batch_paths))
-    return all_transcriptions
-
-
 def pad_audio_to_min_length(audio_np: np.ndarray, sampling_rate: int, min_seconds: float) -> np.ndarray:
     """
     Pad audio to make it at least `min_seconds` long by adding silence at the end if needed.
@@ -243,34 +220,12 @@ def compute_utmosv2_scores(audio_dir, device):
     return utmosv2_scores_dict
 
 
-def transcribed_batched(
-    audio_paths,
-    language,
-    asr_model,
-    whisper_model,
-    whisper_processor,
-    device,
-    asr_batch_size,
-    label="",
-):
-    """Transcribe a list of audio files using NeMo ASR (English) or Whisper (other languages)."""
-    if language == "en":
-        texts = transcribe_with_nemo_asr_batched(asr_model, audio_paths, batch_size=asr_batch_size, label=label)
-    else:
-        texts = transcribe_with_whisper_batched(
-            whisper_model, whisper_processor, audio_paths, language, device, batch_size=asr_batch_size, label=label
-        )
-
-    return texts
-
-
 def load_evaluation_models(
-    language="en", sv_model_type="titanet", asr_model_name="stt_en_conformer_transducer_large", device="cuda"
+    sv_model_type="titanet", asr_model_name="stt_en_conformer_transducer_large", asr_model_type="nemo", device="cuda"
 ):
     """Load ASR and speaker verification models used for evaluation.
 
     Args:
-        language: Language code. "en" uses a NeMo ASR model; other languages use Whisper.
         sv_model_type: Speaker verification model type ("wavlm" or "titanet").
         asr_model_name: Name of the NeMo ASR model (used only when language is "en").
         device: Device to place models on.
@@ -286,18 +241,14 @@ def load_evaluation_models(
         'feature_extractor': None,
     }
 
-    if language == "en":
-        if os.path.isfile(asr_model_name) and asr_model_name.endswith('.nemo'):
-            models['asr_model'] = nemo_asr.models.ASRModel.restore_from(restore_path=asr_model_name).to(device).eval()
-        elif asr_model_name.startswith("nvidia/") or asr_model_name in ["stt_en_conformer_transducer_large"]:
-            models['asr_model'] = nemo_asr.models.ASRModel.from_pretrained(model_name=asr_model_name).to(device).eval()
-        else:
-            raise ValueError(f"ASR model {asr_model_name} not supported")
+    if asr_model_type == "nemo":
+        models['asr_model'] = NemoTranscriber(model_name=asr_model_name, device=device)
+    elif asr_model_type == "nemo_with_prompt":
+        models['asr_model'] = NemoTranscriberWithPrompt(model_name=asr_model_name, device=device)
+    elif asr_model_type == "whisper":
+        models['asr_model'] = WhisperTranscriber(model_name=asr_model_name, device=device)
     else:
-        models['whisper_processor'] = WhisperProcessor.from_pretrained("openai/whisper-large-v3")
-        models['whisper_model'] = (
-            WhisperForConditionalGeneration.from_pretrained("openai/whisper-large-v3").to(device).eval()
-        )
+        raise ValueError(f"Unknown ASR model type {asr_model_name}")
 
     if sv_model_type == "wavlm":
         models['feature_extractor'] = Wav2Vec2FeatureExtractor.from_pretrained('microsoft/wavlm-base-plus-sv')
@@ -344,6 +295,7 @@ def evaluate_dir(
     language="en",
     sv_model_type="titanet",
     asr_model_name="stt_en_conformer_transducer_large",
+    asr_model_type="nemo",
     with_utmosv2=True,
     asr_batch_size=32,
     eou_batch_size=32,
@@ -377,11 +329,9 @@ def evaluate_dir(
     context_audio_paths = [_resolve_path(audio_dir, r.get('context_audio_filepath')) for r in records]
 
     # 2. Load models
-    models = load_evaluation_models(language, sv_model_type, asr_model_name, device)
+    models = load_evaluation_models(sv_model_type, asr_model_name, asr_model_type, device)
 
     asr_model = models['asr_model']
-    whisper_model = models['whisper_model']
-    whisper_processor = models['whisper_processor']
     feature_extractor = models['feature_extractor']
     speaker_verification_model = models['sv_model']
     speaker_verification_model_alternate = models['sv_model_alternate']
@@ -410,29 +360,11 @@ def evaluate_dir(
 
     # Transcribe predicted audios
     text_processor = get_text_processor(language)
-    pred_texts = transcribed_batched(
-        audio_file_lists,
-        language,
-        asr_model,
-        whisper_model,
-        whisper_processor,
-        device,
-        asr_batch_size,
-        label="predicted",
-    )
+    pred_texts = asr_model.transcribe(audio_paths=audio_file_lists, language=language, batch_size=asr_batch_size)
     pred_texts = [text_processor.process_text_for_wer(text) for text in pred_texts]
     # Transcribe ground truth audios
     if len(gt_audio_paths) > 0:
-        gt_audio_texts = transcribed_batched(
-            gt_audio_paths,
-            language,
-            asr_model,
-            whisper_model,
-            whisper_processor,
-            device,
-            asr_batch_size,
-            label="ground truth",
-        )
+        gt_audio_texts = asr_model.transcribe(audio_paths=gt_audio_paths, language=language, batch_size=asr_batch_size)
         gt_audio_texts = [text_processor.process_text_for_wer(text) for text in gt_audio_texts]
     else:
         gt_audio_texts = [None] * len(records)
@@ -598,6 +530,7 @@ def evaluate(
     language="en",
     sv_model_type="titanet",
     asr_model_name="stt_en_conformer_transducer_large",
+    asr_model_type="nemo",
     with_utmosv2=True,
     with_fcd=True,
     codec_model_path=None,
@@ -635,6 +568,7 @@ def evaluate(
         language=language,
         sv_model_type=sv_model_type,
         asr_model_name=asr_model_name,
+        asr_model_type=asr_model_type,
         with_utmosv2=with_utmosv2,
         asr_batch_size=asr_batch_size,
         eou_batch_size=eou_batch_size,
@@ -776,7 +710,7 @@ def main():
     parser.add_argument('--manifest_path', type=str, default=None)
     parser.add_argument('--audio_dir', type=str, default=None)
     parser.add_argument('--generated_audio_dir', type=str, default=None)
-    parser.add_argument('--whisper_language', type=str, default="en")
+    parser.add_argument('--language', type=str, default="en")
     parser.add_argument('--evalset', type=str, default=None)
     args = parser.parse_args()
 
@@ -790,7 +724,7 @@ def main():
         args.manifest_path,
         args.audio_dir,
         args.generated_audio_dir,
-        args.whisper_language,
+        args.language,
         sv_model_type="wavlm",
         asr_model_name="nvidia/parakeet-ctc-0.6b",
     )

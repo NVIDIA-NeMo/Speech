@@ -48,6 +48,7 @@ class EvaluationConfig:
 
     sv_model: str = "titanet"
     asr_model_name: str = "nvidia/parakeet-tdt-1.1b"
+    asr_model_type: str = "nemo"
     eou_model_name: str = "facebook/wav2vec2-base-960h"
     language: str = "en"
     with_utmosv2: bool = True
@@ -90,6 +91,7 @@ def evaluate_generated_audio_dir(
         language=config.language,
         sv_model_type=config.sv_model,
         asr_model_name=config.asr_model_name,
+        asr_model_type=config.asr_model_type,
         with_utmosv2=config.with_utmosv2,
         with_fcd=config.with_fcd,
         codec_model_path=config.codec_model_path,

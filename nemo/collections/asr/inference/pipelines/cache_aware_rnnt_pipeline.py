@@ -350,7 +350,8 @@ class CacheAwareRNNTPipeline(BasePipeline):
     def _apply_beam_update_(self, state: CacheAwareRNNTBeamStreamingState, eou_detected: bool) -> None:
         """After endpointing: refresh beam publish tokens and fold cumulative prefix on EOU."""
         if eou_detected and state.hyp_decoding_state is not None:
-            self.beam_decoder_computer.select_beam_in_state_item_(state.hyp_decoding_state, state.get_best_hyp_idx())
+            beam_idx = state.select_best_beam_idx_(score_norm=True)
+            self.beam_decoder_computer.select_beam_in_state_item_(state.hyp_decoding_state, beam_idx)
         state.update_(eou_detected)
 
     def run_greedy_decoder(self, state: CacheAwareRNNTStreamingState, request: Request, hyp: Hypothesis) -> bool:

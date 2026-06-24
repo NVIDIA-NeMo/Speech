@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import torch
+
 from nemo.collections.asr.inference.streaming.state.cache_aware_state import CacheAwareStreamingState
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 
@@ -121,6 +123,22 @@ class CacheAwareRNNTBeamStreamingState(CacheAwareRNNTStreamingState):
         self.partial_tokens = next_tokens
         self.partial_timestamps = next_timestamps
         self.best_hyp_idx = best_hyp_idx
+
+    def select_best_beam_idx_(self, *, score_norm: bool = False) -> int:
+        """Pick beam index into ``partial_*``; updates ``best_hyp_idx``.
+
+        Per-chunk publish uses raw ``scores.argmax`` (via ``append_chunk_beam_``). At EOU,
+        use ``score_norm=True`` to match offline :meth:`BatchedBeamHyps.flatten_sort_`.
+        """
+        if self.hyp_decoding_state is None:
+            raise RuntimeError("Cannot select beam without decoding carry.")
+
+        scores = self.hyp_decoding_state.score
+        lengths_nb = self.hyp_decoding_state.current_lengths_nb
+        ranking = scores / (lengths_nb.to(dtype=scores.dtype) + 1) if score_norm else scores
+
+        self.best_hyp_idx = int(ranking.argmax().item())
+        return self.best_hyp_idx
 
     def get_best_hyp_idx(self) -> int:
         """Index into ``partial_*`` for publish (chunk argmax, or score argmax from carry)."""

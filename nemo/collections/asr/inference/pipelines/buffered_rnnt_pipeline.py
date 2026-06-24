@@ -49,42 +49,12 @@ from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import (
     BatchedBeamHyps,
     export_batched_beam_hyps_to_cpu_lists,
 )
-from nemo.collections.asr.parts.utils.rnnt_utils import batched_hyps_to_hypotheses
+from nemo.collections.asr.parts.utils.rnnt_utils import batched_beam_hyps_to_hypotheses, batched_hyps_to_hypotheses
 from nemo.utils import logging
 
 if TYPE_CHECKING:
     from nemo.collections.asr.inference.itn.inverse_normalizer import AlignmentPreservingInverseNormalizer
     from nemo.collections.asr.inference.nmt.llm_translator import LLMTranslator
-
-
-def _chunk_hyps_from_batched_beams(
-    out: BatchedBeamHyps | object,
-    beam_indices: torch.Tensor | None,
-    batch_size: int,
-) -> list:
-    """Chunk-local hypotheses for endpointing (physical beam slot when beam search is active)."""
-    if not isinstance(out, BatchedBeamHyps):
-        return batched_hyps_to_hypotheses(out, batch_size=batch_size)
-    if beam_indices is None:
-        return out.to_hyps_list(score_norm=False)
-    scores, transcripts, timestamps, durations, _ = out._export(sort=False, score_norm=False)
-    hyps = [
-        out._hypothesis_from_flat(
-            batch_idx,
-            int(beam_indices[batch_idx].item()),
-            scores,
-            transcripts,
-            timestamps,
-            durations,
-        )
-        for batch_idx in range(out.batch_size)
-    ]
-    for hyp in hyps:
-        if hyp.y_sequence is not None and not isinstance(hyp.y_sequence, (list, torch.Tensor)):
-            hyp.y_sequence = hyp.y_sequence.tolist()
-        if hyp.timestamp is not None and not isinstance(hyp.timestamp, (list, torch.Tensor, dict)):
-            hyp.timestamp = hyp.timestamp.tolist()
-    return hyps
 
 
 class BufferedRNNTPipeline(BasePipeline):
@@ -638,9 +608,9 @@ class BufferedRNNTPipeline(BasePipeline):
                     states, chunk_tokens, chunk_timestamps, root_ptrs, timestamp_offsets, chunk_beam_indices
                 ):
                     state.append_chunk_beam_(ct, cts, rp, beam_size, int(top1.item()), ts_offset=int(ts_off))
-            best_hyps = _chunk_hyps_from_batched_beams(
-                best_batched_hyps_chunk, chunk_beam_indices, batch_size=enc_lens.shape[0]
-            )
+                best_hyps = batched_beam_hyps_to_hypotheses(best_batched_hyps_chunk, chunk_beam_indices)
+            else:
+                best_hyps = batched_hyps_to_hypotheses(best_batched_hyps_chunk, batch_size=enc_lens.shape[0])
         # save state (after chunk): full K-beam carry when beam search is active
         for state, rnnt_state in zip(states, self.decoding_computer.split_batched_state(batched_state)):
             state.hyp_decoding_state = rnnt_state
@@ -662,11 +632,11 @@ class BufferedRNNTPipeline(BasePipeline):
                     batched_state,
                     multi_biasing_ids=multi_biasing_ids,
                 )
-                best_hyps_rc = _chunk_hyps_from_batched_beams(
-                    best_batched_hyps_rc,
-                    chunk_beam_indices if isinstance(best_batched_hyps_rc, BatchedBeamHyps) else None,
-                    batch_size=enc_lens.shape[0],
-                )
+                if isinstance(best_batched_hyps_rc, BatchedBeamHyps):
+                    best_hyps_rc = batched_beam_hyps_to_hypotheses(best_batched_hyps_rc, chunk_beam_indices)
+                else:
+                    best_hyps_rc = batched_hyps_to_hypotheses(best_batched_hyps_rc, batch_size=enc_lens.shape[0])
+            # merge right context to chunk hypothesis
             for hyp, hyp_rc in zip(best_hyps, best_hyps_rc):
                 hyp.merge_(hyp_rc)
 

@@ -12,10 +12,34 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
+import copy
+
 from nemo.core.utils.optional_libs import GRAPHVIZ_AVAILABLE, graphviz_required
 
 if GRAPHVIZ_AVAILABLE:
     import graphviz
+
+DEFAULT_GRAPH_ATTR = {
+    "rankdir": "LR",
+    "size": "8.5,11",
+    "center": "1",
+    "orientation": "Portrait",
+    "ranksep": "0.4",
+    "nodesep": "0.25",
+}
+
+DEFAULT_STATE_ATTR = {
+    "shape": "circle",
+    "style": "bold",
+    "fontsize": "14",
+}
+
+DEFAULT_FINAL_STATE_ATTR = {
+    "shape": "doublecircle",
+    "style": "bold",
+    "fontsize": "14",
+}
 
 
 @graphviz_required
@@ -31,46 +55,50 @@ def draw_linear(
         merges: list of triples containing start state, end state, label (merged)
         case_insensitive: if the graph should show case-insensitive approach
     """
-    graph_attr = {
-        "rankdir": "LR",
-        "size": "8.5,11",
-        "center": "1",
-        "orientation": "Portrait",
-        "ranksep": "0.4",
-        "nodesep": "0.25",
-    }
+    graph_attr = copy.deepcopy(DEFAULT_GRAPH_ATTR)
     if title:
         graph_attr["label"] = title
 
-    default_node_attr = {
-        "shape": "circle",
-        "style": "bold",
-        "fontsize": "14",
-    }
-
-    final_state_attr = {
-        "shape": "doublecircle",
-        "style": "bold",
-        "fontsize": "14",
-    }
-
     dot = graphviz.Digraph(name="Context Graph", graph_attr=graph_attr)
-    for i in range(len(labels) + 1):
+    dot.node(str(0), label=str(0), **DEFAULT_STATE_ATTR)
+    for i, label in enumerate(labels):
         is_final = i == len(labels)
-        if is_final:
-            dot.node(str(i), label=str(i), **final_state_attr)
+        node_attr = DEFAULT_FINAL_STATE_ATTR if is_final else DEFAULT_STATE_ATTR
+        dot.node(str(i + 1), label=str(i + 1), **node_attr)
+        if case_insensitive:
+            label = label.lower()
+            dot.edge(str(i), str(i + 1), label=f"{label}")
+            if label.upper() != label:
+                dot.edge(str(i), str(i + 1), label=f"{label.upper()}")
         else:
-            dot.node(str(i), label=str(i), **default_node_attr)
-        if i > 0:
-            if case_insensitive:
-                label = labels[i - 1].lower()
-                dot.edge(str(i - 1), str(i), label=f"{label}")
-                if label.upper() != label:
-                    dot.edge(str(i - 1), str(i), label=f"{label.upper()}")
-            else:
-                label = labels[i - 1]
-                dot.edge(str(i - 1), str(i), label=f"{label}")
+            dot.edge(str(i), str(i + 1), label=f"{label}")
     if merges:
         for b, e, label in merges:
             dot.edge(str(b), str(e), label=f"{label}")
+    return dot
+
+
+def draw_linear_bpe(labels: list[str], title=""):
+    """
+    Visualize linear graph from BPE labels
+
+    Args:
+        labels: list of labels (minimal units, usually characters)
+        title: title of the graph
+    """
+    graph_attr = copy.deepcopy(DEFAULT_GRAPH_ATTR)
+    if title:
+        graph_attr["label"] = title
+
+    dot = graphviz.Digraph(name="Context Graph", graph_attr=graph_attr)
+    dot.node(str(0), label=str(0), **DEFAULT_STATE_ATTR)
+    node_id = 0
+    for i, label in enumerate(labels):
+        is_final = i + 1 == len(labels)
+        node_id_end = node_id + len(label)
+        node_attr = DEFAULT_FINAL_STATE_ATTR if is_final else DEFAULT_STATE_ATTR
+        dot.node(str(node_id_end), label=str(node_id_end), **node_attr)
+        node_id = node_id_end
+
+        dot.edge(str(node_id - len(label)), str(node_id), label=f"{label}")
     return dot

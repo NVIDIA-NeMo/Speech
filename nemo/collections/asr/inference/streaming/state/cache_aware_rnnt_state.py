@@ -16,8 +16,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import torch
-
 from nemo.collections.asr.inference.streaming.state.cache_aware_state import CacheAwareStreamingState
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 

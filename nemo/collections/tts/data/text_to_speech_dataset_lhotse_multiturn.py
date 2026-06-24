@@ -19,7 +19,6 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.utils.data
-from hydra.utils import instantiate
 from lhotse import CutSet, Seconds, compute_num_frames
 from lhotse.cut import Cut
 from lhotse.dataset.collation import collate_audio, collate_matrices, collate_vectors
@@ -34,6 +33,7 @@ from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     normalize_volume,
     stack_tensors,
 )
+from nemo.core.classes.common import safe_instantiate
 from nemo.utils import logging
 
 
@@ -49,8 +49,8 @@ def setup_tokenizers(all_tokenizers_config, mode='train'):
         else:
             text_tokenizer_kwargs = {}
             if "g2p" in tokenizer_config:
-                text_tokenizer_kwargs["g2p"] = instantiate(tokenizer_config.g2p)
-            tokenizer = instantiate(tokenizer_config, **text_tokenizer_kwargs)
+                text_tokenizer_kwargs["g2p"] = safe_instantiate(tokenizer_config.g2p)
+            tokenizer = safe_instantiate(tokenizer_config, **text_tokenizer_kwargs)
             if mode == 'test' and hasattr(tokenizer, "set_phone_prob"):
                 tokenizer.set_phone_prob(1.0)
         tokenizers.append(tokenizer)
@@ -242,7 +242,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             self.pad_id = self.text_tokenizer.pad
 
         if self.phoneme_tokenizer is None and self.phoneme_tokenizer_config is not None:
-            self.phoneme_tokenizer = instantiate(self.phoneme_tokenizer_config)
+            self.phoneme_tokenizer = safe_instantiate(self.phoneme_tokenizer_config)
 
         cuts = cuts.transform_text(_strip_timestamps)
         for cut in cuts:

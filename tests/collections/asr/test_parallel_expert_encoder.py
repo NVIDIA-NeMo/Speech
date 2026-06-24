@@ -194,6 +194,7 @@ def online_stub(d_model, n_spk, sf, win, lc, rc):
     enc.left_ctx_feat_len = lc * sf
     enc.right_ctx_feat_len = rc * sf
     enc.freeze_asr = True
+    enc.freeze_diar = False  # The stub has no `diarization_model`, so `freeze_diar` must be False to keep
     enc.asr_norm = nn.LayerNorm(d_model)
     enc.diar_norm = nn.LayerNorm(n_spk)
     enc.register_buffer("diar_kernel", torch.randn(n_spk, d_model))

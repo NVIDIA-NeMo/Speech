@@ -314,6 +314,47 @@ def get_hidden_length_from_sample_length(
     return int(hidden_length)
 
 
+def read_rttm_supervisions_lenient(rttm_filepath: Union[str, list]) -> SupervisionSet:
+    """Like ``lhotse.SupervisionSet.from_rttm`` but accepts 9-field RTTM lines.
+
+    Mirrors lhotse's parsing (cols 1,2,3,4,7) while relaxing the strict
+    ``len(parts) == 10`` check to ``>= 8``, since the unused trailing columns are
+    sometimes dropped by the nemoSOT multispeaker data generators.
+
+    Args:
+        rttm_filepath (str | list): Path to an RTTM file or an iterable of paths.
+
+    Returns:
+        SupervisionSet: Supervisions parsed from the RTTM file(s).
+    """
+    from pathlib import Path
+
+    paths = [rttm_filepath] if isinstance(rttm_filepath, (str, Path)) else rttm_filepath
+    segments = []
+    for file in paths:
+        with open(file, "r") as f:
+            for idx, line in enumerate(f):
+                parts = line.strip().split()
+                if not parts:
+                    continue
+                if len(parts) < 8:
+                    raise ValueError(f"Invalid RTTM line in file {file}: {line}")
+                recording_id = parts[1]
+                if float(parts[4]) == 0:  # skip empty segments
+                    continue
+                segments.append(
+                    SupervisionSegment(
+                        id=f"{recording_id}-{idx:06d}",
+                        recording_id=recording_id,
+                        channel=int(parts[2]),
+                        start=float(parts[3]),
+                        duration=float(parts[4]),
+                        speaker=parts[7],
+                    )
+                )
+    return SupervisionSet.from_segments(segments)
+
+
 def speaker_to_target(
     a_cut,
     num_speakers: Optional[int] = None,
@@ -358,7 +399,7 @@ def speaker_to_target(
 
     for i, cut in enumerate(cut_list):
         if cut.custom.get('rttm_filepath', None):
-            rttms = SupervisionSet.from_rttm(cut.rttm_filepath)
+            rttms = read_rttm_supervisions_lenient(cut.rttm_filepath)
         elif cut.supervisions:
             rttms = SupervisionSet(cut.supervisions)
         else:

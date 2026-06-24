@@ -30,6 +30,21 @@ asr:
         source_lang: "en"  # The source language of the context-biasing phrases (for aggregate tokenizer),
         # used with `key_phrases_file` and `key_phrases_list`
       boosting_tree_alpha: 0.0  # Weight of the boosting tree
+    beam:
+      # Cache-aware streaming supports MALSD beam search only (set asr.decoding.strategy: malsd_batch).
+      beam_size: 4
+      allow_cuda_graphs: true
+      # n-gram LM (off by default)
+      ngram_lm_model: null
+      ngram_lm_alpha: 0.0
+      # phrase boosting (off by default)
+      boosting_tree:
+        model_path: null
+        key_phrases_file: null
+        key_phrases_list: null
+        key_phrase_items_list: null
+        source_lang: "en"
+      boosting_tree_alpha: 0.0
   per_stream_biasing_defaults:
     boosting_model_alpha: 1.0
     boosting_model_cfg:

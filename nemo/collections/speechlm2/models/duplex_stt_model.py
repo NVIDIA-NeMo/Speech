@@ -83,7 +83,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         llm = load_pretrained_hf(
             self.cfg.pretrained_llm,
             pretrained_weights=self.cfg.pretrained_weights,
-            trust_remote_code=self.cfg.get("trust_remote_code", True),
+            trust_remote_code=self.cfg.get("trust_remote_code", False),
         ).train()
 
         # Initialize tokenizer with optional special tokens from config

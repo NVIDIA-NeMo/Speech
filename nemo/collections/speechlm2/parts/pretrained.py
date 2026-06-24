@@ -217,9 +217,10 @@ def setup_parallel_expert_encoder(model: torch.nn.Module):
             f"model.pe_encoder_path='{pe_encoder_path}' is set but the model has no "
             "`perception` module to mount it onto. Call setup_speech_encoder() first."
         )
-    if not isinstance(pe_encoder_path, str) or not pe_encoder_path.endswith(".nemo"):
+    if not isinstance(pe_encoder_path, str) or not pe_encoder_path:
         raise ValueError(
-            f"model.pe_encoder_path must point to a ParallelExpertEncoderPT .nemo bundle, " f"got {pe_encoder_path!r}."
+            "model.pe_encoder_path must be a local ParallelExpertEncoderPT .nemo bundle path or a "
+            f"pretrained model id (HuggingFace '{{repo}}/{{name}}' or NGC alias), got {pe_encoder_path!r}."
         )
     if not hasattr(model.perception, "encoder"):
         raise RuntimeError(
@@ -228,8 +229,14 @@ def setup_parallel_expert_encoder(model: torch.nn.Module):
             "feature extractors) need a separate implementation."
         )
 
-    if not ParallelExpertEncoderPT.is_pe_nemo(pe_encoder_path):
-        raise ValueError(f"model.pe_encoder_path={pe_encoder_path!r} is not a ParallelExpertEncoderPT .nemo bundle.")
+    # Fail fast when a local .nemo is given but isn't a PE bundle. HuggingFace Hub /
+    # NGC ids are resolved + validated by ParallelExpertEncoderPT.load_from_nemo
+    # (from_pretrained -> restore_from, which checks the bundle target class).
+    if pe_encoder_path.endswith(".nemo") and Path(pe_encoder_path).is_file():
+        if not ParallelExpertEncoderPT.is_pe_nemo(pe_encoder_path):
+            raise ValueError(
+                f"model.pe_encoder_path={pe_encoder_path!r} is not a ParallelExpertEncoderPT .nemo bundle."
+            )
 
     pe_encoder = ParallelExpertEncoderPT.load_from_nemo(
         pe_encoder_path,

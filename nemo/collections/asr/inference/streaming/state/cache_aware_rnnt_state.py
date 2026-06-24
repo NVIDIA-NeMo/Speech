@@ -12,9 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 from nemo.collections.asr.inference.streaming.state.cache_aware_state import CacheAwareStreamingState
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
+
+if TYPE_CHECKING:
+    from nemo.collections.asr.parts.submodules.rnnt_malsd_batched_computer import MALSDStateItem
 
 
 class CacheAwareRNNTStreamingState(CacheAwareStreamingState):
@@ -64,3 +70,123 @@ class CacheAwareRNNTStreamingState(CacheAwareStreamingState):
         Reset the previous hypothesis to None
         """
         self.previous_hypothesis = None
+
+
+class CacheAwareRNNTBeamStreamingState(CacheAwareRNNTStreamingState):
+    """Beam search streaming state; decoder carry + cumulative/partial tokens.
+
+    ``hyp_decoding_state``: K-beam carry across chunks (collapsed to top1 on EOU in the pipeline).
+    ``cumulative_*``: tokens/timestamps sealed at each EOU (prior utterances in a stream).
+    ``partial_*[k]``: per-beam in-flight suffix since last EOU (chunk-local exports merged via lineage).
+    ``best_hyp_idx``: index into ``partial_*`` for the chunk argmax beam used to publish.
+    """
+
+    def _additional_params_reset(self) -> None:
+        super()._additional_params_reset()
+        self.hyp_decoding_state: MALSDStateItem | None = None
+        self.cumulative_tokens: list[int] = []
+        self.cumulative_timestamps: list[int] = []
+        self.partial_tokens: list[list[int]] | None = None
+        self.partial_timestamps: list[list[int]] | None = None
+        self._cumulative_tokens_len: int = 0
+        self.best_hyp_idx: int | None = None
+
+    def reset_beam_decoding_state_(self) -> None:
+        """Clear beam search carry and cumulative/partial tokens when a stream ends."""
+        self.hyp_decoding_state = None
+        self.cumulative_tokens = []
+        self.cumulative_timestamps = []
+        self.partial_tokens = None
+        self.partial_timestamps = None
+        self._cumulative_tokens_len = 0
+        self.best_hyp_idx = None
+
+    def append_chunk_beam_(
+        self,
+        chunk_tokens: list[list[int]],
+        chunk_timestamps: list[list[int]],
+        root_ptrs: list[int],
+        beam_size: int,
+        best_hyp_idx: int,
+    ) -> None:
+        """Append chunk-local beam exports into state."""
+        prev_t = self.partial_tokens or [[] for _ in range(beam_size)]
+        prev_ts = self.partial_timestamps or [[] for _ in range(beam_size)]
+        next_tokens: list[list[int]] = []
+        next_timestamps: list[list[int]] = []
+        for k in range(beam_size):
+            lineage = int(root_ptrs[k])
+            next_tokens.append(prev_t[lineage] + list(chunk_tokens[k]))
+            next_timestamps.append(prev_ts[lineage] + list(chunk_timestamps[k]))
+        self.partial_tokens = next_tokens
+        self.partial_timestamps = next_timestamps
+        self.best_hyp_idx = best_hyp_idx
+
+    def select_best_beam_idx_(self, *, score_norm: bool = False) -> int:
+        """Pick beam index into ``partial_*``; updates ``best_hyp_idx``.
+
+        Per-chunk publish uses raw ``scores.argmax`` (via ``append_chunk_beam_``). At EOU,
+        use ``score_norm=True`` to match offline :meth:`BatchedBeamHyps.flatten_sort_`.
+        """
+        if self.hyp_decoding_state is None:
+            raise RuntimeError("Cannot select beam without decoding carry.")
+
+        scores = self.hyp_decoding_state.score
+        lengths_nb = self.hyp_decoding_state.current_lengths_nb
+        ranking = scores / (lengths_nb.to(dtype=scores.dtype) + 1) if score_norm else scores
+
+        self.best_hyp_idx = int(ranking.argmax().item())
+        return self.best_hyp_idx
+
+    def get_best_hyp_idx(self) -> int:
+        """Index into ``partial_*`` for publish (chunk argmax, or score argmax from carry)."""
+        if self.best_hyp_idx is not None:
+            return int(self.best_hyp_idx)
+        if self.hyp_decoding_state is None:
+            raise RuntimeError("Cannot resolve top-1 beam index without decoding carry.")
+        return int(self.hyp_decoding_state.score.argmax().item())
+
+    def _get_tokens(self) -> tuple[list[int], list[int]]:
+        """``cumulative_*`` plus the current top-1 ``partial_*`` suffix."""
+        if self.partial_tokens is None or self.hyp_decoding_state is None:
+            return [], []
+        best_hyp_idx = self.get_best_hyp_idx()
+        return (
+            self.cumulative_tokens + list(self.partial_tokens[best_hyp_idx]),
+            self.cumulative_timestamps + list(self.partial_timestamps[best_hyp_idx]),
+        )
+
+    def get_hypothesis(self, score: float) -> Hypothesis:
+        """Build the publishable cumulative hypothesis for the current top-1 beam."""
+        cum_tokens, cum_ts = self._get_tokens()
+        return Hypothesis(
+            score=score,
+            y_sequence=cum_tokens,
+            timestamp=cum_ts,
+            length=len(cum_tokens),
+        )
+
+    def update_(self, eou_detected: bool) -> None:
+        """Refresh publish tokens; on EOU fold utterance into ``cumulative_*`` and clear ``partial_*``."""
+        cum_tokens, cum_ts = self._get_tokens()
+        if cum_tokens:
+            start = max(0, min(int(self._cumulative_tokens_len), len(cum_tokens)))
+            tokens = list(cum_tokens[start:])
+            timesteps = list(cum_ts[start:])
+            self.tokens = tokens
+            self.timesteps = timesteps
+            self.confidences = [0.0] * len(tokens)
+            if tokens:
+                self.last_token = tokens[-1]
+                self.last_token_idx = timesteps[-1] if timesteps else None
+
+        if not eou_detected:
+            return
+
+        if cum_tokens:
+            self._cumulative_tokens_len = len(cum_tokens)
+            self.cumulative_tokens = list(cum_tokens)
+            self.cumulative_timestamps = list(cum_ts)
+        self.partial_tokens = None
+        self.partial_timestamps = None
+        self.best_hyp_idx = None

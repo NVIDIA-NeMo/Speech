@@ -62,7 +62,7 @@ def draw_linear(
     dot = graphviz.Digraph(name="Context Graph", graph_attr=graph_attr)
     dot.node(str(0), label=str(0), **DEFAULT_STATE_ATTR)
     for i, label in enumerate(labels):
-        is_final = i == len(labels)
+        is_final = i == len(labels) - 1
         node_attr = DEFAULT_FINAL_STATE_ATTR if is_final else DEFAULT_STATE_ATTR
         dot.node(str(i + 1), label=str(i + 1), **node_attr)
         if case_insensitive:
@@ -78,6 +78,7 @@ def draw_linear(
     return dot
 
 
+@graphviz_required
 def draw_linear_bpe(labels: list[str], title=""):
     """
     Visualize linear graph from BPE labels
@@ -94,7 +95,7 @@ def draw_linear_bpe(labels: list[str], title=""):
     dot.node(str(0), label=str(0), **DEFAULT_STATE_ATTR)
     node_id = 0
     for i, label in enumerate(labels):
-        is_final = i + 1 == len(labels)
+        is_final = i == len(labels) - 1
         node_id_end = node_id + len(label)
         node_attr = DEFAULT_FINAL_STATE_ATTR if is_final else DEFAULT_STATE_ATTR
         dot.node(str(node_id_end), label=str(node_id_end), **node_attr)

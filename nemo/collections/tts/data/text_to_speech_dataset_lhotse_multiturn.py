@@ -306,6 +306,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
                     source_audio_list=source_audio_list,
                     source_sample_rate=self.source_sample_rate,
                     roles=self.input_roles,
+                    volume_norm=self.volume_norm,
                 )
             )
 
@@ -790,6 +791,7 @@ def extract_turn_audio_channel(
     source_audio_list: list[torch.Tensor],
     source_sample_rate: int,
     roles: set[str],
+    volume_norm: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Packs role-specific speech turns into batch dimension.
@@ -823,6 +825,12 @@ def extract_turn_audio_channel(
                 continue
 
             chunk = audio[start:end]
+
+            # normalize turn level audio
+            if volume_norm:
+                chunk = normalize_volume(chunk.numpy())
+                chunk = torch.from_numpy(chunk)
+
             turn_audio.append(chunk)
             turn_lens.append(chunk.shape[0])
             turn_indices.append([batch_idx, start, end])

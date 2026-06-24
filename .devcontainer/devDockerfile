@@ -1,0 +1,11 @@
+ARG NEMO_VERSION=25.11
+
+FROM nvcr.io/nvidia/nemo:${NEMO_VERSION}
+
+LABEL \
+    maintainer="NeMoTTS team" \
+    description="NeMoTTS Dev Container"
+
+WORKDIR /workspace/NeMo
+
+USER root

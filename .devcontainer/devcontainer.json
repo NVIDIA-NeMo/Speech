@@ -1,0 +1,26 @@
+{
+  "name": "NeMoTTS Dev Container",
+  "build": {
+    "dockerfile": "../.devcontainer/devDockerfile"
+  },
+  "runArgs": [
+    "--gpus",
+    "\"device=0,1\"",
+    "--ipc=host",
+    "--name",
+    "${localEnv:USER}_nemo_tts_devcontainer_easymagpietts_online_cfg_distillation"
+  ],
+  "workspaceFolder": "/workspace/NeMo",
+  "mounts": [
+    "source=${localWorkspaceFolder},target=/workspace/NeMo,type=bind"
+  ],
+  "remoteUser": "root",
+  "postCreateCommand": "pip install -e /workspace/NeMo --no-deps",
+  "customizations": {
+    "vscode": {
+        "settings": {
+            "terminal.integrated.shell.linux": "/bin/bash"
+        }
+    }
+  }
+}

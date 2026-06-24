@@ -20,6 +20,8 @@ from pathlib import Path
 
 from tqdm import tqdm
 
+from nemo.utils.tar_utils import safe_extract
+
 try:
     from nemo_text_processing.text_normalization.normalize import Normalizer
 except (ImportError, ModuleNotFoundError):
@@ -62,9 +64,8 @@ def __maybe_download_file(source_url, destination_path):
 
 def __extract_file(filepath, data_dir):
     try:
-        tar = tarfile.open(filepath)
-        tar.extractall(data_dir)
-        tar.close()
+        with tarfile.open(filepath) as tar:
+            safe_extract(tar, str(data_dir))
     except Exception:
         print(f"Error while extracting {filepath}. Already extracted?")
 

@@ -21,6 +21,7 @@ import urllib.request
 from typing import Optional
 
 from nemo.utils.dependency import import_optional_dependency
+from nemo.utils.tar_utils import safe_extract
 
 
 def build_manifest(transcripts_path, manifest_path, data_dir, mount_dir, wav_path):
@@ -76,8 +77,8 @@ def download_an4(data_dir: str = "./", train_mount_dir: Optional[str] = None, te
         an4_path = data_dir + '/an4_sphere.tar.gz'
 
     if not os.path.exists(data_dir + '/an4/'):
-        tar = tarfile.open(an4_path)
-        tar.extractall(path=data_dir)
+        with tarfile.open(an4_path) as tar:
+            safe_extract(tar, data_dir)
 
         print("Converting .sph to .wav...")
         sph_list = glob.glob(data_dir + '/an4/**/*.sph', recursive=True)

@@ -366,11 +366,23 @@ def collate_speaker_activity_targets(
     from lhotse.dataset.collation import collate_matrices
     from nemo.collections.asr.parts.utils.asr_multispeaker_utils import get_hidden_length_from_sample_length
 
-    targets = collate_matrices(speaker_activities).to(dtype)
-    if targets.shape[2] > num_speakers:
-        targets = targets[:, :, :num_speakers]
-    elif targets.shape[2] < num_speakers:
-        targets = torch.nn.functional.pad(targets, (0, num_speakers - targets.shape[2]), mode="constant", value=0)
+    # `collate_matrices` pads the time axis (dim 0) to the batch max but requires a
+    # uniform speaker axis (dim 1). `speaker_to_target` emits one column per speaker
+    # found in each cut's RTTM -- e.g. a 5-speaker cut yields (T, 5) even when
+    # `num_speakers=4` -- so a batch mixing different speaker counts crashes inside
+    # `collate_matrices`. Normalize every per-example target to exactly `num_speakers`
+    # columns (truncate extras / zero-pad missing) BEFORE collating; this is what the
+    # original post-collate clamp intended, just moved ahead of the collate.
+    normalized = []
+    for activity in speaker_activities:
+        n_spk = activity.shape[1]
+        if n_spk > num_speakers:
+            activity = activity[:, :num_speakers]
+        elif n_spk < num_speakers:
+            activity = torch.nn.functional.pad(activity, (0, num_speakers - n_spk), mode="constant", value=0.0)
+        normalized.append(activity)
+
+    targets = collate_matrices(normalized).to(dtype)
     target_length = torch.tensor(
         [
             get_hidden_length_from_sample_length(al, num_sample_per_mel_frame, num_mel_frame_per_target_frame)

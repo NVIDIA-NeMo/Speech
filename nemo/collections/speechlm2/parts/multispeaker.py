@@ -11,8 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from hydra.utils import instantiate
 from omegaconf import DictConfig, open_dict
+
+from nemo.core.classes.common import safe_instantiate
 
 
 def build_speaker_tokens(speaker_cfg: DictConfig | dict | None, tokenizer) -> list[int]:
@@ -83,4 +84,4 @@ def maybe_init_lss_loss(loss_cfg: DictConfig | None, speaker_token_ids: list[int
                     "model.lss_loss.speaker_token_ids list."
                 )
             loss_cfg.speaker_token_ids = list(speaker_token_ids)
-    return instantiate(loss_cfg)
+    return safe_instantiate(loss_cfg)

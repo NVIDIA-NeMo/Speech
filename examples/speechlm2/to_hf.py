@@ -24,6 +24,7 @@ from omegaconf import DictConfig, OmegaConf
 from safetensors.torch import save_file
 
 from nemo.collections.speechlm2.parts.hf_hub import LLM_BACKBONE_DIR
+from nemo.core.classes.common import safe_instantiate
 from nemo.core.config import hydra_runner
 from nemo.utils.dtype import str_to_dtype
 from nemo.utils.model_utils import import_class_by_path
@@ -69,14 +70,12 @@ def setup_distributed_from_config(strategy_cfg: dict) -> Any:
     Returns:
         An :class:`AutomodelParallelStrategy` with device_mesh ready.
     """
-    import hydra
-
     from nemo.utils.trainer_utils import _resolve_automodel_configs
 
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     torch.cuda.set_device(local_rank)
 
-    strategy = hydra.utils.instantiate(strategy_cfg)
+    strategy = safe_instantiate(strategy_cfg)
     _resolve_automodel_configs(strategy)
     strategy.create_device_mesh()
     return strategy

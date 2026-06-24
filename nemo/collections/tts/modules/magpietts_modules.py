@@ -19,12 +19,12 @@ from typing import Dict, List, Optional
 
 import numpy as np
 import torch
-from hydra.utils import instantiate
 from torch import Tensor
 from torch.utils.data import get_worker_info
 
 from nemo.collections.tts.modules import transformer_2501
 from nemo.collections.tts.parts.utils.helpers import get_mask_from_lengths
+from nemo.core.classes.common import safe_instantiate
 from nemo.core.classes.module import NeuralModule
 from nemo.utils import logging
 from nemo.utils.enum import PrettyStrEnum
@@ -272,7 +272,7 @@ def worker_init_fn(worker_id):
     tokenizer = setup_tokenizers(dataset.tokenizer_config, mode=dataset.dataset_type)
     dataset.text_tokenizer = tokenizer
     if hasattr(dataset, 'phoneme_tokenizer_config'):
-        dataset.phoneme_tokenizer = instantiate(dataset.phoneme_tokenizer_config)
+        dataset.phoneme_tokenizer = safe_instantiate(dataset.phoneme_tokenizer_config)
 
 
 def add_eos_token(codes, codes_len, eos_id, num_eos_tokens=1):

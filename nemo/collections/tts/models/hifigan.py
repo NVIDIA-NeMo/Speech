@@ -17,7 +17,6 @@ from pathlib import Path
 
 import torch
 import torch.nn.functional as F
-from hydra.utils import instantiate
 from lightning.pytorch.loggers.wandb import WandbLogger
 from omegaconf import DictConfig, OmegaConf, open_dict
 
@@ -27,7 +26,7 @@ from nemo.collections.tts.modules.hifigan_modules import MultiPeriodDiscriminato
 from nemo.collections.tts.parts.utils.callbacks import LoggingCallback
 from nemo.collections.tts.parts.utils.helpers import get_batch_size, get_num_workers, plot_spectrogram_to_numpy
 from nemo.core.classes import Exportable
-from nemo.core.classes.common import PretrainedModelInfo, typecheck
+from nemo.core.classes.common import PretrainedModelInfo, safe_instantiate, typecheck
 from nemo.core.neural_types.elements import AudioSignal, MelSpectrogramType
 from nemo.core.neural_types.neural_type import NeuralType
 from nemo.core.optim.lr_scheduler import compute_max_steps, prepare_lr_scheduler
@@ -53,10 +52,10 @@ class HifiGanModel(Vocoder, Exportable):
 
         super().__init__(cfg=cfg, trainer=trainer)
 
-        self.audio_to_melspec_precessor = instantiate(cfg.preprocessor)
+        self.audio_to_melspec_precessor = safe_instantiate(cfg.preprocessor)
         # We use separate preprocessor for training, because we need to pass grads and remove pitch fmax limitation
-        self.trg_melspec_fn = instantiate(cfg.preprocessor, highfreq=None, use_grads=True)
-        self.generator = instantiate(cfg.generator)
+        self.trg_melspec_fn = safe_instantiate(cfg.preprocessor, highfreq=None, use_grads=True)
+        self.generator = safe_instantiate(cfg.generator)
         self.mpd = MultiPeriodDiscriminator(debug=cfg.debug if "debug" in cfg else False)
         self.msd = MultiScaleDiscriminator(debug=cfg.debug if "debug" in cfg else False)
         self.feature_loss = FeatureMatchingLoss()
@@ -119,8 +118,8 @@ class HifiGanModel(Vocoder, Exportable):
 
         gen_params = self.generator.parameters()
         disc_params = itertools.chain(self.msd.parameters(), self.mpd.parameters())
-        optim_g = instantiate(optim_config, params=gen_params)
-        optim_d = instantiate(optim_config, params=disc_params)
+        optim_g = safe_instantiate(optim_config, params=gen_params)
+        optim_d = safe_instantiate(optim_config, params=disc_params)
 
         if sched_config is None:
             return [optim_g, optim_d]
@@ -336,7 +335,7 @@ class HifiGanModel(Vocoder, Exportable):
         return audio_denoised
 
     def _setup_train_dataloader(self, cfg):
-        dataset = instantiate(cfg.dataset)
+        dataset = safe_instantiate(cfg.dataset)
         sampler = dataset.get_sampler(cfg.dataloader_params.batch_size, world_size=self.trainer.world_size)
         data_loader = torch.utils.data.DataLoader(
             dataset, collate_fn=dataset.collate_fn, sampler=sampler, **cfg.dataloader_params
@@ -344,7 +343,7 @@ class HifiGanModel(Vocoder, Exportable):
         return data_loader
 
     def _setup_test_dataloader(self, cfg):
-        dataset = instantiate(cfg.dataset)
+        dataset = safe_instantiate(cfg.dataset)
         data_loader = torch.utils.data.DataLoader(dataset, collate_fn=dataset.collate_fn, **cfg.dataloader_params)
         return data_loader
 
@@ -366,7 +365,7 @@ class HifiGanModel(Vocoder, Exportable):
         elif not shuffle_should_be and cfg.dataloader_params.shuffle:
             logging.error(f"The {name} dataloader for {self} has shuffle set to True!!!")
 
-        dataset = instantiate(cfg.dataset)
+        dataset = safe_instantiate(cfg.dataset)
         return torch.utils.data.DataLoader(dataset, collate_fn=dataset.collate_fn, **cfg.dataloader_params)
 
     def setup_training_data(self, cfg):
@@ -393,7 +392,7 @@ class HifiGanModel(Vocoder, Exportable):
             raise ValueError(f"Sample logging only supported for VocoderDataset, got {sample_ds_class}")
 
         data_loader = self._setup_test_dataloader(self.log_config)
-        generators = instantiate(self.log_config.generators)
+        generators = safe_instantiate(self.log_config.generators)
         log_dir = Path(self.log_config.log_dir) if self.log_config.log_dir else None
         log_callback = LoggingCallback(
             generators=generators,

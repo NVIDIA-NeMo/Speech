@@ -181,14 +181,7 @@ class CharAwareSubwordEncoder(NeuralModule):
     The output is a tensor of shape (batch_size, max_subword_length, d_embed).
     """
 
-    def __init__(
-        self,
-        d_embed: int,
-        llm_tokenizer_vocab: dict,
-        subword_padding_idx: int,
-        special_vocab: dict = None,
-        n_layers: int = 1,
-    ):
+    def __init__(self, d_embed: int, llm_tokenizer_vocab: dict, subword_padding_idx: int, special_vocab: dict = None):
         """
         Args:
             d_embed (int): The dimension of the embedding.
@@ -198,7 +191,6 @@ class CharAwareSubwordEncoder(NeuralModule):
             subword_padding_idx (int): The padding index for the subword vocabulary.
             special_vocab (dict): items of special token dictionary (usually BOS, EOS)
                 eg. special_vocab = {'<BOS>': 30001, '<EOS>': 30002}
-            n_layers (int): Number of transformer layers used in the char-aware encoder.
         """
         super().__init__()
         self.subword_id_to_char_ids, self.char_vocab = build_vocabs(
@@ -206,7 +198,7 @@ class CharAwareSubwordEncoder(NeuralModule):
         )
         self.embed_tokens = torch.nn.Embedding(self.vocab_size + 1, d_embed, padding_idx=self.vocab_size)
         self.encoder = transformer_2501.Transformer(
-            n_layers=n_layers,
+            n_layers=1,
             d_model=d_embed,
             d_ffn=d_embed * 4,
             sa_n_heads=8,

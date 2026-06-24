@@ -92,9 +92,18 @@ class _StreamingSession:
     token here after each step and ``_stream_inputs`` waits for one before each yield.
     """
 
-    __slots__ = ("stream_id", "request_id", "speaker", "context_text", "response_sender", "token_q", "pace_q")
+    __slots__ = (
+        "stream_id",
+        "request_id",
+        "speaker",
+        "context_text",
+        "response_sender",
+        "token_q",
+        "pace_q",
+        "t_recv",
+    )
 
-    def __init__(self, stream_id, request_id, speaker, context_text, response_sender, token_q, pace_q):
+    def __init__(self, stream_id, request_id, speaker, context_text, response_sender, token_q, pace_q, t_recv=None):
         self.stream_id = stream_id
         self.request_id = request_id
         self.speaker = speaker
@@ -102,6 +111,7 @@ class _StreamingSession:
         self.response_sender = response_sender
         self.token_q = token_q
         self.pace_q = pace_q
+        self.t_recv = t_recv
 
 
 def _require_param(parameters: dict, key: str) -> str:
@@ -161,6 +171,13 @@ class TritonPythonModel:
         self._init_sampling_helpers()
         # Inferred from the first codec decode (audio_len / codec_chunk_size).
         self._spf: int | None = None
+
+        # prompt_token_ids length is a pure function of speaker_id (+ the fixed
+        # context_text / checkpoint), so it never changes for a given speaker.
+        # Computing it per request runs a torch.load(<speaker>.pt) + json.load +
+        # tokenize from disk on the shared event loop, which stalls every other
+        # in-flight request; cache it so each speaker pays that cost only once.
+        self._prompt_len_cache: dict[str, int] = {}
 
         # Active streaming-text sessions keyed by stream_id. Touched from the Triton
         # execute() thread (add/lookup) and the asyncio loop thread (removal on
@@ -294,6 +311,8 @@ class TritonPythonModel:
                         # We feed prompt_token_ids directly; the model loads the
                         # bundled tokenizer to tokenize context_text + text.
                         "skip_tokenizer_init": True,
+                        # DEBUG
+                        "load_format": "dummy",
                     },
                     "default_sampling_params": {
                         # Backbone token sampler is a no-op (audio is sampled in the
@@ -332,14 +351,30 @@ class TritonPythonModel:
         ``has_task_embedding``), so the caller only holds a ``speaker_id`` and
         never loads / ships the embedding itself (the engine sources it from its
         precomputed speaker table via ``speaker_id``).
+
+        Cached per speaker: the underlying resolution does blocking disk I/O
+        (``torch.load`` of the speaker ``.pt`` + ``json.load``) which, on the
+        shared event loop, would otherwise stall every concurrent request.
         """
-        return int(
+        cached = self._prompt_len_cache.get(speaker)
+        if cached is not None:
+            return cached
+        t0 = time.perf_counter()
+        val = int(
             self._get_prompt_len(
                 speaker,
                 self.vllm_model_path,
                 tokenize=lambda t: self.tokenizer.encode(t),
             )
         )
+        self._prompt_len_cache[speaker] = val
+        logger.info(
+            "computed prompt_len=%d for speaker=%s in %.1fms (cached for subsequent requests)",
+            val,
+            speaker,
+            (time.perf_counter() - t0) * 1000,
+        )
+        return val
 
     def _build_prompt(self, text: str, context_text: str, speaker: str) -> dict:
         prompt_len = self._prompt_len(speaker)
@@ -445,8 +480,14 @@ class TritonPythonModel:
                 sent += take
                 threshold = self.codec_chunk_size - L
                 is_final = final and sent >= real_count
+                t_dec0 = time.perf_counter()
                 audio = self._decode_codec(chunk, ctx)
+                t_dec1 = time.perf_counter()
                 self._send_audio(response_sender, audio, final=is_final)
+                t_send1 = time.perf_counter()
+                state["decode_ms"] += (t_dec1 - t_dec0) * 1000
+                state["send_ms"] += (t_send1 - t_dec1) * 1000
+                state["n_sends"] += 1
                 if state["t_first_audio"] is None:
                     state["t_first_audio"] = time.perf_counter()
                 finalized = finalized or is_final
@@ -456,7 +497,9 @@ class TritonPythonModel:
             while True:
                 # Block for the next item, then drain any backlog so we only act on the
                 # most recent cumulative codes (older snapshots are subsets of it).
+                t_wait0 = time.perf_counter()
                 batch = [codec_q.get()]
+                state["qwait_ms"] += (time.perf_counter() - t_wait0) * 1000
                 while True:
                     try:
                         batch.append(codec_q.get_nowait())
@@ -509,7 +552,15 @@ class TritonPythonModel:
         return None
 
     async def _drive_codec(
-        self, gen, response_sender, request_id: str, speaker: str, text: str, prompt_len: int, pace_q=None
+        self,
+        gen,
+        response_sender,
+        request_id: str,
+        speaker: str,
+        text: str,
+        prompt_len: int,
+        pace_q=None,
+        t_recv: float | None = None,
     ):
         """Drain one omni request's per-step ``audio_codes`` and stream audio out.
 
@@ -538,13 +589,43 @@ class TritonPythonModel:
         t_start = time.perf_counter()
 
         codec_q: queue.Queue = queue.Queue()
-        state: dict = {"t_first_audio": None, "error": None}
+        # decode_ms / send_ms / qwait_ms / n_sends are written by the codec worker
+        # thread and read here only after it has joined (safe). proc_ms / wait_ms
+        # below measure the event-loop side: time spent doing per-step work on the
+        # shared loop vs. time blocked waiting on the engine for the next output.
+        state: dict = {
+            "t_first_audio": None,
+            "error": None,
+            "decode_ms": 0.0,
+            "send_ms": 0.0,
+            "qwait_ms": 0.0,
+            "n_sends": 0,
+        }
         head = prompt_len + self.speech_delay  # cumulative row of the first real frame
         codec_future = self._codec_pool.submit(self._codec_worker, codec_q, response_sender, state, head)
         sent = 0  # forwarded steps (for the log line only)
+        proc_ms = 0.0  # event-loop per-step processing time (this coroutine's CPU on the loop)
+        # wait splits the engine-blocked time into the first-output latency (prefill +
+        # in-engine admission) and the steady-state decode gaps; max_wait_ms is the
+        # largest single inter-step gap (a stall spike from the shared loop servicing
+        # the other in-flight requests, or an engine hiccup).
+        ttft_wait_ms = 0.0
+        decode_wait_ms = 0.0
+        max_wait_ms = 0.0
+        first_out = True
 
         try:
+            last = time.perf_counter()
             async for out in gen:
+                t_step0 = time.perf_counter()
+                gap_ms = (t_step0 - last) * 1000
+                if first_out:
+                    ttft_wait_ms = gap_ms
+                    first_out = False
+                else:
+                    decode_wait_ms += gap_ms
+                    if gap_ms > max_wait_ms:
+                        max_wait_ms = gap_ms
                 # Release the next input chunk for each decode-step output (one chunk
                 # produces one frame); harmless extra puts during the acoustic tail.
                 if pace_q is not None:
@@ -554,6 +635,8 @@ class TritonPythonModel:
                 payload = (getattr(out, "multimodal_output", None) or {}).get("audio_codes")
                 cum_now = self._cumulative_codes(payload)
                 if cum_now is None:
+                    last = time.perf_counter()
+                    proc_ms += (last - t_step0) * 1000
                     continue
                 # The request truly ends at the backbone audio-EOS stop token; vLLM
                 # already detected it and reports it as the matched stop_reason. When it
@@ -562,6 +645,8 @@ class TritonPythonModel:
                 hit_eos = getattr(co, "stop_reason", None) == self.stop_token_id
                 sent += 1
                 codec_q.put((cum_now, hit_eos))
+                last = time.perf_counter()
+                proc_ms += (last - t_step0) * 1000
 
             if state["error"] is None:
                 codec_q.put(_GEN_DONE)
@@ -574,12 +659,42 @@ class TritonPythonModel:
 
             t_end = time.perf_counter()
             ttfa_ms = ((state["t_first_audio"] or t_end) - t_start) * 1000
+            wait_ms = ttft_wait_ms + decode_wait_ms
+            # admit = Triton received the request -> this generation loop started
+            # (background-loop handoff + prompt build + omni.generate setup). NOT
+            # part of t_start..t_end below, so it's the orchestration latency the
+            # per-request body can't otherwise show.
+            admit_ms = (t_start - t_recv) * 1000 if t_recv is not None else 0.0
+            # Time attribution (so the residual service-vs-benchmark_model gap is
+            # explainable from the log alone):
+            #   admit     - request admission / loop-handoff latency (see above).
+            #   wait      - blocked on the engine; split into ttft (first output:
+            #               prefill + in-engine admission) and decode (steady-state
+            #               inter-step gaps). This is the model speed and should
+            #               track benchmark_model; max is the worst single gap (a
+            #               shared-loop stall spike if >> the mean decode gap).
+            #   proc      - this coroutine's per-step work ON the shared event loop.
+            #   codec.*   - the per-request worker thread: decode_ms (codec/noop),
+            #               send_ms (gRPC serialize+send; the Triton-transport cost
+            #               absent in benchmark_model), qwait_ms (idle).
             logger.info(
-                "rid=%s ttfa=%.1fms total=%.1fms steps=%d speaker=%s text=%r",
+                "rid=%s admit=%.1fms ttfa=%.1fms total=%.1fms steps=%d "
+                "wait=%.1fms[ttft=%.1f decode=%.1f max=%.1f] proc=%.1fms "
+                "codec[decode=%.1fms send=%.1fms qwait=%.1fms sends=%d] speaker=%s text=%r",
                 request_id,
+                admit_ms,
                 ttfa_ms,
                 (t_end - t_start) * 1000,
                 sent,
+                wait_ms,
+                ttft_wait_ms,
+                decode_wait_ms,
+                max_wait_ms,
+                proc_ms,
+                state["decode_ms"],
+                state["send_ms"],
+                state["qwait_ms"],
+                state["n_sends"],
                 speaker,
                 text[:120],
             )
@@ -602,7 +717,9 @@ class TritonPythonModel:
             except Exception:
                 pass
 
-    async def _synthesize_whole_text(self, text: str, context_text: str, speaker: str, response_sender):
+    async def _synthesize_whole_text(
+        self, text: str, context_text: str, speaker: str, response_sender, t_recv: float | None = None
+    ):
         request_id = f"easymp-{uuid.uuid4().hex[:8]}"
         prompt = self._build_prompt(text, context_text, speaker)
         prompt_len = len(prompt["prompt_token_ids"])
@@ -611,7 +728,7 @@ class TritonPythonModel:
             sampling_params_list=[self._make_sampling_params(self.max_new_tokens)],
             request_id=request_id,
         )
-        await self._drive_codec(gen, response_sender, request_id, speaker, text, prompt_len)
+        await self._drive_codec(gen, response_sender, request_id, speaker, text, prompt_len, t_recv=t_recv)
 
     def _text_chunk(self, text_tokens, sampling_params):
         """One ``StreamingInput`` carrying a whole chunk of ids as a ``list[int]``."""
@@ -701,6 +818,7 @@ class TritonPythonModel:
                 "<streaming>",
                 prompt_len,
                 pace_q=session.pace_q,
+                t_recv=session.t_recv,
             )
         finally:
             try:
@@ -751,25 +869,29 @@ class TritonPythonModel:
 
     def execute(self, requests):
         for request in requests:
+            # Stamp arrival here (Triton's execute thread) so the synthesis
+            # coroutine can report the admission / loop-handoff latency it would
+            # otherwise be blind to.
+            t_recv = time.perf_counter()
             response_sender = request.get_response_sender()
             try:
                 stream_id = self._read_str(request, "stream_id", "")
                 if stream_id:
-                    self._handle_streaming(request, stream_id, response_sender)
+                    self._handle_streaming(request, stream_id, response_sender, t_recv)
                 else:
-                    self._handle_whole_text(request, response_sender)
+                    self._handle_whole_text(request, response_sender, t_recv)
             except Exception as e:
                 logger.error("Request parse failed: %s", e, exc_info=True)
                 self._send_error(response_sender, e)
         return None
 
-    def _handle_whole_text(self, request, response_sender) -> None:
+    def _handle_whole_text(self, request, response_sender, t_recv: float) -> None:
         text = self._read_str(request, "text", "")
         context_text = self._read_str(request, "context_text", self.default_context_text)
         speaker = self._read_str(request, "speaker", self.default_speaker)
-        self._launch(self._synthesize_whole_text(text, context_text, speaker, response_sender))
+        self._launch(self._synthesize_whole_text(text, context_text, speaker, response_sender, t_recv))
 
-    def _handle_streaming(self, request, stream_id: str, response_sender) -> None:
+    def _handle_streaming(self, request, stream_id: str, response_sender, t_recv: float | None = None) -> None:
         """Route one chunk of a streaming-text request.
 
         ``stream_start`` opens a session (launching one generate() call whose audio
@@ -792,6 +914,7 @@ class TritonPythonModel:
                 response_sender=response_sender,
                 token_q=asyncio.Queue(),
                 pace_q=asyncio.Queue(),
+                t_recv=t_recv,
             )
             with self._sessions_lock:
                 self._sessions[stream_id] = session

@@ -1160,6 +1160,33 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
 
         return self.model._codec_sil_codes_buffer.to(self.model.device).long()
 
+    @staticmethod
+    def _left_pad_raw_audio_if_short(
+        user_audio: torch.Tensor,
+        user_audio_lens: torch.Tensor,
+        min_len: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Left-pad one raw user-audio turn with silence only when it is shorter than min_len."""
+        min_len = int(min_len)
+        if min_len <= 0:
+            return user_audio, user_audio_lens
+        if user_audio_lens.numel() != 1:
+            raise RuntimeError("multiturn_user_audio raw-audio left padding expects batch_size=1.")
+
+        # In this runner each user turn is kept as its own [1, T] tensor, so T
+        # is the valid raw-audio length. Checking size(-1) avoids a CUDA sync
+        # from user_audio_lens[0].item() in the common no-padding path.
+        current_len = int(user_audio.size(-1))
+        if current_len >= min_len:
+            return user_audio, user_audio_lens
+
+        padded_audio = user_audio.new_zeros(user_audio.shape[:-1] + (min_len,))
+        if current_len > 0:
+            padded_audio[..., -current_len:] = user_audio
+
+        padded_lens = user_audio_lens.new_full(user_audio_lens.shape, min_len)
+        return padded_audio, padded_lens
+
     def _run_multiturn_generation(self, batch: Dict[str, Any]):
         model = self.model
         device = model.device
@@ -1258,9 +1285,12 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
                         getattr(state, attr).zero_()
                 state.last_phoneme_tokens = None
 
+                delay_tokens = int(state.config.training_mode.streaming_speech_delay)
+                samples_per_streaming_step = int(model.codec_model_samples_per_frame * model.frame_stacking_factor)
+
                 if not model.cfg.get("condition_on_user_speech", False):
                     user_audio = batch["user_audio_turns"][local_turn_idx]
-                    user_audio_prefill_steps = int(round(user_audio.size(-1) / model.input_samples_per_frame))
+                    user_audio_prefill_steps = int(round(user_audio.size(-1) / samples_per_streaming_step))
                     user_audio_prefill_tokens = torch.full(
                         (1, user_audio_prefill_steps), model.pad_id, dtype=torch.long, device=device
                     )
@@ -1268,6 +1298,13 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
                 else:
                     user_audio = batch["user_audio_turns"][local_turn_idx]
                     user_audio_lens = batch["user_audio_turns_lens"][local_turn_idx]
+                    min_user_audio_len = delay_tokens * samples_per_streaming_step
+                    user_audio, user_audio_lens = self._left_pad_raw_audio_if_short(
+                        user_audio=user_audio,
+                        user_audio_lens=user_audio_lens,
+                        min_len=min_user_audio_len,
+                    )
+
                     user_audio_codes, user_audio_codes_lens = model._codec_helper.audio_to_codes(
                         user_audio, user_audio_lens
                     )
@@ -1320,8 +1357,13 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
                     )
                     user_audio_channel_embedding = user_audio_embedded
 
-                delay_tokens = int(state.config.training_mode.streaming_speech_delay)
-                delay_tokens = min(delay_tokens, user_audio_prefill_steps)
+                if user_audio_channel_embedding is None:
+                    delay_tokens = min(delay_tokens, user_audio_prefill_steps)
+                elif user_audio_prefill_steps < delay_tokens:
+                    raise RuntimeError(
+                        "Raw user-audio left padding did not produce enough warmup steps: "
+                        f"user_audio_prefill_steps={user_audio_prefill_steps}, delay_tokens={delay_tokens}."
+                    )
 
                 num_warmup_text_tokens = min(delay_tokens, int(turn_lens[0].item()), turn_text.size(1))
                 # handle short turns so that it does not advance the text channel and keep the delay_tokens.

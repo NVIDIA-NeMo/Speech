@@ -21,9 +21,9 @@ If no PR number is clear, ask for it before proceeding.
 ### Step 1 — Get the full picture
 
 ```bash
-gh pr view <PR_NUMBER> --repo NVIDIA-NeMo/NeMo
-gh pr checks <PR_NUMBER> --repo NVIDIA-NeMo/NeMo
-gh pr diff <PR_NUMBER> --repo NVIDIA-NeMo/NeMo
+gh pr view <PR_NUMBER> --repo NVIDIA-NeMo/Speech
+gh pr checks <PR_NUMBER> --repo NVIDIA-NeMo/Speech
+gh pr diff <PR_NUMBER> --repo NVIDIA-NeMo/Speech
 ```
 
 Determine the current state:
@@ -47,9 +47,9 @@ The **"Isort and Black Formatting"** workflow (`reformat_with_isort_and_black` j
 Check out the PR branch and inspect the failure logs:
 
 ```bash
-gh pr checkout <PR_NUMBER> --repo NVIDIA-NeMo/NeMo
-gh run list --repo NVIDIA-NeMo/NeMo --branch <branch-name>
-gh run view <RUN_ID> --repo NVIDIA-NeMo/NeMo --log-failed
+gh pr checkout <PR_NUMBER> --repo NVIDIA-NeMo/Speech
+gh run list --repo NVIDIA-NeMo/Speech --branch <branch-name>
+gh run view <RUN_ID> --repo NVIDIA-NeMo/Speech --log-failed
 ```
 
 Before attempting a fix, check `git log` for recent commits. If you see a previous fix attempt that addressed the same failure and it is still failing, **stop and tell the user** — the issue needs human attention. Do not keep retrying the same fix.
@@ -67,7 +67,7 @@ git push
 After pushing a fix, add the "Run CICD" label to re-trigger the CI pipeline:
 
 ```bash
-gh pr edit <PR_NUMBER> --repo NVIDIA-NeMo/NeMo --add-label "Run CICD"
+gh pr edit <PR_NUMBER> --repo NVIDIA-NeMo/Speech --add-label "Run CICD"
 ```
 
 The "CICD NeMo" workflow is triggered by this label and removes it automatically when done.

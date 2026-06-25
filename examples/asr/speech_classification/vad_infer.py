@@ -13,15 +13,15 @@
 # limitations under the License.
 
 """
-During inference, we perform frame-level prediction by two approaches: 
+During inference, we perform frame-level prediction by two approaches:
     1) shift the window of length window_length_in_sec (e.g. 0.63s) by shift_length_in_sec (e.g. 10ms) to generate the frame and use the prediction of the window to represent the label for the frame;
        [this script demonstrate how to do this approach]
-    2) generate predictions with overlapping input segments. Then a smoothing filter is applied to decide the label for a frame spanned by multiple segments. 
+    2) generate predictions with overlapping input segments. Then a smoothing filter is applied to decide the label for a frame spanned by multiple segments.
        [get frame level prediction by this script and use vad_overlap_posterior.py in NeMo/scripts/voice_activity_detection
-       One can also find posterior about converting frame level prediction 
+       One can also find posterior about converting frame level prediction
        to speech/no-speech segment in start and end times format in that script.]
-       
-       Image https://raw.githubusercontent.com/NVIDIA/NeMo/main/tutorials/asr/images/vad_post_overlap_diagram.png 
+
+       Image https://raw.githubusercontent.com/NVIDIA-NeMo/Speech/main/tutorials/asr/images/vad_post_overlap_diagram.png
        will help you understand this method.
 
 This script will also help you perform postprocessing and generate speech segments if needed

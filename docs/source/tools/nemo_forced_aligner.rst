@@ -14,7 +14,7 @@ Demos & Tutorials
 
 * HuggingFace Space `demo <https://huggingface.co/spaces/erastorgueva-nv/NeMo-Forced-Aligner>`__ to quickly try out NFA in various languages.
 * NFA "how-to" notebook `tutorial <https://nvidia.github.io/NeMo/blogs/2023/2023-08-forced-alignment/>`__.
-* "How forced alignment works" NeMo blog `tutorial <https://colab.research.google.com/github/NVIDIA/NeMo/blob/main/tutorials/tools/NeMo_Forced_Aligner_Tutorial.ipynb>`__.
+* "How forced alignment works" NeMo blog `tutorial <https://colab.research.google.com/github/NVIDIA-NeMo/Speech/blob/main/tutorials/tools/NeMo_Forced_Aligner_Tutorial.ipynb>`__.
 
 Quickstart
 ----------

@@ -124,7 +124,8 @@ class StreamingSTTEvalConfig:
     dynamic_chunk_step: Optional[int] = None
     disable_emit_for_debug: bool = False
     debug_log_audio_frames: bool = False
-    use_chunk_classifier_at_inference: bool = False
+    # NOTE: ``use_chunk_classifier_at_inference`` is removed — the aux head is
+    # used automatically when the model was trained with ``use_chunk_classifier=True``.
     # When True, save per-word alignments alongside pred_text in the output
     # manifest. Each predicted word inherits the start_time / end_time of the
     # audio chunk it was generated from. Format matches the GT manifest:
@@ -184,10 +185,11 @@ def main(cfg: StreamingSTTEvalConfig):
     hyps = []
     input_durations = []
     infer_durations = []
-    # Per-cut alignment lists, ordered to match `cuts` after `sort_by_duration`.
-    # Each entry is a list of {text, start_time, end_time} dicts. None when
-    # save_alignments=False.
+    # Per-cut diagnostic lists, ordered to match `cuts` after `sort_by_duration`.
     cut_alignments: Optional[list[list[dict]]] = [] if cfg.save_alignments else None
+    cut_content_scores: list[list[float]] = []
+    cut_pred_text_annotated: list[str] = []
+    content_score_mode: Optional[str] = None
 
     # Optional per-frame debug log file (one record per LISTENING frame per
     # cut, keyed by cut id). Only opened when debug_log_audio_frames=True.
@@ -203,9 +205,7 @@ def main(cfg: StreamingSTTEvalConfig):
     for batch_idx, batch in tqdm(enumerate(dloader), total=num_batches):
         ts = perf_counter()
         generation_config = GenerationConfig(**OmegaConf.to_container(cfg.generation_config))
-        batch_debug_logs: Optional[list] = [] if cfg.debug_log_audio_frames else None
-        batch_alignments: Optional[list] = [] if cfg.save_alignments else None
-        batch_hyps_raw = model.generate(
+        result = model.generate(
             audios=batch["audios"].to(model.device, non_blocking=True),
             audio_lens=batch["audio_lens"].to(model.device, non_blocking=True),
             system_prompt=cfg.system_prompt,
@@ -216,24 +216,30 @@ def main(cfg: StreamingSTTEvalConfig):
             dynamic_min_chunk_size=cfg.dynamic_min_chunk_size,
             dynamic_max_chunk_size=cfg.dynamic_max_chunk_size,
             emit_threshold=cfg.emit_threshold,
-            debug_logs=batch_debug_logs,
-            alignments_out=batch_alignments,
             emit_delay_frames=cfg.emit_delay_frames,
             dynamic_chunk_step=cfg.dynamic_chunk_step,
             disable_emit_for_debug=cfg.disable_emit_for_debug,
-            use_chunk_classifier_at_inference=cfg.use_chunk_classifier_at_inference,
             chunk_size_override=cfg.chunk_size_override,
+            return_alignments=cfg.save_alignments,
+            return_debug_logs=cfg.debug_log_audio_frames,
         )
         batch_infer_duration = perf_counter() - ts
 
         # Write per-frame debug records keyed by cut id.
-        if debug_log_writer is not None and batch_debug_logs is not None:
-            for cut, frames in zip(batch["cuts"], batch_debug_logs):
+        if debug_log_writer is not None and result.debug_logs is not None:
+            for cut, frames in zip(batch["cuts"], result.debug_logs):
                 debug_log_writer.write({"id": cut.id, "duration": cut.duration, "frames": frames})
+
+        if result.content_score_mode is not None:
+            content_score_mode = result.content_score_mode
+        if result.content_scores is not None:
+            cut_content_scores.extend(result.content_scores)
+        if result.pred_text_annotated is not None:
+            cut_pred_text_annotated.extend(result.pred_text_annotated)
 
         batch_duration = sum(c.duration for c in batch["cuts"])
         batch_refs = [normalizer(cut.supervisions[0].text) for cut in batch["cuts"]]
-        batch_hyps = [normalizer(h.strip()) for h in batch_hyps_raw]
+        batch_hyps = [normalizer(h.strip()) for h in result.texts]
 
         if cfg.verbose:
             batch_wer, _, nins, ndel, nsub = word_error_rate_detail(batch_hyps, batch_refs)
@@ -250,8 +256,8 @@ def main(cfg: StreamingSTTEvalConfig):
 
         refs.extend(batch_refs)
         hyps.extend(batch_hyps)
-        if cut_alignments is not None and batch_alignments is not None:
-            cut_alignments.extend(batch_alignments)
+        if cut_alignments is not None and result.pred_alignments is not None:
+            cut_alignments.extend(result.pred_alignments)
         input_durations.append(batch_duration)
         infer_durations.append(batch_infer_duration)
 
@@ -291,6 +297,11 @@ def main(cfg: StreamingSTTEvalConfig):
                 # same chunk share that chunk's audio span.
                 if cut_alignments is not None and idx < len(cut_alignments):
                     record["pred_alignments"] = cut_alignments[idx]
+                if idx < len(cut_content_scores):
+                    record["content_scores"] = cut_content_scores[idx]
+                    record["content_score_mode"] = content_score_mode
+                if idx < len(cut_pred_text_annotated):
+                    record["pred_text_annotated"] = cut_pred_text_annotated[idx]
                 writer.write(record)
 
 

@@ -163,15 +163,13 @@ class StreamingSTTEvalConfig:
     )
     dynamic_min_chunk_size: int = 0  # dynamic chunking: min frames before allowing generation
     dynamic_max_chunk_size: Optional[int] = None  # dynamic chunking: max frames before forcing generation
-    # When True, the aux chunk-boundary classifier (built during training with
-    # use_chunk_classifier=True) drives the boundary decision at inference.
-    # When False (default), the LM head's signal drives the decision.
-    use_chunk_classifier_at_inference: bool = False
+    # NOTE: ``use_chunk_classifier_at_inference`` is removed — the aux head is
+    # used automatically when the model was trained with ``use_chunk_classifier=True``.
     # Probability threshold for the boundary decision.
-    #   - When use_chunk_classifier_at_inference=True: threshold on the aux
-    #     head's sigmoid output. None → 0.5 default.
-    #   - When False: threshold on p(user_footer_first_id) from the LM head.
-    #     None → fall back to argmax (legacy behavior).
+    #   - When the model has an aux head: threshold on the aux head's sigmoid
+    #     output. None → 0.5 default.
+    #   - When the model has no aux head: threshold on p(user_footer_first_id)
+    #     from the LM head. None → fall back to argmax (legacy behavior).
     emit_threshold: Optional[float] = None
     # Defer the actual FOOTER transition by K LISTENING frames after the
     # boundary classifier decides to emit. The stream keeps listening for K
@@ -313,8 +311,7 @@ def main(cfg: StreamingSTTEvalConfig):
         ts = perf_counter()
         cfg.generation_config.max_new_tokens = cfg.max_new_tokens
         generation_config = GenerationConfig(**OmegaConf.to_container(cfg.generation_config))
-        batch_debug_logs: Optional[list] = [] if cfg.debug_log_audio_frames else None
-        batch_hyps_raw = model.generate(
+        result = model.generate(
             audios=batch["audios"].to(model.device, non_blocking=True),
             audio_lens=batch["audio_lens"].to(model.device, non_blocking=True),
             system_prompt=cfg.system_prompt,
@@ -324,13 +321,14 @@ def main(cfg: StreamingSTTEvalConfig):
             use_state_machine_inference=cfg.use_state_machine_inference,
             dynamic_min_chunk_size=cfg.dynamic_min_chunk_size,
             dynamic_max_chunk_size=cfg.dynamic_max_chunk_size,
-            use_chunk_classifier_at_inference=cfg.use_chunk_classifier_at_inference,
             emit_threshold=cfg.emit_threshold,
             emit_delay_frames=cfg.emit_delay_frames,
             dynamic_chunk_step=cfg.dynamic_chunk_step,
-            debug_logs=batch_debug_logs,
             disable_emit_for_debug=cfg.disable_emit_for_debug,
+            return_debug_logs=cfg.debug_log_audio_frames,
         )
+        batch_hyps_raw = result.texts
+        batch_debug_logs = result.debug_logs
         batch_infer_duration = perf_counter() - ts
 
         # Write per-frame debug records keyed by cut id, and compute per-cut

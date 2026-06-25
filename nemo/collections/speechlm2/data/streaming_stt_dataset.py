@@ -101,6 +101,10 @@ class StreamingSTTDataConfig:
     prompt_field: str = "system_prompt"
     compact_template: bool = False
     write_token: str = "<|im_start|>"
+    # When True, prepend ``write_token`` to non-empty assistant content during
+    # training data construction. Should match the model's ``prepend_write_token``
+    # config. See StreamingSTTModelConfig.prepend_write_token for details.
+    prepend_write_token: bool = False
     # K — only effective in dynamic chunking (chunk_size == 0). Each audio
     # segment is rounded UP to a multiple of K frames (and total audio is
     # padded to K-multiple). The model implicitly learns to emit only at
@@ -120,6 +124,7 @@ def decode_with_blank(
     collapse_whitespace: bool = True,
     join_with: Optional[str] = " ",
     write_token: Optional[str] = None,
+    replace_write: Optional[str] = None,
 ) -> str:
     """Decode token IDs, treating blank tokens as segment boundaries.
 
@@ -138,6 +143,11 @@ def decode_with_blank(
         strip_whitespace: If True, strip whitespace from the output.
         collapse_whitespace: If True, collapse multiple consecutive whitespace characters into a single space.
         join_with: If provided, join the segments divided by blank tokens with this string, else join with empty string.
+        write_token: Optional write token string. When set, the write token is
+            recognized (by default stripped from output; see ``replace_write``).
+        replace_write: If provided, write tokens are replaced with this string
+            in the output instead of being skipped. Symmetric to ``replace_blank``.
+            Useful for diagnostic annotation (e.g., ``"[WRITE] "``).
     """
     if blank_token == "":
         # No blank token: use EOS (e.g. <|im_end|>) as chunk separator so
@@ -159,7 +169,11 @@ def decode_with_blank(
             if replace_blank is not None:
                 segments.append(replace_blank)
         elif tid == write_id:
-            continue
+            if current:
+                segments.append(tokenizer.ids_to_tokens(current))
+                current = []
+            if replace_write is not None:
+                segments.append(replace_write)
         else:
             current.append(tid)
     if current:
@@ -254,6 +268,8 @@ def get_llm_messages_for_sample(
     transcript: Optional[str] = None,
     words_per_group: int = 1,
     chunk_step: int = 1,
+    prepend_write_token: bool = False,
+    write_token: str = "",
 ) -> List[dict]:
     """
     Get the LLM messages for a sample, using the alignments to determine the turns for the audio and text.
@@ -369,6 +385,8 @@ def get_llm_messages_for_sample(
                 # Words at same boundary as previous group — append
                 messages[-1]["content"] += " " + content
             else:
+                if prepend_write_token and write_token:
+                    content = write_token + content
                 messages.append({"role": "assistant", "content": content})
 
             prev_end_frame = group_end_frame
@@ -412,9 +430,12 @@ def get_llm_messages_for_sample(
                         content = " ".join(alignments[i].text for i in word_buffer)
                 else:
                     content = " ".join(alignments[i].text for i in word_buffer)
+                if prepend_write_token and write_token:
+                    content = write_token + content
                 messages.append({"role": "assistant", "content": content})
                 word_buffer = []
             else:
+                # Empty chunk: blank_token alone, NOT prefixed with write_token.
                 messages.append({"role": "assistant", "content": blank_token})
 
         # Append any residual words that weren't emitted (e.g., due to delay pushing
@@ -431,10 +452,16 @@ def get_llm_messages_for_sample(
             else:
                 content = " ".join(alignments[i].text for i in residual_indices)
             if messages[-1]["role"] == "assistant" and messages[-1]["content"] == blank_token:
+                # Replacing a blank-only chunk with real content — needs write_token prefix
+                if prepend_write_token and write_token:
+                    content = write_token + content
                 messages[-1]["content"] = content
             elif messages[-1]["role"] == "assistant":
+                # Appending to an existing non-empty assistant turn — already has the prefix
                 messages[-1]["content"] += " " + content
             else:
+                if prepend_write_token and write_token:
+                    content = write_token + content
                 messages.append({"role": "assistant", "content": content})
 
     return messages
@@ -453,6 +480,8 @@ def get_llm_messages_for_batch(
     transcripts: Optional[List[str]] = None,
     words_per_group: int = 1,
     chunk_step: int = 1,
+    prepend_write_token: bool = False,
+    write_token: str = "",
 ) -> List[List[dict]]:
     """
     Get the LLM messages for a batch of samples.
@@ -495,6 +524,8 @@ def get_llm_messages_for_batch(
                 transcript=transcript,
                 words_per_group=words_per_group,
                 chunk_step=chunk_step,
+                prepend_write_token=prepend_write_token,
+                write_token=write_token,
             )
         )
     return batch_messages
@@ -821,6 +852,7 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
         # Unescape Python escape sequences (e.g. "\\n" → "\n") because Hydra/OmegaConf
         # loads YAML strings literally without interpreting backslash escapes.
         self.cfg.blank_token = self.cfg.blank_token.encode().decode('unicode_escape')
+        self.cfg.write_token = self.cfg.write_token.encode().decode('unicode_escape')
 
         # Normalize chunk_size into a list of candidate fixed-chunk sizes for
         # per-batch random selection. A scalar config yields ``None`` (no random
@@ -1005,6 +1037,8 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
             transcripts=text,
             words_per_group=self.cfg.words_per_group,
             chunk_step=K,
+            prepend_write_token=self.cfg.prepend_write_token,
+            write_token=self.cfg.write_token,
         )
 
         # Pre-computed audio chunk token IDs for this batch's fixed-chunk size

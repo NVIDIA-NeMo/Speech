@@ -153,7 +153,7 @@ To get started with Magpie-TTS, you can download the pretrained multilingual che
 
 Additional documentation on advanced features can be found in the repository:
 
-- `Frame Stacking Guide <https://github.com/NVIDIA-NeMo/NeMo/blob/main/examples/tts/README_frame_stacking.md>`__: Detailed explanation of the two-stage decoding architecture
+- `Frame Stacking Guide <https://github.com/NVIDIA-NeMo/Speech/blob/main/examples/tts/README_frame_stacking.md>`__: Detailed explanation of the two-stage decoding architecture
 
 References
 ##########

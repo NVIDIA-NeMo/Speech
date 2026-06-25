@@ -245,7 +245,7 @@ html_theme_options = {
     "icon_links": [
         {
             "name": "GitHub",
-            "url": "https://github.com/NVIDIA-NeMo/NeMo",
+            "url": "https://github.com/NVIDIA-NeMo/Speech",
             "icon": "fa-brands fa-github",
         }
     ],

@@ -22,7 +22,7 @@ If you have a large, diverse dataset and want to train from scratch, see :doc:`C
 Working with an agent?
 ----------------------
 
-Check out our latest ``/nemo-speech-finetune-asr`` `agent skill <https://github.com/NVIDIA-NeMo/NeMo/tree/main/.claude/skills/nemo-speech-asr-finetune>`_.
+Check out our latest ``/nemo-speech-finetune-asr`` `agent skill <https://github.com/NVIDIA-NeMo/Speech/tree/main/.claude/skills/nemo-speech-asr-finetune>`_.
 
 
 Fine-Tuning Script
@@ -155,7 +155,7 @@ The most important parameters for fine-tuning:
      - Number of fine-tuning epochs (typically 50-100 for domain adaptation)
    * - ``model.optim.lr``
      - Learning rate (use lower than training from scratch, e.g., 1e-4 to 1e-5)
-   * - ``model.train_ds.manifest_filepath``     
+   * - ``model.train_ds.manifest_filepath``
      - Path to training manifest (NeMo JSON format)
    * - ``model.train_ds.batch_size``
      - Batch size per GPU

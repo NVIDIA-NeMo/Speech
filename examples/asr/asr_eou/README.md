@@ -1,6 +1,6 @@
 # Finetuning streming ASR model for integrated end-of-utterance (EOU) detection
 
-This tutorial shows how to finetune a streaming ASR model (e.g., [nvidia/nemotron-speech-streaming-en-0.6b](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b)) for integrated EOU detection (e.g., [nvidia/parakeet_realtime_eou_120m-v1](https://huggingface.co/nvidia/parakeet_realtime_eou_120m-v1)). 
+This tutorial shows how to finetune a streaming ASR model (e.g., [nvidia/nemotron-speech-streaming-en-0.6b](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b)) for integrated EOU detection (e.g., [nvidia/parakeet_realtime_eou_120m-v1](https://huggingface.co/nvidia/parakeet_realtime_eou_120m-v1)).
 
 We use [Nemotron-Speech-Streaming-En-0.6b](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b) as an example of pretrained ASR model.
 
@@ -64,7 +64,7 @@ loss:
       # FastEmit regularization: https://arxiv.org/abs/2010.11148
       # You may enable FastEmit to increase the accuracy and reduce the latency of the model for streaming
       # You may set it to lower values like 1e-3 for models with larger right context
-      fastemit_lambda: 3e-2 
+      fastemit_lambda: 3e-2
 ```
 
 We also need to change the training, validation and test data paths in the model config file based on how we prepare the EOU labeled dataset illustrated in the next section.
@@ -190,7 +190,7 @@ model:
       pad_distribution: 'uniform'  # distribution of padding duration, 'uniform' or 'normal'
       normal_mean: 0.5  # mean of normal distribution used when pad_distribution='normal'
       normal_std: 2.0  # standard deviation of normal distribution  used when pad_distribution='normal'
-      
+
     augmentor:
       white_noise:
         prob: 0.9
@@ -228,7 +228,7 @@ TRAIN_INPUT_CFG=/path/to/train_input_config.yaml
 VAL_MANIFEST=/path/to/val_manifest.json
 NOISE_MANIFEST=/path/to/noise_manifest.json
 
-PRETRAINED_NEMO=/path/to/nemotron-speech-streaming-en-0.6b.nemo 
+PRETRAINED_NEMO=/path/to/nemotron-speech-streaming-en-0.6b.nemo
 
 BATCH_SIZE=16
 NUM_WORKERS=8
@@ -300,5 +300,5 @@ The script will show the WER metrics along with EOU metrics like latency, early 
 
 ## 5. Model deployment with voice agent
 
-Please refer to the [NeMo Voice Agent](https://github.com/NVIDIA-NeMo/NeMo/tree/main/examples/voice_agent/README.md) example for more details on how to deploy the ASR-EOU model with voice agent.
+Please refer to the [NeMo Voice Agent](https://github.com/NVIDIA-NeMo/Speech/tree/main/examples/voice_agent/README.md) example for more details on how to deploy the ASR-EOU model with voice agent.
 

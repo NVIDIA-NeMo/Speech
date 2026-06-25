@@ -50,10 +50,10 @@ except ImportError:
         "Install NeMo with NFA utilities support:\n"
         "  pip install 'nemo-toolkit[all]>=2.5.0'\n"
         "Or install the latest development version:\n"
-        "  pip install git+https://github.com/NVIDIA-NeMo/NeMo.git"
+        "  pip install git+https://github.com/NVIDIA-NeMo/Speech.git"
     )
 """
-Align the utterances in manifest_filepath. 
+Align the utterances in manifest_filepath.
 Results are saved in ctm files in output_dir.
 
 Arguments:
@@ -67,25 +67,25 @@ Arguments:
     manifest_filepath: filepath to the manifest of the data you want to align,
         containing 'audio_filepath' and 'text' fields.
     output_dir: the folder where output CTM files and new JSON manifest will be saved.
-    align_using_pred_text: if True, will transcribe the audio using the specified model and then use that transcription 
-        as the reference text for the forced alignment. 
+    align_using_pred_text: if True, will transcribe the audio using the specified model and then use that transcription
+        as the reference text for the forced alignment.
     transcribe_device: None, or a string specifying the device that will be used for generating log-probs (i.e. "transcribing").
-        The string needs to be in a format recognized by torch.device(). If None, NFA will set it to 'cuda' if it is available 
+        The string needs to be in a format recognized by torch.device(). If None, NFA will set it to 'cuda' if it is available
         (otherwise will set it to 'cpu').
-    viterbi_device: None, or string specifying the device that will be used for doing Viterbi decoding. 
-        The string needs to be in a format recognized by torch.device(). If None, NFA will set it to 'cuda' if it is available 
+    viterbi_device: None, or string specifying the device that will be used for doing Viterbi decoding.
+        The string needs to be in a format recognized by torch.device(). If None, NFA will set it to 'cuda' if it is available
         (otherwise will set it to 'cpu').
     batch_size: int specifying batch size that will be used for generating log-probs and doing Viterbi decoding.
     use_local_attention: boolean flag specifying whether to try to use local attention for the ASR Model (will only
-        work if the ASR Model is a Conformer model). If local attention is used, we will set the local attention context 
+        work if the ASR Model is a Conformer model). If local attention is used, we will set the local attention context
         size to [64,64].
-    additional_segment_grouping_separator: an optional string or list of strings used to separate the text into smaller segments. 
-        If this is not specified, then the whole text will be treated as a single segment. 
-    remove_blank_tokens_from_ctm:  a boolean denoting whether to remove <blank> tokens from token-level output CTMs. 
+    additional_segment_grouping_separator: an optional string or list of strings used to separate the text into smaller segments.
+        If this is not specified, then the whole text will be treated as a single segment.
+    remove_blank_tokens_from_ctm:  a boolean denoting whether to remove <blank> tokens from token-level output CTMs.
     audio_filepath_parts_in_utt_id: int specifying how many of the 'parts' of the audio_filepath
-        we will use (starting from the final part of the audio_filepath) to determine the 
-        utt_id that will be used in the CTM files. Note also that any spaces that are present in the audio_filepath 
-        will be replaced with dashes, so as not to change the number of space-separated elements in the 
+        we will use (starting from the final part of the audio_filepath) to determine the
+        utt_id that will be used in the CTM files. Note also that any spaces that are present in the audio_filepath
+        will be replaced with dashes, so as not to change the number of space-separated elements in the
         CTM files.
         e.g. if audio_filepath is "/a/b/c/d/e 1.wav" and audio_filepath_parts_in_utt_id is 1 => utt_id will be "e1"
         e.g. if audio_filepath is "/a/b/c/d/e 1.wav" and audio_filepath_parts_in_utt_id is 2 => utt_id will be "d_e1"

@@ -17,7 +17,7 @@ weight checkpoints and demos!
 > For the latest stable released version, please use [the 26.02 NGC container](https://catalog.ngc.nvidia.com/orgs/nvidia/containers/nemo?version=26.02).
 
 - 2026-06: [Nemotron-3.5-ASR-Streaming-0.6B](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b) has been released with 40 languages supported, controllable latency 80ms-1s, and 240-2400 1xH100 concurrent streams. Built on cache-aware Fastconformer architecture.
-- 2026-04: [Parakeet-unified-en-0.6b](https://huggingface.co/nvidia/parakeet-unified-en-0.6b) has been released with high-quality offline and streaming (with a minimum latency of 160ms) inference in one model for English language with punctuation and capitalization support. 
+- 2026-04: [Parakeet-unified-en-0.6b](https://huggingface.co/nvidia/parakeet-unified-en-0.6b) has been released with high-quality offline and streaming (with a minimum latency of 160ms) inference in one model for English language with punctuation and capitalization support.
 - 2026-03: [Nemotron 3 VoiceChat](https://build.nvidia.com/nvidia/nemotron-voicechat/modelcard) is now released in Early Access. Built on the Nemotron Nano v2 LLM backbone with Nemotron speech and TTS decoder, VoiceChat delivers full-duplex, natural, interruptible conversations with low latency. Try out [the demo](https://build.nvidia.com/nvidia/nemotron-voicechat) and apply for [early access](https://developer.nvidia.com/nemotron-voicechat-early-access).
 - 2026-03: [Nemotron-Speech-Streaming v2603](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b) has been
     updated. It has been trained on a larger and more diverse corpus, resulting in lower WER across all latency modes.
@@ -31,7 +31,7 @@ weight checkpoints and demos!
     on the latency-accuracy Pareto curve!
 - 2026-01: MagpieTTS was released.
 - 2026: This repo has pivoted to focus on audio, speech, and multimodal LLM. For the last NeMo release with support for more
-    modalities, see [v2.7.0](https://github.com/NVIDIA-NeMo/NeMo/releases/tag/v2.7.0)
+    modalities, see [v2.7.0](https://github.com/NVIDIA-NeMo/Speech/releases/tag/v2.7.0)
 - 2025-08: [Parakeet V3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) and
     [Canary V2](https://huggingface.co/nvidia/canary-1b-v2) have been released with speech recognition and translation
     support for 25 European languages.
@@ -77,7 +77,7 @@ The recommended way to install NeMo Speech is from source with [uv](https://docs
 ### From source with uv (recommended)
 
 ```bash
-git clone https://github.com/NVIDIA-NeMo/NeMo.git
+git clone https://github.com/NVIDIA-NeMo/Speech.git
 cd NeMo
 uv sync --extra all --extra cu13     # CUDA 13.x (recommended) — use --extra cu12 for CUDA 12.x
 ```
@@ -93,7 +93,7 @@ This installs our supported stack (Python 3.13, PyTorch 2.12, CUDA 13.2) into `.
 To build the container from source (CUDA 13 / H100+ by default):
 
 ```bash
-git clone https://github.com/NVIDIA-NeMo/NeMo.git
+git clone https://github.com/NVIDIA-NeMo/Speech.git
 cd NeMo
 docker buildx build -f docker/Dockerfile -t nemo-speech .          # CUDA 13 / H100+ (default)
 docker run --rm -it --gpus all -v "$PWD:/workspace" nemo-speech bash
@@ -121,7 +121,7 @@ pip install 'nemo-toolkit[asr,tts,cu12]' --extra-index-url https://download.pyto
 ## Contribute to NeMo
 
 We welcome community contributions! Please refer to
-[CONTRIBUTING.md](https://github.com/NVIDIA-NeMo/NeMo/blob/main/CONTRIBUTING.md) for the process.
+[CONTRIBUTING.md](https://github.com/NVIDIA-NeMo/Speech/blob/main/CONTRIBUTING.md) for the process.
 
 ## Licenses
 

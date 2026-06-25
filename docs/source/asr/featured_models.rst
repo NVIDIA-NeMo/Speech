@@ -27,7 +27,7 @@ They support ASR in 25 EU languages, speech translation (AST), and punctuation/c
 * `Canary-Qwen-2.5B <https://huggingface.co/nvidia/canary-qwen-2.5b>`__ — English only, PnC, highest accuracy
 * `Canary-1B Flash <https://huggingface.co/nvidia/canary-1b-flash>`__ / `180M Flash <https://huggingface.co/nvidia/canary-180m-flash>`__ — Optimized for speed
 
-Canary supports chunked and `streaming inference <https://github.com/NVIDIA-NeMo/NeMo/blob/main/tutorials/asr/Streaming_ASR_Pipelines.ipynb>`__.
+Canary supports chunked and `streaming inference <https://github.com/NVIDIA-NeMo/Speech/blob/main/tutorials/asr/Streaming_ASR_Pipelines.ipynb>`__.
 
 
 .. _Conformer_model:

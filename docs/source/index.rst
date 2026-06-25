@@ -73,7 +73,7 @@ Get started (install the PyTorch build for your platform first):
 Trying to finetune a model?
 ---------------------------
 
-Check out our latest ``/nemo-speech-finetune-asr`` `agent skill <https://github.com/NVIDIA-NeMo/NeMo/tree/main/.claude/skills/nemo-speech-asr-finetune>`_.
+Check out our latest ``/nemo-speech-finetune-asr`` `agent skill <https://github.com/NVIDIA-NeMo/Speech/tree/main/.claude/skills/nemo-speech-asr-finetune>`_.
 
 
 .. toctree::

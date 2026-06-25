@@ -13,7 +13,7 @@ batch_size: 32
 weighted_sampling_steps_per_epoch: null
 
 # Dataset metadata for each manifest
-# https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/tts/data/vocoder_dataset.py#L39-L41
+# https://github.com/NVIDIA-NeMo/Speech/blob/main/nemo/collections/tts/data/vocoder_dataset.py#L39-L41
 train_ds_meta: ???
 val_ds_meta: ???
 
@@ -160,7 +160,7 @@ trainer:
   log_every_n_steps: 100
   check_val_every_n_epoch: 1
   benchmark: false
-  
+
 
 exp_manager:
   exp_dir: null

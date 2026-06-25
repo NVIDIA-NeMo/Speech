@@ -215,7 +215,7 @@ and stability. To use EMA, set the following parameters via YAML or :class:`~nem
 
     This feature is implemented in the ``StragglerDetectionCallback``, which is disabled by default.
 
-    The callback computes normalized GPU performance scores, which are scalar values ranging from 0.0 (worst) to 1.0 (best). 
+    The callback computes normalized GPU performance scores, which are scalar values ranging from 0.0 (worst) to 1.0 (best).
     A performance score can be interpreted as the ratio of current performance to reference performance.
 
     There are two types of performance scores provided by the callback:
@@ -228,7 +228,7 @@ and stability. To use EMA, set the following parameters via YAML or :class:`~nem
 
     If a GPU performance score drops below the specified threshold, it is identified as a straggler.
 
-    To enable straggler detection, add ``create_straggler_detection_callback: True`` under exp_manager in the config YAML file. 
+    To enable straggler detection, add ``create_straggler_detection_callback: True`` under exp_manager in the config YAML file.
     You might also want to adjust the callback parameters:
 
     .. code-block:: yaml
@@ -257,21 +257,21 @@ and stability. To use EMA, set the following parameters via YAML or :class:`~nem
         Fault Tolerance feature is included in the optional NeMo resiliency package.
 
     When training Deep Neural Network (DNN models), faults may occur, hindering the progress of the entire training process.
-    This is particularly common in distributed, multi-node training scenarios, with many nodes and GPUs involved. 
+    This is particularly common in distributed, multi-node training scenarios, with many nodes and GPUs involved.
 
-    NeMo incorporates a fault tolerance mechanism to detect training halts. 
+    NeMo incorporates a fault tolerance mechanism to detect training halts.
     In response, it can terminate a hung workload and, if requested, restart it from the last checkpoint.
 
-    Fault tolerance ("FT") relies on a special launcher (``ft_launcher``), which is a modified ``torchrun``. 
-    The FT launcher runs background processes called rank monitors. **You need to use ft_launcher to start 
-    your workload if you are using FT**. I.e., `NeMo-Framework-Launcher <https://github.com/NVIDIA/NeMo-Framework-Launcher>`_  
-    can be used to generate SLURM batch scripts with FT support. 
+    Fault tolerance ("FT") relies on a special launcher (``ft_launcher``), which is a modified ``torchrun``.
+    The FT launcher runs background processes called rank monitors. **You need to use ft_launcher to start
+    your workload if you are using FT**. I.e., `NeMo-Framework-Launcher <https://github.com/NVIDIA-NeMo/Speech-Framework-Launcher>`_
+    can be used to generate SLURM batch scripts with FT support.
 
     Each training process (rank) sends `heartbeats` to its monitor during training and validation steps.
     If a rank monitor stops receiving `heartbeats`, a training failure is detected.
 
-    Fault detection is implemented in the ``FaultToleranceCallback`` and is disabled by default. 
-    To enable it, add a ``create_fault_tolerance_callback: True`` option under ``exp_manager`` in the 
+    Fault detection is implemented in the ``FaultToleranceCallback`` and is disabled by default.
+    To enable it, add a ``create_fault_tolerance_callback: True`` option under ``exp_manager`` in the
     config YAML file. Additionally, you can customize FT parameters by adding ``fault_tolerance`` section:
 
     .. code-block:: yaml
@@ -286,9 +286,9 @@ and stability. To use EMA, set the following parameters via YAML or :class:`~nem
 
     Timeouts for fault detection need to be adjusted for a given workload:
         * ``initial_rank_heartbeat_timeout`` should be long enough to allow for workload initialization.
-        * ``rank_heartbeat_timeout`` should be at least as long as the longest possible interval between steps. 
+        * ``rank_heartbeat_timeout`` should be at least as long as the longest possible interval between steps.
 
-    **Importantly, `heartbeats` are not sent during checkpoint loading and saving**, so time for 
+    **Importantly, `heartbeats` are not sent during checkpoint loading and saving**, so time for
     checkpointing related operations should be taken into account.
 
     If ``calculate_timeouts: True``, timeouts will be automatically estimated based on observed intervals.
@@ -297,25 +297,25 @@ and stability. To use EMA, set the following parameters via YAML or :class:`~nem
     training started from scratch, estimated timeouts won't be available during the initial two runs.
     Estimated timeouts are stored in a separate JSON file.
 
-    ``max_subsequent_job_failures`` allows for the automatic continuation of training on a SLURM cluster. 
-    This feature requires SLURM job to be scheduled with ``NeMo-Framework-Launcher``. If ``max_subsequent_job_failures`` 
-    value is `>0` continuation job is prescheduled. It will continue  the work until ``max_subsequent_job_failures`` 
-    subsequent jobs failed (SLURM job exit code is `!= 0`) or the training is completed successfully 
+    ``max_subsequent_job_failures`` allows for the automatic continuation of training on a SLURM cluster.
+    This feature requires SLURM job to be scheduled with ``NeMo-Framework-Launcher``. If ``max_subsequent_job_failures``
+    value is `>0` continuation job is prescheduled. It will continue  the work until ``max_subsequent_job_failures``
+    subsequent jobs failed (SLURM job exit code is `!= 0`) or the training is completed successfully
     ("end of training" marker file is produced by the ``FaultToleranceCallback``, i.e. due to iters or time limit reached).
 
     All FT configuration items summary:
         * ``workload_check_interval`` (float, default=5.0) Periodic workload check interval [seconds] in the workload monitor.
-        * ``initial_rank_heartbeat_timeout`` (Optional[float], default=60.0 * 60.0) Timeout [seconds] for the first heartbeat from a rank. 
-        * ``rank_heartbeat_timeout`` (Optional[float], default=45.0 * 60.0) Timeout [seconds] for subsequent heartbeats from a rank. 
-        * ``calculate_timeouts`` (bool, default=True) Try to calculate ``rank_heartbeat_timeout`` and ``initial_rank_heartbeat_timeout`` 
+        * ``initial_rank_heartbeat_timeout`` (Optional[float], default=60.0 * 60.0) Timeout [seconds] for the first heartbeat from a rank.
+        * ``rank_heartbeat_timeout`` (Optional[float], default=45.0 * 60.0) Timeout [seconds] for subsequent heartbeats from a rank.
+        * ``calculate_timeouts`` (bool, default=True) Try to calculate ``rank_heartbeat_timeout`` and ``initial_rank_heartbeat_timeout``
         based on the observed heartbeat intervals.
-        * ``safety_factor``: (float, default=5.0) When calculating the timeouts, multiply the maximum observed heartbeat interval 
-        by this factor to obtain the timeout estimate. Can be made smaller for stable environments and larger for unstable ones.  
+        * ``safety_factor``: (float, default=5.0) When calculating the timeouts, multiply the maximum observed heartbeat interval
+        by this factor to obtain the timeout estimate. Can be made smaller for stable environments and larger for unstable ones.
         * ``rank_termination_signal`` (signal.Signals, default=signal.SIGKILL) Signal used to terminate the rank when failure is detected.
         * ``log_level`` (str, default='INFO') Log level for the FT client and server(rank monitor).
-        * ``max_rank_restarts`` (int, default=0) Used by FT launcher. Max number of restarts for a rank. 
+        * ``max_rank_restarts`` (int, default=0) Used by FT launcher. Max number of restarts for a rank.
         If ``>0`` ranks will be restarted on existing nodes in case of a failure.
-        * ``max_subsequent_job_failures`` (int, default=0) Used by FT launcher. How many subsequent job failures are allowed until stopping autoresuming. 
+        * ``max_subsequent_job_failures`` (int, default=0) Used by FT launcher. How many subsequent job failures are allowed until stopping autoresuming.
         ``0`` means do not auto-resume.
         * ``additional_ft_launcher_args`` (str, default='') Additional FT launcher params (for advanced use).
 

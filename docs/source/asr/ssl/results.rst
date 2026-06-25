@@ -1,7 +1,7 @@
 Checkpoints
 ===========
 
-Pre-trained SSL checkpoints available in NeMo need to be further fine-tuned on down-stream task. 
+Pre-trained SSL checkpoints available in NeMo need to be further fine-tuned on down-stream task.
 There are two main ways to load pretrained checkpoints in NeMo:
 
 * Using the :code:`restore_from()` method to load a local checkpoint file (``.nemo``), or
@@ -9,13 +9,13 @@ There are two main ways to load pretrained checkpoints in NeMo:
 
 Refer to the following sections for instructions and examples for each.
 
-Note that these instructions are for fine-tuning. To resume an unfinished training experiment, 
+Note that these instructions are for fine-tuning. To resume an unfinished training experiment,
 use the Experiment Manager to do so by setting the ``resume_if_exists`` flag to ``True``.
 
 Loading Local Checkpoints
 -------------------------
 
-NeMo automatically saves checkpoints of a model that is trained in a ``.nemo`` format. Alternatively, to manually save the model at any 
+NeMo automatically saves checkpoints of a model that is trained in a ``.nemo`` format. Alternatively, to manually save the model at any
 point, issue :code:`model.save_to(<checkpoint_path>.nemo)`.
 
 If there is a local ``.nemo`` checkpoint that you'd like to load, use the :code:`restore_from()` method:
@@ -30,7 +30,7 @@ Where the model base class is the ASR model class of the original checkpoint, or
 Loading NGC Pretrained Checkpoints
 ----------------------------------
 
-The SSL collection has checkpoints of several models trained on various datasets. These checkpoints are 
+The SSL collection has checkpoints of several models trained on various datasets. These checkpoints are
 obtainable via NGC `NeMo Automatic Speech Recognition collection <https://catalog.ngc.nvidia.com/orgs/nvidia/collections/nemo_asr>`_.
 The model cards on NGC contain more information about each of the checkpoints available.
 
@@ -63,8 +63,8 @@ If you would like to programatically list the models available for a particular 
 
 Loading SSL checkpoint into Down-stream Model
 ---------------------------------------------
-After loading an SSL checkpoint as shown above, it's ``state_dict`` needs to be copied to a 
-down-stream model for fine-tuning. 
+After loading an SSL checkpoint as shown above, it's ``state_dict`` needs to be copied to a
+down-stream model for fine-tuning.
 
 For example, to load a SSL checkpoint for ASR down-stream task using ``EncDecRNNTBPEModel``, run:
 
@@ -79,19 +79,19 @@ For example, to load a SSL checkpoint for ASR down-stream task using ``EncDecRNN
   # discard ssl model
   del ssl model
 
-Refer to :doc:`SSL configs <./configs>` to do this automatically via config files. 
+Refer to :doc:`SSL configs <./configs>` to do this automatically via config files.
 
 
 Fine-tuning on Downstream Datasets
 -----------------------------------
 
-After loading SSL checkpoint into down-stream model, refer to multiple ASR tutorials provided in the :ref:`Tutorials <tutorials>` section. 
+After loading SSL checkpoint into down-stream model, refer to multiple ASR tutorials provided in the :ref:`Tutorials <tutorials>` section.
 Most of these tutorials explain how to fine-tune on some dataset as a demonstration.
 
 Inference Execution Flow Diagram
 --------------------------------
 
-When preparing your own inference scripts after downstream fine-tuning, please follow the execution flow diagram order for correct inference, found at the `examples directory for ASR collection <https://github.com/NVIDIA/NeMo/blob/stable/examples/asr/README.md>`_.
+When preparing your own inference scripts after downstream fine-tuning, please follow the execution flow diagram order for correct inference, found at the `examples directory for ASR collection <https://github.com/NVIDIA-NeMo/Speech/blob/stable/examples/asr/README.md>`_.
 
 SSL Models
 -----------------------------------

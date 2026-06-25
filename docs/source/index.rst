@@ -1,7 +1,7 @@
 NVIDIA NeMo Speech Developer Docs
 =================================
 
-`NVIDIA NeMo Speech <https://github.com/NVIDIA/NeMo>`_ is an open-source toolkit for speech, audio, and multimodal language model research, with a clear path from experimentation to production deployment.
+`NVIDIA NeMo Speech <https://github.com/NVIDIA-NeMo/Speech>`_ is an open-source toolkit for speech, audio, and multimodal language model research, with a clear path from experimentation to production deployment.
 
 .. raw:: html
 
@@ -50,7 +50,7 @@ NVIDIA NeMo Speech Developer Docs
 What is NeMo?
 --------------
 
-`NVIDIA NeMo <https://github.com/NVIDIA/NeMo>`_ is an open-source toolkit for building, customizing, and deploying speech, audio, and multimodal language models. It provides:
+`NVIDIA NeMo <https://github.com/NVIDIA-NeMo/Speech>`_ is an open-source toolkit for building, customizing, and deploying speech, audio, and multimodal language models. It provides:
 
 - **Pretrained models** — production-ready checkpoints on `NGC <https://catalog.ngc.nvidia.com/models?query=nemo&orderBy=weightPopularDESC>`__ and `HuggingFace Hub <https://huggingface.co/nvidia>`__
 - **Modular architecture** — neural modules you can mix, match, and extend

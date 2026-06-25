@@ -88,12 +88,12 @@ class GradBucket(object):
     def __init__(self, numel, chunk_size_mb, data_group):
         if not HAVE_APEX:
             raise ImportError(
-                "Apex was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
+                "Apex was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA-NeMo/Speech#megatron-gpt."
             )
 
         if not HAVE_MEGATRON_CORE:
             raise ImportError(
-                "megatron-core was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
+                "megatron-core was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA-NeMo/Speech#megatron-gpt."
             )
 
         self.numel = numel
@@ -192,12 +192,12 @@ class MainParamsOptimizerWrapper(torch.optim.Optimizer):
     ):
         if not HAVE_APEX:
             raise ImportError(
-                "Apex was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
+                "Apex was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA-NeMo/Speech#megatron-gpt."
             )
 
         if not HAVE_MEGATRON_CORE:
             raise ImportError(
-                "megatron-core was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
+                "megatron-core was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA-NeMo/Speech#megatron-gpt."
             )
 
         self.optimizer = optimizer

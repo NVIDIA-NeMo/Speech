@@ -62,10 +62,10 @@ Tutorial Overview
      - `Offline ASR <https://colab.research.google.com/github/NVIDIA/NeMo/blob/main/tutorials/asr/Offline_ASR.ipynb>`_
    * - ASR
      - Online ASR Microphone Cache Aware Streaming
-     - `Online ASR Microphone Cache Aware Streaming <https://github.com/NVIDIA/NeMo/blob/main/tutorials/asr/Online_ASR_Microphone_Demo_Cache_Aware_Streaming.ipynb>`_
+     - `Online ASR Microphone Cache Aware Streaming <https://github.com/NVIDIA-NeMo/Speech/blob/main/tutorials/asr/Online_ASR_Microphone_Demo_Cache_Aware_Streaming.ipynb>`_
    * - ASR
      - Online ASR Microphone Buffered Streaming
-     - `Online ASR Microphone Buffered Streaming <https://github.com/NVIDIA/NeMo/blob/main/tutorials/asr/Online_ASR_Microphone_Demo_Buffered_Streaming.ipynb>`_
+     - `Online ASR Microphone Buffered Streaming <https://github.com/NVIDIA-NeMo/Speech/blob/main/tutorials/asr/Online_ASR_Microphone_Demo_Buffered_Streaming.ipynb>`_
    * - ASR
      - ASR CTC Language Fine-Tuning
      - `ASR CTC Language Fine-Tuning <https://colab.research.google.com/github/NVIDIA/NeMo/blob/main/tutorials/asr/ASR_CTC_Language_Finetuning.ipynb>`_
@@ -83,13 +83,13 @@ Tutorial Overview
      - `Speech Commands <https://colab.research.google.com/github/NVIDIA/NeMo/blob/main/tutorials/asr/Speech_Commands.ipynb>`_
    * - ASR
      - Online Offline Microphone Speech Commands
-     - `Online Offline Microphone Speech Commands <https://github.com/NVIDIA/NeMo/blob/main/tutorials/asr/Online_Offline_Speech_Commands_Demo.ipynb>`_
+     - `Online Offline Microphone Speech Commands <https://github.com/NVIDIA-NeMo/Speech/blob/main/tutorials/asr/Online_Offline_Speech_Commands_Demo.ipynb>`_
    * - ASR
      - Voice Activity Detection
      - `Voice Activity Detection <https://colab.research.google.com/github/NVIDIA/NeMo/blob/main/tutorials/asr/Voice_Activity_Detection.ipynb>`_
    * - ASR
      - Online Offline Microphone VAD
-     - `Online Offline Microphone VAD <https://github.com/NVIDIA/NeMo/blob/main/tutorials/asr/Online_Offline_Microphone_VAD_Demo.ipynb>`_
+     - `Online Offline Microphone VAD <https://github.com/NVIDIA-NeMo/Speech/blob/main/tutorials/asr/Online_Offline_Microphone_VAD_Demo.ipynb>`_
    * - ASR
      - Speaker Recognition and Verification
      - `Speaker Recognition and Verification <https://colab.research.google.com/github/NVIDIA/NeMo/blob/main/tutorials/speaker_tasks/Speaker_Identification_Verification.ipynb>`_
@@ -104,10 +104,10 @@ Tutorial Overview
      - `Online Noise Augmentation <https://colab.research.google.com/github/NVIDIA/NeMo/blob/main/tutorials/asr/Online_Noise_Augmentation.ipynb>`_
    * - ASR
      - ASR for Telephony Speech
-     - `ASR for Telephony Speech <https://github.com/NVIDIA/NeMo/blob/main/tutorials/asr/ASR_for_telephony_speech.ipynb>`_
+     - `ASR for Telephony Speech <https://github.com/NVIDIA-NeMo/Speech/blob/main/tutorials/asr/ASR_for_telephony_speech.ipynb>`_
    * - ASR
      - Streaming inference
-     - `Streaming inference <https://github.com/NVIDIA/NeMo/blob/main/tutorials/asr/Streaming_ASR.ipynb>`_
+     - `Streaming inference <https://github.com/NVIDIA-NeMo/Speech/blob/main/tutorials/asr/Streaming_ASR.ipynb>`_
    * - ASR
      - Buffered Transducer inference
      - `Buffered Transducer inference <https://colab.research.google.com/github/NVIDIA/NeMo/blob/main/tutorials/asr/Buffered_Transducer_Inference.ipynb>`_

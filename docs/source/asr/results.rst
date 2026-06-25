@@ -106,7 +106,7 @@ In order to obtain alignments from CTC or RNNT models (previously called ``logpr
 .. code-block:: python
 
     hyps = model.transcribe(audio=[list of audio files], batch_size=BATCH_SIZE, return_hypotheses=True)
-    logprobs = hyps[0].alignments  
+    logprobs = hyps[0].alignments
 
 -----
 
@@ -138,13 +138,13 @@ In some cases the audio is too long for standard inference, especially if you're
 There are two main ways of performing inference on long audio files in NeMo:
 
 The first way is to use buffered inference, where the audio is divided into chunks to run on, and the output is merged afterwards.
-The relevant scripts for this are contained in `this folder <https://github.com/NVIDIA/NeMo/blob/stable/examples/asr/asr_chunked_inference>`_.
+The relevant scripts for this are contained in `this folder <https://github.com/NVIDIA-NeMo/Speech/blob/stable/examples/asr/asr_chunked_inference>`_.
 
 The second way, specifically for models with the Conformer/Fast Conformer encoder, is to use local attention, which changes the costs to be linear.
 You can train Fast Conformer models with Longformer-style (https://arxiv.org/abs/2004.05150) local+global attention using one of the following configs: CTC config at
 ``<NeMo_git_root>/examples/asr/conf/fastconformer/fast-conformer-long_ctc_bpe.yaml`` and transducer config at ``<NeMo_git_root>/examples/asr/conf/fastconformer/fast-conformer-long_transducer_bpe.yaml``.
 You can also convert any model trained with full context attention to local, though this may result in lower WER in some cases. You can switch to local attention when running the
-`transcribe <https://github.com/NVIDIA/NeMo/blob/stable/examples/asr/transcribe_speech.py>`_ or `evaluation <https://github.com/NVIDIA/NeMo/blob/stable/examples/asr/transcribe_speech.py>`_
+`transcribe <https://github.com/NVIDIA-NeMo/Speech/blob/stable/examples/asr/transcribe_speech.py>`_ or `evaluation <https://github.com/NVIDIA-NeMo/Speech/blob/stable/examples/asr/transcribe_speech.py>`_
 scripts in the following way:
 
 .. code-block:: python
@@ -187,10 +187,10 @@ Multi-task models that use structured prompts require additionl task tokens as i
 .. code-block:: python
 
     from nemo.collections.asr.models import EncDecMultiTaskModel
-   
+
     # load model
     canary_model = EncDecMultiTaskModel.from_pretrained('nvidia/canary-1b-v2')
-   
+
     # update dcode params
     decode_cfg = canary_model.cfg.decoding
     decode_cfg.beam.beam_size = 1
@@ -213,10 +213,10 @@ Here the manifest file should be a json file where each line has the following f
        "source_lang": "en",  # language of the audio input, set `source_lang`==`target_lang` for ASR
        "target_lang": "en",  # language of the text output
        "pnc": "yes",  # whether to have PnC output, choices=['yes', 'no']
-       "answer": "na", # set to non-dummy strings to calculate WER/BLEU scores 
+       "answer": "na", # set to non-dummy strings to calculate WER/BLEU scores
     }
 
-Note that using manifest allows to specify the task configuration for each audio individually. If we want to use the same task configuration for all the audio files, it can be specified in `transcribe` method directly. 
+Note that using manifest allows to specify the task configuration for each audio individually. If we want to use the same task configuration for all the audio files, it can be specified in `transcribe` method directly.
 
 .. code-block:: python
 
@@ -232,7 +232,7 @@ Note that using manifest allows to specify the task configuration for each audio
 Inference on Apple M-Series GPU
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-To perform inference on Apple Mac M-Series GPU (``mps`` PyTorch device), use PyTorch 2.0 or higher (see the `mac-installation <https://github.com/NVIDIA/NeMo/blob/stable/README.rst#mac-computers-with-apple-silicon>` section). Environment variable ``PYTORCH_ENABLE_MPS_FALLBACK=1`` should be set, since not all operations in PyTorch are currently implemented on ``mps`` device.
+To perform inference on Apple Mac M-Series GPU (``mps`` PyTorch device), use PyTorch 2.0 or higher (see the `mac-installation <https://github.com/NVIDIA-NeMo/Speech/blob/stable/README.rst#mac-computers-with-apple-silicon>` section). Environment variable ``PYTORCH_ENABLE_MPS_FALLBACK=1`` should be set, since not all operations in PyTorch are currently implemented on ``mps`` device.
 
 If ``allow_mps=true`` flag is passed to ``speech_to_text_eval.py``, the ``mps`` device will be selected automatically.
 
@@ -251,7 +251,7 @@ There are multiple ASR tutorials provided in the Tutorials section. Most of thes
 Inference Execution Flow Diagram
 --------------------------------
 
-When preparing your own inference scripts, please follow the execution flow diagram order for correct inference, found at the `examples directory for ASR collection <https://github.com/NVIDIA/NeMo/blob/stable/examples/asr/README.md>`_.
+When preparing your own inference scripts, please follow the execution flow diagram order for correct inference, found at the `examples directory for ASR collection <https://github.com/NVIDIA-NeMo/Speech/blob/stable/examples/asr/README.md>`_.
 
 
 Automatic Speech Recognition Models
@@ -261,7 +261,7 @@ Automatic Speech Recognition Models
 
 Speech Recognition
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-Below is a list of the high quality ASR models available in NeMo for specific languages. All ASR models can be found in :doc:`ASR Model Checkpoints <./asr_checkpoints>`. 
+Below is a list of the high quality ASR models available in NeMo for specific languages. All ASR models can be found in :doc:`ASR Model Checkpoints <./asr_checkpoints>`.
 
 Multilingual Multitask
 ^^^^^^^^^^^^^^^^^^^^^^
@@ -269,7 +269,7 @@ Multilingual Multitask
 .. csv-table::
    :file: data/benchmark_canary.csv
    :align: left
-   :widths: 50,50  
+   :widths: 50,50
    :header-rows: 1
 
 Parakeet
@@ -310,10 +310,10 @@ The Hybrid-Transducer-CTC model with prompt conditioning (``EncDecHybridRNNTCTCB
 .. code-block:: python
 
   import nemo.collections.asr as nemo_asr
-  
+
   # Load the model
   model = nemo_asr.models.EncDecHybridRNNTCTCBPEModelWithPrompt.restore_from("path/to/model.nemo")
-  
+
   # Transcribe with language prompts
   transcriptions = model.transcribe(
       paths2audio_files=["audio1.wav", "audio2.wav"],

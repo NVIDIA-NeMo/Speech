@@ -39,7 +39,7 @@ See the [model architecture](#model-architecture) section and [NeMo documentatio
 To train, fine-tune, or experiment with the model, install the PyTorch build for your platform first, then install [NVIDIA NeMo](https://docs.nvidia.com/nemo/speech/nightly/starthere/install.html) with the extras you need.
 ```
 pip install 'nemo-toolkit[all]'
-``` 
+```
 
 ## How to Use this Model
 
@@ -96,9 +96,9 @@ model = ModelPT.from_pretrained("{repo_id}")
 
     An example is provided below for ASR
 
-    The NeMo toolkit [3] was used for training the models for over several hundred epochs. These model are trained with this [example script](https://github.com/NVIDIA/NeMo/blob/main/examples/asr/asr_transducer/speech_to_text_rnnt_bpe.py) and this [base config](https://github.com/NVIDIA/NeMo/blob/main/examples/asr/conf/fastconformer/fast-conformer_transducer_bpe.yaml).
+    The NeMo toolkit [3] was used for training the models for over several hundred epochs. These model are trained with this [example script](https://github.com/NVIDIA-NeMo/Speech/blob/main/examples/asr/asr_transducer/speech_to_text_rnnt_bpe.py) and this [base config](https://github.com/NVIDIA-NeMo/Speech/blob/main/examples/asr/conf/fastconformer/fast-conformer_transducer_bpe.yaml).
 
-    The tokenizers for these models were built using the text transcripts of the train set with this [script](https://github.com/NVIDIA/NeMo/blob/main/scripts/tokenizers/process_asr_text_tokenizer.py).
+    The tokenizers for these models were built using the text transcripts of the train set with this [script](https://github.com/NVIDIA-NeMo/Speech/blob/main/scripts/tokenizers/process_asr_text_tokenizer.py).
 
 
 ### Datasets
@@ -150,7 +150,7 @@ model = ModelPT.from_pretrained("{repo_id}")
 ### NOTE
 
     An example is provided below for ASR metrics list that can be added to the top of the README
-    
+
     model-index:
     - name: PUT_MODEL_NAME
       results:
@@ -182,7 +182,7 @@ model = ModelPT.from_pretrained("{repo_id}")
           type: wer
           value: 14.11
 
-Provide any caveats about the results presented in the top of the discussion so that nuance is not lost. 
+Provide any caveats about the results presented in the top of the discussion so that nuance is not lost.
 
 It should ideally be in a tabular format (you can use the following website to make your tables in markdown format - https://www.tablesgenerator.com/markdown_tables)**
 
@@ -193,7 +193,7 @@ It should ideally be in a tabular format (you can use the following website to m
 
 ### Note
 
-    An example is provided below 
+    An example is provided below
 
     Since this model was trained on publicly available speech datasets, the performance of this model might degrade for speech which includes technical terms, or vernacular that the model has not been trained on. The model might also perform worse for accented speech.
 
@@ -206,5 +206,5 @@ License to use this model is covered by the [CC-BY-4.0](https://creativecommons.
 
 **Provide appropriate references in the markdown link format below. Please order them numerically.**
 
-[1] [NVIDIA NeMo Toolkit](https://github.com/NVIDIA/NeMo)
+[1] [NVIDIA NeMo Toolkit](https://github.com/NVIDIA-NeMo/Speech)
 """

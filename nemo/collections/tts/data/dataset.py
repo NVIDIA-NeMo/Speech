@@ -197,7 +197,7 @@ class TTSDataset(Dataset):
             self.text_normalizer_call = None
         elif not PYNINI_AVAILABLE:
             raise ImportError(
-                "`nemo_text_processing` is not installed, see https://github.com/NVIDIA/NeMo-text-processing for details. "
+                "`nemo_text_processing` is not installed, see https://github.com/NVIDIA-NeMo/Speech-text-processing for details. "
                 "If you wish to continue without text normalization, please remove the text_normalizer part in your TTS yaml file."
             )
         else:

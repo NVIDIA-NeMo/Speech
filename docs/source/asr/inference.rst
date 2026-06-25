@@ -162,7 +162,7 @@ For audio longer than what fits in memory (especially with Conformer's quadratic
 **Buffered / chunked inference:**
 
 Divide audio into overlapping chunks and merge outputs. Scripts are in
-`examples/asr/asr_chunked_inference <https://github.com/NVIDIA/NeMo/tree/main/examples/asr/asr_chunked_inference>`_.
+`examples/asr/asr_chunked_inference <https://github.com/NVIDIA-NeMo/Speech/tree/main/examples/asr/asr_chunked_inference>`_.
 
 **Local attention (recommended for Fast Conformer):**
 
@@ -308,4 +308,4 @@ Execution Flow
 --------------
 
 When writing custom inference scripts, follow the execution flow diagram at the
-`ASR examples README <https://github.com/NVIDIA/NeMo/blob/main/examples/asr/README.md>`_.
+`ASR examples README <https://github.com/NVIDIA-NeMo/Speech/blob/main/examples/asr/README.md>`_.

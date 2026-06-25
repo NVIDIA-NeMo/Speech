@@ -96,7 +96,7 @@ Your original input manifest should contain the fields `audio_filepath`, `text`,
 
 ### 2.2 Getting timestamps for end-of-utterance (EOU)
 
-We recommend using forced alignment to get the timestamps for EOU. One way to do this is to use the [Nemo Forced Aligner](https://github.com/NVIDIA/NeMo/tree/main/tools/nemo_forced_aligner) tool.
+We recommend using forced alignment to get the timestamps for EOU. One way to do this is to use the [Nemo Forced Aligner](https://github.com/NVIDIA-NeMo/Speech/tree/main/tools/nemo_forced_aligner) tool.
 
 ```bash
 python <NeMo Root>/tools/nemo_forced_aligner/align_eou.py \

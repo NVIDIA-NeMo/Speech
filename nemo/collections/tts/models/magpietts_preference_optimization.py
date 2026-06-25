@@ -309,12 +309,12 @@ class MagpieTTSModelOfflinePO(MagpieTTSModel):
         logits = pi_logratios - ref_logratios  # also known as h_{\pi_\theta}^{y_w,y_l}
         # logits = (policy_chosen_logps - policy_rejected_logps) - (reference_chosen_logps - reference_rejected_logps)
         # logits = (policy_chosen_logps - reference_chosen_logps) - (policy_rejected_logps - reference_rejected_logps)
-        # logits is the same as rewards_delta in NeMo aligner: https://github.com/NVIDIA/NeMo-Aligner/blob/0b5bffeb78a8316dd57e0816a2a9544540f0c8dd/nemo_aligner/models/nlp/gpt/megatron_gpt_dpo_model.py#L241
+        # logits is the same as rewards_delta in NeMo aligner: https://github.com/NVIDIA-NeMo/Speech-Aligner/blob/0b5bffeb78a8316dd57e0816a2a9544540f0c8dd/nemo_aligner/models/nlp/gpt/megatron_gpt_dpo_model.py#L241
 
         if loss_type == "ipo":
             losses = (logits - 1 / (2 * beta)) ** 2  # Eq. 17 of https://arxiv.org/pdf/2310.12036v2.pdf
         elif loss_type == "rpo":
-            # https://github.com/NVIDIA/NeMo-Aligner/blob/0b5bffeb78a8316dd57e0816a2a9544540f0c8dd/nemo_aligner/models/nlp/gpt/megatron_gpt_dpo_model.py#L241
+            # https://github.com/NVIDIA-NeMo/Speech-Aligner/blob/0b5bffeb78a8316dd57e0816a2a9544540f0c8dd/nemo_aligner/models/nlp/gpt/megatron_gpt_dpo_model.py#L241
             logbeta_hat_chosen = torch.nn.functional.logsigmoid(beta * logits)
             logbeta_hat_rejected = torch.nn.functional.logsigmoid(-beta * logits)
             gt_rewards_delta = gt_reward_scale * (chosen_gt_rewards - rejected_gt_rewards)

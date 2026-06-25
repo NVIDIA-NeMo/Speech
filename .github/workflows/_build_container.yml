@@ -99,7 +99,7 @@ jobs:
           build-args: |
             IMAGE_LABEL=nemo-core
             NEMO_TAG=${{ github.sha }}
-            NEMO_REPO=https://github.com/NVIDIA/NeMo
+            NEMO_REPO=https://github.com/NVIDIA-NeMo/Speech
             PR_NUMBER=${{ github.event.pull_request.number || 0 }}
           cache-from: |
             type=registry,ref=${{ inputs.registry }}/nemo-speech:${{ inputs.image-name }}-buildcache-main,mode=max

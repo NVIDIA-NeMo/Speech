@@ -6,7 +6,7 @@ NeMo APIs
 
 You can learn more about the underlying principles of the NeMo codebase in this section.
 
-The `NeMo Toolkit codebase <https://github.com/NVIDIA/NeMo>`__ is composed of a `core <https://github.com/NVIDIA/NeMo/tree/main/nemo/core>`__ section which contains the main building blocks of the framework, and various `collections <https://github.com/NVIDIA/NeMo/tree/main/nemo/collections>`__ which help you
+The `NeMo Toolkit codebase <https://github.com/NVIDIA-NeMo/Speech>`__ is composed of a `core <https://github.com/NVIDIA-NeMo/Speech/tree/main/nemo/core>`__ section which contains the main building blocks of the framework, and various `collections <https://github.com/NVIDIA-NeMo/Speech/tree/main/nemo/collections>`__ which help you
 build specialized AI models.
 
 You can learn more about aspects of the NeMo "core" by following the links below:

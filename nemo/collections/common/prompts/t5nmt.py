@@ -27,7 +27,7 @@ from nemo.collections.common.prompts.formatter import Modality, PromptFormatter
 class T5NMTPromptFormatter(PromptFormatter):
     """
     The default prompt format for Megatron T5 based neural machine translation models.
-    Based on: https://github.com/NVIDIA/NeMo/blob/ad5ef750e351edbb5eeb7eb6df2d0c804819600f/nemo/collections/nlp/models/machine_translation/megatron_nmt_model.py#L790
+    Based on: https://github.com/NVIDIA-NeMo/Speech/blob/ad5ef750e351edbb5eeb7eb6df2d0c804819600f/nemo/collections/nlp/models/machine_translation/megatron_nmt_model.py#L790
     """
 
     NAME = "t5nmt"
@@ -50,7 +50,7 @@ class T5NMTPromptFormatter(PromptFormatter):
 
     def encode_turn(self, prompt_template: str, expected_slots: dict, slot_values: dict) -> list[int]:
         # Automatically adds "<" and ">" to target lang token for T5 NMT.
-        # Based on: https://github.com/NVIDIA/NeMo/blob/ad5ef750e351edbb5eeb7eb6df2d0c804819600f/nemo/collections/nlp/models/machine_translation/mt_enc_dec_model.py#L307
+        # Based on: https://github.com/NVIDIA-NeMo/Speech/blob/ad5ef750e351edbb5eeb7eb6df2d0c804819600f/nemo/collections/nlp/models/machine_translation/mt_enc_dec_model.py#L307
         if (val := slot_values.get("target_lang")) is not None:
             if not val.startswith("<") or not val.endswith(">"):
                 slot_values["target_lang"] = f"<{val}>"

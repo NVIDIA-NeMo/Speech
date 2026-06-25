@@ -20,7 +20,7 @@ Speech Data Explorer (SDE) is a `Dash <https://plotly.com/dash/>`__-based web ap
 
 Getting Started
 ---------------
-SDE could be found in `NeMo/tools/speech_data_explorer <https://github.com/NVIDIA/NeMo/tree/stable/tools/speech_data_explorer>`__.
+SDE could be found in `NeMo/tools/speech_data_explorer <https://github.com/NVIDIA-NeMo/Speech/tree/stable/tools/speech_data_explorer>`__.
 
 Please install the SDE requirements:
 
@@ -75,7 +75,7 @@ SDE application has two pages:
         :align: center
         :width: 800px
         :alt: SDE Statistics
-        
+
 
 * `Samples` (to allow navigation across the entire dataset and exploration of individual utterances)
 
@@ -83,7 +83,7 @@ SDE application has two pages:
         :align: center
         :width: 800px
         :alt: SDE Statistics
-        
+
 
 Plotly Dash Datatable provides core SDE's interactive features (navigation, filtering, and sorting).
 SDE has two datatables:
@@ -94,7 +94,7 @@ SDE has two datatables:
         :align: center
         :width: 800px
         :alt: Vocabulary
-        
+
 
 * Data (that visualizes all dataset's utterances on `Samples` page)
 
@@ -102,7 +102,7 @@ SDE has two datatables:
         :align: center
         :width: 800px
         :alt: Data
-        
+
 
 Every column of the DataTable has the following interactive features:
 
@@ -112,7 +112,7 @@ Every column of the DataTable has the following interactive features:
         :align: center
         :width: 800px
         :alt: Toggling
-        
+
 
 * sorting (by clicking on small triangle icons in the column's header cell): unordered (two triangles point up and down), ascending (a triangle points up), descending (a triangle points down)
 
@@ -120,7 +120,7 @@ Every column of the DataTable has the following interactive features:
         :align: center
         :width: 800px
         :alt: Sorting
-        
+
 
 * filtering (by entering a filtering expression in a cell below the header's cell): SDE supports ``<``, ``>``, ``<=``, ``>=``, ``=``, ``!=``, and ``contains`` operators; to match a specific substring, the quoted substring can be used as a filtering expression
 
@@ -128,7 +128,7 @@ Every column of the DataTable has the following interactive features:
         :align: center
         :width: 800px
         :alt: Filtering
-        
+
 
 
 Analysis of Speech Datasets
@@ -146,14 +146,14 @@ If there is a pre-trained ASR model, then the JSON manifest file can be extended
 .. code-block:: bash
 
     python examples/asr/transcribe_speech.py pretrained_name=<ASR_MODEL_NAME> dataset_manifest=<JSON_FILENAME>
-    
-After that it is worth to check words with zero accuracy. 
+
+After that it is worth to check words with zero accuracy.
 
     .. image:: images/sde_mls_words.png
         :align: center
         :width: 800px
         :alt: MLS Words
-        
+
 
 And then look at high CER utterances.
 
@@ -161,7 +161,7 @@ And then look at high CER utterances.
         :align: center
         :width: 800px
         :alt: MLS CER
-        
+
 
 Listening to the audio recording helps to validate the corresponding reference transcript.
 
@@ -169,7 +169,7 @@ Listening to the audio recording helps to validate the corresponding reference t
         :align: center
         :width: 800px
         :alt: MLS Player
-        
+
 
 
 

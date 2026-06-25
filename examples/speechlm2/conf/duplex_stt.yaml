@@ -13,7 +13,8 @@ model:
 
   perception:
      target:  nemo.collections.speechlm2.modules.perception.AudioPerceptionModule
-     _target_: nemo.collections.speechlm2.modules.perception.IdentityConnector
+     modality_adapter:
+       _target_: nemo.collections.speechlm2.modules.perception.IdentityConnector
        d_model: 1024
 
   optimizer:

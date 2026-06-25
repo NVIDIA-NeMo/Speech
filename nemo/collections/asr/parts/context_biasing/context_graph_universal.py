@@ -304,7 +304,7 @@ class ContextGraph:
         scores: Optional[list[float]] = None,
         ac_thresholds: Optional[list[float]] = None,
         uniform_weights: Optional[bool] = False,
-        var_bpe_scoring: bool = True,
+        var_bpe_scoring_temp: float = 10.0,
     ):
         """Build the ContextGraph from a list of token list.
         It first build a trie from the given token lists, then fill the fail arc
@@ -368,12 +368,12 @@ class ContextGraph:
                 token_score = self._get_token_score(
                     depth=depth, uniform_weights=uniform_weights, context_score=context_score
                 )  # / cur_len
-                if var_bpe_scoring:
-                    probs = softmax(np.asarray([np.log(p + 1) for p in range(cur_len)]))
-                    for t in range(k, k + cur_len):
-                        token_scores[t] = token_score * probs[t - k]
-                else:
-                    token_scores[k + cur_len - 1] = token_score
+                # if var_bpe_scoring_temp is not None:
+                probs = softmax(np.asarray([(p + 1) ** var_bpe_scoring_temp for p in range(cur_len)]))
+                for t in range(k, k + cur_len):
+                    token_scores[t] = token_score * probs[t - k]
+                # else:
+                #     token_scores[k + cur_len - 1] = token_score
                 primary_context_scores[k + cur_len - 1] = token_score
                 primary_paths[k + cur_len - 1] = cur_len
                 k += cur_len

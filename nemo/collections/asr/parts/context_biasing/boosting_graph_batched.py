@@ -84,6 +84,7 @@ class BoostingTreeModelConfig:
         5  # The number of alternative transcriptions to generate for each context-biasing phrase
     )
     bpe_alpha: float = 0.3  # The alpha parameter for BPE dropout
+    var_bpe_scoring_temp: float = 10.0
 
     @staticmethod
     def is_empty(cfg: "BoostingTreeModelConfig") -> bool:
@@ -650,6 +651,7 @@ class GPUBoostingTreeModel(NGramGPULanguageModel):
                 scores=scores,
                 phrases=phrases,
                 uniform_weights=cfg.uniform_weights,
+                var_bpe_scoring_temp=cfg.var_bpe_scoring_temp,
             )
         else:
             context_graph.build(

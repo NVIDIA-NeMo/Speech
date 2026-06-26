@@ -13,6 +13,9 @@
 # limitations under the License.
 
 from abc import ABC, abstractmethod
+from typing import Optional, Tuple
+
+import torch
 
 
 class StreamingEncoder(ABC):
@@ -74,3 +77,47 @@ class StreamingEncoder(ABC):
             self.streaming_cfg.drop_extra_pre_encoded = prev_drop_extra_pre_encoded
 
         return encoder_output
+
+
+class _DummyStreamingCfg:
+    """Minimal streaming config for stateless encoders.
+
+    ``pre_encode_cache_size = 0`` tells the audio feature buffer that no
+    pre-encode overlap frames are needed between chunks — the encoder
+    processes each chunk independently with no temporal state.
+    """
+
+    pre_encode_cache_size: int = 0
+
+
+class DummyCacheAwareStreamingMixin(StreamingEncoder):
+    """Mixin for stateless encoders to satisfy the cache-aware streaming
+    interface required by ``StreamingSTTModel`` inference.
+
+    Encoders that process each audio chunk independently (no temporal KV cache,
+    no recurrent state) inherit this mixin instead of implementing the full
+    ``StreamingEncoder`` protocol.  All streaming cache arguments passed by the
+    inference pipeline are silently ignored; ``get_initial_cache_state`` returns
+    ``(None, None, None)`` so downstream code that guards on ``is not None``
+    skips all cache-update logic.
+
+    Usage::
+
+        class MyEncoder(nn.Module, DummyCacheAwareStreamingMixin):
+            ...
+    """
+
+    streaming_cfg: _DummyStreamingCfg = _DummyStreamingCfg()
+
+    def setup_streaming_params(self, **kwargs) -> None:
+        """No-op: stateless encoders have no streaming params to configure."""
+
+    def get_initial_cache_state(
+        self,
+        batch_size: int = 1,
+        dtype: Optional[torch.dtype] = None,
+        device: Optional[torch.device] = None,
+        **kwargs,
+    ) -> Tuple[None, None, None]:
+        """Return empty cache — this encoder carries no state between chunks."""
+        return None, None, None

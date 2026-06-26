@@ -22,6 +22,7 @@ from nemo.collections.asr.parts.mixins.mixins import (
     PromptStreamingMixin,
 )
 from nemo.collections.asr.parts.mixins.multitalker_asr_mixins import SpeakerKernelMixin
+from nemo.collections.asr.parts.mixins.streaming import DummyCacheAwareStreamingMixin
 from nemo.collections.asr.parts.mixins.transcription import (
     ASRTranscriptionMixin,
     TranscribeConfig,
@@ -35,6 +36,7 @@ __all__ = [
     'ASRModuleMixin',
     'ASRTranscriptionMixin',
     'DiarizationMixin',
+    'DummyCacheAwareStreamingMixin',
     'InterCTCMixin',
     'PromptStreamingMixin',
     'SpeakerKernelMixin',

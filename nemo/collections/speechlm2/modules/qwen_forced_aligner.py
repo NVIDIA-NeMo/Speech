@@ -22,11 +22,12 @@ import torch
 from torch import Tensor
 
 from nemo.collections.speechlm2.parts.alignments import ForcedAligner, WordAlignment
+from nemo.collections.speechlm2.parts.utils import freeze_module
 
 log = logging.getLogger(__name__)
 
 
-class QwenForcedAligner(ForcedAligner):
+class QwenForcedAligner(torch.nn.Module, ForcedAligner):
     """
     Wraps qwen_asr.Qwen3ForcedAligner to provide word-level alignment
     from audio tensors and text.
@@ -51,6 +52,7 @@ class QwenForcedAligner(ForcedAligner):
         device: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
     ):
+        super().__init__()
         import qwen_asr
 
         self.aligner = qwen_asr.Qwen3ForcedAligner.from_pretrained(
@@ -59,6 +61,7 @@ class QwenForcedAligner(ForcedAligner):
             device_map=device,
         )
         self.language = language
+        freeze_module(self)
 
     @torch.no_grad()
     def align_numpy(

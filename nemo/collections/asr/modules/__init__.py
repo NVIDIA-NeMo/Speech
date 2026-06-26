@@ -53,6 +53,7 @@ from nemo.collections.asr.modules.ssl_modules import (  # noqa: F401
     RandomBlockMasking,
     RandomProjectionVectorQuantizer,
 )
+from nemo.collections.asr.modules.subsampling_encoder import SubsamplingEncoder  # noqa: F401
 from nemo.collections.asr.modules.transformer_encoder import TransformerEncoder  # noqa: F401
 
 __all__ = [
@@ -87,4 +88,5 @@ __all__ = [
     'RandomBlockMasking',
     'RandomProjectionVectorQuantizer',
     'TransformerEncoder',
+    'SubsamplingEncoder',
 ]

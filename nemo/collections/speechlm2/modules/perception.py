@@ -22,6 +22,7 @@ from transformers.models.bert.modeling_bert import BertEncoder
 from nemo.collections.asr.models import ASRModel
 from nemo.collections.asr.modules.conformer_encoder import ConformerEncoder, ConformerMultiLayerFeatureExtractor
 from nemo.collections.asr.parts.mixins import TranscribeConfig
+from nemo.collections.asr.parts.mixins.streaming import StreamingEncoder
 from nemo.core import Exportable, NeuralModule, typecheck
 
 
@@ -246,7 +247,7 @@ class AudioPerceptionModule(NeuralModule, Exportable):
     def get_initial_cache_state(self, batch_size=1, dtype=torch.float32, device=None, **kwargs):
         if isinstance(self.modality_adapter, (QformerConnector, MultiLayerProjectionConnector)):
             return None  # not implemented yet
-        elif isinstance(self.encoder, ConformerEncoder):
+        elif isinstance(self.encoder, StreamingEncoder):
             return self.encoder.get_initial_cache_state(
                 batch_size=batch_size, dtype=dtype, device=device, max_dim=kwargs.get('max_dim', 0)
             )

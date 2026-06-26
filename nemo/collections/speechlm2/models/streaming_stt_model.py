@@ -2179,10 +2179,13 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                     device=device,
                 ).long()
 
-                # Slice encoder cache to the subset
-                sub_cache_lc = state.audio_cache.cache_last_channel.index_select(1, idx_t)
-                sub_cache_lt = state.audio_cache.cache_last_time.index_select(1, idx_t)
-                sub_cache_lcl = state.audio_cache.cache_last_channel_len[idx_t]
+                # Slice encoder cache to the subset (None when encoder is stateless).
+                if state.audio_cache.cache_last_channel is not None:
+                    sub_cache_lc = state.audio_cache.cache_last_channel.index_select(1, idx_t)
+                    sub_cache_lt = state.audio_cache.cache_last_time.index_select(1, idx_t)
+                    sub_cache_lcl = state.audio_cache.cache_last_channel_len[idx_t]
+                else:
+                    sub_cache_lc = sub_cache_lt = sub_cache_lcl = None
 
                 outputs = self.perception(
                     processed_signal=processed_signal,

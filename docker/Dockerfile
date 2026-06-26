@@ -70,7 +70,7 @@ EOF
 RUN <<"EOF" bash -ex
 apt-cache depends libsox-fmt-all \
   | awk '$1 == "Depends:" && $2 != "libsox-fmt-ao" && $2 != "libsox-fmt-mp3" && $2 !~ /^</ { print $2 }' \
-  | xargs -r apt-get install -y
+  | xargs -r apt-get install -y sox
 apt-get clean
 EOF
 

@@ -313,7 +313,7 @@ class OutputTarget:
     @staticmethod
     def _local_checksum(local_path: str, checksum_type: str) -> Optional[str]:
         checksum_type = checksum_type.lower().replace("-", "")
-        if checksum_type in ("xxhash", "xxhash64", "xxh64"):
+        if checksum_type in ("xxhash", "xxhash2", "xxhash64", "xxh64"):
             try:
                 import xxhash
             except ModuleNotFoundError:

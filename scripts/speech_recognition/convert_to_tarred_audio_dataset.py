@@ -77,6 +77,7 @@ python convert_to_tarred_audio_dataset.py \
 """
 import argparse
 import copy
+import hashlib
 import json
 import math
 import os
@@ -120,6 +121,14 @@ def _is_not_found_error(exc: Exception) -> bool:
     if response is not None and getattr(response, "status_code", None) == 404:
         return True
     return False
+
+
+@dataclass
+class RemoteObjectInfo:
+    exists: bool
+    size: Optional[int] = None
+    checksum_type: Optional[str] = None
+    checksum_value: Optional[str] = None
 
 
 class AISS3HTTPClient:
@@ -237,30 +246,149 @@ class OutputTarget:
             return local_path
         return self.object_uri(self.relative_path(local_path))
 
-    def exists(self, local_path: str) -> bool:
+    @staticmethod
+    def _header_value(headers, name: str):
+        if headers is None:
+            return None
+        if hasattr(headers, "get"):
+            value = headers.get(name)
+            if value is not None:
+                return value
+            if hasattr(headers, "items"):
+                lower_name = name.lower()
+                for key, candidate in headers.items():
+                    if str(key).lower() == lower_name:
+                        return candidate
+        return None
+
+    @classmethod
+    def _remote_info_from_headers(cls, headers) -> RemoteObjectInfo:
+        size = None
+        content_length = cls._header_value(headers, "Content-Length")
+        if content_length not in (None, ""):
+            try:
+                size = int(content_length)
+            except (TypeError, ValueError):
+                size = None
+
+        checksum_type = cls._header_value(headers, "ais-checksum-type")
+        checksum_value = cls._header_value(headers, "ais-checksum-value")
+
+        # Some tools render AIS checksums as one field, e.g. "xxhash[02a1...]".
+        checksum = cls._header_value(headers, "checksum")
+        if (not checksum_type or not checksum_value) and checksum and "[" in checksum and checksum.endswith("]"):
+            parsed_type, parsed_value = checksum.split("[", 1)
+            checksum_type = checksum_type or parsed_type
+            checksum_value = checksum_value or parsed_value[:-1]
+
+        if checksum_type:
+            checksum_type = checksum_type.strip().lower()
+        if checksum_value:
+            checksum_value = checksum_value.strip().strip('"')
+
+        return RemoteObjectInfo(
+            exists=True,
+            size=size,
+            checksum_type=checksum_type or None,
+            checksum_value=checksum_value or None,
+        )
+
+    def _remote_info(self, local_path: str) -> RemoteObjectInfo:
         if not self.is_s3:
-            return os.path.exists(local_path)
+            return RemoteObjectInfo(exists=os.path.exists(local_path))
 
         relative_path = self.relative_path(local_path)
         key = self.object_key(relative_path)
         try:
-            self.bucket.object(key).head()
-            return True
+            headers = self.bucket.object(key).head()
+            return self._remote_info_from_headers(headers)
         except Exception as exc:
             if _is_not_found_error(exc):
-                return False
+                return RemoteObjectInfo(exists=False)
             raise
 
-    def upload_file(self, local_path: str, remove_after: bool = False) -> None:
+    def exists(self, local_path: str) -> bool:
+        return self._remote_info(local_path).exists
+
+    @staticmethod
+    def _local_checksum(local_path: str, checksum_type: str) -> Optional[str]:
+        checksum_type = checksum_type.lower().replace("-", "")
+        if checksum_type in ("xxhash", "xxhash64", "xxh64"):
+            try:
+                import xxhash
+            except ModuleNotFoundError:
+                return None
+            hasher = xxhash.xxh64()
+        elif checksum_type == "md5":
+            hasher = hashlib.md5()
+        elif checksum_type in ("sha1", "sha"):
+            hasher = hashlib.sha1()
+        elif checksum_type == "sha256":
+            hasher = hashlib.sha256()
+        else:
+            return None
+
+        with open(local_path, "rb") as f:
+            for chunk in iter(lambda: f.read(8 * 1024 * 1024), b""):
+                hasher.update(chunk)
+        return hasher.hexdigest()
+
+    def matches_remote(self, local_path: str) -> bool:
         if not self.is_s3:
-            return
+            return os.path.exists(local_path)
+
+        remote_info = self._remote_info(local_path)
+        if not remote_info.exists:
+            return False
+
+        local_size = os.path.getsize(local_path)
+        if remote_info.size is not None and remote_info.size != local_size:
+            print(
+                f"Remote size differs for {self.display_path(local_path)} "
+                f"({remote_info.size} != {local_size}); uploading replacement."
+            )
+            return False
+
+        if not remote_info.checksum_type or not remote_info.checksum_value:
+            print(f"Remote checksum is unavailable for {self.display_path(local_path)}; uploading replacement.")
+            return False
+
+        local_checksum = self._local_checksum(local_path, remote_info.checksum_type)
+        if local_checksum is None:
+            print(
+                f"Cannot compute local {remote_info.checksum_type} checksum for {local_path}; "
+                "uploading replacement."
+            )
+            return False
+
+        if local_checksum == remote_info.checksum_value:
+            return True
+
+        print(
+            f"Remote checksum differs for {self.display_path(local_path)} "
+            f"({remote_info.checksum_type}: {remote_info.checksum_value} != {local_checksum}); "
+            "uploading replacement."
+        )
+        return False
+
+    def upload_file(self, local_path: str, remove_after: bool = False) -> bool:
+        if not self.is_s3:
+            return False
 
         relative_path = self.relative_path(local_path)
         key = self.object_key(relative_path)
+
+        if self.matches_remote(local_path):
+            print(f"Skipping unchanged upload: {self.object_uri(relative_path)}")
+            if remove_after:
+                os.remove(local_path)
+            return False
+
         print(f"Uploading {local_path} -> {self.object_uri(relative_path)}")
         self.bucket.object(key).get_writer().put_file(local_path)
         if remove_after:
             os.remove(local_path)
+        return True
 
 
 @dataclass
@@ -337,14 +465,50 @@ class ASRTarredDatasetBuilder:
             return self.output_target.exists(local_path)
         return os.path.exists(local_path)
 
-    def _upload_output_file(self, local_path: str, remove_after: bool = False) -> None:
+    def _upload_output_file(self, local_path: str, remove_after: bool = False) -> bool:
         if self.output_target is not None:
-            self.output_target.upload_file(local_path, remove_after=remove_after)
+            return self.output_target.upload_file(local_path, remove_after=remove_after)
+        return False
 
     def _display_output_path(self, local_path: str) -> str:
         if self.output_target is not None:
             return self.output_target.display_path(local_path)
         return local_path
+
+    def _shard_tar_path(self, target_dir: str, shard_id: int) -> str:
+        return os.path.join(target_dir, f'audio_{shard_id}.tar')
+
+    def _s3_output_enabled(self) -> bool:
+        return self.output_target is not None and self.output_target.is_s3
+
+    def _tar_preexists_for_manifest_check(self, target_dir: str, shard_id: int, only_manifests: bool) -> bool:
+        if only_manifests or not self._s3_output_enabled():
+            return False
+        return self._output_exists(self._shard_tar_path(target_dir, shard_id))
+
+    def _ensure_tar_checked_after_manifest_upload(
+        self,
+        entries,
+        target_dir: str,
+        shard_id: int,
+        manifest_folder: str,
+        only_manifests: bool,
+        manifest_uploaded: bool,
+        tar_preexisted: bool,
+    ) -> None:
+        if only_manifests or not manifest_uploaded or not tar_preexisted or not self._s3_output_enabled():
+            return
+
+        tar_path = self._shard_tar_path(target_dir, shard_id)
+        print(f"Shard manifest changed; checking tar shard checksum: {self._display_output_path(tar_path)}")
+        self._create_shard(
+            entries,
+            target_dir,
+            shard_id,
+            manifest_folder,
+            only_manifests=False,
+            force_tar_checksum=True,
+        )
 
     def _keep_local_tar_for_index(self) -> bool:
         return self.output_target is not None and self.output_target.is_s3 and dali_index_available()
@@ -442,6 +606,7 @@ class ASRTarredDatasetBuilder:
 
         start_indices = []
         end_indices = []
+        tar_preexisted_by_shard = []
         # Build indices
         for i in range(config.num_shards):
             start_idx = (len(entries) // config.num_shards) * i
@@ -457,6 +622,7 @@ class ASRTarredDatasetBuilder:
 
             start_indices.append(start_idx)
             end_indices.append(end_idx)
+            tar_preexisted_by_shard.append(self._tar_preexists_for_manifest_check(target_dir, i, only_manifests))
 
         manifest_folder, _ = os.path.split(manifest_path)
 
@@ -472,14 +638,20 @@ class ASRTarredDatasetBuilder:
             if not os.path.exists(sharded_manifests_dir):
                 os.makedirs(sharded_manifests_dir)
 
-            for manifest in new_entries_list:
+            for manifest, start_idx, end_idx, tar_preexisted in zip(
+                new_entries_list, start_indices, end_indices, tar_preexisted_by_shard
+            ):
                 shard_id = manifest[0]['shard_id']
-                new_manifest_shard_path = os.path.join(sharded_manifests_dir, f'manifest_{shard_id}.json')
-                with open(new_manifest_shard_path, 'w', encoding='utf-8') as m2:
-                    for entry in manifest:
-                        json.dump(entry, m2, ensure_ascii=False)
-                        m2.write('\n')
-                self._upload_output_file(new_manifest_shard_path, remove_after=True)
+                manifest_uploaded = self._write_shard_manifest(target_dir, manifest)
+                self._ensure_tar_checked_after_manifest_upload(
+                    entries[start_idx:end_idx],
+                    target_dir,
+                    shard_id,
+                    manifest_folder,
+                    only_manifests,
+                    manifest_uploaded,
+                    tar_preexisted,
+                )
 
         # Flatten the list of list of entries to a list of entries
         new_entries = [sample for manifest in new_entries_list for sample in manifest]
@@ -656,6 +828,7 @@ class ASRTarredDatasetBuilder:
         start_indices = []
         end_indices = []
         shard_indices = []
+        tar_preexisted_by_shard = []
         for i in range(num_added_shards):
             start_idx = (len(entries) // num_added_shards) * i
             end_idx = start_idx + (len(entries) // num_added_shards)
@@ -665,6 +838,9 @@ class ASRTarredDatasetBuilder:
             start_indices.append(start_idx)
             end_indices.append(end_idx)
             shard_indices.append(shard_idx)
+            tar_preexisted_by_shard.append(
+                self._tar_preexists_for_manifest_check(target_dir, shard_idx, only_manifests)
+            )
 
         manifest_folder, _ = os.path.split(base_manifest_path)
 
@@ -682,14 +858,20 @@ class ASRTarredDatasetBuilder:
             if not os.path.exists(sharded_manifests_dir):
                 os.makedirs(sharded_manifests_dir)
 
-            for manifest in new_entries_list:
+            for manifest, start_idx, end_idx, tar_preexisted in zip(
+                new_entries_list, start_indices, end_indices, tar_preexisted_by_shard
+            ):
                 shard_id = manifest[0]['shard_id']
-                new_manifest_shard_path = os.path.join(sharded_manifests_dir, f'manifest_{shard_id}.json')
-                with open(new_manifest_shard_path, 'w', encoding='utf-8') as m2:
-                    for entry in manifest:
-                        json.dump(entry, m2, ensure_ascii=False)
-                        m2.write('\n')
-                self._upload_output_file(new_manifest_shard_path, remove_after=True)
+                manifest_uploaded = self._write_shard_manifest(target_dir, manifest)
+                self._ensure_tar_checked_after_manifest_upload(
+                    entries[start_idx:end_idx],
+                    target_dir,
+                    shard_id,
+                    manifest_folder,
+                    only_manifests,
+                    manifest_uploaded,
+                    tar_preexisted,
+                )
 
         # Flatten the list of list of entries to a list of entries
         new_entries = [sample for manifest in new_entries_list for sample in manifest]
@@ -849,11 +1031,11 @@ class ASRTarredDatasetBuilder:
                 json.dump(entry, m2, ensure_ascii=False)
                 m2.write('\n')
 
-    def _write_shard_manifest(self, target_dir: str, entries) -> None:
+    def _write_shard_manifest(self, target_dir: str, entries) -> bool:
         if not self.config.shard_manifests:
-            return
+            return False
         if not entries:
-            return
+            return False
 
         sharded_manifests_dir = target_dir + '/sharded_manifests'
         if not os.path.exists(sharded_manifests_dir):
@@ -862,7 +1044,7 @@ class ASRTarredDatasetBuilder:
         shard_id = entries[0]['shard_id']
         new_manifest_shard_path = os.path.join(sharded_manifests_dir, f'manifest_{shard_id}.json')
         self._write_manifest_entries(new_manifest_shard_path, entries)
-        self._upload_output_file(new_manifest_shard_path, remove_after=True)
+        return self._upload_output_file(new_manifest_shard_path, remove_after=True)
 
     def _create_new_dataset_streaming(
         self,
@@ -928,10 +1110,22 @@ class ASRTarredDatasetBuilder:
                 if current_shard_id == config.num_shards - 1:
                     print(f"Have {remainder_entries} entries left over that will be discarded.")
 
+                tar_preexisted = self._tar_preexists_for_manifest_check(
+                    target_dir, current_shard_id, only_manifests
+                )
                 new_entries = self._create_shard(
                     current_entries, target_dir, current_shard_id, manifest_folder, only_manifests
                 )
-                self._write_shard_manifest(target_dir, new_entries)
+                manifest_uploaded = self._write_shard_manifest(target_dir, new_entries)
+                self._ensure_tar_checked_after_manifest_upload(
+                    current_entries,
+                    target_dir,
+                    current_shard_id,
+                    manifest_folder,
+                    only_manifests,
+                    manifest_uploaded,
+                    tar_preexisted,
+                )
                 for new_entry in new_entries:
                     json.dump(new_entry, m2, ensure_ascii=False)
                     m2.write('\n')
@@ -1026,17 +1220,28 @@ class ASRTarredDatasetBuilder:
         down = source_sampling_rate // common
         return resample_poly(audio, up, down, axis=0)
 
-    def _create_shard(self, entries, target_dir, shard_id, manifest_folder: str = None, only_manifests: bool = False):
+    def _create_shard(
+        self,
+        entries,
+        target_dir,
+        shard_id,
+        manifest_folder: str = None,
+        only_manifests: bool = False,
+        force_tar_checksum: bool = False,
+    ):
         """Creates a tarball containing the audio files from `entries`."""
         if self.config.sort_in_shards:
             entries.sort(key=lambda x: x["duration"], reverse=False)
 
         new_entries = []
 
-        tar_filepath = os.path.join(target_dir, f'audio_{shard_id}.tar')
+        tar_filepath = self._shard_tar_path(target_dir, shard_id)
         tar_exists = self._output_exists(tar_filepath)
-        write_tar = not only_manifests and not tar_exists
-        if tar_exists and not only_manifests:
+        force_tar_write = force_tar_checksum and self._s3_output_enabled()
+        write_tar = not only_manifests and (force_tar_write or not tar_exists)
+        if tar_exists and force_tar_write:
+            print(f"Rebuilding tar shard for checksum comparison: {self._display_output_path(tar_filepath)}")
+        elif tar_exists and not only_manifests:
             print(f"Skipping existing tar shard: {self._display_output_path(tar_filepath)}")
         if write_tar:
             tar = tarfile.open(tar_filepath, mode='w', dereference=True)
@@ -1096,8 +1301,8 @@ class ASRTarredDatasetBuilder:
                     )
                 count[squashed_filename] += 1
 
-                entry['source_audio_offset'] = entry['offset']
-                del entry['offset']
+                manifest_entry = dict(entry)
+                manifest_entry['source_audio_offset'] = manifest_entry.pop('offset')
             else:
                 if squashed_filename not in count:
                     to_write = self._tar_audio_filename(squashed_filename)
@@ -1107,13 +1312,14 @@ class ASRTarredDatasetBuilder:
                 else:
                     to_write = self._tar_audio_filename(base + "-sub" + str(count[squashed_filename]) + ext)
                     count[squashed_filename] += 1
+                manifest_entry = dict(entry)
 
             if only_manifests:
-                entry['abs_audio_filepath'] = audio_filepath
+                manifest_entry['abs_audio_filepath'] = audio_filepath
 
             # Carry over every key in the entry, override audio_filepath and shard_id
             new_entry = {
-                **entry,
+                **manifest_entry,
                 'audio_filepath': to_write,
                 'shard_id': shard_id,  # Keep shard ID for recordkeeping
             }

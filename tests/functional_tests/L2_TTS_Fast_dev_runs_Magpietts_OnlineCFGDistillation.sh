@@ -77,7 +77,9 @@ HF_HUB_OFFLINE=1 TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 coverage run -a --data-file=
     +model.text_tokenizers.french_chartokenizer._target_=AutoTokenizer \
     +model.text_tokenizers.french_chartokenizer.pretrained_model="google/byt5-small" \
     +model.text_tokenizers.hindi_chartokenizer._target_=nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.HindiCharsTokenizer \
+    +model.text_tokenizers.hindi_chartokenizer.charset_version=1 \
     +model.text_tokenizers.hindi_chartokenizer.punct=true \
+    +model.text_tokenizers.hindi_chartokenizer.punct_version=1 \
     +model.text_tokenizers.hindi_chartokenizer.apostrophe=true \
     +model.text_tokenizers.hindi_chartokenizer.pad_with_space=true \
     +model.text_tokenizers.italian_phoneme._target_=AutoTokenizer \

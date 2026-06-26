@@ -16,12 +16,13 @@ import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from functools import partial
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 import torch
 from omegaconf import DictConfig, OmegaConf
 
-from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
+if TYPE_CHECKING:
+    from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 
 
 class ConfidenceMethodConstants:
@@ -380,7 +381,7 @@ class ConfidenceMixin(ABC):
                 self.tdt_include_duration_confidence = self.cfg.greedy.get('tdt_include_duration_confidence', False)
 
     @abstractmethod
-    def compute_confidence(self, hypotheses_list: List[Hypothesis]) -> List[Hypothesis]:
+    def compute_confidence(self, hypotheses_list: List["Hypothesis"]) -> List["Hypothesis"]:
         """Computes high-level (per-token and/or per-word) confidence scores for a list of hypotheses.
         Assumes that `frame_confidence` is present in the hypotheses.
 
@@ -393,7 +394,7 @@ class ConfidenceMixin(ABC):
         raise NotImplementedError()
 
     @abstractmethod
-    def _aggregate_token_confidence(self, hypothesis: Hypothesis) -> List[float]:
+    def _aggregate_token_confidence(self, hypothesis: "Hypothesis") -> List[float]:
         """Implemented by subclass in order to aggregate token confidence to a word-level confidence.
 
         Args:

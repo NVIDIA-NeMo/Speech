@@ -15,6 +15,7 @@ from typing import Optional
 
 import torch
 
+from nemo.collections.asr.parts.submodules.transducer_decoding.label_looping_base import BatchedBeamState
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis, NBestHypotheses
 from nemo.utils.enum import PrettyStrEnum
 
@@ -73,6 +74,39 @@ class ASRModelTypeEnum(PrettyStrEnum):
     RNNT = "rnnt"
     TDT = "tdt"
     CTC = "ctc"
+
+
+def seed_batched_hyps_from_state(
+    hyps: "BatchedBeamHyps",
+    state: BatchedBeamState,
+    batch_size: Optional[int] = None,
+) -> None:
+    """Copy cross-chunk per-beam fields from a :class:`BatchedBeamState` snapshot
+    into ``hyps`` (in-place). Inverse of
+    :meth:`BatchedBeamHyps.export_cross_chunk_state`.
+
+    Used by streaming beam-search decoders to seed a ``BatchedBeamHyps`` from the previous
+    chunk's snapshot. Chunk-local buffers (prefix tree / timestamps / write cursor)
+    and the per-beam time cursor are NOT touched -- the caller is responsible for
+    wiping them.
+
+    Args:
+        hyps: destination ``BatchedBeamHyps`` (modified in place).
+        state: source snapshot. No-op when ``state.scores`` is ``None`` (first chunk).
+        batch_size: optional number of leading rows to copy. Defaults to
+            ``state.scores.shape[0]``.
+    """
+    if state.scores is None:
+        return
+    bs = state.scores.shape[0] if batch_size is None else batch_size
+    hyps.scores[:bs].copy_(state.scores[:bs])
+    hyps.last_label[:bs].copy_(state.labels[:bs])
+    hyps.transcript_hash[:bs].copy_(state.transcript_hash[:bs])
+    hyps.current_lengths_nb[:bs].copy_(state.current_lengths_nb[:bs])
+    if hyps.store_prefix_hashes and state.transcript_prefix_hash is not None:
+        hyps.transcript_prefix_hash[:bs].copy_(state.transcript_prefix_hash[:bs])
+    if hyps.model_type != ASRModelTypeEnum.CTC and state.last_timestamp_lasts is not None:
+        hyps.last_timestamp_lasts[:bs].copy_(state.last_timestamp_lasts[:bs])
 
 
 class BatchedBeamHyps:
@@ -170,6 +204,11 @@ class BatchedBeamHyps:
             # tracking last frame index and number of labels for the last frama
             self.next_timestamp = torch.zeros((batch_size, self.beam_size), device=device, dtype=torch.long)
             self.last_timestamp_lasts = torch.zeros((batch_size, self.beam_size), device=device, dtype=torch.long)
+            if self.model_type == ASRModelTypeEnum.TDT:
+                # Per-step label durations; timestamps store end times during decoding.
+                self.token_durations = torch.zeros(
+                    (batch_size, self.beam_size, self._max_length), device=device, dtype=torch.long
+                )
 
     def clear_(self):
         """
@@ -198,6 +237,118 @@ class BatchedBeamHyps:
             self.timestamps.fill_(0)
             self.next_timestamp.fill_(0)
             self.last_timestamp_lasts.fill_(0)
+            if self.model_type == ASRModelTypeEnum.TDT:
+                self.token_durations.fill_(0)
+
+    def export_cross_chunk_state(self, batch_size: Optional[int] = None) -> dict[str, Optional[torch.Tensor]]:
+        """
+        Snapshot cross-chunk per-beam fields for :class:`BatchedBeamState`.
+
+        Exports the fields needed to seed beam search on the next chunk (scores,
+        transcript_hash, current_lengths_nb, and optionally last_timestamp_lasts /
+        transcript_prefix_hash). Per-beam last labels are stored on
+        ``BatchedBeamState.labels`` by the caller. The chunk-local prefix tree and
+        timestamps are NOT exported -- they reach the caller via the first element
+        of the computer's return tuple.
+
+        Args:
+            batch_size: optional number of rows to export. Defaults to
+                ``self.batch_size``. Used by the CUDA-graphs paths to trim
+                capture-time buffers down to the live batch.
+
+        Returns:
+            Keyword arguments with cloned tensors (safe to keep across subsequent
+            in-place mutations of this object).
+        """
+        out_batch = self.batch_size if batch_size is None else batch_size
+        if out_batch <= 0 or out_batch > self.batch_size:
+            raise ValueError(f"batch_size must be in (0, {self.batch_size}], got {out_batch}")
+        cross_chunk_state = {
+            "scores": self.scores[:out_batch].clone(),
+            "transcript_hash": self.transcript_hash[:out_batch].clone(),
+            "current_lengths_nb": self.current_lengths_nb[:out_batch].clone(),
+            "last_timestamp_lasts": (
+                self.last_timestamp_lasts[:out_batch].clone() if self.model_type != ASRModelTypeEnum.CTC else None
+            ),
+            "transcript_prefix_hash": (
+                self.transcript_prefix_hash[:out_batch].clone() if self.store_prefix_hashes else None
+            ),
+        }
+        return cross_chunk_state
+
+    def clone(self, batch_size: Optional[int] = None) -> "BatchedBeamHyps":
+        """
+        Create a deep copy of this BatchedBeamHyps object.
+
+        Args:
+            batch_size: optional output batch size. If provided, must satisfy
+                ``1 <= batch_size <= self.batch_size``, and the returned object
+                holds a deep copy of the first ``batch_size`` rows. Defaults to
+                ``self.batch_size`` (i.e. a full copy). Used by streaming/chunked
+                decoding to trim graph-captured buffers (sized at the capture-time
+                max) down to the live batch.
+
+        Returns:
+            New BatchedBeamHyps with copied state.
+        """
+        out_batch = self.batch_size if batch_size is None else batch_size
+        if out_batch <= 0 or out_batch > self.batch_size:
+            raise ValueError(f"batch_size must be in [1, {self.batch_size}], got {out_batch}")
+        new_hyps = BatchedBeamHyps(
+            batch_size=out_batch,
+            beam_size=self.beam_size,
+            init_length=self._max_length,
+            blank_index=self.blank_index,
+            device=self.device,
+            float_dtype=self.scores.dtype,
+            store_prefix_hashes=self.store_prefix_hashes,
+            model_type=self.model_type,
+        )
+        # Destination is freshly allocated at exactly [out_batch, beam_size, _max_length],
+        # so we can copy whole rows of `self` directly without per-axis trimming.
+        new_hyps.current_lengths_nb.copy_(self.current_lengths_nb[:out_batch])
+        new_hyps.current_lengths_wb.copy_(self.current_lengths_wb[:out_batch])
+        new_hyps.transcript_wb.copy_(self.transcript_wb[:out_batch])
+        new_hyps.transcript_wb_prev_ptr.copy_(self.transcript_wb_prev_ptr[:out_batch])
+        new_hyps.scores.copy_(self.scores[:out_batch])
+        new_hyps.last_label.copy_(self.last_label[:out_batch])
+        new_hyps.transcript_hash.copy_(self.transcript_hash[:out_batch])
+        if self.store_prefix_hashes:
+            new_hyps.transcript_prefix_hash.copy_(self.transcript_prefix_hash[:out_batch])
+        new_hyps.timestamps.copy_(self.timestamps[:out_batch])
+        if self.model_type != ASRModelTypeEnum.CTC:
+            new_hyps.next_timestamp.copy_(self.next_timestamp[:out_batch])
+            new_hyps.last_timestamp_lasts.copy_(self.last_timestamp_lasts[:out_batch])
+            if self.model_type == ASRModelTypeEnum.TDT:
+                new_hyps.token_durations.copy_(self.token_durations[:out_batch])
+        return new_hyps
+
+    def keep_beam_(self, beam_indices: torch.Tensor) -> None:
+        """Collapse each row to one beam, replicated across all slots (in-place)."""
+        if self.beam_size <= 1:
+            return
+        permutation = (
+            beam_indices.to(dtype=torch.long, device=self.device)
+            .unsqueeze(-1)
+            .expand(self.batch_size, self.beam_size)
+            .contiguous()
+        )
+        self._flatten_with_permutation_(permutation)
+        self.scores[:, 1:].fill_(INACTIVE_SCORE)
+
+    def get_last_labels(self, pad_id: int = -1) -> torch.Tensor:
+        """
+        Get last labels for each hypothesis in the beam.
+
+        Args:
+            pad_id: Value to use for padding (for hypotheses without labels). Defaults to -1.
+
+        Returns:
+            Tensor of shape [batch_size, beam_size] with the last label for each hypothesis.
+        """
+        # last_label already contains the last label for each beam
+        # Replace NON_EXISTENT_LABEL_VALUE with pad_id
+        return torch.where(self.last_label != NON_EXISTENT_LABEL_VALUE, self.last_label, pad_id)
 
     def _allocate_more(self):
         """
@@ -215,6 +366,10 @@ class BatchedBeamHyps:
             self.timestamps = self._create_timestamps_tensor(2 * self._max_length)
         else:
             self.timestamps = torch.cat((self.timestamps, torch.zeros_like(self.timestamps)), dim=-1)
+            if self.model_type == ASRModelTypeEnum.TDT:
+                self.token_durations = torch.cat(
+                    (self.token_durations, torch.zeros_like(self.token_durations)), dim=-1
+                )
 
         self._max_length *= 2
 
@@ -275,6 +430,7 @@ class BatchedBeamHyps:
         is_extended = next_labels >= 0
         extended_with_blank = next_labels == self.blank_index
         extended_with_label = (is_extended) & (~extended_with_blank)
+
         if self.model_type == ASRModelTypeEnum.CTC:
             # for CTC last non-blank and non-repeated label
             extended_with_label = (extended_with_label) & (next_labels != last_labels)  # non-repeated non-blank label
@@ -307,6 +463,11 @@ class BatchedBeamHyps:
                 self.ZERO_TENSOR,
                 torch.gather(self.last_timestamp_lasts, dim=-1, index=next_indices) + extended_with_label,
                 out=self.last_timestamp_lasts,
+            )
+            self.token_durations.scatter_(
+                dim=-1,
+                index=self.current_lengths_wb.unsqueeze(-1),
+                src=torch.where(is_extended, next_label_durations, 0).unsqueeze(-1).to(self.token_durations.dtype),
             )
 
         self.current_lengths_nb.copy_(
@@ -365,6 +526,7 @@ class BatchedBeamHyps:
             self.scores[:, None, :].expand(self.batch_size, self.beam_size, self.beam_size),
             self.INACTIVE_SCORE_TENSOR,
         )
+
         scores_argmax = scores_matrix.argmax(-1, keepdim=False)
         scores_to_keep = (
             torch.arange(self.beam_size, device=scores_argmax.device, dtype=torch.long)[None, :] == scores_argmax
@@ -373,6 +535,7 @@ class BatchedBeamHyps:
             new_scores = torch.max(scores_matrix, dim=-1, keepdim=False).values
         else:
             new_scores = torch.logsumexp(scores_matrix, dim=-1, keepdim=False)
+
         torch.where(scores_to_keep, new_scores.to(self.scores.dtype), self.INACTIVE_SCORE_TENSOR, out=self.scores)
 
     def remove_duplicates(self, labels: torch.Tensor, total_logps: torch.Tensor):
@@ -460,34 +623,18 @@ class BatchedBeamHyps:
 
     def to_hyps_list(self, score_norm: bool = True) -> list[Hypothesis]:
         """
-        Converts the batched beam search results into a list of signle best hypotheses for each batch.
+        Converts the batched beam search results into a list of single best hypotheses for each batch.
         Args:
             score_norm (bool):  If True, normalize the scores before sorting. Defaults to True.
         Returns:
             list[Hypothesis]: A list where each element corresponds to a batch and contains
             best hypothesis.
         """
-        self.flatten_sort_(score_norm)
-
-        scores = self.scores[self.batch_indices, 0].tolist()
-
-        max_idx = self.current_lengths_wb.max() - 1
-        timestamps = self.timestamps[..., 0, : max_idx + 1]
-        transcripts = self.transcript_wb[..., 0, : max_idx + 1]
-        hypotheses = [
-            Hypothesis(
-                score=scores[batch_idx],
-                y_sequence=transcripts[batch_idx][mask := self._create_transcripts_mask(transcripts[batch_idx])]
-                .cpu()
-                .detach()
-                .numpy(),
-                timestamp=timestamps[batch_idx][mask].cpu().detach().numpy(),
-                alignments=None,
-                dec_state=None,
-            )
-            for batch_idx in range(self.batch_size)
+        scores, transcripts, timestamps, durations, _ = self._export(sort=True, score_norm=score_norm)
+        return [
+            self._hypothesis_from_flat(b, 0, scores, transcripts, timestamps, durations)
+            for b in range(self.batch_size)
         ]
-        return hypotheses
 
     def to_nbest_hyps_list(self, score_norm: bool = True) -> list[NBestHypotheses]:
         """
@@ -498,38 +645,78 @@ class BatchedBeamHyps:
             list[NBestHypotheses]: A list where each element corresponds to a batch and contains
             N-best hypotheses.
         """
+        scores, transcripts, timestamps, durations, _ = self._export(sort=True, score_norm=score_norm)
+        hypotheses = []
+        for batch_idx in range(self.batch_size):
+            nbest = []
+            for beam_idx in range(self.beam_size):
+                if scores[batch_idx][beam_idx] <= INACTIVE_SCORE:
+                    continue
+                nbest.append(
+                    self._hypothesis_from_flat(batch_idx, beam_idx, scores, transcripts, timestamps, durations)
+                )
+            hypotheses.append(NBestHypotheses(nbest))
+        return hypotheses
 
-        self.flatten_sort_(score_norm)
+    def _export(
+        self, sort: bool = True, score_norm: bool = True
+    ) -> tuple[list[list[float]], torch.Tensor, torch.Tensor, Optional[torch.Tensor], torch.Tensor]:
+        """
+        Flatten the prefix tree and return per-(batch, beam) views.
 
+        Args:
+            sort: if True, flatten by descending (normalized) score; otherwise
+                flatten while preserving slot order.
+            score_norm: passed to :meth:`flatten_sort_` when ``sort=True``.
+
+        Returns:
+            (scores, transcripts, timestamps, durations, root_ptrs). The first four
+            are inputs for :meth:`_hypothesis_from_flat`; ``root_ptrs`` is the
+            chunk-start -> chunk-end slot descent map (``[batch, beam]`` long
+            tensor) for the current beam ordering.
+        """
+        if sort:
+            root_ptrs = self.flatten_sort_(score_norm)
+        else:
+            root_ptrs = self.flatten_()
         scores = self.scores.tolist()
-
         max_idx = self.current_lengths_wb.max() - 1
         transcripts = self.transcript_wb[..., : max_idx + 1]
         timestamps = self.timestamps[..., : max_idx + 1]
-        hypotheses = [
-            NBestHypotheses(
-                [
-                    Hypothesis(
-                        score=scores[batch_idx][beam_idx],
-                        y_sequence=transcripts[batch_idx][beam_idx][
-                            mask := self._create_transcripts_mask(transcripts[batch_idx][beam_idx])
-                        ]
-                        .cpu()
-                        .detach()
-                        .numpy(),
-                        timestamp=timestamps[batch_idx][beam_idx][mask].cpu().detach().numpy(),
-                        alignments=None,
-                        dec_state=None,
-                    )
-                    for beam_idx in range(self.beam_size)
-                    if scores[batch_idx][beam_idx] > INACTIVE_SCORE
-                ]
-            )
-            for batch_idx in range(self.batch_size)
-        ]
-        return hypotheses
+        durations = self.token_durations[..., : max_idx + 1] if self.model_type == ASRModelTypeEnum.TDT else None
+        return scores, transcripts, timestamps, durations, root_ptrs
 
-    def flatten_sort_(self, score_norm: bool = True):
+    def _hypothesis_from_flat(
+        self,
+        batch_idx: int,
+        beam_idx: int,
+        scores: list[list[float]],
+        transcripts: torch.Tensor,
+        timestamps: torch.Tensor,
+        durations: Optional[torch.Tensor],
+    ) -> Hypothesis:
+        """Build one ``Hypothesis`` from already-flattened per-(batch, beam) views."""
+        transcript = transcripts[batch_idx][beam_idx]
+        mask = self._create_transcripts_mask(transcript)
+        end_times = timestamps[batch_idx][beam_idx][mask]
+        if durations is not None:
+            # TDT: report per-token start times and durations.
+            token_duration = durations[batch_idx][beam_idx][mask]
+            timestamp = (end_times - token_duration).cpu().detach().numpy()
+            token_duration = token_duration.cpu().detach().numpy()
+        else:
+            timestamp = end_times.cpu().detach().numpy()
+            token_duration = None
+        return Hypothesis(
+            score=scores[batch_idx][beam_idx],
+            y_sequence=transcript[mask].cpu().detach().numpy(),
+            timestamp=timestamp,
+            token_duration=token_duration,
+            alignments=None,
+            dec_state=None,
+        )
+
+    def flatten_sort_(self, score_norm: bool = True) -> torch.Tensor:
         """
         Sorts and flattens the tree structure of hypotheses in a batched beam search decoding process.
         Args:
@@ -541,14 +728,60 @@ class BatchedBeamHyps:
         3. Iteratively reconstructs the tokens and timestamps for each hypothesis in reverse order.
         4. Updates the internal state of the object, including transcripts, timestamps, scores,
            lengths, labels, and other metadata, based on the sorted order.
+
+        Returns:
+            ``root_ptrs`` of shape ``[batch_size, beam_size]``: the chunk-start beam index
+            (before the first ``add_results_*`` write) from which each sorted output beam
+            descends. Same semantics as :meth:`flatten_`, but for the sorted ordering.
         """
 
         # add one for consistency with non-batched decodings, that use SOS.
         normalized_scores = (
             self.scores / (self.current_lengths_nb.to(self.scores.dtype) + 1) if score_norm else self.scores
         )
-        normalized_scores, indices = torch.sort(normalized_scores, dim=-1, descending=True)
+        _, indices = torch.sort(normalized_scores, dim=-1, descending=True)
+        return self._flatten_with_permutation_(indices)
 
+    def flatten_(self) -> torch.Tensor:
+        """
+        Flatten the tree structure of hypotheses without changing beam order.
+
+        Like :meth:`flatten_sort_` but uses the identity permutation, so beam ``i`` keeps
+        its identity (its decoded prefix and its cross-chunk per-beam state stay aligned
+        with the corresponding beam in any other ``BatchedBeamHyps`` constructed under the
+        same decoding run). Required for inter-chunk :meth:`merge_` calls in streaming
+        beam decoding where beam indices must correspond across chunks.
+
+        Returns:
+            ``root_ptrs`` of shape ``[batch_size, beam_size]``: the beam index at the
+            chunk's *start* (i.e. before the first ``add_results_*`` write) from which
+            each output beam ultimately descends. For chunked streaming beam search, this
+            tells the caller how to permute the previous chunks' accumulated per-beam
+            transcripts so they align with this chunk's beam ordering before merging.
+
+            If the prefix tree is empty (``current_lengths_wb.max() == 0``) the identity
+            permutation is returned.
+        """
+        identity = self.beam_indices.unsqueeze(0).expand(self.batch_size, self.beam_size).contiguous()
+        return self._flatten_with_permutation_(identity)
+
+    def _flatten_with_permutation_(self, indices: torch.Tensor) -> torch.Tensor:
+        """
+        In-place flatten of the prefix tree using ``indices`` as the new beam permutation.
+
+        Walks ``transcript_wb_prev_ptr`` from the most recent step back to step 0,
+        gathering tokens and timestamps for each output beam from the source beam given
+        by ``indices``. Updates all per-beam metadata to match the new ordering.
+
+        Args:
+            indices: ``[batch_size, beam_size]`` long tensor giving the source beam index
+                for each output beam (e.g. ``arange(beam_size)`` for no permutation).
+
+        Returns:
+            ``root_ptrs`` of shape ``[batch_size, beam_size]``: the beam index *before*
+            step 0 of the prefix tree from which each output beam descends. If the prefix
+            tree is empty (``max_idx < 0``) this equals ``indices``.
+        """
         max_idx = self.current_lengths_wb.max() - 1
         ptrs = indices
 
@@ -556,6 +789,10 @@ class BatchedBeamHyps:
             self.transcript_wb[..., idx].copy_(self.transcript_wb[self.batch_indices.unsqueeze(-1), ptrs, idx])
             if self.model_type == ASRModelTypeEnum.TDT or self.model_type == ASRModelTypeEnum.RNNT:
                 self.timestamps[..., idx].copy_(self.timestamps[self.batch_indices.unsqueeze(-1), ptrs, idx])
+                if self.model_type == ASRModelTypeEnum.TDT:
+                    self.token_durations[..., idx].copy_(
+                        self.token_durations[self.batch_indices.unsqueeze(-1), ptrs, idx]
+                    )
             ptrs = self.transcript_wb_prev_ptr[self.batch_indices.unsqueeze(-1), ptrs, idx]
         self.transcript_wb_prev_ptr[..., : max_idx + 1].copy_(self.beam_indices.unsqueeze(0).unsqueeze(-1))
 
@@ -572,6 +809,8 @@ class BatchedBeamHyps:
         self.transcript_hash.copy_(torch.gather(self.transcript_hash, dim=-1, index=indices))
         if self.store_prefix_hashes:
             self.transcript_prefix_hash.copy_(torch.gather(self.transcript_prefix_hash, dim=-1, index=indices))
+
+        return ptrs
 
     def _create_fold_consecutive_mask(self, transcript):
         """
@@ -621,3 +860,159 @@ class BatchedBeamHyps:
             return self._create_fold_consecutive_mask(transcripts)
         else:
             return (transcripts >= 0) & (transcripts != self.blank_index)
+
+    def merge_(
+        self,
+        other: "BatchedBeamHyps",
+        is_chunk_continuation: bool = False,
+        boundary_prev_ptr: Optional[torch.Tensor] = None,
+    ) -> "BatchedBeamHyps":
+        """
+        Merge two batched beam hypotheses structures by concatenating transcripts.
+        Used for streaming/chunked inference where results from multiple chunks need to be combined.
+
+        Prerequisites:
+            - Both self and other should have been processed with flatten_sort_() before merging,
+              so that each beam contains an independent flattened hypothesis.
+            - Beam indices should correspond across chunks (beam i in self matches beam i in other).
+
+        Notes:
+            - Timestamps in 'other' should already be cumulative (adjusted for time offset).
+            - The transcript_hash values are copied from 'other' and won't reflect the full
+              merged transcript. This means recombine_hyps_() should NOT be called on merged
+              results without recomputing hashes. This is acceptable for output-only use.
+
+        Args:
+            other: BatchedBeamHyps from the next chunk to merge.
+            is_chunk_continuation: If True, treat ``other`` as a beam-search continuation
+                chunk in which the cross-chunk per-beam fields (``scores``,
+                ``current_lengths_nb``) already hold cumulative across-chunks values rather
+                than chunk-local deltas. In that case those fields are *replaced* with the
+                values from ``other`` instead of summed, to avoid double-counting. The
+                default (False) preserves the original "deltas" semantics used by greedy
+                streaming-style merges.
+            boundary_prev_ptr: Optional ``[batch_size, beam_size]`` long tensor. When
+                provided, written into ``transcript_wb_prev_ptr`` at the very first
+                position of the merged region (i.e. at ``self.current_lengths_wb`` before
+                the update). All other positions of the merged region still receive
+                ``beam_indices`` (identity) pointers. This is how chunked streaming beam
+                search threads the cross-chunk beam permutation (the "root ptrs" returned
+                by :meth:`flatten_` on ``other``) into the accumulator's prefix tree so
+                that the final :meth:`flatten_sort_` walk redirects from beam ``i`` in
+                ``other``'s region back to its source beam in ``self``'s region.
+
+        Returns:
+            Self (modified in-place)
+        """
+        max_other_len = other.current_lengths_wb.max().item()
+
+        # Early return if other has nothing to merge
+        if max_other_len == 0:
+            return self
+
+        # Check if we need more storage (using allocated buffer size, not current shape)
+        # Compute max needed length: current max + other max
+        max_needed = self.current_lengths_wb.max().item() + max_other_len
+
+        # Expand storage if needed - use existing _allocate_more() method
+        while max_needed > self._max_length:
+            self._allocate_more()
+
+        # Create a range tensor: [0, 1, 2, ..., max_other_len-1]
+        other_indices = torch.arange(max_other_len, device=self.device, dtype=torch.long)
+
+        # Create shifted indices: current_lengths + [0, 1, 2, ...]
+        # Shape: [batch_size, beam_size, max_other_len]
+        shifted_indices = self.current_lengths_wb.unsqueeze(-1) + other_indices.unsqueeze(0).unsqueeze(0)
+
+        # Scatter other's transcripts into self at shifted positions
+        self.transcript_wb.scatter_(
+            dim=-1,
+            index=shifted_indices,
+            src=other.transcript_wb[..., :max_other_len],
+        )
+
+        # Update pointers: in the merged region every position points to its own beam
+        # (identity), except the *first* merged position which optionally encodes the
+        # cross-chunk root permutation so the final flatten walk redirects from the new
+        # region back to the right beam in the old region.
+        identity_src = self.beam_indices.view(1, self.beam_size, 1).expand(self.batch_size, -1, max_other_len)
+        if boundary_prev_ptr is not None:
+            ptr_src = identity_src.clone()
+            ptr_src[..., 0] = boundary_prev_ptr
+        else:
+            ptr_src = identity_src
+        self.transcript_wb_prev_ptr.scatter_(
+            dim=-1,
+            index=shifted_indices,
+            src=ptr_src,
+        )
+
+        # Scatter timestamps
+        self.timestamps.scatter_(
+            dim=-1,
+            index=shifted_indices,
+            src=other.timestamps[..., :max_other_len],
+        )
+        if self.model_type == ASRModelTypeEnum.TDT:
+            self.token_durations.scatter_(
+                dim=-1,
+                index=shifted_indices,
+                src=other.token_durations[..., :max_other_len],
+            )
+
+        # Lengths in the chunk-local write cursor are always additive (``other`` always
+        # reports a chunk-local ``current_lengths_wb``).
+        self.current_lengths_wb += other.current_lengths_wb
+
+        if is_chunk_continuation:
+            # Beam-search streaming: ``other`` carries cumulative cross-chunk state in
+            # these fields, so replace rather than accumulate.
+            self.current_lengths_nb.copy_(other.current_lengths_nb)
+            self.scores.copy_(other.scores)
+        else:
+            # Original ("deltas") semantics.
+            self.current_lengths_nb += other.current_lengths_nb
+            self.scores += other.scores
+
+        # Update transcript hash by combining hashes
+        # The hash of the merged transcript should account for all non-blank labels
+        self.transcript_hash.copy_(other.transcript_hash)
+
+        # Update prefix hashes if used
+        if self.store_prefix_hashes:
+            self.transcript_prefix_hash.copy_(other.transcript_prefix_hash)
+
+        # Update tracking fields from other (they reflect the end state after other chunk)
+        self.last_label.copy_(other.last_label)
+
+        # Only update timestamp tracking fields for transducer models
+        if self.model_type != ASRModelTypeEnum.CTC:
+            self.next_timestamp.copy_(other.next_timestamp)
+            self.last_timestamp_lasts.copy_(other.last_timestamp_lasts)
+
+        return self
+
+
+def export_batched_beam_hyps_to_cpu_lists(
+    bbh: BatchedBeamHyps,
+) -> tuple[list[list[list[int]]], list[list[list[int]]], list[list[int]]]:
+    """Export chunk-local per-beam tokens/timestamps and beam descent map to CPU lists."""
+    _, transcripts, timestamps, _, root_ptrs = bbh._export(sort=False)
+    root_ptrs_list = root_ptrs.detach().cpu().tolist()
+    transcripts_cpu = transcripts.detach().cpu()
+    timestamps_cpu = timestamps.detach().cpu()
+
+    tokens: list[list[list[int]]] = []
+    timestamps_out: list[list[list[int]]] = []
+    for b in range(bbh.batch_size):
+        bt: list[list[int]] = []
+        bts: list[list[int]] = []
+        for k in range(bbh.beam_size):
+            t = transcripts_cpu[b, k]
+            mask = bbh._create_transcripts_mask(t)
+            bt.append(t[mask].tolist())
+            bts.append(timestamps_cpu[b, k][mask].tolist())
+        tokens.append(bt)
+        timestamps_out.append(bts)
+    return tokens, timestamps_out, root_ptrs_list

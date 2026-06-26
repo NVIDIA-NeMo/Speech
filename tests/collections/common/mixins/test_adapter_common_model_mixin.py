@@ -18,7 +18,6 @@ from typing import Tuple
 
 import pytest
 import torch
-from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.common.parts.adapter_modules import LinearAdapter
@@ -37,7 +36,7 @@ class MockLinearAdapter2(LinearAdapter):
 
 
 class CommonModule(NeuralModule):
-    """ Define a default neural module (without adapter support)"""
+    """Define a default neural module (without adapter support)"""
 
     def __init__(self):
         super().__init__()
@@ -60,7 +59,7 @@ class CommonModule(NeuralModule):
 
 
 class CommonModuleAdapter(CommonModule, AdapterModuleMixin):
-    """ Subclass the DefaultModule, adding adapter module support"""
+    """Subclass the DefaultModule, adding adapter module support"""
 
     def forward(self, x):
         x = super().forward(x)
@@ -73,7 +72,9 @@ class CommonModuleAdapter(CommonModule, AdapterModuleMixin):
 
         return x
 
-    def get_accepted_adapter_types(self,) -> 'Set[type]':
+    def get_accepted_adapter_types(
+        self,
+    ) -> 'Set[type]':
         types = super().get_accepted_adapter_types()
 
         if len(types) == 0:

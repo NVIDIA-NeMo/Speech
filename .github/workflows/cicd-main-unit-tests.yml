@@ -18,6 +18,15 @@ on:
       test_to_run:
         required: true
         type: string
+      runner:
+        required: false
+        default: nemo-ci-aws-gpu-x2
+        type: string
+        description: "Runner to use for GPU jobs"
+      container-image:
+        required: true
+        type: string
+        description: "Full image URL with tag for the NeMo container"
 
 jobs:
   collections-common-tests:
@@ -26,24 +35,28 @@ jobs:
       matrix:
         include:
           - script: L0_Unit_Tests_GPU_Common
-            runner: self-hosted-azure-gpus-1
+            runner: ${{ inputs.runner }}
           - script: L0_Unit_Tests_CPU_Common
-            runner: self-hosted-azure-cpu
+            runner: ${{ inputs.runner }}
             cpu-only: true
     runs-on: ${{ matrix.runner }}
     name: ${{ matrix.script }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+      - name: Checkout NeMo
+        uses: actions/checkout@v6
         with:
           path: ${{ github.run_id }}
       - name: main
-        uses: NVIDIA/NeMo/.github/actions/test-template@main
+        uses: ./.github/actions/test-template
         with:
           runner: ${{ runner.name }}
           script: ${{ matrix.script }}
           is_unit_test: true
           tests_to_run: ${{ inputs.test_to_run }}
+          image: ${{ inputs.container-image }}
+          test-data-path: ${{ vars.DEFAULT_TEST_DATA_PATH || '/mnt/datadrive/TestData' }}
           cpu-only: ${{ matrix.cpu-only || false }}
 
   core-tests:
@@ -52,29 +65,33 @@ jobs:
       matrix:
         include:
           - script: L0_Unit_Tests_GPU_Core
-            runner: self-hosted-azure-gpus-1
+            runner: ${{ inputs.runner }}
           - script: L0_Unit_Tests_CPU_Core
-            runner: self-hosted-azure-cpu
+            runner: ${{ inputs.runner }}
             cpu-only: true
           - script: L0_Unit_Tests_GPU_Hydra
-            runner: self-hosted-azure-gpus-1
+            runner: ${{ inputs.runner }}
           - script: L0_Unit_Tests_CPU_Hydra
-            runner: self-hosted-azure-cpu
+            runner: ${{ inputs.runner }}
             cpu-only: true
     runs-on: ${{ matrix.runner }}
     name: ${{ matrix.script }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+      - name: Checkout NeMo
+        uses: actions/checkout@v6
         with:
           path: ${{ github.run_id }}
       - name: main
-        uses: NVIDIA/NeMo/.github/actions/test-template@main
+        uses: ./.github/actions/test-template
         with:
           runner: ${{ runner.name }}
           script: ${{ matrix.script }}
           is_unit_test: true
           tests_to_run: ${{ inputs.test_to_run }}
+          image: ${{ inputs.container-image }}
+          test-data-path: ${{ vars.DEFAULT_TEST_DATA_PATH || '/mnt/datadrive/TestData' }}
           cpu-only: ${{ matrix.cpu-only || false }}
 
   other-tests:
@@ -83,23 +100,27 @@ jobs:
       matrix:
         include:
           - script: L0_Unit_Tests_GPU_Others
-            runner: self-hosted-azure-gpus-1
+            runner: ${{ inputs.runner }}
           - script: L0_Unit_Tests_CPU_Others
-            runner: self-hosted-azure-cpu
+            runner: ${{ inputs.runner }}
             cpu-only: true
     runs-on: ${{ matrix.runner }}
     name: ${{ matrix.script }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+      - name: Checkout NeMo
+        uses: actions/checkout@v6
         with:
           path: ${{ github.run_id }}
       - name: main
-        uses: NVIDIA/NeMo/.github/actions/test-template@main
+        uses: ./.github/actions/test-template
         with:
           runner: ${{ runner.name }}
           script: ${{ matrix.script }}
           is_unit_test: true
           tests_to_run: ${{ inputs.test_to_run }}
+          image: ${{ inputs.container-image }}
+          test-data-path: ${{ vars.DEFAULT_TEST_DATA_PATH || '/mnt/datadrive/TestData' }}
           cpu-only: ${{ matrix.cpu-only || false }}
           is_optional: ${{ matrix.is-optional || false }}

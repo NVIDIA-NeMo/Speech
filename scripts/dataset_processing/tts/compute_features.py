@@ -28,29 +28,42 @@ $ python <nemo_root_path>/scripts/dataset_processing/tts/compute_features.py \
 import argparse
 from pathlib import Path
 
-from hydra.utils import instantiate
 from joblib import Parallel, delayed
 from omegaconf import OmegaConf
 from tqdm import tqdm
 
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
+from nemo.core.classes.common import safe_instantiate
 
 
 def get_args():
     parser = argparse.ArgumentParser(
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter, description="Compute TTS features.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description="Compute TTS features.",
     )
     parser.add_argument(
-        "--feature_config_path", required=True, type=Path, help="Path to feature config file.",
+        "--feature_config_path",
+        required=True,
+        type=Path,
+        help="Path to feature config file.",
     )
     parser.add_argument(
-        "--manifest_path", required=True, type=Path, help="Path to training manifest.",
+        "--manifest_path",
+        required=True,
+        type=Path,
+        help="Path to training manifest.",
     )
     parser.add_argument(
-        "--audio_dir", required=True, type=Path, help="Path to base directory with audio data.",
+        "--audio_dir",
+        required=True,
+        type=Path,
+        help="Path to base directory with audio data.",
     )
     parser.add_argument(
-        "--feature_dir", required=True, type=Path, help="Path to directory where feature data will be stored.",
+        "--feature_dir",
+        required=True,
+        type=Path,
+        help="Path to directory where feature data will be stored.",
     )
     parser.add_argument(
         "--dedupe_files",
@@ -58,7 +71,9 @@ def get_args():
         help="If given, will only process the first manifest entry found for each audio file.",
     )
     parser.add_argument(
-        "--overwrite", action=argparse.BooleanOptionalAction, help="Whether to overwrite existing feature files.",
+        "--overwrite",
+        action=argparse.BooleanOptionalAction,
+        help="Whether to overwrite existing feature files.",
     )
     parser.add_argument(
         "--num_workers", default=1, type=int, help="Number of parallel threads to use. If -1 all CPUs are used."
@@ -85,7 +100,7 @@ def main():
         raise ValueError(f"Audio directory {audio_dir} does not exist.")
 
     feature_config = OmegaConf.load(feature_config_path)
-    feature_config = instantiate(feature_config)
+    feature_config = safe_instantiate(feature_config)
     featurizers = feature_config.featurizers
 
     entries = read_manifest(manifest_path)

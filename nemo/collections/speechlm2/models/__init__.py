@@ -18,6 +18,7 @@ from .duplex_stt_model import DuplexSTTModel
 from .nemotron_voicechat import NemotronVoiceChat
 from .salm import SALM
 from .salm_asr_decoder import SALMWithAsrDecoder
+from .salm_automodel import SALMAutomodel
 from .streaming_stt_model import StreamingState, StreamingSTTModel
 
 __all__ = [
@@ -26,6 +27,7 @@ __all__ = [
     'DuplexSTTModel',
     'DuplexEARTTS',
     'SALM',
+    'SALMAutomodel',
     'SALMWithAsrDecoder',
     'NemotronVoiceChat',
     'StreamingState',

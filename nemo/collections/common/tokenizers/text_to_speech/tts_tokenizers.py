@@ -16,6 +16,7 @@
 import itertools
 import os
 import string
+import warnings
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from typing import List, Optional, Union
@@ -24,10 +25,12 @@ from tokenizers import Tokenizer
 from transformers import PreTrainedTokenizerBase
 
 from nemo.collections.common.tokenizers.text_to_speech.ipa_lexicon import (
+    DEFAULT_PUNCTUATION,
     get_grapheme_character_set,
     get_ipa_punctuation_list,
     validate_locale,
 )
+
 from nemo.collections.common.tokenizers.text_to_speech.tokenizer_utils import (
     any_locale_text_preprocessing,
     chinese_text_preprocessing,
@@ -40,6 +43,15 @@ from nemo.collections.common.tokenizers.text_to_speech.tokenizer_utils import (
 )
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.utils import logging
+
+CASELESS_SCRIPT_TOKENIZER_TARGETS = frozenset(
+    {
+        'nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.HindiCharsTokenizer',
+        'nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.ArabicCharsTokenizer',
+    }
+)
+
+DEFAULT_CHARSET_VERSION = 2
 
 
 class BaseTokenizer(ABC):
@@ -110,14 +122,7 @@ class BaseCharsTokenizer(BaseTokenizer):
         text_preprocessing_func: Text preprocessing function for correct execution of the tokenizer.
     """
 
-    # fmt: off
-    # TODO @xueyang: unify definition of the default PUNCT_LIST and import from ipa_lexicon.py
-    PUNCT_LIST = (  # Derived from LJSpeech and "/" additionally
-        ',', '.', '!', '?', '-',
-        ':', ';', '/', '"', '(',
-        ')', '[', ']', '{', '}',
-    )
-    # fmt: on
+    PUNCT_LIST = DEFAULT_PUNCTUATION
 
     def __init__(
         self,
@@ -168,9 +173,8 @@ class BaseCharsTokenizer(BaseTokenizer):
                 logging.warning(f"Text: [{text}] contains unknown char: [{c}]. Symbol will be skipped.")
 
         # Remove trailing spaces
-        if cs:
-            while cs[-1] == space:
-                cs.pop()
+        while cs and cs[-1] == space:
+            cs.pop()
 
         if self.pad_with_space:
             cs = [space] + cs + [space]
@@ -386,12 +390,26 @@ class ItalianCharsTokenizer(BaseCharsTokenizer):
 class HindiCharsTokenizer(BaseCharsTokenizer):
     """Hindi grapheme tokenizer (character-based, no phonemes).
     Args:
+        chars: Explicit character set string. When provided, ``charset_version`` is ignored.
+        charset_version: Controls which default character set to use (only when ``chars`` is None).
+            ``2`` (default) — ``case="upper"`` Devanagari + ``ascii_letters``.
+            Hindi/Devanagari has no case distinction, so ``case="upper"`` avoids duplicating
+            every code-point. ``ascii_letters`` covers both upper- and lower-case English for
+            mixed-language text.
+            ``1`` — legacy ``case="mixed"`` Devanagari + ``ascii_lowercase``. Use this value to
+            restore models that were trained before the charset fix.
         punct: Whether to reserve grapheme for basic punctuation or not.
         apostrophe: Whether to use apostrophe or not.
         add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
             if None then no blank in labels.
         pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
         non_default_punct_list: List of punctuation marks which will be used instead default.
+            Overrides ``punct_version`` when explicitly provided.
+        punct_version: Punctuation set version (default 2).
+            2 — expanded set from ``get_ipa_punctuation_list("hi-IN")`` including dandas.
+            1 — legacy ``sorted(list(DEFAULT_PUNCTUATION))`` without dandas; emits
+            ``DeprecationWarning`` and will be removed in a future release.
+            Ignored when ``non_default_punct_list`` is explicitly provided.
         text_preprocessing_func: Text preprocessing function. Keeps Devanagari unchanged.
 
         Each Unicode code point becomes 1 token (not visual grapheme clusters)
@@ -404,19 +422,53 @@ class HindiCharsTokenizer(BaseCharsTokenizer):
 
     _LOCALE = "hi-IN"
     _PUNCT_LIST = get_ipa_punctuation_list(_LOCALE)
-    _CHARSET_STR = get_grapheme_character_set(locale=_LOCALE, case="mixed")
-    _CHARSET_STR += string.ascii_lowercase
+    _CHARSET_STR = get_grapheme_character_set(locale=_LOCALE, case="upper") + string.ascii_letters
+    _PUNCT_LIST_V1 = sorted(list(DEFAULT_PUNCTUATION))
+    _CHARSET_STR_V1 = get_grapheme_character_set(locale=_LOCALE, case="mixed") + string.ascii_lowercase
 
     def __init__(
         self,
-        chars=_CHARSET_STR,
+        chars=None,
+        charset_version=2,
         punct=True,
         apostrophe=True,
         add_blank_at=None,
         pad_with_space=False,
-        non_default_punct_list=_PUNCT_LIST,
+        non_default_punct_list=None,
+        punct_version=2,
         text_preprocessing_func=any_locale_text_preprocessing,
     ):
+        if chars is None:
+            if charset_version == 1:
+                warnings.warn(
+                    "HindiCharsTokenizer charset_version=1 (case='mixed' + ascii_lowercase) is deprecated "
+                    "and will be removed in a future release. "
+                    "Migrate to charset_version=2 (case='upper' + ascii_letters) and retrain.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                chars = self._CHARSET_STR_V1
+            elif charset_version == 2:
+                chars = self._CHARSET_STR
+            else:
+                raise ValueError(
+                    f"HindiCharsTokenizer: unsupported charset_version={charset_version!r}. Use 1 (legacy) or 2."
+                )
+        if non_default_punct_list is None:
+            if punct_version == 1:
+                warnings.warn(
+                    "HindiCharsTokenizer: punct_version=1 uses DEFAULT_PUNCTUATION without dandas "
+                    "and will be removed in a future release. Migrate to punct_version=2.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                non_default_punct_list = self._PUNCT_LIST_V1
+            elif punct_version == 2:
+                non_default_punct_list = self._PUNCT_LIST
+            else:
+                raise ValueError(
+                    f"HindiCharsTokenizer: unsupported punct_version={punct_version}. Use 1 (legacy) or 2."
+                )
         super().__init__(
             chars=chars,
             punct=punct,
@@ -448,9 +500,100 @@ class HindiCharsTokenizer(BaseCharsTokenizer):
                 logging.warning(f"Text: [{text}] contains unknown char: [{c}]. Symbol will be skipped.")
 
         # Remove trailing spaces
-        if cs:
-            while cs[-1] == space:
-                cs.pop()
+        while cs and cs[-1] == space:
+            cs.pop()
+
+        if self.pad_with_space:
+            cs = [space] + cs + [space]
+
+        return [self._token2id[p] for p in cs]
+
+
+class ArabicCharsTokenizer(BaseCharsTokenizer):
+    """Arabic grapheme tokenizer (character-based, no phonemes).
+    Args:
+        chars: Explicit character set string. When provided, ``charset_version`` is ignored.
+        charset_version: Controls which default character set to use (only when ``chars`` is None).
+            ``2`` (default) — ``case="upper"`` Arabic + ``ascii_letters``.
+            Arabic script has no case distinction, so ``case="upper"`` avoids duplicating
+            every code-point. ``ascii_letters`` covers both upper- and lower-case English for
+            mixed-language text.
+            ``1`` — legacy ``case="mixed"`` Arabic + ``ascii_letters``. Use this value to
+            restore models that were trained before the charset fix.
+        punct: Whether to reserve grapheme for basic punctuation or not.
+        apostrophe: Whether to use apostrophe or not.
+        add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
+            if None then no blank in labels.
+        pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
+        non_default_punct_list: List of punctuation marks which will be used instead default.
+        text_preprocessing_func: Text preprocessing function. Keeps Arabic unchanged.
+
+        Each Unicode code point becomes 1 token (letters, diacritics, and Arabic punct from ipa_lexicon).
+        Supports both upper and lower English letters (e.g. mixed-language text).
+
+        Input Text: مرحبا Hello
+        Chars: ['م', 'ر', 'ح', 'ب', 'ا', ' ', 'H', 'e', 'l', 'l', 'o']
+    """
+
+    _LOCALE = "ar-MSA"
+    _PUNCT_LIST = get_ipa_punctuation_list(_LOCALE)
+    _CHARSET_STR = get_grapheme_character_set(locale=_LOCALE, case="upper") + string.ascii_letters
+    _CHARSET_STR_V1 = get_grapheme_character_set(locale=_LOCALE, case="mixed") + string.ascii_letters
+
+    def __init__(
+        self,
+        chars=None,
+        charset_version=2,
+        punct=True,
+        apostrophe=True,
+        add_blank_at=None,
+        pad_with_space=False,
+        non_default_punct_list=_PUNCT_LIST,
+        text_preprocessing_func=any_locale_text_preprocessing,
+    ):
+        if chars is None:
+            if charset_version == 1:
+                warnings.warn(
+                    "ArabicCharsTokenizer charset_version=1 (case='mixed' + ascii_letters) is deprecated "
+                    "and will be removed in a future release. "
+                    "Migrate to charset_version=2 (case='upper' + ascii_letters) and retrain.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                chars = self._CHARSET_STR_V1
+            elif charset_version == 2:
+                chars = self._CHARSET_STR
+            else:
+                raise ValueError(
+                    f"ArabicCharsTokenizer: unsupported charset_version={charset_version!r}. Use 1 (legacy) or 2."
+                )
+        super().__init__(
+            chars=chars,
+            punct=punct,
+            apostrophe=apostrophe,
+            add_blank_at=add_blank_at,
+            pad_with_space=pad_with_space,
+            non_default_punct_list=non_default_punct_list,
+            text_preprocessing_func=text_preprocessing_func,
+        )
+
+    def encode(self, text):
+        """Encode Arabic text, handling diacritics and English (upper/lower) correctly."""
+        cs, space, tokens = [], self.tokens[self.space], set(self.tokens)
+
+        text = self.text_preprocessing_func(text)
+        for c in text:
+            if c == space and len(cs) > 0 and cs[-1] != space:
+                cs.append(c)
+            elif c in tokens and c != space:
+                cs.append(c)
+            elif (c in self.PUNCT_LIST) and self.punct:
+                cs.append(c)
+            elif c != space:
+                logging.warning(f"Text: [{text}] contains unknown char: [{c}]. Symbol will be skipped.")
+
+        while cs and cs[-1] == space:
+            cs.pop()
 
         if self.pad_with_space:
             cs = [space] + cs + [space]
@@ -470,14 +613,6 @@ class GermanPhonemesTokenizer(BaseCharsTokenizer):
         text_preprocessing_func: Text preprocessing function for correct execution of the tokenizer.
             Currently, it only applies lower() function.
     """
-
-    # fmt: off
-    PUNCT_LIST = (  # Derived from LJSpeech and "/" additionally
-        ',', '.', '!', '?', '-',
-        ':', ';', '/', '"', '(',
-        ')', '[', ']', '{', '}',
-    )
-    # fmt: on
 
     def __init__(
         self,
@@ -628,12 +763,9 @@ class EnglishPhonemesTokenizer(BaseTokenizer):
             handled by g2p).
     """
 
+    PUNCT_LIST = DEFAULT_PUNCTUATION
+
     # fmt: off
-    PUNCT_LIST = (  # Derived from LJSpeech and "/" additionally
-        ',', '.', '!', '?', '-',
-        ':', ';', '/', '"', '(',
-        ')', '[', ']', '{', '}',
-    )
     VOWELS = (
         'AA', 'AE', 'AH', 'AO', 'AW',
         'AY', 'EH', 'ER', 'EY', 'IH',
@@ -773,10 +905,14 @@ class IPATokenizer(BaseTokenizer):
     Args:
         g2p: Grapheme to phoneme module, should be IpaG2p or some subclass thereof.
         locale: Locale used to determine default text processing logic and punctuation.
-            Supports ["en-US", "de-DE", "es-ES", "fr-FR"]. Defaults to "en-US".
+            See ``SUPPORTED_LOCALES`` in ``ipa_lexicon.py`` for the full list. Defaults to "en-US".
             Specify None if implementing custom logic for a new locale.
         punct: Whether to reserve grapheme for basic punctuation or not.
         non_default_punct_list: List of punctuation marks which will be used instead default, if any.
+        locale_specific_punct: Whether to use locale-specific punctuation (via ``get_ipa_punctuation_list``)
+            or only ``DEFAULT_PUNCTUATION``. Defaults to True. Set to False to preserve the token
+            vocabulary of checkpoints trained before locale-specific punctuation was introduced.
+            Currently only affects pt-BR. Ignored when ``non_default_punct_list`` is provided.
         fixed_vocab: List of valid grapheme/phoneme tokens for the model.
             Set only if overriding the default vocab generation process (reading from G2P dict).
             If set, any dataset entries that have unincluded graphemes will be filtered out, and any words whose
@@ -799,6 +935,7 @@ class IPATokenizer(BaseTokenizer):
         locale="en-US",
         punct=True,
         non_default_punct_list=None,
+        locale_specific_punct=True,
         fixed_vocab=None,
         *,
         space=' ',
@@ -851,8 +988,10 @@ class IPATokenizer(BaseTokenizer):
         if punct:
             if non_default_punct_list is not None:
                 self.punct_list = non_default_punct_list
-            else:
+            elif locale_specific_punct:
                 self.punct_list = get_ipa_punctuation_list(locale)
+            else:
+                self.punct_list = sorted(list(DEFAULT_PUNCTUATION))
 
             tokens.update(self.punct_list)
 
@@ -964,14 +1103,8 @@ class ChinesePhonemesTokenizer(BaseTokenizer):
             handled by g2p).
     """
 
-    # fmt: off
-    PUNCT_LIST = (  # Derived from LJSpeech and "/" additionally
-        ',', '.', '!', '?', '-',
-        ':', ';', '/', '"', '(',
-        ')', '[', ']', '{', '}',
-    )
+    PUNCT_LIST = DEFAULT_PUNCTUATION
     ZH_PUNCT_LIST = list("，。？！；：、‘’“”（）【】「」《》") + list(PUNCT_LIST)
-    # fmt: on
 
     def __init__(
         self,

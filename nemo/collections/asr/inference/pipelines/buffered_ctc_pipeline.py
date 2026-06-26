@@ -100,8 +100,6 @@ class BufferedCTCPipeline(BasePipeline):
         self.right_padding = self.padding_mode is FeatureBufferPaddingMode.RIGHT
         self.return_tail_result = cfg.return_tail_result
 
-        # Keep small amount of extra padding
-        self.tail_padding_in_samples = max(int(self.chunk_size * self.sample_rate * 0.45), 6400)
         self.zero_log_probs = self.init_zero_log_probs() if self.right_padding else None
 
     def init_endpointer(self) -> None:
@@ -238,10 +236,10 @@ class BufferedCTCPipeline(BasePipeline):
             buffers.append(buffer.unsqueeze_(0))
 
         # Only final frames have right padding
-        # Keep some amount of extra padding to avoid the performance degradation
-        right_paddings = torch.tensor(
-            [frame.size - frame.valid_size - self.tail_padding_in_samples for frame in frames], device=self.device
-        ).clamp(min=0)
+        # Calculate right paddings
+        right_paddings = torch.tensor([frame.size - frame.valid_size for frame in frames], device=self.device).clamp(
+            min=0
+        )
 
         # Create and adjust the buffer lens
         buffer_lens = torch.tensor([buffers[0].size(1)] * len(buffers), device=self.device)
@@ -441,6 +439,5 @@ class BufferedCTCPipeline(BasePipeline):
             device=self.device,
             pad_last_frame=True,
             right_pad_features=self.right_padding,
-            tail_padding_in_samples=self.tail_padding_in_samples,
         )
         return request_generator

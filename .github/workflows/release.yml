@@ -1,4 +1,4 @@
-# Copyright (c) 2020-2021, NVIDIA CORPORATION.
+# Copyright (c) 2020-2026, NVIDIA CORPORATION.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,9 +11,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-name: "Release Neural Modules"
+name: "Build, validate, and release Neural Modules"
 
 on:
+  push:
+    branches:
+      - main
+      - "r**"
+      - "pull-request/**"
+      - "deploy-release/*"
   workflow_dispatch:
     inputs:
       release-ref:
@@ -25,7 +31,7 @@ on:
         required: true
         type: string
       dry-run:
-        description: Do not publish a wheel and GitHub release.
+        description: Compute the release but do not publish wheel, GH release, or docs.
         required: true
         default: true
         type: boolean
@@ -42,42 +48,80 @@ on:
       publish-docs:
         description: Publish docs
         required: false
-        default: false
+        default: true
         type: boolean
       gh-release-from-tag:
         description: Tag of previous release for changelog builder
         required: false
         type: string
         default: ""
+
+defaults:
+  run:
+    shell: bash -x -e -u -o pipefail {0}
+
+permissions:
+  id-token: write
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
+
 jobs:
+  pre-flight:
+    if: github.event_name != 'workflow_dispatch'
+    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_cicd_preflight.yml@v0.94.1
+
   release:
-    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_release_library.yml@v0.80.3
+    needs: [pre-flight]
+    if: |
+      !cancelled() && !failure()
+      && !(needs.pre-flight.outputs.docs_only == 'true'
+           || needs.pre-flight.outputs.is_deployment_workflow == 'true')
+    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_release_library.yml@v1.4.3
     with:
-      release-ref: ${{ inputs.release-ref }}
+      release-ref: ${{ inputs.release-ref || github.sha }}
       python-package: nemo
       python-version: "3.10"
       library-name: Neural Modules
-      dry-run: ${{ inputs.dry-run }}
-      version-bump-branch: ${{ inputs.version-bump-branch }}
-      create-gh-release: ${{ inputs.create-gh-release }}
+      validate-only: ${{ github.event_name != 'workflow_dispatch' }}
+      dry-run: ${{ inputs.dry-run || false }}
+      wheel-content-ignore: "W002,W004,W005,W009"
+      skip-check-manifest: true
+      version-bump-branch: ${{ inputs.version-bump-branch || github.ref_name }}
+      create-gh-release: ${{ inputs.create-gh-release || true }}
       app-id: ${{ vars.BOT_ID }}
-      gh-release-use-changelog-builder: ${{ inputs.generate-changelog }}
-      publish-docs: ${{ inputs.publish-docs }}
-      gh-release-from-tag: ${{ inputs.gh-release-from-tag }}
-    secrets:
-      TWINE_USERNAME: ${{ secrets.TWINE_USERNAME }}
-      TWINE_PASSWORD: ${{ secrets.TWINE_PASSWORD }}
-      SLACK_WEBHOOK_ADMIN: ${{ secrets.SLACK_WEBHOOK_ADMIN }}
-      SLACK_WEBHOOK: ${{ secrets.SLACK_RELEASE_ENDPOINT }}
-      PAT: ${{ secrets.PAT }}
-      SSH_KEY: ${{ secrets.SSH_KEY }}
-      SSH_PWD: ${{ secrets.SSH_PWD }}
-      BOT_KEY: ${{ secrets.BOT_KEY }}
-      AWS_ASSUME_ROLE_ARN: ${{ secrets.AWS_ASSUME_ROLE_ARN }}
-      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-      AKAMAI_HOST: ${{ secrets.AKAMAI_HOST }}
-      AKAMAI_CLIENT_TOKEN: ${{ secrets.AKAMAI_CLIENT_TOKEN }}
-      AKAMAI_CLIENT_SECRET: ${{ secrets.AKAMAI_CLIENT_SECRET }}
-      AKAMAI_ACCESS_TOKEN: ${{ secrets.AKAMAI_ACCESS_TOKEN }}
-      S3_BUCKET_NAME: ${{ secrets.S3_BUCKET_NAME }}
+      gh-release-use-changelog-builder: ${{ inputs.generate-changelog || false }}
+      publish-docs: ${{ inputs.publish-docs || true }}
+      docs-target-path: nemo
+      docs-directory: docs/source
+      docs-requirements-file: requirements/requirements_docs.txt
+      docs-sync-all: true
+      docs-no-extras: "--no-extra cu12 --no-extra compiled --no-extra compiled-a100"
+      publish-as-latest: true
+      run-on-version-tag-only: ${{ github.ref_name != 'main' }}
+      gh-release-from-tag: ${{ inputs.gh-release-from-tag || '' }}
+      restrict-to-admins: true
+    secrets: inherit  # pragma: allowlist secret
+
+  release-summary:
+    needs: [pre-flight, release]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Result
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          FAILED_JOBS=$(gh run view $GITHUB_RUN_ID --repo ${{ github.repository }} --json jobs --jq '[.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "action_required")] | length')
+
+          if [ "${FAILED_JOBS:-0}" -eq 0 ]; then
+              echo "✅ All previous jobs completed successfully"
+              exit 0
+          else
+              echo "❌ Found $FAILED_JOBS failed job(s)"
+              gh run view $GITHUB_RUN_ID --repo ${{ github.repository }} --json jobs --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "action_required") | .name'
+              exit 1
+          fi

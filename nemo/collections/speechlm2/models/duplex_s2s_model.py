@@ -63,7 +63,8 @@ class DuplexS2SModel(LightningModule, HFHubMixin):
         # pretrained LM head weights.
         # However, for S2S we need to access the activations before LM head directly
         # to feed them to the audio codec head.
-        self.tokenizer = AutoTokenizer(self.cfg.pretrained_llm, use_fast=True)
+        tokenizer_src = self.cfg.get("tokenizer_path", None) or self.cfg.pretrained_llm
+        self.tokenizer = AutoTokenizer(tokenizer_src, use_fast=True)
         llm = load_pretrained_hf(self.cfg.pretrained_llm, pretrained_weights=self.cfg.pretrained_weights).train()
         self.llm = llm.model  # fetch PretrainedBaseModel from model "ForCausalLM"
         self.lm_head = llm.lm_head

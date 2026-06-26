@@ -65,6 +65,33 @@ def bpe_tokenizer(tmp_path_factory):
 
 
 @pytest.fixture(scope="session")
+def bpe_tokenizer_with_think(tmp_path_factory):
+    tmpdir = tmp_path_factory.mktemp("bpe_tokenizer_with_think")
+    text_path = tmpdir / "text.txt"
+    text_path.write_text(TOKENIZER_TRAIN_TEXT)
+    create_spt_model(
+        str(text_path),
+        vocab_size=512,
+        sample_size=-1,
+        do_lower_case=False,
+        output_dir=str(tmpdir),
+        remove_extra_whitespaces=True,
+        bos=True,
+        eos=True,
+        user_defined_symbols=[
+            '\n',
+            '<|im_start|>',
+            '<|im_end|>',
+            '<SPECIAL_10>',
+            '<SPECIAL_11>',
+            '<think>',
+            '</think>',
+        ],
+    )
+    return SentencePieceTokenizer(str(tmpdir / "tokenizer.model"))
+
+
+@pytest.fixture(scope="session")
 def canary_tokenizer(bpe_tokenizer, tmp_path_factory):
     tmpdir = tmp_path_factory.mktemp("spl_tokens")
     spl_tokens = CanaryTokenizer.build_special_tokenizer(["transcribe", "en"], tmpdir)

@@ -127,7 +127,10 @@ def __text_normalization(json_file, num_workers=-1):
         "punct_post_process": True,
     }
     text_normalizer = Normalizer(
-        lang="de", input_case="cased", overwrite_cache=True, cache_dir=str(json_file.parent / "cache_dir"),
+        lang="de",
+        input_case="cased",
+        overwrite_cache=True,
+        cache_dir=str(json_file.parent / "cache_dir"),
     )
 
     def normalizer_call(x):
@@ -178,7 +181,7 @@ def __process_data(
                     continue
 
                 # skip audios if their duration is out of range.
-                duration = subprocess.check_output(f"soxi -D {wav_file}", shell=True)
+                duration = subprocess.check_output(["soxi", "-D", str(wav_file)])
                 duration = float(duration)
                 if min_duration <= duration <= max_duration:
                     entry = {

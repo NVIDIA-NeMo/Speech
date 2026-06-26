@@ -22,11 +22,12 @@ from typing import Dict, List, Tuple
 import numpy as np
 import soundfile as sf
 import torch
+from lhotse import SupervisionSegment
 from omegaconf.listconfig import ListConfig
-from pyannote.core import Annotation, Segment, Timeline
 from tqdm import tqdm
 
 from nemo.collections.asr.data.audio_to_label import repeat_signal
+from nemo.collections.asr.metrics.der import make_diar_annotation, make_uem_timeline, write_supervisions_to_rttm
 from nemo.collections.asr.parts.utils.longform_clustering import LongFormSpeakerClustering
 from nemo.utils import logging
 
@@ -310,17 +311,26 @@ def merge_stamps(lines):
     return overlap_stamps
 
 
-def labels_to_pyannote_object(labels, uniq_name=''):
-    """
-    Convert the given labels to pyannote object to calculate DER and for visualization
-    """
-    annotation = Annotation(uri=uniq_name)
-    for label in labels:
-        start, end, speaker = label.strip().split()
-        start, end = float(start), float(end)
-        annotation[Segment(start, end)] = speaker
+def labels_to_supervisions(labels, uniq_name='', audio_end=None):
+    """Convert ``"start end speaker"`` label strings to a diarization annotation.
 
-    return annotation
+    Returns a ``list`` of :class:`lhotse.SupervisionSegment`, which is the
+    annotation type used throughout NeMo's DER pipeline. The returned object
+    can be passed to ``score_labels`` / ``score_labels_from_rttm_labels``
+    and other DER helpers.
+
+    Args:
+        labels (Iterable[str]): Iterable of label strings, each formatted as
+            ``"start end speaker"``.
+        uniq_name (str): Recording / file identifier (used as the recording id
+            of each emitted supervision).
+        audio_end (Optional[float]): If provided, segment end times are capped
+            at this value. Segments past this boundary are dropped.
+
+    Returns:
+        List[SupervisionSegment]: Supervision segments, one per valid label.
+    """
+    return make_diar_annotation(labels, uniq_name=uniq_name, audio_end=audio_end)
 
 
 def labels_to_rttmfile(labels, uniq_id, out_rttm_dir):
@@ -457,8 +467,10 @@ def perform_clustering(
             Enable TQDM progress bar.
 
     Returns:
-        all_reference (list[uniq_name,Annotation]): reference annotations for score calculation
-        all_hypothesis (list[uniq_name,Annotation]): hypothesis annotations for score calculation
+        all_reference (list[uniq_name, list[SupervisionSegment]]):
+            reference annotations for score calculation.
+        all_hypothesis (list[uniq_name, list[SupervisionSegment]]):
+            hypothesis annotations for score calculation.
 
     """
     all_hypothesis = []
@@ -518,13 +530,13 @@ def perform_clustering(
         if out_rttm_dir:
             labels_to_rttmfile(labels, uniq_id, out_rttm_dir)
             lines_cluster_labels.extend([f'{uniq_id} {seg_line}\n' for seg_line in lines])
-        hypothesis = labels_to_pyannote_object(labels, uniq_name=uniq_id)
+        hypothesis = labels_to_supervisions(labels, uniq_name=uniq_id)
         all_hypothesis.append([uniq_id, hypothesis])
 
         rttm_file = audio_rttm_values.get('rttm_filepath', None)
         if rttm_file is not None and os.path.exists(rttm_file) and not no_references:
             ref_labels = rttm_to_labels(rttm_file)
-            reference = labels_to_pyannote_object(ref_labels, uniq_name=uniq_id)
+            reference = labels_to_supervisions(ref_labels, uniq_name=uniq_id)
             all_reference.append([uniq_id, reference])
         else:
             no_references = True
@@ -1361,17 +1373,20 @@ def get_online_subsegments_from_buffer(
     return sigs_list, sig_rangel_list, sig_indexes
 
 
-def timestamps_to_pyannote_object(
+def timestamps_to_supervisions(
     speaker_timestamps: List[Tuple[float, float]],
     uniq_id: str,
     audio_rttm_values: Dict[str, str],
-    all_hypothesis: List[Tuple[str, Timeline]],
-    all_reference: List[Tuple[str, Timeline]],
-    all_uems: List[Tuple[str, Timeline]],
+    all_hypothesis: List[Tuple[str, List[SupervisionSegment]]],
+    all_reference: List[Tuple[str, List[SupervisionSegment]]],
+    all_uems: List[Tuple[str, List[SupervisionSegment]]],
     out_rttm_dir: str | None,
 ):
-    """
-    Convert speaker timestamps to pyannote.core.Timeline object.
+    """Convert speaker timestamps into the diarization annotation lists used by DER.
+
+    Hypothesis / reference / UEM are represented as lists of
+    :class:`lhotse.SupervisionSegment`; every consumer in NeMo's DER pipeline
+    accepts this representation.
 
     Args:
         speaker_timestamps (List[Tuple[float, float]]):
@@ -1380,50 +1395,50 @@ def timestamps_to_pyannote_object(
             Unique ID of each speaker.
         audio_rttm_values (Dict[str, str]):
             Dictionary of manifest values.
-        all_hypothesis (List[Tuple[str, pyannote.core.Timeline]]):
-            List of hypothesis in pyannote.core.Timeline object.
-        all_reference (List[Tuple[str, pyannote.core.Timeline]]):
-            List of reference in pyannote.core.Timeline object.
-        all_uems (List[Tuple[str, pyannote.core.Timeline]]):
-            List of uems in pyannote.core.Timeline object.
+        all_hypothesis (List[Tuple[str, List[SupervisionSegment]]]):
+            Accumulator list of hypothesis annotations.
+        all_reference (List[Tuple[str, List[SupervisionSegment]]]):
+            Accumulator list of reference annotations.
+        all_uems (List[Tuple[str, List[SupervisionSegment]]]):
+            Accumulator list of UEM timelines.
         out_rttm_dir (str | None):
             Directory to save RTTMs
 
     Returns:
-        all_hypothesis (List[Tuple[str, pyannote.core.Timeline]]):
-            List of hypothesis in pyannote.core.Timeline object with an added Timeline object.
-        all_reference (List[Tuple[str, pyannote.core.Timeline]]):
-            List of reference in pyannote.core.Timeline object with an added Timeline object.
-        all_uems (List[Tuple[str, pyannote.core.Timeline]]):
-            List of uems in pyannote.core.Timeline object with an added Timeline object.
+        Updated ``(all_hypothesis, all_reference, all_uems)`` tuple, each
+        entry of the form ``(uniq_id, list_of_SupervisionSegment)``.
     """
     offset, dur = float(audio_rttm_values.get('offset', None)), float(audio_rttm_values.get('duration', None))
+    audio_end = offset + dur
     hyp_labels = generate_diarization_output_lines(
         speaker_timestamps=speaker_timestamps, model_spk_num=len(speaker_timestamps)
     )
-    hypothesis = labels_to_pyannote_object(hyp_labels, uniq_name=uniq_id)
+    hypothesis = labels_to_supervisions(hyp_labels, uniq_name=uniq_id, audio_end=audio_end)
     if out_rttm_dir is not None and os.path.exists(out_rttm_dir):
         with open(f'{out_rttm_dir}/{uniq_id}.rttm', 'w') as f:
-            hypothesis.write_rttm(f)
+            write_supervisions_to_rttm(hypothesis, f, recording_id=uniq_id)
     all_hypothesis.append([uniq_id, hypothesis])
     rttm_file = audio_rttm_values.get('rttm_filepath', None)
     if rttm_file is not None and os.path.exists(rttm_file):
         uem_lines = [[offset, dur + offset]]
         org_ref_labels = rttm_to_labels(rttm_file)
         ref_labels = org_ref_labels
-        reference = labels_to_pyannote_object(ref_labels, uniq_name=uniq_id)
+        reference = labels_to_supervisions(ref_labels, uniq_name=uniq_id)
         uem_obj = get_uem_object(uem_lines, uniq_id=uniq_id)
         all_uems.append(uem_obj)
         all_reference.append([uniq_id, reference])
     return all_hypothesis, all_reference, all_uems
 
 
-def get_uem_object(uem_lines: List[List[float]], uniq_id: str):
-    """
-    Generate pyannote timeline segments for uem file.
+def get_uem_object(uem_lines: List[List[float]], uniq_id: str) -> List[SupervisionSegment]:
+    """Generate the UEM (evaluation regions) timeline for a session.
 
      <UEM> file format
      UNIQ_SPEAKER_ID CHANNEL START_TIME END_TIME
+
+    Returns a ``list`` of :class:`lhotse.SupervisionSegment` (each with
+    ``speaker="UEM"``), which is the UEM representation used throughout
+    NeMo's DER pipeline.
 
     Args:
         uem_lines (list): list of session ID and start, end times.
@@ -1432,13 +1447,9 @@ def get_uem_object(uem_lines: List[List[float]], uniq_id: str):
         uniq_id (str): Unique session ID.
 
     Returns:
-        timeline (pyannote.core.Timeline): pyannote timeline object.
+        List of :class:`lhotse.SupervisionSegment` representing the UEM.
     """
-    timeline = Timeline(uri=uniq_id)
-    for uem_stt_end in uem_lines:
-        start_time, end_time = uem_stt_end
-        timeline.add(Segment(float(start_time), float(end_time)))
-    return timeline
+    return make_uem_timeline(uem_lines, uniq_id=uniq_id)
 
 
 def embedding_normalize(embs, use_std=False, eps=1e-10):

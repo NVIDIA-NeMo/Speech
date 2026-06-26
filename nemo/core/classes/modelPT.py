@@ -23,7 +23,6 @@ from os import path
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Union
 
-import hydra
 import torch
 from lightning.pytorch import LightningModule, Trainer
 from lightning.pytorch.utilities import model_summary, rank_zero_only
@@ -31,7 +30,7 @@ from omegaconf import DictConfig, OmegaConf, open_dict
 
 from nemo import package_info
 from nemo.core import optim
-from nemo.core.classes.common import Model
+from nemo.core.classes.common import Model, safe_instantiate
 from nemo.core.classes.module import NeuralModule
 from nemo.core.connectors.save_restore_connector import SaveRestoreConnector
 from nemo.core.optim import prepare_lr_scheduler
@@ -759,7 +758,7 @@ class ModelPT(LightningModule, Model):
                         optimizer_config = {}
                     optimizer_config.update(optimizer_args)
 
-                    optimizer_instance = hydra.utils.instantiate(
+                    optimizer_instance = safe_instantiate(
                         optimizer_cls, self._optimizer_param_groups, **optimizer_config
                     )  # type: DictConfig
 
@@ -783,6 +782,7 @@ class ModelPT(LightningModule, Model):
 
             self._optimizer = optimizer
 
+        optim.patch_flashoptim_uneven_shard_support(self._optimizer)
         self._scheduler = prepare_lr_scheduler(
             optimizer=self._optimizer, scheduler_config=scheduler_config, train_dataloader=self._train_dl
         )

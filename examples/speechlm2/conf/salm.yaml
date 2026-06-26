@@ -5,6 +5,12 @@ model:
 
   pretrained_weights: True  # When False, we use pretrained_name to load the architecture, but with random init
 
+  # Fine-tune from a previous training checkpoint (model weights only — optimizer,
+  # scheduler, and step counter start fresh). Supports DCP directories (from
+  # FSDP2/TP training), HuggingFace directories (model.safetensors), and
+  # single-file .ckpt checkpoints. Set to null to train from pretrained_llm/asr.
+  init_from_checkpoint: null
+
   # Regexp (re.compile) patterns matching parameters to be frozen.
   freeze_params:
     # Frozen LLM
@@ -17,6 +23,10 @@ model:
 
   prompt_format: qwen
   audio_locator_tag: "<|audioplaceholder|>"  # placeholder token for audio turn is expected
+  # Optional: split audios longer than this before the speech encoder forward, then
+  # concatenate the encoded chunks back into one sequence before passing them to the LLM.
+  # Leave as null (default) to encode each audio row directly and preserve existing behavior.
+  encoder_chunk_size_seconds: null
 
   # Note: Uncomment the block below to enable LoRA on LLM via HuggingFace PEFT library.
   #   It will automatically freeze LLM parameters even if freeze_params was unused,
@@ -30,17 +40,26 @@ model:
   #   target_modules: ["q_proj", "v_proj"]
 
   perception:
-     target: nemo.collections.speechlm2.modules.perception.AudioPerceptionModule
-     output_dim: 2048
-     modality_adapter:
-       _target_: nemo.collections.speechlm2.modules.perception.IdentityConnector
-       d_model: 1024
-     # spec_augment:
-     #   _target_: nemo.collections.asr.modules.SpectrogramAugmentation
-     #   freq_masks: 2 # set to zero to disable it
-     #   time_masks: 10 # set to zero to disable it
-     #   freq_width: 27
-     #   time_width: 5  # 5 frames = 50ms
+    target: nemo.collections.speechlm2.modules.perception.AudioPerceptionModule
+    output_dim: 2048
+    modality_adapter:
+      _target_: nemo.collections.speechlm2.modules.perception.IdentityConnector
+      d_model: 1024
+    
+    # Optional Rotary Time Embedding (RoTE, https://arxiv.org/abs/2410.12109): encodes absolute time into the encoder output
+    # features (at the modality-adapter entrance). Omit this block to disable (default).
+    # rote:
+    #   _target_: nemo.collections.speechlm2.modules.rote.RotaryTimeEmbedding
+    #   dim: 1024             # must match the encoder output feature dim (must be even)
+    #   theta: 1200.0         # base of the geometric frequency bank
+    #   rotary_fraction: 0.2  # fraction of dim to rotate
+    
+    # spec_augment:
+    #   _target_: nemo.collections.asr.modules.SpectrogramAugmentation
+    #   freq_masks: 2 # set to zero to disable it
+    #   time_masks: 10 # set to zero to disable it
+    #   freq_width: 27
+    #   time_width: 5  # 5 frames = 50ms
 
   optimizer:
     _target_: torch.optim.AdamW

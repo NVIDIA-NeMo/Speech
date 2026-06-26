@@ -66,7 +66,7 @@ def test_model_training_step():
     audio_len = torch.tensor([num_samples], dtype=torch.long, device=d)
     batch = {"audio": audio, "audio_lens": audio_len}
 
-    audio_ref, audio_ref_len, audio_gen, commit_loss, _ = model._process_batch(batch)
+    audio_ref, audio_ref_len, audio_gen, commit_loss, *_ = model._process_batch(batch)
 
     loss_mel_l1, loss_mel_l2 = model.mel_loss_fn(
         audio_real=audio_ref.float(),

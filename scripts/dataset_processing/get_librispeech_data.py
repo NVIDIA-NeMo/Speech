@@ -29,8 +29,9 @@ import subprocess
 import tarfile
 import urllib.request
 
-from sox import Transformer
 from tqdm import tqdm
+
+from nemo.utils.tar_utils import safe_extract
 
 parser = argparse.ArgumentParser(description="LibriSpeech Data download")
 parser.add_argument("--data_root", required=True, default=None, type=str)
@@ -50,6 +51,17 @@ URLS = {
     "DEV_CLEAN_2": "https://www.openslr.org/resources/31/dev-clean-2.tar.gz",
     "TRAIN_CLEAN_5": "https://www.openslr.org/resources/31/train-clean-5.tar.gz",
 }
+
+
+def _load_sox_transformer():
+    try:
+        from sox import Transformer
+    except ImportError:
+        raise ImportError(
+            "Optional dependency 'sox' is required by this script. Install it with: pip install sox"
+        ) from None
+
+    return Transformer
 
 
 def __retrieve_with_progress(source: str, filename: str):
@@ -98,9 +110,8 @@ def __maybe_download_file(destination: str, source: str):
 
 def __extract_file(filepath: str, data_dir: str):
     try:
-        tar = tarfile.open(filepath)
-        tar.extractall(data_dir)
-        tar.close()
+        with tarfile.open(filepath) as tar:
+            safe_extract(tar, data_dir)
     except Exception:
         logging.info("Not extracting. Maybe already there?")
 
@@ -114,6 +125,7 @@ def __process_transcript(file_path: str, dst_folder: str):
     Returns:
         a list of metadata entries for processed files.
     """
+    Transformer = _load_sox_transformer()
     entries = []
     root = os.path.dirname(file_path)
     with open(file_path, encoding="utf-8") as fin:
@@ -127,7 +139,7 @@ def __process_transcript(file_path: str, dst_folder: str):
             if not os.path.exists(wav_file):
                 Transformer().build(flac_file, wav_file)
             # check duration
-            duration = subprocess.check_output("soxi -D {0}".format(wav_file), shell=True)
+            duration = subprocess.check_output(["soxi", "-D", wav_file])
 
             entry = {}
             entry["audio_filepath"] = os.path.abspath(wav_file)
@@ -190,8 +202,15 @@ def main():
         __extract_file(filepath, data_root)
         logging.info("Processing {0}".format(data_set))
         __process_data(
-            os.path.join(os.path.join(data_root, "LibriSpeech"), data_set.replace("_", "-"),),
-            os.path.join(os.path.join(data_root, "LibriSpeech"), data_set.replace("_", "-"),) + "-processed",
+            os.path.join(
+                os.path.join(data_root, "LibriSpeech"),
+                data_set.replace("_", "-"),
+            ),
+            os.path.join(
+                os.path.join(data_root, "LibriSpeech"),
+                data_set.replace("_", "-"),
+            )
+            + "-processed",
             os.path.join(data_root, data_set + ".json"),
             num_workers=num_workers,
         )

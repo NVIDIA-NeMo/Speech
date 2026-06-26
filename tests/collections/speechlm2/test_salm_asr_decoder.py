@@ -197,6 +197,47 @@ def test_salm_generation(model):
     assert (answer < model.text_vocab_size).all()
 
 
+@pytest.mark.parametrize(
+    ("enable_thinking", "expected_formatter_kwargs"),
+    [
+        (False, {"enable_thinking": False}),
+        (None, {}),
+    ],
+)
+def test_salm_generation_passes_enable_thinking(model, monkeypatch, enable_thinking, expected_formatter_kwargs):
+    seen = {}
+
+    class _FakeFormatter:
+        def __init__(self, tokenizer):
+            pass
+
+        def encode_dialog(self, turns, **kwargs):
+            seen["turns"] = turns
+            seen["formatter_kwargs"] = kwargs
+            return {"input_ids": torch.tensor([1, 2], dtype=torch.long)}
+
+    def fake_generate(*, inputs_embeds, attention_mask, generation_config, **kwargs):
+        seen["inputs_embeds"] = inputs_embeds
+        seen["attention_mask"] = attention_mask
+        max_new_tokens = kwargs["max_new_tokens"]
+        return torch.zeros((inputs_embeds.shape[0], max_new_tokens), dtype=torch.long, device=inputs_embeds.device)
+
+    monkeypatch.setattr(PromptFormatter, "resolve", staticmethod(lambda name: _FakeFormatter))
+    monkeypatch.setattr(model.llm, "generate", fake_generate, raising=False)
+
+    answer = model.generate(
+        prompts=[[{"role": "user", "slots": {"message": "test"}}]],
+        enable_thinking=enable_thinking,
+        max_new_tokens=3,
+    )
+
+    assert seen["formatter_kwargs"] == expected_formatter_kwargs
+    assert seen["turns"] == [{"role": "user", "slots": {"message": "test"}}]
+    assert seen["inputs_embeds"].shape[:2] == (1, 2)
+    assert torch.equal(seen["attention_mask"], torch.ones((1, 2), dtype=torch.bool, device=model.device))
+    assert answer.shape == (1, 3)
+
+
 def test_salm_generation_audios_via_prompt(model, tmp_path):
     audio_path = tmp_path / "audio.wav"
     dummy_cut(0, with_data=True).save_audio(audio_path)

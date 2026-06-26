@@ -6,7 +6,7 @@ NFA is hosted here: https://github.com/NVIDIA/NeMo/tree/main/tools/nemo_forced_a
 
 NFA is a tool for generating token-, word- and segment-level timestamps of speech in audio using NeMo's CTC-based Automatic Speech Recognition models. 
 You can provide your own reference text, or use ASR-generated transcription. 
-You can use NeMo's ASR Model checkpoints out of the box in :ref:`14+ languages <asr-checkpoint-list-by-language>`, or train your own model.
+You can use NeMo's ASR Model checkpoints out of the box in 14+ languages (see :doc:`ASR Model Checkpoints </asr/asr_checkpoints>`), or train your own model.
 NFA can be used on long audio files of 1+ hours duration (subject to your hardware and the ASR model used).
 
 Demos & Tutorials
@@ -19,7 +19,7 @@ Demos & Tutorials
 Quickstart
 ----------
 
-1. Install `NeMo <https://github.com/NVIDIA/NeMo#installation>`__.
+1. Install NeMo with the ASR collection. See :ref:`installation`.
 2. Prepare a NeMo-style manifest containing the paths of audio files you would like to proces, and (optionally) their text.
 3. Run NFA's ``align.py`` script with the desired config, e.g.:
 

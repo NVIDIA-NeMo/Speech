@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import inspect
+
 import torch
 from omegaconf import DictConfig, open_dict
 from torch import nn
@@ -37,6 +39,29 @@ class AudioPerceptionModule(NeuralModule, Exportable):
         adapter_subsampling = getattr(self.modality_adapter, "subsampling_factor", 1.0)
         return frame_shift * encoder_subsampling * adapter_subsampling
 
+    @property
+    def encoder_frame_duration(self) -> float:
+        """
+        Returns the audio duration corresponding to a single frame at the encoder output
+        (but before the modality adapter).
+        """
+        frame_shift = self.preprocessor.featurizer.hop_length / self.preprocessor.featurizer.sample_rate
+        return frame_shift * self.encoder.subsampling_factor
+
+    @property
+    def encoder(self) -> nn.Module:
+        # When the modality adapter needs per-layer activations (Qformer / MultiLayer
+        # projection), the encoder is wrapped inside ``encoder_multilayer`` so
+        # ConformerMultiLayerFeatureExtractor can attach hooks. Expose it at the top
+        # level here so downstream code (training_step freeze checks, etc.) sees a
+        # single logical ``encoder`` submodule regardless of the adapter choice.
+        # For the non-multilayer path, the encoder was registered via
+        # ``self.encoder = encoder`` through nn.Module.__setattr__ (which bypasses
+        # this property); look it up directly in _modules.
+        if 'encoder_multilayer' in self._modules:
+            return self._modules['encoder_multilayer'].encoder
+        return self._modules['encoder']
+
     def __init__(self, cfg: DictConfig):
         super().__init__()
         # Initialize components
@@ -55,6 +80,7 @@ class AudioPerceptionModule(NeuralModule, Exportable):
                 layer_idx_list=cfg.modality_adapter.target_layer_ids,
                 detach=False,
                 convert_to_cpu=False,
+                include_final_output=cfg.modality_adapter.get("include_final_output", True),
             )
         else:
             self.encoder = encoder
@@ -72,6 +98,18 @@ class AudioPerceptionModule(NeuralModule, Exportable):
             self.proj = nn.Linear(d_model, cfg.output_dim)
         else:
             self.proj = nn.Identity()
+        # Optional Rotary Time Embedding (ROTE), applied to the encoder output features
+        # at the entrance of the modality adapter. ``None`` (default) is a no-op.
+        self.rote = self.from_config_dict(cfg.rote) if cfg.get("rote") is not None else None
+
+    def set_activation_checkpointing(self, enabled: bool) -> None:
+        """Enable/disable activation checkpointing on the encoder's transformer layers.
+
+        When ``enabled`` is True, wraps each layer in ``self.encoder.layers`` with
+        ``torch.distributed.algorithms._checkpoint.checkpoint_wrapper``. Must be
+        called before FSDP2 sharding. When ``enabled`` is False, this is a no-op.
+        """
+        _set_encoder_activation_checkpointing(self.encoder, enabled)
 
     def maybe_preprocess_audio(
         self,
@@ -95,6 +133,35 @@ class AudioPerceptionModule(NeuralModule, Exportable):
             )
         return processed_signal, processed_signal_length
 
+    def _apply_rote(self, encoder_emb, time_offset=None):
+        """Apply RoTE to encoder output features ``(B, C, T)`` (or a list thereof).
+
+        ``time_offset`` is an optional per-row start time in seconds, shape ``(B,)``; when
+        ``None`` every row starts at time 0. Per-frame absolute time is
+        ``time_offset[b] + (frame_idx + 0.5) * encoder_frame_duration``.
+        """
+        if isinstance(encoder_emb, (list, tuple)):
+            return type(encoder_emb)(self._apply_rote(emb, time_offset) for emb in encoder_emb)
+
+        # encoder_emb: (B, C, T) -> rotate over the channel dim with x channel-last.
+        b, _, t = encoder_emb.shape
+        device = encoder_emb.device
+        frame_times = (torch.arange(t, device=device, dtype=torch.float32) + 0.5) * self.encoder_frame_duration
+        times = frame_times.unsqueeze(0).expand(b, -1)  # (B, T)
+        if time_offset is not None:
+            times = times + time_offset.to(device=device, dtype=torch.float32).unsqueeze(1)
+        rotated = self.rote(encoder_emb.transpose(1, 2), times)  # (B, T, C)
+        return rotated.transpose(1, 2)
+
+    @staticmethod
+    def _encoder_accepts_spk_targets(encoder: nn.Module) -> bool:
+        if hasattr(encoder, "diarization_model") or hasattr(encoder, "diar_kernel"):
+            return True
+        try:
+            return "spk_targets" in inspect.signature(encoder.forward).parameters
+        except (TypeError, ValueError):
+            return False
+
     # disable type checks to avoid type-check errors when using Conformer as modality adapter
     @typecheck.disable_checks()
     def forward(
@@ -108,6 +175,8 @@ class AudioPerceptionModule(NeuralModule, Exportable):
         cache_last_time=None,
         cache_last_channel_len=None,
         streaming=False,
+        time_offset=None,
+        spk_targets=None,
     ):
         processed_signal, processed_signal_length = self.maybe_preprocess_audio(
             input_signal, input_signal_length, processed_signal, processed_signal_length
@@ -149,8 +218,18 @@ class AudioPerceptionModule(NeuralModule, Exportable):
                     'cache_last_channel_len': new_cache_last_channel_len,
                 }
         else:
-            encoder_emb, encoded_len = self.encoder(audio_signal=processed_signal, length=processed_signal_length)
-
+            encoder_kwargs = {"audio_signal": processed_signal, "length": processed_signal_length}
+            if spk_targets is not None:
+                if not self._encoder_accepts_spk_targets(self.encoder):
+                    raise ValueError(
+                        "`spk_targets` were provided, but the mounted perception encoder "
+                        f"({type(self.encoder).__name__}) does not support speaker-target inputs. "
+                        "spk_targets has no effect when the encoder does not support it."
+                    )
+                encoder_kwargs["spk_targets"] = spk_targets
+            encoder_emb, encoded_len = self.encoder(**encoder_kwargs)
+        if self.rote is not None:
+            encoder_emb = self._apply_rote(encoder_emb, time_offset)
         encoded, encoded_len = self.modality_adapter(audio_signal=encoder_emb, length=encoded_len)
 
         # b, c, t -> b, t, c
@@ -187,6 +266,34 @@ class IdentityConnector(nn.Module):
 
     def forward(self, audio_signal, length=None, *args, **kwargs):
         return audio_signal, length
+
+
+def _set_encoder_activation_checkpointing(encoder: nn.Module, enabled: bool) -> None:
+    """Wrap the encoder's subsampling front-end and each transformer layer with
+    ``checkpoint_wrapper`` when enabled.
+
+    Covers ``encoder.pre_encode`` (the Conformer fbank→subsampled-activation
+    module: ``ConvSubsampling`` / ``StackingSubsampling`` / ``nn.Linear``) and
+    each entry in ``encoder.layers``. Missing attributes are skipped so
+    non-Conformer architectures degrade gracefully. No-op when ``enabled`` is
+    False.
+    """
+    if not enabled:
+        return
+    from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
+
+    pre_encode = getattr(encoder, "pre_encode", None)
+    # ConformerEncoder.forward dispatches on ``isinstance(pre_encode, nn.Linear)``
+    # to choose between positional and (x=, lengths=) kwargs. Wrapping a Linear
+    # hides its type and routes it to the wrong branch, so skip that case — the
+    # memory win is negligible anyway (one linear vs. a conv/stacking stack).
+    if pre_encode is not None and not isinstance(pre_encode, nn.Linear):
+        encoder.pre_encode = checkpoint_wrapper(pre_encode)
+
+    layers = getattr(encoder, "layers", None)
+    if layers is not None:
+        for i in range(len(layers)):
+            layers[i] = checkpoint_wrapper(layers[i])
 
 
 class AudioTranscriptionPerceptionModule(NeuralModule, Exportable):
@@ -231,11 +338,21 @@ class AudioTranscriptionPerceptionModule(NeuralModule, Exportable):
                 layer_idx_list=cfg.modality_adapter.target_layer_ids,
                 detach=False,
                 convert_to_cpu=False,
+                include_final_output=cfg.modality_adapter.get("include_final_output", True),
             )
         if 'output_dim' not in cfg.modality_adapter and "d_model" in cfg.modality_adapter:  # e.g., conformer encoder
             self.proj = nn.Linear(cfg.modality_adapter.d_model, cfg.output_dim)
         else:
             self.proj = nn.Identity()
+
+    def set_activation_checkpointing(self, enabled: bool) -> None:
+        """Enable/disable activation checkpointing on the encoder's transformer layers.
+
+        When ``enabled`` is True, wraps each layer in ``self.encoder.layers`` with
+        ``torch.distributed.algorithms._checkpoint.checkpoint_wrapper``. Must be
+        called before FSDP2 sharding. When ``enabled`` is False, this is a no-op.
+        """
+        _set_encoder_activation_checkpointing(self.encoder, enabled)
 
     def maybe_preprocess_audio(
         self,
@@ -321,21 +438,21 @@ class QformerConnector(nn.Module):
         qformer_num_hidden_layers: int,
         encoder_config: DictConfig,
         llm_config: DictConfig,
+        include_final_output: bool = True,
     ):
         super().__init__()
         self.prompt_size = prompt_size
         self.target_layer_ids = target_layer_ids
+        self.include_final_output = include_final_output
         self.qformer_num_hidden_layers = qformer_num_hidden_layers
         self.encoder_config = encoder_config
         self.llm_config = llm_config
 
+        num_inputs = len(self.target_layer_ids) + int(self.include_final_output)
         self.layer_prompts = nn.ParameterList(
-            [
-                nn.Parameter(torch.randn(1, self.prompt_size, self.encoder_config.d_model))
-                for _ in range(len(self.target_layer_ids))
-            ]
+            [nn.Parameter(torch.randn(1, self.prompt_size, self.encoder_config.d_model)) for _ in range(num_inputs)]
         )
-        self.layer_weights = nn.Parameter(torch.zeros(self.prompt_size, len(self.target_layer_ids), dtype=torch.float))
+        self.layer_weights = nn.Parameter(torch.zeros(self.prompt_size, num_inputs, dtype=torch.float))
 
         qformer_config = BertConfig()
         qformer_config.num_hidden_layers = self.qformer_num_hidden_layers
@@ -358,9 +475,10 @@ class QformerConnector(nn.Module):
             audio_signal: layerwise hidden states from the encoder
         """
         layer_prompt_outputs = []
-        assert len(audio_signal) == len(
-            self.target_layer_ids
-        ), f"Expected {len(self.target_layer_ids)} activations from encoder layers but got {len(audio_signal)}."
+        expected_num = len(self.target_layer_ids) + int(self.include_final_output)
+        assert (
+            len(audio_signal) == expected_num
+        ), f"Expected {expected_num} activations from encoder layers but got {len(audio_signal)}."
         for idx, encoder_hidden_state in enumerate(audio_signal):
             layer_prompt = self.layer_prompts[idx].expand(encoder_hidden_state.size(0), -1, -1)
             qformer_output = self.qformer(
@@ -388,17 +506,21 @@ class MultiLayerProjectionConnector(nn.Module):
         target_layer_ids: list[int],
         input_dim: int,
         output_dim: int,
+        include_final_output: bool = True,
     ):
         super().__init__()
         self.target_layer_ids = target_layer_ids
+        self.include_final_output = include_final_output
         self.input_dim = input_dim
         self.output_dim = output_dim
-        self.proj = torch.nn.Linear(self.input_dim * len(self.target_layer_ids), self.output_dim)
+        num_inputs = len(self.target_layer_ids) + int(self.include_final_output)
+        self.proj = torch.nn.Linear(self.input_dim * num_inputs, self.output_dim)
 
     def forward(self, audio_signal: list[torch.Tensor], length):
-        assert len(audio_signal) == len(
-            self.target_layer_ids
-        ), f"Expected {len(self.target_layer_ids)} activations from encoder layers but got {len(audio_signal)}."
+        expected_num = len(self.target_layer_ids) + int(self.include_final_output)
+        assert (
+            len(audio_signal) == expected_num
+        ), f"Expected {expected_num} activations from encoder layers but got {len(audio_signal)}."
         audio_signal = torch.cat(audio_signal, dim=1).transpose(1, 2)
         projected = self.proj(audio_signal).transpose(1, 2)
         return projected, length[0]

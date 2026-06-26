@@ -28,6 +28,7 @@ from typing import Dict, Optional, Tuple
 import torch
 from omegaconf import DictConfig, OmegaConf, open_dict
 
+from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import CASELESS_SCRIPT_TOKENIZER_TARGETS
 from nemo.collections.tts.models import EasyMagpieTTSInferenceModel, MagpieTTSModel
 from nemo.utils import logging
 
@@ -120,6 +121,7 @@ class ModelLoadConfig:
         legacy_text_conditioning: Use legacy text conditioning for old checkpoints.
         hparams_from_wandb: Whether hparams file is from wandb export.
         phoneme_tokenizer_path: Override path to the phoneme tokenizer file (EasyMagpieTTS only).
+        disable_cas_for_context_text: Skip CAS embeddings for context text in legacy EasyMagpieTTS models.
     """
 
     hparams_file: Optional[str] = None
@@ -130,6 +132,7 @@ class ModelLoadConfig:
     legacy_text_conditioning: bool = False
     hparams_from_wandb: bool = False
     phoneme_tokenizer_path: Optional[str] = None
+    disable_cas_for_context_text: bool = False
 
     def validate(self) -> None:
         """Validate that the configuration is complete and consistent."""
@@ -147,6 +150,55 @@ class ModelLoadConfig:
             logging.warning(
                 "Both checkpoint mode and nemo_file provided. Using checkpoint mode (hparams_file + checkpoint_file)."
             )
+
+
+def _migrate_charset_version(model_cfg: DictConfig) -> None:
+    """Pin charset_version=1 for Hindi/Arabic tokenizers in old checkpoints.
+
+    New models have ``charset_version`` persisted by ``setup_tokenizers()``.
+    Old checkpoints lack it, so without this migration the new default (v2)
+    would silently change the token-to-ID mapping and break the model.
+
+    Must be called inside ``open_dict(model_cfg)``.
+    """
+    if not hasattr(model_cfg, 'text_tokenizers'):
+        return
+    for tok_name in model_cfg.text_tokenizers:
+        tok_cfg = model_cfg.text_tokenizers[tok_name]
+        if hasattr(tok_cfg, '_target_') and tok_cfg._target_ in CASELESS_SCRIPT_TOKENIZER_TARGETS:
+            if not hasattr(tok_cfg, 'charset_version'):
+                tok_cfg.charset_version = 1
+
+
+def _migrate_tokenizer_punctuation(model_cfg: DictConfig) -> None:
+    """Backfill punctuation fields for tokenizers that predate them.
+
+    Old checkpoints were trained with DEFAULT_PUNCTUATION only. Without these
+    migrations, restoring those checkpoints would pick up expanded defaults
+    from new code, adding extra punctuation tokens and breaking the vocabulary.
+
+    Handles:
+      - pt-BR IPATokenizer: sets locale_specific_punct=False (old default had no guillemets/quotes).
+      - HindiCharsTokenizer: sets punct_version=1 (old default had no dandas).
+    """
+    if not hasattr(model_cfg, 'text_tokenizers'):
+        return
+    for tok_name in model_cfg.text_tokenizers:
+        tok_cfg = model_cfg.text_tokenizers[tok_name]
+        if not hasattr(tok_cfg, '_target_'):
+            continue
+        if (
+            tok_cfg._target_ == "nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.IPATokenizer"
+            and tok_cfg.get('locale', None) == "pt-BR"
+            and not hasattr(tok_cfg, 'non_default_punct_list')
+            and not hasattr(tok_cfg, 'locale_specific_punct')
+        ):
+            tok_cfg.locale_specific_punct = False
+        if (
+            tok_cfg._target_ == "nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.HindiCharsTokenizer"
+            and not hasattr(tok_cfg, 'punct_version')
+        ):
+            tok_cfg.punct_version = 1
 
 
 def update_config_for_inference(
@@ -170,6 +222,9 @@ def update_config_for_inference(
         Tuple of (updated config, sample_rate from config if present).
     """
     model_cfg.codecmodel_path = codecmodel_path
+
+    _migrate_tokenizer_punctuation(model_cfg)
+    _migrate_charset_version(model_cfg)
 
     # Update text tokenizer paths for backward compatibility
     if hasattr(model_cfg, 'text_tokenizer'):
@@ -375,6 +430,9 @@ def load_easy_magpie_model(config: ModelLoadConfig, device: str = "cuda") -> Tup
             model_cfg.run_val_inference = False
             model_cfg.use_utmos = False
             model_cfg.use_meta_init_for_decoder = True
+            # Some legacy EasyMagpieTTS models trained context text without CAS embeddings.
+            if config.disable_cas_for_context_text:
+                model_cfg.disable_cas_for_context_text = True
             if config.phoneme_tokenizer_path and hasattr(model_cfg, 'phoneme_tokenizer'):
                 model_cfg.phoneme_tokenizer.tokenizer_path = config.phoneme_tokenizer_path
 
@@ -398,6 +456,9 @@ def load_easy_magpie_model(config: ModelLoadConfig, device: str = "cuda") -> Tup
                 model_cfg.codecmodel_path = config.codecmodel_path
                 model_cfg.train_ds = None
                 model_cfg.validation_ds = None
+                # Some legacy EasyMagpieTTS models trained context text without CAS embeddings.
+                if config.disable_cas_for_context_text:
+                    model_cfg.disable_cas_for_context_text = True
                 if config.phoneme_tokenizer_path and hasattr(model_cfg, 'phoneme_tokenizer'):
                     model_cfg.phoneme_tokenizer.tokenizer_path = config.phoneme_tokenizer_path
                 # Override target so restore_from instantiates the inference class,

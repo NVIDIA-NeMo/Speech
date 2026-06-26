@@ -7,6 +7,41 @@ ASR Language Modeling and Customization
 NeMo supports decoding-time customization techniques such as *language modeling* and *word boosting*,
 which improve transcription accuracy by incorporating external knowledge or domain-specific vocabulary—without retraining the model.
 
+
+Decoder Types
+-------------
+
+NeMo ASR models use different decoder architectures. The table below summarizes them:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Decoder
+     - Type
+     - Description
+     - Models
+   * - **CTC**
+     - Non-autoregressive
+     - Connectionist Temporal Classification. Fast inference, supports LM fusion and word boosting.
+     - Parakeet-CTC, FastConformer-CTC
+   * - **RNN-T**
+     - Autoregressive
+     - Recurrent Neural Network Transducer. Strong accuracy, streaming-friendly.
+     - Parakeet-RNNT, FastConformer-Transducer
+   * - **TDT**
+     - Autoregressive
+     - Token-and-Duration Transducer. Extends RNN-T with duration prediction for better timestamps.
+     - Parakeet-TDT
+   * - **AED**
+     - Autoregressive
+     - Attention Encoder-Decoder. Multi-task capable (ASR + AST), prompt-based language control.
+     - Canary-1B, Canary-1B-V2, Canary-1B-Flash
+   * - **Hybrid**
+     - Both
+     - Joint RNN-T + CTC training. Use either decoder at inference time.
+     - FastConformer Hybrid models
+
+
 Language Modeling
 -----------------
 
@@ -67,6 +102,104 @@ LM Training
 
 NeMo provides tools for training n-gram language models that can be used for language model fusion or word-boosting.
 For details, please refer to: :ref:`ngram-utils`.
+
+
+CUDA Graphs
+-----------
+
+CUDA graphs accelerate decoding by capturing and replaying GPU operations, eliminating kernel launch overhead.
+Support varies by decoder strategy:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Strategy
+     - Config Parameter
+     - Default
+     - Notes
+   * - ``greedy_batch`` (RNN-T, TDT)
+     - ``use_cuda_graph_decoder``
+     - ``true``
+     - Requires ``loop_labels=True`` and ``blank_as_pad=True``
+   * - ``maes_batch``, ``malsd_batch`` (beam)
+     - ``allow_cuda_graphs``
+     - ``true``
+     - Batched beam search strategies
+   * - Non-batched ``greedy`` / ``beam``
+     - N/A
+     - N/A
+     - Not supported; standard decoding used
+
+To disable CUDA graphs (e.g. for debugging or when preserving alignments with frame-looping):
+
+**Via Python (at runtime):**
+
+.. code-block:: python
+
+    model.disable_cuda_graphs()
+
+**Greedy decoding** — use ``use_cuda_graph_decoder=true/false``:
+
+.. code-block:: bash
+
+    python examples/asr/speech_to_text_eval.py \
+       pretrained_name="nvidia/parakeet-rnnt-1.1b" \
+       dataset_manifest=<dataset_manifest> \
+       batch_size=32 \
+       output_filename=decoded.jsonl \
+       rnnt_decoding.strategy="greedy_batch" \
+       rnnt_decoding.greedy.use_cuda_graph_decoder=true
+
+**Beam decoding** — use ``allow_cuda_graphs=true/false``:
+
+.. code-block:: bash
+
+    python examples/asr/speech_to_text_eval.py \
+       pretrained_name="nvidia/parakeet-rnnt-1.1b" \
+       dataset_manifest=<dataset_manifest> \
+       batch_size=32 \
+       output_filename=decoded.jsonl \
+       rnnt_decoding.strategy="malsd_batch" \
+       rnnt_decoding.beam.max_symbols_per_step=10 \
+       rnnt_decoding.beam.beam_size=12 \
+       rnnt_decoding.beam.allow_cuda_graphs=true
+
+When unsupported, NeMo falls back to standard decoding automatically.
+
+
+Confidence Estimation
+---------------------
+
+NeMo supports per-frame, per-token, and per-word confidence scores during decoding.
+Confidence estimation helps applications decide when to trust ASR output and when to request human review.
+
+.. code-block:: yaml
+
+  decoding:
+    confidence_cfg:
+      preserve_frame_confidence: false
+      preserve_token_confidence: false
+      preserve_word_confidence: false
+      exclude_blank: true
+      aggregation: "mean"       # mean, min, max, prod
+      method_cfg:
+        name: "entropy"         # max_prob or entropy
+        entropy_type: "tsallis" # gibbs, tsallis, renyi
+        alpha: 0.33
+        entropy_norm: "exp"     # lin or exp
+
+**Confidence methods:**
+
+* ``max_prob``: Maximum token probability as confidence. Simple and fast.
+* ``entropy``: Normalized entropy of the log-likelihood vector (default). Entropy types:
+
+  - ``gibbs``: Standard Gibbs entropy
+  - ``tsallis``: Tsallis entropy (default, recommended)
+  - ``renyi``: Renyi entropy
+
+**Aggregation** combines frame-level scores into token/word scores: ``mean``, ``min``, ``max``, or ``prod``.
+
+For TDT models, set ``tdt_include_duration_confidence: true`` to include duration prediction confidence.
 
 
 .. toctree::

@@ -46,7 +46,6 @@ from typing import Tuple
 
 import librosa
 import soundfile as sf
-from hydra.utils import instantiate
 from joblib import Parallel, delayed
 from omegaconf import OmegaConf
 from tqdm import tqdm
@@ -54,24 +53,38 @@ from tqdm import tqdm
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest, write_manifest
 from nemo.collections.tts.parts.preprocessing.audio_trimming import AudioTrimmer
 from nemo.collections.tts.parts.utils.tts_dataset_utils import get_abs_rel_paths, normalize_volume
+from nemo.core.classes.common import safe_instantiate
 from nemo.utils import logging
 
 
 def get_args():
     parser = argparse.ArgumentParser(
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter, description="Compute speaker level pitch statistics.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description="Compute speaker level pitch statistics.",
     )
     parser.add_argument(
-        "--input_manifest", required=True, type=Path, help="Path to input training manifest.",
+        "--input_manifest",
+        required=True,
+        type=Path,
+        help="Path to input training manifest.",
     )
     parser.add_argument(
-        "--input_audio_dir", required=True, type=Path, help="Path to base directory with audio files.",
+        "--input_audio_dir",
+        required=True,
+        type=Path,
+        help="Path to base directory with audio files.",
     )
     parser.add_argument(
-        "--output_manifest", required=True, type=Path, help="Path to output training manifest with processed audio.",
+        "--output_manifest",
+        required=True,
+        type=Path,
+        help="Path to output training manifest with processed audio.",
     )
     parser.add_argument(
-        "--output_audio_dir", required=True, type=Path, help="Path to output directory for audio files.",
+        "--output_audio_dir",
+        required=True,
+        type=Path,
+        help="Path to output directory for audio files.",
     )
     parser.add_argument(
         "--overwrite_audio",
@@ -205,7 +218,7 @@ def main():
 
     if args.trim_config_path:
         audio_trimmer_config = OmegaConf.load(args.trim_config_path)
-        audio_trimmer = instantiate(audio_trimmer_config)
+        audio_trimmer = safe_instantiate(audio_trimmer_config)
     else:
         audio_trimmer = None
 

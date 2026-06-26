@@ -14,10 +14,9 @@
 import itertools
 from typing import Iterable, Optional
 
-import editdistance
 import librosa
 import torch
-from hydra.utils import instantiate
+from kaldialign import edit_distance
 from lightning.pytorch import Trainer
 from lightning.pytorch.loggers import TensorBoardLogger
 from lightning.pytorch.utilities.combined_loader import CombinedLoader
@@ -28,7 +27,7 @@ from nemo.collections.tts.data.dataset import TTSDataset
 from nemo.collections.tts.modules.ssl_tts import GreedyCTCDecoder
 from nemo.collections.tts.torch.tts_tokenizers import BaseTokenizer, EnglishCharsTokenizer
 from nemo.core.classes import ModelPT
-from nemo.core.classes.common import PretrainedModelInfo
+from nemo.core.classes.common import PretrainedModelInfo, safe_instantiate
 from nemo.core.optim.lr_scheduler import WarmupPolicy
 from nemo.utils import logging
 from nemo.utils.decorators import experimental
@@ -146,7 +145,7 @@ class SSLDisentangler(ModelPT):
 
         else:
             if hasattr(self, '_text_tokenizer') and not isinstance(self._text_tokenizer, BaseTokenizer):
-                logging.warning(f"test_tokenizer is set but not a BaseTokenizer. Will be set to EnglishCharsTokenizer")
+                logging.warning("test_tokenizer is set but not a BaseTokenizer. Will be set to EnglishCharsTokenizer")
 
             _text_tokenizer = self._text_tokenizer = EnglishCharsTokenizer(add_blank_at="last")
 
@@ -215,11 +214,11 @@ class SSLDisentangler(ModelPT):
         sched_downstream_config = optim_downstream_config.pop("sched", None)
         OmegaConf.set_struct(optim_downstream_config, True)
 
-        optim_backbone = instantiate(
+        optim_backbone = safe_instantiate(
             optim_backbone_config,
             params=self.encoder.parameters(),
         )
-        optim_downstream = instantiate(
+        optim_downstream = safe_instantiate(
             optim_downstream_config,
             params=itertools.chain(
                 self.downstream_nets.parameters(),
@@ -350,7 +349,7 @@ class SSLDisentangler(ModelPT):
                     self.log("t_ctc_loss", ctc_loss.item())
                     content_loss += ctc_loss
                 else:
-                    logging.warning(f"ctc_loss is not finite")
+                    logging.warning("ctc_loss is not finite")
 
                 if self.pitch_augment:
                     augmented_signal = batch[key]['audio_shifted']
@@ -382,7 +381,7 @@ class SSLDisentangler(ModelPT):
                             content_loss += ctc_loss_aug
                             self.log("t_ctc_loss_aug", ctc_loss_aug.item())
                         else:
-                            logging.warning(f"ctc_loss_aug is not finite. Add min duration to avoid getting here.")
+                            logging.warning("ctc_loss_aug is not finite. Add min duration to avoid getting here.")
 
                 loss += content_loss
 
@@ -448,7 +447,7 @@ class SSLDisentangler(ModelPT):
                 if torch.isfinite(ctc_loss):
                     content_loss += ctc_loss
                 else:
-                    logging.warning(f"ctc_loss is not finite. Add min duration to avoid getting here.")
+                    logging.warning("ctc_loss is not finite. Add min duration to avoid getting here.")
 
                 if self.pitch_augment:
                     augmented_signal = batch[key]['audio_shifted']
@@ -473,7 +472,7 @@ class SSLDisentangler(ModelPT):
                     _, predicted_str = self.ctc_decoder(item_log_prob)
                     tokenizer = self._text_tokenizer
                     target_str = tokenizer.sep.join(tokenizer._id2token[t] for t in item_target.tolist())
-                    ed = editdistance.eval(predicted_str, target_str)
+                    ed = edit_distance(list(predicted_str), list(target_str))['total']
                     if max(len(predicted_str), len(target_str)) > 0:
                         normalized_ed = (1.0 * ed) / max(len(predicted_str), len(target_str))
                     else:

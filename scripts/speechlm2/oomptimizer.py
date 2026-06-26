@@ -14,24 +14,19 @@
 # limitations under the License.
 
 import importlib
-import math
 import os
 import sys
-from functools import partial
-from numbers import Number
-from typing import Literal
 
 import click
 import lightning.pytorch as pl
 import torch
-from lhotse import compute_num_samples
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader, IterableDataset
 
-from nemo.collections.speechlm2 import SALM, SALMWithAsrDecoder
-from nemo.collections.speechlm2.models import StreamingSTTModel
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, MaskType, NeuralType
 from nemo.utils import logging
+from nemo.utils.oomptimizer import SequenceLengthResolver
+from nemo.utils.oomptimizer import is_2d_bucketing as _is_2d_bucketing
 from nemo.utils.trainer_utils import resolve_trainer_cfg
 
 
@@ -151,6 +146,15 @@ class ProfilingBatchGenerator:
             elif isinstance(nt.elements_type, LabelsType):
                 seq_length = select_seq_length[item["seq_length"]]
                 tnsr = torch.randint(0, item["vocab_size"], size=(B, seq_length), device=self.device)
+                replacement_id = int(item.get("excluded_token_replacement_id", 0))
+                for token_id in item.get("excluded_token_ids", []):
+                    tnsr.masked_fill_(tnsr == token_id, replacement_id)
+                for position, token_id in item.get("forced_token_ids", {}).items():
+                    position = int(position)
+                    if position < 0:
+                        position += seq_length
+                    if 0 <= position < seq_length:
+                        tnsr[:, position] = token_id
             else:
                 raise RuntimeError("Unexpected item in oomptimizer schema: {item}")
             batch.append(tnsr)
@@ -313,6 +317,12 @@ class FloatList(click.Option):
     default=True,
     help="Whether we should simulate DDP GPU RAM usage. Stores an extra copy of the model in GPU memory. Enabled by default.",
 )
+@click.option(
+    "--salm-audio-token-ratio",
+    type=float,
+    default=0.75,
+    help="For SALM-style 1D token buckets, fraction of the bucket represented by audio-equivalent tokens.",
+)
 def oomptimizer(
     pretrained_name: str | None,
     module_name: str | None,
@@ -324,6 +334,7 @@ def oomptimizer(
     memory_fraction: float,
     dtype: str,
     ddp: bool,
+    salm_audio_token_ratio: float,
 ):
     """
     OOMptimizer finds the optimal batch sizes for training your model with bucketing dataloading.
@@ -388,13 +399,6 @@ def oomptimizer(
         model = model_cls(OmegaConf.to_container(cfg.model, resolve=True))
     model = model.to(device)
 
-    if isinstance(model, (SALM, SALMWithAsrDecoder)):
-        model.prepare_inputs = partial(_override_prepare_inputs, model)
-
-    if isinstance(model, StreamingSTTModel):
-        model._build_input_embeds = partial(_override_build_input_embeds, model, ratio=ratio)
-        model.forced_aligner = None  # skip forced alignment for synthetic batches
-
     if not hasattr(model, "oomptimizer_schema"):
         click.secho(
             f"We read model of type {type(model)} which doesn't seem to support OOMptimizer "
@@ -404,95 +408,18 @@ def oomptimizer(
         sys.exit(1)
 
     schema = model.oomptimizer_schema
-
-    is_2d_bucketing = all(
-        isinstance(item, (list, tuple)) and len(item) == 2 and all(isinstance(v, Number) for v in item)
-        for item in buckets
+    is_2d_bucketing = _is_2d_bucketing(buckets)
+    length_resolver = SequenceLengthResolver(
+        cfg=cfg,
+        ratio=ratio,
+        salm_audio_token_ratio=salm_audio_token_ratio,
+        module_name=module_name,
+        model=model,
+        schema=schema,
     )
-    # Determine modality for input and output.
-    modalities = [
-        (
-            "text"
-            if any(
-                isinstance(item["type"], NeuralType)
-                and isinstance(item["type"].elements_type, LabelsType)
-                and item["seq_length"] == direction
-                for item in schema["inputs"]
-                if item["type"] != "dummy"
-            )
-            else "audio"
-        )
-        for direction in ("input", "output")
-    ]
-
-    def get_max_seq_lens(buckets):
-
-        def _determine_lens_for_bucket(bin):
-            if isinstance(model, (SALM, SALMWithAsrDecoder)):
-                return bin, bin  # Note: only 1D bucketing, only counted in tokens
-            elif is_2d_bucketing:
-                input_len, output_len = bin
-            else:
-                input_len = bin
-                output_len = math.ceil(ratio * input_len)
-            sampling_rate = getattr(model, "sample_rate", None) or getattr(model, "sampling_rate", 16000)
-
-            # For StreamingSTTModel, output_len must account for the streaming
-            # chat template overhead: each chunk adds ~10 template tokens + text.
-            if isinstance(model, StreamingSTTModel):
-                model._ensure_inference_cache()
-                chunk_size = max(model.core_cfg.chunk_size, 1)
-                frame_length = model.core_cfg.frame_length_in_secs
-                num_audio_frames = math.ceil(input_len / frame_length)
-                num_chunks = math.ceil(num_audio_frames / chunk_size)
-                if model.core_cfg.chunk_size == 0:
-                    # Dynamic chunking: no fixed turn template. Audio frames are fed
-                    # incrementally; the user header/footer are appended on demand.
-                    # Use an upper bound estimation of the turn template length.
-                    turn_template_len = len(model._user_header_ids) + len(model._user_footer_and_asst_header_ids) + 1
-                else:
-                    # Fixed chunking: use the fixed turn template length.
-                    turn_template_len = len(model._turn_template_ids)
-                asst_footer_len = len(model._asst_footer_ids)
-                chunk_duration = chunk_size * frame_length
-                avg_text_per_turn = max(1, math.ceil(ratio * chunk_duration))
-                hf_tok = model.tokenizer.tokenizer
-                system_prompt = (
-                    cfg.get("data", {}).get("dataset", {}).get("system_prompt", "Transcribe the audio into text.")
-                )
-                sys_len = len(
-                    hf_tok.apply_chat_template(
-                        [{"role": "system", "content": system_prompt}],
-                        tokenize=True,
-                        add_generation_prompt=False,
-                        enable_thinking=False,
-                    )
-                )
-                output_len = sys_len + num_chunks * (turn_template_len + avg_text_per_turn + asst_footer_len)
-                return (compute_num_samples(input_len, sampling_rate=sampling_rate), output_len)
-
-            match modalities:
-                case "audio", "audio":
-                    return (
-                        compute_num_samples(input_len, sampling_rate=sampling_rate),
-                        compute_num_samples(output_len, sampling_rate=sampling_rate),
-                    )
-                case "audio", "text":
-                    return (compute_num_samples(input_len, sampling_rate=sampling_rate), output_len)
-                case "text", "audio":
-                    return (
-                        input_len,
-                        compute_num_samples(output_len, sampling_rate=sampling_rate),
-                    )
-                case "text", "text":
-                    return input_len, output_len
-                case _:
-                    raise RuntimeError(f"Unexpected modality combination: {_}")
-
-        return [_determine_lens_for_bucket(bin) for bin in buckets]
 
     click.echo("Starting profiling.")
-    max_seq_lens = get_max_seq_lens(buckets)
+    max_seq_lens = length_resolver.resolve_many(buckets)
     gen = ProfilingBatchGenerator(
         schema=schema, start_batch_size=start_batch_size, rel_gap_thresh=threshold, device=device, float_dtype=dtype
     )
@@ -502,7 +429,7 @@ def oomptimizer(
         def __iter__(self):
             gen.reset()
             gen._current = 1
-            yield gen(33, 33)
+            yield gen(*length_resolver.resolve_one(33))
             # yield gen(16000, 13)
             gen.reset()
 
@@ -519,8 +446,6 @@ def oomptimizer(
     # a tiny bit smaller batches, likely due to worse memory fragmentation.
     with torch.autocast("cuda", dtype=None, enabled=False):
         for bucket, (seq_len_in, seq_len_out) in reversed(list(zip(buckets, max_seq_lens))):
-            seq_len_in = math.ceil(seq_len_in)
-            seq_len_out = math.ceil(seq_len_out)
             click.echo(f"The current sequence lengths are: input={seq_len_in} output={seq_len_out}.")
             gen.reset()
             batch_idx = 0
@@ -603,64 +528,6 @@ def oomptimizer(
     click.secho("The final profile is:", bold=True)
     click.secho("\tbucket_duration_bins=[" + ",".join(str(seqlen) for seqlen, bs in final_profile) + "]", bold=True)
     click.secho("\tbucket_batch_size=[" + ",".join(str(bs) for seqlen, bs in final_profile) + "]", bold=True)
-
-
-def _override_prepare_inputs(self, batch: dict) -> dict:
-    ratio = 0.8
-    input_embs = self.embed_tokens(batch["input_ids"][:, :-1])
-    target_ids = batch["input_ids"][:, 1:]
-    attention_mask = torch.ones_like(target_ids, dtype=torch.bool)
-
-    B, T = input_embs.shape[:2]
-    audio_emb_len = int(input_embs.shape[1] * ratio)
-    n_samples = int(audio_emb_len * self.token_equivalent_duration * self.sampling_rate)
-    audio = torch.randn(B, n_samples, device=input_embs.device, dtype=torch.float32)
-    audio_lens = torch.tensor([n_samples] * B, device=input_embs.device)
-    audio_embs, _ = self.perception(input_signal=audio, input_signal_length=audio_lens)
-    input_embs[:, : audio_embs.shape[1]] = audio_embs
-
-    return {
-        "input_embeds": input_embs,
-        "attention_mask": attention_mask,
-        "target_ids": target_ids,
-    }
-
-
-def _override_build_input_embeds(self, input_tokens, audios, audio_lens, ratio=12):
-    """Override _build_input_embeds for oomptimizer profiling of StreamingSTTModel.
-
-    The schema now generates input_tokens at the correct length (including chat
-    template overhead). This override places AUDIO_TOKEN_IDX at the right positions
-    and runs the perception module on the synthetic audio.
-    """
-    from nemo.collections.speechlm2.models.streaming_stt_model import AUDIO_TOKEN_IDX, interleave_embeddings
-
-    # Run perception to get audio embeddings
-    audio_embs, audio_emb_lens = self.perception(
-        input_signal=audios,
-        input_signal_length=audio_lens,
-    )
-    n_audio_frames = audio_embs.shape[1]  # (B, T_enc, H)
-    B, L = input_tokens.shape
-
-    # Place AUDIO_TOKEN_IDX at the first n_audio positions
-    input_tokens = input_tokens.clone()
-    n_audio = min(n_audio_frames, L)
-    input_tokens[:, :n_audio] = AUDIO_TOKEN_IDX
-    # Ensure remaining tokens are valid vocab IDs
-    input_tokens[:, n_audio:] = torch.clamp(input_tokens[:, n_audio:].abs(), 0, self.text_vocab_size - 1)
-
-    audio_mask = input_tokens == AUDIO_TOKEN_IDX
-    text_tokens = input_tokens.where(~audio_mask, torch.zeros_like(input_tokens))
-    text_embeds = self.embed_tokens(text_tokens)
-
-    return interleave_embeddings(
-        input_tokens=input_tokens,
-        audio_mask=audio_mask,
-        text_embeds=text_embeds,
-        audio_embs=audio_embs,
-        pad_id=self.text_pad_id,
-    )
 
 
 if __name__ == "__main__":

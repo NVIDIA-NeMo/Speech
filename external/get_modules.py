@@ -26,8 +26,8 @@ from nemo.utils import logging
 
 
 def process_member(name, obj, module_list):
-    """ Helper function processing the passed object and, if ok, adding a record to the module list.
-    
+    """Helper function processing the passed object and, if ok, adding a record to the module list.
+
     Args:
         name: name of the member
         obj: member (class/function etc.)
@@ -74,7 +74,7 @@ def process_member(name, obj, module_list):
 
 
 def main():
-    """ Main function analysing the indicated NeMo collection and generating a JSON file with module descriptions. """
+    """Main function analysing the indicated NeMo collection and generating a JSON file with module descriptions."""
     # Parse filename.
     parser = argparse.ArgumentParser()
     parser.add_argument('--collection', help='ID of the collection', type=str)

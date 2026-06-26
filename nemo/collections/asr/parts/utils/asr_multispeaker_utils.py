@@ -314,6 +314,47 @@ def get_hidden_length_from_sample_length(
     return int(hidden_length)
 
 
+def read_rttm_supervisions_lenient(rttm_filepath: Union[str, list]) -> SupervisionSet:
+    """Like ``lhotse.SupervisionSet.from_rttm`` but accepts 9-field RTTM lines.
+
+    Mirrors lhotse's parsing (cols 1,2,3,4,7) while relaxing the strict
+    ``len(parts) == 10`` check to ``>= 8``, since the unused trailing columns are
+    sometimes dropped by the nemoSOT multispeaker data generators.
+
+    Args:
+        rttm_filepath (str | list): Path to an RTTM file or an iterable of paths.
+
+    Returns:
+        SupervisionSet: Supervisions parsed from the RTTM file(s).
+    """
+    from pathlib import Path
+
+    paths = [rttm_filepath] if isinstance(rttm_filepath, (str, Path)) else rttm_filepath
+    segments = []
+    for file in paths:
+        with open(file, "r") as f:
+            for idx, line in enumerate(f):
+                parts = line.strip().split()
+                if not parts:
+                    continue
+                if len(parts) < 8:
+                    raise ValueError(f"Invalid RTTM line in file {file}: {line}")
+                recording_id = parts[1]
+                if float(parts[4]) == 0:  # skip empty segments
+                    continue
+                segments.append(
+                    SupervisionSegment(
+                        id=f"{recording_id}-{idx:06d}",
+                        recording_id=recording_id,
+                        channel=int(parts[2]),
+                        start=float(parts[3]),
+                        duration=float(parts[4]),
+                        speaker=parts[7],
+                    )
+                )
+    return SupervisionSet.from_segments(segments)
+
+
 def speaker_to_target(
     a_cut,
     num_speakers: Optional[int] = None,
@@ -323,6 +364,7 @@ def speaker_to_target(
     soft_label: bool = False,
     soft_thres: float = 0.5,
     return_text: bool = False,
+    no_rttm_to_ones: bool = True,
 ):
     '''
     Get rttm samples corresponding to one cut, generate speaker mask numpy.ndarray with shape (num_speaker, hidden_length)
@@ -337,6 +379,8 @@ def speaker_to_target(
         soft_label (bool): set to True to use soft label that enables values in [0, 1] range, False by default and leads to binary labels.
         soft_thres (float): the threshold for the soft label, 0.5 by default.
         return_text (bool): set to True to return the text of the speakers (if it is available), False by default.
+        no_rttm_to_ones (bool): when a cut has no RTTM/supervisions, synthesize a single full-duration
+            single-speaker supervision (all-ones target) instead of skipping the cut, True by default.
 
     Returns:
         mask (Tensor): speaker mask with shape (num_speaker, hidden_lenght)
@@ -355,12 +399,25 @@ def speaker_to_target(
 
     for i, cut in enumerate(cut_list):
         if cut.custom.get('rttm_filepath', None):
-            rttms = SupervisionSet.from_rttm(cut.rttm_filepath)
+            rttms = read_rttm_supervisions_lenient(cut.rttm_filepath)
         elif cut.supervisions:
             rttms = SupervisionSet(cut.supervisions)
         else:
-            logging.warning(f"No rttm or supervisions found for cut {cut.id}")
-            continue
+            if no_rttm_to_ones:
+                rttms = SupervisionSet(
+                    [
+                        SupervisionSegment(
+                            id=cut.id,
+                            recording_id=cut.recording_id,
+                            start=0,
+                            duration=cut.duration,
+                            speaker=getattr(cut, 'speaker', 'speaker_0'),
+                        )
+                    ]
+                )
+            else:
+                logging.warning(f"No rttm or supervisions found for cut {cut.id}")
+                continue
 
         start = cut.offset if hasattr(cut, 'offset') else cut.start
         end = start + cut.duration

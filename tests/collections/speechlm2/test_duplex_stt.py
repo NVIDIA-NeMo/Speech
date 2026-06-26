@@ -49,6 +49,7 @@ def create_model(
         "model": {
             **resolve_pretrained_models(),
             "pretrained_weights": False,
+            "trust_remote_code": True,
             "audio_loss_weight": 1,
             "text_loss_weight": 3,
             "source_sample_rate": 16000,

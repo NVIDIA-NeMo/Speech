@@ -57,6 +57,9 @@ class CacheAwareCTCInferenceWrapper(CacheAwareASRInferenceWrapper):
 
         self.drop_extra_pre_encoded = self.get_drop_extra_pre_encoded()
 
+        self.cast_dtype = torch.float32 if self.use_amp else self.compute_dtype
+        self.asr_model.to(self.cast_dtype)
+
     def get_blank_id(self) -> int:
         """
         Returns id of the blank token.
@@ -179,6 +182,8 @@ class CacheAwareCTCInferenceWrapper(CacheAwareASRInferenceWrapper):
 
         if processed_signal_length.device != self.device:
             processed_signal_length = processed_signal_length.to(self.device)
+
+        processed_signal = processed_signal.to(self.cast_dtype)
 
         if context is None:
             # create a dummy context

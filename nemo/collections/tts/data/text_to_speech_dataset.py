@@ -35,7 +35,9 @@ from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     get_tokenizer_for_language,
     get_weighted_sampler,
     load_audio,
+    setup_pronunciation_control_g2p,
     stack_tensors,
+    tokenize_text_with_pronunciation_control,
 )
 from nemo.core.classes import Dataset
 from nemo.utils import logging
@@ -380,6 +382,8 @@ class MagpieTTSDataset(TextToSpeechDataset):
         text_context_remapping: Dict[str, str] = None,
         text_context_remapping_prob: float = 0.0,
         ignore_phoneme_languages: List[str] = None,
+        phoneme_as_text_prob: float = 0.0,
+        pronunciation_control_g2p: Dict = None,
         add_language_to_context_text: bool = False,
     ):
         super().__init__(
@@ -406,6 +410,7 @@ class MagpieTTSDataset(TextToSpeechDataset):
         self.tokenizer_config = tokenizer_config
         self.text_tokenizer = None  # Assigned in worker_init_fn in model file
         self.phoneme_tokenizer = None  # Assigned in worker_init_fn in model file (if any)
+        self.pronunciation_control_g2p = None
         self.load_16khz_audio = load_16khz_audio
         self.use_text_conditioning_tokenizer = use_text_conditioning_tokenizer
         self.text_conditioning_tokenizer_name = text_conditioning_tokenizer_name
@@ -415,6 +420,8 @@ class MagpieTTSDataset(TextToSpeechDataset):
         self.text_context_remapping = text_context_remapping
         self.text_context_remapping_prob = text_context_remapping_prob
         self.ignore_phoneme_languages = ignore_phoneme_languages or []
+        self.phoneme_as_text_prob = phoneme_as_text_prob
+        self.pronunciation_control_g2p_config = pronunciation_control_g2p
         self.add_language_to_context_text = add_language_to_context_text
 
     def get_num_audio_samples_to_slice(self, duration, sample_rate):
@@ -424,6 +431,12 @@ class MagpieTTSDataset(TextToSpeechDataset):
 
     def __getitem__(self, index):
         data = self.data_samples[index]
+        if (
+            self.pronunciation_control_g2p is None
+            and self.pronunciation_control_g2p_config is not None
+            and self.phoneme_as_text_prob > 0.0
+        ):
+            self.pronunciation_control_g2p = setup_pronunciation_control_g2p(self.pronunciation_control_g2p_config)
 
         def _sample_context_duration_with_available_limit(available_duration_sec: float) -> float:
             effective_duration_max = min(self.context_duration_max, available_duration_sec)
@@ -435,7 +448,15 @@ class MagpieTTSDataset(TextToSpeechDataset):
             # Pick a random tokenizer from the list of tokenizers
             tokenizer_name = random.choice(data.tokenizer_names)
         language = data.manifest_entry.get('language', 'en')
-        tokens = self.text_tokenizer.encode(text=data.text, tokenizer_name=tokenizer_name)
+        tokens = tokenize_text_with_pronunciation_control(
+            text_tokenizer=self.text_tokenizer,
+            text_str=data.text,
+            language=language,
+            tokenizer_name=tokenizer_name,
+            dataset_type=self.dataset_type,
+            phoneme_as_text_prob=self.phoneme_as_text_prob,
+            pronunciation_control_g2p=self.pronunciation_control_g2p,
+        )
         tokens = tokens + [self.eos_id]  # Not adding BOS id
         tokens = torch.tensor(tokens, dtype=torch.int32)
         text_len = tokens.shape[0]

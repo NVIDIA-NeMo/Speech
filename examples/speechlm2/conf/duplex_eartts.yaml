@@ -3,6 +3,7 @@ model:
   pretrained_audio_codec: ???  # to be released
   pretrained_tts_model: null
   scoring_asr: stt_en_fastconformer_transducer_large # used only in validation/evaluation
+  trust_remote_code: false
 
   # Regexp (re.compile) patterns matching parameters to be frozen.
   freeze_params:
@@ -127,7 +128,7 @@ trainer:
   strategy:
     _target_: lightning.pytorch.strategies.DDPStrategy
     gradient_as_bucket_view: true
-    find_unused_parameters: true
+    find_unused_parameters: false
 
 data:
   # data loader configs
@@ -198,3 +199,4 @@ exp_manager:
      every_n_epochs: 1
      save_top_k: 1
      always_save_nemo: false
+     save_nemo_on_train_end: false

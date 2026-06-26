@@ -18,9 +18,9 @@ import tarfile
 import urllib.request
 from pathlib import Path
 
-import sox
-import wget
 from tqdm import tqdm
+
+from nemo.utils.tar_utils import safe_extract
 
 try:
     from nemo_text_processing.text_normalization.normalize import Normalizer
@@ -44,6 +44,17 @@ URL = "https://data.keithito.com/data/speech/LJSpeech-1.1.tar.bz2"
 FILELIST_BASE = 'https://raw.githubusercontent.com/NVIDIA/tacotron2/master/filelists'
 
 
+def _load_sox():
+    try:
+        import sox
+    except ImportError:
+        raise ImportError(
+            "Optional dependency 'sox' is required by this script. Install it with: pip install sox"
+        ) from None
+
+    return sox
+
+
 def __maybe_download_file(source_url, destination_path):
     if not destination_path.exists():
         tmp_file_path = destination_path.with_suffix('.tmp')
@@ -53,16 +64,19 @@ def __maybe_download_file(source_url, destination_path):
 
 def __extract_file(filepath, data_dir):
     try:
-        tar = tarfile.open(filepath)
-        tar.extractall(data_dir)
-        tar.close()
+        with tarfile.open(filepath) as tar:
+            safe_extract(tar, str(data_dir))
     except Exception:
         print(f"Error while extracting {filepath}. Already extracted?")
 
 
 def __process_data(data_root):
+    sox = _load_sox()
     text_normalizer = Normalizer(
-        lang="en", input_case="cased", overwrite_cache=True, cache_dir=data_root / "cache_dir",
+        lang="en",
+        input_case="cased",
+        overwrite_cache=True,
+        cache_dir=data_root / "cache_dir",
     )
     text_normalizer_call_kwargs = {"punct_pre_process": True, "punct_post_process": True}
     normalizer_call = lambda x: text_normalizer.normalize(x, **text_normalizer_call_kwargs)
@@ -74,7 +88,10 @@ def __process_data(data_root):
         filelist_path = data_root / f"ljs_audio_text_{split}_filelist.txt"
 
         if not filelist_path.exists():
-            wget.download(f"{FILELIST_BASE}/ljs_audio_text_{split}_filelist.txt", out=str(data_root))
+            urllib.request.urlretrieve(
+                f"{FILELIST_BASE}/ljs_audio_text_{split}_filelist.txt",
+                filename=str(filelist_path),
+            )
 
         manifest_target = data_root / f"{split}_manifest.json"
         with open(manifest_target, 'w') as f_out:

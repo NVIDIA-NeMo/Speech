@@ -42,6 +42,8 @@ import numpy as np
 import soundfile
 from tqdm import tqdm
 
+from nemo.utils.tar_utils import safe_extract
+
 URL_v1 = 'http://download.tensorflow.org/data/speech_commands_v0.01.tar.gz'
 URL_v2 = 'http://download.tensorflow.org/data/speech_commands_v0.02.tar.gz'
 
@@ -77,9 +79,8 @@ def __extract_all_files(filepath: str, data_dir: str):
 
 def extract_file(filepath: str, data_dir: str):
     try:
-        tar = tarfile.open(filepath)
-        tar.extractall(data_dir)
-        tar.close()
+        with tarfile.open(filepath) as tar:
+            safe_extract(tar, data_dir)
     except Exception:
         logging.info('Not extracting. Maybe already there?')
 

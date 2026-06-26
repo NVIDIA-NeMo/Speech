@@ -412,28 +412,38 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         with torch.no_grad():
             loss_display = loss_sum.detach() / num_frames.clamp(min=1)
 
-        # Multi-Token Prediction auxiliary loss. Reuse Automodel's calculate_mtp_loss
-        # (it rolls labels per depth, masks the wrapped tail, projects each depth's hidden
-        # state through the shared lm_head via self._mtp_loss_fn, and sums the CE). We pass
-        # num_label_tokens=num_frames_global so each depth is normalized by the same global
-        # token count as the main loss, and multiply by dp_size to cancel FSDP's gradient
-        # averaging (matching the main-loss scaling above). loss_parallel() keeps the
-        # vocab-sharded CE correct under tensor parallelism.
+        # Multi-Token Prediction auxiliary loss. Compute the aggregate and per-head losses
+        # in one pass so WandB can show each MTP depth without repeating the expensive
+        # lm_head + CE work. ``mtp_loss`` keeps the same meaning as before: the weighted
+        # auxiliary loss added to the training objective after the DP-size correction.
+        mtp_metrics = {}
         mtp_h = forward_outputs.get("mtp_per_depth_h", None)
         if mtp_h is not None:
-            from nemo_automodel.components.loss.mtp import calculate_mtp_loss
-
+            # Under packed THD multiple utterances share one token stream, so the
+            # per-depth label roll must not predict the next sequence's first token
+            # from the current sequence's last token. Pass cu_seqlens (empty/None for
+            # BSHD, where each row is already a single sequence) so the loss derives
+            # seq_idx and masks cross-sequence targets.
+            mtp_cu_seqlens = inputs.get("llm_kwargs", {}).get("cu_seqlens")
             with loss_parallel():
-                mtp_loss = dp_size * calculate_mtp_loss(
+                mtp_loss, mtp_loss_by_head, mtp_raw_loss_by_head = _calculate_mtp_loss_with_heads(
                     self._mtp_loss_fn,
                     mtp_per_depth_h=mtp_h,
                     labels=inputs["target_ids"],
                     model=self.llm,
                     scaling_factor=self._mtp_loss_scaling_factor,
                     num_label_tokens=num_frames_global,
+                    cu_seqlens=mtp_cu_seqlens,
                 )
+            mtp_loss = dp_size * mtp_loss
+            mtp_loss_by_head = [dp_size * head_loss for head_loss in mtp_loss_by_head]
+            mtp_raw_loss_by_head = [dp_size * head_loss for head_loss in mtp_raw_loss_by_head]
             loss = loss + mtp_loss
-            self.log("mtp_loss", mtp_loss.detach(), on_step=True, prog_bar=True)
+            mtp_metrics["mtp_loss"] = mtp_loss.detach()
+            for head_idx, head_loss in enumerate(mtp_loss_by_head, start=1):
+                mtp_metrics[f"mtp_loss/head_{head_idx}"] = head_loss.detach()
+            for head_idx, head_loss in enumerate(mtp_raw_loss_by_head, start=1):
+                mtp_metrics[f"mtp_loss_unscaled/head_{head_idx}"] = head_loss.detach()
 
         # Input embeds shape is (B, T, H) for BSHD or (T, H) for THD packed.
         input_embeds = inputs["input_embeds"]
@@ -453,8 +463,13 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             "target_to_input_ratio": num_frames / (B * T),
             "padding_ratio": (batch["input_ids"] != self.text_pad_id).long().sum() / batch["input_ids"].numel(),
         }
-        self.log("loss", loss_display, on_step=True, prog_bar=True)
-        self.log_dict({k: v for k, v in ans.items() if k != "loss"}, on_step=True)
+        # batch_size kwarg is required by Lightning when training_step uses
+        # the ``dataloader_iter`` signature (it can't auto-infer otherwise).
+        self.log("loss", loss_display, on_step=True, prog_bar=True, batch_size=B)
+        if mtp_metrics:
+            self.log("mtp_loss", mtp_metrics.pop("mtp_loss"), on_step=True, prog_bar=True, batch_size=B)
+            self.log_dict(mtp_metrics, on_step=True, batch_size=B)
+        self.log_dict({k: v for k, v in ans.items() if k != "loss"}, on_step=True, batch_size=B)
         self.maybe_log_moe_metrics(batch_idx)
         return ans
 
@@ -1050,8 +1065,10 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         mtp_cfg = self.cfg.get("mtp", None)
         mtp_requested = mtp_cfg is not None and mtp_cfg.get("enabled", False)
         if mtp_requested:
-            if self.cfg.get("packed_sequences", False):
-                raise NotImplementedError("MTP is not yet supported with packed_sequences=true (THD path).")
+            # MTP supports both BSHD and packed THD. For THD the MTP loss must
+            # receive cu_seqlens so target rolling is masked at packed sequence
+            # boundaries (see training_step); the MTP sublayers already get the
+            # THD context (qkv_format/cu_seqlens/seq_idx) from the model forward.
             self._mtp_loss_scaling_factor = float(mtp_cfg.get("loss_scaling_factor", 0.1))
             # Same per-token loss class the Automodel recipe uses for MTP; reduction="sum"
             # so calculate_mtp_loss can normalize by our global token count.
@@ -1170,3 +1187,113 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 {"name": "loss_mask", "type": NeuralType(("B", "T"), MaskType()), "seq_length": "output"},
             ],
         }
+
+
+def _calculate_mtp_loss_with_heads(
+    loss_fn,
+    *,
+    mtp_per_depth_h: list[torch.Tensor] | None = None,
+    mtp_per_depth_logits: list[torch.Tensor] | None = None,
+    labels: torch.Tensor,
+    model: torch.nn.Module,
+    scaling_factor: float = 0.1,
+    num_label_tokens: torch.Tensor | None = None,
+    ignore_index: int = -100,
+    cu_seqlens: torch.Tensor | None = None,
+    seq_idx: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, list[torch.Tensor], list[torch.Tensor]]:
+    """Compute aggregate MTP loss and per-head losses for logging.
+
+    This mirrors Automodel's ``calculate_mtp_loss`` but keeps the intermediate
+    depth losses so Lightning/WandB can display each MTP head. Returned
+    ``head_losses`` are the weighted contributions that sum to ``total``;
+    returned ``raw_head_losses`` are normalized CE values before applying
+    ``scaling_factor / D``. The caller applies the same DP correction used by
+    the main training loss.
+    """
+    from nemo_automodel.components.loss.linear_ce import FusedLinearCrossEntropy
+    from nemo_automodel.components.loss.utils import _get_lm_head_module, calculate_loss
+    from nemo_automodel.components.models.common.mtp import roll_tensor
+
+    if (mtp_per_depth_h is None) == (mtp_per_depth_logits is None):
+        raise ValueError("Provide exactly one of mtp_per_depth_h or mtp_per_depth_logits")
+
+    mtp_outputs = mtp_per_depth_logits if mtp_per_depth_logits is not None else mtp_per_depth_h
+
+    if labels.dim() == 1:
+        mtp_outputs = [h.squeeze(0) if (h.dim() == 3 and h.shape[0] == 1) else h for h in mtp_outputs]
+
+    D = len(mtp_outputs)
+    cur_labels = labels
+    total = mtp_outputs[0].new_zeros(())
+    head_losses = []
+    raw_head_losses = []
+
+    if seq_idx is None and cu_seqlens is not None:
+        cs = cu_seqlens
+        if cs.dim() == 2 and cs.shape[0] == 1:
+            cs = cs.squeeze(0)
+        if cs.dim() == 1:
+            total_len = labels.shape[-1]
+            positions = torch.arange(total_len, device=labels.device)
+            seq_idx = torch.searchsorted(cs[1:].contiguous(), positions, right=True)
+            if labels.dim() == 2:
+                seq_idx = seq_idx.unsqueeze(0).expand(labels.shape[0], -1)
+    elif seq_idx is not None:
+        if seq_idx.dim() == 1 and labels.dim() == 2:
+            seq_idx = seq_idx.unsqueeze(0).expand(labels.shape[0], -1)
+        elif seq_idx.dim() == 2 and labels.dim() == 1 and seq_idx.shape[0] == 1:
+            seq_idx = seq_idx.squeeze(0)
+        if seq_idx.shape != labels.shape:
+            raise ValueError(
+                f"_calculate_mtp_loss_with_heads: seq_idx.shape={tuple(seq_idx.shape)} does not "
+                f"match labels.shape={tuple(labels.shape)}"
+            )
+
+    for k, mtp_output in enumerate(mtp_outputs):
+        cur_labels = roll_tensor(cur_labels, shifts=-1, dim=-1)
+        masked = cur_labels.clone()
+        n_invalid = min(k + 1, masked.shape[-1])
+        masked[..., -n_invalid:] = ignore_index
+
+        if seq_idx is not None:
+            rolled_seq_idx = roll_tensor(seq_idx, shifts=-(k + 1), dim=-1)
+            cross_seq = rolled_seq_idx != seq_idx
+            masked = torch.where(cross_seq, torch.full_like(masked, ignore_index), masked)
+
+        if mtp_per_depth_logits is not None:
+            if isinstance(loss_fn, FusedLinearCrossEntropy):
+                raise ValueError("MTP logits are incompatible with FusedLinearCrossEntropy")
+            depth_loss = calculate_loss(
+                loss_fn,
+                logits=mtp_output,
+                labels=masked,
+                model=model,
+                num_label_tokens=num_label_tokens,
+            )
+        elif isinstance(loss_fn, FusedLinearCrossEntropy):
+            depth_loss = calculate_loss(
+                loss_fn,
+                hidden_states=mtp_output,
+                labels=masked,
+                model=model,
+                num_label_tokens=num_label_tokens,
+            )
+        else:
+            lm_head = _get_lm_head_module(model)
+            if lm_head is None:
+                raise ValueError("lm_head module not found in model")
+            depth_loss = calculate_loss(
+                loss_fn,
+                logits=lm_head(mtp_output),
+                labels=masked,
+                model=model,
+                num_label_tokens=num_label_tokens,
+            )
+
+        raw_head_losses.append(depth_loss)
+        head_loss = depth_loss * (scaling_factor / D)
+        head_losses.append(head_loss)
+        total = total + head_loss
+
+    return total, head_losses, raw_head_losses

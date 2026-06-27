@@ -357,6 +357,20 @@ def oomptimizer(
     This may be required in very complex setups where there are additional GPU RAM loads that can't be anticipated
     through the combination of training_step and optimizer update.
     """
+    click.echo("Starting OOMptimizer...")
+    click.echo("Arguments:")
+    click.echo(f"  pretrained_name: {pretrained_name}")
+    click.echo(f"  module_name: {module_name}")
+    click.echo(f"  config_path: {config_path}")
+    click.echo(f"  optimizer_name: {optimizer_name}")
+    click.echo(f"  buckets: {buckets}")
+    click.echo(f"  threshold: {threshold}")
+    click.echo(f"  start_batch_size: {start_batch_size}")
+    click.echo(f"  ratio: {ratio}")
+    click.echo(f"  memory_fraction: {memory_fraction}")
+    click.echo(f"  device: {device}")
+    click.echo(f"  dtype: {dtype}")
+    click.echo(f"  ddp: {ddp}")
     if all(opt is None for opt in (pretrained_name, module_name, config_path)):
         click.secho(
             "You need to provide either PRETRAINED_NAME or the pair of MODULE_NAME and CONFIG_PATH.", fg="yellow"
@@ -467,7 +481,7 @@ def oomptimizer(
 
             def step():
                 click.echo(
-                    f"\t[BEGIN step] [CUDA RAM CURRENT: {torch.cuda.memory_allocated() / (1024 * 1024):.1f}MB] [CUDA RAM MAX: {torch.cuda.max_memory_allocated() / (1024*1024):.1f}MB]"
+                    f"\t[BEGIN step] [input={seq_len_in}] [output={seq_len_out}] [CUDA RAM CURRENT: {torch.cuda.memory_allocated() / (1024 * 1024):.1f}MB] [CUDA RAM MAX: {torch.cuda.max_memory_allocated() / (1024*1024):.1f}MB]"
                 )
                 batch = gen(seq_len_in, seq_len_out)
                 oom = False

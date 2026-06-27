@@ -35,12 +35,31 @@ from lhotse.audio.backend import LibsndfileBackend
 from lhotse.cut import Cut
 from lhotse.dataset.dataloading import resolve_seed
 from lhotse.lazy import LazyIteratorChain, LazyJsonlIterator
-from lhotse.serialization import open_best
+from lhotse.serialization import decode_json_line, open_best
 from lhotse.utils import compute_num_samples, ifnone
 
 from nemo.collections.common.parts.preprocessing.manifest import get_full_path
 from nemo.utils import logging
 from nemo.utils.data_utils import is_datastore_path
+
+
+class LhotseLazyJsonlIterator(LazyJsonlIterator):
+    def __init__(self, path: str | Path | list[str]):
+        super().__init__(path)
+
+    def __iter__(self):
+        tot = 0
+        with open_best(self.path, "r") as f:
+            for line in f:
+                try:
+                    data = decode_json_line(line)
+                    yield data
+                    tot += 1
+                except Exception as e:
+                    logging.error(f"Error decoding JSON line `{line}` in file `{self.path}`: {e}")
+                    raise e
+        if self._len is None:
+            self._len = tot
 
 
 class LazyNeMoIterator:
@@ -125,6 +144,7 @@ class LazyNeMoIterator:
             audio_path = get_full_path(str(data.pop("audio_filepath")), str(self.path), force_cache=False)
             duration = data.pop("duration")
             offset = data.pop("offset", None)
+            num_channels = data.pop("num_channels", None)
             sampling_rate = data.pop("sampling_rate", None)
             if sampling_rate is None:
                 sampling_rate = data.pop("sample_rate", None)
@@ -133,6 +153,7 @@ class LazyNeMoIterator:
                 offset=offset,
                 duration=duration,
                 sampling_rate=sampling_rate,
+                num_channels=num_channels,
             )
             # Note that start=0 and not start=offset because supervision's start if relative to the
             # start of the cut; and cut.start is already set to offset
@@ -164,9 +185,12 @@ class LazyNeMoIterator:
         offset: float,
         duration: float,
         sampling_rate: int | None = None,
+        num_channels: int | None = None,
     ) -> Cut:
+        if num_channels is None:
+            num_channels = 1  # default to single channel if not specified
         if not self.metadata_only:
-            recording = self._create_recording(audio_path, duration, sampling_rate)
+            recording = self._create_recording(audio_path, duration, sampling_rate, num_channels)
             cut = recording.to_cut()
             if offset is not None:
                 cut = cut.truncate(offset=offset, duration=duration, preserve_id=True)
@@ -186,7 +210,7 @@ class LazyNeMoIterator:
                 supervisions=[],
                 recording=Recording(
                     id=audio_path,
-                    sources=[AudioSource(type="dummy", channels=[0], source="")],
+                    sources=[AudioSource(type="dummy", channels=list(range(num_channels)), source="")],
                     sampling_rate=sr,
                     duration=offset + duration,
                     num_samples=compute_num_samples(offset + duration, sr),
@@ -199,18 +223,17 @@ class LazyNeMoIterator:
         audio_path: str,
         duration: float,
         sampling_rate: int | None = None,
+        num_channels: int = 1,
     ) -> Recording:
         if sampling_rate is not None:
-            # TODO(pzelasko): It will only work with single-channel audio in the current shape.
-
             source_type = "url" if is_datastore_path(audio_path) else "file"
             return Recording(
                 id=audio_path,
-                sources=[AudioSource(type=source_type, channels=[0], source=audio_path)],
+                sources=[AudioSource(type=source_type, channels=list(range(num_channels)), source=audio_path)],
                 sampling_rate=sampling_rate,
                 num_samples=compute_num_samples(duration, sampling_rate),
                 duration=duration,
-                channel_ids=[0],
+                channel_ids=list(range(num_channels)),
             )
         else:
             return Recording.from_file(audio_path)

@@ -61,6 +61,18 @@ class MLMLoss(Loss):
     def forward(
         self, decoder_outputs, targets, decoder_lengths=None, target_lengths=None, spec_masks=None, masks=None
     ):
+        """
+        Args:
+            decoder_outputs: (B, T, D)
+            targets: (B, T)
+            decoder_lengths: (B,)
+            target_lengths: (B,)
+            spec_masks: (B, D, T)
+            masks: (B, D, T)
+
+        Returns:
+            loss: (1,)
+        """
 
         if masks is None:
             masks = spec_masks
@@ -71,11 +83,22 @@ class MLMLoss(Loss):
             # B,D,T -> B,T,D
             masks = masks.transpose(1, 2)
 
-            masks = masks.reshape(masks.shape[0], masks.shape[1] // self.combine_time_steps, -1)
-            masks = masks.mean(-1) > self.mask_threshold
+        masks = masks.reshape(masks.shape[0], masks.shape[1] // self.combine_time_steps, -1)
+        masks = masks.mean(-1) > self.mask_threshold  # (B, T)
+
+        # Truncate the length of decoder_outputs, masks, and targets to the minimum length of the three.
+        loss_length = min(decoder_outputs.shape[1], masks.shape[1], targets.shape[1])
+
+        decoder_outputs = decoder_outputs[:, :loss_length]
+        masks = masks[:, :loss_length]
+        targets = targets[:, :loss_length]
+
+        if decoder_lengths is not None:
+            decoder_lengths = torch.clamp(decoder_lengths, max=loss_length)
+        if target_lengths is not None:
+            target_lengths = torch.clamp(target_lengths, max=loss_length)
 
         out_masked_only = decoder_outputs[masks]
-        targets = F.pad(targets, (0, masks.shape[-1] - targets.shape[-1]))
         targets_masked_only = targets[masks]
 
         loss = self.nll_loss(out_masked_only, targets_masked_only)

@@ -17,7 +17,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from nemo.core import NeuralModule
-from nemo.core.classes import Exportable, NeuralModule, typecheck
+from nemo.core.classes import Exportable, NeuralModule
 from nemo.core.neural_types import LabelsType, NeuralType, SpectrogramType
 
 
@@ -35,6 +35,8 @@ class RandomProjectionVectorQuantizer(NeuralModule, Exportable):
         freeze: bool = True,
         squeeze_single: bool = False,
         combine_time_steps: int = 1,
+        learnable_norm: bool = False,
+        xavier_normal_init: bool = False,
     ):
         """Vector quantization using random projection proposed in BEST-RQ paper:
         'Self-Supervised Learning with Random-Projection Quantizer for Speech Recognition'
@@ -48,6 +50,8 @@ class RandomProjectionVectorQuantizer(NeuralModule, Exportable):
             time_ahead: if Ture, the input is of shape (B, T, D), otherwise (B, D, T)
             freeze: whether to freeze the projection matrix
             squeeze_single: if True, squeeze codebook dimension if num_books is 1
+            learnable_norm: if True, use LayerNorm with learnable affine params; otherwise plain standardization
+            xavier_normal_init: if True, use Xavier normal initialization for the projection matrix; otherwise Xavier uniform
         """
         super().__init__()
 
@@ -62,18 +66,31 @@ class RandomProjectionVectorQuantizer(NeuralModule, Exportable):
         self.time_ahead = time_ahead
         self.squeeze_single = squeeze_single
         self.combine_time_steps = combine_time_steps
+        self.input_norm = nn.LayerNorm(self.feat_in, elementwise_affine=learnable_norm)
 
         # (B, T, D) -> (B, T, num_books, code_dim)
         self.proj = nn.Linear(self.feat_in * combine_time_steps, self.num_books * self.code_dim, bias=False)
-        torch.nn.init.xavier_normal_(self.proj.weight)
+        if xavier_normal_init:
+            torch.nn.init.xavier_normal_(self.proj.weight)
+        else:
+            torch.nn.init.xavier_uniform_(self.proj.weight)
 
         # (num_books, num_classes, hid_dim)
-        codebooks = torch.randn(self.num_books, self.num_classes, self.code_dim).double()
-        torch.nn.init.normal_(codebooks, mean=0, std=1)
+        codebooks = torch.randn(self.num_books, self.num_classes, self.code_dim)
         codebooks = F.normalize(codebooks, dim=-1)
         self.codebooks = nn.Parameter(codebooks)
+        # Pre-computed offset for multi-book embedding lookup: [0, num_classes, 2*num_classes, ...]
+        self.register_buffer(
+            'book_offsets',
+            self.num_classes * torch.arange(self.num_books).reshape(1, 1, self.num_books),
+            persistent=False,
+        )
         if freeze:
             self.freeze()
+        if learnable_norm:
+            # unfreeze the layernorm parameters
+            self.input_norm.weight.requires_grad = True
+            self.input_norm.bias.requires_grad = True
 
     @property
     def input_types(self):
@@ -105,7 +122,6 @@ class RandomProjectionVectorQuantizer(NeuralModule, Exportable):
             "xid": NeuralType(('B', 'T', 'H'), LabelsType()),
         }
 
-    @typecheck()
     def forward(self, input_signal):
         """
         Args:
@@ -120,6 +136,8 @@ class RandomProjectionVectorQuantizer(NeuralModule, Exportable):
 
         B, T, _ = input_signal.size()
 
+        input_signal = self.input_norm(input_signal)
+
         if self.combine_time_steps > 1:
             input_signal = input_signal.contiguous().reshape(B, T // self.combine_time_steps, -1)
             T = T // self.combine_time_steps
@@ -127,25 +145,18 @@ class RandomProjectionVectorQuantizer(NeuralModule, Exportable):
         # (B, T, D) -> (B, T, num_books*code_dim)
         x = self.proj(input_signal)
 
-        # normalize each feature vector
+        # normalize each projected vector
         # (B, T, num_books*code_dim) -> (B, T, num_books, code_dim)
         x = F.normalize(x.view(B, T, self.num_books, self.code_dim), dim=-1)
 
         # get tokens (xid) of shape (B, T, num_books)
-        if self.dist_fn == "cosine":
-            # (B, T, num_books, code_dim) -> (B, T, num_books, num_classes)
-            xid = torch.einsum('btdh,dch->btdc', x, self.codebooks)
-            # (B, T, num_books, num_classes) -> (B, T, num_books)
-            xid = xid.max(dim=-1)[1]
-        elif self.dist_fn == "l2":
-            # (B, T, num_books, code_dim) -> (B, T, num_books, code_dim, num_classes)
-            xid = x.unsqueeze(-1) - self.codebooks.transpose(1, 2).unsqueeze(0).unsqueeze(0)
-            xid = xid.norm(dim=-2).argmin(dim=-1)
-        else:
-            raise ValueError(f"Unknown distance function {self.dist_fn}, must be one of {self.DIST_FN_LIST}")
+        # Both x and codebooks are L2-normalized, so for both "cosine" and "l2":
+        # argmax(dot) == argmax(cosine) == argmin(||a-b||^2)  since ||a-b||^2 = 2 - 2*a·b
+        xid = torch.einsum('btdh,dch->btdc', x, self.codebooks)
+        xid = xid.max(dim=-1)[1]
 
         # xid2: (B, T, num_books) -> (B, T, num_books)
-        xid2 = xid + self.num_classes * torch.arange(self.num_books, device=xid.device).unsqueeze(0).unsqueeze(0)
+        xid2 = xid + self.book_offsets
         # xid2: (B, T, num_books) -> (B*num_books, T)
         xid2 = xid2.transpose(1, 2).contiguous().view(-1, T)
 

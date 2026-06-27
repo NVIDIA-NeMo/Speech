@@ -28,7 +28,7 @@ class NsightProfiling(Callback):
           ...
           callbacks:
             - _target_: nemo.collections.speechlm2.parts.nsight.NsightProfiling
-              start_step: 5
+              begin_step: 5
               end_step: 10
               gen_shape: true
               nvtx_ranges: true

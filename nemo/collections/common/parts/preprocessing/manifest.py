@@ -289,8 +289,13 @@ def get_full_path(
             if data_dir is None:
                 data_dir = os.path.dirname(manifest_file)
 
-            # assume audio_file path is relative to data_dir
-            audio_file_path = os.path.join(data_dir, audio_file)
+            if not is_datastore_path(audio_file):
+                # if audio_file is not a datastore path, assume it is relative to data_dir
+                # assume audio_file path is relative to data_dir
+                audio_file_path = os.path.join(data_dir, audio_file)
+            else:
+                # if audio_file is a datastore path, use the original path
+                audio_file_path = audio_file
 
             if is_datastore_path(audio_file_path):
                 # If audio was originally on an object store, use locally-cached path.

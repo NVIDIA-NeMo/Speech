@@ -1259,7 +1259,9 @@ class ModelPT(LightningModule, Model):
                 )
 
     @rank_zero_only
-    def maybe_init_from_pretrained_checkpoint(self, cfg: OmegaConf, map_location: str = 'cpu'):
+    def maybe_init_from_pretrained_checkpoint(
+        self, cfg: OmegaConf, map_location: str = 'cpu', weights_only: bool = True
+    ):
         """
         Initializes a given model with the parameters obtained via specific config arguments.
         The state dict of the provided model will be updated with `strict=False` setting so as to prevent
@@ -1301,6 +1303,7 @@ class ModelPT(LightningModule, Model):
             cfg: The config used to instantiate the model. It need only contain one of the above keys.
             map_location: str or torch.device() which represents where the intermediate state dict
                 (from the pretrained model or checkpoint) will be loaded.
+            weights_only: bool flag passed to torch.load(), set to False if fails to load OmegaConf related fields.
 
         """
         args = [
@@ -1411,7 +1414,7 @@ class ModelPT(LightningModule, Model):
                 if isinstance(cfg.init_from_ptl_ckpt, str):
                     # Restore checkpoint
                     ckpt_path = cfg.pop('init_from_ptl_ckpt')
-                    ckpt = torch.load(ckpt_path, map_location=map_location)
+                    ckpt = torch.load(ckpt_path, map_location=map_location, weights_only=weights_only)
 
                     # Restore checkpoint into current model
                     self.load_state_dict(ckpt['state_dict'], strict=False)
@@ -1425,7 +1428,7 @@ class ModelPT(LightningModule, Model):
                     for model_load_cfg in model_load_dict.values():
                         ckpt_path = model_load_cfg.path
                         # Restore model
-                        ckpt = torch.load(ckpt_path, map_location=map_location)
+                        ckpt = torch.load(ckpt_path, map_location=map_location, weights_only=weights_only)
 
                         include = model_load_cfg.pop('include', [""])
                         exclude = model_load_cfg.pop('exclude', [])

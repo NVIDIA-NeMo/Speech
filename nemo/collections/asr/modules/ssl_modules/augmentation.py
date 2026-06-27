@@ -14,14 +14,13 @@
 
 import math
 import random
-from collections import Counter
-
 import torch
 
 from nemo.collections.asr.data.ssl_dataset import AudioNoiseBatch
+from nemo.core.classes.common import Serialization
 
 
-class SpeakerNoiseAugmentation(object):
+class SpeakerNoiseAugmentation(Serialization):
     def __init__(
         self,
         prob: float = 0.0,
@@ -99,33 +98,38 @@ class SpeakerNoiseAugmentation(object):
             # randomly select position to start the mixing
             mix_start_idx = random.randint(0, audio_lengths[i] - mix_len - 1)
 
-            # randomly select the energy ratio between speech and noise
+            # randomly select the energy ratio and noise source
             if random.random() < self.noise_ratio or batch_size == 1:
                 energy_ratio = random.uniform(self.min_r_noise, self.max_r_noise)
+                src = noise[i]
+                src_len = noise_len[i]
             else:
                 energy_ratio = random.uniform(self.min_r_speech, self.max_r_speech)
-                j = random.choice([x for x in range(batch_size) if x != i])
-                noise[i] = audio_signal[j].clone()
-                noise_len[i] = audio_lengths[j]
+                j = random.randrange(batch_size - 1)
+                if j >= i:
+                    j += 1
+                src = audio_signal[j]
+                src_len = audio_lengths[j]
 
-            # repeat noise to match the length of audio mix length if necessary
-            if noise_len[i] <= mix_len:
-                # repeat noise to match the length of audio mix length
-                noise_start_idx = 0
-                noise[i] = self.pad_or_trim_noise(self.repeat_noise(noise[i], noise_len[i], mix_len), max_audio_len)
-                noise_len[i] = mix_len
+            # extract noise clip directly from source
+            if src_len <= mix_len:
+                noise_clip = self.repeat_noise(src, src_len, mix_len)
             else:
-                # randomly select a segment of noise
-                noise_start_idx = random.randint(0, noise_len[i] - mix_len - 1)
+                noise_start_idx = random.randint(0, src_len - mix_len - 1)
+                noise_clip = src[noise_start_idx : noise_start_idx + mix_len]
 
             # calculate the scale factor for noise
-            audio_energy = torch.sum(audio_signal[i, : audio_lengths[i]] ** 2) / audio_lengths[i]
-            noise_energy = torch.sum(noise[i, : noise_len[i]] ** 2) / noise_len[i] if noise_len[i] > 0 else 0
+            audio_slice = audio_signal[i, : audio_lengths[i]]
+            audio_energy = torch.dot(audio_slice, audio_slice) / audio_lengths[i]
+            if src_len > 0:
+                src_slice = src[:src_len]
+                noise_energy = torch.dot(src_slice, src_slice) / src_len
+            else:
+                noise_energy = 0
             mix_scale = math.sqrt(audio_energy / (10 ** (energy_ratio / 10) * noise_energy)) if noise_energy > 0 else 0
 
-            # get the residual signal to be added to original audio
-            noise_clip = noise[i, noise_start_idx : noise_start_idx + mix_len]
-            noise_signal = torch.zeros_like(audio_signal[i])
+            # place scaled noise clip into noise signal
+            noise_signal = torch.zeros(max_audio_len, device=audio_signal.device, dtype=audio_signal.dtype)
             noise_signal[mix_start_idx : mix_start_idx + mix_len] = mix_scale * noise_clip
 
             noise[i] = noise_signal
@@ -196,8 +200,14 @@ class MultiSpeakerNoiseAugmentation(SpeakerNoiseAugmentation):
             num_speakers = random.randint(self.min_num_speakers, self.max_num_speakers)
             num_speakers = min(num_speakers, batch_size)
 
-            # randomly chunk mix_len into num_segments
-            segment_lens = list(Counter(random.choices(range(num_segments), k=mix_len)).values())
+            # randomly chunk mix_len into num_segments using sorted breakpoints
+            if num_segments == 1 or mix_len <= 1:
+                segment_lens = [mix_len]
+            else:
+                k = min(num_segments - 1, mix_len - 1)
+                breakpoints = sorted(random.sample(range(1, mix_len), k))
+                segment_lens = [b - a for a, b in zip([0] + breakpoints, breakpoints + [mix_len])]
+            num_segments = len(segment_lens)
 
             # randomly select the energy ratio between speech and noise
             if random.random() < self.noise_ratio or batch_size == 1:
@@ -220,8 +230,10 @@ class MultiSpeakerNoiseAugmentation(SpeakerNoiseAugmentation):
                 max_start_idx += segment_lens[j]
 
             # calculate the scale factor for noise
-            audio_energy = torch.sum(audio_signal[i, : audio_lengths[i]] ** 2) / audio_lengths[i]
-            noise_energy = torch.sum(noise_signal[: audio_lengths[i]] ** 2) / audio_lengths[i]
+            audio_slice = audio_signal[i, : audio_lengths[i]]
+            noise_slice = noise_signal[: audio_lengths[i]]
+            audio_energy = torch.dot(audio_slice, audio_slice) / audio_lengths[i]
+            noise_energy = torch.dot(noise_slice, noise_slice) / audio_lengths[i]
             mix_scale = math.sqrt(audio_energy / (10 ** (energy_ratio / 10) * noise_energy)) if noise_energy > 0 else 0
 
             # get the residual signal to be added to original audio
@@ -239,21 +251,19 @@ class MultiSpeakerNoiseAugmentation(SpeakerNoiseAugmentation):
             noisy_audio_len=noise_len,
         )
 
-    def get_noise_segments(self, batch_idx, batch, segment_lens, num_speakers, mode):
+    def get_noise_segments(self, batch_idx, batch: AudioNoiseBatch, segment_lens, num_speakers, mode):
         audio_signal = batch.audio
         audio_lengths = batch.audio_len
         noise = batch.noise
         noise_len = batch.noise_len
         batch_size = noise.size(0)
-        max_audio_len = audio_signal.size(1)
         noise_segments = []
         if mode == "noise":
-            noise_padded = self.pad_or_trim_noise(
-                self.repeat_noise(noise[batch_idx], noise_len[batch_idx], max_audio_len), max_audio_len
-            )
+            total_len = sum(segment_lens)
+            noise_repeated = self.repeat_noise(noise[batch_idx], noise_len[batch_idx], total_len)
             start_idx = 0
             for segment_len in segment_lens:
-                noise_segments.append(noise_padded[start_idx : start_idx + segment_len])
+                noise_segments.append(noise_repeated[start_idx : start_idx + segment_len])
                 start_idx += segment_len
             return noise_segments
 

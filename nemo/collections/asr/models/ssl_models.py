@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from math import ceil
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -761,6 +761,16 @@ class EncDecMaskedTokenPredModel(SpeechEncDecSelfSupervisedModel):
             'train_loss': loss_value,
         }
 
+        if hasattr(self, '_trainer') and self._trainer is not None:
+            log_every_n_steps = self._trainer.log_every_n_steps
+            sample_id = self._trainer.global_step
+        else:
+            log_every_n_steps = 1
+            sample_id = batch_idx
+
+        if self.cfg.get("log_codebook_coverage", False) and (sample_id + 1) % log_every_n_steps == 0:
+            self.log_codebook_coverage(tokens, encoded_len)
+
         return {'loss': loss_value, 'log': tensorboard_logs}
 
     def inference_pass(self, batch, batch_idx=0, dataloader_idx=0, mode='val', apply_mask=False):
@@ -821,6 +831,65 @@ class EncDecMaskedTokenPredModel(SpeechEncDecSelfSupervisedModel):
         tensorboard_logs = {'test_loss': test_loss_mean}
         return {'test_loss': test_loss_mean, 'log': tensorboard_logs}
 
+    def log_codebook_coverage(self, tokens: torch.Tensor, encoded_len: torch.Tensor):
+        if tokens.ndim == 2:
+            _tokens = tokens.unsqueeze(-1)  # shape [B, T, 1]
+        else:
+            _tokens = tokens  # shape [B, T, N]
+
+        # find the number of unique tokens in the batch, excluding padding; count per codebook (batch collapsed) -> [N]
+        # encoded_len is of shape [B]; valid positions: t < encoded_len[b] for each batch item b
+        T, N = _tokens.size(1), _tokens.size(2)
+        valid_mask = torch.arange(T, device=_tokens.device, dtype=encoded_len.dtype).unsqueeze(
+            0
+        ) < encoded_len.unsqueeze(1)
+
+        # Initialize cumulative token count if it doesn't exist, it's okay that each training job will reset it,
+        # as long as the curve for each job is showing increasing cumulative coverage.
+        if getattr(self, 'cumulative_token_count', None) is None:
+            self.cumulative_token_count = torch.zeros(
+                [N, int(self.cfg.num_classes)], device=_tokens.device, dtype=torch.long
+            )
+
+        # This batch's token counts per codebook [N, num_classes]; will be summed across ranks then added to cumulative
+        all_valid = _tokens[valid_mask]  # (num_valid, N) — index once outside loop
+        batch_token_count = torch.zeros([N, int(self.cfg.num_classes)], device=_tokens.device, dtype=torch.long)
+        for n in range(N):
+            valid_tokens_n = all_valid[:, n]
+            if valid_tokens_n.numel() > 0:
+                batch_token_count[n] = torch.bincount(valid_tokens_n.long(), minlength=int(self.cfg.num_classes))
+        # Derive unique count from bincount — no separate .unique() call
+        num_unique_tokens = (batch_token_count > 0).sum(dim=1)
+
+        # Sync batch counts across ranks (SUM) so cumulative is global
+        if torch.distributed.is_initialized():
+            torch.distributed.all_reduce(batch_token_count, op=torch.distributed.ReduceOp.SUM)
+        self.cumulative_token_count += batch_token_count
+
+        # Get the maximum number of unique tokens for each codebook across all ranks
+        if torch.distributed.is_initialized():
+            torch.distributed.all_reduce(num_unique_tokens, op=torch.distributed.ReduceOp.MAX)
+
+        # coverage = fraction of codebook entries used
+        codebook_coverage = num_unique_tokens / float(self.cfg.num_classes)
+        cumulative_codebook_coverage = torch.count_nonzero(self.cumulative_token_count, dim=1) / float(
+            self.cfg.num_classes
+        )
+        cumulative_token_prob = self.cumulative_token_count / self.cumulative_token_count.sum(
+            dim=1, keepdim=True
+        )  # shape [N, num_classes]
+        # Entropy H = -sum(p * log(p)) per codebook; use clamp to avoid log(0)
+        cumulative_codebook_entropy = -(cumulative_token_prob * torch.log(cumulative_token_prob.clamp(min=1e-10))).sum(
+            dim=1
+        )
+        for n in range(N):
+            self.log(f"codebook_coverage_cb{n}", codebook_coverage[n].float())
+            self.log(f"cumul_codebook_coverage_cb{n}", cumulative_codebook_coverage[n].float())
+            self.log(f"cumul_codebook_entropy_cb{n}", cumulative_codebook_entropy[n].float())
+        self.log(f"codebook_coverage_avg", codebook_coverage.mean().float())
+        self.log(f"cumul_codebook_coverage_avg", cumulative_codebook_coverage.mean().float())
+        self.log(f"cumul_codebook_entropy_avg", cumulative_codebook_entropy.mean().float())
+
 
 class EncDecDenoiseMaskedTokenPredModel(EncDecMaskedTokenPredModel):
     """
@@ -839,8 +908,6 @@ class EncDecDenoiseMaskedTokenPredModel(EncDecMaskedTokenPredModel):
             "inputs": [
                 {"type": NeuralType(("B", "T"), AudioSignal()), "seq_length": "input", "name": "audio"},
                 {"type": NeuralType(("B",), LengthsType()), "seq_length": "input", "name": "audio_len"},
-                {"type": NeuralType(("B", "T"), AudioSignal()), "seq_length": "input", "name": "noise"},
-                {"type": NeuralType(("B",), LengthsType()), "seq_length": "input", "name": "noise_len"},
                 {"type": NeuralType(("B", "T"), AudioSignal()), "seq_length": "input", "name": "noisy_audio"},
                 {"type": NeuralType(("B",), LengthsType()), "seq_length": "input", "name": "noisy_audio_len"},
             ],
@@ -858,8 +925,10 @@ class EncDecDenoiseMaskedTokenPredModel(EncDecMaskedTokenPredModel):
                 global_rank=self.global_rank,
                 world_size=self.world_size,
                 dataset=ssl_dataset.LhotseAudioNoiseDataset(
+                    cfg=config,
                     noise_manifest=config.get('noise_manifest', None),
                     batch_augmentor_cfg=config.get('batch_augmentor', None),
+                    return_noise=False,
                 ),
             )
 
@@ -867,6 +936,7 @@ class EncDecDenoiseMaskedTokenPredModel(EncDecMaskedTokenPredModel):
             config,
             global_rank=self.global_rank,
             world_size=self.world_size,
+            return_noise=False,
         )
 
         shuffle = config['shuffle']
@@ -945,7 +1015,29 @@ class EncDecDenoiseMaskedTokenPredModel(EncDecMaskedTokenPredModel):
         processed_noisy_input_signal=None,
         processed_noisy_input_signal_length=None,
         apply_mask=False,
-    ):
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Forward pass for the model.
+        Args:
+            input_signal: Input signal of shape [B, T].
+            input_signal_length: Lengths of the input signal of shape [B].
+            processed_signal: Processed signal of shape [B, D, T].
+            processed_signal_length: Lengths of the processed signal of shape [B].
+            noise_signal: Noise signal of shape [B, T].
+            noise_signal_length: Lengths of the noise signal of shape [B].
+            processed_noise_signal: Processed noise signal of shape [B, D, T].
+            processed_noise_signal_length: Lengths of the processed noise signal of shape [B].
+            noisy_input_signal: Noisy input signal of shape [B, T].
+            noisy_input_signal_length: Lengths of the noisy input signal of shape [B].
+            processed_noisy_input_signal: Processed noisy input signal of shape [B, D, T].
+            processed_noisy_input_signal_length: Lengths of the processed noisy input signal of shape [B].
+            apply_mask: Whether to apply masking to the input signal.
+        Returns:
+            log_probs: Log probabilities of the model of shape [B, T, C].
+            encoded_len: Lengths of the encoded signal of shape [B].
+            masks: Masks of the model of shape [B, D, T].
+            tokens: Target tokens of the model of shape [B, T, N] or [B, T] if num_books == 1 and squeeze_single is True.
+        """
         has_input_signal = input_signal is not None and input_signal_length is not None
         has_processed_signal = processed_signal is not None and processed_signal_length is not None
         if (has_input_signal ^ has_processed_signal) == False:
@@ -1032,6 +1124,16 @@ class EncDecDenoiseMaskedTokenPredModel(EncDecMaskedTokenPredModel):
             'global_step': self.trainer.global_step,
             'train_loss': loss_value,
         }
+
+        if hasattr(self, '_trainer') and self._trainer is not None:
+            log_every_n_steps = self._trainer.log_every_n_steps
+            sample_id = self._trainer.global_step
+        else:
+            log_every_n_steps = 1
+            sample_id = batch_idx
+
+        if self.cfg.get("log_codebook_coverage", False) and (sample_id + 1) % log_every_n_steps == 0:
+            self.log_codebook_coverage(tokens, encoded_len)
 
         return {'loss': loss_value, 'log': tensorboard_logs}
 

@@ -557,6 +557,7 @@ class SBSampler(NeuralModule):
                 # Calculate scaling for the first-order discretization from the paper
                 weight_prev = alpha_t * sigma_t**2 / (alpha_prev * sigma_prev**2 + self.eps)
                 tmp = 1 - sigma_t**2 / (sigma_prev**2 + self.eps)
+                tmp = tmp.clamp_min(0)
                 weight_estimate = alpha_t * tmp
                 weight_z = alpha_t * sigma_t * torch.sqrt(tmp)
 

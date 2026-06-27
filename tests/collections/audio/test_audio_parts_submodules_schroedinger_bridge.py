@@ -21,6 +21,19 @@ from nemo.collections.audio.parts.submodules.schroedinger_bridge import SBNoiseS
 NUM_STEPS = [1, 5, 10, 20, 100]
 
 
+@pytest.mark.unit
+def test_sb_noise_schedule_ve_g_uses_input_time_and_preserves_dtype():
+    noise_schedule = SBNoiseScheduleVE(k=2.0, c=0.5, num_steps=5)
+    time = torch.tensor([0.0, 0.5, 1.0], dtype=torch.float64)
+
+    g = noise_schedule.g(time)
+
+    expected = torch.sqrt(torch.tensor(0.5, dtype=time.dtype, device=time.device)) * 2.0**time
+    torch.testing.assert_close(g, expected)
+    assert g.dtype == time.dtype
+    assert g.device == time.device
+
+
 @pytest.mark.parametrize("num_steps", NUM_STEPS)
 @pytest.mark.parametrize("process", ["sde", "ode"])
 @pytest.mark.parametrize("noise_schedule_type", ["ve", "vp"])

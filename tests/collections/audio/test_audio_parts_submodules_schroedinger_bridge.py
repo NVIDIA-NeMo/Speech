@@ -19,6 +19,40 @@ import torch
 from nemo.collections.audio.parts.submodules.schroedinger_bridge import SBNoiseScheduleVE, SBNoiseScheduleVP, SBSampler
 
 NUM_STEPS = [1, 5, 10, 20, 100]
+DEVICES = [
+    pytest.param(torch.device("cpu"), id="cpu"),
+    pytest.param(
+        torch.device("cuda"),
+        marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),
+        id="cuda",
+    ),
+]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64], ids=["float32", "float64"])
+@pytest.mark.parametrize("device", DEVICES)
+def test_sb_noise_schedule_t_max_accessors_match_reference_tensor(device, dtype):
+    noise_schedule = SBNoiseScheduleVE(k=2.0, c=0.5, num_steps=5).to(device=device, dtype=dtype)
+    ref = torch.ones(1, device=device, dtype=dtype)
+
+    alpha_t_max = noise_schedule.alpha_t_max
+    sigma_t_max = noise_schedule.sigma_t_max
+    alpha_t_max_like = noise_schedule.alpha_t_max_like(ref)
+    sigma_t_max_like = noise_schedule.sigma_t_max_like(ref)
+
+    expected_time_max = ref.new_tensor([noise_schedule.time_max])
+    expected_alpha_t_max = noise_schedule.alpha(expected_time_max)
+    expected_sigma_t_max = noise_schedule.sigma(expected_time_max)
+
+    for value in (alpha_t_max, sigma_t_max, alpha_t_max_like, sigma_t_max_like):
+        assert value.device == device
+        assert value.dtype == dtype
+
+    torch.testing.assert_close(alpha_t_max, expected_alpha_t_max)
+    torch.testing.assert_close(sigma_t_max, expected_sigma_t_max)
+    torch.testing.assert_close(alpha_t_max_like, expected_alpha_t_max)
+    torch.testing.assert_close(sigma_t_max_like, expected_sigma_t_max)
 
 
 @pytest.mark.parametrize("num_steps", NUM_STEPS)

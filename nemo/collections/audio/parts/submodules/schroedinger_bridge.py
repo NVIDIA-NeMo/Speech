@@ -44,6 +44,7 @@ class SBNoiseSchedule(NeuralModule, ABC):
         eps: float = 1e-8,
     ):
         super().__init__()
+        self.register_buffer('_time_reference', torch.empty(0), persistent=False)
 
         # min and max time
         if time_min < 0:
@@ -86,17 +87,30 @@ class SBNoiseSchedule(NeuralModule, ABC):
         time = torch.rand(size, device=device) * self.time_delta + self.time_min
         return time
 
+    def _time_max_like(self, ref: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """Return `time_max` on the same device and dtype as `ref`."""
+        if ref is None:
+            ref = self._time_reference
+
+        return ref.new_tensor([self.time_max])
+
     @property
     def alpha_t_max(self):
         """Return alpha_t at t_max."""
-        t_max = torch.tensor([self.time_max], device=alpha.device)
-        return self.alpha(t_max)
+        return self.alpha(self._time_max_like())
+
+    def alpha_t_max_like(self, ref: torch.Tensor) -> torch.Tensor:
+        """Return alpha_t at t_max on the same device and dtype as `ref`."""
+        return self.alpha(self._time_max_like(ref))
 
     @property
     def sigma_t_max(self):
         """Return sigma_t at t_max."""
-        t_max = torch.tensor([self.time_max], device=alpha.device)
-        return self.sigma(t_max)
+        return self.sigma(self._time_max_like())
+
+    def sigma_t_max_like(self, ref: torch.Tensor) -> torch.Tensor:
+        """Return sigma_t at t_max on the same device and dtype as `ref`."""
+        return self.sigma(self._time_max_like(ref))
 
     @abstractmethod
     def f(self, time: torch.Tensor) -> torch.Tensor:
@@ -147,7 +161,7 @@ class SBNoiseSchedule(NeuralModule, ABC):
         Returns:
             Tensors the same size as alpha, representing alpha_bar and alpha_t_max.
         """
-        alpha_t_max = self.alpha(torch.tensor([self.time_max], device=alpha.device))
+        alpha_t_max = self.alpha_t_max_like(alpha)
         alpha_bar = alpha / (alpha_t_max + self.eps)
         return alpha_bar, alpha_t_max
 
@@ -189,7 +203,7 @@ class SBNoiseSchedule(NeuralModule, ABC):
         Returns:
             Tensors the same size as sigma, representing sigma_bar and sigma_t_max.
         """
-        sigma_t_max = self.sigma(torch.tensor([self.time_max], device=sigma.device))
+        sigma_t_max = self.sigma_t_max_like(sigma)
         sigma_bar_sq = sigma_t_max**2 - sigma**2
         return torch.sqrt(sigma_bar_sq + self.eps), sigma_t_max
 

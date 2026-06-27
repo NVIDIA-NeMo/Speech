@@ -190,7 +190,7 @@ def convert_manifest_nemo_to_lhotse(
                     get_full_path(audio_file=item_reference_key, manifest_file=input_manifest)
                 )
 
-                _as_relative(cut.reference_recording, item_target_key, enabled=not force_absolute_paths)
+                _as_relative(cut.reference_recording, item_reference_key, enabled=not force_absolute_paths)
 
                 if (channels := item.pop(REFERENCE_CHANNEL_SELECTOR, None)) is not None:
                     if cut.reference_recording.num_channels == 1:

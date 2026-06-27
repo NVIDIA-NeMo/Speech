@@ -14,6 +14,7 @@
 
 """Utility functions for handling data operations, including datastore access and caching."""
 
+import io
 import os
 import pathlib
 import shutil
@@ -180,6 +181,82 @@ def datastore_path_to_local_path(store_path: str) -> str:
     return local_path
 
 
+class _AISBinaryStream(io.IOBase):
+    """Wrap an AIS subprocess stream and keep the process alive until the stream is closed."""
+
+    def __init__(self, proc: subprocess.Popen):
+        self._proc = proc
+        self._stream = proc.stdout
+        self._stderr = proc.stderr
+
+        if self._stream is None:
+            self.close()
+            raise RuntimeError('AIS binary did not provide a stdout pipe.')
+
+    @property
+    def closed(self) -> bool:
+        return self._stream.closed
+
+    def close(self):
+        if self._stream is not None and not self._stream.closed:
+            self._stream.close()
+
+        if self._proc.poll() is None:
+            self._proc.wait()
+
+        if self._stderr is not None and not self._stderr.closed:
+            self._stderr.close()
+
+    def readable(self) -> bool:
+        return self._stream.readable()
+
+    def seekable(self) -> bool:
+        return False
+
+    def writable(self) -> bool:
+        return False
+
+    def peek(self, size: int = 0) -> bytes:
+        return self._stream.peek(size)
+
+    def read(self, size: int = -1) -> bytes:
+        return self._stream.read(size)
+
+    def read1(self, size: int = -1) -> bytes:
+        read1 = getattr(self._stream, 'read1', None)
+        if read1 is not None:
+            return read1(size)
+        return self._stream.read(size)
+
+    def readinto(self, buffer) -> int:
+        return self._stream.readinto(buffer)
+
+    def readline(self, size: int = -1) -> bytes:
+        return self._stream.readline(size)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+        return False
+
+    def __iter__(self):
+        return iter(self._stream)
+
+    def __next__(self):
+        return next(self._stream)
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
 def open_datastore_object_with_binary(path: str, num_retries: int = 5):
     """Open a datastore object and return a file-like object.
 
@@ -211,26 +288,32 @@ def open_datastore_object_with_binary(path: str, num_retries: int = 5):
 
         cmd = [binary, 'get', path, '-']
 
-        done = False
-
+        last_error = ''
         for _ in range(num_retries):
-            with subprocess.Popen(
+            proc = subprocess.Popen(
                 cmd, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=False  # bytes mode
-            ) as proc:
-                stream = proc.stdout
-                if stream.peek(1):
-                    done = True
-                    return stream
-
-        if not done:
-            with subprocess.Popen(
-                cmd, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=False
-            ) as proc:
-                error = proc.stderr.read().decode("utf-8", errors="ignore").strip()
-            raise ValueError(
-                f"{path} couldn't be opened with AIS binary "
-                f"after {num_retries} attempts because of the following exception: {error}"
             )
+            stream = proc.stdout
+            if stream is None:
+                proc.wait()
+                raise RuntimeError('AIS binary did not provide a stdout pipe.')
+
+            if stream.peek(1):
+                return _AISBinaryStream(proc)
+
+            error = b''
+            if proc.stderr is not None:
+                error = proc.stderr.read()
+                proc.stderr.close()
+
+            stream.close()
+            proc.wait()
+            last_error = error.decode("utf-8", errors="ignore").strip()
+
+        raise ValueError(
+            f"{path} couldn't be opened with AIS binary "
+            f"after {num_retries} attempts because of the following exception: {last_error}"
+        )
     return None
 
 

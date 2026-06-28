@@ -41,6 +41,12 @@ AUTOMODEL_LOADER_KWARGS = frozenset(
 )
 
 
+def _normalize_torch_dtype_name(torch_dtype):
+    if isinstance(torch_dtype, str):
+        return torch_dtype.removeprefix("torch.")
+    return str(torch_dtype).removeprefix("torch.")
+
+
 def _constructor_kwargs(cls, model_kwargs):
     signature = inspect.signature(cls.__init__)
     if any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values()):
@@ -138,9 +144,7 @@ class HFHubMixin(
             if model_kwargs['cfg'].get("use_nemo_automodel", False):
                 model_kwargs['cfg']['init_configure_model'] = True
             if torch_dtype is not None:
-                model_kwargs['cfg']['torch_dtype'] = (
-                    torch_dtype if isinstance(torch_dtype, str) else str(torch_dtype).replace("torch.", "")
-                )
+                model_kwargs['cfg']['torch_dtype'] = _normalize_torch_dtype_name(torch_dtype)
             return super()._from_pretrained(
                 model_id=model_id,
                 revision=revision,
@@ -247,9 +251,7 @@ def _distributed_from_pretrained(
     """
     model_kwargs['cfg']['init_configure_model'] = False
     if torch_dtype is not None:
-        model_kwargs['cfg']['torch_dtype'] = (
-            torch_dtype if isinstance(torch_dtype, str) else str(torch_dtype).replace("torch.", "")
-        )
+        model_kwargs['cfg']['torch_dtype'] = _normalize_torch_dtype_name(torch_dtype)
 
     # 1. Create instance (tokenizer only; llm=None, perception=None)
     instance = cls(**_constructor_kwargs(cls, model_kwargs))

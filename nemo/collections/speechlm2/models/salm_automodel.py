@@ -43,6 +43,12 @@ from nemo.collections.speechlm2.parts.pretrained import (
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, MaskType, NeuralType
 
 
+def _resolve_torch_dtype(torch_dtype):
+    if not isinstance(torch_dtype, str):
+        return torch_dtype
+    return getattr(torch, torch_dtype.removeprefix("torch."))
+
+
 class SALMAutomodel(LightningModule, HFHubMixin):
     def __init__(self, cfg) -> None:
         assert isinstance(cfg, dict), (
@@ -863,8 +869,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             elif "16" in precision:
                 dtype = torch.float16
         elif hasattr(self.cfg, 'torch_dtype') and self.cfg.torch_dtype is not None:
-            td = self.cfg.torch_dtype
-            dtype = getattr(torch, td) if isinstance(td, str) else td
+            dtype = _resolve_torch_dtype(self.cfg.torch_dtype)
 
         # Fall back to trainer.strategy for configs (Lightning training path)
         if distributed_config is None and self._trainer is not None:

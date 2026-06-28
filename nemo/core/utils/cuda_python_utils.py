@@ -243,7 +243,7 @@ def run_nvrtc(kernel_string: str, kernel_name: bytes, program_name: bytes):
     assert_drv(err)
     err, size = nvrtc.nvrtcGetProgramLogSize(prog)
     assert_drv(err)
-    buf = b" " * size
+    buf = bytearray(size)
     (err,) = nvrtc.nvrtcGetProgramLog(prog, buf)
     assert_drv(err)
 

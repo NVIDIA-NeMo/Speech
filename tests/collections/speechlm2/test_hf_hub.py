@@ -18,6 +18,12 @@ import torch
 from nemo.collections.speechlm2.parts import hf_hub
 
 
+def test_normalize_torch_dtype_name_accepts_prefixed_strings():
+    assert hf_hub._normalize_torch_dtype_name(torch.float32) == "float32"
+    assert hf_hub._normalize_torch_dtype_name("float32") == "float32"
+    assert hf_hub._normalize_torch_dtype_name("torch.float32") == "float32"
+
+
 def test_distributed_loader_forwards_nested_automodel_controls(monkeypatch, tmp_path):
     config_path = tmp_path / hf_hub.CONFIG_NAME
     config_path.write_text(

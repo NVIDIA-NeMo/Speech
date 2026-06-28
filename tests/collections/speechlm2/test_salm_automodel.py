@@ -25,6 +25,7 @@ from nemo.collections.common.data.utils import move_data_to_device
 from nemo.collections.common.prompts import PromptFormatter
 from nemo.collections.speechlm2.data import SALMDataset
 from nemo.collections.speechlm2.models import SALMAutomodel
+from nemo.collections.speechlm2.models.salm_automodel import _resolve_torch_dtype
 from tests.collections.speechlm2._chunking_helpers import (
     ChunkingTestPerception,
     ChunkingTestTokenizer,
@@ -35,6 +36,11 @@ requires_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="SALMAu
 
 if torch.cuda.is_available():
     torch.set_default_device('cuda')
+
+
+@pytest.mark.parametrize("value", ["float32", "torch.float32", torch.float32])
+def test_resolve_torch_dtype_accepts_prefixed_strings(value):
+    assert _resolve_torch_dtype(value) is torch.float32
 
 
 def resolve_pretrained_models():

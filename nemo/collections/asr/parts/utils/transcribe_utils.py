@@ -106,9 +106,7 @@ def get_buffered_pred_feat_rnnt(
     delay: int,
     model_stride_in_secs: int,
     batch_size: int,
-    manifest: Optional[str] = None,
-    filepaths: Optional[List[list]] = None,
-    target_lang_id: Optional[str] = None,
+    filepaths: Optional[List[str]] = None,
     accelerator: Optional[str] = 'cpu',
 ) -> List[rnnt_utils.Hypothesis]:
     """

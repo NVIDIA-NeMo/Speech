@@ -846,6 +846,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         moe_mesh=None,
         activation_checkpointing_llm: bool | None = None,
         activation_checkpointing_perception: bool | None = None,
+        llm_automodel_kwargs: dict[str, Any] | None = None,
     ) -> None:
         # Use provided device_mesh, or fall back to LightningModule property
         if device_mesh is not None:
@@ -940,6 +941,22 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         sdpa_method = self.cfg.get("sdpa_method", None)
         if sdpa_method is not None:
             automodel_kwargs["sdpa_method"] = list(OmegaConf.to_container(sdpa_method, resolve=True))
+
+        if llm_automodel_kwargs:
+            topology_keys = {
+                "activation_checkpointing",
+                "device_mesh",
+                "distributed_config",
+                "moe_config",
+                "moe_mesh",
+            }
+            conflicting_keys = topology_keys.intersection(llm_automodel_kwargs)
+            if conflicting_keys:
+                raise ValueError(
+                    "llm_automodel_kwargs cannot override SALM topology controls: "
+                    f"{sorted(conflicting_keys)}"
+                )
+            automodel_kwargs.update(llm_automodel_kwargs)
 
         self.llm = load_pretrained_automodel_llm(
             self.cfg.pretrained_llm,

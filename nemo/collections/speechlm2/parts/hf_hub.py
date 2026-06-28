@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import inspect
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
@@ -21,6 +22,36 @@ from transformers.utils import cached_file
 
 SAFETENSORS_SINGLE_FILE = "model.safetensors"
 LLM_BACKBONE_DIR = "llm_backbone"
+AUTOMODEL_LOADER_KWARGS = frozenset(
+    {
+        "attn_implementation",
+        "backend",
+        "compile_config",
+        "force_hf",
+        "fp8_config",
+        "peft_config",
+        "pipeline_config",
+        "qat_config",
+        "quantization_config",
+        "sdpa_method",
+        "tp_plan",
+        "use_liger_kernel",
+        "use_sdpa_patching",
+    }
+)
+
+
+def _constructor_kwargs(cls, model_kwargs):
+    signature = inspect.signature(cls.__init__)
+    if any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values()):
+        return model_kwargs
+    allowed = {
+        name
+        for name, param in signature.parameters.items()
+        if name != "self"
+        and param.kind in {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
+    }
+    return {key: value for key, value in model_kwargs.items() if key in allowed}
 
 
 class HFHubMixin(
@@ -65,6 +96,18 @@ class HFHubMixin(
         moe_config = model_kwargs.pop("moe_config", None)
         moe_mesh = model_kwargs.pop("moe_mesh", None)
         torch_dtype = model_kwargs.pop("torch_dtype", None)
+        activation_checkpointing_llm = model_kwargs.pop(
+            "activation_checkpointing_llm",
+            model_kwargs.pop("activation_checkpointing", None),
+        )
+        activation_checkpointing_perception = model_kwargs.pop(
+            "activation_checkpointing_perception", None
+        )
+        llm_automodel_kwargs = {
+            key: model_kwargs.pop(key)
+            for key in AUTOMODEL_LOADER_KWARGS
+            if key in model_kwargs
+        }
 
         _cached_file_kwargs = dict(
             cache_dir=cache_dir,
@@ -125,6 +168,9 @@ class HFHubMixin(
             distributed_config=distributed_config,
             moe_config=moe_config,
             moe_mesh=moe_mesh,
+            activation_checkpointing_llm=activation_checkpointing_llm,
+            activation_checkpointing_perception=activation_checkpointing_perception,
+            llm_automodel_kwargs=llm_automodel_kwargs,
             cached_file_kwargs=_cached_file_kwargs,
         )
 
@@ -186,6 +232,9 @@ def _distributed_from_pretrained(
     distributed_config,
     moe_config,
     moe_mesh,
+    activation_checkpointing_llm,
+    activation_checkpointing_perception,
+    llm_automodel_kwargs,
     cached_file_kwargs,
 ):
     """Create a distributed model instance outside of a classmethod frame.
@@ -203,7 +252,7 @@ def _distributed_from_pretrained(
         )
 
     # 1. Create instance (tokenizer only; llm=None, perception=None)
-    instance = cls(**model_kwargs)
+    instance = cls(**_constructor_kwargs(cls, model_kwargs))
 
     # 2. Build parallelized architecture
     instance.configure_model(
@@ -211,6 +260,9 @@ def _distributed_from_pretrained(
         distributed_config=distributed_config,
         moe_config=moe_config,
         moe_mesh=moe_mesh,
+        activation_checkpointing_llm=activation_checkpointing_llm,
+        activation_checkpointing_perception=activation_checkpointing_perception,
+        llm_automodel_kwargs=llm_automodel_kwargs,
     )
 
     # 3. Load weights

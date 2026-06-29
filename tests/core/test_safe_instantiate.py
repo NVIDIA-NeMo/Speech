@@ -23,7 +23,8 @@ from torch.distributed.fsdp import MixedPrecisionPolicy
 
 from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import BaseTokenizer
 from nemo.collections.tts.g2p.models.base import BaseG2p
-from nemo.core.classes.common import safe_instantiate
+from nemo.core.classes.common import _is_target_allowed, safe_instantiate
+from nemo.utils.decorators import experimental
 
 
 class MockDataset(torch.utils.data.Dataset):
@@ -49,6 +50,15 @@ class MockTokenizer(BaseTokenizer):
 
     def encode(self, text: str) -> list[int]:
         return [0]
+
+
+@experimental
+class MockExperimentalModule(torch.nn.Module):
+    """nn.Module wrapped by @experimental (wrapt), like asr's TransformerEncoder."""
+
+    def __init__(self, value: int = 0):
+        super().__init__()
+        self.value = value
 
 
 @pytest.mark.unit
@@ -125,3 +135,24 @@ def test_safe_instantiate_validates_nested_targets_before_hydra():
             safe_instantiate(config)
 
     instantiate_mock.assert_not_called()
+
+
+@pytest.mark.unit
+def test_safe_instantiate_allows_wrapt_decorated_module():
+    """Regression: a wrapt-decorated (@experimental) nn.Module must not be blocked."""
+    target = get_class_path(MockExperimentalModule)
+
+    assert _is_target_allowed(target) is True
+
+    obj = safe_instantiate(DictConfig({"_target_": target, "value": 7}))
+    assert isinstance(obj, torch.nn.Module)
+    assert obj.value == 7
+
+
+@pytest.mark.unit
+def test_safe_instantiate_allows_experimental_asr_transformer_encoder():
+    """The originally reported target: an @experimental nn.Module in asr.modules."""
+    pytest.importorskip("nemo.collections.asr.modules.transformer_encoder")
+
+    assert _is_target_allowed("nemo.collections.asr.modules.transformer_encoder.TransformerEncoder") is True
+    assert _is_target_allowed("nemo.collections.asr.modules.TransformerEncoder") is True

@@ -158,32 +158,26 @@ class CacheAwareRNNTBeamStreamingState(CacheAwareRNNTStreamingState):
             raise RuntimeError("Cannot resolve top-1 beam index without decoding carry.")
         return int(self.hyp_decoding_state.score.argmax().item())
 
-    def _get_tokens(self) -> tuple[list[int], list[int]]:
+    def _get_tokens(self) -> tuple[list[int], list[int], list[float]]:
         """``cumulative_*`` plus the current top-1 ``partial_*`` suffix."""
         if self.partial_tokens is None or self.hyp_decoding_state is None:
-            return [], []
+            return [], [], []
         best_hyp_idx = self.get_best_hyp_idx()
-        return (
-            self.cumulative_tokens + list(self.partial_tokens[best_hyp_idx]),
-            self.cumulative_timestamps + list(self.partial_timestamps[best_hyp_idx]),
-        )
-
-    def _get_confidences(self) -> list[float]:
-        """``cumulative_confidences`` plus the current top-1 ``partial_confidences`` suffix."""
-        if self.partial_tokens is None or self.hyp_decoding_state is None:
-            return []
-        best_hyp_idx = self.get_best_hyp_idx()
+        partial_tokens = list(self.partial_tokens[best_hyp_idx])
         partial_conf = (
             list(self.partial_confidences[best_hyp_idx])
             if self.partial_confidences is not None
-            else [0.0] * len(self.partial_tokens[best_hyp_idx])
+            else [0.0] * len(partial_tokens)
         )
-        return self.cumulative_confidences + partial_conf
+        return (
+            self.cumulative_tokens + partial_tokens,
+            self.cumulative_timestamps + list(self.partial_timestamps[best_hyp_idx]),
+            self.cumulative_confidences + partial_conf,
+        )
 
     def get_hypothesis(self, score: float) -> Hypothesis:
         """Build the publishable cumulative hypothesis for the current top-1 beam."""
-        cum_tokens, cum_ts = self._get_tokens()
-        cum_conf = self._get_confidences()
+        cum_tokens, cum_ts, cum_conf = self._get_tokens()
         return Hypothesis(
             score=score,
             y_sequence=cum_tokens,
@@ -194,8 +188,7 @@ class CacheAwareRNNTBeamStreamingState(CacheAwareRNNTStreamingState):
 
     def update_(self, eou_detected: bool) -> None:
         """Refresh publish tokens; on EOU fold utterance into ``cumulative_*`` and clear ``partial_*``."""
-        cum_tokens, cum_ts = self._get_tokens()
-        cum_conf = self._get_confidences()
+        cum_tokens, cum_ts, cum_conf = self._get_tokens()
         if cum_tokens:
             start = max(0, min(int(self._cumulative_tokens_len), len(cum_tokens)))
             tokens = list(cum_tokens[start:])

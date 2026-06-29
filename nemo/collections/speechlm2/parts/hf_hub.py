@@ -21,6 +21,7 @@ from omegaconf import DictConfig, OmegaConf
 from transformers.utils import cached_file
 
 SAFETENSORS_SINGLE_FILE = "model.safetensors"
+ACTIVATION_CHECKPOINT_WRAPPER_COMPONENT = "._checkpoint_wrapped_module."
 AUTOMODEL_LOADER_KWARGS = frozenset(
     {
         "attn_implementation",
@@ -57,6 +58,28 @@ def _constructor_kwargs(cls, model_kwargs):
         and param.kind in {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
     }
     return {key: value for key, value in model_kwargs.items() if key in allowed}
+
+
+def _checkpoint_state_dict(model_state, checkpoint_keys):
+    """Map wrapped model tensors to their original checkpoint names."""
+    checkpoint_keys = set(checkpoint_keys)
+    state_dict = {}
+    for model_key, value in model_state.items():
+        checkpoint_key = model_key
+        if checkpoint_key not in checkpoint_keys:
+            checkpoint_key = model_key.replace(
+                ACTIVATION_CHECKPOINT_WRAPPER_COMPONENT,
+                ".",
+            )
+        if checkpoint_key not in checkpoint_keys:
+            continue
+        if checkpoint_key in state_dict:
+            raise RuntimeError(
+                "Multiple model tensors map to checkpoint key "
+                f"{checkpoint_key!r}"
+            )
+        state_dict[checkpoint_key] = value
+    return state_dict
 
 
 class HFHubMixin(
@@ -300,7 +323,7 @@ def _load_state_dict_with_dtensors(model, weight_dir):
     # Read the checkpoint metadata first and keep only matching keys.
     reader = _HuggingFaceStorageReader(path=weight_dir)
     checkpoint_keys = reader.read_metadata().state_dict_metadata.keys()
-    state_dict = {k: v for k, v in all_params.items() if k in checkpoint_keys}
+    state_dict = _checkpoint_state_dict(all_params, checkpoint_keys)
 
     # DCP + HF storage reader: parses safetensors header for byte offsets,
     # the planner narrows each tensor to the local DTensor shard,

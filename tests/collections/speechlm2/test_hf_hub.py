@@ -24,6 +24,22 @@ def test_normalize_torch_dtype_name_accepts_prefixed_strings():
     assert hf_hub._normalize_torch_dtype_name("torch.float32") == "float32"
 
 
+def test_checkpoint_state_dict_maps_activation_checkpoint_wrappers():
+    wrapped = torch.nn.Parameter(torch.tensor([1.0]))
+    ignored = torch.nn.Parameter(torch.tensor([2.0]))
+
+    state_dict = hf_hub._checkpoint_state_dict(
+        {
+            "llm.layers.0._checkpoint_wrapped_module.norm.weight": wrapped,
+            "runtime_only.weight": ignored,
+        },
+        {"llm.layers.0.norm.weight"},
+    )
+
+    assert list(state_dict) == ["llm.layers.0.norm.weight"]
+    assert state_dict["llm.layers.0.norm.weight"] is wrapped
+
+
 def test_distributed_loader_forwards_nested_automodel_controls(monkeypatch, tmp_path):
     config_path = tmp_path / hf_hub.CONFIG_NAME
     config_path.write_text(

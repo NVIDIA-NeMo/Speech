@@ -301,6 +301,12 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
             )
         if self.preserve_step_confidence:
             self._init_confidence_method(confidence_method_cfg=confidence_method_cfg)
+            logging.info(
+                "Batched beam search stores per-step confidences for all decode steps (including blanks) "
+                "internally. Exported hypotheses expose non-blank token scores via "
+                "`non_blank_step_confidence_precomputed` only; `Hypothesis.frame_confidence` is not populated. "
+                "Run `compute_confidence()` for token- and word-level scores."
+            )
         self._SOS = self._blank_index
         self.durations = durations
         self.allow_cuda_graphs = allow_cuda_graphs

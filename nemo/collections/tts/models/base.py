@@ -42,7 +42,7 @@ class NeedsNormalizer:
         if "text_normalizer" in cfg:
             if not PYNINI_AVAILABLE:
                 logging.error(
-                    "`nemo_text_processing` not installed, see https://github.com/NVIDIA/NeMo-text-processing for more details."
+                    "`nemo_text_processing` not installed, see https://github.com/NVIDIA-NeMo/Speech-text-processing for more details."
                 )
                 logging.error("The normalizer will be disabled.")
                 return

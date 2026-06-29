@@ -35,7 +35,7 @@ The recommended way to install NeMo Speech is from source with `uv <https://docs
 
 .. code-block:: bash
 
-   git clone https://github.com/NVIDIA-NeMo/NeMo.git
+   git clone https://github.com/NVIDIA-NeMo/Speech.git
    cd NeMo
 
    # CUDA 13.x (recommended). Use --extra cu12 for CUDA 12.x. uv resolves the
@@ -133,7 +133,7 @@ To build the container from source, use the provided ``docker/Dockerfile`` (CUDA
 
 .. code-block:: bash
 
-   git clone https://github.com/NVIDIA-NeMo/NeMo.git
+   git clone https://github.com/NVIDIA-NeMo/Speech.git
    cd NeMo
    docker buildx build -f docker/Dockerfile -t nemo-speech .          # CUDA 13 / H100+ (default)
    docker run --rm -it --gpus all -v "$PWD:/workspace" nemo-speech bash

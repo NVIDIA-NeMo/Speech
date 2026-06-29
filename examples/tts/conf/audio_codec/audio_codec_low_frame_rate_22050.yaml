@@ -12,7 +12,7 @@ batch_size: 16
 weighted_sampling_steps_per_epoch: null
 
 # Dataset metadata for each manifest
-# https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/tts/data/vocoder_dataset.py#L39-L41
+# https://github.com/NVIDIA-NeMo/Speech/blob/main/nemo/collections/tts/data/vocoder_dataset.py#L39-L41
 train_ds_meta: ???
 val_ds_meta: ???
 
@@ -151,7 +151,7 @@ model:
         slm_sr: 16000
         input_sr: ${sample_rate}
         slm_hidden: 768
-        slm_layers: 13 
+        slm_layers: 13
         initial_channel: 64
         use_spectral_norm: false
 

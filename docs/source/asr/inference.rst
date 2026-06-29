@@ -162,7 +162,7 @@ For audio longer than what fits in memory (especially with Conformer's quadratic
 **Buffered / chunked inference:**
 
 Divide audio into overlapping chunks and merge outputs. Scripts are in
-`examples/asr/asr_chunked_inference <https://github.com/NVIDIA/NeMo/tree/main/examples/asr/asr_chunked_inference>`_.
+`examples/asr/asr_chunked_inference <https://github.com/NVIDIA-NeMo/Speech/tree/main/examples/asr/asr_chunked_inference>`_.
 
 **Local attention (recommended for Fast Conformer):**
 
@@ -252,7 +252,7 @@ Streaming Inference
 NeMo provides a unified streaming-first Pipeline API for real-time ASR under ``nemo.collections.asr.inference``.
 It supports buffered CTC/RNNT/TDT pipelines (overlapping chunks with any offline model) and cache-aware CTC/RNNT pipelines (processes each frame once using cached activations).
 
-See the `Streaming ASR Pipelines tutorial <https://github.com/NVIDIA-NeMo/NeMo/blob/main/tutorials/asr/Streaming_ASR_Pipelines.ipynb>`_ for a comprehensive walkthrough covering buffered and cache-aware pipelines, per-stream options, EoU detection, word timestamps, per-stream biasing, ITN, and speech translation.
+See the `Streaming ASR Pipelines tutorial <https://github.com/NVIDIA-NeMo/Speech/blob/main/tutorials/asr/Streaming_ASR_Pipelines.ipynb>`_ for a comprehensive walkthrough covering buffered and cache-aware pipelines, per-stream options, EoU detection, word timestamps, per-stream biasing, ITN, and speech translation.
 
 See :ref:`cache-aware streaming conformer` for model architecture details.
 
@@ -308,4 +308,4 @@ Execution Flow
 --------------
 
 When writing custom inference scripts, follow the execution flow diagram at the
-`ASR examples README <https://github.com/NVIDIA/NeMo/blob/main/examples/asr/README.md>`_.
+`ASR examples README <https://github.com/NVIDIA-NeMo/Speech/blob/main/examples/asr/README.md>`_.

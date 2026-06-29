@@ -54,7 +54,7 @@ Lhotse dataloading supports the following types of inputs:
 Converting NeMo manifest to Lhotse
 ----------------------------------
 
-A dataset with a manifest in NeMo format can be converted to Lhotse format using the provided `conversion script <https://github.com/NVIDIA/NeMo/blob/main/scripts/audio_to_audio/convert_nemo_to_lhotse.py>`_.
+A dataset with a manifest in NeMo format can be converted to Lhotse format using the provided `conversion script <https://github.com/NVIDIA-NeMo/Speech/blob/main/scripts/audio_to_audio/convert_nemo_to_lhotse.py>`_.
 
 .. code:: shell
 

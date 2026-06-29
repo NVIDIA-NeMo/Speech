@@ -12,7 +12,7 @@ batch_size: 16
 weighted_sampling_steps_per_epoch: null
 
 # Dataset metadata for each manifest
-# https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/tts/data/vocoder_dataset.py#L39-L41
+# https://github.com/NVIDIA-NeMo/Speech/blob/main/nemo/collections/tts/data/vocoder_dataset.py#L39-L41
 train_ds_meta: ???
 val_ds_meta: ???
 
@@ -164,7 +164,7 @@ exp_manager:
   wandb_logger_kwargs:
     name: null
     project: null
-  create_checkpoint_callback: true 
+  create_checkpoint_callback: true
   checkpoint_callback_params:
     monitor: val_loss
     mode: min

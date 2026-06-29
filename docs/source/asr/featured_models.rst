@@ -27,7 +27,7 @@ They support ASR in 25 EU languages, speech translation (AST), and punctuation/c
 * `Canary-Qwen-2.5B <https://huggingface.co/nvidia/canary-qwen-2.5b>`__ — English only, PnC, highest accuracy
 * `Canary-1B Flash <https://huggingface.co/nvidia/canary-1b-flash>`__ / `180M Flash <https://huggingface.co/nvidia/canary-180m-flash>`__ — Optimized for speed
 
-Canary supports chunked and `streaming inference <https://github.com/NVIDIA-NeMo/NeMo/blob/main/tutorials/asr/Streaming_ASR_Pipelines.ipynb>`__.
+Canary supports chunked and `streaming inference <https://github.com/NVIDIA-NeMo/Speech/blob/main/tutorials/asr/Streaming_ASR_Pipelines.ipynb>`__.
 
 
 .. _Conformer_model:
@@ -64,7 +64,7 @@ Cache-aware Streaming Conformer
 
 Streaming models trained with limited right context for real-time inference with caching to avoid duplicate computation. Supports three modes: fully causal, regular look-ahead, and chunk-aware look-ahead (recommended).
 
-* `Tutorial notebook <https://github.com/NVIDIA/NeMo/blob/main/tutorials/asr/Online_ASR_Microphone_Demo_Cache_Aware_Streaming.ipynb>`_
+* `Tutorial notebook <https://github.com/NVIDIA-NeMo/Speech/blob/main/tutorials/asr/Online_ASR_Microphone_Demo_Cache_Aware_Streaming.ipynb>`_
 * Simulation script: ``examples/asr/asr_cache_aware_streaming/speech_to_text_cache_aware_streaming_infer.py``
 * Supports multiple look-aheads with ``att_context_size`` lists
 
@@ -85,7 +85,7 @@ Multitalker Streaming
 Streaming multi-speaker ASR based on cache-aware FastConformer with speaker kernel injection :cite:`asr-models-wang25y_interspeech`. Deploys one model instance per speaker for robust transcription of overlapped speech.
 
 * `Model card <https://huggingface.co/nvidia/multitalker-parakeet-streaming-0.6b-v1>`__
-* `Tutorial <https://github.com/NVIDIA/NeMo/blob/main/tutorials/asr/Streaming_Multitalker_ASR.ipynb>`_
+* `Tutorial <https://github.com/NVIDIA-NeMo/Speech/blob/main/tutorials/asr/Streaming_Multitalker_ASR.ipynb>`_
 
 .. _Hybrid-Transducer_CTC_model:
 

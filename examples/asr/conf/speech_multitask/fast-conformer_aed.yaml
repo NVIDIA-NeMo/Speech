@@ -15,7 +15,7 @@
 # |   canary-1b-flash    |    883M    |        32         |                     4                 |                       1024                     |              1024             |             1024             |
 # |  canary-180m-flash   |    182M    |        17         |                     4                 |                       1024                     |               512             |             1024             |
 #
-# a typical training manifest entry looks like this - 
+# a typical training manifest entry looks like this -
 # {"audio_filepath": "/path/to/audio/file.wav", "duration": 16.192, "text": "Text spoken in the audio.", "source_lang": "en", "target_lang": "en", "taskname": "asr", "pnc": "yes"}
 
 name: "FastConformer-Transformer-MultiTask"
@@ -43,7 +43,7 @@ model:
   prompt_defaults: null
 
   # Sub-config for specifying multiple metrics for multitask modeling.
-  # Each metric allows a custom bool constraint to determine conditions for evaluation. 
+  # Each metric allows a custom bool constraint to determine conditions for evaluation.
   # See `asr.collections.metrics.multitask` for further details.
   multitask_metrics_cfg:
     log_predictions: true
@@ -52,7 +52,7 @@ model:
         _target_: nemo.collections.asr.metrics.WER
         constraint: ".source_lang==.target_lang"
       bleu:
-        _target_: nemo.collections.asr.metrics.BLEU  
+        _target_: nemo.collections.asr.metrics.BLEU
         constraint: ".source_lang!=.target_lang"
         bleu_tokenizer: 13a
         check_cuts_for_bleu_tokenizers: false  # For E.Asian languages. If `true`, calculates BLEU with SacreBLEU tokenizer passed by `bleu_tokenizer string' property in `cuts.custom`.
@@ -70,9 +70,9 @@ model:
     shuffle: true
     num_workers: 8
     # To understand the settings below, please refer to Lhotse Dataloading documentation:
-    # https://github.com/NVIDIA/NeMo/blob/main/docs/source/asr/datasets.rst#lhotse-dataloading
+    # https://github.com/NVIDIA-NeMo/Speech/blob/main/docs/source/asr/datasets.rst#lhotse-dataloading
     # You can also check the following configuration dataclass:
-    # https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/common/data/lhotse/dataloader.py#L36
+    # https://github.com/NVIDIA-NeMo/Speech/blob/main/nemo/collections/common/data/lhotse/dataloader.py#L36
     batch_size: null
     batch_duration: 360
     quadratic_duration: 15
@@ -117,7 +117,7 @@ model:
       spl_tokens: # special tokens model
         dir: null # Passed in training script
         type: bpe
-      en: # English tokenizer (example, replace with whichever language you would like or add tokenizers to add tokenizer for additional languages) 
+      en: # English tokenizer (example, replace with whichever language you would like or add tokenizers to add tokenizer for additional languages)
         dir: ???
         type: bpe
 

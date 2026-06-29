@@ -27,7 +27,7 @@ Any initialization parameters that are accepted for the Dataset class used in yo
 can be set in the config file.
 See the :ref:`Datasets <asr-api-datasets>` section of the API for a list of Datasets and their respective parameters.
 
-An example Speech Classification train and validation configuration could look like: 
+An example Speech Classification train and validation configuration could look like:
 
 .. code-block:: yaml
 
@@ -59,7 +59,7 @@ If you would like to use tarred dataset, have a look at :ref:`Datasets Configura
 
 Preprocessor Configuration
 --------------------------
-Preprocessor helps to compute MFCC or mel spectrogram features that are given as inputs to model. 
+Preprocessor helps to compute MFCC or mel spectrogram features that are given as inputs to model.
 For details on how to write this section, refer to :ref:`Preprocessor Configuration <asr-configs-preprocessor-configuration>`
 
 Check config yaml files in ``<NeMo_git_root>/examples/asr/conf`` to find the processors been used by speech classification models.
@@ -72,7 +72,7 @@ There are a few on-the-fly spectrogram augmentation options for NeMo ASR, which 
 configuration file using the ``augmentor`` and ``spec_augment`` section.
 For details on how to write this section, refer to the ASR :ref:`Augmentation Configuration <asr-configs-augmentation-configurations>` section.
 
-Check config yaml files in ``<NeMo_git_root>/tutorials/asr/conf`` to find the processors been used by speech classification models. 
+Check config yaml files in ``<NeMo_git_root>/tutorials/asr/conf`` to find the processors been used by speech classification models.
 
 
 Model Architecture Configurations
@@ -84,13 +84,13 @@ specifying the module to use for each.
 
 The following sections go into more detail about the specific configurations of each model architecture.
 
-The :ref:`MatchboxNet <MarbleNet_model>` and :ref:`MarbleNet <MarbleNet_model>` models are very similar, and as 
+The :ref:`MatchboxNet <MarbleNet_model>` and :ref:`MarbleNet <MarbleNet_model>` models are very similar, and as
 such the components in their configs are very similar as well.
 
 Decoder Configurations
 ------------------------
 
-After features have been computed from ConvASREncoder, we pass the features to decoder to compute embeddings and then to compute log_probs 
+After features have been computed from ConvASREncoder, we pass the features to decoder to compute embeddings and then to compute log_probs
 for training models.
 
 .. code-block:: yaml
@@ -111,5 +111,5 @@ When preparing your own training or fine-tuning scripts, please follow the execu
 
 Depending on the type of model, there may be extra steps that must be performed -
 
-* Speech Classification models - `Examples directory for Classification Models <https://github.com/NVIDIA/NeMo/blob/stable/examples/asr/speech_classification/README.md>`_
+* Speech Classification models - `Examples directory for Classification Models <https://github.com/NVIDIA-NeMo/Speech/blob/stable/examples/asr/speech_classification/README.md>`_
 

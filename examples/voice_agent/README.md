@@ -1,6 +1,6 @@
 # NeMo Voice Agent
 
-A fully open-source NVIDIA NeMo Voice Agent example demonstrating a simple way to combine NVIDIA NeMo STT/TTS service and HuggingFace LLM together into a conversational agent. Everything is open-source and deployed locally so you can have your own voice agent. Feel free to explore the code and see how different speech technologies can be integrated with LLMs to create a seamless conversation experience. 
+A fully open-source NVIDIA NeMo Voice Agent example demonstrating a simple way to combine NVIDIA NeMo STT/TTS service and HuggingFace LLM together into a conversational agent. Everything is open-source and deployed locally so you can have your own voice agent. Feel free to explore the code and see how different speech technologies can be integrated with LLMs to create a seamless conversation experience.
 
 As of now, we only support English input and output, but more languages will be supported in the future.
 
@@ -25,7 +25,7 @@ As of now, we only support English input and output, but more languages will be 
 ## ✨ Key Features
 
 - Open-source, local deployment, and flexible customization.
-- Allow users to talk to most LLMs from HuggingFace with configurable prompts. 
+- Allow users to talk to most LLMs from HuggingFace with configurable prompts.
 - Streaming speech recognition with low latency and end-of-utterance detection.
 - Low latency TTS for fast audio response generation.
 - Speaker diarization up to 4 speakers in different user turns.
@@ -88,7 +88,7 @@ Then you can activate the environment via `conda activate nemo-voice`.
 If you want to just try the default server config, you can skip this step.
 
 Edit the `server/server_configs/default.yaml` file to configure the server as needed, for example:
-- Changing the LLM and system prompt you want to use in `llm.model` and `llm.system_prompt`, by either putting a local path to a text file or the whole prompt string. See `server/example_prompts/` for examples to start with. 
+- Changing the LLM and system prompt you want to use in `llm.model` and `llm.system_prompt`, by either putting a local path to a text file or the whole prompt string. See `server/example_prompts/` for examples to start with.
 - Configure the LLM parameters, such as temperature, max tokens, etc. You may also need to change the HuggingFace or vLLM server parameters, depending on the LLM you are using. Please refer to the LLM's model page for details on the recommended parameters.
 - If you know whether you want to use vLLM or HuggingFace, you can set `llm.type` to `vllm` or `hf` to force using vLLM or HuggingFace, respectively. Otherwise, it will automatically switch between the two based on the model's support. Please also remember to update the parameters of the chosen backend as well, by referring to the LLM's model page.
 - Distribute different components to different GPUs if you have more than one.
@@ -103,7 +103,7 @@ Edit the `server/server_configs/default.yaml` file to configure the server as ne
 Open a terminal and run the server via:
 
 ```bash
-NEMO_PATH=???  # Use your local NeMo path with the latest main branch from: https://github.com/NVIDIA-NeMo/NeMo
+NEMO_PATH=???  # Use your local NeMo path with the latest main branch from: https://github.com/NVIDIA-NeMo/Speech
 export PYTHONPATH=$NEMO_PATH:$PYTHONPATH
 # export HF_TOKEN="hf_..."  # Use your own HuggingFace API token if needed, as some models may require.
 # export HF_HUB_CACHE="/path/to/your/huggingface/cache"  # change where HF cache is stored if you don't want to use the default cache
@@ -125,9 +125,9 @@ There should be a message in terminal showing the address and port of the client
 
 ### Connect to the client via browser
 
-Open the client via browser: `http://[YOUR MACHINE IP ADDRESS]:5173/` (or whatever address and port is shown in the terminal where the client was launched). 
+Open the client via browser: `http://[YOUR MACHINE IP ADDRESS]:5173/` (or whatever address and port is shown in the terminal where the client was launched).
 
-You can mute/unmute your microphone via the "Mute" button, and reset the LLM context history and speaker cache by clicking the "Reset" button. 
+You can mute/unmute your microphone via the "Mute" button, and reset the LLM context history and speaker cache by clicking the "Reset" button.
 
 **If using chrome browser, you need to add `http://[YOUR MACHINE IP ADDRESS]:5173/` to the allow list via `chrome://flags/#unsafely-treat-insecure-origin-as-secure`.** You may also need to restart the browser for the changes to take effect.
 
@@ -142,7 +142,7 @@ Most LLMs from HuggingFace are supported. A few examples are:
     - Please use `server/server_configs/llm_configs/nemotron_nano_v2.yaml` as the server config.
     - Tool calling is enabled for this model.
 - [nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16)
-    - Please use `server/server_configs/llm_configs/nemotron_nano_v3.yaml` as the server config. It needs more than 60GB VRAM to host the model, thus the config by default is set to use tensor parallelism of 2. Expect additional 5GB for kv-cache and other components in the voice agent. To better monitor the vllm status, `start_vllm_on_init` is set to `false`, so that you can manually start the vllm server in another terminal via: 
+    - Please use `server/server_configs/llm_configs/nemotron_nano_v3.yaml` as the server config. It needs more than 60GB VRAM to host the model, thus the config by default is set to use tensor parallelism of 2. Expect additional 5GB for kv-cache and other components in the voice agent. To better monitor the vllm status, `start_vllm_on_init` is set to `false`, so that you can manually start the vllm server in another terminal via:
     ```bash
         vllm serve nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16 \
             --trust-remote-code --max-num-seqs 1 --gpu-memory-utilization 0.8 --max-model-len 8192 \
@@ -161,7 +161,7 @@ Most LLMs from HuggingFace are supported. A few examples are:
 - [meta-llama/Llama-3.1-8B-Instruct](https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct)
     - Please use `server/server_configs/llm_configs/llama3.1-8B-instruct.yaml` as the server config.
     - Note that you need to get access to the model first, and specify `export HF_TOKEN="hf_..."` when launching the server.
-- [nvidia/Llama-3.1-Nemotron-Nano-8B-v1](https://huggingface.co/nvidia/Llama-3.1-Nemotron-Nano-8B-v1) 
+- [nvidia/Llama-3.1-Nemotron-Nano-8B-v1](https://huggingface.co/nvidia/Llama-3.1-Nemotron-Nano-8B-v1)
 - [nvidia/Nemotron-Mini-4B-Instruct](https://huggingface.co/nvidia/Nemotron-Mini-4B-Instruct)
 
 
@@ -182,7 +182,7 @@ If thinking/reasoning mode is enabled (e.g., in `server/server_configs/llm_confi
 
 For vLLM server, if you specify `--reasoning_parser` in `vllm_server_params`, the thinking/reasoning content will be filtered out and does not show up in the output.
 
-### 🎤 ASR 
+### 🎤 ASR
 
 We use [cache-aware streaming FastConformer](https://arxiv.org/abs/2312.17279) to transcribe the user's speech into text. While new models will be released soon, we use the existing English models for now:
 - [nvidia/parakeet_realtime_eou_120m-v1](https://huggingface.co/nvidia/parakeet_realtime_eou_120m-v1) (default)
@@ -195,9 +195,9 @@ We use [cache-aware streaming FastConformer](https://arxiv.org/abs/2312.17279) t
 
 ### 💬 Speaker Diarization
 
-Speaker diarization aims to distinguish different speakers in the input speech audio. We use [streaming Sortformer](http://arxiv.org/abs/2507.18446) to detect the speaker for each user turn. 
+Speaker diarization aims to distinguish different speakers in the input speech audio. We use [streaming Sortformer](http://arxiv.org/abs/2507.18446) to detect the speaker for each user turn.
 
-As of now, we only support detecting 1 speaker per user turn, but different turns come from different speakers, with a maximum of 4 speakers in the whole conversation. 
+As of now, we only support detecting 1 speaker per user turn, but different turns come from different speakers, with a maximum of 4 speakers in the whole conversation.
 
 Currently supported models are:
  - [nvidia/diar_streaming_sortformer_4spk-v2.1](https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1) (default)
@@ -210,7 +210,7 @@ Please note that in some circumstances, the diarization model might not work wel
 Here are the supported TTS models:
 - [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) is a lightweight TTS model. This model is the default speech generation backend.
     - Please use `server/server_configs/tts_configs/kokoro_82M.yaml` as the server config.
-- [FastPitch-HiFiGAN](https://huggingface.co/nvidia/tts_en_fastpitch) is an NVIDIA-NeMo TTS model. It only supports English output. 
+- [FastPitch-HiFiGAN](https://huggingface.co/nvidia/tts_en_fastpitch) is an NVIDIA-NeMo TTS model. It only supports English output.
     - Please use `server/server_configs/tts_configs/nemo_fastpitch-hifigan.yaml` as the server config.
 - [magpie_tts_multilingual_357m](https://huggingface.co/nvidia/magpie_tts_multilingual_357m) is a multilingual TTS model.
     - Please use `server/server_configs/tts_configs/magpie_tts_multilingual_357m.yaml` as the server config.
@@ -239,7 +239,7 @@ We support tool calling for LLMs to use external tools (e.g., getting the curren
    - "Reset to the original speaking speed."
    - "Speak twice as fast."
    - "Speak half as slow."
-  
+
 3. Switching between British and American accents, and changing the gender of the voice:
    - "Speak in British accent."
    - "Switch to a male voice."

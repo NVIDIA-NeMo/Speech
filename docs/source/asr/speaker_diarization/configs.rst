@@ -5,8 +5,8 @@ Speaker Diarization Configuration Files
 
    For the full configuration files, see the YAML configs on GitHub:
 
-   - `sortformer_diarizer_hybrid_loss_4spk-v1.yaml <https://github.com/NVIDIA/NeMo/blob/main/examples/speaker_tasks/diarization/conf/neural_diarizer/sortformer_diarizer_hybrid_loss_4spk-v1.yaml>`__
-   - `streaming_sortformer_diarizer_4spk-v2.yaml <https://github.com/NVIDIA/NeMo/blob/main/examples/speaker_tasks/diarization/conf/neural_diarizer/streaming_sortformer_diarizer_4spk-v2.yaml>`__
+   - `sortformer_diarizer_hybrid_loss_4spk-v1.yaml <https://github.com/NVIDIA-NeMo/Speech/blob/main/examples/speaker_tasks/diarization/conf/neural_diarizer/sortformer_diarizer_hybrid_loss_4spk-v1.yaml>`__
+   - `streaming_sortformer_diarizer_4spk-v2.yaml <https://github.com/NVIDIA-NeMo/Speech/blob/main/examples/speaker_tasks/diarization/conf/neural_diarizer/streaming_sortformer_diarizer_4spk-v2.yaml>`__
 
 Hydra Configurations for Sortformer Diarizer Training
 -----------------------------------------------------
@@ -106,13 +106,13 @@ The Streaming Sortformer config extends the offline config with ``streaming_mode
       hidden_size: ${model.model_defaults.tf_d_model}
       num_attention_heads: 8
 
-See the full YAML configs on GitHub: `Sortformer <https://github.com/NVIDIA/NeMo/blob/main/examples/speaker_tasks/diarization/conf/neural_diarizer/sortformer_diarizer_hybrid_loss_4spk-v1.yaml>`__ · `Streaming Sortformer <https://github.com/NVIDIA/NeMo/blob/main/examples/speaker_tasks/diarization/conf/neural_diarizer/streaming_sortformer_diarizer_4spk-v2.yaml>`__
+See the full YAML configs on GitHub: `Sortformer <https://github.com/NVIDIA-NeMo/Speech/blob/main/examples/speaker_tasks/diarization/conf/neural_diarizer/sortformer_diarizer_hybrid_loss_4spk-v1.yaml>`__ · `Streaming Sortformer <https://github.com/NVIDIA-NeMo/Speech/blob/main/examples/speaker_tasks/diarization/conf/neural_diarizer/streaming_sortformer_diarizer_4spk-v2.yaml>`__
 
 
 Hydra Configurations for (Streaming) Sortformer Diarization Post-processing
 -----------------------------------------------------------------------------
 
-Post-processing converts the floating point number based Tensor output to time stamp output. While generating the speaker-homogeneous segments, onset and offset threshold, 
+Post-processing converts the floating point number based Tensor output to time stamp output. While generating the speaker-homogeneous segments, onset and offset threshold,
 paddings can be considered to render the time stamps that can lead to the lowest diarization error rate (DER). This post-processing can be applied to both offline and streaming Sortformer diarizer.
 
 
@@ -120,7 +120,7 @@ By default, post-processing is bypassed, and only binarization is performed. If 
 
 .. code-block:: yaml
 
-  parameters: 
+  parameters:
     onset: 0.64  # Onset threshold for detecting the beginning of a speech segment
     offset: 0.74  # Offset threshold for detecting the end of a speech segment
     pad_onset: 0.06  # Adds the specified duration at the beginning of each speech segment
@@ -136,7 +136,7 @@ Example configuration files for speaker diarization inference can be found in ``
 
 The configurations for all the components of diarization inference are included in a single file named ``diar_infer_<domain>.yaml``. Each ``.yaml`` file has a few different sections for the following modules: VAD, Speaker Embedding, Clustering and ASR.
 
-In speaker diarization inference, the datasets provided in manifest format denote the data that you would like to perform speaker diarization on. 
+In speaker diarization inference, the datasets provided in manifest format denote the data that you would like to perform speaker diarization on.
 
 Diarizer Configurations
 -----------------------
@@ -165,18 +165,18 @@ Parameters for VAD model are provided as in the following Hydra config example.
     model_path: null # .nemo local model path or pretrained model name or none
     external_vad_manifest: null # This option is provided to use external vad and provide its speech activity labels for speaker embeddings extraction. Only one of model_path or external_vad_manifest should be set
 
-    parameters: # Tuned parameters for CH109 (using the 11 multi-speaker sessions as dev set) 
-      window_length_in_sec: 0.15  # Window length in sec for VAD context input 
+    parameters: # Tuned parameters for CH109 (using the 11 multi-speaker sessions as dev set)
+      window_length_in_sec: 0.15  # Window length in sec for VAD context input
       shift_length_in_sec: 0.01 # Shift length in sec for generate frame level VAD prediction
       smoothing: "median" # False or type of smoothing method (eg: median)
       overlap: 0.875 # Overlap ratio for overlapped mean/median smoothing filter
-      onset: 0.4 # Onset threshold for detecting the beginning and end of a speech 
+      onset: 0.4 # Onset threshold for detecting the beginning and end of a speech
       offset: 0.7 # Offset threshold for detecting the end of a speech
-      pad_onset: 0.05 # Adding durations before each speech segment 
-      pad_offset: -0.1 # Adding durations after each speech segment 
+      pad_onset: 0.05 # Adding durations before each speech segment
+      pad_offset: -0.1 # Adding durations after each speech segment
       min_duration_on: 0.2 # Threshold for short speech segment deletion
       min_duration_off: 0.2 # Threshold for small non_speech deletion
-      filter_speech_first: True 
+      filter_speech_first: True
 
 Configurations for Speaker Embedding in Diarization
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -199,19 +199,19 @@ Configurations for Clustering in Diarization
 Parameters for clustering algorithm are provided in the following Hydra config example.
 
 .. code-block:: yaml
-  
+
   clustering:
     parameters:
       oracle_num_speakers: False # If True, use num of speakers value provided in the manifest file.
       max_num_speakers: 20 # Max number of speakers for each recording. If oracle_num_speakers is passed, this value is ignored.
       enhanced_count_thres: 80 # If the number of segments is lower than this number, enhanced speaker counting is activated.
-      max_rp_threshold: 0.25 # Determines the range of p-value search: 0 < p <= max_rp_threshold. 
-      sparse_search_volume: 30 # The higher the number, the more values will be examined with more time. 
+      max_rp_threshold: 0.25 # Determines the range of p-value search: 0 < p <= max_rp_threshold.
+      sparse_search_volume: 30 # The higher the number, the more values will be examined with more time.
 
 Configurations for Diarization with ASR
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The following configuration needs to be appended under ``diarizer`` to run ASR with diarization to get a transcription with speaker labels. 
+The following configuration needs to be appended under ``diarizer`` to run ASR with diarization to get a transcription with speaker labels.
 
 .. code-block:: yaml
 
@@ -223,13 +223,13 @@ The following configuration needs to be appended under ``diarizer`` to run ASR w
       asr_batch_size: null # Batch size can be dependent on each ASR model. Default batch sizes are applied if set to null.
       lenient_overlap_WDER: True # If true, when a word falls into speaker-overlapped regions, consider the word as a correctly diarized word.
       decoder_delay_in_sec: null # Native decoder delay. null is recommended to use the default values for each ASR model.
-      word_ts_anchor_offset: null # Offset to set a reference point from the start of the word. Recommended range of values is [-0.05  0.2]. 
+      word_ts_anchor_offset: null # Offset to set a reference point from the start of the word. Recommended range of values is [-0.05  0.2].
       word_ts_anchor_pos: "start" # Select which part of the word timestamp we want to use. The options are: 'start', 'end', 'mid'.
       fix_word_ts_with_VAD: False # Fix the word timestamp using VAD output. You must provide a VAD model to use this feature.
       colored_text: False # If True, use colored text to distinguish speakers in the output transcript.
       print_time: True # If True, the start of the end time of each speaker turn is printed in the output transcript.
       break_lines: False # If True, the output transcript breaks the line to fix the line width (default is 90 chars)
-    
+
     ctc_decoder_parameters: # Optional beam search decoder (pyctcdecode)
       pretrained_language_model: null # KenLM model file: .arpa model file or .bin binary file.
       beam_width: 32

@@ -1,4 +1,4 @@
-> [!IMPORTANT]  
+> [!IMPORTANT]
 > The `Update branch` button must only be pressed in very rare occassions.
 > An outdated branch is never blocking the merge of a PR.
 > Please reach out to the automation team before pressing that button.
@@ -18,7 +18,7 @@ Add a one line overview of what this PR aims to accomplish.
 - You can potentially add a usage example below
 
 ```python
-# Add a code snippet demonstrating how to use this 
+# Add a code snippet demonstrating how to use this
 ```
 
 # GitHub Actions CI
@@ -33,12 +33,12 @@ To run CI on an untrusted fork, a NeMo user with write access must first click "
 
 **Pre checks**:
 
-- [ ] Make sure you read and followed [Contributor guidelines](https://github.com/NVIDIA/NeMo/blob/main/CONTRIBUTING.md)
+- [ ] Make sure you read and followed [Contributor guidelines](https://github.com/NVIDIA-NeMo/Speech/blob/main/CONTRIBUTING.md)
 - [ ] Did you write any new necessary tests?
 - [ ] Did you add or update any necessary documentation?
 - [ ] Does the PR affect components that are optional to install? (Ex: Numba, Pynini, Apex etc)
   - [ ] Reviewer: Does the PR have correct import guards for all optional libraries?
-  
+
 **PR Type**:
 
 - [ ] New Feature
@@ -50,7 +50,7 @@ If you haven't finished some of the above items you can still open "Draft" PR.
 ## Who can review?
 
 Anyone in the community is free to review the PR once the checks have passed.
-[Contributor guidelines](https://github.com/NVIDIA/NeMo/blob/main/CONTRIBUTING.md) contains specific people who can review PRs to various areas.
+[Contributor guidelines](https://github.com/NVIDIA-NeMo/Speech/blob/main/CONTRIBUTING.md) contains specific people who can review PRs to various areas.
 
 # Additional Information
 

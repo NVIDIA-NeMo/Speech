@@ -26,7 +26,7 @@ LLM_BACKBONE_DIR = "llm_backbone"
 class HFHubMixin(
     PyTorchModelHubMixin,
     library_name="NeMo",
-    repo_url="https://github.com/NVIDIA/NeMo",
+    repo_url="https://github.com/NVIDIA-NeMo/Speech",
     docs_url="https://docs.nvidia.com/nemo-framework/user-guide/latest/nemotoolkit",
 ):
     @classmethod

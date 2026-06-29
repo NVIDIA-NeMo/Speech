@@ -8,7 +8,7 @@ batch_size: 16
 weighted_sampling_steps_per_epoch: null
 
 # Dataset metadata for each manifest
-# See DatasetMeta in https://github.com/NVIDIA-NeMo/NeMo/blob/main/nemo/collections/tts/data/text_to_speech_dataset.py
+# See DatasetMeta in https://github.com/NVIDIA-NeMo/Speech/blob/main/nemo/collections/tts/data/text_to_speech_dataset.py
 train_ds_meta: ???
 val_ds_meta: ???
 

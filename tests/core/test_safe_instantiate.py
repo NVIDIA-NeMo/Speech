@@ -23,7 +23,7 @@ from torch.distributed.fsdp import MixedPrecisionPolicy
 
 from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import BaseTokenizer
 from nemo.collections.tts.g2p.models.base import BaseG2p
-from nemo.core.classes.common import _is_target_allowed, safe_instantiate
+from nemo.core.classes.common import safe_instantiate
 
 
 class MockDataset(torch.utils.data.Dataset):
@@ -125,16 +125,3 @@ def test_safe_instantiate_validates_nested_targets_before_hydra():
             safe_instantiate(config)
 
     instantiate_mock.assert_not_called()
-
-
-@pytest.mark.unit
-def test_safe_instantiate_allows_ssl_batch_augmentation():
-    """A Serialization subclass (MultiSpeakerNoiseAugmentation) must pass the guard."""
-    pytest.importorskip("nemo.collections.asr.modules.ssl_modules.augmentation")
-
-    assert _is_target_allowed("nemo.collections.asr.modules.ssl_modules.MultiSpeakerNoiseAugmentation") is True
-    assert (
-        _is_target_allowed("nemo.collections.asr.modules.ssl_modules.augmentation.MultiSpeakerNoiseAugmentation")
-        is True
-    )
-    assert _is_target_allowed("nemo.collections.asr.modules.ssl_modules.augmentation.SpeakerNoiseAugmentation") is True

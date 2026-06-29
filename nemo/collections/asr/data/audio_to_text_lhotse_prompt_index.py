@@ -83,6 +83,9 @@ class LhotseSpeechToTextBpeDatasetWithPromptIndex(torch.utils.data.Dataset):
         # Index used for the language-agnostic / auto prompt
         self.auto_index = self.prompt_dict.get('auto', 101)
 
+        # Fallback language for cuts with no language (e.g. transcribe() temp cuts)
+        self.default_lang = cfg.get('default_lang', None)
+
         logging.info(
             f"LhotseSpeechToTextBpeDatasetWithPromptIndex: "
             f"default_prompt_mode={self.default_prompt_mode}, "
@@ -121,7 +124,7 @@ class LhotseSpeechToTextBpeDatasetWithPromptIndex(torch.utils.data.Dataset):
         mode = self._get_prompt_mode(cut)
 
         if mode == 'langID':
-            return self._get_prompt_index(cut.supervisions[0].language)
+            return self._get_prompt_index(cut.supervisions[0].language or self.default_lang)
         elif mode == 'auto':
             return self.auto_index
         elif mode == 'unified':

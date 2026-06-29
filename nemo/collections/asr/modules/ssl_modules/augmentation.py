@@ -19,9 +19,10 @@ from collections import Counter
 import torch
 
 from nemo.collections.asr.data.ssl_dataset import AudioNoiseBatch
+from nemo.core.classes import Serialization
 
 
-class SpeakerNoiseAugmentation(object):
+class SpeakerNoiseAugmentation(Serialization):
     def __init__(
         self,
         prob: float = 0.0,

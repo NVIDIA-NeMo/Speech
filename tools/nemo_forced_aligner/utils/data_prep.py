@@ -15,6 +15,8 @@
 import json
 from pathlib import Path
 
+from nemo.collections.common.parts.preprocessing.manifest import get_full_path
+
 
 def get_batch_starts_ends(manifest_filepath, batch_size):
     """

@@ -45,7 +45,7 @@ parser.add_argument("--sample_rate", type=int, default=16000, help="Sampling rat
 parser.add_argument(
     "--model",
     type=str,
-    default="QuartzNet15x5Base-En",
+    default="stt_en_fastconformer_ctc_large",
     help="Path to model checkpoint or pre-trained model name",
 )
 parser.add_argument("--debug", action="store_true", help="Flag to enable debugging messages")

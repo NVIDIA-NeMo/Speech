@@ -58,7 +58,10 @@ parser.add_argument(
     help="Number of seconds to cut from the beginning of the audio files.",
 )
 parser.add_argument(
-    "--model", type=str, default="QuartzNet15x5Base-En", help="Pre-trained model name or path to model checkpoint"
+    "--model",
+    type=str,
+    default="stt_en_fastconformer_ctc_large",
+    help="Pre-trained model name or path to model checkpoint",
 )
 parser.add_argument(
     "--max_length", type=int, default=40, help="Max number of words of the text segment for alignment."

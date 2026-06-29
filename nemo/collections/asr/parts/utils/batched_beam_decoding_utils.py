@@ -1062,9 +1062,9 @@ def export_batched_beam_hyps_to_cpu_lists(
     tokens: list[list[list[int]]] = []
     timestamps_out: list[list[list[int]]] = []
     confidences_out: list[list[list[float]]] | None = None
-    if step_confidence is not None:
+    step_confidence_cpu = step_confidence.detach().cpu() if step_confidence is not None else None
+    if step_confidence_cpu is not None:
         confidences_out = []
-        step_confidence_cpu = step_confidence.detach().cpu()
     for b in range(bbh.batch_size):
         bt: list[list[int]] = []
         bts: list[list[int]] = []
@@ -1074,10 +1074,10 @@ def export_batched_beam_hyps_to_cpu_lists(
             mask = bbh._create_transcripts_mask(t)
             bt.append(t[mask].tolist())
             bts.append(timestamps_cpu[b, k][mask].tolist())
-            if confidences_out is not None:
+            if step_confidence_cpu is not None:
                 bc.append(step_confidence_cpu[b, k][mask].tolist())
         tokens.append(bt)
         timestamps_out.append(bts)
-        if confidences_out is not None:
+        if step_confidence_cpu is not None:
             confidences_out.append(bc)
     return tokens, timestamps_out, root_ptrs_list, confidences_out

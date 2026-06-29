@@ -758,8 +758,8 @@ class SaveRestoreConnector:
 
         """
         try:
-            # weights_only=None keeps torch's secure default but honors TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD.
-            return torch.load(model_weights, map_location=map_location, weights_only=None)
+            # Use torch's default weights_only handling so TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD is honored.
+            return torch.load(model_weights, map_location=map_location)
         except Exception as e:
             logging.error(f"Failed to load checkpoint: {e}")
             raise e

@@ -36,6 +36,7 @@ from nemo.collections.asr.parts.utils.transcribe_utils import (
     prepare_audio_data,
     restore_transcription_order,
     setup_model,
+    wire_confidence_cfg,
     write_transcription,
 )
 from nemo.core.config import hydra_runner
@@ -100,6 +101,18 @@ python transcribe_speech.py \
     amp=True \
     append_pred=False \
     pred_name_postfix="<remove or use another model name for output filename>"
+
+## Offline batched beam search with confidence (RNNT)
+
+python transcribe_speech.py \
+    pretrained_name=nvidia/stt_en_fastconformer_transducer_large \
+    dataset_manifest=<path/to/manifest.json> \
+    output_filename=<path/to/output.jsonl> \
+    batch_size=32 \
+    confidence=true \
+    rnnt_decoding.strategy=malsd_batch \
+    rnnt_decoding.beam.beam_size=4 \
+    rnnt_decoding.beam.allow_cuda_graphs=true
 """
 
 
@@ -206,6 +219,8 @@ class TranscriptionConfig:
 
     extract_nbest: bool = False  # Extract n-best hypotheses from the model
 
+    confidence: bool = False  # output token and word confidence in the manifest
+
     calculate_rtfx: bool = False
     warmup_steps: int = 0  # by default - no warmup
     run_steps: int = 1  # by default - single run
@@ -290,6 +305,11 @@ def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List[Hypothesis
 
     if cfg.timestamps:
         cfg.return_hypotheses = True
+
+    if cfg.confidence:
+        cfg.return_hypotheses = True
+        wire_confidence_cfg(cfg.rnnt_decoding, enabled=True)
+        wire_confidence_cfg(cfg.ctc_decoding, enabled=True)
 
     # Check whether model and decoder type match
     if isinstance(asr_model, EncDecCTCModel):
@@ -465,6 +485,7 @@ def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List[Hypothesis
         filepaths=filepaths,
         compute_langs=compute_langs,
         timestamps=cfg.timestamps,
+        confidence=cfg.confidence,
     )
     logging.info(f"Finished writing predictions to {output_filename}!")
 

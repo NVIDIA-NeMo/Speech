@@ -22,6 +22,7 @@ from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import (
     INIT_POINTER_VALUE,
     NON_EXISTENT_LABEL_VALUE,
     BatchedBeamHyps,
+    export_batched_beam_hyps_to_cpu_lists,
 )
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis, NBestHypotheses
 
@@ -1229,3 +1230,70 @@ class TestConvertToHypotheses:
         assert hypotheses[1].n_best_hypotheses[0].score == pytest.approx(0.6)
         assert hypotheses[1].n_best_hypotheses[1].score == pytest.approx(0.55)
         assert hypotheses[1].n_best_hypotheses[2].score == pytest.approx(0.4)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("device", DEVICES)
+    def test_to_hyps_list_with_step_confidence(self, device: torch.device):
+        blank_index = 1024
+        hyps = BatchedBeamHyps(
+            batch_size=1,
+            beam_size=1,
+            init_length=4,
+            device=device,
+            blank_index=blank_index,
+            with_step_confidence=True,
+        )
+        hyps.add_results_(
+            next_indices=torch.tensor([[0]], device=device),
+            next_labels=torch.tensor([[5]], device=device),
+            next_hyps_prob=torch.tensor([[0.0]], device=device),
+            next_step_confidence=torch.tensor([[0.9]], device=device),
+        )
+        hyps.add_results_(
+            next_indices=torch.tensor([[0]], device=device),
+            next_labels=torch.tensor([[blank_index]], device=device),
+            next_hyps_prob=torch.tensor([[0.0]], device=device),
+            next_step_confidence=torch.tensor([[0.5]], device=device),
+        )
+        hyps.add_results_(
+            next_indices=torch.tensor([[0]], device=device),
+            next_labels=torch.tensor([[2]], device=device),
+            next_hyps_prob=torch.tensor([[0.0]], device=device),
+            next_step_confidence=torch.tensor([[0.8]], device=device),
+        )
+        hypotheses = hyps.to_hyps_list(score_norm=False)
+        assert hypotheses[0].non_blank_step_confidence_precomputed == pytest.approx([0.9, 0.8])
+        assert hypotheses[0].y_sequence.tolist() == [5, 2]
+
+    def test_export_batched_beam_hyps_to_cpu_lists_with_step_confidence(self, device: torch.device):
+        blank_index = 1024
+        hyps = BatchedBeamHyps(
+            batch_size=1,
+            beam_size=1,
+            init_length=4,
+            device=device,
+            blank_index=blank_index,
+            with_step_confidence=True,
+        )
+        hyps.add_results_(
+            next_indices=torch.tensor([[0]], device=device),
+            next_labels=torch.tensor([[5]], device=device),
+            next_hyps_prob=torch.tensor([[0.0]], device=device),
+            next_step_confidence=torch.tensor([[0.9]], device=device),
+        )
+        hyps.add_results_(
+            next_indices=torch.tensor([[0]], device=device),
+            next_labels=torch.tensor([[blank_index]], device=device),
+            next_hyps_prob=torch.tensor([[0.0]], device=device),
+            next_step_confidence=torch.tensor([[0.5]], device=device),
+        )
+        hyps.add_results_(
+            next_indices=torch.tensor([[0]], device=device),
+            next_labels=torch.tensor([[2]], device=device),
+            next_hyps_prob=torch.tensor([[0.0]], device=device),
+            next_step_confidence=torch.tensor([[0.8]], device=device),
+        )
+        tokens, timestamps, root_ptrs, confidences = export_batched_beam_hyps_to_cpu_lists(hyps)
+        assert tokens == [[[5, 2]]]
+        assert confidences == [[[0.9, 0.8]]]
+        assert root_ptrs == [[0]]

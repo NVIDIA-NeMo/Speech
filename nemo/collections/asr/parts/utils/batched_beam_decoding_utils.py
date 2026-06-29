@@ -122,6 +122,7 @@ class BatchedBeamHyps:
         float_dtype: torch.dtype = None,
         store_prefix_hashes: Optional[bool] = False,
         model_type: Optional[ASRModelTypeEnum | str] = ASRModelTypeEnum.RNNT,
+        with_step_confidence: Optional[bool] = False,
     ):
         """
         Initializes the batched beam hypotheses utility for Transducer decoding (RNN-T and TDT models).
@@ -134,6 +135,7 @@ class BatchedBeamHyps:
             float_dtype (torch.dtype): The floating-point data type. Defaults to None.
             store_prefix_hashes (bool, optional): Whether to store prefix hashes for hypotheses. Defaults to False.
             model_type: (str or ModelTypeEnum, optional): Model type, either 'rnnt', 'tdt' or 'ctc'. Defaults to 'rnnt'.
+            with_step_confidence: Whether to store per-step confidence scores aligned with ``transcript_wb``.
         """
 
         if beam_size <= 0:
@@ -148,6 +150,7 @@ class BatchedBeamHyps:
         self.ZERO_TENSOR = torch.tensor(0, device=device, dtype=torch.long)
 
         self.model_type = ASRModelTypeEnum(model_type)
+        self.with_step_confidence = with_step_confidence
         self.store_prefix_hashes = store_prefix_hashes
         self._max_length = init_length
         self.beam_size = beam_size
@@ -210,6 +213,13 @@ class BatchedBeamHyps:
                     (batch_size, self.beam_size, self._max_length), device=device, dtype=torch.long
                 )
 
+        if self.with_step_confidence:
+            self.step_confidence = torch.zeros(
+                (batch_size, self.beam_size, self._max_length), device=device, dtype=float_dtype
+            )
+        else:
+            self.step_confidence = None
+
     def clear_(self):
         """
         Clears and resets the internal state of the object.
@@ -239,6 +249,9 @@ class BatchedBeamHyps:
             self.last_timestamp_lasts.fill_(0)
             if self.model_type == ASRModelTypeEnum.TDT:
                 self.token_durations.fill_(0)
+
+        if self.with_step_confidence:
+            self.step_confidence.fill_(0.0)
 
     def export_cross_chunk_state(self, batch_size: Optional[int] = None) -> dict[str, Optional[torch.Tensor]]:
         """
@@ -303,6 +316,7 @@ class BatchedBeamHyps:
             float_dtype=self.scores.dtype,
             store_prefix_hashes=self.store_prefix_hashes,
             model_type=self.model_type,
+            with_step_confidence=self.with_step_confidence,
         )
         # Destination is freshly allocated at exactly [out_batch, beam_size, _max_length],
         # so we can copy whole rows of `self` directly without per-axis trimming.
@@ -321,6 +335,8 @@ class BatchedBeamHyps:
             new_hyps.last_timestamp_lasts.copy_(self.last_timestamp_lasts[:out_batch])
             if self.model_type == ASRModelTypeEnum.TDT:
                 new_hyps.token_durations.copy_(self.token_durations[:out_batch])
+        if self.with_step_confidence:
+            new_hyps.step_confidence.copy_(self.step_confidence[:out_batch])
         return new_hyps
 
     def keep_beam_(self, beam_indices: torch.Tensor) -> None:
@@ -371,6 +387,9 @@ class BatchedBeamHyps:
                     (self.token_durations, torch.zeros_like(self.token_durations)), dim=-1
                 )
 
+        if self.with_step_confidence:
+            self.step_confidence = torch.cat((self.step_confidence, torch.zeros_like(self.step_confidence)), dim=-1)
+
         self._max_length *= 2
 
     def add_results_(
@@ -379,6 +398,7 @@ class BatchedBeamHyps:
         next_labels: torch.Tensor,
         next_hyps_prob: torch.Tensor,
         next_label_durations: Optional[torch.Tensor] = None,
+        next_step_confidence: Optional[torch.Tensor] = None,
     ):
         """
         Updates batch of beam hypotheses with labels. If the maximum allowed length
@@ -388,6 +408,7 @@ class BatchedBeamHyps:
             next_labels (torch.Tensor): Labels corresponding to the next step in the beam search.
             next_hyps_prob (torch.Tensor): Probabilities of the next hypotheses.
             next_label_durations (torch.Tensor, optional): Durations associated with the next labels. Required when `model_type='tdt'`.
+            next_step_confidence (torch.Tensor, optional): Per-beam step confidence aligned with ``next_labels``.
         """
 
         if self.model_type == ASRModelTypeEnum.TDT and next_label_durations is None:
@@ -401,6 +422,7 @@ class BatchedBeamHyps:
             next_labels=next_labels,
             next_hyps_prob=next_hyps_prob,
             next_label_durations=next_label_durations,
+            next_step_confidence=next_step_confidence,
         )
 
     def add_results_no_checks_(
@@ -409,6 +431,7 @@ class BatchedBeamHyps:
         next_labels: torch.Tensor,
         next_hyps_prob: torch.Tensor,
         next_label_durations: Optional[torch.Tensor] = None,
+        next_step_confidence: Optional[torch.Tensor] = None,
     ):
         """
         Updates batch of beam hypotheses with labels.
@@ -417,6 +440,7 @@ class BatchedBeamHyps:
             next_labels (torch.Tensor): Labels corresponding to the next step in the beam search.
             next_hyps_prob (torch.Tensor): Probabilities of the next hypotheses.
             next_label_durations (torch.Tensor, optional): Durations associated with the next labels. Required when `model_type='tdt'`.
+            next_step_confidence (torch.Tensor, optional): Per-beam step confidence aligned with ``next_labels``.
         """
         if self.model_type == ASRModelTypeEnum.TDT and next_label_durations is None:
             raise ValueError("`next_label_durations` is required when model type is TDT.")
@@ -468,6 +492,17 @@ class BatchedBeamHyps:
                 dim=-1,
                 index=self.current_lengths_wb.unsqueeze(-1),
                 src=torch.where(is_extended, next_label_durations, 0).unsqueeze(-1).to(self.token_durations.dtype),
+            )
+
+        if self.with_step_confidence and next_step_confidence is not None:
+            self.step_confidence.scatter_(
+                dim=-1,
+                index=self.current_lengths_wb.unsqueeze(-1),
+                src=torch.where(
+                    is_extended.unsqueeze(-1),
+                    next_step_confidence.unsqueeze(-1).to(self.step_confidence.dtype),
+                    torch.zeros(1, device=self.device, dtype=self.step_confidence.dtype),
+                ),
             )
 
         self.current_lengths_nb.copy_(
@@ -630,9 +665,9 @@ class BatchedBeamHyps:
             list[Hypothesis]: A list where each element corresponds to a batch and contains
             best hypothesis.
         """
-        scores, transcripts, timestamps, durations, _ = self._export(sort=True, score_norm=score_norm)
+        scores, transcripts, timestamps, durations, _, step_confidence = self._export(sort=True, score_norm=score_norm)
         return [
-            self._hypothesis_from_flat(b, 0, scores, transcripts, timestamps, durations)
+            self._hypothesis_from_flat(b, 0, scores, transcripts, timestamps, durations, step_confidence)
             for b in range(self.batch_size)
         ]
 
@@ -645,7 +680,7 @@ class BatchedBeamHyps:
             list[NBestHypotheses]: A list where each element corresponds to a batch and contains
             N-best hypotheses.
         """
-        scores, transcripts, timestamps, durations, _ = self._export(sort=True, score_norm=score_norm)
+        scores, transcripts, timestamps, durations, _, step_confidence = self._export(sort=True, score_norm=score_norm)
         hypotheses = []
         for batch_idx in range(self.batch_size):
             nbest = []
@@ -653,14 +688,21 @@ class BatchedBeamHyps:
                 if scores[batch_idx][beam_idx] <= INACTIVE_SCORE:
                     continue
                 nbest.append(
-                    self._hypothesis_from_flat(batch_idx, beam_idx, scores, transcripts, timestamps, durations)
+                    self._hypothesis_from_flat(
+                        batch_idx, beam_idx, scores, transcripts, timestamps, durations, step_confidence
+                    )
                 )
             hypotheses.append(NBestHypotheses(nbest))
         return hypotheses
 
-    def _export(
-        self, sort: bool = True, score_norm: bool = True
-    ) -> tuple[list[list[float]], torch.Tensor, torch.Tensor, Optional[torch.Tensor], torch.Tensor]:
+    def _export(self, sort: bool = True, score_norm: bool = True) -> tuple[
+        list[list[float]],
+        torch.Tensor,
+        torch.Tensor,
+        Optional[torch.Tensor],
+        torch.Tensor,
+        Optional[torch.Tensor],
+    ]:
         """
         Flatten the prefix tree and return per-(batch, beam) views.
 
@@ -670,10 +712,10 @@ class BatchedBeamHyps:
             score_norm: passed to :meth:`flatten_sort_` when ``sort=True``.
 
         Returns:
-            (scores, transcripts, timestamps, durations, root_ptrs). The first four
-            are inputs for :meth:`_hypothesis_from_flat`; ``root_ptrs`` is the
+            (scores, transcripts, timestamps, durations, root_ptrs, step_confidence). The first
+            four are inputs for :meth:`_hypothesis_from_flat`; ``root_ptrs`` is the
             chunk-start -> chunk-end slot descent map (``[batch, beam]`` long
-            tensor) for the current beam ordering.
+            tensor) for the current beam ordering; ``step_confidence`` is optional.
         """
         if sort:
             root_ptrs = self.flatten_sort_(score_norm)
@@ -684,7 +726,8 @@ class BatchedBeamHyps:
         transcripts = self.transcript_wb[..., : max_idx + 1]
         timestamps = self.timestamps[..., : max_idx + 1]
         durations = self.token_durations[..., : max_idx + 1] if self.model_type == ASRModelTypeEnum.TDT else None
-        return scores, transcripts, timestamps, durations, root_ptrs
+        step_confidence = self.step_confidence[..., : max_idx + 1] if self.with_step_confidence else None
+        return scores, transcripts, timestamps, durations, root_ptrs, step_confidence
 
     def _hypothesis_from_flat(
         self,
@@ -694,6 +737,7 @@ class BatchedBeamHyps:
         transcripts: torch.Tensor,
         timestamps: torch.Tensor,
         durations: Optional[torch.Tensor],
+        step_confidence: Optional[torch.Tensor] = None,
     ) -> Hypothesis:
         """Build one ``Hypothesis`` from already-flattened per-(batch, beam) views."""
         transcript = transcripts[batch_idx][beam_idx]
@@ -707,6 +751,9 @@ class BatchedBeamHyps:
         else:
             timestamp = end_times.cpu().detach().numpy()
             token_duration = None
+        nb_confidence = None
+        if step_confidence is not None:
+            nb_confidence = step_confidence[batch_idx][beam_idx][mask].cpu().detach().tolist()
         return Hypothesis(
             score=scores[batch_idx][beam_idx],
             y_sequence=transcript[mask].cpu().detach().numpy(),
@@ -714,6 +761,7 @@ class BatchedBeamHyps:
             token_duration=token_duration,
             alignments=None,
             dec_state=None,
+            non_blank_step_confidence_precomputed=nb_confidence,
         )
 
     def flatten_sort_(self, score_norm: bool = True) -> torch.Tensor:
@@ -793,6 +841,8 @@ class BatchedBeamHyps:
                     self.token_durations[..., idx].copy_(
                         self.token_durations[self.batch_indices.unsqueeze(-1), ptrs, idx]
                     )
+            if self.with_step_confidence:
+                self.step_confidence[..., idx].copy_(self.step_confidence[self.batch_indices.unsqueeze(-1), ptrs, idx])
             ptrs = self.transcript_wb_prev_ptr[self.batch_indices.unsqueeze(-1), ptrs, idx]
         self.transcript_wb_prev_ptr[..., : max_idx + 1].copy_(self.beam_indices.unsqueeze(0).unsqueeze(-1))
 
@@ -960,6 +1010,12 @@ class BatchedBeamHyps:
                 index=shifted_indices,
                 src=other.token_durations[..., :max_other_len],
             )
+        if self.with_step_confidence:
+            self.step_confidence.scatter_(
+                dim=-1,
+                index=shifted_indices,
+                src=other.step_confidence[..., :max_other_len],
+            )
 
         # Lengths in the chunk-local write cursor are always additive (``other`` always
         # reports a chunk-local ``current_lengths_wb``).
@@ -996,23 +1052,32 @@ class BatchedBeamHyps:
 
 def export_batched_beam_hyps_to_cpu_lists(
     bbh: BatchedBeamHyps,
-) -> tuple[list[list[list[int]]], list[list[list[int]]], list[list[int]]]:
-    """Export chunk-local per-beam tokens/timestamps and beam descent map to CPU lists."""
-    _, transcripts, timestamps, _, root_ptrs = bbh._export(sort=False)
+) -> tuple[list[list[list[int]]], list[list[list[int]]], list[list[int]], list[list[list[float]]] | None]:
+    """Export chunk-local per-beam tokens/timestamps/confidences and beam descent map to CPU lists."""
+    _, transcripts, timestamps, _, root_ptrs, step_confidence = bbh._export(sort=False)
     root_ptrs_list = root_ptrs.detach().cpu().tolist()
     transcripts_cpu = transcripts.detach().cpu()
     timestamps_cpu = timestamps.detach().cpu()
 
     tokens: list[list[list[int]]] = []
     timestamps_out: list[list[list[int]]] = []
+    confidences_out: list[list[list[float]]] | None = None
+    if step_confidence is not None:
+        confidences_out = []
+        step_confidence_cpu = step_confidence.detach().cpu()
     for b in range(bbh.batch_size):
         bt: list[list[int]] = []
         bts: list[list[int]] = []
+        bc: list[list[float]] = []
         for k in range(bbh.beam_size):
             t = transcripts_cpu[b, k]
             mask = bbh._create_transcripts_mask(t)
             bt.append(t[mask].tolist())
             bts.append(timestamps_cpu[b, k][mask].tolist())
+            if confidences_out is not None:
+                bc.append(step_confidence_cpu[b, k][mask].tolist())
         tokens.append(bt)
         timestamps_out.append(bts)
-    return tokens, timestamps_out, root_ptrs_list
+        if confidences_out is not None:
+            confidences_out.append(bc)
+    return tokens, timestamps_out, root_ptrs_list, confidences_out

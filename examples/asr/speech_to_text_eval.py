@@ -60,6 +60,19 @@ python speech_to_text_eval.py \
     use_cer=False \
     only_score_manifest=True
 
+## Offline batched beam search with confidence (RNNT)
+
+python speech_to_text_eval.py \
+    pretrained_name=nvidia/stt_en_fastconformer_transducer_large \
+    dataset_manifest=<path/to/manifest.json> \
+    output_filename=<path/to/output.jsonl> \
+    batch_size=32 \
+    confidence=true \
+    rnnt_decoding.strategy=malsd_batch \
+    rnnt_decoding.beam.beam_size=4 \
+    rnnt_decoding.beam.allow_cuda_graphs=true \
+    scores_per_sample=true
+
 """
 
 import json
@@ -186,13 +199,13 @@ def main(cfg: EvaluationConfig):
         if cfg.use_punct_er:
             metrics_to_compute.append("punct_er")
 
-        samples_with_metrics = compute_metrics_per_sample(
-            manifest_path=cfg.dataset_manifest,
+        compute_metrics_per_sample(
+            manifest_path=transcription_cfg.output_filename,
             reference_field=cfg.gt_text_attr_name,
             hypothesis_field="pred_text",
             metrics=metrics_to_compute,
             punctuation_marks=cfg.text_processing.punctuation_marks,
-            output_manifest_path=cfg.output_filename,
+            output_manifest_path=transcription_cfg.output_filename,
         )
 
     # Compute the WER

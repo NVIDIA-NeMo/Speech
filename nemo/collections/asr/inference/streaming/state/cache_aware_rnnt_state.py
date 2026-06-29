@@ -86,8 +86,10 @@ class CacheAwareRNNTBeamStreamingState(CacheAwareRNNTStreamingState):
         self.hyp_decoding_state: MALSDStateItem | None = None
         self.cumulative_tokens: list[int] = []
         self.cumulative_timestamps: list[int] = []
+        self.cumulative_confidences: list[float] = []
         self.partial_tokens: list[list[int]] | None = None
         self.partial_timestamps: list[list[int]] | None = None
+        self.partial_confidences: list[list[float]] | None = None
         self._cumulative_tokens_len: int = 0
         self.best_hyp_idx: int | None = None
 
@@ -96,8 +98,10 @@ class CacheAwareRNNTBeamStreamingState(CacheAwareRNNTStreamingState):
         self.hyp_decoding_state = None
         self.cumulative_tokens = []
         self.cumulative_timestamps = []
+        self.cumulative_confidences = []
         self.partial_tokens = None
         self.partial_timestamps = None
+        self.partial_confidences = None
         self._cumulative_tokens_len = 0
         self.best_hyp_idx = None
 
@@ -108,18 +112,26 @@ class CacheAwareRNNTBeamStreamingState(CacheAwareRNNTStreamingState):
         root_ptrs: list[int],
         beam_size: int,
         best_hyp_idx: int,
+        chunk_confidences: list[list[float]] | None = None,
     ) -> None:
         """Append chunk-local beam exports into state."""
         prev_t = self.partial_tokens or [[] for _ in range(beam_size)]
         prev_ts = self.partial_timestamps or [[] for _ in range(beam_size)]
+        prev_conf = self.partial_confidences or [[] for _ in range(beam_size)]
         next_tokens: list[list[int]] = []
         next_timestamps: list[list[int]] = []
+        next_confidences: list[list[float]] = []
         for k in range(beam_size):
             lineage = int(root_ptrs[k])
             next_tokens.append(prev_t[lineage] + list(chunk_tokens[k]))
             next_timestamps.append(prev_ts[lineage] + list(chunk_timestamps[k]))
+            if chunk_confidences is not None:
+                next_confidences.append(prev_conf[lineage] + list(chunk_confidences[k]))
+            else:
+                next_confidences.append(prev_conf[lineage] + [0.0] * len(chunk_tokens[k]))
         self.partial_tokens = next_tokens
         self.partial_timestamps = next_timestamps
+        self.partial_confidences = next_confidences
         self.best_hyp_idx = best_hyp_idx
 
     def select_best_beam_idx_(self, *, score_norm: bool = False) -> int:
@@ -156,26 +168,42 @@ class CacheAwareRNNTBeamStreamingState(CacheAwareRNNTStreamingState):
             self.cumulative_timestamps + list(self.partial_timestamps[best_hyp_idx]),
         )
 
+    def _get_confidences(self) -> list[float]:
+        """``cumulative_confidences`` plus the current top-1 ``partial_confidences`` suffix."""
+        if self.partial_tokens is None or self.hyp_decoding_state is None:
+            return []
+        best_hyp_idx = self.get_best_hyp_idx()
+        partial_conf = (
+            list(self.partial_confidences[best_hyp_idx])
+            if self.partial_confidences is not None
+            else [0.0] * len(self.partial_tokens[best_hyp_idx])
+        )
+        return self.cumulative_confidences + partial_conf
+
     def get_hypothesis(self, score: float) -> Hypothesis:
         """Build the publishable cumulative hypothesis for the current top-1 beam."""
         cum_tokens, cum_ts = self._get_tokens()
+        cum_conf = self._get_confidences()
         return Hypothesis(
             score=score,
             y_sequence=cum_tokens,
             timestamp=cum_ts,
             length=len(cum_tokens),
+            non_blank_step_confidence_precomputed=cum_conf if cum_conf else None,
         )
 
     def update_(self, eou_detected: bool) -> None:
         """Refresh publish tokens; on EOU fold utterance into ``cumulative_*`` and clear ``partial_*``."""
         cum_tokens, cum_ts = self._get_tokens()
+        cum_conf = self._get_confidences()
         if cum_tokens:
             start = max(0, min(int(self._cumulative_tokens_len), len(cum_tokens)))
             tokens = list(cum_tokens[start:])
             timesteps = list(cum_ts[start:])
+            confidences = list(cum_conf[start:]) if cum_conf else [0.0] * len(tokens)
             self.tokens = tokens
             self.timesteps = timesteps
-            self.confidences = [0.0] * len(tokens)
+            self.confidences = confidences
             if tokens:
                 self.last_token = tokens[-1]
                 self.last_token_idx = timesteps[-1] if timesteps else None
@@ -187,6 +215,8 @@ class CacheAwareRNNTBeamStreamingState(CacheAwareRNNTStreamingState):
             self._cumulative_tokens_len = len(cum_tokens)
             self.cumulative_tokens = list(cum_tokens)
             self.cumulative_timestamps = list(cum_ts)
+            self.cumulative_confidences = list(cum_conf)
         self.partial_tokens = None
         self.partial_timestamps = None
+        self.partial_confidences = None
         self.best_hyp_idx = None

@@ -366,19 +366,25 @@ class ConfidenceMixin(ABC):
         self.confidence_aggregation_bank = get_confidence_aggregation_bank()
         self._aggregate_confidence = self.confidence_aggregation_bank[self.word_confidence_aggregation]
 
-        # Update preserve frame confidence
+        # Update preserve frame confidence from strategy-specific config (greedy or batched beam).
+        strategy_overrides = None
         if self.cfg.strategy in ['greedy', 'greedy_batch']:
+            strategy_overrides = self.cfg.greedy
+        elif self.cfg.strategy in ['malsd_batch', 'maes_batch']:
+            strategy_overrides = self.cfg.beam
+
+        if strategy_overrides is not None:
             if not self.preserve_frame_confidence:
-                self.preserve_frame_confidence = self.cfg.greedy.get('preserve_frame_confidence', False)
+                self.preserve_frame_confidence = strategy_overrides.get('preserve_frame_confidence', False)
                 # OmegaConf.structured ensures that post_init check is always executed
-                confidence_method_cfg = OmegaConf.structured(self.cfg.greedy).get('confidence_method_cfg', None)
+                confidence_method_cfg = OmegaConf.structured(strategy_overrides).get('confidence_method_cfg', None)
                 self.confidence_method_cfg = (
                     OmegaConf.structured(ConfidenceMethodConfig())
                     if confidence_method_cfg is None
                     else OmegaConf.structured(ConfidenceMethodConfig(**confidence_method_cfg))
                 )
             if not self.tdt_include_duration_confidence:
-                self.tdt_include_duration_confidence = self.cfg.greedy.get('tdt_include_duration_confidence', False)
+                self.tdt_include_duration_confidence = strategy_overrides.get('tdt_include_duration_confidence', False)
 
     @abstractmethod
     def compute_confidence(self, hypotheses_list: List["Hypothesis"]) -> List["Hypothesis"]:

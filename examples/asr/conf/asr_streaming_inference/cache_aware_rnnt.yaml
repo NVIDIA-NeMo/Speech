@@ -34,6 +34,7 @@ asr:
       # Cache-aware streaming supports MALSD beam search only (set asr.decoding.strategy: malsd_batch).
       beam_size: 4
       allow_cuda_graphs: true
+      preserve_frame_confidence: false  # Set to true to calculate confidence (token/word etc.)
       # n-gram LM (off by default)
       ngram_lm_model: null
       ngram_lm_alpha: 0.0

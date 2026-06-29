@@ -30,6 +30,7 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 import torch
+from omegaconf import DictConfig
 from tqdm import tqdm
 
 from nemo.collections.asr.modules import rnnt_abstract
@@ -853,6 +854,9 @@ class BeamBatchedTDTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs)
         allow_cuda_graphs: Optional[bool] = True,
         return_best_hypothesis: Optional[str] = True,
         enable_per_stream_biasing: bool = False,
+        preserve_step_confidence: bool = False,
+        include_duration_confidence: bool = False,
+        confidence_method_cfg: Optional[DictConfig] = None,
     ):
         """
         Init method.
@@ -871,6 +875,9 @@ class BeamBatchedTDTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs)
             allow_cuda_graphs: whether to allow CUDA graphs
             score_norm: whether to normalize scores before best hypothesis extraction
             enable_per_stream_biasing: whether to enable per-stream biasing via multi-boosting tree
+            preserve_step_confidence: if step confidence should be preserved in beam hypotheses
+            include_duration_confidence: if duration confidence is requested (not supported; logged and skipped)
+            confidence_method_cfg: config for the confidence estimation method
         """
         super().__init__()
         self.decoder = decoder_model
@@ -905,6 +912,9 @@ class BeamBatchedTDTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs)
                 pruning_mode=pruning_mode,
                 allow_cuda_graphs=allow_cuda_graphs,
                 enable_per_stream_biasing=enable_per_stream_biasing,
+                preserve_step_confidence=preserve_step_confidence,
+                include_duration_confidence=include_duration_confidence,
+                confidence_method_cfg=confidence_method_cfg,
             )
         else:
             raise Exception(f"Decoding strategy {search_type} nor implemented.")

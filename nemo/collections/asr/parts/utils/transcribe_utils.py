@@ -21,7 +21,7 @@ from tempfile import NamedTemporaryFile
 from typing import List, Optional, Tuple, Union
 
 import torch
-from omegaconf import DictConfig
+from omegaconf import DictConfig, open_dict
 from tqdm.auto import tqdm
 
 from nemo.collections.asr.metrics.wer import word_error_rate
@@ -36,6 +36,24 @@ _MPS_WARNING_TEXT = (
     "MPS device (Apple Silicon M-series GPU) support is experimental."
     " Env variable `PYTORCH_ENABLE_MPS_FALLBACK=1` should be set in most cases to avoid failures."
 )
+
+
+def wire_confidence_cfg(decoding_cfg: DictConfig, enabled: bool = True) -> None:
+    """Enable confidence estimation on a CTC or RNNT decoding config.
+
+    Mirrors the greedy/beam strategy override pattern used by ``ConfidenceMixin._init_confidence``.
+    """
+    if not enabled:
+        return
+    with open_dict(decoding_cfg):
+        decoding_cfg.confidence_cfg.preserve_frame_confidence = True
+        decoding_cfg.confidence_cfg.preserve_token_confidence = True
+        decoding_cfg.confidence_cfg.preserve_word_confidence = True
+        strategy = decoding_cfg.get("strategy", "greedy")
+        if strategy in ("greedy", "greedy_batch"):
+            decoding_cfg.greedy.preserve_frame_confidence = True
+        elif strategy in ("malsd_batch", "maes_batch"):
+            decoding_cfg.beam.preserve_frame_confidence = True
 
 
 def get_auto_inference_device(allow_mps: bool = True) -> torch.device:
@@ -508,6 +526,8 @@ def write_transcription(
                         if hasattr(transcription, "word_confidence"):
                             item["word_confidence"] = transcription.word_confidence
                             item["words"] = transcription.words
+                        if getattr(transcription, "token_confidence", None) is not None:
+                            item["token_confidence"] = transcription.token_confidence
 
                     if compute_langs:
                         item['pred_lang'] = transcription.langs
@@ -542,6 +562,8 @@ def write_transcription(
                             if hasattr(hyp, "word_confidence"):
                                 item["word_confidence"] = hyp.word_confidence
                                 item["words"] = hyp.words
+                            if getattr(hyp, "token_confidence", None) is not None:
+                                item["token_confidence"] = hyp.token_confidence
 
                         if compute_langs:
                             item['pred_lang'] = best_hyps[idx].langs

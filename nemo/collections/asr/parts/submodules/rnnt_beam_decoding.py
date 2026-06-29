@@ -32,6 +32,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
+from omegaconf import DictConfig, OmegaConf
 from tqdm import tqdm
 
 from nemo.collections.asr.modules import rnnt_abstract
@@ -39,7 +40,7 @@ from nemo.collections.asr.parts.context_biasing import BoostingTreeModelConfig
 from nemo.collections.asr.parts.submodules.ngram_lm import DEFAULT_TOKEN_OFFSET, NGramGPULanguageModel
 from nemo.collections.asr.parts.submodules.rnnt_maes_batched_computer import ModifiedAESBatchedRNNTComputer
 from nemo.collections.asr.parts.submodules.rnnt_malsd_batched_computer import ModifiedALSDBatchedRNNTComputer
-from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMethodMixin
+from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMethodConfig, ConfidenceMethodMixin
 from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import BlankLMScoreMode, PruningMode
 from nemo.collections.asr.parts.utils.rnnt_utils import (
     HATJointOutput,
@@ -1561,6 +1562,8 @@ class BeamBatchedRNNTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs
         allow_cuda_graphs: Optional[bool] = True,
         return_best_hypothesis: Optional[str] = True,
         enable_per_stream_biasing: bool = False,
+        preserve_step_confidence: bool = False,
+        confidence_method_cfg: Optional[DictConfig] = None,
     ):
         """
         Init method.
@@ -1593,6 +1596,8 @@ class BeamBatchedRNNTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs
             allow_cuda_graphs: whether to allow CUDA graphs
             return_best_hypothesis: whether to return the best hypothesis or N-best hypotheses
             enable_per_stream_biasing: whether to enable per-stream biasing via multi-boosting tree
+            preserve_step_confidence: if step confidence should be preserved in beam hypotheses
+            confidence_method_cfg: config for the confidence estimation method
         """
 
         super().__init__()
@@ -1632,6 +1637,8 @@ class BeamBatchedRNNTInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraphs
                 pruning_mode=pruning_mode,
                 allow_cuda_graphs=allow_cuda_graphs,
                 enable_per_stream_biasing=enable_per_stream_biasing,
+                preserve_step_confidence=preserve_step_confidence,
+                confidence_method_cfg=confidence_method_cfg,
             )
         elif search_type == "maes_batch":
             self.decoding_computer = ModifiedAESBatchedRNNTComputer(
@@ -1759,3 +1766,14 @@ class BeamRNNTInferConfig:
     pruning_mode: Optional[str | PruningMode] = PruningMode.LATE
     allow_cuda_graphs: Optional[bool] = True
     enable_per_stream_biasing: bool = False
+    preserve_frame_confidence: bool = False
+    tdt_include_duration_confidence: bool = False
+    confidence_method_cfg: Optional[ConfidenceMethodConfig] = field(default_factory=lambda: ConfidenceMethodConfig())
+
+    def __post_init__(self):
+        # OmegaConf.structured ensures that post_init check is always executed
+        self.confidence_method_cfg = OmegaConf.structured(
+            self.confidence_method_cfg
+            if isinstance(self.confidence_method_cfg, ConfidenceMethodConfig)
+            else ConfidenceMethodConfig(**self.confidence_method_cfg)
+        )

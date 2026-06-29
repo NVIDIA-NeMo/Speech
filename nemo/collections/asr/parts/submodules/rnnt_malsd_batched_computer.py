@@ -17,6 +17,7 @@ from typing import Any, List, Optional, Union
 import numpy as np
 import torch
 import torch.nn.functional as F
+from omegaconf import DictConfig
 
 from nemo.collections.asr.parts.context_biasing.biasing_multi_model import (
     GPUBiasingMultiModel,
@@ -120,6 +121,7 @@ class MALSDState:
         device: torch.device,
         float_dtype: torch.dtype,
         blank_index: int,
+        with_step_confidence: bool = False,
     ):
         """
         Args:
@@ -191,6 +193,7 @@ class MALSDState:
             init_length=max_time * (max_symbols + 1) if max_symbols is not None else max_time,
             device=device,
             float_dtype=float_dtype,
+            with_step_confidence=with_step_confidence,
         )
 
     def need_reinit(self, encoder_output_projected: torch.Tensor) -> bool:
@@ -263,6 +266,8 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         pruning_mode: Optional[str | PruningMode] = None,
         allow_cuda_graphs: bool = True,
         enable_per_stream_biasing: bool = False,
+        preserve_step_confidence: bool = False,
+        confidence_method_cfg: Optional[DictConfig] = None,
     ):
         """
         Init method.
@@ -279,6 +284,8 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             pruning_mode: mode for pruning hypotheses with fusion models
             allow_cuda_graphs: whether to allow CUDA graphs
             enable_per_stream_biasing: whether to enable per-stream biasing via multi-boosting tree
+            preserve_step_confidence: if step confidence should be preserved in beam hypotheses
+            confidence_method_cfg: config for the confidence estimation method
         """
 
         super().__init__()
@@ -289,6 +296,9 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         self.beam_size = beam_size
         self.max_symbols = max_symbols_per_step
         self.preserve_alignments = preserve_alignments
+        self.preserve_step_confidence = preserve_step_confidence
+        if self.preserve_step_confidence:
+            self._init_confidence_method(confidence_method_cfg=confidence_method_cfg)
         self._SOS = self._blank_index
         self.allow_cuda_graphs = allow_cuda_graphs
 
@@ -325,6 +335,17 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             )
         else:
             self.blank_lm_score_mode = None
+
+    def _get_step_confidence(self, log_probs: torch.Tensor) -> Optional[torch.Tensor]:
+        """Compute per-beam step confidence from token log-probabilities."""
+        if not self.preserve_step_confidence:
+            return None
+        return self._get_confidence_tensor(log_probs).to(dtype=log_probs.dtype)
+
+    def _gather_parent_step_confidence(
+        self, step_confidence: torch.Tensor, parent_indices: torch.Tensor
+    ) -> torch.Tensor:
+        return torch.gather(step_confidence, dim=-1, index=parent_indices)
 
     @property
     def per_stream_biasing_enabled(self) -> bool:
@@ -468,6 +489,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             init_length=max_time * (self.max_symbols + 1) if self.max_symbols is not None else max_time,
             device=device,
             float_dtype=float_dtype,
+            with_step_confidence=self.preserve_step_confidence,
         )
         batch_beam_indices = (
             torch.arange(batch_size, dtype=torch.long, device=device)[:, None]
@@ -624,11 +646,18 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
                 labels_top_k.reshape(batch_size, -1), dim=-1, index=hyps_candidates_indices
             )  # labels for extended hypotheses
 
+            next_step_confidence = None
+            if self.preserve_step_confidence:
+                step_confidence = self._get_step_confidence(log_probs)
+                next_step_confidence = self._gather_parent_step_confidence(step_confidence, hyps_indices)
+
             # step 3: store results
             if self.max_symbols is None:
-                batched_hyps.add_results_(hyps_indices, next_labels, next_hyps_prob)
+                batched_hyps.add_results_(hyps_indices, next_labels, next_hyps_prob, next_step_confidence=next_step_confidence)
             else:
-                batched_hyps.add_results_no_checks_(hyps_indices, next_labels, next_hyps_prob)
+                batched_hyps.add_results_no_checks_(
+                    hyps_indices, next_labels, next_hyps_prob, next_step_confidence=next_step_confidence
+                )
 
             # step 4: recombine hypotheses: sum probabilities of identical hypotheses.
             batched_hyps.recombine_hyps_()
@@ -955,6 +984,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             device=encoder_output_projected.device,
             float_dtype=encoder_output_projected.dtype,
             blank_index=self._blank_index,
+            with_step_confidence=self.preserve_step_confidence,
         )
 
         self.state.decoder_state = self.decoder.initialize_state(
@@ -1255,12 +1285,25 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         )  # labels for extended hypotheses
         self.state.next_scores.copy_(next_hyps_prob)
 
+        next_step_confidence = None
+        if self.preserve_step_confidence:
+            step_confidence = self._get_step_confidence(log_probs)
+            next_step_confidence = self._gather_parent_step_confidence(step_confidence, self.state.next_idx)
+
         # step 3: store results
         if self.max_symbols is None:
-            self.state.batched_hyps.add_results_(self.state.next_idx, self.state.next_labels, self.state.next_scores)
+            self.state.batched_hyps.add_results_(
+                self.state.next_idx,
+                self.state.next_labels,
+                self.state.next_scores,
+                next_step_confidence=next_step_confidence,
+            )
         else:
             self.state.batched_hyps.add_results_no_checks_(
-                self.state.next_idx, self.state.next_labels, self.state.next_scores
+                self.state.next_idx,
+                self.state.next_labels,
+                self.state.next_scores,
+                next_step_confidence=next_step_confidence,
             )
 
         # step 4: recombine hypotheses: sum probabilities of identical hypotheses.

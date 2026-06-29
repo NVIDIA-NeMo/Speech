@@ -643,6 +643,8 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                     allow_cuda_graphs=self.cfg.beam.get('allow_cuda_graphs', True),
                     return_best_hypothesis=self.cfg.beam.get('return_best_hypothesis', True),
                     enable_per_stream_biasing=self.cfg.beam.get('enable_per_stream_biasing', False),
+                    preserve_step_confidence=self.preserve_frame_confidence,
+                    confidence_method_cfg=self.confidence_method_cfg,
                 )
             case TransducerDecodingStrategyType.MALSD_BATCH, TransducerModelType.TDT:
                 self.decoding = tdt_beam_decoding.BeamBatchedTDTInfer(
@@ -662,6 +664,9 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                     allow_cuda_graphs=self.cfg.beam.get('allow_cuda_graphs', True),
                     return_best_hypothesis=self.cfg.beam.get('return_best_hypothesis', True),
                     enable_per_stream_biasing=self.cfg.beam.get('enable_per_stream_biasing', False),
+                    preserve_step_confidence=self.preserve_frame_confidence,
+                    include_duration_confidence=self.tdt_include_duration_confidence,
+                    confidence_method_cfg=self.confidence_method_cfg,
                 )
             case TransducerDecodingStrategyType.MAES_BATCH, TransducerModelType.RNNT:
                 self.decoding = rnnt_beam_decoding.BeamBatchedRNNTInfer(

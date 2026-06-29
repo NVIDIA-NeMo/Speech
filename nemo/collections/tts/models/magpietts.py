@@ -3811,7 +3811,7 @@ class MagpieTTSModel(ModelPT):
                     end_of_text=end_of_text,
                     beginning_of_text=beginning_of_text,
                     use_cfg=use_cfg,
-                    use_local_transformer_for_inference=True,
+                    use_local_transformer_for_inference=self.local_transformer_type != LocalTransformerType.NO_LT,
                 )
                 if output.predicted_codes_lens[0] > 0:
                     all_codes.append(output.predicted_codes[0, :, : output.predicted_codes_lens[0]])

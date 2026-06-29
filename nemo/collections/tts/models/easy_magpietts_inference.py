@@ -2136,7 +2136,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         context_audio_duration: float = 5.0,
         use_cfg: bool = True,
         cfg_scale: float = 2.5,
-        use_local_transformer: bool = True,
+        use_local_transformer: Optional[bool] = None,  # If unset, defaults to True if AR LT is present
         temperature: float = 0.7,
         topk: int = 80,
         max_steps: int = 330,
@@ -2152,6 +2152,10 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         device = next(self.parameters()).device
         transcript = transcript.strip()
         context_text = (context_text or "[NO TEXT CONTEXT]").strip()
+        if use_local_transformer is None:
+            # EasyMagpie uses the local transformer only for AR; MASKGIT/NO_LT decode via
+            # parallel sampling (_sample_audio_codes raises if asked to use a non-AR local transformer).
+            use_local_transformer = self.local_transformer_type == LocalTransformerType.AR
 
         if main_tokenizer_name is None:
             # Match model init behavior: default to first configured tokenizer.

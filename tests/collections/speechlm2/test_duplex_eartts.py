@@ -36,6 +36,7 @@ test_eartts_config = {
         "pretrained_lm_name": "nvidia/NVIDIA-Nemotron-Nano-9B-v2",
         "pretrained_ae_dir": None,
         "pretrained_tts_model": None,
+        "trust_remote_code": True,
         "scoring_asr": "stt_en_fastconformer_transducer_large",
         "freeze_params": [
             r"^audio_codec\..+$",  # Keep audio codec frozen as it only provides supervision for training.

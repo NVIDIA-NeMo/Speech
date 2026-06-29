@@ -211,6 +211,22 @@ class SeparateGraphsMALSD:
     loop_update_decoder: torch.cuda.CUDAGraph = field(default_factory=torch.cuda.CUDAGraph)
 
 
+@dataclass
+class MALSDStateItem:
+    """Per-stream MALSD carry for cache-aware streaming (beam-shaped tensors)."""
+
+    predictor_state: Any  # opaque per-stream predictor state of size beam_size
+    predictor_output: torch.Tensor  # [beam_size, 1, D]
+    label: torch.Tensor  # [beam_size]
+    decoded_length: torch.Tensor  # scalar
+    score: torch.Tensor  # [beam_size]
+    transcript_hash: torch.Tensor  # [beam_size]
+    current_lengths_nb: torch.Tensor  # [beam_size]
+    last_timestamp_lasts: Optional[torch.Tensor] = None  # [beam_size] or None
+    transcript_prefix_hash: Optional[torch.Tensor] = None  # [beam_size] or None
+    fusion_state_list: list[torch.Tensor] = field(default_factory=list)  # each [beam_size, ...]
+
+
 class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMixin):
     """
     Batched Alignment-Length Synchronous Decoding implementation. Callable.
@@ -1475,6 +1491,258 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             time_jumps=None,
             **self.state.batched_hyps.export_cross_chunk_state(batch_size=current_batch_size),
         )
+
+    def _get_state_item_after_sos(self, device: torch.device | str) -> MALSDStateItem:
+        """After-SOS per-stream state; used to fill ``None`` entries in merge."""
+        batched = self._get_batched_state_after_sos(device=device, batch_size=1)
+        return self.split_batched_state(batched)[0]
+
+    def _get_batched_state_after_sos(self, device: torch.device | str, batch_size: int) -> BatchedBeamState:
+        """Fresh batched MALSD state after ``<SOS>`` (slot 0 active, others inactive)."""
+        beam_size = self.beam_size
+        total = batch_size * beam_size
+
+        sos_labels = torch.full([total], fill_value=self._SOS, dtype=torch.long, device=device)
+        decoder_output, predictor_state, *_ = self.decoder.predict(
+            sos_labels.unsqueeze(1), None, add_sos=False, batch_size=total
+        )
+        decoder_output = self.joint.project_prednet(decoder_output)  # [B*K, 1, D]
+
+        scores = torch.full(
+            [batch_size, beam_size], fill_value=INACTIVE_SCORE, dtype=decoder_output.dtype, device=device
+        )
+        scores[:, 0] = 0.0
+
+        fusion_states_list: list[torch.Tensor] = []
+        if self.has_fusion_models:
+            for fm in self._all_fusion_models():
+                fs = fm.get_init_states(batch_size=total, bos=True).to(device)
+                fusion_states_list.append(fs.reshape(batch_size, beam_size, *fs.shape[1:]))
+
+        def zeros_bk() -> torch.Tensor:
+            return torch.zeros([batch_size, beam_size], dtype=torch.long, device=device)
+
+        return BatchedBeamState(
+            predictor_states=predictor_state,
+            predictor_outputs=decoder_output,
+            labels=sos_labels.view(batch_size, beam_size),
+            decoded_lengths=torch.zeros([batch_size], dtype=torch.long, device=device),
+            fusion_states_list=fusion_states_list,
+            time_jumps=None,
+            scores=scores,
+            transcript_hash=zeros_bk(),
+            current_lengths_nb=zeros_bk(),
+            last_timestamp_lasts=zeros_bk(),
+            transcript_prefix_hash=None,
+        )
+
+    def split_batched_state(self, state: BatchedBeamState) -> list[MALSDStateItem]:
+        """Split a batched MALSD state into per-stream items."""
+        if state is None:
+            return []
+        batch_size = state.labels.shape[0]
+        beam_size = self.beam_size
+
+        per_row_states = self.decoder.batch_split_states(state.predictor_states)
+        if len(per_row_states) != batch_size * beam_size:
+            raise AssertionError(
+                f"Expected predictor states with batch dim {batch_size * beam_size}, "
+                f"got {len(per_row_states)} per-row items"
+            )
+
+        items: list[MALSDStateItem] = []
+        for i in range(batch_size):
+            stream_predictor_state = self.decoder.batch_unsplit_states(
+                per_row_states[i * beam_size : (i + 1) * beam_size]
+            )
+            fusion_state_list = [fs[i].clone() for fs in state.fusion_states_list] if state.fusion_states_list else []
+            items.append(
+                MALSDStateItem(
+                    predictor_state=stream_predictor_state,
+                    predictor_output=state.predictor_outputs[i * beam_size : (i + 1) * beam_size].clone(),
+                    label=state.labels[i].clone(),
+                    decoded_length=state.decoded_lengths[i].clone(),
+                    score=state.scores[i].clone() if state.scores is not None else None,
+                    transcript_hash=(state.transcript_hash[i].clone() if state.transcript_hash is not None else None),
+                    current_lengths_nb=(
+                        state.current_lengths_nb[i].clone() if state.current_lengths_nb is not None else None
+                    ),
+                    last_timestamp_lasts=(
+                        state.last_timestamp_lasts[i].clone() if state.last_timestamp_lasts is not None else None
+                    ),
+                    transcript_prefix_hash=(
+                        state.transcript_prefix_hash[i].clone() if state.transcript_prefix_hash is not None else None
+                    ),
+                    fusion_state_list=fusion_state_list,
+                )
+            )
+        return items
+
+    def merge_to_batched_state(self, state_items: list[Optional[MALSDStateItem]]) -> BatchedBeamState:
+        """Merge per-stream items into one batched state; ``None`` entries get after-SOS fillers."""
+        if any(item is None for item in state_items):
+            not_none_item = next(item for item in state_items if item is not None)
+            device = not_none_item.predictor_output.device
+            start_item = self._get_state_item_after_sos(device=device)
+            state_items = [item if item is not None else start_item for item in state_items]
+
+        per_row_states: list[Any] = []
+        for item in state_items:
+            per_row_states.extend(self.decoder.batch_split_states(item.predictor_state))
+        batched_predictor_state = self.decoder.batch_unsplit_states(per_row_states)
+
+        predictor_outputs = torch.cat([item.predictor_output for item in state_items], dim=0)
+        labels = torch.stack([item.label for item in state_items], dim=0)
+        decoded_lengths = torch.stack([item.decoded_length for item in state_items], dim=0)
+        scores = torch.stack([item.score for item in state_items], dim=0)
+        transcript_hash = torch.stack([item.transcript_hash for item in state_items], dim=0)
+        current_lengths_nb = torch.stack([item.current_lengths_nb for item in state_items], dim=0)
+        last_timestamp_lasts = (
+            torch.stack([item.last_timestamp_lasts for item in state_items], dim=0)
+            if state_items[0].last_timestamp_lasts is not None
+            else None
+        )
+        transcript_prefix_hash = (
+            torch.stack([item.transcript_prefix_hash for item in state_items], dim=0)
+            if state_items[0].transcript_prefix_hash is not None
+            else None
+        )
+
+        num_fusion = max(len(item.fusion_state_list) for item in state_items)
+        if num_fusion > 0:
+            sos_fusion_template: list[torch.Tensor] | None = None
+            for item in state_items:
+                if len(item.fusion_state_list) < num_fusion:
+                    if sos_fusion_template is None:
+                        sos_fusion_template = self._get_state_item_after_sos(
+                            device=item.predictor_output.device
+                        ).fusion_state_list
+                    for fi in range(len(item.fusion_state_list), num_fusion):
+                        item.fusion_state_list.append(sos_fusion_template[fi].clone())
+
+            fusion_states_list = [
+                torch.stack([item.fusion_state_list[fi] for item in state_items], dim=0) for fi in range(num_fusion)
+            ]
+        else:
+            fusion_states_list = []
+
+        return BatchedBeamState(
+            predictor_states=batched_predictor_state,
+            predictor_outputs=predictor_outputs,
+            labels=labels,
+            decoded_lengths=decoded_lengths,
+            fusion_states_list=fusion_states_list,
+            time_jumps=None,
+            scores=scores,
+            transcript_hash=transcript_hash,
+            current_lengths_nb=current_lengths_nb,
+            last_timestamp_lasts=last_timestamp_lasts,
+            transcript_prefix_hash=transcript_prefix_hash,
+        )
+
+    def collapse_batched_state_to_beams_(
+        self,
+        state: BatchedBeamState,
+        batched_hyps: BatchedBeamHyps,
+        beam_indices: torch.Tensor,
+    ) -> None:
+        """Collapse each batch row to one beam, replicated across all slots."""
+        batch_size = state.labels.shape[0]
+        beam_size = self.beam_size
+        if beam_indices.shape != (batch_size,):
+            raise ValueError(
+                f"beam_indices must have shape [batch_size={batch_size}], got {tuple(beam_indices.shape)}"
+            )
+
+        device = state.labels.device
+        beam_indices = beam_indices.to(dtype=torch.long, device=device)
+
+        row_offsets = torch.arange(batch_size, device=device, dtype=torch.long) * beam_size
+        chosen_flat_idx = row_offsets + beam_indices  # [B]
+        flat_perm = chosen_flat_idx.unsqueeze(-1).expand(batch_size, beam_size).reshape(-1)  # [B*K]
+
+        per_row = self.decoder.batch_split_states(state.predictor_states)
+        if len(per_row) != batch_size * beam_size:
+            raise AssertionError(
+                f"Expected predictor states with batch dim {batch_size * beam_size}, "
+                f"got {len(per_row)} per-row items"
+            )
+        replicated_per_row = [per_row[int(idx)] for idx in flat_perm.tolist()]
+        state.predictor_states = self.decoder.batch_unsplit_states(replicated_per_row)
+
+        state.predictor_outputs = state.predictor_outputs.index_select(0, flat_perm).contiguous()
+
+        beam_perm = beam_indices.unsqueeze(-1).expand(batch_size, beam_size)
+        state.labels = torch.gather(state.labels, dim=1, index=beam_perm).contiguous()
+        if state.scores is not None:
+            state.scores = torch.gather(state.scores, dim=1, index=beam_perm).contiguous()
+            state.scores[:, 1:].fill_(INACTIVE_SCORE)
+        if state.transcript_hash is not None:
+            state.transcript_hash = torch.gather(state.transcript_hash, dim=1, index=beam_perm).contiguous()
+        if state.current_lengths_nb is not None:
+            state.current_lengths_nb = torch.gather(state.current_lengths_nb, dim=1, index=beam_perm).contiguous()
+        if state.last_timestamp_lasts is not None:
+            state.last_timestamp_lasts = torch.gather(state.last_timestamp_lasts, dim=1, index=beam_perm).contiguous()
+        if state.transcript_prefix_hash is not None:
+            state.transcript_prefix_hash = torch.gather(
+                state.transcript_prefix_hash, dim=1, index=beam_perm
+            ).contiguous()
+
+        if state.fusion_states_list:
+            for fs in state.fusion_states_list:
+                if fs.ndim != 2:
+                    raise NotImplementedError(
+                        f"collapse_batched_state_to_beams_ only supports rank-2 [B, K] "
+                        f"fusion states; got shape {tuple(fs.shape)}"
+                    )
+            state.fusion_states_list = [
+                torch.gather(fs, dim=1, index=beam_perm).contiguous() for fs in state.fusion_states_list
+            ]
+
+        batched_hyps.keep_beam_(beam_indices)
+
+    def select_beam_in_state_item_(self, item: MALSDStateItem, beam_index: int) -> None:
+        """In-place per-stream beam selection (used at EOU in streaming).
+
+        Selects ``beam_index`` and replicates that beam's decoder carry across all
+        ``beam_size`` slots. Beam width is unchanged; every slot holds the same
+        predictor, fusion, and score state so the next decode step starts from one
+        committed hypothesis.
+        """
+        beam_size = self.beam_size
+        if not 0 <= beam_index < beam_size:
+            raise ValueError(f"beam_index must be in [0, {beam_size}), got {beam_index}")
+
+        with torch.inference_mode():
+            per_row = self.decoder.batch_split_states(item.predictor_state)
+            if len(per_row) != beam_size:
+                raise AssertionError(
+                    f"Expected per-stream predictor state with batch dim {beam_size}, got {len(per_row)}"
+                )
+            item.predictor_state = self.decoder.batch_unsplit_states([per_row[beam_index]] * beam_size)
+
+            item.predictor_output = (
+                item.predictor_output[beam_index : beam_index + 1]
+                .expand(beam_size, *item.predictor_output.shape[1:])
+                .contiguous()
+            )
+
+            idx = torch.full([beam_size], fill_value=beam_index, dtype=torch.long, device=item.label.device)
+            item.label = item.label.index_select(0, idx).contiguous()
+            if item.score is not None:
+                item.score = item.score.index_select(0, idx).contiguous()
+                item.score[1:].fill_(INACTIVE_SCORE)
+            if item.transcript_hash is not None:
+                item.transcript_hash = item.transcript_hash.index_select(0, idx).contiguous()
+            if item.current_lengths_nb is not None:
+                item.current_lengths_nb = item.current_lengths_nb.index_select(0, idx).contiguous()
+            if item.last_timestamp_lasts is not None:
+                item.last_timestamp_lasts = item.last_timestamp_lasts.index_select(0, idx).contiguous()
+            if item.transcript_prefix_hash is not None:
+                item.transcript_prefix_hash = item.transcript_prefix_hash.index_select(0, idx).contiguous()
+
+            for fi, fs in enumerate(item.fusion_state_list):
+                item.fusion_state_list[fi] = fs.index_select(0, idx).contiguous()
 
     def __call__(
         self,

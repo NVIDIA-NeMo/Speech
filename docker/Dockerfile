@@ -59,20 +59,14 @@ ENV PATH="/root/.local/bin:${VIRTUAL_ENV}/bin:${PATH}"
 RUN <<"EOF" bash -ex
 apt-get update
 apt-get install -y \
-    bc \
     curl \
     git \
-    libsndfile1
+    libsox3
 apt-get clean
 EOF
-
-# Install Sox without libsox-fmt-ao and libsox-fmt-mp3
-RUN <<"EOF" bash -ex
-apt-cache depends libsox-fmt-all \
-  | awk '$1 == "Depends:" && $2 != "libsox-fmt-ao" && $2 != "libsox-fmt-mp3" && $2 !~ /^</ { print $2 }' \
-  | xargs -r apt-get install -y sox
-apt-get clean
-EOF
+# NOTE: removed libsndfile1 and only kept libsox3
+# soundfile ships with its own version of libsndfile1
+# lhotse only links into libsox3 and not the rest of sox; removed sox and libsox-fmt-all and only kept libsox3
 
 RUN <<"EOF" bash -ex
 curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh

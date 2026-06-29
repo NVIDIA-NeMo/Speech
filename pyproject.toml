@@ -532,8 +532,6 @@ test = [
     "pytest-shard",
     "pytest-mock",
     "pytest-runner",
-    "sphinx",
-    "sphinxcontrib-bibtex",
     "wandb",
     "wrapt",
 ]

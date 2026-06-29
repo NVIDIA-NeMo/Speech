@@ -60,19 +60,6 @@ python speech_to_text_eval.py \
     use_cer=False \
     only_score_manifest=True
 
-## Offline batched beam search with confidence (RNNT)
-
-python speech_to_text_eval.py \
-    pretrained_name=nvidia/stt_en_fastconformer_transducer_large \
-    dataset_manifest=<path/to/manifest.json> \
-    output_filename=<path/to/output.jsonl> \
-    batch_size=32 \
-    confidence=true \
-    rnnt_decoding.strategy=malsd_batch \
-    rnnt_decoding.beam.beam_size=4 \
-    rnnt_decoding.beam.allow_cuda_graphs=true \
-    scores_per_sample=true
-
 """
 
 import json

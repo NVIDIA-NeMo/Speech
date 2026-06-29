@@ -366,7 +366,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
         """
         eou_detected = request.is_last
         # Per-token non-blank confidence precomputed during RNN-T decoding (aligned with `hyp.y_sequence`).
-        # Populated only when `asr.decoding.greedy.preserve_frame_confidence=true`; otherwise None.
+        # Populated when greedy or batched-beam preserve_frame_confidence is enabled; otherwise None.
         cur_output, cur_labels, new_offset = self.greedy_rnnt_decoder(
             global_timestamps=hyp.timestamp,
             tokens=hyp.y_sequence,

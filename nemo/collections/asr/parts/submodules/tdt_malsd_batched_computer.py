@@ -345,11 +345,6 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
             return None
         return self._get_confidence_tensor(token_log_probs).to(dtype=token_log_probs.dtype)
 
-    def _gather_parent_step_confidence(
-        self, step_confidence: torch.Tensor, parent_indices: torch.Tensor
-    ) -> torch.Tensor:
-        return torch.gather(step_confidence, dim=-1, index=parent_indices)
-
     @property
     def per_stream_biasing_enabled(self) -> bool:
         return self.biasing_multi_model is not None
@@ -670,16 +665,24 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
             next_step_confidence = None
             if self.preserve_step_confidence:
                 step_confidence = self._get_step_confidence(log_probs)
-                next_step_confidence = self._gather_parent_step_confidence(step_confidence, hyps_indices)
+                next_step_confidence = torch.gather(step_confidence, dim=-1, index=hyps_indices)
 
             # step 3: store results
             if self.max_symbols is None:
                 batched_hyps.add_results_(
-                    hyps_indices, next_labels, next_hyps_prob, next_label_durations, next_step_confidence=next_step_confidence
+                    hyps_indices,
+                    next_labels,
+                    next_hyps_prob,
+                    next_label_durations,
+                    next_step_confidence=next_step_confidence,
                 )
             else:
                 batched_hyps.add_results_no_checks_(
-                    hyps_indices, next_labels, next_hyps_prob, next_label_durations, next_step_confidence=next_step_confidence
+                    hyps_indices,
+                    next_labels,
+                    next_hyps_prob,
+                    next_label_durations,
+                    next_step_confidence=next_step_confidence,
                 )
 
             # step 4: recombine hypotheses: sum probabilities of identical hypotheses.
@@ -1375,7 +1378,7 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
         next_step_confidence = None
         if self.preserve_step_confidence:
             step_confidence = self._get_step_confidence(log_probs)
-            next_step_confidence = self._gather_parent_step_confidence(step_confidence, self.state.next_idx)
+            next_step_confidence = torch.gather(step_confidence, dim=-1, index=self.state.next_idx)
 
         # step 3: store results
         if self.max_symbols is None:

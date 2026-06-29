@@ -655,7 +655,7 @@ class BufferedRNNTPipeline(BasePipeline):
                 tokens, timestamp, self.tokens_to_move, self.underscore_id
             )
             # Per-token non-blank confidence precomputed during RNN-T decoding (aligned with `tokens`).
-            # Populated only when `asr.decoding.greedy.preserve_frame_confidence=true`; otherwise None.
+            # Populated when greedy or batched-beam preserve_frame_confidence is enabled; otherwise None.
             confidences = hyp.non_blank_step_confidence_precomputed
             if confidences is not None:
                 confidences = torch.tensor(confidences, dtype=torch.float32, device=tokens.device)

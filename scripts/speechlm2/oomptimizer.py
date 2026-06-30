@@ -25,7 +25,7 @@ from torch.utils.data import DataLoader, IterableDataset
 
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, MaskType, NeuralType
 from nemo.utils import logging
-from nemo.utils.oomptimizer import SequenceLengthResolver
+from nemo.utils.oomptimizer import SequenceLengthResolver, instantiate_profiling_models
 from nemo.utils.oomptimizer import is_2d_bucketing as _is_2d_bucketing
 from nemo.utils.trainer_utils import resolve_trainer_cfg
 
@@ -320,8 +320,9 @@ class FloatList(click.Option):
 @click.option(
     "--salm-audio-token-ratio",
     type=float,
-    default=0.75,
-    help="For SALM-style 1D token buckets, fraction of the bucket represented by audio-equivalent tokens.",
+    default=1.0,
+    help="For SALM-style 1D token buckets, fraction of the bucket represented by audio-equivalent tokens. "
+    "Defaults to 1.0 to simulate the worst case memory scenario (max audio tokens).",
 )
 def oomptimizer(
     pretrained_name: str | None,
@@ -374,7 +375,8 @@ def oomptimizer(
     logging.setLevel(logging.CRITICAL)
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
     device = torch.device(f'cuda:{os.environ["LOCAL_RANK"]}')
-    dtype = getattr(torch, dtype)
+    dtype_name = dtype
+    dtype = getattr(torch, dtype_name)
     torch.cuda.set_per_process_memory_fraction(memory_fraction, device)
 
     torch.distributed.init_process_group(backend="nccl")
@@ -395,9 +397,13 @@ def oomptimizer(
             "val_check_interval": 0.0,
         }
     )
-    with trainer.init_module():
-        model = model_cls(OmegaConf.to_container(cfg.model, resolve=True))
-    model = model.to(device)
+    model_config = OmegaConf.to_container(cfg.model, resolve=True)
+    model, ddp_overhead_models = instantiate_profiling_models(
+        model_cls, model_config, trainer, device, simulate_ddp=ddp
+    )
+    if ddp_overhead_models:
+        noun = "copy" if len(ddp_overhead_models) == 1 else "copies"
+        click.echo(f"Simulating DDP GPU RAM usage with {len(ddp_overhead_models)} extra model {noun}.")
 
     if not hasattr(model, "oomptimizer_schema"):
         click.secho(
@@ -444,7 +450,7 @@ def oomptimizer(
 
     # Iterate buckets from the largest to the smallest sequences. This usually ends up creating
     # a tiny bit smaller batches, likely due to worse memory fragmentation.
-    with torch.autocast("cuda", dtype=None, enabled=False):
+    with torch.autocast("cuda", dtype):
         for bucket, (seq_len_in, seq_len_out) in reversed(list(zip(buckets, max_seq_lens))):
             click.echo(f"The current sequence lengths are: input={seq_len_in} output={seq_len_out}.")
             gen.reset()
@@ -524,7 +530,7 @@ def oomptimizer(
     click.secho(f"The profile was created with the following settings:")
     click.secho(f"* using {memory_fraction:.1%} of available GPU RAM.")
     click.secho(f"* {'' if ddp else 'not '}simulating DDP memory overhead.")
-    click.secho(f"* using AMP with dtype={dtype}.")
+    click.secho(f"* using AMP with dtype={dtype_name}.")
     click.secho("The final profile is:", bold=True)
     click.secho("\tbucket_duration_bins=[" + ",".join(str(seqlen) for seqlen, bs in final_profile) + "]", bold=True)
     click.secho("\tbucket_batch_size=[" + ",".join(str(bs) for seqlen, bs in final_profile) + "]", bold=True)

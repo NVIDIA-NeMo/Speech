@@ -18,10 +18,34 @@ from dataclasses import dataclass
 from numbers import Number
 from typing import Literal
 
+import torch
 from lhotse import compute_num_samples
 from omegaconf import OmegaConf
 
 from nemo.core.neural_types import LabelsType, NeuralType
+
+
+def instantiate_profiling_models(
+    model_cls,
+    model_config: dict,
+    trainer,
+    device: torch.device,
+    *,
+    simulate_ddp: bool = False,
+) -> tuple[object, list[object]]:
+    """
+    Instantiate model(s) for OOMptimizer profiling.
+
+    When ``simulate_ddp`` is True, keeps an extra full model copy on the GPU to approximate
+    DDP gradient-buffer memory that is not visible in a single-process training step.
+    """
+    models = []
+    with trainer.init_module():
+        for _ in range(2 if simulate_ddp else 1):
+            models.append(model_cls(model_config))
+    for model in models:
+        model.to(device)
+    return models[-1], models[:-1]
 
 
 def is_2d_bucketing(buckets) -> bool:

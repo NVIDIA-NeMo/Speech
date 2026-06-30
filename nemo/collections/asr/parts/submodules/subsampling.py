@@ -538,9 +538,12 @@ class ConvSubsampling(torch.nn.Module):
         else:
             # avoiding a bug / feature limiting indexing of tensors to 2**31
             # see https://github.com/pytorch/pytorch/issues/80020
-            # Smallest power-of-two batch split that keeps each chunk's exact first-conv
-            # output strictly below the 32-bit element limit (the +1 forces "strictly").
-            cf = 2 ** math.ceil(math.log(self._first_conv_output_numel(x) // _MAX_CONV_NUMEL_32BIT + 1, 2))
+            # Smallest power-of-two batch split that keeps each chunk strictly below the
+            # 32-bit element limit (the +1 forces "strictly"). Mirror the forward() guard
+            # by sizing against whichever of the conv input or its (larger) first-conv
+            # output reaches the limit.
+            numel = max(self._first_conv_output_numel(x), torch.numel(x))
+            cf = 2 ** math.ceil(math.log(numel // _MAX_CONV_NUMEL_32BIT + 1, 2))
             logging.debug(f'using auto set chunking factor: {cf}')
 
         new_batch_size = b // cf

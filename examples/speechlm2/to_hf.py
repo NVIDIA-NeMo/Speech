@@ -338,7 +338,7 @@ def main(cfg: HfExportConfig) -> None:
         )
         model_cfg["pretrained_weights"] = False
 
-        load_checkpoint(model, cfg.ckpt_path)
+        load_checkpoint(model, cfg.ckpt_path, weights_only=cfg.weights_only)
 
         # Consolidate DTensors to regular tensors and save on rank 0.
         consolidated = consolidate_state_dict(model)
@@ -351,7 +351,7 @@ def main(cfg: HfExportConfig) -> None:
     else:
         model_cfg["init_configure_model"] = True
         model = cls(model_cfg)
-        load_checkpoint(model, cfg.ckpt_path)
+        load_checkpoint(model, cfg.ckpt_path, weights_only=cfg.weights_only)
         model = model.to(str_to_dtype(cfg.dtype))
         model_cfg["pretrained_weights"] = False
         model.save_pretrained(cfg.output_dir, config=_hf_export_config(model, cfg.dtype))

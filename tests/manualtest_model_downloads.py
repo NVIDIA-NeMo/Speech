@@ -36,11 +36,8 @@ for refresh_cache in [True, False]:
         nemo_asr.models.EncDecCTCModel,
         refresh_cache,
         [
-            'QuartzNet15x5Base-En',
-            'QuartzNet15x5Base-Zh',
-            'QuartzNet5x5LS-En',
-            'QuartzNet15x5NR-En',
-            'Jasper10x5Dr-En',
+            'stt_en_jasper10x5dr',
+            'asr_talknet_aligner',
         ],
     )
     testclass_downloads(nemo_asr.models.EncDecCTCModelBPE, refresh_cache, ['ContextNet-192-WPE-1024-8x-Stride'])

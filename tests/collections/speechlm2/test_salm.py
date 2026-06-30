@@ -298,6 +298,29 @@ def test_salm_prepare_inputs_chunks_long_audio(device):
 
 
 @pytest.mark.parametrize("device", chunking_test_devices())
+def test_salm_prepare_inputs_passes_chunk_time_offsets(device):
+    # sampling_rate=8, chunk=0.5s -> 4 samples/chunk; a 12-sample audio splits cleanly into
+    # 3 chunks starting at samples 0, 4, 8, i.e. time offsets 0.0, 0.5, 1.0 seconds.
+    model = _make_chunking_test_model(encoder_chunk_size_seconds=0.5, sampling_rate=8, hop_length=2, device=device)
+    batch = {
+        "audios": torch.arange(1.0, 13.0, device=device).unsqueeze(0),
+        "audio_lens": torch.tensor([12], dtype=torch.long, device=device),
+        "input_ids": torch.tensor([[model.audio_locator_tag_id, 10]], dtype=torch.long, device=device),
+        "loss_mask": torch.tensor([[False, True]], dtype=torch.bool, device=device),
+    }
+
+    model.prepare_inputs(batch)
+
+    chunked_signal, chunked_lens = model.perception.calls[0]
+    assert chunked_signal.shape == (3, 4)
+    assert torch.equal(chunked_lens, torch.tensor([4, 4, 4], dtype=torch.long, device=device))
+    time_offset = model.perception.time_offsets[0]
+    assert time_offset is not None
+    # chunk N start_sample / sampling_rate: [0/8, 4/8, 8/8]
+    assert torch.equal(time_offset, torch.tensor([0.0, 0.5, 1.0], device=device))
+
+
+@pytest.mark.parametrize("device", chunking_test_devices())
 def test_salm_prepare_inputs_merges_short_tail_chunk(device):
     model = _make_chunking_test_model(encoder_chunk_size_seconds=0.5, sampling_rate=8, hop_length=2, device=device)
     batch = {

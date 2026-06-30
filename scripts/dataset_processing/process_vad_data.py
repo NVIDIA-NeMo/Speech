@@ -35,6 +35,8 @@ import numpy as np
 import soundfile as sf
 from sklearn.model_selection import train_test_split
 
+from nemo.utils.tar_utils import safe_extract
+
 sr = 16000
 
 # google speech command v2
@@ -64,9 +66,8 @@ def __maybe_download_file(destination: str, source: str):
 
 def extract_file(filepath: str, data_dir: str):
     try:
-        tar = tarfile.open(filepath)
-        tar.extractall(data_dir)
-        tar.close()
+        with tarfile.open(filepath) as tar:
+            safe_extract(tar, data_dir)
     except Exception:
         logging.info('Not extracting. Maybe already there?')
 

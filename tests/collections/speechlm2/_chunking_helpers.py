@@ -43,9 +43,13 @@ class ChunkingTestPerception(torch.nn.Module):
         super().__init__()
         self.preprocessor = SimpleNamespace(featurizer=_ChunkingTestFeaturizer(sampling_rate, hop_length))
         self.calls = []
+        self.time_offsets = []
+        self.spk_targets_calls = []
 
-    def forward(self, input_signal=None, input_signal_length=None):
+    def forward(self, input_signal=None, input_signal_length=None, time_offset=None, spk_targets=None):
         self.calls.append((input_signal.detach().clone(), input_signal_length.detach().clone()))
+        self.time_offsets.append(None if time_offset is None else time_offset.detach().clone())
+        self.spk_targets_calls.append(None if spk_targets is None else spk_targets.detach().clone())
         max_len = int(input_signal_length.max().item()) if input_signal_length.numel() > 0 else 0
         return input_signal[:, :max_len].unsqueeze(-1), input_signal_length.clone()
 

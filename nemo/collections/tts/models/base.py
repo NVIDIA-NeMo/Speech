@@ -18,13 +18,12 @@ from contextlib import ExitStack, contextmanager
 from typing import List, Optional
 
 import torch
-from hydra.utils import instantiate
 from omegaconf import DictConfig
 from tqdm import tqdm
 
 from nemo.collections.tts.parts.utils.helpers import OperationMode
 from nemo.core.classes import ModelPT
-from nemo.core.classes.common import PretrainedModelInfo, typecheck
+from nemo.core.classes.common import PretrainedModelInfo, safe_instantiate, typecheck
 from nemo.core.neural_types.elements import AudioSignal
 from nemo.core.neural_types.neural_type import NeuralType
 from nemo.utils import logging, model_utils
@@ -54,7 +53,7 @@ class NeedsNormalizer:
                     'text_normalizer.whitelist', cfg.text_normalizer.whitelist
                 )
 
-            self.normalizer = instantiate(cfg.text_normalizer, **normalizer_kwargs)
+            self.normalizer = safe_instantiate(cfg.text_normalizer, **normalizer_kwargs)
             self.text_normalizer_call = self.normalizer.normalize
             if "text_normalizer_call_kwargs" in cfg:
                 self.text_normalizer_call_kwargs = cfg.text_normalizer_call_kwargs

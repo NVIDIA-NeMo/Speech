@@ -24,7 +24,7 @@ from typing import Any, Dict
 
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request, WebSocket
+from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 from omegaconf import OmegaConf
@@ -36,6 +36,7 @@ from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
 from pipecat.processors.frameworks.rtvi import RTVIAction, RTVIConfig, RTVIObserverParams, RTVIProcessor
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
+from websocket_url import build_websocket_url
 
 from nemo.agents.voice_agent.pipecat.processors.frameworks.rtvi import RTVIObserver
 from nemo.agents.voice_agent.pipecat.services.nemo.audio_logger import AudioLogger, RTVIAudioLoggerObserver
@@ -92,6 +93,8 @@ TRANSPORT_AUDIO_OUT_10MS_CHUNKS = config_manager.TRANSPORT_AUDIO_OUT_10MS_CHUNKS
 RECORD_AUDIO_DATA = server_config.transport.get("record_audio_data", False)
 AUDIO_LOG_DIR = server_config.transport.get("audio_log_dir", "./audio_logs")
 SERVER_HOST = os.getenv("SERVER_HOST", "0.0.0.0")
+SERVER_PUBLIC_HOST = os.getenv("SERVER_PUBLIC_HOST", "127.0.0.1")
+WEBSOCKET_SCHEME = os.getenv("WEBSOCKET_SCHEME", "ws")
 WEBSOCKET_PORT = int(os.getenv("WEBSOCKET_PORT", 8765))
 FASTAPI_PORT = int(os.getenv("FASTAPI_PORT", 7860))
 
@@ -424,11 +427,9 @@ async def websocket_endpoint(websocket: WebSocket):
 
 
 @app.post("/connect")
-async def bot_connect(request: Request) -> Dict[Any, Any]:
+async def bot_connect() -> Dict[Any, Any]:
     print("Received /connect request")
-    # Use the host that the client connected to (from the request)
-    server_host = request.url.hostname or request.headers.get("host", "").split(":")[0]
-    ws_url = f"ws://{server_host}:{WEBSOCKET_PORT}"
+    ws_url = build_websocket_url(SERVER_PUBLIC_HOST, WEBSOCKET_PORT, WEBSOCKET_SCHEME)
     print(f"Returning WebSocket URL: {ws_url}")
     return {"ws_url": ws_url}
 

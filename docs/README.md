@@ -2,12 +2,10 @@
 
 ## Building the Documentation
 
-1. Create and activate a virtual environment.
-
-1. Install the documentation dependencies:
+1. Install the documentation dependencies into the locked `uv` environment:
 
    ```console
-   $ uv sync --group docs
+   $ uv sync --locked --group docs
    ```
 
 1. Build the documentation:
@@ -21,7 +19,7 @@
 1. Build the documentation, as described in the preceding section, but use the following command:
 
    ```shell
-   make -C docs clean linkcheck
+   uv run make -C docs clean linkcheck
    ```
 
 1. Run the link-checking script:

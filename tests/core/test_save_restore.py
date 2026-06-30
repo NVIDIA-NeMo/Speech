@@ -1417,3 +1417,23 @@ class TestSaveRestore:
                 assert expected_paths == observed_paths
         finally:
             os.chdir(cwd)
+
+
+class _NonTensorPayload:
+    """A non-tensor, picklable object that torch's weights_only unpickler rejects."""
+
+    def __init__(self, value):
+        self.value = value
+
+
+@pytest.mark.unit
+def test_load_state_dict_honors_force_no_weights_only(tmp_path, monkeypatch):
+    """TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD must let a checkpoint with non-tensor objects load."""
+    ckpt = tmp_path / "weights.ckpt"
+    torch.save({"w": torch.zeros(2), "meta": _NonTensorPayload(11)}, ckpt)
+    monkeypatch.setenv("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")
+
+    state = save_restore_connector.SaveRestoreConnector._load_state_dict_from_disk(str(ckpt))
+
+    assert torch.equal(state["w"], torch.zeros(2))
+    assert state["meta"].value == 11

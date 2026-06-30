@@ -15,7 +15,6 @@ import random
 from typing import Iterable
 
 import torch
-from hydra.utils import instantiate
 from lightning.pytorch import Trainer
 from lightning.pytorch.loggers import TensorBoardLogger
 from omegaconf import DictConfig
@@ -25,7 +24,7 @@ from nemo.collections.tts.modules.fastpitch import FastPitchSSLModule, average_f
 from nemo.collections.tts.modules.transformer import mask_from_lens
 from nemo.collections.tts.parts.utils.helpers import plot_multipitch_to_numpy, plot_spectrogram_to_numpy
 from nemo.core.classes import ModelPT
-from nemo.core.classes.common import PretrainedModelInfo
+from nemo.core.classes.common import PretrainedModelInfo, safe_instantiate
 from nemo.utils import logging, model_utils
 from nemo.utils.decorators import experimental
 
@@ -68,20 +67,20 @@ class FastPitchModel_SSL(ModelPT):
         input_fft = None
         self.use_encoder = use_encoder = cfg.get("use_encoder", False)
         if use_encoder:
-            self.encoder = instantiate(self._cfg.encoder)
+            self.encoder = safe_instantiate(self._cfg.encoder)
 
-        output_fft = instantiate(self._cfg.output_fft)
+        output_fft = safe_instantiate(self._cfg.output_fft)
 
         duration_predictor = None
         self.use_duration_predictor = cfg.get("use_duration_predictor", False)
         if self.use_duration_predictor:
             assert self.encoder is not None, "use_encoder must be True if use_duration_predictor is True"
             # this means we are using unique tokens
-            duration_predictor = instantiate(self._cfg.duration_predictor)
+            duration_predictor = safe_instantiate(self._cfg.duration_predictor)
 
         self.pitch_conditioning = pitch_conditioning = cfg.get("pitch_conditioning", True)
         if pitch_conditioning:
-            pitch_predictor = instantiate(self._cfg.pitch_predictor)
+            pitch_predictor = safe_instantiate(self._cfg.pitch_predictor)
         else:
             pitch_predictor = None
 
@@ -396,7 +395,7 @@ class FastPitchModel_SSL(ModelPT):
         return wavs
 
     def __setup_dataloader_from_config(self, cfg):
-        dataset = instantiate(cfg.dataset)
+        dataset = safe_instantiate(cfg.dataset)
 
         return torch.utils.data.DataLoader(dataset, collate_fn=dataset.pad_collate_fn, **cfg.dataloader_params)
 

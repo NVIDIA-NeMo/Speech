@@ -22,6 +22,7 @@ from safetensors.torch import load_file
 from transformers import AutoConfig, AutoModelForCausalLM
 
 from nemo.collections.asr.models import ASRModel
+from nemo.collections.asr.modules.parallel_expert_encoder import ParallelExpertEncoderPT
 from nemo.collections.speechlm2.modules import AudioPerceptionModule
 from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.tts.models import AudioCodecModel
@@ -88,7 +89,12 @@ def load_pretrained_automodel_llm(
     from nemo_automodel import NeMoAutoModelForCausalLM
 
     if pretrained_weights:
-        return NeMoAutoModelForCausalLM.from_pretrained(model_path_or_name, torch_dtype=dtype, **kwargs)
+        return NeMoAutoModelForCausalLM.from_pretrained(
+            model_path_or_name,
+            torch_dtype=dtype,
+            trust_remote_code=trust_remote_code,
+            **kwargs,
+        )
     else:
         config = AutoConfig.from_pretrained(model_path_or_name, trust_remote_code=trust_remote_code)
         return NeMoAutoModelForCausalLM.from_config(config, torch_dtype=dtype, **kwargs)
@@ -186,6 +192,114 @@ def setup_speech_encoder(model: torch.nn.Module, pretrained_weights: bool = True
     else:
         model.perception = AudioPerceptionModule(model.cfg.perception).train()
 
+    if model.cfg.get("pe_encoder_path", None) not in (None, "", False):
+        setup_parallel_expert_encoder(model)
+
+
+def setup_parallel_expert_encoder(model: torch.nn.Module):
+    """Mount a ParallelExpertEncoder bundle from ``model.pe_encoder_path``.
+
+    This is an encoder replacement, not a training-checkpoint restore. It keeps
+    the existing SALM perception path intact:
+
+        preprocessor -> ParallelExpertEncoder -> modality_adapter -> proj
+
+    The PE encoder expects un-normalised mels for its Sortformer branch and
+    replays ASR normalisation internally, so the outer perception preprocessor
+    normalisation is disabled when the bundle is mounted.
+    """
+    pe_encoder_path = model.cfg.get("pe_encoder_path", None)
+    if pe_encoder_path in (None, "", False):
+        return
+
+    if not (hasattr(model, "perception") and model.perception is not None):
+        raise RuntimeError(
+            f"model.pe_encoder_path='{pe_encoder_path}' is set but the model has no "
+            "`perception` module to mount it onto. Call setup_speech_encoder() first."
+        )
+    if not isinstance(pe_encoder_path, str) or not pe_encoder_path:
+        raise ValueError(
+            "model.pe_encoder_path must be a local ParallelExpertEncoderPT .nemo bundle path or a "
+            f"pretrained model id (HuggingFace '{{repo}}/{{name}}' or NGC alias), got {pe_encoder_path!r}."
+        )
+    if not hasattr(model.perception, "encoder"):
+        raise RuntimeError(
+            "model.pe_encoder_path requires a direct `model.perception.encoder` to replace. "
+            "Adapters that wrap the encoder at construction time (for example multi-layer "
+            "feature extractors) need a separate implementation."
+        )
+
+    # Fail fast when a local .nemo is given but isn't a PE bundle. HuggingFace Hub /
+    # NGC ids are resolved + validated by ParallelExpertEncoderPT.load_from_nemo
+    # (from_pretrained -> restore_from, which checks the bundle target class).
+    if pe_encoder_path.endswith(".nemo") and Path(pe_encoder_path).is_file():
+        if not ParallelExpertEncoderPT.is_pe_nemo(pe_encoder_path):
+            raise ValueError(
+                f"model.pe_encoder_path={pe_encoder_path!r} is not a ParallelExpertEncoderPT .nemo bundle."
+            )
+
+    pe_encoder = ParallelExpertEncoderPT.load_from_nemo(
+        pe_encoder_path,
+        map_location="cpu",
+        strict=True,
+    )
+
+    existing_encoder = model.perception.encoder
+    existing_d_model = int(getattr(existing_encoder, "d_model", -1))
+    if existing_d_model > 0 and int(pe_encoder.d_model) != existing_d_model:
+        raise ValueError(
+            f"ParallelExpertEncoder d_model={pe_encoder.d_model} does not match the "
+            f"existing perception encoder d_model={existing_d_model}. Re-export the "
+            "PE bundle with a matching ASR encoder or use a matching perception config."
+        )
+
+    adapter_cfg = model.cfg.get("perception", {}).get("modality_adapter", {})
+    adapter_d_model = adapter_cfg.get("d_model", None)
+    if adapter_d_model is not None and int(adapter_d_model) != int(pe_encoder.d_model):
+        raise ValueError(
+            f"ParallelExpertEncoder d_model={pe_encoder.d_model} does not match "
+            f"model.perception.modality_adapter.d_model={adapter_d_model}."
+        )
+
+    proj = getattr(model.perception, "proj", None)
+    if isinstance(proj, torch.nn.Linear) and int(proj.in_features) != int(pe_encoder.d_model):
+        raise ValueError(
+            f"ParallelExpertEncoder d_model={pe_encoder.d_model} does not match "
+            f"model.perception.proj.in_features={proj.in_features}."
+        )
+
+    prev_normalize = None
+    try:
+        prev_normalize = model.perception.preprocessor.featurizer.normalize
+        model.perception.preprocessor.featurizer.normalize = None
+    except AttributeError:
+        logging.warning(
+            "Could not disable perception preprocessor featurizer.normalize while mounting "
+            "ParallelExpertEncoder from %s.",
+            pe_encoder_path,
+        )
+    try:
+        with open_dict(model.cfg):
+            if "perception" in model.cfg and "preprocessor" in model.cfg.perception:
+                model.cfg.perception.preprocessor.normalize = None
+    except (AttributeError, TypeError):
+        # cfg may lack this nested key or be a non-editable structure; the runtime
+        # featurizer.normalize disabling above is the functional change that matters.
+        pass
+
+    model.perception.encoder = pe_encoder
+    logging.info(
+        "Mounted ParallelExpertEncoder from %s onto model.perception.encoder "
+        "(d_model=%d, n_spk=%d, freeze_diar=%s, freeze_asr=%s); "
+        "perception preprocessor normalization disabled (was %r).",
+        pe_encoder_path,
+        int(pe_encoder.d_model),
+        int(pe_encoder.n_spk),
+        bool(pe_encoder.freeze_diar),
+        bool(pe_encoder.freeze_asr),
+        prev_normalize,
+    )
+
 
 def set_model_dict_for_partial_init(
     pretrained_dict: Dict[str, torch.Tensor], model_dict: Dict[str, torch.Tensor]
@@ -270,7 +384,7 @@ def _load_checkpoint_state(checkpoint_path: str) -> dict:
 
         return load_file(os.path.join(checkpoint_path, "model.safetensors"))
     else:
-        return torch.load(checkpoint_path, weights_only=False, map_location='cpu')['state_dict']
+        return torch.load(checkpoint_path, map_location='cpu')['state_dict']
 
 
 def init_perception_from_checkpoint(model: torch.nn.Module, checkpoint_path: str):
@@ -397,6 +511,14 @@ def init_from_training_checkpoint(model: torch.nn.Module, checkpoint_path: str):
         return
 
     logging.info(f"Initializing model weights from training checkpoint: {checkpoint_path}")
+
+    from nemo.collections.asr.modules.parallel_expert_encoder import ParallelExpertEncoderPT
+
+    if ParallelExpertEncoderPT.is_pe_nemo(checkpoint_path):
+        raise ValueError(
+            f"init_from_checkpoint={checkpoint_path!r} points to a ParallelExpertEncoderPT bundle. "
+            "Use model.pe_encoder_path for PE encoder bundles."
+        )
 
     if _is_dcp_checkpoint(checkpoint_path):
         import torch.distributed.checkpoint as dcp

@@ -36,9 +36,9 @@ See the [model architecture](#model-architecture) section and [NeMo documentatio
 
 ## NVIDIA NeMo: Training
 
-To train, fine-tune or play with the model you will need to install [NVIDIA NeMo](https://github.com/NVIDIA/NeMo). We recommend you install it after you've installed latest Pytorch version.
+To train, fine-tune, or experiment with the model, install the PyTorch build for your platform first, then install [NVIDIA NeMo](https://docs.nvidia.com/nemo/speech/nightly/starthere/install.html) with the extras you need.
 ```
-pip install nemo_toolkit['all']
+pip install 'nemo-toolkit[all]'
 ``` 
 
 ## How to Use this Model

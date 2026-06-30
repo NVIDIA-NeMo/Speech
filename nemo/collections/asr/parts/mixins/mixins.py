@@ -16,6 +16,7 @@ import json
 import os
 import tarfile
 from abc import ABC, abstractmethod
+from pathlib import PurePosixPath
 from typing import List
 
 import torch
@@ -32,6 +33,7 @@ from nemo.collections.asr.parts.utils.tokenizer_utils import (
     extract_punctuation_from_vocab,
 )
 from nemo.collections.common import tokenizers
+from nemo.core.connectors.save_restore_connector import SaveRestoreConnector
 from nemo.utils import app_state, logging
 from nemo.utils.file_utils import robust_copy
 
@@ -58,6 +60,14 @@ class ASRBPEMixin(ABC):
 
     # this will be used in configs and nemo artifacts
     AGGREGATE_TOKENIZERS_DICT_PREFIX = 'langs'
+
+    @staticmethod
+    def _get_extracted_tokenizer_name(member_name: str) -> str:
+        member_file_name = PurePosixPath(member_name).name
+        new_name = member_file_name.split("_")[1:]
+        if len(new_name) > 1:
+            return "_".join(new_name)
+        return new_name[0]
 
     def _setup_tokenizer(self, tokenizer_cfg: DictConfig):
         tokenizer_type = tokenizer_cfg.get('type')
@@ -466,21 +476,15 @@ class ASRBPEMixin(ABC):
             except tarfile.ReadError:
                 # can be older checkpoint => try compressed tar
                 tar_header = "r:gz"
-            tar = tarfile.open(restore_path, tar_header)
+            with tarfile.open(restore_path, tar_header) as tar:
+                for nemo_object_name in nemo_file_objects:
+                    members = [x for x in tar.getmembers() if nemo_object_name in x.name]
+                    extracted_members = SaveRestoreConnector._safe_extract(tar, dir, members=members)
+                    for member in extracted_members:
+                        new_name = self._get_extracted_tokenizer_name(member.name)
+                        os.rename(os.path.join(dir, member.name), os.path.join(dir, new_name))
 
-            for nemo_object_name in nemo_file_objects:
-                members = [x for x in tar.getmembers() if nemo_object_name in x.name]
-                for member in members:
-                    tar.extract(member, dir)
-
-                    new_name = member.name.split("_")[1:]
-                    if len(new_name) > 1:
-                        new_name = "_".join(new_name)
-                    else:
-                        new_name = new_name[0]
-                    os.rename(os.path.join(dir, member.name), os.path.join(dir, new_name))
-
-                    logging.info(f"Saved {nemo_object_name} at {os.path.join(dir, new_name)}")
+                        logging.info(f"Saved {nemo_object_name} at {os.path.join(dir, new_name)}")
 
     def _derive_tokenizer_properties(self):
         vocab = self.tokenizer.tokenizer.get_vocab()

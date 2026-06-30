@@ -38,7 +38,7 @@ jobs:
     uses: ./.github/workflows/_build_container.yml
     with:
       image-name: ${{ inputs.image-name }}
-      dockerfile: docker/Dockerfile.ci
+      dockerfile: docker/Dockerfile
       runner: ${{ inputs.runner }}
 
   unit-tests:
@@ -185,6 +185,9 @@ jobs:
             script: L2_Speech_Estimate_Token_Bins
           - runner: ${{ inputs.runner }}
             script: L2_Speech_Batch_Size_OOMptimizer
+          - runner: ${{ inputs.runner }}
+            script: L2_Speech_Distributed_Batch_Size_OOMptimizer
+            timeout: 15
           - runner: ${{ inputs.runner }}
             script: Optional_L2_Speech_Batch_Size_OOMptimizer_Canary
             is-optional: true

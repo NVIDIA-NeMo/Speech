@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import inspect
+
 import torch
 from omegaconf import DictConfig, open_dict
 from torch import nn
@@ -36,6 +38,15 @@ class AudioPerceptionModule(NeuralModule, Exportable):
         encoder_subsampling = self.encoder.subsampling_factor
         adapter_subsampling = getattr(self.modality_adapter, "subsampling_factor", 1.0)
         return frame_shift * encoder_subsampling * adapter_subsampling
+
+    @property
+    def encoder_frame_duration(self) -> float:
+        """
+        Returns the audio duration corresponding to a single frame at the encoder output
+        (but before the modality adapter).
+        """
+        frame_shift = self.preprocessor.featurizer.hop_length / self.preprocessor.featurizer.sample_rate
+        return frame_shift * self.encoder.subsampling_factor
 
     @property
     def encoder(self) -> nn.Module:
@@ -76,6 +87,9 @@ class AudioPerceptionModule(NeuralModule, Exportable):
             self.proj = nn.Linear(cfg.modality_adapter.d_model, cfg.output_dim)
         else:
             self.proj = nn.Identity()
+        # Optional Rotary Time Embedding (ROTE), applied to the encoder output features
+        # at the entrance of the modality adapter. ``None`` (default) is a no-op.
+        self.rote = self.from_config_dict(cfg.rote) if cfg.get("rote") is not None else None
 
     def set_activation_checkpointing(self, enabled: bool) -> None:
         """Enable/disable activation checkpointing on the encoder's transformer layers.
@@ -108,6 +122,35 @@ class AudioPerceptionModule(NeuralModule, Exportable):
             )
         return processed_signal, processed_signal_length
 
+    def _apply_rote(self, encoder_emb, time_offset=None):
+        """Apply RoTE to encoder output features ``(B, C, T)`` (or a list thereof).
+
+        ``time_offset`` is an optional per-row start time in seconds, shape ``(B,)``; when
+        ``None`` every row starts at time 0. Per-frame absolute time is
+        ``time_offset[b] + (frame_idx + 0.5) * encoder_frame_duration``.
+        """
+        if isinstance(encoder_emb, (list, tuple)):
+            return type(encoder_emb)(self._apply_rote(emb, time_offset) for emb in encoder_emb)
+
+        # encoder_emb: (B, C, T) -> rotate over the channel dim with x channel-last.
+        b, _, t = encoder_emb.shape
+        device = encoder_emb.device
+        frame_times = (torch.arange(t, device=device, dtype=torch.float32) + 0.5) * self.encoder_frame_duration
+        times = frame_times.unsqueeze(0).expand(b, -1)  # (B, T)
+        if time_offset is not None:
+            times = times + time_offset.to(device=device, dtype=torch.float32).unsqueeze(1)
+        rotated = self.rote(encoder_emb.transpose(1, 2), times)  # (B, T, C)
+        return rotated.transpose(1, 2)
+
+    @staticmethod
+    def _encoder_accepts_spk_targets(encoder: nn.Module) -> bool:
+        if hasattr(encoder, "diarization_model") or hasattr(encoder, "diar_kernel"):
+            return True
+        try:
+            return "spk_targets" in inspect.signature(encoder.forward).parameters
+        except (TypeError, ValueError):
+            return False
+
     # disable type checks to avoid type-check errors when using Conformer as modality adapter
     @typecheck.disable_checks()
     def forward(
@@ -117,6 +160,8 @@ class AudioPerceptionModule(NeuralModule, Exportable):
         processed_signal=None,
         processed_signal_length=None,
         return_encoder_emb=False,
+        time_offset=None,
+        spk_targets=None,
     ):
         processed_signal, processed_signal_length = self.maybe_preprocess_audio(
             input_signal, input_signal_length, processed_signal, processed_signal_length
@@ -131,7 +176,18 @@ class AudioPerceptionModule(NeuralModule, Exportable):
                 audio_signal=processed_signal, length=processed_signal_length
             )
         else:
-            encoder_emb, encoded_len = self.encoder(audio_signal=processed_signal, length=processed_signal_length)
+            encoder_kwargs = {"audio_signal": processed_signal, "length": processed_signal_length}
+            if spk_targets is not None:
+                if not self._encoder_accepts_spk_targets(self.encoder):
+                    raise ValueError(
+                        "`spk_targets` were provided, but the mounted perception encoder "
+                        f"({type(self.encoder).__name__}) does not support speaker-target inputs. "
+                        "spk_targets has no effect when the encoder does not support it."
+                    )
+                encoder_kwargs["spk_targets"] = spk_targets
+            encoder_emb, encoded_len = self.encoder(**encoder_kwargs)
+        if self.rote is not None:
+            encoder_emb = self._apply_rote(encoder_emb, time_offset)
         encoded, encoded_len = self.modality_adapter(audio_signal=encoder_emb, length=encoded_len)
 
         # b, c, t -> b, t, c

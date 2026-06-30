@@ -27,7 +27,6 @@ import numpy as np
 import soundfile as sf
 import torch
 import wandb
-from hydra.utils import instantiate
 from lhotse.serialization import load_yaml
 from lightning.pytorch import Trainer
 from lightning.pytorch.loggers import TensorBoardLogger, WandbLogger
@@ -70,7 +69,7 @@ from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     stack_tensors,
 )
 from nemo.core.classes import ModelPT
-from nemo.core.classes.common import PretrainedModelInfo
+from nemo.core.classes.common import PretrainedModelInfo, safe_instantiate
 from nemo.utils import logging
 from nemo.utils.exceptions import NeMoBaseException
 
@@ -363,7 +362,7 @@ class MagpieTTSModel(ModelPT):
         # that is different than in the audio codec checkpoint.
         vector_quantizer = cfg.get('vector_quantizer')
         if vector_quantizer is not None:
-            vector_quantizer = instantiate(vector_quantizer)
+            vector_quantizer = safe_instantiate(vector_quantizer)
             num_audio_codebooks = vector_quantizer.num_codebooks
             codebook_size = vector_quantizer.codebook_size
             codec_converter = VectorQuantizerIndexConverter(
@@ -3441,7 +3440,7 @@ class MagpieTTSModel(ModelPT):
                 f"Got keys: {list(dataset_cfg.keys())}"
             )
 
-        dataset = instantiate(
+        dataset = safe_instantiate(
             dataset_cfg.datasets,
             sample_rate=self.sample_rate,
             bos_id=self.bos_id,
@@ -3812,7 +3811,7 @@ class MagpieTTSModel(ModelPT):
                     end_of_text=end_of_text,
                     beginning_of_text=beginning_of_text,
                     use_cfg=use_cfg,
-                    use_local_transformer_for_inference=True,
+                    use_local_transformer_for_inference=self.local_transformer_type != LocalTransformerType.NO_LT,
                 )
                 if output.predicted_codes_lens[0] > 0:
                     all_codes.append(output.predicted_codes[0, :, : output.predicted_codes_lens[0]])

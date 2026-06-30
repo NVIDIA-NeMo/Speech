@@ -24,6 +24,7 @@ import urllib.request
 from pathlib import Path
 
 from nemo.collections.asr.parts.utils.manifest_utils import create_manifest
+from nemo.utils.tar_utils import safe_extract
 
 train_url = "https://www.openslr.org/resources/111/train_{}.tar.gz"
 train_datasets = ["S", "M", "L"]
@@ -44,9 +45,8 @@ def _load_sox_transformer():
 
 def extract_file(filepath: str, data_dir: str):
     try:
-        tar = tarfile.open(filepath)
-        tar.extractall(data_dir)
-        tar.close()
+        with tarfile.open(filepath) as tar:
+            safe_extract(tar, data_dir)
     except Exception:
         logging.info("Not extracting. Maybe already there?")
 

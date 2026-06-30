@@ -34,7 +34,7 @@ except RuntimeError:
 torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
 
 
-@hydra_runner(config_path="conf", config_name="s2s_duplex_stt")
+@hydra_runner(config_path="conf", config_name="duplex_stt")
 def train(cfg):
     OmegaConf.resolve(cfg)
     torch.distributed.init_process_group(backend="nccl")

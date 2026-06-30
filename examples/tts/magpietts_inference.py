@@ -216,9 +216,7 @@ def run_inference_and_evaluation(
         violin_plot_metrics.remove('utmosv2')
 
     # Build full checkpoint identifier (include MoE info if present)
-    full_checkpoint_name = (
-        f"{checkpoint_name}_{moe_info}{inference_config.build_identifier()}_SV_{eval_config.sv_model}"
-    )
+    full_checkpoint_name = f"{checkpoint_name}_{moe_info}{inference_config.build_identifier()}_SV_{eval_config.sv_model}_{eval_config.language}"
 
     # Tracking metrics across datasets
     ssim_per_dataset = []

@@ -41,6 +41,7 @@ from nemo.collections.speechlm2.parts.pretrained import (
     update_perception_output_dim,
 )
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, MaskType, NeuralType
+from nemo.utils import logging
 
 
 class SALMAutomodel(LightningModule, HFHubMixin):
@@ -478,6 +479,8 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         self._partial_val_corrects = defaultdict(list)
         self._partial_val_num_frames = defaultdict(list)
         self._partial_val_lss = defaultdict(list)
+        self._partial_val_mtp_correct = defaultdict(list)
+        self._partial_val_mtp_valid = defaultdict(list)
 
     def on_validation_epoch_end(self) -> None:
         val_losses = []
@@ -512,10 +515,32 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             if lss_vals:
                 self.log("val_lss", torch.stack(lss_vals).mean(), on_epoch=True, sync_dist=True)
 
+        # Multi-Token Prediction acceptance metrics: per-head acceptance probability and the
+        # expected acceptance length (number of tokens a greedy verifier would accept, i.e. the
+        # always-accepted main-head token plus the cumulative product of each MTP head's accept
+        # probability). Per-head marginal rates approximate the conditional accept probabilities.
+        if self._partial_val_mtp_correct:
+            accept_lengths = []
+            for name in self._partial_val_mtp_correct:
+                correct = torch.stack(self._partial_val_mtp_correct[name]).sum(dim=0)
+                valid = torch.stack(self._partial_val_mtp_valid[name]).sum(dim=0)
+                D = correct.numel()
+                reduced = self._reduce_validation_metric_sums(torch.cat([correct, valid]), reduction_group)
+                per_head = reduced[:D] / reduced[D:].clamp(min=1)
+                for head_idx, p in enumerate(per_head, start=1):
+                    self.log(f"val_mtp_acc_{name}/head_{head_idx}", p, on_epoch=True, sync_dist=True)
+                accept_length = 1.0 + torch.cumprod(per_head, dim=0).sum()
+                self.log(f"val_mtp_accept_length_{name}", accept_length, on_epoch=True, sync_dist=True)
+                accept_lengths.append(accept_length)
+            if accept_lengths:
+                self.log("val_mtp_accept_length", torch.stack(accept_lengths).mean(), on_epoch=True, sync_dist=True)
+
         self._partial_val_loss_sums.clear()
         self._partial_val_corrects.clear()
         self._partial_val_num_frames.clear()
         self._partial_val_lss.clear()
+        self._partial_val_mtp_correct.clear()
+        self._partial_val_mtp_valid.clear()
 
     def _reduce_validation_metric_sums(self, metric_sums: Tensor, group) -> Tensor:
         if group is not None and dist.is_available() and dist.is_initialized():
@@ -528,11 +553,32 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             if dataset_batch is None:
                 continue  # some dataset is exhausted
             inputs = self.prepare_inputs(dataset_batch)
-            forward_outputs = self(
-                inputs["input_embeds"],
-                attention_mask=inputs["attention_mask"],
-                **inputs.get("llm_kwargs", {}),
-            )
+            # Enable the MTP heads under eval so we can measure per-head token
+            # acceptance during validation; the LLM gates them on self.training
+            # otherwise. Restored immediately so generation stays unaffected.
+            # ``hasattr`` (not ``getattr(..., None)``) so we can distinguish "LLM
+            # doesn't support eval-mode MTP" from the normal False default and warn
+            # once — otherwise the acceptance metrics silently never appear.
+            _mtp_eval_supported = hasattr(self.llm, "compute_mtp_in_eval")
+            if not _mtp_eval_supported and self._mtp_enabled and not getattr(self, "_warned_no_mtp_eval", False):
+                logging.warning(
+                    "MTP is enabled but the LLM has no `compute_mtp_in_eval` attribute, so validation "
+                    "will not report MTP acceptance metrics. Upgrade nemo_automodel to a revision that "
+                    "supports eval-mode MTP (the heads are gated on `self.training` otherwise)."
+                )
+                self._warned_no_mtp_eval = True
+            if _mtp_eval_supported:
+                _prev_mtp_eval = self.llm.compute_mtp_in_eval
+                self.llm.compute_mtp_in_eval = True
+            try:
+                forward_outputs = self(
+                    inputs["input_embeds"],
+                    attention_mask=inputs["attention_mask"],
+                    **inputs.get("llm_kwargs", {}),
+                )
+            finally:
+                if _mtp_eval_supported:
+                    self.llm.compute_mtp_in_eval = _prev_mtp_eval
             num_frames = (inputs["target_ids"] != -100).long().sum()
             with loss_parallel():
                 logits = forward_outputs["logits"]
@@ -559,6 +605,20 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             self._partial_val_loss_sums[name].append(loss_sum.detach())
             self._partial_val_corrects[name].append(correct.detach().to(loss_sum.dtype))
             self._partial_val_num_frames[name].append(num_frames.detach().to(loss_sum.dtype))
+
+            # Multi-Token Prediction acceptance: per-head match rate of each MTP head's
+            # argmax against the token it predicts, accumulated for epoch-end reporting.
+            mtp_h = forward_outputs.get("mtp_per_depth_h", None)
+            if mtp_h is not None:
+                mtp_cu_seqlens = inputs.get("llm_kwargs", {}).get("cu_seqlens")
+                correct_by_head, valid_by_head = _calculate_mtp_acceptance_with_heads(
+                    mtp_per_depth_h=mtp_h,
+                    labels=inputs["target_ids"],
+                    model=self.llm,
+                    cu_seqlens=mtp_cu_seqlens,
+                )
+                self._partial_val_mtp_correct[name].append(torch.stack(correct_by_head).detach().to(loss_sum.dtype))
+                self._partial_val_mtp_valid[name].append(torch.stack(valid_by_head).detach().to(loss_sum.dtype))
 
     def on_test_epoch_start(self) -> None:
         return self.on_validation_epoch_start()
@@ -1297,3 +1357,66 @@ def _calculate_mtp_loss_with_heads(
         total = total + head_loss
 
     return total, head_losses, raw_head_losses
+
+
+def _calculate_mtp_acceptance_with_heads(
+    *,
+    mtp_per_depth_h: list[torch.Tensor],
+    labels: torch.Tensor,
+    model: torch.nn.Module,
+    ignore_index: int = -100,
+    cu_seqlens: torch.Tensor | None = None,
+    seq_idx: torch.Tensor | None = None,
+) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
+    """Per-head MTP token-acceptance counts for validation.
+
+    For each MTP depth ``k`` the head's argmax prediction is compared against the
+    token ``k + 1`` steps ahead, using exactly the same rolled/masked targets as
+    ``_calculate_mtp_loss_with_heads`` (including cross-sequence masking under
+    packed THD). Returns ``(correct_by_head, valid_by_head)`` scalar tensors so
+    the epoch end can report per-head acceptance probability and expected
+    acceptance length without repeating the forward pass.
+    """
+    from nemo_automodel.components.loss.utils import _get_lm_head_module
+    from nemo_automodel.components.models.common.mtp import roll_tensor
+
+    mtp_outputs = mtp_per_depth_h
+    if labels.dim() == 1:
+        mtp_outputs = [h.squeeze(0) if (h.dim() == 3 and h.shape[0] == 1) else h for h in mtp_outputs]
+
+    lm_head = _get_lm_head_module(model)
+    if lm_head is None:
+        raise ValueError("lm_head module not found in model")
+
+    if seq_idx is None and cu_seqlens is not None:
+        cs = cu_seqlens
+        if cs.dim() == 2 and cs.shape[0] == 1:
+            cs = cs.squeeze(0)
+        if cs.dim() == 1:
+            positions = torch.arange(labels.shape[-1], device=labels.device)
+            seq_idx = torch.searchsorted(cs[1:].contiguous(), positions, right=True)
+            if labels.dim() == 2:
+                seq_idx = seq_idx.unsqueeze(0).expand(labels.shape[0], -1)
+
+    cur_labels = labels
+    correct_by_head = []
+    valid_by_head = []
+    for k, mtp_output in enumerate(mtp_outputs):
+        cur_labels = roll_tensor(cur_labels, shifts=-1, dim=-1)
+        masked = cur_labels.clone()
+        n_invalid = min(k + 1, masked.shape[-1])
+        masked[..., -n_invalid:] = ignore_index
+
+        if seq_idx is not None:
+            rolled_seq_idx = roll_tensor(seq_idx, shifts=-(k + 1), dim=-1)
+            masked = torch.where(rolled_seq_idx != seq_idx, torch.full_like(masked, ignore_index), masked)
+
+        logits = lm_head(mtp_output)
+        if isinstance(logits, DTensor):
+            logits = logits.full_tensor()
+        preds = logits.argmax(dim=-1)
+        valid = masked != ignore_index
+        correct_by_head.append((preds.eq(masked) & valid).sum())
+        valid_by_head.append(valid.sum())
+
+    return correct_by_head, valid_by_head

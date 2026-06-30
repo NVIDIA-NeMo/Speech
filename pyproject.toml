@@ -467,7 +467,9 @@ no-build-isolation-package = [
 # Keep Torch wheel indexes explicit per CUDA extra. The pinned Automodel git
 # dependency also carries Torch source metadata; see the static metadata below.
 [tool.uv.sources]
-nemo_automodel = { git = "https://github.com/NVIDIA-NeMo/Automodel.git", rev = "9eccbb6102a260efd7cbdffa890fc57b94f94528" }
+# TODO: re-point to NVIDIA-NeMo/Automodel once PR #2802 merges to main, pinning the merged SHA.
+# Until then the commit lives only on the fork / PR-head ref, which uv can't resolve from the org repo.
+nemo_automodel = { git = "https://github.com/Slyne/Automodel.git", rev = "9db8a6e9916d0ddd61112418145d6c061d2ebd49" }
 deep_ep = { git = "https://github.com/deepseek-ai/DeepEP.git", tag = "v1.2.1" }
 torch = [
   { index = "pytorch-cpu", marker = "sys_platform != 'linux' and sys_platform != 'darwin'" },
@@ -499,7 +501,7 @@ explicit = true
 
 [[tool.uv.dependency-metadata]]
 name = "nemo-automodel"
-version = "0.4.0+9eccbb61"
+version = "0.5.0+9db8a6e9"
 requires-python = ">=3.10"
 # The pinned Automodel git revision carries its own Torch source table. Keep
 # its core dependency metadata static here so this repo controls the CUDA wheel index.

@@ -111,3 +111,85 @@ def test_forward_omits_mtp_per_depth_h_when_absent():
     )
 
     assert 'mtp_per_depth_h' not in result
+
+
+# ---------------------------------------------------------------------------
+# validation MTP acceptance metrics
+# ---------------------------------------------------------------------------
+
+
+def test_validation_epoch_end_logs_mtp_acceptance():
+    '''on_validation_epoch_end reports per-head acceptance probability and the
+    expected acceptance length (always-accepted main token + cumulative product
+    of per-head accept probabilities).'''
+    from collections import defaultdict
+
+    model = _bare_model()
+    model._get_moe_dp_group = lambda: None  # single-rank: _reduce_validation_metric_sums is a no-op
+    model.lss_loss = None
+
+    logged = {}
+    model.log = lambda name, value, **kwargs: logged.__setitem__(name, float(value))
+
+    # Standard val metrics still need populating — the method aggregates them first.
+    model._partial_val_loss_sums = defaultdict(list, {'ds': [torch.tensor(4.0)]})
+    model._partial_val_corrects = defaultdict(list, {'ds': [torch.tensor(8.0)]})
+    model._partial_val_num_frames = defaultdict(list, {'ds': [torch.tensor(10.0)]})
+    model._partial_val_lss = defaultdict(list)
+
+    # Head 1: 8/10 accepted (p1 = 0.8); head 2: 5/10 accepted (p2 = 0.5).
+    model._partial_val_mtp_correct = defaultdict(list, {'ds': [torch.tensor([8.0, 5.0])]})
+    model._partial_val_mtp_valid = defaultdict(list, {'ds': [torch.tensor([10.0, 10.0])]})
+
+    SALMAutomodel.on_validation_epoch_end(model)
+
+    assert logged['val_mtp_acc_ds/head_1'] == pytest.approx(0.8)
+    assert logged['val_mtp_acc_ds/head_2'] == pytest.approx(0.5)
+    # 1 (main) + 0.8 + 0.8 * 0.5 = 2.2
+    assert logged['val_mtp_accept_length_ds'] == pytest.approx(2.2)
+    assert logged['val_mtp_accept_length'] == pytest.approx(2.2)
+
+
+def test_calculate_mtp_acceptance_with_heads_counts(monkeypatch):
+    '''_calculate_mtp_acceptance_with_heads compares each head's argmax against the
+    same rolled/masked targets used by the MTP loss and returns per-head
+    (correct, valid) counts.'''
+    # The helper imports these specific Automodel submodules; importorskip each so the test
+    # skips cleanly when the installed Automodel rev predates them (rather than hard-failing).
+    pytest.importorskip('nemo_automodel.components.loss.utils', reason='needs Automodel _get_lm_head_module')
+    mtp_mod = pytest.importorskip('nemo_automodel.components.models.common.mtp', reason='needs Automodel roll_tensor')
+    roll_tensor = mtp_mod.roll_tensor
+
+    from nemo.collections.speechlm2.models.salm_automodel import _calculate_mtp_acceptance_with_heads
+
+    # Identity lm_head over a V==H one-hot space so argmax(hidden) == predicted token id.
+    V = 4
+    lm_head = torch.nn.Linear(V, V, bias=False)
+    with torch.no_grad():
+        lm_head.weight.copy_(torch.eye(V))
+    model = torch.nn.Module()
+    model.lm_head = lm_head
+    # Avoid depending on Automodel's lm-head discovery internals.
+    monkeypatch.setattr('nemo_automodel.components.loss.utils._get_lm_head_module', lambda m: m.lm_head)
+
+    labels = torch.tensor([[0, 1, 2, 3, 0]])  # (1, T)
+    T = labels.shape[-1]
+    D = 2
+    # Every head predicts token 0 everywhere (one-hot index 0).
+    one_hot_zero = torch.zeros(1, T, V)
+    one_hot_zero[..., 0] = 1.0
+    mtp_h = [one_hot_zero.clone() for _ in range(D)]
+
+    correct, valid = _calculate_mtp_acceptance_with_heads(mtp_per_depth_h=mtp_h, labels=labels, model=model)
+
+    # Independently recompute the rolled/masked targets with the real roll_tensor.
+    cur = labels
+    for k in range(D):
+        cur = roll_tensor(cur, shifts=-1, dim=-1)
+        masked = cur.clone()
+        masked[..., -min(k + 1, T) :] = -100
+        valid_mask = masked != -100
+        exp_valid = int(valid_mask.sum())
+        exp_correct = int(((masked == 0) & valid_mask).sum())  # preds are all 0
+        assert int(valid[k]) == exp_valid
+        assert int(correct[k]) == exp_correct

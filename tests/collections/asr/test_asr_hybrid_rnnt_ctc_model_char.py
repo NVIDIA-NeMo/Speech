@@ -343,6 +343,9 @@ class TestEncDecHybridRNNTCTCModel:
             'blank_index',
             'boosting_tree',
             'boosting_tree_alpha',
+            'preserve_frame_confidence',
+            'tdt_include_duration_confidence',
+            'confidence_method_cfg',
         ]
 
         result = assert_dataclass_signature_match(

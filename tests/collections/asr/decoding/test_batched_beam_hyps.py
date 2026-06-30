@@ -1265,6 +1265,8 @@ class TestConvertToHypotheses:
         assert hypotheses[0].non_blank_step_confidence_precomputed == pytest.approx([0.9, 0.8])
         assert hypotheses[0].y_sequence.tolist() == [5, 2]
 
+    @pytest.mark.unit
+    @pytest.mark.parametrize("device", DEVICES)
     def test_export_batched_beam_hyps_to_cpu_lists_with_step_confidence(self, device: torch.device):
         blank_index = 1024
         hyps = BatchedBeamHyps(
@@ -1295,5 +1297,5 @@ class TestConvertToHypotheses:
         )
         tokens, timestamps, root_ptrs, confidences = export_batched_beam_hyps_to_cpu_lists(hyps)
         assert tokens == [[[5, 2]]]
-        assert confidences == [[[0.9, 0.8]]]
+        assert confidences[0][0] == pytest.approx([0.9, 0.8])
         assert root_ptrs == [[0]]

@@ -522,13 +522,18 @@ def init_from_training_checkpoint(model: torch.nn.Module, checkpoint_path: str):
 
     if _is_dcp_checkpoint(checkpoint_path):
         import torch.distributed.checkpoint as dcp
+        from torch.distributed.checkpoint.default_planner import DefaultLoadPlanner
 
         # Lightning saves model weights under the "state_dict" key in DCP.
         # Wrapping with the same structure lets DCP match keys correctly.
         # Optimizer states and other trainer state are ignored automatically
         # because we only provide the model's state_dict.
         state_dict = {"state_dict": model.state_dict()}
-        dcp.load(state_dict, checkpoint_id=str(checkpoint_path))
+        allow_partial = bool(model.cfg.get("init_from_checkpoint_allow_partial", False))
+        planner = DefaultLoadPlanner(allow_partial_load=True) if allow_partial else None
+        if allow_partial:
+            logging.info("DCP partial load enabled; checkpoint-missing model keys keep their initialized values")
+        dcp.load(state_dict, checkpoint_id=str(checkpoint_path), planner=planner)
         model.load_state_dict(state_dict["state_dict"])
         logging.info(f"Loaded distributed checkpoint from {checkpoint_path}")
     else:

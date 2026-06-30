@@ -134769,8 +134769,8 @@ WJH  ˈdʌbəljuˈdʒeɪˈeɪtʃ
 ;;; Pronunciation changes from 0.7b
 ;;;
 3D  ˈθɹiˌdi
-A  ˈeɪ
-A(1)  ˈʌ
+A  ˈʌ
+A(1)  ˈeɪ
 AC  ˌeɪˈsi
 AI  ˈeɪˈaɪ
 AI(1)  ˌeɪˈaɪ

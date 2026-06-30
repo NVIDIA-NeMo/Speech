@@ -355,8 +355,8 @@ def main(cfg: HfExportConfig) -> None:
         model = model.to(str_to_dtype(cfg.dtype))
         model_cfg["pretrained_weights"] = False
         model.save_pretrained(cfg.output_dir, config=_hf_export_config(model, cfg.dtype))
-        save_llm_backbone_config(model, cfg.output_dir)
-        _try_prepare_for_vllm(cfg.output_dir, model_cfg)
+        # save_llm_backbone_config(model, cfg.output_dir)
+        # _try_prepare_for_vllm(cfg.output_dir, model_cfg)
 
 
 if __name__ == "__main__":

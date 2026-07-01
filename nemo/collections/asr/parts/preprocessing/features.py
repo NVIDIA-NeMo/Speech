@@ -479,10 +479,8 @@ class FilterbankFeatures(nn.Module):
             x, _, _ = normalize_batch(x, seq_len, normalize_type=self.normalize)
 
         # mask to zero any values beyond seq_len in batch, pad to multiple of `pad_to` (for efficiency)
-        max_len = x.size(-1)
-        mask = torch.arange(max_len, device=x.device)
-        mask = mask.repeat(x.size(0), 1) >= seq_len.unsqueeze(1)
-        x = x.masked_fill(mask.unsqueeze(1).type(torch.bool).to(device=x.device), self.pad_value)
+        mask: torch.Tensor = make_seq_mask_like(lengths=seq_len, like=x, time_dim=-1, valid_ones=False)
+        x = x.masked_fill(mask, self.pad_value)
         del mask
         pad_to = self.pad_to
         if pad_to == "max":

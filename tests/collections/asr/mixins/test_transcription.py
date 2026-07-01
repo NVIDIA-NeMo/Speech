@@ -581,3 +581,30 @@ class TestTranscriptionMixin:
 
         # Reset the decoding strategy to original
         canary_1b_v2.change_decoding_strategy(orig_decoding_config)
+
+    @pytest.mark.with_downloads()
+    @pytest.mark.unit
+    def test_transcribe_override_config_preserves_timestamps(self, audio_files, canary_1b_v2):
+        canary_1b_v2.eval()
+        audio1, audio2 = audio_files
+
+        config = MultiTaskTranscriptionConfig(
+            batch_size=4,
+            return_hypotheses=True,
+            num_workers=0,
+            verbose=False,
+            prompt={'source_lang': 'en', 'target_lang': 'en'},
+            enable_chunking=False,
+            timestamps=True,
+        )
+
+        output = canary_1b_v2.transcribe([audio1, audio2], override_config=config)
+
+        assert len(output) == 2
+        assert isinstance(output[0], Hypothesis)
+        assert isinstance(output[1], Hypothesis)
+
+        assert output[0].timestamp is not None
+        assert output[1].timestamp is not None
+        assert 'word' in output[0].timestamp
+        assert 'word' in output[1].timestamp

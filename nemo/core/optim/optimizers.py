@@ -51,7 +51,7 @@ try:
 
     AVAILABLE_OPTIMIZERS['lamb'] = FusedLAMB
     AVAILABLE_OPTIMIZERS['fused_adam'] = FusedAdam
-except ModuleNotFoundError:
+except Exception:
     HAVE_APEX = False
 
 HAVE_APEX_DISTRIBUTED_ADAM = False

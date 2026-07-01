@@ -235,7 +235,7 @@ class EncDecRNNTBPEModelWithPrompt(PromptStreamingMixin, EncDecRNNTBPEModel, ASR
             manifest_filepath = os.path.join(config['temp_dir'], 'manifest.json')
             batch_size = min(config['batch_size'], len(config['paths2audio_files']))
 
-        target_lang = config.get('target_lang', 'en-US')
+        target_lang = config.get('target_lang', 'auto')
 
         dl_config = {
             'manifest_filepath': manifest_filepath,
@@ -254,6 +254,7 @@ class EncDecRNNTBPEModelWithPrompt(PromptStreamingMixin, EncDecRNNTBPEModel, ASR
             'num_prompts': self.cfg.model_defaults.get('num_prompts', 128),
             'subsampling_factor': self.cfg.get('subsampling_factor', 8),
             'default_lang': target_lang,
+            'default_prompt_mode': 'langID',
             'window_stride': self.cfg.preprocessor.get('window_stride', 0.01),
         }
 

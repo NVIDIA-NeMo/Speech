@@ -230,7 +230,7 @@ class CacheAwareRNNTInferenceWrapper(CacheAwareASRInferenceWrapper):
                 encs_dim_last, encoded_len, batched_state, multi_biasing_ids=multi_biasing_ids
             )
 
-            chunk_tokens, chunk_timestamps, root_ptrs, chunk_confidences = export_batched_beam_hyps_to_cpu_lists(
+            chunk_tokens, chunk_timestamps, chunk_confidences, root_ptrs = export_batched_beam_hyps_to_cpu_lists(
                 best_batched_hyps
             )
             beam_indices = best_batched_hyps.scores.argmax(dim=-1).detach().cpu().tolist()

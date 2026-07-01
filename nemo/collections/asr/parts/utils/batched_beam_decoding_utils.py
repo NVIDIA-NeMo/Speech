@@ -1052,7 +1052,7 @@ class BatchedBeamHyps:
 
 def export_batched_beam_hyps_to_cpu_lists(
     bbh: BatchedBeamHyps,
-) -> tuple[list[list[list[int]]], list[list[list[int]]], list[list[int]], list[list[list[float]]] | None]:
+) -> tuple[list[list[list[int]]], list[list[list[int]]], list[list[list[float]]] | None, list[list[int]]]:
     """Export chunk-local per-beam tokens/timestamps/confidences and beam descent map to CPU lists."""
     _, transcripts, timestamps, _, root_ptrs, step_confidence = bbh._export(sort=False)
     root_ptrs_list = root_ptrs.detach().cpu().tolist()
@@ -1080,4 +1080,4 @@ def export_batched_beam_hyps_to_cpu_lists(
         timestamps_out.append(bts)
         if step_confidence_cpu is not None:
             confidences_out.append(bc)
-    return tokens, timestamps_out, root_ptrs_list, confidences_out
+    return tokens, timestamps_out, confidences_out, root_ptrs_list

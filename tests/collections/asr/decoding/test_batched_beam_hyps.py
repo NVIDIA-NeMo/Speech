@@ -1295,7 +1295,7 @@ class TestConvertToHypotheses:
             next_hyps_prob=torch.tensor([[0.0]], device=device),
             next_step_confidence=torch.tensor([[0.8]], device=device),
         )
-        tokens, timestamps, root_ptrs, confidences = export_batched_beam_hyps_to_cpu_lists(hyps)
+        tokens, timestamps, confidences, root_ptrs = export_batched_beam_hyps_to_cpu_lists(hyps)
         assert tokens == [[[5, 2]]]
         assert confidences[0][0] == pytest.approx([0.9, 0.8])
         assert root_ptrs == [[0]]

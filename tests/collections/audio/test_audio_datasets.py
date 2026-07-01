@@ -18,6 +18,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 import torch.cuda
+from lhotse import CutSet
 from omegaconf import OmegaConf
 
 from nemo.collections.asr.parts.utils.manifest_utils import write_manifest
@@ -38,6 +39,14 @@ from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_confi
 
 
 class TestAudioDatasets:
+    @staticmethod
+    def _convert_manifest_item_to_cut(test_dir, item):
+        manifest_filepath = os.path.join(test_dir, 'manifest.json')
+        cuts_path = manifest_filepath.replace('.json', '_cuts.jsonl')
+        write_manifest(manifest_filepath, [item])
+        convert_manifest_nemo_to_lhotse(input_manifest=manifest_filepath, output_manifest=cuts_path)
+        return next(iter(CutSet.from_file(cuts_path)))
+
     @pytest.mark.unit
     @pytest.mark.parametrize('num_channels', [1, 2])
     @pytest.mark.parametrize('num_targets', [1, 3])
@@ -59,6 +68,59 @@ class TestAudioDatasets:
         assert (ASRAudioProcessor.list_to_multichannel(golden_target) == golden_target).all()
         # Check the list is converted back to the original signal
         assert (ASRAudioProcessor.list_to_multichannel(target_list) == golden_target).all()
+
+    @pytest.mark.unit
+    def test_convert_manifest_nemo_to_lhotse_with_reference_only(self):
+        sample_rate = 16000
+        duration = 0.1
+        num_samples = int(sample_rate * duration)
+
+        with tempfile.TemporaryDirectory() as test_dir:
+            input_filepath = 'input.wav'
+            reference_filepath = 'reference.wav'
+            sf.write(os.path.join(test_dir, input_filepath), np.zeros(num_samples), sample_rate, 'float')
+            sf.write(os.path.join(test_dir, reference_filepath), np.ones(num_samples), sample_rate, 'float')
+
+            cut = self._convert_manifest_item_to_cut(
+                test_dir,
+                {
+                    'input_filepath': input_filepath,
+                    'reference_filepath': reference_filepath,
+                    'duration': duration,
+                },
+            )
+
+            assert cut.recording.sources[0].source == input_filepath
+            assert cut.reference_recording.sources[0].source == reference_filepath
+            assert 'target_recording' not in (cut.custom or {})
+
+    @pytest.mark.unit
+    def test_convert_manifest_nemo_to_lhotse_with_different_target_and_reference_paths(self):
+        sample_rate = 16000
+        duration = 0.1
+        num_samples = int(sample_rate * duration)
+
+        with tempfile.TemporaryDirectory() as test_dir:
+            input_filepath = 'input.wav'
+            target_filepath = 'target.wav'
+            reference_filepath = 'reference.wav'
+            sf.write(os.path.join(test_dir, input_filepath), np.zeros(num_samples), sample_rate, 'float')
+            sf.write(os.path.join(test_dir, target_filepath), np.ones(num_samples), sample_rate, 'float')
+            sf.write(os.path.join(test_dir, reference_filepath), -np.ones(num_samples), sample_rate, 'float')
+
+            cut = self._convert_manifest_item_to_cut(
+                test_dir,
+                {
+                    'input_filepath': input_filepath,
+                    'target_filepath': target_filepath,
+                    'reference_filepath': reference_filepath,
+                    'duration': duration,
+                },
+            )
+
+            assert cut.target_recording.sources[0].source == target_filepath
+            assert cut.reference_recording.sources[0].source == reference_filepath
+            assert cut.target_recording.sources[0].source != cut.reference_recording.sources[0].source
 
     @pytest.mark.unit
     @pytest.mark.parametrize('num_channels', [1, 2])

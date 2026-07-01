@@ -21,6 +21,7 @@ from nemo.collections.asr.modules.transformer_encoder import (
     TransformerEncoder,
     TransformerEncoderConfig,
 )
+from nemo.collections.asr.parts.submodules.multi_head_attention import RotaryPositionalEncoding
 
 
 class TestTransformerEncoderConfig:
@@ -39,6 +40,8 @@ class TestTransformerEncoderConfig:
         assert cfg.subsampling_factor == 4
         assert cfg.attn_mode == "full"
         assert cfg.self_attention_model == "rel_pos"
+        assert cfg.rope_base == 10000.0
+        assert cfg.rotary_fraction == 1.0
 
     @pytest.mark.unit
     def test_custom_config(self):
@@ -496,7 +499,7 @@ class TestSelfAttentionModel:
         assert model.self_attention_model == "rel_pos"
 
     @pytest.mark.unit
-    @pytest.mark.parametrize("mode", ["abs_pos", "rel_pos", "no_pos"])
+    @pytest.mark.parametrize("mode", ["abs_pos", "rel_pos", "no_pos", "rope"])
     def test_valid_modes_are_accepted(self, mode):
         model = TransformerEncoder(feat_in=128, d_model=64, n_heads=4, n_layers=2, self_attention_model=mode)
         assert model.self_attention_model == mode
@@ -533,9 +536,9 @@ class TestSelfAttentionModel:
             assert attn.pos_bias_v.shape == (n_heads, head_dim)
 
     @pytest.mark.unit
-    @pytest.mark.parametrize("mode", ["abs_pos", "no_pos"])
+    @pytest.mark.parametrize("mode", ["abs_pos", "no_pos", "rope"])
     def test_non_rel_pos_modes_have_no_rel_params(self, mode):
-        """abs_pos and no_pos modes must not allocate the rel-pos parameters."""
+        """abs_pos, no_pos and rope modes must not allocate the rel-pos parameters."""
         model = TransformerEncoder(feat_in=128, d_model=64, n_heads=4, n_layers=2, self_attention_model=mode)
         for layer in model.layers:
             attn = layer.attn
@@ -552,7 +555,7 @@ class TestSelfAttentionModel:
         assert model.max_audio_length == model.pos_emb_max_len
 
     @pytest.mark.unit
-    @pytest.mark.parametrize("mode", ["abs_pos", "rel_pos", "no_pos", None])
+    @pytest.mark.parametrize("mode", ["abs_pos", "rel_pos", "no_pos", "rope", None])
     def test_forward_each_mode_cpu(self, mode):
         """Each ``self_attention_model`` choice (including ``None``) must produce a valid forward."""
         model = TransformerEncoder(
@@ -591,6 +594,45 @@ class TestSelfAttentionModel:
         # 200 input frames / subsampling_factor=4 -> 50 attention frames; n_heads=4 -> T != H.
         model = TransformerEncoder(
             feat_in=128, d_model=64, n_heads=4, n_layers=2, drop_rate=0.0, self_attention_model="rel_pos"
+        )
+        model.eval()
+
+        B, C, T = 2, 128, 200
+        x = torch.randn(B, C, T)
+        lengths = torch.tensor([T, 160])
+
+        with torch.no_grad():
+            out, _ = model(audio_signal=x, length=lengths)
+
+        assert out.shape == (B, 64, T // 4)
+        assert not torch.isnan(out).any()
+
+    @pytest.mark.unit
+    def test_rope_uses_shared_rotary_pos_enc(self):
+        """rope mode builds a single ``RotaryPositionalEncoding`` reused by every attention layer.
+
+        The cos/sin buffers are computed once on the shared module (see ``TransformerEncoder``),
+        so each layer's ``attn.rope`` must be the *same* object as ``model.pos_enc``.
+        """
+        model = TransformerEncoder(feat_in=128, d_model=64, n_heads=4, n_layers=3, self_attention_model="rope")
+        assert isinstance(model.pos_enc, RotaryPositionalEncoding)
+        for layer in model.layers:
+            attn = layer.attn
+            assert attn._uses_rope is True
+            assert attn.rope is model.pos_enc
+
+    @pytest.mark.unit
+    def test_rope_partial_rotation_forward_cpu(self):
+        """``rotary_fraction`` < 1.0 rotates only part of each head dim (exercises the pass-through split)."""
+        model = TransformerEncoder(
+            feat_in=128,
+            d_model=64,
+            n_heads=4,
+            n_layers=2,
+            drop_rate=0.0,
+            subsampling_factor=4,
+            self_attention_model="rope",
+            rotary_fraction=0.5,
         )
         model.eval()
 

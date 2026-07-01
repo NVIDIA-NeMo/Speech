@@ -135,6 +135,8 @@ def append_metrics_to_csv(csv_path: str, checkpoint_name: str, dataset: str, met
         metrics.get('eou_silence_rate', ''),
         metrics.get('eou_noise_rate', ''),
         metrics.get('eou_error_rate', ''),
+        metrics.get('katakana_cer_filewise_avg', ''),
+        metrics.get('katakana_cer_cumulative', ''),
     ]
     with open(csv_path, "a") as f:
         f.write(",".join(str(v) for v in values) + "\n")
@@ -151,10 +153,7 @@ def create_formatted_metrics_mean_ci(metrics_mean_ci: dict) -> dict:
     return metrics_mean_ci
 
 
-def filter_datasets(
-    dataset_meta_info: dict,
-    datasets: Optional[List[str]],
-) -> List[str]:
+def filter_datasets(dataset_meta_info: dict, datasets: Optional[List[str]]) -> List[str]:
     """Select datasets from the dataset meta info."""
     if datasets is None:
         # Dataset filtering not specified, return all datasets.
@@ -233,7 +232,8 @@ def run_inference_and_evaluation(
         "ssim_pred_gt_avg_alternate,ssim_pred_context_avg_alternate,"
         "ssim_gt_context_avg_alternate,cer_gt_audio_cumulative,wer_gt_audio_cumulative,"
         "utmosv2_avg,total_gen_audio_seconds,frechet_codec_distance,"
-        "eou_cutoff_rate,eou_silence_rate,eou_noise_rate,eou_error_rate"
+        "eou_cutoff_rate,eou_silence_rate,eou_noise_rate,eou_error_rate,"
+        "katakana_cer_filewise_avg,katakana_cer_cumulative"
     )
 
     for dataset in datasets:
@@ -241,11 +241,13 @@ def run_inference_and_evaluation(
 
         meta = dataset_meta_info[dataset]
         manifest_records = read_manifest(meta['manifest_path'])
-        language = meta.get('whisper_language', 'en')
+        # `language` drives all language-specific eval logic (ASR target_lang, Whisper prompt,
+        # text normalization). `whisper_language` is kept as a fallback for legacy evalsets.
+        language = meta.get('language', meta.get('whisper_language', 'en'))
 
         # Prepare dataset metadata (remove evaluation-specific keys)
         dataset_meta_for_dl = copy.deepcopy(meta)
-        for key in ["whisper_language", "load_cached_codes_if_available"]:
+        for key in ["language", "whisper_language", "load_cached_codes_if_available"]:
             dataset_meta_for_dl.pop(key, None)
 
         # Setup output directories
@@ -492,10 +494,14 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
         help='Path to dataset configuration JSON file',
     )
     data_group.add_argument(
-        '--datasets_base_path',
-        type=Path,
-        default=None,
-        help='Optional base path that paths in the "datasets_json_path" file are relative to',
+        '--root',
+        type=str,
+        default='',
+        help=(
+            'Root directory the evalset relative paths are resolved against. '
+            'Each entry\'s "manifest_path" and "audio_dir" are joined onto this root. '
+            'Defaults to empty (treat paths as absolute / cwd-relative).'
+        ),
     )
     data_group.add_argument(
         '--datasets',
@@ -601,11 +607,6 @@ def _add_easy_magpie_args(parser: argparse.ArgumentParser) -> None:
         default=None,
         help='Override path to the phoneme tokenizer file (overrides the path stored in the checkpoint config)',
     )
-    group.add_argument(
-        '--disable_cas_for_context_text',
-        action='store_true',
-        help='Skip CAS embeddings for context text when loading legacy EasyMagpieTTS models',
-    )
 
 
 def create_argument_parser() -> argparse.ArgumentParser:
@@ -667,9 +668,13 @@ def main(argv=None):
     if args.deterministic:
         seed_all(seed=9)
 
-    dataset_meta_info = load_evalset_config(
-        config_path=args.datasets_json_path, dataset_base_path=args.datasets_base_path
-    )
+    dataset_meta_info = load_evalset_config(args.datasets_json_path)
+    # Resolve relative evalset paths against --root so the checked-in config stays portable.
+    if args.root:
+        for _meta in dataset_meta_info.values():
+            for _key in ("manifest_path", "audio_dir"):
+                if _meta.get(_key):
+                    _meta[_key] = os.path.join(args.root, _meta[_key])
     datasets = filter_datasets(dataset_meta_info, args.datasets)
     logging.info(f"Loaded {len(datasets)} datasets: {', '.join(datasets)}")
 
@@ -721,7 +726,6 @@ def main(argv=None):
                 legacy_text_conditioning=args.legacy_text_conditioning,
                 hparams_from_wandb=args.hparams_file_from_wandb,
                 phoneme_tokenizer_path=getattr(args, 'phoneme_tokenizer_path', None),
-                disable_cas_for_context_text=args.disable_cas_for_context_text,
             )
 
             # Load model
@@ -764,7 +768,6 @@ def main(argv=None):
                 legacy_codebooks=args.legacy_codebooks,
                 legacy_text_conditioning=args.legacy_text_conditioning,
                 phoneme_tokenizer_path=getattr(args, 'phoneme_tokenizer_path', None),
-                disable_cas_for_context_text=args.disable_cas_for_context_text,
             )
 
             # Load model

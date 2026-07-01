@@ -74,6 +74,14 @@ def transformer_weights_init(module, std_init_range=0.02, xavier=True):
         nn.init.constant_(module.bias, 0.0)
 
 
-def mask_padded_tokens(tokens, pad_id):
+def mask_padded_tokens(tokens: torch.Tensor, pad_id: int) -> torch.Tensor:
+    """
+    Args:
+        tokens: input tokens
+        pad_id: padding token id
+    Returns:
+        mask: binary mask of size B x L with 1s corresponding to valid tokens and 0s corresponding to padding tokens
+    """
+
     mask = tokens != pad_id
     return mask

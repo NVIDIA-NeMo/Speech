@@ -14,7 +14,8 @@
 
 import pytest
 
-from nemo.collections.asr.inference.utils.lcs_merge import MergingStrategy, lcs_merge, longest_common_substring
+from nemo.collections.asr.inference.utils.enums import MergingStrategy
+from nemo.collections.asr.parts.utils.streaming_utils import lcs_merge, longest_common_substring
 
 
 class TestLCSMerge:

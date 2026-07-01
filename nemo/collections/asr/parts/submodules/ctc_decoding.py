@@ -423,6 +423,7 @@ class AbstractCTCDecoding(ConfidenceMixin):
         decoder_lengths: torch.Tensor = None,
         fold_consecutive: bool = True,
         return_hypotheses: bool = False,
+        return_token_ids: bool = False,
     ) -> Union[List[Hypothesis], List[List[Hypothesis]]]:
         """
         Decodes a sequence of labels to words
@@ -468,7 +469,6 @@ class AbstractCTCDecoding(ConfidenceMixin):
 
             # extract the hypotheses
             hypotheses_list = hypotheses_list[0]  # type: List[Hypothesis]
-
         if isinstance(hypotheses_list[0], NBestHypotheses):
             if self.cfg.strategy == 'wfst':
                 all_hypotheses = [hyp.n_best_hypotheses for hyp in hypotheses_list]
@@ -485,7 +485,9 @@ class AbstractCTCDecoding(ConfidenceMixin):
                     if self.compute_timestamps is True:
                         timestamp_type = self.cfg.get('ctc_timestamp_type', 'all')
                         for hyp_idx in range(len(decoded_hyps)):
-                            decoded_hyps[hyp_idx] = self.compute_ctc_timestamps(decoded_hyps[hyp_idx], timestamp_type)
+                            decoded_hyps[hyp_idx] = self.compute_ctc_timestamps(
+                                decoded_hyps[hyp_idx], timestamp_type, return_token_ids
+                            )
 
                     all_hypotheses.append(decoded_hyps)
 
@@ -515,12 +517,18 @@ class AbstractCTCDecoding(ConfidenceMixin):
                             hyp.text = hyp.text[:2]
                     timestamp_type = self.cfg.get('ctc_timestamp_type', 'all')
                     for hyp_idx in range(len(hypotheses)):
-                        hypotheses[hyp_idx] = self.compute_ctc_timestamps(hypotheses[hyp_idx], timestamp_type)
+                        hypotheses[hyp_idx] = self.compute_ctc_timestamps(
+                            hypotheses[hyp_idx], timestamp_type, return_token_ids
+                        )
 
             if return_hypotheses:
                 return hypotheses
 
-            return [Hypothesis(h.score, h.y_sequence, h.text) for h in hypotheses]
+            out = [Hypothesis(h.score, h.y_sequence, h.text) for h in hypotheses]
+            for h, o in zip(hypotheses, out):
+                if getattr(h, 'token_sequence', None) is not None and return_token_ids:
+                    o.token_sequence = h.token_sequence
+            return out
 
     def decode_hypothesis(
         self, hypotheses_list: List[Hypothesis], fold_consecutive: bool
@@ -580,7 +588,8 @@ class AbstractCTCDecoding(ConfidenceMixin):
                 decoded_prediction = prediction[prediction != self.blank_id].tolist()
                 token_lengths = [1] * len(decoded_prediction)  # preserve number of repetitions per token
                 token_repetitions = [1] * len(decoded_prediction)  # preserve number of repetitions per token
-
+            # Final token sequence after CTC collapse (blanks removed, consecutive merged)
+            hypotheses_list[ind].token_sequence = list(decoded_prediction)
             # De-tokenize the integer tokens; if not computing timestamps
             if self.compute_timestamps is True:
                 # keep the original predictions, wrap with the number of repetitions per token
@@ -683,7 +692,9 @@ class AbstractCTCDecoding(ConfidenceMixin):
 
         return text
 
-    def compute_ctc_timestamps(self, hypothesis: Hypothesis, timestamp_type: str = "all"):
+    def compute_ctc_timestamps(
+        self, hypothesis: Hypothesis, timestamp_type: str = "all", return_token_ids: bool = False
+    ):
         """
         Method to compute time stamps at char/subword, and word level given some hypothesis.
         Requires the input hypothesis to contain a `text` field that is the tuple. The tuple contains -
@@ -696,6 +707,8 @@ class AbstractCTCDecoding(ConfidenceMixin):
                 A list of integers that represents the number of repetitions per token.
             timestamp_type: A str value that represents the type of time stamp calculated.
                 Can be one of "char", "word" "segment" or "all"
+            return_token_ids: If True, each char/subword offset will include a "token_id" field
+                with the corresponding token id(s).
 
         Returns:
             A Hypothesis object with a modified `timestep` value, which is now a dictionary containing
@@ -729,6 +742,9 @@ class AbstractCTCDecoding(ConfidenceMixin):
         for i, char in enumerate(hypothesis.text):
             encoded_char_offsets[i]["char"] = self.decode_ids_to_tokens([char])[0]
             char_offsets[i]["char"] = self.decode_tokens_to_str([encoded_char_offsets[i]["char"]])
+            # Providing this to get word offsets in merged hypotheses after chunking
+            if return_token_ids:
+                char_offsets[i]["token_id"] = [char]
 
         encoded_char_offsets, char_offsets = self._refine_timestamps(
             encoded_char_offsets=encoded_char_offsets,

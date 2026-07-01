@@ -94,6 +94,14 @@ class EncDecCTCModelBPE(EncDecCTCModel, ASRBPEMixin):
         )
 
     def _setup_dataloader_from_config(self, config: Optional[Dict]):
+        enable_chunking = config.get("enable_chunking", False)
+        if enable_chunking:
+            config['use_lhotse'] = True
+            chunk_range = config.get("chunk_range", [240, 300])
+            config.cut_into_windows_balanced_min_duration = chunk_range[0]
+            config.cut_into_windows_balanced_max_duration = chunk_range[1]
+            config.cut_into_windows_balanced_overlap = 1.0
+
         if config.get("use_lhotse"):
             return get_lhotse_dataloader_from_config(
                 config,
@@ -104,7 +112,7 @@ class EncDecCTCModelBPE(EncDecCTCModel, ASRBPEMixin):
                 world_size=self.world_size if not config.get("do_transcribe", False) else config.get("world_size"),
                 dataset=LhotseSpeechToTextBpeDataset(
                     tokenizer=self.tokenizer,
-                    return_cuts=config.get("do_transcribe", False),
+                    return_cuts=config.get("do_transcribe", False) or enable_chunking,
                 ),
                 tokenizer=self.tokenizer,
             )
@@ -181,14 +189,19 @@ class EncDecCTCModelBPE(EncDecCTCModel, ASRBPEMixin):
         Returns:
             A pytorch DataLoader for the given audio file(s).
         """
-
         if 'manifest_filepath' in config:
             manifest_filepath = config['manifest_filepath']
             batch_size = config['batch_size']
         else:
             manifest_filepath = os.path.join(config['temp_dir'], 'manifest.json')
-            batch_size = min(config['batch_size'], len(config['paths2audio_files']))
+            enable_chunking = config.get('enable_chunking', False)
+            batch_size = (
+                config['batch_size']
+                if enable_chunking
+                else min(config['batch_size'], len(config['paths2audio_files']))
+            )
 
+        enable_chunking = config.get('enable_chunking', False)
         dl_config = {
             'use_lhotse': config.get('use_lhotse', True),
             'manifest_filepath': manifest_filepath,
@@ -197,8 +210,14 @@ class EncDecCTCModelBPE(EncDecCTCModel, ASRBPEMixin):
             'shuffle': False,
             'num_workers': config.get('num_workers', min(batch_size, os.cpu_count() - 1)),
             'pin_memory': True,
+            'use_bucketing': False,
+            'drop_last': False,
+            'pad_min_duration': config.get('pad_min_duration', 1.0),
+            'pad_direction': config.get('pad_direction', 'both'),
             'channel_selector': config.get('channel_selector', None),
             'use_start_end_token': self.cfg.validation_ds.get('use_start_end_token', False),
+            'enable_chunking': enable_chunking,
+            'chunk_range': config.get('chunk_range', [240, 300]),
         }
 
         if config.get("augmentor"):

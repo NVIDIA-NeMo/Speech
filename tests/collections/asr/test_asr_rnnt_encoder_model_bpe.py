@@ -12,15 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
 import os
 import shutil
 import tempfile
 
+import librosa
 import pytest
 import torch
 from lhotse import CutSet, MonoCut
 from lhotse.testing.dummies import DummyManifest
-from omegaconf import DictConfig
+from lightning.pytorch import Trainer
+from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.asr.data.audio_to_text_lhotse import LhotseSpeechToTextBpeDataset
 from nemo.collections.asr.models import ASRModel
@@ -106,7 +109,7 @@ def asr_model(test_data_dir):
 
 
 class NestedRNNTModel(ASRModel):
-    def __init__(self, cfg: DictConfig, trainer: 'Trainer' = None):
+    def __init__(self, cfg: DictConfig, trainer: Trainer = None):
         super().__init__(cfg=cfg, trainer=trainer)
 
         if 'inner_model' in self.cfg:
@@ -333,6 +336,98 @@ class TestEncDecRNNTBPEModel:
         asr_model.change_decoding_strategy(decoding_cfg=new_strategy)
         assert isinstance(asr_model.decoding.decoding, beam_decode.BeamRNNTInfer)
         assert asr_model.decoding.decoding.search_type == "alsd"
+
+    @pytest.mark.unit
+    def test_transcribe_parallel_chunking_long_audio(self, fast_conformer_transducer_model):
+        model = fast_conformer_transducer_model
+        model.eval()
+        audio_file = "/home/TestData/asr/longform/earnings22/sample_4469669.wav"
+
+        # Test with file path (no timestamps)
+        hypotheses = model.transcribe(audio_file, return_hypotheses=True, timestamps=False, enable_chunking=True)
+        assert len(hypotheses) == 1
+        assert isinstance(hypotheses[0], Hypothesis)
+        assert isinstance(hypotheses[0].text, str) and len(hypotheses[0].text) > 0
+        assert hypotheses[0].timestamp == []
+
+        # Test with tensor input (with timestamps)
+        audio_data, sr = librosa.load(audio_file, sr=16000)
+        audio_tensor = [torch.from_numpy(audio_data)]
+
+        ts_hypotheses = model.transcribe(audio_tensor, return_hypotheses=True, timestamps=True, enable_chunking=True)
+        assert len(ts_hypotheses) == 1
+        assert isinstance(ts_hypotheses[0], Hypothesis)
+        assert ts_hypotheses[0].text == hypotheses[0].text
+        assert hypotheses[0].text[-35:] == "ultiple customer orders and reality"
+        assert 'word' in ts_hypotheses[0].timestamp
+        assert 'segment' in ts_hypotheses[0].timestamp
+        assert len(ts_hypotheses[0].timestamp['word']) > 0
+        assert len(ts_hypotheses[0].timestamp['segment']) > 0
+        # Monotonicity and validity of word offsets and times
+        words = ts_hypotheses[0].timestamp['word']
+        starts = [w['start'] for w in words]
+        ends = [w['end'] for w in words]
+        assert all(s <= e for s, e in zip(starts, ends))
+        assert all(x <= y for x, y in zip(starts, starts[1:]))
+        assert all(x <= y for x, y in zip(ends, ends[1:]))
+        assert [word_offset['word'] for word_offset in ts_hypotheses[0].timestamp['word']] == ts_hypotheses[
+            0
+        ].text.split()
+
+        assert " ".join([word_offset['word'] for word_offset in ts_hypotheses[0].timestamp['word']]) == " ".join(
+            [segment_offset['segment'] for segment_offset in ts_hypotheses[0].timestamp['segment']]
+        )
+        assert words[-1] == {
+            'word': 'reality',
+            'start_offset': 7493,
+            'end_offset': 7497,
+            'start': 599.44,
+            'end': 599.76,
+        }
+
+        # Check that the number of words and segments are consistent
+        assert ts_hypotheses[0].timestamp['segment'][0]['start'] == ts_hypotheses[0].timestamp['word'][0]['start']
+        assert ts_hypotheses[0].timestamp['segment'][-1]['end'] == ts_hypotheses[0].timestamp['word'][-1]['end']
+        assert (
+            ts_hypotheses[0].timestamp['segment'][0]['start_offset']
+            == ts_hypotheses[0].timestamp['word'][0]['start_offset']
+        )
+        assert (
+            ts_hypotheses[0].timestamp['segment'][-1]['end_offset']
+            == ts_hypotheses[0].timestamp['word'][-1]['end_offset']
+        )
+
+        # Test chunking with confidence: merged hypothesis should have confidences from join_confidence_values
+        orig_decoding = copy.deepcopy(model.cfg.decoding)
+        decoding_cfg = OmegaConf.merge(
+            OmegaConf.create(OmegaConf.to_container(orig_decoding)),
+            {
+                'greedy': {'preserve_frame_confidence': True},
+                'confidence_cfg': {
+                    'preserve_frame_confidence': True,
+                    'preserve_token_confidence': True,
+                    'preserve_word_confidence': True,
+                },
+            },
+        )
+        model.change_decoding_strategy(decoding_cfg)
+        conf_hypotheses = model.transcribe(
+            audio_file, batch_size=1, return_hypotheses=True, timestamps=False, enable_chunking=True
+        )
+        model.change_decoding_strategy(orig_decoding)
+
+        assert len(conf_hypotheses) == 1
+        hyp = conf_hypotheses[0]
+        assert isinstance(hyp, Hypothesis)
+        assert isinstance(hyp.text, str) and len(hyp.text) > 0
+        # Chunking merges confidences via join_confidence_values
+        assert hyp.frame_confidence is not None, "Merged hypothesis should have frame_confidence"
+        assert hyp.token_confidence is not None, "Merged hypothesis should have token_confidence"
+        assert hyp.word_confidence is not None, "Merged hypothesis should have word_confidence"
+        num_words = len(hyp.text.split())
+        assert len(hyp.word_confidence) == 1379
+        assert all(0 <= c <= 1.0 for c in hyp.word_confidence), "word_confidence values should be in [0, 1]"
+        assert len(hyp.token_confidence) >= num_words, "token_confidence should have at least one per word"
 
     @pytest.mark.with_downloads()
     @pytest.mark.unit

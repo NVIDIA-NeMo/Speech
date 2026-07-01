@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import copy
+import uuid
 from typing import Any, List, Optional, Union
 
 import torch
@@ -103,6 +104,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin, ASRT
         augmentor: DictConfig = None,
         verbose: bool = True,
         timestamps: bool = None,
+        enable_chunking: bool = False,
         override_config: Optional[TranscribeConfig] = None,
     ) -> TranscriptionReturnType:
         """
@@ -126,6 +128,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin, ASRT
             timestamps: Optional(Bool): timestamps will be returned if set to True as part of hypothesis object 
                 (output.timestep['segment']/output.timestep['word']). Refer to `Hypothesis` class for more details.
                 Default is None and would retain the previous state set by using self.change_decoding_strategy().
+            enable_chunking: (bool) whether to enable parallel chunking for transcription.
             verbose: (bool) whether to display tqdm progress bar
             logprobs: (bool) whether to return ctc logits insted of hypotheses
 
@@ -134,7 +137,6 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin, ASRT
             * A list of greedy transcript texts / Hypothesis
             * An optional list of beam search transcript texts / Hypothesis / NBestHypothesis.
         """
-
         if timestamps is not None:
             if self.cur_decoder not in ["ctc", "rnnt"]:
                 raise ValueError(
@@ -161,7 +163,6 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin, ASRT
                         decoding_cfg.compute_timestamps = False
             if need_change_decoding:
                 self.change_decoding_strategy(decoding_cfg, decoder_type=self.cur_decoder, verbose=False)
-
         return ASRTranscriptionMixin.transcribe(
             self,
             audio=audio,
@@ -173,6 +174,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin, ASRT
             augmentor=augmentor,
             verbose=verbose,
             timestamps=timestamps,
+            enable_chunking=enable_chunking,
             override_config=override_config,
         )
 
@@ -197,7 +199,13 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin, ASRT
 
         logits = self.ctc_decoder(encoder_output=encoded)
         output = dict(logits=logits, encoded_len=encoded_len)
-
+        if trcfg.enable_chunking:
+            last = batch[-1]
+            if len(batch) >= 4 and isinstance(batch[2], torch.Tensor) and isinstance(last, torch.Tensor):
+                output['chunk_sample_ids'] = batch[2]
+                output['chunk_starts_samples'] = last
+            elif last is not None:
+                output['cuts'] = last
         del encoded
         return output
 
@@ -206,38 +214,66 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin, ASRT
     ) -> Union[List['Hypothesis'], List[List['Hypothesis']]]:
         if self.cur_decoder == "rnnt":
             return super()._transcribe_output_processing(outputs, trcfg)
-
         # CTC Path
         logits = outputs.pop('logits')
         encoded_len = outputs.pop('encoded_len')
-
+        cuts = outputs.pop('cuts', None)
+        chunk_sample_ids = outputs.pop('chunk_sample_ids', None)
+        chunk_starts_samples = outputs.pop('chunk_starts_samples', None)
+        if trcfg.timestamps and trcfg.enable_chunking:
+            final_timestamps_type = self.ctc_decoding.cfg.ctc_timestamp_type
+            self.ctc_decoding.cfg.ctc_timestamp_type = 'char'
+        else:
+            final_timestamps_type = None
         hypotheses = self.ctc_decoding.ctc_decoder_predictions_tensor(
             logits,
             encoded_len,
             return_hypotheses=trcfg.return_hypotheses,
+            return_token_ids=trcfg.enable_chunking,
         )
         logits = logits.cpu()
-
         if trcfg.return_hypotheses:
             # dump log probs per file
             for idx in range(logits.shape[0]):
                 hypotheses[idx].y_sequence = logits[idx][: encoded_len[idx]]
                 if hypotheses[idx].alignments is None:
                     hypotheses[idx].alignments = hypotheses[idx].y_sequence
-
         # DEPRECATED?
         # if logprobs:
         #     for logit, elen in zip(logits, encoded_len):
         #         logits_list.append(logit[:elen])
-
+        del logits
         if trcfg.timestamps:
             hypotheses = process_timestamp_outputs(
                 hypotheses, self.encoder.subsampling_factor, self.cfg['preprocessor']['window_stride']
             )
-
-        del logits, encoded_len
-
-        return hypotheses
+        if trcfg.enable_chunking:
+            # Restore the timestamp type that was temporarily overridden to 'char'
+            if final_timestamps_type is not None:
+                self.ctc_decoding.cfg.ctc_timestamp_type = final_timestamps_type
+            # Stamp each hypothesis with chunk metadata for post-inference merge.
+            # merge_flat_chunk_hypotheses (called in transcription.py) handles all
+            # LCS merging and update_timestamps — do NOT call update_timestamps here.
+            for j, h in enumerate(hypotheses):
+                if cuts is not None:
+                    cut = cuts[j]
+                    source_id = (cut.custom or {}).get("source_cut_id", cut.id)
+                    chunk_start = (cut.custom or {}).get("source_cut_start", 0)
+                elif chunk_sample_ids is not None:
+                    # Pre-chunked tensor path: use stable sample index and actual chunk offset.
+                    sample_rate = getattr(self, 'sample_rate', None) or self.cfg.get('sample_rate', 16000)
+                    source_id = f'audio_{chunk_sample_ids[j].item()}'
+                    chunk_start = chunk_starts_samples[j].item() / sample_rate
+                else:
+                    source_id = f'audio_{uuid.uuid4().int}'
+                    chunk_start = 0
+                setattr(h, 'id', source_id)
+                setattr(h, 'chunk_start', chunk_start)
+                setattr(h, '_encoded_len', encoded_len[j].item())
+                setattr(h, '_timestamps_type', final_timestamps_type)
+            return hypotheses
+        else:
+            return hypotheses
 
     def change_vocabulary(
         self,

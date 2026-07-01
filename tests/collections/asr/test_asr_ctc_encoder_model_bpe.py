@@ -17,6 +17,7 @@ import os
 import shutil
 import tempfile
 
+import librosa
 import pytest
 import torch
 from lhotse import CutSet, MonoCut
@@ -427,3 +428,62 @@ class TestEncDecCTCModel:
         assert signatures_match
         assert cls_subset is None
         assert dataclass_subset is None
+
+    @pytest.mark.unit
+    def test_transcribe_parallel_chunking_long_audio(self, fast_conformer_ctc_model):
+        """Test chunking transcription with pretrained CTC BPE model on long audio."""
+        model = fast_conformer_ctc_model
+        # Use RNNT decoder so test is deterministic regardless of test order. The session-scoped
+        # fixture can be left in CTC mode by test_timestamps_with_transcribe_hybrid_ctc_head.
+        model.eval()
+        audio_file = "/home/TestData/asr/longform/earnings22/sample_4469669.wav"
+        # Test with file path (no timestamps)
+        hypotheses = model.transcribe(audio_file, batch_size=1, timestamps=False, enable_chunking=True)
+        assert len(hypotheses) == 1
+        assert isinstance(hypotheses[0], Hypothesis)
+        assert isinstance(hypotheses[0].text, str) and len(hypotheses[0].text) > 0
+        assert hypotheses[0].timestamp == []
+
+        # Test with tensor input (with timestamps)
+        audio_data, sr = librosa.load(audio_file, sr=16000)
+        audio_tensor = [torch.from_numpy(audio_data)]
+
+        ts_hypotheses = model.transcribe(audio_tensor, batch_size=1, timestamps=True, enable_chunking=True)
+        assert len(ts_hypotheses) == 1
+        assert isinstance(ts_hypotheses[0], Hypothesis)
+        assert ts_hypotheses[0].text == hypotheses[0].text
+        assert 'word' in ts_hypotheses[0].timestamp
+        assert 'segment' in ts_hypotheses[0].timestamp
+        assert len(ts_hypotheses[0].timestamp['word']) > 0
+        assert len(ts_hypotheses[0].timestamp['segment']) > 0
+        # Monotonicity and validity of word offsets and times
+        assert ts_hypotheses[0].text[-25:] == ' customer orders and real'
+        words = ts_hypotheses[0].timestamp['word']
+        starts = [w['start'] for w in words]
+        ends = [w['end'] for w in words]
+        assert words[-1] == {
+            'word': 'real',
+            'start_offset': 7489,
+            'end_offset': 7491,
+            'start': 599.12,
+            'end': 599.28,
+        }
+        assert all(s <= e for s, e in zip(starts, ends))
+        assert all(x <= y for x, y in zip(starts, starts[1:]))
+        assert all(x <= y for x, y in zip(ends, ends[1:]))
+        assert [word_offset['word'] for word_offset in ts_hypotheses[0].timestamp['word']] == ts_hypotheses[
+            0
+        ].text.split()
+        assert " ".join([word_offset['word'] for word_offset in ts_hypotheses[0].timestamp['word']]) == " ".join(
+            [segment_offset['segment'] for segment_offset in ts_hypotheses[0].timestamp['segment']]
+        )
+        assert ts_hypotheses[0].timestamp['segment'][0]['start'] == ts_hypotheses[0].timestamp['word'][0]['start']
+        assert ts_hypotheses[0].timestamp['segment'][-1]['end'] == ts_hypotheses[0].timestamp['word'][-1]['end']
+        assert (
+            ts_hypotheses[0].timestamp['segment'][0]['start_offset']
+            == ts_hypotheses[0].timestamp['word'][0]['start_offset']
+        )
+        assert (
+            ts_hypotheses[0].timestamp['segment'][-1]['end_offset']
+            == ts_hypotheses[0].timestamp['word'][-1]['end_offset']
+        )

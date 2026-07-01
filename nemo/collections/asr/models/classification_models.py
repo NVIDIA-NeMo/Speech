@@ -49,6 +49,7 @@ __all__ = ['EncDecClassificationModel', 'EncDecRegressionModel']
 class ClassificationInferConfig:
     batch_size: int = 4
     logprobs: bool = False
+    enable_chunking: bool = False  # Not used for classification; required by TranscriptionMixin
 
     _internal: InternalTranscribeConfig = field(default_factory=lambda: InternalTranscribeConfig())
 
@@ -57,6 +58,7 @@ class ClassificationInferConfig:
 class RegressionInferConfig:
     batch_size: int = 4
     logprobs: bool = True
+    enable_chunking: bool = False  # Not used for regression; required by TranscriptionMixin
 
     _internal: InternalTranscribeConfig = field(default_factory=lambda: InternalTranscribeConfig())
 

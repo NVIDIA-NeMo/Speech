@@ -949,7 +949,7 @@ def get_batch_variables(
                     hypotheses = audio
                 else:
                     hypotheses = model.transcribe(
-                        audio, return_hypotheses=True, batch_size=batch_size, verbose=verbose
+                        audio, return_hypotheses=True, batch_size=batch_size, enable_chunking=False, verbose=verbose
                     )
         else:
             assert isinstance(audio, list) or isinstance(
@@ -975,7 +975,7 @@ def get_batch_variables(
         for audio_sample in tqdm(audio, desc="Sample:"):
             model.reset()
             model.read_audio_file(audio_sample, delay, model_stride_in_secs)
-            hyp, logits = model.transcribe(tokens_per_chunk, delay, keep_logits=True)
+            hyp, logits = model.transcribe(tokens_per_chunk, delay, keep_logits=True, enable_chunking=False)
             log_probs_list_batch.append(logits)
             T_list_batch.append(logits.shape[0])
             pred_text_batch.append(hyp)

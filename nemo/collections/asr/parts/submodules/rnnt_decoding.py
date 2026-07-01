@@ -722,6 +722,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
         encoded_lengths: torch.Tensor,
         return_hypotheses: bool = False,
         partial_hypotheses: Optional[List[Hypothesis]] = None,
+        return_token_ids: bool = False,
     ) -> Union[List[Hypothesis], List[List[Hypothesis]]]:
         """
         Decode an encoder output by autoregressive decoding of the Decoder+Joint networks.
@@ -742,6 +743,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                     Look at rnnt_utils.Hypothesis for more information.
         """
         # Compute hypotheses
+
         with torch.inference_mode():
             hypotheses_list = self.decoding(
                 encoder_output=encoder_output, encoded_lengths=encoded_lengths, partial_hypotheses=partial_hypotheses
@@ -751,7 +753,6 @@ class AbstractRNNTDecoding(ConfidenceMixin):
             hypotheses_list = hypotheses_list[0]  # type: List[Hypothesis]
 
         prediction_list = hypotheses_list
-
         if isinstance(prediction_list[0], NBestHypotheses):
             hypotheses = []
             all_hypotheses = []
@@ -764,7 +765,9 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                 if self.compute_timestamps is True:
                     timestamp_type = self.cfg.get('rnnt_timestamp_type', 'all')
                     for hyp_idx in range(len(decoded_hyps)):
-                        decoded_hyps[hyp_idx] = self.compute_rnnt_timestamps(decoded_hyps[hyp_idx], timestamp_type)
+                        decoded_hyps[hyp_idx] = self.compute_rnnt_timestamps(
+                            decoded_hyps[hyp_idx], timestamp_type, return_token_ids
+                        )
 
                 hypotheses.append(decoded_hyps[0])  # best hypothesis
                 all_hypotheses.append(decoded_hyps)
@@ -782,7 +785,9 @@ class AbstractRNNTDecoding(ConfidenceMixin):
             if self.compute_timestamps is True:
                 timestamp_type = self.cfg.get('rnnt_timestamp_type', 'all')
                 for hyp_idx in range(len(hypotheses)):
-                    hypotheses[hyp_idx] = self.compute_rnnt_timestamps(hypotheses[hyp_idx], timestamp_type)
+                    hypotheses[hyp_idx] = self.compute_rnnt_timestamps(
+                        hypotheses[hyp_idx], timestamp_type, return_token_ids
+                    )
 
             if return_hypotheses:
                 # greedy decoding, can get high-level confidence scores
@@ -1035,7 +1040,9 @@ class AbstractRNNTDecoding(ConfidenceMixin):
             logging.info("Joint fused batch size <= 0; Will temporarily disable fused batch step in the Joint.")
             self.decoding.joint.set_fuse_loss_wer(False)
 
-    def compute_rnnt_timestamps(self, hypothesis: Hypothesis, timestamp_type: str = "all"):
+    def compute_rnnt_timestamps(
+        self, hypothesis: Hypothesis, timestamp_type: str = "all", return_token_ids: bool = False
+    ):
         """
         Computes character, word, and segment timestamps for an RNN-T hypothesis.
 
@@ -1065,26 +1072,30 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                 f"`len(offsets)`: {len(char_offsets)} and `len(processed_tokens)`:"
                 f" {len(y_sequence_blank_removed)}"
             )
-
         encoded_char_offsets = copy.deepcopy(char_offsets)
 
         # Correctly process the token ids to chars/subwords.
         for i, offsets in enumerate(char_offsets):
             chars_text = []
             chars_tokens = []
+            chars_token_id = []
             for char in offsets['char']:
                 # NB: if blank tokens are present, _refine_timestamps will not work properly
                 # as offests and encoded_offsets will not be 1:1 match
                 assert char != self.blank_id, "Offsets should not contain blank tokens"
+
                 chars_tokens.append(self.decode_ids_to_tokens([int(char)])[0])
                 chars_text.append(self.decode_ids_to_str([int(char)]))
+                chars_token_id.append(int(char))
             char_offsets[i]["char"] = chars_text
             encoded_char_offsets[i]["char"] = chars_tokens
+            # Providing this to get word offsets in merged hypotheses after chunking
+            if return_token_ids:
+                char_offsets[i]["token_id"] = chars_token_id
 
         encoded_char_offsets, char_offsets = self._refine_timestamps(
             encoded_char_offsets, char_offsets, self.supported_punctuation
         )
-
         # detect char vs subword models
         lens = []
         for v in char_offsets:
@@ -1097,7 +1108,6 @@ class AbstractRNNTDecoding(ConfidenceMixin):
             # but this is violated for subword models.
             max_len = max(len(c) for c in tokens)
             lens.append(max_len)
-
         # retrieve word offsets from character offsets
         word_offsets = None
         if timestamp_type in ['word', 'segment', 'all']:
@@ -1118,7 +1128,6 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                 supported_punctuation=self.supported_punctuation,
                 segment_gap_threshold=self.segment_gap_threshold,
             )
-
         # attach results
         if len(hypothesis.timestamp) > 0:
             timestep_info = hypothesis.timestamp
@@ -1161,7 +1170,6 @@ class AbstractRNNTDecoding(ConfidenceMixin):
         """
         if isinstance(hypothesis.timestamp, torch.Tensor):
             hypothesis.timestamp = hypothesis.timestamp.cpu().tolist()
-
         # Merge the results per token into a list of dictionaries
         offsets = [
             {"char": [t], "start_offset": s, "end_offset": s + 1}
@@ -1193,7 +1201,6 @@ class AbstractRNNTDecoding(ConfidenceMixin):
 
         if isinstance(hypothesis.timestamp, torch.Tensor):
             hypothesis.timestamp = hypothesis.timestamp.cpu().tolist()
-
         # Merge the results per token into a list of dictionaries
         offsets = [
             {"char": [t], "start_offset": s, "end_offset": s + d}

@@ -28,6 +28,7 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Dataset
 
 from nemo.collections.asr.data.audio_to_text_lhotse_prompted import PromptedAudioToTextMiniBatch
+from nemo.collections.asr.inference.utils.enums import MergingStrategy
 from nemo.collections.asr.models import ASRModel
 from nemo.collections.asr.parts.context_biasing.biasing_multi_model import BiasingRequestItemConfig
 from nemo.collections.asr.parts.mixins.streaming import StreamingEncoder
@@ -297,11 +298,119 @@ def longest_common_subsequence_merge(X, Y, filepath=None):
     return result_idx, LCSuff
 
 
+def longest_common_substring(buffer: list, data: list) -> tuple:
+    """
+    Find the longest common substring between two lists of integers.
+    If there are multiple LCSs, return the rightmost one in the buffer.
+    Args:
+        buffer: (list[int]) The buffer of tokens.
+        data: (list[int]) The new tokens to merge with the buffer.
+    Returns:
+        A tuple containing - (tuple[int, int, int]):
+          - Start index of the longest common substring in the buffer.
+          - Start index of the longest common substring in the data.
+          - Length of the longest common substring.
+    """
+    n, m = len(buffer), len(data)
+    dp = [[0] * (m + 1) for _ in range(n + 1)]
+
+    max_len = 0
+    end_i = end_j = -1
+
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            if buffer[i - 1] == data[j - 1]:
+                dp[i][j] = dp[i - 1][j - 1] + 1
+
+                # Logic:
+                # 1. If we find a strictly longer substring, take it.
+                # 2. If it's the same length, update if this occurrence
+                #    ends further right in the buffer (larger i).
+                if dp[i][j] > max_len or (dp[i][j] == max_len and i >= end_i):
+                    max_len = dp[i][j]
+                    end_i = i
+                    end_j = j
+            else:
+                dp[i][j] = 0
+
+    if max_len == 0:
+        return -1, -1, 0
+
+    return end_i - max_len, end_j - max_len, max_len
+
+
+def _get_lcs_overlap(buffer_slice, data, merging_strategy, filepath=None):
+    """Compute (i_rel, j_rel, length) overlap between buffer_slice and data using the given strategy."""
+    if merging_strategy == MergingStrategy.LCSUBSTR:
+        return longest_common_substring(buffer_slice, data)
+    elif merging_strategy == MergingStrategy.LCS:
+        result_idx, _ = longest_common_subsequence_merge(buffer_slice, data, filepath=filepath)
+        return tuple(result_idx)
+    else:
+        raise ValueError(
+            f"Invalid merging strategy: {merging_strategy!r}. Supported strategies: {[s.name for s in MergingStrategy]}"
+        )
+
+
+def _apply_lcs_merge(buffer, buffer_slice, data, i_rel, j_rel, length, append_only=False):
+    """
+    Apply merge using precomputed overlap (i_rel, j_rel, length).
+    If append_only: append data[j_after:] to buffer; else replace buffer tail with overlap and append data[j_after:].
+    """
+    base = len(buffer) - len(buffer_slice)
+    i_abs_end = base + i_rel + length  # end position (exclusive) in buffer
+    j_after = j_rel + length  # first index after LCS in data
+    if append_only:
+        return buffer + data[j_after:]
+    return buffer[:i_abs_end] + data[j_after:]
+
+
+def lcs_merge(
+    buffer: list,
+    data: list,
+    search_size: int,
+    sep_id: list | None = None,
+    min_lcs_length: int = 1,
+    merging_strategy: MergingStrategy = MergingStrategy.LCSUBSTR,
+) -> list:
+    """
+    Merge the buffer and data using the LCS algorithm.
+    Args:
+        buffer: (list[int]) The buffer of tokens.
+        data: (list[int]) The new tokens to merge with the buffer.
+        search_size: (int) The size of the search window in the buffer.
+        sep_id: (list[int] | None) The separator token ids. If no LCS is found, separator token is used to merge the buffer and data.
+        min_lcs_length: (int) The minimum length of the LCS.
+        merging_strategy: (MergingStrategy) The merging strategy to use.
+    Returns:
+        (list[int]) The merged tokens.
+    """
+
+    if len(buffer) == 0:
+        buffer += data
+        return buffer
+
+    if sep_id is None:
+        sep_id = []
+
+    if search_size < 1:
+        buffer += sep_id + data
+        return buffer
+
+    buffer_slice = buffer[-search_size:]
+    i_rel, j_rel, length = _get_lcs_overlap(buffer_slice, data, merging_strategy)
+
+    if length < min_lcs_length:
+        buffer += sep_id + data
+        return buffer
+
+    return _apply_lcs_merge(buffer, buffer_slice, data, i_rel, j_rel, length, append_only=False)
+
+
 def lcs_alignment_merge_buffer(
     buffer,
     data,
     delay,
-    model,
     max_steps_per_timestep: int = 5,
     filepath: str = None,
     min_lcs_length: int = 1,
@@ -320,7 +429,6 @@ def lcs_alignment_merge_buffer(
         buffer: The existing buffer of tokens
         data: New data to merge with buffer
         delay: Number of delay timesteps
-        model: The ASR model
         max_steps_per_timestep: Maximum steps per timestep
         filepath: Optional filepath for debugging
         min_lcs_length: Minimum LCS length for deduplication
@@ -332,27 +440,12 @@ def lcs_alignment_merge_buffer(
 
     search_size = int(delay * max_steps_per_timestep)
     buffer_slice = buffer[-search_size:]
-
-    lcs_idx, lcs_alignment = longest_common_subsequence_merge(buffer_slice, data, filepath=filepath)
-    i_rel, j_rel, length = lcs_idx
+    i_rel, j_rel, length = _get_lcs_overlap(buffer_slice, data, MergingStrategy.LCS, filepath=filepath)
 
     if length < min_lcs_length:
         return buffer + data
 
-    if parallel_chunking:
-        base = len(buffer) - len(buffer_slice)
-        i_abs_start = base + i_rel
-        i_abs_end = i_abs_start + length  # end position (exclusive) in `buffer`
-        j_after = j_rel + length  # first index after LCS in `data`
-
-        merged = buffer[:i_abs_end] + data[j_after:]
-        return merged
-    else:
-        # Slice off new data based on LCS and concatenate
-        slice_idx = j_rel + length
-        data = data[slice_idx:]
-        buffer += data
-        return buffer
+    return _apply_lcs_merge(buffer, buffer_slice, data, i_rel, j_rel, length, append_only=not parallel_chunking)
 
 
 def inplace_buffer_merge(buffer, data, timesteps, model):

@@ -15,6 +15,7 @@
 import os
 from typing import Dict, Optional, Tuple
 
+import torch
 import torch.utils.data
 from lhotse.dataset import AudioSamples
 from lhotse.dataset.collation import collate_vectors
@@ -72,16 +73,20 @@ class LhotseSpeechToTextBpeDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, cuts) -> Tuple[torch.Tensor, ...]:
         audio, audio_lens, cuts = self.load_audio(cuts)
-        tokens = [
-            torch.cat(
+
+        def _tokens_from_cut(cut):
+            return torch.cat(
                 [
                     torch.as_tensor(s.tokens if hasattr(s, "tokens") else self.tokenizer(s.text or "", s.language))
-                    for s in c.supervisions
+                    for s in cut.supervisions
                 ],
                 dim=0,
             )
-            for c in cuts
-        ]
+
+        base_tokens = [_tokens_from_cut(cut) for cut in cuts]
+
+        tokens = base_tokens
+
         token_lens = torch.tensor([t.size(0) for t in tokens], dtype=torch.long)
         tokens = collate_vectors(tokens, padding_value=0)
         if self.return_cuts:

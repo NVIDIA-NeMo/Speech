@@ -12,15 +12,33 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
 import pytest
 import torch
 
+from nemo.collections.asr.parts.mixins.transcription import (
+    TranscriptionTensorDataset,
+    _pre_chunked_tensor_collate_fn,
+    resolve_chunking,
+)
 from nemo.collections.asr.parts.utils.chunking_utils import (
+    chunk_waveform,
+    find_optimal_chunk_size,
     join_char_level_timestamps,
-    merge_all_hypotheses,
-    merge_hypotheses_of_same_audio,
+    merge_flat_chunk_hypotheses,
 )
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
+
+
+def _make_hyp(text, id_, chunk_start=0.0):
+    """Shared hypothesis factory for merge tests."""
+    h = Hypothesis(score=0.0, y_sequence=torch.tensor([1]), timestamp={"word": [], "segment": []})
+    h.text = text
+    h.id = id_
+    h.chunk_start = chunk_start
+    h._encoded_len = 10
+    h._timestamps_type = None
+    return h
 
 
 def _make_char(char, token_id, start_off, end_off, token=None):
@@ -31,6 +49,76 @@ def _make_char(char, token_id, start_off, end_off, token=None):
         "start_offset": start_off,
         "end_offset": end_off,
     }
+
+
+@pytest.mark.unit
+def test_find_optimal_chunk_size_returns_total_for_short_audio():
+    total_len = 95
+    chunk_size = find_optimal_chunk_size(
+        total_len=total_len,
+        min_sec=3,
+        max_sec=10,
+        sample_rate=10,
+        overlap_sec=1.0,
+    )
+
+    assert chunk_size == total_len
+
+
+@pytest.mark.unit
+def test_find_optimal_chunk_size_prefers_largest_last_chunk():
+    total_len = 105
+    chunk_size = find_optimal_chunk_size(
+        total_len=total_len,
+        min_sec=3,
+        max_sec=5,
+        sample_rate=10,
+        overlap_sec=1.0,
+    )
+
+    assert chunk_size == 50  # 5 seconds * 10 Hz sample rate
+
+
+@pytest.mark.unit
+def test_chunk_waveform_produces_overlapping_padded_chunks():
+    waveform = torch.arange(100, dtype=torch.float32)
+
+    chunks, chunk_lens, chunk_starts = chunk_waveform(
+        waveform=waveform,
+        chunk_range=[3, 3],
+        overlap_sec=1.0,
+        sample_rate=10,
+    )
+
+    assert len(chunks) == 5
+    assert chunk_lens == [30, 30, 30, 30, 20]
+    assert chunk_starts == [0, 20, 40, 60, 80]
+    assert all(chunk.shape[0] == 30 for chunk in chunks)
+    assert torch.allclose(chunks[0], waveform[:30])
+
+    padded_tail = chunks[-1][chunk_lens[-1] :]
+    assert torch.allclose(padded_tail, torch.zeros_like(padded_tail))
+
+
+@pytest.mark.unit
+def test_chunk_waveform_requires_valid_range():
+    waveform = torch.zeros(32)
+    with pytest.raises((ValueError, TypeError)):
+        chunk_waveform(waveform=waveform, chunk_range=42, sample_rate=10)
+    with pytest.raises((ValueError, TypeError)):
+        chunk_waveform(waveform=waveform, chunk_range=[1], sample_rate=10)
+
+
+@pytest.mark.unit
+def test_chunk_waveform_raises_when_overlap_not_smaller_than_chunk():
+    waveform = torch.arange(25, dtype=torch.float32)
+    with pytest.raises(ValueError):
+        chunk_waveform(
+            waveform=waveform,
+            chunk_range=[1, 1],
+            overlap_sec=1.5,
+            sample_rate=10,
+        )
 
 
 @pytest.mark.unit
@@ -146,103 +234,104 @@ def test_join_char_level_timestamps_with_filter():
 
 
 @pytest.mark.unit
-def test_merge_hypotheses_of_same_audio():
-    # Different segments of the same audio file are correctly combined
-    subsampling_factor = 8
-    chunk_duration_seconds = 10
-    frame_offset = int(chunk_duration_seconds * 1000 / subsampling_factor)
+def test_merge_flat_chunk_hypotheses_preserves_manifest_order():
+    """merge_flat_chunk_hypotheses must output results in the order they first appear
+    in the flat hypotheses list (which matches the presorted manifest order), NOT in
+    alphabetical order of the string ID.  transcribe_speech presorts by duration and
+    restore_transcription_order expects results back in that same presorted order."""
 
-    h0 = Hypothesis(
-        score=0.0,
-        y_sequence=torch.tensor([1]),
-        timestamp={
-            "word": [{"word": "a", "start": 0.0, "end": 0.1, "start_offset": 0, "end_offset": 2}],
-            "segment": [{"segment": "a", "start": 0.0, "end": 0.1, "start_offset": 0, "end_offset": 2}],
-        },
-    )
-    h1 = Hypothesis(
-        score=0.0,
-        y_sequence=torch.tensor([2]),
-        timestamp={
-            "word": [{"word": "b", "start": 0.2, "end": 0.3, "start_offset": 0, "end_offset": 3}],
-            "segment": [{"segment": "b", "start": 0.2, "end": 0.3, "start_offset": 0, "end_offset": 3}],
-        },
-    )
-    h2 = Hypothesis(
-        score=0.0,
-        y_sequence=torch.tensor([3]),
-        timestamp={
-            "word": [],
-            "segment": [],
-        },
-    )
-
-    merged = merge_hypotheses_of_same_audio(
-        hypotheses_list=[h0, h1, h2],
-        timestamps=True,
-        subsampling_factor=subsampling_factor,
-        chunk_duration_seconds=chunk_duration_seconds,
-    )
-
-    words = merged.timestamp["word"]
-    segs = merged.timestamp["segment"]
-
-    assert [w["word"] for w in words] == ["a", "b"]
-    assert words[0]["start"] == pytest.approx(0.0)
-    assert words[0]["start_offset"] == 0
-    assert words[1]["start"] == pytest.approx(0.2 + chunk_duration_seconds)
-    assert words[1]["start_offset"] == frame_offset
-
-    assert [s["segment"] for s in segs] == ["a", "b"]
-    assert segs[1]["end"] == pytest.approx(0.3 + chunk_duration_seconds)
-    assert segs[1]["end_offset"] == 3 + frame_offset
-
-
-@pytest.mark.unit
-def test_merge_all_hypotheses():
-    # Testing if merging by id works
-    def H(text, id_):
-        h = Hypothesis(score=0.0, y_sequence=torch.tensor([1]), timestamp={"word": [], "segment": []})
-        h.text = text
-        h.id = id_
-        return h
-
-    hyps = [H("a", 1), H("b", 1), H("c", 2), H("d", 2)]
-
-    merged_list = merge_all_hypotheses(
-        hypotheses_list=hyps,
-        timestamps=False,
-        subsampling_factor=2,
-        chunk_duration_seconds=3600,
-    )
-
-    assert len(merged_list) == 2
-    texts = {m.text for m in merged_list}
-    assert texts == {"a b", "c d"}
-
-
-@pytest.mark.unit
-def test_merge_all_hypotheses_with_cut_segmented_suffix():
-    def H(text, id_):
-        h = Hypothesis(score=0.0, y_sequence=torch.tensor([1]), timestamp={"word": [], "segment": []})
-        h.text = text
-        h.id = id_
-        return h
-
-    hyps = [
-        H("root", "11-0"),
-        H("cont1", "11-1_cut_segmented"),
-        H("cont2", "11-2_cut_segmented"),
-        H("other", "12-0"),
+    # Simulates presorted order: "258" longest, then "113", then "11".
+    # Alphabetical would be: "11", "113", "258" — the opposite of what we want.
+    flat = [
+        _make_hyp("a1", "258-0", 0.0),
+        _make_hyp("a2", "258-0", 40.0),
+        _make_hyp("b1", "113-0", 0.0),
+        _make_hyp("b2", "113-0", 40.0),
+        _make_hyp("c1", "11-0", 0.0),
+        _make_hyp("c2", "11-0", 40.0),
     ]
 
-    merged_list = merge_all_hypotheses(
-        hypotheses_list=hyps,
+    merged = merge_flat_chunk_hypotheses(
+        hypotheses_list=flat,
         timestamps=False,
+        tokenizer=None,
         subsampling_factor=8,
-        chunk_duration_seconds=3600,
+        window_stride=0.01,
+        vocabulary=[chr(i) for i in range(128)],
+        return_hypotheses=False,
     )
 
-    assert len(merged_list) == 2
-    texts = sorted(m.text for m in merged_list)
-    assert texts == ["other", "root cont1 cont2"]
+    # Output order must be 258, 113, 11 — not alphabetical 11, 113, 258.
+    assert len(merged) == 3
+    ids = [getattr(m, 'id', None) for m in merged]
+    assert ids == ["258-0", "113-0", "11-0"], f"Expected presorted order, got {ids}"
+
+
+@pytest.mark.unit
+def test_resolve_chunking_enables():
+    assert resolve_chunking(audio='single.wav', enable_chunking=True) is True
+    assert resolve_chunking(audio='single.wav', enable_chunking=False) is False
+
+
+@pytest.mark.unit
+def test_resolve_chunking_disabled_for_dataloader():
+    """External DataLoader bypasses chunking setup, so resolve_chunking must return False."""
+    dl = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(torch.zeros(1)))
+    assert resolve_chunking(audio=dl, enable_chunking=True) is False
+
+
+@pytest.mark.unit
+def test_transcription_tensor_dataset_pre_chunks():
+    """TranscriptionTensorDataset with enable_chunking pre-expands audio into chunks.
+
+    Each item must carry (chunk, chunk_len, sample_idx, chunk_start_samples) so that
+    _transcribe_output_processing can assign stable IDs and correct offsets for merging.
+    """
+    sample_rate = 100  # 100 Hz for easy arithmetic
+    # Two audio tensors: 500 samples (5 s) and 250 samples (2.5 s).
+    # chunk_range=[2, 2] → 2 s chunks (200 samples), overlap=1 s (100 samples), step=100 samples.
+    # Audio 0 (500 samples): starts at 0, 100, 200, 300, 400 → 5 chunks
+    # Audio 1 (250 samples): starts at 0, 100, 150 ... let's check: step=100,
+    #   overlap=100, chunks while start + 100 < 250: start=0,100; start=200 → 200+100=300 > 250, stop → 3 chunks
+    audio_tensors = [
+        torch.ones(500, dtype=torch.float32),
+        torch.ones(250, dtype=torch.float32) * 2,
+    ]
+    config = {
+        'audio_tensors': audio_tensors,
+        'channel_selector': None,
+        'sample_rate': sample_rate,
+        'enable_chunking': True,
+        'chunk_range': [2, 2],  # 2-second chunks at 100 Hz = 200-sample chunks
+    }
+    ds = TranscriptionTensorDataset(config)
+
+    # Dataset length = total number of chunks across all audio tensors
+    assert ds.length > 0
+
+    # All items for audio 0 must have sample_idx=0; all for audio 1 must have sample_idx=1
+    sample_indices = [ds.get_item(i)[2].item() for i in range(ds.length)]
+    assert 0 in sample_indices
+    assert 1 in sample_indices
+
+    # chunk_start_samples must be non-decreasing within each sample's group
+    starts_by_sample = {}
+    for i in range(ds.length):
+        _, _, sidx, start = ds.get_item(i)
+        sidx = sidx.item()
+        starts_by_sample.setdefault(sidx, []).append(start.item())
+
+    for sidx, starts in starts_by_sample.items():
+        assert starts == sorted(starts), f"chunk starts not sorted for sample {sidx}: {starts}"
+        # First chunk must start at sample 0
+        assert starts[0] == 0
+
+    # _pre_chunked_tensor_collate_fn must pad and stack correctly
+    batch = [ds.get_item(i) for i in range(min(4, ds.length))]
+    audio, lens, sample_ids, chunk_starts = _pre_chunked_tensor_collate_fn(batch)
+    assert audio.ndim == 2
+    assert lens.shape[0] == len(batch)
+    assert sample_ids.shape[0] == len(batch)
+    assert chunk_starts.shape[0] == len(batch)
+    # All chunks padded to same length
+    assert all(audio[i].shape[0] == audio[0].shape[0] for i in range(len(batch)))

@@ -52,6 +52,7 @@ Transcribe audio file on a single CPU/GPU. Useful for transcription of moderate 
   dataset_manifest: path to dataset JSON manifest file (in NeMo formats
   compute_langs: Bool to request language ID information (if the model supports it)
   timestamps: Bool to request greedy time stamp information (if the model supports it) by default None 
+  enable_chunking: Bool to enable chunking for long audio files (default: False)
 
   (Optionally: You can limit the type of timestamp computations using below overrides)
   ctc_decoding.ctc_timestamp_type="all"  # (default all, can be [all, char, word, segment])
@@ -140,6 +141,8 @@ class TranscriptionConfig:
 
     # Set to True to output greedy timestamp information (only supported models) and returns full alignment hypotheses
     timestamps: Optional[bool] = None
+    enable_chunking: Optional[bool] = False
+    verbose: bool = True
 
     # Set to True to return hypotheses instead of text from the transcribe function
     return_hypotheses: bool = False
@@ -409,6 +412,8 @@ def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List[Hypothesis
             override_cfg.text_field = cfg.gt_text_attr_name
             override_cfg.lang_field = cfg.gt_lang_attr_name
             override_cfg.timestamps = cfg.timestamps
+            override_cfg.enable_chunking = cfg.enable_chunking
+            override_cfg.verbose = cfg.verbose
             if hasattr(override_cfg, "prompt"):
                 override_cfg.prompt = parse_multitask_prompt(OmegaConf.to_container(cfg.prompt))
 
@@ -424,6 +429,7 @@ def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List[Hypothesis
                     audio=filepaths,
                     override_config=override_cfg,
                     timestamps=cfg.timestamps,
+                    enable_chunking=cfg.enable_chunking,
                 )
                 # stop timer, log time
                 timer.stop(device=device)

@@ -16,7 +16,7 @@ import json
 import os
 import tempfile
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -29,6 +29,7 @@ from tqdm import tqdm
 from nemo.collections.asr.parts.preprocessing.perturb import process_augmentations
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment, ChannelSelectorType
 from nemo.collections.asr.parts.utils import manifest_utils
+from nemo.collections.asr.parts.utils.chunking_utils import merge_flat_chunk_hypotheses
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.common.data.utils import move_data_to_device
 from nemo.utils import logging, logging_mode
@@ -64,11 +65,11 @@ class TranscribeConfig:
     augmentor: Optional[DictConfig] = None
     timestamps: Optional[bool] = None  # returns timestamps for each word and segments if model supports punctuations
     verbose: bool = True
-
     # Utility
     partial_hypothesis: Optional[List[Any]] = None
-
+    enable_chunking: Optional[bool] = False
     _internal: Optional[InternalTranscribeConfig] = None
+    chunk_range: Optional[List[int]] = field(default_factory=lambda: [240, 300])
 
 
 def get_value_from_transcription_config(trcfg, key, default):
@@ -94,24 +95,61 @@ def get_value_from_transcription_config(trcfg, key, default):
         return default
 
 
+def resolve_chunking(
+    audio: Union[str, List[str], np.ndarray, torch.Tensor, DataLoader],
+    enable_chunking: bool,
+) -> bool:
+    """Returns True when chunking is requested and audio is not an external DataLoader."""
+    return enable_chunking and not isinstance(audio, DataLoader)
+
+
 class TranscriptionTensorDataset(Dataset):
+    """
+    Dataset for transcribing audio tensors.
+
+    Chunking:
+    If `enable_chunking` is True, each audio sample is pre-split into optimally sized overlapping
+    chunks at construction time. The dataset then has one entry per chunk and each item is a 4-tuple
+    ``(chunk, chunk_len, sample_idx, chunk_start_samples)`` where the last two scalars carry the
+    provenance metadata needed by the post-inference merge logic.
+    """
+
     def __init__(self, config: Dict[str, Any]):
         super().__init__()
         self.audio_tensors = config['audio_tensors']
         self.channel_selector = config['channel_selector']
         self.augmentor_cfg = config.get('augmentor', None)
         self.sample_rate = config['sample_rate']
-
         self.pad_min_duration = config.get('pad_min_duration', 1.0)
         self.pad_direction = config.get('pad_direction', 'both')
         self.pad_min_samples = int(self.pad_min_duration * self.sample_rate)
+        self.enable_chunking = config.get('enable_chunking', False)
+        self.chunk_range = config.get('chunk_range', [240, 300])
 
         if self.augmentor_cfg is not None:
             self.augmentor = process_augmentations(self.augmentor_cfg, global_rank=0, world_size=1)
         else:
             self.augmentor = None
 
-        self.length = len(self.audio_tensors)
+        if self.enable_chunking:
+            # Pre-expand every audio tensor into its chunks so the dataloader can use
+            # any batch size and each item already carries (sample_idx, chunk_start_samples).
+            from nemo.collections.asr.parts.utils.chunking_utils import chunk_waveform
+
+            self._chunks: List[Tuple[torch.Tensor, int, int, int]] = []
+            for sample_idx, tensor in enumerate(self.audio_tensors):
+                tensor = self._load_and_pad(tensor)
+                chunks, lens, starts = chunk_waveform(
+                    waveform=tensor,
+                    chunk_range=self.chunk_range,
+                    overlap_sec=1.0,
+                    sample_rate=self.sample_rate,
+                )
+                for chunk, length, start in zip(chunks, lens, starts):
+                    self._chunks.append((chunk, length, sample_idx, start))
+            self.length = len(self._chunks)
+        else:
+            self.length = len(self.audio_tensors)
 
     def __getitem__(self, index):
         if index >= self.length:
@@ -141,9 +179,8 @@ class TranscriptionTensorDataset(Dataset):
         samples = torch.nn.functional.pad(samples, (pad_left, pad_right), mode='constant', value=0.0)
         return samples
 
-    def get_item(self, index):
-        samples = self.audio_tensors[index]
-
+    def _load_and_pad(self, samples: torch.Tensor) -> torch.Tensor:
+        """Apply augmentation (if any) and minimum-duration padding."""
         if self.augmentor is not None:
             logging.warning(
                 "Audio Augmentations are being applied during inference by moving the tensor onto CPU. "
@@ -159,12 +196,58 @@ class TranscriptionTensorDataset(Dataset):
             samples = self.augmentor.perturb(segment)
             samples = torch.tensor(samples.samples, dtype=original_dtype)
 
-        samples = self._pad_audio(samples)
-        seq_len = torch.tensor(samples.shape[0], dtype=torch.long)
+        return self._pad_audio(samples)
 
+    def get_item(self, index):
+        if self.enable_chunking:
+            chunk, length, sample_idx, start_samples = self._chunks[index]
+            seq_len = torch.tensor(length, dtype=torch.long)
+            # Return (audio, audio_len, sample_idx, chunk_start_samples) so that
+            # _transcribe_output_processing can assign stable IDs and correct offsets.
+            return (
+                chunk,
+                seq_len,
+                torch.tensor(sample_idx, dtype=torch.long),
+                torch.tensor(start_samples, dtype=torch.long),
+            )
+
+        samples = self._load_and_pad(self.audio_tensors[index])
+        seq_len = torch.tensor(samples.shape[0], dtype=torch.long)
         # Typically NeMo ASR models expect the mini-batch to be a 4-tuple of (audio, audio_len, text, text_len).
         # For inference, we set text and text_len to None to not disrupt the shape of the tuple.
         return samples, seq_len, None, None
+
+
+def _pre_chunked_tensor_collate_fn(
+    batch: List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]],
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Collate function for pre-chunked tensor datasets (``TranscriptionTensorDataset`` with
+    ``enable_chunking=True``).
+
+    Each item is ``(chunk, chunk_len, sample_idx, chunk_start_samples)`` — all tensors.
+    The function pads chunks to a uniform length and stacks everything.
+
+    Returns:
+        audio: ``(B, T)`` padded chunk audio.
+        audio_lens: ``(B,)`` true (unpadded) length of each chunk in samples.
+        sample_ids: ``(B,)`` original sample index for each chunk (stable ID for merging).
+        chunk_starts: ``(B,)`` start offset of each chunk within its original audio, in samples.
+    """
+    chunks, lens, sample_ids, starts = zip(*batch)
+    max_len = max(c.shape[0] for c in chunks)
+    padded = []
+    for chunk in chunks:
+        pad_len = max_len - chunk.shape[0]
+        if pad_len > 0:
+            chunk = torch.nn.functional.pad(chunk, (0, pad_len))
+        padded.append(chunk)
+    return (
+        torch.stack(padded),
+        torch.stack(lens),
+        torch.stack(sample_ids),
+        torch.stack(starts),
+    )
 
 
 class TranscriptionMixin(ABC):
@@ -195,6 +278,40 @@ class TranscriptionMixin(ABC):
 
     """
 
+    def _is_chunking_compatible_decoding(self) -> bool:
+        """
+        Check if the current decoding strategy is compatible with chunking.
+
+        Beam search with `return_best_hypothesis=False` returns multiple hypotheses per chunk,
+        which is incompatible with the current chunking merge implementation that expects
+        a single hypothesis per chunk.
+
+        Returns:
+            bool: True if decoding is compatible with chunking, False otherwise.
+        """
+        # Check if the model has a decoding attribute (RNNT/TDT models)
+        if not hasattr(self, 'decoding'):
+            return True
+
+        # Check if decoding has an inner decoder (AbstractRNNTDecoding stores decoder as self.decoding)
+        inner_decoder = getattr(self.decoding, 'decoding', None)
+        if inner_decoder is None:
+            return True
+
+        # Check if the inner decoder has return_best_hypothesis attribute (beam decoders have this)
+        return_best_hypothesis = getattr(inner_decoder, 'return_best_hypothesis', True)
+
+        if not return_best_hypothesis:
+            logging.warning(
+                "Chunking is not compatible with beam search when `return_best_hypothesis=False`. "
+                "The decoding returns multiple hypotheses per chunk, but chunking merge expects "
+                "a single hypothesis per chunk. Disabling chunking. "
+                "Set `decoding.beam.return_best_hypothesis=True` to enable chunking with beam search."
+            )
+            return False
+
+        return True
+
     @torch.inference_mode()
     def transcribe(
         self,
@@ -207,6 +324,7 @@ class TranscriptionMixin(ABC):
         augmentor: DictConfig = None,
         verbose: bool = True,
         timestamps: Optional[bool] = None,
+        enable_chunking: bool = False,
         override_config: Optional[TranscribeConfig] = None,
         **config_kwargs,
     ) -> GenericTranscriptionType:
@@ -223,7 +341,7 @@ class TranscriptionMixin(ABC):
             batch_size: (int) batch size to use during inference.
                 Bigger will result in better throughput performance but would use more memory.
             return_hypotheses: (bool) Either return hypotheses or text
-                With hypotheses can do some postprocessing like getting timestamp or rescoring
+                With hypotheses can do some postprocessing like getting timestamp or rescoring.
             num_workers: (int) number of workers for DataLoader
             channel_selector (int | Iterable[int] | str): select a single channel or a subset of channels from
                 multi-channel audio. If set to `'average'`, it performs averaging across channels. Disabled if set
@@ -253,7 +371,6 @@ class TranscriptionMixin(ABC):
 
                 - Dict[str, List[str/Hypothesis]]
         """
-
         if override_config is None:
             transcribe_cfg = TranscribeConfig(
                 use_lhotse=use_lhotse,
@@ -264,6 +381,7 @@ class TranscriptionMixin(ABC):
                 augmentor=augmentor,
                 verbose=verbose,
                 timestamps=timestamps,
+                enable_chunking=enable_chunking,
                 **config_kwargs,
             )
         else:
@@ -277,7 +395,6 @@ class TranscriptionMixin(ABC):
                 override_config._internal = InternalTranscribeConfig()
 
             transcribe_cfg = override_config
-
         # Add new internal config
         if transcribe_cfg._internal is None:
             transcribe_cfg._internal = InternalTranscribeConfig()
@@ -288,10 +405,19 @@ class TranscriptionMixin(ABC):
                     "`transcribe_cfg._internal` must be of an object of type InternalTranscribeConfig or "
                     "its subclass"
                 )
-
+        # Classification and regression models never use chunking
+        if type(transcribe_cfg).__name__ in ('ClassificationInferConfig', 'RegressionInferConfig'):
+            transcribe_cfg.enable_chunking = False
+        else:
+            transcribe_cfg.enable_chunking = (
+                resolve_chunking(
+                    audio=audio,
+                    enable_chunking=transcribe_cfg.enable_chunking,
+                )
+                and self._is_chunking_compatible_decoding()
+            )
         # Hold the results here
         results = None  # type: GenericTranscriptionType
-
         try:
             generator = self.transcribe_generator(audio, override_config=transcribe_cfg)
 
@@ -341,14 +467,33 @@ class TranscriptionMixin(ABC):
                     )
         except StopIteration:
             pass
-
+        if transcribe_cfg.enable_chunking and isinstance(results, list):
+            _timestamps = override_config.timestamps if override_config is not None else timestamps
+            _subsampling = self.encoder.subsampling_factor if hasattr(self.encoder, 'subsampling_factor') else 8
+            _window_stride = (
+                self.cfg['preprocessor']['window_stride']
+                if hasattr(self, 'cfg') and 'preprocessor' in self.cfg
+                else None
+            )
+            # Vocabulary for char-based models (RNNT: joint.vocabulary, CTC: decoder.vocabulary)
+            _vocabulary = getattr(getattr(self, 'joint', None), 'vocabulary', None) or getattr(
+                getattr(self, 'decoder', None), 'vocabulary', None
+            )
+            results = merge_flat_chunk_hypotheses(
+                hypotheses_list=results,
+                timestamps=_timestamps,
+                tokenizer=getattr(self, 'tokenizer', None),
+                subsampling_factor=_subsampling,
+                window_stride=_window_stride,
+                vocabulary=_vocabulary,
+                return_hypotheses=transcribe_cfg.return_hypotheses,
+            )
         return results
 
     def transcribe_generator(self, audio, override_config: Optional[TranscribeConfig]):
         """
         A generator version of `transcribe` function.
         """
-
         if override_config is None:
             override_config = TranscribeConfig()
 
@@ -480,6 +625,7 @@ class TranscriptionMixin(ABC):
         Returns:
             A DataLoader object that is used to iterate over the input audio data.
         """
+        # Resolve chunking based on input constraints
         if isinstance(audio, (list, tuple)):
             if len(audio) == 0:
                 raise ValueError("Input `audio` is empty")
@@ -497,7 +643,6 @@ class TranscriptionMixin(ABC):
 
             tmp_dir = trcfg._internal.temp_dir
             ds_config = self._transcribe_input_manifest_processing(audio_files, tmp_dir, trcfg)
-
             temp_dataloader = self._setup_transcribe_dataloader(ds_config)
             return temp_dataloader
 
@@ -514,7 +659,6 @@ class TranscriptionMixin(ABC):
 
             tmp_dir = trcfg._internal.temp_dir
             ds_config = self._transcribe_input_tensor_processing(audio_tensors, tmp_dir, trcfg)
-
             temp_dataloader = self._setup_transcribe_tensor_dataloader(ds_config, trcfg)
             return temp_dataloader
 
@@ -553,6 +697,9 @@ class TranscriptionMixin(ABC):
                 "does not have `sample_rate` attribute. Please set `sample_rate` attribute to the model explicitly."
             )
 
+        # Determine model-specific default chunk range
+        # Canary models (have transf_decoder) use shorter chunks (30-40s)
+        # Parakeet models use longer chunks (240-300s)
         ds_config = {
             'use_lhotse': get_value_from_transcription_config(trcfg, 'use_lhotse', True),
             'audio_tensors': audio_tensors,
@@ -563,6 +710,8 @@ class TranscriptionMixin(ABC):
             'sample_rate': sample_rate,
             'pad_min_duration': get_value_from_transcription_config(trcfg, 'pad_min_duration', 1.0),
             'pad_direction': get_value_from_transcription_config(trcfg, 'pad_direction', 'both'),
+            'enable_chunking': get_value_from_transcription_config(trcfg, 'enable_chunking', False),
+            'chunk_range': get_value_from_transcription_config(trcfg, 'chunk_range', [240, 300]),
         }
 
         augmentor = get_value_from_transcription_config(trcfg, 'augmentor', None)
@@ -689,6 +838,16 @@ class TranscriptionMixin(ABC):
             )
             pad_id = 0
 
+        # Choose collate function based on chunking setting.
+        # When chunking is enabled, TranscriptionTensorDataset pre-expands each audio into
+        # chunks at construction time, so each dataset item is already one chunk with metadata.
+        # Use the dedicated collate that handles (chunk, len, sample_idx, chunk_start) tuples.
+        enable_chunking = config.get('enable_chunking', False)
+        if enable_chunking:
+            collate_fn = _pre_chunked_tensor_collate_fn
+        else:
+            collate_fn = partial(_speech_collate_fn, pad_id=pad_id)
+
         return DataLoader(
             dataset=dataset,
             shuffle=False,
@@ -696,7 +855,7 @@ class TranscriptionMixin(ABC):
             num_workers=config['num_workers'],
             pin_memory=False,
             drop_last=False,
-            collate_fn=partial(_speech_collate_fn, pad_id=pad_id),
+            collate_fn=collate_fn,
         )
 
 
@@ -753,6 +912,8 @@ class ASRTranscriptionMixin(TranscriptionMixin):
             'channel_selector': get_value_from_transcription_config(trcfg, 'channel_selector', None),
             'text_field': get_value_from_transcription_config(trcfg, 'text_field', 'text'),
             'lang_field': get_value_from_transcription_config(trcfg, 'lang_field', 'lang'),
+            'enable_chunking': get_value_from_transcription_config(trcfg, 'enable_chunking', False),
+            'chunk_range': get_value_from_transcription_config(trcfg, 'chunk_range', [240, 300]),
         }
 
         augmentor = get_value_from_transcription_config(trcfg, 'augmentor', None)

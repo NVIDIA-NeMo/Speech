@@ -14,6 +14,7 @@
 
 import copy
 import os
+import uuid
 from math import ceil
 from typing import Any, Dict, List, Optional, Union
 
@@ -250,6 +251,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         augmentor: DictConfig = None,
         verbose: bool = True,
         timestamps: Optional[bool] = None,
+        enable_chunking: bool = False,
         override_config: Optional[TranscribeConfig] = None,
     ) -> TranscriptionReturnType:
         """
@@ -279,6 +281,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             timestamps: Optional(Bool): timestamps will be returned if set to True as part of hypothesis object
                 (output.timestep['segment']/output.timestep['word']). Refer to `Hypothesis` class for more details.
                 Default is None and would retain the previous state set by using self.change_decoding_strategy().
+            enable_chunking: (bool) whether to enable parallel chunking for transcription.
             override_config: (Optional[TranscribeConfig]) override transcription config pre-defined by the user.
                 **Note**: All other arguments in the function will be ignored if override_config is passed.
                 You should call this argument as `model.transcribe(audio, override_config=TranscribeConfig(...))`.
@@ -288,7 +291,6 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             * A list of greedy transcript texts / Hypothesis
             * An optional list of beam search transcript texts / Hypothesis / NBestHypothesis.
         """
-
         timestamps = timestamps or (override_config.timestamps if override_config is not None else None)
         if timestamps is not None:
             need_change_decoding = False
@@ -298,6 +300,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
                         with output[0][idx].timestep['word'/'segment'/'char']"
                 )
                 return_hypotheses = True
+
                 if self.cfg.decoding.get("compute_timestamps", None) is not True:
                     # compute_timestamps None, False or non-existent -> change to True
                     need_change_decoding = True
@@ -327,6 +330,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             override_config=override_config,
             # Additional arguments
             partial_hypothesis=partial_hypothesis,
+            enable_chunking=enable_chunking,
         )
 
     def change_vocabulary(self, new_vocabulary: List[str], decoding_cfg: Optional[DictConfig] = None):
@@ -476,6 +480,13 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         # Automatically inject args from model config to dataloader config
         audio_to_text_dataset.inject_dataloader_value_from_model_config(self.cfg, config, key='sample_rate')
         audio_to_text_dataset.inject_dataloader_value_from_model_config(self.cfg, config, key='labels')
+        enable_chunking = config.get("enable_chunking", False)
+        if enable_chunking:
+            config['use_lhotse'] = True
+            chunk_range = config.get("chunk_range", [240, 300])
+            config.cut_into_windows_balanced_min_duration = chunk_range[0]
+            config.cut_into_windows_balanced_max_duration = chunk_range[1]
+            config.cut_into_windows_balanced_overlap = 1.0
 
         if config.get("use_lhotse"):
             return get_lhotse_dataloader_from_config(
@@ -493,7 +504,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
                         blank_id=config.get('blank_index', -1),
                         do_normalize=config.get('normalize_transcripts', False),
                     ),
-                    return_cuts=config.get("do_transcribe", False),
+                    return_cuts=config.get("do_transcribe", False) or enable_chunking,
                 ),
             )
 
@@ -712,7 +723,6 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         # Spec augment is not applied during evaluation/testing
         if self.spec_augmentation is not None and self.training:
             processed_signal = self.spec_augmentation(input_spec=processed_signal, length=processed_signal_length)
-
         encoded, encoded_len = self.encoder(audio_signal=processed_signal, length=processed_signal_length)
         return encoded, encoded_len
 
@@ -944,7 +954,16 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
 
     def _transcribe_forward(self, batch: Any, trcfg: TranscribeConfig):
         encoded, encoded_len = self.forward(input_signal=batch[0], input_signal_length=batch[1])
-        output = dict(encoded=encoded, encoded_len=encoded_len)
+        output = dict[str, Any](encoded=encoded, encoded_len=encoded_len)
+        if trcfg.enable_chunking:
+            last = batch[-1]
+            if len(batch) >= 4 and isinstance(batch[2], torch.Tensor) and isinstance(last, torch.Tensor):
+                # Pre-chunked tensor path: batch = (audio, lens, sample_ids, chunk_starts)
+                output['chunk_sample_ids'] = batch[2]
+                output['chunk_starts_samples'] = last
+            elif last is not None:
+                # Lhotse path: last element is a CutSet
+                output['cuts'] = last
         return output
 
     def _transcribe_output_processing(
@@ -952,22 +971,52 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
     ) -> Union[List['Hypothesis'], List[List['Hypothesis']]]:
         encoded = outputs.pop('encoded')
         encoded_len = outputs.pop('encoded_len')
-
+        cuts = outputs.pop('cuts', None)
+        chunk_sample_ids = outputs.pop('chunk_sample_ids', None)
+        chunk_starts_samples = outputs.pop('chunk_starts_samples', None)
+        if trcfg.timestamps and trcfg.enable_chunking:
+            final_timestamps_type = self.cfg.decoding.rnnt_timestamp_type
+            self.decoding.cfg.rnnt_timestamp_type = 'char'
+        else:
+            final_timestamps_type = None
         hyp = self.decoding.rnnt_decoder_predictions_tensor(
             encoded,
             encoded_len,
             return_hypotheses=trcfg.return_hypotheses,
             partial_hypotheses=trcfg.partial_hypothesis,
+            return_token_ids=trcfg.enable_chunking,  # If chunking is enabled, we need to return the token ids to be used for merging the hypotheses
         )
         # cleanup memory
-        del encoded, encoded_len
-
+        del encoded
         if trcfg.timestamps:
             hyp = process_timestamp_outputs(
                 hyp, self.encoder.subsampling_factor, self.cfg['preprocessor']['window_stride']
             )
-
-        return hyp
+        if trcfg.enable_chunking:
+            # Restore the timestamp type that was temporarily overridden to 'char'
+            if final_timestamps_type is not None:
+                self.decoding.cfg.rnnt_timestamp_type = final_timestamps_type
+            # Stamp each hypothesis with chunk metadata for post-inference merge
+            for j, h in enumerate(hyp):
+                if cuts is not None:
+                    cut = cuts[j]
+                    source_id = (cut.custom or {}).get("source_cut_id", cut.id)
+                    chunk_start = (cut.custom or {}).get("source_cut_start", 0)
+                elif chunk_sample_ids is not None:
+                    # Pre-chunked tensor path: use stable sample index and actual chunk offset.
+                    sample_rate = getattr(self, 'sample_rate', None) or self.cfg.get('sample_rate', 16000)
+                    source_id = f'audio_{chunk_sample_ids[j].item()}'
+                    chunk_start = chunk_starts_samples[j].item() / sample_rate
+                else:
+                    source_id = f'audio_{uuid.uuid4().int}'
+                    chunk_start = 0
+                setattr(h, 'id', source_id)
+                setattr(h, 'chunk_start', chunk_start)
+                setattr(h, '_encoded_len', encoded_len[j].item())
+                setattr(h, '_timestamps_type', final_timestamps_type)
+            return hyp
+        else:
+            return hyp
 
     def _setup_transcribe_dataloader(self, config: Dict) -> 'torch.utils.data.DataLoader':
         """
@@ -990,8 +1039,15 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             batch_size = config['batch_size']
         else:
             manifest_filepath = os.path.join(config['temp_dir'], 'manifest.json')
-            batch_size = min(config['batch_size'], len(config['paths2audio_files']))
+            enable_chunking = config.get('enable_chunking', False)
+            # With chunking, chunks vastly outnumber input files; always use the requested batch_size.
+            batch_size = (
+                config['batch_size']
+                if enable_chunking
+                else min(config['batch_size'], len(config['paths2audio_files']))
+            )
 
+        enable_chunking = config.get('enable_chunking', False)
         dl_config = {
             'manifest_filepath': manifest_filepath,
             'sample_rate': self.preprocessor._sample_rate,
@@ -1001,11 +1057,17 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             'shuffle': False,
             'num_workers': config.get('num_workers', min(batch_size, os.cpu_count() - 1)),
             'pin_memory': True,
+            'use_lhotse': config.get('use_lhotse', True),
+            'use_bucketing': False,
+            'drop_last': False,
+            'pad_min_duration': config.get('pad_min_duration', 1.0),
+            'pad_direction': config.get('pad_direction', 'both'),
+            'enable_chunking': enable_chunking,
+            'chunk_range': config.get('chunk_range', [240, 300]),
         }
 
         if config.get("augmentor"):
             dl_config['augmentor'] = config.get("augmentor")
-
         temporary_datalayer = self._setup_dataloader_from_config(config=DictConfig(dl_config))
         return temporary_datalayer
 

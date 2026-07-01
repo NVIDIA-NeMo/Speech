@@ -667,7 +667,6 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
 
         if not bypass_pre_encode:
             audio_signal = torch.transpose(audio_signal, 1, 2)
-
             if isinstance(self.pre_encode, nn.Linear):
                 audio_signal = self.pre_encode(audio_signal)
             else:

@@ -30,7 +30,7 @@ from nemo.collections.asr.inference.streaming.framing.request import FeatureBuff
 from nemo.collections.asr.inference.streaming.framing.request_options import ASRRequestOptions
 from nemo.collections.asr.inference.streaming.state.salm_state import SALMStreamingState
 from nemo.collections.asr.inference.utils.enums import ASROutputGranularity, MergingStrategy, RequestType
-from nemo.collections.asr.inference.utils.lcs_merge import lcs_merge
+from nemo.collections.asr.parts.utils.streaming_utils import lcs_merge
 from nemo.utils.decorators import experimental
 
 if TYPE_CHECKING:

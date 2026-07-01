@@ -56,10 +56,15 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: anthropics/claude-code-action@v1
+        env:
+          ANTHROPIC_BASE_URL: ${{ secrets.NVIDIA_INFERENCE_URL }}
+          CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: "1"
+          DISABLE_PROMPT_CACHING: "1"
         with:
           prompt: |
             You are a helpful assistant for the NeMo repository.
             Answer the user's question based on the issue description, comments, and the codebase.
             Be concise and provide code references where relevant.
             Do NOT make any code changes or create PRs — only answer the question.
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          anthropic_api_key: ${{ secrets.NVIDIA_INFERENCE_KEY }}
+          claude_args: --model "${{ vars.CLAUDE_MODEL }}"

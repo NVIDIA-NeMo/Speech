@@ -41,7 +41,7 @@
 # Additionally, speech_team members can @claude in a PR review comment on a
 # babysitter-enabled PR to ask questions or request changes.
 #
-# Required secrets: ANTHROPIC_API_KEY, ORG_TEAM_READ_TOKEN, NEMO_RELABEL_TOKEN
+# Required secrets: NVIDIA_INFERENCE_URL, NVIDIA_INFERENCE_KEY, ORG_TEAM_READ_TOKEN, NEMO_RELABEL_TOKEN
 
 name: Claude Code — PR Babysitter
 
@@ -208,10 +208,14 @@ jobs:
       - uses: actions/checkout@v6
 
       - uses: anthropics/claude-code-action@v1
+        env:
+          ANTHROPIC_BASE_URL: ${{ secrets.NVIDIA_INFERENCE_URL }}
+          CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: "1"
+          DISABLE_PROMPT_CACHING: "1"
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          anthropic_api_key: ${{ secrets.NVIDIA_INFERENCE_KEY }}
           # No prompt — Claude reads the @claude mention and responds in context
-          claude_args: "--max-turns 15 --model claude-sonnet-4-6"
+          claude_args: "--max-turns 15 --model ${{ vars.CLAUDE_MODEL }}"
 
   # ---- CI failure: investigate, propose a plan, DO NOT push ----
 
@@ -275,8 +279,12 @@ jobs:
           ref: ${{ needs.check-label-for-ci.outputs.head_ref }}
 
       - uses: anthropics/claude-code-action@v1
+        env:
+          ANTHROPIC_BASE_URL: ${{ secrets.NVIDIA_INFERENCE_URL }}
+          CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: "1"
+          DISABLE_PROMPT_CACHING: "1"
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          anthropic_api_key: ${{ secrets.NVIDIA_INFERENCE_KEY }}
           prompt: |
             The CI workflow "${{ github.event.workflow_run.name }}" just failed
             on PR #${{ needs.check-label-for-ci.outputs.pr_number }}.
@@ -313,7 +321,7 @@ jobs:
                DO NOT include the `<!-- babysit-plan -->` marker. Instead post
                a comment that mentions @${{ needs.check-label-for-ci.outputs.author_login }}
                describing what you found and asking for help.
-          claude_args: "--max-turns 10 --model claude-sonnet-4-6"
+          claude_args: "--max-turns 10 --model ${{ vars.CLAUDE_MODEL }}"
 
       - name: Mark plan awaiting approval (or stop if Claude gave up)
         env:
@@ -406,8 +414,11 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.NEMO_RELABEL_TOKEN }}
           PR_NUMBER: ${{ github.event.issue.number }}
+          ANTHROPIC_BASE_URL: ${{ secrets.NVIDIA_INFERENCE_URL }}
+          CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: "1"
+          DISABLE_PROMPT_CACHING: "1"
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          anthropic_api_key: ${{ secrets.NVIDIA_INFERENCE_KEY }}
           prompt: |
             Decide whether the PR author has approved the fix plan, then act.
 
@@ -433,7 +444,7 @@ jobs:
                - NEITHER: post a short PR comment asking for an explicit
                  approve/reject. Do NOT change labels.
             5. Do not push any code. Do not edit files in the repository.
-          claude_args: "--max-turns 8 --model claude-sonnet-4-6"
+          claude_args: "--max-turns 8 --model ${{ vars.CLAUDE_MODEL }}"
 
   # ---- Execute the approved plan (the only job allowed to push code) ----
 
@@ -528,8 +539,12 @@ jobs:
 
       - uses: anthropics/claude-code-action@v1
         if: steps.authz.outputs.authorized == 'true' && steps.plan.outputs.found == 'true'
+        env:
+          ANTHROPIC_BASE_URL: ${{ secrets.NVIDIA_INFERENCE_URL }}
+          CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: "1"
+          DISABLE_PROMPT_CACHING: "1"
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          anthropic_api_key: ${{ secrets.NVIDIA_INFERENCE_KEY }}
           prompt: |
             The PR author has approved your previously posted fix plan. Execute it now.
 
@@ -544,7 +559,7 @@ jobs:
                code has moved on, the reproduction no longer triggers the bug):
                post a PR comment mentioning @${{ github.event.pull_request.user.login }}
                explaining what changed and DO NOT push.
-          claude_args: "--max-turns 10 --model claude-sonnet-4-6"
+          claude_args: "--max-turns 10 --model ${{ vars.CLAUDE_MODEL }}"
 
       - name: Re-trigger CI or stop loop
         if: steps.authz.outputs.authorized == 'true' && steps.plan.outputs.found == 'true'

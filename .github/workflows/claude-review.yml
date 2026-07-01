@@ -30,8 +30,9 @@ jobs:
 
   claude-review:
     needs: acknowledge
-    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_claude_review.yml@v0.88.0
+    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_claude_review.yml@v1.7.0
     with:
+      model: ${{ vars.CLAUDE_MODEL }}
       prompt: |
         You are doing a light code review. Keep it concise and actionable.
 
@@ -55,4 +56,5 @@ jobs:
         It's perfectly acceptable to not have anything to comment on.
         If you do not have anything to comment on, post "LGTM".
     secrets:
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      NVIDIA_INFERENCE_URL: ${{ secrets.NVIDIA_INFERENCE_URL }}
+      NVIDIA_INFERENCE_KEY: ${{ secrets.NVIDIA_INFERENCE_KEY }}

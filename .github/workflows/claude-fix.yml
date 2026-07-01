@@ -58,6 +58,10 @@ jobs:
       - uses: actions/checkout@v6
       - uses: anthropics/claude-code-action@v1
         id: claude
+        env:
+          ANTHROPIC_BASE_URL: ${{ secrets.NVIDIA_INFERENCE_URL }}
+          CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: "1"
+          DISABLE_PROMPT_CACHING: "1"
         with:
           prompt: |
             You are a developer working on the NeMo repository.
@@ -89,7 +93,8 @@ jobs:
               ```
 
             
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          anthropic_api_key: ${{ secrets.NVIDIA_INFERENCE_KEY }}
+          claude_args: --model "${{ vars.CLAUDE_MODEL }}"
 
       - name: Label PR with agent-contribution
         if: steps.claude.outputs.branch_name

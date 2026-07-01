@@ -186,8 +186,8 @@ def main(cfg: EvaluationConfig):
         if cfg.use_punct_er:
             metrics_to_compute.append("punct_er")
 
-        compute_metrics_per_sample(
-            manifest_path=transcription_cfg.output_filename,
+        samples_with_metrics = compute_metrics_per_sample(
+            manifest_path=cfg.dataset_manifest,
             reference_field=cfg.gt_text_attr_name,
             hypothesis_field="pred_text",
             metrics=metrics_to_compute,

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+import stat
 from unittest import mock
 
 import pytest
@@ -23,11 +24,39 @@ from nemo.utils.data_utils import (
     ais_endpoint_to_dir,
     bucket_and_object_from_uri,
     is_datastore_path,
+    open_datastore_object_with_binary,
     resolve_cache_dir,
 )
 
 
 class TestDataUtils:
+    @staticmethod
+    def _write_fake_ais_binary(path):
+        path.write_text(
+            """#!/usr/bin/env python3
+import os
+import sys
+import time
+
+if sys.argv[1:] != ['get', 'ais://bucket/object', '-']:
+    sys.stderr.write(f'unexpected args: {sys.argv[1:]}')
+    sys.exit(2)
+
+mode = os.environ['FAKE_AIS_MODE']
+if mode == 'success':
+    sys.stdout.buffer.write(b'payload')
+    sys.stdout.flush()
+    time.sleep(0.2)
+elif mode == 'error':
+    sys.stderr.write('simulated ais failure')
+    sys.exit(1)
+else:
+    sys.stderr.write(f'unsupported mode: {mode}')
+    sys.exit(3)
+"""
+        )
+        path.chmod(path.stat().st_mode | stat.S_IXUSR)
+
     @pytest.mark.unit
     def test_resolve_cache_dir(self):
         """Test cache dir path."""
@@ -90,3 +119,36 @@ class TestDataUtils:
         with mock.patch('shutil.which', lambda x: None), mock.patch('os.path.isfile', lambda x: None):
             ais_binary.cache_clear()
             assert ais_binary() is None
+
+    @pytest.mark.unit
+    def test_open_datastore_object_with_binary_keeps_process_alive_until_close(self, tmp_path):
+        """Test datastore streams keep the AIS subprocess alive until the caller closes the stream."""
+        fake_ais = tmp_path / 'fake_ais.py'
+        self._write_fake_ais_binary(fake_ais)
+
+        with (
+            mock.patch('nemo.utils.data_utils.ais_binary', return_value=str(fake_ais)),
+            mock.patch('nemo.utils.data_utils.ais_endpoint', return_value='http://local:123'),
+            mock.patch.dict(os.environ, {'FAKE_AIS_MODE': 'success'}),
+        ):
+            with open_datastore_object_with_binary('ais://bucket/object') as stream:
+                assert stream.read(1) == b'p'
+                assert not stream.closed
+                assert stream._proc.poll() is None
+
+            assert stream.closed
+            assert stream._proc.poll() == 0
+
+    @pytest.mark.unit
+    def test_open_datastore_object_with_binary_raises_if_ais_returns_no_data(self, tmp_path):
+        """Test datastore open retries surface the AIS error if the binary never returns data."""
+        fake_ais = tmp_path / 'fake_ais.py'
+        self._write_fake_ais_binary(fake_ais)
+
+        with (
+            mock.patch('nemo.utils.data_utils.ais_binary', return_value=str(fake_ais)),
+            mock.patch('nemo.utils.data_utils.ais_endpoint', return_value='http://local:123'),
+            mock.patch.dict(os.environ, {'FAKE_AIS_MODE': 'error'}),
+        ):
+            with pytest.raises(ValueError, match='simulated ais failure'):
+                open_datastore_object_with_binary('ais://bucket/object', num_retries=2)

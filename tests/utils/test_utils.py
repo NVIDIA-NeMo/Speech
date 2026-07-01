@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import io
 import os
 from unittest import mock
 
@@ -22,6 +23,7 @@ from nemo.utils.data_utils import (
     ais_binary,
     ais_endpoint_to_dir,
     bucket_and_object_from_uri,
+    get_datastore_object,
     is_datastore_path,
     resolve_cache_dir,
 )
@@ -90,3 +92,25 @@ class TestDataUtils:
         with mock.patch('shutil.which', lambda x: None), mock.patch('os.path.isfile', lambda x: None):
             ais_binary.cache_clear()
             assert ais_binary() is None
+
+    @pytest.mark.unit
+    def test_get_datastore_object_passes_num_retries_to_datastore_open_on_cache_miss(self, tmp_path):
+        """Test datastore cache misses preserve caller retries when downloading through the AIS fallback."""
+        local_path = tmp_path / 'cache' / 'object.bin'
+        opened_with = {}
+
+        def fake_open_datastore_object_with_binary(path, num_retries=5):
+            opened_with['path'] = path
+            opened_with['num_retries'] = num_retries
+            return io.BytesIO(b'payload')
+
+        with (
+            mock.patch('nemo.utils.data_utils.LHOTSE_AVAILABLE', False),
+            mock.patch('nemo.utils.data_utils.open_datastore_object_with_binary', side_effect=fake_open_datastore_object_with_binary),
+            mock.patch('nemo.utils.data_utils.datastore_path_to_local_path', return_value=str(local_path)),
+        ):
+            resolved_path = get_datastore_object('ais://bucket/object', num_retries=7)
+
+        assert resolved_path == str(local_path)
+        assert local_path.read_bytes() == b'payload'
+        assert opened_with == {'path': 'ais://bucket/object', 'num_retries': 7}

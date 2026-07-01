@@ -24,9 +24,13 @@ from nemo.collections.asr.parts.utils.data_simulation_utils import (
     SpeechSampler,
     add_silence_to_alignments,
     binary_search_alignments,
+    build_speaker_samples_map,
     get_cleaned_base_path,
+    get_speaker_ids,
+    get_speaker_samples,
     get_split_points_in_alignments,
     normalize_audio,
+    per_speaker_normalize,
     read_noise_manifest,
 )
 from nemo.collections.asr.parts.utils.manifest_utils import get_ctm_line
@@ -361,6 +365,79 @@ class TestDataSimulatorUtils:
         else:
             assert audio_manifest['alignments'] == alignments
             assert audio_manifest['words'] == words
+
+    def test_get_speaker_ids(self):
+        speaker_samples = {
+            'spk_0': [{'audio_filepath': 'a.wav'}],
+            'spk_1': [{'audio_filepath': 'b.wav'}],
+            'spk_2': [{'audio_filepath': 'c.wav'}],
+            'spk_3': [{'audio_filepath': 'd.wav'}],
+        }
+        permutated_speaker_inds = np.array([[0, 1, 2, 3], [3, 2, 1, 0]])
+        speaker_ids = get_speaker_ids(
+            sess_idx=0, speaker_samples=speaker_samples, permutated_speaker_inds=permutated_speaker_inds
+        )
+        assert speaker_ids == ['spk_0', 'spk_1', 'spk_2', 'spk_3']
+
+        speaker_ids = get_speaker_ids(
+            sess_idx=1, speaker_samples=speaker_samples, permutated_speaker_inds=permutated_speaker_inds
+        )
+        assert speaker_ids == ['spk_3', 'spk_2', 'spk_1', 'spk_0']
+
+    def test_get_speaker_ids_wraps_around(self):
+        speaker_samples = {
+            'spk_0': [{'audio_filepath': 'a.wav'}],
+            'spk_1': [{'audio_filepath': 'b.wav'}],
+        }
+        permutated_speaker_inds = np.array([[0, 1], [1, 0]])
+        speaker_ids = get_speaker_ids(
+            sess_idx=2, speaker_samples=speaker_samples, permutated_speaker_inds=permutated_speaker_inds
+        )
+        assert speaker_ids == ['spk_0', 'spk_1'], "sess_idx should wrap around via modulo"
+
+    def test_build_speaker_samples_map(self):
+        manifest = [
+            {'speaker_id': 'spk_0', 'audio_filepath': 'a.wav', 'duration': 1.0},
+            {'speaker_id': 'spk_1', 'audio_filepath': 'b.wav', 'duration': 2.0},
+            {'speaker_id': 'spk_0', 'audio_filepath': 'c.wav', 'duration': 1.5},
+        ]
+        result = build_speaker_samples_map(manifest)
+        assert len(result) == 2
+        assert len(result['spk_0']) == 2
+        assert len(result['spk_1']) == 1
+        assert result['spk_0'][0]['audio_filepath'] == 'a.wav'
+        assert result['spk_0'][1]['audio_filepath'] == 'c.wav'
+
+    def test_build_speaker_samples_map_empty(self):
+        result = build_speaker_samples_map([])
+        assert len(result) == 0
+
+    def test_get_speaker_samples(self):
+        speaker_samples = {
+            'spk_0': [{'audio_filepath': 'a.wav'}],
+            'spk_1': [{'audio_filepath': 'b.wav'}],
+            'spk_2': [{'audio_filepath': 'c.wav'}],
+        }
+        result = get_speaker_samples(speaker_ids=['spk_0', 'spk_2'], speaker_samples=speaker_samples)
+        assert len(result) == 2
+        assert 'spk_0' in result
+        assert 'spk_2' in result
+        assert 'spk_1' not in result
+
+    @pytest.mark.parametrize("volume", [0.5, 1.0, 2.0])
+    def test_per_speaker_normalize(self, volume):
+        torch.manual_seed(42)
+        sentence_audio = torch.randn(16000)
+        splits = [[0, 8000], [8000, 16000]]
+        speaker_turn = 0
+        volumes = [volume, 1.0]
+        device = torch.device('cpu')
+
+        result = per_speaker_normalize(sentence_audio, splits, speaker_turn, volumes, device)
+        assert result.shape == sentence_audio.shape
+
+        rms = torch.sqrt(torch.mean(result**2))
+        assert abs(rms.item() - volume) < 1e-4, f"Expected RMS ~{volume}, got {rms.item()}"
 
 
 class TestDataAnnotator:

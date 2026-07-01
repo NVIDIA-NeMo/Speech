@@ -78,6 +78,16 @@ class TestHydraRunner:
             # Run the call as subprocess.
             subprocess.check_call(call, shell=True, stdout=sys.stdout, stderr=sys.stdout)
 
+    @pytest.mark.unit
+    def test_passthrough_config(self):
+        """Test calling my_app directly with a DictConfig (cfg_passthrough path)."""
+        from omegaconf import OmegaConf
+
+        from tests.hydra.my_app import my_app
+
+        cfg = OmegaConf.create({"dataset_name": "passthrough_test"})
+        my_app(cfg)
+
     @pytest.mark.integration
     def test_config2_filepath_schema(self):
         """ "Test injection of valid config2 - using namepath with schema is prohibited."""

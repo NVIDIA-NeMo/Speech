@@ -247,7 +247,7 @@ def test_salm_automodel_pee_training_step(model, dataset, prompt_formatter, trai
     batch = dataset[training_cutset_batch]
     assert "spk_targets" in batch  # injected as spk_targets into the PE encoder during training
     batch = move_data_to_device(batch, device=model.device)
-    results = model.training_step(batch, batch_idx=0)
+    results = model._training_step_batch(batch, batch_idx=0)
     assert torch.is_tensor(results["loss"])
     assert not torch.isnan(results["loss"])
     assert results["loss"] > 0

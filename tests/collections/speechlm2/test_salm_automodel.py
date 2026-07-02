@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import inspect
 import os
 
 import pytest
@@ -192,10 +193,30 @@ def test_salm_automodel_training_step(model, dataset, prompt_formatter, training
     training_cutset_batch = training_cutset_batch.map(lambda c: c.apply_prompt_format(prompt_formatter), apply_fn=None)
     batch = dataset[training_cutset_batch]
     batch = move_data_to_device(batch, device=model.device)
-    results = model.training_step(batch, batch_idx=0)
+    results = model._training_step_batch(batch, batch_idx=0)
     assert torch.is_tensor(results["loss"])
     assert not torch.isnan(results["loss"])
     assert results["loss"] > 0
+
+
+def test_salm_automodel_training_step_uses_dataloader_iter_signature():
+    assert list(inspect.signature(SALMAutomodel.training_step).parameters) == ["self", "dataloader_iter"]
+
+
+def test_salm_automodel_record_training_stats_uses_thd_metadata():
+    model = SALMAutomodel.__new__(SALMAutomodel)
+    batch = {"input_ids": torch.zeros(3, 7, dtype=torch.long)}
+    inputs = {
+        "input_embeds": torch.zeros(5, 4),
+        "attention_mask": None,
+        "num_tokens": torch.tensor(11),
+        "num_examples": torch.tensor(3),
+    }
+
+    model._record_training_stats(batch, inputs)
+
+    assert model._last_batch_num_tokens == 11
+    assert model._last_batch_num_examples == 3
 
 
 @requires_cuda

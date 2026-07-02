@@ -153,13 +153,19 @@ class _TrainablePerceptionStub(torch.nn.Module):
     def __init__(self):
         super().__init__()
         self.scale = torch.nn.Parameter(torch.tensor(2.0))
+        self.num_calls = 0
+        self.last_input_signal_shape = None
+        self.last_input_signal_length = None
         self.spk_targets_calls = []
 
     def forward(self, *, input_signal, input_signal_length, spk_targets=None):
+        self.num_calls += 1
+        self.last_input_signal_shape = tuple(input_signal.shape)
+        self.last_input_signal_length = input_signal_length.detach().cpu().tolist()
         self.spk_targets_calls.append(None if spk_targets is None else spk_targets.detach().clone())
         B = input_signal.shape[0]
-        embs = input_signal[:, :2].unsqueeze(-1) * self.scale
-        lens = torch.full((B,), 2, dtype=input_signal_length.dtype, device=input_signal_length.device)
+        embs = input_signal[:, : max(1, min(2, input_signal.shape[1]))].unsqueeze(-1) * self.scale
+        lens = torch.full((B,), embs.shape[1], dtype=input_signal_length.dtype, device=input_signal_length.device)
         return embs, lens
 
 
@@ -199,3 +205,101 @@ def test_encode_audio_cp_distribution_preserves_local_autograd(monkeypatch):
     embs[0].sum().backward()
     assert perception.scale.grad is not None
     assert perception.scale.grad.item() == pytest.approx(3.0)
+
+
+def test_encode_audio_empty_rank_runs_dummy_when_fsdp_group_has_audio(monkeypatch):
+    perception = _TrainablePerceptionStub()
+    audios = torch.zeros(0, 1600, dtype=torch.float32)
+    audio_lens = torch.zeros(0, dtype=torch.long)
+    all_reduce_calls = []
+
+    def fake_all_reduce(tensor, op=None, group=None):
+        all_reduce_calls.append((int(tensor.item()), group))
+        tensor.fill_(1)
+
+    monkeypatch.setattr("nemo.collections.speechlm2.parts.cp_helpers.dist.is_available", lambda: True)
+    monkeypatch.setattr("nemo.collections.speechlm2.parts.cp_helpers.dist.is_initialized", lambda: True)
+    monkeypatch.setattr("nemo.collections.speechlm2.parts.cp_helpers.dist.all_reduce", fake_all_reduce)
+
+    embs, dummy_audio_loss = encode_audio_with_cp_distribution(
+        perception,
+        audios,
+        audio_lens,
+        chunk_size_seconds=None,
+        sampling_rate=16000,
+        cp_mesh=None,
+        fsdp_sync_group="fake-fsdp-group",
+        return_dummy_loss=True,
+    )
+
+    assert embs == []
+    assert perception.num_calls == 1
+    assert perception.last_input_signal_shape == (1, 16000)
+    assert perception.last_input_signal_length == [16000]
+    assert all_reduce_calls == [(0, "fake-fsdp-group")]
+    assert dummy_audio_loss is not None
+    assert dummy_audio_loss.requires_grad
+    assert dummy_audio_loss.item() == pytest.approx(0.0)
+    dummy_audio_loss.backward()
+    assert perception.scale.grad is not None
+    assert perception.scale.grad.item() == pytest.approx(0.0)
+
+
+def test_encode_audio_empty_rank_skips_dummy_when_fsdp_group_has_no_audio(monkeypatch):
+    perception = _TrainablePerceptionStub()
+    audios = torch.zeros(0, 1600, dtype=torch.float32)
+    audio_lens = torch.zeros(0, dtype=torch.long)
+    all_reduce_calls = []
+
+    def fake_all_reduce(tensor, op=None, group=None):
+        all_reduce_calls.append((int(tensor.item()), group))
+
+    monkeypatch.setattr("nemo.collections.speechlm2.parts.cp_helpers.dist.is_available", lambda: True)
+    monkeypatch.setattr("nemo.collections.speechlm2.parts.cp_helpers.dist.is_initialized", lambda: True)
+    monkeypatch.setattr("nemo.collections.speechlm2.parts.cp_helpers.dist.all_reduce", fake_all_reduce)
+
+    embs, dummy_audio_loss = encode_audio_with_cp_distribution(
+        perception,
+        audios,
+        audio_lens,
+        chunk_size_seconds=None,
+        sampling_rate=16000,
+        cp_mesh=None,
+        fsdp_sync_group="fake-fsdp-group",
+        return_dummy_loss=True,
+    )
+
+    assert embs == []
+    assert perception.num_calls == 0
+    assert all_reduce_calls == [(0, "fake-fsdp-group")]
+    assert dummy_audio_loss is None
+
+
+def test_encode_audio_nonempty_rank_participates_in_fsdp_audio_probe(monkeypatch):
+    perception = _TrainablePerceptionStub()
+    audios = torch.tensor([[1.0, 2.0, 0.0]])
+    audio_lens = torch.tensor([3], dtype=torch.long)
+    all_reduce_calls = []
+
+    def fake_all_reduce(tensor, op=None, group=None):
+        all_reduce_calls.append((int(tensor.item()), group))
+
+    monkeypatch.setattr("nemo.collections.speechlm2.parts.cp_helpers.dist.is_available", lambda: True)
+    monkeypatch.setattr("nemo.collections.speechlm2.parts.cp_helpers.dist.is_initialized", lambda: True)
+    monkeypatch.setattr("nemo.collections.speechlm2.parts.cp_helpers.dist.all_reduce", fake_all_reduce)
+
+    embs, dummy_audio_loss = encode_audio_with_cp_distribution(
+        perception,
+        audios,
+        audio_lens,
+        chunk_size_seconds=None,
+        sampling_rate=16000,
+        cp_mesh=None,
+        fsdp_sync_group="fake-fsdp-group",
+        return_dummy_loss=True,
+    )
+
+    assert len(embs) == 1
+    assert perception.num_calls == 1
+    assert all_reduce_calls == [(1, "fake-fsdp-group")]
+    assert dummy_audio_loss is None

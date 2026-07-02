@@ -20,6 +20,8 @@ Dev quickstart: `uv sync --extra all --extra cu13` (Python 3.12+, PyTorch 2.7+; 
 - Check: `isort --check <path> && black --check <path>` or `isort --check . && black --check .`
 - Fix: `isort <path> && black <path>` or `isort . && black .`
 - Jupyter Notebooks are excluded from automatic black reformatting (see `extend-exclude`), but can be still reformatted when passed directly. Do not reformat notebooks outside your changes.
+- **Helper placement**: keep public APIs and top-level classes/functions near the top of a file; place private
+  helpers and utilities at the bottom of the file unless a local module convention requires otherwise.
 
 ## Testing
 

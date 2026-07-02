@@ -52,6 +52,9 @@ def encode_audio_with_optional_chunking(
         embeddings are concatenated along the time axis to recover a single tensor per
         original audio row.
     """
+    if input_signal_length.numel() == 0:
+        return []
+
     chunk_size_samples = _get_chunk_size_samples(chunk_size_seconds, sampling_rate)
     perception_kwargs = {"input_signal": input_signal, "input_signal_length": input_signal_length}
     if spk_targets is not None:

@@ -40,7 +40,7 @@ from lhotse.dataset import (
 from lhotse.dataset.dataloading import resolve_seed
 from lhotse.dataset.sampling.base import CutSampler, SamplingConstraint, TimeConstraint
 from lhotse.lazy import LazyFlattener
-from lhotse.utils import fastcopy, fix_random_seed
+from lhotse.utils import fix_random_seed
 from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.common.data.lhotse.cutset import (
@@ -254,6 +254,22 @@ class LhotseDataLoadingConfig:
     # The first K examples will actually be read and then discarded, incurring the IO cost, due to
     # our support of object stores and gzipped files that generally don't have indexes of byte offsets per line.
     slice_length: Optional[int] = None
+    # Forwarded to ``CutSet.from_file(path, indexed=...)`` for plain JSONL ``cuts_path`` inputs.
+    # ``None`` = lhotse auto-detect (uses .idx if present, falls back to streaming).
+    # ``True`` = require indexed reads (errors if .idx is missing).
+    # ``False`` = streaming reads only.
+    indexed: Optional[bool] = None
+    # When set, ``.idx`` sidecars are read from a mirror under this root that
+    # preserves the data files' directory structure (URL schemes are stripped,
+    # leading separators dropped). Use this to keep indexes on a fast local
+    # disk while the data lives on shared / object storage. Cascades through
+    # ``read_dataset_config`` to every nested ``input_cfg`` entry.
+    indexes_root: Optional[str] = None
+    # When True, build the dataloader with ``torchdata.stateful_dataloader.StatefulDataLoader``
+    # instead of ``torch.utils.data.DataLoader``. Combined with a checkpointable lhotse sampler
+    # (DynamicBucketingSampler / DynamicCutSampler), this enables exact resume from the next batch
+    # within the current epoch via the standard PyTorch state_dict / load_state_dict protocol.
+    use_stateful_dataloader: bool = False
 
 
 def determine_use_iterable_dataset(use_iterable_dataset: bool, config: DictConfig) -> bool:
@@ -265,12 +281,184 @@ def determine_use_iterable_dataset(use_iterable_dataset: bool, config: DictConfi
     return use_iterable_dataset
 
 
+def _build_dataloader(
+    use_stateful_dataloader: bool,
+    *,
+    dp_rank: Optional[int] = None,
+    dp_world_size: Optional[int] = None,
+    dp_group: Optional[Any] = None,
+    **kwargs,
+) -> torch.utils.data.DataLoader:
+    """
+    Construct a DataLoader, optionally using ``torchdata.stateful_dataloader.StatefulDataLoader``
+    so that resume picks up at the exact next batch via ``state_dict()`` / ``load_state_dict()``.
+
+    When ``dp_rank`` / ``dp_world_size`` are provided AND we're building a
+    stateful loader under multi-rank training, wrap ``StatefulDataLoader`` in
+    :class:`_PerRankStatefulDataLoader`. The wrapper all-gathers each rank's
+    local state at save time and scatters back the right entry at load time,
+    so Lightning's automatic ``FitLoop`` save-and-restore of
+    ``CombinedLoader._state_dicts()`` doesn't broadcast rank-0's iterator
+    state to every rank (which would corrupt per-shard partitioning — see
+    the 2026-05-14 post-mortem).
+    """
+    if use_stateful_dataloader:
+        from torchdata.stateful_dataloader import StatefulDataLoader
+
+        if dp_world_size is not None and dp_world_size > 1:
+            return _PerRankStatefulDataLoader(
+                dp_rank=dp_rank if dp_rank is not None else 0,
+                dp_world_size=dp_world_size,
+                dp_group=dp_group,
+                **kwargs,
+            )
+        return StatefulDataLoader(**kwargs)
+    return torch.utils.data.DataLoader(**kwargs)
+
+
+class _PerRankStatefulDataLoader:
+    """``StatefulDataLoader`` whose ``state_dict`` is a per-rank list.
+
+    Why this exists: Lightning's ``FitLoop`` saves dataloader state via
+    ``CombinedLoader._state_dicts()`` → ``loader.state_dict()`` (collective
+    across ranks but only rank 0's return value is persisted to meta.pt),
+    then on resume calls ``loader.load_state_dict(state)`` on EVERY rank with
+    that single rank-0-only state. Per-shard partitioning (``shard_id =
+    dp_rank * num_workers + worker_id`` inside lhotse's
+    ``PartitionedIndexedIterator``) then desynchronises — rank 28 worker 0
+    loads rank 0 worker 0's ``shard_id=0`` while its own current shard_id is
+    112, the iterator's first ``iterate()`` call raises ValueError, and the
+    rest of the ranks get SIGTERMed via ``srun --kill-on-bad-exit=1``. (See
+    ``agent-debug-workspace/0909-en-only-id2-4node-postfix/DIAGNOSIS_ORD_vs_IAD.md``.)
+
+    The fix turns ``state_dict()`` into a per-rank gather and
+    ``load_state_dict(state)`` into a per-rank scatter. The serialised payload
+    on disk becomes a list of N tagged state dicts (one per DP rank); on
+    every rank, the wrapper picks ``per_rank[self._dp_rank]``. This works
+    whether the call comes from Lightning's automatic FitLoop path OR from
+    our DataModule.load_state_dict override, because both go through this
+    one method.
+
+    We delegate to a contained ``StatefulDataLoader`` rather than subclass
+    it: subclassing would inherit ``_Stateful`` via the runtime-checkable
+    Protocol AND every attribute Lightning's iterator-management code
+    introspects (``flattened``, ``persistent_workers``, etc.), which is what
+    we want; but it would also inherit ``__init__`` whose signature includes
+    parameters we don't want at this layer. Composition keeps the wrapper's
+    constructor clean and lets us forward attribute lookups via
+    ``__getattr__``.
+    """
+
+    def __init__(
+        self,
+        *,
+        dp_rank: int,
+        dp_world_size: int,
+        dp_group: Optional[Any] = None,
+        **kwargs,
+    ) -> None:
+        from torchdata.stateful_dataloader import StatefulDataLoader
+
+        self._dp_rank = int(dp_rank)
+        self._dp_world_size = int(dp_world_size)
+        self._dp_group = dp_group
+        self._inner = StatefulDataLoader(**kwargs)
+
+    def state_dict(self) -> dict:
+        local_state = self._inner.state_dict()
+        tagged = {
+            "dp_rank": self._dp_rank,
+            "dp_world_size": self._dp_world_size,
+            "state": local_state,
+        }
+        if self._dp_world_size <= 1 or not (torch.distributed.is_available() and torch.distributed.is_initialized()):
+            per_rank = [tagged]
+        else:
+            per_rank: List[Optional[dict]] = [None] * self._dp_world_size
+            torch.distributed.all_gather_object(per_rank, tagged, group=self._dp_group)
+        return {"train_dataloader_per_rank": per_rank}
+
+    def load_state_dict(self, state_dict: dict) -> None:
+        if not state_dict:
+            return
+        # We exclusively support the per-rank wire format produced by our
+        # own ``state_dict()``. Anything else — a bare inner state, a
+        # rank-0-only StatefulDataLoader payload (the shape Lightning's
+        # FitLoop used to broadcast and silently corrupt resume), an old
+        # DataModule key — must fail loudly so any partial-rollforward or
+        # checkpoint-format mismatch is caught at load time rather than
+        # producing wrong data several minutes into training.
+        if "train_dataloader_per_rank" not in state_dict:
+            raise RuntimeError(
+                "PerRankStatefulDataLoader.load_state_dict: state must use "
+                "the per-rank wire format (top-level key "
+                "'train_dataloader_per_rank'); got keys "
+                f"{sorted(state_dict.keys())}. This dataloader only supports "
+                "states produced by its own state_dict()."
+            )
+        per_rank = state_dict["train_dataloader_per_rank"]
+        if not isinstance(per_rank, list) or len(per_rank) != self._dp_world_size:
+            raise RuntimeError(
+                f"PerRankStatefulDataLoader: state has dp_world_size="
+                f"{len(per_rank) if isinstance(per_rank, list) else 'unknown'} "
+                f"but the current run has dp_world_size={self._dp_world_size}."
+            )
+        entry = per_rank[self._dp_rank]
+        if (
+            not isinstance(entry, dict)
+            or "state" not in entry
+            or "dp_rank" not in entry
+            or "dp_world_size" not in entry
+        ):
+            raise RuntimeError(
+                f"PerRankStatefulDataLoader: malformed per-rank entry at index "
+                f"{self._dp_rank}: expected keys {{'dp_rank', 'dp_world_size', "
+                f"'state'}}, got {list(entry.keys()) if isinstance(entry, dict) else type(entry).__name__}."
+            )
+        saved_rank, saved_world = entry["dp_rank"], entry["dp_world_size"]
+        if saved_rank != self._dp_rank or saved_world != self._dp_world_size:
+            raise RuntimeError(
+                f"PerRankStatefulDataLoader: state tagged (dp_rank={saved_rank}, "
+                f"dp_world_size={saved_world}) loaded on (dp_rank={self._dp_rank}, "
+                f"dp_world_size={self._dp_world_size})."
+            )
+        self._inner.load_state_dict(entry["state"])
+
+    # Forward everything else to the inner StatefulDataLoader so Lightning's
+    # iterator-management, ``flattened``-discovery and friends keep working.
+    def __getattr__(self, name: str) -> Any:
+        # ``__getattr__`` only fires when normal attribute lookup fails, so the
+        # explicit attributes (``_inner``, ``_dp_rank``, ...) are reached
+        # directly without bouncing through here.
+        return getattr(self._inner, name)
+
+    def __iter__(self):
+        return iter(self._inner)
+
+    def __len__(self):
+        return len(self._inner)
+
+
+def _maybe_init_main_process_for_iterable(num_workers: int, global_rank: int, world_size: int, seed: int) -> None:
+    """When ``num_workers == 0`` the iterable-path sampler runs in the main training
+    process; PyTorch's DataLoader never invokes ``worker_init_fn`` in that case.
+    Call it eagerly so env vars (``RANK``/``WORLD_SIZE``/``LHOTSE_PROCESS_SEED``) and
+    the per-process random seed are set before any iterator is consumed — required so
+    ``get_worker_partition`` returns the correct DP-rank shard inside lhotse's lazy
+    indexed iterators (e.g. ``LazyShuffledRange``)."""
+    if num_workers == 0:
+        from lhotse.dataset.dataloading import worker_init_fn
+
+        worker_init_fn(0, rank=global_rank, world_size=world_size, seed=seed)
+
+
 def get_lhotse_dataloader_from_config(
     config: Union[dict, DictConfig],
     global_rank: int,
     world_size: int,
     dataset: torch.utils.data.Dataset,
     tokenizer=None,
+    dp_group: Optional[Any] = None,
 ) -> torch.utils.data.DataLoader:
     """
     Set up a Lhotse training dataloader.
@@ -304,10 +492,16 @@ def get_lhotse_dataloader_from_config(
             world_size=world_size,
             dataset=dataset,
             tokenizer=tokenizer,
+            dp_group=dp_group,
         )
     else:
         return get_lhotse_dataloader_from_single_config(
-            config=config, global_rank=global_rank, world_size=world_size, dataset=dataset, tokenizer=tokenizer
+            config=config,
+            global_rank=global_rank,
+            world_size=world_size,
+            dataset=dataset,
+            tokenizer=tokenizer,
+            dp_group=dp_group,
         )
 
 
@@ -317,6 +511,7 @@ def get_lhotse_dataloader_from_single_config(
     world_size: int,
     dataset: torch.utils.data.Dataset,
     tokenizer=None,
+    dp_group: Optional[Any] = None,
 ) -> torch.utils.data.DataLoader:
     """
     Set up a Lhotse training dataloader.
@@ -359,6 +554,7 @@ def get_lhotse_dataloader_from_single_config(
         # We use lhotse's own worker_init_fn which leverages information such as rank, world_size,
         # worker_id, etc. to set a different random seed for each (node, worker) combination.
         # This together with infinite datasets removes the need to split data across nodes/workers.
+        _maybe_init_main_process_for_iterable(config.num_workers, global_rank, world_size, config.seed)
         dloader_kwargs = dict(
             dataset=IterableDatasetWrapper(dataset=dataset, sampler=sampler),
             worker_init_fn=make_worker_init_fn(rank=global_rank, world_size=world_size, seed=config.seed),
@@ -369,7 +565,11 @@ def get_lhotse_dataloader_from_single_config(
         # reads only light-weight JSON objects; it samples mini-batches and passes
         # the meta-data to Dataset, which performs the actual I/O inside its __getitem__ method.
         dloader_kwargs = dict(dataset=dataset, sampler=sampler)
-    dloader = torch.utils.data.DataLoader(
+    dloader = _build_dataloader(
+        use_stateful_dataloader=config.use_stateful_dataloader,
+        dp_rank=global_rank,
+        dp_world_size=world_size,
+        dp_group=dp_group,
         **dloader_kwargs,
         batch_size=None,
         num_workers=config.num_workers,
@@ -385,6 +585,7 @@ def get_lhotse_dataloader_from_multi_config(
     world_size: int,
     dataset: torch.utils.data.Dataset,
     tokenizer=None,
+    dp_group: Optional[Any] = None,
 ) -> torch.utils.data.DataLoader:
     """
     Set up a Lhotse training dataloder.
@@ -420,6 +621,13 @@ def get_lhotse_dataloader_from_multi_config(
             "multi_config",
             "metadata_only",
             "force_finite",
+            "use_stateful_dataloader",
+            # Indexed dataloading flags must propagate too — otherwise a
+            # top-level ``indexed: true`` / ``indexes_root: /tmp/idx`` on the
+            # train_ds namespace silently fails to reach sub-configs, and the
+            # underlying readers fall back to streaming.
+            "indexed",
+            "indexes_root",
         ]
         defaults = OmegaConf.structured(LhotseDataLoadingConfig)
         top_level_config["seed"] = resolve_seed(top_level_config["seed"])
@@ -483,6 +691,7 @@ def get_lhotse_dataloader_from_multi_config(
         # We use lhotse's own worker_init_fn which leverages information such as rank, world_size,
         # worker_id, etc. to set a different random seed for each (node, worker) combination.
         # This together with infinite datasets removes the need to split data across nodes/workers.
+        _maybe_init_main_process_for_iterable(shared_opts.num_workers, global_rank, world_size, shared_opts.seed)
         dloader_kwargs = dict(
             dataset=IterableDatasetWrapper(dataset=dataset, sampler=sampler),
             worker_init_fn=make_worker_init_fn(rank=global_rank, world_size=world_size, seed=shared_opts.seed),
@@ -493,7 +702,11 @@ def get_lhotse_dataloader_from_multi_config(
         # reads only light-weight JSON objects; it samples mini-batches and passes
         # the meta-data to Dataset, which performs the actual I/O inside its __getitem__ method.
         dloader_kwargs = dict(dataset=dataset, sampler=sampler)
-    dloader = torch.utils.data.DataLoader(
+    dloader = _build_dataloader(
+        use_stateful_dataloader=shared_opts.use_stateful_dataloader,
+        dp_rank=global_rank,
+        dp_world_size=world_size,
+        dp_group=dp_group,
         **dloader_kwargs,
         batch_size=None,
         num_workers=shared_opts.num_workers,
@@ -509,6 +722,38 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
     cuts, use_iterable_dataset = read_cutset_from_config(config)
     use_iterable_dataset = determine_use_iterable_dataset(use_iterable_dataset, config)
 
+    # Map-style + StatefulDataLoader requires shard_seed to be a fixed integer:
+    #   * On the map path, cross-rank de-duplication is by ``rank/world_size``
+    #     index slicing (passed below to DynamicBucketingSampler/DynamicCutSampler),
+    #     NOT by per-rank seed differentiation. ``shard_seed="randomized"`` is
+    #     iterable-path machinery that injects worker-PID-derived seeding;
+    #     across resume boundaries the new process has a different PID, so the
+    #     freshly-initialised sampler RNG diverges from the saved snapshot.
+    #     ``StatefulDataLoader.load_state_dict`` overrides that init RNG state
+    #     in practice, but it's a footgun: any RNG draw before the first
+    #     ``__iter__`` (e.g. shuffle of shards in the parent process) is lost.
+    # If the user sets ``shard_seed="randomized"`` AND ``force_map_dataset=True``
+    # AND ``use_stateful_dataloader=True``, warn loudly and auto-overwrite with
+    # the fixed ``seed`` integer so resume semantics stay clean.
+    if (
+        getattr(config, "force_map_dataset", False)
+        and getattr(config, "use_stateful_dataloader", False)
+        and isinstance(config.get("shard_seed"), str)
+        and str(config.shard_seed).lower() == "randomized"
+    ):
+        fixed_seed = int(config.seed)
+        logging.warning(
+            "shard_seed=%r is incompatible with force_map_dataset=True + "
+            "use_stateful_dataloader=True (the map path doesn't need per-rank "
+            "seed differentiation; cross-rank de-dup is by index slicing). "
+            "Auto-overriding shard_seed -> %d (the value of `seed`) for "
+            "deterministic StatefulDataLoader resume. Pin shard_seed to an "
+            "integer in your YAML to silence this warning.",
+            config.shard_seed,
+            fixed_seed,
+        )
+        config.shard_seed = fixed_seed
+
     _auto_detect_bucketing_and_validate_batch_size(config)
 
     # Apply channel selector
@@ -518,9 +763,6 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
 
     # Resample as a safeguard; it's a no-op when SR is already OK
     cuts = cuts.map(partial(resample, sampling_rate=config.sample_rate), apply_fn=None)
-
-    # Expands cuts if multiple translations are provided.
-    cuts = CutSet(LazyFlattener(cuts.map(_flatten_alt_text, apply_fn=None)))
 
     if config.use_multimodal_sampling:
         assert tokenizer is not None, (
@@ -936,22 +1178,6 @@ def _normalize_loudness(cuts: CutSet, db_norm: float) -> CutSet:
 
 def _merge_supervisions(cuts: CutSet) -> CutSet:
     return cuts.merge_supervisions()
-
-
-def _flatten_alt_text(cut) -> list:
-    ans = [cut]
-    if not isinstance(cut, Cut) or cut.custom is None or cut.custom.get("alt_text") is None:
-        return ans
-    cut = cut.move_to_memory(audio_format="wav")  # performs I/O once and holds audio in memory from now on
-    # Popping to ease eyesight on debug.
-    paired_text = cut.custom.pop("alt_text")
-    for data in paired_text.values():
-        # Copy to avoid lazy dataloading issues
-        data = data.copy()
-        text_instance = cut.map_supervisions(lambda s: fastcopy(s, text=data["text"], language=data["lang"]))
-        text_instance.custom = {"text": data.pop("text"), "lang": data.pop("lang"), **data}
-        ans.append(text_instance)
-    return ans
 
 
 def maybe_set_cuda_expandable_segments(enabled: bool):

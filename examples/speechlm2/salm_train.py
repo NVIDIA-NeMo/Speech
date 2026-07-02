@@ -19,6 +19,7 @@ from omegaconf import OmegaConf
 
 from nemo.collections.speechlm2 import SALM, DataModule, SALMDataset
 from nemo.core.config import hydra_runner
+from nemo.utils.callbacks.training_stats import TrainingStatsCallback
 from nemo.utils.exp_manager import exp_manager
 from nemo.utils.trainer_utils import resolve_trainer_cfg
 
@@ -35,6 +36,11 @@ def train(cfg):
     torch.set_float32_matmul_precision("medium")
     trainer = Trainer(**resolve_trainer_cfg(cfg.trainer))
     log_dir = exp_manager(trainer, cfg.get("exp_manager", None))
+    # Insert at position 0 so our ``on_train_batch_end`` runs BEFORE the
+    # StatelessTimer's hook (which can trigger a checkpoint save mid-
+    # batch-end). Without this, the saved ``state_dict`` would lag the
+    # accumulators by one batch on every wall-time-induced save.
+    trainer.callbacks.insert(0, TrainingStatsCallback())
     OmegaConf.save(cfg, log_dir / "exp_config.yaml")
 
     model_cls = SALM
@@ -50,6 +56,9 @@ def train(cfg):
     datamodule = DataModule(cfg.data, tokenizer=model.tokenizer, dataset=dataset)
 
     trainer.fit(model, datamodule)
+
+    if torch.distributed.is_initialized():
+        torch.distributed.destroy_process_group()
 
 
 if __name__ == "__main__":

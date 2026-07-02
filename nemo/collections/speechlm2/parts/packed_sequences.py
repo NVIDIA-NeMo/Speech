@@ -283,6 +283,8 @@ def prepare_packed_llm_inputs(
         cp_size=cp_size,
         tp_size=tp_size,
     )
+    num_tokens = packed["seq_lens"].sum()
+    num_examples = torch.tensor(input_ids.shape[0], dtype=torch.long, device=input_ids.device)
 
     if cp_mesh is not None:
         packed = _shard_packed_for_cp(packed, cp_mesh)
@@ -291,6 +293,8 @@ def prepare_packed_llm_inputs(
         "input_embeds": packed["inputs_embeds"],
         "attention_mask": None,
         "target_ids": packed["labels"],
+        "num_tokens": num_tokens,
+        "num_examples": num_examples,
         "llm_kwargs": {
             "qkv_format": "thd",
             # Match Automodel's standard THD contract (``thd_utils.process_input_for_thd``

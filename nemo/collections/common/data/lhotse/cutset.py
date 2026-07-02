@@ -51,6 +51,7 @@ from nemo.collections.common.data.lhotse.text_adapters import (
     NeMoMultimodalConversationShareGPTJsonlAdapter,
     NeMoMultimodalConversationShareGPTWebdatasetAdapter,
     NeMoSFTJsonlAdapter,
+    NemotronTextConversationAdapter,
     TextTurn,
 )
 from nemo.collections.common.parts.preprocessing.manifest import get_full_path
@@ -285,6 +286,8 @@ def read_dataset_config(config) -> tuple[CutSet, bool]:
         "force_map_dataset": config.get("force_map_dataset", False),
         "force_iterable_dataset": config.get("force_iterable_dataset", False),
         "slice_length": config.get("slice_length", None),
+        "indexed": config.get("indexed", False),
+        "indexes_root": config.get("indexes_root", None),
         # Temperature for re-weighting datasets. 1 is a neutral value. Lower temperature over-samples smaller datasets, and vice versa.
         "reweight_temperature": config.get("reweight_temperature", None),
     }
@@ -348,6 +351,8 @@ def read_txt_jsonl_paths(config: DictConfig) -> tuple[CutSet, bool]:
             text_field=config.text_field,
             shuffle_shards=config.shuffle,
             shard_seed=config.shard_seed,
+            indexed=config.get("indexed", False),
+            indexes_root=config.get("indexes_root", None),
         )
     )
     if not config.get("force_finite", False):
@@ -384,6 +389,25 @@ def read_nemo_sft_jsonl(config: DictConfig) -> tuple[CutSet, bool]:
             language=config.get("language"),
             shuffle_shards=config.shuffle,
             shard_seed=config.shard_seed,
+            indexed=config.get("indexed", False),
+            indexes_root=config.get("indexes_root", None),
+        )
+    )
+    if not config.get("force_finite", False):
+        cuts = cuts.repeat(preserve_id=True)
+    return cuts, True
+
+
+@data_type_parser("nemotron_text_converation")
+def read_nemotron_text_converation(config: DictConfig) -> tuple[CutSet, bool]:
+    """Read Nemotron/Energon text-only conversation JSONL files or tar directories."""
+    cuts = CutSet(
+        NemotronTextConversationAdapter(
+            paths=config.paths,
+            shuffle_shards=config.shuffle,
+            shard_seed=config.shard_seed,
+            indexed=config.get("indexed", False),
+            indexes_root=config.get("indexes_root", None),
         )
     )
     if not config.get("force_finite", False):
@@ -405,6 +429,8 @@ def read_multimodal_conversation_jsonl(config: DictConfig) -> tuple[CutSet, bool
             system_prompt=config.get("tags", {}).get("system_prompt"),
             context=config.get("tags", {}).get("context"),
             slice_length=config.get("slice_length"),
+            indexed=config.get("indexed", False),
+            indexes_root=config.get("indexes_root", None),
         )
     )
     if not config.get("force_finite", False):
@@ -426,6 +452,9 @@ def read_share_gpt_as_conversation(config) -> tuple[CutSet, bool]:
             shuffle_shards=config.shuffle,
             shard_seed=config.shard_seed,
             slice_length=config.get("slice_length"),
+            indexed=config.get("indexed", False),
+            indexes_root=config.get("indexes_root", None),
+            skip_missing_manifest_entries=config.get("skip_missing_manifest_entries", False),
         )
     )
     if not config.get("force_finite", False):
@@ -444,6 +473,8 @@ def read_share_gpt_webdataset_as_conversation(config) -> tuple[CutSet, bool]:
             token_equivalent_duration=config.get("token_equivalent_duration"),
             shuffle_shards=config.shuffle,
             shard_seed=config.shard_seed,
+            indexed=config.get("indexed", False),
+            indexes_root=config.get("indexes_root", None),
         )
     )
     # When force_finite is False (default), repeat the dataset infinitely so that
@@ -640,6 +671,8 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
         shard_seed = config.get("shard_seed", "trng")
         metadata_only = config.get("metadata_only", False)
         force_finite = config.get("force_finite", False)
+        indexed = config.get("indexed", False)
+        indexes_root = config.get("indexes_root", None)
         if config.get("cuts_path") is not None:
             warnings.warn("Note: lhotse.cuts_path will be ignored because lhotse.shar_path was provided.")
         if isinstance(config.shar_path, (str, Path)):
@@ -648,6 +681,8 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
                 shuffle_shards=True,
                 seed=shard_seed,
                 slice_length=config.get("slice_length", None),
+                indexed=indexed,
+                indexes_root=indexes_root,
             )
             if not metadata_only and not force_finite:
                 cuts = cuts.repeat(preserve_id=True)
@@ -664,6 +699,8 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
                         shuffle_shards=True,
                         seed=shard_seed,
                         slice_length=config.get("slice_length", None),
+                        indexed=indexed,
+                        indexes_root=indexes_root,
                     )
                     weight = len(cs)
                 else:
@@ -679,6 +716,8 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
                         shuffle_shards=True,
                         seed=shard_seed,
                         slice_length=config.get("slice_length", None),
+                        indexed=indexed,
+                        indexes_root=indexes_root,
                     )
                 cutsets.append(cs)
                 weights.append(weight)
@@ -703,6 +742,8 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
                 shuffle_shards=True,
                 seed=shard_seed,
                 slice_length=config.get("slice_length", None),
+                indexed=indexed,
+                indexes_root=indexes_root,
             )
             if not metadata_only and not force_finite:
                 cuts = cuts.repeat(preserve_id=True)
@@ -715,7 +756,13 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
     else:
         # Regular Lhotse manifest points to individual audio files (like native NeMo manifest).
         path = config.cuts_path
-        cuts = CutSet.from_file(path).map(partial(resolve_relative_paths, manifest_path=path))
+        from lhotse.indexing import index_file_path
+
+        indexes_root = config.get("indexes_root", None)
+        from_file_kwargs = {"indexed": config.get("indexed", None)}
+        if indexes_root is not None:
+            from_file_kwargs["index_path"] = index_file_path(path, indexes_root)
+        cuts = CutSet.from_file(path, **from_file_kwargs).map(partial(resolve_relative_paths, manifest_path=path))
     return cuts, is_tarred
 
 
@@ -749,6 +796,7 @@ def read_parquet_manifest(config: DictConfig) -> tuple[CutSet, bool]:
     # Extract shuffling options (CRITICAL for distributed training)
     shuffle_shards = config.get("shuffle", False)
     shard_seed = config.get("shard_seed", "trng")
+    indexed = config.get("indexed", False)
 
     # 3. Create Iterators for each file
     iterators = []
@@ -761,6 +809,7 @@ def read_parquet_manifest(config: DictConfig) -> tuple[CutSet, bool]:
             duration_field=duration_field,
             lang_field=lang_field,
             sampling_rate=sampling_rate,
+            indexed=indexed,
         )
         iterators.append(adapter)
 
@@ -1459,6 +1508,10 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
                 common_kwargs["shuffle_shards"] = config[key]
             else:
                 common_kwargs[key] = config[key]
+    indexed = config.get("indexed", False)
+    indexes_root = config.get("indexes_root", None)
+    indexed_extra = {"indexes_root": indexes_root} if (indexed and indexes_root is not None) else {}
+    notar_kwargs_extra = {"indexed": indexed, **indexed_extra} if indexed else {}
     # The option below is to allow a special case of NeMo manifest iteration as Lhotse CutSet
     # without performing any I/O. NeMo manifests typically don't have sampling_rate information required by Lhotse,
     # so lhotse has to look up the headers of audio files to fill it on-the-fly.
@@ -1467,7 +1520,11 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
     # and other data statistics.
     metadata_only = config.get("metadata_only", False)
     force_finite = config.get("force_finite", False)
-    notar_kwargs = {"metadata_only": metadata_only}
+    notar_kwargs = {
+        "metadata_only": metadata_only,
+        "skip_missing_manifest_entries": config.get("skip_missing_manifest_entries", False),
+    }
+    tar_kwargs_extra = {"indexed": indexed, **indexed_extra} if indexed else {}
     is_tarred = config.get("tarred_audio_filepaths") is not None
     if isinstance(config.manifest_filepath, (str, Path)):
         if is_tarred and not metadata_only:
@@ -1477,13 +1534,16 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
                     tar_paths=config.tarred_audio_filepaths,
                     skip_missing_manifest_entries=config.get("skip_missing_manifest_entries", False),
                     slice_length=config.get("slice_length", None),
+                    **tar_kwargs_extra,
                     **common_kwargs,
                 )
             )
             if not force_finite:
                 cuts = cuts.repeat(preserve_id=True)
         else:
-            cuts = CutSet(LazyNeMoIterator(config.manifest_filepath, **notar_kwargs, **common_kwargs))
+            cuts = CutSet(
+                LazyNeMoIterator(config.manifest_filepath, **notar_kwargs, **notar_kwargs_extra, **common_kwargs)
+            )
     else:
         # Format option 1:
         #   Assume it's [[path1], [path2], ...] (same for tarred_audio_filepaths).
@@ -1517,10 +1577,11 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
                     tar_paths=tar_path,
                     skip_missing_manifest_entries=config.get("skip_missing_manifest_entries", False),
                     slice_length=config.get("slice_length", None),
+                    **tar_kwargs_extra,
                     **common_kwargs,
                 )
             else:
-                nemo_iter = LazyNeMoIterator(manifest_path, **notar_kwargs, **common_kwargs)
+                nemo_iter = LazyNeMoIterator(manifest_path, **notar_kwargs, **notar_kwargs_extra, **common_kwargs)
             # Then, determine the weight or use one provided
             if isinstance(manifest_info, str) or len(manifest_info) == 1:
                 weight = len(nemo_iter)

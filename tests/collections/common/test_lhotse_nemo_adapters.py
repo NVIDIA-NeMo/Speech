@@ -280,7 +280,7 @@ def nemo_manifest_path_sample_rate(tmp_path_factory):
                 "lang": "en",
             }
         )
-    p = tmpdir / "nemo_manifest_sr.json"
+    p = tmpdir / "nemo_manifest_sr.jsonl"
     save_to_jsonl(nemo, p)
     return p
 
@@ -303,4 +303,19 @@ def test_lazy_nemo_iterator_sample_rate_fallback(nemo_manifest_path_sample_rate)
         assert audio.shape == (1, 16000)
 
         # sample_rate should not leak into custom fields
+        assert "sample_rate" not in (c.custom or {})
+
+
+def test_lazy_nemo_iterator_sample_rate_fallback_indexed(nemo_manifest_path_sample_rate):
+    """The shared dict-to-cut helper must also consume 'sample_rate' in indexed mode."""
+    indexing = pytest.importorskip("lhotse.indexing")
+    indexing.create_jsonl_index(str(nemo_manifest_path_sample_rate))
+
+    cuts = CutSet(LazyNeMoIterator(nemo_manifest_path_sample_rate, indexed=True))
+
+    assert len(cuts) == 2
+    for c in cuts:
+        assert isinstance(c, MonoCut)
+        assert c.sampling_rate == 16000
+        assert c.recording.sampling_rate == 16000
         assert "sample_rate" not in (c.custom or {})

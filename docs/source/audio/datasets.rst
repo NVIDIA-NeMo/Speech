@@ -3,6 +3,12 @@ Datasets
 
 The `audio` collection expect the training, validation and tests datasets in either NeMo format or Lhotse format.
 
+.. seealso::
+
+   For the Lhotse dataloader's full surface — supported ``input_cfg``
+   types, bucketing, indexed manifests + resumable dataloading, and the
+   ``LhotseDataLoadingConfig`` field reference — see :doc:`/dataloaders`.
+
 NeMo Format
 -----------
 

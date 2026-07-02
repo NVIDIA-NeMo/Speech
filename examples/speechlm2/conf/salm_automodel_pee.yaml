@@ -192,7 +192,7 @@ trainer:
     # ``activation_checkpointing_llm`` is a single switch that covers both the
     # non-EP FSDP2 path (via FSDP2Config.activation_checkpointing) and the
     # EP/MoE parallelizer path.
-    # ``activation_checkpointing_perception`` wraps each layer in ``perception.encoder.layers`` 
+    # ``activation_checkpointing_perception`` wraps each layer in ``perception.encoder.layers``
     # with ``checkpoint_wrapper`` before FSDP2 sharding.
     activation_checkpointing_llm: false
     activation_checkpointing_perception: false

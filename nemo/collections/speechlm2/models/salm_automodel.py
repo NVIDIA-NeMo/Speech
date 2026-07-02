@@ -41,6 +41,7 @@ from nemo.collections.speechlm2.parts.pretrained import (
     update_perception_output_dim,
 )
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, MaskType, NeuralType
+from nemo.core.utils.lightning_utils import read_batch
 
 
 class SALMAutomodel(LightningModule, HFHubMixin):
@@ -237,19 +238,27 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         targets are injected into a ``ParallelExpertEncoder``. Otherwise, the
         encoder runs its embedded Sortformer to predict diarization.
         """
+        from nemo.collections.speechlm2.parts.cp_helpers import (
+            encode_audio_with_cp_distribution,
+            get_cp_mesh,
+            get_perception_fsdp_group,
+        )
+
+        device_mesh = getattr(self, "_device_mesh", None)
+        spk_targets = batch.get("spk_targets", None)
+        cp_mesh, cp_size, _ = get_cp_mesh(device_mesh)
+        fsdp_sync_group = get_perception_fsdp_group(device_mesh)
+
         # Source audio encoding.
         # Input audio: (B, T_samples)
         # Audio embeddings: (B, T, H)
-        from nemo.collections.speechlm2.parts.cp_helpers import encode_audio_with_cp_distribution, get_cp_mesh
-
-        spk_targets = batch.get("spk_targets", None)
-        cp_mesh, cp_size, _ = get_cp_mesh(getattr(self, "_device_mesh", None))
         # Encoder path by (PEE, spk_targets):
         # PEE=true  & spk_targets=None  : Inference mode, uses recursive encoding in PEE, NO chunking/CP.
         # PEE=true  & spk_targets!=None : Training mode, ``spk_targets`` injected into PEE with chunking/CP.
         # PEE=false & spk_targets=None  : Training/Inference mode, plain encoder with chunking/CP.
         # PEE=false & spk_targets!=None : Training/Inference mode, plain encoder with chunking/CP and
         #                                 the provided ``spk_targets`` is ignored (no-op).
+        dummy_audio_loss = None
         if self._uses_parallel_expert_encoder() and spk_targets is None:
             self._warn_parallel_expert_encoder_inference_compatibility(cp_size)
             audio_embs, audio_emb_lens = self.perception(
@@ -257,7 +266,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             )
             audio_embs = [emb[:emblen] for emb, emblen in zip(audio_embs, audio_emb_lens)]
         else:
-            audio_embs = encode_audio_with_cp_distribution(
+            audio_embs, dummy_audio_loss = encode_audio_with_cp_distribution(
                 self.perception,
                 batch["audios"],
                 batch["audio_lens"],
@@ -265,6 +274,8 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 sampling_rate=self.sampling_rate,
                 cp_mesh=cp_mesh,
                 spk_targets=spk_targets,
+                fsdp_sync_group=fsdp_sync_group,
+                return_dummy_loss=True,
             )
         input_ids_to_embed = torch.where(batch["input_ids"] == self.audio_locator_tag_id, 0, batch["input_ids"])
         text_embs = self._embed_tokens(input_ids_to_embed)
@@ -275,15 +286,18 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         if self.cfg.get("packed_sequences", False):
             from nemo.collections.speechlm2.parts.packed_sequences import prepare_packed_llm_inputs
 
-            return prepare_packed_llm_inputs(
+            ans = prepare_packed_llm_inputs(
                 input_ids=batch["input_ids"],
                 text_embs=text_embs,
                 audio_embs=audio_embs,
                 target_ids=target_ids_full,
                 padding_id=self.text_pad_id,
                 placeholder_id=self.audio_locator_tag_id,
-                device_mesh=getattr(self, "_device_mesh", None),
+                device_mesh=device_mesh,
             )
+            if dummy_audio_loss is not None:
+                ans["dummy_audio_loss"] = dummy_audio_loss
+            return ans
 
         input_embs, target_ids, attention_mask = replace_placeholders_and_build_targets(
             input_ids=batch["input_ids"],
@@ -308,12 +322,15 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 attention_mask = attention_mask[:, :-remainder]
                 target_ids = target_ids[:, :-remainder]
 
-        return {
+        ans = {
             "input_embeds": input_embs,
             "attention_mask": attention_mask,
             "target_ids": target_ids,
             "llm_kwargs": {},
         }
+        if dummy_audio_loss is not None:
+            ans["dummy_audio_loss"] = dummy_audio_loss
+        return ans
 
     def on_fit_start(self) -> None:
         """Configure the MoE aux-loss backward scaler to cancel FSDP's gradient
@@ -350,13 +367,21 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             device_capability=device_capability,
         )
 
-    def training_step(self, batch: dict, batch_idx: int):
+    def training_step(self, dataloader_iter):
+        # ``dataloader_iter`` signature → Lightning selects
+        # ``_DataLoaderIterDataFetcher`` (no prefetch) which is required for
+        # bit-identical checkpoint resumption. See ``read_batch`` docstring.
+        batch, batch_idx = read_batch(dataloader_iter, self)
+        return self._training_step_batch(batch, batch_idx)
+
+    def _training_step_batch(self, batch: dict, batch_idx: int):
         self._current_batch_idx = batch_idx
         for m in (self.perception.preprocessor, self.perception.encoder, self.llm):
             if is_frozen(m):
                 m.eval()
 
         inputs = self.prepare_inputs(batch)
+        self._record_training_stats(batch, inputs)
         forward_outputs = self(
             inputs["input_embeds"],
             attention_mask=inputs["attention_mask"],
@@ -388,6 +413,8 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 ignore_index=-100,
             )
             loss = loss_sum * dp_size / num_frames_global
+        if (dummy_audio_loss := inputs.get("dummy_audio_loss")) is not None:
+            loss = loss + dummy_audio_loss
 
         # Latent speaker supervision loss (auxiliary, optional).
         if self.lss_loss is not None and num_frames > 0:
@@ -419,10 +446,29 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             "target_to_input_ratio": num_frames / (B * T),
             "padding_ratio": (batch["input_ids"] != self.text_pad_id).long().sum() / batch["input_ids"].numel(),
         }
-        self.log("loss", loss_display, on_step=True, prog_bar=True)
-        self.log_dict({k: v for k, v in ans.items() if k != "loss"}, on_step=True)
+        # batch_size kwarg is required by Lightning when training_step uses
+        # the ``dataloader_iter`` signature (it can't auto-infer otherwise).
+        self.log("loss", loss_display, on_step=True, prog_bar=True, batch_size=B)
+        self.log_dict({k: v for k, v in ans.items() if k != "loss"}, on_step=True, batch_size=B)
         self.maybe_log_moe_metrics(batch_idx)
         return ans
+
+    def _record_training_stats(self, batch: dict, inputs: dict) -> None:
+        # Counters consumed by TrainingStatsCallback. In BSHD, the attention mask
+        # counts every real LLM input position. In THD, packed input metadata must
+        # come from pre-CP sequence lengths so CP/TP-local tensor shapes do not
+        # over- or under-count the global batch.
+        if inputs["attention_mask"] is not None:
+            num_tokens = inputs["attention_mask"].long().sum()
+        else:
+            num_tokens = inputs["num_tokens"]
+        num_examples = inputs.get("num_examples", batch["input_ids"].shape[0])
+        if torch.is_tensor(num_tokens):
+            num_tokens = num_tokens.detach().cpu().item()
+        if torch.is_tensor(num_examples):
+            num_examples = num_examples.detach().cpu().item()
+        self._last_batch_num_tokens = int(num_tokens)
+        self._last_batch_num_examples = int(num_examples)
 
     def on_validation_epoch_start(self) -> None:
         self._partial_val_loss_sums = defaultdict(list)
@@ -787,7 +833,14 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         else:
             metrics = compute_brief_metrics(layer_loads, top_k=top_k)
 
-        self.log_dict(metrics, on_step=True)
+        # ``batch_size=1`` is required when training_step uses the
+        # ``dataloader_iter`` flavor: Lightning cannot infer the batch size
+        # from the closure, and these MoE metrics are model-internal
+        # aggregates (load fractions, top-k expert utilization), so the
+        # per-call batch_size is just a logging-aggregation hint, not a true
+        # sample count. Without it Lightning raises
+        # ``MisconfigurationException`` on the very first training step.
+        self.log_dict(metrics, on_step=True, batch_size=1)
 
     def _get_moe_dp_group(self):
         """Return the DP process group for MoE metrics all-reduce.

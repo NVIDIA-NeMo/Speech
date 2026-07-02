@@ -449,6 +449,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                     max_symbols_per_step=(
                         self.cfg.greedy.get('max_symbols', None) or self.cfg.greedy.get('max_symbols_per_step', None)
                     ),
+                    window_size=self.cfg.greedy.get('window_size', None),
                     preserve_alignments=self.preserve_alignments,
                     preserve_frame_confidence=self.preserve_frame_confidence,
                     exclude_blank_from_confidence=self.exclude_blank_from_confidence,

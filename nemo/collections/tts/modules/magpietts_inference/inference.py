@@ -63,6 +63,7 @@ class BaseInferenceConfig(abc.ABC):
     batch_size: int = 32
     use_cfg: bool = False
     use_local_transformer: bool = False
+    default_tokenizer_name: str = "english_phoneme"
 
     @abc.abstractmethod
     def build_identifier(self) -> str:
@@ -722,6 +723,7 @@ class EasyMagpieInferenceRunner(BaseInferenceRunner):
             context_duration_max=context_duration_max,
             ignore_phoneme_languages=self.model.cfg.get('ignore_phoneme_languages', []),
             add_language_to_context_text=self.model.add_language_to_context_text,
+            default_tokenizer_name=self.config.default_tokenizer_name,
         )
         dataset.text_tokenizer = self.model.tokenizer
 

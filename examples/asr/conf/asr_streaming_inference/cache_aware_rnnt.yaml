@@ -45,6 +45,10 @@ asr:
         key_phrase_items_list: null
         source_lang: "en"
       boosting_tree_alpha: 0.0
+  per_stream_biasing_defaults:
+    boosting_model_alpha: 1.0
+    boosting_model_cfg:
+      bpe_mode: default  # use "case_insensitive" to enable case-insensitive boosting; valid modes: [default, bpe_dropout, var_bpe, case_insensitive]
 
 # ==========================================
 # Inverse Text Normalization Configuration

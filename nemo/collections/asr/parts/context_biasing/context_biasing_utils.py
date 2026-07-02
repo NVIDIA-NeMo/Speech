@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+import re
 from typing import List, Union
 
 import numpy as np
@@ -150,7 +151,8 @@ def merge_alignment_with_ws_hyps(
 
 def compute_fscore(
     recognition_results_manifest: str,
-    key_words_list: List,
+    key_words_list: List = None,
+    key_words_field: str = None,
     eps: str = "<eps>",
     print_stats: bool = False,
 ) -> tuple[float, float, float]:
@@ -159,45 +161,72 @@ def compute_fscore(
     The idea is to get a word-level alignment for ground truth text and prediction results from manifest file.
     Then compute f-score for each word/phrase from key_words_list according to obtained word alignment.
 
+    Two modes of operation:
+        1. Global keywords: provide ``key_words_list`` — the same keyword set is used for every sample.
+        2. Per-sample keywords: provide ``key_words_field`` — keywords are read from each manifest entry
+           (comma-separated values in the given field). Only that sample's keywords participate in scoring.
+
     Args:
         recognition_results_manifest: path to nemo manifest file with recognition results in pred_text field.
-        key_words_list: list of context biasing words/phrases.
-        return_scores: if True, return precision, recall and fscore (not only print).
+        key_words_list: list of context biasing words/phrases (global mode).
+        key_words_field: manifest field name containing comma-separated keywords per sample (per-sample mode).
         eps: epsilon symbol for alignment.
+        print_stats: if True, log per-word and aggregate statistics.
     Returns:
         Returns tuple of precision, recall and fscore.
     """
 
-    assert key_words_list, "key_words_list is empty"
+    assert key_words_list or key_words_field, "Either key_words_list or key_words_field must be provided"
 
-    # get data from manifest
     assert os.path.isfile(recognition_results_manifest), f"manifest file {recognition_results_manifest} doesn't exist"
     data = read_manifest(recognition_results_manifest)
     assert len(data) > 0, "manifest file is empty"
     assert data[0].get('text', None), "manifest file should contain text field"
     assert data[0].get('pred_text', None), "manifest file should contain pred_text field"
 
-    # compute max number of words in one context biasing phrase
-    max_ngram_order = max([len(item.split()) for item in key_words_list])
-    key_words_stat = {}  # a word here can be single word or phareses
-    for word in key_words_list:
-        key_words_stat[word] = [0, 0, 0]  # [true positive (tp), groud truth (gt), false positive (fp)]
+    if key_words_field is not None:
+        all_keywords_set = set()
+        per_sample_keywords = []
+        field_path = key_words_field.split(".")
+        for item in data:
+            val = item
+            for key in field_path:
+                val = val.get(key, "") if isinstance(val, dict) else ""
+            if isinstance(val, list):
+                sample_kws = set(kw.strip().lower() for kw in val if isinstance(kw, str) and kw.strip())
+            else:
+                sample_kws = set(kw.strip().lower() for kw in str(val).split(",") if kw.strip())
+            per_sample_keywords.append(sample_kws)
+            all_keywords_set.update(sample_kws)
+        assert all_keywords_set, f"No keywords found in field '{key_words_field}' across the manifest"
+        all_key_words_list = sorted(all_keywords_set)
+    else:
+        assert key_words_list, "key_words_list is empty"
+        all_key_words_list = key_words_list
+        global_keywords_set = set(key_words_list)
+        per_sample_keywords = None
 
-    for item in data:
-        # get alignment by texterrors
-        ref = item['text'].split()
-        hyp = item['pred_text'].split()
+    max_ngram_order = max(len(item.split()) for item in all_key_words_list)
+    key_words_stat = {}  # a word here can be single word or phrases
+    for word in all_key_words_list:
+        key_words_stat[word] = [0, 0, 0]  # [true positive (tp), ground truth (gt), false positive (fp)]
+
+    for sample_idx, item in enumerate(data):
+        sample_kw_set = per_sample_keywords[sample_idx] if per_sample_keywords is not None else global_keywords_set
+
+        ref = re.sub(r'[.,!?]', '', item['text'].lower()).split()
+        hyp = re.sub(r'[.,!?]', '', item['pred_text'].lower()).split()
         ali = align(ref, hyp, eps)
 
         # 1-grams
         for idx in range(len(ali)):
             word_ref = ali[idx][0]
             word_hyp = ali[idx][1]
-            if word_ref in key_words_stat:
+            if word_ref in sample_kw_set:
                 key_words_stat[word_ref][1] += 1  # add to gt
                 if word_ref == word_hyp:
                     key_words_stat[word_ref][0] += 1  # add to tp
-            elif word_hyp in key_words_stat:
+            elif word_hyp in sample_kw_set:
                 key_words_stat[word_hyp][2] += 1  # add to fp
 
         # 2-grams and higher (takes into account epsilons in alignment)
@@ -217,9 +246,9 @@ def compute_fscore(
                     else:
                         item_ref.append((word, idx - 1))
                 if len(item_ref) == ngram_order:
-                    phrase_ref = " ".join([item[0] for item in item_ref])
-                    phrase_hyp = " ".join([ali[item[1]][1] for item in item_ref])
-                    if phrase_ref in key_words_stat:
+                    phrase_ref = " ".join([wr[0] for wr in item_ref])
+                    phrase_hyp = " ".join([ali[wr[1]][1] for wr in item_ref])
+                    if phrase_ref in sample_kw_set:
                         key_words_stat[phrase_ref][1] += 1  # add to gt
                         if phrase_ref == phrase_hyp:
                             key_words_stat[phrase_ref][0] += 1  # add to tp
@@ -238,9 +267,9 @@ def compute_fscore(
                     else:
                         item_hyp.append((word, idx - 1))
                 if len(item_hyp) == ngram_order:
-                    phrase_hyp = " ".join([item[0] for item in item_hyp])
-                    phrase_ref = " ".join([ali[item[1]][0] for item in item_hyp])
-                    if phrase_hyp in key_words_stat and phrase_hyp != phrase_ref:
+                    phrase_hyp = " ".join([wh[0] for wh in item_hyp])
+                    phrase_ref = " ".join([ali[wh[1]][0] for wh in item_hyp])
+                    if phrase_hyp in sample_kw_set and phrase_hyp != phrase_ref:
                         key_words_stat[phrase_hyp][2] += 1  # add to fp
 
     tp = sum([key_words_stat[x][0] for x in key_words_stat])
@@ -252,19 +281,18 @@ def compute_fscore(
     fscore = 2 * (precision * recall) / (precision + recall + 1e-8)
 
     if print_stats:
+        active_words = [x for x in key_words_stat if key_words_stat[x][1] > 0 or key_words_stat[x][2] > 0]
+        max_len = max(len(x) for x in active_words) if active_words else 0
         logging.info("=" * 60)
         logging.info("Per words statistic (word: correct/totall | false positive):\n")
-    max_len = max([len(x) for x in key_words_stat if key_words_stat[x][1] > 0 or key_words_stat[x][2] > 0])
-    for word in key_words_list:
-        if key_words_stat[word][1] > 0 or key_words_stat[word][2] > 0:
-            false_positive = ""
-            if key_words_stat[word][2] > 0:
-                false_positive = key_words_stat[word][2]
-            if print_stats:
+        for word in all_key_words_list:
+            if key_words_stat[word][1] > 0 or key_words_stat[word][2] > 0:
+                false_positive = ""
+                if key_words_stat[word][2] > 0:
+                    false_positive = key_words_stat[word][2]
                 logging.info(
                     f"{word:>{max_len}}: {key_words_stat[word][0]:3}/{key_words_stat[word][1]:<3} |{false_positive:>3}"
                 )
-    if print_stats:
         logging.info("=" * 60)
         logging.info("=" * 60)
         logging.info(f"Precision: {precision:.4f} ({tp}/{tp + fp}) fp:{fp}")

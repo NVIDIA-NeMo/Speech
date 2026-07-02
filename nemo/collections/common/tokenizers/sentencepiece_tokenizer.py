@@ -14,6 +14,8 @@
 
 import os
 import re
+from collections import defaultdict
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Union
 
 import numpy as np
@@ -22,10 +24,101 @@ import torch
 
 from nemo.collections.common.parts.utils import if_exist
 from nemo.collections.common.tokenizers.chat_template_mixin import ChatTemplateMixin
-from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
+from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec, TokenWithLength, VarBPERepresentation
 from nemo.utils import logging
 
 __all__ = ['SentencePieceTokenizer', 'create_spt_model']
+
+
+@dataclass
+class VarBPEExtension:
+    """
+    Var-BPE extension for SentencePiece tokenizer: handles variative token merges.
+    Can map phrase (token ids) to all possible representations using `VarBPERepresentation` structure
+    """
+
+    vocab: list[str]
+    token2id: dict[str, int]
+    token_id2canonical_id: dict[int, int]
+    canonical_id2alternatives: dict[int, list[int]]
+    token_id2canonical_split: dict[int, tuple[int, ...]]
+    max_token_len: int
+
+    def __init__(self, tokenizer, case_insensitive: bool = True):
+        """
+
+        Args:
+            tokenizer: SentencePiece tokenizer
+            case_insensitive: if extension should be case insensitive
+        """
+        # vocab + inversed vocab (id2token/token2id)
+        vocab = tokenizer.vocab
+        self.token2id = dict(zip(vocab, range(len(vocab))))
+
+        # mapping: token_id -> canonical_id (lowercase if case_insensitive)
+        if case_insensitive:
+            self.token_id2canonical_id = dict()
+            for token, token_id in self.token2id.items():
+                if token.lower() != token and token.lower() in self.token2id:
+                    self.token_id2canonical_id[token_id] = self.token2id[token.lower()]
+                else:
+                    self.token_id2canonical_id[token_id] = token_id
+        else:
+            # identity mapping
+            self.token_id2canonical_id = dict(zip(range(len(vocab)), range(len(vocab))))
+
+        # inverse mapping: canonical_id -> list of token_id alternatives
+        self.canonical_id2alternatives = defaultdict(list)
+        for token_id, canonical_id in self.token_id2canonical_id.items():
+            self.canonical_id2alternatives[canonical_id].append(token_id)
+
+        # mapping: token_id -> canonical split
+        # for sentencepiece: each token is a merge of characters; all characters are in the vocab
+        self.max_token_len = 1
+        self.token_id2canonical_split = dict()
+        for token, token_id in self.token2id.items():
+            if len(token) == 1 or (token.startswith("<") and token.endswith(">")):
+                canonical_split = (self.token_id2canonical_id[token_id],)
+            else:
+                try:
+                    canonical_split = tuple(
+                        self.token_id2canonical_id[self.token2id[sub_token]] for sub_token in token
+                    )
+                except KeyError:
+                    logging.warning(f"No split for token {token} - {token_id}")
+                    canonical_split = (self.token_id2canonical_id[token_id],)
+            self.token_id2canonical_split[token_id] = canonical_split
+            self.max_token_len = max(self.max_token_len, len(canonical_split))
+        # inverse mapping: canonical split -> list of token ids
+        self.canonical_split2token_ids = defaultdict(list)
+        for token_id, canonical_split in self.token_id2canonical_split.items():
+            self.canonical_split2token_ids[canonical_split].append(token_id)
+
+    def ids_to_canonical(self, token_ids: list[int]) -> list[int]:
+        """Map token ids to list of token ids representing canonical split"""
+        canonical_ids = []
+        for token_id in token_ids:
+            canonical_ids.extend(self.token_id2canonical_split[token_id])
+        return canonical_ids
+
+    def ids_to_all_representations(self, token_ids: list[int]) -> VarBPERepresentation:
+        """Map list of token ids to Var-BPE representation"""
+        canonical_lengths = [len(self.token_id2canonical_split[token_id]) for token_id in token_ids]
+        canonical_ids = self.ids_to_canonical(token_ids=token_ids)
+        if len(canonical_ids) != sum(canonical_lengths):
+            logging.warning(f"unequal len: {len(canonical_ids)} != {sum(canonical_lengths)}")
+        representations: list[list[TokenWithLength]] = [[] for _ in range(len(canonical_ids))]
+        for i, canonical_token_id in enumerate(canonical_ids):
+            # add alternatives to canonical tokens
+            for token_id in self.canonical_id2alternatives[canonical_token_id]:
+                representations[i].append(TokenWithLength(token_id=token_id, length=1))
+            # add merges
+            # Potentially can be accelerated: do not check token merges for inter-boundary tokens; use trie
+            for start in range(max(0, i - self.max_token_len), i):
+                if tuple(canonical_ids[start : i + 1]) in self.canonical_split2token_ids:
+                    for merged_token_id in self.canonical_split2token_ids[tuple(canonical_ids[start : i + 1])]:
+                        representations[i].append(TokenWithLength(token_id=merged_token_id, length=i - start + 1))
+        return VarBPERepresentation(canonical_lengths=canonical_lengths, token_ids_with_merges=representations)
 
 
 class SentencePieceTokenizer(TokenizerSpec, ChatTemplateMixin):
@@ -81,6 +174,26 @@ class SentencePieceTokenizer(TokenizerSpec, ChatTemplateMixin):
 
         self.removed_extra_spaces = self.tokenizer.encode_as_pieces('x  y') == self.tokenizer.encode_as_pieces('x y')
         self.space_sensitive = self.text_to_tokens('x y') != self.text_to_tokens('x') + self.text_to_tokens('y')
+        self._var_bpe_extension: VarBPEExtension | None = None  # lazy init
+        self._var_bpe_extension_case_insensitive: VarBPEExtension | None = None  # lazy init
+
+    def get_var_bpe_extension(self, case_insensitive: bool = True) -> VarBPEExtension:
+        """Get Var-BPE extension. If not initialized - initialize and return"""
+        if case_insensitive:
+            if self._var_bpe_extension_case_insensitive is None:
+                # init
+                self._var_bpe_extension_case_insensitive = VarBPEExtension(tokenizer=self, case_insensitive=True)
+            return self._var_bpe_extension_case_insensitive
+
+        if self._var_bpe_extension is None:
+            self._var_bpe_extension = VarBPEExtension(tokenizer=self, case_insensitive=False)
+        return self._var_bpe_extension
+
+    def text_to_ids_var_bpe(self, text: str, case_insensitive: bool = True) -> VarBPERepresentation:
+        """Transform import text to Var-BPE representation"""
+        token_ids = self.text_to_ids(text)
+        var_bpe_ext = self.get_var_bpe_extension(case_insensitive=case_insensitive)
+        return var_bpe_ext.ids_to_all_representations(token_ids=token_ids)
 
     def text_to_tokens(self, text):
         """Converts input text to a list of tokens.

@@ -17,14 +17,17 @@ from typing import Dict, List, Union
 import numpy as np
 import torch
 
-from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
+from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec, VarBPERepresentation
 from nemo.utils import logging
 
 __all__ = ['AggregateTokenizer', 'TokenizerWrapper']
 
 
 class DummyTokenizer:
+    """Dummy tokenizer"""
+
     def __init__(self, vocab):
+        """Init tokenizer from vocab"""
         self.vocab = vocab
         self.vocab_size = len(vocab)
 
@@ -32,22 +35,25 @@ class DummyTokenizer:
     # since all the monolingual tokenizers have a vocab
     # additional methods could be added here
     def get_vocab(self):
+        """Get vocabulary"""
         return self.vocab
 
 
 class AggregateTokenizer(TokenizerSpec):
-    '''
+    """
     AggregateTokenizer, allowing one to combine multiple regular monolongual tokenizers into one tokenizer.
-    The intuition is that we can use existing tokenizers "as is", without retraining, and associate each tokenizer with a language id
-    during text processing (language id will be used to route the incoming text sample to the right tokenizer)
+    The intuition is that we can use existing tokenizers "as is", without retraining,
+    and associate each tokenizer with a language id during text processing
+    (language id will be used to route the incoming text sample to the right tokenizer)
     as well as a token id range for detokenization (e.g. [0..127] for tokenizer A, [128..255] for tokenizer B) so
     that the orignal text could be reconstructed. Note that we assume that the incoming dict of langs / tokenizers
     is ordered, e.g. the first tokenizer will be assigned a lower interval of token ids
         Args:
         tokenizers: dict of tokenizers, keys are lang ids, values are actual tokenizers
-    '''
+    """
 
     def __init__(self, tokenizers: Dict):
+        """Init from tokenizers"""
 
         self.tokenizers_dict = tokenizers
         self.vocabulary = []
@@ -107,17 +113,29 @@ class AggregateTokenizer(TokenizerSpec):
         return offsets, tokenizers, langs
 
     def text_to_tokens(self, text, lang_id):
+        """Converts text into a list of tokens using `lang_id`"""
         tokenizer = self.tokenizers_dict[lang_id]
         return tokenizer.text_to_tokens(text)
 
     def text_to_ids(self, text, lang_id):
+        """Converts text directly to token IDs using `lang_id`"""
         tokenizer = self.tokenizers_dict[lang_id]
         token_ids = tokenizer.text_to_ids(text)
         token_ids[:] = [t + self.token_id_offset[lang_id] for t in token_ids]
 
         return token_ids
 
+    def text_to_ids_var_bpe(self, text: str, lang_id: int, case_insensitive: bool = True) -> VarBPERepresentation:
+        """Converts text to token Var-BPE representation"""
+        tokenizer = self.tokenizers_dict[lang_id]
+        token_ids_var_bpe: VarBPERepresentation = tokenizer.text_to_ids_var_bpe(case_insensitive=case_insensitive)
+        token_offset = self.token_id_offset[lang_id]
+        for i, token_ids in enumerate(token_ids_var_bpe.token_ids_with_merges):
+            token_ids[:] = [t + token_offset for t in token_ids]
+        return token_ids_var_bpe
+
     def tokens_to_text(self, tokens, lang_id):
+        """Converts a list of tokens back into text, using lang_id."""
         if isinstance(tokens, np.ndarray):
             tokens = tokens.tolist()
 
@@ -125,6 +143,7 @@ class AggregateTokenizer(TokenizerSpec):
         return tokenizer.decode_pieces(tokens)
 
     def ids_to_text(self, ids):
+        """Converts token IDs back to text."""
         if isinstance(ids, (np.ndarray, torch.Tensor)):
             ids = ids.tolist()
 
@@ -138,10 +157,12 @@ class AggregateTokenizer(TokenizerSpec):
         return text
 
     def token_to_id(self, token, lang_id):
+        """Converts token to id using `lang_id`"""
         tokenizer = self.tokenizers_dict[lang_id]
         return tokenizer.token_to_id(token) + self.token_id_offset[lang_id]
 
     def ids_to_tokens(self, ids):
+        """Converts a list of token IDs back to tokens."""
         tokens = []
 
         for id in ids:
@@ -153,6 +174,7 @@ class AggregateTokenizer(TokenizerSpec):
         return tokens
 
     def ids_to_text_and_langs(self, ids):
+        """Converts a list of token IDs to tokens annotated with language."""
         text_and_langs = []
 
         for id in ids:
@@ -167,6 +189,7 @@ class AggregateTokenizer(TokenizerSpec):
         return text_and_langs
 
     def ids_to_words_and_langs(self, ids):
+        """Converts a list of token IDs to words annotated with language."""
         words_and_langs = []
 
         word_ids = []  # tokens belonging to the current word
@@ -194,6 +217,7 @@ class AggregateTokenizer(TokenizerSpec):
         return words_and_langs
 
     def ids_to_lang(self, ids):
+        """Converts a list of token IDs most probable language"""
         lang_cnts = {}
 
         for id in ids:
@@ -214,6 +238,7 @@ class AggregateTokenizer(TokenizerSpec):
         return max_lang
 
     def tokens_to_ids(self, tokens: Union[str, List[str]], langs: Union[str, List[str]]) -> Union[int, List[int]]:
+        """Converts token(s)) annotated with language(s) to the list of ids."""
         if isinstance(tokens, str):
             tokens = [tokens]
         if isinstance(langs, str):
@@ -226,17 +251,21 @@ class AggregateTokenizer(TokenizerSpec):
         return ids
 
     def get_bos(self, lang_id: str) -> int:
+        """Get BOS symbol id for `lang_id`"""
         return self.tokenizers_dict[lang_id].bos + self.token_id_offset[lang_id]
 
     def get_eos(self, lang_id: str) -> int:
+        """Get EOS symbol id for `lang_id`"""
         return self.tokenizers_dict[lang_id].eos + self.token_id_offset[lang_id]
 
     @property
     def vocab(self):
+        """Property: get vocabulary"""
         return self.vocabulary
 
     @property
     def langs(self):
+        """Property: get list of languages"""
         return list(self.tokenizers_dict.keys())
 
 

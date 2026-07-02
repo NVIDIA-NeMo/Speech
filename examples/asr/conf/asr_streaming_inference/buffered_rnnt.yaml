@@ -30,6 +30,20 @@ asr:
         source_lang: "en"  # The source language of the context-biasing phrases (for aggregate tokenizer),
         # used with `key_phrases_file` and `key_phrases_list`
       boosting_tree_alpha: 0.0
+    beam:
+      beam_size: 4
+      allow_cuda_graphs: true
+      # n-gram LM (off by default)
+      ngram_lm_model: null
+      ngram_lm_alpha: 0.0
+      # phrase boosting (off by default)
+      boosting_tree:
+        model_path: null
+        key_phrases_file: null
+        key_phrases_list: null
+        key_phrase_items_list: null
+        source_lang: "en"
+      boosting_tree_alpha: 0.0
 
 
 # ==========================================

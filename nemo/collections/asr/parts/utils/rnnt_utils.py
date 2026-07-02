@@ -364,3 +364,35 @@ def batched_hyps_to_hypotheses(batched_hyps: BatchedHyps, batch_size=None) -> li
                     )
                 start += timestamp_cnt
     return hypotheses
+
+
+def batched_beam_hyps_to_hypotheses(
+    batched_beam_hyps: "BatchedBeamHyps",
+    beam_indices: torch.Tensor,
+) -> list[Hypothesis]:
+    """
+    Convert MALSD beam output to Hypothesis objects at fixed physical beam slots.
+
+    Unlike :meth:`BatchedBeamHyps.to_hyps_list` (sorted best beam per stream), this uses
+    ``beam_indices[b]`` to pick the hypothesis in physical slot order — e.g. ``scores.argmax(-1)``
+    for streaming endpointing aligned with per-chunk publish.
+
+    Args:
+        batched_beam_hyps: Decoder output for one chunk (or right-context pass).
+        beam_indices: Per-stream physical beam index, shape ``[batch_size]``.
+
+    Returns:
+        One :class:`Hypothesis` per batch row (chunk-local tokens/timestamps).
+    """
+    scores, transcripts, timestamps, durations, _ = batched_beam_hyps._export(sort=False, score_norm=False)
+    return [
+        batched_beam_hyps._hypothesis_from_flat(
+            batch_idx,
+            int(beam_indices[batch_idx].item()),
+            scores,
+            transcripts,
+            timestamps,
+            durations,
+        )
+        for batch_idx in range(batched_beam_hyps.batch_size)
+    ]

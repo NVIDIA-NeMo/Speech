@@ -20,6 +20,7 @@ from lhotse.cut import MonoCut
 from nemo.collections.common.data.lhotse.sampling import (
     CERFilter,
     ContextSpeakerSimilarityFilter,
+    SpeakerFilter,
     ValidationStatusFilter,
 )
 
@@ -141,3 +142,71 @@ def test_cut_validation_status_filter(cut_example):
 
     f = ValidationStatusFilter("any_other_status")
     assert f(cut_example) == False
+
+
+def test_cut_speaker_filter_by_speaker(cut_example):
+    f = SpeakerFilter(
+        excluded_speaker_ids=["| Language:en Dataset:nvyt2505 Speaker:Zdud2gXLTXY_SPEAKER_02 |"],
+        speaker_fields=["speaker"],
+    )
+    assert f(cut_example) == False
+
+    f = SpeakerFilter(
+        excluded_speaker_ids=["some_other_speaker"],
+        speaker_fields=["speaker"],
+    )
+    assert f(cut_example) == True
+
+
+def test_cut_speaker_filter_by_custom_speaker_id(cut_example):
+    cut_example.supervisions[0].custom["speaker_id"] = "test_speaker_001"
+
+    f = SpeakerFilter(
+        excluded_speaker_ids=["test_speaker_001"],
+        speaker_fields=["speaker_id"],
+    )
+    assert f(cut_example) == False
+
+    f = SpeakerFilter(
+        excluded_speaker_ids=["some_other_speaker"],
+        speaker_fields=["speaker_id"],
+    )
+    assert f(cut_example) == True
+
+
+def test_cut_speaker_filter_multiple_fields(cut_example):
+    cut_example.supervisions[0].custom["speaker_id"] = "test_speaker_001"
+
+    f = SpeakerFilter(
+        excluded_speaker_ids=["test_speaker_001"],
+        speaker_fields=["speaker", "speaker_id"],
+    )
+    assert f(cut_example) == False
+
+    f = SpeakerFilter(
+        excluded_speaker_ids=["some_other_speaker"],
+        speaker_fields=["speaker", "speaker_id"],
+    )
+    assert f(cut_example) == True
+
+
+def test_cut_speaker_filter_disabled(cut_example):
+    f = SpeakerFilter(
+        excluded_speaker_ids=None,
+        speaker_fields=["speaker_id"],
+    )
+    assert f(cut_example) == True
+
+    f = SpeakerFilter(
+        excluded_speaker_ids=[],
+        speaker_fields=["speaker_id"],
+    )
+    assert f(cut_example) == True
+
+
+def test_cut_speaker_filter_requires_fields_when_enabled():
+    with pytest.raises(ValueError):
+        SpeakerFilter(
+            excluded_speaker_ids=["test_speaker_001"],
+            speaker_fields=None,
+        )

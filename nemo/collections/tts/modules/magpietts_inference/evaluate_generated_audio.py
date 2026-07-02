@@ -18,6 +18,7 @@ import argparse
 import json
 import os
 import pprint
+import re
 import tempfile
 import time
 from collections import Counter
@@ -52,12 +53,48 @@ except (ImportError, ModuleNotFoundError) as e:
     )
 
 
+# Regexes mirrored from the IPA preprocessing script that creates
+# custom["text_without_annotation"]. This is used only for text inputs
+# during metric computation when requested.
+_WS_RE = re.compile(r"\s+")
+_SPACE_BEFORE_PUNCT_RE = re.compile(r"\s+([,.;:!?؟،؛])")
+_TATWEEL_RE = re.compile("\u0640+")
+_ANNOTATION_OR_MARKER_RE = re.compile(
+    r"""
+      \[[^\[\]\n]{1,512}\]          # square annotation: [breath], [نقر]
+    | </?[^<>\n]{1,512}>            # XML/style/language tags
+    | \{/?[^{}\n]{1,512}\}          # curly control/pronunciation tags
+    | [-–—]{2,}                     # multi-dash cutoff: --, ---, ——
+    | (?<=\S)[-–—](?=\s|$)          # trailing single dash after a token: word-
+    | (?:^|(?<=\s))[-–—](?=\s|$)    # standalone dash
+    | \.{3,}                        # ASCII ellipsis
+    | …+                            # Unicode ellipsis
+    | \*+                            # emphasis marker: *word*
+    """,
+    re.VERBOSE,
+)
+
+
+def strip_text_annotations_from_text(text: str) -> str:
+    """Return orthographic text with annotation/control tokens removed."""
+    text = _ANNOTATION_OR_MARKER_RE.sub(" ", str(text))
+    text = _TATWEEL_RE.sub("", text)
+    text = _WS_RE.sub(" ", text).strip()
+    text = _SPACE_BEFORE_PUNCT_RE.sub(r"\1", text)
+    return text.strip()
+
+
 FILEWISE_METRICS_TO_SAVE = [
     'cer',
     'wer',
     'pred_context_ssim',
+    'pred_gt_esim',
+    'pred_gt_ems',
     'pred_text',
     'gt_text',
+    'predicted_phoneme_text',
+    'predicted_phoneme_tokens',
+    'predicted_phoneme_token_labels',
     'gt_audio_filepath',
     'pred_audio_filepath',
     'context_audio_filepath',
@@ -265,7 +302,13 @@ def transcribed_batched(
 
 
 def load_evaluation_models(
-    language="en", sv_model_type="titanet", asr_model_name="stt_en_conformer_transducer_large", device="cuda"
+    language="en",
+    sv_model_type="titanet",
+    asr_model_name="stt_en_conformer_transducer_large",
+    device="cuda",
+    with_emotion_metrics=False,
+    emotion_model_size="small",
+    emotion_cache_dir=None,
 ):
     """Load ASR and speaker verification models used for evaluation.
 
@@ -284,6 +327,7 @@ def load_evaluation_models(
         'whisper_model': None,
         'whisper_processor': None,
         'feature_extractor': None,
+        'emotion_model': None,
     }
 
     if language == "en":
@@ -314,7 +358,41 @@ def load_evaluation_models(
         )
     models['sv_model_alternate'] = models['sv_model_alternate'].to(device).eval()
 
+    if with_emotion_metrics:
+        logging.info("Loading emotion encoder for ESIM/EMS metrics...")
+        try:
+            from nemo.collections.tts.metrics.emotion_encoder import EmpathicInsightVoice
+
+            models['emotion_model'] = EmpathicInsightVoice.from_pretrained(
+                size=emotion_model_size,
+                device=device,
+                mlp_device=device,
+                cache_dir=emotion_cache_dir,
+                cache_classifiers=True,
+                load_all_classifiers=False,
+                top_k_emotions=1,
+            ).eval()
+        except Exception as e:
+            logging.warning(f"Emotion encoder could not be loaded: {e}. ESIM/EMS metrics will be set to NaN.")
+
     return models
+
+
+def compute_emotion_pair_metrics(emotion_model, gt_audio_path, pred_audio_path, embedding_type="score_vector"):
+    """Compute ground-truth to predicted emotion similarity and top-emotion match."""
+    if emotion_model is None or gt_audio_path is None or pred_audio_path is None:
+        return float('NaN'), float('NaN')
+
+    try:
+        result = emotion_model.compare_emotion_pair(
+            audio_path_a=gt_audio_path,
+            audio_path_b=pred_audio_path,
+            embedding_type=embedding_type,
+        )
+        return float(result["emotion_similarity"]), float(result["top_emotion_match"])
+    except Exception as e:
+        logging.warning(f"Could not compute ESIM/EMS for {gt_audio_path} and {pred_audio_path}: {e}")
+        return float('NaN'), float('NaN')
 
 
 def classify_eou_batched(
@@ -345,6 +423,11 @@ def evaluate_dir(
     sv_model_type="titanet",
     asr_model_name="stt_en_conformer_transducer_large",
     with_utmosv2=True,
+    strip_text_annotations_for_metrics=False,
+    with_emotion_metrics=False,
+    emotion_model_size="small",
+    emotion_embedding_type="score_vector",
+    emotion_cache_dir=None,
     asr_batch_size=32,
     eou_batch_size=32,
     device="cuda",
@@ -377,7 +460,15 @@ def evaluate_dir(
     context_audio_paths = [_resolve_path(audio_dir, r.get('context_audio_filepath')) for r in records]
 
     # 2. Load models
-    models = load_evaluation_models(language, sv_model_type, asr_model_name, device)
+    models = load_evaluation_models(
+        language,
+        sv_model_type,
+        asr_model_name,
+        device,
+        with_emotion_metrics=with_emotion_metrics,
+        emotion_model_size=emotion_model_size,
+        emotion_cache_dir=emotion_cache_dir,
+    )
 
     asr_model = models['asr_model']
     whisper_model = models['whisper_model']
@@ -385,6 +476,7 @@ def evaluate_dir(
     feature_extractor = models['feature_extractor']
     speaker_verification_model = models['sv_model']
     speaker_verification_model_alternate = models['sv_model_alternate']
+    emotion_model = models['emotion_model']
 
     # 3. EoU classifier (support for English only)
     if language == "en":
@@ -420,6 +512,8 @@ def evaluate_dir(
         asr_batch_size,
         label="predicted",
     )
+    if strip_text_annotations_for_metrics:
+        pred_texts = [strip_text_annotations_from_text(text) for text in pred_texts]
     pred_texts = [text_processor.process_text_for_wer(text) for text in pred_texts]
     # Transcribe ground truth audios
     if len(gt_audio_paths) > 0:
@@ -433,6 +527,8 @@ def evaluate_dir(
             asr_batch_size,
             label="ground truth",
         )
+        if strip_text_annotations_for_metrics:
+            gt_audio_texts = [strip_text_annotations_from_text(text) for text in gt_audio_texts]
         gt_audio_texts = [text_processor.process_text_for_wer(text) for text in gt_audio_texts]
     else:
         gt_audio_texts = [None] * len(records)
@@ -446,7 +542,10 @@ def evaluate_dir(
             text_field = 'normalized_text'
         else:
             text_field = 'text'
-        processed_text = text_processor.process_text_for_wer(record[text_field])
+        text = record[text_field]
+        if strip_text_annotations_for_metrics:
+            text = strip_text_annotations_from_text(text)
+        processed_text = text_processor.process_text_for_wer(text)
         gt_texts_processed.append(processed_text)
 
     # 7. Batched EoU classification
@@ -476,6 +575,16 @@ def evaluate_dir(
         detailed_cer = word_error_rate_detail(hypotheses=[pred_text], references=[gt_text], use_cer=True)
         detailed_wer = word_error_rate_detail(hypotheses=[pred_text], references=[gt_text], use_cer=False)
 
+        pred_gt_esim = float('NaN')
+        pred_gt_ems = float('NaN')
+        if with_emotion_metrics:
+            pred_gt_esim, pred_gt_ems = compute_emotion_pair_metrics(
+                emotion_model,
+                gt_audio_filepath,
+                pred_audio_filepath,
+                embedding_type=emotion_embedding_type,
+            )
+
         logging.info(f"{ridx} GT Text: {gt_text}")
         logging.info(f"{ridx} Pr Text: {pred_text}")
         # Format cer and wer to 2 decimal places
@@ -494,7 +603,7 @@ def evaluate_dir(
                 model=speaker_verification_model_alternate,
                 extractor=feature_extractor,
                 device=device,
-                sv_model_type=sv_model_type,
+                sv_model_type="titanet",  # alternate is always titanet
             )
 
             # Initialize SSIMs with a default since the context or ground truth audio
@@ -561,32 +670,38 @@ def evaluate_dir(
             eou_trailing = float('nan')
             eou_rms_ratio = float('nan')
 
-        filewise_metrics.append(
-            {
-                'gt_text': gt_text,
-                'pred_text': pred_text,
-                'gt_audio_text': gt_audio_text,
-                'detailed_cer': detailed_cer,
-                'detailed_wer': detailed_wer,
-                'cer': detailed_cer[0],
-                'wer': detailed_wer[0],
-                'pred_gt_ssim': pred_gt_ssim,
-                'pred_context_ssim': pred_context_ssim,
-                'gt_context_ssim': gt_context_ssim,
-                'pred_gt_ssim_alternate': pred_gt_ssim_alternate,
-                'pred_context_ssim_alternate': pred_context_ssim_alternate,
-                'gt_context_ssim_alternate': gt_context_ssim_alternate,
-                'gt_audio_filepath': gt_audio_filepath,
-                'pred_audio_filepath': pred_audio_filepath,
-                'context_audio_filepath': context_audio_filepath,
-                'utmosv2': utmosv2_score,
-                'eou_type': eou_type,
-                'eou_trailing_duration': eou_trailing,
-                'eou_trail_rms_ratio': eou_rms_ratio,
-                'total_gen_audio_seconds': file_duration,
-                'predicted_codes_path': codes_file_lists[ridx] if has_codes else None,
-            }
-        )
+        metric_row = {
+            'gt_text': gt_text,
+            'pred_text': pred_text,
+            'gt_audio_text': gt_audio_text,
+            'predicted_phoneme_text': record.get('predicted_phoneme_text', ''),
+            'predicted_phoneme_tokens': record.get('predicted_phoneme_tokens', []),
+            'predicted_phoneme_token_labels': record.get('predicted_phoneme_token_labels', []),
+            'detailed_cer': detailed_cer,
+            'detailed_wer': detailed_wer,
+            'cer': detailed_cer[0],
+            'wer': detailed_wer[0],
+            'pred_gt_ssim': pred_gt_ssim,
+            'pred_context_ssim': pred_context_ssim,
+            'gt_context_ssim': gt_context_ssim,
+            'pred_gt_ssim_alternate': pred_gt_ssim_alternate,
+            'pred_context_ssim_alternate': pred_context_ssim_alternate,
+            'gt_context_ssim_alternate': gt_context_ssim_alternate,
+            'gt_audio_filepath': gt_audio_filepath,
+            'pred_audio_filepath': pred_audio_filepath,
+            'context_audio_filepath': context_audio_filepath,
+            'utmosv2': utmosv2_score,
+            'eou_type': eou_type,
+            'eou_trailing_duration': eou_trailing,
+            'eou_trail_rms_ratio': eou_rms_ratio,
+            'total_gen_audio_seconds': file_duration,
+            'predicted_codes_path': codes_file_lists[ridx] if has_codes else None,
+        }
+        if with_emotion_metrics:
+            metric_row['pred_gt_esim'] = pred_gt_esim
+            metric_row['pred_gt_ems'] = pred_gt_ems
+
+        filewise_metrics.append(metric_row)
 
     return filewise_metrics
 
@@ -599,8 +714,13 @@ def evaluate(
     sv_model_type="titanet",
     asr_model_name="stt_en_conformer_transducer_large",
     with_utmosv2=True,
+    strip_text_annotations_for_metrics=False,
     with_fcd=True,
     codec_model_path=None,
+    with_emotion_metrics=False,
+    emotion_model_size="small",
+    emotion_embedding_type="head_concat",
+    emotion_cache_dir=None,
     asr_batch_size=32,
     eou_batch_size=32,
     device="cuda",
@@ -636,6 +756,11 @@ def evaluate(
         sv_model_type=sv_model_type,
         asr_model_name=asr_model_name,
         with_utmosv2=with_utmosv2,
+        strip_text_annotations_for_metrics=strip_text_annotations_for_metrics,
+        with_emotion_metrics=with_emotion_metrics,
+        emotion_model_size=emotion_model_size,
+        emotion_embedding_type=emotion_embedding_type,
+        emotion_cache_dir=emotion_cache_dir,
         asr_batch_size=asr_batch_size,
         eou_batch_size=eou_batch_size,
         device=device,
@@ -725,6 +850,9 @@ def compute_global_metrics(
         sum(m['pred_context_ssim_alternate'] for m in filewise_metrics) / n
     )
     avg_metrics['ssim_gt_context_avg_alternate'] = sum(m['gt_context_ssim_alternate'] for m in filewise_metrics) / n
+    if 'pred_gt_esim' in filewise_metrics[0]:
+        avg_metrics['esim_pred_gt_avg'] = sum(m['pred_gt_esim'] for m in filewise_metrics) / n
+        avg_metrics['ems_pred_gt_avg'] = sum(m['pred_gt_ems'] for m in filewise_metrics) / n
 
     # Cumulative WER/CER on ground-truth audio transcriptions (if available)
     gt_audio_texts = [m['gt_audio_text'] for m in filewise_metrics]
@@ -778,6 +906,20 @@ def main():
     parser.add_argument('--generated_audio_dir', type=str, default=None)
     parser.add_argument('--whisper_language', type=str, default="en")
     parser.add_argument('--evalset', type=str, default=None)
+    parser.add_argument('--with_emotion_metrics', action='store_true')
+    parser.add_argument(
+        '--strip_text_annotations_for_metrics',
+        action='store_true',
+        help='Strip bracket/tag/control annotations from reference and ASR hypothesis text while computing text metrics.',
+    )
+    parser.add_argument('--emotion_model_size', type=str, default="small", choices=["small", "large"])
+    parser.add_argument(
+        '--emotion_embedding_type',
+        type=str,
+        default="score_vector",
+        choices=["head_concat", "head_mean", "score_vector"],
+    )
+    parser.add_argument('--emotion_cache_dir', type=str, default=None)
     args = parser.parse_args()
 
     if args.evalset is not None:
@@ -793,6 +935,11 @@ def main():
         args.whisper_language,
         sv_model_type="wavlm",
         asr_model_name="nvidia/parakeet-ctc-0.6b",
+        with_emotion_metrics=args.with_emotion_metrics,
+        strip_text_annotations_for_metrics=args.strip_text_annotations_for_metrics,
+        emotion_model_size=args.emotion_model_size,
+        emotion_embedding_type=args.emotion_embedding_type,
+        emotion_cache_dir=args.emotion_cache_dir,
     )
 
 

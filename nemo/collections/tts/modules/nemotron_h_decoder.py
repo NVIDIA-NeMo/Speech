@@ -91,6 +91,49 @@ IS_FAST_PATH_AVAILABLE = all(
 )
 
 
+def make_mamba_conv_cache_from_sequence(
+    hidden_states_B_C: torch.Tensor,
+    conv_kernel_size: int,
+) -> torch.Tensor:
+    """
+    hidden_states_B_C: (B, T, conv_dim)
+    returns conv cache: (B, conv_dim, conv_kernel_size)
+    """
+    x = hidden_states_B_C.transpose(1, 2)  # (B, conv_dim, T)
+
+    if x.size(-1) >= conv_kernel_size:
+        return x[:, :, -conv_kernel_size:].contiguous()
+
+    return F.pad(x, (conv_kernel_size - x.size(-1), 0)).contiguous()
+
+
+def get_cached_mamba_ssm_state(
+    cache_params: "HybridMambaAttentionDynamicCache",
+    layer_idx: int,
+    batch_size: int,
+    num_heads: int,
+    head_dim: int,
+    ssm_state_size: int,
+    device: torch.device,
+):
+    """
+    Returns cached SSM state in the shape expected by full-sequence/chunk scan:
+      (B, num_heads, head_dim, ssm_state_size)
+
+    The cache may contain either:
+      (B, num_heads * head_dim, ssm_state_size)
+    or:
+      (B, num_heads, head_dim, ssm_state_size)
+    depending on which path updated it last.
+    """
+    state = cache_params.ssm_states[layer_idx].to(device=device)
+
+    if state.dim() == 3:
+        state = state.view(batch_size, num_heads, head_dim, ssm_state_size)
+
+    return state
+
+
 def get_activation_fn(activation: str):
     """Get activation function by name."""
     if activation == "silu" or activation == "swish":
@@ -240,6 +283,7 @@ class HybridMambaAttentionDynamicCache:
         intermediate_size = config.mamba_num_heads * config.mamba_head_dim
         ssm_state_size = config.ssm_state_size
         conv_kernel_size = config.conv_kernel
+        conv_dim = intermediate_size + 2 * config.n_groups * config.ssm_state_size
 
         self.conv_states = []
         self.ssm_states = []
@@ -250,7 +294,7 @@ class HybridMambaAttentionDynamicCache:
         for i in range(config.num_hidden_layers):
             if config.layers_block_type[i] == "mamba":
                 self.conv_states.append(
-                    torch.zeros(batch_size, intermediate_size, conv_kernel_size, device=device, dtype=dtype)
+                    torch.zeros(batch_size, conv_dim, conv_kernel_size, device=device, dtype=dtype)
                 )
                 self.ssm_states.append(
                     torch.zeros(batch_size, intermediate_size, ssm_state_size, device=device, dtype=dtype)
@@ -495,10 +539,14 @@ class NemotronHMamba2Mixer(nn.Module):
             - self.num_heads
         ) // 2
 
-        if cache_params is not None and cache_position is not None and cache_position[0] > 0:
-            # Cached forward (single token)
+        has_cache_prefix = cache_params is not None and cache_position is not None and cache_position[0] > 0
+        is_decode_step = has_cache_prefix and seq_len == 1
+
+        if is_decode_step:
+            # Cached single-token decode path.
             _, _, gate, hidden_states_B_C, dt = projected_states.squeeze(1).split(
-                [d_mlp, d_mlp, self.intermediate_size, self.conv_dim, self.num_heads], dim=-1
+                [d_mlp, d_mlp, self.intermediate_size, self.conv_dim, self.num_heads],
+                dim=-1,
             )
 
             hidden_states_B_C = causal_conv1d_update(
@@ -539,8 +587,9 @@ class NemotronHMamba2Mixer(nn.Module):
             hidden_states = hidden_states.view(batch_size, self.num_heads * self.head_dim)
             hidden_states = self.norm(hidden_states, gate)
             out = self.out_proj(hidden_states)[:, None, ...]
+
         else:
-            # Full sequence forward
+            # Full sequence or cached multi-token prefill path.
             A = -torch.exp(self.A_log.float())
             dt_limit_kwargs = {} if self.time_step_limit == (0.0, float("inf")) else {"dt_limit": self.time_step_limit}
 
@@ -567,30 +616,56 @@ class NemotronHMamba2Mixer(nn.Module):
                 )
             else:
                 _, _, gate, hidden_states_B_C, dt = projected_states.split(
-                    [d_mlp, d_mlp, self.intermediate_size, self.conv_dim, self.num_heads], dim=-1
+                    [d_mlp, d_mlp, self.intermediate_size, self.conv_dim, self.num_heads],
+                    dim=-1,
                 )
 
-                if cache_params is not None:
-                    hidden_states_B_C_transposed = hidden_states_B_C.transpose(1, 2)
-                    conv_states = F.pad(
-                        hidden_states_B_C_transposed,
-                        (cache_params.conv_kernel_size - hidden_states_B_C_transposed.shape[-1], 0),
-                    )
-                    cache_params.update_conv_state(
-                        layer_idx=self.layer_idx, new_conv_state=conv_states, cache_init=True
-                    )
+                raw_hidden_states_B_C = hidden_states_B_C
+
+                # For cached T > 1 prefill, convolution must see the previous conv cache.
+                if has_cache_prefix:
+                    prev_conv = cache_params.conv_states[self.layer_idx].to(
+                        device=raw_hidden_states_B_C.device,
+                        dtype=raw_hidden_states_B_C.dtype,
+                    )  # (B, conv_dim, K)
+
+                    conv_input = torch.cat(
+                        [prev_conv, raw_hidden_states_B_C.transpose(1, 2)],
+                        dim=-1,
+                    )  # (B, conv_dim, K + T)
+
+                    raw_for_cache = torch.cat(
+                        [prev_conv.transpose(1, 2), raw_hidden_states_B_C],
+                        dim=1,
+                    )  # (B, K + T, conv_dim)
+                else:
+                    conv_input = raw_hidden_states_B_C.transpose(1, 2)
+                    raw_for_cache = raw_hidden_states_B_C
 
                 if self.activation not in ["silu", "swish"]:
-                    hidden_states_B_C = self.act(
-                        self.conv1d(hidden_states_B_C.transpose(1, 2))[..., :seq_len].transpose(1, 2)
-                    )
+                    conv_out = self.act(self.conv1d(conv_input)[..., : conv_input.size(-1)].transpose(1, 2))
                 else:
-                    hidden_states_B_C = causal_conv1d_fn(
-                        x=hidden_states_B_C.transpose(1, 2),
+                    conv_out = causal_conv1d_fn(
+                        x=conv_input,
                         weight=self.conv1d.weight.squeeze(1),
                         bias=self.conv1d.bias,
                         activation=self.activation,
                     ).transpose(1, 2)
+
+                # Keep only outputs corresponding to the new chunk.
+                hidden_states_B_C = conv_out[:, -seq_len:, :].contiguous()
+
+                # Update cache after using the previous cache.
+                if cache_params is not None:
+                    conv_states = make_mamba_conv_cache_from_sequence(
+                        raw_for_cache,
+                        cache_params.conv_kernel_size,
+                    )
+                    cache_params.update_conv_state(
+                        layer_idx=self.layer_idx,
+                        new_conv_state=conv_states,
+                        cache_init=True,
+                    )
 
                 hidden_states_B_C = apply_mask_to_padding_states(hidden_states_B_C, attention_mask)
                 hidden_states, B, C = torch.split(
@@ -599,12 +674,7 @@ class NemotronHMamba2Mixer(nn.Module):
                     dim=-1,
                 )
 
-                scan_output, ssm_state = mamba_chunk_scan_combined(
-                    hidden_states.view(batch_size, seq_len, -1, self.head_dim),
-                    dt,
-                    A,
-                    B.view(batch_size, seq_len, self.n_groups, -1),
-                    C.view(batch_size, seq_len, self.n_groups, -1),
+                scan_kwargs = dict(
                     chunk_size=self.chunk_size,
                     D=self.D,
                     z=None,
@@ -615,8 +685,32 @@ class NemotronHMamba2Mixer(nn.Module):
                     **dt_limit_kwargs,
                 )
 
+                # For cached T > 1 prefill, SSM must start from previous cache state.
+                if has_cache_prefix:
+                    scan_kwargs["initial_states"] = get_cached_mamba_ssm_state(
+                        cache_params=cache_params,
+                        layer_idx=self.layer_idx,
+                        batch_size=batch_size,
+                        num_heads=self.num_heads,
+                        head_dim=self.head_dim,
+                        ssm_state_size=self.ssm_state_size,
+                        device=hidden_states.device,
+                    )
+
+                scan_output, ssm_state = mamba_chunk_scan_combined(
+                    hidden_states.view(batch_size, seq_len, -1, self.head_dim),
+                    dt,
+                    A,
+                    B.view(batch_size, seq_len, self.n_groups, -1),
+                    C.view(batch_size, seq_len, self.n_groups, -1),
+                    **scan_kwargs,
+                )
+
                 if ssm_state is not None and cache_params is not None:
-                    cache_params.update_ssm_state(layer_idx=self.layer_idx, new_ssm_state=ssm_state)
+                    cache_params.update_ssm_state(
+                        layer_idx=self.layer_idx,
+                        new_ssm_state=ssm_state,
+                    )
 
                 scan_output = scan_output.view(batch_size, seq_len, -1)
                 scan_output = self.norm(scan_output, gate)
@@ -645,28 +739,70 @@ class NemotronHMamba2Mixer(nn.Module):
             - self.num_heads
         ) // 2
         _, _, gate, hidden_states_B_C, dt = projected_states.split(
-            [d_mlp, d_mlp, self.intermediate_size, self.conv_dim, self.num_heads], dim=-1
+            [d_mlp, d_mlp, self.intermediate_size, self.conv_dim, self.num_heads],
+            dim=-1,
         )
 
+        has_cache_prefix = cache_params is not None and cache_position is not None and cache_position[0] > 0
+        is_decode_step = has_cache_prefix and seq_len == 1
+
+        # -----------------------
         # Convolution
-        if cache_params is not None and cache_position is not None and cache_position[0] > 0:
+        # -----------------------
+        if is_decode_step:
             cache_params.update_conv_state(
-                layer_idx=self.layer_idx, new_conv_state=hidden_states_B_C, cache_init=False
+                layer_idx=self.layer_idx,
+                new_conv_state=hidden_states_B_C,
+                cache_init=False,
             )
-            conv_states = cache_params.conv_states[self.layer_idx].to(device=self.conv1d.weight.device)
+            conv_states = cache_params.conv_states[self.layer_idx].to(
+                device=self.conv1d.weight.device,
+                dtype=hidden_states_B_C.dtype,
+            )
             hidden_states_B_C = torch.sum(conv_states * self.conv1d.weight.squeeze(1), dim=-1)
             if self.use_conv_bias:
                 hidden_states_B_C = hidden_states_B_C + self.conv1d.bias
             hidden_states_B_C = self.act(hidden_states_B_C)
+
         else:
+            raw_hidden_states_B_C = hidden_states_B_C
+
+            # For cached T > 1 prefill, convolution must see previous conv cache.
+            if has_cache_prefix:
+                prev_conv = cache_params.conv_states[self.layer_idx].to(
+                    device=raw_hidden_states_B_C.device,
+                    dtype=raw_hidden_states_B_C.dtype,
+                )  # (B, conv_dim, K)
+
+                conv_input = torch.cat(
+                    [prev_conv, raw_hidden_states_B_C.transpose(1, 2)],
+                    dim=-1,
+                )  # (B, conv_dim, K + T)
+
+                raw_for_cache = torch.cat(
+                    [prev_conv.transpose(1, 2), raw_hidden_states_B_C],
+                    dim=1,
+                )  # (B, K + T, conv_dim)
+            else:
+                conv_input = raw_hidden_states_B_C.transpose(1, 2)
+                raw_for_cache = raw_hidden_states_B_C
+
+            conv_out = self.act(self.conv1d(conv_input)[..., : conv_input.size(-1)].transpose(1, 2))
+
+            # Keep only outputs corresponding to the new chunk.
+            hidden_states_B_C = conv_out[:, -seq_len:, :].contiguous()
+
+            # Update cache after using the previous cache.
             if cache_params is not None:
-                hidden_states_B_C_transposed = hidden_states_B_C.transpose(1, 2)
-                conv_states = F.pad(
-                    hidden_states_B_C_transposed,
-                    (cache_params.conv_kernel_size - hidden_states_B_C_transposed.shape[-1], 0),
+                conv_states = make_mamba_conv_cache_from_sequence(
+                    raw_for_cache,
+                    cache_params.conv_kernel_size,
                 )
-                cache_params.update_conv_state(layer_idx=self.layer_idx, new_conv_state=conv_states, cache_init=True)
-            hidden_states_B_C = self.act(self.conv1d(hidden_states_B_C.transpose(1, 2))[..., :seq_len].transpose(1, 2))
+                cache_params.update_conv_state(
+                    layer_idx=self.layer_idx,
+                    new_conv_state=conv_states,
+                    cache_init=True,
+                )
 
         hidden_states_B_C = apply_mask_to_padding_states(hidden_states_B_C, attention_mask)
         hidden_states, B, C = torch.split(
@@ -675,11 +811,13 @@ class NemotronHMamba2Mixer(nn.Module):
             dim=-1,
         )
 
+        # -----------------------
         # SSM
+        # -----------------------
         A = -torch.exp(self.A_log.float())
 
-        if cache_params is not None and cache_position is not None and cache_position[0] > 0:
-            # Single step SSM update
+        if is_decode_step:
+            # Single-step SSM update.
             cache_device = cache_params.ssm_states[self.layer_idx].device
             dt = dt[:, 0, :][:, None, ...]
             dt = dt.transpose(1, 2).expand(batch_size, dt.shape[-1], self.head_dim)
@@ -701,7 +839,8 @@ class NemotronHMamba2Mixer(nn.Module):
             dBx = (dB * hidden_states[..., None]).to(device=cache_device)
 
             cache_params.update_ssm_state(
-                layer_idx=self.layer_idx, new_ssm_state=cache_params.ssm_states[self.layer_idx] * dA + dBx
+                layer_idx=self.layer_idx,
+                new_ssm_state=cache_params.ssm_states[self.layer_idx] * dA + dBx,
             )
 
             C = C.reshape(batch_size, self.n_groups, -1)[..., None, :]
@@ -717,8 +856,9 @@ class NemotronHMamba2Mixer(nn.Module):
             D = self.D[..., None].expand(self.D.shape[0], self.head_dim)
             y = (y + hidden_states * D).to(y.dtype)
             y = y.reshape(batch_size, -1)[:, None, ...]
+
         else:
-            # Full sequence SSM (chunked)
+            # Full-sequence or cached multi-token SSM.
             dt = F.softplus(dt + self.dt_bias)
             dt = torch.clamp(dt, self.time_step_limit[0], self.time_step_limit[1])
             hidden_states = hidden_states.reshape(batch_size, seq_len, -1, self.head_dim).float()
@@ -751,8 +891,18 @@ class NemotronHMamba2Mixer(nn.Module):
             B_decay = B * decay_states.permute(0, -2, -1, 1)[..., None]
             states = (B_decay[..., None, :] * hidden_states[..., None]).sum(dim=2)
 
-            if cache_params is not None and cache_position is not None and cache_position[0] > 0:
-                previous_states = cache_params.ssm_states[self.layer_idx][:, None, ...].to(device=states.device)
+            # This is the critical fix:
+            # cached T > 1 prefill must start from the previous SSM state.
+            if has_cache_prefix:
+                previous_states = get_cached_mamba_ssm_state(
+                    cache_params=cache_params,
+                    layer_idx=self.layer_idx,
+                    batch_size=batch_size,
+                    num_heads=self.num_heads,
+                    head_dim=self.head_dim,
+                    ssm_state_size=self.ssm_state_size,
+                    device=states.device,
+                )[:, None, ...]
             else:
                 previous_states = torch.zeros_like(states[:, :1])
 
@@ -776,7 +926,10 @@ class NemotronHMamba2Mixer(nn.Module):
             y = y.reshape(batch_size, seq_len, -1)
 
             if ssm_state is not None and cache_params is not None:
-                cache_params.update_ssm_state(layer_idx=self.layer_idx, new_ssm_state=ssm_state)
+                cache_params.update_ssm_state(
+                    layer_idx=self.layer_idx,
+                    new_ssm_state=ssm_state,
+                )
 
         scan_output = self.norm(y, gate)
         contextualized_states = self.out_proj(scan_output.to(dtype))
@@ -1371,9 +1524,22 @@ class NemotronHModel(nn.Module):
             if output_hidden_states:
                 all_hidden_states = all_hidden_states + (hidden_states,)
 
+            def create_custom_forward(layer, layer_mask):
+                def custom_forward(hidden_states):
+                    return layer(
+                        hidden_states,
+                        cache_params=None,
+                        cache_position=None,
+                        attention_mask=layer_mask,
+                    )
+
+                return custom_forward
+
             if self.gradient_checkpointing and self.training:
                 hidden_states = torch.utils.checkpoint.checkpoint(
-                    layer.__call__, hidden_states, cache_params, cache_position, layer_mask
+                    create_custom_forward(layer, layer_mask),
+                    hidden_states,
+                    use_reentrant=False,
                 )
             else:
                 hidden_states = layer(

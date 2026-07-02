@@ -96,8 +96,8 @@ class SpecialAudioToken(Enum):
     AUDIO_CONTEXT_EOS = 3
     MASK_TOKEN = 4
     # Reserve these values so that if we need to add more special tokens in the future the codebook size will remain the same
-    RESERVED_1 = 5
-    RESERVED_2 = 6
+    USER_SPEAKING = 5
+    USER_SPEAKING_END = 6
     RESERVED_3 = 7
 
     @staticmethod
@@ -243,6 +243,11 @@ class CharAwareSubwordEncoder(NeuralModule):
 
         if subword_mask.ndim == 3:
             subword_mask = subword_mask.squeeze(-1)
+
+        if not subword_mask.any():
+            B, T = subword_ids.shape
+            D = self.embed_tokens.embedding_dim
+            return torch.zeros((B, T, D), dtype=self.embed_tokens.weight.dtype, device=device)
 
         char_ids, char_lengths = self.prepare_inputs(subword_ids, subword_mask)
         char_mask = get_mask_from_lengths(char_lengths)

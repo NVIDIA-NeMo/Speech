@@ -56,6 +56,7 @@ from nemo.collections.common.data.lhotse.sampling import (
     FixedBucketBatchSizeConstraint2D,
     MultimodalFixedBucketBatchSizeConstraint2D,
     MultimodalSamplingConstraint,
+    SpeakerFilter,
     TokenCountFilter,
     TokenPerSecondFilter,
     TokenPerTokenFilter,
@@ -149,6 +150,8 @@ class LhotseDataLoadingConfig:
     # 2.3 Filters on CER and/or cosine speaker similarity of the context audio serving for TTS use cases.
     max_cer: float | None = float("inf")
     min_context_speaker_similarity: float | None = -1
+    excluded_speaker_ids: Any = None
+    speaker_filter_fields: list[str] | None = None
 
     # 2.4 Filters on validation status. If the validation status is not "pass", the cut will be filtered out.
     keep: str = "pass"
@@ -254,6 +257,21 @@ class LhotseDataLoadingConfig:
     # The first K examples will actually be read and then discarded, incurring the IO cost, due to
     # our support of object stores and gzipped files that generally don't have indexes of byte offsets per line.
     slice_length: Optional[int] = None
+
+
+def resolve_excluded_speaker_ids(excluded_speaker_ids):
+    if excluded_speaker_ids is None:
+        return None
+
+    if isinstance(excluded_speaker_ids, str):
+        excluded_speaker_ids = OmegaConf.load(excluded_speaker_ids)
+
+    excluded_speaker_ids = OmegaConf.to_container(excluded_speaker_ids, resolve=True)
+
+    if isinstance(excluded_speaker_ids, dict):
+        excluded_speaker_ids = excluded_speaker_ids["excluded_speaker_ids"]
+
+    return excluded_speaker_ids
 
 
 def determine_use_iterable_dataset(use_iterable_dataset: bool, config: DictConfig) -> bool:
@@ -612,6 +630,12 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
 
     # validation status filtering
     cuts = cuts.filter(ValidationStatusFilter(config.keep))
+    # Exclude cuts that contain known test speakers.
+    cuts = cuts.filter(
+        SpeakerFilter(
+            resolve_excluded_speaker_ids(config.excluded_speaker_ids), speaker_fields=config.speaker_filter_fields
+        )
+    )
     # CER filtering, same as native NeMo dataloaders.
     cuts = cuts.filter(CERFilter(config.max_cer))
     # Context speaker similarity filtering, same as native NeMo dataloaders.

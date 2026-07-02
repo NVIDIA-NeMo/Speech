@@ -12,7 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import random
+import tempfile
 import time
+from collections import Counter
 from dataclasses import dataclass, fields
 from functools import partial
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -25,6 +27,8 @@ from omegaconf import DictConfig
 from torch import nn
 from transformers import AutoConfig, AutoModelForCausalLM
 
+from nemo.collections.audio.parts.utils.transforms import resample
+from nemo.collections.speechlm2.parts.pretrained import set_model_dict_for_partial_init
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse import setup_tokenizers
 from nemo.collections.tts.models import AudioCodecModel
 from nemo.collections.tts.modules import transformer_2501
@@ -40,6 +44,7 @@ from nemo.collections.tts.modules.magpietts_modules import (
 from nemo.collections.tts.parts.utils.helpers import get_mask_from_lengths
 from nemo.core.classes import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo, safe_instantiate
+from nemo.core.connectors.save_restore_connector import SaveRestoreConnector
 from nemo.utils import logging
 from nemo.utils.exceptions import NeMoBaseException
 
@@ -130,6 +135,7 @@ class StreamingState:
     full_context_lens: torch.Tensor
     context_position: torch.Tensor
     text_tokens_seen: torch.Tensor
+    turn_text_tokens_seen: torch.Tensor
     phoneme_steps: torch.Tensor
     audio_steps: torch.Tensor
     phoneme_stream_ended: torch.Tensor
@@ -143,6 +149,7 @@ class StreamingState:
     audio_prediction_end_idx: torch.Tensor
     phoneme_prediction_start_idx: torch.Tensor
     phoneme_prediction_end_idx: torch.Tensor
+
     gt_phoneme_embeddings: Optional[torch.Tensor] = None  # (B, T', E) pre-computed GT embeddings
     gt_phoneme_lens: Optional[torch.Tensor] = None  # (B,) lengths after stacking
     gt_audio_embeddings: Optional[torch.Tensor] = None  # (B, T', E) pre-computed GT audio embeddings
@@ -255,6 +262,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         self.codebook_size = codebook_size
 
         self.codec_model_samples_per_frame = codec_model.samples_per_frame
+        self.codec_model_input_sample_rate = codec_model.sample_rate
         # Our codebooks start with actual audio codec tokens, followed by special tokens.
         # The `forced_*` options are for backward compatibility for models trained with older code.
         get_token_index = partial(SpecialAudioToken.get_index, base_codebook_size=self.codebook_size)
@@ -263,6 +271,8 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         self.context_audio_bos_id = get_token_index(SpecialAudioToken.AUDIO_CONTEXT_BOS)
         self.context_audio_eos_id = get_token_index(SpecialAudioToken.AUDIO_CONTEXT_EOS)
         self.mask_token_id = get_token_index(SpecialAudioToken.MASK_TOKEN)
+        self.audio_user_speaking_id = get_token_index(SpecialAudioToken.USER_SPEAKING)
+        self.audio_user_speaking_end_id = get_token_index(SpecialAudioToken.USER_SPEAKING_END)
         self.num_all_tokens_per_codebook = self.codebook_size + len(SpecialAudioToken)
         self.use_bpe_char_tokenizer = cfg.get('use_bpe_char_tokenizer', False)
         # If True, text tokens are embedded only with the char-aware subword (CAS) encoder, and the decoder token
@@ -270,7 +280,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         self.disable_subword_embedding = cfg.get('disable_subword_embedding', False)
         # If True, remove the decoder LM head over text tokens to save parameters when the model does not train or
         # infer text-token logits from the decoder output.
-        self.disable_lm_text_head = cfg.get('disable_lm_text_head', False)
+        self.disable_lm_text_head = cfg.get('disable_lm_text_head', True)
         # Legacy checkpoints may have trained context text with decoder embeddings only, even when CAS is enabled for
         # regular text tokens. This flag skips adding CAS embeddings for context text to match those checkpoints.
         self.disable_cas_for_context_text = cfg.get('disable_cas_for_context_text', False)
@@ -333,11 +343,24 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             mode='train',
         )
 
-        num_tokens_tokenizer = len(self.tokenizer.tokens)
-        num_tokens = num_tokens_tokenizer + 3  # +3 for BOS, EOS, CFG_UNK
-        self.bos_id = num_tokens - 3
-        self.eos_id = num_tokens - 2
-        self.cfg_unk_token_id = num_tokens - 1
+        base_num_tokens = len(self.tokenizer.tokens)
+
+        # Assign standard special tokens sequentially
+        self.bos_id = base_num_tokens
+        self.eos_id = base_num_tokens + 1
+        self.cfg_unk_token_id = base_num_tokens + 2
+        special_tokens_added = 3
+
+        # Conditionally add the interruption token
+        if cfg.get("use_multiturn_dataset", False):
+            self.interruption_token_id = base_num_tokens + special_tokens_added
+            special_tokens_added += 1
+
+        # Calculate the final total vocabulary size
+        num_tokens = base_num_tokens + special_tokens_added
+
+        self.pad_id = self.tokenizer.pad
+
         self.phoneme_tokenizer = None
         if cfg.get('phoneme_tokenizer', None) is not None:
             self.phoneme_tokenizer = safe_instantiate(cfg.phoneme_tokenizer)
@@ -480,6 +503,17 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         else:
             raise ValueError(f"Unknown decoder_type: {self.decoder_type}. Supported: 'huggingface', 'nemotron_h'")
 
+        self.activation_checkpointing = cfg.get("activation_checkpointing", False)
+        if self.activation_checkpointing:
+            logging.info("Enabling activation checkpointing for decoder")
+
+            if self.decoder_type == "nemotron_h":
+                self.decoder.gradient_checkpointing = True
+            elif hasattr(self.decoder, "gradient_checkpointing_enable"):
+                self.decoder.gradient_checkpointing_enable()
+            elif hasattr(self.decoder, "gradient_checkpointing"):
+                self.decoder.gradient_checkpointing = True
+
         if self.disable_lm_text_head and hasattr(self.decoder, 'lm_head'):
             self.decoder.lm_head = None
 
@@ -515,6 +549,9 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 '<EOS>': self.eos_id,
                 '<CFG_UNK>': self.cfg_unk_token_id,
             }
+            if cfg.get("use_multiturn_dataset", False):
+                special_vocab["<INTERRUPTION>"] = self.interruption_token_id
+
             self.cas_encoder = CharAwareSubwordEncoder(
                 d_embed=cfg.embedding_dim,
                 llm_tokenizer_vocab=subword_vocab,
@@ -586,6 +623,187 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 mask_token_id=self.mask_token_id,
                 codebook_size=self.codebook_size,
             )
+
+    @property
+    def codec_sil_codes(self):
+        return self._codec_sil_codes_buffer
+
+    @property
+    def codec_sil_codes_unconverted(self):
+        return self._codec_sil_codes_buffer_unconverted
+
+    def restore_from_pretrained_checkpoint(self, checkpoint_path):
+        """
+        Loads model weights a pretrained checkpoint file, supporting partial loading from safetensor and PyTorch formats.
+
+        Args:
+            checkpoint_path (str): Path to checkpoint file.
+
+        Returns:
+            None. The model is updated in-place.
+        """
+        if checkpoint_path is not None:
+            if '.nemo' in checkpoint_path:
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    SaveRestoreConnector._unpack_nemo_file(checkpoint_path, tmpdir)
+                    checkpoint_path = f"{tmpdir}/model_weights.ckpt"
+                    checkpoint_state = torch.load(checkpoint_path, map_location='cpu')
+            else:
+                checkpoint_state = torch.load(checkpoint_path, map_location='cpu')
+            checkpoint_state = set_model_dict_for_partial_init(
+                checkpoint_state, self.state_dict(), allow_partial_copy=True
+            )
+
+            self.load_state_dict(checkpoint_state, strict=True)
+            logging.info(f"Model restored from the checkpoint: {checkpoint_path} !")
+
+    def _generate_codec_silence_buffer(self):
+        codec_device = next(self._codec_model.parameters()).device
+
+        audio = torch.zeros(1, 5 * self.sample_rate, dtype=torch.float32, device=codec_device)
+        audio_len = torch.tensor([audio.size(-1)], dtype=torch.long, device=codec_device)
+
+        with torch.no_grad():
+            sil_codes_raw, sil_codes_lens = self._codec_helper.audio_to_codes(audio, audio_len)
+
+            frames_raw = sil_codes_raw[0].transpose(0, 1)
+            combos_raw = [tuple(frame.tolist()) for frame in frames_raw]
+            most_common_raw, _ = Counter(combos_raw).most_common(1)[0]
+            sil_tensor_unconverted = torch.tensor(most_common_raw, device=codec_device, dtype=torch.long)
+
+            if self._codec_converter is not None:
+                sil_codes_conv = self._codec_converter.convert_original_to_new(
+                    audio_tokens=sil_codes_raw, audio_lens=sil_codes_lens
+                ).long()
+                frames_conv = sil_codes_conv[0].transpose(0, 1)
+                combos_conv = [tuple(frame.tolist()) for frame in frames_conv]
+                most_common_conv, _ = Counter(combos_conv).most_common(1)[0]
+                sil_tensor_converted = torch.tensor(most_common_conv, device=codec_device, dtype=torch.long)
+            else:
+                sil_tensor_converted = sil_tensor_unconverted.clone()
+
+        if not hasattr(self, "_codec_sil_codes_buffer"):
+            self.register_buffer("_codec_sil_codes_buffer", sil_tensor_converted, persistent=False)
+            self.register_buffer("_codec_sil_codes_buffer_unconverted", sil_tensor_unconverted, persistent=False)
+        else:
+            self._codec_sil_codes_buffer.copy_(sil_tensor_converted)
+            self._codec_sil_codes_buffer_unconverted.copy_(sil_tensor_unconverted)
+
+    def streaming_prefill_profile(
+        self,
+        state: StreamingState,
+        text_tokens: torch.Tensor,  # (B, T) or (B,)
+        user_audio_channel_embedding: torch.Tensor = None,
+        use_inference_mode: bool = True,
+        # ToDo: implement audio direct support instead of use silence tokens
+    ) -> StreamingState:
+        grad_ctx = torch.inference_mode if use_inference_mode else torch.no_grad
+        with grad_ctx():
+            if text_tokens.dim() == 1:
+                text_tokens = text_tokens[:, None]
+
+            B, T = text_tokens.shape
+            device = state.config.device
+            text_tokens = text_tokens.to(device)
+
+            # -----------------------
+            # TEXT CHANNEL
+            # -----------------------
+            text_emb = self.embed_text_tokens(
+                text_tokens, text_lens=None, is_multiturn=self.cfg.get("use_multiturn_dataset", False)
+            )
+            if self.cfg.get("use_multiturn_dataset", False):
+                text_emb[text_tokens == self.pad_id] = 0.0
+
+            # -----------------------
+            # AUDIO CHANNEL: previous-token input during profile
+            # -----------------------
+            C = self.num_audio_codebooks
+            S = self.frame_stacking_factor
+
+            sil_codes = self.codec_sil_codes.to(device=device, dtype=torch.long)  # (C,)
+
+            # Keep all_predictions as real silence so decoded waveform has silence during profile.
+            sil_codes_unstacked = sil_codes.view(1, C, 1).expand(B, C, T * S).contiguous()
+
+            if self.cfg.get("use_user_speaking_token", False):
+                # Match training: during non-agent/user-speaking regions, the audio INPUT token
+                # is audio_user_speaking_id.
+                profile_audio_stacked = torch.full(
+                    (B, C * S, T),
+                    self.audio_user_speaking_id,
+                    dtype=torch.long,
+                    device=device,
+                )
+            else:
+                profile_audio_stacked, _ = self.stack_codes(
+                    sil_codes_unstacked,
+                    torch.full((B,), T * S, dtype=torch.long, device=device),
+                    bos_id=self.audio_bos_id,
+                    eos_id=self.audio_eos_id,
+                    stacking_factor=S,
+                    num_codebooks=C,
+                )  # (B, C*S, T)
+
+            audio_emb = self.embed_audio_tokens(profile_audio_stacked)
+
+            # Match training channel sum: text + audio profile-token/silence input.
+            combined_emb = text_emb + audio_emb
+
+            if self.cfg.get("condition_on_user_speech", False):
+                combined_emb = combined_emb + user_audio_channel_embedding
+
+            # -----------------------
+            # CFG handling
+            # -----------------------
+            if state.config.use_cfg:
+                # Match regular streaming inference:
+                # conditional branch = text + audio
+                # unconditional branch = audio only
+                inputs_embeds = torch.cat([combined_emb, audio_emb], dim=0)
+            else:
+                inputs_embeds = combined_emb
+
+            # -----------------------
+            # KV CACHE EXTENSION
+            # -----------------------
+            cache_position = torch.arange(
+                state.cache_seq_len,
+                state.cache_seq_len + T,
+                device=device,
+            )
+
+            out = self.forward(
+                inputs_embeds=inputs_embeds,
+                attention_mask=None,
+                use_cache=True,
+                past_key_values=state.past_key_values,
+                cache_position=cache_position,
+            )
+
+            state.past_key_values = out.past_key_values
+            state.cache_seq_len += T
+            state.last_hidden = out.last_hidden_state
+
+            # Advance logical streams consumed by this profile prefill.
+            state.text_tokens_seen += T
+            state.audio_steps += T
+
+            # Make the next normal streaming_step continue from silence, not AUDIO_BOS.
+            state.all_predictions.append(
+                sil_codes_unstacked
+            )  # keep silence so that in the target audio user will be silence
+            if self.cfg.get("use_user_speaking_token", False):
+                state.last_audio_codes = torch.full(
+                    (B, C * S),
+                    self.audio_user_speaking_id,
+                    dtype=torch.long,
+                    device=device,
+                )
+            else:
+                state.last_audio_codes = profile_audio_stacked[:, :, -1].contiguous()
+
+            return state
 
     def _get_state_dict_keys_to_exclude(self) -> List[str]:
         return [
@@ -672,6 +890,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         text_tokens: torch.Tensor,
         text_lens: Optional[torch.Tensor] = None,
         disable_cas_embedding: bool = False,
+        is_multiturn: bool = False,
     ) -> torch.Tensor:
         """Embed text tokens using decoder embedding + optional CAS, or CAS-only when configured.
 
@@ -680,13 +899,18 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             text_lens: Optional valid token lengths for constructing the CAS mask. Defaults to the full sequence length.
             disable_cas_embedding: When True, skip adding CAS embeddings even if the model uses the BPE char tokenizer.
                 This is needed for legacy models where context text was trained without CAS embeddings.
+            is_multiturn: When True creates the text_mask based on non text pad ids positions, so that it can support multiturn.
         """
         if text_lens is None:
             text_lens = torch.full(
                 (text_tokens.size(0),), text_tokens.size(1), dtype=torch.long, device=text_tokens.device
             )
 
-        text_mask = get_mask_from_lengths(text_lens)
+        if is_multiturn:
+            text_mask = text_tokens != self.tokenizer.pad
+        else:
+            text_mask = get_mask_from_lengths(text_lens)
+
         if self.disable_subword_embedding:
             if disable_cas_embedding:
                 raise ValueError("Cannot disable CAS embedding when `disable_subword_embedding=True`.")
@@ -952,7 +1176,6 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         )
         context_audio_embedded = self.embed_audio_tokens(context_audio_codes)  # (B, T', E)
         batch_size = context_audio_embedded.size(0)
-
         if self.use_speaker_encoder:
             if (
                 self.training
@@ -1291,6 +1514,11 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 )
                 gt_phoneme_embeddings = self.embed_phoneme_tokens(gt_phoneme_stacked)  # (B, T', E)
 
+                if self.cfg.get("use_multiturn_dataset", False):
+                    phoneme_pad_id = getattr(self.phoneme_tokenizer, "pad", -1)
+                    phoneme_mask = gt_phoneme_stacked[:, 0, :] != phoneme_pad_id
+                    gt_phoneme_embeddings = gt_phoneme_embeddings * phoneme_mask.unsqueeze(2)
+
             # Process GT audio codes if provided (for teacher forcing)
             gt_audio_embeddings = None
             gt_audio_lens_state = None
@@ -1326,6 +1554,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 full_context_lens=full_context_lens,
                 context_position=torch.full((batch_size,), min_context_len, dtype=torch.long, device=device),
                 text_tokens_seen=torch.zeros(batch_size, dtype=torch.long, device=device),
+                turn_text_tokens_seen=torch.zeros(batch_size, dtype=torch.long, device=device),
                 phoneme_steps=torch.zeros(batch_size, dtype=torch.long, device=device),
                 audio_steps=torch.zeros(batch_size, dtype=torch.long, device=device),
                 phoneme_stream_ended=torch.zeros(batch_size, dtype=torch.bool, device=device),
@@ -1352,7 +1581,10 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         state: StreamingState,
         text_tokens: Optional[torch.Tensor] = None,
         force_dropout_text: bool = False,
+        user_audio_channel_embedding: Optional[torch.Tensor] = None,
+        prefill_like_step: bool = False,
         use_inference_mode: bool = True,
+        prefill_like_is_last_step: bool = False,
     ) -> Tuple[StreamingState, Optional[torch.Tensor], Optional[torch.Tensor]]:
         """
         Perform one streaming inference step with batch support.
@@ -1383,7 +1615,10 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
             # Phase 1: Prepare input embedding and determine per-item phase masks
             next_input, needs_context, needs_phoneme, needs_audio = self._prepare_streaming_input(
-                state, text_tokens, force_dropout_text
+                state,
+                text_tokens,
+                force_dropout_text,
+                user_audio_channel_embedding=user_audio_channel_embedding,
             )
 
             # Phase 2: Transformer forward pass
@@ -1400,11 +1635,93 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             state.past_key_values = transformer_out.past_key_values
             state.cache_seq_len += 1
 
+            if prefill_like_step:
+                # Advance logical streams, keep audio silent, but predict phonemes if enabled.
+                state.context_position += needs_context.long()
+                state.text_tokens_seen += (~needs_context).long()
+
+                if hasattr(state, "turn_text_tokens_seen"):
+                    state.turn_text_tokens_seen += (~needs_context).long()
+
+                C = self.num_audio_codebooks
+                S = self.frame_stacking_factor
+                B = state.config.batch_size
+
+                sil = self.codec_sil_codes.to(device=device, dtype=torch.long)
+                sil = sil.view(1, C, 1).expand(B, C, S).contiguous()
+
+                # Keep decoded profile/warmup region silent.
+                state.all_predictions.append(sil)
+
+                pred_phoneme_tokens = None
+
+                if needs_phoneme.any() and self.phoneme_tokenizer is not None:
+                    first_phoneme_step = needs_phoneme & (state.phoneme_prediction_start_idx == -1)
+                    if first_phoneme_step.any():
+                        current_phoneme_step_idx = len(state.all_phoneme_predictions)
+                        state.phoneme_prediction_start_idx = torch.where(
+                            first_phoneme_step,
+                            torch.full_like(state.phoneme_prediction_start_idx, current_phoneme_step_idx),
+                            state.phoneme_prediction_start_idx,
+                        )
+
+                    pred_phoneme_tokens = self._predict_phoneme_tokens(state)
+                    if state.last_phoneme_tokens is None:
+                        state.last_phoneme_tokens = pred_phoneme_tokens
+                    else:
+                        update_mask = needs_phoneme.view(B, 1).expand_as(pred_phoneme_tokens)
+                        state.last_phoneme_tokens = torch.where(
+                            update_mask,
+                            pred_phoneme_tokens,
+                            state.last_phoneme_tokens,
+                        )
+
+                    state.all_phoneme_predictions.append(pred_phoneme_tokens)
+
+                    phoneme_eos_detected = needs_phoneme & (
+                        pred_phoneme_tokens == self.phoneme_tokenizer.eos_token_id
+                    ).any(dim=1)
+
+                    state.phoneme_eos_detected = state.phoneme_eos_detected | phoneme_eos_detected
+
+                    newly_ended_phoneme = phoneme_eos_detected & (state.phoneme_prediction_end_idx == -1)
+                    if newly_ended_phoneme.any():
+                        current_phoneme_step_idx = len(state.all_phoneme_predictions)
+                        state.phoneme_prediction_end_idx = torch.where(
+                            newly_ended_phoneme,
+                            torch.full_like(state.phoneme_prediction_end_idx, current_phoneme_step_idx),
+                            state.phoneme_prediction_end_idx,
+                        )
+
+                state.phoneme_steps += needs_phoneme.long()
+                state.audio_steps += needs_audio.long()
+
+                # Match training: the input slot that predicts the first agent frame after
+                # a user/non-agent region should receive the learned user-speaking-end token.
+                use_end_token = prefill_like_is_last_step and self.cfg.get("use_user_speaking_end_token", False)
+
+                if use_end_token:
+                    state.last_audio_codes = torch.full(
+                        (B, C * S),
+                        self.audio_user_speaking_end_id,
+                        dtype=torch.long,
+                        device=device,
+                    )
+                elif self.cfg.get("use_user_speaking_token", False):
+                    state.last_audio_codes = torch.full(
+                        (B, C * S),
+                        self.audio_user_speaking_id,
+                        dtype=torch.long,
+                        device=device,
+                    )
+                else:
+                    state.last_audio_codes = sil.reshape(B, C * S)
+                return state, None, pred_phoneme_tokens
+
             # Phase 3: Update counters and extract predictions
             audio_codes_next, pred_phoneme_tokens = self._process_predictions(
                 state, needs_context, needs_phoneme, needs_audio
             )
-
             return state, audio_codes_next, pred_phoneme_tokens
 
     def _prepare_streaming_input(
@@ -1412,6 +1729,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         state: StreamingState,
         text_tokens: Optional[torch.Tensor],
         force_dropout_text: bool,
+        user_audio_channel_embedding: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Build the input embedding for one streaming step.
@@ -1432,10 +1750,13 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         # Determine phases per batch item
         needs_context = state.context_position < state.full_context_lens  # (B,) bool
         needs_text = (~needs_context) & (~state.text_finished)
+
+        turn_text_tokens_seen = getattr(state, "turn_text_tokens_seen", state.text_tokens_seen)
         needs_phoneme = (
-            (~needs_context) & (state.text_tokens_seen >= streaming_phonemes_delay) & (~state.phoneme_stream_ended)
+            (~needs_context) & (turn_text_tokens_seen >= streaming_phonemes_delay) & (~state.phoneme_stream_ended)
         )
-        needs_audio = (~needs_context) & (state.text_tokens_seen >= streaming_speech_delay) & (~state.finished)
+
+        needs_audio = (~needs_context) & (turn_text_tokens_seen >= streaming_speech_delay) & (~state.finished)
 
         next_input = torch.zeros(batch_size, 1, self.cfg.embedding_dim, device=device)
 
@@ -1457,10 +1778,16 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             text_embedded = self.embed_text_tokens(
                 text_tokens_2d,
                 text_lens=torch.ones(batch_size, dtype=torch.long, device=device),
+                is_multiturn=self.cfg.get("use_multiturn_dataset", False),
             )  # (B, 1, E)
 
             if force_dropout_text:
                 text_embedded = text_embedded * 0
+
+            # Zero out padding tokens exactly like in process_batch
+            if self.cfg.get("use_multiturn_dataset", False):
+                is_pad = text_tokens_2d == self.tokenizer.pad
+                text_embedded[is_pad] = 0.0
 
             is_eos_token = (text_tokens == self.eos_id) & needs_text  # (B,) bool
             text_add_mask = needs_text.view(batch_size, 1, 1).float()
@@ -1500,9 +1827,21 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                         phoneme_emb = phoneme_emb + phoneme_bos_emb * first_mask
 
                     if has_last_phoneme.any() and state.last_phoneme_tokens is not None:
-                        last_phoneme_emb = self.embed_phoneme_tokens(
-                            state.last_phoneme_tokens.unsqueeze(2)
-                        )  # (B, 1, E)
+                        last_phoneme_tokens = state.last_phoneme_tokens  # (B, S_ph)
+
+                        last_phoneme_emb = self.embed_phoneme_tokens(last_phoneme_tokens.unsqueeze(2))  # (B, 1, E)
+
+                        # Match training: PAD phoneme inputs contribute zero embedding.
+                        if self.cfg.get("use_multiturn_dataset", False):
+                            phoneme_pad_id = getattr(self.phoneme_tokenizer, "pad", None)
+                            if phoneme_pad_id is not None:
+                                # Same convention as training: check first stacked phoneme channel.
+                                phoneme_is_pad = last_phoneme_tokens[:, 0] == phoneme_pad_id  # (B,)
+                                last_phoneme_emb = last_phoneme_emb * (~phoneme_is_pad).view(batch_size, 1, 1).float()
+                            else:
+                                raise ValueError(
+                                    "self.phoneme_tokenizer.pad is not defined, so it is not possible to zero-out the phoneme on the padding positon, please verify it!"
+                                )
                         last_mask = has_last_phoneme.view(batch_size, 1, 1).float()
                         phoneme_emb = phoneme_emb + last_phoneme_emb * last_mask
 
@@ -1543,6 +1882,14 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                     audio_emb = audio_emb + last_audio_emb * last_mask
 
             next_input = next_input + audio_emb
+
+        if user_audio_channel_embedding is not None:
+            user_audio_channel_embedding = user_audio_channel_embedding.unsqueeze(1)
+
+            next_input = next_input + user_audio_channel_embedding.to(
+                device=next_input.device,
+                dtype=next_input.dtype,
+            )
 
         # --- Handle CFG ---
         if state.config.use_cfg:
@@ -1588,6 +1935,9 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         # Update counters
         state.context_position = state.context_position + needs_context.long()
         state.text_tokens_seen = state.text_tokens_seen + (~needs_context).long()
+        if hasattr(state, "turn_text_tokens_seen"):
+            state.turn_text_tokens_seen = state.turn_text_tokens_seen + (~needs_context).long()
+
         state.phoneme_steps = state.phoneme_steps + needs_phoneme.long()
         state.audio_steps = state.audio_steps + needs_audio.long()
 
@@ -2099,11 +2449,13 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         audio, sr = sf.read(audio_path, dtype='float32')
         if len(audio.shape) > 1:
             audio = audio.mean(axis=1)
-        if sr != target_sample_rate:
-            import librosa
 
-            audio = librosa.resample(audio, orig_sr=sr, target_sr=target_sample_rate)
-        return torch.from_numpy(audio).unsqueeze(0)
+        audio = torch.from_numpy(audio).unsqueeze(0)
+
+        if sr != target_sample_rate:
+            audio = resample(audio.float(), sr, target_sample_rate)
+
+        return audio
 
     @staticmethod
     def _adjust_audio_to_duration_for_inference(

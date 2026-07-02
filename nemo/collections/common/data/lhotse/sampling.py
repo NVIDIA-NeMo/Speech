@@ -308,6 +308,45 @@ class CERFilter:
             return True
 
 
+class SpeakerFilter:
+    """
+    Callable, returns ``False`` if any supervision in a cut belongs to an excluded speaker.
+    Checks configured supervision attributes/custom fields.
+    Acts as a pass-through for objects of other type than Cut.
+    """
+
+    def __init__(
+        self,
+        excluded_speaker_ids: Sequence[str] | None = None,
+        speaker_fields: Sequence[str] = None,
+    ) -> None:
+        self.excluded_speaker_ids = set(ifnone(excluded_speaker_ids, ()))
+        self.enabled = len(self.excluded_speaker_ids) > 0
+        if self.enabled and speaker_fields is None:
+            raise ValueError(
+                "SpeakerFilter requires speaker_fields when excluded_speaker_ids is set. "
+                "Example: speaker_filter_fields=[speaker_id]"
+            )
+        self.speaker_fields = tuple(ifnone(speaker_fields, ()))
+
+    def __call__(self, example) -> bool:
+        if not self.enabled or not isinstance(example, Cut):
+            return True
+
+        excluded_speaker_ids = self.excluded_speaker_ids
+
+        for supervision in example.supervisions:
+            for field in self.speaker_fields:
+                if supervision.has_custom(field):
+                    speaker_id = getattr(supervision, field)
+                else:
+                    speaker_id = getattr(supervision, field, None)
+
+                if speaker_id in excluded_speaker_ids:
+                    return False
+        return True
+
+
 class ContextSpeakerSimilarityFilter:
     """
     Callable, returns ``True`` if a cut's context speaker similarity is greater than min_context_speaker_similarity and ``False`` otherwise.

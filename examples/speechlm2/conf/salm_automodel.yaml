@@ -343,15 +343,37 @@ exp_manager:
      save_nemo_on_train_end: false
 
 # Optional DFlash draft training from a frozen audio-conditioned SALMAutomodel.
+# The defaults mirror the trainable dense core of
+# nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4-DFlash: six non-causal
+# Qwen3/GQA layers, 32 Q heads, 2 KV heads, 6144-wide MLPs, and the same six
+# target-layer taps. The public checkpoint is a Model Optimizer W4A16_NVFP4
+# inference artifact and cannot directly initialize these trainable BF16
+# nn.Linear weights; these settings reproduce its architecture, not its weights.
+#
 # This initial integration supports BSHD batches with pp_size=cp_size=1. Keep
 # num_anchors small: Automodel's generic DFlash trainer currently materializes
 # draft vocabulary logits.
 dflash:
   enabled: false
-  mask_token_id: null  # Set this to an unused token in the target vocabulary.
-  draft_num_hidden_layers: 2
-  target_layer_ids: null
-  draft_model_config: {}
+  mask_token_id: 990
+  draft_num_hidden_layers: 6
+  target_layer_ids: [1, 5, 19, 29, 41, 51]
+  draft_model_config:
+    attention_bias: false
+    attention_dropout: 0.0
+    head_dim: 128
+    hidden_act: silu
+    intermediate_size: 6144
+    max_position_embeddings: 1048576
+    num_attention_heads: 32
+    num_key_value_heads: 2
+    rms_norm_eps: 1.0e-6
+    rope_parameters:
+      factor: 128.0
+      original_max_position_embeddings: 8192
+      rope_theta: 10000
+      rope_type: yarn
+    use_cache: false
   block_size: 8
   num_anchors: 1
   loss_decay_gamma: 7.0

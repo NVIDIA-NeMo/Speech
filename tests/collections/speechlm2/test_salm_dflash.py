@@ -12,15 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 import torch
+from omegaconf import OmegaConf
 from torch import nn
 from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
 
 from nemo.collections.speechlm2.parts import dflash as salm_dflash
+
+
+REPO_ROOT = Path(__file__).parents[3]
 
 
 class _FakeMoEMesh:
@@ -140,6 +145,49 @@ def test_build_draft_config_rejects_managed_overrides():
             block_size=8,
             mask_token_id=18,
         )
+
+
+def test_salm_automodel_dflash_defaults_match_nemotron_3_5_lightning():
+    cfg = OmegaConf.load(REPO_ROOT / "examples/speechlm2/conf/salm_automodel.yaml")
+    dflash_cfg = OmegaConf.to_container(cfg.dflash, resolve=True)
+    target_config = Qwen3Config(
+        hidden_size=2688,
+        intermediate_size=1856,
+        num_attention_heads=32,
+        num_key_value_heads=2,
+        num_hidden_layers=52,
+        head_dim=128,
+        vocab_size=131072,
+    )
+
+    draft_config, target_layer_ids = salm_dflash._build_draft_config(
+        target_config,
+        dflash_cfg,
+        block_size=dflash_cfg["block_size"],
+        mask_token_id=dflash_cfg["mask_token_id"],
+    )
+
+    assert dflash_cfg["enabled"] is False
+    assert draft_config.num_hidden_layers == 6
+    assert draft_config.hidden_size == 2688
+    assert draft_config.intermediate_size == 6144
+    assert draft_config.num_attention_heads == 32
+    assert draft_config.num_key_value_heads == 2
+    assert draft_config.head_dim == 128
+    assert draft_config.rms_norm_eps == pytest.approx(1.0e-6)
+    assert draft_config.max_position_embeddings == 1048576
+    assert draft_config.rope_parameters == {
+        "factor": 128.0,
+        "original_max_position_embeddings": 8192,
+        "rope_theta": 10000,
+        "rope_type": "yarn",
+    }
+    assert target_layer_ids == [1, 5, 19, 29, 41, 51]
+    assert draft_config.dflash_config == {
+        "mask_token_id": 990,
+        "target_layer_ids": [1, 5, 19, 29, 41, 51],
+    }
+    assert draft_config.block_size == 8
 
 
 class _TargetLLM(nn.Module):

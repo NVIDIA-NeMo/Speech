@@ -341,3 +341,22 @@ exp_manager:
      save_top_k: 1
      always_save_nemo: false
      save_nemo_on_train_end: false
+
+# Optional DFlash draft training from a frozen audio-conditioned SALMAutomodel.
+# This initial integration supports BSHD batches with pp_size=cp_size=1. Keep
+# num_anchors small: Automodel's generic DFlash trainer currently materializes
+# draft vocabulary logits.
+dflash:
+  enabled: false
+  mask_token_id: null  # Set this to an unused token in the target vocabulary.
+  draft_num_hidden_layers: 2
+  target_layer_ids: null
+  draft_model_config: {}
+  block_size: 8
+  num_anchors: 1
+  loss_decay_gamma: 7.0
+  attention_backend: sdpa
+  activation_checkpointing: false
+  target_dtype: bfloat16
+  lr: 6.0e-4
+  output_dir: ./outputs/salm_dflash

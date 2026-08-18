@@ -83,6 +83,8 @@ def train(cfg):
         torch.distributed.init_process_group(backend="nccl", **init_kwargs)
     seed_everything(cfg.data.train_ds.seed)
     torch.set_float32_matmul_precision("medium")
+    if cfg.get("dflash", {}).get("enabled", False) and not cfg.model.get("use_nemo_automodel", False):
+        raise ValueError("SALM DFlash training requires model.use_nemo_automodel=true")
     trainer = Trainer(**resolve_trainer_cfg(cfg.trainer))
     log_dir = exp_manager(trainer, cfg.get("exp_manager", None))
     # Insert at position 0 so our ``on_train_batch_end`` runs BEFORE the
@@ -91,6 +93,22 @@ def train(cfg):
     # accumulators by one batch on every wall-time-induced save.
     trainer.callbacks.insert(0, TrainingStatsCallback())
     OmegaConf.save(cfg, log_dir / "exp_config.yaml")
+
+    if cfg.get("dflash", {}).get("enabled", False):
+        from nemo.collections.speechlm2 import SALMAutomodel
+        from nemo.collections.speechlm2.parts.dflash import SALMDFlashModule
+
+        model_cfg = OmegaConf.to_container(cfg.model, resolve=True)
+        model_cfg["torch_dtype"] = cfg.dflash.get("target_dtype", "bfloat16")
+        with trainer.init_module():
+            target_model = SALMAutomodel(model_cfg)
+        model = SALMDFlashModule(target_model, OmegaConf.to_container(cfg, resolve=True))
+        dataset = _create_salm_dataset(target_model.tokenizer, cfg.data)
+        datamodule = DataModule(cfg.data, tokenizer=target_model.tokenizer, dataset=dataset)
+        trainer.fit(model, datamodule)
+        if torch.distributed.is_initialized():
+            torch.distributed.destroy_process_group()
+        return
 
     model_cls = SALM
     if cfg.model.get("use_nemo_automodel", False):

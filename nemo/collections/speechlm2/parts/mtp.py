@@ -91,6 +91,7 @@ def calculate_mtp_lk_loss(
     cu_seqlens: torch.Tensor | None = None,
     seq_idx: torch.Tensor | None = None,
     mtp_per_depth_targets: Sequence[torch.Tensor] | None = None,
+    projection_sync_group: dist.ProcessGroup | None = None,
     context_parallel_group: dist.ProcessGroup | None = None,
 ) -> MTPLKLossOutput:
     """Distill MTP heads from the frozen backbone with the hybrid LK objective.
@@ -193,6 +194,7 @@ def calculate_mtp_lk_loss(
             mtp_output,
             aligned_teacher_logits,
             lm_head=lm_head,
+            projection_sync_group=projection_sync_group,
             valid=valid,
             teacher_rows=source_rows,
         )
@@ -403,6 +405,7 @@ def _calculate_lk_sums(
     teacher_logits: torch.Tensor,
     *,
     lm_head: torch.nn.Module,
+    projection_sync_group: dist.ProcessGroup | None,
     valid: torch.Tensor,
     teacher_rows: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -411,16 +414,22 @@ def _calculate_lk_sums(
     draft_flat = draft_hidden.reshape(-1, draft_hidden.shape[-1])
     teacher_flat = teacher_logits.reshape(-1, vocab_size)
     valid_rows = valid.reshape(-1).nonzero(as_tuple=True)[0]
-    if valid_rows.numel() == 0:
+    source_rows = teacher_rows.reshape(-1).index_select(0, valid_rows)
+    chunk_tokens = max(1, _LK_MAX_CHUNK_ELEMENTS // vocab_size)
+    num_chunks = (valid_rows.numel() + chunk_tokens - 1) // chunk_tokens
+    if projection_sync_group is not None and dist.is_available() and dist.is_initialized():
+        synchronized_chunks = torch.tensor(num_chunks, dtype=torch.long, device=draft_hidden.device)
+        dist.all_reduce(synchronized_chunks, op=dist.ReduceOp.MAX, group=projection_sync_group)
+        num_chunks = int(synchronized_chunks.item())
+    if num_chunks == 0:
         zero = draft_hidden.sum() * 0.0
         return zero, zero
 
-    source_rows = teacher_rows.reshape(-1).index_select(0, valid_rows)
-    chunk_tokens = max(1, _LK_MAX_CHUNK_ELEMENTS // vocab_size)
     chunk_fn = partial(_calculate_lk_chunk, lm_head=lm_head)
     kl_sum = draft_hidden.new_zeros((), dtype=torch.float32)
     tv_sum = draft_hidden.new_zeros((), dtype=torch.float32)
-    for start in range(0, valid_rows.numel(), chunk_tokens):
+    for chunk_idx in range(num_chunks):
+        start = chunk_idx * chunk_tokens
         draft_indices = valid_rows[start : start + chunk_tokens]
         teacher_indices = source_rows[start : start + chunk_tokens]
         if torch.is_grad_enabled() and draft_hidden.requires_grad:
@@ -486,7 +495,9 @@ def _exchange_context_parallel_teacher_logits(
     total_tokens = int(cs[-1].item())
 
     partitions = [
-        tex.thd_get_partitioned_indices(cs, total_tokens, cp_size, rank).to(teacher_logits.device)
+        tex.thd_get_partitioned_indices(cs, total_tokens, cp_size, rank).to(
+            device=teacher_logits.device, dtype=torch.long
+        )
         for rank in range(cp_size)
     ]
     local_global_rows = partitions[cp_rank]

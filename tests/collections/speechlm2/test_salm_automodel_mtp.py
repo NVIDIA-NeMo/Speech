@@ -819,10 +819,85 @@ def test_mtp_lk_loss_aligns_teacher_without_crossing_packed_boundaries():
     torch.testing.assert_close(output.loss, torch.tensor(0.0), atol=1e-7, rtol=0.0)
 
 
+def _run_fsdp_lk_with_uneven_valid_rows(rank, world_size, init_file):
+    from torch.distributed.device_mesh import init_device_mesh
+    from torch.distributed.fsdp import fully_shard
+
+    torch.distributed.init_process_group(
+        "gloo",
+        init_method=f"file://{init_file}",
+        rank=rank,
+        world_size=world_size,
+    )
+    try:
+        mesh = init_device_mesh("cpu", (world_size,), mesh_dim_names=("dp",))
+
+        class _TinyModel(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.mtp = torch.nn.Linear(7, 7)
+                self.lm_head = torch.nn.Linear(7, 13, bias=False)
+
+            def forward(self, inputs):
+                return self.mtp(inputs), self.lm_head(inputs).detach()
+
+        model = _TinyModel()
+        model.lm_head.requires_grad_(False)
+        fully_shard(model.lm_head, mesh=mesh, reshard_after_forward=False)
+        fully_shard(model, mesh=mesh, reshard_after_forward=False)
+
+        torch.manual_seed(23)
+        draft_hidden, teacher_logits = model(torch.randn(2, 6, 7))
+        labels = torch.full((2, 6), -100, dtype=torch.long) if rank == 0 else torch.arange(12).reshape(2, 6)
+        mtp_module._LK_MAX_CHUNK_ELEMENTS = 26
+
+        output = mtp_module.calculate_mtp_lk_loss(
+            mtp_per_depth_h=[draft_hidden],
+            teacher_logits=teacher_logits,
+            labels=labels,
+            model=model,
+            scaling_factor=0.3,
+            lk_lambda=0.4,
+            num_label_tokens=12,
+            projection_sync_group=torch.distributed.group.WORLD,
+        )
+        output.loss.backward()
+        assert model.mtp.weight.grad is not None
+    finally:
+        torch.distributed.destroy_process_group()
+
+
+def test_fsdp_lk_supports_rank_with_no_valid_rows(tmp_path):
+    import time
+
+    if not torch.distributed.is_available() or not torch.distributed.is_gloo_available():
+        pytest.skip("Gloo distributed backend is unavailable")
+
+    world_size = 2
+    process_context = torch.multiprocessing.spawn(
+        _run_fsdp_lk_with_uneven_valid_rows,
+        args=(world_size, str(tmp_path / "fsdp_init")),
+        nprocs=world_size,
+        join=False,
+    )
+    deadline = time.monotonic() + 20
+    while not process_context.join(timeout=max(0.0, deadline - time.monotonic())):
+        if time.monotonic() < deadline:
+            continue
+        for process in process_context.processes:
+            process.terminate()
+        for process in process_context.processes:
+            process.join(timeout=5)
+        pytest.fail("FSDP LK loss hung with uneven valid-token counts across ranks")
+
+
 def _run_context_parallel_lk_reference(rank, world_size, init_file):
     import sys
 
-    partitions = (torch.tensor([0, 1, 6, 7]), torch.tensor([2, 3, 4, 5]))
+    partitions = (
+        torch.tensor([0, 1, 6, 7], dtype=torch.int32),
+        torch.tensor([2, 3, 4, 5], dtype=torch.int32),
+    )
 
     def _partition_indices(_cu_seqlens, _total_tokens, _cp_size, cp_rank):
         return partitions[cp_rank]
@@ -859,8 +934,8 @@ def _run_context_parallel_lk_reference(rank, world_size, init_file):
         partition = partitions[rank]
         local_targets = torch.where(partition < 7, 0, -100)
         actual = mtp_module.calculate_mtp_lk_loss(
-            mtp_per_depth_h=[draft_hidden.index_select(0, partition)],
-            teacher_logits=teacher_logits.index_select(0, partition),
+            mtp_per_depth_h=[draft_hidden.index_select(0, partition.long())],
+            teacher_logits=teacher_logits.index_select(0, partition.long()),
             labels=torch.arange(partition.numel()),
             model=model,
             scaling_factor=0.3,
@@ -896,9 +971,9 @@ def test_context_parallel_teacher_exchange_preserves_local_output_order(monkeypa
     import sys
 
     global_logits = torch.arange(8, dtype=torch.float32).unsqueeze(-1)
-    rank_zero_partition = torch.tensor([0, 1, 6, 7])
-    rank_one_partition = torch.tensor([2, 3, 4, 5])
-    local_logits = global_logits.index_select(0, rank_zero_partition)
+    rank_zero_partition = torch.tensor([0, 1, 6, 7], dtype=torch.int32)
+    rank_one_partition = torch.tensor([2, 3, 4, 5], dtype=torch.int32)
+    local_logits = global_logits.index_select(0, rank_zero_partition.long())
 
     def _partition_indices(_cu_seqlens, _total_tokens, _cp_size, cp_rank):
         return rank_zero_partition if cp_rank == 0 else rank_one_partition
@@ -1100,7 +1175,8 @@ def test_training_step_routes_head_only_lk_to_backbone_teacher(monkeypatch):
     model._mtp_loss_scaling_factor = 0.1
     model._trainer = None
     model.tokenizer = type("Tokenizer", (), {"pad": -1, "unk_id": None})()
-    model._get_moe_dp_group = lambda: None
+    dp_group = SimpleNamespace(size=lambda: 1)
+    model._get_moe_dp_group = lambda: dp_group
     model.log = lambda *_args, **_kwargs: None
     model.log_dict = lambda *_args, **_kwargs: None
     model.maybe_log_moe_metrics = lambda _batch_idx: None
@@ -1151,6 +1227,7 @@ def test_training_step_routes_head_only_lk_to_backbone_teacher(monkeypatch):
     assert captured_kwargs["mtp_per_depth_targets"] is mtp_targets
     assert captured_kwargs["cu_seqlens"] is cu_seqlens
     assert captured_kwargs["lk_lambda"] == 0.4
+    assert captured_kwargs["projection_sync_group"] is dp_group
 
 
 def test_mtp_validation_forward_uses_and_restores_native_gate():

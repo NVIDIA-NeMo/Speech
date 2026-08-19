@@ -350,9 +350,10 @@ exp_manager:
 # inference artifact and cannot directly initialize these trainable BF16
 # nn.Linear weights; these settings reproduce its architecture, not its weights.
 #
-# This initial integration supports BSHD batches with pp_size=cp_size=1. Keep
-# num_anchors small: Automodel's generic DFlash trainer currently materializes
-# draft vocabulary logits.
+# This integration supports BSHD batches with pp_size=cp_size=1. The generic
+# Automodel trainer chunks the LM-head projection and caps the rectangular
+# local-microbatch anchor allocation, so the paper-scale 512-anchor budget does
+# not retain a full anchors-by-block-by-vocabulary logits tensor.
 dflash:
   enabled: false
   mask_token_id: 990
@@ -375,10 +376,13 @@ dflash:
       rope_type: yarn
     use_cache: false
   block_size: 8
-  num_anchors: 1
-  loss_decay_gamma: 7.0
-  attention_backend: sdpa
-  activation_checkpointing: false
+  num_anchors: 512
+  max_total_anchors: 512
+  loss_decay_gamma: 4.0
+  attention_backend: flex_attention
+  activation_checkpointing: true
+  use_fused_linear_ce: true
+  linear_ce_chunk_size: 256
   target_dtype: bfloat16
   lr: 6.0e-4
   output_dir: ./outputs/salm_dflash

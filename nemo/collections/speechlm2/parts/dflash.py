@@ -200,7 +200,7 @@ class SALMDFlashModule(LightningModule):
         if mask_token_id is None:
             raise ValueError("dflash.mask_token_id must identify an unused token in the target vocabulary")
         self.mask_token_id = int(mask_token_id)
-        self.attention_backend = str(self.dflash_config.get("attention_backend", "sdpa"))
+        self.attention_backend = str(self.dflash_config.get("attention_backend", "flex_attention"))
         self.output_dir = self.dflash_config.get("output_dir")
         self.learning_rate = float(self.dflash_config.get("lr", 6e-4))
         self.draft_model = None
@@ -256,7 +256,7 @@ class SALMDFlashModule(LightningModule):
         draft_config._attn_implementation = self.attention_backend
         dtype = next(self.target.llm.parameters()).dtype
         self.draft_model = Qwen3DFlashDraftModel(draft_config).to(self.target.device, dtype=dtype)
-        if self.dflash_config.get("activation_checkpointing", False):
+        if self.dflash_config.get("activation_checkpointing", True):
             self.draft_model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
 
         self.trainer_module = DFlashTrainerModule(
@@ -266,10 +266,13 @@ class SALMDFlashModule(LightningModule):
             mask_token_id=self.mask_token_id,
             block_size=self.block_size,
             attention_backend=self.attention_backend,
-            num_anchors=int(self.dflash_config.get("num_anchors", 1)),
-            loss_decay_gamma=self.dflash_config.get("loss_decay_gamma", 7.0),
+            num_anchors=int(self.dflash_config.get("num_anchors", 512)),
+            max_total_anchors=int(self.dflash_config.get("max_total_anchors", 512)),
+            loss_decay_gamma=self.dflash_config.get("loss_decay_gamma", 4.0),
             loss_type=str(self.dflash_config.get("loss_type", "dflash")),
             prefix_weight_base=float(self.dflash_config.get("prefix_weight_base", 0.9)),
+            use_fused_linear_ce=bool(self.dflash_config.get("use_fused_linear_ce", True)),
+            linear_ce_chunk_size=int(self.dflash_config.get("linear_ce_chunk_size", 256)),
         )
 
         device_mesh = self.device_mesh

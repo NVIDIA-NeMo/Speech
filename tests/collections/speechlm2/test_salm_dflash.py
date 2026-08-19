@@ -168,6 +168,14 @@ def test_salm_automodel_dflash_defaults_match_nemotron_3_5_lightning():
     )
 
     assert dflash_cfg["enabled"] is False
+    assert dflash_cfg["block_size"] == 8
+    assert dflash_cfg["num_anchors"] == 512
+    assert dflash_cfg["max_total_anchors"] == 512
+    assert dflash_cfg["loss_decay_gamma"] == pytest.approx(4.0)
+    assert dflash_cfg["attention_backend"] == "flex_attention"
+    assert dflash_cfg["activation_checkpointing"] is True
+    assert dflash_cfg["use_fused_linear_ce"] is True
+    assert dflash_cfg["linear_ce_chunk_size"] == 256
     assert draft_config.num_hidden_layers == 6
     assert draft_config.hidden_size == 2688
     assert draft_config.intermediate_size == 6144

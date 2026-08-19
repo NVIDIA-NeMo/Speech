@@ -236,6 +236,38 @@ def test_invalid_mtp_training_mode_fails_before_loading(monkeypatch):
         SALMAutomodel.configure_model(model)
 
 
+@pytest.mark.parametrize(
+    ("mtp_overrides", "error_match"),
+    [
+        ({"training_mode": "joint", "loss_type": "lk"}, "requires mtp.training_mode='head_only'"),
+        ({"training_mode": "head_only", "loss_type": "lk", "lk_lambda": 1.1}, "mtp.lk_lambda"),
+        ({"training_mode": "head_only", "loss_type": "unknown"}, "mtp.loss_type"),
+    ],
+)
+def test_invalid_mtp_lk_config_fails_before_loading(monkeypatch, mtp_overrides, error_match):
+    from omegaconf import DictConfig
+
+    model = _bare_model()
+    model.cfg = DictConfig(
+        {
+            "pretrained_llm": "unused",
+            "pretrained_asr": "unused",
+            "mtp": {"enabled": True, **mtp_overrides},
+        }
+    )
+    model._trainer = None
+    model._use_fsdp = False
+    model._use_tp = False
+    monkeypatch.setattr(
+        salm_module,
+        "load_pretrained_automodel_llm",
+        lambda *_args, **_kwargs: pytest.fail("invalid LK config must fail before loading"),
+    )
+
+    with pytest.raises(ValueError, match=error_match):
+        SALMAutomodel.configure_model(model)
+
+
 def test_repeated_layer_settings_reach_native_mtp_constructor(monkeypatch):
     """Reload preserves logical MTP depth when the checkpoint stores one physical repeated layer."""
     from omegaconf import DictConfig
@@ -640,6 +672,125 @@ def test_iter_mtp_depth_targets_masks_trailing_and_packed_boundaries():
     torch.testing.assert_close(targets[1], torch.tensor([12, -100, -100, -100, -100]))
 
 
+def test_mtp_lk_loss_matches_forward_kl_tv_and_detaches_teacher():
+    vocab_size = 4
+    model = torch.nn.Module()
+    model.lm_head = torch.nn.Linear(vocab_size, vocab_size, bias=False)
+    with torch.no_grad():
+        model.lm_head.weight.copy_(torch.eye(vocab_size))
+
+    teacher_logits = torch.tensor(
+        [
+            [3.0, 1.0, -1.0, 0.0],
+            [0.0, 2.0, 1.0, -2.0],
+            [-1.0, 0.0, 3.0, 1.0],
+            [1.0, -2.0, 0.0, 2.0],
+        ],
+        requires_grad=True,
+    )
+    draft_hidden = torch.zeros_like(teacher_logits, requires_grad=True)
+    labels = torch.arange(teacher_logits.shape[0])
+    lk_lambda = 0.25
+    scaling_factor = 0.2
+
+    output = mtp_module.calculate_mtp_lk_loss(
+        mtp_per_depth_h=[draft_hidden],
+        teacher_logits=teacher_logits,
+        labels=labels,
+        model=model,
+        scaling_factor=scaling_factor,
+        lk_lambda=lk_lambda,
+    )
+
+    teacher_log_probs = torch.log_softmax(teacher_logits[1:].detach(), dim=-1)
+    draft_log_probs = torch.log_softmax(draft_hidden[:-1], dim=-1)
+    teacher_probs = teacher_log_probs.exp()
+    draft_probs = draft_log_probs.exp()
+    expected_kl = (teacher_probs * (teacher_log_probs - draft_log_probs)).sum() / labels.numel()
+    expected_tv = 0.5 * (teacher_probs - draft_probs).abs().sum() / labels.numel()
+    expected = scaling_factor * (lk_lambda * expected_kl + (1.0 - lk_lambda) * expected_tv)
+
+    torch.testing.assert_close(output.per_depth_kl[0], expected_kl)
+    torch.testing.assert_close(output.per_depth_tv[0], expected_tv)
+    torch.testing.assert_close(output.loss, expected)
+    output.loss.backward()
+    assert teacher_logits.grad is None
+    assert draft_hidden.grad is not None
+
+
+def test_mtp_lk_loss_aligns_teacher_without_crossing_packed_boundaries():
+    vocab_size = 3
+    model = torch.nn.Module()
+    model.lm_head = torch.nn.Linear(vocab_size, vocab_size, bias=False)
+    with torch.no_grad():
+        model.lm_head.weight.copy_(torch.eye(vocab_size))
+
+    teacher_logits = torch.randn(5, vocab_size)
+    draft_hidden = torch.randn_like(teacher_logits, requires_grad=True)
+    with torch.no_grad():
+        draft_hidden[0] = teacher_logits[1]
+        draft_hidden[1] = teacher_logits[2]
+        draft_hidden[3] = teacher_logits[4]
+
+    output = mtp_module.calculate_mtp_lk_loss(
+        mtp_per_depth_h=[draft_hidden],
+        teacher_logits=teacher_logits,
+        labels=torch.arange(5),
+        model=model,
+        scaling_factor=1.0,
+        lk_lambda=0.5,
+        cu_seqlens=torch.tensor([0, 3, 5], dtype=torch.int32),
+    )
+
+    torch.testing.assert_close(output.loss, torch.tensor(0.0), atol=1e-7, rtol=0.0)
+
+
+def test_context_parallel_teacher_exchange_preserves_local_output_order(monkeypatch):
+    import sys
+
+    global_logits = torch.arange(8, dtype=torch.float32).unsqueeze(-1)
+    rank_zero_partition = torch.tensor([0, 1, 6, 7])
+    rank_one_partition = torch.tensor([2, 3, 4, 5])
+    local_logits = global_logits.index_select(0, rank_zero_partition)
+
+    def _partition_indices(_cu_seqlens, _total_tokens, _cp_size, cp_rank):
+        return rank_zero_partition if cp_rank == 0 else rank_one_partition
+
+    monkeypatch.setitem(
+        sys.modules,
+        "transformer_engine_torch",
+        SimpleNamespace(thd_get_partitioned_indices=_partition_indices),
+    )
+    monkeypatch.setattr(mtp_module.dist, "get_world_size", lambda _group: 2)
+    monkeypatch.setattr(mtp_module.dist, "get_rank", lambda _group: 0)
+    collective_call = {"value": 0}
+
+    def _all_to_all_single(output, input, **_kwargs):
+        collective_call["value"] += 1
+        if collective_call["value"] == 1:
+            torch.testing.assert_close(input, torch.tensor([2, 1]))
+            output.zero_()
+        elif collective_call["value"] == 2:
+            torch.testing.assert_close(input, torch.tensor([1, 3, 0]))
+            assert output.numel() == 0
+        else:
+            assert collective_call["value"] == 3
+            assert input.numel() == 0
+            output.copy_(global_logits[torch.tensor([1, 7, 2])])
+
+    monkeypatch.setattr(mtp_module.dist, "all_to_all_single", _all_to_all_single)
+
+    aligned = mtp_module._exchange_context_parallel_teacher_logits(
+        local_logits,
+        valid=torch.tensor([True, True, True, False]),
+        depth=1,
+        cu_seqlens=torch.tensor([0, 8], dtype=torch.int32),
+        group=object(),
+    )
+
+    torch.testing.assert_close(aligned, global_logits[torch.tensor([1, 2, 7, 0])])
+
+
 def test_training_step_forwards_packed_cu_seqlens_to_mtp_loss(monkeypatch):
     class _Perception(torch.nn.Module):
         def __init__(self):
@@ -774,6 +925,85 @@ def test_training_step_shares_one_materialized_lm_weight_with_main_and_mtp_losse
     assert fused_loss.materialize_calls == [(model.llm.lm_head.weight, None)]
     assert fused_loss.loss_weights == [fused_loss.shared_weight]
     assert captured_kwargs["lm_weight"] is fused_loss.shared_weight
+
+
+def test_training_step_routes_head_only_lk_to_backbone_teacher(monkeypatch):
+    class _Perception(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.preprocessor = torch.nn.Identity()
+            self.encoder = torch.nn.Identity()
+
+    class _LLM(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.model = torch.nn.Sequential(torch.nn.Linear(4, 4), torch.nn.Dropout())
+            self.lm_head = torch.nn.Sequential(torch.nn.Dropout(), torch.nn.Linear(4, 8))
+            self.mtp = torch.nn.Sequential(torch.nn.Linear(4, 4), torch.nn.Dropout())
+
+    model = _bare_model()
+    model.perception = _Perception()
+    model.llm = _LLM()
+    model.llm.requires_grad_(False)
+    model.llm.mtp.requires_grad_(True)
+    model.train()
+    model.lss_loss = None
+    model._mtp_loss_type = "lk"
+    model._mtp_lk_lambda = 0.4
+    model._mtp_loss_scaling_factor = 0.1
+    model._trainer = None
+    model.tokenizer = type("Tokenizer", (), {"pad": -1, "unk_id": None})()
+    model._get_moe_dp_group = lambda: None
+    model.log = lambda *_args, **_kwargs: None
+    model.log_dict = lambda *_args, **_kwargs: None
+    model.maybe_log_moe_metrics = lambda _batch_idx: None
+
+    cu_seqlens = torch.tensor([0, 3, 5], dtype=torch.int32)
+    mtp_targets = [torch.tensor([1, 2, -100, 4, -100])]
+    inputs = {
+        "input_embeds": torch.zeros(5, 4),
+        "attention_mask": None,
+        "target_ids": torch.tensor([0, 1, 2, 3, 4]),
+        "mtp_per_depth_targets": mtp_targets,
+        "llm_kwargs": {"cu_seqlens": cu_seqlens},
+        "num_tokens": 5,
+        "num_examples": 2,
+    }
+    teacher_logits = torch.zeros(1, 5, 8)
+    model.prepare_inputs = lambda _batch: inputs
+    model.forward = lambda *_args, **_kwargs: {
+        "logits": teacher_logits,
+        "mtp_per_depth_h": [torch.zeros(1, 5, 4)],
+    }
+    captured_kwargs = {}
+
+    def _calculate_mtp_lk_loss(**kwargs):
+        captured_kwargs.update(kwargs)
+        return SimpleNamespace(
+            loss=torch.tensor(0.25),
+            per_depth_losses=[torch.tensor(2.5)],
+            per_depth_kl=[torch.tensor(1.5)],
+            per_depth_tv=[torch.tensor(3.5)],
+        )
+
+    monkeypatch.setattr(salm_module, "calculate_mtp_lk_loss", _calculate_mtp_lk_loss)
+    monkeypatch.setattr(
+        salm_module,
+        "calculate_mtp_loss_with_per_depth",
+        lambda *_args, **_kwargs: pytest.fail("LK training must not call the cross-entropy MTP loss"),
+    )
+
+    model._training_step_batch({"input_ids": torch.tensor([[1, 2, 3, 4, 5]])}, batch_idx=0)
+
+    assert model.llm.training
+    assert not model.llm.model.training
+    assert not model.llm.lm_head.training
+    assert model.llm.mtp.training
+    assert not model.perception.training
+    assert captured_kwargs["teacher_logits"] is teacher_logits
+    assert captured_kwargs["mtp_per_depth_targets"] is mtp_targets
+    assert captured_kwargs["cu_seqlens"] is cu_seqlens
+    assert captured_kwargs["lk_lambda"] == 0.4
 
 
 def test_mtp_validation_forward_uses_and_restores_native_gate():

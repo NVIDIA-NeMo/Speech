@@ -38,6 +38,7 @@ from nemo.collections.speechlm2.parts.gc import GarbageCollectionManager
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
 from nemo.collections.speechlm2.parts.mtp import (
     build_mtp_loss_fn,
+    calculate_mtp_lk_loss,
     calculate_mtp_loss_with_per_depth,
     calculate_mtp_teacher_forced_agreement,
     compute_mtp_agreement_lengths,
@@ -563,9 +564,18 @@ class SALMAutomodel(LightningModule, HFHubMixin):
 
     def _training_step_batch(self, batch: dict | None, batch_idx: int):
         self._current_batch_idx = batch_idx
-        for m in (self.perception.preprocessor, self.perception.encoder, self.llm):
+        for m in (self.perception, self.perception.preprocessor, self.perception.encoder, self.llm):
             if is_frozen(m):
                 m.eval()
+
+        # Keep the root LLM in training mode so Automodel emits MTP states, but
+        # make the frozen teacher path deterministic during head-only LK training.
+        if getattr(self, "_mtp_loss_type", None) == "lk" and self._mtp_enabled:
+            self.llm.model.eval()
+            lm_head = getattr(self.llm, "lm_head", None)
+            if lm_head is not None:
+                lm_head.eval()
+            self.llm.mtp.train()
 
         self._log_training_batch_debug(batch, batch_idx)
         if batch is None:
@@ -630,38 +640,54 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         with torch.no_grad():
             loss_display = loss_sum.detach() / num_frames.clamp(min=1)
 
-        # Multi-Token Prediction auxiliary loss. Compute the aggregate and per-head losses
-        # in one pass so WandB can show each MTP depth without repeating the expensive
-        # lm_head + CE work. ``mtp_loss`` keeps the same meaning as before: the weighted
-        # auxiliary loss added to the training objective after the DP-size correction.
+        # Multi-Token Prediction auxiliary loss. Cross-entropy remains the
+        # backward-compatible default; head-only LK training instead distills
+        # each draft depth from the frozen backbone distribution.
         mtp_metrics = {}
         if mtp_h is not None:
-            # Under packed THD multiple utterances share one token stream, so the
-            # per-depth label roll must not predict the next sequence's first token
-            # from the current sequence's last token. Pass cu_seqlens (empty/None for
-            # BSHD, where each row is already a single sequence) so the loss derives
-            # seq_idx and masks cross-sequence targets.
             mtp_per_depth_targets = inputs.get("mtp_per_depth_targets")
-            mtp_cu_seqlens = (
-                None if mtp_per_depth_targets is not None else inputs.get("llm_kwargs", {}).get("cu_seqlens")
-            )
-            with loss_parallel():
-                mtp_loss_output = calculate_mtp_loss_with_per_depth(
-                    self._mtp_loss_fn,
+            packed_cu_seqlens = inputs.get("llm_kwargs", {}).get("cu_seqlens")
+            mtp_loss_type = getattr(self, "_mtp_loss_type", "cross_entropy")
+            if mtp_loss_type == "lk":
+                cp_group = self._device_mesh["cp"].get_group() if self._context_parallel_size > 1 else None
+                mtp_loss_output = calculate_mtp_lk_loss(
                     mtp_per_depth_targets=mtp_per_depth_targets,
                     mtp_per_depth_h=mtp_h,
+                    teacher_logits=logits,
                     labels=inputs["target_ids"],
                     model=self.llm,
                     scaling_factor=self._mtp_loss_scaling_factor,
+                    lk_lambda=self._mtp_lk_lambda,
                     num_label_tokens=num_frames_global,
-                    grad_reduce_group=dp_group,
-                    lm_weight=shared_lm_weight,
-                    cu_seqlens=mtp_cu_seqlens,
-                    return_per_depth=True,
+                    cu_seqlens=packed_cu_seqlens,
+                    context_parallel_group=cp_group,
                 )
-                mtp_loss = mtp_loss_output.loss
                 mtp_raw_loss_by_head = mtp_loss_output.per_depth_losses
-            mtp_loss = dp_size * mtp_loss
+                for head_idx, (kl_loss, tv_loss) in enumerate(
+                    zip(mtp_loss_output.per_depth_kl, mtp_loss_output.per_depth_tv), start=1
+                ):
+                    mtp_metrics[f"mtp_lk_kl/head_{head_idx}"] = (dp_size * kl_loss).detach()
+                    mtp_metrics[f"mtp_lk_tv/head_{head_idx}"] = (dp_size * tv_loss).detach()
+            else:
+                # Precomputed targets are authoritative under CP; otherwise
+                # Automodel derives the same shifts from global cu_seqlens.
+                mtp_cu_seqlens = None if mtp_per_depth_targets is not None else packed_cu_seqlens
+                with loss_parallel():
+                    mtp_loss_output = calculate_mtp_loss_with_per_depth(
+                        self._mtp_loss_fn,
+                        mtp_per_depth_targets=mtp_per_depth_targets,
+                        mtp_per_depth_h=mtp_h,
+                        labels=inputs["target_ids"],
+                        model=self.llm,
+                        scaling_factor=self._mtp_loss_scaling_factor,
+                        num_label_tokens=num_frames_global,
+                        grad_reduce_group=dp_group,
+                        cu_seqlens=mtp_cu_seqlens,
+                        return_per_depth=True,
+                    )
+                    mtp_raw_loss_by_head = mtp_loss_output.per_depth_losses
+
+            mtp_loss = dp_size * mtp_loss_output.loss
             mtp_raw_loss_by_head = [dp_size * head_loss for head_loss in mtp_raw_loss_by_head]
             loss = loss + mtp_loss
             mtp_metrics["mtp_loss"] = mtp_loss.detach()
@@ -1422,18 +1448,30 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         mtp_cfg = self.cfg.get("mtp", None)
         mtp_requested = mtp_cfg is not None and mtp_cfg.get("enabled", False)
         mtp_training_mode = str(mtp_cfg.get("training_mode", "joint")) if mtp_requested else "disabled"
+        mtp_loss_type = str(mtp_cfg.get("loss_type", "cross_entropy")) if mtp_requested else "disabled"
         if mtp_requested and mtp_training_mode not in {"joint", "head_only"}:
             raise ValueError(
                 f"Unknown mtp.training_mode {mtp_training_mode!r}; expected 'joint' or 'head_only' when MTP is enabled"
             )
-        logging.info(f"MTP training mode={mtp_training_mode}")
+        if mtp_requested and mtp_loss_type not in {"cross_entropy", "lk"}:
+            raise ValueError(
+                f"Unknown mtp.loss_type {mtp_loss_type!r}; expected 'cross_entropy' or 'lk' when MTP is enabled"
+            )
+        if mtp_loss_type == "lk" and mtp_training_mode != "head_only":
+            raise ValueError("mtp.loss_type='lk' requires mtp.training_mode='head_only' so the teacher stays frozen")
+        mtp_lk_lambda = float(mtp_cfg.get("lk_lambda", 0.5)) if mtp_requested else 0.5
+        if mtp_loss_type == "lk" and not 0.0 <= mtp_lk_lambda <= 1.0:
+            raise ValueError(f"mtp.lk_lambda must be in [0, 1], got {mtp_lk_lambda}")
+        logging.info(f"MTP training mode={mtp_training_mode}, loss type={mtp_loss_type}")
         if mtp_requested:
             # MTP supports both BSHD and packed THD. For THD the MTP loss must
             # receive cu_seqlens so target rolling is masked at packed sequence
             # boundaries (see training_step); the MTP sublayers already get the
             # THD context (qkv_format/cu_seqlens/seq_idx) from the model forward.
             self._mtp_loss_scaling_factor = float(mtp_cfg.get("loss_scaling_factor", 0.1))
-            self._mtp_loss_fn = build_mtp_loss_fn()
+            self._mtp_loss_type = mtp_loss_type
+            self._mtp_lk_lambda = mtp_lk_lambda
+            self._mtp_loss_fn = build_mtp_loss_fn() if mtp_loss_type == "cross_entropy" else None
             requested_depth = int(mtp_cfg.get("num_nextn_predict_layers", 1))
             use_repeated_layer = bool(mtp_cfg.get("use_repeated_layer", False))
             # HF/vLLM exports describe physical layers. A repeated MTP head has one

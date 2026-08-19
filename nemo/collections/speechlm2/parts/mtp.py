@@ -18,12 +18,24 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
+from dataclasses import dataclass
 from typing import Any
 
 import torch
+import torch.distributed as dist
 from torch.distributed.tensor import DTensor
 
 from nemo.utils import logging, logging_mode
+
+
+@dataclass(frozen=True)
+class MTPLKLossOutput:
+    """Aggregate LK loss and its unscaled per-depth components."""
+
+    loss: torch.Tensor
+    per_depth_losses: list[torch.Tensor]
+    per_depth_kl: list[torch.Tensor]
+    per_depth_tv: list[torch.Tensor]
 
 
 def build_mtp_loss_fn() -> torch.nn.Module:
@@ -59,6 +71,140 @@ def calculate_mtp_loss_with_per_depth(*args: Any, **kwargs: Any) -> Any:
     if not isinstance(output, MTPLossOutput):
         raise TypeError("Automodel did not return the requested per-depth MTP loss output")
     return output
+
+
+def calculate_mtp_lk_loss(
+    *,
+    mtp_per_depth_h: list[torch.Tensor],
+    teacher_logits: torch.Tensor,
+    labels: torch.Tensor,
+    model: torch.nn.Module,
+    scaling_factor: float,
+    lk_lambda: float,
+    num_label_tokens: int | torch.Tensor | None = None,
+    ignore_index: int = -100,
+    cu_seqlens: torch.Tensor | None = None,
+    seq_idx: torch.Tensor | None = None,
+    mtp_per_depth_targets: Sequence[torch.Tensor] | None = None,
+    context_parallel_group: dist.ProcessGroup | None = None,
+) -> MTPLKLossOutput:
+    """Distill MTP heads from the frozen backbone with the hybrid LK objective.
+
+    For each MTP depth, the backbone distribution is shifted to the same future
+    position as that depth's ordinary token target. The objective is
+    ``lambda * KL(p || q) + (1 - lambda) * TV(p, q)``, where ``p`` is detached
+    from autograd and ``q`` is the MTP distribution. Packed-sequence validity is
+    inherited from the same targets used by the cross-entropy MTP objective.
+
+    When context parallelism is active, rank-local logits are exchanged so each
+    rank receives only the future teacher rows needed by its local MTP outputs.
+    This avoids gathering the full sequence-by-vocabulary tensor on every rank.
+    """
+    if not 0.0 <= lk_lambda <= 1.0:
+        raise ValueError(f"lk_lambda must be in [0, 1], got {lk_lambda}")
+    if not mtp_per_depth_h:
+        raise ValueError("mtp_per_depth_h must contain at least one prediction depth")
+
+    from nemo_automodel.components.loss.utils import _get_lm_head_module
+
+    mtp_outputs = mtp_per_depth_h
+    if labels.dim() == 1:
+        mtp_outputs = [h.squeeze(0) if h.dim() == 3 and h.shape[0] == 1 else h for h in mtp_outputs]
+        if teacher_logits.dim() == 3 and teacher_logits.shape[0] == 1:
+            teacher_logits = teacher_logits.squeeze(0)
+    if teacher_logits.shape[:-1] != labels.shape:
+        raise ValueError(
+            f"teacher_logits shape {tuple(teacher_logits.shape)} is incompatible with labels shape {tuple(labels.shape)}"
+        )
+
+    num_depths = len(mtp_outputs)
+    if mtp_per_depth_targets is None:
+        depth_targets = tuple(
+            iter_mtp_depth_targets(
+                labels,
+                num_depths,
+                ignore_index=ignore_index,
+                cu_seqlens=cu_seqlens,
+                seq_idx=seq_idx,
+            )
+        )
+    else:
+        if seq_idx is not None:
+            raise ValueError("mtp_per_depth_targets cannot be combined with seq_idx")
+        if len(mtp_per_depth_targets) != num_depths:
+            raise ValueError(f"Expected {num_depths} mtp_per_depth_targets, got {len(mtp_per_depth_targets)}")
+        depth_targets = tuple(mtp_per_depth_targets)
+        for depth, targets in enumerate(depth_targets, start=1):
+            if targets.shape != labels.shape:
+                raise ValueError(
+                    f"MTP depth {depth} target shape {tuple(targets.shape)} does not match "
+                    f"labels shape {tuple(labels.shape)}"
+                )
+
+    lm_head = _get_lm_head_module(model)
+    if lm_head is None:
+        raise ValueError("lm_head module not found in model")
+
+    if num_label_tokens is None:
+        normalizer = (labels != ignore_index).sum().clamp(min=1)
+    elif torch.is_tensor(num_label_tokens):
+        normalizer = num_label_tokens.to(device=teacher_logits.device).clamp(min=1)
+    else:
+        normalizer = teacher_logits.new_tensor(max(num_label_tokens, 1))
+
+    teacher_logits = teacher_logits.detach()
+    teacher_rows = torch.arange(labels.numel(), device=labels.device).reshape(labels.shape)
+    use_context_parallel = context_parallel_group is not None and dist.get_world_size(context_parallel_group) > 1
+    if use_context_parallel and labels.dim() != 1:
+        raise ValueError("Context-parallel LK loss requires flattened THD labels")
+    if use_context_parallel and cu_seqlens is None:
+        raise ValueError("Context-parallel LK loss requires global cu_seqlens")
+
+    total = mtp_outputs[0].new_zeros(())
+    per_depth_losses = []
+    per_depth_kl = []
+    per_depth_tv = []
+    for depth, (mtp_output, targets) in enumerate(zip(mtp_outputs, depth_targets), start=1):
+        draft_logits = lm_head(mtp_output)
+        if draft_logits.shape[:-1] != labels.shape:
+            raise ValueError(
+                f"MTP depth {depth} logits shape {tuple(draft_logits.shape)} is incompatible with "
+                f"labels shape {tuple(labels.shape)}"
+            )
+        valid = targets != ignore_index
+        if use_context_parallel:
+            aligned_teacher_logits = _exchange_context_parallel_teacher_logits(
+                teacher_logits,
+                valid=valid,
+                depth=depth,
+                cu_seqlens=cu_seqlens,
+                group=context_parallel_group,
+            )
+            source_rows = teacher_rows
+        else:
+            aligned_teacher_logits = teacher_logits
+            source_rows = torch.roll(teacher_rows, shifts=-depth, dims=-1)
+
+        kl_sum, tv_sum = _calculate_lk_sums(
+            draft_logits,
+            aligned_teacher_logits,
+            valid=valid,
+            teacher_rows=source_rows,
+        )
+        kl_loss = kl_sum / normalizer
+        tv_loss = tv_sum / normalizer
+        depth_loss = lk_lambda * kl_loss + (1.0 - lk_lambda) * tv_loss
+        per_depth_kl.append(kl_loss)
+        per_depth_tv.append(tv_loss)
+        per_depth_losses.append(depth_loss)
+        total = total + depth_loss
+
+    return MTPLKLossOutput(
+        loss=total * (scaling_factor / num_depths),
+        per_depth_losses=per_depth_losses,
+        per_depth_kl=per_depth_kl,
+        per_depth_tv=per_depth_tv,
+    )
 
 
 def resolve_mtp_seq_idx(
@@ -245,3 +391,128 @@ def compute_mtp_agreement_lengths(
     per_depth = reduced[:num_depths].float() / reduced[num_depths:].clamp(min=1).float()
     mean_prefix_length = per_depth.new_tensor(1.0) + per_depth.sum()
     return per_depth, mean_prefix_length
+
+
+def _calculate_lk_sums(
+    draft_logits: torch.Tensor,
+    teacher_logits: torch.Tensor,
+    *,
+    valid: torch.Tensor,
+    teacher_rows: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return summed forward-KL and TV values while bounding temporary memory."""
+    vocab_size = draft_logits.shape[-1]
+    draft_flat = draft_logits.reshape(-1, vocab_size)
+    teacher_flat = teacher_logits.reshape(-1, vocab_size)
+    valid_rows = valid.reshape(-1).nonzero(as_tuple=True)[0]
+    if valid_rows.numel() == 0:
+        zero = draft_logits.sum() * 0.0
+        return zero, zero
+
+    source_rows = teacher_rows.reshape(-1).index_select(0, valid_rows)
+    max_chunk_elements = 4 * 1024 * 1024
+    chunk_tokens = max(1, max_chunk_elements // vocab_size)
+    kl_sum = draft_logits.new_zeros((), dtype=torch.float32)
+    tv_sum = draft_logits.new_zeros((), dtype=torch.float32)
+    for start in range(0, valid_rows.numel(), chunk_tokens):
+        draft_indices = valid_rows[start : start + chunk_tokens]
+        teacher_indices = source_rows[start : start + chunk_tokens]
+        draft_log_probs = torch.log_softmax(draft_flat.index_select(0, draft_indices).float(), dim=-1)
+        teacher_log_probs = torch.log_softmax(teacher_flat.index_select(0, teacher_indices).float(), dim=-1)
+        teacher_probs = teacher_log_probs.exp()
+        draft_probs = draft_log_probs.exp()
+        kl_sum = kl_sum + (teacher_probs * (teacher_log_probs - draft_log_probs)).sum()
+        tv_sum = tv_sum + 0.5 * (teacher_probs - draft_probs).abs().sum()
+
+    return kl_sum, tv_sum
+
+
+@torch.no_grad()
+def _exchange_context_parallel_teacher_logits(
+    teacher_logits: torch.Tensor,
+    *,
+    valid: torch.Tensor,
+    depth: int,
+    cu_seqlens: torch.Tensor,
+    group: dist.ProcessGroup,
+) -> torch.Tensor:
+    """Exchange only the future teacher rows required by this CP rank."""
+    import transformer_engine_torch as tex
+
+    cp_size = dist.get_world_size(group)
+    cp_rank = dist.get_rank(group)
+    cs = cu_seqlens.squeeze(0) if cu_seqlens.dim() == 2 and cu_seqlens.shape[0] == 1 else cu_seqlens
+    if cs.dim() != 1:
+        raise ValueError(f"cu_seqlens must have shape [N+1] or [1, N+1], got {tuple(cu_seqlens.shape)}")
+    total_tokens = int(cs[-1].item())
+
+    partitions = [
+        tex.thd_get_partitioned_indices(cs, total_tokens, cp_size, rank).to(teacher_logits.device)
+        for rank in range(cp_size)
+    ]
+    local_global_rows = partitions[cp_rank]
+    if local_global_rows.numel() != teacher_logits.shape[0]:
+        raise ValueError(
+            f"CP partition has {local_global_rows.numel()} rows but teacher_logits has {teacher_logits.shape[0]}"
+        )
+
+    global_owner = torch.empty(total_tokens, dtype=torch.long, device=teacher_logits.device)
+    global_local_row = torch.empty_like(global_owner)
+    for rank, partition in enumerate(partitions):
+        global_owner.index_fill_(0, partition, rank)
+        global_local_row.index_copy_(
+            0,
+            partition,
+            torch.arange(partition.numel(), dtype=torch.long, device=teacher_logits.device),
+        )
+
+    destination_rows = valid.reshape(-1).nonzero(as_tuple=True)[0]
+    source_global_rows = local_global_rows.index_select(0, destination_rows) + depth
+    if source_global_rows.numel() and int(source_global_rows.max().item()) >= total_tokens:
+        raise ValueError("A valid MTP target points beyond the global packed sequence")
+
+    source_owners = global_owner.index_select(0, source_global_rows)
+    request_chunks = []
+    destination_chunks = []
+    send_counts = torch.zeros(cp_size, dtype=torch.long, device=teacher_logits.device)
+    for owner in range(cp_size):
+        owned = source_owners == owner
+        requested_global = source_global_rows[owned]
+        request_chunks.append(global_local_row.index_select(0, requested_global))
+        destination_chunks.append(destination_rows[owned])
+        send_counts[owner] = requested_global.numel()
+
+    recv_counts = torch.empty_like(send_counts)
+    dist.all_to_all_single(recv_counts, send_counts, group=group)
+    send_requests = (
+        torch.cat(request_chunks) if request_chunks else torch.empty(0, dtype=torch.long, device=teacher_logits.device)
+    )
+    recv_requests = torch.empty(int(recv_counts.sum().item()), dtype=torch.long, device=teacher_logits.device)
+    send_splits = [int(value) for value in send_counts.tolist()]
+    recv_splits = [int(value) for value in recv_counts.tolist()]
+    dist.all_to_all_single(
+        recv_requests,
+        send_requests,
+        output_split_sizes=recv_splits,
+        input_split_sizes=send_splits,
+        group=group,
+    )
+
+    response_rows = teacher_logits.index_select(0, recv_requests).contiguous()
+    received_rows = torch.empty(
+        (int(send_counts.sum().item()), teacher_logits.shape[-1]),
+        dtype=teacher_logits.dtype,
+        device=teacher_logits.device,
+    )
+    dist.all_to_all_single(
+        received_rows,
+        response_rows,
+        output_split_sizes=send_splits,
+        input_split_sizes=recv_splits,
+        group=group,
+    )
+
+    aligned = torch.zeros_like(teacher_logits)
+    if destination_rows.numel():
+        aligned.index_copy_(0, torch.cat(destination_chunks), received_rows)
+    return aligned

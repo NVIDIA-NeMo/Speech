@@ -39,6 +39,10 @@ model:
   mtp:
     enabled: false
     training_mode: joint  # joint preserves the recipe freeze policy; head_only trains only llm.mtp
+    # cross_entropy uses dataset labels. lk requires head_only and distills the
+    # frozen backbone distribution with lambda * KL(p||q) + (1-lambda) * TV(p,q).
+    loss_type: cross_entropy
+    lk_lambda: 0.5
     num_nextn_predict_layers: 1
     hybrid_override_pattern: "*"
     # Preserve a checkpoint-native MTP architecture by default. Set true to

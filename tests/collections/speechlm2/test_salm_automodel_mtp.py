@@ -718,6 +718,80 @@ def test_mtp_lk_loss_matches_forward_kl_tv_and_detaches_teacher():
     assert draft_hidden.grad is not None
 
 
+def test_mtp_lk_loss_matches_reference_for_multiple_depths():
+    vocab_size = 4
+    model = torch.nn.Module()
+    model.lm_head = torch.nn.Linear(vocab_size, vocab_size, bias=False)
+    with torch.no_grad():
+        model.lm_head.weight.copy_(torch.eye(vocab_size))
+
+    torch.manual_seed(7)
+    teacher_logits = torch.randn(6, vocab_size)
+    draft_hidden = [
+        torch.randn_like(teacher_logits, requires_grad=True),
+        torch.randn_like(teacher_logits, requires_grad=True),
+    ]
+    labels = torch.arange(teacher_logits.shape[0])
+    lk_lambda = 0.4
+    scaling_factor = 0.3
+
+    output = mtp_module.calculate_mtp_lk_loss(
+        mtp_per_depth_h=draft_hidden,
+        teacher_logits=teacher_logits,
+        labels=labels,
+        model=model,
+        scaling_factor=scaling_factor,
+        lk_lambda=lk_lambda,
+    )
+
+    expected_depth_losses = []
+    for depth, hidden in enumerate(draft_hidden, start=1):
+        teacher_log_probs = torch.log_softmax(teacher_logits[depth:], dim=-1)
+        draft_log_probs = torch.log_softmax(hidden[:-depth], dim=-1)
+        teacher_probs = teacher_log_probs.exp()
+        draft_probs = draft_log_probs.exp()
+        expected_kl = (teacher_probs * (teacher_log_probs - draft_log_probs)).sum() / labels.numel()
+        expected_tv = 0.5 * (teacher_probs - draft_probs).abs().sum() / labels.numel()
+        expected_depth_losses.append(lk_lambda * expected_kl + (1.0 - lk_lambda) * expected_tv)
+        torch.testing.assert_close(output.per_depth_kl[depth - 1], expected_kl)
+        torch.testing.assert_close(output.per_depth_tv[depth - 1], expected_tv)
+
+    torch.testing.assert_close(output.loss, scaling_factor * torch.stack(expected_depth_losses).mean())
+    output.loss.backward()
+    assert all(hidden.grad is not None for hidden in draft_hidden)
+
+
+def test_mtp_lk_projects_only_vocab_bounded_chunks(monkeypatch):
+    class _RecordingLMHead(torch.nn.Linear):
+        def __init__(self):
+            super().__init__(4, 4, bias=False)
+            self.rows_per_call = []
+
+        def forward(self, hidden):
+            self.rows_per_call.append(hidden.shape[0])
+            return super().forward(hidden)
+
+    model = torch.nn.Module()
+    model.lm_head = _RecordingLMHead()
+    teacher_logits = torch.randn(6, 4)
+    draft_hidden = torch.randn(6, 4, requires_grad=True)
+    monkeypatch.setattr(mtp_module, "_LK_MAX_CHUNK_ELEMENTS", 8)
+
+    output = mtp_module.calculate_mtp_lk_loss(
+        mtp_per_depth_h=[draft_hidden],
+        teacher_logits=teacher_logits,
+        labels=torch.arange(6),
+        model=model,
+        scaling_factor=1.0,
+        lk_lambda=0.5,
+    )
+
+    assert model.lm_head.rows_per_call == [2, 2, 1]
+    output.loss.backward()
+    assert max(model.lm_head.rows_per_call) == 2
+    assert draft_hidden.grad is not None
+
+
 def test_mtp_lk_loss_aligns_teacher_without_crossing_packed_boundaries():
     vocab_size = 3
     model = torch.nn.Module()
@@ -743,6 +817,79 @@ def test_mtp_lk_loss_aligns_teacher_without_crossing_packed_boundaries():
     )
 
     torch.testing.assert_close(output.loss, torch.tensor(0.0), atol=1e-7, rtol=0.0)
+
+
+def _run_context_parallel_lk_reference(rank, world_size, init_file):
+    import sys
+
+    partitions = (torch.tensor([0, 1, 6, 7]), torch.tensor([2, 3, 4, 5]))
+
+    def _partition_indices(_cu_seqlens, _total_tokens, _cp_size, cp_rank):
+        return partitions[cp_rank]
+
+    sys.modules["transformer_engine_torch"] = SimpleNamespace(thd_get_partitioned_indices=_partition_indices)
+    torch.distributed.init_process_group(
+        "gloo",
+        init_method=f"file://{init_file}",
+        rank=rank,
+        world_size=world_size,
+    )
+    try:
+        vocab_size = 4
+        torch.manual_seed(17)
+        teacher_logits = torch.randn(8, vocab_size)
+        draft_hidden = torch.randn(8, vocab_size)
+        model = torch.nn.Module()
+        model.lm_head = torch.nn.Linear(vocab_size, vocab_size, bias=False)
+        with torch.no_grad():
+            model.lm_head.weight.copy_(torch.eye(vocab_size))
+
+        full_targets = torch.tensor([0, 0, 0, 0, 0, 0, 0, -100])
+        reference = mtp_module.calculate_mtp_lk_loss(
+            mtp_per_depth_h=[draft_hidden],
+            teacher_logits=teacher_logits,
+            labels=torch.arange(8),
+            model=model,
+            scaling_factor=0.3,
+            lk_lambda=0.4,
+            num_label_tokens=8,
+            mtp_per_depth_targets=[full_targets],
+        )
+
+        partition = partitions[rank]
+        local_targets = torch.where(partition < 7, 0, -100)
+        actual = mtp_module.calculate_mtp_lk_loss(
+            mtp_per_depth_h=[draft_hidden.index_select(0, partition)],
+            teacher_logits=teacher_logits.index_select(0, partition),
+            labels=torch.arange(partition.numel()),
+            model=model,
+            scaling_factor=0.3,
+            lk_lambda=0.4,
+            num_label_tokens=8,
+            cu_seqlens=torch.tensor([0, 8], dtype=torch.int32),
+            mtp_per_depth_targets=[local_targets],
+            context_parallel_group=torch.distributed.group.WORLD,
+        )
+
+        reduced = torch.stack((actual.per_depth_kl[0], actual.per_depth_tv[0], actual.loss))
+        torch.distributed.all_reduce(reduced)
+        expected = torch.stack((reference.per_depth_kl[0], reference.per_depth_tv[0], reference.loss))
+        torch.testing.assert_close(reduced, expected)
+    finally:
+        torch.distributed.destroy_process_group()
+
+
+def test_context_parallel_lk_matches_single_rank_reference(tmp_path):
+    if not torch.distributed.is_available() or not torch.distributed.is_gloo_available():
+        pytest.skip("Gloo distributed backend is unavailable")
+
+    world_size = 2
+    torch.multiprocessing.spawn(
+        _run_context_parallel_lk_reference,
+        args=(world_size, str(tmp_path / "cp_init")),
+        nprocs=world_size,
+        join=True,
+    )
 
 
 def test_context_parallel_teacher_exchange_preserves_local_output_order(monkeypatch):

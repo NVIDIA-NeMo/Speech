@@ -19,13 +19,18 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import partial
 from typing import Any
 
 import torch
 import torch.distributed as dist
 from torch.distributed.tensor import DTensor
+from torch.utils.checkpoint import checkpoint
 
 from nemo.utils import logging, logging_mode
+
+
+_LK_MAX_CHUNK_ELEMENTS = 4 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -165,10 +170,9 @@ def calculate_mtp_lk_loss(
     per_depth_kl = []
     per_depth_tv = []
     for depth, (mtp_output, targets) in enumerate(zip(mtp_outputs, depth_targets), start=1):
-        draft_logits = lm_head(mtp_output)
-        if draft_logits.shape[:-1] != labels.shape:
+        if mtp_output.shape[:-1] != labels.shape:
             raise ValueError(
-                f"MTP depth {depth} logits shape {tuple(draft_logits.shape)} is incompatible with "
+                f"MTP depth {depth} hidden-state shape {tuple(mtp_output.shape)} is incompatible with "
                 f"labels shape {tuple(labels.shape)}"
             )
         valid = targets != ignore_index
@@ -186,8 +190,9 @@ def calculate_mtp_lk_loss(
             source_rows = torch.roll(teacher_rows, shifts=-depth, dims=-1)
 
         kl_sum, tv_sum = _calculate_lk_sums(
-            draft_logits,
+            mtp_output,
             aligned_teacher_logits,
+            lm_head=lm_head,
             valid=valid,
             teacher_rows=source_rows,
         )
@@ -394,36 +399,70 @@ def compute_mtp_agreement_lengths(
 
 
 def _calculate_lk_sums(
-    draft_logits: torch.Tensor,
+    draft_hidden: torch.Tensor,
     teacher_logits: torch.Tensor,
     *,
+    lm_head: torch.nn.Module,
     valid: torch.Tensor,
     teacher_rows: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Return summed forward-KL and TV values while bounding temporary memory."""
-    vocab_size = draft_logits.shape[-1]
-    draft_flat = draft_logits.reshape(-1, vocab_size)
+    """Return summed forward-KL and TV while recomputing chunk activations in backward."""
+    vocab_size = teacher_logits.shape[-1]
+    draft_flat = draft_hidden.reshape(-1, draft_hidden.shape[-1])
     teacher_flat = teacher_logits.reshape(-1, vocab_size)
     valid_rows = valid.reshape(-1).nonzero(as_tuple=True)[0]
     if valid_rows.numel() == 0:
-        zero = draft_logits.sum() * 0.0
+        zero = draft_hidden.sum() * 0.0
         return zero, zero
 
     source_rows = teacher_rows.reshape(-1).index_select(0, valid_rows)
-    max_chunk_elements = 4 * 1024 * 1024
-    chunk_tokens = max(1, max_chunk_elements // vocab_size)
-    kl_sum = draft_logits.new_zeros((), dtype=torch.float32)
-    tv_sum = draft_logits.new_zeros((), dtype=torch.float32)
+    chunk_tokens = max(1, _LK_MAX_CHUNK_ELEMENTS // vocab_size)
+    chunk_fn = partial(_calculate_lk_chunk, lm_head=lm_head)
+    kl_sum = draft_hidden.new_zeros((), dtype=torch.float32)
+    tv_sum = draft_hidden.new_zeros((), dtype=torch.float32)
     for start in range(0, valid_rows.numel(), chunk_tokens):
         draft_indices = valid_rows[start : start + chunk_tokens]
         teacher_indices = source_rows[start : start + chunk_tokens]
-        draft_log_probs = torch.log_softmax(draft_flat.index_select(0, draft_indices).float(), dim=-1)
-        teacher_log_probs = torch.log_softmax(teacher_flat.index_select(0, teacher_indices).float(), dim=-1)
-        teacher_probs = teacher_log_probs.exp()
-        draft_probs = draft_log_probs.exp()
-        kl_sum = kl_sum + (teacher_probs * (teacher_log_probs - draft_log_probs)).sum()
-        tv_sum = tv_sum + 0.5 * (teacher_probs - draft_probs).abs().sum()
+        if torch.is_grad_enabled() and draft_hidden.requires_grad:
+            chunk_kl, chunk_tv = checkpoint(
+                chunk_fn,
+                draft_flat,
+                teacher_flat,
+                draft_indices,
+                teacher_indices,
+                use_reentrant=False,
+            )
+        else:
+            chunk_kl, chunk_tv = chunk_fn(draft_flat, teacher_flat, draft_indices, teacher_indices)
+        kl_sum = kl_sum + chunk_kl
+        tv_sum = tv_sum + chunk_tv
 
+    return kl_sum, tv_sum
+
+
+def _calculate_lk_chunk(
+    draft_hidden: torch.Tensor,
+    teacher_logits: torch.Tensor,
+    draft_rows: torch.Tensor,
+    teacher_rows: torch.Tensor,
+    *,
+    lm_head: torch.nn.Module,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Project and compare one token chunk without retaining vocabulary-sized activations."""
+    draft_logits = lm_head(draft_hidden.index_select(0, draft_rows))
+    selected_teacher_logits = teacher_logits.index_select(0, teacher_rows)
+    if draft_logits.shape != selected_teacher_logits.shape:
+        raise ValueError(
+            f"MTP draft logits shape {tuple(draft_logits.shape)} does not match "
+            f"teacher logits shape {tuple(selected_teacher_logits.shape)}"
+        )
+
+    draft_log_probs = torch.log_softmax(draft_logits.float(), dim=-1)
+    teacher_log_probs = torch.log_softmax(selected_teacher_logits.float(), dim=-1)
+    teacher_probs = teacher_log_probs.exp()
+    draft_probs = draft_log_probs.exp()
+    kl_sum = (teacher_probs * (teacher_log_probs - draft_log_probs)).sum()
+    tv_sum = 0.5 * (teacher_probs - draft_probs).abs().sum()
     return kl_sum, tv_sum
 
 

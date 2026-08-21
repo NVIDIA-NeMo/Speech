@@ -22,13 +22,24 @@ from collections.abc import Sequence
 
 import torch
 from lightning import LightningModule
-from nemo_automodel.components.speculative.dflash.core import DFlashTrainerModule, NoValidAnchorsError
-from nemo_automodel.components.speculative.dflash.draft_qwen3 import Qwen3DFlashDraftModel, build_target_layer_ids
+from nemo_automodel.components.speculative.dflash.core import (
+    DFlashTrainerModule,
+    NoValidAnchorsError,
+)
+from nemo_automodel.components.speculative.dflash.draft_qwen3 import (
+    Qwen3DFlashDraftModel,
+    build_target_layer_ids,
+)
 from torch import nn
 from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
 
-from nemo.collections.speechlm2.models.salm import replace_placeholders_and_build_targets
-from nemo.collections.speechlm2.parts.cp_helpers import encode_audio_with_cp_distribution, get_perception_fsdp_group
+from nemo.collections.speechlm2.models.salm import (
+    replace_placeholders_and_build_targets,
+)
+from nemo.collections.speechlm2.parts.cp_helpers import (
+    encode_audio_with_cp_distribution,
+    get_perception_fsdp_group,
+)
 from nemo.core.classes.common import safe_instantiate
 
 _DRAFT_CONFIG_MANAGED_KEYS = {
@@ -92,6 +103,19 @@ def _has_valid_dflash_anchors(loss_mask: torch.Tensor, block_size: int) -> bool:
     """Return whether this rank can form at least one DFlash anchor."""
     max_anchor = max(loss_mask.shape[1] - block_size, 0)
     return bool((loss_mask[:, : max_anchor + 1] > 0.5).any().item())
+
+
+def _validate_dflash_parallelism(mesh_context) -> None:
+    """Reject parallel layouts whose sequence shards the non-TP DFlash draft cannot consume."""
+    unsupported = []
+    for name in ("tp", "pp", "cp"):
+        size = int(getattr(mesh_context, f"{name}_size", 1))
+        if size > 1:
+            unsupported.append(f"{name}_size={size}")
+    if unsupported:
+        raise NotImplementedError(
+            "SALM DFlash currently requires tp_size=pp_size=cp_size=1; got " + ", ".join(unsupported)
+        )
 
 
 def _build_draft_config(
@@ -179,7 +203,10 @@ def _get_consolidated_model_state_dict(model: nn.Module) -> dict[str, torch.Tens
     if not (torch.distributed.is_available() and torch.distributed.is_initialized()):
         return model.state_dict()
 
-    from torch.distributed.checkpoint.state_dict import StateDictOptions, get_model_state_dict
+    from torch.distributed.checkpoint.state_dict import (
+        StateDictOptions,
+        get_model_state_dict,
+    )
 
     return get_model_state_dict(model, options=StateDictOptions(full_state_dict=True, cpu_offload=True))
 
@@ -206,8 +233,16 @@ class SALMDFlashModule(LightningModule):
         self.draft_model = None
         self.trainer_module = None
         self.target_layer_ids = None
+        self._draft_dp_group = None
+        self._draft_dp_size = 1
         self._partial_val_metrics = defaultdict(list)
         self.register_state_dict_post_hook(self._keep_draft_checkpoint_state)
+
+    def train(self, mode: bool = True):
+        """Set the draft's mode while keeping the frozen target in evaluation mode."""
+        super().train(mode)
+        self.target.eval()
+        return self
 
     @staticmethod
     def _keep_draft_checkpoint_state(module, state_dict, prefix, local_metadata) -> None:
@@ -236,8 +271,7 @@ class SALMDFlashModule(LightningModule):
         distributed_setup = getattr(strategy, "distributed_setup", None)
         if distributed_setup is not None:
             mesh_context = distributed_setup.mesh_context
-            if mesh_context.pp_size > 1 or mesh_context.cp_size > 1:
-                raise NotImplementedError("SALM DFlash currently requires pp_size=cp_size=1")
+            _validate_dflash_parallelism(mesh_context)
         self.target._trainer = self.trainer
         self.target.configure_model(
             distributed_setup=distributed_setup,
@@ -283,6 +317,8 @@ class SALMDFlashModule(LightningModule):
             draft_fsdp_mesh = device_mesh["dp_shard_cp"]
         else:
             draft_fsdp_mesh = device_mesh["dp"]
+        self._draft_dp_size = int(draft_fsdp_mesh.size())
+        self._draft_dp_group = draft_fsdp_mesh.get_group() if self._draft_dp_size > 1 else None
         if draft_fsdp_mesh.size() > 1:
             from torch.distributed.fsdp import fully_shard
 
@@ -340,10 +376,14 @@ class SALMDFlashModule(LightningModule):
             self.mask_token_id,
         )
         return {
-            "input_ids": expanded_ids[:, :-1],
-            "input_embeddings": input_embeddings[:, :-1],
-            "attention_mask": attention_mask[:, :-1],
-            "loss_mask": target_ids[:, 1:].ne(-100),
+            # DFlash consumes the full, unshifted token stream. Its block builder
+            # gathers a token and its supervision mask at the same sequence index;
+            # applying causal-LM input/label shifting here would offset response
+            # boundaries and remove the final token from draft supervision.
+            "input_ids": expanded_ids,
+            "input_embeddings": input_embeddings,
+            "attention_mask": attention_mask,
+            "loss_mask": target_ids.ne(-100),
         }
 
     @torch.no_grad()
@@ -377,12 +417,19 @@ class SALMDFlashModule(LightningModule):
         forward_kwargs = {
             "inputs_embeds": inputs["input_embeddings"],
             "attention_mask": inputs["attention_mask"],
+        }
+        forward_parameters = inspect.signature(type(self.target.llm).forward).parameters
+        accepts_extra_kwargs = any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in forward_parameters.values()
+        )
+        for name, value in {
             "output_hidden_states": False,
             "use_cache": False,
             "return_dict": True,
-        }
-        if "compute_logits" in inspect.signature(type(self.target.llm).forward).parameters:
-            forward_kwargs["compute_logits"] = False
+            "compute_logits": False,
+        }.items():
+            if accepts_extra_kwargs or name in forward_parameters:
+                forward_kwargs[name] = value
         try:
             self.target.llm(**forward_kwargs)
         finally:
@@ -395,7 +442,8 @@ class SALMDFlashModule(LightningModule):
     def _run_batch(self, batch: dict[str, torch.Tensor]):
         inputs = self._prepare_batch(batch)
         if not _all_ranks_agree(
-            _has_valid_dflash_anchors(inputs["loss_mask"], self.block_size), inputs["loss_mask"].device
+            _has_valid_dflash_anchors(inputs["loss_mask"], self.block_size),
+            inputs["loss_mask"].device,
         ):
             raise NoValidAnchorsError("At least one rank has no valid DFlash anchors")
         _synchronize_ep_group_before_target_forward(getattr(self.trainer.strategy, "moe_mesh", None))
@@ -406,28 +454,61 @@ class SALMDFlashModule(LightningModule):
             loss_mask=inputs["loss_mask"],
         )
 
+    def _globally_normalized_loss(self, metrics) -> torch.Tensor:
+        """Weight a local DFlash mean by the global draft-DP loss denominator.
+
+        FSDP averages gradients across its process group. Multiplying the local
+        weighted-loss numerator by ``dp_size / global_weight`` therefore yields
+        the true global weighted mean even when ranks sample different numbers of
+        valid anchors or supervised block positions.
+        """
+        local_weight = metrics.loss_weight.to(device=metrics.loss.device, dtype=metrics.loss.dtype)
+        if not (self._draft_dp_size > 1 and torch.distributed.is_available() and torch.distributed.is_initialized()):
+            return metrics.loss
+
+        global_weight = local_weight.detach().clone()
+        torch.distributed.all_reduce(
+            global_weight,
+            op=torch.distributed.ReduceOp.SUM,
+            group=self._draft_dp_group,
+        )
+        return metrics.loss * local_weight * self._draft_dp_size / global_weight.clamp_min(1.0e-6)
+
     def training_step(self, batch, batch_idx):
         batches = list(batch.values()) if isinstance(batch, dict) and "input_ids" not in batch else [batch]
         losses = []
+        skip_counts = defaultdict(int)
         num_batches = _max_rank_value(len(batches), self.device)
         for dataset_index in range(num_batches):
             dataset_batch = batches[dataset_index] if dataset_index < len(batches) else None
             if not _all_ranks_agree(dataset_batch is not None, self.device):
+                skip_counts["missing_batch"] += 1
                 continue
             assert dataset_batch is not None
             signature = _preprocessing_signature(dataset_batch)
             if not _all_ranks_report_same_value(signature, self.device):
+                skip_counts["preprocessing_signature"] += 1
                 continue
             try:
                 metrics = self._run_batch(dataset_batch)
             except NoValidAnchorsError:
+                skip_counts["no_valid_anchors"] += 1
                 continue
-            losses.append(metrics.loss)
+            losses.append(self._globally_normalized_loss(metrics))
             self.log("train/dflash_loss", metrics.loss, on_step=True, prog_bar=True)
             self.log("train/dflash_accuracy", metrics.accuracy, on_step=True)
             self.log("train/accept_len", metrics.accept_len, on_step=True)
         if not losses:
+            # Every rank takes the same synchronized skip branches above. Lightning
+            # rejects ``None`` from ``training_step`` under distributed automatic
+            # optimization, so return a standalone differentiable zero. It has no
+            # graph edge to optimizer-owned draft parameters: backward is valid, all
+            # draft gradients stay ``None``, and AdamW performs no parameter update.
+            self.log("train/dflash_skipped_step", 1.0, on_step=True)
+            for reason, count in skip_counts.items():
+                self.log(f"train/dflash_skip/{reason}", float(count), on_step=True)
             return torch.zeros((), device=self.device, requires_grad=True)
+        self.log("train/dflash_skipped_step", 0.0, on_step=True)
         return torch.stack(losses).mean()
 
     def on_validation_epoch_start(self) -> None:
@@ -450,12 +531,15 @@ class SALMDFlashModule(LightningModule):
                 metrics = self._run_batch(dataset_batch)
             except NoValidAnchorsError:
                 continue
-            metric_dtype = metrics.loss.dtype
+            # Counts can exceed float32's exact-integer range over a long epoch
+            # with 512 anchors. Accumulate all additive validation statistics in
+            # float64 so a single stacked all-reduce remains exact for counts.
+            metric_dtype = torch.float64
             metric_device = metrics.loss.device
             self._partial_val_metrics[dataset_name].append(
                 torch.stack(
                     [
-                        metrics.loss.detach() * metrics.loss_weight.to(metric_dtype),
+                        metrics.loss.detach().to(dtype=metric_dtype) * metrics.loss_weight.to(metric_dtype),
                         metrics.loss_weight.to(dtype=metric_dtype, device=metric_device),
                         metrics.correct_tokens.to(dtype=metric_dtype, device=metric_device),
                         metrics.valid_tokens.to(dtype=metric_dtype, device=metric_device),
@@ -481,9 +565,22 @@ class SALMDFlashModule(LightningModule):
 
     def _log_validation_metrics(self, metric_sums: torch.Tensor, suffix: str = "") -> None:
         loss_sum, loss_weight, correct, valid, accept_sum, valid_blocks = metric_sums
-        self.log(f"val/dflash_loss{suffix}", loss_sum / loss_weight.clamp_min(1), on_epoch=True)
-        self.log(f"val/dflash_accuracy{suffix}", correct / valid.clamp_min(1), on_epoch=True)
-        self.log(f"val/accept_len{suffix}", accept_sum / valid_blocks.clamp_min(1), on_epoch=True)
+        accuracy = correct / valid.clamp_min(1)
+        self.log(
+            f"val/dflash_loss{suffix}",
+            loss_sum / loss_weight.clamp_min(1),
+            on_epoch=True,
+        )
+        self.log(f"val/dflash_accuracy{suffix}", accuracy, on_epoch=True)
+        self.log(
+            f"val/accept_len{suffix}",
+            accept_sum / valid_blocks.clamp_min(1),
+            on_epoch=True,
+        )
+        if not suffix:
+            # Preserve the existing SALM recipe's ModelCheckpoint monitor without
+            # changing non-DFlash logging or requiring a DFlash-only exp_manager.
+            self.log("val_acc", accuracy, on_epoch=True)
 
     def configure_optimizers(self):
         optimizer_config = self.dflash_config.get("optimizer")
@@ -500,7 +597,11 @@ class SALMDFlashModule(LightningModule):
         scheduler = safe_instantiate(scheduler_config, optimizer=optimizer, _convert_="all")
         return {
             "optimizer": optimizer,
-            "lr_scheduler": {"scheduler": scheduler, "interval": "step", "frequency": 1},
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "interval": "step",
+                "frequency": 1,
+            },
         }
 
     def on_train_end(self) -> None:

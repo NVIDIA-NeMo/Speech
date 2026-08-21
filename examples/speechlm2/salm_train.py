@@ -105,7 +105,10 @@ def train(cfg):
         model = SALMDFlashModule(target_model, OmegaConf.to_container(cfg, resolve=True))
         dataset = _create_salm_dataset(target_model.tokenizer, cfg.data)
         datamodule = DataModule(cfg.data, tokenizer=target_model.tokenizer, dataset=dataset)
-        trainer.fit(model, datamodule)
+        if cfg.get("run_validate_only", False):
+            trainer.validate(model, datamodule)
+        else:
+            trainer.fit(model, datamodule)
         if torch.distributed.is_initialized():
             torch.distributed.destroy_process_group()
         return

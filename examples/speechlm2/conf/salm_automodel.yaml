@@ -350,7 +350,7 @@ exp_manager:
 # inference artifact and cannot directly initialize these trainable BF16
 # nn.Linear weights; these settings reproduce its architecture, not its weights.
 #
-# This integration supports BSHD batches with pp_size=cp_size=1. The generic
+# This integration supports BSHD batches with tp_size=pp_size=cp_size=1. The generic
 # Automodel trainer chunks the LM-head projection and caps the rectangular
 # local-microbatch anchor allocation, so the paper-scale 512-anchor budget does
 # not retain a full anchors-by-block-by-vocabulary logits tensor.

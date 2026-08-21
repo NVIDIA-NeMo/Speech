@@ -22,6 +22,8 @@ from omegaconf import OmegaConf
 from torch import nn
 from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
 
+from nemo_automodel.components.loss.dllm_loss import DFlashDecayLoss
+
 from nemo.collections.speechlm2.parts import dflash as salm_dflash
 
 
@@ -66,6 +68,13 @@ def test_synchronize_ep_group_is_noop_without_distributed_ep(monkeypatch):
     assert calls == []
 
 
+def test_validate_dflash_parallelism_rejects_tensor_parallelism():
+    mesh_context = SimpleNamespace(tp_size=2, pp_size=1, cp_size=1)
+
+    with pytest.raises(NotImplementedError, match="tp_size=2"):
+        salm_dflash._validate_dflash_parallelism(mesh_context)
+
+
 def test_expand_ids_with_audio_preserves_internal_pad_valued_tokens():
     input_ids = torch.tensor([[0, 0, 11, 99, 0, 12]])
     audio_embeddings = [torch.randn(3, 4)]
@@ -107,6 +116,78 @@ def test_expand_ids_with_audio_requires_every_replacement_to_be_used():
         )
 
 
+class _BatchTarget(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(1))
+        self.cfg = {}
+        self.text_pad_id = 0
+        self.audio_locator_tag_id = 99
+
+    def _embed_tokens(self, input_ids):
+        return input_ids.to(torch.float32).unsqueeze(-1).expand(-1, -1, 4).clone()
+
+
+class _CaptureDFlashTrainer(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.kwargs = None
+
+    def forward(self, **kwargs):
+        self.kwargs = kwargs
+        return "dflash-result"
+
+
+def test_prepare_batch_keeps_full_unshifted_ids_and_token_aligned_loss_mask(
+    monkeypatch,
+):
+    module = salm_dflash.SALMDFlashModule(_BatchTarget(), {"dflash": {"mask_token_id": 990, "block_size": 2}})
+    audio_embeddings = [
+        torch.tensor(
+            [
+                [100.0, 100.0, 100.0, 100.0],
+                [101.0, 101.0, 101.0, 101.0],
+            ]
+        )
+    ]
+    monkeypatch.setattr(module, "_audio_embeddings", Mock(return_value=audio_embeddings))
+    batch = {
+        "input_ids": torch.tensor([[0, 10, 99, 20, 21, 22]]),
+        "loss_mask": torch.tensor([[False, False, False, False, True, True]]),
+    }
+
+    prepared = module._prepare_batch(batch)
+
+    assert prepared["input_ids"].tolist() == [[10, 990, 990, 20, 21, 22]]
+    assert prepared["loss_mask"].tolist() == [[False, False, False, False, True, True]]
+    assert prepared["attention_mask"].tolist() == [[True, True, True, True, True, True]]
+    assert prepared["input_embeddings"].shape == (1, 6, 4)
+    assert prepared["input_embeddings"][0].tolist() == [
+        [10.0, 10.0, 10.0, 10.0],
+        [100.0, 100.0, 100.0, 100.0],
+        [101.0, 101.0, 101.0, 101.0],
+        [20.0, 20.0, 20.0, 20.0],
+        [21.0, 21.0, 21.0, 21.0],
+        [22.0, 22.0, 22.0, 22.0],
+    ]
+
+    captured_hidden = torch.randn(1, 6, 8)
+    target_hidden_states = Mock(return_value=captured_hidden)
+    monkeypatch.setattr(module, "_target_hidden_states", target_hidden_states)
+    module.trainer_module = _CaptureDFlashTrainer()
+    module._trainer = SimpleNamespace(strategy=SimpleNamespace(moe_mesh=None))
+
+    result = module._run_batch(batch)
+
+    assert result == "dflash-result"
+    target_inputs = target_hidden_states.call_args.args[0]
+    assert target_inputs["input_ids"].tolist() == [[10, 990, 990, 20, 21, 22]]
+    assert target_inputs["loss_mask"].tolist() == [[False, False, False, False, True, True]]
+    assert module.trainer_module.kwargs["input_ids"].tolist() == [[10, 990, 990, 20, 21, 22]]
+    assert module.trainer_module.kwargs["loss_mask"].tolist() == [[False, False, False, False, True, True]]
+    assert module.trainer_module.kwargs["hidden_states"] is captured_hidden
+
+
 def test_build_draft_config_applies_explicit_architecture_and_layer_taps():
     target_config = Qwen3Config(
         hidden_size=64,
@@ -132,7 +213,10 @@ def test_build_draft_config_applies_explicit_architecture_and_layer_taps():
     assert layer_ids == [1, 6]
     assert draft_config.num_hidden_layers == 2
     assert draft_config.intermediate_size == 96
-    assert draft_config.dflash_config == {"mask_token_id": 18, "target_layer_ids": [1, 6]}
+    assert draft_config.dflash_config == {
+        "mask_token_id": 18,
+        "target_layer_ids": [1, 6],
+    }
 
 
 def test_build_draft_config_rejects_managed_overrides():
@@ -236,6 +320,23 @@ class _TargetModel(nn.Module):
         self.llm = _TargetLLM()
 
 
+class _MinimalTargetLLM(nn.Module):
+    """Target whose explicit forward rejects every optional HF-style kwarg."""
+
+    def __init__(self):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(1))
+        self.layers = nn.ModuleList([nn.Identity(), nn.Identity()])
+        self.calls = []
+
+    def forward(self, *, inputs_embeds, attention_mask):
+        self.calls.append({"attention_mask": attention_mask})
+        hidden = inputs_embeds
+        for index, layer in enumerate(self.layers, start=1):
+            hidden = layer(hidden + index)
+        return hidden
+
+
 def test_target_hidden_states_uses_audio_embeddings_and_skips_logits():
     module = salm_dflash.SALMDFlashModule(_TargetModel(), {"dflash": {"mask_token_id": 18}})
     module.target_layer_ids = [0, 2]
@@ -260,7 +361,25 @@ def test_target_hidden_states_uses_audio_embeddings_and_skips_logits():
     ]
 
 
-def test_get_consolidated_state_dict_uses_plain_state_dict_without_distributed(monkeypatch):
+def test_target_hidden_states_filters_unsupported_optional_forward_kwargs():
+    target = _TargetModel()
+    target.llm = _MinimalTargetLLM()
+    module = salm_dflash.SALMDFlashModule(target, {"dflash": {"mask_token_id": 18}})
+    module.target_layer_ids = [0, 1]
+    inputs = {
+        "input_embeddings": torch.randn(1, 4, 3),
+        "attention_mask": torch.ones(1, 4, dtype=torch.bool),
+    }
+
+    hidden = module._target_hidden_states(inputs)
+
+    assert hidden.shape == (1, 4, 6)
+    assert target.llm.calls == [{"attention_mask": inputs["attention_mask"]}]
+
+
+def test_get_consolidated_state_dict_uses_plain_state_dict_without_distributed(
+    monkeypatch,
+):
     expected = {"weight": torch.tensor([1.0])}
     model = SimpleNamespace(state_dict=Mock(return_value=expected))
     monkeypatch.setattr(salm_dflash.torch.distributed, "is_available", lambda: True)
@@ -270,6 +389,155 @@ def test_get_consolidated_state_dict_uses_plain_state_dict_without_distributed(m
 
     assert result is expected
     model.state_dict.assert_called_once_with()
+
+
+def test_train_keeps_frozen_target_in_eval_mode_and_draft_in_requested_mode():
+    target = nn.Sequential(nn.Dropout(p=0.5))
+    module = salm_dflash.SALMDFlashModule(target, {"dflash": {"mask_token_id": 18}})
+    module.draft_model = nn.Sequential(nn.Dropout(p=0.5))
+
+    module.train()
+
+    assert module.training
+    assert module.draft_model.training
+    assert not module.target.training
+    assert not module.target[0].training
+
+
+def test_globally_normalized_loss_uses_draft_dp_weight(monkeypatch):
+    module = salm_dflash.SALMDFlashModule(nn.Linear(1, 1), {"dflash": {"mask_token_id": 18}})
+    module._draft_dp_size = 2
+    module._draft_dp_group = object()
+    monkeypatch.setattr(salm_dflash.torch.distributed, "is_available", lambda: True)
+    monkeypatch.setattr(salm_dflash.torch.distributed, "is_initialized", lambda: True)
+
+    def fake_all_reduce(value, *, op, group):
+        assert op == salm_dflash.torch.distributed.ReduceOp.SUM
+        assert group is module._draft_dp_group
+        value.fill_(10.0)
+
+    monkeypatch.setattr(salm_dflash.torch.distributed, "all_reduce", fake_all_reduce)
+    local_loss = torch.tensor(2.0, requires_grad=True)
+    metrics = SimpleNamespace(loss=local_loss, loss_weight=torch.tensor(3.0))
+
+    loss = module._globally_normalized_loss(metrics)
+    loss.backward()
+
+    assert loss.item() == pytest.approx(1.2)
+    assert local_loss.grad.item() == pytest.approx(0.6)
+
+
+def test_dflash_loss_times_weight_recovers_decay_weighted_numerator():
+    torch.manual_seed(7)
+    block_size = 4
+    logits = torch.randn(1, 6, 11)
+    targets = torch.randint(0, 11, (1, 6))
+    block_mask = torch.tensor([[1.0, 1.0, 0.0, 1.0, 1.0, 1.0]])
+    loss_fn = DFlashDecayLoss(loss_gamma=4.0, normalize="mean")
+
+    result = loss_fn(logits, targets, block_mask, block_size=block_size)
+
+    nll = torch.nn.functional.cross_entropy(logits.view(-1, 11), targets.view(-1), reduction="none").view(1, 6)
+    depth_weights = torch.exp(-torch.arange(block_size - 1, dtype=logits.dtype) / 4.0).repeat(2)
+    effective_weights = block_mask * depth_weights.unsqueeze(0)
+    expected_numerator = (nll * effective_weights).sum()
+    torch.testing.assert_close(result.total_loss * effective_weights.sum(), expected_numerator)
+
+
+def test_training_step_synchronizes_multi_dataset_skips(monkeypatch):
+    module = salm_dflash.SALMDFlashModule(nn.Linear(1, 1), {"dflash": {"mask_token_id": 18}})
+    module.draft_model = nn.Linear(1, 1)
+    module._draft_dp_size = 1
+    module._draft_dp_group = None
+    monkeypatch.setattr(module, "log", Mock())
+    monkeypatch.setattr(salm_dflash, "_max_rank_value", lambda _value, _device: 3)
+    availability = []
+
+    def agree(local_condition, _device):
+        availability.append(local_condition)
+        return local_condition
+
+    monkeypatch.setattr(salm_dflash, "_all_ranks_agree", agree)
+    monkeypatch.setattr(salm_dflash, "_all_ranks_report_same_value", lambda _value, _device: True)
+    metrics = SimpleNamespace(
+        loss=torch.tensor(2.0, requires_grad=True),
+        loss_weight=torch.tensor(3.0),
+        accuracy=torch.tensor(0.5),
+        accept_len=torch.tensor(1.5),
+    )
+    run_batch = Mock(side_effect=[salm_dflash.NoValidAnchorsError("skip"), metrics])
+    monkeypatch.setattr(module, "_run_batch", run_batch)
+    batch = {
+        "dataset_a": {"input_ids": torch.ones(1, 2, dtype=torch.long)},
+        "dataset_b": {"input_ids": torch.ones(1, 2, dtype=torch.long)},
+    }
+
+    loss = module.training_step(batch, batch_idx=0)
+
+    torch.testing.assert_close(loss, metrics.loss)
+    assert availability == [True, True, False]
+    assert run_batch.call_count == 2
+
+
+def test_training_step_returns_differentiable_zero_when_every_dataset_is_skipped(monkeypatch):
+    module = salm_dflash.SALMDFlashModule(nn.Linear(1, 1), {"dflash": {"mask_token_id": 18}})
+    module.draft_model = nn.Linear(1, 1)
+    log = Mock()
+    monkeypatch.setattr(module, "log", log)
+    monkeypatch.setattr(salm_dflash, "_max_rank_value", lambda value, _device: value)
+    monkeypatch.setattr(salm_dflash, "_all_ranks_agree", lambda condition, _device: condition)
+    monkeypatch.setattr(salm_dflash, "_all_ranks_report_same_value", lambda _value, _device: True)
+    monkeypatch.setattr(
+        module,
+        "_run_batch",
+        Mock(side_effect=salm_dflash.NoValidAnchorsError("skip")),
+    )
+
+    loss = module.training_step({"input_ids": torch.ones(1, 2, dtype=torch.long)}, batch_idx=0)
+
+    assert loss.item() == 0.0
+    assert loss.requires_grad
+    loss.backward()
+    assert all(parameter.grad is None for parameter in module.draft_model.parameters())
+    log.assert_any_call("train/dflash_skipped_step", 1.0, on_step=True)
+    log.assert_any_call("train/dflash_skip/no_valid_anchors", 1.0, on_step=True)
+
+
+def test_validation_step_accumulates_additive_metrics_in_float64(monkeypatch):
+    module = salm_dflash.SALMDFlashModule(nn.Linear(1, 1), {"dflash": {"mask_token_id": 18}})
+    module.draft_model = nn.Linear(1, 1)
+    metrics = SimpleNamespace(
+        loss=torch.tensor(2.0, dtype=torch.bfloat16),
+        loss_weight=torch.tensor(3.0),
+        correct_tokens=torch.tensor(2**24 + 1),
+        valid_tokens=torch.tensor(2**24 + 3),
+        accept_len_sum=torch.tensor(7.0),
+        valid_blocks=torch.tensor(4),
+    )
+    monkeypatch.setattr(salm_dflash, "_max_rank_value", lambda value, _device: value)
+    monkeypatch.setattr(salm_dflash, "_all_ranks_agree", lambda condition, _device: condition)
+    monkeypatch.setattr(salm_dflash, "_all_ranks_report_same_value", lambda _value, _device: True)
+    monkeypatch.setattr(module, "_run_batch", Mock(return_value=metrics))
+
+    module.validation_step({"input_ids": torch.ones(1, 2, dtype=torch.long)}, batch_idx=0)
+
+    stored = module._partial_val_metrics["validation"][0]
+    assert stored.dtype == torch.float64
+    assert stored[2].item() == 2**24 + 1
+    assert stored[3].item() == 2**24 + 3
+
+
+def test_aggregate_validation_accuracy_preserves_default_checkpoint_monitor(
+    monkeypatch,
+):
+    module = salm_dflash.SALMDFlashModule(nn.Linear(1, 1), {"dflash": {"mask_token_id": 18}})
+    log = Mock()
+    monkeypatch.setattr(module, "log", log)
+
+    module._log_validation_metrics(torch.tensor([8.0, 4.0, 3.0, 6.0, 5.0, 2.0]))
+
+    log.assert_any_call("val/dflash_accuracy", torch.tensor(0.5), on_epoch=True)
+    log.assert_any_call("val_acc", torch.tensor(0.5), on_epoch=True)
 
 
 def test_state_dict_hook_keeps_only_draft_parameters():

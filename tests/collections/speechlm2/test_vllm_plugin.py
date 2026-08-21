@@ -1302,6 +1302,59 @@ class TestPluginRegistration:
 
 
 @pytest.mark.skipif(not _HAS_VLLM, reason="vLLM not installed")
+class TestDFlashPlugin:
+    """Tests for the target-model contract required by real DFlash."""
+
+    def test_model_advertises_eagle3_support(self):
+        from vllm.model_executor.models.interfaces import supports_eagle3
+
+        from nemo.collections.speechlm2.vllm.salm.model import NeMoSpeechLMForConditionalGeneration
+
+        assert supports_eagle3(NeMoSpeechLMForConditionalGeneration)
+
+    def test_get_language_model_exposes_wrapped_decoder(self):
+        from nemo.collections.speechlm2.vllm.salm.model import NeMoSpeechLMForConditionalGeneration
+
+        model = object.__new__(NeMoSpeechLMForConditionalGeneration)
+        language_model = object()
+        object.__setattr__(model, "language_model", language_model)
+
+        assert model.get_language_model() is language_model
+
+    def test_aux_hidden_state_methods_delegate_to_wrapped_decoder(self):
+        from unittest.mock import Mock
+
+        from nemo.collections.speechlm2.vllm.salm.model import NeMoSpeechLMForConditionalGeneration
+
+        layers = (2, 6, 20, 30, 42, 52)
+        language_model = Mock()
+        language_model.get_eagle3_default_aux_hidden_state_layers.return_value = layers
+
+        model = object.__new__(NeMoSpeechLMForConditionalGeneration)
+        object.__setattr__(model, "language_model", language_model)
+
+        model.set_aux_hidden_state_layers(layers)
+
+        language_model.set_aux_hidden_state_layers.assert_called_once_with(layers)
+        assert model.get_eagle3_default_aux_hidden_state_layers() == layers
+
+    def test_forward_preserves_auxiliary_hidden_state_output(self):
+        from unittest.mock import Mock
+
+        from nemo.collections.speechlm2.vllm.salm.model import NeMoSpeechLMForConditionalGeneration
+
+        output = (object(), [object(), object()])
+        language_model = Mock(return_value=output)
+        model = object.__new__(NeMoSpeechLMForConditionalGeneration)
+        object.__setattr__(model, "language_model", language_model)
+
+        input_ids = object()
+        positions = object()
+        assert model.forward(input_ids, positions) is output
+        language_model.assert_called_once_with(input_ids, positions, None, None)
+
+
+@pytest.mark.skipif(not _HAS_VLLM, reason="vLLM not installed")
 class TestMTPPlugin:
     """Tests for NeMo SpeechLM MTP speculative-decoding support."""
 

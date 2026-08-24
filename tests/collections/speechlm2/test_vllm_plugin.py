@@ -1303,7 +1303,7 @@ class TestPluginRegistration:
 
 @pytest.mark.skipif(not _HAS_VLLM, reason="vLLM not installed")
 class TestDFlashPlugin:
-    """Tests for the target-model contract required by real DFlash."""
+    """Tests for the target-model contract required by DFlash and DFlash2."""
 
     def test_model_advertises_eagle3_support(self):
         from vllm.model_executor.models.interfaces import supports_eagle3

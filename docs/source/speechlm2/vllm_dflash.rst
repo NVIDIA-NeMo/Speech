@@ -33,34 +33,17 @@ The target SpeechLM checkpoint must use
 The draft checkpoint provides the auxiliary target-layer selection and mask
 token configuration consumed by vLLM; no draft weights are bundled with NeMo.
 
-DFlash2 bootstrap
+DFlash2 inference
 -----------------
 
-DFlash2 adds two-tap dynamic convolutions and a candidate-path selector. Until
-a trained Lightning DFlash2 checkpoint is published, the existing trained
-Lightning DFlash checkpoint can be converted into a functional DFlash2
-bootstrap:
-
-.. code-block:: bash
-
-   python scripts/speechlm2/convert_dflash_to_dflash2.py \
-     nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4-DFlash \
-     /path/to/lightning-dflash2-bootstrap
-
-The converter preserves the trained draft backbone, initializes both
-convolutions as exact identities, and initializes the selector as a no-op. It
-also preserves an optional ``mask_embedding.pt`` and excludes the new BF16
-modules from ModelOpt quantization metadata. The source must store its weights
-in a single safetensors file. Its rank-256, top-k-16 selector defaults keep the
-bootstrap memory-representative rather than minimizing its footprint. Output
-files use container-readable model-artifact
-permissions (``0755`` directory and ``0644`` files). The bootstrap therefore
-validates the DFlash2 runtime integration but does not claim the acceptance
-improvement of a checkpoint whose DFlash2 parameters were trained.
+DFlash2 adds dynamic convolutions and a candidate-path selector to the draft
+model. Its checkpoint must be trained or fine-tuned separately for the target
+language backbone; NeMo's vLLM inference plugin does not create or convert
+DFlash2 weights.
 
 At the time of writing, DFlash2 requires the vLLM implementation from pull
 request 52816. It uses the same ``method`` value as DFlash; vLLM selects the
-DFlash2 runtime from the draft checkpoint architecture:
+DFlash2 runtime from the trained draft checkpoint's architecture:
 
 .. code-block:: bash
 
@@ -70,16 +53,24 @@ DFlash2 runtime from the draft checkpoint architecture:
      --trust-remote-code \
      --speculative-config '{
        "method": "dflash",
-       "model": "/path/to/lightning-dflash2-bootstrap",
+       "model": "/path/to/trained-lightning-dflash2-checkpoint",
        "num_speculative_tokens": 6
      }'
 
-The generated config declares ``DFlash2DraftModel``. That architecture forces
-vLLM's V2 model runner; vLLM raises an error if another requested feature is
-incompatible with that runner. The runtime derives its convolution block size
-from ``num_speculative_tokens`` (seven positions in the example: one anchor plus
-six draft tokens). The SpeechLM target uses the same ``SupportsEagle3``
-hidden-state contract for both DFlash versions.
+The trained draft config must declare ``DFlash2DraftModel``. Its
+``dflash_config`` must include ``target_layer_ids``, ``conv_group_size``,
+``conv_kernel_size``, ``selector_rank``, and ``selector_top_k``. Set
+``num_speculative_tokens`` to one less than the convolution block size used to
+train the draft: vLLM constructs each runtime block from one anchor plus the
+configured number of draft tokens and does not reject a training/inference
+block-size mismatch.
+
+The DFlash2 architecture forces vLLM's V2 model runner, including for hybrid
+NemotronH targets that would otherwise use V1. vLLM raises an error for features
+it knows are incompatible with V2, but the target and serving configuration
+should still be qualified on that runner. The SpeechLM target uses the same
+``SupportsEagle3`` hidden-state contract for DFlash and DFlash2, so no draft
+weights or training logic are bundled with NeMo.
 
 Validation
 ----------

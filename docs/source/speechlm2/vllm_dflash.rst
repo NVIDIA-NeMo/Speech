@@ -41,13 +41,15 @@ model. Its checkpoint must be trained or fine-tuned separately for the target
 language backbone; NeMo's vLLM inference plugin does not create or convert
 DFlash2 weights.
 
-At the time of writing, DFlash2 requires the vLLM implementation from pull
-request 52816. It uses the same ``method`` value as DFlash; vLLM selects the
-DFlash2 runtime from the trained draft checkpoint's architecture:
+At the time of writing, DFlash2 requires vLLM commit
+``3406ec1dae9916f920b90f0dbf90dcf54923d042`` from pull request 52816. The
+immutable commit pin keeps the DFlash2 runtime reproducible. DFlash2 uses the
+same ``method`` value as DFlash; vLLM selects it from the trained draft
+checkpoint's architecture:
 
 .. code-block:: bash
 
-   pip install -U "vllm @ git+https://github.com/vllm-project/vllm.git@refs/pull/52816/head"
+   pip install -U "vllm @ git+https://github.com/vllm-project/vllm.git@3406ec1dae9916f920b90f0dbf90dcf54923d042"
 
    vllm serve /path/to/vllm-ready-speechlm-checkpoint \
      --trust-remote-code \

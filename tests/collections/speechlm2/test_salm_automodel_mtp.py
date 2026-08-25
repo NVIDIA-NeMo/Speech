@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -892,9 +893,24 @@ def _run_fsdp_lk_with_uneven_valid_rows(rank, world_size, init_file):
         torch.distributed.destroy_process_group()
 
 
-def test_fsdp_lk_supports_rank_with_no_valid_rows(tmp_path):
-    import time
+def _join_distributed_test(process_context, *, timeout: float, failure_message: str) -> None:
+    """Join spawned workers and terminate every rank if a collective hangs."""
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        if process_context.join(timeout=remaining):
+            return
 
+    for process in process_context.processes:
+        process.terminate()
+    for process in process_context.processes:
+        process.join(timeout=5)
+    pytest.fail(failure_message)
+
+
+def test_fsdp_lk_supports_rank_with_no_valid_rows(tmp_path):
     if not torch.distributed.is_available() or not torch.distributed.is_gloo_available():
         pytest.skip("Gloo distributed backend is unavailable")
 
@@ -905,15 +921,11 @@ def test_fsdp_lk_supports_rank_with_no_valid_rows(tmp_path):
         nprocs=world_size,
         join=False,
     )
-    deadline = time.monotonic() + 20
-    while not process_context.join(timeout=max(0.0, deadline - time.monotonic())):
-        if time.monotonic() < deadline:
-            continue
-        for process in process_context.processes:
-            process.terminate()
-        for process in process_context.processes:
-            process.join(timeout=5)
-        pytest.fail("FSDP LK loss hung with uneven valid-token counts across ranks")
+    _join_distributed_test(
+        process_context,
+        timeout=20,
+        failure_message="FSDP LK loss hung with uneven valid-token counts across ranks",
+    )
 
 
 def _run_context_parallel_lk_reference(rank, world_size, init_file):
@@ -984,11 +996,16 @@ def test_context_parallel_lk_matches_single_rank_reference(tmp_path):
         pytest.skip("Gloo distributed backend is unavailable")
 
     world_size = 2
-    torch.multiprocessing.spawn(
+    process_context = torch.multiprocessing.spawn(
         _run_context_parallel_lk_reference,
         args=(world_size, str(tmp_path / "cp_init")),
         nprocs=world_size,
-        join=True,
+        join=False,
+    )
+    _join_distributed_test(
+        process_context,
+        timeout=20,
+        failure_message="context-parallel LK reference test hung",
     )
 
 

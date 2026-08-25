@@ -174,6 +174,36 @@ SALMAutomodel-Specific Options
 The SALMAutomodel config exposes a few extra knobs that pass through to NeMo
 Automodel. All are optional — defaults preserve standard behavior.
 
+**Multi-token prediction (MTP):**
+
+.. code-block:: yaml
+
+    model:
+      mtp:
+        enabled: true
+        training_mode: head_only       # "joint" or "head_only"
+        loss_type: lk                  # "cross_entropy" or "lk"
+        lk_lambda: 0.5                 # LK = lambda * KL + (1-lambda) * TV
+        loss_scaling_factor: 0.1
+        num_nextn_predict_layers: 2
+        use_repeated_layer: true
+        replace_existing_head: false
+
+``cross_entropy`` trains each MTP depth against its shifted dataset target and
+supports either joint training or head-only training. ``lk`` distills each MTP
+depth from the backbone's future-token distribution and requires
+``training_mode: head_only``; this keeps the backbone frozen as the teacher.
+``lk_lambda`` must be between 0 and 1. Packed-sequence boundaries are respected,
+and the teacher rows needed by each rank are exchanged when context parallelism
+is enabled.
+
+The progress-bar ``loss`` remains the backbone cross-entropy value for continuity
+with existing runs. The gradient-carrying objective also includes ``mtp_loss``;
+inspect that metric and ``mtp_lk_kl/head_N`` / ``mtp_lk_tv/head_N`` to monitor LK
+training. ``use_repeated_layer`` shares one physical MTP layer across the configured
+logical prediction depths. ``replace_existing_head: false`` preserves compatible
+MTP weights already present in a checkpoint.
+
 **Garbage collection:**
 
 .. code-block:: yaml

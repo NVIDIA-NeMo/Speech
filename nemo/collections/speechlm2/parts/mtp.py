@@ -409,7 +409,16 @@ def _calculate_lk_sums(
     valid: torch.Tensor,
     teacher_rows: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Return summed forward-KL and TV while recomputing chunk activations in backward."""
+    """Return summed forward-KL and TV with rank-symmetric projection work.
+
+    FSDP/EP ranks may have different numbers of labeled tokens. DeepEP's
+    backward collectives require those ranks to reach each rendezvous in the
+    same order and within its fixed timeout, so synchronizing only the number
+    of LM-head calls is insufficient: a rank with empty tail chunks can finish
+    much earlier than a rank projecting full chunks. Pad every call to the same
+    token count and mask the dummy rows out of the objective. Checkpoint
+    recomputation then performs identical-shape projection work on every rank.
+    """
     vocab_size = teacher_logits.shape[-1]
     draft_flat = draft_hidden.reshape(-1, draft_hidden.shape[-1])
     teacher_flat = teacher_logits.reshape(-1, vocab_size)
@@ -421,9 +430,11 @@ def _calculate_lk_sums(
         synchronized_chunks = torch.tensor(num_chunks, dtype=torch.long, device=draft_hidden.device)
         dist.all_reduce(synchronized_chunks, op=dist.ReduceOp.MAX, group=projection_sync_group)
         num_chunks = int(synchronized_chunks.item())
-    if num_chunks == 0:
-        zero = draft_hidden.sum() * 0.0
-        return zero, zero
+
+    # Even a globally empty supervised batch must retain the MTP/DeepEP
+    # autograd path. One fully masked projection gives every rank the same
+    # differentiable graph and produces exactly zero loss/gradient.
+    num_chunks = max(1, num_chunks)
 
     chunk_fn = partial(_calculate_lk_chunk, lm_head=lm_head)
     kl_sum = draft_hidden.new_zeros((), dtype=torch.float32)
@@ -432,6 +443,13 @@ def _calculate_lk_sums(
         start = chunk_idx * chunk_tokens
         draft_indices = valid_rows[start : start + chunk_tokens]
         teacher_indices = source_rows[start : start + chunk_tokens]
+        num_valid_rows = draft_indices.numel()
+        num_padding_rows = chunk_tokens - num_valid_rows
+        if num_padding_rows:
+            padding = draft_indices.new_zeros(num_padding_rows)
+            draft_indices = torch.cat((draft_indices, padding))
+            teacher_indices = torch.cat((teacher_indices, padding))
+        valid_chunk_rows = torch.arange(chunk_tokens, device=draft_indices.device) < num_valid_rows
         if torch.is_grad_enabled() and draft_hidden.requires_grad:
             chunk_kl, chunk_tv = checkpoint(
                 chunk_fn,
@@ -439,10 +457,17 @@ def _calculate_lk_sums(
                 teacher_flat,
                 draft_indices,
                 teacher_indices,
+                valid_chunk_rows,
                 use_reentrant=False,
             )
         else:
-            chunk_kl, chunk_tv = chunk_fn(draft_flat, teacher_flat, draft_indices, teacher_indices)
+            chunk_kl, chunk_tv = chunk_fn(
+                draft_flat,
+                teacher_flat,
+                draft_indices,
+                teacher_indices,
+                valid_chunk_rows,
+            )
         kl_sum = kl_sum + chunk_kl
         tv_sum = tv_sum + chunk_tv
 
@@ -454,10 +479,16 @@ def _calculate_lk_chunk(
     teacher_logits: torch.Tensor,
     draft_rows: torch.Tensor,
     teacher_rows: torch.Tensor,
+    valid_rows: torch.Tensor,
     *,
     lm_head: torch.nn.Module,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Project and compare one token chunk without retaining vocabulary-sized activations."""
+    """Project one fixed-size chunk and exclude its padded rows from LK."""
+    if draft_rows.shape != teacher_rows.shape or draft_rows.shape != valid_rows.shape:
+        raise ValueError(
+            "LK chunk row tensors must have matching shapes, got "
+            f"{tuple(draft_rows.shape)}, {tuple(teacher_rows.shape)}, and {tuple(valid_rows.shape)}"
+        )
     draft_logits = lm_head(draft_hidden.index_select(0, draft_rows))
     selected_teacher_logits = teacher_logits.index_select(0, teacher_rows)
     if draft_logits.shape != selected_teacher_logits.shape:
@@ -470,8 +501,9 @@ def _calculate_lk_chunk(
     teacher_log_probs = torch.log_softmax(selected_teacher_logits.float(), dim=-1)
     teacher_probs = teacher_log_probs.exp()
     draft_probs = draft_log_probs.exp()
-    kl_sum = (teacher_probs * (teacher_log_probs - draft_log_probs)).sum()
-    tv_sum = 0.5 * (teacher_probs - draft_probs).abs().sum()
+    row_weights = valid_rows.to(dtype=draft_log_probs.dtype)
+    kl_sum = ((teacher_probs * (teacher_log_probs - draft_log_probs)).sum(dim=-1) * row_weights).sum()
+    tv_sum = (0.5 * (teacher_probs - draft_probs).abs().sum(dim=-1) * row_weights).sum()
     return kl_sum, tv_sum
 
 

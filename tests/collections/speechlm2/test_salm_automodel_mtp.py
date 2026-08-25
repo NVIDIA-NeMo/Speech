@@ -786,10 +786,35 @@ def test_mtp_lk_projects_only_vocab_bounded_chunks(monkeypatch):
         lk_lambda=0.5,
     )
 
-    assert model.lm_head.rows_per_call == [2, 2, 1]
+    assert model.lm_head.rows_per_call == [2, 2, 2]
     output.loss.backward()
-    assert max(model.lm_head.rows_per_call) == 2
+    assert model.lm_head.rows_per_call == [2, 2, 2, 2, 2, 2]
     assert draft_hidden.grad is not None
+
+
+def test_mtp_lk_fully_masked_batch_keeps_zero_gradient_path(monkeypatch):
+    model = torch.nn.Module()
+    model.mtp = torch.nn.Linear(4, 4, bias=False)
+    model.lm_head = torch.nn.Linear(4, 8, bias=False)
+    model.lm_head.requires_grad_(False)
+    draft_hidden = model.mtp(torch.randn(5, 4))
+    teacher_logits = model.lm_head(torch.randn(5, 4)).detach()
+    monkeypatch.setattr(mtp_module, "_LK_MAX_CHUNK_ELEMENTS", 16)
+
+    output = mtp_module.calculate_mtp_lk_loss(
+        mtp_per_depth_h=[draft_hidden],
+        teacher_logits=teacher_logits,
+        labels=torch.full((5,), -100, dtype=torch.long),
+        model=model,
+        scaling_factor=1.0,
+        lk_lambda=0.5,
+    )
+
+    assert output.loss.requires_grad
+    torch.testing.assert_close(output.loss, torch.tensor(0.0))
+    output.loss.backward()
+    assert model.mtp.weight.grad is not None
+    assert torch.count_nonzero(model.mtp.weight.grad) == 0
 
 
 def test_mtp_lk_loss_aligns_teacher_without_crossing_packed_boundaries():

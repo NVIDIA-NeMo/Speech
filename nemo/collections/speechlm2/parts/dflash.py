@@ -31,6 +31,7 @@ from nemo_automodel.components.speculative.dflash.draft_qwen3 import (
     build_target_layer_ids,
 )
 from torch import nn
+from torch.distributed.tensor import DTensor
 from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
 
 from nemo.collections.speechlm2.models.salm import (
@@ -100,7 +101,13 @@ def _synchronize_ep_group_before_target_forward(moe_mesh) -> None:
 
 
 def _has_valid_dflash_anchors(loss_mask: torch.Tensor, block_size: int) -> bool:
-    """Return whether this rank can form at least one DFlash anchor."""
+    """Mirror Automodel's unpacked DFlash anchor-validity predicate.
+
+    SALM DFlash rejects packed sequences, so ``DFlashTrainerModule`` considers
+    an anchor valid exactly when its own position is supervised and it lies no
+    later than ``seq_len - block_size``. Following block positions may be masked;
+    they affect the loss denominator but not anchor validity.
+    """
     max_anchor = max(loss_mask.shape[1] - block_size, 0)
     return bool((loss_mask[:, : max_anchor + 1] > 0.5).any().item())
 
@@ -177,7 +184,10 @@ def _expand_ids_with_audio(
     replacement_idx = 0
     for row in input_ids:
         non_padding = (row != padding_id).nonzero(as_tuple=False)
-        first_non_padding = int(non_padding[0]) if non_padding.numel() else row.numel()
+        # Match input_utils._unpad_inputs exactly: an all-padding row retains its
+        # last element rather than becoming empty, keeping ids and embeddings
+        # aligned even for this degenerate input.
+        first_non_padding = int(non_padding[0]) if non_padding.numel() else row.numel() - 1
         row = row[first_non_padding:]
         pieces = []
         for token in row:
@@ -328,8 +338,13 @@ class SALMDFlashModule(LightningModule):
             raise RuntimeError("The DFlash SALM target must be fully frozen")
 
     @property
-    def device(self):
-        return next(self.draft_model.parameters()).device
+    def device(self) -> torch.device:
+        """Infer the device from regular or FSDP2-sharded draft parameters."""
+        if self.draft_model is not None:
+            parameter = next(self.draft_model.parameters(), None)
+            if parameter is not None:
+                return parameter._local_tensor.device if isinstance(parameter, DTensor) else parameter.device
+        return super().device
 
     def _audio_embeddings(self, batch: dict[str, torch.Tensor]) -> list[torch.Tensor]:
         spk_targets = batch.get("spk_targets")
@@ -492,6 +507,8 @@ class SALMDFlashModule(LightningModule):
             try:
                 metrics = self._run_batch(dataset_batch)
             except NoValidAnchorsError:
+                # _run_batch's exact, synchronized precheck makes this branch
+                # rank-symmetric; retain the catch for direct/test callers.
                 skip_counts["no_valid_anchors"] += 1
                 continue
             losses.append(self._globally_normalized_loss(metrics))
@@ -530,6 +547,7 @@ class SALMDFlashModule(LightningModule):
             try:
                 metrics = self._run_batch(dataset_batch)
             except NoValidAnchorsError:
+                # Rank symmetry is guaranteed by _run_batch's exact precheck.
                 continue
             # Counts can exceed float32's exact-integer range over a long epoch
             # with 512 anchors. Accumulate all additive validation statistics in

@@ -22,12 +22,43 @@ from omegaconf import OmegaConf
 from torch import nn
 from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
 
-from nemo_automodel.components.loss.dllm_loss import DFlashDecayLoss
+pytest.importorskip("nemo_automodel")
+pytestmark = pytest.mark.unit
 
-from nemo.collections.speechlm2.parts import dflash as salm_dflash
+from nemo_automodel.components.loss.dllm_loss import DFlashDecayLoss  # noqa: E402
+
+from nemo.collections.speechlm2.parts import dflash as salm_dflash  # noqa: E402
 
 
 REPO_ROOT = Path(__file__).parents[3]
+
+
+@pytest.mark.parametrize(
+    "loss_mask,block_size",
+    [
+        (torch.tensor([[1.0] * 8]), 8),
+        (torch.tensor([[1.0] * 4]), 8),
+        (torch.tensor([[0.0] * 8 + [1.0] * 8]), 8),
+        (torch.tensor([[0.0] * 9 + [1.0] * 7]), 8),
+        (torch.tensor([[0.0] * 16, [0.0] * 8 + [1.0] * 8]), 8),
+    ],
+)
+def test_anchor_precheck_matches_automodel_unpacked_sampler(loss_mask, block_size):
+    """The synchronized precheck must exactly predict Automodel's early raise."""
+    trainer = SimpleNamespace(block_size=block_size, num_anchors=512, max_total_anchors=None)
+    try:
+        salm_dflash.DFlashTrainerModule._sample_anchor_positions(
+            trainer,
+            seq_len=loss_mask.shape[1],
+            loss_mask=loss_mask,
+            device=loss_mask.device,
+        )
+    except salm_dflash.NoValidAnchorsError:
+        automodel_has_valid = False
+    else:
+        automodel_has_valid = True
+
+    assert salm_dflash._has_valid_dflash_anchors(loss_mask, block_size) is automodel_has_valid
 
 
 class _FakeMoEMesh:
@@ -114,6 +145,25 @@ def test_expand_ids_with_audio_requires_every_replacement_to_be_used():
             placeholder_id=99,
             mask_token_id=18,
         )
+
+
+def test_expand_ids_with_audio_matches_unpad_behavior_for_all_padding_row():
+    expanded = salm_dflash._expand_ids_with_audio(
+        torch.tensor([[0, 0, 0], [0, 11, 12]]),
+        [],
+        padding_id=0,
+        placeholder_id=99,
+        mask_token_id=18,
+    )
+
+    assert expanded.tolist() == [[0, 0], [11, 12]]
+
+
+def test_device_falls_back_before_draft_configuration():
+    module = salm_dflash.SALMDFlashModule(nn.Linear(1, 1), {"dflash": {"mask_token_id": 18}})
+
+    assert module.draft_model is None
+    assert module.device == torch.device("cpu")
 
 
 class _BatchTarget(nn.Module):

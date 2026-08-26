@@ -16,7 +16,7 @@ import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from functools import partial
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Callable, List, Optional
 
 import torch
 from omegaconf import DictConfig, OmegaConf
@@ -431,7 +431,11 @@ class ConfidenceMixin(ABC):
         return word_confidence
 
     def _aggregate_token_confidence_subwords_sentencepiece(
-        self, words: List[str], token_confidence: List[float], token_ids: List[int]
+        self,
+        words: List[str],
+        token_confidence: List[float],
+        token_ids: List[int],
+        decode_prefix: Optional[Callable[[List[int]], str]] = None,
     ) -> List[float]:
         """Implementation of token confidence aggregation for subword-based models.
 
@@ -441,6 +445,9 @@ class ConfidenceMixin(ABC):
             words: List of words of a hypothesis.
             token_confidence: List of token-level confidence scores of a hypothesis.
             token_ids: List of token ids of a hypothesis.
+            decode_prefix: Ids-to-text call used to locate word boundaries. Must be the one that
+                produced ``words``, or a token can be attributed to the wrong word. Defaults to
+                ``decode_ids_to_str``.
 
         Returns:
             A list of word-level confidence scores.
@@ -448,36 +455,12 @@ class ConfidenceMixin(ABC):
         word_confidence = []
         # run only if there are final words
         if len(words) > 0:
-            # Bucket each token's confidence into the word it belongs to, using the decode-and-split
-            # operation itself as the boundary oracle so the produced count matches
-            # ``len(words) == tokenizer.ids_to_text(...).split()`` by construction.
-            #
-            # Motivation: ``words`` is ``self.text.split()`` where ``text`` is the *full*
-            # SentencePiece decode of the token ids. ``str.split()`` breaks on ANY Unicode
-            # whitespace, which includes characters produced only by byte-fallback decoding
-            # (e.g. non-breaking space U+00A0, thin space U+2009 — very common in German text such
-            # as ``z. B.`` or grouped numbers) that carry no ``▁`` word-boundary marker. Heuristics
-            # that reconstruct words from individual token pieces (the previous
-            # ``token != token_text`` proxy, or a ``▁``-prefix check) cannot see those boundaries and
-            # drift from ``text.split()``, which is what triggered the
-            # ``len(words) != len(word_confidence)`` RuntimeError on some transcripts.
-            #
-            # Instead we walk the tokens left to right and track how many whitespace-delimited words
-            # the decoded prefix contains. ``decode_ids_to_str`` routes through the same tokenizer
-            # path that built ``text`` (``tokenizer.ids_to_text``), so ``prev_count`` below is exactly
-            # the running word count of ``text``. A token opens a new word whenever the decoded
-            # prefix gains a word; otherwise it continues the current word. Byte-fallback bytes that
-            # only complete into a character (or whitespace) once the next byte arrives are handled
-            # naturally, because the word count only advances once the decoded text actually gains a
-            # whitespace-delimited token.
+            decode = decode_prefix if decode_prefix is not None else self.decode_ids_to_str
             num_words = len(words)
             int_token_ids = [int(t) for t in token_ids]
 
-            # Fast path (O(n), a single ``decode_ids_to_tokens`` call): group tokens using the
-            # canonical SentencePiece word-start marker ``▁`` (U+2581). A token starts a new word iff
-            # its piece begins with ``▁`` (or is / follows ``<unk>``, which ``ids_to_text`` renders as
-            # its own whitespace-delimited token). Pure ``▁`` separator groups are dropped. This
-            # reproduces ``text.split()`` for the overwhelming majority of transcripts.
+            # Fast path: group on the SentencePiece word-start marker, and trust it only if the
+            # group count matches the decoded text's own word count.
             underline = '\u2581'  # '▁'
             pieces = self.decode_ids_to_tokens(int_token_ids)
             fast_groups: List[List[int]] = []
@@ -490,29 +473,18 @@ class ConfidenceMixin(ABC):
                 else:
                     fast_groups[-1][1] = i + 1
                 prev_unk = is_unk
-            fast_groups = [
-                g for g in fast_groups if not all(pieces[k] == underline for k in range(g[0], g[1]))
-            ]
+            fast_groups = [g for g in fast_groups if not all(pieces[k] == underline for k in range(g[0], g[1]))]
 
             if len(fast_groups) == num_words:
-                # Fast path already agrees with ``text.split()`` — no per-token re-decode needed.
                 groups: List[List[int]] = fast_groups
             else:
-                # Slow, exact path: use the decode-and-split operation itself as the boundary oracle.
-                # This handles byte-fallback whitespace characters (non-breaking space U+00A0, thin
-                # space U+2009 — common in German such as ``z. B.`` or grouped numbers) that carry no
-                # ``▁`` marker and are therefore invisible to the fast path, yet split ``text`` into
-                # extra words. ``decode_ids_to_str`` routes through the same tokenizer path that built
-                # ``text``, so this reproduces ``text.split()`` exactly, by construction.
+                # Exact path: a token opens a word whenever the decoded prefix gains one. Byte-fallback
+                # whitespace and punctuation the decode re-spaces carry no marker in the pieces, so only
+                # the decode itself knows where the boundaries are.
                 groups = []
                 prev_count = 0
                 for i in range(len(int_token_ids)):
-                    cur_count = len(self.decode_ids_to_str(int_token_ids[: i + 1]).split())
-                    # Clamp so re-segmentation across the truncation boundary can never let the
-                    # running count exceed the final word count.
-                    if cur_count > num_words:
-                        cur_count = num_words
-
+                    cur_count = min(len(decode(int_token_ids[: i + 1]).split()), num_words)
                     if cur_count > prev_count:
                         while len(groups) < cur_count - 1:
                             groups.append([i, i + 1])
@@ -520,15 +492,9 @@ class ConfidenceMixin(ABC):
                         prev_count = cur_count
                     elif groups:
                         groups[-1][1] = i + 1
-                    # else: leading separator / empty-decode tokens — absorbed once the first word opens.
 
-                # Reconcile in case the running oracle lagged (e.g. a trailing word produced only when
-                # the final token completed a whitespace character).
                 while len(groups) < num_words:
-                    if groups:
-                        groups.append(list(groups[-1]))
-                    else:
-                        groups.append([0, len(int_token_ids)])
+                    groups.append(list(groups[-1]) if groups else [0, len(int_token_ids)])
                 groups = groups[:num_words]
 
             for start, end in groups:

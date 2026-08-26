@@ -20,6 +20,8 @@ vocabularies that emit word-initial punctuation pieces, ``<unk>``, and byte-fall
 characters that carry no SentencePiece word-boundary marker.
 """
 
+import re
+
 import pytest
 
 from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMixin
@@ -121,6 +123,47 @@ def test_punctuation_attaches_to_word():
     words, wc = _run(vocab, [1, 2, 3])
     assert words == ["Hallo,", "Welt"]
     assert len(wc) == len(words)
+
+
+class _StripPunctAgg(_FakeAgg):
+    """Stand-in for the RNNT path, where ``hypothesis.text`` removes the space before punctuation,
+    so ``words`` and the raw decode disagree on where the words are."""
+
+    def decode_with_strip_punctuation(self, ids):
+        return re.sub(r' +([\-,.!?;:])', r'\1', self.decode_ids_to_str(ids))
+
+
+@pytest.mark.unit
+def test_stripped_punctuation_attributes_confidence_to_the_right_word():
+    # ▁CDU ▁- ▁CSU decodes raw as "CDU - CSU" (3 words) but the hypothesis text is "CDU- CSU"
+    # (2 words). The dash belongs to the first word, so its confidence must land there.
+    vocab = {
+        1: (f"{UNDERLINE}CDU", f"{UNDERLINE}CDU"),
+        2: (f"{UNDERLINE}-", f"{UNDERLINE}-"),
+        3: (f"{UNDERLINE}CSU", f"{UNDERLINE}CSU"),
+    }
+    agg = _StripPunctAgg(vocab)
+    ids = [1, 2, 3]
+    words = agg.decode_with_strip_punctuation(ids).split()
+    assert words == ["CDU-", "CSU"]
+
+    wc = agg._aggregate_token_confidence_subwords_sentencepiece(
+        words, [0.9, 0.1, 0.8], ids, agg.decode_with_strip_punctuation
+    )
+    assert wc == pytest.approx([0.5, 0.8])
+
+
+@pytest.mark.unit
+def test_default_oracle_still_follows_the_raw_decode():
+    # Callers whose text is the plain decode must keep the raw boundaries: three words here.
+    vocab = {
+        1: (f"{UNDERLINE}CDU", f"{UNDERLINE}CDU"),
+        2: (f"{UNDERLINE}-", f"{UNDERLINE}-"),
+        3: (f"{UNDERLINE}CSU", f"{UNDERLINE}CSU"),
+    }
+    words, wc = _run(vocab, [1, 2, 3], [0.9, 0.1, 0.8])
+    assert words == ["CDU", "-", "CSU"]
+    assert wc == pytest.approx([0.9, 0.1, 0.8])
 
 
 class _CountingAgg(_FakeAgg):

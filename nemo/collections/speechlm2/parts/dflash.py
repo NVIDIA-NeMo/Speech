@@ -471,16 +471,24 @@ class SALMDFlashModule(LightningModule):
 
     @torch.no_grad()
     def _target_hidden_states(self, inputs: dict[str, torch.Tensor]) -> torch.Tensor:
-        """Run the frozen audio-conditioned target and concatenate configured layers."""
+        """Run the frozen target and concatenate pre-final-norm decoder-block outputs.
+
+        Args:
+            inputs: Mapping containing ``input_embeddings`` with shape
+                ``[batch, sequence, hidden]`` and ``attention_mask`` with shape
+                ``[batch, sequence]``.
+
+        Returns:
+            Tensor of shape ``[batch, sequence, selected_layers * hidden]``.
+            Each feature is the raw output of the configured decoder block,
+            before any separate model-level final normalization.
+        """
         if hasattr(self.target.llm, "model") and hasattr(self.target.llm.model, "layers"):
             layer_container = self.target.llm.model.layers
-            final_norm = getattr(self.target.llm.model, "norm", None)
         elif hasattr(self.target.llm, "layers"):
             layer_container = self.target.llm.layers
-            final_norm = getattr(self.target.llm, "norm", None)
         elif hasattr(self.target.llm, "transformer") and hasattr(self.target.llm.transformer, "h"):
             layer_container = self.target.llm.transformer.h
-            final_norm = getattr(self.target.llm.transformer, "ln_f", None)
         else:
             raise ValueError("Unsupported SALM target structure for DFlash hidden-state capture")
         if isinstance(layer_container, nn.ModuleDict):
@@ -497,14 +505,8 @@ class SALMDFlashModule(LightningModule):
 
             return hook
 
-        final_layer_id = len(layers) - 1
         for layer_id in self.target_layer_ids:
-            if layer_id == final_layer_id:
-                if final_norm is None:
-                    raise ValueError("The final DFlash target-layer tap requires a discoverable target final norm")
-                handles.append(final_norm.register_forward_hook(make_hook(layer_id)))
-            else:
-                handles.append(layers[layer_id].register_forward_hook(make_hook(layer_id)))
+            handles.append(layers[layer_id].register_forward_hook(make_hook(layer_id)))
 
         forward_kwargs = {
             "inputs_embeds": inputs["input_embeddings"],

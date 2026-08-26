@@ -573,7 +573,7 @@ class _MinimalTargetLLM(nn.Module):
         return self.norm(hidden)
 
 
-def test_target_hidden_states_uses_audio_embeddings_and_skips_logits():
+def test_target_hidden_states_uses_pre_final_norm_block_outputs_and_skips_logits():
     module = salm_dflash.SALMDFlashModule(_TargetModel(), {"dflash": {"mask_token_id": 18}})
     module.target_layer_ids = [0, 2]
     inputs = {
@@ -585,7 +585,10 @@ def test_target_hidden_states_uses_audio_embeddings_and_skips_logits():
 
     assert hidden.shape == (2, 5, 8)
     assert torch.allclose(hidden[..., :4], inputs["input_embeddings"] + 1)
-    assert torch.allclose(hidden[..., 4:], inputs["input_embeddings"] + 16)
+    # Block 2 contributes +3 after blocks 0 and 1 contributed +1 and +2.
+    # The separate final norm contributes +10 to the model output, but it must
+    # not alter DFlash's captured decoder-block feature.
+    assert torch.allclose(hidden[..., 4:], inputs["input_embeddings"] + 6)
     assert module.target.llm.calls == [
         {
             "attention_mask": inputs["attention_mask"],

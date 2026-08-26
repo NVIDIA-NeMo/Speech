@@ -1305,6 +1305,35 @@ class TestPluginRegistration:
 class TestDFlashPlugin:
     """Tests for the target-model contract required by DFlash and DFlash2."""
 
+    def test_registers_automodel_dflash_architecture_alias(self, monkeypatch):
+        """An untouched Automodel draft config should resolve to vLLM's native DFlash model."""
+        from transformers import AutoConfig
+        from vllm.model_executor.models.registry import ModelRegistry
+        from vllm.transformers_utils.configs.eagle import EAGLEConfig
+
+        if "DFlashDraftModel" not in ModelRegistry.get_supported_archs():
+            pytest.skip("installed vLLM does not provide native DFlash support")
+
+        monkeypatch.setattr(
+            AutoConfig,
+            "from_pretrained",
+            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError()),
+        )
+
+        register()
+
+        native_model = ModelRegistry.models["DFlashDraftModel"]
+        automodel_config = AutoConfig.for_model("qwen3", architectures=["Qwen3DFlashDraftModel"])
+        runtime_config = EAGLEConfig(automodel_config, method="dflash", model_type="eagle")
+        assert runtime_config.architectures == ["DFlashQwen3DFlashDraftModel"]
+
+        for alias in ("Qwen3DFlashDraftModel", *runtime_config.architectures):
+            alias_model = ModelRegistry.models[alias]
+            assert (alias_model.module_name, alias_model.class_name) == (
+                native_model.module_name,
+                native_model.class_name,
+            )
+
     def test_model_advertises_eagle3_support(self):
         from vllm.model_executor.models.interfaces import supports_eagle3
 

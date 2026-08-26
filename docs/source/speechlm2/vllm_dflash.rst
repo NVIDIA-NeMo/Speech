@@ -32,6 +32,10 @@ The target SpeechLM checkpoint must use
 ``nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16`` as its language backbone.
 The draft checkpoint provides the auxiliary target-layer selection and mask
 token configuration consumed by vLLM; no draft weights are bundled with NeMo.
+Automodel-trained drafts may retain ``Qwen3DFlashDraftModel`` as their
+architecture so they can be reopened for training. The NeMo plugin registers
+that name as an alias of vLLM's native ``DFlashDraftModel`` implementation;
+serve the original checkpoint without rewriting its ``config.json``.
 
 DFlash2 inference
 -----------------

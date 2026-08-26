@@ -585,6 +585,7 @@ class ContextSpeakerSimilarityFilter:
             isinstance(example, MonoCut)
             and len(example.supervisions) > 0
             and example.supervisions[0].has_custom("context_speaker_similarity")
+            and example.supervisions[0].context_speaker_similarity is not None
         ):
             return example.supervisions[0].context_speaker_similarity >= self.min_context_speaker_similarity
         else:

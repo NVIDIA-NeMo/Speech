@@ -350,12 +350,14 @@ exp_manager:
 # inference artifact and cannot directly initialize these trainable BF16
 # nn.Linear weights; these settings reproduce its architecture, not its weights.
 #
-# This integration supports BSHD batches with tp_size=pp_size=cp_size=1. The generic
-# Automodel trainer chunks the LM-head projection and caps the rectangular
-# local-microbatch anchor allocation, so the paper-scale 512-anchor budget does
-# not retain a full anchors-by-block-by-vocabulary logits tensor.
+# This integration supports DFlash and DFlash2 with BSHD batches and
+# tp_size=pp_size=cp_size=1. The DFlash2 defaults mirror Automodel's recipe: a
+# two-tap grouped dynamic convolution and a rank-256 top-16 path selector. DFlash2
+# needs dense draft logits for that selector, so fused linear CE is only available
+# when variant=dflash.
 dflash:
   enabled: false
+  variant: dflash2  # dflash or dflash2
   mask_token_id: 990
   draft_num_hidden_layers: 6
   target_layer_ids: [1, 5, 19, 29, 41, 51]
@@ -379,9 +381,16 @@ dflash:
   num_anchors: 512
   max_total_anchors: 512
   loss_decay_gamma: 4.0
+  draft_sliding_window: null
   attention_backend: flex_attention
   activation_checkpointing: true
-  use_fused_linear_ce: true
+  # DFlash2 in-block convolution and pairwise path selector (Automodel recipe defaults).
+  conv_kernel_size: 2
+  conv_group_size: 16
+  selector_rank: 256
+  selector_top_k: 16
+  selector_loss_weight: 1.0
+  use_fused_linear_ce: false  # set true only with variant=dflash
   linear_ce_chunk_size: 256
   target_dtype: bfloat16
   lr: 6.0e-4

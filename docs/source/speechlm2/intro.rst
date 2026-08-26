@@ -370,16 +370,21 @@ The ``salm_automodel.yaml`` config sets ``model.use_nemo_automodel: true``, whic
 ``SALMAutomodel`` class. This variant supports ``AutomodelParallelStrategy`` for FSDP2/TP/EP
 parallelism and MoE optimizations (Grouped GEMM, DeepEP).
 
-DFlash draft training
-~~~~~~~~~~~~~~~~~~~~~
+DFlash and DFlash2 draft training
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The same config includes an optional ``dflash:`` section for training a compact DFlash draft
-against a frozen, audio-conditioned ``SALMAutomodel`` target. Set ``dflash.enabled=true`` and
-provide a reserved ``dflash.mask_token_id``; ``salm_train.py`` then trains and exports draft-only
-weights while preserving SALM's audio-placeholder expansion. The default anchor budget and fused
-linear cross-entropy bound peak vocabulary-logit memory. This initial integration supports BSHD
-batches with ``tp_size=pp_size=cp_size=1`` and does not directly load the published packed NVFP4
-inference checkpoint into BF16 training modules.
+The same config includes an optional ``dflash:`` section for training a compact DFlash or DFlash2
+draft against a frozen, audio-conditioned ``SALMAutomodel`` target. Set ``dflash.enabled=true``,
+choose ``dflash.variant`` (``dflash`` or ``dflash2``), and provide a reserved
+``dflash.mask_token_id``; ``salm_train.py`` then trains and exports draft-only weights while
+preserving SALM's audio-placeholder expansion. The shipped DFlash2 settings mirror Automodel's
+recipe, including its two-tap grouped dynamic convolution, top-16 rank-256 path selector, and
+separately normalized backbone and selector losses. ``max_total_anchors`` bounds both variants'
+anchor allocation. Fused linear cross-entropy further bounds DFlash vocabulary-logit memory, but
+DFlash2 requires dense logits for candidate selection and therefore requires
+``use_fused_linear_ce=false``. This integration supports BSHD batches with
+``tp_size=pp_size=cp_size=1`` and does not directly load the published packed NVFP4 inference
+checkpoint into BF16 training modules.
 
 For more detailed information on training at scale, model parallelism, and SLURM-based training, see :doc:`training and scaling <training_and_scaling>`.
 

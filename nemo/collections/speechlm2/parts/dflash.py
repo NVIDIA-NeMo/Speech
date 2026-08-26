@@ -22,14 +22,17 @@ from collections.abc import Sequence
 
 import torch
 from lightning import LightningModule
+from nemo_automodel.components.distributed.mesh_utils import get_flat_mesh, get_fsdp_dp_mesh
 from nemo_automodel.components.speculative.dflash.core import (
     DFlashTrainerModule,
     NoValidAnchorsError,
 )
+from nemo_automodel.components.speculative.dflash.dflash2_core import DFlash2TrainerModule
 from nemo_automodel.components.speculative.dflash.draft_qwen3 import (
     Qwen3DFlashDraftModel,
     build_target_layer_ids,
 )
+from nemo_automodel.components.speculative.dflash.draft_qwen3_dflash2 import Qwen3DFlash2DraftModel
 from torch import nn
 from torch.distributed.tensor import DTensor
 from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
@@ -47,11 +50,15 @@ _DRAFT_CONFIG_MANAGED_KEYS = {
     "architectures",
     "block_size",
     "dflash_config",
+    "is_causal",
     "layer_types",
     "max_window_layers",
     "num_hidden_layers",
     "num_target_layers",
+    "sliding_window",
+    "use_sliding_window",
 }
+_DFLASH_VARIANTS = {"dflash", "dflash2"}
 
 
 def _all_ranks_agree(local_condition: bool, device: torch.device) -> bool:
@@ -132,6 +139,9 @@ def _build_draft_config(
     mask_token_id: int,
 ) -> tuple[Qwen3Config, list[int]]:
     """Create the Qwen3-shaped DFlash draft config for a SALM target."""
+    variant = str(dflash_config.get("variant", "dflash")).lower()
+    if variant not in _DFLASH_VARIANTS:
+        raise ValueError(f"dflash.variant must be one of {sorted(_DFLASH_VARIANTS)}, got {variant!r}")
     num_target_layers = int(target_config.num_hidden_layers)
     draft_layers = int(dflash_config.get("draft_num_hidden_layers", 2))
     target_layer_ids = list(
@@ -147,20 +157,49 @@ def _build_draft_config(
     if managed:
         raise ValueError(f"dflash.draft_model_config cannot override managed keys: {', '.join(managed)}")
 
+    draft_metadata = {
+        "block_size": block_size,
+        "mask_token_id": mask_token_id,
+        "target_layer_ids": target_layer_ids,
+    }
+    if variant == "dflash2":
+        draft_metadata.update(
+            {
+                "conv_kernel_size": int(dflash_config.get("conv_kernel_size", 2)),
+                "conv_group_size": int(dflash_config.get("conv_group_size", 16)),
+                "selector_rank": int(dflash_config.get("selector_rank", 256)),
+                "selector_top_k": int(dflash_config.get("selector_top_k", 16)),
+            }
+        )
+
+    draft_layers_config = {
+        "layer_types": ["full_attention"] * draft_layers,
+        "sliding_window": None,
+        "use_sliding_window": False,
+    }
+    sliding_window = dflash_config.get("draft_sliding_window")
+    if sliding_window is not None:
+        sliding_window = int(sliding_window)
+        if sliding_window <= 0:
+            raise ValueError(f"dflash.draft_sliding_window must be > 0 or null, got {sliding_window}")
+        draft_layers_config = {
+            "layer_types": ["sliding_attention"] * draft_layers,
+            "sliding_window": sliding_window,
+            "use_sliding_window": True,
+        }
+
     draft_dict = target_config.to_dict()
     draft_dict.update(architecture)
     draft_dict.update(
         {
-            "architectures": ["Qwen3DFlashDraftModel"],
+            "architectures": ["Qwen3DFlash2DraftModel" if variant == "dflash2" else "Qwen3DFlashDraftModel"],
             "num_hidden_layers": draft_layers,
-            "layer_types": ["full_attention"] * draft_layers,
             "max_window_layers": draft_layers,
+            "is_causal": False,
             "num_target_layers": num_target_layers,
             "block_size": block_size,
-            "dflash_config": {
-                "mask_token_id": mask_token_id,
-                "target_layer_ids": target_layer_ids,
-            },
+            "dflash_config": draft_metadata,
+            **draft_layers_config,
         }
     )
     draft_config = Qwen3Config.from_dict(draft_dict)
@@ -232,6 +271,9 @@ class SALMDFlashModule(LightningModule):
         self.target = target_model
         self.cfg = cfg
         self.dflash_config = cfg.get("dflash", cfg)
+        self.dflash_variant = str(self.dflash_config.get("variant", "dflash")).lower()
+        if self.dflash_variant not in _DFLASH_VARIANTS:
+            raise ValueError(f"dflash.variant must be one of {sorted(_DFLASH_VARIANTS)}, got {self.dflash_variant!r}")
         self.block_size = int(self.dflash_config.get("block_size", 8))
         mask_token_id = self.dflash_config.get("mask_token_id")
         if mask_token_id is None:
@@ -240,6 +282,18 @@ class SALMDFlashModule(LightningModule):
         self.attention_backend = str(self.dflash_config.get("attention_backend", "flex_attention"))
         self.output_dir = self.dflash_config.get("output_dir")
         self.learning_rate = float(self.dflash_config.get("lr", 6e-4))
+        self.selector_loss_weight = float(self.dflash_config.get("selector_loss_weight", 1.0))
+        if self.selector_loss_weight < 0:
+            raise ValueError(f"dflash.selector_loss_weight must be >= 0, got {self.selector_loss_weight}")
+        if self.dflash_variant == "dflash2":
+            loss_type = str(self.dflash_config.get("loss_type", None) or "dflash")
+            if loss_type != "dflash":
+                raise ValueError("dflash.loss_type must be 'dflash' when dflash.variant='dflash2'")
+            if bool(self.dflash_config.get("use_fused_linear_ce", False)):
+                raise ValueError(
+                    "dflash.use_fused_linear_ce is not supported by DFlash2 because its path selector needs "
+                    "the draft logits; set it to false"
+                )
         self.draft_model = None
         self.trainer_module = None
         self.target_layer_ids = None
@@ -299,36 +353,18 @@ class SALMDFlashModule(LightningModule):
         )
         draft_config._attn_implementation = self.attention_backend
         dtype = next(self.target.llm.parameters()).dtype
-        self.draft_model = Qwen3DFlashDraftModel(draft_config).to(self.target.device, dtype=dtype)
+        draft_cls = self._draft_model_class()
+        self.draft_model = draft_cls(draft_config).to(self.target.device, dtype=dtype)
         if self.dflash_config.get("activation_checkpointing", True):
             self.draft_model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
 
-        self.trainer_module = DFlashTrainerModule(
-            draft_model=self.draft_model,
-            target_lm_head=self.target.llm.get_output_embeddings(),
-            target_embed_tokens=self.target.llm.get_input_embeddings(),
-            mask_token_id=self.mask_token_id,
-            block_size=self.block_size,
-            attention_backend=self.attention_backend,
-            num_anchors=int(self.dflash_config.get("num_anchors", 512)),
-            max_total_anchors=int(self.dflash_config.get("max_total_anchors", 512)),
-            loss_decay_gamma=self.dflash_config.get("loss_decay_gamma", 4.0),
-            loss_type=str(self.dflash_config.get("loss_type", "dflash")),
-            prefix_weight_base=float(self.dflash_config.get("prefix_weight_base", 0.9)),
-            use_fused_linear_ce=bool(self.dflash_config.get("use_fused_linear_ce", True)),
-            linear_ce_chunk_size=int(self.dflash_config.get("linear_ce_chunk_size", 256)),
-        )
+        self.trainer_module = self._create_trainer_module()
 
         device_mesh = self.device_mesh
-        dim_names = device_mesh.mesh_dim_names
-        if "dp_replicate" in dim_names and "dp_shard_cp" in dim_names:
-            draft_fsdp_mesh = device_mesh["dp_replicate", "dp_shard_cp"]
-        elif "dp_shard_cp" in dim_names:
-            draft_fsdp_mesh = device_mesh["dp_shard_cp"]
-        else:
-            draft_fsdp_mesh = device_mesh["dp"]
-        self._draft_dp_size = int(draft_fsdp_mesh.size())
-        self._draft_dp_group = draft_fsdp_mesh.get_group() if self._draft_dp_size > 1 else None
+        draft_fsdp_mesh = get_fsdp_dp_mesh(device_mesh)
+        draft_dp_mesh = get_flat_mesh(device_mesh, "dp")
+        self._draft_dp_size = int(draft_dp_mesh.size())
+        self._draft_dp_group = draft_dp_mesh.get_group() if self._draft_dp_size > 1 else None
         if draft_fsdp_mesh.size() > 1:
             from torch.distributed.fsdp import fully_shard
 
@@ -336,6 +372,38 @@ class SALMDFlashModule(LightningModule):
 
         if any(parameter.requires_grad for parameter in self.target.parameters()):
             raise RuntimeError("The DFlash SALM target must be fully frozen")
+
+    def _create_trainer_module(self) -> DFlashTrainerModule:
+        """Build the Automodel trainer matching the configured draft variant."""
+        max_total_anchors = self.dflash_config.get("max_total_anchors", 512)
+        common_trainer_kwargs = {
+            "draft_model": self.draft_model,
+            "target_lm_head": self.target.llm.get_output_embeddings(),
+            "target_embed_tokens": self.target.llm.get_input_embeddings(),
+            "mask_token_id": self.mask_token_id,
+            "block_size": self.block_size,
+            "attention_backend": self.attention_backend,
+            "num_anchors": int(self.dflash_config.get("num_anchors", 512)),
+            "max_total_anchors": int(max_total_anchors) if max_total_anchors is not None else None,
+            "loss_decay_gamma": self.dflash_config.get("loss_decay_gamma", 4.0),
+            "sliding_window": self.dflash_config.get("draft_sliding_window"),
+        }
+        if self.dflash_variant == "dflash2":
+            return DFlash2TrainerModule(
+                **common_trainer_kwargs,
+                selector_loss_weight=self.selector_loss_weight,
+            )
+        return DFlashTrainerModule(
+            **common_trainer_kwargs,
+            loss_type=str(self.dflash_config.get("loss_type", None) or "dflash"),
+            prefix_weight_base=float(self.dflash_config.get("prefix_weight_base", 0.9)),
+            use_fused_linear_ce=bool(self.dflash_config.get("use_fused_linear_ce", True)),
+            linear_ce_chunk_size=int(self.dflash_config.get("linear_ce_chunk_size", 256)),
+        )
+
+    def _draft_model_class(self) -> type[Qwen3DFlashDraftModel]:
+        """Return the draft implementation selected by ``dflash.variant``."""
+        return Qwen3DFlash2DraftModel if self.dflash_variant == "dflash2" else Qwen3DFlashDraftModel
 
     @property
     def device(self) -> torch.device:
@@ -406,10 +474,13 @@ class SALMDFlashModule(LightningModule):
         """Run the frozen audio-conditioned target and concatenate configured layers."""
         if hasattr(self.target.llm, "model") and hasattr(self.target.llm.model, "layers"):
             layer_container = self.target.llm.model.layers
+            final_norm = getattr(self.target.llm.model, "norm", None)
         elif hasattr(self.target.llm, "layers"):
             layer_container = self.target.llm.layers
+            final_norm = getattr(self.target.llm, "norm", None)
         elif hasattr(self.target.llm, "transformer") and hasattr(self.target.llm.transformer, "h"):
             layer_container = self.target.llm.transformer.h
+            final_norm = getattr(self.target.llm.transformer, "ln_f", None)
         else:
             raise ValueError("Unsupported SALM target structure for DFlash hidden-state capture")
         if isinstance(layer_container, nn.ModuleDict):
@@ -426,8 +497,14 @@ class SALMDFlashModule(LightningModule):
 
             return hook
 
+        final_layer_id = len(layers) - 1
         for layer_id in self.target_layer_ids:
-            handles.append(layers[layer_id].register_forward_hook(make_hook(layer_id)))
+            if layer_id == final_layer_id:
+                if final_norm is None:
+                    raise ValueError("The final DFlash target-layer tap requires a discoverable target final norm")
+                handles.append(final_norm.register_forward_hook(make_hook(layer_id)))
+            else:
+                handles.append(layers[layer_id].register_forward_hook(make_hook(layer_id)))
 
         forward_kwargs = {
             "inputs_embeds": inputs["input_embeddings"],
@@ -470,24 +547,38 @@ class SALMDFlashModule(LightningModule):
         )
 
     def _globally_normalized_loss(self, metrics) -> torch.Tensor:
-        """Weight a local DFlash mean by the global draft-DP loss denominator.
+        """Weight local draft-loss means by their global draft-DP denominators.
 
         FSDP averages gradients across its process group. Multiplying the local
         weighted-loss numerator by ``dp_size / global_weight`` therefore yields
-        the true global weighted mean even when ranks sample different numbers of
-        valid anchors or supervised block positions.
+        the true global weighted mean even when ranks sample different numbers
+        of valid anchors. DFlash2's backbone and selector terms use different
+        valid sets, so each term must be normalized independently.
         """
-        local_weight = metrics.loss_weight.to(device=metrics.loss.device, dtype=metrics.loss.dtype)
+        loss_terms = self._loss_terms(metrics)
         if not (self._draft_dp_size > 1 and torch.distributed.is_available() and torch.distributed.is_initialized()):
-            return metrics.loss
+            return sum(loss for loss, _weight in loss_terms)
 
-        global_weight = local_weight.detach().clone()
-        torch.distributed.all_reduce(
-            global_weight,
-            op=torch.distributed.ReduceOp.SUM,
-            group=self._draft_dp_group,
-        )
-        return metrics.loss * local_weight * self._draft_dp_size / global_weight.clamp_min(1.0e-6)
+        normalized_terms = []
+        for loss, weight in loss_terms:
+            local_weight = weight.to(device=loss.device, dtype=loss.dtype)
+            global_weight = local_weight.detach().clone()
+            torch.distributed.all_reduce(
+                global_weight,
+                op=torch.distributed.ReduceOp.SUM,
+                group=self._draft_dp_group,
+            )
+            normalized_terms.append(loss * local_weight * self._draft_dp_size / global_weight.clamp_min(1.0e-6))
+        return sum(normalized_terms)
+
+    def _loss_terms(self, metrics) -> tuple[tuple[torch.Tensor, torch.Tensor], ...]:
+        """Return differentiable loss terms paired with their local denominators."""
+        if self.dflash_variant == "dflash2":
+            return (
+                (metrics.base_loss, metrics.loss_weight),
+                (self.selector_loss_weight * metrics.selector_loss, metrics.selector_loss_denominator),
+            )
+        return ((metrics.loss, metrics.loss_weight),)
 
     def training_step(self, batch, batch_idx):
         batches = list(batch.values()) if isinstance(batch, dict) and "input_ids" not in batch else [batch]
@@ -515,6 +606,12 @@ class SALMDFlashModule(LightningModule):
             self.log("train/dflash_loss", metrics.loss, on_step=True, prog_bar=True)
             self.log("train/dflash_accuracy", metrics.accuracy, on_step=True)
             self.log("train/accept_len", metrics.accept_len, on_step=True)
+            if self.dflash_variant == "dflash2":
+                self.log("train/dflash_base_loss", metrics.base_loss, on_step=True)
+                self.log("train/dflash_selector_loss", metrics.selector_loss, on_step=True)
+                self.log("train/dflash_base_accuracy", metrics.base_accuracy, on_step=True)
+                self.log("train/dflash_base_accept_len", metrics.base_accept_len, on_step=True)
+                self.log("train/dflash_candidate_recall", metrics.candidate_recall, on_step=True)
         if not losses:
             # Every rank takes the same synchronized skip branches above. Lightning
             # rejects ``None`` from ``training_step`` under distributed automatic
@@ -554,18 +651,32 @@ class SALMDFlashModule(LightningModule):
             # float64 so a single stacked all-reduce remains exact for counts.
             metric_dtype = torch.float64
             metric_device = metrics.loss.device
-            self._partial_val_metrics[dataset_name].append(
-                torch.stack(
-                    [
-                        metrics.loss.detach().to(dtype=metric_dtype) * metrics.loss_weight.to(metric_dtype),
-                        metrics.loss_weight.to(dtype=metric_dtype, device=metric_device),
-                        metrics.correct_tokens.to(dtype=metric_dtype, device=metric_device),
-                        metrics.valid_tokens.to(dtype=metric_dtype, device=metric_device),
-                        metrics.accept_len_sum.to(dtype=metric_dtype, device=metric_device),
-                        metrics.valid_blocks.to(dtype=metric_dtype, device=metric_device),
-                    ]
-                )
-            )
+            if self.dflash_variant == "dflash2":
+                selector_weight = metrics.selector_loss_denominator.to(dtype=metric_dtype, device=metric_device)
+                valid_tokens = metrics.valid_tokens.to(dtype=metric_dtype, device=metric_device)
+                metric_sums = [
+                    metrics.base_loss.detach().to(dtype=metric_dtype) * metrics.loss_weight.to(metric_dtype),
+                    metrics.loss_weight.to(dtype=metric_dtype, device=metric_device),
+                    metrics.selector_loss.detach().to(dtype=metric_dtype) * selector_weight,
+                    selector_weight,
+                    metrics.correct_tokens.to(dtype=metric_dtype, device=metric_device),
+                    valid_tokens,
+                    metrics.accept_len_sum.to(dtype=metric_dtype, device=metric_device),
+                    metrics.valid_blocks.to(dtype=metric_dtype, device=metric_device),
+                    metrics.base_correct_tokens.to(dtype=metric_dtype, device=metric_device),
+                    metrics.base_accept_len_sum.to(dtype=metric_dtype, device=metric_device),
+                    metrics.candidate_recall.to(dtype=metric_dtype, device=metric_device) * valid_tokens,
+                ]
+            else:
+                metric_sums = [
+                    metrics.loss.detach().to(dtype=metric_dtype) * metrics.loss_weight.to(metric_dtype),
+                    metrics.loss_weight.to(dtype=metric_dtype, device=metric_device),
+                    metrics.correct_tokens.to(dtype=metric_dtype, device=metric_device),
+                    metrics.valid_tokens.to(dtype=metric_dtype, device=metric_device),
+                    metrics.accept_len_sum.to(dtype=metric_dtype, device=metric_device),
+                    metrics.valid_blocks.to(dtype=metric_dtype, device=metric_device),
+                ]
+            self._partial_val_metrics[dataset_name].append(torch.stack(metric_sums))
 
     def on_validation_epoch_end(self) -> None:
         all_sums = []
@@ -582,11 +693,39 @@ class SALMDFlashModule(LightningModule):
         self._partial_val_metrics.clear()
 
     def _log_validation_metrics(self, metric_sums: torch.Tensor, suffix: str = "") -> None:
-        loss_sum, loss_weight, correct, valid, accept_sum, valid_blocks = metric_sums
+        if self.dflash_variant == "dflash2":
+            (
+                base_loss_sum,
+                base_loss_weight,
+                selector_loss_sum,
+                selector_loss_weight,
+                correct,
+                valid,
+                accept_sum,
+                valid_blocks,
+                base_correct,
+                base_accept_sum,
+                candidate_hits,
+            ) = metric_sums
+            base_loss = base_loss_sum / base_loss_weight.clamp_min(1)
+            selector_loss = selector_loss_sum / selector_loss_weight.clamp_min(1)
+            loss = base_loss + self.selector_loss_weight * selector_loss
+            self.log(f"val/dflash_base_loss{suffix}", base_loss, on_epoch=True)
+            self.log(f"val/dflash_selector_loss{suffix}", selector_loss, on_epoch=True)
+            self.log(f"val/dflash_base_accuracy{suffix}", base_correct / valid.clamp_min(1), on_epoch=True)
+            self.log(
+                f"val/dflash_base_accept_len{suffix}",
+                base_accept_sum / valid_blocks.clamp_min(1),
+                on_epoch=True,
+            )
+            self.log(f"val/dflash_candidate_recall{suffix}", candidate_hits / valid.clamp_min(1), on_epoch=True)
+        else:
+            loss_sum, loss_weight, correct, valid, accept_sum, valid_blocks = metric_sums
+            loss = loss_sum / loss_weight.clamp_min(1)
         accuracy = correct / valid.clamp_min(1)
         self.log(
             f"val/dflash_loss{suffix}",
-            loss_sum / loss_weight.clamp_min(1),
+            loss,
             on_epoch=True,
         )
         self.log(f"val/dflash_accuracy{suffix}", accuracy, on_epoch=True)

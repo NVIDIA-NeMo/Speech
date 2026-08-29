@@ -350,6 +350,9 @@ def main(cfg: TranscriptionConfig):
     if sum((cfg.audio_file is not None, cfg.dataset_manifest is not None, cfg.audio_dir is not None)) != 1:
         raise ValueError("Exactly one of the `audio_file`, `dataset_manifest` or `audio_dir` should be non-empty!")
 
+    if cfg.output_path is not None and cfg.dataset_manifest is None:
+        raise ValueError("`output_path` requires ground-truth text from `dataset_manifest` to calculate WER.")
+
     asr_model, model_name = setup_model(cfg=cfg, map_location=device)
 
     logging.info(asr_model.encoder.streaming_cfg)
@@ -426,9 +429,15 @@ def main(cfg: TranscriptionConfig):
         online_normalization=online_normalization,
         pad_and_drop_preencoded=cfg.pad_and_drop_preencoded,
     )
+
+    all_streaming_tran = []
+    all_offline_tran = []
+    all_refs_text = []
+
     with torch.amp.autocast('cuda' if device.type == "cuda" else "cpu", dtype=amp_dtype, enabled=cfg.amp):
         if cfg.audio_file is not None:
             # stream a single audio file
+            start_time = time.time()
             _ = streaming_buffer.append_audio_file(cfg.audio_file, stream_id=-1)
             perform_streaming(
                 asr_model=asr_model,
@@ -439,9 +448,6 @@ def main(cfg: TranscriptionConfig):
             )
         else:
             # stream audio files in a manifest file in batched mode
-            all_streaming_tran = []
-            all_offline_tran = []
-            all_refs_text = []
             batch_size = cfg.batch_size
 
             if cfg.dataset_manifest is not None:

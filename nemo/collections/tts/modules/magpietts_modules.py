@@ -20,6 +20,7 @@ from typing import Dict, List, Optional
 
 import numpy as np
 import torch
+from einops import rearrange
 from torch import Tensor
 from torch.utils.data import get_worker_info
 
@@ -480,7 +481,7 @@ class LocalTransformerHelper:
         codes_with_mask = torch.where(mask, self.mask_token_id, codes)
         return codes_with_mask, mask
 
-    def compute_logits(self, dec_out, audio_codes_target, targets_offset_by_one=False):
+    def compute_logits(self, dec_out, audio_codes_target, targets_offset_by_one=False, feature_masking=None):
         """Predicts the logits for all codebooks using the local transformer.
 
         Used in both autoregressive (AR) and MaskGit (MG) modes during
@@ -507,8 +508,7 @@ class LocalTransformerHelper:
                 if True, target for index 1 is codebook 0 (MaskGit).
         """
         C = self.num_audio_codebooks
-        dec_out_all = dec_out.reshape(-1, dec_out.size(-1))  # (B*T', E)
-        local_transformer_input = [dec_out_all]
+        local_transformer_input = []
         audio_codes_target = pad_audio_codes(audio_codes_target, self.frame_stacking_factor).long()
         for fs_index in range(self.frame_stacking_factor):
             for codebook_num in range(C):
@@ -519,6 +519,18 @@ class LocalTransformerHelper:
                 local_transformer_input.append(codebook_embedding)
 
         local_transformer_input = torch.stack(local_transformer_input, dim=1)
+
+        if feature_masking is not None:
+            lt_batch_size = local_transformer_input.shape[0]
+            lt_num_codebook = local_transformer_input.shape[1]
+            input_len = lt_num_codebook * torch.ones([lt_batch_size], device=local_transformer_input.device)
+            local_transformer_input = feature_masking.apply_dropout(
+                inputs=local_transformer_input, input_len=input_len
+            )
+
+        dec_out_all = dec_out.reshape(-1, 1, dec_out.size(-1))  # (B*T', 1, E)
+        local_transformer_input = torch.cat([dec_out_all, local_transformer_input], dim=1)
+
         local_transformer_input = self.local_transformer_in_projection(local_transformer_input)
         _mask = torch.ones(
             local_transformer_input.size(0), local_transformer_input.size(1), device=local_transformer_input.device
@@ -785,3 +797,77 @@ class LocalTransformerHelper:
         if use_cfg:
             codes = codes[:actual_batch_size]
         return codes
+
+
+class FeatureMasking(NeuralModule):
+    """Randomly dropout ground truth features by replacing feature embeddings with a mask embeddings
+
+    Features are dropped out based on a beta distribution. For example, the default parameters
+    (min=0.0, max=0.75, alpha=2.0, beta=1.0) means each item in a training batch will mask between 0% and 75% of
+    its input, with an average of 45%.
+
+    (min=0.1, max=0.5, alpha=1.0, beta=1.0) would be a uniform distribution masking between 10% and 50% of its input.
+
+    Args:
+        hidden_size: Dimension of model hidden state
+        mask_min: Minimum fraction of timesteps to mask for each batch item.
+        mask_max: Maximum fraction of timesteps to mask for each batch item.
+        alpha: alpha value of beta distribution
+        beta: beta value of beta distribution
+    """
+
+    def __init__(
+        self,
+        hidden_size: int,
+        mask_min: float = 0.0,
+        mask_max: float = 0.75,
+        alpha: float = 2.0,
+        beta: float = 1.0,
+    ):
+        super().__init__()
+        self.masked_emb = torch.nn.Parameter(torch.zeros([1, 1, hidden_size]))
+        self.mask_min = mask_min
+        self.mask_max = mask_max
+        self.dist = torch.distributions.beta.Beta(concentration1=alpha, concentration0=beta)
+
+    def _create_dropout_mask(self, input_len):
+        batch_size = input_len.shape[0]
+        len_mask = get_mask_from_lengths(input_len)
+        max_len = len_mask.shape[1]
+
+        # Select a fraction of tokens to mask in the range [min, max]
+        mask_percent = self.dist.sample(sample_shape=torch.Size([batch_size])).to(input_len.device)
+        mask_percent = self.mask_min + (self.mask_max - self.mask_min) * mask_percent
+        mask_len = mask_percent * input_len.float()
+        # Determine how many values will be masked based on the item length
+        mask_rank = torch.clamp_min(mask_len - 1, 0).long()
+        mask_rank = rearrange(mask_rank, 'B -> B 1')
+
+        # [batch_size, time]
+        mask_vals = torch.rand(size=len_mask.shape, device=input_len.device)
+        mask_vals = mask_vals * len_mask
+        # Select top 'mask_rank' values to be output as the final mask
+        mask_topk = torch.topk(mask_vals, k=max_len, dim=1, sorted=True).values
+        mask_min_val = torch.gather(mask_topk, index=mask_rank, dim=1)
+        mask = mask_vals >= mask_min_val
+
+        # Set values outside the batch item length back to false
+        mask = mask * len_mask
+
+        return mask
+
+    def forward(self, inputs, mask):
+        """
+        The input mask specifies which ground truth values to mask.
+
+        At training time the mask should be randomly generated. At inference, this method can be given a custom
+        mask, signaling the model to predict all timesteps where the mask embedding is provided.
+        """
+        mask = rearrange(mask, 'B T -> B T 1')
+        out = torch.where(mask, self.masked_emb, inputs)
+        return out
+
+    def apply_dropout(self, inputs, input_len):
+        mask = self._create_dropout_mask(input_len=input_len)
+        out = self.forward(inputs=inputs, mask=mask)
+        return out

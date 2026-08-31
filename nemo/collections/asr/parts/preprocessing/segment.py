@@ -129,7 +129,13 @@ def get_samples(audio_file: str, target_sr: int = 16000, dtype: str = 'float32')
         (numpy.ndarray):
             Time-series sample data from the given audio file
     """
-    return librosa.load(audio_file, sr=target_sr, mono=True, dtype=dtype)[0]
+    with sf.SoundFile(audio_file, 'r') as f:
+        samples = f.read(dtype=dtype)
+        if samples.ndim > 1:
+            samples = np.mean(samples, axis=1, dtype=dtype)
+        if f.samplerate != target_sr:
+            samples = librosa.core.resample(samples, orig_sr=f.samplerate, target_sr=target_sr)
+    return samples
 
 
 class AudioSegment(object):

@@ -685,7 +685,7 @@ def get_lhotse_dataloader_from_multi_config(
             "multi_config",
             "metadata_only",
             "force_finite",
-"use_stateful_dataloader",
+            "use_stateful_dataloader",
             # Indexed dataloading flags must propagate too — otherwise a
             # top-level ``indexed: true`` / ``indexes_root: /tmp/idx`` on the
             # train_ds namespace silently fails to reach sub-configs, and the

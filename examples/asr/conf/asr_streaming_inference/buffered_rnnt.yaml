@@ -61,6 +61,15 @@ nmt:
   source_language: "English"                         # Source language code
   target_language: "Russian"                         # Target language code
   waitk: -1                                          # Max allowed lag (in words) between ASR transcript and translation; -1 disables it and uses only the longest common prefix between current and previous translations.
+  prefix_boundary_mode: auto                         # LCP boundary: auto, whitespace, or model token.
+  source_buffer:
+    enabled: false                                   # Decouple MT source segmentation from acoustic ASR endpointing.
+    history_size: 2                                  # Completed aligned source-target units retained as MT context.
+    history_max_tokens: 1024                         # Combined model-token budget for retained context.
+    max_source_units: 256                            # Safety boundary when stable punctuation is absent.
+    max_duration_ms: 30000                           # Secondary safety boundary for unpunctuated speech.
+    max_handoff_deferrals: 1                         # Bounded retry when an MT boundary handoff is empty.
+    flush_at_stream_end: true                        # Finalize source retained when SimulStream closes a stream.
   device: cuda                                       # Device for translation: 'cuda'. 'cpu' is not supported.
   device_id: 1                                       # GPU device ID for translation
   batch_size: 16                                     # Batch size for translation, if -1, the batch size is equal to the ASR batch size

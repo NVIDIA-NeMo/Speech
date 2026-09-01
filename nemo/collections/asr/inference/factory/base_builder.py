@@ -69,6 +69,7 @@ class BaseBuilder:
                 batch_size=cfg.nmt.batch_size,
                 llm_params=cfg.nmt.llm_params,
                 sampling_params=cfg.nmt.sampling_params,
+                prefix_boundary_mode=cfg.nmt.get("prefix_boundary_mode", "auto"),
             )
             logging.info(f"NMT model `{cfg.nmt.model_name}` loaded")
         return nmt_model

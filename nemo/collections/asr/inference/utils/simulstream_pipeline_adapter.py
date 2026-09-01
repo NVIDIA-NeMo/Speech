@@ -370,16 +370,17 @@ class NeMoStreamingPipelineAdapter(SpeechProcessor):
             IncrementalOutput: Simulstream format with generated/deleted token lists.
         """
         if self.pipeline.nmt_enabled:
-            is_final = bool(step_output.final_transcript)
             prev_partial = self._prev_partial_translation
-            current_partial = step_output.final_translation if is_final else step_output.partial_translation
-            self._prev_partial_translation = "" if is_final else current_partial
+            curr_tokens = []
+            curr_tokens.extend(self._tokenize_text(step_output.final_translation))
+            curr_tokens.extend(self._tokenize_text(step_output.partial_translation))
+            self._prev_partial_translation = step_output.partial_translation
         else:
             prev_partial = previous_transcript
             current_partial = self._final_transcript_acc + self._last_partial_transcript
+            curr_tokens = self._tokenize_text(current_partial)
 
         prev_tokens = self._tokenize_text(prev_partial)
-        curr_tokens = self._tokenize_text(current_partial)
 
         common_prefix_len = 0
         for i in range(min(len(prev_tokens), len(curr_tokens))):
@@ -410,12 +411,22 @@ class NeMoStreamingPipelineAdapter(SpeechProcessor):
         if self._finalized:
             return IncrementalOutput(new_tokens=[], new_string="", deleted_tokens=[], deleted_string="")
 
+        flushed_output = None
+        flush_translation_stream = getattr(self.pipeline, "flush_translation_stream", None)
+        if flush_translation_stream is not None:
+            flushed_output = flush_translation_stream(self.stream_id)
+            if flushed_output is not None and flushed_output.final_translation:
+                self._final_translation_acc += flushed_output.final_translation
+                self._last_partial_translation = ""
+
         pred_text = (self._final_transcript_acc + self._last_partial_transcript).strip()
         pred_translation = (self._final_translation_acc + self._last_partial_translation).strip()
         self._write_prediction_manifest_line(pred_text, pred_translation)
 
         self.pipeline.delete_state(self.stream_id)
         self._finalized = True
+        if flushed_output is not None:
+            return self._convert_to_incremental_output(flushed_output)
         return IncrementalOutput(new_tokens=[], new_string="", deleted_tokens=[], deleted_string="")
 
     def clear(self) -> None:

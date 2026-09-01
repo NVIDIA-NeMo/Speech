@@ -27,6 +27,7 @@ from omegaconf import DictConfig, OmegaConf
 from safetensors.torch import save_file
 
 from nemo.collections.speechlm2.parts.hf_hub import LLM_BACKBONE_DIR
+from nemo.collections.speechlm2.vllm.salm.config import _mtp_pattern_from_backbone_config, _resolve_speechlm_mtp_config
 from nemo.core.classes.common import safe_instantiate
 from nemo.core.config import hydra_runner
 from nemo.utils.dtype import str_to_dtype
@@ -186,6 +187,77 @@ def _hf_export_config(model: torch.nn.Module, dtype: str | torch.dtype) -> dict[
     config["dtype"] = dtype_name
     config["torch_dtype"] = dtype_name
 
+    llm = getattr(model, "llm", None)
+    text_config = getattr(llm, "config", None)
+    explicit_mtp = config.get("mtp")
+    mtp_enabled = (
+        bool(explicit_mtp.get("enabled", True))
+        if isinstance(explicit_mtp, dict)
+        else bool(config.get("compute_mtp", False))
+    )
+    runtime_mtp_config = getattr(llm, "mtp_config", None)
+    runtime_mtp_depth = getattr(runtime_mtp_config, "num_layers", None)
+    if runtime_mtp_depth is None and text_config is not None:
+        runtime_mtp_depth = getattr(text_config, "num_nextn_predict_layers", 0)
+    if not isinstance(explicit_mtp, dict) and mtp_enabled and not int(runtime_mtp_depth or 0):
+        # compute_mtp is the legacy switch. Modern SALMAutomodel recipes
+        # suppress a checkpoint-native head when no explicit mtp block is
+        # present; do not let a stale flag recreate a serving-only MTP module.
+        config["compute_mtp"] = False
+        mtp_enabled = False
+
+    if text_config is not None and mtp_enabled:
+        use_repeated_layer = getattr(
+            runtime_mtp_config,
+            "use_repeated_layer",
+            bool(explicit_mtp.get("use_repeated_layer", False)) if isinstance(explicit_mtp, dict) else False,
+        )
+        resolved_mtp = dict(explicit_mtp) if isinstance(explicit_mtp, dict) else {}
+
+        raw_mtp_pattern = getattr(text_config, "mtp_hybrid_override_pattern", None)
+        mtp_block_types = getattr(text_config, "mtp_layers_block_type", None)
+        if raw_mtp_pattern is not None:
+            if not isinstance(raw_mtp_pattern, str) or (not raw_mtp_pattern and not mtp_block_types):
+                raise ValueError(
+                    f"Built LLM has invalid mtp_hybrid_override_pattern={raw_mtp_pattern!r}; " "cannot export it."
+                )
+        actual_mtp_pattern = _mtp_pattern_from_backbone_config(text_config)
+        if actual_mtp_pattern is not None:
+            # A preserved checkpoint-native MTP head can differ from the
+            # recipe's requested replacement pattern. Persist the pattern of
+            # the head that was actually built so serving constructs matching
+            # physical layers.
+            resolved_mtp["hybrid_override_pattern"] = actual_mtp_pattern
+
+        actual_mtp_depth = getattr(text_config, "num_nextn_predict_layers", None)
+        logical_mtp_depth = getattr(runtime_mtp_config, "num_layers", None)
+        if actual_mtp_depth is not None:
+            if isinstance(actual_mtp_depth, bool) or not isinstance(actual_mtp_depth, int) or actual_mtp_depth <= 0:
+                raise ValueError(
+                    f"Built LLM has invalid num_nextn_predict_layers={actual_mtp_depth!r}; cannot export it."
+                )
+            if use_repeated_layer:
+                if actual_mtp_depth != 1:
+                    raise ValueError(
+                        "A repeated MTP head must serialize exactly one physical layer, but the built LLM "
+                        f"declares num_nextn_predict_layers={actual_mtp_depth}."
+                    )
+            else:
+                # For a preserved native head, the recipe depth is advisory.
+                # Export the physical/logical depth that is actually present.
+                logical_mtp_depth = actual_mtp_depth
+
+        config["mtp"] = _resolve_speechlm_mtp_config(
+            mtp=resolved_mtp,
+            compute_mtp=bool(config.get("compute_mtp", False)),
+            text_config=text_config,
+            num_nextn_predict_layers=logical_mtp_depth,
+            use_repeated_layer=use_repeated_layer,
+        )
+    elif mtp_enabled and isinstance(explicit_mtp, dict):
+        raise ValueError(
+            "The root mtp config enables MTP, but the instantiated model has no positive-depth MTP head to export."
+        )
     return config
 
 
@@ -309,6 +381,7 @@ def prepare_for_vllm(output_dir: str, model_cfg: dict) -> None:
     else:
         config.pop("llm_config", None)
     config.pop("audio_token_index", None)
+    config.pop("image_token_index", None)
 
     # 2. Save tokenizer (backbone chat_template carries over via save_pretrained)
     existing = [

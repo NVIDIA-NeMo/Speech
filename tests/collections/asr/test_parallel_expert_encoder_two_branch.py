@@ -22,9 +22,8 @@ from torch import nn
 import nemo.collections.asr.modules.parallel_expert_encoder as pee_module
 from nemo.collections.asr.models import SortformerEncLabelModel
 from nemo.collections.asr.modules.conformer_encoder import ConformerEncoder
-from nemo.collections.asr.modules.parallel_expert_encoder_two_branch import (
+from nemo.collections.asr.modules.parallel_expert_encoder import (
     ParallelExpertEncoder,
-    ParallelExpertEncoderPT,
     _clone_config,
     _default_dtype,
     _disable_dist_feature_sync,
@@ -32,8 +31,6 @@ from nemo.collections.asr.modules.parallel_expert_encoder_two_branch import (
 from nemo.collections.asr.modules.transformer_encoder import TransformerEncoder
 from nemo.collections.asr.parts.packed_sequence import pack_encoder_output, unpack_encoder_output
 from nemo.collections.asr.parts.preprocessing.features import normalize_batch, normalize_packed_batch
-
-_PEE = getattr(ParallelExpertEncoder, "__wrapped__", ParallelExpertEncoder)
 
 _MEL_FEATURES = 128
 _ASR_D_MODEL = 32

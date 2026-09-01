@@ -335,7 +335,12 @@ Let's briefly go over each of the Lhotse dataloading arguments:
 * ``num_buckets`` is the number of buckets in the bucketing sampler. Bigger value means less padding but also less randomization.
 * ``num_cuts_for_bins_estimate`` is the number of utterance we will sample before the start of the training to estimate the duration bins for buckets. Larger number results in a more accurate estimatation but also a bigger lag before starting the training.
 * ``bucket_buffer_size`` is the number of utterances (data and metadata) we will hold in memory to be distributed between buckets. With bigger ``batch_duration``, this number may need to be increased for dynamic bucketing sampler to work properly (typically it will emit a warning if this is too low).
-* ``shuffle_buffer_size`` is an extra number of utterances we will hold in memory to perform approximate shuffling (via reservoir-like sampling). Bigger number means more memory usage but also better randomness.
+* ``shuffle_buffer_size`` is an extra number of utterances we will hold in
+  memory to perform approximate shuffling (via reservoir-like sampling).
+  Bigger values mean more memory usage but also better randomness. When
+  ``use_packed_sequence_sampling: true``, this option is repurposed as the
+  size of the single post-filter best-fit packing pool; the sampler disables
+  its reservoir because indexed sources are already Feistel-shuffled.
 
 The PyTorch Lightning ``trainer`` related arguments:
 
@@ -680,6 +685,15 @@ intentionally streaming-only. See :ref:`indexed-resumable-dataloading`.
 
 * (multimodal-only) ``token_equivalent_duration: 0.08`` is used to be able to measure audio examples in the number of "tokens". For example, if we're using fbank with 0.01s frame shift and an acoustic model that has a subsampling factor of 0.08, then a reasonable setting for this could be 0.08 (which means every subsampled frame counts as one token). Calibrate this value to fit your needs.
 
+* (multimodal-only) ``audio_token_estimator`` replaces the duration approximation
+  with sample-exact integer length arithmetic for the audio preprocessor,
+  encoder subsampling, and optional encoder chunking. Both repeated
+  convolution/pooling stages (``type: conv``) and feature stacking
+  (``type: feature_stacking``) are supported. Use it
+  whenever ``batch_tokens`` must be a hard limit on the sequence actually passed
+  to the model. ``chunk_size_seconds`` must match the model's encoder chunking
+  option; rounding is applied independently to every chunk.
+
 **Text/multimodal bucketing and OOMptimizer.** Analogous to bucketing for audio data, we provide two scripts to support efficient bucketing:
 
 * ``scripts/speech_llm/estimate_token_bins.py`` which estimates 1D or 2D buckets based on the input config, tokenizer, and prompt format. It also estimates input/output token count distribution and suggested ``max_tpt`` (token-per-token) filtering values.
@@ -694,7 +708,21 @@ To enable bucketing, set ``batch_size: null`` and use the following options:
 
 * (oomptimizer-only) ``bucket_batch_size`` - the output of OOMptimizer.
 
-* (non-oomptimizer-only) ``batch_tokens`` is the maximum number of tokens we want to find inside a mini-batch. Similarly to ``batch_duration``, this number does consider padding tokens too, therefore enabling bucketing is recommended to maximize the ratio of real vs padding tokens. Note that it's just a heuristic for determining the optimal batch sizes for different buckets, and may be less efficient than using OOMptimizer.
+* (non-oomptimizer-only) ``batch_tokens`` is the maximum number of tokens we want to find inside a mini-batch. By default, similarly to ``batch_duration``, this number considers padding tokens too, therefore enabling bucketing is recommended to maximize the ratio of real vs padding tokens. Note that it's just a heuristic for determining the optimal batch sizes for different buckets, and may be less efficient than using OOMptimizer.
+
+* ``use_packed_sequence_sampling: true`` changes ``batch_tokens`` accounting
+  from ``batch_size * longest_sequence`` to the sum of the measured sequence
+  lengths. For heterogeneous, non-bucketed batches, NeMo fills a bounded
+  post-filter pool of ``shuffle_buffer_size`` candidates and chooses the exact
+  best-fit subset without exceeding the budget. The oldest candidate is always
+  included, which bounds displacement and prevents starvation. ``batch_tokens``
+  is therefore a hard upper bound. The sampler passes ``shuffle=False`` to its
+  ``DynamicCutSampler`` parent so that this packing pool is the only buffer;
+  with indexed input and ``shuffle: true``, the lazy data source supplies the
+  random Feistel permutation. Set ``max_tokens`` less than or equal to
+  ``batch_tokens`` so an individual over-budget example is filtered before
+  batching. Use this option only when the dataset and model preserve a
+  padding-free representation through the expensive model path.
 
 * (non-oomptimizer-only) ``quadratic_factor`` is a quadratic penalty to equalize the GPU memory usage between buckets of short and long sequence lengths for models with quadratic memory usage. It is only a heuristic and may not be as efficient as using OOMptimizer.
 
@@ -802,6 +830,15 @@ A :class:`~lhotse.dataset.sampling.base.SamplingConstraint` decides what
   and a ``token_equivalent_duration`` so audio cuts are measured in
   equivalent-token units alongside text. Enforces all of the above plus
   ``min_tpt``/``max_tpt`` (token-per-token ratio filtering).
+  With ``use_packed_sequence_sampling: true``, it wraps a packed token
+  constraint that budgets the sum of per-example lengths. The non-bucketing
+  sampler performs deterministic best-fit selection from the bounded
+  ``shuffle_buffer_size`` packing pool while requiring its oldest candidate.
+  For indexed sources, buffered candidates are saved as immutable graph-origin
+  tokens and reconstructed by random access for exact O(1) resume.
+  Audio examples additionally require ``audio_token_estimator`` in this mode;
+  ``token_equivalent_duration`` cannot guarantee a hard cap because frame and
+  subsampling rounding (especially at encoder chunk boundaries) is discrete.
 * ``FixedBucketBatchSizeConstraint2D`` — activated automatically when
   ``bucket_duration_bins`` is given as a list of ``[duration, tokens]``
   pairs **and** ``bucket_batch_size`` is set. Each bucket gets its own
@@ -811,6 +848,81 @@ A :class:`~lhotse.dataset.sampling.base.SamplingConstraint` decides what
 You usually don't pick a constraint by name — it's inferred from the
 combination of YAML options. The names matter when you read NeMo's source,
 extend the system with a custom constraint, or interpret error messages.
+
+Packed sequence sampling contract
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``use_packed_sequence_sampling`` changes sampling accounting only; it does
+not pack tensors or alter a model's attention behavior. The complete contract
+has three parts:
+
+* **Examples visible to the sampler.** Each example must be either a Lhotse
+  ``Cut`` or NeMo ``Formattable``. A ``Cut`` normally uses
+  ``token_equivalent_duration`` to convert audio duration to tokens;
+  with ``measure_total_length: true``, tokenized supervision text is added.
+  A ``Formattable`` must have been prompt-formatted/tokenized so its
+  ``input_length`` and ``total_length`` are available. The multimodal
+  constraint records the resulting scalar as ``example.num_tokens`` for the
+  downstream dataset. For exact packed audio sampling,
+  ``audio_token_estimator`` is mandatory and supersedes the duration estimate
+  in both token filters and sampling constraints. Its ``preprocessor`` mapping
+  specifies ``n_fft``, ``hop_length``, and per-side ``stft_pad_amount``;
+  ``subsampling`` is one mapping (or a list of mappings). A ``type: conv`` stage
+  specifies ``kernel_size``, ``stride``, per-side ``padding``, ``repeat``, and
+  ``ceil_mode``. A ``type: feature_stacking`` stage specifies ``factor`` and
+  applies ceiling division, matching PEE's feature-stacking encoder. Omitting
+  ``type`` retains backward compatibility by selecting ``conv``. This metadata
+  must describe every temporal reduction before audio embeddings replace the
+  locator token. ``chunk_size_seconds`` must equal the model's encoder chunk
+  size (or be ``null`` when chunking is disabled). NeMo fails clearly on the
+  first audio example if packed sampling is requested without this metadata.
+
+* **Dataset/collator output.** The Dataset class must accept the sampler's
+  ``CutSet`` mini-batch and retain the individual sequence boundaries while
+  constructing a contiguous representation. For SALM encoder packing,
+  ``SALMDataset(pack_audio=True)`` returns ``packed_audio_samples``,
+  ``audio_cu_seqlens``, and ``audio_lens``. When ``batch_tokens`` is also
+  supplied, it emits ``packing_efficiency = sum(example.num_tokens) /
+  batch_tokens`` after fault-tolerant collation; SALMAutomodel logs this scalar
+  on training steps. Under exact packed sampling the metric is at most ``1.0``;
+  lower values represent unused token budget. The metric is omitted if exact
+  sampler measurements are unavailable.
+
+* **Model forward signature.** The forward path must consume both the packed
+  values and explicit boundaries (for example cumulative sequence lengths and
+  the maximum sequence length), and its attention kernels must honor those
+  boundaries so examples cannot attend to one another. A model that only
+  accepts padded ``[B, T, ...]`` tensors, or ignores the boundary metadata,
+  does not satisfy this contract. SALM's packed encoder consumes the waveform
+  keys above, while its packed LLM path uses flattened THD activations plus
+  cumulative sequence-length metadata.
+
+For SALMAutomodel, a typical training configuration ties sampler accounting to
+the actual encoder execution mode::
+
+    use_multimodal_sampling: true
+    measure_total_length: true
+    batch_tokens: 16384
+    max_tokens: 16384
+    audio_token_estimator:
+      preprocessor:
+        n_fft: 512
+        hop_length: 160
+        stft_pad_amount: 256
+      subsampling:
+        type: conv
+        kernel_size: 3
+        stride: 2
+        padding: 1
+        repeat: 3
+        ceil_mode: false
+      chunk_size_seconds: ${model.encoder_chunk_size_seconds}
+    use_packed_sequence_sampling: ${model.packed_encoder_sequences}
+    shuffle: true
+    shuffle_buffer_size: 128
+
+Do not enable the option merely because the LLM is packed if the dominant
+encoder path still pads to the longest example.
 
 .. _indexed-resumable-dataloading:
 
@@ -1572,7 +1684,26 @@ options by what they control.
 
 **Inputs.** ``input_cfg``, ``manifest_filepath``,
 ``tarred_audio_filepaths``, ``cuts_path``, ``shar_path``,
-``skip_missing_manifest_entries``.
+``skip_missing_manifest_entries``, ``fault_tolerant_audio_loading``.
+
+The two failure policies are independent and loader-wide:
+
+* ``skip_missing_manifest_entries`` defaults to ``false``. Set it to ``true``
+  only for sequential paired-tar inputs where the tar may contain audio members
+  that have no corresponding JSONL row. It does not suppress malformed JSON,
+  missing required manifest fields, or audio I/O and decoder errors.
+* ``fault_tolerant_audio_loading`` defaults to ``true`` and drops examples whose
+  audio cannot be read, fetched, or decoded so training can continue past a
+  small number of corrupt files. Set it to ``false`` for fail-fast diagnostics.
+
+For example, strict manifest/tar alignment with fault-tolerant audio loading is
+the default. To tolerate filtered JSONL manifests while still failing on a bad
+audio payload, configure:
+
+.. code-block:: yaml
+
+   skip_missing_manifest_entries: true
+   fault_tolerant_audio_loading: false
 
 **Sampling — basic.** ``batch_size``, ``batch_duration``,
 ``quadratic_duration``, ``min_duration``, ``max_duration``, ``min_tps``,
@@ -1584,7 +1715,8 @@ options by what they control.
 
 **Sampling — multimodal.** ``use_multimodal_sampling``, ``prompt_format``,
 ``pretokenize``, ``audio_locator_tag``, ``token_equivalent_duration``,
-``batch_tokens``, ``quadratic_factor``, ``min_tokens``, ``max_tokens``,
+``audio_token_estimator``, ``batch_tokens``, ``use_packed_sequence_sampling``, ``quadratic_factor``,
+``min_tokens``, ``max_tokens``,
 ``min_tpt``, ``max_tpt``, ``measure_total_length``.
 
 **Sampling — fusion (multi-config).** ``multi_config``, ``sampler_fusion``,

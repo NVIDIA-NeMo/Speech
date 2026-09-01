@@ -719,7 +719,8 @@ def _normalize_packed_features_and_padding(features, lengths, sequence_ids, norm
         input_dtype = features.dtype
         statistics_features = _packed_normalization_statistics_features(features)
         denominator = lengths.clamp_min(1).unsqueeze(1)
-        mean = _packed_segment_sum(statistics_features, lengths) / denominator
+        reference = _packed_segment_reference(statistics_features, lengths)
+        mean = reference + _packed_segment_sum(statistics_features - reference[sequence_ids], lengths) / denominator
         centered = statistics_features - mean[sequence_ids]
         variance = _packed_segment_sum(centered.square(), lengths) / (denominator - 1)
         std = torch.sqrt(variance).masked_fill(variance.isnan(), 0.0) + CONSTANT
@@ -760,6 +761,13 @@ def _normalize_packed_features_and_padding(features, lengths, sequence_ids, norm
 def _packed_segment_sum(values, lengths):
     # Public packed entry points validate lengths; avoid repeating their synchronizing checks here.
     return torch.segment_reduce(values, "sum", lengths=lengths, unsafe=True)
+
+
+def _packed_segment_reference(values, lengths):
+    """Return one value per segment, with zeros for empty segments."""
+    starts = torch.cat([lengths.new_zeros(1), lengths.cumsum(0)[:-1]]).long()
+    references = values.index_select(0, starts.clamp_max(values.shape[0] - 1))
+    return references.masked_fill((lengths == 0).unsqueeze(1), 0.0)
 
 
 def _packed_normalization_statistics_features(features):

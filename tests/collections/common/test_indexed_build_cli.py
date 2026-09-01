@@ -131,11 +131,7 @@ def test_build_indexes_resolves_nested_input_cfg_relative_to_declaring_file(tmp_
         )
     )
     outer = wrapper_dir / "outer.yaml"
-    outer.write_text(
-        yaml.safe_dump(
-            [{"type": "group", "input_cfg": "inner.yaml", "weight": 1.0}]
-        )
-    )
+    outer.write_text(yaml.safe_dump([{"type": "group", "input_cfg": "inner.yaml", "weight": 1.0}]))
 
     result = CliRunner().invoke(
         build_indexes.main,

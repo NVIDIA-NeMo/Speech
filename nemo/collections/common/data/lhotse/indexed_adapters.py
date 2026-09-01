@@ -28,9 +28,7 @@ from urllib.parse import urlsplit
 import numpy as np
 
 try:
-    from lhotse.audio.source import (
-        resolve_s3_to_local_mirror as _resolve_s3_to_local_mirror,
-    )
+    from lhotse.audio.source import resolve_s3_to_local_mirror as _resolve_s3_to_local_mirror
 except ImportError:
     _resolve_s3_to_local_mirror = None
 
@@ -71,45 +69,29 @@ class TarSampleBundle(NamedTuple):
 def wds_sample_key(member_name: str) -> str:
     """Return the v2 logical sample key for one regular tar member name."""
     if not isinstance(member_name, str) or not member_name:
-        raise ValueError(
-            f"WebDataset member name must be a non-empty string, got {member_name!r}"
-        )
+        raise ValueError(f"WebDataset member name must be a non-empty string, got {member_name!r}")
     if member_name.startswith("/"):
-        raise ValueError(
-            f"WebDataset member name must not be absolute: {member_name!r}"
-        )
+        raise ValueError(f"WebDataset member name must not be absolute: {member_name!r}")
     raw_parts = member_name.split("/")
     if any(part in (".", "..") for part in raw_parts):
-        raise ValueError(
-            f"WebDataset member name has a forbidden path component: {member_name!r}"
-        )
+        raise ValueError(f"WebDataset member name has a forbidden path component: {member_name!r}")
     path = PurePosixPath(member_name)
     if path.is_absolute():
-        raise ValueError(
-            f"WebDataset member name must not be absolute: {member_name!r}"
-        )
+        raise ValueError(f"WebDataset member name must not be absolute: {member_name!r}")
     basename = path.name
     if not basename:
-        raise ValueError(
-            f"WebDataset member name has an empty basename: {member_name!r}"
-        )
+        raise ValueError(f"WebDataset member name has an empty basename: {member_name!r}")
     first_dot = basename.find(".")
     if first_dot < 0 or first_dot == len(basename) - 1:
-        raise ValueError(
-            f"WebDataset member basename is without an extension: {member_name!r}"
-        )
+        raise ValueError(f"WebDataset member basename is without an extension: {member_name!r}")
     if first_dot == 0:
-        raise ValueError(
-            f"WebDataset member basename has an empty prefix: {member_name!r}"
-        )
+        raise ValueError(f"WebDataset member basename has an empty prefix: {member_name!r}")
     prefix = basename[:first_dot]
     parent = path.parent
     return prefix if str(parent) == "." else str(parent / prefix)
 
 
-def wds_v2_index_path(
-    data_path: str | Path, indexes_root: str | Path | None = None
-) -> Path:
+def wds_v2_index_path(data_path: str | Path, indexes_root: str | Path | None = None) -> Path:
     """Return the local mirrored ``.wds-v2.idx`` path for ``data_path``."""
     from lhotse.indexing import index_file_path
 
@@ -120,9 +102,7 @@ def wds_v2_index_path(
             f"for remote source {data_path!s}."
         )
     if not legacy_path.endswith(".idx"):
-        raise ValueError(
-            f"Unexpected Lhotse index path without .idx suffix: {legacy_path}"
-        )
+        raise ValueError(f"Unexpected Lhotse index path without .idx suffix: {legacy_path}")
     return Path(legacy_path[: -len(".idx")] + _WDS_V2_INDEX_SUFFIX)
 
 
@@ -130,9 +110,7 @@ def wds_v2_metadata_path(idx_path: str | Path) -> Path:
     """Return the canonical metadata companion path for a WDS v2 offset sidecar."""
     idx_path = Path(idx_path)
     if not str(idx_path).endswith(_WDS_V2_INDEX_SUFFIX):
-        raise ValueError(
-            f"WDS v2 index path must end with {_WDS_V2_INDEX_SUFFIX!r}: {idx_path}"
-        )
+        raise ValueError(f"WDS v2 index path must end with {_WDS_V2_INDEX_SUFFIX!r}: {idx_path}")
     return Path(str(idx_path) + _WDS_V2_METADATA_SUFFIX)
 
 
@@ -198,9 +176,7 @@ def create_wds_v2_tar_index(
     """Build and atomically publish an immutable variable-member WDS v2 index pair."""
     tar_path_str = os.fspath(tar_path)
     idx_path = wds_v2_index_path(tar_path_str) if idx_path is None else Path(idx_path)
-    metadata_path = (
-        wds_v2_metadata_path(idx_path) if metadata_path is None else Path(metadata_path)
-    )
+    metadata_path = wds_v2_metadata_path(idx_path) if metadata_path is None else Path(metadata_path)
     _require_wds_v2_sidecar_paths(idx_path, metadata_path)
     if idx_path.exists() or metadata_path.exists():
         raise FileExistsError(
@@ -219,9 +195,7 @@ def create_wds_v2_tar_index(
             f"scanned={source_size}, current={source['size_bytes']}"
         )
 
-    raw_offsets = b"".join(
-        struct.pack("<Q", offset) for offset in (*offsets, source_size)
-    )
+    raw_offsets = b"".join(struct.pack("<Q", offset) for offset in (*offsets, source_size))
     metadata = {
         "format": WDS_V2_INDEX_FORMAT,
         "version": WDS_V2_INDEX_VERSION,
@@ -273,9 +247,7 @@ def validate_wds_v2_tar_index(
     """Validate one WDS v2 offset/metadata pair against its configured source."""
     tar_path_str = os.fspath(tar_path)
     idx_path = wds_v2_index_path(tar_path_str) if idx_path is None else Path(idx_path)
-    metadata_path = (
-        wds_v2_metadata_path(idx_path) if metadata_path is None else Path(metadata_path)
-    )
+    metadata_path = wds_v2_metadata_path(idx_path) if metadata_path is None else Path(metadata_path)
     _require_wds_v2_sidecar_paths(idx_path, metadata_path)
     try:
         raw_offsets = idx_path.read_bytes()
@@ -284,19 +256,13 @@ def validate_wds_v2_tar_index(
     try:
         raw_metadata = metadata_path.read_bytes()
     except FileNotFoundError as ex:
-        raise FileNotFoundError(
-            f"Missing WDS v2 metadata sidecar: {metadata_path}"
-        ) from ex
+        raise FileNotFoundError(f"Missing WDS v2 metadata sidecar: {metadata_path}") from ex
     try:
         metadata = json.loads(raw_metadata)
     except (UnicodeDecodeError, json.JSONDecodeError) as ex:
-        raise ValueError(
-            f"Malformed WDS v2 metadata JSON in {metadata_path}: {ex}"
-        ) from ex
+        raise ValueError(f"Malformed WDS v2 metadata JSON in {metadata_path}: {ex}") from ex
     if raw_metadata != _canonical_json_bytes(metadata):
-        raise ValueError(
-            f"WDS v2 metadata is not canonical sorted compact JSON: {metadata_path}"
-        )
+        raise ValueError(f"WDS v2 metadata is not canonical sorted compact JSON: {metadata_path}")
 
     _validate_wds_v2_metadata_shape(metadata, metadata_path)
     if metadata["source"]["path"] != tar_path_str:
@@ -464,9 +430,7 @@ def _split_json_audio_pair(name_a, bytes_a, name_b, bytes_b) -> TarSample:
     is_json_a = name_a.endswith(".json")
     is_json_b = name_b.endswith(".json")
     if is_json_a == is_json_b:
-        raise ValueError(
-            f"Expected exactly one .json member in tar sample pair, got: {name_a}, {name_b}"
-        )
+        raise ValueError(f"Expected exactly one .json member in tar sample pair, got: {name_a}, {name_b}")
     if is_json_a:
         json_name, json_bytes = name_a, bytes_a
         audio_name, audio_bytes = name_b, bytes_b
@@ -476,10 +440,7 @@ def _split_json_audio_pair(name_a, bytes_a, name_b, bytes_b) -> TarSample:
     json_key = PurePosixPath(json_name).with_suffix("").as_posix()
     audio_key = PurePosixPath(audio_name).with_suffix("").as_posix()
     if json_key != audio_key:
-        raise ValueError(
-            "WebDataset tar pair has different sample keys: "
-            f"json={json_name!r} audio={audio_name!r}."
-        )
+        raise ValueError("WebDataset tar pair has different sample keys: " f"json={json_name!r} audio={audio_name!r}.")
     return TarSample(json.loads(json_bytes), audio_bytes, audio_name)
 
 
@@ -493,9 +454,7 @@ class IndexedTarSampleReader:
 
     def __init__(self, tar_path: str | Path, idx_path: str | Path | None = None):
         self.data_path = str(tar_path)
-        self.offsets, self._len = _load_index(
-            self.data_path, str(idx_path) if idx_path else None
-        )
+        self.offsets, self._len = _load_index(self.data_path, str(idx_path) if idx_path else None)
         self._data_size = int(self.offsets[-1])
         self._validate_index()
 
@@ -608,8 +567,7 @@ class IndexedTarSampleBundleReader:
             ValueError,
         ) as ex:
             raise ValueError(
-                f"Invalid WDS v2 sample {idx}/{self._len} in {self.data_path} "
-                f"at byte range [{start}, {end}): {ex}"
+                f"Invalid WDS v2 sample {idx}/{self._len} in {self.data_path} " f"at byte range [{start}, {end}): {ex}"
             ) from ex
 
 
@@ -618,9 +576,7 @@ class PackedTarSampleBundleReader:
 
     def __init__(self, collection, max_open_files: int = 32):
         if collection.kind != "wds_tar_v2":
-            raise ValueError(
-                f"Expected a wds_tar_v2 collection, got {collection.kind!r}"
-            )
+            raise ValueError(f"Expected a wds_tar_v2 collection, got {collection.kind!r}")
         if not collection.offsets_required:
             raise ValueError("A wds_tar_v2 collection must contain sample offsets")
         if max_open_files < 1:
@@ -668,9 +624,7 @@ class PackedTarSampleBundleReader:
                 max_open_files=self.max_open_files,
             )
         try:
-            return _decode_wds_v2_sample_range(
-                raw, location.path, idx, location.start, location.end
-            )
+            return _decode_wds_v2_sample_range(raw, location.path, idx, location.start, location.end)
         except (
             EOFError,
             tarfile.TarError,
@@ -747,10 +701,7 @@ class IndexedTarMemberReader:
         try:
             name, data = _read_tar_member(self._fh)
         except (EOFError, tarfile.TarError) as e:
-            raise type(e)(
-                f"{e} — reading sample {idx}/{self._len} at offset {offset} "
-                f"in {self.data_path}"
-            ) from e
+            raise type(e)(f"{e} — reading sample {idx}/{self._len} at offset {offset} " f"in {self.data_path}") from e
         return name, data
 
     def _build_name_index(self) -> dict[str, int]:
@@ -772,9 +723,7 @@ class IndexedTarMemberReader:
                 header = self._fh.read(_TAR_BLOCK_SIZE)
                 if len(header) < _TAR_BLOCK_SIZE or header == _TAR_ZERO_BLOCK:
                     break
-                info = tarfile.TarInfo.frombuf(
-                    header, tarfile.ENCODING, "surrogateescape"
-                )
+                info = tarfile.TarInfo.frombuf(header, tarfile.ENCODING, "surrogateescape")
                 if info.type in (tarfile.REGTYPE, tarfile.AREGTYPE):
                     name_to_idx[info.name] = i
                     break
@@ -846,9 +795,7 @@ def _parse_pax_headers(data: bytes) -> dict[str, str]:
     while position < len(data):
         space = data.find(b" ", position)
         if space < 0:
-            raise tarfile.ReadError(
-                "Malformed PAX header: missing record length separator"
-            )
+            raise tarfile.ReadError("Malformed PAX header: missing record length separator")
         try:
             length = int(data[position:space])
         except ValueError as ex:
@@ -862,9 +809,7 @@ def _parse_pax_headers(data: bytes) -> dict[str, str]:
         key, separator, value = record.partition(b"=")
         if not separator:
             raise tarfile.ReadError("Malformed PAX header key/value record")
-        headers[key.decode("utf-8", "surrogateescape")] = value.decode(
-            "utf-8", "surrogateescape"
-        )
+        headers[key.decode("utf-8", "surrogateescape")] = value.decode("utf-8", "surrogateescape")
         position = end
     return headers
 
@@ -924,13 +869,9 @@ class PackedTarMemberReader:
             if header == _TAR_ZERO_BLOCK:
                 break
             try:
-                info = tarfile.TarInfo.frombuf(
-                    header, tarfile.ENCODING, "surrogateescape"
-                )
+                info = tarfile.TarInfo.frombuf(header, tarfile.ENCODING, "surrogateescape")
             except tarfile.TarError as ex:
-                raise type(ex)(
-                    f"{ex} — reading packed tar header at {position} in {location.path}"
-                ) from ex
+                raise type(ex)(f"{ex} — reading packed tar header at {position} in {location.path}") from ex
             data_position = position + _TAR_BLOCK_SIZE
             if info.type in (
                 tarfile.XHDTYPE,
@@ -941,17 +882,12 @@ class PackedTarMemberReader:
                 if info.type in (tarfile.XHDTYPE, tarfile.XGLTYPE):
                     pax_headers.update(_parse_pax_headers(data))
                 else:
-                    long_name = data.rstrip(b"\0\n").decode(
-                        tarfile.ENCODING, "surrogateescape"
-                    )
+                    long_name = data.rstrip(b"\0\n").decode(tarfile.ENCODING, "surrogateescape")
             elif info.type in (tarfile.REGTYPE, tarfile.AREGTYPE):
                 return pax_headers.get("path") or long_name or info.name
-            position = data_position + (
-                -(-info.size // _TAR_BLOCK_SIZE) * _TAR_BLOCK_SIZE
-            )
+            position = data_position + (-(-info.size // _TAR_BLOCK_SIZE) * _TAR_BLOCK_SIZE)
         raise EOFError(
-            f"No regular tar member in packed range [{location.start}, {location.end}) "
-            f"in {location.path}"
+            f"No regular tar member in packed range [{location.start}, {location.end}) " f"in {location.path}"
         )
 
     def _name_index_for_shard(self, shard_index: int) -> dict[str, int]:
@@ -1100,6 +1036,7 @@ def create_tar_index(tar_path, idx_path):
     ``idx_path`` and then ``os.replace()``-d into place, so concurrent writers
     can't observe a half-written ``.idx``.
     """
+
     def scan_offsets(tar):
         offsets = []
         prev_stem = None
@@ -1112,7 +1049,6 @@ def create_tar_index(tar_path, idx_path):
                 prev_stem = stem
         return offsets
 
-
     def scan_stream(fileobj):
         counter = _CountingReader(fileobj)
         with tarfile.open(fileobj=counter, mode="r|") as tar:
@@ -1122,6 +1058,7 @@ def create_tar_index(tar_path, idx_path):
         while counter.read(1024 * 1024):
             pass
         return offsets, counter.bytes_read
+
     read_path = _resolve_data_path(str(tar_path))
     scheme = urlsplit(read_path).scheme.lower() if _is_remote_path(read_path) else ""
     if scheme and scheme not in _SUPPORTED_REMOTE_RANGE_SCHEMES:
@@ -1182,16 +1119,12 @@ def _scan_wds_v2_tar(tar_path: str) -> tuple[list[int], int, int]:
                     continue
                 key = wds_sample_key(member.name)
                 if member.name in seen_member_names:
-                    raise ValueError(
-                        f"WebDataset tar {tar_path} has duplicate regular member name {member.name!r}"
-                    )
+                    raise ValueError(f"WebDataset tar {tar_path} has duplicate regular member name {member.name!r}")
                 seen_member_names.add(member.name)
                 if key != current_key:
                     finish_sample()
                     if key in closed_keys:
-                        raise ValueError(
-                            f"WebDataset tar {tar_path} has non-contiguous reuse of sample key {key!r}"
-                        )
+                        raise ValueError(f"WebDataset tar {tar_path} has non-contiguous reuse of sample key {key!r}")
                     if current_key is not None:
                         closed_keys.add(current_key)
                     current_key = key
@@ -1204,9 +1137,7 @@ def _scan_wds_v2_tar(tar_path: str) -> tuple[list[int], int, int]:
                     json_count += 1
                     extracted = archive.extractfile(member)
                     if extracted is None:
-                        raise ValueError(
-                            f"Could not read JSON member {member.name!r} in {tar_path}"
-                        )
+                        raise ValueError(f"Could not read JSON member {member.name!r} in {tar_path}")
                     raw_json = extracted.read()
                     try:
                         decoded = json.loads(raw_json)
@@ -1227,9 +1158,7 @@ def _scan_wds_v2_tar(tar_path: str) -> tuple[list[int], int, int]:
     return offsets, regular_member_count, source_size
 
 
-def _decode_wds_v2_sample_range(
-    raw: bytes, source_path: str, idx: int, start: int, end: int
-) -> TarSampleBundle:
+def _decode_wds_v2_sample_range(raw: bytes, source_path: str, idx: int, start: int, end: int) -> TarSampleBundle:
     members = list(_iter_regular_tar_members(raw))
     if not members:
         raise ValueError("sample range contains no regular tar members")
@@ -1253,13 +1182,9 @@ def _decode_wds_v2_sample_range(
         else:
             payloads.append(TarSampleMember(name, data))
     if len(json_items) != 1:
-        raise ValueError(
-            f"sample key {sample_key!r} must contain exactly one .json member; found {len(json_items)}"
-        )
+        raise ValueError(f"sample key {sample_key!r} must contain exactly one .json member; found {len(json_items)}")
     if not payloads:
-        raise ValueError(
-            f"sample key {sample_key!r} must contain at least one non-JSON payload"
-        )
+        raise ValueError(f"sample key {sample_key!r} must contain at least one non-JSON payload")
     json_name, raw_json = json_items[0]
     try:
         json_data = json.loads(raw_json)
@@ -1285,16 +1210,12 @@ def _iter_regular_tar_members(raw: bytes):
         remaining = raw[position:]
         if len(remaining) < _TAR_BLOCK_SIZE:
             if any(remaining):
-                raise EOFError(
-                    f"Truncated tar header at relative byte offset {position}"
-                )
+                raise EOFError(f"Truncated tar header at relative byte offset {position}")
             return
         header = remaining[:_TAR_BLOCK_SIZE]
         if header == _TAR_ZERO_BLOCK:
             if any(remaining):
-                raise tarfile.ReadError(
-                    f"Non-zero data follows tar end marker at relative byte offset {position}"
-                )
+                raise tarfile.ReadError(f"Non-zero data follows tar end marker at relative byte offset {position}")
             return
         info = tarfile.TarInfo.frombuf(header, tarfile.ENCODING, "surrogateescape")
         data_start = position + _TAR_BLOCK_SIZE
@@ -1400,9 +1321,7 @@ def _remote_object_identity(source) -> str | None:
     etag = getattr(attributes, "etag", "") if attributes is not None else ""
     if etag:
         return f"etag:{etag}"
-    checksum = (
-        getattr(attributes, "checksum_value", "") if attributes is not None else ""
-    )
+    checksum = getattr(attributes, "checksum_value", "") if attributes is not None else ""
     if checksum:
         checksum_type = getattr(attributes, "checksum_type", "") or "backend"
         return f"checksum:{checksum_type}:{checksum}"
@@ -1410,9 +1329,7 @@ def _remote_object_identity(source) -> str | None:
 
 
 def _canonical_json_bytes(value) -> bytes:
-    return json.dumps(
-        value, ensure_ascii=False, separators=(",", ":"), sort_keys=True
-    ).encode("utf-8")
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
 
 
 def _validate_wds_v2_metadata_shape(metadata: dict, metadata_path: Path) -> None:
@@ -1430,59 +1347,41 @@ def _validate_wds_v2_metadata_shape(metadata: dict, metadata_path: Path) -> None
             f"Invalid WDS v2 metadata keys in {metadata_path}: expected {sorted(expected_keys)}, "
             f"got {sorted(metadata) if isinstance(metadata, dict) else type(metadata).__name__}"
         )
-    if (
-        metadata["format"] != WDS_V2_INDEX_FORMAT
-        or metadata["version"] != WDS_V2_INDEX_VERSION
-    ):
+    if metadata["format"] != WDS_V2_INDEX_FORMAT or metadata["version"] != WDS_V2_INDEX_VERSION:
         raise ValueError(
             f"Unsupported WDS v2 metadata format/version in {metadata_path}: "
             f"format={metadata['format']!r}, version={metadata['version']!r}"
         )
     if metadata["sample_key_algorithm"] != WDS_V2_SAMPLE_KEY_ALGORITHM:
         raise ValueError(
-            f"Unsupported WDS v2 sample-key algorithm in {metadata_path}: "
-            f"{metadata['sample_key_algorithm']!r}"
+            f"Unsupported WDS v2 sample-key algorithm in {metadata_path}: " f"{metadata['sample_key_algorithm']!r}"
         )
     source = metadata["source"]
     source_keys = {"path", "size_bytes", "mtime_ns", "object_identity"}
     if not isinstance(source, dict) or set(source) != source_keys:
-        raise ValueError(
-            f"Invalid WDS v2 source metadata in {metadata_path}: {source!r}"
-        )
+        raise ValueError(f"Invalid WDS v2 source metadata in {metadata_path}: {source!r}")
     if not isinstance(source["path"], str) or not source["path"]:
-        raise ValueError(
-            f"Invalid WDS v2 source path in {metadata_path}: {source['path']!r}"
-        )
+        raise ValueError(f"Invalid WDS v2 source path in {metadata_path}: {source['path']!r}")
     for field in ("size_bytes", "mtime_ns"):
         if type(source[field]) is not int or source[field] < 0:
-            raise ValueError(
-                f"Invalid WDS v2 source {field} in {metadata_path}: {source[field]!r}"
-            )
+            raise ValueError(f"Invalid WDS v2 source {field} in {metadata_path}: {source[field]!r}")
     if source["object_identity"] is not None and (
         not isinstance(source["object_identity"], str) or not source["object_identity"]
     ):
-        raise ValueError(
-            f"Invalid WDS v2 source object_identity in {metadata_path}: {source['object_identity']!r}"
-        )
+        raise ValueError(f"Invalid WDS v2 source object_identity in {metadata_path}: {source['object_identity']!r}")
     for field in ("regular_member_count", "sample_count"):
         if type(metadata[field]) is not int or metadata[field] < 0:
-            raise ValueError(
-                f"Invalid WDS v2 {field} in {metadata_path}: {metadata[field]!r}"
-            )
+            raise ValueError(f"Invalid WDS v2 {field} in {metadata_path}: {metadata[field]!r}")
     if (
         not isinstance(metadata["offsets_sha256"], str)
         or re.fullmatch(r"[0-9a-f]{64}", metadata["offsets_sha256"]) is None
     ):
-        raise ValueError(
-            f"Invalid WDS v2 offsets_sha256 in {metadata_path}: {metadata['offsets_sha256']!r}"
-        )
+        raise ValueError(f"Invalid WDS v2 offsets_sha256 in {metadata_path}: {metadata['offsets_sha256']!r}")
 
 
 def _require_wds_v2_sidecar_paths(idx_path: Path, metadata_path: Path) -> None:
     if not str(idx_path).endswith(_WDS_V2_INDEX_SUFFIX):
-        raise ValueError(
-            f"WDS v2 index path must end with {_WDS_V2_INDEX_SUFFIX!r}: {idx_path}"
-        )
+        raise ValueError(f"WDS v2 index path must end with {_WDS_V2_INDEX_SUFFIX!r}: {idx_path}")
     expected_metadata = wds_v2_metadata_path(idx_path)
     if metadata_path != expected_metadata:
         raise ValueError(

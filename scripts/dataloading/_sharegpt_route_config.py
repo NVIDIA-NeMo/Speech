@@ -68,15 +68,9 @@ def discover_sharegpt_route_specs(
     if route_path and legacy_route_path and str(route_path) != str(legacy_route_path):
         raise ValueError("tar_routing_filepath and tar_routing_index disagree")
     route_path = route_path or legacy_route_path
-    if not isinstance(route_path, (str, Path)) or not str(route_path).endswith(
-        ".sgroute"
-    ):
-        raise ValueError(
-            "ShareGPT collection mode requires tar_routing_filepath with the .sgroute suffix"
-        )
-    manifest_paths, manifest_specs = _expand_jsonl_with_specs(
-        entry.get("manifest_filepath")
-    )
+    if not isinstance(route_path, (str, Path)) or not str(route_path).endswith(".sgroute"):
+        raise ValueError("ShareGPT collection mode requires tar_routing_filepath with the .sgroute suffix")
+    manifest_paths, manifest_specs = _expand_jsonl_with_specs(entry.get("manifest_filepath"))
     tar_paths = _expand_tars(entry.get("tarred_audio_filepaths"))
     specs.append(
         ShareGptRouteSpec(

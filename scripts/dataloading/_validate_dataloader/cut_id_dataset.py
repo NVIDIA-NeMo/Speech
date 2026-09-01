@@ -36,13 +36,10 @@ def _validation_identity(cut) -> str:
         # keeping this namespace distinct from indexed graph tokens.
         return "semantic:" + json.dumps(str(cut.id), ensure_ascii=False)
     try:
-        encoded = json.dumps(
-            token, ensure_ascii=False, separators=(",", ":"), sort_keys=True
-        )
+        encoded = json.dumps(token, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
     except TypeError as error:
         raise TypeError(
-            "Indexed example graph-origin token is not JSON-serializable: "
-            f"type={type(token).__name__}"
+            "Indexed example graph-origin token is not JSON-serializable: " f"type={type(token).__name__}"
         ) from error
     return f"graph:{encoded}"
 
@@ -76,10 +73,7 @@ def _declared_audio_duration(example) -> float:
     list_cuts = getattr(example, "list_cuts", None)
     if not callable(list_cuts):
         return 0.0
-    return sum(
-        _nonnegative_float(getattr(cut, "duration", None), default=0.0)
-        for cut in list_cuts()
-    )
+    return sum(_nonnegative_float(getattr(cut, "duration", None), default=0.0) for cut in list_cuts())
 
 
 class CutIdDataset(torch.utils.data.Dataset):
@@ -95,20 +89,10 @@ class CutIdDataset(torch.utils.data.Dataset):
         return {
             "cut_ids": [_validation_identity(cut) for cut in cuts],
             "semantic_cut_ids": [str(cut.id) for cut in cuts],
-            "declared_duration_seconds": [
-                _declared_audio_duration(cut)
-                for cut in cuts
-            ],
-            "sampled_num_tokens": [
-                _nonnegative_int(getattr(cut, "num_tokens", None), default=-1)
-                for cut in cuts
-            ],
-            "source_groups": [
-                str(getattr(cut, "validation_source_group", "")) for cut in cuts
-            ],
-            "source_ids": [
-                str(getattr(cut, "validation_source_id", "")) for cut in cuts
-            ],
+            "declared_duration_seconds": [_declared_audio_duration(cut) for cut in cuts],
+            "sampled_num_tokens": [_nonnegative_int(getattr(cut, "num_tokens", None), default=-1) for cut in cuts],
+            "source_groups": [str(getattr(cut, "validation_source_group", "")) for cut in cuts],
+            "source_ids": [str(getattr(cut, "validation_source_id", "")) for cut in cuts],
             "worker_id": int(info.id) if info is not None else 0,
             "num_workers": int(info.num_workers) if info is not None else 1,
         }

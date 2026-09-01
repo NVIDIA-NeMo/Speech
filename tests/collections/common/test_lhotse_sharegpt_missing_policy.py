@@ -68,9 +68,7 @@ def _sharegpt_row(index: int, audio_name: str | None = None) -> dict:
 
 
 def _write_paired_manifest(path: Path, num_rows: int = 3) -> Path:
-    path.write_text(
-        "".join(json.dumps(_sharegpt_row(index)) + "\n" for index in range(num_rows))
-    )
+    path.write_text("".join(json.dumps(_sharegpt_row(index)) + "\n" for index in range(num_rows)))
     create_jsonl_index(path)
     return path
 
@@ -238,9 +236,7 @@ def _write_wds(root: Path, *, version: int) -> Path:
         )
         members.append((f"{index}.wav", b"not-an-audio-file" if index == 1 else _wav()))
     tar_path = _write_tar(root / "shard.tar", members)
-    (root / "wids-meta.json").write_text(
-        json.dumps({"shardlist": [{"url": "shard.tar", "nsamples": 3}]})
-    )
+    (root / "wids-meta.json").write_text(json.dumps({"shardlist": [{"url": "shard.tar", "nsamples": 3}]}))
     if version == 1:
         create_tar_index(tar_path, f"{tar_path}.idx")
     else:
@@ -342,9 +338,7 @@ def test_sharegpt_wds_v1_rejects_cross_sample_member_pairing(
             ("2.wav", _wav()),
         ],
     )
-    (data_dir / "wids-meta.json").write_text(
-        json.dumps({"shardlist": [{"url": "shard.tar", "nsamples": 2}]})
-    )
+    (data_dir / "wids-meta.json").write_text(json.dumps({"shardlist": [{"url": "shard.tar", "nsamples": 2}]}))
     if indexed:
         create_tar_index(tar_path, f"{tar_path}.idx")
     adapter = _wds_adapter(

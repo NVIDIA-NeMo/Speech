@@ -1,3 +1,17 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Run exact materialized-SFT token censuses per shard and merge fail-closed."""
 
 from __future__ import annotations
@@ -59,9 +73,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def resolve_shards(
-    raw_paths: list[str], *, expected_files: int, expected_bytes: int
-) -> list[Shard]:
+def resolve_shards(raw_paths: list[str], *, expected_files: int, expected_bytes: int) -> list[Shard]:
     paths = [Path(raw) for raw in raw_paths]
     if len(paths) != expected_files:
         raise ValueError(f"Expected {expected_files} shard arguments, got {len(paths)}")
@@ -71,15 +83,10 @@ def resolve_shards(
     missing = [str(path) for path in paths if not path.is_file()]
     if missing:
         raise FileNotFoundError(f"Missing shard files: {missing}")
-    shards = [
-        Shard(index=index, path=path, bytes=path.stat().st_size)
-        for index, path in enumerate(paths)
-    ]
+    shards = [Shard(index=index, path=path, bytes=path.stat().st_size) for index, path in enumerate(paths)]
     actual_bytes = sum(shard.bytes for shard in shards)
     if actual_bytes != expected_bytes:
-        raise ValueError(
-            f"Expected aggregate bytes={expected_bytes}, observed {actual_bytes}"
-        )
+        raise ValueError(f"Expected aggregate bytes={expected_bytes}, observed {actual_bytes}")
     return shards
 
 
@@ -92,9 +99,7 @@ def _empty_stats() -> dict:
     }
 
 
-def _validate_shard_report(
-    report: dict, *, shard: Shard, tokenizer: str, special_tokens: list[str]
-) -> dict:
+def _validate_shard_report(report: dict, *, shard: Shard, tokenizer: str, special_tokens: list[str]) -> dict:
     if report.get("schema_version") != 1:
         raise ValueError(f"Shard {shard.index} has unsupported schema_version")
     if report.get("tokenizer") != tokenizer:
@@ -142,13 +147,9 @@ def merge_reports(
         row_min = stats["min_row_tokens"]
         if row_min is not None:
             aggregate["min_row_tokens"] = (
-                row_min
-                if aggregate["min_row_tokens"] is None
-                else min(aggregate["min_row_tokens"], row_min)
+                row_min if aggregate["min_row_tokens"] is None else min(aggregate["min_row_tokens"], row_min)
             )
-        aggregate["max_row_tokens"] = max(
-            aggregate["max_row_tokens"], stats["max_row_tokens"]
-        )
+        aggregate["max_row_tokens"] = max(aggregate["max_row_tokens"], stats["max_row_tokens"])
         shard_summaries.append(
             {
                 "index": shard.index,
@@ -165,21 +166,14 @@ def merge_reports(
         raise ValueError("Merged report byte count does not match accepted closure")
     aggregate["role_messages"] = dict(sorted(aggregate["role_messages"].items()))
     aggregate["mean_row_tokens"] = (
-        aggregate["total_tokens"] / aggregate["packed_rows"]
-        if aggregate["packed_rows"]
-        else 0.0
+        aggregate["total_tokens"] / aggregate["packed_rows"] if aggregate["packed_rows"] else 0.0
     )
     aggregate["assistant_token_fraction"] = (
-        aggregate["assistant_tokens"] / aggregate["total_tokens"]
-        if aggregate["total_tokens"]
-        else 0.0
+        aggregate["assistant_tokens"] / aggregate["total_tokens"] if aggregate["total_tokens"] else 0.0
     )
     return {
         "schema_version": 2,
-        "metric": (
-            "exact identity-preformatted tokens; assistant tokens selected "
-            "by top-level role"
-        ),
+        "metric": ("exact identity-preformatted tokens; assistant tokens selected " "by top-level role"),
         "tokenizer": tokenizer,
         "additional_special_tokens": special_tokens,
         "chunk_tokenization_validated": True,
@@ -189,9 +183,7 @@ def merge_reports(
     }
 
 
-def _counter_command(
-    *, args: argparse.Namespace, counter: Path, shard: Shard, report: Path
-) -> list[str]:
+def _counter_command(*, args: argparse.Namespace, counter: Path, shard: Shard, report: Path) -> list[str]:
     command = [
         sys.executable,
         str(counter),
@@ -211,18 +203,14 @@ def _counter_command(
     return command
 
 
-def run_shards(
-    *, args: argparse.Namespace, shards: list[Shard], counter: Path, work_dir: Path
-) -> list[dict]:
+def run_shards(*, args: argparse.Namespace, shards: list[Shard], counter: Path, work_dir: Path) -> list[dict]:
     running: list[RunningShard] = []
     try:
         for shard in shards:
             report = work_dir / f"shard-{shard.index:02d}.json"
             log = work_dir / f"shard-{shard.index:02d}.log"
             log_stream = log.open("w", encoding="utf-8")
-            command = _counter_command(
-                args=args, counter=counter, shard=shard, report=report
-            )
+            command = _counter_command(args=args, counter=counter, shard=shard, report=report)
             print(
                 json.dumps(
                     {
@@ -241,9 +229,7 @@ def run_shards(
                 stderr=subprocess.STDOUT,
                 text=True,
             )
-            running.append(
-                RunningShard(shard, process, report, log, log_stream)
-            )
+            running.append(RunningShard(shard, process, report, log, log_stream))
 
         pending = set(range(len(running)))
         while pending:
@@ -260,16 +246,10 @@ def run_shards(
                     for other_index in pending:
                         running[other_index].process.wait(timeout=30)
                         running[other_index].log_stream.close()
-                    tail = "\n".join(
-                        item.log.read_text(encoding="utf-8", errors="replace").splitlines()[-40:]
-                    )
-                    raise RuntimeError(
-                        f"Shard {item.shard.index} counter failed with {status}:\n{tail}"
-                    )
+                    tail = "\n".join(item.log.read_text(encoding="utf-8", errors="replace").splitlines()[-40:])
+                    raise RuntimeError(f"Shard {item.shard.index} counter failed with {status}:\n{tail}")
                 if not item.report.is_file():
-                    raise FileNotFoundError(
-                        f"Shard {item.shard.index} exited successfully without report"
-                    )
+                    raise FileNotFoundError(f"Shard {item.shard.index} exited successfully without report")
                 print(
                     json.dumps(
                         {"event": "shard_task_done", "index": item.shard.index},
@@ -289,16 +269,12 @@ def run_shards(
 def publish_atomic(report: dict, *, output: Path, success_marker: Path) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     if output.exists() or success_marker.exists():
-        raise FileExistsError(
-            f"Refusing to overwrite output/marker: {output}, {success_marker}"
-        )
+        raise FileExistsError(f"Refusing to overwrite output/marker: {output}, {success_marker}")
     nonce = f"{os.getpid()}.{uuid.uuid4().hex}"
     staged_output = output.with_name(f".{output.name}.tmp.{nonce}")
     staged_marker = success_marker.with_name(f".{success_marker.name}.tmp.{nonce}")
     try:
-        staged_output.write_text(
-            json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
+        staged_output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         with staged_output.open("rb") as stream:
             os.fsync(stream.fileno())
         staged_marker.write_text(
@@ -358,9 +334,7 @@ def main() -> None:
         raise FileExistsError(f"Work directory already exists: {work_dir}")
     work_dir.mkdir(parents=True)
     try:
-        reports = run_shards(
-            args=args, shards=shards, counter=counter, work_dir=work_dir
-        )
+        reports = run_shards(args=args, shards=shards, counter=counter, work_dir=work_dir)
         merged = merge_reports(
             shards=shards,
             reports=reports,

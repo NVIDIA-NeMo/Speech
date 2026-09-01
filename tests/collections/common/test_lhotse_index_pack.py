@@ -20,31 +20,20 @@ import tarfile
 import pytest
 import yaml
 from click.testing import CliRunner
-from lhotse.index_pack import (
-    IndexPack,
-    IndexPackCollectionSpec,
-    index_pack_collection_key,
-    write_index_pack,
-)
+from lhotse.index_pack import IndexPack, IndexPackCollectionSpec, index_pack_collection_key, write_index_pack
 from lhotse.indexing import create_jsonl_index
-from nemo.collections.common.data.lhotse import nemo_adapters, text_adapters
-from nemo.collections.common.data.lhotse.cutset import read_nemo_manifest
-from nemo.collections.common.data.lhotse.indexed_adapters import (
-    PackedTarMemberReader,
-    read_exact_range,
-)
-from nemo.collections.common.data.lhotse.indexed_adapters import (
-    create_tar_index as create_nemo_tar_index,
-)
-from nemo.collections.common.data.lhotse.nemo_adapters import (
-    LazyNeMoIterator,
-    LazyNeMoTarredIterator,
-)
 from omegaconf import OmegaConf
 from scripts.dataloading import convert_indexes_to_idxpack as converter
 from scripts.dataloading import validate_idxpack_records as record_validator
 from scripts.dataloading.convert_indexes_to_idxpack import main
 from scripts.dataloading.validate_idxpack_records import main as validate_records_main
+
+from nemo.collections.common.data.lhotse import nemo_adapters, text_adapters
+from nemo.collections.common.data.lhotse.cutset import read_nemo_manifest
+from nemo.collections.common.data.lhotse.indexed_adapters import PackedTarMemberReader
+from nemo.collections.common.data.lhotse.indexed_adapters import create_tar_index as create_nemo_tar_index
+from nemo.collections.common.data.lhotse.indexed_adapters import read_exact_range
+from nemo.collections.common.data.lhotse.nemo_adapters import LazyNeMoIterator, LazyNeMoTarredIterator
 
 
 def _make_native_tar_dataset(tmp_path):
@@ -169,9 +158,7 @@ def test_idxpack_json_record_validator_rejects_non_object_rows(tmp_path):
     messages = []
 
     with pytest.raises(record_validator.IndexPackRecordValidationError) as exc_info:
-        record_validator.validate_idxpack_json_records(
-            pack_path, report=messages.append
-        )
+        record_validator.validate_idxpack_json_records(pack_path, report=messages.append)
 
     assert exc_info.value.summary.records_checked == 5
     assert exc_info.value.summary.errors == 4
@@ -236,18 +223,13 @@ def test_converter_preserves_skip_markers_and_idxpack_bytes(tmp_path):
     assert converted.read_bytes() == direct.read_bytes()
 
 
-def test_idxpack_json_record_validator_uses_pack_cache_for_mirrored_s3(
-    tmp_path, monkeypatch
-):
+def test_idxpack_json_record_validator_uses_pack_cache_for_mirrored_s3(tmp_path, monkeypatch):
     remote_manifest = "s3://bucket/nested/manifest.jsonl"
     mirror_root = tmp_path / "mirror"
     mirrored_manifest = mirror_root / "bucket" / "nested" / "manifest.jsonl"
     mirrored_manifest.parent.mkdir(parents=True)
     mirrored_manifest.write_text(
-        json.dumps({"id": "valid"})
-        + "\n"
-        + json.dumps({"id": "skip", "custom": {"_skipme": True}})
-        + "\n"
+        json.dumps({"id": "valid"}) + "\n" + json.dumps({"id": "skip", "custom": {"_skipme": True}}) + "\n"
     )
     mirrored_index = create_jsonl_index(mirrored_manifest)
     spec = IndexPackCollectionSpec(
@@ -273,9 +255,7 @@ def test_idxpack_json_record_validator_uses_pack_cache_for_mirrored_s3(
         return original_read_packed_range(pack, path, start, end)
 
     def fail_remote_read(*args, **kwargs):
-        raise AssertionError(
-            "mirrored S3 records must use the pack-shared local descriptor cache"
-        )
+        raise AssertionError("mirrored S3 records must use the pack-shared local descriptor cache")
 
     monkeypatch.setattr(record_validator, "read_packed_range", read_cached)
     monkeypatch.setattr(record_validator, "read_exact_range", fail_remote_read)
@@ -316,9 +296,7 @@ def test_idxpack_record_reader_preserves_true_remote_s3_path(monkeypatch):
     assert remote_reads == [(remote_path, 3, 9)]
 
 
-def test_idxpack_json_record_validator_reuses_one_remote_reader_per_shard(
-    tmp_path, monkeypatch
-):
+def test_idxpack_json_record_validator_reuses_one_remote_reader_per_shard(tmp_path, monkeypatch):
     remote_manifest = "s3://bucket/manifest.jsonl"
     raw = b'{"id": "one"}\n{"id": "two"}\n'
     local_manifest = tmp_path / "manifest.jsonl"
@@ -345,9 +323,7 @@ def test_idxpack_json_record_validator_reuses_one_remote_reader_per_shard(
             super().__init__(raw)
             self.size = len(raw)
 
-    monkeypatch.setattr(
-        record_validator, "resolve_s3_to_local_mirror", lambda path: path
-    )
+    monkeypatch.setattr(record_validator, "resolve_s3_to_local_mirror", lambda path: path)
     monkeypatch.setattr("lhotse.ais.AISRangeReader", FakeAISRangeReader)
 
     summary = record_validator.validate_idxpack_json_records(pack_path)
@@ -355,12 +331,11 @@ def test_idxpack_json_record_validator_reuses_one_remote_reader_per_shard(
     assert summary.records_checked == 2
     assert opens == [remote_manifest]
 
+
 def test_converter_does_not_publish_pack_with_malformed_json_records(tmp_path):
     manifest, _ = _make_malformed_jsonl_pack(tmp_path)
     input_cfg = tmp_path / "dataset.yaml"
-    input_cfg.write_text(
-        yaml.safe_dump({"type": "nemo", "manifest_filepath": str(manifest)})
-    )
+    input_cfg.write_text(yaml.safe_dump({"type": "nemo", "manifest_filepath": str(manifest)}))
     output = tmp_path / "canonical.idxpack"
 
     result = CliRunner().invoke(main, ["--output", str(output), str(input_cfg)])
@@ -424,9 +399,7 @@ def test_converter_repairs_stale_local_tar_in_private_overlay(tmp_path):
     assert result.exit_code == 0, result.output
     assert idx_path.read_bytes() == shared_sidecar_bytes
     repair_idx = converter._resolve_local_sidecar(str(tar_path), repair_root)
-    assert (
-        struct.unpack("<Q", repair_idx.read_bytes()[-8:])[0] == tar_path.stat().st_size
-    )
+    assert struct.unpack("<Q", repair_idx.read_bytes()[-8:])[0] == tar_path.stat().st_size
     with IndexPack(output) as pack:
         key = index_pack_collection_key("tar", "nemo_tar", str(tar_path))
         assert pack.collection(key).locate(0).end == tar_path.stat().st_size
@@ -482,9 +455,7 @@ def test_converter_validates_remote_native_tar_sentinel(tmp_path, monkeypatch):
     remote_idx = converter._resolve_local_sidecar(remote_path, tmp_path)
     remote_idx.parent.mkdir(parents=True, exist_ok=True)
     remote_idx.write_bytes(local_idx.read_bytes())
-    monkeypatch.setattr(
-        converter, "_source_size", lambda path: tar_path.stat().st_size + 1
-    )
+    monkeypatch.setattr(converter, "_source_size", lambda path: tar_path.stat().st_size + 1)
 
     with pytest.raises(ValueError, match="sentinel"):
         converter._validate_native_tar_sidecar(remote_path, tmp_path)
@@ -498,21 +469,14 @@ def test_converter_source_size_uses_lhotse_s3_local_mirror(tmp_path, monkeypatch
     monkeypatch.setenv("LHOTSE_S3_LOCAL_MIRROR_ROOTS", str(mirror_root))
 
     def fail_ais(*args, **kwargs):
-        raise AssertionError(
-            "AIS must not be opened when Lhotse resolves a local S3 mirror"
-        )
+        raise AssertionError("AIS must not be opened when Lhotse resolves a local S3 mirror")
 
     monkeypatch.setattr("lhotse.ais.AISRangeReader", fail_ais)
 
-    assert (
-        converter._source_size("s3://bucket/nested/audio.tar")
-        == mirrored_tar.stat().st_size
-    )
+    assert converter._source_size("s3://bucket/nested/audio.tar") == mirrored_tar.stat().st_size
 
 
-def test_converter_source_size_falls_back_to_ais_without_local_mirror_match(
-    tmp_path, monkeypatch
-):
+def test_converter_source_size_falls_back_to_ais_without_local_mirror_match(tmp_path, monkeypatch):
     monkeypatch.setenv("LHOTSE_S3_LOCAL_MIRROR_ROOTS", str(tmp_path / "empty-mirror"))
     opened = []
 
@@ -535,9 +499,7 @@ def test_converter_source_size_falls_back_to_ais_without_local_mirror_match(
     assert opened == [remote_path]
 
 
-def test_packed_range_read_falls_back_to_ais_without_local_mirror_match(
-    tmp_path, monkeypatch
-):
+def test_packed_range_read_falls_back_to_ais_without_local_mirror_match(tmp_path, monkeypatch):
     monkeypatch.setenv("LHOTSE_S3_LOCAL_MIRROR_ROOTS", str(tmp_path / "empty-mirror"))
     opened = []
     payload = b"abcdef"
@@ -570,9 +532,7 @@ def test_packed_range_read_falls_back_to_ais_without_local_mirror_match(
     assert opened == [remote_path]
 
 
-def test_converter_local_s3_mirror_preserves_remote_pack_identity(
-    tmp_path, monkeypatch
-):
+def test_converter_local_s3_mirror_preserves_remote_pack_identity(tmp_path, monkeypatch):
     manifest = tmp_path / "manifest.jsonl"
     manifest.write_text(json.dumps({"audio_filepath": "sample.wav"}) + "\n")
     create_jsonl_index(manifest)
@@ -607,9 +567,7 @@ def test_converter_local_s3_mirror_preserves_remote_pack_identity(
     monkeypatch.setenv("LHOTSE_S3_LOCAL_MIRROR_ROOTS", str(mirror_root))
 
     def fail_ais(*args, **kwargs):
-        raise AssertionError(
-            "AIS must not be opened when the tar exists in the local mirror"
-        )
+        raise AssertionError("AIS must not be opened when the tar exists in the local mirror")
 
     monkeypatch.setattr("lhotse.ais.AISRangeReader", fail_ais)
 
@@ -682,9 +640,7 @@ def test_convert_input_cfg_sidecars_to_one_index_pack(tmp_path):
         assert pack.num_segments == 2
 
 
-def test_flat_native_lists_use_aggregate_pack_and_preserve_positional_pairs(
-    tmp_path, monkeypatch
-):
+def test_flat_native_lists_use_aggregate_pack_and_preserve_positional_pairs(tmp_path, monkeypatch):
     manifests = []
     declared_tar_paths = []
     expected_texts = []
@@ -718,9 +674,7 @@ def test_flat_native_lists_use_aggregate_pack_and_preserve_positional_pairs(
             }
         )
     )
-    remote_sizes = {
-        path: 10_000 + index for index, path in enumerate(declared_tar_paths)
-    }
+    remote_sizes = {path: 10_000 + index for index, path in enumerate(declared_tar_paths)}
     monkeypatch.setattr(converter, "_source_size", remote_sizes.__getitem__)
     output = tmp_path / "flat-lists.idxpack"
     result = CliRunner().invoke(
@@ -735,17 +689,11 @@ def test_flat_native_lists_use_aggregate_pack_and_preserve_positional_pairs(
     assert result.exit_code == 0, result.output
 
     with IndexPack(output) as pack:
-        manifest_collection = pack.collection(
-            index_pack_collection_key("manifest", "jsonl", manifests)
-        )
-        tar_collection = pack.collection(
-            index_pack_collection_key("tar", "nemo_tar", declared_tar_paths)
-        )
+        manifest_collection = pack.collection(index_pack_collection_key("manifest", "jsonl", manifests))
+        tar_collection = pack.collection(index_pack_collection_key("tar", "nemo_tar", declared_tar_paths))
         assert manifest_collection.sequence_count == 3
         assert tar_collection.sequence_count == 3
-        assert [
-            tar_collection.path_for_shard(idx) for idx in range(3)
-        ] == declared_tar_paths
+        assert [tar_collection.path_for_shard(idx) for idx in range(3)] == declared_tar_paths
         assert [tar_collection.source_size_for_shard(idx) for idx in range(3)] == [
             remote_sizes[path] for path in declared_tar_paths
         ]
@@ -765,8 +713,7 @@ def test_flat_native_lists_use_aggregate_pack_and_preserve_positional_pairs(
     assert is_tarred
     assert [cut.supervisions[0].text for cut in cuts] == expected_texts
     assert [cut.recording.sources[0].source for cut in cuts] == [
-        f"{tar_path}/sample-{position}.wav"
-        for position, tar_path in enumerate(declared_tar_paths)
+        f"{tar_path}/sample-{position}.wav" for position, tar_path in enumerate(declared_tar_paths)
     ]
 
 
@@ -787,9 +734,7 @@ def test_converter_rejects_mixed_scalar_and_flat_native_pairs(tmp_path):
         ["--dry-run", "--output", str(tmp_path / "mixed.idxpack"), str(input_cfg)],
     )
     assert result.exit_code != 0
-    assert "must both use scalar path specs or both use non-empty flat lists" in str(
-        result.exception
-    )
+    assert "must both use scalar path specs or both use non-empty flat lists" in str(result.exception)
 
 
 def test_converter_rejects_nested_native_manifest_lists(tmp_path):
@@ -858,9 +803,7 @@ def test_lazy_nemo_iterator_uses_pack_without_expanding_shards(tmp_path, monkeyp
     assert [cut.supervisions[0].text for cut in iterator] == expected_texts
 
 
-def test_lazy_nemo_tarred_iterator_uses_pack_without_expanding_shards(
-    tmp_path, monkeypatch
-):
+def test_lazy_nemo_tarred_iterator_uses_pack_without_expanding_shards(tmp_path, monkeypatch):
     manifest_paths = []
     tar_paths = []
     manifest_spec = str(tmp_path / "manifest__OP_0..1_CL_.jsonl")
@@ -951,12 +894,7 @@ def test_nemotron_text_jsonl_uses_one_pack(tmp_path, monkeypatch):
         }
 
     manifest = tmp_path / "text.jsonl"
-    manifest.write_text(
-        json.dumps(sample("jsonl-sample-0"))
-        + "\n"
-        + json.dumps(sample("jsonl-sample-1"))
-        + "\n"
-    )
+    manifest.write_text(json.dumps(sample("jsonl-sample-0")) + "\n" + json.dumps(sample("jsonl-sample-1")) + "\n")
     create_jsonl_index(manifest)
     paths = str(manifest)
     input_cfg = tmp_path / "text.yaml"
@@ -1006,9 +944,7 @@ def test_converter_rejects_mixed_nemotron_text_paths(tmp_path):
         )
     )
 
-    result = CliRunner().invoke(
-        main, ["--dry-run", "--output", str(tmp_path / "mixed.idxpack"), str(input_cfg)]
-    )
+    result = CliRunner().invoke(main, ["--dry-run", "--output", str(tmp_path / "mixed.idxpack"), str(input_cfg)])
     assert result.exit_code != 0
     assert "must be homogeneous" in str(result.exception)
 

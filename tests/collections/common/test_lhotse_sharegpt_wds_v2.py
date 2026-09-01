@@ -68,18 +68,14 @@ def _json(**extra) -> bytes:
 
 
 @pytest.mark.parametrize("json_first", [True, False])
-def test_sharegpt_wds_v2_resolves_multiple_audio_members_in_json_path_order(
-    tmp_path, json_first
-):
+def test_sharegpt_wds_v2_resolves_multiple_audio_members_in_json_path_order(tmp_path, json_first):
     data_dir = tmp_path / "wds"
     data_dir.mkdir()
     members = [("7.json", _json()), ("7.1.wav", _wav(1.5)), ("7.wav", _wav(1.0))]
     if not json_first:
         members = [members[1], members[2], members[0]]
     tar_path = _write_tar(data_dir / "shard.tar", members)
-    (data_dir / "wids-meta.json").write_text(
-        json.dumps({"shardlist": [{"url": "shard.tar", "nsamples": 1}]})
-    )
+    (data_dir / "wids-meta.json").write_text(json.dumps({"shardlist": [{"url": "shard.tar", "nsamples": 1}]}))
     create_wds_v2_tar_index(tar_path)
 
     adapter = NeMoMultimodalConversationShareGPTWebdatasetAdapter(
@@ -129,9 +125,7 @@ def test_sharegpt_wds_v2_packed_reader_uses_catalog_without_data_dir_scan(tmp_pa
 
     assert len(adapter) == 1
     conversation = adapter[0]
-    assert [
-        turn.cut.duration for turn in conversation.turns if isinstance(turn, AudioTurn)
-    ] == [1.0, 1.5]
+    assert [turn.cut.duration for turn in conversation.turns if isinstance(turn, AudioTurn)] == [1.0, 1.5]
 
 
 def test_sharegpt_wds_v2_reads_nv_split_catalog_in_declared_order(tmp_path):
@@ -149,9 +143,7 @@ def test_sharegpt_wds_v2_reads_nv_split_catalog_in_declared_order(tmp_path):
         )
         create_wds_v2_tar_index(tar_path)
         tar_paths.append(tar_path)
-    unrelated = _write_tar(
-        data_dir / "ignore-me.tar", [("9.json", _json()), ("9.wav", _wav(1.0))]
-    )
+    unrelated = _write_tar(data_dir / "ignore-me.tar", [("9.json", _json()), ("9.wav", _wav(1.0))])
     (data_dir / ".nv-meta").mkdir()
     (data_dir / ".nv-meta" / "split.yaml").write_text(
         yaml.safe_dump({"split_parts": {"train": ["shards/shard-{0..1}.tar"]}})
@@ -205,9 +197,7 @@ def test_sharegpt_wds_v2_single_audio_accepts_legacy_source_path():
 
     conversation = adapter._yield_from_sample_bundle(bundle)
 
-    assert [
-        turn.cut.duration for turn in conversation.turns if isinstance(turn, AudioTurn)
-    ] == [1.0]
+    assert [turn.cut.duration for turn in conversation.turns if isinstance(turn, AudioTurn)] == [1.0]
 
 
 @pytest.mark.parametrize(
@@ -237,9 +227,7 @@ def test_sharegpt_wds_v2_single_audio_accepts_legacy_source_path():
         ),
     ],
 )
-def test_sharegpt_wds_v2_fails_on_missing_or_ambiguous_audio_member(
-    tmp_path, bundle, error
-):
+def test_sharegpt_wds_v2_fails_on_missing_or_ambiguous_audio_member(tmp_path, bundle, error):
     adapter = object.__new__(NeMoMultimodalConversationShareGPTWebdatasetAdapter)
     adapter.audio_locator_tag = "[audio]"
     adapter.audio_placeholders = ["<sound>", "<speech>"]
@@ -274,13 +262,9 @@ def test_sharegpt_wds_v2_decodes_repeated_member_once(monkeypatch):
         calls += 1
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(
-        text_adapters.Recording, "from_bytes", staticmethod(counted_from_bytes)
-    )
+    monkeypatch.setattr(text_adapters.Recording, "from_bytes", staticmethod(counted_from_bytes))
 
     conversation = adapter._yield_from_sample_bundle(bundle)
 
-    assert (
-        len([turn for turn in conversation.turns if isinstance(turn, AudioTurn)]) == 2
-    )
+    assert len([turn for turn in conversation.turns if isinstance(turn, AudioTurn)]) == 2
     assert calls == 1

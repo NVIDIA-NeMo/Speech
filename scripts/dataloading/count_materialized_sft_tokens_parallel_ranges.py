@@ -1,4 +1,18 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Run an exact materialized-SFT census over newline-aligned byte ranges."""
 
 from __future__ import annotations
@@ -122,9 +136,20 @@ def run_ranges(args: argparse.Namespace, ranges: list[Range], script: Path, work
                     text=True,
                 )
                 running[process] = (item, report, log, stream)
-                print(json.dumps({"event": "range_task_start", "file_index": item.file_index,
-                                  "range_index": item.range_index, "path": str(item.path),
-                                  "byte_start": item.start, "byte_end": item.end}, sort_keys=True), flush=True)
+                print(
+                    json.dumps(
+                        {
+                            "event": "range_task_start",
+                            "file_index": item.file_index,
+                            "range_index": item.range_index,
+                            "path": str(item.path),
+                            "byte_start": item.start,
+                            "byte_end": item.end,
+                        },
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
             completed = [process for process in running if process.poll() is not None]
             if not completed:
                 time.sleep(0.5)
@@ -142,8 +167,13 @@ def run_ranges(args: argparse.Namespace, ranges: list[Range], script: Path, work
                     raise RuntimeError(f"Range {item.file_index}:{item.range_index} failed: {tail}")
                 data = json.loads(report.read_text())
                 reports[(item.file_index, item.range_index)] = data
-                print(json.dumps({"event": "range_task_done", "file_index": item.file_index,
-                                  "range_index": item.range_index}, sort_keys=True), flush=True)
+                print(
+                    json.dumps(
+                        {"event": "range_task_done", "file_index": item.file_index, "range_index": item.range_index},
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
         return [reports[(item.file_index, item.range_index)] for item in ranges]
     finally:
         for _, _, _, stream in running.values():
@@ -175,10 +205,18 @@ def merge_reports(args: argparse.Namespace, ranges: list[Range], reports: list[d
             raise ValueError(f"Range {item.file_index}:{item.range_index} accounting mismatch")
         _merge(aggregate, stats)
         _merge(by_file[item.file_index], stats)
-        summaries.append({"file_index": item.file_index, "range_index": item.range_index,
-                          "path": str(item.path), "byte_start": item.start, "byte_end": item.end,
-                          "packed_rows": stats["packed_rows"], "total_tokens": stats["total_tokens"],
-                          "assistant_tokens": stats["assistant_tokens"]})
+        summaries.append(
+            {
+                "file_index": item.file_index,
+                "range_index": item.range_index,
+                "path": str(item.path),
+                "byte_start": item.start,
+                "byte_end": item.end,
+                "packed_rows": stats["packed_rows"],
+                "total_tokens": stats["total_tokens"],
+                "assistant_tokens": stats["assistant_tokens"],
+            }
+        )
     aggregate["files"] = args.expected_files
     if aggregate["bytes"] != args.expected_bytes:
         raise ValueError("Merged range bytes do not match accepted closure")
@@ -200,8 +238,10 @@ def main() -> None:
     if args.ranges_per_shard < 2 or args.max_workers < 1:
         raise ValueError("ranges-per-shard must be >=2 and max-workers must be positive")
     ranges = resolve_ranges(args)
-    script = Path(args.range_script) if args.range_script else Path(__file__).with_name(
-        "count_materialized_sft_token_range.py"
+    script = (
+        Path(args.range_script)
+        if args.range_script
+        else Path(__file__).with_name("count_materialized_sft_token_range.py")
     )
     work = Path(args.work_dir)
     if work.exists():
@@ -213,9 +253,19 @@ def main() -> None:
         output = Path(args.output)
         marker = Path(args.success_marker or f"{args.output}.SUCCESS")
         publish_atomic(merged, output=output, success_marker=marker)
-        print(json.dumps({"event": "range_census_published", "output": str(output),
-                          "success_marker": str(marker), "total_tokens": merged["total"]["total_tokens"],
-                          "assistant_tokens": merged["total"]["assistant_tokens"]}, sort_keys=True), flush=True)
+        print(
+            json.dumps(
+                {
+                    "event": "range_census_published",
+                    "output": str(output),
+                    "success_marker": str(marker),
+                    "total_tokens": merged["total"]["total_tokens"],
+                    "assistant_tokens": merged["total"]["assistant_tokens"],
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

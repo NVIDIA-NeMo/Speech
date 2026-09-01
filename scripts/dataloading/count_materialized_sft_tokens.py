@@ -45,9 +45,7 @@ def _name_value(value: str, option: str) -> tuple[str, str]:
     return name, raw
 
 
-def _resolve_components(
-    specs: list[str], expected_specs: list[str]
-) -> dict[str, list[Path]]:
+def _resolve_components(specs: list[str], expected_specs: list[str]) -> dict[str, list[Path]]:
     components: dict[str, list[Path]] = {}
     for spec in specs:
         name, pattern = _name_value(spec, "--component")
@@ -55,9 +53,7 @@ def _resolve_components(
         if not matches and Path(pattern).is_file():
             matches = [Path(pattern)]
         if not matches:
-            raise FileNotFoundError(
-                f"Component {name!r} pattern matched no files: {pattern}"
-            )
+            raise FileNotFoundError(f"Component {name!r} pattern matched no files: {pattern}")
         components.setdefault(name, []).extend(matches)
 
     expected = {}
@@ -66,15 +62,11 @@ def _resolve_components(
         expected[name] = int(raw_count)
     unknown = set(expected) - set(components)
     if unknown:
-        raise ValueError(
-            f"--expected-files names have no --component: {sorted(unknown)}"
-        )
+        raise ValueError(f"--expected-files names have no --component: {sorted(unknown)}")
     for name, expected_count in expected.items():
         actual = len(components[name])
         if actual != expected_count:
-            raise ValueError(
-                f"Component {name!r} expected {expected_count} files, found {actual}"
-            )
+            raise ValueError(f"Component {name!r} expected {expected_count} files, found {actual}")
     return components
 
 
@@ -102,9 +94,7 @@ def _update_row_stats(stats: dict, messages: list[dict], input_ids, mask) -> Non
     stats["total_tokens"] += row_tokens
     stats["assistant_tokens"] += int(mask.sum())
     stats["min_row_tokens"] = (
-        row_tokens
-        if stats["min_row_tokens"] is None
-        else min(stats["min_row_tokens"], row_tokens)
+        row_tokens if stats["min_row_tokens"] is None else min(stats["min_row_tokens"], row_tokens)
     )
     stats["max_row_tokens"] = max(stats["max_row_tokens"], row_tokens)
     for message in messages:
@@ -122,13 +112,9 @@ def _update_row_stats(stats: dict, messages: list[dict], input_ids, mask) -> Non
 def _finalize(stats: dict) -> dict:
     stats = dict(stats)
     stats["role_messages"] = dict(sorted(stats["role_messages"].items()))
-    stats["mean_row_tokens"] = (
-        stats["total_tokens"] / stats["packed_rows"] if stats["packed_rows"] else 0.0
-    )
+    stats["mean_row_tokens"] = stats["total_tokens"] / stats["packed_rows"] if stats["packed_rows"] else 0.0
     stats["assistant_token_fraction"] = (
-        stats["assistant_tokens"] / stats["total_tokens"]
-        if stats["total_tokens"]
-        else 0.0
+        stats["assistant_tokens"] / stats["total_tokens"] if stats["total_tokens"] else 0.0
     )
     return stats
 
@@ -168,10 +154,7 @@ def parse_args() -> argparse.Namespace:
         action="append",
         required=True,
         metavar="NAME=GLOB",
-        help=(
-            "Component name and local JSONL glob; repeat for multiple "
-            "patterns/components."
-        ),
+        help=("Component name and local JSONL glob; repeat for multiple " "patterns/components."),
     )
     parser.add_argument(
         "--expected-files",
@@ -180,9 +163,7 @@ def parse_args() -> argparse.Namespace:
         metavar="NAME=N",
         help="Fail unless a component resolves to exactly N files.",
     )
-    parser.add_argument(
-        "--output", required=True, help="Atomic JSON report destination."
-    )
+    parser.add_argument("--output", required=True, help="Atomic JSON report destination.")
     parser.add_argument("--trust-remote-code", action="store_true")
     parser.add_argument(
         "--additional-special-token",
@@ -252,9 +233,7 @@ def main() -> None:
                     try:
                         data = json.loads(line)
                     except json.JSONDecodeError as error:
-                        raise ValueError(
-                            f"Invalid JSON at {path}:{line_index + 1}: {error}"
-                        ) from error
+                        raise ValueError(f"Invalid JSON at {path}:{line_index + 1}: {error}") from error
                     if set(data) != {"messages"}:
                         raise ValueError(
                             f"{path}:{line_index + 1} must have exactly top-level "
@@ -264,23 +243,16 @@ def main() -> None:
                     example = MaterializedSFTMessagesExample(
                         id=f"{path.name}:{line_index}",
                         messages=data["messages"],
-                        validate_chunk_tokenization=(
-                            not args.no_validate_chunk_tokenization
-                        ),
+                        validate_chunk_tokenization=(not args.no_validate_chunk_tokenization),
                     )
                     encoded = _encode_materialized_sft_messages(example, encode)
-                    _update_row_stats(
-                        stats, example.messages, encoded["input_ids"], encoded["mask"]
-                    )
+                    _update_row_stats(stats, example.messages, encoded["input_ids"], encoded["mask"])
         component_reports[component_name] = _finalize(stats)
         _merge(aggregate, stats)
 
     report = {
         "schema_version": 1,
-        "metric": (
-            "exact identity-preformatted tokens; assistant tokens selected "
-            "by top-level role"
-        ),
+        "metric": ("exact identity-preformatted tokens; assistant tokens selected " "by top-level role"),
         "tokenizer": args.tokenizer,
         "additional_special_tokens": args.additional_special_token,
         "chunk_tokenization_validated": not args.no_validate_chunk_tokenization,
@@ -290,9 +262,7 @@ def main() -> None:
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_suffix(output.suffix + f".tmp.{os.getpid()}")
-    temporary.write_text(
-        json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    temporary.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     temporary.replace(output)
     print(json.dumps(report, indent=2, sort_keys=True))
 

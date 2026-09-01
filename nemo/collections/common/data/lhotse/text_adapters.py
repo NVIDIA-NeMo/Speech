@@ -601,11 +601,7 @@ def _encode_materialized_sft_messages(example: MaterializedSFTMessagesExample, e
                 "the production identity-preformatted token stream."
             )
 
-    mask = [
-        is_assistant
-        for is_assistant, token_ids in zip(chunk_mask_values, chunk_token_ids)
-        for _ in token_ids
-    ]
+    mask = [is_assistant for is_assistant, token_ids in zip(chunk_mask_values, chunk_token_ids) for _ in token_ids]
     input_tensor = torch.tensor(input_ids, dtype=torch.long)
     mask_tensor = torch.tensor(mask, dtype=torch.bool)
     return {
@@ -944,8 +940,7 @@ class MaterializedSFTMessagesAdapter(NemotronTextConversationAdapter):
         unsupported = [kind for kind in self._reader_kinds if kind not in ("jsonl", "packed_jsonl")]
         if unsupported:
             raise ValueError(
-                "MaterializedSFTMessagesAdapter supports JSONL paths only; "
-                f"found reader kinds {unsupported}"
+                "MaterializedSFTMessagesAdapter supports JSONL paths only; " f"found reader kinds {unsupported}"
             )
 
     def _data_to_conversation(
@@ -1528,13 +1523,9 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
             turns = []
             for turn in data["conversations"]:
                 if turn["type"] == "text":
-                    turns.append(
-                        TextTurn(value=turn["value"], role=turn["from"].lower())
-                    )
+                    turns.append(TextTurn(value=turn["value"], role=turn["from"].lower()))
                     continue
-                cut = self._build_direct_audio_cut(
-                    turn=turn, manifest_path=manifest_path
-                )
+                cut = self._build_direct_audio_cut(turn=turn, manifest_path=manifest_path)
                 cut = cut.with_id(self._make_cut_id(cut, turn))
                 turns.append(
                     AudioTurn(
@@ -1545,14 +1536,9 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
                     )
                 )
         except (AudioLoadingError, OSError) as ex:
-            message = (
-                f"Failed to load multimodal conversation {data.get('id')!r} "
-                f"from manifest {manifest_path!r}."
-            )
+            message = f"Failed to load multimodal conversation {data.get('id')!r} " f"from manifest {manifest_path!r}."
             if self.fault_tolerant_audio_loading:
-                logging.warning(
-                    f"Skipping conversation because fault_tolerant_audio_loading=true: {message} {ex}"
-                )
+                logging.warning(f"Skipping conversation because fault_tolerant_audio_loading=true: {message} {ex}")
                 return None
             raise RuntimeError(message) from ex
         if self.context is not None and turns[0].role == "user" and isinstance(turns[0], AudioTurn):
@@ -1586,12 +1572,8 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
         try:
             recording = Recording.from_file(audio_path)
         except (AudioLoadingError, OSError, RuntimeError, ValueError) as ex:
-            raise AudioLoadingError(
-                f"Failed to read multimodal conversation audio {str(audio_path)!r}."
-            ) from ex
-        return recording.to_cut().truncate(
-            offset=turn.get("offset", 0.0), duration=turn.get("duration")
-        )
+            raise AudioLoadingError(f"Failed to read multimodal conversation audio {str(audio_path)!r}.") from ex
+        return recording.to_cut().truncate(offset=turn.get("offset", 0.0), duration=turn.get("duration"))
 
     def _build_conversation_tarred(self, data: dict, tar_reader, tar_path: str) -> NeMoMultimodalConversation | None:
         import io as _io
@@ -1610,14 +1592,9 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
                 audio_bytes = tar_reader.get(turn["value"])
                 meta = _sf.info(_io.BytesIO(audio_bytes))
             except (EOFError, KeyError, OSError, RuntimeError, ValueError, tarfile.TarError) as ex:
-                message = (
-                    f"Failed to load multimodal audio member {turn['value']!r} "
-                    f"from tar {tar_path!r}."
-                )
+                message = f"Failed to load multimodal audio member {turn['value']!r} " f"from tar {tar_path!r}."
                 if self.fault_tolerant_audio_loading:
-                    logging.warning(
-                        f"Skipping conversation because fault_tolerant_audio_loading=true: {message} {ex}"
-                    )
+                    logging.warning(f"Skipping conversation because fault_tolerant_audio_loading=true: {message} {ex}")
                     return None
                 raise RuntimeError(message) from ex
             recording = _Recording(
@@ -1757,14 +1734,9 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
                     StopIteration,
                     tarfile.TarError,
                 ) as ex:
-                    message = (
-                        f"Failed to load multimodal tar shard {tar_path!r} "
-                        f"for manifest {jsonl_path!r}."
-                    )
+                    message = f"Failed to load multimodal tar shard {tar_path!r} " f"for manifest {jsonl_path!r}."
                     if self.fault_tolerant_audio_loading:
-                        logging.warning(
-                            f"Skipping tar because fault_tolerant_audio_loading=true: {message} {ex}"
-                        )
+                        logging.warning(f"Skipping tar because fault_tolerant_audio_loading=true: {message} {ex}")
                         break
                     raise RuntimeError(message) from ex
                 if self._should_skip(data):
@@ -2443,8 +2415,7 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
                             )
                         except (AudioLoadingError, OSError, RuntimeError, StopIteration) as ex:
                             message = (
-                                f"Failed to load paired ShareGPT tar {tar_path!r} "
-                                f"for manifest {jsonl_path!r}."
+                                f"Failed to load paired ShareGPT tar {tar_path!r} " f"for manifest {jsonl_path!r}."
                             )
                             if not self.fault_tolerant_audio_loading:
                                 raise RuntimeError(message) from ex
@@ -2814,9 +2785,7 @@ class NeMoMultimodalConversationShareGPTWebdatasetAdapter(IteratorNode):
                         info_b.name,
                         tar.extractfile(info_b).read(),
                     )
-                    conversation = self._build_wds_sample(
-                        (json_data, audio_bytes, audio_name), sample_idx=None
-                    )
+                    conversation = self._build_wds_sample((json_data, audio_bytes, audio_name), sample_idx=None)
                     if conversation is not None:
                         yield conversation
         self.epoch += 1
@@ -2959,10 +2928,7 @@ def _next_matching_paired_audio(
         )
         if not skip_missing_manifest_entries:
             raise ValueError(message)
-        logging.warning(
-            "Skipping tar member because skip_missing_manifest_entries=true: "
-            f"{message}"
-        )
+        logging.warning("Skipping tar member because skip_missing_manifest_entries=true: " f"{message}")
 
 
 def _validate_no_trailing_paired_audio(
@@ -2985,8 +2951,7 @@ def _validate_no_trailing_paired_audio(
         )
         if fault_tolerant_audio_loading:
             logging.warning(
-                "Skipping unreadable trailing audio because fault_tolerant_audio_loading=true: "
-                f"{message} {ex}"
+                "Skipping unreadable trailing audio because fault_tolerant_audio_loading=true: " f"{message} {ex}"
             )
             return
         raise AudioLoadingError(message) from ex
@@ -2997,10 +2962,7 @@ def _validate_no_trailing_paired_audio(
         f"member={str(trailing_audio_path)!r}."
     )
     if skip_missing_manifest_entries:
-        logging.warning(
-            "Skipping trailing tar member because skip_missing_manifest_entries=true: "
-            f"{message}"
-        )
+        logging.warning("Skipping trailing tar member because skip_missing_manifest_entries=true: " f"{message}")
         return
     raise ValueError(message)
 

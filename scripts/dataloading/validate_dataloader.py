@@ -230,9 +230,7 @@ def cli(
         metadata_only = False
         LOG.info("full mode: forced metadata_only=False to materialize production payloads")
 
-    inject_validator_flags(
-        section_cfg, force_finite=force_finite, metadata_only=metadata_only
-    )
+    inject_validator_flags(section_cfg, force_finite=force_finite, metadata_only=metadata_only)
     if skip_missing_manifest_entries is not None:
         inject_missing_manifest_policy(
             section_cfg,
@@ -340,12 +338,8 @@ def cli(
             cut_ids, worker_id = _extract_cuts(batch)
             semantic_cut_ids = _extract_semantic_cut_ids(batch, len(cut_ids))
             source_groups, source_ids = _extract_source_labels(batch, len(cut_ids))
-            declared_durations = _extract_numeric_list(
-                batch, "declared_duration_seconds", len(cut_ids), float
-            )
-            sampled_num_tokens = _extract_numeric_list(
-                batch, "sampled_num_tokens", len(cut_ids), int
-            )
+            declared_durations = _extract_numeric_list(batch, "declared_duration_seconds", len(cut_ids), float)
+            sampled_num_tokens = _extract_numeric_list(batch, "sampled_num_tokens", len(cut_ids), int)
             row = {
                 "step": step,
                 "rank": rank,
@@ -516,8 +510,7 @@ def _extract_numeric_list(batch, key: str, expected_count: int, cast):
     normalized = [cast(value) for value in values]
     if len(normalized) != expected_count:
         raise click.ClickException(
-            f"validator {key} cardinality mismatch: "
-            f"expected={expected_count} actual={len(normalized)}"
+            f"validator {key} cardinality mismatch: " f"expected={expected_count} actual={len(normalized)}"
         )
     return normalized
 

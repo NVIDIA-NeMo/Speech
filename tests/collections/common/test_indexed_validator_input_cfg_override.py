@@ -20,9 +20,7 @@ from scripts.dataloading import validate_dataloader
 
 
 @pytest.mark.parametrize("as_list", [False, True])
-def test_input_cfg_override_preserves_base_recipe_and_resolves_interpolation(
-    tmp_path, monkeypatch, as_list
-):
+def test_input_cfg_override_preserves_base_recipe_and_resolves_interpolation(tmp_path, monkeypatch, as_list):
     base_config = tmp_path / "base-recipe.yaml"
     base_config.write_text(
         yaml.safe_dump(
@@ -94,6 +92,4 @@ def test_input_cfg_override_preserves_base_recipe_and_resolves_interpolation(
         "force_finite": True,
         "metadata_only": True,
     }
-    assert captured["section"]["input_cfg"] == (
-        [expected_leaf] if as_list else expected_leaf
-    )
+    assert captured["section"]["input_cfg"] == ([expected_leaf] if as_list else expected_leaf)

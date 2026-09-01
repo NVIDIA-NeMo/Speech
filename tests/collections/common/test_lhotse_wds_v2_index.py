@@ -40,9 +40,7 @@ def _json(sample_id: str, **extra) -> bytes:
     return json.dumps({"id": sample_id, **extra}).encode("utf-8")
 
 
-def _write_tar(
-    path: Path, members: list[tuple[str, bytes | None, bytes | None]]
-) -> Path:
+def _write_tar(path: Path, members: list[tuple[str, bytes | None, bytes | None]]) -> Path:
     """Write ``(name, payload, type)`` entries; ``payload=None`` means no data."""
     with tarfile.open(path, "w:") as archive:
         for name, payload, member_type in members:
@@ -120,9 +118,7 @@ def test_wds_v2_conventional_pair_offsets_match_legacy_byte_for_byte(tmp_path):
         ),
     ],
 )
-def test_wds_v2_variable_members_preserve_physical_audio_order(
-    tmp_path, members, expected_audio_names
-):
+def test_wds_v2_variable_members_preserve_physical_audio_order(tmp_path, members, expected_audio_names):
     tar_path = _write_tar(tmp_path / "variable.tar", members)
     create_wds_v2_tar_index(tar_path)
 
@@ -205,9 +201,7 @@ def test_packed_wds_v2_reader_supports_global_and_shard_local_access(tmp_path):
     write_index_pack(pack_path, [spec], index_path_overrides=index_paths)
 
     with IndexPack(pack_path) as pack:
-        reader = PackedTarSampleBundleReader(
-            pack.collection(spec.key), max_open_files=1
-        )
+        reader = PackedTarSampleBundleReader(pack.collection(spec.key), max_open_files=1)
 
         assert len(reader) == 3
         assert reader.path_for_shard(1) == str(tar_paths[1])
@@ -230,9 +224,7 @@ def test_packed_wds_v2_reader_supports_global_and_shard_local_access(tmp_path):
         ("wds_tar_v2", False, "must contain sample offsets"),
     ],
 )
-def test_packed_wds_v2_reader_rejects_wrong_collection_contract(
-    kind, offsets_required, error
-):
+def test_packed_wds_v2_reader_rejects_wrong_collection_contract(kind, offsets_required, error):
     collection = type(
         "Collection",
         (),
@@ -312,17 +304,13 @@ def test_wds_v2_reader_rejects_a_range_that_mixes_sample_keys(tmp_path):
         ],
     )
     idx_path, metadata_path = create_wds_v2_tar_index(tar_path)
-    raw_offsets = (0).to_bytes(8, "little") + tar_path.stat().st_size.to_bytes(
-        8, "little"
-    )
+    raw_offsets = (0).to_bytes(8, "little") + tar_path.stat().st_size.to_bytes(8, "little")
     idx_path.write_bytes(raw_offsets)
     metadata = json.loads(metadata_path.read_bytes())
     metadata["sample_count"] = 1
     metadata["offsets_sha256"] = hashlib.sha256(raw_offsets).hexdigest()
     metadata_path.write_bytes(
-        json.dumps(
-            metadata, ensure_ascii=False, separators=(",", ":"), sort_keys=True
-        ).encode("utf-8")
+        json.dumps(metadata, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
     )
 
     with pytest.raises(ValueError, match="mixes indexed key"):
@@ -402,9 +390,7 @@ def test_wds_v2_validator_rejects_stale_source_and_corrupt_offsets(tmp_path):
         validate_wds_v2_tar_index(tar_path)
 
     os.utime(tar_path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
-    idx_path.write_bytes(
-        idx_path.read_bytes()[:-8] + (tar_path.stat().st_size - 1).to_bytes(8, "little")
-    )
+    idx_path.write_bytes(idx_path.read_bytes()[:-8] + (tar_path.stat().st_size - 1).to_bytes(8, "little"))
     with pytest.raises(ValueError, match="offsets_sha256"):
         validate_wds_v2_tar_index(tar_path)
 

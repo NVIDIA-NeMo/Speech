@@ -93,8 +93,7 @@ def _add_collection(
             continue
         if existing.paths != candidate.paths:
             raise ValueError(
-                f"Collection-key collision for role={role!r}, kind={kind!r}, "
-                f"source_spec={source_spec!r}"
+                f"Collection-key collision for role={role!r}, kind={kind!r}, " f"source_spec={source_spec!r}"
             )
         return
     collections.append(candidate)
@@ -121,8 +120,7 @@ def _resolve_local_sidecar(path: str, indexes_root) -> Path:
     idx_path = index_file_path(path, indexes_root)
     if _is_remote_path(idx_path):
         raise ValueError(
-            "Index-pack conversion requires local .idx sidecars; "
-            f"resolved {path} to remote sidecar {idx_path}."
+            "Index-pack conversion requires local .idx sidecars; " f"resolved {path} to remote sidecar {idx_path}."
         )
     return Path(idx_path)
 
@@ -199,9 +197,7 @@ def _repair_local_native_tar_sidecar(path: str, repair_root) -> Path:
             f"but source {path} is {source_size} bytes."
         )
     if Path(path).stat().st_mtime_ns > index_stat.st_mtime_ns:
-        raise ValueError(
-            f"Source {path} changed while rebuilding private sidecar {repair_idx}."
-        )
+        raise ValueError(f"Source {path} changed while rebuilding private sidecar {repair_idx}.")
     logging.info(
         "Rebuilt stale local native-tar sidecar privately: source=%s bytes=%d sidecar=%s",
         path,
@@ -231,8 +227,7 @@ def _verify_trailing_zero_padding(path: str, start: int, source_size: int) -> No
             chunk = stream.read(min(1024 * 1024, remaining))
             if not chunk:
                 raise ValueError(
-                    f"Short read while verifying trailing padding for {path}: "
-                    f"{remaining} bytes remain"
+                    f"Short read while verifying trailing padding for {path}: " f"{remaining} bytes remain"
                 )
             if any(chunk):
                 raise ValueError(
@@ -257,11 +252,7 @@ def _validate_native_tar_sidecar(
         if repair_stale_local_sidecars_root is not None and not _is_remote_path(path)
         else None
     )
-    idx_path = (
-        repair_idx_path
-        if repair_idx_path is not None and repair_idx_path.exists()
-        else shared_idx_path
-    )
+    idx_path = repair_idx_path if repair_idx_path is not None and repair_idx_path.exists() else shared_idx_path
     sentinel, index_stat = _read_raw_tar_sentinel(idx_path)
 
     source_size = _source_size(path)
@@ -285,13 +276,8 @@ def _validate_native_tar_sidecar(
                     source_size - sentinel,
                 )
         if not accepted_padding:
-            if (
-                not _is_remote_path(path)
-                and repair_stale_local_sidecars_root is not None
-            ):
-                idx_path = _repair_local_native_tar_sidecar(
-                    path, repair_stale_local_sidecars_root
-                )
+            if not _is_remote_path(path) and repair_stale_local_sidecars_root is not None:
+                idx_path = _repair_local_native_tar_sidecar(path, repair_stale_local_sidecars_root)
                 sentinel, index_stat = _read_raw_tar_sentinel(idx_path)
             else:
                 raise ValueError(
@@ -301,18 +287,12 @@ def _validate_native_tar_sidecar(
 
     if not _is_remote_path(path):
         source_stat = Path(path).stat()
-        if (
-            source_stat.st_mtime_ns > index_stat.st_mtime_ns
-            and source_size_override is None
-        ):
+        if source_stat.st_mtime_ns > index_stat.st_mtime_ns and source_size_override is None:
             if repair_stale_local_sidecars_root is not None:
-                idx_path = _repair_local_native_tar_sidecar(
-                    path, repair_stale_local_sidecars_root
-                )
+                idx_path = _repair_local_native_tar_sidecar(path, repair_stale_local_sidecars_root)
             else:
                 raise ValueError(
-                    f"Source {path} is newer than native tar index {idx_path}. "
-                    f"{_REBUILD_TAR_INDEXES_HINT}"
+                    f"Source {path} is newer than native tar index {idx_path}. " f"{_REBUILD_TAR_INDEXES_HINT}"
                 )
     return idx_path, source_size_override
 
@@ -408,8 +388,7 @@ def _discover_paths_collections(
 def _require_scalar_spec(value, field: str) -> None:
     if not isinstance(value, (str, Path)):
         raise ValueError(
-            f"Packed {field} must be a string/Path (brace expansion is "
-            "supported); list forms are not supported."
+            f"Packed {field} must be a string/Path (brace expansion is " "supported); list forms are not supported."
         )
 
 
@@ -449,8 +428,7 @@ def _validate_native_pair(manifests: list[str], tars: list[str]) -> None:
     tar_ids = [_shard_number(path) for path in tars]
     if None in manifest_ids or None in tar_ids:
         raise ValueError(
-            "Cannot verify native NeMo manifest/tar shard identity from file "
-            "names; use numbered shard names."
+            "Cannot verify native NeMo manifest/tar shard identity from file " "names; use numbered shard names."
         )
     if manifest_ids != tar_ids:
         raise ValueError(
@@ -468,9 +446,7 @@ def _expand_flat_native_pairs(manifest_specs, tar_specs) -> tuple[list[str], lis
 
     manifests: list[str] = []
     tars: list[str] = []
-    for position, (manifest_spec, tar_spec) in enumerate(
-        zip(manifest_specs, tar_specs)
-    ):
+    for position, (manifest_spec, tar_spec) in enumerate(zip(manifest_specs, tar_specs)):
         pair_manifests = _expand_jsonl(manifest_spec)
         pair_tars = _expand_tars(tar_spec)
         if len(pair_manifests) != len(pair_tars):
@@ -534,9 +510,7 @@ def discover_pack_collections(
         *_TRANSFORM_TYPES,
     }
     if typ not in supported:
-        raise NotImplementedError(
-            f"idxpack conversion does not support dataset type {typ!r}."
-        )
+        raise NotImplementedError(f"idxpack conversion does not support dataset type {typ!r}.")
 
     if typ == "share_gpt_webdataset":
         version = int(entry.get("wds_sample_index_version", 1))
@@ -574,27 +548,21 @@ def discover_pack_collections(
         and entry.get("manifest_filepath") is not None
     ):
         raw = entry.get("manifest_filepath")
-        collection_mode = (
-            typ == "share_gpt" and entry.get("tar_lookup_mode") == "collection"
-        )
+        collection_mode = typ == "share_gpt" and entry.get("tar_lookup_mode") == "collection"
         if collection_mode:
             route = entry.get("tar_routing_filepath")
             legacy_route = entry.get("tar_routing_index")
             if route and legacy_route and str(route) != str(legacy_route):
                 raise ValueError("tar_routing_filepath and tar_routing_index disagree")
             route = route or legacy_route
-            if not isinstance(route, (str, Path)) or not str(route).endswith(
-                ".sgroute"
-            ):
+            if not isinstance(route, (str, Path)) or not str(route).endswith(".sgroute"):
                 raise ValueError(
                     "Packed ShareGPT collection mode requires tar_routing_filepath " "with the .sgroute suffix."
                 )
             _require_scalar_or_flat_path_list(raw, "manifest_filepath")
             raw_tars = entry.get("tarred_audio_filepaths")
             if raw_tars is None:
-                raise ValueError(
-                    "Packed ShareGPT collection mode requires tarred_audio_filepaths."
-                )
+                raise ValueError("Packed ShareGPT collection mode requires tarred_audio_filepaths.")
             _require_scalar_or_flat_path_list(raw_tars, "tarred_audio_filepaths")
             manifests = _expand_jsonl(raw)
             tars = _expand_tars(raw_tars)
@@ -691,9 +659,7 @@ def _write_validated_index_pack(
     if output.exists() and not overwrite:
         raise FileExistsError(f"Index pack already exists: {output}")
     output.parent.mkdir(parents=True, exist_ok=True)
-    staged = output.with_name(
-        f".{output.name}.record-validation.{os.getpid()}.{uuid.uuid4().hex}"
-    )
+    staged = output.with_name(f".{output.name}.record-validation.{os.getpid()}.{uuid.uuid4().hex}")
     try:
         write_index_pack(
             staged,
@@ -741,9 +707,7 @@ def _write_validated_index_pack(
     default=None,
     help="Resolve ${data_blend_dir} in nested input_cfg references.",
 )
-@click.option(
-    "--overwrite", is_flag=True, help="Atomically replace an existing output pack."
-)
+@click.option("--overwrite", is_flag=True, help="Atomically replace an existing output pack.")
 @click.option(
     "--native-tar-paths-only",
     is_flag=True,
@@ -776,9 +740,7 @@ def _write_validated_index_pack(
     default=1,
     help="Process workers for disjoint exhaustive JSONL record validation.",
 )
-@click.option(
-    "--dry-run", is_flag=True, help="Print discovered collections without writing."
-)
+@click.option("--dry-run", is_flag=True, help="Print discovered collections without writing.")
 def main(
     input_cfg: str,
     output: str,
@@ -816,9 +778,7 @@ def main(
             for collection in collections
         ]
     num_paths = sum(len(collection.paths) for collection in collections)
-    click.echo(
-        f"Discovered {len(collections)} collections with {num_paths} ordered paths."
-    )
+    click.echo(f"Discovered {len(collections)} collections with {num_paths} ordered paths.")
     if dry_run:
         for collection in collections:
             click.echo(

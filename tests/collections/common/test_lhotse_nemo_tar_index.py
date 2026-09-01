@@ -18,10 +18,10 @@ import tarfile
 
 import pytest
 from lhotse.indexing import read_index
+from scripts.dataloading import build_indexes
 
 from nemo.collections.common.data.lhotse import indexed_adapters
 from nemo.collections.common.data.lhotse.indexed_adapters import IndexedTarMemberReader, create_tar_index
-from scripts.dataloading import build_indexes
 
 
 def test_nemo_tar_index_sentinel_includes_trailing_record_padding(tmp_path):
@@ -82,9 +82,7 @@ def test_nemo_tar_index_and_reader_use_s3_local_mirror(tmp_path, monkeypatch):
     reader.close()
 
 
-def test_nemo_tar_index_uses_generic_streaming_opener_for_http(
-    tmp_path, monkeypatch
-):
+def test_nemo_tar_index_uses_generic_streaming_opener_for_http(tmp_path, monkeypatch):
     tar_path = tmp_path / "data.tar"
     with tarfile.open(tar_path, "w") as archive:
         payload = b"sample"

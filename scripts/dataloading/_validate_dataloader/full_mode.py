@@ -24,33 +24,20 @@ LOG = logging.getLogger(__name__)
 def validate_full_batch(batch, *, step: int) -> None:
     """Fail unless one production SALM batch fully materialized its payload."""
     if not isinstance(batch, dict):
-        raise click.ClickException(
-            f"full validation step {step} returned no materialized batch"
-        )
+        raise click.ClickException(f"full validation step {step} returned no materialized batch")
     required = ("audio_lens", "input_ids", "loss_mask", "conversations")
     missing = [key for key in required if batch.get(key) is None]
     if missing:
-        raise click.ClickException(
-            f"full validation step {step} is missing materialized fields: {', '.join(missing)}"
-        )
+        raise click.ClickException(f"full validation step {step} is missing materialized fields: {', '.join(missing)}")
     has_dense_audio = batch.get("audios") is not None
-    has_packed_audio = (
-        batch.get("packed_audio_samples") is not None
-        and batch.get("audio_cu_seqlens") is not None
-    )
+    has_packed_audio = batch.get("packed_audio_samples") is not None and batch.get("audio_cu_seqlens") is not None
     if not (has_dense_audio or has_packed_audio):
-        raise click.ClickException(
-            f"full validation step {step} is missing an audio payload"
-        )
+        raise click.ClickException(f"full validation step {step} is missing an audio payload")
     if not batch["conversations"]:
-        raise click.ClickException(
-            f"full validation step {step} materialized an empty conversation batch"
-        )
+        raise click.ClickException(f"full validation step {step} materialized an empty conversation batch")
 
 
-def build_validation_dataset(
-    full_cfg, tokenizer, *, mode: str, section: str = "train_ds"
-):
+def build_validation_dataset(full_cfg, tokenizer, *, mode: str, section: str = "train_ds"):
     """Build the production SALMDataset while keeping decode failures visible."""
     if mode == "fast":
         return CutIdDataset()
@@ -78,8 +65,7 @@ def build_tokenizer(full_cfg, section_cfg, *, required: bool = False):
     tokenizer_src = model_cfg.get("tokenizer_path") or model_cfg.get("pretrained_llm")
     if not tokenizer_src:
         raise click.ClickException(
-            "full validation or use_multimodal_sampling=True requires model.tokenizer_path "
-            "or model.pretrained_llm."
+            "full validation or use_multimodal_sampling=True requires model.tokenizer_path " "or model.pretrained_llm."
         )
     from nemo.collections.common.tokenizers import AutoTokenizer
 

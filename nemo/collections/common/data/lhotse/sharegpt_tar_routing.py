@@ -144,17 +144,13 @@ class ShareGptTarRoutingIndex:
         if row_index < 0:
             row_index += len(self)
         if row_index < 0 or row_index >= len(self):
-            raise IndexError(
-                f"Manifest row index {row_index} is out of bounds for {len(self)} rows"
-            )
+            raise IndexError(f"Manifest row index {row_index} is out of bounds for {len(self)} rows")
         begin = self._row_offsets[row_index]
         end = self._row_offsets[row_index + 1]
         routes = []
         for record_index in range(begin, end):
             offset = self.header.routes_offset + record_index * SGROUTE_RECORD_SIZE
-            tar_shard_index, tar_member_local_index = _ROUTE.unpack_from(
-                self._mmap, offset
-            )
+            tar_shard_index, tar_member_local_index = _ROUTE.unpack_from(self._mmap, offset)
             routes.append(TarRoute(tar_shard_index, tar_member_local_index))
         return tuple(routes)
 
@@ -162,14 +158,9 @@ class ShareGptTarRoutingIndex:
 def canonical_audio_prefix_map_digest(prefix_map: Mapping[str, str] | None) -> bytes:
     """Return SHA-256 of the canonical sorted compact JSON prefix-map object."""
     normalized = {} if prefix_map is None else dict(prefix_map)
-    if not all(
-        isinstance(key, str) and isinstance(value, str)
-        for key, value in normalized.items()
-    ):
+    if not all(isinstance(key, str) and isinstance(value, str) for key, value in normalized.items()):
         raise TypeError("Audio prefix map keys and values must be strings")
-    canonical = json.dumps(
-        normalized, ensure_ascii=False, separators=(",", ":"), sort_keys=True
-    ).encode("utf-8")
+    canonical = json.dumps(normalized, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
     return hashlib.sha256(canonical).digest()
 
 
@@ -180,13 +171,8 @@ def ordered_manifest_spec_path_digest(
     paths = [os.fspath(path) for path in manifest_paths]
     specs = paths if manifest_specs is None else list(manifest_specs)
     if len(specs) != len(paths):
-        raise ValueError(
-            f"Expected one manifest spec per path, got {len(specs)} specs for {len(paths)} paths"
-        )
-    records = (
-        _canonical_json_bytes({"path": path, "spec": spec})
-        for path, spec in zip(paths, specs, strict=True)
-    )
+        raise ValueError(f"Expected one manifest spec per path, got {len(specs)} specs for {len(paths)} paths")
+    records = (_canonical_json_bytes({"path": path, "spec": spec}) for path, spec in zip(paths, specs, strict=True))
     return _length_prefixed_digest(records)
 
 
@@ -215,8 +201,7 @@ def ordered_manifest_source_identity_digest(
 ) -> bytes:
     """Digest ordered O(1)-read identities for runtime validation."""
     return _length_prefixed_digest(
-        _canonical_json_bytes(_source_identity_record(os.fspath(path)))
-        for path in manifest_paths
+        _canonical_json_bytes(_source_identity_record(os.fspath(path))) for path in manifest_paths
     )
 
 
@@ -240,9 +225,7 @@ def ordered_manifest_content_digest_from_mirrors(
                 digest.update(chunk)
                 consumed += len(chunk)
         if consumed != size or mirror.stat().st_size != size:
-            raise RuntimeError(
-                f"Manifest content mirror changed while digesting at position {index}: {mirror}"
-            )
+            raise RuntimeError(f"Manifest content mirror changed while digesting at position {index}: {mirror}")
     return digest.digest()
 
 
@@ -264,37 +247,26 @@ def ordered_manifest_source_identity_digest_from_metadata(
         "inode",
     }
     records = []
-    for index, (path_like, record) in enumerate(
-        zip(manifest_paths, metadata_records, strict=True)
-    ):
+    for index, (path_like, record) in enumerate(zip(manifest_paths, metadata_records, strict=True)):
         path = os.fspath(path_like)
         if _is_remote_path(path):
-            raise ValueError(
-                f"Offline local-manifest metadata requires a local path at position {index}: {path!r}"
-            )
+            raise ValueError(f"Offline local-manifest metadata requires a local path at position {index}: {path!r}")
         if not isinstance(record, Mapping) or set(record) != expected_keys:
-            actual = (
-                sorted(record) if isinstance(record, Mapping) else type(record).__name__
-            )
+            actual = sorted(record) if isinstance(record, Mapping) else type(record).__name__
             raise ValueError(
                 f"Invalid manifest metadata keys at position {index}: expected "
                 f"{sorted(expected_keys)}, got {actual}"
             )
         if record["path"] != path:
             raise ValueError(
-                f"Manifest metadata path mismatch at position {index}: "
-                f"{record['path']!r} != {path!r}"
+                f"Manifest metadata path mismatch at position {index}: " f"{record['path']!r} != {path!r}"
             )
         for field in ("size_bytes", "mtime_ns", "device", "inode"):
             value = record[field]
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-                raise ValueError(
-                    f"Invalid manifest metadata {field} at position {index}: {value!r}"
-                )
+                raise ValueError(f"Invalid manifest metadata {field} at position {index}: {value!r}")
         if record["object_identity"] is not None:
-            raise ValueError(
-                f"Local manifest object_identity must be null at position {index}"
-            )
+            raise ValueError(f"Local manifest object_identity must be null at position {index}")
         records.append(dict(record))
     return _length_prefixed_digest(_canonical_json_bytes(record) for record in records)
 
@@ -302,8 +274,7 @@ def ordered_manifest_source_identity_digest_from_metadata(
 def ordered_tar_catalog_digest(tar_paths: Sequence[str | Path]) -> bytes:
     """Digest ordered tar paths and mutation-sensitive source identities."""
     return _length_prefixed_digest(
-        _canonical_json_bytes(_source_identity_record(os.fspath(path)))
-        for path in tar_paths
+        _canonical_json_bytes(_source_identity_record(os.fspath(path))) for path in tar_paths
     )
 
 
@@ -318,39 +289,25 @@ def ordered_tar_catalog_digest_from_metadata(
         )
     expected_keys = {"path", "size_bytes", "mtime_ns", "object_identity"}
     records = []
-    for index, (path_like, record) in enumerate(
-        zip(tar_paths, metadata_records, strict=True)
-    ):
+    for index, (path_like, record) in enumerate(zip(tar_paths, metadata_records, strict=True)):
         path = os.fspath(path_like)
         if not _is_remote_path(path):
-            raise ValueError(
-                f"Offline tar metadata requires a remote path at position {index}: {path!r}"
-            )
+            raise ValueError(f"Offline tar metadata requires a remote path at position {index}: {path!r}")
         if not isinstance(record, Mapping) or set(record) != expected_keys:
             actual = sorted(record) if isinstance(record, Mapping) else type(record).__name__
             raise ValueError(
-                f"Invalid tar metadata keys at position {index}: expected "
-                f"{sorted(expected_keys)}, got {actual}"
+                f"Invalid tar metadata keys at position {index}: expected " f"{sorted(expected_keys)}, got {actual}"
             )
         if record["path"] != path:
-            raise ValueError(
-                f"Tar metadata path mismatch at position {index}: "
-                f"{record['path']!r} != {path!r}"
-            )
+            raise ValueError(f"Tar metadata path mismatch at position {index}: " f"{record['path']!r} != {path!r}")
         size = record["size_bytes"]
         if isinstance(size, bool) or not isinstance(size, int) or size < 0:
-            raise ValueError(
-                f"Invalid tar metadata size at position {index}: {size!r}"
-            )
+            raise ValueError(f"Invalid tar metadata size at position {index}: {size!r}")
         if record["mtime_ns"] != 0:
-            raise ValueError(
-                f"Remote tar metadata mtime_ns must be zero at position {index}"
-            )
+            raise ValueError(f"Remote tar metadata mtime_ns must be zero at position {index}")
         identity = record["object_identity"]
         if not isinstance(identity, str) or not identity:
-            raise ValueError(
-                f"Remote tar metadata has no stable object identity at position {index}"
-            )
+            raise ValueError(f"Remote tar metadata has no stable object identity at position {index}")
         records.append(dict(record))
     return _length_prefixed_digest(_canonical_json_bytes(record) for record in records)
 
@@ -371,22 +328,16 @@ def extract_sharegpt_audio_paths(
         None,
     )
     if selected_field is None:
-        raise ValueError(
-            f"ShareGPT row has no supported audio field; expected one of {_AUDIO_FIELDS}"
-        )
+        raise ValueError(f"ShareGPT row has no supported audio field; expected one of {_AUDIO_FIELDS}")
     value = document[selected_field]
     if isinstance(value, str):
         paths = (value,)
     elif isinstance(value, list) and all(isinstance(item, str) for item in value):
         paths = tuple(value)
     else:
-        raise ValueError(
-            f"ShareGPT {selected_field!r} must be a string or flat list of strings"
-        )
+        raise ValueError(f"ShareGPT {selected_field!r} must be a string or flat list of strings")
     if not paths or any(not path for path in paths):
-        raise ValueError(
-            f"ShareGPT {selected_field!r} must contain one or more non-empty paths"
-        )
+        raise ValueError(f"ShareGPT {selected_field!r} must contain one or more non-empty paths")
 
     conversations = document.get("conversations")
     if not isinstance(conversations, list):
@@ -426,9 +377,7 @@ def write_sharegpt_tar_routing_index(
     """Write, fsync, reopen-validate, and atomically publish a sealed route."""
     output = Path(path)
     if output.exists():
-        raise FileExistsError(
-            f"Refusing to overwrite sealed ShareGPT tar route: {output}"
-        )
+        raise FileExistsError(f"Refusing to overwrite sealed ShareGPT tar route: {output}")
     output.parent.mkdir(parents=True, exist_ok=True)
     if tar_shard_count < 0 or tar_shard_count > _UINT32_MAX + 1:
         raise ValueError(f"tar_shard_count is outside the v2 range: {tar_shard_count}")
@@ -437,11 +386,7 @@ def write_sharegpt_tar_routing_index(
     records: list[TarRoute] = []
     for row in row_routes:
         for route_like in row:
-            route = (
-                route_like
-                if isinstance(route_like, TarRoute)
-                else TarRoute(*route_like)
-            )
+            route = route_like if isinstance(route_like, TarRoute) else TarRoute(*route_like)
             _validate_route(route, tar_shard_count)
             records.append(route)
         row_offsets.append(len(records))
@@ -458,19 +403,13 @@ def write_sharegpt_tar_routing_index(
     file_size = routes_offset + SGROUTE_RECORD_SIZE * route_count
     payload_sha256 = hashlib.sha256(payload).digest()
     digests = {
-        "manifest_spec_path_digest": _coerce_digest(
-            manifest_spec_path_digest, "manifest spec/path digest"
-        ),
-        "manifest_content_digest": _coerce_digest(
-            manifest_content_digest, "manifest content digest"
-        ),
+        "manifest_spec_path_digest": _coerce_digest(manifest_spec_path_digest, "manifest spec/path digest"),
+        "manifest_content_digest": _coerce_digest(manifest_content_digest, "manifest content digest"),
         "manifest_source_identity_digest": _coerce_digest(
             manifest_source_identity_digest, "manifest source-identity digest"
         ),
         "tar_catalog_digest": _coerce_digest(tar_catalog_digest, "tar catalog digest"),
-        "audio_prefix_map_digest": _coerce_digest(
-            audio_prefix_map_digest, "audio prefix-map digest"
-        ),
+        "audio_prefix_map_digest": _coerce_digest(audio_prefix_map_digest, "audio prefix-map digest"),
     }
     header = _HEADER.pack(
         SGROUTE_MAGIC,
@@ -508,9 +447,7 @@ def write_sharegpt_tar_routing_index(
             expected_manifest_row_count=row_count,
             expected_manifest_spec_path_digest=digests["manifest_spec_path_digest"],
             expected_manifest_content_digest=digests["manifest_content_digest"],
-            expected_manifest_source_identity_digest=digests[
-                "manifest_source_identity_digest"
-            ],
+            expected_manifest_source_identity_digest=digests["manifest_source_identity_digest"],
             expected_tar_shard_count=tar_shard_count,
             expected_tar_catalog_digest=digests["tar_catalog_digest"],
             expected_audio_prefix_map_digest=digests["audio_prefix_map_digest"],
@@ -537,17 +474,11 @@ def validate_sharegpt_tar_routing_index(
 ) -> ShareGptTarRouteHeader:
     """Validate self-contained and caller-supplied open-time route invariants."""
     if not offset_bearing_tar_collections:
-        raise ValueError(
-            "ShareGPT collection routing requires offset-bearing tar collections"
-        )
+        raise ValueError("ShareGPT collection routing requires offset-bearing tar collections")
     with ShareGptTarRoutingIndex(path) as routing:
         header = routing.header
-        _expect_equal(
-            "manifest row count", header.manifest_row_count, expected_manifest_row_count
-        )
-        _expect_equal(
-            "tar shard count", header.tar_shard_count, expected_tar_shard_count
-        )
+        _expect_equal("manifest row count", header.manifest_row_count, expected_manifest_row_count)
+        _expect_equal("tar shard count", header.tar_shard_count, expected_tar_shard_count)
         _expect_digest(
             "manifest spec/path digest",
             header.manifest_spec_path_digest,
@@ -563,9 +494,7 @@ def validate_sharegpt_tar_routing_index(
             header.manifest_source_identity_digest,
             expected_manifest_source_identity_digest,
         )
-        _expect_digest(
-            "tar catalog digest", header.tar_catalog_digest, expected_tar_catalog_digest
-        )
+        _expect_digest("tar catalog digest", header.tar_catalog_digest, expected_tar_catalog_digest)
         _expect_digest(
             "audio prefix-map digest",
             header.audio_prefix_map_digest,
@@ -585,14 +514,8 @@ def _validate_native_tar_ranges(
     for local_index, ((name, expected_start, data_end), start, end) in enumerate(
         zip(members, offsets[:-1], offsets[1:], strict=True)
     ):
-        next_regular_start = (
-            members[local_index + 1][1] if local_index + 1 < len(members) else None
-        )
-        if (
-            start != expected_start
-            or (next_regular_start is not None and next_regular_start < end)
-            or data_end > end
-        ):
+        next_regular_start = members[local_index + 1][1] if local_index + 1 < len(members) else None
+        if start != expected_start or (next_regular_start is not None and next_regular_start < end) or data_end > end:
             raise ValueError(
                 f"Native tar index range [{start}, {end}) at local member {local_index} in {tar_path} "
                 "does not represent exactly one regular member"
@@ -601,9 +524,7 @@ def _validate_native_tar_ranges(
     return tuple(result)
 
 
-def validate_native_tar_member_index(
-    tar_path: str | Path, index_path: str | Path
-) -> tuple[NativeTarMemberRange, ...]:
+def validate_native_tar_member_index(tar_path: str | Path, index_path: str | Path) -> tuple[NativeTarMemberRange, ...]:
     """Prove that every native tar-index range contains one regular member."""
     tar_path = os.fspath(tar_path)
     index_path = Path(index_path)
@@ -611,16 +532,11 @@ def validate_native_tar_member_index(
     source_size = source_metadata["size_bytes"]
     index_bytes = index_path.read_bytes()
     if len(index_bytes) < 8 or len(index_bytes) % 8:
-        raise ValueError(
-            f"Native tar index must contain raw little-endian uint64 offsets: {index_path}"
-        )
+        raise ValueError(f"Native tar index must contain raw little-endian uint64 offsets: {index_path}")
     offsets = list(struct.unpack(f"<{len(index_bytes) // 8}Q", index_bytes))
 
     if _is_remote_path(tar_path):
-        members = [
-            _read_remote_native_tar_member(tar_path, start, end)
-            for start, end in pairwise(offsets)
-        ]
+        members = [_read_remote_native_tar_member(tar_path, start, end) for start, end in pairwise(offsets)]
     else:
         members = []
         with tarfile.open(tar_path, "r:") as archive:
@@ -634,13 +550,9 @@ def validate_native_tar_member_index(
             f"{max(0, len(offsets) - 1)} ranges for {len(members)} regular members"
         )
     if any(left >= right for left, right in pairwise(offsets)):
-        raise ValueError(
-            "Native tar index must provide exactly one regular member per strictly increasing range"
-        )
+        raise ValueError("Native tar index must provide exactly one regular member per strictly increasing range")
     if offsets[-1] > source_size:
-        raise ValueError(
-            f"Native tar index sentinel {offsets[-1]} exceeds tar size {source_size}: {index_path}"
-        )
+        raise ValueError(f"Native tar index sentinel {offsets[-1]} exceeds tar size {source_size}: {index_path}")
 
     result = _validate_native_tar_ranges(
         tar_path=tar_path,
@@ -648,9 +560,7 @@ def validate_native_tar_member_index(
         members=members,
     )
     if indexed_source_metadata(tar_path) != source_metadata:
-        raise RuntimeError(
-            f"Native tar source changed while validating its index: {tar_path}"
-        )
+        raise RuntimeError(f"Native tar source changed while validating its index: {tar_path}")
     return result
 
 
@@ -668,53 +578,32 @@ def build_sharegpt_tar_routing_index(
     """Build one deterministic route from ordered indexed manifests/tars."""
     output = Path(output_path)
     if output.exists():
-        raise FileExistsError(
-            f"Refusing to overwrite sealed ShareGPT tar route: {output}"
-        )
+        raise FileExistsError(f"Refusing to overwrite sealed ShareGPT tar route: {output}")
     if not manifest_paths:
         raise ValueError("At least one manifest path is required")
     if not tar_paths:
         raise ValueError("At least one tar path is required")
     manifest_paths = list(manifest_paths)
     tar_paths = list(tar_paths)
-    manifest_indexes = _resolve_companion_paths(
-        manifest_paths, manifest_index_paths, ".idx", "manifest"
-    )
+    manifest_indexes = _resolve_companion_paths(manifest_paths, manifest_index_paths, ".idx", "manifest")
     tar_indexes = _resolve_companion_paths(tar_paths, tar_index_paths, ".idx", "tar")
 
     manifest_stats = [_stable_source_identity(path) for path in manifest_paths]
-    manifest_spec_digest = ordered_manifest_spec_path_digest(
-        manifest_paths, manifest_specs
-    )
+    manifest_spec_digest = ordered_manifest_spec_path_digest(manifest_paths, manifest_specs)
     manifest_content_digest = ordered_manifest_content_digest(manifest_paths)
-    manifest_source_identity_digest = ordered_manifest_source_identity_digest(
-        manifest_paths
-    )
+    manifest_source_identity_digest = ordered_manifest_source_identity_digest(manifest_paths)
     tar_digest_before = ordered_tar_catalog_digest(tar_paths)
     exact_names, basenames = _scan_ordered_tar_collection(tar_paths, tar_indexes)
 
     row_routes = []
-    for manifest_path, manifest_index in zip(
-        manifest_paths, manifest_indexes, strict=True
-    ):
+    for manifest_path, manifest_index in zip(manifest_paths, manifest_indexes, strict=True):
         for document in _iter_indexed_jsonl(manifest_path, manifest_index):
-            paths = extract_sharegpt_audio_paths(
-                document, audio_placeholders=audio_placeholders
-            )
-            row_routes.append(
-                [
-                    _resolve_audio_reference(path, exact_names, basenames)
-                    for path in paths
-                ]
-            )
+            paths = extract_sharegpt_audio_paths(document, audio_placeholders=audio_placeholders)
+            row_routes.append([_resolve_audio_reference(path, exact_names, basenames) for path in paths])
     if manifest_stats != [_stable_source_identity(path) for path in manifest_paths]:
-        raise RuntimeError(
-            "A source manifest changed while building the ShareGPT tar route"
-        )
+        raise RuntimeError("A source manifest changed while building the ShareGPT tar route")
     if tar_digest_before != ordered_tar_catalog_digest(tar_paths):
-        raise RuntimeError(
-            "The ordered tar catalog changed while building the ShareGPT tar route"
-        )
+        raise RuntimeError("The ordered tar catalog changed while building the ShareGPT tar route")
 
     return write_sharegpt_tar_routing_index(
         output,
@@ -728,9 +617,7 @@ def build_sharegpt_tar_routing_index(
     )
 
 
-def _validate_layout(
-    path: Path, data: mmap.mmap
-) -> tuple[ShareGptTarRouteHeader, tuple[int, ...]]:
+def _validate_layout(path: Path, data: mmap.mmap) -> tuple[ShareGptTarRouteHeader, tuple[int, ...]]:
     actual_size = len(data)
     if actual_size < SGROUTE_HEADER_SIZE:
         raise ValueError(
@@ -765,28 +652,19 @@ def _validate_layout(
     if version != SGROUTE_VERSION:
         raise ValueError(f"Unsupported ShareGPT tar route version {version}: {path}")
     if header_size != SGROUTE_HEADER_SIZE:
-        raise ValueError(
-            f"Invalid ShareGPT tar route header size {header_size}: {path}"
-        )
+        raise ValueError(f"Invalid ShareGPT tar route header size {header_size}: {path}")
     if flags != SGROUTE_FLAGS:
         raise ValueError(
-            f"Invalid ShareGPT tar route flags {flags:#x}; v2 requires exactly "
-            f"{SGROUTE_FLAGS:#x}: {path}"
+            f"Invalid ShareGPT tar route flags {flags:#x}; v2 requires exactly " f"{SGROUTE_FLAGS:#x}: {path}"
         )
     if reserved0 != 0 or reserved1 != 0 or reserved_tail != bytes(16):
-        raise ValueError(
-            f"ShareGPT tar route reserved header bytes must be zero: {path}"
-        )
+        raise ValueError(f"ShareGPT tar route reserved header bytes must be zero: {path}")
     if route_record_size != SGROUTE_RECORD_SIZE:
-        raise ValueError(
-            f"Invalid ShareGPT tar route route-record size {route_record_size}: {path}"
-        )
+        raise ValueError(f"Invalid ShareGPT tar route route-record size {route_record_size}: {path}")
     expected_routes_offset = SGROUTE_HEADER_SIZE + 8 * (row_count + 1)
     expected_file_size = expected_routes_offset + SGROUTE_RECORD_SIZE * route_count
     if row_offsets_offset != SGROUTE_HEADER_SIZE:
-        raise ValueError(
-            f"Invalid ShareGPT tar route row-offset array file offset {row_offsets_offset}: {path}"
-        )
+        raise ValueError(f"Invalid ShareGPT tar route row-offset array file offset {row_offsets_offset}: {path}")
     if routes_offset != expected_routes_offset:
         raise ValueError(
             f"Invalid ShareGPT tar route record-array file offset {routes_offset}; expected {expected_routes_offset}: {path}"
@@ -800,8 +678,7 @@ def _validate_layout(
         raise ValueError(f"ShareGPT tar route payload SHA-256 mismatch: {path}")
 
     row_offsets = tuple(
-        _U64.unpack_from(data, row_offsets_offset + index * _U64.size)[0]
-        for index in range(row_count + 1)
+        _U64.unpack_from(data, row_offsets_offset + index * _U64.size)[0] for index in range(row_count + 1)
     )
     if not row_offsets or row_offsets[0] != 0:
         raise ValueError(f"ShareGPT tar route row_offsets[0] must be zero: {path}")
@@ -812,9 +689,7 @@ def _validate_layout(
     if any(left > right for left, right in pairwise(row_offsets)):
         raise ValueError(f"ShareGPT tar route row offsets must be monotonic: {path}")
     for record_index in range(route_count):
-        shard_index, _ = _ROUTE.unpack_from(
-            data, routes_offset + record_index * SGROUTE_RECORD_SIZE
-        )
+        shard_index, _ = _ROUTE.unpack_from(data, routes_offset + record_index * SGROUTE_RECORD_SIZE)
         if shard_index >= tar_count:
             raise ValueError(
                 f"ShareGPT tar route record {record_index} addresses shard {shard_index}, "
@@ -842,16 +717,12 @@ def _scan_ordered_tar_collection(
 ) -> tuple[dict[str, TarRoute], dict[str, list[TarRoute]]]:
     exact_names: dict[str, TarRoute] = {}
     basenames: dict[str, list[TarRoute]] = {}
-    for shard_index, (tar_path, index_path) in enumerate(
-        zip(tar_paths, tar_index_paths, strict=True)
-    ):
+    for shard_index, (tar_path, index_path) in enumerate(zip(tar_paths, tar_index_paths, strict=True)):
         members = validate_native_tar_member_index(tar_path, index_path)
         for member in members:
             route = TarRoute(shard_index, member.local_index)
             if member.name in exact_names:
-                raise ValueError(
-                    f"duplicate tar member name {member.name!r} in ordered tar collection"
-                )
+                raise ValueError(f"duplicate tar member name {member.name!r} in ordered tar collection")
             exact_names[member.name] = route
             basenames.setdefault(PurePosixPath(member.name).name, []).append(route)
     return exact_names, basenames
@@ -868,13 +739,9 @@ def _resolve_audio_reference(
     basename = PurePosixPath(reference).name
     candidates = basenames.get(basename, ())
     if not candidates:
-        raise ValueError(
-            f"missing audio member {reference!r} in ordered tar collection"
-        )
+        raise ValueError(f"missing audio member {reference!r} in ordered tar collection")
     if len(candidates) != 1:
-        raise ValueError(
-            f"ambiguous basename {basename!r} for audio reference {reference!r} in tar collection"
-        )
+        raise ValueError(f"ambiguous basename {basename!r} for audio reference {reference!r} in tar collection")
     return candidates[0]
 
 
@@ -884,21 +751,16 @@ def _iter_indexed_jsonl(path_like: str | Path, index_path_like: str | Path):
     source_metadata = indexed_source_metadata(path)
     source_size = source_metadata["size_bytes"]
     if not offsets or offsets[0] != 0 or offsets[-1] != source_size:
-        raise ValueError(
-            f"Indexed ShareGPT manifest must have zero origin and physical-size sentinel: {path}"
-        )
+        raise ValueError(f"Indexed ShareGPT manifest must have zero origin and physical-size sentinel: {path}")
     if any(left >= right for left, right in pairwise(offsets)):
-        raise ValueError(
-            f"Indexed ShareGPT manifest offsets must define non-empty ordered rows: {path}"
-        )
+        raise ValueError(f"Indexed ShareGPT manifest offsets must define non-empty ordered rows: {path}")
     row_index = 0
     while row_index < len(offsets) - 1:
         batch_start = offsets[row_index]
         batch_end_index = row_index + 1
         while (
             batch_end_index < len(offsets) - 1
-            and offsets[batch_end_index + 1] - batch_start
-            <= _REMOTE_MANIFEST_BATCH_BYTES
+            and offsets[batch_end_index + 1] - batch_start <= _REMOTE_MANIFEST_BATCH_BYTES
         ):
             batch_end_index += 1
         batch_end = offsets[batch_end_index]
@@ -915,27 +777,19 @@ def _iter_indexed_jsonl(path_like: str | Path, index_path_like: str | Path):
             try:
                 document = json.loads(payload)
             except (UnicodeDecodeError, json.JSONDecodeError) as error:
-                raise ValueError(
-                    f"Malformed JSON at indexed row {row_index} in {path}: {error}"
-                ) from error
+                raise ValueError(f"Malformed JSON at indexed row {row_index} in {path}: {error}") from error
             if not isinstance(document, dict):
-                raise TypeError(
-                    f"ShareGPT indexed row {row_index} in {path} must be a JSON object"
-                )
+                raise TypeError(f"ShareGPT indexed row {row_index} in {path} must be a JSON object")
             yield document
             row_index += 1
     if indexed_source_metadata(path) != source_metadata:
-        raise RuntimeError(
-            f"ShareGPT manifest changed while reading indexed rows: {path}"
-        )
+        raise RuntimeError(f"ShareGPT manifest changed while reading indexed rows: {path}")
 
 
 def _read_offsets(path: Path) -> tuple[int, ...]:
     raw = path.read_bytes()
     if len(raw) < 8 or len(raw) % 8:
-        raise ValueError(
-            f"Offset index must contain raw little-endian uint64 values: {path}"
-        )
+        raise ValueError(f"Offset index must contain raw little-endian uint64 values: {path}")
     return struct.unpack(f"<{len(raw) // 8}Q", raw)
 
 
@@ -964,10 +818,7 @@ def _source_identity_record(path: str) -> dict:
     if _is_remote_path(path):
         return metadata
     stat = Path(path).stat()
-    if (
-        metadata["size_bytes"] != stat.st_size
-        or metadata["mtime_ns"] != stat.st_mtime_ns
-    ):
+    if metadata["size_bytes"] != stat.st_size or metadata["mtime_ns"] != stat.st_mtime_ns:
         raise RuntimeError(f"Source changed while recording identity: {path}")
     return {
         **metadata,
@@ -980,9 +831,7 @@ def _is_remote_path(path: str) -> bool:
     return path.startswith(("ais://", "s3://"))
 
 
-def _read_remote_native_tar_member(
-    path: str, start: int, end: int
-) -> tuple[str, int, int]:
+def _read_remote_native_tar_member(path: str, start: int, end: int) -> tuple[str, int, int]:
     if start < 0 or end <= start:
         raise ValueError(f"Invalid native tar member range [{start}, {end}) in {path}")
     position = start
@@ -1001,9 +850,7 @@ def _read_remote_native_tar_member(
         data_start = position + tarfile.BLOCKSIZE
         data_end = data_start + _round_up_tar_block(info.size)
         if data_end > end:
-            raise ValueError(
-                f"Remote tar member {info.name!r} exceeds indexed range [{start}, {end}) in {path}"
-            )
+            raise ValueError(f"Remote tar member {info.name!r} exceeds indexed range [{start}, {end}) in {path}")
         if info.type in (tarfile.XHDTYPE, tarfile.XGLTYPE, tarfile.GNUTYPE_LONGNAME):
             if info.size > _REMOTE_TAR_METADATA_MAX_BYTES:
                 raise ValueError(
@@ -1014,40 +861,28 @@ def _read_remote_native_tar_member(
             if info.type in (tarfile.XHDTYPE, tarfile.XGLTYPE):
                 pax_headers.update(_parse_pax_headers(data))
             else:
-                long_name = data.rstrip(b"\0\n").decode(
-                    tarfile.ENCODING, "surrogateescape"
-                )
+                long_name = data.rstrip(b"\0\n").decode(tarfile.ENCODING, "surrogateescape")
             position = data_end
             continue
         if info.type in (tarfile.REGTYPE, tarfile.AREGTYPE):
             name = pax_headers.get("path") or long_name or info.name
             return name, start, data_end
         position = data_end
-    raise ValueError(
-        f"Native tar index range [{start}, {end}) in {path} contains no regular member"
-    )
+    raise ValueError(f"Native tar index range [{start}, {end}) in {path} contains no regular member")
 
 
 def _validate_route(route: TarRoute, tar_shard_count: int) -> None:
-    if not isinstance(route.tar_shard_index, int) or not isinstance(
-        route.tar_member_local_index, int
-    ):
+    if not isinstance(route.tar_shard_index, int) or not isinstance(route.tar_member_local_index, int):
         raise TypeError(f"Tar route indices must be integers, got {route!r}")
     if route.tar_shard_index < 0 or route.tar_shard_index >= tar_shard_count:
-        raise ValueError(
-            f"Tar route shard index {route.tar_shard_index} is outside [0, {tar_shard_count})"
-        )
+        raise ValueError(f"Tar route shard index {route.tar_shard_index} is outside [0, {tar_shard_count})")
     if route.tar_member_local_index < 0 or route.tar_member_local_index > _UINT32_MAX:
-        raise ValueError(
-            f"Tar route local member index is outside uint32 range: {route.tar_member_local_index}"
-        )
+        raise ValueError(f"Tar route local member index is outside uint32 range: {route.tar_member_local_index}")
 
 
 def _coerce_digest(value: bytes | str, label: str) -> bytes:
     if isinstance(value, str):
-        if len(value) != 64 or any(
-            character not in "0123456789abcdef" for character in value
-        ):
+        if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
             raise ValueError(f"{label} must be 64 lower-case hexadecimal characters")
         value = bytes.fromhex(value)
     if not isinstance(value, bytes) or len(value) != 32:
@@ -1057,9 +892,7 @@ def _coerce_digest(value: bytes | str, label: str) -> bytes:
 
 def _expect_equal(label: str, actual, expected) -> None:
     if expected is not None and actual != expected:
-        raise ValueError(
-            f"ShareGPT tar route {label} mismatch: expected {expected}, got {actual}"
-        )
+        raise ValueError(f"ShareGPT tar route {label} mismatch: expected {expected}, got {actual}")
 
 
 def _expect_digest(label: str, actual: bytes, expected: bytes | str | None) -> None:
@@ -1072,9 +905,7 @@ def _expect_digest(label: str, actual: bytes, expected: bytes | str | None) -> N
 
 
 def _canonical_json_bytes(value) -> bytes:
-    return json.dumps(
-        value, ensure_ascii=False, separators=(",", ":"), sort_keys=True
-    ).encode("utf-8")
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
 
 
 def _length_prefixed_digest(records: Iterable[bytes]) -> bytes:
@@ -1110,9 +941,7 @@ def _atomic_publish_no_replace(source: Path, destination: Path) -> None:
         try:
             os.link(source, destination)
         except FileExistsError as error:
-            raise FileExistsError(
-                f"Refusing to overwrite sealed ShareGPT tar route: {destination}"
-            ) from error
+            raise FileExistsError(f"Refusing to overwrite sealed ShareGPT tar route: {destination}") from error
         source.unlink()
 
     libc = ctypes.CDLL(None, use_errno=True)
@@ -1142,9 +971,7 @@ def _atomic_publish_no_replace(source: Path, destination: Path) -> None:
         return
     error_number = ctypes.get_errno()
     if error_number == errno.EEXIST:
-        raise FileExistsError(
-            f"Refusing to overwrite sealed ShareGPT tar route: {destination}"
-        )
+        raise FileExistsError(f"Refusing to overwrite sealed ShareGPT tar route: {destination}")
     if error_number in {
         errno.ENOSYS,
         errno.EINVAL,

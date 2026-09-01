@@ -50,9 +50,7 @@ def test_validator_initializes_process_group_for_multi_rank(monkeypatch):
         lambda **kwargs: calls.append(kwargs),
     )
 
-    initialized = validate_dataloader._ensure_validation_process_group(
-        rank=1, world_size=2
-    )
+    initialized = validate_dataloader._ensure_validation_process_group(rank=1, world_size=2)
 
     assert initialized is True
     assert calls == [{"backend": "gloo", "rank": 1, "world_size": 2}]
@@ -64,10 +62,7 @@ def test_validator_reuses_matching_process_group(monkeypatch):
     monkeypatch.setattr(torch.distributed, "get_rank", lambda: 1)
     monkeypatch.setattr(torch.distributed, "get_world_size", lambda: 2)
 
-    assert (
-        validate_dataloader._ensure_validation_process_group(rank=1, world_size=2)
-        is False
-    )
+    assert validate_dataloader._ensure_validation_process_group(rank=1, world_size=2) is False
 
 
 def test_validator_rejects_mismatched_process_group(monkeypatch):
@@ -99,9 +94,7 @@ def _invoke(tmp_path, monkeypatch, *, num_batches, requested_batches):
             }
         )
     )
-    monkeypatch.setattr(
-        validate_dataloader, "_build_tokenizer", lambda *args, **kwargs: _Tokenizer()
-    )
+    monkeypatch.setattr(validate_dataloader, "_build_tokenizer", lambda *args, **kwargs: _Tokenizer())
     monkeypatch.setattr(
         validate_dataloader,
         "_build_validation_dataset",
@@ -152,9 +145,7 @@ def test_full_cli_writes_passed_summary_after_exact_completion(tmp_path, monkeyp
     }
 
 
-def test_full_cli_writes_failed_summary_when_loader_exhausts_early(
-    tmp_path, monkeypatch
-):
+def test_full_cli_writes_failed_summary_when_loader_exhausts_early(tmp_path, monkeypatch):
     result, summary = _invoke(tmp_path, monkeypatch, num_batches=1, requested_batches=2)
 
     assert result.exit_code != 0
@@ -162,6 +153,4 @@ def test_full_cli_writes_failed_summary_when_loader_exhausts_early(
     assert summary["status"] == "failed"
     assert summary["requested_batches"] == 2
     assert summary["completed_batches"] == 1
-    assert summary["failures"] == [
-        {"step": 1, "stage": "materialize_or_measure", "error_type": "ClickException"}
-    ]
+    assert summary["failures"] == [{"step": 1, "stage": "materialize_or_measure", "error_type": "ClickException"}]

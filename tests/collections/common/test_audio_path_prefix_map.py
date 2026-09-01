@@ -20,22 +20,14 @@ def test_audio_path_prefix_map_leaves_relative_and_url_paths_unchanged():
     mapper = AudioPathPrefixMap({"/source/site-a": "/mirror/site-b"})
 
     assert mapper.resolve("audio/example.wav") == "audio/example.wav"
-    assert (
-        mapper.resolve("s3://existing-bucket/audio/example.wav")
-        == "s3://existing-bucket/audio/example.wav"
-    )
+    assert mapper.resolve("s3://existing-bucket/audio/example.wav") == "s3://existing-bucket/audio/example.wav"
 
 
 def test_audio_path_prefix_map_maps_local_and_remote_destinations():
     local = AudioPathPrefixMap({"/source/site-a": "/mirror/site-b"})
-    remote = AudioPathPrefixMap(
-        {"/source/site-a": "s3://example-audio/payload/site-a-source"}
-    )
+    remote = AudioPathPrefixMap({"/source/site-a": "s3://example-audio/payload/site-a-source"})
 
-    assert (
-        local.resolve("/source/site-a/audio/example.wav")
-        == "/mirror/site-b/audio/example.wav"
-    )
+    assert local.resolve("/source/site-a/audio/example.wav") == "/mirror/site-b/audio/example.wav"
     assert (
         remote.resolve("/source/site-a/audio/example.wav")
         == "s3://example-audio/payload/site-a-source/audio/example.wav"
@@ -52,10 +44,7 @@ def test_audio_path_prefix_map_uses_component_safe_longest_prefix():
     )
 
     assert mapper.resolve("/source/site-a/special/a.wav") == "/mirror/special/a.wav"
-    assert (
-        mapper.resolve("/source/site-a/ordinary/a.wav")
-        == "/mirror/general/ordinary/a.wav"
-    )
+    assert mapper.resolve("/source/site-a/ordinary/a.wav") == "/mirror/general/ordinary/a.wav"
     assert mapper.resolve("/source/site-a-other/a.wav") == "/mirror/other/a.wav"
 
 
@@ -90,9 +79,7 @@ def test_audio_path_prefix_map_rejects_invalid_configuration(mapping, match):
         AudioPathPrefixMap(mapping)
 
 
-@pytest.mark.parametrize(
-    "path", ["/source/site-a/../escape.wav", "/source/site-a/./audio.wav"]
-)
+@pytest.mark.parametrize("path", ["/source/site-a/../escape.wav", "/source/site-a/./audio.wav"])
 def test_audio_path_prefix_map_rejects_input_traversal(path):
     mapper = AudioPathPrefixMap({"/source/site-a": "/mirror/site-b"})
 

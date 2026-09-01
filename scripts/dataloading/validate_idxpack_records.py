@@ -76,10 +76,7 @@ def _collection_descriptors(
     collection_specs: Iterable[IndexPackCollectionSpec] | None,
 ) -> list[_CollectionDescriptor]:
     if collection_specs is not None:
-        return [
-            _CollectionDescriptor(key=spec.key, role=spec.role, kind=spec.kind)
-            for spec in collection_specs
-        ]
+        return [_CollectionDescriptor(key=spec.key, role=spec.role, kind=spec.kind) for spec in collection_specs]
 
     # The pack format persists keys and kinds, but not the human-readable role.
     # IndexPack has no public collection enumeration API yet, so the pack-only
@@ -126,8 +123,7 @@ class _ShardRecordReader:
             raise ValueError(f"Invalid byte range [{start}, {end})")
         if end > self.source.size:
             raise EOFError(
-                f"Short indexed read from {path}: requested [{start}, {end}), "
-                f"source size is {self.source.size}"
+                f"Short indexed read from {path}: requested [{start}, {end}), " f"source size is {self.source.size}"
             )
         self.source.seek(start)
         chunks = []
@@ -141,8 +137,7 @@ class _ShardRecordReader:
         data = b"".join(chunks)
         if len(data) != end - start:
             raise EOFError(
-                f"Short indexed read from {path}: requested [{start}, {end}), "
-                f"received {len(data)} bytes"
+                f"Short indexed read from {path}: requested [{start}, {end}), " f"received {len(data)} bytes"
             )
         return data
 
@@ -193,15 +188,10 @@ def _scan_json_record_partition(
                         raw = record_reader.read(location.path, start, end)
                         decoded = json.loads(raw.decode("utf-8"))
                         if not isinstance(decoded, dict):
-                            raise TypeError(
-                                "Expected a JSON object record, got "
-                                f"{type(decoded).__name__}"
-                            )
+                            raise TypeError("Expected a JSON object record, got " f"{type(decoded).__name__}")
                         top_level_marker = bool(decoded.get("_skipme", False))
                         custom = decoded.get("custom")
-                        custom_marker = isinstance(custom, dict) and bool(
-                            custom.get("_skipme", False)
-                        )
+                        custom_marker = isinstance(custom, dict) and bool(custom.get("_skipme", False))
                         top_level_skip_marker_records += int(top_level_marker)
                         custom_skip_marker_records += int(custom_marker)
                         skip_marker_records += int(top_level_marker or custom_marker)
@@ -306,9 +296,7 @@ def validate_idxpack_json_records(
                 active_pack.close()
     else:
         if not owns_pack:
-            raise ValueError(
-                "num_workers > 1 requires an index-pack path, not an open IndexPack"
-            )
+            raise ValueError("num_workers > 1 requires an index-pack path, not an open IndexPack")
         pack_path = str(index_pack)
         with ProcessPoolExecutor(
             max_workers=num_workers,
@@ -332,18 +320,10 @@ def validate_idxpack_json_records(
         report(message)
     summary = IndexPackRecordValidationSummary(
         records_checked=sum(result.summary.records_checked for result in results),
-        jsonl_collections_checked=sum(
-            descriptor.kind == "jsonl" for descriptor in descriptors
-        ),
-        skip_marker_records=sum(
-            result.summary.skip_marker_records for result in results
-        ),
-        top_level_skip_marker_records=sum(
-            result.summary.top_level_skip_marker_records for result in results
-        ),
-        custom_skip_marker_records=sum(
-            result.summary.custom_skip_marker_records for result in results
-        ),
+        jsonl_collections_checked=sum(descriptor.kind == "jsonl" for descriptor in descriptors),
+        skip_marker_records=sum(result.summary.skip_marker_records for result in results),
+        top_level_skip_marker_records=sum(result.summary.top_level_skip_marker_records for result in results),
+        custom_skip_marker_records=sum(result.summary.custom_skip_marker_records for result in results),
         errors=sum(result.summary.errors for result in results),
         errors_reported=len(messages),
     )

@@ -1,4 +1,18 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Exactly count one newline-aligned byte range of a materialized SFT JSONL."""
 
 from __future__ import annotations
@@ -8,13 +22,13 @@ import json
 import os
 from pathlib import Path
 
+from count_materialized_sft_tokens import _finalize, _new_stats, _update_row_stats
+
 from nemo.collections.common.data.lhotse.text_adapters import (
     MaterializedSFTMessagesExample,
     _encode_materialized_sft_messages,
 )
 from nemo.collections.common.tokenizers import AutoTokenizer
-
-from count_materialized_sft_tokens import _finalize, _new_stats, _update_row_stats
 
 
 def parse_args() -> argparse.Namespace:
@@ -66,17 +80,14 @@ def main() -> None:
             offset = stream.tell()
             raw = stream.readline()
             if not raw or stream.tell() > args.byte_end:
-                raise ValueError(
-                    f"Range crossed its boundary at {path}:{offset} end={args.byte_end}"
-                )
+                raise ValueError(f"Range crossed its boundary at {path}:{offset} end={args.byte_end}")
             try:
                 data = json.loads(raw)
             except (UnicodeDecodeError, json.JSONDecodeError) as error:
                 raise ValueError(f"Invalid JSON at {path} byte {offset}: {error}") from error
             if set(data) != {"messages"}:
                 raise ValueError(
-                    f"{path} byte {offset} must have exactly top-level key 'messages'; "
-                    f"got {sorted(data)}"
+                    f"{path} byte {offset} must have exactly top-level key 'messages'; " f"got {sorted(data)}"
                 )
             example = MaterializedSFTMessagesExample(
                 id=f"{path.name}:{args.range_index}:{row_index}",
@@ -87,9 +98,7 @@ def main() -> None:
             _update_row_stats(stats, example.messages, encoded["input_ids"], encoded["mask"])
             row_index += 1
         if stream.tell() != args.byte_end:
-            raise ValueError(
-                f"Range ended at {stream.tell()} instead of exact boundary {args.byte_end}"
-            )
+            raise ValueError(f"Range ended at {stream.tell()} instead of exact boundary {args.byte_end}")
     report = {
         "schema_version": 1,
         "tokenizer": args.tokenizer,

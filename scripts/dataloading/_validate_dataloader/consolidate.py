@@ -217,7 +217,9 @@ def _q3_partition_correctness(rows: list[dict]) -> QResult:
     ratio = sum_distinct / max(len(grand_union), 1)
     tag = "partition-rank-leak"
     if ratio >= n_ranks - 0.5:
-        detail = f"FULL BROADCAST: each validation identity appears on ~{ratio:.1f}/{n_ranks} ranks " f"(overlap={overlap})"
+        detail = (
+            f"FULL BROADCAST: each validation identity appears on ~{ratio:.1f}/{n_ranks} ranks " f"(overlap={overlap})"
+        )
     else:
         detail = (
             f"PARTIAL OVERLAP: per-rank distinct sums to {sum_distinct} but |union|={len(grand_union)} "

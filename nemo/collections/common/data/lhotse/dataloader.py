@@ -44,10 +44,15 @@ from lhotse.lazy import LazyFlattener
 from lhotse.utils import fix_random_seed
 from omegaconf import DictConfig, OmegaConf
 
+from nemo.collections.common.data.lhotse.audio_token_estimator import AudioTokenEstimator
 from nemo.collections.common.data.lhotse.cutset import (
     IncompleteConfigError,
     guess_parse_cutset,
     read_cutset_from_config,
+)
+from nemo.collections.common.data.lhotse.packed_sequence_sampler import (
+    PackedSequenceDynamicBucketingSampler,
+    PackedSequenceDynamicCutSampler,
 )
 from nemo.collections.common.data.lhotse.sampling import (
     BucketingFilter,
@@ -88,6 +93,9 @@ class LhotseDataLoadingConfig:
     shar_path: Any = None  # str | list[str | tuple[str, float | int]] | None = None
     #  Enable this to support dataloading from JSON manifests that reference subsets of audio tar files.
     skip_missing_manifest_entries: bool = False
+    # Continue past unreadable, missing, or corrupted audio payloads. Disable for fail-fast diagnostics.
+    # This is independent of skip_missing_manifest_entries, which only handles tar members absent from JSONL.
+    fault_tolerant_audio_loading: bool = True
     tarred_random_access: bool = False  # deprecated, replaced by: skip_missing_manifest_entries
     # 2. Batch size.
     #   a. Existing NeMo options.
@@ -102,9 +110,16 @@ class LhotseDataLoadingConfig:
     num_cuts_for_bins_estimate: int = 10000
     bucket_duration_bins: Any = None  # list[float] | list[list[float]] | None = None
     bucket_buffer_size: int = 10000
+    # Number of candidates considered by packed best-fit batching, with or
+    # without bucketing. This is independent of bucket_buffer_size, which caps
+    # total occupancy across all buckets.
+    # Explicit legacy shuffle_buffer_size values are copied here during schema
+    # merge; otherwise packed sampling uses a safe 128-candidate default.
+    packing_buffer_size: int | None = None
     concurrent_bucketing: bool = True  # fetches data in a background thread
     bucketing_2d_strict_mode: bool = True  # reduces padding by discarding significant outliers
     #   d. Other Lhotse sampling options.
+    # Reservoir size for ordinary (non-packed) dynamic sampling.
     shuffle_buffer_size: int | None = 10000
     drop_last: bool = False
     shard_seed: int | str = "trng"
@@ -127,7 +142,13 @@ class LhotseDataLoadingConfig:
     use_multimodal_sampling: bool = False
     audio_locator_tag: str | None = None  # global audio placeholder token, propagates to datasets in input_cfg
     token_equivalent_duration: float | None = None
+    # Sample-exact audio-to-model-token length arithmetic. When set, this
+    # supersedes token_equivalent_duration for constraints and token filters.
+    audio_token_estimator: Any = None
     batch_tokens: int | None = None
+    # Use sum-of-lengths rather than padded batch-size-times-maximum accounting.
+    # Enable this when the encoder consumes packed sequences.
+    use_packed_sequence_sampling: bool = False
     quadratic_factor: float | None = None
     # Text pretraining data is usually very long, so we split it into smaller chunks.
     # When provided, the text tokens will be cut into windows of this size.
@@ -278,6 +299,13 @@ class LhotseDataLoadingConfig:
     # Explicitly set on an owning input_cfg entry, normally relative to
     # index_pack_root. Declaring a pack is strict: missing packs are errors.
     index_pack: Optional[str] = None
+    # One-based JSONL rows approved for deterministic exclusion from indexed
+    # ShareGPT datasets. The line-set digest is computed over the canonical
+    # compact JSON list plus a trailing newline. The audit digest binds the
+    # exception to an external immutable approval artifact.
+    excluded_manifest_lines: Any = None
+    excluded_manifest_lines_sha256: Optional[str] = None
+    approved_exclusion_audit_sha256: Optional[str] = None
 
     # When True, build the dataloader with ``torchdata.stateful_dataloader.StatefulDataLoader``
     # instead of ``torch.utils.data.DataLoader``. Combined with a checkpointable lhotse sampler
@@ -801,6 +829,10 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
         config.shard_seed = fixed_seed
 
     _auto_detect_bucketing_and_validate_batch_size(config)
+    audio_token_estimator = AudioTokenEstimator.from_config(
+        config.audio_token_estimator,
+        sample_rate=config.sample_rate,
+    )
 
     # Apply channel selector
     if config.channel_selector is not None:
@@ -895,7 +927,12 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
     # We can filter after the augmentations because they are applied only when calling load_audio().
     cuts = cuts.filter(DurationFilter(config.min_duration, config.max_duration))
     cuts = cuts.filter(
-        TokenCountFilter(config.min_tokens, config.max_tokens, measure_total_length=config.measure_total_length)
+        TokenCountFilter(
+            config.min_tokens,
+            config.max_tokens,
+            measure_total_length=config.measure_total_length,
+            audio_token_estimator=audio_token_estimator,
+        )
     )
 
     # validation status filtering
@@ -918,7 +955,12 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
     # Select the strategy customizing Lhotse sampler behaviour.
     # Provides support for dynamic batch sizes, multimodal dataloading, 2D bucketing, etc.
     bucket_duration_bins = determine_bucket_duration_bins(config)
-    cuts, constraint = determine_sampling_constraint(cuts, bucket_duration_bins, config)
+    cuts, constraint = determine_sampling_constraint(
+        cuts,
+        bucket_duration_bins,
+        config,
+        audio_token_estimator=audio_token_estimator,
+    )
 
     # 3. The sampler.
     if config.use_bucketing:
@@ -926,17 +968,28 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
         #    - we can tweak the number of buckets and bucket duration bins using the configuration
         #    - batch size is dynamic and configurable via a single param: max_duration (config: batch_duration)
         #    - quadratic_duration introduces a penalty to balance batch sizes for quadratic time complexity models
+        use_exact_packed_sampler = config.use_packed_sequence_sampling and isinstance(
+            constraint, MultimodalSamplingConstraint
+        )
+        sampler_cls = PackedSequenceDynamicBucketingSampler if use_exact_packed_sampler else DynamicBucketingSampler
         logging.info(
-            f"Creating a Lhotse DynamicBucketingSampler "
+            f"Creating a Lhotse {sampler_cls.__name__} "
             f"(max_batch_duration={config.batch_duration} max_batch_size={config.batch_size})"
         )
+        sampler_kwargs = {}
+        if use_exact_packed_sampler:
+            packing_buffer_size = config.packing_buffer_size
+            if packing_buffer_size is None:
+                packing_buffer_size = 128
+            sampler_kwargs["packing_buffer_size"] = packing_buffer_size
+        else:
+            sampler_kwargs["shuffle_buffer_size"] = config.shuffle_buffer_size
         # Determine the bucket duration bins
-        sampler = DynamicBucketingSampler(
+        sampler = sampler_cls(
             cuts,
             constraint=constraint,
             shuffle=config.shuffle,
             drop_last=config.drop_last,
-            shuffle_buffer_size=config.shuffle_buffer_size,
             seed=config.shard_seed,
             num_buckets=config.num_buckets,
             duration_bins=determine_bucket_duration_bins(config),
@@ -945,24 +998,34 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
             concurrent=config.concurrent_bucketing,
             rank=0 if use_iterable_dataset else global_rank,
             world_size=1 if use_iterable_dataset else world_size,
+            **sampler_kwargs,
         )
     else:
         # Non-bucketing sampler, similar to original NeMo dataloading without bucketing,
         # but we also use batch_duration instead of batch_size here.
         # Recommended for dev/test.
+        sampler_cls = PackedSequenceDynamicCutSampler if config.use_packed_sequence_sampling else DynamicCutSampler
         logging.info(
-            f"Creating a Lhotse DynamicCutSampler (bucketing is disabled, "
-            f"(max_batch_duration={config.batch_duration} max_batch_size={config.batch_size})"
+            f"Creating a Lhotse {sampler_cls.__name__} (bucketing is disabled, "
+            f"max_batch_duration={config.batch_duration} max_batch_size={config.batch_size})"
         )
-        sampler = DynamicCutSampler(
+        sampler_kwargs = {}
+        if config.use_packed_sequence_sampling:
+            packing_buffer_size = config.packing_buffer_size
+            if packing_buffer_size is None:
+                packing_buffer_size = 128
+            sampler_kwargs["packing_buffer_size"] = packing_buffer_size
+        else:
+            sampler_kwargs["shuffle_buffer_size"] = config.shuffle_buffer_size
+        sampler = sampler_cls(
             cuts,
             constraint=constraint,
             shuffle=config.shuffle,
             drop_last=config.drop_last,
-            shuffle_buffer_size=config.shuffle_buffer_size,
             seed=config.shard_seed,
             rank=0 if use_iterable_dataset else global_rank,
             world_size=1 if use_iterable_dataset else world_size,
+            **sampler_kwargs,
         )
 
     if config.concatenate_samples:
@@ -1037,7 +1100,13 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
     return sampler, use_iterable_dataset
 
 
-def determine_sampling_constraint(cuts: CutSet, bucket_duration_bins, config) -> tuple[CutSet, SamplingConstraint]:
+def determine_sampling_constraint(
+    cuts: CutSet,
+    bucket_duration_bins,
+    config,
+    *,
+    audio_token_estimator: AudioTokenEstimator | None = None,
+) -> tuple[CutSet, SamplingConstraint]:
     """
     Select an appropriate sampling strategy (constraint) for Lhotse samplers based on the configuration.
     Sampling constraint affects the batch size (static/dynamic) and bucketing behaviour (1D/2D).
@@ -1058,6 +1127,7 @@ def determine_sampling_constraint(cuts: CutSet, bucket_duration_bins, config) ->
                 max_seq_len_buckets=bucket_duration_bins,
                 batch_sizes=config.bucket_batch_size,
                 token_equivalent_duration=config.token_equivalent_duration,
+                audio_token_estimator=audio_token_estimator,
                 strict_2d=config.bucketing_2d_strict_mode,
                 max_ratio=config.max_tpt if isinstance(config.max_tpt, Sequence) else None,
                 measure_total_length=config.measure_total_length,
@@ -1066,10 +1136,12 @@ def determine_sampling_constraint(cuts: CutSet, bucket_duration_bins, config) ->
         else:
             constraint = MultimodalSamplingConstraint(
                 token_equivalent_duration=config.token_equivalent_duration,
+                audio_token_estimator=audio_token_estimator,
                 batch_size=config.batch_size,
                 batch_tokens=config.batch_tokens,
                 quadratic_factor=config.quadratic_factor,
                 measure_total_length=config.measure_total_length,
+                use_packed_sequence_sampling=config.use_packed_sequence_sampling,
             )
     else:
         if config.bucket_batch_size is not None:
@@ -1098,19 +1170,29 @@ def _auto_detect_bucketing_and_validate_batch_size(config) -> None:
     that at least one valid batch size combination is configured.
     """
     # Auto-detect use_bucketing when bucketing params are set.
-    if not config.use_bucketing:
-        if config.bucket_batch_size is not None:
+    use_bucketing = bool(config.get("use_bucketing", False))
+    bucket_batch_size = config.get("bucket_batch_size")
+    bucket_duration_bins = config.get("bucket_duration_bins")
+    batch_size = config.get("batch_size")
+    batch_duration = config.get("batch_duration")
+    use_multimodal_sampling = bool(config.get("use_multimodal_sampling", False))
+    batch_tokens = config.get("batch_tokens")
+
+    if not use_bucketing:
+        if bucket_batch_size is not None:
             logging.info("Auto-enabling use_bucketing=True because bucket_batch_size is set.")
             config.use_bucketing = True
-        elif config.bucket_duration_bins is not None:
+            use_bucketing = True
+        elif bucket_duration_bins is not None:
             logging.info("Auto-enabling use_bucketing=True because bucket_duration_bins is set.")
             config.use_bucketing = True
+            use_bucketing = True
 
     # Validate that at least one valid batch size combination is configured.
-    has_batch_size = config.batch_size is not None
-    has_batch_duration = not config.use_multimodal_sampling and config.batch_duration is not None
-    has_bucket_config = config.bucket_duration_bins is not None and config.bucket_batch_size is not None
-    has_batch_tokens = config.use_multimodal_sampling and config.batch_tokens is not None
+    has_batch_size = batch_size is not None
+    has_batch_duration = not use_multimodal_sampling and batch_duration is not None
+    has_bucket_config = bucket_duration_bins is not None and bucket_batch_size is not None
+    has_batch_tokens = use_multimodal_sampling and batch_tokens is not None
     if not (has_batch_size or has_batch_duration or has_bucket_config or has_batch_tokens):
         raise ValueError(
             "Batch size is not configured. Please set one of the following:\n"
@@ -1169,6 +1251,9 @@ def make_structured_with_schema_warnings(config: Union[DictConfig, dict]) -> Dic
     # Remove unsupported keys and warn about them.
     supported_keys = set(OmegaConf.to_container(default).keys())
     received_keys = set(OmegaConf.to_container(config).keys())
+    legacy_packing_buffer_size = None
+    if "packing_buffer_size" not in received_keys and "shuffle_buffer_size" in received_keys:
+        legacy_packing_buffer_size = config.shuffle_buffer_size
     unsupported_keys = received_keys - supported_keys
     unsupported_keys.discard("use_lhotse")
     if unsupported_keys:
@@ -1178,6 +1263,12 @@ def make_structured_with_schema_warnings(config: Union[DictConfig, dict]) -> Dic
     config = OmegaConf.masked_copy(config, list(supported_keys))
 
     config = OmegaConf.merge(default, config)
+    if legacy_packing_buffer_size is not None:
+        config.packing_buffer_size = legacy_packing_buffer_size
+        logging.info(
+            "Treating explicitly configured shuffle_buffer_size=%s as packing_buffer_size for compatibility.",
+            legacy_packing_buffer_size,
+        )
 
     if config.get("tarred_random_access", False):
         logging.warning(
@@ -1187,9 +1278,13 @@ def make_structured_with_schema_warnings(config: Union[DictConfig, dict]) -> Dic
     if config.skip_missing_manifest_entries:
         logging.warning(
             "Note: skip_missing_manifest_entries is set to True. "
-            "If any of your manifests and tar files are mismatched, the entire "
-            "tar file will be skipped without warning. It's your responsibility "
-            "to ensure data integrity with this setting."
+            "Sequential tar members without corresponding JSONL entries will be skipped. "
+            "Malformed manifest rows and audio loading failures are governed separately."
+        )
+    if not config.fault_tolerant_audio_loading:
+        logging.warning(
+            "Note: fault_tolerant_audio_loading is set to False. "
+            "Audio I/O and decoder failures will stop dataloading instead of dropping bad examples."
         )
 
     return config

@@ -19,6 +19,7 @@ import os
 import pathlib
 import shutil
 import subprocess
+import tempfile
 from functools import lru_cache
 from typing import Any, Callable, Dict, Iterable, Tuple
 from urllib.parse import urlparse
@@ -235,12 +236,13 @@ def open_datastore_object_with_binary(path: str, num_retries: int = 5):
     return None
 
 
-def open_best(path: str, mode: str = "rb"):
+def open_best(path: str, mode: str = "rb", num_retries: int = 5):
     """Open a file using the best available method (Lhotse, datastore binary, or standard open).
 
     Args:
         path: path to the file or datastore object
         mode: file opening mode (default: "rb")
+        num_retries: number of attempts when the binary datastore client is used
 
     Returns:
         File-like object
@@ -248,7 +250,7 @@ def open_best(path: str, mode: str = "rb"):
     if LHOTSE_AVAILABLE:
         return lhotse_open_best(path, mode=mode)
     if is_datastore_path(path):
-        return open_datastore_object_with_binary(path)
+        return open_datastore_object_with_binary(path, num_retries=num_retries)
     return open(path, mode=mode, encoding='utf-8' if 'b' not in mode else None)
 
 
@@ -270,15 +272,22 @@ def get_datastore_object(path: str, force: bool = False, num_retries: int = 5) -
 
         local_path = datastore_path_to_local_path(store_path=path)
 
-        if not os.path.isfile(local_path) or force:
+        if not os.path.isfile(local_path) or os.path.getsize(local_path) == 0 or force:
             # Either we don't have the file in cache or we force download it
             # Enhancement: if local file is present, check some tag and compare against remote
             local_dir = os.path.dirname(local_path)
             if not os.path.isdir(local_dir):
                 os.makedirs(local_dir, exist_ok=True)
 
-            with open(local_path, 'wb') as f:
-                f.write(open_best(path).read(), num_retries=num_retries)
+            temp_path = None
+            try:
+                with tempfile.NamedTemporaryFile(dir=local_dir, prefix='.download-', delete=False) as f:
+                    temp_path = f.name
+                    f.write(open_best(path, num_retries=num_retries).read())
+                os.replace(temp_path, local_path)
+            finally:
+                if temp_path is not None and os.path.exists(temp_path):
+                    os.unlink(temp_path)
 
         return local_path
 

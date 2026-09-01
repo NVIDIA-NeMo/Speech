@@ -47,6 +47,7 @@ from nemo.collections.common.data.lhotse.text_adapters import (
     LhotseTextAdapter,
     LhotseTextJsonlAdapter,
     LhotseTextPairAdapter,
+    MaterializedSFTMessagesAdapter,
     NeMoMultimodalConversation,
     NeMoMultimodalConversationJsonlAdapter,
     NeMoMultimodalConversationShareGPTJsonlAdapter,
@@ -284,6 +285,7 @@ def read_dataset_config(config) -> tuple[CutSet, bool]:
         "audio_locator_tag": config.get("audio_locator_tag", None),
         "token_equivalent_duration": config.get("token_equivalent_duration", None),
         "skip_missing_manifest_entries": config.get("skip_missing_manifest_entries", False),
+        "fault_tolerant_audio_loading": config.get("fault_tolerant_audio_loading", True),
         "force_map_dataset": config.get("force_map_dataset", False),
         "force_iterable_dataset": config.get("force_iterable_dataset", False),
         "slice_length": config.get("slice_length", None),
@@ -436,6 +438,26 @@ def read_nemotron_text_converation(config: DictConfig) -> tuple[CutSet, bool]:
     return cuts, True
 
 
+@data_type_parser("materialized_sft_messages")
+def read_materialized_sft_messages(config: DictConfig) -> tuple[CutSet, bool]:
+    """Read packed SFT JSONL whose message contents are already prompt-rendered."""
+    cuts = CutSet(
+        MaterializedSFTMessagesAdapter(
+            paths=config.paths,
+            shuffle_shards=config.shuffle,
+            shard_seed=config.shard_seed,
+            indexed=config.get("indexed", False),
+            indexes_root=config.get("indexes_root", None),
+            index_pack=_resolve_index_pack(config),
+            index_pack_max_open_files=config.get("index_pack_max_open_files", 32),
+            validate_chunk_tokenization=config.get("validate_chunk_tokenization", True),
+        )
+    )
+    if not config.get("force_finite", False):
+        cuts = cuts.repeat(preserve_id=True)
+    return cuts, True
+
+
 @data_type_parser("multimodal_conversation")
 def read_multimodal_conversation_jsonl(config: DictConfig) -> tuple[CutSet, bool]:
     """Read paths to multimodal conversation JSONL files and create a CutSet."""
@@ -452,6 +474,10 @@ def read_multimodal_conversation_jsonl(config: DictConfig) -> tuple[CutSet, bool
             slice_length=config.get("slice_length"),
             indexed=config.get("indexed", False),
             indexes_root=config.get("indexes_root", None),
+            index_pack=_resolve_index_pack(config),
+            index_pack_max_open_files=config.get("index_pack_max_open_files", 32),
+            skip_missing_manifest_entries=config.get("skip_missing_manifest_entries", False),
+            fault_tolerant_audio_loading=config.get("fault_tolerant_audio_loading", True),
         )
     )
     if not config.get("force_finite", False):
@@ -466,9 +492,12 @@ def read_share_gpt_as_conversation(config) -> tuple[CutSet, bool]:
         NeMoMultimodalConversationShareGPTJsonlAdapter(
             manifest_filepath=config.manifest_filepath,
             tarred_audio_filepaths=config.get("tarred_audio_filepaths"),
+            tar_lookup_mode=config.get("tar_lookup_mode"),
+            tar_routing_filepath=config.get("tar_routing_filepath", config.get("tar_routing_index")),
             audio_locator_tag=config.audio_locator_tag,
             audio_placeholders=config.audio_placeholders,
             audio_root=config.get("audio_root"),
+            audio_path_prefix_map=config.get("audio_path_prefix_map"),
             token_equivalent_duration=config.get("token_equivalent_duration"),
             shuffle_shards=config.shuffle,
             shard_seed=config.shard_seed,
@@ -478,6 +507,10 @@ def read_share_gpt_as_conversation(config) -> tuple[CutSet, bool]:
             index_pack=_resolve_index_pack(config),
             index_pack_max_open_files=config.get("index_pack_max_open_files", 32),
             skip_missing_manifest_entries=config.get("skip_missing_manifest_entries", False),
+            fault_tolerant_audio_loading=config.get("fault_tolerant_audio_loading", True),
+            excluded_manifest_lines=config.get("excluded_manifest_lines"),
+            excluded_manifest_lines_sha256=config.get("excluded_manifest_lines_sha256"),
+            approved_exclusion_audit_sha256=config.get("approved_exclusion_audit_sha256"),
         )
     )
     if not config.get("force_finite", False):
@@ -498,6 +531,11 @@ def read_share_gpt_webdataset_as_conversation(config) -> tuple[CutSet, bool]:
             shard_seed=config.shard_seed,
             indexed=config.get("indexed", False),
             indexes_root=config.get("indexes_root", None),
+            wds_sample_index_version=config.get("wds_sample_index_version", 1),
+            index_pack=_resolve_index_pack(config),
+            index_pack_max_open_files=config.get("index_pack_max_open_files", 32),
+            skip_missing_manifest_entries=config.get("skip_missing_manifest_entries", False),
+            fault_tolerant_audio_loading=config.get("fault_tolerant_audio_loading", True),
         )
     )
     # When force_finite is False (default), repeat the dataset infinitely so that
@@ -556,7 +594,7 @@ def count_input_cfg_levels(config: Union[DictConfig, dict]) -> int:
 
     _cache: dict[str, object] = {}
 
-    def _resolve_if_path(val):
+    def _resolve_if_path(val, containing_dir: Path | None):
         """If *val* is a string/Path, load the YAML file it points to.
 
         Raises on I/O or parse errors except ``FileNotFoundError``, which is
@@ -566,29 +604,38 @@ def count_input_cfg_levels(config: Union[DictConfig, dict]) -> int:
         runtime via ``OmegaConf.create()``.
         """
         if isinstance(val, (str, Path)):
-            key = str(val)
+            raw_path = str(val)
+            if "://" in raw_path:
+                key = raw_path
+                next_dir = containing_dir
+            else:
+                path = Path(raw_path)
+                if containing_dir is not None and not path.is_absolute():
+                    path = containing_dir / path
+                key = str(path)
+                next_dir = path.parent
             if key not in _cache:
                 try:
                     _cache[key] = load_yaml(key)
                 except FileNotFoundError:
                     logging.debug("count_input_cfg_levels: could not load %r, treating as leaf", key)
                     _cache[key] = val
-            return _cache[key]
-        return val
+            return _cache[key], next_dir
+        return val, containing_dir
 
-    def _max_depth(obj) -> int:
+    def _max_depth(obj, containing_dir: Path | None = None) -> int:
         if isinstance(obj, (dict, DictConfig)):
             depths = []
             for key, val in obj.items():
                 if key == "input_cfg":
-                    resolved = _resolve_if_path(val)
-                    depths.append(1 + _max_depth(resolved))
+                    resolved, next_dir = _resolve_if_path(val, containing_dir)
+                    depths.append(1 + _max_depth(resolved, next_dir))
                 else:
-                    depths.append(_max_depth(val))
+                    depths.append(_max_depth(val, containing_dir))
             return max(depths, default=0)
         elif isinstance(obj, (list, ListConfig)):
             # For lists, find the max depth across all items (siblings)
-            return max((_max_depth(item) for item in obj), default=0)
+            return max((_max_depth(item, containing_dir) for item in obj), default=0)
         return 0
 
     return _max_depth(config)
@@ -611,20 +658,44 @@ def parse_and_combine_datasets(
         temperature, *next_temperatures = propagate_attrs["reweight_temperature"]
     propagate_attrs["reweight_temperature"] = next_temperatures
 
+    containing_dir = None
     if isinstance(config_list, (str, Path)):
         # Resolve local filepath /path/to/input_cfg.yaml or
         # remote url s3://bucket/path/to/input_cfg.yaml into config contents if needed.
-        config_list = OmegaConf.create(load_yaml(config_list))
+        config_path = str(config_list)
+        config_list = OmegaConf.create(load_yaml(config_path))
+        if "://" not in config_path:
+            containing_dir = Path(config_path).parent
     assert len(config_list) > 0, "Empty group in dataset config list."
 
     for item in config_list:
-        # Check if we have any attributes that are propagated downwards to each item in the group.
-        # If a key already exists in the item, it takes precedence (we will not overwrite);
-        # otherwise we will assign it.
-        # We also update propagate_atts for the next sub-groups based on what's present in this group
+        # External blend YAMLs may refer to another YAML relative to their own
+        # location. Resolve that reference before descending so frozen blend
+        # trees remain portable when their common parent directory is moved.
+        if containing_dir is not None and isinstance((nested := item.get("input_cfg")), (str, Path)):
+            nested_path = str(nested)
+            if "://" not in nested_path and not Path(nested_path).is_absolute():
+                item["input_cfg"] = str(containing_dir / nested_path)
+
+        # Propagate loader attributes into each leaf. Most leaf values may
+        # override their parent, but both failure policies remain loader-wide.
+        # SALMDataset and FallbackDataset are shared across the blended graph,
+        # and preserving one authoritative policy also avoids changing existing
+        # external-input_cfg override semantics. Keep top-level values authoritative
+        # through external YAMLs.
         next_propagate_attrs = propagate_attrs.copy()
         for k, v in propagate_attrs.items():
-            if k not in item:
+            if k in ("skip_missing_manifest_entries", "fault_tolerant_audio_loading"):
+                if k in item and item[k] != v:
+                    logging.info(
+                        "Overriding nested %s=%s with loader-wide value %s.",
+                        k,
+                        item[k],
+                        v,
+                    )
+                item[k] = v
+                next_propagate_attrs[k] = v
+            elif k not in item:
                 item[k] = v
             else:
                 next_propagate_attrs[k] = item[k]
@@ -1711,6 +1782,7 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
                     manifest_filepath,
                     tar_paths=tarred_audio_filepaths,
                     skip_missing_manifest_entries=config.get("skip_missing_manifest_entries", False),
+                    fault_tolerant_audio_loading=config.get("fault_tolerant_audio_loading", True),
                     slice_length=config.get("slice_length", None),
                     **tar_kwargs_extra,
                     **common_kwargs,
@@ -1752,6 +1824,7 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
                     manifest_path=manifest_path,
                     tar_paths=tar_path,
                     skip_missing_manifest_entries=config.get("skip_missing_manifest_entries", False),
+                    fault_tolerant_audio_loading=config.get("fault_tolerant_audio_loading", True),
                     slice_length=config.get("slice_length", None),
                     **tar_kwargs_extra,
                     **common_kwargs,

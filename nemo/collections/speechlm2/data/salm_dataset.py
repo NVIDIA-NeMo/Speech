@@ -14,6 +14,7 @@
 # limitations under the License.
 import logging
 import os
+from copy import copy
 from dataclasses import dataclass
 from itertools import groupby
 from typing import Iterable, Union
@@ -66,6 +67,11 @@ class SALMDataset(torch.utils.data.Dataset):
             ``spk_targets`` / ``spk_target_length``. Rows without an explicit
             RTTM path contain the reserved value ``-1`` so the perception encoder
             can replace them with inferred speaker activity.
+        strict_audio_loading (bool):
+            Re-raise audio collation failures and reject batches where the
+            fault-tolerant collator dropped or reordered conversations/audio.
+            Defaults to ``False``; the datamodule configures it from
+            ``fault_tolerant_audio_loading`` for each loader.
 
             [ SOT Example for overlapping speakers ]
             Speaker-parallel transcription as a timeline:
@@ -96,9 +102,15 @@ class SALMDataset(torch.utils.data.Dataset):
           ``multispeaker_cfg`` and does not affect the default single-speaker behavior.
     """
 
-    def __init__(self, tokenizer: AutoTokenizer, multispeaker_cfg: dict | None = None) -> None:
+    def __init__(
+        self,
+        tokenizer: AutoTokenizer,
+        multispeaker_cfg: dict | None = None,
+        strict_audio_loading: bool = False,
+    ) -> None:
         self.tokenizer = tokenizer
         self.pad_id = get_pad_id(tokenizer)
+        self.strict_audio_loading = bool(strict_audio_loading)
         # Setting USE_AIS_GET_BATCH=true makes the loader issue a single AIStore GetBatch
         # call per minibatch, paired with URL-backed cuts produced by the multimodal
         # conversation adapters (NeMoMultimodalConversation{Jsonl,ShareGPTJsonl}Adapter).
@@ -117,18 +129,52 @@ class SALMDataset(torch.utils.data.Dataset):
             SALMMultiSpeakerProcessor(self.multispeaker_cfg) if self.multispeaker_cfg is not None else None
         )
 
+    def with_fault_tolerant_audio_loading(self, enabled: bool) -> "SALMDataset":
+        """Return a per-loader view with the requested audio I/O policy."""
+        enabled = bool(enabled)
+        dataset = copy(self)
+        dataset.strict_audio_loading = not enabled
+        dataset.load_audio = copy(self.load_audio)
+        dataset.load_audio.fault_tolerant = enabled
+        if self.load_audio.ais_batch_loader is not None:
+            dataset.load_audio.ais_batch_loader = copy(self.load_audio.ais_batch_loader)
+            dataset.load_audio.ais_batch_loader.skip_failed_fetches = enabled
+        return dataset
+
     def __getitem__(self, conversations: CutSet) -> dict | None:
-        # Note: the function call below may filter out some or all conversations due to audio loading issues.
-        # If all conversations are filtered out, we'll return None, and expect users to wrap this dataset
-        # in ``nemo.collections.common.data.fallback.FallbackDataset`` to use the previous mini-batch instead.
+        if self.strict_audio_loading:
+            requested_conversation_ids = tuple(id(conversation) for conversation in conversations)
+            requested_audio_cut_ids = _audio_cut_ids(conversations)
+        else:
+            requested_conversation_ids = requested_audio_cut_ids = ()
         try:
             audios, audio_lens, conversations = collate_conversation_audio_fault_tolerant(
                 conversations, self.load_audio
             )
         except Exception as e:
+            if self.strict_audio_loading:
+                raise
             logging.warning(f"Error collating conversations: {e}")
             return None
+        if self.strict_audio_loading:
+            materialized_conversation_ids = tuple(id(conversation) for conversation in conversations)
+            if materialized_conversation_ids != requested_conversation_ids:
+                raise RuntimeError(
+                    "Strict SALM validation dropped or reordered conversations: "
+                    f"requested={len(requested_conversation_ids)} "
+                    f"materialized={len(materialized_conversation_ids)}"
+                )
+            materialized_audio_cut_ids = _audio_cut_ids(conversations)
+            if materialized_audio_cut_ids != requested_audio_cut_ids or len(audio_lens) != len(
+                requested_audio_cut_ids
+            ):
+                raise RuntimeError(
+                    "Strict SALM validation dropped or reordered audio items: "
+                    f"requested={len(requested_audio_cut_ids)} materialized={len(audio_lens)}"
+                )
         if not conversations:
+            if self.strict_audio_loading:
+                raise RuntimeError("Strict SALM validation dropped or reordered conversations into an empty batch.")
             return None
         batch = {
             "audios": audios,
@@ -163,6 +209,10 @@ def drop_in_memory_data(conversations: CutSet) -> CutSet:
         return fastcopy(conversation, turns=turns)
 
     return conversations.map(_drop, apply_fn=None)
+
+
+def _audio_cut_ids(conversations: Iterable[NeMoMultimodalConversation]) -> tuple[str, ...]:
+    return tuple(cut.id for conversation in conversations for cut in conversation.list_cuts())
 
 
 @registered_prompt_format_fn(NeMoMultimodalConversation, Llama2PromptFormatter)

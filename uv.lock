@@ -3036,8 +3036,8 @@ wheels = [
 
 [[package]]
 name = "lhotse"
-version = "2.0.0a3"
-source = { registry = "https://pypi.org/simple" }
+version = "2.0.0a3.dev0+git.31912a04.clean"
+source = { git = "https://github.com/lhotse-speech/lhotse.git?rev=31912a04028b214988c949a5f7c815788409c478#31912a04028b214988c949a5f7c815788409c478" }
 dependencies = [
     { name = "audioread" },
     { name = "click" },
@@ -3054,10 +3054,6 @@ dependencies = [
     { name = "torch", version = "2.12.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform != 'darwin' and sys_platform != 'linux') or (sys_platform == 'darwin' and extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (sys_platform == 'linux' and extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (sys_platform == 'darwin' and extra != 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (sys_platform == 'darwin' and extra != 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (sys_platform == 'linux' and extra != 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (sys_platform == 'linux' and extra != 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13')" },
     { name = "torch", version = "2.12.0+cu132", source = { registry = "https://download.pytorch.org/whl/cu132" }, marker = "(sys_platform == 'linux' and extra != 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-cu13') or (sys_platform == 'linux' and extra != 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-cu13') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100')" },
     { name = "tqdm" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/8f/ff/85e558beab921603a458ed164d2e514dddf4d74a91925b059003045307d1/lhotse-2.0.0a3.tar.gz", hash = "sha256:b7c52f3df2ef6974c5af1eb71abed945af0e30e8a597a88238bec74719a75f94", size = 753675, upload-time = "2026-07-31T19:24:07.088Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/c5/6e/34bf88c19bf3c3e5a383209092b52bc9497501f6b6dd1f2beb96cb2820c7/lhotse-2.0.0a3-py3-none-any.whl", hash = "sha256:0327edb75cbac6dd631771719e65803a41a988f2a6ebbd9719d6f26cab5961ec", size = 977240, upload-time = "2026-07-31T19:24:05.388Z" },
 ]
 
 [[package]]
@@ -4603,12 +4599,12 @@ requires-dist = [
     { name = "kaldialign", marker = "extra == 'asr-only'" },
     { name = "kaldialign", marker = "extra == 'speechlm2'" },
     { name = "kaldialign", marker = "extra == 'tts'" },
-    { name = "lhotse", marker = "extra == 'all'", specifier = "==2.0.0a3" },
-    { name = "lhotse", marker = "extra == 'asr'", specifier = "==2.0.0a3" },
-    { name = "lhotse", marker = "extra == 'asr-only'", specifier = "==2.0.0a3" },
-    { name = "lhotse", marker = "extra == 'audio'", specifier = "==2.0.0a3" },
-    { name = "lhotse", marker = "extra == 'speechlm2'", specifier = "==2.0.0a3" },
-    { name = "lhotse", marker = "extra == 'tts'", specifier = "==2.0.0a3" },
+    { name = "lhotse", marker = "extra == 'all'", git = "https://github.com/lhotse-speech/lhotse.git?rev=31912a04028b214988c949a5f7c815788409c478" },
+    { name = "lhotse", marker = "extra == 'asr'", git = "https://github.com/lhotse-speech/lhotse.git?rev=31912a04028b214988c949a5f7c815788409c478" },
+    { name = "lhotse", marker = "extra == 'asr-only'", git = "https://github.com/lhotse-speech/lhotse.git?rev=31912a04028b214988c949a5f7c815788409c478" },
+    { name = "lhotse", marker = "extra == 'audio'", git = "https://github.com/lhotse-speech/lhotse.git?rev=31912a04028b214988c949a5f7c815788409c478" },
+    { name = "lhotse", marker = "extra == 'speechlm2'", git = "https://github.com/lhotse-speech/lhotse.git?rev=31912a04028b214988c949a5f7c815788409c478" },
+    { name = "lhotse", marker = "extra == 'tts'", git = "https://github.com/lhotse-speech/lhotse.git?rev=31912a04028b214988c949a5f7c815788409c478" },
     { name = "librosa", marker = "extra == 'all'" },
     { name = "librosa", marker = "extra == 'all'", specifier = ">=0.10.0" },
     { name = "librosa", marker = "extra == 'all'", specifier = ">=0.10.1" },

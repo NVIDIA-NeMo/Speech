@@ -12,10 +12,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .perception import AudioPerceptionModule
+from .perception import AudioPerceptionModule, IndependentDualEncoder
 from .speech_generation import TransformerARSpeechDecoder
 
 __all__ = [
     'AudioPerceptionModule',
+    'IndependentDualEncoder',
     'TransformerARSpeechDecoder',
 ]

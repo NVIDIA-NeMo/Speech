@@ -12,6 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import importlib.util
+import io
+import tarfile
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -202,6 +207,31 @@ def build_toy_packed_pe_encoder(**overrides) -> ParallelExpertEncoder:
     }
     kwargs.update(overrides)
     return build_toy_pe_encoder(**kwargs)
+
+
+def bundle_config(**overrides) -> DictConfig:
+    config = {
+        "target": "nemo.collections.asr.modules.parallel_expert_encoder.ParallelExpertEncoderPT",
+        "asr_encoder_cfg": toy_asr_encoder_cfg(),
+        "diarization_model_cfg": toy_diarization_model_cfg(),
+        "asr_normalize_type": "per_feature",
+    }
+    config.update(overrides)
+    return OmegaConf.create(config)
+
+
+def write_bundle(path, config, state=None):
+    config_bytes = OmegaConf.to_yaml(config).encode()
+    weights = io.BytesIO()
+    torch.save(state or {}, weights)
+    with tarfile.open(path, "w") as archive:
+        config_info = tarfile.TarInfo("model_config.yaml")
+        config_info.size = len(config_bytes)
+        archive.addfile(config_info, io.BytesIO(config_bytes))
+        weight_bytes = weights.getvalue()
+        weight_info = tarfile.TarInfo("model_weights.ckpt")
+        weight_info.size = len(weight_bytes)
+        archive.addfile(weight_info, io.BytesIO(weight_bytes))
 
 
 @pytest.mark.unit
@@ -679,3 +709,454 @@ def test_activation_checkpointing_wraps_trainable_asr_layers_and_packed_backward
     output.data.square().mean().backward()
     assert mels.grad is not None
     assert torch.isfinite(mels.grad).all()
+
+
+def dispatch_stub(enabled):
+    encoder = _PEE.__new__(_PEE)
+    nn.Module.__init__(encoder)
+    encoder.online_inference_length = 10
+    encoder.online_inference_enabled = enabled
+    encoder._forward = lambda **kwargs: ("offline", None)
+    encoder._forward_online = lambda **kwargs: ("online", None)
+    return encoder
+
+
+@pytest.mark.unit
+def test_online_inference_context_controls_dispatch_and_restores_state():
+    encoder = dispatch_stub(False)
+    audio = torch.zeros(1, 8, 20)
+    length = torch.tensor([20])
+    assert encoder(audio, length)[0] == "offline"
+    with encoder.online_inference():
+        assert encoder(audio, length)[0] == "online"
+    assert encoder(audio, length)[0] == "offline"
+
+
+@pytest.mark.unit
+def test_online_inference_runs_two_real_branches_with_conformer_io():
+    encoder = build_toy_pe_encoder(
+        online_inference_length=10,
+        chunk_left_context=2,
+        chunk_right_context=2,
+        diar_fifo_len=10,
+        diar_spkcache_update_period=20,
+        diar_spkcache_len=20,
+    ).eval()
+    encoder._suppress_online_pbar = True
+    mels = torch.randn(1, _MEL_FEATURES, 160)
+    lengths = torch.tensor([160])
+
+    with torch.no_grad(), encoder.online_inference():
+        output, output_lengths = encoder(mels, lengths)
+
+    assert output.shape == (1, _ASR_D_MODEL, int(output_lengths[0]))
+    assert torch.isfinite(output).all()
+
+    targets = torch.zeros(1, output.shape[-1], _N_SPK)
+    targets[:, :, 0] = 1.0
+    with torch.no_grad(), encoder.online_inference():
+        external_output, external_lengths = encoder(mels, lengths, spk_targets=targets)
+    assert external_output.shape == output.shape
+    assert torch.equal(external_lengths, output_lengths)
+
+
+@pytest.mark.unit
+def test_online_inference_passes_normalized_time_major_mels_to_sortformer(monkeypatch):
+    """Sortformer receives normalized time-major features before its pre-encoder."""
+    encoder = build_toy_pe_encoder(
+        diarization_model_cfg=toy_packed_diarization_model_cfg(),
+        online_inference_length=10,
+        chunk_left_context=2,
+        chunk_right_context=2,
+        diar_fifo_len=10,
+        diar_spkcache_update_period=20,
+        diar_spkcache_len=20,
+    ).eval()
+    encoder._suppress_online_pbar = True
+    original = encoder.diarization_model.forward_streaming_step
+    observed_signals = []
+
+    def checked_forward_streaming_step(**kwargs):
+        processed_signal = kwargs["processed_signal"]
+        observed_signals.append(processed_signal.detach().clone())
+        assert processed_signal.shape[2] == _MEL_FEATURES
+        return original(**kwargs)
+
+    monkeypatch.setattr(
+        encoder.diarization_model,
+        "forward_streaming_step",
+        checked_forward_streaming_step,
+    )
+    mels = 4.0 * torch.randn(1, _MEL_FEATURES, 160) + 17.0
+    lengths = torch.tensor([160])
+
+    with torch.no_grad(), encoder.online_inference():
+        encoder(mels, lengths)
+
+    expected, _, _ = normalize_batch(mels, lengths, normalize_type="per_feature")
+    assert observed_signals
+    expected_first_chunk = expected[:, :, : observed_signals[0].shape[1]].transpose(1, 2)
+    torch.testing.assert_close(observed_signals[0], expected_first_chunk)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="Test requires CUDA")
+def test_online_inference_uses_activation_device_after_nested_parent_move():
+    """A nested Lightning Sortformer must not retain its construction device."""
+    parent = nn.Module()
+    parent.encoder = build_toy_pe_encoder(
+        online_inference_length=10,
+        chunk_left_context=2,
+        chunk_right_context=2,
+        diar_fifo_len=10,
+        diar_spkcache_update_period=20,
+        diar_spkcache_len=20,
+    ).eval()
+    parent.encoder._suppress_online_pbar = True
+    parent.to("cuda")
+
+    mels = torch.randn(1, _MEL_FEATURES, 40, device="cuda")
+    lengths = torch.tensor([40], device="cuda")
+    with torch.no_grad(), parent.encoder.online_inference():
+        output, output_lengths = parent.encoder(mels, lengths)
+
+    assert output.device.type == "cuda"
+    assert output_lengths.device.type == "cuda"
+    assert torch.isfinite(output).all()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("asr_encoder_type", "asr_encoder_cfg"),
+    [
+        ("fastconformer", toy_asr_encoder_cfg),
+        ("transformer", toy_transformer_asr_encoder_cfg),
+    ],
+)
+def test_online_inference_matches_independent_valid_prefixes_for_unequal_audio(asr_encoder_type, asr_encoder_cfg):
+    encoder = build_toy_pe_encoder(
+        asr_encoder_type=asr_encoder_type,
+        asr_encoder_cfg=asr_encoder_cfg(),
+        online_inference_length=10,
+        chunk_left_context=2,
+        chunk_right_context=2,
+        diar_fifo_len=10,
+        diar_spkcache_update_period=20,
+        diar_spkcache_len=20,
+    ).eval()
+    encoder._suppress_online_pbar = True
+    mels = torch.randn(2, _MEL_FEATURES, 321)
+    lengths = torch.tensor([321, 173])
+
+    with torch.no_grad(), encoder.online_inference():
+        batched_output, batched_lengths = encoder(mels, lengths)
+        first_output, first_length = encoder(mels[:1, :, :321], lengths[:1])
+        second_output, second_length = encoder(mels[1:2, :, :173], lengths[1:])
+
+    expected_lengths = torch.cat([first_length, second_length])
+    assert torch.equal(batched_lengths, expected_lengths)
+    assert batched_output.shape == (2, _ASR_D_MODEL, int(expected_lengths.max()))
+    torch.testing.assert_close(batched_output[0, :, : first_length[0]], first_output[0])
+    torch.testing.assert_close(batched_output[1, :, : second_length[0]], second_output[0])
+
+
+@pytest.mark.unit
+def test_transformer_online_inference_preserves_partial_feature_stack():
+    encoder = build_toy_pe_encoder(
+        asr_encoder_type="transformer",
+        asr_encoder_cfg=toy_transformer_asr_encoder_cfg(),
+        online_inference_length=10,
+        chunk_left_context=2,
+        chunk_right_context=2,
+        diar_fifo_len=10,
+        diar_spkcache_update_period=20,
+        diar_spkcache_len=20,
+    ).eval()
+    encoder._suppress_online_pbar = True
+    mels = torch.randn(1, _MEL_FEATURES, 161)
+    lengths = torch.tensor([161])
+    targets = torch.zeros(1, 21, _N_SPK)
+    targets[:, :, 0] = 1.0
+
+    with torch.no_grad():
+        _, expected_lengths = encoder._run_asr(mels, lengths)
+        with encoder.online_inference():
+            output, output_lengths = encoder(mels, lengths, spk_targets=targets)
+
+    assert torch.equal(output_lengths, expected_lengths)
+    assert output.shape == (1, _ASR_D_MODEL, int(expected_lengths[0]))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("asr_encoder_type", "asr_encoder_cfg", "write_type_flag"),
+    [
+        ("fastconformer", toy_asr_encoder_cfg, False),
+        ("transformer", toy_transformer_asr_encoder_cfg, True),
+    ],
+)
+def test_strict_two_branch_bundle_loading(tmp_path, asr_encoder_type, asr_encoder_cfg, write_type_flag):
+    source = build_toy_pe_encoder(
+        asr_encoder_type=asr_encoder_type,
+        asr_encoder_cfg=asr_encoder_cfg(),
+    ).eval()
+    state = {f"encoder.{key}": value for key, value in source.state_dict().items()}
+    archive = tmp_path / "two_branch.nemo"
+    config_overrides = {"asr_encoder_cfg": asr_encoder_cfg()}
+    if write_type_flag:
+        config_overrides["asr_encoder_type"] = asr_encoder_type
+    write_bundle(archive, bundle_config(**config_overrides), state)
+
+    restored = ParallelExpertEncoderPT.load_from_nemo(str(archive), strict=True).eval()
+    assert restored.asr_encoder_type == asr_encoder_type
+    assert set(restored.state_dict()) == set(source.state_dict())
+    for key, value in source.state_dict().items():
+        torch.testing.assert_close(restored.state_dict()[key], value)
+
+
+@pytest.mark.unit
+def test_inline_config_reconstructs_architecture_without_standalone_weights():
+    config = bundle_config(asr_chunk_size_seconds=30.0, diar_chunk_size_seconds=45.0)
+
+    restored = ParallelExpertEncoderPT.from_inline_config(config).eval()
+
+    assert restored.asr_chunk_size_seconds == 30.0
+    assert restored.diar_chunk_size_seconds == 45.0
+    assert restored.diar_normalize_type == "per_feature"
+    assert restored._bundle_config.diar_normalize_type == "per_feature"
+    assert restored.speaker_feature_mode == "thresholded"
+    assert restored.speaker_activity_threshold == 0.5
+    assert restored._bundle_config.speaker_feature_config_version == 1
+    assert restored._bundle_config.speaker_feature_mode == "thresholded"
+    assert restored._bundle_config.speaker_activity_threshold == 0.5
+    assert restored._bundle_config.target == config.target
+
+
+@pytest.mark.unit
+def test_legacy_canonical_bundle_requires_explicit_speaker_contract(tmp_path):
+    config = bundle_config(target="nemo.collections.asr.modules.parallel_expert_encoder.ParallelExpertEncoderPT")
+    with pytest.raises(ValueError, match="cannot be inferred safely"):
+        ParallelExpertEncoderPT.from_inline_config(config)
+
+    source = build_toy_pe_encoder().eval()
+    state = {f"encoder.{key}": value for key, value in source.state_dict().items()}
+    archive = tmp_path / "legacy-canonical.nemo"
+    write_bundle(archive, config, state)
+    overrides = {
+        "speaker_feature_config_version": 1,
+        "speaker_feature_mode": "continuous",
+        "speaker_activity_threshold": None,
+        "sync_max_audio_length": False,
+    }
+    restored = ParallelExpertEncoderPT.load_from_nemo(
+        str(archive),
+        strict=True,
+        config_overrides=overrides,
+    ).eval()
+
+    assert restored.speaker_feature_mode == "continuous"
+    assert restored.speaker_activity_threshold is None
+    assert restored._bundle_config.speaker_feature_config_version == 1
+    assert restored._bundle_config.speaker_feature_mode == "continuous"
+    assert restored._bundle_config.speaker_activity_threshold is None
+    assert restored._bundle_config.sync_max_audio_length is False
+
+
+@pytest.mark.unit
+def test_sync_max_audio_length_is_disabled_by_portable_config():
+    config = bundle_config(sync_max_audio_length=False)
+    config.asr_encoder_cfg.sync_max_audio_length = True
+    config.diarization_model_cfg.encoder.sync_max_audio_length = True
+
+    restored = ParallelExpertEncoderPT.from_inline_config(config).eval()
+
+    assert restored.sync_max_audio_length is False
+    assert restored.asr_encoder.sync_max_audio_length is False
+    assert restored.diarization_model.encoder.sync_max_audio_length is False
+    assert restored._bundle_config.sync_max_audio_length is False
+
+
+@pytest.mark.unit
+def test_explicit_portable_speaker_contract_is_independent_of_target_name():
+    config = bundle_config(
+        target="nemo.collections.asr.modules.parallel_expert_encoder.ParallelExpertEncoderPT",
+        speaker_feature_config_version=1,
+        speaker_feature_mode="thresholded",
+        speaker_activity_threshold=0.5,
+    )
+
+    restored = ParallelExpertEncoderPT.from_inline_config(config).eval()
+
+    assert restored.speaker_feature_mode == "thresholded"
+    assert restored.speaker_activity_threshold == 0.5
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "overrides,match",
+    [
+        (
+            {"speaker_feature_config_version": 1},
+            "requires an explicit speaker_feature_mode",
+        ),
+        (
+            {
+                "speaker_feature_config_version": 1,
+                "speaker_feature_mode": "continuous",
+                "speaker_activity_threshold": 0.5,
+            },
+            "continuous.*speaker_activity_threshold=None",
+        ),
+        (
+            {
+                "speaker_feature_config_version": 1,
+                "speaker_feature_mode": "thresholded",
+                "speaker_activity_threshold": None,
+            },
+            "thresholded.*non-null",
+        ),
+        (
+            {
+                "speaker_feature_config_version": 2,
+                "speaker_feature_mode": "thresholded",
+                "speaker_activity_threshold": 0.5,
+            },
+            "Unsupported speaker_feature_config_version",
+        ),
+    ],
+)
+def test_invalid_speaker_feature_contract_is_rejected(overrides, match):
+    with pytest.raises(ValueError, match=match):
+        ParallelExpertEncoderPT.from_inline_config(bundle_config(**overrides))
+
+
+@pytest.mark.unit
+def test_current_pee_loader_dispatches_two_branch_inline_schema():
+    from nemo.collections.asr.modules.parallel_expert_encoder import (
+        ParallelExpertEncoderPT as CurrentParallelExpertEncoderPT,
+    )
+
+    restored = CurrentParallelExpertEncoderPT.from_inline_config(bundle_config()).eval()
+
+    assert isinstance(restored, ParallelExpertEncoder)
+    assert restored.asr_encoder_type == "fastconformer"
+
+
+@pytest.mark.unit
+def test_current_pee_loader_rejects_ambiguous_inline_schema():
+    from nemo.collections.asr.modules.parallel_expert_encoder import (
+        ParallelExpertEncoderPT as CurrentParallelExpertEncoderPT,
+    )
+
+    config = OmegaConf.merge(
+        bundle_config(),
+        {
+            "speech_expert_cfg": {"_target_": "example.Speech"},
+            "speaker_expert_cfg": {"_target_": "example.Speaker"},
+            "sound_expert_cfg": {"_target_": "example.Sound"},
+            "sortformer_modules_cfg": {"_target_": "example.Sortformer"},
+        },
+    )
+    with pytest.raises(ValueError, match="ambiguously contains both"):
+        CurrentParallelExpertEncoderPT.from_inline_config(config)
+
+
+@pytest.mark.unit
+def test_exported_inline_config_round_trips_consolidated_weights():
+    to_hf_path = Path(__file__).parents[3] / "examples" / "speechlm2" / "to_hf.py"
+    spec = importlib.util.spec_from_file_location("to_hf_for_pee_roundtrip", to_hf_path)
+    to_hf = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(to_hf)
+
+    source = ParallelExpertEncoderPT(bundle_config()).encoder.eval()
+    source.asr_chunk_size_seconds = 30.0
+    source.diar_chunk_size_seconds = 45.0
+    root = SimpleNamespace(
+        cfg={"pe_encoder_path": "/models/placeholderParallelExpertEncoder.nemo"},
+        perception=SimpleNamespace(encoder=source),
+    )
+
+    exported = to_hf._hf_export_config(root, "bfloat16")
+    restored = ParallelExpertEncoderPT.from_inline_config(exported["pe_encoder_config"]).eval()
+    restored.load_state_dict(source.state_dict(), strict=True)
+
+    assert set(restored.state_dict()) == set(source.state_dict())
+    assert restored.asr_chunk_size_seconds == 30.0
+    assert restored.diar_chunk_size_seconds == 45.0
+    assert restored.diar_normalize_type == "per_feature"
+    assert restored.speaker_feature_mode == "thresholded"
+    assert restored.speaker_activity_threshold == 0.5
+    assert exported["pe_encoder_config"]["speaker_feature_config_version"] == 1
+    assert exported["pe_encoder_config"]["speaker_feature_mode"] == "thresholded"
+    assert exported["pe_encoder_config"]["speaker_activity_threshold"] == 0.5
+    assert exported["pe_encoder_config"]["sync_max_audio_length"] is False
+    mels = torch.randn(1, _MEL_FEATURES, 161)
+    lengths = torch.tensor([161])
+    with torch.no_grad():
+        expected, expected_lengths = source(mels, lengths)
+        actual, actual_lengths = restored(mels, lengths)
+    torch.testing.assert_close(actual, expected)
+    assert torch.equal(actual_lengths, expected_lengths)
+
+
+@pytest.mark.unit
+def test_legacy_three_expert_bundle_is_rejected(tmp_path):
+    archive = tmp_path / "legacy.nemo"
+    legacy = OmegaConf.create(
+        {
+            "target": "nemo.collections.asr.modules.parallel_expert_encoder_two_branch.ParallelExpertEncoderPT",
+            "speech_expert_cfg": {"_target_": "legacy.Speech"},
+            "speaker_expert_cfg": {"_target_": "legacy.Speaker"},
+            "sound_expert_cfg": {"_target_": "legacy.Sound"},
+            "sortformer_modules_cfg": {"_target_": "legacy.Sortformer"},
+        }
+    )
+    write_bundle(archive, legacy)
+    with pytest.raises(ValueError, match="Legacy three-expert"):
+        ParallelExpertEncoderPT.load_from_nemo(str(archive), strict=True)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("target", "expected"),
+    [
+        (
+            "nemo.collections.asr.modules.parallel_expert_encoder_two_branch.ParallelExpertEncoderPT",
+            True,
+        ),
+        ("ParallelExpertEncoderPT", True),
+        ("nemo.collections.asr.models.SomethingElse", False),
+    ],
+)
+def test_is_pe_nemo_uses_target_and_two_branch_schema(tmp_path, target, expected):
+    archive = tmp_path / "bundle.nemo"
+    config = bundle_config()
+    config.target = target
+    write_bundle(archive, config)
+    assert ParallelExpertEncoderPT.is_pe_nemo(str(archive)) is expected
+
+
+@pytest.mark.unit
+def test_training_loader_dispatches_two_branch_bundle_by_schema(tmp_path):
+    from nemo.collections.speechlm2.parts.pretrained import _resolve_parallel_expert_encoder_class
+
+    archive = tmp_path / "bundle.nemo"
+    write_bundle(archive, bundle_config())
+
+    assert _resolve_parallel_expert_encoder_class(str(archive)) is ParallelExpertEncoderPT
+
+
+@pytest.mark.unit
+def test_save_to_nemo_guard_rails(tmp_path):
+    with pytest.raises(TypeError):
+        ParallelExpertEncoderPT.save_to_nemo(
+            nn.Linear(2, 2),
+            str(tmp_path / "out.nemo"),
+            template_bundle_path=str(tmp_path / "template.nemo"),
+        )
+    fake_encoder = _PEE.__new__(_PEE)
+    with pytest.raises(FileNotFoundError):
+        ParallelExpertEncoderPT.save_to_nemo(
+            fake_encoder,
+            str(tmp_path / "out.nemo"),
+            template_bundle_path=str(tmp_path / "missing.nemo"),
+        )

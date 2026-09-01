@@ -27,6 +27,7 @@ from nemo.collections.common.data.lhotse.nemo_adapters import LazyNeMoIterator, 
 from nemo.collections.common.data.lhotse.text_adapters import (
     NeMoMultimodalConversation,
     NeMoSFTExample,
+    MaterializedSFTMessagesExample,
     SourceTargetTextExample,
     TextExample,
 )

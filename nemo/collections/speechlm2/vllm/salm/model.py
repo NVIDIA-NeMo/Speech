@@ -273,6 +273,13 @@ class NeMoSpeechLMForConditionalGeneration(
                 continue
             if name.startswith("perception."):
                 perception[name[len("perception.") :]] = tensor
+            elif name.startswith("llm.mtp."):
+                pass  # MTP draft-head weights; loaded by the speculative draft model, not here
+            elif name.startswith("mtp."):
+                raise ValueError(
+                    f"Unsupported bare MTP tensor {name!r}; NeMo SpeechLM exports must store draft weights "
+                    f"under the 'llm.mtp.*' namespace."
+                )
             else:
                 llm.append((name, tensor))
         return perception, llm

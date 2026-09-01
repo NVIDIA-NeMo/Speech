@@ -110,6 +110,7 @@ def _seed_output_dir(tmp_path, llm_arch="Qwen2ForCausalLM"):
                 "hidden_size": 2048,
                 "num_hidden_layers": 24,
                 "audio_token_index": 17,
+                "image_token_index": 18,
             }
         )
     )
@@ -143,6 +144,111 @@ class _FakeExportModel:
     llm = type("_FakeLLM", (), {"config": _FakeLLMConfig()})()
 
 
+class _FakeMTPBackboneConfig(_FakeLLMConfig):
+    num_nextn_predict_layers = 1
+    mtp_hybrid_override_pattern = None
+    mtp_layers_block_type = ["attention", "moe"]
+
+
+class _FakeMTPExportModel:
+    cfg = {
+        "pretrained_llm": "fake-model",
+        "pretrained_asr": "fake-asr",
+        "pretrained_weights": False,
+        "compute_mtp": True,
+        "mtp": None,
+        "dtype": "bf16",
+        "torch_dtype": "bf16",
+        "audio_locator_tag": AUDIO_TOKEN,
+    }
+    llm = type(
+        "_FakeMTPLLM",
+        (),
+        {
+            "config": _FakeMTPBackboneConfig(),
+            "mtp_config": SimpleNamespace(num_layers=1, use_repeated_layer=False),
+        },
+    )()
+
+
+class _FakeExplicitMTPExportModel:
+    cfg = {
+        **_FakeMTPExportModel.cfg,
+        "compute_mtp": False,
+        "mtp": {
+            "enabled": True,
+            "num_nextn_predict_layers": 1,
+            "use_repeated_layer": False,
+            "hybrid_override_pattern": "*E",
+        },
+    }
+    llm = _FakeMTPExportModel.llm
+
+
+class _FakeStaleLegacyMTPExportModel:
+    cfg = {
+        **_FakeMTPExportModel.cfg,
+        "compute_mtp": True,
+        "mtp": None,
+    }
+    llm = type(
+        "_FakeDisabledMTPLLM",
+        (),
+        {
+            "config": type(
+                "_FakeDisabledMTPBackboneConfig",
+                (_FakeLLMConfig,),
+                {"num_nextn_predict_layers": 0},
+            )(),
+            "mtp_config": None,
+        },
+    )()
+
+
+def test_hf_export_config_persists_built_mtp_pattern_without_mutating_recipe():
+    """A preserved native head's physical pattern must override stale recipe metadata."""
+    model = SimpleNamespace(
+        cfg={
+            "mtp": {
+                "enabled": True,
+                "hybrid_override_pattern": "*",
+                "num_nextn_predict_layers": 1,
+            }
+        },
+        llm=SimpleNamespace(config=SimpleNamespace(mtp_hybrid_override_pattern="*E", num_nextn_predict_layers=1)),
+    )
+
+    config = to_hf._hf_export_config(model, "bfloat16")
+
+    assert config["mtp"]["hybrid_override_pattern"] == "*E"
+    assert model.cfg["mtp"]["hybrid_override_pattern"] == "*"
+
+
+def test_hf_export_config_persists_built_list_form_mtp_pattern():
+    """A native list-form head must override stale replacement-recipe metadata."""
+    model = SimpleNamespace(
+        cfg={
+            "mtp": {
+                "enabled": True,
+                "hybrid_override_pattern": "*",
+                "num_nextn_predict_layers": 1,
+            }
+        },
+        llm=SimpleNamespace(
+            config=SimpleNamespace(
+                mtp_hybrid_override_pattern=None,
+                mtp_layers_block_type=["attention", "moe"],
+                num_nextn_predict_layers=1,
+            )
+        ),
+    )
+
+    config = to_hf._hf_export_config(model, "bfloat16")
+
+    assert config["mtp"]["hybrid_override_pattern"] == "*E"
+    assert model.cfg["mtp"]["hybrid_override_pattern"] == "*"
+
+
 def test_hf_export_config_does_not_persist_remote_code_trust():
     model = SimpleNamespace(cfg={"trust_remote_code": True})
 
@@ -150,6 +256,105 @@ def test_hf_export_config_does_not_persist_remote_code_trust():
 
     assert "trust_remote_code" not in config
     assert model.cfg["trust_remote_code"] is True
+
+
+def test_hf_export_config_persists_built_non_repeated_mtp_depth():
+    """A preserved native head's actual depth must override stale recipe metadata."""
+    model = SimpleNamespace(
+        cfg={
+            "mtp": {
+                "enabled": True,
+                "hybrid_override_pattern": "*",
+                "num_nextn_predict_layers": 4,
+                "use_repeated_layer": False,
+            }
+        },
+        llm=SimpleNamespace(config=SimpleNamespace(mtp_hybrid_override_pattern="*E", num_nextn_predict_layers=1)),
+    )
+
+    config = to_hf._hf_export_config(model, "bfloat16")
+
+    assert config["mtp"]["num_nextn_predict_layers"] == 1
+    assert model.cfg["mtp"]["num_nextn_predict_layers"] == 4
+
+
+def test_hf_export_config_keeps_logical_depth_for_repeated_mtp():
+    model = SimpleNamespace(
+        cfg={
+            "mtp": {
+                "enabled": True,
+                "hybrid_override_pattern": "*",
+                "num_nextn_predict_layers": 4,
+                "use_repeated_layer": True,
+            }
+        },
+        llm=SimpleNamespace(
+            config=SimpleNamespace(mtp_hybrid_override_pattern="*E", num_nextn_predict_layers=1),
+            mtp_config=SimpleNamespace(num_layers=4, use_repeated_layer=True),
+        ),
+    )
+
+    config = to_hf._hf_export_config(model, "bfloat16")
+
+    assert config["mtp"]["num_nextn_predict_layers"] == 4
+
+
+@pytest.mark.parametrize("depth", [False, 0, -1])
+def test_hf_export_config_rejects_invalid_built_mtp_depth(depth):
+    model = SimpleNamespace(
+        cfg={
+            "mtp": {
+                "enabled": True,
+                "hybrid_override_pattern": "*",
+                "num_nextn_predict_layers": 1,
+            }
+        },
+        llm=SimpleNamespace(config=SimpleNamespace(mtp_hybrid_override_pattern="*", num_nextn_predict_layers=depth)),
+    )
+
+    with pytest.raises(ValueError, match="num_nextn_predict_layers"):
+        to_hf._hf_export_config(model, "bfloat16")
+
+
+@pytest.mark.parametrize("pattern", ["", 3])
+def test_hf_export_config_rejects_invalid_built_mtp_pattern(pattern):
+    model = SimpleNamespace(
+        cfg={
+            "mtp": {
+                "enabled": True,
+                "hybrid_override_pattern": "*",
+                "num_nextn_predict_layers": 1,
+            }
+        },
+        llm=SimpleNamespace(config=SimpleNamespace(mtp_hybrid_override_pattern=pattern, num_nextn_predict_layers=1)),
+    )
+
+    with pytest.raises(ValueError, match="mtp_hybrid_override_pattern"):
+        to_hf._hf_export_config(model, "bfloat16")
+
+
+def test_save_hf_checkpoint_validates_config_before_writing_weights(tmp_path):
+    model = SimpleNamespace(
+        cfg={
+            "mtp": {
+                "enabled": True,
+                "hybrid_override_pattern": "*",
+                "num_nextn_predict_layers": 1,
+            }
+        },
+        llm=SimpleNamespace(config=SimpleNamespace(mtp_hybrid_override_pattern="", num_nextn_predict_layers=1)),
+    )
+    cfg = to_hf.HfExportConfig(
+        class_path="fake.Class",
+        ckpt_path="fake.ckpt",
+        ckpt_config="fake.yaml",
+        output_dir=str(tmp_path),
+    )
+
+    with pytest.raises(ValueError, match="mtp_hybrid_override_pattern"):
+        to_hf.save_hf_checkpoint(model, {"weight": torch.zeros(1)}, cfg)
+
+    assert not (tmp_path / "model.safetensors").exists()
 
 
 def test_save_hf_checkpoint_writes_llm_backbone_config(tmp_path):
@@ -295,6 +500,56 @@ def test_hf_export_config_embeds_portable_independent_dual_architecture():
     assert original_cfg == {"speaker_encoder": {"path": "/models/speaker-transformer", "frozen": True}}
 
 
+def test_save_hf_checkpoint_writes_explicit_mtp_contract(tmp_path):
+    """Nemotron 3.5 list-form topology should export as vLLM's *E pattern."""
+    cfg = to_hf.HfExportConfig(
+        class_path="fake.Class",
+        ckpt_path="fake.ckpt",
+        ckpt_config="fake.yaml",
+        output_dir=str(tmp_path),
+        dtype="bfloat16",
+    )
+
+    to_hf.save_hf_checkpoint(_FakeMTPExportModel(), {"weight": torch.zeros(1)}, cfg)
+
+    root_cfg = json.loads((tmp_path / "config.json").read_text())
+    assert root_cfg["mtp"] == {
+        "enabled": True,
+        "num_nextn_predict_layers": 1,
+        "use_repeated_layer": False,
+        "hybrid_override_pattern": "*E",
+    }
+
+
+def test_save_hf_checkpoint_preserves_explicit_mtp_contract_without_compute_flag(
+    tmp_path,
+):
+    cfg = to_hf.HfExportConfig(
+        class_path="fake.Class",
+        ckpt_path="fake.ckpt",
+        ckpt_config="fake.yaml",
+        output_dir=str(tmp_path),
+        dtype="bfloat16",
+    )
+
+    to_hf.save_hf_checkpoint(_FakeExplicitMTPExportModel(), {"weight": torch.zeros(1)}, cfg)
+
+    root_cfg = json.loads((tmp_path / "config.json").read_text())
+    assert root_cfg["mtp"] == _FakeExplicitMTPExportModel.cfg["mtp"]
+
+
+def test_hf_export_config_disables_stale_legacy_mtp_flag_without_runtime_head():
+    exported = to_hf._hf_export_config(_FakeStaleLegacyMTPExportModel(), "bfloat16")
+
+    assert exported["compute_mtp"] is False
+    assert exported["mtp"] is None
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Error paths (no mocking required — checks run before any HF calls)
+# ──────────────────────────────────────────────────────────────────────
+
+
 def test_prepare_for_vllm_missing_pretrained_llm(tmp_path):
     with pytest.raises(ValueError, match="pretrained_llm"):
         to_hf.prepare_for_vllm(str(tmp_path), {"audio_locator_tag": AUDIO_TOKEN})
@@ -361,6 +616,7 @@ def test_prepare_for_vllm_patches_config_json(tmp_path):
     assert cfg["architectures"] == ["NeMoSpeechLMForConditionalGeneration"]
     assert cfg["audio_locator_tag"] == AUDIO_TOKEN
     assert "audio_token_index" not in cfg
+    assert "image_token_index" not in cfg
     # Original LLM fields are preserved.
     assert cfg["hidden_size"] == 2048
 
@@ -449,6 +705,7 @@ def test_prepare_for_vllm_accepts_audio_token_inside_non_boundary_embedding_row(
 
     cfg = json.loads((output_dir / "config.json").read_text())
     assert "audio_token_index" not in cfg
+    assert "image_token_index" not in cfg
 
 
 def test_prepare_for_vllm_uses_training_tokenizer_path(tmp_path):

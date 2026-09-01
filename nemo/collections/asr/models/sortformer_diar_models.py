@@ -182,9 +182,8 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
         """
         random.seed(42)
         self._trainer = trainer if trainer else None
-        self._cfg = cfg
         if _VLLM_ONLY:
-            self._cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
+            cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
             for data_config_name in (
                 "train_ds",
                 "validation_ds",
@@ -192,9 +191,9 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
                 "spec_augment",
                 "augmentor",
             ):
-                if data_config_name in self._cfg:
-                    self._cfg[data_config_name] = None
-            cfg = self._cfg
+                if data_config_name in cfg:
+                    cfg[data_config_name] = None
+        self._cfg = cfg
         self.high_resolution, self.output_subsampling_factor = self._resolve_output_resolution()
 
         if self._trainer:

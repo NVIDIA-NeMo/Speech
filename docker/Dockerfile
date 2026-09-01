@@ -225,6 +225,15 @@ uv sync \
     --group test
 nemo-install-cuda-python
 
+python - <<'PY'
+from importlib.metadata import version
+
+import cut_cross_entropy
+
+assert version("cut-cross-entropy") == "25.3.2"
+print(f"cut-cross-entropy {cut_cross_entropy.__version__} ready")
+PY
+
 automodel_site_packages="$(
     python - <<'PY'
 from pathlib import Path

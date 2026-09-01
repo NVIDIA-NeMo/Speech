@@ -1694,6 +1694,20 @@ nvvm = [
 ]
 
 [[package]]
+name = "cut-cross-entropy"
+version = "25.3.2"
+source = { git = "https://github.com/apple/ml-cross-entropy.git?rev=87a86aba72cfd2f0d8abecaf81c13c4528ea07d8#87a86aba72cfd2f0d8abecaf81c13c4528ea07d8" }
+dependencies = [
+    { name = "setuptools" },
+    { name = "torch", version = "2.11.0+cu129", source = { registry = "https://download.pytorch.org/whl/cu129" }, marker = "(sys_platform != 'linux' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (sys_platform == 'linux' and extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-cu12') or (sys_platform == 'linux' and extra == 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-cu12') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (extra != 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13')" },
+    { name = "torch", version = "2.12.0", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'darwin' and sys_platform != 'linux' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (sys_platform == 'darwin' and extra == 'extra-12-nemo-toolkit-compiled') or (sys_platform == 'darwin' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (sys_platform == 'darwin' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (sys_platform == 'linux' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (sys_platform == 'linux' and extra == 'extra-12-nemo-toolkit-compiled' and extra != 'extra-12-nemo-toolkit-cu12' and extra != 'extra-12-nemo-toolkit-cu13') or (sys_platform == 'linux' and extra == 'extra-12-nemo-toolkit-compiled-a100' and extra != 'extra-12-nemo-toolkit-cu12' and extra != 'extra-12-nemo-toolkit-cu13') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13')" },
+    { name = "torch", version = "2.12.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform != 'darwin' and sys_platform != 'linux' and extra == 'extra-12-nemo-toolkit-compiled') or (sys_platform != 'darwin' and sys_platform != 'linux' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (sys_platform == 'darwin' and extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (sys_platform == 'linux' and extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (sys_platform == 'darwin' and extra != 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (sys_platform == 'darwin' and extra != 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (sys_platform == 'linux' and extra != 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (sys_platform == 'linux' and extra != 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (extra != 'extra-12-nemo-toolkit-compiled' and extra != 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13')" },
+    { name = "torch", version = "2.12.0+cu132", source = { registry = "https://download.pytorch.org/whl/cu132" }, marker = "(sys_platform != 'linux' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (sys_platform == 'linux' and extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-cu13') or (sys_platform == 'linux' and extra == 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-cu13') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (extra != 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13')" },
+    { name = "triton", version = "3.6.0", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'linux' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (sys_platform == 'linux' and extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-cu12') or (sys_platform == 'linux' and extra == 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-cu12') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (extra != 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13')" },
+    { name = "triton", version = "3.7.0", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'darwin' and sys_platform != 'linux' and extra == 'extra-12-nemo-toolkit-compiled') or (sys_platform != 'darwin' and sys_platform != 'linux' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (sys_platform == 'darwin' and extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (sys_platform == 'linux' and extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (sys_platform == 'linux' and extra == 'extra-12-nemo-toolkit-compiled' and extra != 'extra-12-nemo-toolkit-cu12') or (sys_platform == 'linux' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (sys_platform == 'linux' and extra == 'extra-12-nemo-toolkit-compiled-a100' and extra != 'extra-12-nemo-toolkit-cu12') or (sys_platform == 'darwin' and extra != 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (sys_platform == 'darwin' and extra != 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (extra != 'extra-12-nemo-toolkit-compiled' and extra != 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13')" },
+]
+
+[[package]]
 name = "cycler"
 version = "0.12.1"
 source = { registry = "https://pypi.org/simple" }
@@ -4379,6 +4393,7 @@ common-only = [
 ]
 compiled = [
     { name = "causal-conv1d" },
+    { name = "cut-cross-entropy" },
     { name = "deep-ep" },
     { name = "flash-attn" },
     { name = "mamba-ssm" },
@@ -4389,6 +4404,7 @@ compiled = [
 ]
 compiled-a100 = [
     { name = "causal-conv1d" },
+    { name = "cut-cross-entropy" },
     { name = "flash-attn" },
     { name = "mamba-ssm" },
     { name = "nv-grouped-gemm" },
@@ -4562,6 +4578,8 @@ requires-dist = [
     { name = "cuda-bindings", marker = "sys_platform != 'darwin'" },
     { name = "cuda-python", marker = "sys_platform != 'darwin' and extra == 'cu12'", specifier = ">=12,<13" },
     { name = "cuda-python", marker = "sys_platform != 'darwin' and extra == 'cu13'", specifier = ">=13,<14" },
+    { name = "cut-cross-entropy", marker = "extra == 'compiled'", git = "https://github.com/apple/ml-cross-entropy.git?rev=87a86aba72cfd2f0d8abecaf81c13c4528ea07d8" },
+    { name = "cut-cross-entropy", marker = "extra == 'compiled-a100'", git = "https://github.com/apple/ml-cross-entropy.git?rev=87a86aba72cfd2f0d8abecaf81c13c4528ea07d8" },
     { name = "datasets", marker = "extra == 'all'", specifier = ">=3.2.0" },
     { name = "datasets", marker = "extra == 'asr'", specifier = ">=3.2.0" },
     { name = "datasets", marker = "extra == 'audio'", specifier = ">=3.2.0" },

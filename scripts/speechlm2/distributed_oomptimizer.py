@@ -81,6 +81,7 @@ The main control flow is:
 """
 
 import importlib
+import inspect
 import json
 import math
 import os
@@ -103,6 +104,23 @@ from nemo.utils import logging
 from nemo.utils.oomptimizer import SequenceLengthResolver
 from nemo.utils.oomptimizer import is_2d_bucketing as _is_2d_bucketing
 from nemo.utils.trainer_utils import resolve_trainer_cfg
+
+
+def _run_training_step(model: pl.LightningModule, batch, batch_idx: int):
+    if hasattr(model, "_training_step_batch"):
+        return model._training_step_batch(batch, batch_idx)
+
+    signature = inspect.signature(model.training_step)
+    params = [
+        param
+        for param in signature.parameters.values()
+        if param.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        and param.default is inspect.Parameter.empty
+    ]
+    has_varargs = any(param.kind == inspect.Parameter.VAR_POSITIONAL for param in signature.parameters.values())
+    if has_varargs or len(params) >= 2:
+        return model.training_step(batch, batch_idx)
+    return model.training_step(batch)
 
 
 class ProfilingBatchGenerator:
@@ -1591,7 +1609,7 @@ def oomptimizer(
                 try:
                     click.echo(f"\tCurrent gap: {gen.current_rel_gap}... ", nl=False)
                     optimizer.zero_grad()
-                    out = model.training_step(batch, batch_idx)
+                    out = _run_training_step(model, batch, batch_idx)
                     out['loss'].sum().backward()
                     optimizer.step()
                     peak_allocated = torch.cuda.max_memory_allocated()
@@ -1599,13 +1617,7 @@ def oomptimizer(
                     oom = True
                     status = "OOM!"
                 except RuntimeError as e:
-                    error_msg = str(e)
-                    oom_like = (
-                        "cuFFT error: CUFFT_INTERNAL_ERROR" in error_msg
-                        or "CUDA out of memory" in error_msg
-                        or "CUDACachingAllocator" in error_msg
-                    )
-                    if not oom_like:
+                    if not _is_oom_like(e):
                         raise
                     oom = True
                     status = "OOM!"
@@ -1690,7 +1702,7 @@ class ProbeWorkerRunner:
                 try:
                     self.optimizer.zero_grad()
                     batch = self.gen(self.seq_len_in, self.seq_len_out)
-                    out = self.model.training_step(batch, batch_idx)
+                    out = _run_training_step(self.model, batch, batch_idx)
                     out['loss'].sum().backward()
                     self.optimizer.step()
                     torch.cuda.synchronize(self.device)

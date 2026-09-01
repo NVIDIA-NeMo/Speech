@@ -49,9 +49,18 @@ def build_validation_dataset(full_cfg, tokenizer, *, mode: str, section: str = "
     from nemo.collections.speechlm2.data.salm_dataset import SALMDataset
 
     data_cfg = full_cfg.get("data", {})
+    model_cfg = full_cfg.get("model", {})
     kwargs = {"tokenizer": tokenizer, "strict_audio_loading": True}
     if (multispeaker_cfg := data_cfg.get("multispeaker_cfg")) is not None:
         kwargs["multispeaker_cfg"] = multispeaker_cfg
+    pack_audio = bool(
+        model_cfg.get("use_nemo_automodel", False)
+        and model_cfg.get("packed_encoder_sequences", False)
+    )
+    if pack_audio:
+        kwargs["pack_audio"] = True
+    if (batch_tokens := data_cfg.get(section, {}).get("batch_tokens")) is not None:
+        kwargs["batch_tokens"] = batch_tokens
     # FallbackDataset would replay the prior batch after a decode failure and
     # hide the exact error this validation mode is intended to detect.
     return SALMDataset(**kwargs)

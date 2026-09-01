@@ -37,8 +37,10 @@ from nemo.collections.asr.parts.utils.sot_speaker_alignment import (
 from nemo.collections.common.data.lhotse import NeMoMultimodalConversation
 from nemo.collections.common.data.lhotse.text_adapters import (
     AudioTurn,
+    Formattable,
     TextTurn,
     collate_conversation_audio_fault_tolerant,
+    collate_conversation_audio_packed_fault_tolerant,
 )
 from nemo.collections.common.data.prompt_fn import registered_prompt_format_fn
 from nemo.collections.common.prompts import Llama2PromptFormatter
@@ -67,11 +69,29 @@ class SALMDataset(torch.utils.data.Dataset):
             ``spk_targets`` / ``spk_target_length``. Rows without an explicit
             RTTM path contain the reserved value ``-1`` so the perception encoder
             can replace them with inferred speaker activity.
+        pack_audio (bool):
+            Return valid waveform samples contiguously as `packed_audio_samples`
+            plus `audio_cu_seqlens`, instead of materializing `audios[B, T_max]`.
+            Defaults to `False` for complete batch-API compatibility.
+        pack_sequences (bool):
+            Return every variable-length sequence tensor without batch padding.
+            Text IDs and masks are concatenated to shape ``[T_total]`` and
+            described by ``text_cu_seqlens``; audio is returned in the same
+            packed form as ``pack_audio=True``; optional speaker targets are
+            concatenated to shape ``[T_spk_total, N_spk]`` and described by
+            ``spk_target_cu_seqlens``. This option implies ``pack_audio=True``.
+        batch_tokens (int | None):
+            Token budget used by the Lhotse sampler. When provided, and the
+            sampler attached an exact ``num_tokens`` measurement to every
+            retained conversation, the batch contains a scalar
+            ``packing_efficiency`` equal to the measured token sum divided by
+            this budget.
         strict_audio_loading (bool):
-            Re-raise audio collation failures and reject batches where the
-            fault-tolerant collator dropped or reordered conversations/audio.
-            Defaults to ``False``; the datamodule configures it from
-            ``fault_tolerant_audio_loading`` for each loader.
+            Re-raises audio collation errors and
+            rejects conversations or audio items dropped or reordered by the
+            fault-tolerant collator. Defaults to ``False`` so audio I/O and
+            decoder failures remain fault tolerant. The datamodule controls
+            this through ``fault_tolerant_audio_loading``.
 
             [ SOT Example for overlapping speakers ]
             Speaker-parallel transcription as a timeline:
@@ -84,11 +104,17 @@ class SALMDataset(torch.utils.data.Dataset):
 
     Returns:
         A dictionary with the following keys:
-            - audios: Tensor of audio waveform samples [B_audio, T_samples]
+            - audios: Tensor of audio waveform samples [B_audio, T_samples] (default mode)
+            - packed_audio_samples: Tensor of contiguous waveform samples [T_total] (packed mode)
+            - audio_cu_seqlens: Tensor of cumulative waveform offsets [B_audio + 1] (packed mode)
             - audio_lens: Tensor of audio lengths [B_audio]
-            - input_ids: Tensor of text token IDs [B, T_tokens], including audio_locator_tag tokens
-            - loss_mask: Boolean tensor [B, T_tokens] indicating which tokens are part of the
-                assistant's responses (True) and should be used for computing loss
+            - input_ids: Tensor of text token IDs [B, T_tokens] (padded mode) or
+                [T_total] (packed mode), including audio_locator_tag tokens
+            - loss_mask: Boolean tensor with the same shape as input_ids indicating which
+                tokens are part of the assistant's responses (True) and should be used for loss
+            - text_cu_seqlens: Tensor of cumulative text offsets [B + 1] (packed mode)
+            - packing_efficiency: Optional scalar measuring sampled tokens divided by
+                ``batch_tokens``
 
     Notes:
         - Each audio_locator_tag token in input_ids corresponds to an audio segment in audios
@@ -106,11 +132,19 @@ class SALMDataset(torch.utils.data.Dataset):
         self,
         tokenizer: AutoTokenizer,
         multispeaker_cfg: dict | None = None,
+        pack_audio: bool = False,
+        pack_sequences: bool = False,
+        batch_tokens: int | None = None,
         strict_audio_loading: bool = False,
     ) -> None:
         self.tokenizer = tokenizer
         self.pad_id = get_pad_id(tokenizer)
+        self.pack_sequences = bool(pack_sequences)
+        self.pack_audio = bool(pack_audio) or self.pack_sequences
+        self.batch_tokens = int(batch_tokens) if batch_tokens is not None else None
         self.strict_audio_loading = bool(strict_audio_loading)
+        if self.batch_tokens is not None and self.batch_tokens <= 0:
+            raise ValueError(f"batch_tokens must be positive, got {self.batch_tokens}")
         # Setting USE_AIS_GET_BATCH=true makes the loader issue a single AIStore GetBatch
         # call per minibatch, paired with URL-backed cuts produced by the multimodal
         # conversation adapters (NeMoMultimodalConversation{Jsonl,ShareGPTJsonl}Adapter).
@@ -126,11 +160,20 @@ class SALMDataset(torch.utils.data.Dataset):
         )
         self.multispeaker_cfg = MultiSpeakerConfig.from_dict(multispeaker_cfg)
         self.multispeaker_processor = (
-            SALMMultiSpeakerProcessor(self.multispeaker_cfg) if self.multispeaker_cfg is not None else None
+            SALMMultiSpeakerProcessor(self.multispeaker_cfg, pack_targets=self.pack_sequences)
+            if self.multispeaker_cfg is not None
+            else None
         )
 
     def with_fault_tolerant_audio_loading(self, enabled: bool) -> "SALMDataset":
-        """Return a per-loader view with the requested audio I/O policy."""
+        """Return a per-loader view with the requested audio I/O failure policy.
+
+        ``DataModule`` shares one dataset factory between train/validation/test,
+        while each loader may have a different audio-loading policy. A shallow
+        copy keeps the tokenizer and model-independent processors shared, and a
+        copied ``AudioSamples`` instance avoids mutating another loader's
+        strictness state.
+        """
         enabled = bool(enabled)
         dataset = copy(self)
         dataset.strict_audio_loading = not enabled
@@ -142,15 +185,29 @@ class SALMDataset(torch.utils.data.Dataset):
         return dataset
 
     def __getitem__(self, conversations: CutSet) -> dict | None:
+        # The collator retains its fault-tolerant 3-tuple API, but strict mode
+        # verifies exact conversation/audio identity and raises on any drop.
+        # DataModule gates FallbackDataset behind the same audio-loading policy.
         if self.strict_audio_loading:
             requested_conversation_ids = tuple(id(conversation) for conversation in conversations)
             requested_audio_cut_ids = _audio_cut_ids(conversations)
         else:
             requested_conversation_ids = requested_audio_cut_ids = ()
+
         try:
-            audios, audio_lens, conversations = collate_conversation_audio_fault_tolerant(
-                conversations, self.load_audio
-            )
+            if self.pack_audio:
+                packed_audio_samples, audio_cu_seqlens, audio_lens, conversations = (
+                    collate_conversation_audio_packed_fault_tolerant(conversations, self.load_audio)
+                )
+                audio_inputs = {
+                    "packed_audio_samples": packed_audio_samples,
+                    "audio_cu_seqlens": audio_cu_seqlens,
+                }
+            else:
+                audios, audio_lens, conversations = collate_conversation_audio_fault_tolerant(
+                    conversations, self.load_audio
+                )
+                audio_inputs = {"audios": audios}
         except Exception as e:
             if self.strict_audio_loading:
                 raise
@@ -165,28 +222,61 @@ class SALMDataset(torch.utils.data.Dataset):
                     f"materialized={len(materialized_conversation_ids)}"
                 )
             materialized_audio_cut_ids = _audio_cut_ids(conversations)
-            if materialized_audio_cut_ids != requested_audio_cut_ids or len(audio_lens) != len(
-                requested_audio_cut_ids
+            if (
+                materialized_audio_cut_ids != requested_audio_cut_ids
+                or len(audio_lens) != len(requested_audio_cut_ids)
             ):
                 raise RuntimeError(
                     "Strict SALM validation dropped or reordered audio items: "
-                    f"requested={len(requested_audio_cut_ids)} materialized={len(audio_lens)}"
+                    f"requested={len(requested_audio_cut_ids)} "
+                    f"materialized={len(audio_lens)}"
                 )
         if not conversations:
             if self.strict_audio_loading:
-                raise RuntimeError("Strict SALM validation dropped or reordered conversations into an empty batch.")
+                raise RuntimeError("Strict SALM loading produced an empty conversation batch.")
             return None
+        input_ids = [c.input_ids for c in conversations]
+        loss_masks = [getattr(c, "mask", torch.empty(0)) for c in conversations]
+        if self.pack_sequences:
+            packed_input_ids, text_cu_seqlens = pack_vectors(input_ids)
+            packed_loss_mask, loss_mask_cu_seqlens = pack_vectors(loss_masks)
+            if not torch.equal(text_cu_seqlens, loss_mask_cu_seqlens):
+                raise ValueError(
+                    "Each SALM loss mask must have the same length as its input IDs; "
+                    f"got offsets {text_cu_seqlens.tolist()} and {loss_mask_cu_seqlens.tolist()}."
+                )
+            text_inputs = {
+                "input_ids": packed_input_ids,
+                "loss_mask": packed_loss_mask.to(torch.bool),
+                "text_cu_seqlens": text_cu_seqlens,
+            }
+        else:
+            text_inputs = {
+                "input_ids": left_collate_vectors(input_ids, padding_value=self.pad_id),
+                "loss_mask": left_collate_vectors(loss_masks, padding_value=0).to(torch.bool),
+            }
+
         batch = {
-            "audios": audios,
+            **audio_inputs,
+            **text_inputs,
             "audio_lens": audio_lens,
-            "input_ids": left_collate_vectors([c.input_ids for c in conversations], padding_value=self.pad_id),
-            "loss_mask": left_collate_vectors(
-                [getattr(c, "mask", torch.empty(0)) for c in conversations], padding_value=0
-            ).to(torch.bool),
-            "conversations": drop_in_memory_data(conversations),
+            # Keep decoded in-memory audio available until auxiliary targets
+            # are materialized. Native ShareGPT WDS cuts intentionally use
+            # memory-backed recordings; dropping them first replaces their
+            # sources with unresolved Shar placeholders, and multichannel
+            # downmixing in SALMMultiSpeakerProcessor then cannot load audio.
+            "conversations": conversations,
         }
+        if self.batch_tokens is not None:
+            sampled_lengths = [getattr(conversation, "num_tokens", None) for conversation in conversations]
+            if all(length is not None for length in sampled_lengths):
+                batch["packing_efficiency"] = torch.tensor(
+                    sum(sampled_lengths) / self.batch_tokens,
+                    dtype=torch.float32,
+                )
         if self.multispeaker_processor is not None:
             self.multispeaker_processor(batch)
+        batch["conversations"] = drop_in_memory_data(conversations)
         return batch
 
 
@@ -199,8 +289,23 @@ def left_collate_vectors(
     return pad_sequence(tensors, batch_first=True, padding_value=padding_value, padding_side="left")
 
 
+def pack_vectors(tensors: Iterable[Union[torch.Tensor, np.ndarray]]) -> tuple[torch.Tensor, torch.Tensor]:
+    """Concatenate 1-D rows and return their cumulative offsets without padding."""
+    tensors = [torch.as_tensor(t) for t in tensors]
+    if not tensors:
+        raise ValueError("Cannot pack an empty sequence collection.")
+    if not all(t.ndim == 1 for t in tensors):
+        raise ValueError(f"Expected only 1-D input tensors, got shapes {[tuple(t.shape) for t in tensors]}.")
+    values = torch.cat(tensors, dim=0)
+    lengths = torch.as_tensor([t.shape[0] for t in tensors], dtype=torch.long, device=values.device)
+    cu_seqlens = torch.cat([lengths.new_zeros(1), lengths.cumsum(0)])
+    return values, cu_seqlens
+
+
 def drop_in_memory_data(conversations: CutSet) -> CutSet:
-    def _drop(conversation: NeMoMultimodalConversation) -> NeMoMultimodalConversation:
+    def _drop(conversation: Formattable) -> Formattable:
+        if not isinstance(conversation, NeMoMultimodalConversation):
+            return conversation
         turns = []
         for t in conversation.turns:
             if isinstance(t, AudioTurn):
@@ -211,8 +316,17 @@ def drop_in_memory_data(conversations: CutSet) -> CutSet:
     return conversations.map(_drop, apply_fn=None)
 
 
-def _audio_cut_ids(conversations: Iterable[NeMoMultimodalConversation]) -> tuple[str, ...]:
-    return tuple(cut.id for conversation in conversations for cut in conversation.list_cuts())
+def _audio_cut_ids(conversations: Iterable[Formattable]) -> tuple[str, ...]:
+    cut_ids = []
+    for conversation in conversations:
+        if isinstance(conversation, NeMoMultimodalConversation):
+            cut_ids.extend(cut.id for cut in conversation.list_cuts())
+        elif not isinstance(conversation, Formattable):
+            raise TypeError(
+                "SALMDataset expected a prompt-formatted example, "
+                f"got {type(conversation).__name__}."
+            )
+    return tuple(cut_ids)
 
 
 @registered_prompt_format_fn(NeMoMultimodalConversation, Llama2PromptFormatter)
@@ -275,8 +389,9 @@ class MultiSpeakerConfig:
 class SALMMultiSpeakerProcessor:
     """Add SOT activity targets, using ``-1`` rows to request inferred diarization."""
 
-    def __init__(self, cfg: MultiSpeakerConfig) -> None:
+    def __init__(self, cfg: MultiSpeakerConfig, *, pack_targets: bool = False) -> None:
         self.cfg = cfg
+        self.pack_targets = bool(pack_targets)
 
     def __call__(self, batch: dict) -> None:
         """Attach RTTM targets or missing-RTTM sentinels to ``batch`` in place."""
@@ -293,23 +408,50 @@ class SALMMultiSpeakerProcessor:
             [bool(torch.all(activity == -1.0)) for activity in speaker_activities],
             dtype=torch.bool,
         )
-        targets, target_length = collate_speaker_activity_targets(
-            speaker_activities,
-            batch["audio_lens"],
-            num_speakers=cfg.num_speakers,
-            num_sample_per_mel_frame=cfg.num_sample_per_mel_frame,
-            num_mel_frame_per_target_frame=cfg.num_mel_frame_per_target_frame,
-            dtype=batch["audios"].dtype,
-        )
-        targets[missing_rttm_rows] = -1.0
-        batch["spk_targets"] = targets
-        batch["spk_target_length"] = target_length
+        dtype = (batch["audios"] if "audios" in batch else batch["packed_audio_samples"]).dtype
+        if self.pack_targets:
+            normalized = []
+            for activity, missing_rttm in zip(speaker_activities, missing_rttm_rows):
+                n_spk = activity.shape[1]
+                if n_spk > cfg.num_speakers:
+                    activity = activity[:, : cfg.num_speakers]
+                elif n_spk < cfg.num_speakers:
+                    activity = torch.nn.functional.pad(
+                        activity,
+                        (0, cfg.num_speakers - n_spk),
+                        mode="constant",
+                        value=0.0,
+                    )
+                activity = activity.to(dtype=dtype)
+                if missing_rttm:
+                    activity = torch.full_like(activity, -1.0)
+                normalized.append(activity)
+            target_length = torch.as_tensor([target.shape[0] for target in normalized], dtype=torch.long)
+            targets = torch.cat(normalized, dim=0)
+            target_cu_seqlens = torch.cat([target_length.new_zeros(1), target_length.cumsum(0)])
+            batch["spk_targets"] = targets
+            batch["spk_target_length"] = target_length
+            batch["spk_target_cu_seqlens"] = target_cu_seqlens
+        else:
+            targets, target_length = collate_speaker_activity_targets(
+                speaker_activities,
+                batch["audio_lens"],
+                num_speakers=cfg.num_speakers,
+                num_sample_per_mel_frame=cfg.num_sample_per_mel_frame,
+                num_mel_frame_per_target_frame=cfg.num_mel_frame_per_target_frame,
+                dtype=dtype,
+            )
+            targets[missing_rttm_rows] = -1.0
+            batch["spk_targets"] = targets
+            batch["spk_target_length"] = target_length
 
     def _build_speaker_activities(self, conversations: CutSet) -> list[torch.Tensor]:
         cfg = self.cfg
         speaker_activities = []
         for conversation in conversations:
-            for turn in conversation.turns:
+            # Generic prompt-formatted text-only examples intentionally do not
+            # expose multimodal turns and have no speaker targets to materialize.
+            for turn in getattr(conversation, "turns", ()):
                 if not isinstance(turn, AudioTurn):
                     continue
 

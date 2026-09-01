@@ -22,8 +22,9 @@ from dataclasses import dataclass
 
 
 _SPACE_RE = re.compile(r"\s+")
-_TERMINAL_RE = re.compile(r"[.!?]+")
+_TERMINAL_RE = re.compile(r"[.!?。！？]+")
 _INITIALISM_RE = re.compile(r"(?:[A-Za-z]\.){2,}$")
+_CLOSING_DELIMITERS = frozenset("\"'”’»)]}】」』")
 _NON_TERMINAL_ABBREVIATIONS = {
     "dr.",
     "e.g.",
@@ -79,6 +80,8 @@ def last_text_boundary(text: str) -> int:
         if match.group(0) == "." and _is_non_terminal_period(text, match.end()):
             continue
         boundary = match.end()
+        while boundary < len(text) and text[boundary] in _CLOSING_DELIMITERS:
+            boundary += 1
     return boundary
 
 
@@ -158,7 +161,15 @@ class TextMTSourceBuffer:
         if rollback and rollback <= len(self.active_source):
             self.active_source = self.active_source[:-rollback]
         self.active_source = self._append(self.active_source, delta, exact_continuation=exact_continuation)
-        self.previous_asr_view = "" if acoustic_eou else current
+        is_temporary_shortening = bool(
+            self.previous_asr_view and self.previous_asr_view.startswith(current) and self.previous_asr_view != current
+        )
+        if acoustic_eou:
+            self.previous_asr_view = ""
+        elif not is_temporary_shortening:
+            # A shorter cumulative view was ignored above. Keep the longer
+            # comparison anchor so that a later re-extension is not appended twice.
+            self.previous_asr_view = current
         self.active_duration_ms += max(0, int(elapsed_ms))
 
         boundary = last_text_boundary(self.active_source)

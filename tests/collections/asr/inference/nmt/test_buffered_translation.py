@@ -15,7 +15,11 @@
 import os
 from types import SimpleNamespace
 
+import torch
+
 from nemo.collections.asr.inference.pipelines.base_pipeline import BasePipeline, TranscribeStepOutput
+from nemo.collections.asr.inference.streaming.framing.request import Frame
+from nemo.collections.asr.inference.streaming.framing.request_options import ASRRequestOptions
 from nemo.collections.asr.inference.streaming.state.state import StreamingState
 
 
@@ -69,6 +73,14 @@ class _Pipeline(BasePipeline):
         return state
 
 
+class _NativePipeline(_Pipeline):
+    def transcribe_step_for_frames(self, frames):
+        for frame in frames:
+            state = self.get_state(frame.stream_id)
+            state.partial_transcript = "unfinished ending"
+            state.current_step_transcript = "unfinished ending"
+
+
 def _state():
     state = StreamingState()
     state.options = SimpleNamespace(enable_nmt=True, source_language="English", target_language="German")
@@ -89,6 +101,23 @@ def test_acoustic_eou_does_not_reset_mt_source():
     assert first.final_translation == ""
     assert first.partial_translation == "<short fragment>"
     assert second.final_translation == "<short fragment continues.>"
+
+
+def test_acoustic_eou_residue_is_translated_in_the_same_update():
+    pipeline = _Pipeline(_Translator())
+    state = _state()
+    output = TranscribeStepOutput(
+        stream_id=0,
+        final_transcript="Closed.",
+        partial_transcript="New temporary",
+        current_step_transcript="Closed.",
+    )
+
+    pipeline._translate_step_buffered([state], [output])
+
+    assert output.final_translation == "<Closed.>"
+    assert output.partial_translation == "<New temporary>"
+    assert state.mt_previous_source == "New temporary"
 
 
 def test_boundary_closes_unit_and_translates_suffix_in_same_update():
@@ -136,6 +165,26 @@ def test_empty_suffix_handoff_is_deferred_once():
     assert state.mt_handoff_deferrals == 0
 
 
+def test_empty_closed_unit_handoff_preserves_previous_visible_translation():
+    translator = _Translator(empty_sources={"Closed."})
+    pipeline = _Pipeline(translator)
+    state = _state()
+    state.set_translation_info("<Earlier source>", "<Earlier")
+    state.mt_previous_source = "Earlier source"
+    output = TranscribeStepOutput(
+        stream_id=0,
+        partial_transcript="Closed. New",
+        current_step_transcript="Closed. New",
+    )
+
+    pipeline._translate_step_buffered([state], [output])
+
+    assert output.final_translation == ""
+    assert output.partial_translation == "<Earlier source>"
+    assert state.previous_translation_info == ("<Earlier source>", "<Earlier")
+    assert state.mt_previous_source == "Earlier source"
+
+
 def test_stream_end_regenerates_source_not_covered_by_deferred_translation():
     translator = _Translator(empty_sources={"New"})
     pipeline = _Pipeline(translator)
@@ -151,3 +200,26 @@ def test_stream_end_regenerates_source_not_covered_by_deferred_translation():
     flushed = pipeline.flush_translation_stream(0)
 
     assert flushed.final_translation == "<Closed. New>"
+
+
+def test_native_last_request_flushes_unpunctuated_translation_before_state_deletion():
+    pipeline = _NativePipeline(_Translator())
+    options = ASRRequestOptions(
+        enable_nmt=True,
+        source_language="English",
+        target_language="German",
+    )
+    request = Frame(
+        samples=torch.zeros(8),
+        stream_id=7,
+        is_first=True,
+        is_last=True,
+        options=options,
+    )
+
+    output = pipeline.transcribe_step([request])[0]
+
+    assert output.final_translation == "<unfinished ending>"
+    assert output.partial_translation == ""
+    assert output.current_step_translation == "<unfinished ending>"
+    assert pipeline.get_state(7) is None

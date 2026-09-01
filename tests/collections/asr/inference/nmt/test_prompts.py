@@ -56,3 +56,14 @@ def test_riva_prompt_expands_simulstream_language_codes():
     messages = RivaV2TranslatorPromptTemplate.messages("en", "zh", "Current source", "")
 
     assert messages[0] == {"role": "system", "content": "en-zh"}
+
+
+def test_riva_prompt_expands_extended_model_card_language_names():
+    messages = RivaV2TranslatorPromptTemplate.messages(
+        "English",
+        "Brazilian Portuguese",
+        "Current source",
+        "",
+    )
+
+    assert messages[0] == {"role": "system", "content": "en-pt-br"}

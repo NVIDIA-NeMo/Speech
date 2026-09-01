@@ -53,3 +53,34 @@ def test_chinese_boundary_transition_does_not_insert_whitespace():
 
     assert incremental.deleted_tokens == []
     assert incremental.new_string == "开始。注册开放"
+
+
+def test_prediction_manifest_accumulates_word_units_with_spacing():
+    adapter = NeMoStreamingPipelineAdapter.__new__(NeMoStreamingPipelineAdapter)
+    adapter.latency_unit = "word"
+
+    accumulated = adapter._append_translation_unit("First sentence.", "Second sentence.")
+
+    assert accumulated == "First sentence. Second sentence."
+
+
+def test_prediction_manifest_accumulates_character_units_without_spacing():
+    adapter = NeMoStreamingPipelineAdapter.__new__(NeMoStreamingPipelineAdapter)
+    adapter.latency_unit = "char"
+
+    accumulated = adapter._append_translation_unit("第一句。", "第二句。")
+
+    assert accumulated == "第一句。第二句。"
+
+
+def test_prediction_manifest_joins_final_and_remaining_partial_translation():
+    adapter = NeMoStreamingPipelineAdapter.__new__(NeMoStreamingPipelineAdapter)
+    adapter.latency_unit = "word"
+    adapter._final_translation_acc = "Finalized sentence."
+    adapter._last_partial_translation = "Remaining partial"
+
+    prediction = adapter._append_translation_unit(
+        adapter._final_translation_acc, adapter._last_partial_translation
+    ).strip()
+
+    assert prediction == "Finalized sentence. Remaining partial"

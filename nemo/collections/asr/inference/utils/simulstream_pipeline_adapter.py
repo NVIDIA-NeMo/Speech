@@ -323,7 +323,9 @@ class NeMoStreamingPipelineAdapter(SpeechProcessor):
 
         # Track final/latest-partial outputs to write a NeMo-style prediction manifest line.
         self._final_transcript_acc += step_output.final_transcript or ""
-        self._final_translation_acc += step_output.final_translation or ""
+        self._final_translation_acc = self._append_translation_unit(
+            self._final_translation_acc, step_output.final_translation
+        )
         self._last_partial_transcript = step_output.partial_transcript or ""
         self._last_partial_translation = step_output.partial_translation or ""
 
@@ -399,14 +401,24 @@ class NeMoStreamingPipelineAdapter(SpeechProcessor):
             deleted_string=self._join_tokens(deleted_tokens),
         )
 
+    def _append_translation_unit(self, accumulated: str, unit: str) -> str:
+        """Append a finalized target unit using the configured latency-unit spacing."""
+
+        if not accumulated:
+            return (unit or "").strip()
+        if not unit:
+            return accumulated
+        separator = "" if self.latency_unit == "char" else " "
+        return f"{accumulated.rstrip()}{separator}{unit.lstrip()}"
+
     def end_of_stream(self) -> IncrementalOutput:
         """
         Called at the end of the audio stream to finalize output.
 
         The last chunk was already processed with is_last=False in process_chunk() (simulstream
         doesn't signal which chunk is last), so this only finalizes stream state / writes the
-        prediction manifest line and emits an empty incremental output. Required by the
-        SpeechProcessor interface.
+        prediction manifest line and emits any translation finalized by the MT flush.
+        Required by the SpeechProcessor interface.
         """
         if self._finalized:
             return IncrementalOutput(new_tokens=[], new_string="", deleted_tokens=[], deleted_string="")
@@ -416,11 +428,15 @@ class NeMoStreamingPipelineAdapter(SpeechProcessor):
         if flush_translation_stream is not None:
             flushed_output = flush_translation_stream(self.stream_id)
             if flushed_output is not None and flushed_output.final_translation:
-                self._final_translation_acc += flushed_output.final_translation
+                self._final_translation_acc = self._append_translation_unit(
+                    self._final_translation_acc, flushed_output.final_translation
+                )
                 self._last_partial_translation = ""
 
         pred_text = (self._final_transcript_acc + self._last_partial_transcript).strip()
-        pred_translation = (self._final_translation_acc + self._last_partial_translation).strip()
+        pred_translation = self._append_translation_unit(
+            self._final_translation_acc, self._last_partial_translation
+        ).strip()
         self._write_prediction_manifest_line(pred_text, pred_translation)
 
         self.pipeline.delete_state(self.stream_id)

@@ -50,6 +50,15 @@ def test_cumulative_asr_updates_append_only_unseen_text():
     assert decision.source == "the language models improve"
 
 
+def test_temporary_shortening_then_reextension_does_not_duplicate_source():
+    buffer = TextMTSourceBuffer()
+    buffer.update("The meeting starts Monday", acoustic_eou=False, elapsed_ms=480)
+    buffer.update("The meeting starts", acoustic_eou=False, elapsed_ms=480)
+    decision = buffer.update("The meeting starts Monday", acoustic_eou=False, elapsed_ms=480)
+
+    assert decision.source == "The meeting starts Monday"
+
+
 def test_earlier_punctuation_revision_does_not_duplicate_source():
     buffer = TextMTSourceBuffer()
     first = buffer.update("Earlier text. Active source", acoustic_eou=False, elapsed_ms=480)
@@ -98,3 +107,21 @@ def test_stream_end_flushes_retained_source_once():
     assert decision.source == "retained ending"
     assert decision.boundary_reason == "stream_end"
     assert not buffer.flush().is_final
+
+
+@pytest.mark.parametrize(
+    ("text", "source", "suffix"),
+    [
+        ('He said "Hello." Next sentence', 'He said "Hello."', "Next sentence"),
+        ("真的吗？ 下一句", "真的吗？", "下一句"),
+        ("他说：“你好。” 下一句", "他说：“你好。”", "下一句"),
+    ],
+)
+def test_text_boundary_includes_unicode_punctuation_and_closing_delimiters(text, source, suffix):
+    buffer = TextMTSourceBuffer()
+
+    decision = buffer.update(text, acoustic_eou=False, elapsed_ms=480)
+
+    assert decision.is_final
+    assert decision.source == source
+    assert decision.retained_suffix == suffix

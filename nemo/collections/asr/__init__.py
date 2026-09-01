@@ -16,7 +16,7 @@
 import os
 
 if os.getenv("NEMO_SPEECHLM2_VLLM_ONLY") != "1":
-    from nemo.collections.asr import data, losses, models, modules
+    from nemo.collections.asr import data, losses, models, modules  # noqa: F401
 from nemo.package_info import __version__
 
 # Set collection version equal to NeMo version.

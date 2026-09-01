@@ -50,7 +50,6 @@ from vllm.model_executor.models.utils import AutoWeightsLoader, init_vllm_regist
 from vllm.multimodal import MULTIMODAL_REGISTRY
 from vllm.sequence import IntermediateTensors
 
-from nemo.collections.asr.modules.parallel_expert_encoder import ParallelExpertEncoder
 from nemo.collections.speechlm2.parts.encoder_chunking import encode_audio_with_optional_chunking
 from nemo.collections.speechlm2.vllm.salm.audio import (
     _SAMPLING_RATE,
@@ -59,6 +58,7 @@ from nemo.collections.speechlm2.vllm.salm.audio import (
     NeMoSpeechLMMultiModalProcessor,
     NeMoSpeechLMProcessingInfo,
     _load_nemo_perception,
+    _maybe_mount_independent_speaker_encoder,
     _maybe_mount_pe_encoder,
 )
 from nemo.collections.speechlm2.vllm.salm.backends import HybridBackend, make_backend
@@ -66,6 +66,13 @@ from nemo.collections.speechlm2.vllm.salm.config import _AUDIO_PLACEHOLDER
 
 _AUDIO_INPUT_DTYPE = torch.float32
 _PERCEPTION_DTYPE = torch.bfloat16
+
+
+def _is_parallel_expert_encoder(module: nn.Module) -> bool:
+    """Recognize the shared speaker-aware encoder contract without importing ASR at plugin import time."""
+    return bool(getattr(module, "supports_external_speaker_targets", False)) and callable(
+        getattr(module, "online_inference", None)
+    )
 
 
 @MULTIMODAL_REGISTRY.register_processor(
@@ -107,9 +114,38 @@ class NeMoSpeechLMForConditionalGeneration(
 
         with self._mark_tower_model(vllm_config, {"audio"}):
             self.perception = _load_nemo_perception(config.perception)
-            _maybe_mount_pe_encoder(self.perception, getattr(config, "pe_encoder_path", None))
-
-        self._uses_pe_encoder = isinstance(getattr(self.perception, "encoder", None), ParallelExpertEncoder)
+            pe_encoder_path = getattr(config, "pe_encoder_path", None)
+            pe_encoder_config = getattr(config, "pe_encoder_config", None)
+            speaker_encoder = getattr(config, "speaker_encoder", None)
+            has_pe_encoder = pe_encoder_path not in (
+                None,
+                "",
+                False,
+            ) or pe_encoder_config not in (
+                None,
+                {},
+                "",
+                False,
+            )
+            has_speaker_encoder = speaker_encoder not in (None, {}, "", False)
+            if has_pe_encoder and has_speaker_encoder:
+                raise ValueError("ParallelExpertEncoder and speaker_encoder are mutually exclusive.")
+            if has_speaker_encoder:
+                _maybe_mount_independent_speaker_encoder(
+                    self.perception,
+                    speaker_encoder,
+                    self.encoder_chunk_size_seconds,
+                )
+                self._uses_pe_encoder = False
+            else:
+                _maybe_mount_pe_encoder(
+                    self.perception,
+                    pe_encoder_path,
+                    pe_encoder_config,
+                    getattr(config, "pe_encoder_type", None),
+                    getattr(config, "pe_encoder_overrides", None),
+                )
+                self._uses_pe_encoder = _is_parallel_expert_encoder(getattr(self.perception, "encoder", None))
 
         self.make_empty_intermediate_tensors = self.language_model.make_empty_intermediate_tensors
 
@@ -160,9 +196,10 @@ class NeMoSpeechLMForConditionalGeneration(
         # inference over the full audio, so it bypasses the chunking helper.
         with torch.no_grad():
             if self._uses_pe_encoder:
-                audio_embs, audio_emb_lens = self.perception(
-                    input_signal=audio_signal, input_signal_length=audio_lengths
-                )
+                with self.perception.encoder.online_inference():
+                    audio_embs, audio_emb_lens = self.perception(
+                        input_signal=audio_signal, input_signal_length=audio_lengths
+                    )
                 audio_embeds = [emb[:emblen] for emb, emblen in zip(audio_embs, audio_emb_lens)]
             else:
                 audio_embeds = encode_audio_with_optional_chunking(
@@ -209,7 +246,21 @@ class NeMoSpeechLMForConditionalGeneration(
 
     def _load_perception_weights(self, perception_weights: dict[str, torch.Tensor]) -> set[str]:
         self.perception = self.perception.to(_PERCEPTION_DTYPE)
-        self.perception.load_state_dict(perception_weights, strict=False)
+        incompatible = self.perception.load_state_dict(perception_weights, strict=False)
+
+        from nemo.collections.speechlm2.modules.perception import IndependentDualEncoder
+
+        requires_exact_architecture = (
+            isinstance(getattr(self.perception, "encoder", None), IndependentDualEncoder) or self._uses_pe_encoder
+        )
+        if requires_exact_architecture:
+            missing = [name for name in incompatible.missing_keys if not name.endswith("._extra_state")]
+            unexpected = [name for name in incompatible.unexpected_keys if not name.endswith("._extra_state")]
+            if missing or unexpected:
+                raise RuntimeError(
+                    "Speech encoder checkpoint does not exactly match its exported architecture: "
+                    f"missing={missing}, unexpected={unexpected}."
+                )
         return {"perception." + k for k in perception_weights}
 
     @staticmethod

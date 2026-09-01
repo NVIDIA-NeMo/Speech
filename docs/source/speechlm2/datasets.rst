@@ -208,6 +208,560 @@ This dataset class is specialized for the SALM model, which focuses on understan
         tokenizer=model.tokenizer,                   # Text tokenizer
     )
 
+
+Indexed ShareGPT audio formats
+------------------------------
+
+The ``share_gpt`` and ``share_gpt_webdataset`` readers support the indexed,
+checkpointable conversation formats below.  The YAML blocks are complete
+``input_cfg`` leaves: they can be stored as individual YAML files and passed to
+the index tools.  Source JSONL and tar files are immutable; ``.idx``,
+``.wds-v2.idx``, ``.sgroute``, and ``.idxpack`` files are derived artifacts.
+For stateful training, put ``index_pack`` on each outer dataset entry and keep
+``indexed: true`` and ``use_stateful_dataloader: true`` on the training dataset.
+
+Audio fields and placeholder binding
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The accepted top-level audio fields have deterministic precedence:
+``sound``, then ``speech``, then ``ori_sound``.  The first non-empty field wins;
+lower-precedence fields are not merged.  Each field accepts either one string
+or a flat list of strings.  Audio paths bind in JSON list order:
+
+* one path may be reused by any number of user/human placeholders;
+* several paths with one placeholder expand into several audio turns;
+* several paths with several placeholders bind one path per placeholder and
+  must have equal cardinality.
+
+Assistant placeholders remain literal text.  The default placeholders are
+``<sound>`` and ``<speech>``; list them explicitly when source data uses both.
+These minimal rows make the precedence rule concrete:
+
+.. code-block:: json
+
+    {
+      "id": "alias-precedence",
+      "sound": "chosen-by-sound.wav",
+      "speech": "ignored-speech.wav",
+      "ori_sound": "ignored-original.wav",
+      "conversations": [
+        {"from": "human", "value": "<sound>"},
+        {"from": "gpt", "value": "Done."}
+      ]
+    }
+
+.. code-block:: json
+
+    {
+      "id": "alias-speech",
+      "speech": "chosen-by-speech.wav",
+      "conversations": [
+        {"from": "human", "value": "<speech>"},
+        {"from": "gpt", "value": "Done."}
+      ]
+    }
+
+.. code-block:: json
+
+    {
+      "id": "alias-ori-sound",
+      "ori_sound": "chosen-by-ori.wav",
+      "conversations": [
+        {"from": "human", "value": "<sound>"},
+        {"from": "gpt", "value": "Done."}
+      ]
+    }
+
+Loose JSONL with direct audio
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Relative local paths use ``audio_root`` when configured, otherwise the
+manifest directory.  This row uses a scalar relative ``sound``:
+
+.. code-block:: json
+
+    {
+      "id": "loose-relative-scalar",
+      "sound": "audio/request.wav",
+      "conversations": [
+        {"from": "human", "value": "Please inspect <sound>."},
+        {"from": "gpt", "value": "The request is clear."}
+      ]
+    }
+
+.. code-block:: yaml
+
+    # indexed-sharegpt-example: loose-relative-scalar
+    - type: share_gpt
+      manifest_filepath: /data/sharegpt/relative.jsonl
+      audio_root: /data/sharegpt
+      audio_locator_tag: <|audio|>
+      audio_placeholders: [<sound>, <speech>]
+      shuffle: true
+      shard_seed: 17
+      indexed: true
+      indexes_root: /index-mirror/site-a
+      index_pack: /index-packs/site-a/loose-relative.idxpack
+      index_pack_max_open_files: 32
+      force_finite: false
+
+``s3://`` and ``ais://`` are direct object paths.  A flat list may mix them;
+the following two placeholders bind left then right:
+
+.. code-block:: json
+
+    {
+      "id": "loose-remote-list",
+      "sound": [
+        "s3://example-audio/clips/left.flac",
+        "ais://example-audio/clips/right.flac"
+      ],
+      "conversations": [
+        {"from": "human", "value": "Compare <sound> with <speech>."},
+        {"from": "gpt", "value": "They differ."}
+      ]
+    }
+
+.. code-block:: yaml
+
+    # indexed-sharegpt-example: loose-remote-list
+    - type: share_gpt
+      manifest_filepath: /data/sharegpt/remote.jsonl
+      audio_locator_tag: <|audio|>
+      audio_placeholders: [<sound>, <speech>]
+      shuffle: true
+      shard_seed: 17
+      indexed: true
+      indexes_root: /index-mirror/site-b
+      index_pack: /index-packs/site-b/loose-remote.idxpack
+      index_pack_max_open_files: 32
+      force_finite: false
+
+Absolute POSIX paths are read unchanged when they exist locally.  To preserve
+an original manifest across clusters, ``audio_path_prefix_map`` rewrites an
+absolute source prefix before opening audio.  Mapping is component-aware,
+selects the unique longest prefix, and requires every absolute source path to
+match when a map is configured.  Destinations may be local paths or
+``s3://``/``ais://`` roots; the source JSONL is not rewritten.
+
+.. code-block:: json
+
+    {
+      "id": "loose-absolute-prefix-map",
+      "sound": "/lustre/source/audio/request.wav",
+      "conversations": [
+        {"from": "human", "value": "Inspect <sound>."},
+        {"from": "gpt", "value": "Done."}
+      ]
+    }
+
+.. code-block:: yaml
+
+    # indexed-sharegpt-example: loose-absolute-prefix-map
+    - type: share_gpt
+      manifest_filepath: /data/sharegpt/absolute.jsonl
+      audio_path_prefix_map:
+        /source/site-a/: s3://example-audio/source-root/
+      audio_locator_tag: <|audio|>
+      audio_placeholders: [<sound>, <speech>]
+      shuffle: true
+      shard_seed: 17
+      indexed: true
+      indexes_root: /index-mirror/site-b
+      index_pack: /index-packs/site-b/loose-absolute.idxpack
+      index_pack_max_open_files: 32
+      force_finite: false
+
+Audited exact-row exclusions
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+An immutable source may have a separately approved set of unusable rows.  For
+indexed ShareGPT JSONL only, ``excluded_manifest_lines`` removes those rows
+from the logical sample domain before parsing or audio I/O.  Lines are
+one-based, positive, unique integers.  The list must be sorted and accompanied
+by both digests:
+
+.. code-block:: yaml
+
+    - type: share_gpt
+      manifest_filepath: /data/sharegpt/frozen.jsonl
+      audio_root: /data/sharegpt
+      audio_locator_tag: <|audio|>
+      audio_placeholders: [<sound>, <speech>]
+      shuffle: true
+      shard_seed: 17
+      indexed: true
+      index_pack: /index-packs/site-a/frozen.idxpack
+      excluded_manifest_lines: [12, 48, 93]
+      excluded_manifest_lines_sha256: <sha256-of-compact-json-list-plus-newline>
+      approved_exclusion_audit_sha256: <sha256-of-immutable-approval-artifact>
+      force_finite: false
+
+Compute the line-set digest over the exact UTF-8 bytes ``[12,48,93]\\n``.
+The approval digest must be a lowercase 64-character SHA-256.  Construction
+fails on an invalid line, duplicate, out-of-range line, digest mismatch,
+missing approval digest, or use without ``indexed: true``.
+
+Logical graph tokens are mapped to the remaining physical rows before
+partitioning output is decoded.  ``len(reader)`` therefore reports source
+rows minus approved exclusions; ``__getitem__`` and iterator graph origins
+use the logical index, while collection-mode routing uses the corresponding
+physical manifest row.  Checkpoint state records both exclusion digests and
+refuses a resume when the set or approval changes.  Datasets without
+exclusions retain their legacy state shape.
+
+This mechanism does not enable ``skip_missing_manifest_entries`` and does
+not change ``fault_tolerant_audio_loading``. Keep the former disabled and set
+the latter to ``false`` when the contract is to skip only an audited exact set
+and fail on every unrelated manifest or audio error.
+
+Aligned JSONL and tar shards
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The legacy paired mode aligns expanded manifest and tar shard lists one to
+one.  Each JSONL row names a regular member in its corresponding tar; ordering
+inside the tar is not the lookup key.
+
+.. code-block:: json
+
+    {
+      "id": "aligned-jsonl-tar",
+      "sound": "audio/000.wav",
+      "conversations": [
+        {"from": "human", "value": "Transcribe <sound>."},
+        {"from": "gpt", "value": "hello"}
+      ]
+    }
+
+.. code-block:: text
+
+    manifests/part-000.jsonl  <->  audio/part-000.tar
+                                      audio/000.wav
+    manifests/part-001.jsonl  <->  audio/part-001.tar
+                                      audio/001.wav
+
+.. code-block:: yaml
+
+    # indexed-sharegpt-example: aligned-jsonl-tar
+    - type: share_gpt
+      manifest_filepath: /data/aligned/manifests/part-{000..127}.jsonl
+      tarred_audio_filepaths: /data/aligned/audio/part-{000..127}.tar
+      tar_lookup_mode: paired
+      audio_locator_tag: <|audio|>
+      audio_placeholders: [<sound>, <speech>]
+      shuffle: true
+      shard_seed: 17
+      indexed: true
+      indexes_root: /index-mirror/site-a
+      force_finite: false
+
+Paired mode requires a JSONL ``.idx`` and native tar ``.idx`` for every shard.
+It is a supported loose-index compatibility path, but paired ShareGPT audio
+tars are not supported by ``convert_indexes_to_idxpack.py``.  Do not add an
+``index_pack`` to this leaf; use collection mode for new pack-based datasets.
+
+JSONL with an unordered tar collection
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Collection mode is for one or more manifest shards whose audio members are
+distributed across an ordered tar collection without positional shard pairing.
+The route builder resolves each requested name once and writes an immutable,
+row-aligned ``.sgroute``.  Runtime uses the row's ``(tar shard, member index)``
+records and never builds a per-worker global filename table.
+
+.. code-block:: json
+
+    {
+      "id": "unordered-tar-collection",
+      "sound": ["clips/left.flac", "clips/right.flac"],
+      "conversations": [
+        {"from": "human", "value": "First <sound>, then <speech>."},
+        {"from": "gpt", "value": "Counted both clips."}
+      ]
+    }
+
+.. code-block:: text
+
+    multi-clip.jsonl
+    audio_00.tar
+      unrelated.flac
+      clips/right.flac
+    audio_01.tar
+      clips/left.flac
+
+.. code-block:: yaml
+
+    # indexed-sharegpt-example: unordered-tar-collection
+    - type: share_gpt
+      manifest_filepath: /data/multi-clip/multi-clip.jsonl
+      tarred_audio_filepaths: /data/multi-clip/audio_{00..63}.tar
+      tar_lookup_mode: collection
+      tar_routing_filepath: multi-clip.sgroute
+      audio_locator_tag: <|audio|>
+      audio_placeholders: [<sound>, <speech>]
+      shuffle: true
+      shard_seed: 17
+      indexed: true
+      indexes_root: /index-mirror/site-a
+      index_pack: /index-packs/site-a/multi-clip.idxpack
+      index_pack_max_open_files: 32
+      force_finite: false
+
+``tar_routing_filepath`` is canonical; ``tar_routing_index`` is a compatibility
+alias.  Defining both with different values is an error.  In packed mode, a
+relative route is published and resolved beside ``index_pack``; in loose mode,
+it resolves below ``indexes_root``.  A relative route without either root is an
+error.  The pack must contain ``role=manifest, kind=jsonl`` and an
+offset-bearing ``role=tar_collection, kind=nemo_tar``.  Paths-only native tar
+catalogs cannot serve collection routes.
+
+The current route format is ``SGROUTE2``.  Its builder records both a complete
+manifest-content digest and a compact source-identity digest.  One-time build
+and artifact validation recompute the complete content digest; training-worker
+startup compares only local stat identity or a stable remote version, ETag, or
+checksum.  Runtime therefore performs no full-manifest payload read while
+still rejecting a changed source before the first sample is yielded.  A remote
+backend that exposes no stable object identity is rejected.
+
+Conventional and variable-member WebDataset
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``share_gpt_webdataset`` groups consecutive regular tar members by POSIX parent
+plus the filename prefix before the first dot.  Conventional one-audio samples
+are valid WDS v2 samples and pack normally:
+
+.. code-block:: json
+
+    {
+      "id": "conventional-wds-v2",
+      "sound": "sample-000.wav",
+      "conversations": [
+        {"from": "human", "value": "Transcribe <sound>."},
+        {"from": "gpt", "value": "hello"}
+      ]
+    }
+
+.. code-block:: text
+
+    shard-000.tar
+      sample-000.json
+      sample-000.wav
+      sample-001.wav
+      sample-001.json
+
+.. code-block:: yaml
+
+    # indexed-sharegpt-example: conventional-wds-v2
+    - type: share_gpt_webdataset
+      data_dir: /data/wds/conventional
+      wds_sample_index_version: 2
+      audio_locator_tag: <|audio|>
+      audio_placeholders: [<sound>, <speech>]
+      shuffle: true
+      shard_seed: 17
+      indexed: true
+      indexes_root: /index-mirror/site-a
+      index_pack: /index-packs/site-a/wds-conventional.idxpack
+      index_pack_max_open_files: 32
+      force_finite: false
+
+Legacy conventional rows may retain an original source path in ``sound`` (or
+an audio alias) even when packing renames the sole tar payload to
+``<sample-key>.<codec>``.  When a sample has exactly one audio payload, that
+one-to-one binding is deterministic and remains supported.  Variable-member
+samples still resolve strictly by exact name or one unambiguous basename.
+
+Variable-member samples may use the same key for ``1.json``, ``1.flac``, and
+``1.1.flac``.  The JSON path list determines placeholder order; physical audio
+member order does not.  Resolution first matches the exact member name and
+then an unambiguous basename.
+
+.. code-block:: json
+
+    {
+      "id": "variable-wds-v2",
+      "speech": ["nested/1.flac", "nested/1.1.flac"],
+      "conversations": [
+        {"from": "human", "value": "Compare <speech> and <sound>."},
+        {"from": "gpt", "value": "The clips differ."}
+      ]
+    }
+
+.. code-block:: text
+
+    variable-shard-000.tar
+      nested/1.1.flac
+      nested/1.json
+      nested/1.flac
+      nested/2.json
+      nested/2.flac
+
+.. code-block:: yaml
+
+    # indexed-sharegpt-example: variable-wds-v2
+    - type: share_gpt_webdataset
+      data_dir: /data/wds/variable-members
+      wds_sample_index_version: 2
+      audio_locator_tag: <|audio|>
+      audio_placeholders: [<sound>, <speech>]
+      shuffle: true
+      shard_seed: 17
+      indexed: true
+      indexes_root: /index-mirror/site-a
+      index_pack: /index-packs/site-a/wds-variable-members.idxpack
+      index_pack_max_open_files: 32
+      force_finite: false
+
+Every WDS v2 tar has ``<tar>.wds-v2.idx`` plus canonical
+``<tar>.wds-v2.idx.meta.json`` metadata.  Its pack collection is
+``role=wds_tar, kind=wds_tar_v2`` and retains sample offsets.  The pack catalog
+defines the runtime shard order, so production workers perform no recursive WDS scan.
+If ``wids-meta.json`` is absent, only the one-time build/conversion CPU process
+may discover tars below ``data_dir``.
+
+Text-only conversations
+^^^^^^^^^^^^^^^^^^^^^^^
+
+Loose ``share_gpt`` JSONL may contain text-only rows with no audio field and no
+audio placeholder.  They can coexist with audio rows and use the same manifest
+index/pack.  WDS v2 intentionally requires at least one non-JSON payload per
+sample, and tar-paired or collection routing should not be used to represent a
+text-only source.
+
+.. code-block:: json
+
+    {
+      "id": "text-only",
+      "conversations": [
+        {"from": "human", "value": "What is two plus two?"},
+        {"from": "gpt", "value": "Four."}
+      ]
+    }
+
+.. code-block:: yaml
+
+    # indexed-sharegpt-example: text-only
+    - type: share_gpt
+      manifest_filepath: /data/sharegpt/text-only.jsonl
+      audio_locator_tag: <|audio|>
+      audio_placeholders: [<sound>, <speech>]
+      shuffle: true
+      shard_seed: 17
+      indexed: true
+      indexes_root: /index-mirror/site-a
+      index_pack: /index-packs/site-a/text-only.idxpack
+      index_pack_max_open_files: 32
+      force_finite: false
+
+Build, convert, and validate
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Run these commands from the NeMo repository root.  Build loose sidecars first;
+omitting ``--kind`` builds every kind discovered in the leaf.
+
+Direct or text-only JSONL needs the manifest ``.idx`` before conversion:
+
+.. code-block:: bash
+
+    python scripts/dataloading/build_indexes.py \
+      --indexes-root /index-mirror/site-a --kind jsonl loose-sharegpt.yaml
+    python scripts/dataloading/convert_indexes_to_idxpack.py \
+      --indexes-root /index-mirror/site-a \
+      --output /immutable-packs/site-a/loose-sharegpt.idxpack loose-sharegpt.yaml
+
+The direct JSONL pack contains ``role=manifest, kind=jsonl``.  The same layout
+serves mixed audio/text or text-only manifests.
+
+Aligned paired mode needs both loose index kinds and is not converted:
+
+.. code-block:: bash
+
+    python scripts/dataloading/build_indexes.py \
+      --indexes-root /index-mirror/site-a --kind jsonl --kind nemo_tar aligned-sharegpt.yaml
+
+Build WDS v2 sidecars, then convert them.  Conversion validates every offset
+file and metadata companion against its source before publishing the pack:
+
+.. code-block:: bash
+
+    python scripts/dataloading/build_indexes.py \
+      --indexes-root /index-mirror/site-a --kind wds_tar_v2 wds-v2.yaml
+    python scripts/dataloading/convert_indexes_to_idxpack.py \
+      --indexes-root /index-mirror/site-a \
+      --output /immutable-packs/site-a/wds-v2.idxpack wds-v2.yaml
+
+For collection mode, build the JSONL and native-tar offsets before the route.
+The command performs that dependency ordering even though the filters appear
+on one line:
+
+.. code-block:: bash
+
+    python scripts/dataloading/build_indexes.py --indexes-root /index-mirror/site-a --kind jsonl --kind nemo_tar --kind sharegpt_route collection-sharegpt.yaml
+    python scripts/dataloading/convert_indexes_to_idxpack.py \
+      --indexes-root /index-mirror/site-a \
+      --output /immutable-packs/site-a/multi-clip.idxpack collection-sharegpt.yaml
+
+Do not pass ``--native-tar-paths-only`` for collection mode: routes require the
+offset-bearing tar collection.  Add converter ``--overwrite`` only when an
+intentional atomic replacement is authorized; normal pack roots are immutable.
+The repository submission wrapper uses the corresponding form:
+
+.. code-block:: bash
+
+    python submit_build_indexes.py \
+      --cluster site-a --blend collection-sharegpt.yaml \
+      --build-packs --pack-with-tar-offsets
+
+The full validator consumes a training recipe, not a leaf-only YAML.  It uses
+the production tokenizer, ``SALMDataset``, audio loading, tokenization, and
+collation, and fails unless all requested batches materialize.  Output contains
+only IDs, counters, and timings, never conversation or audio payloads:
+
+.. code-block:: bash
+
+    torchrun --standalone --nnodes=1 --nproc-per-node=8 \
+      scripts/dataloading/validate_dataloader.py \
+      --config recipe.yaml --data-blend-dir /data-blends/site-a \
+      --output-dir /validation/site-a --phase baseline --run-idx 0 \
+      --steps 100 --checkpoint-at -1 --section train_ds \
+      --mode full --no-metadata-only
+
+Use the full validator before training; fast mode validates metadata/indexed
+iteration but does not prove that audio can be decoded and collated.
+
+Portability and fail-closed behavior
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+An ``.idxpack`` stores the configured source strings, ordered shard catalog,
+source identities, and collection keys.  It is not cluster-path portable when
+local paths or prefix-map destinations change.  Rebuild local tar indexes,
+``.sgroute`` files, and packs under a new immutable root for each deployment site.
+A pack may be reused only when configured path strings and source identities
+are identical, as can occur with shared ``s3://``/``ais://`` object names.
+Never rewrite a source JSONL to make an old pack appear portable.
+
+Indexed dataset entries fail closed rather than selecting a sequential reader:
+
+* WDS v2 requires ``indexed: true``; sequential fallback is not allowed.
+* Each WDS sample must have contiguous regular members, exactly one JSON member,
+  at least one non-JSON payload, unique names, valid object JSON, and one sample
+  key.  Duplicate names, non-contiguous sample-key reuse, stale metadata, or a
+  corrupt offset digest are errors.
+* A requested WDS member must match exactly or by one unambiguous basename.
+  A conventional sample with exactly one payload may bind its single declared
+  source path to that payload for legacy path-preserving JSON compatibility.
+  Otherwise missing members, an ambiguous basename, or two declared paths
+  resolving to one member are errors.
+* A placeholder without an audio path, a non-string/nested audio list, or
+  incompatible path/placeholder cardinality is an error.
+* Collection mode requires ``indexed: true``, tar paths, a ``.sgroute``, matching
+  route source/row/map digests, and an offset-bearing tar pack collection.
+  Missing names, duplicate candidate names, stale routes, paths-only tar
+  collections, and unused route records are errors.
+* Packed WDS workers use the catalog and packed offsets.  A missing pack or any
+  attempt to fall back to recursive shard discovery is an error for production
+  indexed configurations.
+
 AIStore GetBatch (multimodal conversations) (experimental)
 **********************************************************
 
@@ -515,4 +1069,4 @@ While there are no publicly available datasets specifically formatted for Duplex
 3. CallHome
 4. Synthetic conversation datasets generated using TTS
 
-You would need to format these datasets as Lhotse manifests with appropriate speaker role annotations to use them with the speechlm2 S2S models. 
+You would need to format these datasets as Lhotse manifests with appropriate speaker role annotations to use them with the speechlm2 S2S models.

@@ -37,7 +37,6 @@ import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 import click
 
@@ -54,7 +53,7 @@ SKIP = "SKIP"
 class QResult:
     q_id: str
     status: str
-    tag: Optional[str] = None
+    tag: str | None = None
     detail: str = ""
     extra: dict = field(default_factory=dict)
 
@@ -113,19 +112,24 @@ def consolidate(output_dir: Path, *, checkpoint_at: int, num_determinism_runs: i
 
 
 def _q1_no_duplication(rows: list[dict]) -> QResult:
-    """Q1: no cut appears twice within phase 1. Tag ``partition-rank-leak``
+    """Q1: no validation identity appears twice within phase 1. Tag ``partition-rank-leak``
     if cross-rank, ``partition-worker-leak`` if within one rank."""
     if not rows:
         return QResult("Q1", SKIP, detail="no baseline rows loaded")
     # Map cut_id -> set of (rank, worker) tuples that saw it.
     sightings: dict[str, set[tuple[int, int]]] = defaultdict(set)
+    occurrences: Counter[str] = Counter()
     for r in rows:
         for cid in r["cut_ids"]:
             sightings[cid].add((r["rank"], r["worker_id"]))
+            occurrences[cid] += 1
     dup_cross_rank: list[str] = []
     dup_within_rank: list[str] = []
+    dup_within_worker: list[str] = []
     for cid, seen in sightings.items():
-        if len(seen) <= 1:
+        if len(seen) == 1:
+            if occurrences[cid] > 1:
+                dup_within_worker.append(cid)
             continue
         ranks = {rank for rank, _ in seen}
         if len(ranks) > 1:
@@ -137,7 +141,7 @@ def _q1_no_duplication(rows: list[dict]) -> QResult:
             "Q1",
             FAIL,
             tag="partition-rank-leak",
-            detail=f"{len(dup_cross_rank)} cut.id(s) appeared on multiple ranks",
+            detail=f"{len(dup_cross_rank)} validation identity/identities appeared on multiple ranks",
             extra={"examples": dup_cross_rank[:5]},
         )
     if dup_within_rank:
@@ -145,8 +149,16 @@ def _q1_no_duplication(rows: list[dict]) -> QResult:
             "Q1",
             FAIL,
             tag="partition-worker-leak",
-            detail=f"{len(dup_within_rank)} cut.id(s) seen by multiple workers within one rank",
+            detail=f"{len(dup_within_rank)} validation identity/identities seen by multiple workers within one rank",
             extra={"examples": dup_within_rank[:5]},
+        )
+    if dup_within_worker:
+        return QResult(
+            "Q1",
+            FAIL,
+            tag="duplicate-within-worker",
+            detail=f"{len(dup_within_worker)} validation identity/identities repeated within one rank/worker",
+            extra={"examples": dup_within_worker[:5]},
         )
     return QResult("Q1", PASS, detail=f"{len(sightings)} distinct cuts, no duplicates")
 
@@ -172,7 +184,7 @@ def _q2_no_skipping(rows: list[dict], groundtruth_path: Path) -> QResult:
             "Q2",
             FAIL,
             tag="skip",
-            detail=f"{len(missing)} of {len(expected)} expected cut.id(s) never yielded",
+            detail=f"{len(missing)} of {len(expected)} expected validation identities never yielded",
             extra={"missing_examples": list(missing)[:5], "unexpected_count": len(unexpected)},
         )
     if unexpected:
@@ -180,7 +192,7 @@ def _q2_no_skipping(rows: list[dict], groundtruth_path: Path) -> QResult:
             "Q2",
             FAIL,
             tag="id-collision",
-            detail=f"{len(unexpected)} cut.id(s) yielded but not in ground truth",
+            detail=f"{len(unexpected)} validation identities yielded but not in ground truth",
             extra={"unexpected_examples": list(unexpected)[:5]},
         )
     return QResult("Q2", PASS, detail=f"yielded ({len(yielded)}) == ground truth ({len(expected)})")
@@ -205,7 +217,7 @@ def _q3_partition_correctness(rows: list[dict]) -> QResult:
     ratio = sum_distinct / max(len(grand_union), 1)
     tag = "partition-rank-leak"
     if ratio >= n_ranks - 0.5:
-        detail = f"FULL BROADCAST: each cut.id appears on ~{ratio:.1f}/{n_ranks} ranks " f"(overlap={overlap})"
+        detail = f"FULL BROADCAST: each validation identity appears on ~{ratio:.1f}/{n_ranks} ranks " f"(overlap={overlap})"
     else:
         detail = (
             f"PARTIAL OVERLAP: per-rank distinct sums to {sum_distinct} but |union|={len(grand_union)} "
@@ -215,80 +227,73 @@ def _q3_partition_correctness(rows: list[dict]) -> QResult:
 
 
 def _q4_exact_resume(baseline: list[dict], resumed: list[dict], *, checkpoint_at: int) -> QResult:
-    """Q4: per-(rank, step) cut sets in resumed match the baseline tail.
+    """Q4: ordered per-(rank, step) cut IDs exactly match the baseline tail.
 
     The validator saves ``state_dict()`` AFTER yielding baseline step
     ``checkpoint_at``; StatefulDataLoader's state points at the NEXT
     element, so resumed[0] should equal baseline[checkpoint_at + 1].
 
-    The comparison runs on the **overlapping window** only: cells where
-    both the baseline and the resumed JSONL have an entry. Cells
-    beyond that (resumed ran longer than baseline tail, or vice versa)
-    are reported in ``extra`` but don't trigger FAIL on their own —
-    they just mean one side iterated more batches than necessary."""
-    if not resumed:
-        return QResult("Q4", SKIP, detail="no resumed rows loaded")
-    base_by_key = {(r["rank"], r["step"]): set(r["cut_ids"]) for r in baseline}
-    res_by_key = {(r["rank"], r["step"]): set(r["cut_ids"]) for r in resumed}
+    Coverage must also be exact: missing or extra resumed cells fail even when
+    every cell in the overlapping window matches."""
+    base_by_key = {(r["rank"], r["step"]): list(r["cut_ids"]) for r in baseline}
+    res_by_key = {(r["rank"], r["step"]): list(r["cut_ids"]) for r in resumed}
+    expected_resumed = {
+        (rank, baseline_step - checkpoint_at - 1): cut_ids
+        for (rank, baseline_step), cut_ids in base_by_key.items()
+        if baseline_step > checkpoint_at
+    }
+    missing_keys = sorted(expected_resumed.keys() - res_by_key.keys())
+    extra_keys = sorted(res_by_key.keys() - expected_resumed.keys())
+    if missing_keys or extra_keys:
+        return QResult(
+            "Q4",
+            FAIL,
+            tag="resume-length-mismatch",
+            detail=(
+                "resumed coverage does not exactly match the baseline tail: "
+                f"{len(missing_keys)} missing, {len(extra_keys)} extra cell(s)"
+            ),
+            extra={
+                "expected_cells": len(expected_resumed),
+                "resumed_cells": len(res_by_key),
+                "missing_examples": missing_keys[:5],
+                "extra_examples": extra_keys[:5],
+            },
+        )
     divergences: list[dict] = []
-    overlap = 0
-    extra_resumed = 0
-    extra_baseline_tail = 0
-    # Compare every resumed cell to its baseline counterpart at step + checkpoint_at + 1.
-    for (rank, rstep), res_cuts in sorted(res_by_key.items()):
-        base_step = rstep + checkpoint_at + 1
-        base_cuts = base_by_key.get((rank, base_step))
-        if base_cuts is None:
-            extra_resumed += 1
-            continue
-        overlap += 1
-        if base_cuts != res_cuts:
+    for (rank, resumed_step), expected_cut_ids in sorted(expected_resumed.items()):
+        actual_cut_ids = res_by_key[(rank, resumed_step)]
+        if expected_cut_ids != actual_cut_ids:
             divergences.append(
                 {
                     "rank": rank,
-                    "step": rstep,
-                    "baseline_step": base_step,
-                    "only_in_baseline": list(base_cuts - res_cuts)[:3],
-                    "only_in_resumed": list(res_cuts - base_cuts)[:3],
+                    "step": resumed_step,
+                    "baseline_step": resumed_step + checkpoint_at + 1,
+                    "expected_cut_ids": expected_cut_ids[:5],
+                    "actual_cut_ids": actual_cut_ids[:5],
                 }
             )
-    # Cells in baseline-tail that the resumed run never reached.
-    for rank, bstep in base_by_key:
-        if bstep <= checkpoint_at:
-            continue
-        rstep = bstep - checkpoint_at - 1
-        if (rank, rstep) not in res_by_key:
-            extra_baseline_tail += 1
-    extras = {
-        "overlap_cells": overlap,
-        "extra_resumed_cells": extra_resumed,
-        "extra_baseline_tail_cells": extra_baseline_tail,
-    }
     if divergences:
         return QResult(
             "Q4",
             FAIL,
             tag="resume-rng-divergence",
-            detail=f"{len(divergences)}/{overlap} overlapping cell(s) diverge after resume",
-            extra={**extras, "examples": divergences[:5]},
+            detail=f"{len(divergences)}/{len(expected_resumed)} cell(s) diverge after resume",
+            extra={"examples": divergences[:5]},
         )
-    if overlap == 0:
-        return QResult(
-            "Q4",
-            FAIL,
-            tag="resume-length-mismatch",
-            detail="zero overlap between resumed and baseline-tail windows",
-            extra=extras,
-        )
-    return QResult("Q4", PASS, detail=f"{overlap} overlapping cell(s) match baseline tail bit-for-bit", extra=extras)
+    return QResult(
+        "Q4",
+        PASS,
+        detail=f"{len(expected_resumed)} cell(s) exactly match the ordered baseline tail",
+    )
 
 
 def _q5_determinism(run0: list[dict], run1: list[dict]) -> QResult:
-    """Q5: two independent baseline runs produce identical (rank, step) cut sets."""
+    """Q5: independent baseline runs produce identical ordered batches."""
     if not run1:
         return QResult("Q5", SKIP, detail="run1 missing")
-    a = {(r["rank"], r["step"]): set(r["cut_ids"]) for r in run0}
-    b = {(r["rank"], r["step"]): set(r["cut_ids"]) for r in run1}
+    a = {(r["rank"], r["step"]): list(r["cut_ids"]) for r in run0}
+    b = {(r["rank"], r["step"]): list(r["cut_ids"]) for r in run1}
     if a.keys() != b.keys():
         only_a = list(a.keys() - b.keys())[:3]
         only_b = list(b.keys() - a.keys())[:3]
@@ -303,9 +308,7 @@ def _q5_determinism(run0: list[dict], run1: list[dict]) -> QResult:
     for k, va in a.items():
         vb = b[k]
         if va != vb:
-            divergences.append(
-                {"rank": k[0], "step": k[1], "only_run0": list(va - vb)[:3], "only_run1": list(vb - va)[:3]}
-            )
+            divergences.append({"rank": k[0], "step": k[1], "run0_cut_ids": va[:5], "run1_cut_ids": vb[:5]})
     if divergences:
         return QResult(
             "Q5",

@@ -13,9 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import io
+
+import numpy as np
 import pytest
+import soundfile as sf
 import torch
-from lhotse import CutSet, SupervisionSegment
+from lhotse import CutSet, Recording, SupervisionSegment, fastcopy
 from lhotse.testing.dummies import dummy_cut, dummy_recording
 
 import nemo.collections.speechlm2.data.salm_dataset as salm_dataset_module
@@ -38,6 +42,233 @@ def stub_audio_samples(monkeypatch):
 def test_multispeaker_config_requires_explicit_speaker_count():
     with pytest.raises(ValueError, match="no implicit 4-speaker cap"):
         salm_dataset_module.MultiSpeakerConfig.from_dict({})
+
+
+@pytest.mark.unit
+def test_multispeaker_targets_precede_in_memory_audio_drop(monkeypatch):
+    audio = io.BytesIO()
+    sf.write(audio, np.zeros((640, 2), dtype=np.float32), 16000, format="WAV")
+    cut = Recording.from_bytes(audio.getvalue(), recording_id="native-wds").to_cut()
+    cut = fastcopy(
+        cut,
+        custom={
+            "_source_read_key": "/data/shard-0.tar#sample-0",
+            "_source_range_bytes": len(audio.getvalue()),
+        },
+    )
+    conversation = NeMoMultimodalConversation(
+        id="example-0",
+        turns=[
+            AudioTurn(role="user", cut=cut, audio_locator_tag="<|audio|>"),
+            TextTurn(role="assistant", value="hello"),
+        ],
+        token_equivalent_duration=0.01,
+    )
+    conversation.input_ids = torch.tensor([7, 8], dtype=torch.long)
+    conversation.mask = torch.tensor([False, True])
+    conversations = CutSet([conversation])
+
+    def fake_audio_collate(conversations_arg, *args, **kwargs):
+        return torch.zeros(1, 640), torch.tensor([640]), conversations_arg
+
+    def fake_speaker_activity_from_cut(materialized_cut, **kwargs):
+        assert materialized_cut.load_audio().shape == (1, 640)
+        return torch.zeros(4, 2)
+
+    monkeypatch.setattr(
+        salm_dataset_module,
+        "collate_conversation_audio_fault_tolerant",
+        fake_audio_collate,
+    )
+    monkeypatch.setattr(
+        salm_dataset_module,
+        "speaker_activity_from_cut",
+        fake_speaker_activity_from_cut,
+    )
+    dataset = salm_dataset_module.SALMDataset(
+        tokenizer=_Tokenizer(),
+        multispeaker_cfg={
+            "num_speakers": 2,
+            "sample_rate": 16000,
+            "window_stride": 0.01,
+            "subsampling_factor": 1,
+        },
+    )
+
+    batch = dataset[conversations]
+
+    assert torch.all(batch["spk_targets"] == -1.0)
+    (returned_cut,) = next(iter(batch["conversations"])).list_cuts()
+    assert returned_cut.recording.sources[0].type == "shar"
+    assert returned_cut.custom["_source_read_key"] == "/data/shard-0.tar#sample-0"
+
+
+@pytest.mark.unit
+def test_salm_dataset_can_return_packed_audio_samples(monkeypatch):
+    cut = dummy_cut(0, duration=0.03, recording=dummy_recording(0, duration=0.03, with_data=True))
+    conversation = NeMoMultimodalConversation(
+        id="example-0",
+        turns=[
+            AudioTurn(role="user", cut=cut, audio_locator_tag="<|audio|>"),
+            TextTurn(role="assistant", value="hello"),
+        ],
+        token_equivalent_duration=0.01,
+    )
+    conversation.input_ids = torch.tensor([7, 8], dtype=torch.long)
+    conversation.mask = torch.tensor([False, True])
+    conversations = CutSet([conversation])
+    expected_samples = torch.tensor([1.0, 2.0, 3.0])
+    expected_cu_seqlens = torch.tensor([0, 3], dtype=torch.long)
+    expected_lens = torch.tensor([3], dtype=torch.long)
+
+    def fake_packed_audio_collate(conversations_arg, *args, **kwargs):
+        assert conversations_arg is conversations
+        return expected_samples, expected_cu_seqlens, expected_lens, conversations_arg
+
+    monkeypatch.setattr(
+        salm_dataset_module,
+        "collate_conversation_audio_packed_fault_tolerant",
+        fake_packed_audio_collate,
+    )
+    dataset = salm_dataset_module.SALMDataset(tokenizer=_Tokenizer(), pack_audio=True)
+
+    batch = dataset[conversations]
+
+    assert "audios" not in batch
+    assert batch["packed_audio_samples"] is expected_samples
+    assert batch["audio_cu_seqlens"] is expected_cu_seqlens
+    assert batch["audio_lens"] is expected_lens
+    assert batch["input_ids"].shape == (1, 2)
+
+
+@pytest.mark.unit
+def test_salm_dataset_packed_sequences_never_pads_variable_length_tensors(monkeypatch):
+    conversations = []
+    for idx, (input_ids, mask) in enumerate(
+        (
+            ([7, 8, 9], [False, True, True]),
+            ([10, 11], [False, True]),
+        )
+    ):
+        cut = dummy_cut(idx, duration=0.03, recording=dummy_recording(idx, duration=0.03, with_data=True))
+        conversation = NeMoMultimodalConversation(
+            id=f"example-{idx}",
+            turns=[
+                AudioTurn(role="user", cut=cut, audio_locator_tag="<|audio|>"),
+                TextTurn(role="assistant", value="hello"),
+            ],
+            token_equivalent_duration=0.01,
+        )
+        conversation.input_ids = torch.tensor(input_ids, dtype=torch.long)
+        conversation.mask = torch.tensor(mask)
+        conversations.append(conversation)
+    conversations = CutSet(conversations)
+
+    def fake_packed_audio_collate(conversations_arg, *args, **kwargs):
+        return (
+            torch.tensor([1.0, 2.0, 10.0, 11.0, 12.0]),
+            torch.tensor([0, 2, 5], dtype=torch.long),
+            torch.tensor([2, 3], dtype=torch.long),
+            conversations_arg,
+        )
+
+    monkeypatch.setattr(
+        salm_dataset_module,
+        "collate_conversation_audio_packed_fault_tolerant",
+        fake_packed_audio_collate,
+    )
+    dataset = salm_dataset_module.SALMDataset(tokenizer=_Tokenizer(), pack_sequences=True)
+
+    batch = dataset[conversations]
+
+    assert dataset.pack_audio is True
+    assert "audios" not in batch
+    assert batch["packed_audio_samples"].shape == (5,)
+    assert torch.equal(batch["audio_cu_seqlens"], torch.tensor([0, 2, 5]))
+    assert torch.equal(batch["input_ids"], torch.tensor([7, 8, 9, 10, 11]))
+    assert torch.equal(batch["loss_mask"], torch.tensor([False, True, True, False, True]))
+    assert torch.equal(batch["text_cu_seqlens"], torch.tensor([0, 3, 5]))
+
+
+@pytest.mark.unit
+def test_salm_dataset_packs_multispeaker_targets_without_time_padding(monkeypatch):
+    conversations = []
+    for idx in range(2):
+        cut = dummy_cut(idx, duration=0.03, recording=dummy_recording(idx, duration=0.03, with_data=True))
+        conversation = NeMoMultimodalConversation(
+            id=f"example-{idx}",
+            turns=[
+                AudioTurn(role="user", cut=cut, audio_locator_tag="<|audio|>"),
+                TextTurn(role="assistant", value="hello"),
+            ],
+            token_equivalent_duration=0.01,
+        )
+        conversation.input_ids = torch.tensor([7 + idx, 9], dtype=torch.long)
+        conversation.mask = torch.tensor([False, True])
+        conversations.append(conversation)
+    conversations = CutSet(conversations)
+
+    def fake_packed_audio_collate(conversations_arg, *args, **kwargs):
+        return (
+            torch.arange(6, dtype=torch.float32),
+            torch.tensor([0, 3, 6], dtype=torch.long),
+            torch.tensor([3, 3], dtype=torch.long),
+            conversations_arg,
+        )
+
+    activity_lengths = iter((3, 1))
+
+    def fake_speaker_activity_from_cut(cut, **kwargs):
+        return torch.ones(next(activity_lengths), 1)
+
+    monkeypatch.setattr(
+        salm_dataset_module,
+        "collate_conversation_audio_packed_fault_tolerant",
+        fake_packed_audio_collate,
+    )
+    monkeypatch.setattr(salm_dataset_module, "speaker_activity_from_cut", fake_speaker_activity_from_cut)
+    dataset = salm_dataset_module.SALMDataset(
+        tokenizer=_Tokenizer(),
+        pack_sequences=True,
+        multispeaker_cfg={"num_speakers": 2},
+    )
+
+    batch = dataset[conversations]
+
+    assert batch["spk_targets"].shape == (4, 2)
+    assert torch.all(batch["spk_targets"] == -1.0)
+    assert torch.equal(batch["spk_target_length"], torch.tensor([3, 1]))
+    assert torch.equal(batch["spk_target_cu_seqlens"], torch.tensor([0, 3, 4]))
+
+
+@pytest.mark.unit
+def test_salm_dataset_reports_exact_packing_efficiency(monkeypatch):
+    conversations = []
+    for idx, num_tokens in enumerate((3072, 7168)):
+        cut = dummy_cut(idx, duration=0.03, recording=dummy_recording(idx, duration=0.03, with_data=True))
+        conversation = NeMoMultimodalConversation(
+            id=f"example-{idx}",
+            turns=[
+                AudioTurn(role="user", cut=cut, audio_locator_tag="<|audio|>"),
+                TextTurn(role="assistant", value="hello"),
+            ],
+            token_equivalent_duration=0.01,
+        )
+        conversation.input_ids = torch.tensor([7, 8], dtype=torch.long)
+        conversation.mask = torch.tensor([False, True])
+        conversation.num_tokens = num_tokens
+        conversations.append(conversation)
+    conversations = CutSet(conversations)
+
+    def fake_audio_collate(conversations_arg, *args, **kwargs):
+        return torch.zeros(2, 480), torch.tensor([480, 480]), conversations_arg
+
+    monkeypatch.setattr(salm_dataset_module, "collate_conversation_audio_fault_tolerant", fake_audio_collate)
+    dataset = salm_dataset_module.SALMDataset(tokenizer=_Tokenizer(), batch_tokens=12288)
+
+    batch = dataset[conversations]
+
+    assert batch["packing_efficiency"].item() == pytest.approx(10240 / 12288)
 
 
 @pytest.mark.unit

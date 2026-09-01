@@ -52,6 +52,11 @@ from tests.collections.asr.test_parallel_expert_encoder import (
     build_toy_pe_encoder,
 )
 
+# Reuse the shared toy encoder and dimensions so both suites use one fixture.
+from tests.collections.asr.test_parallel_expert_encoder_two_branch import (
+    build_toy_pe_encoder as build_toy_two_branch_encoder,
+)
+
 # SALMAutomodel.configure_model() pulls in the (gitignored) nemo_automodel package,
 # so the full-model tests need both CUDA and that dependency to be importable.
 # Build a precise skip reason that names only the piece that is actually missing
@@ -117,7 +122,7 @@ def test_multispeaker_processor_preserves_missing_rttm_sentinel_after_variable_l
     assert torch.all(batch["spk_targets"][0] == -1.0)
     assert torch.all(batch["spk_targets"][1] == 0.0)
     assert torch.equal(batch["spk_target_length"], torch.tensor([2, 4]))
-    encoder = build_toy_pe_encoder().eval()
+    encoder = build_toy_two_branch_encoder().eval()
     assert encoder._missing_target_rows(batch["spk_targets"]).tolist() == [True, False]
 
 

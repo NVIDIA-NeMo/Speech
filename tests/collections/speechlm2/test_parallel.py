@@ -18,7 +18,7 @@ from lightning.pytorch.strategies.model_parallel import ModelParallelStrategy
 from nemo_automodel.components.distributed.config import FSDP2Config, MoEParallelizerConfig
 from omegaconf import DictConfig
 
-from nemo.collections.speechlm2.parts.parallel import AutomodelParallelStrategy
+from nemo.collections.speechlm2.parts.parallel import AutomodelParallelStrategy, _validate_missing_optimizer_state
 from nemo.utils.trainer_utils import _resolve_automodel_configs, resolve_trainer_cfg
 
 # ---------------------------------------------------------------------------
@@ -108,6 +108,42 @@ class TestAutomodelParallelStrategy:
         with pytest.raises(RuntimeError):
             _ = strategy.distributed_sampler_kwargs
 
+    def test_allows_wholly_absent_lazy_optimizer_parameter_state(self):
+        active = "optimizer_0.state.llm.model.layer.weight"
+        unused = "optimizer_0.state.llm.mtp.layer.weight"
+        fields = {"step", "exp_avg", "exp_avg_sq"}
+        target = {f"{prefix}.{field}" for prefix in (active, unused) for field in fields}
+        checkpoint = {f"{active}.{field}" for field in fields}
+        assert _validate_missing_optimizer_state(
+            target_keys=target,
+            checkpoint_keys=checkpoint,
+            parameter_names={"llm.model.layer.weight", "llm.mtp.layer.weight"},
+            optimizer_key="optimizer_0",
+        ) == ["llm.mtp.layer.weight"]
+
+    def test_rejects_partial_optimizer_parameter_state(self):
+        prefix = "optimizer_0.state.llm.mtp.layer.weight"
+        with pytest.raises(RuntimeError, match="partial optimizer state"):
+            _validate_missing_optimizer_state(
+                target_keys={
+                    f"{prefix}.step",
+                    f"{prefix}.exp_avg",
+                    f"{prefix}.exp_avg_sq",
+                },
+                checkpoint_keys={f"{prefix}.step"},
+                parameter_names={"llm.mtp.layer.weight"},
+                optimizer_key="optimizer_0",
+            )
+
+    def test_rejects_missing_optimizer_metadata(self):
+        with pytest.raises(RuntimeError, match="missing optimizer metadata"):
+            _validate_missing_optimizer_state(
+                target_keys={"optimizer_0.param_groups.0.lr"},
+                checkpoint_keys=set(),
+                parameter_names=set(),
+                optimizer_key="optimizer_0",
+            )
+
 
 # ---------------------------------------------------------------------------
 # _resolve_automodel_configs
@@ -119,7 +155,10 @@ class TestResolveAutomodelConfigs:
 
     def test_plain_dict_to_fsdp2_config(self):
         strategy = AutomodelParallelStrategy(
-            distributed_config={"defer_fsdp_grad_sync": False, "sequence_parallel": True},
+            distributed_config={
+                "defer_fsdp_grad_sync": False,
+                "sequence_parallel": True,
+            },
         )
         _resolve_automodel_configs(strategy)
         assert isinstance(strategy.distributed_config, FSDP2Config)

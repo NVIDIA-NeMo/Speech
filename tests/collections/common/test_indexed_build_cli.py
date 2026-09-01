@@ -335,6 +335,8 @@ def test_full_mode_builds_production_salm_dataset():
     dataset = validate_dataloader._build_validation_dataset(config, _Tokenizer(), mode="full")
 
     assert isinstance(dataset, SALMDataset)
+    assert dataset.pack_audio is True
+    assert dataset.batch_tokens == 1024
     assert dataset.strict_audio_loading is True
 
 

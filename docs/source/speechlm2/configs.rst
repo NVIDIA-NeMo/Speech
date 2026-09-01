@@ -170,6 +170,22 @@ SALMAutomodel-Specific Options
 The SALMAutomodel config exposes a few extra knobs that pass through to NeMo
 Automodel. All are optional — defaults preserve standard behavior.
 
+**Garbage collection:**
+
+.. code-block:: yaml
+
+    model:
+      # Optional positive optimizer-step interval; null keeps automatic GC.
+      gc_every_steps: null
+
+Setting ``gc_every_steps`` to a positive integer disables Python's automatic
+garbage collector at fit start and uses NeMo Automodel's generation-1 collector
+at that optimizer-step cadence. This avoids an occasional generation-2 scan on
+one distributed rank delaying all peers at the next collective. The cadence is
+counted in optimizer steps, so gradient accumulation does not increase the
+collection frequency. Leave it ``null`` unless profiling shows GC-related rank
+stragglers.
+
 **MoE training:**
 
 .. code-block:: yaml

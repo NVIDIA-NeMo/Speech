@@ -36,6 +36,7 @@ def _is_nemo_speechlm_tracker(mm_tracker: Any) -> bool:
     hf_config = getattr(model_config, "hf_config", None)
     return getattr(hf_config, "model_type", None) in {
         "nemo_speechlm",
+        "nemo_speechlm_mtp",
     }
 
 

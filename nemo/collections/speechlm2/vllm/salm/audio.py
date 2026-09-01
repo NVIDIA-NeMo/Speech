@@ -343,10 +343,7 @@ class NeMoSpeechLMProcessingInfo(BaseProcessingInfo):
         return {"audio": None}
 
     def _has_pe_encoder(self) -> bool:
-        config = self.get_hf_config()
-        return getattr(config, "pe_encoder_path", None) not in (None, "", False) or getattr(
-            config, "pe_encoder_config", None
-        ) not in (None, {}, "", False)
+        return _config_has_pe_encoder(self.get_hf_config())
 
     def _get_encoder_chunk_size_seconds(self) -> float | None:
         """Return the per-encoder-call chunk size baked into the checkpoint.
@@ -358,9 +355,9 @@ class NeMoSpeechLMProcessingInfo(BaseProcessingInfo):
         chunking, so its prompt estimator must also use one full-audio pass.
         ``None`` means the encoder runs once over the full audio.
         """
-        if self._has_pe_encoder():
-            return None
         config = self.get_hf_config()
+        if _config_has_pe_encoder(config):
+            return None
         return getattr(config, "encoder_chunk_size_seconds", None)
 
     def _get_audio_token_estimator_config(self) -> Mapping[str, object] | None:
@@ -651,3 +648,9 @@ class NeMoSpeechLMDummyInputsBuilder(
     def get_dummy_text(self, mm_counts: Mapping[str, int]) -> str:
         num_audios = mm_counts.get("audio", 0)
         return "Transcribe the following: " + _AUDIO_PLACEHOLDER * num_audios
+
+
+def _config_has_pe_encoder(config) -> bool:
+    return getattr(config, "pe_encoder_path", None) not in (None, "", False) or getattr(
+        config, "pe_encoder_config", None
+    ) not in (None, {}, "", False)

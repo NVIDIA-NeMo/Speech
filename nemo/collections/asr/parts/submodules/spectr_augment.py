@@ -19,6 +19,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+from nemo.collections.asr.parts.packed_sequence import PackedEncoderActivations, packed_encoder_position_ids
 from nemo.core.classes import Typing, typecheck
 from nemo.core.neural_types import LengthsType, NeuralType, SpectrogramType
 
@@ -99,6 +100,31 @@ class SpecAugment(nn.Module, Typing):
             return self._forward_vectorized(input_spec, length)
         else:
             return self._forward_legacy(input_spec, length)
+
+    @torch.no_grad()
+    def forward_packed(self, input_spec: PackedEncoderActivations) -> PackedEncoderActivations:
+        """Apply GPU-vectorized sequence-local masks directly to token-flat features.
+
+        ``use_vectorized_code`` only preserves the historical dense backend choice;
+        the new packed API always avoids the legacy Python loop.
+        """
+        data = _apply_packed_axis_masks(
+            input_spec.data,
+            input_spec,
+            num_masks=self.time_masks,
+            width=self.time_width,
+            axis=self.TIME_AXIS,
+            mask_value=self.mask_value,
+        )
+        data = _apply_packed_axis_masks(
+            data,
+            input_spec,
+            num_masks=self.freq_masks,
+            width=self.freq_width,
+            axis=self.FREQ_AXIS,
+            mask_value=self.mask_value,
+        )
+        return input_spec.with_data(data)
 
     def _forward_legacy(self, input_spec, length):
         batch_size, num_freq_bins, _ = input_spec.shape
@@ -262,3 +288,77 @@ class SpecCutout(nn.Module, Typing):
                 input_spec[idx, rect_x : rect_x + w_x, rect_y : rect_y + w_y] = 0.0
 
         return input_spec
+
+    @torch.no_grad()
+    def forward_packed(self, input_spec: PackedEncoderActivations) -> PackedEncoderActivations:
+        """Apply sequence-local rectangular masks to token-flat features."""
+        if input_spec.total_tokens == 0 or self.rect_masks == 0:
+            return input_spec
+        batch_size = input_spec.batch_size
+        data = input_spec.data
+        freq_start = torch.zeros((batch_size, self.rect_masks), dtype=torch.long, device=data.device)
+        freq_width = torch.zeros_like(freq_start)
+        time_start = torch.zeros((batch_size, self.rect_masks), dtype=torch.long, device=data.device)
+        time_width = torch.zeros_like(time_start)
+        dense_time = input_spec.padded_length if input_spec.padded_length is not None else input_spec.max_seqlen
+        for row in range(batch_size):
+            for mask in range(self.rect_masks):
+                freq_start[row, mask] = self._rng.randint(0, data.shape[1] - self.rect_freq)
+                time_start[row, mask] = self._rng.randint(0, dense_time - self.rect_time)
+                freq_width[row, mask] = self._rng.randint(0, self.rect_freq)
+                time_width[row, mask] = self._rng.randint(0, self.rect_time)
+        data = _apply_packed_range_masks(
+            data,
+            input_spec,
+            freq_start=freq_start,
+            freq_width=freq_width,
+            time_start=time_start,
+            time_width=time_width,
+            mask_value=0.0,
+            rectangular=True,
+        )
+        return input_spec.with_data(data)
+
+
+def _apply_packed_axis_masks(data, packed, *, num_masks, width, axis, mask_value):
+    if num_masks == 0 or packed.total_tokens == 0:
+        return data
+    batch_size = packed.batch_size
+    axis_length = packed.max_seqlen if axis == SpecAugment.TIME_AXIS else data.shape[1]
+    if axis == SpecAugment.TIME_AXIS and isinstance(width, float):
+        width = torch.clamp(width * packed.lengths, max=axis_length).unsqueeze(1)
+    mask_width = (torch.rand((batch_size, num_masks), device=data.device, dtype=torch.float32) * width).long()
+    mask_start = torch.rand((batch_size, num_masks), device=data.device, dtype=torch.float32)
+    if axis == SpecAugment.TIME_AXIS:
+        mask_start = (mask_start * (packed.lengths.unsqueeze(1) - mask_width)).long()
+        token_indices = torch.arange(packed.total_tokens, device=data.device)
+        sequence_ids = torch.bucketize(token_indices, packed.cu_seqlens[1:], right=True)
+        positions = (token_indices - packed.cu_seqlens[sequence_ids]).unsqueeze(1)
+        mask = ((positions >= mask_start[sequence_ids]) & (positions < (mask_start + mask_width)[sequence_ids])).any(1)
+        return data.masked_fill(mask.unsqueeze(1), mask_value)
+    mask_start = (mask_start * (axis_length - mask_width)).long()
+    bins = torch.arange(axis_length, device=data.device)
+    mask = ((bins >= mask_start.unsqueeze(-1)) & (bins < (mask_start + mask_width).unsqueeze(-1))).any(1)
+    token_indices = torch.arange(packed.total_tokens, device=data.device)
+    sequence_ids = torch.bucketize(token_indices, packed.cu_seqlens[1:], right=True)
+    return data.masked_fill(mask[sequence_ids], mask_value)
+
+
+def _apply_packed_range_masks(
+    data, packed, *, freq_start, freq_width, time_start, time_width, mask_value, rectangular=False
+):
+    if packed.total_tokens == 0:
+        return data
+    sequence_ids = torch.repeat_interleave(torch.arange(packed.batch_size, device=data.device), packed.lengths)
+    positions = packed_encoder_position_ids(packed)
+    bins = torch.arange(data.shape[1], device=data.device)
+    time_mask = (positions[:, None] >= time_start[sequence_ids]) & (
+        positions[:, None] < (time_start + time_width)[sequence_ids]
+    )
+    freq_mask = (bins >= freq_start.unsqueeze(-1)) & (bins < (freq_start + freq_width).unsqueeze(-1))
+    freq_mask = freq_mask[sequence_ids].transpose(1, 2)
+    if rectangular:
+        mask = (time_mask.unsqueeze(1) & freq_mask).any(2)
+    else:
+        mask = time_mask.any(1).unsqueeze(1) | freq_mask.any(2)
+    return data.masked_fill(mask, mask_value)

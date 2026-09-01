@@ -16,14 +16,21 @@
 import math
 import random
 from dataclasses import dataclass
-from typing import Optional
+from functools import lru_cache
+from typing import Optional, Sequence
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.nn.attention.flex_attention import and_masks, create_block_mask, flex_attention
 
 from nemo.collections.asr.models.configs import CacheAwareStreamingConfig
 from nemo.collections.asr.parts.mixins.streaming import StreamingEncoder
+from nemo.collections.asr.parts.packed_sequence import (
+    PackedEncoderActivations,
+    pack_encoder_output,
+    packed_encoder_position_ids,
+)
 from nemo.collections.asr.parts.submodules.multi_head_attention import (
     PositionalEncoding,
     RelPositionalEncoding,
@@ -313,6 +320,11 @@ class MultiHeadAttention(nn.Module):
         def score_mod(score, b, h, q_idx, kv_idx):
             return score + rel_pos_bias[b, h, q_idx, kv_idx]
 
+        # The compact CPU-with-grad compatibility path consumes the same tensor
+        # directly because older supported PyTorch releases cannot differentiate
+        # FlexAttention on CPU.
+        score_mod._relative_position_bias = rel_pos_bias
+
         # Matrix c: fold u @ K^T into FlexAttention by rewriting Q as (Q + u).
         return score_mod, q + bias_u
 
@@ -463,6 +475,151 @@ class MultiHeadAttention(nn.Module):
         out = out.transpose(1, 2).contiguous().view(B, num_cur, self.d_model)
         return self.out_proj(out)
 
+    def forward_sequence_packed(
+        self,
+        x: torch.Tensor,
+        *,
+        lengths: torch.Tensor,
+        cu_seqlens: torch.Tensor,
+        max_seqlen: int,
+        position_ids: Optional[torch.Tensor] = None,
+        pos_emb: Optional[torch.Tensor] = None,
+        padded_length: Optional[int] = None,
+        causal: bool = False,
+        sequence_offsets: Optional[Sequence[int]] = None,
+        fused_qkv: bool = False,
+    ) -> torch.Tensor:
+        """Run self-attention on token-flat encoder states.
+
+        CUDA fp16/bf16 RoPE, absolute-position, and no-position inputs use
+        FlashAttention's native variable-length THD kernel when available. Other
+        inputs use a compact per-utterance FlexAttention reference without
+        recreating a padded batch-wide activation.
+        """
+        return self._forward_sequence_packed(
+            x,
+            lengths=lengths,
+            cu_seqlens=cu_seqlens,
+            max_seqlen=max_seqlen,
+            position_ids=position_ids,
+            pos_emb=pos_emb,
+            padded_length=padded_length,
+            causal=causal,
+            sequence_offsets=sequence_offsets,
+            fused_qkv=fused_qkv,
+        )
+
+    def _forward_sequence_packed(
+        self,
+        x,
+        *,
+        lengths,
+        cu_seqlens,
+        max_seqlen,
+        position_ids,
+        pos_emb,
+        padded_length,
+        causal,
+        sequence_offsets,
+        fused_qkv,
+    ):
+        q, k, v = self._project_sequence_packed_qkv(x, position_ids=position_ids, fused_qkv=fused_qkv)
+        out = self._compute_sequence_packed_attention(
+            q,
+            k,
+            v,
+            lengths=lengths,
+            cu_seqlens=cu_seqlens,
+            max_seqlen=max_seqlen,
+            pos_emb=pos_emb,
+            padded_length=padded_length,
+            causal=causal,
+            sequence_offsets=sequence_offsets,
+        )
+        return self.out_proj(out.reshape(x.shape[0], self.d_model))
+
+    def _project_sequence_packed_qkv(self, x, *, position_ids, fused_qkv):
+        total_tokens = x.shape[0]
+        if fused_qkv:
+            qkv = self.w_qkv(x).view(total_tokens, 3, self.n_heads, self.head_dim)
+            q, k, v = (projection.contiguous() for projection in qkv.unbind(dim=1))
+        else:
+            weights = self.w_qkv.weight.view(3, self.d_model, self.d_model)
+            biases = self.w_qkv.bias.view(3, self.d_model) if self.w_qkv.bias is not None else None
+            q, k, v = (
+                F.linear(x, weights[idx], None if biases is None else biases[idx]).view(
+                    total_tokens, self.n_heads, self.head_dim
+                )
+                for idx in range(3)
+            )
+        return self._prepare_sequence_packed_qkv(q, k, v, position_ids=position_ids)
+
+    def _prepare_sequence_packed_qkv(self, q, k, v, *, position_ids):
+        if self.qk_norm:
+            q = self.q_norm(q).to(v.dtype)
+            k = self.k_norm(k).to(v.dtype)
+
+        if self._uses_rope:
+            if position_ids is None:
+                raise ValueError("Packed RoPE attention requires per-token position_ids.")
+            q, k = _apply_packed_rope(self.rope, q, k, position_ids)
+        return q, k, v
+
+    def _compute_sequence_packed_attention(
+        self,
+        q,
+        k,
+        v,
+        *,
+        lengths,
+        cu_seqlens,
+        max_seqlen,
+        pos_emb,
+        padded_length,
+        causal,
+        sequence_offsets,
+    ):
+        use_flash = not self._uses_rel_pos and _can_use_flash_attention_varlen(q)
+        if use_flash:
+            flash_attention = _get_flash_attention_varlen()
+            out = flash_attention(
+                q,
+                k,
+                v,
+                cu_seqlens,
+                cu_seqlens,
+                max_seqlen,
+                max_seqlen,
+                dropout_p=0.0,
+                softmax_scale=None,
+                causal=causal,
+            )
+            self._last_sequence_packed_backend = "flash_attention_varlen"
+            self._last_sequence_packed_provider = getattr(flash_attention, "_sequence_packed_provider", "external")
+        else:
+            use_math_reference = (
+                q.device.type == 'cpu'
+                and torch.is_grad_enabled()
+                and any(tensor.requires_grad for tensor in (q, k, v))
+            )
+            out = _packed_flex_attention_reference(
+                self,
+                q,
+                k,
+                v,
+                lengths=lengths,
+                pos_emb=pos_emb,
+                padded_length=padded_length,
+                causal=causal,
+                sequence_offsets=sequence_offsets,
+                use_math_reference=use_math_reference,
+            )
+            self._last_sequence_packed_backend = (
+                "math_attention_reference" if use_math_reference else "flex_attention_reference"
+            )
+            self._last_sequence_packed_provider = None
+        return out
+
 
 class TransformerBlock(nn.Module):
     def __init__(self, cfg: TransformerEncoderConfig, pos_enc=None):
@@ -510,6 +667,35 @@ class TransformerBlock(nn.Module):
         else:
             new_cache = kv_in[:, -cache_size:]
         return x, new_cache
+    def _forward_sequence_packed(
+        self,
+        x,
+        *,
+        lengths,
+        cu_seqlens,
+        max_seqlen,
+        position_ids,
+        pos_emb,
+        padded_length,
+        causal,
+        sequence_offsets,
+        fused_qkv,
+    ):
+        attn_out = self.attn.forward_sequence_packed(
+            self.norm1(x),
+            lengths=lengths,
+            cu_seqlens=cu_seqlens,
+            max_seqlen=max_seqlen,
+            position_ids=position_ids,
+            pos_emb=pos_emb,
+            padded_length=padded_length,
+            causal=causal,
+            sequence_offsets=sequence_offsets,
+            fused_qkv=fused_qkv,
+        )
+        x = x + self.drop(attn_out)
+        x = x + self.drop(self.ffn(self.norm2(x)))
+        return x
 
 
 @experimental
@@ -593,6 +779,9 @@ class TransformerEncoder(nn.Module):
         sync_max_audio_length: When true, sync positional encoding allocation length across distributed ranks.
     """
 
+    supports_sequence_packed_output = True
+    supports_sequence_packed_fused_qkv = True
+
     def __init__(
         self,
         feat_in: int = 128,
@@ -654,6 +843,7 @@ class TransformerEncoder(nn.Module):
             rotary_fraction=rotary_fraction,
         )
         self.d_model = d_model
+        self.n_heads = n_heads
         self.n_layers = n_layers
         self._feat_in = feat_in
         self.subsampling = subsampling
@@ -866,6 +1056,171 @@ class TransformerEncoder(nn.Module):
 
     def unfreeze(self, partial: bool = False) -> None:
         unfreeze(self, partial=partial)
+
+    def forward_sequence_packed(
+        self, audio_signal, length, bypass_pre_encode=False, *, fused_qkv: bool = False
+    ) -> PackedEncoderActivations:
+        """Encode a batch while keeping all Transformer-layer states token-flat.
+
+        This opt-in method leaves :meth:`forward` and its channels-first padded
+        return contract unchanged, so existing configs, exports, and checkpoints
+        retain their historical behavior.
+
+        With nonzero training dropout, removing padding changes random-number
+        indexing. Packed execution is reproducible within its own path, but it does
+        not promise same-seed elementwise equality with padded execution.
+
+        ``fused_qkv=True`` trades a small transient projection buffer for a larger,
+        potentially more efficient projection GEMM. Splitting its interleaved result
+        requires three compacting copies, so it is an explicit performance option,
+        not a promise of fewer launches. The default remains the lower-peak
+        independent projection path.
+        """
+        if self.self_attention_model == "rel_pos" and not getattr(self, "_packed_rel_pos_warned", False):
+            logging.warning(
+                "Sequence-packed rel_pos attention uses the compact per-utterance reference backend; "
+                "use rope, abs_pos, or no_pos for the CUDA varlen fast path."
+            )
+            self._packed_rel_pos_warned = True
+        if isinstance(audio_signal, PackedEncoderActivations):
+            if (
+                length is not None
+                and length is not audio_signal.lengths
+                and not torch.equal(length.to(audio_signal.lengths), audio_signal.lengths)
+            ):
+                raise ValueError("length must match audio_signal.lengths for packed input.")
+            expected_width = self.d_model if bypass_pre_encode else self._feat_in
+            if audio_signal.data.shape[-1] != expected_width:
+                raise ValueError(
+                    f"Packed audio_signal must have feature width {expected_width}, "
+                    f"got {audio_signal.data.shape[-1]}."
+                )
+            self.update_max_seq_length(seq_length=audio_signal.max_seqlen, device=audio_signal.data.device)
+            packed, pos_emb, padded_length = self._prepare_packed_input(audio_signal, bypass_pre_encode)
+        else:
+            if not bypass_pre_encode and audio_signal.shape[-2] != self._feat_in:
+                raise ValueError(
+                    f"If bypass_pre_encode is False, audio_signal should have shape "
+                    f"(batch, {self._feat_in}, n_frame) but got last dimension {audio_signal.shape[-2]}."
+                )
+            if bypass_pre_encode and audio_signal.shape[-1] != self.d_model:
+                raise ValueError(
+                    f"If bypass_pre_encode is True, audio_signal should have shape "
+                    f"(batch, n_frame, {self.d_model}) but got last dimension {audio_signal.shape[-1]}."
+                )
+            if bypass_pre_encode:
+                self.update_max_seq_length(seq_length=audio_signal.size(1), device=audio_signal.device)
+            else:
+                self.update_max_seq_length(seq_length=audio_signal.size(2), device=audio_signal.device)
+            x, length, pos_emb = self._prepare_sequence_packed_input(audio_signal, length, bypass_pre_encode)
+            padded_length = x.shape[1]
+            packed = pack_encoder_output(x, length)
+        position_ids = packed_encoder_position_ids(packed) if self.self_attention_model == "rope" else None
+        x = packed.data
+        fast_path = self.self_attention_model != "rel_pos" and _can_use_flash_attention_varlen_layout(
+            x,
+            self.d_model // self.n_heads,
+        )
+        sequence_offsets = None if fast_path else tuple(packed.cu_seqlens.tolist())
+        for layer in self.layers:
+            x = _forward_sequence_packed_layer(
+                layer,
+                x,
+                lengths=packed.lengths,
+                cu_seqlens=packed.cu_seqlens,
+                max_seqlen=packed.max_seqlen,
+                position_ids=position_ids,
+                pos_emb=pos_emb if self.self_attention_model == "rel_pos" else None,
+                padded_length=padded_length,
+                causal=self.attn_mode == "causal",
+                sequence_offsets=sequence_offsets,
+                fused_qkv=fused_qkv,
+            )
+        x = self.final_norm(x)
+        if self.out_proj is not None:
+            x = self.out_proj(x)
+        return packed.with_data(x)
+
+    def _prepare_sequence_packed_input(self, audio_signal, length, bypass_pre_encode):
+        if length is None:
+            length = audio_signal.new_full(
+                (audio_signal.size(0),),
+                audio_signal.size(1) if bypass_pre_encode else audio_signal.size(-1),
+                dtype=torch.int64,
+                device=audio_signal.device,
+            )
+
+        if not bypass_pre_encode:
+            # Unwrap activation-checkpointing (CheckpointWrapper) and match by name: both
+            # the wrapper and duplicate module copies defeat isinstance(FeatureStacking).
+            pre_encode_module = getattr(self.pre_encode, "_checkpoint_wrapped_module", self.pre_encode)
+            is_feature_stacking = type(pre_encode_module).__name__ == "FeatureStacking"
+            if is_feature_stacking:
+                x, length = self.pre_encode(audio_signal, length)
+            else:
+                x = torch.transpose(audio_signal, 1, 2)
+            if isinstance(pre_encode_module, nn.Linear):
+                x = self.pre_encode(x)
+            elif not is_feature_stacking:
+                x, length = self.pre_encode(x=x, lengths=length)
+            length = length.to(torch.int64)
+        else:
+            x = audio_signal
+            length = length.to(torch.int64)
+
+        if self.self_attention_model == "rope":
+            if self.xscale:
+                x = x * self.xscale
+            x = self.dropout_pre_encoder(x)
+            pos_emb = None
+        elif self.pos_enc is not None:
+            x, pos_emb = self.pos_enc(x=x)
+        else:
+            pos_emb = None
+        return self.embed_norm(x), length, pos_emb
+
+    def _prepare_packed_input(self, audio_signal: PackedEncoderActivations, bypass_pre_encode: bool):
+        if bypass_pre_encode:
+            packed = audio_signal
+        else:
+            pre_encode_module = getattr(self.pre_encode, "_checkpoint_wrapped_module", self.pre_encode)
+            if type(pre_encode_module).__name__ != "FeatureStacking":
+                raise TypeError(
+                    "Packed feature input currently requires subsampling='feature_stacking'; "
+                    f"got {type(pre_encode_module).__name__}."
+                )
+            packed = self.pre_encode(audio_signal)
+        return self._apply_packed_position(packed)
+
+    def _apply_packed_position(self, packed: PackedEncoderActivations):
+        x = packed.data
+        if self.self_attention_model == "rope":
+            if self.xscale:
+                x = x * self.xscale
+            x = self.dropout_pre_encoder(x)
+            pos_emb = None
+        elif self.self_attention_model == "abs_pos":
+            position_ids = packed_encoder_position_ids(packed)
+            if self.pos_enc.xscale:
+                x = x * self.pos_enc.xscale
+            pos_emb = self.pos_enc.pe[:, : packed.max_seqlen]
+            token_pos_emb = pos_emb[0].index_select(0, position_ids)
+            if self.pos_enc.dropout_emb:
+                token_pos_emb = self.pos_enc.dropout_emb(token_pos_emb)
+            x = self.pos_enc.dropout(x + token_pos_emb)
+        elif self.self_attention_model == "rel_pos":
+            if self.pos_enc.xscale:
+                x = x * self.pos_enc.xscale
+            x = self.pos_enc.dropout(x)
+            center_pos = self.pos_enc.pe.size(1) // 2 + 1
+            start_pos = center_pos - packed.max_seqlen
+            end_pos = center_pos + packed.max_seqlen - 1
+            pos_emb = self.pos_enc.pe[:, start_pos:end_pos]
+            if self.pos_enc.dropout_emb:
+                pos_emb = self.pos_enc.dropout_emb(pos_emb)
+        else:
+            pos_emb = None
+        return packed.with_data(self.embed_norm(x)), pos_emb, packed.max_seqlen
 
 
 @experimental
@@ -1380,3 +1735,139 @@ class StreamingTransformerEncoder(TransformerEncoder, StreamingEncoder):
             return ok
 
         return create_block_mask(mask_mod, B=cache_valid_len.shape[0], H=1, Q_LEN=C, KV_LEN=num_kv, device=device)
+def _apply_packed_rope(rope, q, k, position_ids):
+    cos = rope.cos.index_select(0, position_ids).unsqueeze(1).to(q.dtype)
+    sin = rope.sin.index_select(0, position_ids).unsqueeze(1).to(q.dtype)
+    return rope._apply_rotary(q, cos, sin), rope._apply_rotary(k, cos.to(k.dtype), sin.to(k.dtype))
+
+
+def _packed_flex_attention_reference(
+    attn,
+    q,
+    k,
+    v,
+    *,
+    lengths,
+    pos_emb,
+    padded_length,
+    causal,
+    sequence_offsets,
+    use_math_reference=False,
+):
+    if sequence_offsets is None:
+        sequence_offsets = tuple(torch.cat([lengths.new_zeros(1), lengths.cumsum(0)]).tolist())
+    outputs = []
+    attn_fn = flex_attention_compiled if q.is_cuda else flex_attention
+    for offset, end in zip(sequence_offsets[:-1], sequence_offsets[1:]):
+        length = end - offset
+        if length == 0:
+            continue
+        qi = q[offset:end].transpose(0, 1).unsqueeze(0)
+        ki = k[offset:end].transpose(0, 1).unsqueeze(0)
+        vi = v[offset:end].transpose(0, 1).unsqueeze(0)
+        score_mod = None
+        if attn._uses_rel_pos:
+            if pos_emb is None or padded_length is None:
+                raise ValueError("Packed relative-position attention requires max-length positional metadata.")
+            pos_i = pos_emb[:, padded_length - length : padded_length + length - 1]
+            score_mod, qi = attn._build_rel_pos_score_mod(qi, pos_i)
+        if use_math_reference:
+            out = _packed_math_attention_reference(qi, ki, vi, causal=causal, score_mod=score_mod)
+        else:
+            block_mask = None
+            if causal:
+                block_mask = create_block_mask(
+                    _make_causal_mod(), B=1, H=1, Q_LEN=length, KV_LEN=length, device=q.device
+                )
+            out = attn_fn(qi, ki, vi, block_mask=block_mask, score_mod=score_mod)
+        outputs.append(out.squeeze(0).transpose(0, 1))
+    if not outputs:
+        # Keep every attention branch in the autograd graph even when a rank owns
+        # no valid tokens. FSDP/DDP otherwise observes missing gradients for q/k
+        # (and relative-position parameters), which can break collectives when
+        # another rank in the same step has non-empty input.
+        anchor = q.sum() + k.sum()
+        if attn._uses_rel_pos:
+            anchor = anchor + 0.0 * (attn.pos_bias_u.sum() + attn.pos_bias_v.sum())
+            anchor = anchor + sum(0.0 * parameter.sum() for parameter in attn.linear_pos.parameters())
+        return v + anchor.to(v.dtype)
+    return torch.cat(outputs, dim=0)
+
+
+def _packed_math_attention_reference(q, k, v, *, causal, score_mod):
+    scores = torch.matmul(q, k.transpose(-2, -1)) * (q.shape[-1] ** -0.5)
+    if score_mod is not None:
+        scores = scores + score_mod._relative_position_bias
+    if causal:
+        causal_mask = torch.ones(scores.shape[-2:], dtype=torch.bool, device=scores.device).tril()
+        scores = scores.masked_fill(~causal_mask, torch.finfo(scores.dtype).min)
+    return torch.matmul(torch.softmax(scores, dim=-1).to(v.dtype), v)
+
+
+def _can_use_flash_attention_varlen(q):
+    return _can_use_flash_attention_varlen_layout(q, q.shape[-1])
+
+
+def _can_use_flash_attention_varlen_layout(x, head_dim):
+    if not x.is_cuda or x.dtype not in (torch.float16, torch.bfloat16) or x.shape[0] == 0:
+        return False
+    if head_dim > 256 or head_dim % 8 != 0:
+        return False
+    if torch.version.cuda is None or torch.cuda.get_device_capability(x.device)[0] < 8:
+        return False
+    return _get_flash_attention_varlen() is not None
+
+
+@lru_cache(maxsize=1)
+def _get_flash_attention_varlen():
+    try:
+        from flash_attn import flash_attn_varlen_func
+    except (ImportError, ModuleNotFoundError):
+        flash_forward = getattr(torch.ops.aten, "_flash_attention_forward", None)
+        if flash_forward is None:
+            return None
+
+        def torch_flash_attention_varlen(
+            q,
+            k,
+            v,
+            cu_seqlens_q,
+            cu_seqlens_k,
+            max_seqlen_q,
+            max_seqlen_k,
+            *,
+            dropout_p,
+            softmax_scale,
+            causal,
+        ):
+            return flash_forward(
+                q,
+                k,
+                v,
+                cu_seqlens_q,
+                cu_seqlens_k,
+                max_seqlen_q,
+                max_seqlen_k,
+                dropout_p,
+                causal,
+                False,
+                scale=softmax_scale,
+            )[0]
+
+        torch_flash_attention_varlen._sequence_packed_provider = "aten"
+        return torch_flash_attention_varlen
+    return flash_attn_varlen_func
+
+
+def _forward_sequence_packed_layer(layer, x, **kwargs):
+    """Preserve packed execution through PyTorch's activation-checkpoint wrapper."""
+    wrapped = getattr(layer, '_checkpoint_wrapped_module', None)
+    if wrapped is None:
+        return layer._forward_sequence_packed(x, **kwargs)
+    packed_forward = getattr(wrapped, '_forward_sequence_packed', None)
+    checkpoint_fn = getattr(layer, 'checkpoint_fn', None)
+    if packed_forward is None or checkpoint_fn is None:
+        raise TypeError(
+            f"Activation-checkpoint wrapper around {type(wrapped).__name__} cannot execute sequence-packed layers."
+        )
+    return checkpoint_fn(packed_forward, x, **kwargs)

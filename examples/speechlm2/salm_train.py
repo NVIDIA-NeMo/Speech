@@ -107,9 +107,7 @@ def train(cfg):
         pack_audio=bool(
             cfg.model.get("use_nemo_automodel", False) and cfg.model.get("packed_encoder_sequences", False)
         ),
-        pack_sequences=bool(
-            cfg.model.get("use_nemo_automodel", False) and cfg.model.get("packed_sequences", False)
-        ),
+        pack_sequences=bool(cfg.model.get("use_nemo_automodel", False) and cfg.model.get("packed_sequences", False)),
     )
     datamodule = DataModule(cfg.data, tokenizer=model.tokenizer, dataset=dataset)
 

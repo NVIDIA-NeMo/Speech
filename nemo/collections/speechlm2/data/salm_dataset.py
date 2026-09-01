@@ -222,9 +222,8 @@ class SALMDataset(torch.utils.data.Dataset):
                     f"materialized={len(materialized_conversation_ids)}"
                 )
             materialized_audio_cut_ids = _audio_cut_ids(conversations)
-            if (
-                materialized_audio_cut_ids != requested_audio_cut_ids
-                or len(audio_lens) != len(requested_audio_cut_ids)
+            if materialized_audio_cut_ids != requested_audio_cut_ids or len(audio_lens) != len(
+                requested_audio_cut_ids
             ):
                 raise RuntimeError(
                     "Strict SALM validation dropped or reordered audio items: "
@@ -322,10 +321,7 @@ def _audio_cut_ids(conversations: Iterable[Formattable]) -> tuple[str, ...]:
         if isinstance(conversation, NeMoMultimodalConversation):
             cut_ids.extend(cut.id for cut in conversation.list_cuts())
         elif not isinstance(conversation, Formattable):
-            raise TypeError(
-                "SALMDataset expected a prompt-formatted example, "
-                f"got {type(conversation).__name__}."
-            )
+            raise TypeError("SALMDataset expected a prompt-formatted example, " f"got {type(conversation).__name__}.")
     return tuple(cut_ids)
 
 

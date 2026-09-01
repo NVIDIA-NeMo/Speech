@@ -53,10 +53,7 @@ def build_validation_dataset(full_cfg, tokenizer, *, mode: str, section: str = "
     kwargs = {"tokenizer": tokenizer, "strict_audio_loading": True}
     if (multispeaker_cfg := data_cfg.get("multispeaker_cfg")) is not None:
         kwargs["multispeaker_cfg"] = multispeaker_cfg
-    pack_audio = bool(
-        model_cfg.get("use_nemo_automodel", False)
-        and model_cfg.get("packed_encoder_sequences", False)
-    )
+    pack_audio = bool(model_cfg.get("use_nemo_automodel", False) and model_cfg.get("packed_encoder_sequences", False))
     if pack_audio:
         kwargs["pack_audio"] = True
     if (batch_tokens := data_cfg.get(section, {}).get("batch_tokens")) is not None:

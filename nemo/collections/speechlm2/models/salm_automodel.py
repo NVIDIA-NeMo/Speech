@@ -393,6 +393,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         # Generate stays on the BSHD path (it doesn't go through prepare_inputs).
         if self.cfg.get("packed_sequences", False):
             from nemo.collections.speechlm2.parts.packed_sequences import prepare_packed_llm_inputs
+
             te_fp8 = getattr(getattr(self.llm, "backend", None), "te_fp8", None)
 
             ans = prepare_packed_llm_inputs(

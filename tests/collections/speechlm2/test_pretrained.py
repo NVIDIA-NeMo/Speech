@@ -45,9 +45,7 @@ def test_setup_speech_encoder_hydrates_missing_config_without_weights():
     )
 
     with (
-        patch.object(
-            pretrained, "load_pretrained_nemo_config", return_value=asr_cfg
-        ) as load_config,
+        patch.object(pretrained, "load_pretrained_nemo_config", return_value=asr_cfg) as load_config,
         patch.object(pretrained, "AudioPerceptionModule") as perception,
     ):
         pretrained.setup_speech_encoder(model, pretrained_weights=False)
@@ -98,15 +96,11 @@ def test_setup_parallel_expert_encoder_applies_per_branch_chunk_overrides():
             encoder=SimpleNamespace(d_model=4),
             modality_adapter=object(),
             proj=torch.nn.Linear(4, 8),
-            preprocessor=SimpleNamespace(
-                featurizer=SimpleNamespace(normalize="per_feature")
-            ),
+            preprocessor=SimpleNamespace(featurizer=SimpleNamespace(normalize="per_feature")),
         ),
     )
 
-    with patch.object(
-        pretrained, "_resolve_parallel_expert_encoder_class", return_value=loader
-    ):
+    with patch.object(pretrained, "_resolve_parallel_expert_encoder_class", return_value=loader):
         pretrained.setup_parallel_expert_encoder(model)
 
     loader.load_from_nemo.assert_called_once_with(
@@ -122,9 +116,7 @@ def test_setup_parallel_expert_encoder_applies_per_branch_chunk_overrides():
 
 
 def _mock_automodel_loader(config):
-    automodel = SimpleNamespace(
-        from_config=MagicMock(return_value=object()), from_pretrained=MagicMock()
-    )
+    automodel = SimpleNamespace(from_config=MagicMock(return_value=object()), from_pretrained=MagicMock())
     return (
         automodel,
         patch.object(pretrained.AutoConfig, "from_pretrained", return_value=config),
@@ -132,9 +124,7 @@ def _mock_automodel_loader(config):
             "sys.modules",
             {"nemo_automodel": SimpleNamespace(NeMoAutoModelForCausalLM=automodel)},
         ),
-        patch(
-            "nemo.collections.speechlm2.parts.automodel_compat.remove_automodel_backend_for_hf_fallback"
-        ),
+        patch("nemo.collections.speechlm2.parts.automodel_compat.remove_automodel_backend_for_hf_fallback"),
     )
 
 
@@ -151,9 +141,7 @@ def test_load_pretrained_automodel_llm_builds_missing_mtp_before_loading_weights
             "_resolve_automodel_checkpoint_path",
             return_value="base-checkpoint",
         ),
-        patch.object(
-            pretrained, "_load_automodel_base_checkpoint_without_mtp", create=True
-        ) as base_load,
+        patch.object(pretrained, "_load_automodel_base_checkpoint_without_mtp", create=True) as base_load,
     ):
         result = pretrained.load_pretrained_automodel_llm(
             "base-checkpoint",
@@ -197,9 +185,7 @@ def test_load_pretrained_automodel_llm_preserves_native_mtp_config_by_default():
             "_resolve_automodel_checkpoint_path",
             return_value="native-mtp-checkpoint",
         ),
-        patch.object(
-            pretrained, "_load_automodel_base_checkpoint_without_mtp", create=True
-        ) as base_load,
+        patch.object(pretrained, "_load_automodel_base_checkpoint_without_mtp", create=True) as base_load,
     ):
         pretrained.load_pretrained_automodel_llm(
             "native-mtp-checkpoint",
@@ -237,9 +223,7 @@ def test_load_pretrained_automodel_llm_can_replace_native_mtp_config():
             "_resolve_automodel_checkpoint_path",
             return_value="native-mtp-checkpoint",
         ),
-        patch.object(
-            pretrained, "_load_automodel_base_checkpoint_without_mtp", create=True
-        ) as base_load,
+        patch.object(pretrained, "_load_automodel_base_checkpoint_without_mtp", create=True) as base_load,
     ):
         result = pretrained.load_pretrained_automodel_llm(
             "native-mtp-checkpoint",
@@ -302,9 +286,7 @@ def test_load_pretrained_automodel_llm_accepts_one_depth_native_head_as_repeated
             return_value="one-depth-mtp-checkpoint",
         ) as resolve_checkpoint,
     ):
-        pretrained.load_pretrained_automodel_llm(
-            "one-depth-mtp-checkpoint", **loader_kwargs
-        )
+        pretrained.load_pretrained_automodel_llm("one-depth-mtp-checkpoint", **loader_kwargs)
 
     resolve_checkpoint.assert_called_once_with("one-depth-mtp-checkpoint", {})
     config_loader.assert_called_once_with(
@@ -356,9 +338,7 @@ def test_load_pretrained_automodel_llm_rejects_multi_depth_native_head_as_repeat
         ),
         pytest.raises(ValueError, match="one physical MTP depth"),
     ):
-        pretrained.load_pretrained_automodel_llm(
-            "independent-mtp-checkpoint", **loader_kwargs
-        )
+        pretrained.load_pretrained_automodel_llm("independent-mtp-checkpoint", **loader_kwargs)
 
     automodel.from_pretrained.assert_not_called()
     automodel.from_config.assert_not_called()
@@ -377,9 +357,7 @@ def test_load_pretrained_automodel_llm_builds_repeated_head_for_checkpoint_witho
             "_resolve_automodel_checkpoint_path",
             return_value="base-checkpoint",
         ),
-        patch.object(
-            pretrained, "_load_automodel_base_checkpoint_without_mtp", create=True
-        ) as base_load,
+        patch.object(pretrained, "_load_automodel_base_checkpoint_without_mtp", create=True) as base_load,
     ):
         result = pretrained.load_pretrained_automodel_llm(
             "base-checkpoint",
@@ -415,9 +393,7 @@ def test_load_pretrained_automodel_llm_builds_repeated_head_for_checkpoint_witho
 def test_load_pretrained_automodel_llm_builds_repeated_model_without_checkpoint_weights(
     checkpoint_depth, mtp_config_overrides
 ):
-    config = SimpleNamespace(
-        num_nextn_predict_layers=checkpoint_depth, name_or_path="config-only-checkpoint"
-    )
+    config = SimpleNamespace(num_nextn_predict_layers=checkpoint_depth, name_or_path="config-only-checkpoint")
     automodel, config_patch, module_patch, compat_patch = _mock_automodel_loader(config)
     loader_kwargs = {
         "num_nextn_predict_layers": 4,
@@ -435,9 +411,7 @@ def test_load_pretrained_automodel_llm_builds_repeated_model_without_checkpoint_
             "_resolve_automodel_checkpoint_path",
             return_value="config-only-checkpoint",
         ) as resolve_checkpoint,
-        patch.object(
-            pretrained, "_load_automodel_base_checkpoint_without_mtp", create=True
-        ) as base_load,
+        patch.object(pretrained, "_load_automodel_base_checkpoint_without_mtp", create=True) as base_load,
     ):
         result = pretrained.load_pretrained_automodel_llm(
             "config-only-checkpoint",
@@ -447,9 +421,7 @@ def test_load_pretrained_automodel_llm_builds_repeated_model_without_checkpoint_
 
     assert result is automodel.from_config.return_value
     assert config.num_nextn_predict_layers == 1
-    resolve_checkpoint.assert_called_once_with(
-        "config-only-checkpoint", {}, include_weights=False
-    )
+    resolve_checkpoint.assert_called_once_with("config-only-checkpoint", {}, include_weights=False)
     automodel.from_config.assert_called_once_with(
         config,
         torch_dtype=torch.float32,
@@ -475,9 +447,7 @@ def test_load_pretrained_automodel_llm_rejects_repeated_mode_without_head_defini
             "_resolve_automodel_checkpoint_path",
             return_value="base-checkpoint",
         ),
-        pytest.raises(
-            ValueError, match="requires either a checkpoint with a native MTP head"
-        ),
+        pytest.raises(ValueError, match="requires either a checkpoint with a native MTP head"),
     ):
         pretrained.load_pretrained_automodel_llm(
             "base-checkpoint",
@@ -498,9 +468,7 @@ def test_load_pretrained_automodel_llm_rejects_replace_without_config_overrides(
 
 
 def test_load_pretrained_automodel_llm_forwards_hf_resolution_kwargs():
-    config = SimpleNamespace(
-        num_nextn_predict_layers=0, name_or_path="private-checkpoint"
-    )
+    config = SimpleNamespace(num_nextn_predict_layers=0, name_or_path="private-checkpoint")
     automodel, config_patch, module_patch, compat_patch = _mock_automodel_loader(config)
 
     with (
@@ -513,9 +481,7 @@ def test_load_pretrained_automodel_llm_forwards_hf_resolution_kwargs():
             return_value="/cache/exact-snapshot/subdir",
             create=True,
         ) as resolve_checkpoint,
-        patch.object(
-            pretrained, "_load_automodel_base_checkpoint_without_mtp", create=True
-        ) as base_load,
+        patch.object(pretrained, "_load_automodel_base_checkpoint_without_mtp", create=True) as base_load,
     ):
         result = pretrained.load_pretrained_automodel_llm(
             "private-checkpoint",
@@ -553,25 +519,19 @@ def test_load_pretrained_automodel_llm_forwards_hf_resolution_kwargs():
         trust_remote_code=True,
         cache_dir="/cache",
     )
-    base_load.assert_called_once_with(
-        result, "/cache/exact-snapshot/subdir", {"cache_dir": "/cache"}
-    )
+    base_load.assert_called_once_with(result, "/cache/exact-snapshot/subdir", {"cache_dir": "/cache"})
 
 
 @pytest.mark.parametrize(
     ("include_weights", "expected_extra_kwargs"),
     [(True, {}), (False, {"allow_patterns": ["*.json", "*.py"]})],
 )
-def test_resolve_automodel_checkpoint_path_uses_exact_snapshot(
-    tmp_path, include_weights, expected_extra_kwargs
-):
+def test_resolve_automodel_checkpoint_path_uses_exact_snapshot(tmp_path, include_weights, expected_extra_kwargs):
     snapshot_root = tmp_path / "snapshot"
     expected_path = snapshot_root / "weights"
     expected_path.mkdir(parents=True)
 
-    with patch(
-        "huggingface_hub.snapshot_download", return_value=str(snapshot_root)
-    ) as snapshot_download:
+    with patch("huggingface_hub.snapshot_download", return_value=str(snapshot_root)) as snapshot_download:
         result = pretrained._resolve_automodel_checkpoint_path(
             "private-checkpoint",
             {
@@ -607,22 +567,16 @@ def test_automodel_mtp_depth_supports_non_nemotron_config_fields():
         == 2
     )
     assert (
-        pretrained._automodel_config_mtp_depth(
-            SimpleNamespace(num_nextn_predict_layers=None, mtp_num_hidden_layers=2)
-        )
+        pretrained._automodel_config_mtp_depth(SimpleNamespace(num_nextn_predict_layers=None, mtp_num_hidden_layers=2))
         == 2
     )
 
 
 def test_automodel_base_load_skips_checkpoint_mtp_for_fresh_head(tmp_path):
-    model = SimpleNamespace(
-        config=SimpleNamespace(model_type="nemotron_h"), backbone=object()
-    )
+    model = SimpleNamespace(config=SimpleNamespace(model_type="nemotron_h"), backbone=object())
 
     with (
-        patch(
-            "nemo_automodel.components.checkpoint.checkpointing.Checkpointer"
-        ) as checkpointer_cls,
+        patch("nemo_automodel.components.checkpoint.checkpointing.Checkpointer") as checkpointer_cls,
         patch.object(torch.cuda, "is_available", return_value=False),
     ):
         pretrained._load_automodel_base_checkpoint_without_mtp(
@@ -644,9 +598,7 @@ def test_automodel_base_load_skips_checkpoint_mtp_for_fresh_head(tmp_path):
 
 
 @pytest.mark.parametrize("checkpoint_format", ["bin", "safetensors"])
-def test_automodel_base_load_keeps_fresh_mtp_on_direct_fast_paths(
-    tmp_path, checkpoint_format
-):
+def test_automodel_base_load_keeps_fresh_mtp_on_direct_fast_paths(tmp_path, checkpoint_format):
     class IdentityStateDictAdapter:
         def __init__(self):
             self.loaded_keys = None
@@ -663,9 +615,7 @@ def test_automodel_base_load_keeps_fresh_mtp_on_direct_fast_paths(
             super().__init__()
             self.base = torch.nn.Linear(2, 2, bias=False)
             self.mtp = torch.nn.Linear(2, 2, bias=False)
-            self.config = SimpleNamespace(
-                model_type="tiny_test", tie_word_embeddings=False
-            )
+            self.config = SimpleNamespace(model_type="tiny_test", tie_word_embeddings=False)
             self.state_dict_adapter = IdentityStateDictAdapter()
 
     model = TinyModel()
@@ -683,9 +633,7 @@ def test_automodel_base_load_keeps_fresh_mtp_on_direct_fast_paths(
 
     pretrained._load_automodel_base_checkpoint_without_mtp(model, str(tmp_path), {})
 
-    torch.testing.assert_close(
-        model.base.weight, torch.full_like(model.base.weight, 3.0)
-    )
+    torch.testing.assert_close(model.base.weight, torch.full_like(model.base.weight, 3.0))
     torch.testing.assert_close(model.mtp.weight, fresh_mtp)
     assert model.state_dict_adapter.loaded_keys == {"base.weight"}
 

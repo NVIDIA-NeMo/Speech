@@ -42,32 +42,20 @@ def ensure_sharegpt_route(
     manifest_paths = tuple(map(str, manifest_paths))
     tar_paths = tuple(map(str, tar_paths))
     manifest_specs = tuple(map(str, manifest_specs))
-    manifest_index_paths = tuple(
-        Path(index_file_path(path, indexes_root)) for path in manifest_paths
-    )
-    tar_index_paths = tuple(
-        Path(index_file_path(path, indexes_root)) for path in tar_paths
-    )
+    manifest_index_paths = tuple(Path(index_file_path(path, indexes_root)) for path in manifest_paths)
+    tar_index_paths = tuple(Path(index_file_path(path, indexes_root)) for path in tar_paths)
     prefix_map = dict(audio_prefix_map or {})
 
     if output_path.exists():
         validate_sharegpt_tar_routing_index(
             output_path,
             offset_bearing_tar_collections=True,
-            expected_manifest_spec_path_digest=ordered_manifest_spec_path_digest(
-                manifest_paths, manifest_specs
-            ),
-            expected_manifest_content_digest=ordered_manifest_content_digest(
-                manifest_paths
-            ),
-            expected_manifest_source_identity_digest=ordered_manifest_source_identity_digest(
-                manifest_paths
-            ),
+            expected_manifest_spec_path_digest=ordered_manifest_spec_path_digest(manifest_paths, manifest_specs),
+            expected_manifest_content_digest=ordered_manifest_content_digest(manifest_paths),
+            expected_manifest_source_identity_digest=ordered_manifest_source_identity_digest(manifest_paths),
             expected_tar_shard_count=len(tar_paths),
             expected_tar_catalog_digest=ordered_tar_catalog_digest(tar_paths),
-            expected_audio_prefix_map_digest=canonical_audio_prefix_map_digest(
-                prefix_map
-            ),
+            expected_audio_prefix_map_digest=canonical_audio_prefix_map_digest(prefix_map),
         )
         return output_path
     if not build_if_missing:

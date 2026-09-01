@@ -30,6 +30,8 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import click
+from scripts.dataloading._sharegpt_route_config import ShareGptRouteSpec, discover_sharegpt_route_specs
+from scripts.dataloading.build_indexes import _load_input_cfg
 
 from nemo.collections.common.data.lhotse.sharegpt_tar_routing import (
     ShareGptTarRoutingIndex,
@@ -43,11 +45,6 @@ from nemo.collections.common.data.lhotse.sharegpt_tar_routing import (
     ordered_tar_catalog_digest_from_metadata,
     write_sharegpt_tar_routing_index,
 )
-from scripts.dataloading._sharegpt_route_config import (
-    ShareGptRouteSpec,
-    discover_sharegpt_route_specs,
-)
-from scripts.dataloading.build_indexes import _load_input_cfg
 
 
 def _sha256_file(path: str | Path) -> bytes:
@@ -84,39 +81,23 @@ def relocate_sharegpt_route(
                 f"{len(spec.tar_paths)} != {header.tar_shard_count}"
             )
 
-        offline_manifest_sources = sum(
-            value is not None
-            for value in (manifest_mirrors, manifest_content_digest)
-        )
+        offline_manifest_sources = sum(value is not None for value in (manifest_mirrors, manifest_content_digest))
         if manifest_metadata is None and offline_manifest_sources:
             raise ValueError("Offline manifest relocation requires metadata")
         if manifest_metadata is not None and offline_manifest_sources != 1:
-            raise ValueError(
-                "Offline manifest relocation requires exactly one of mirrors "
-                "or a content digest"
-            )
+            raise ValueError("Offline manifest relocation requires exactly one of mirrors " "or a content digest")
         if manifest_metadata is None:
             content_digest = ordered_manifest_content_digest(spec.manifest_paths)
-            manifest_identity_digest = ordered_manifest_source_identity_digest(
-                spec.manifest_paths
-            )
+            manifest_identity_digest = ordered_manifest_source_identity_digest(spec.manifest_paths)
         elif manifest_content_digest is not None:
-            content_digest = _coerce_sha256_digest(
-                manifest_content_digest, "manifest content"
-            )
-            manifest_identity_digest = (
-                ordered_manifest_source_identity_digest_from_metadata(
-                    spec.manifest_paths, manifest_metadata
-                )
+            content_digest = _coerce_sha256_digest(manifest_content_digest, "manifest content")
+            manifest_identity_digest = ordered_manifest_source_identity_digest_from_metadata(
+                spec.manifest_paths, manifest_metadata
             )
         else:
-            content_digest = ordered_manifest_content_digest_from_mirrors(
-                spec.manifest_paths, manifest_mirrors
-            )
-            manifest_identity_digest = (
-                ordered_manifest_source_identity_digest_from_metadata(
-                    spec.manifest_paths, manifest_metadata
-                )
+            content_digest = ordered_manifest_content_digest_from_mirrors(spec.manifest_paths, manifest_mirrors)
+            manifest_identity_digest = ordered_manifest_source_identity_digest_from_metadata(
+                spec.manifest_paths, manifest_metadata
             )
         if not hmac.compare_digest(content_digest, header.manifest_content_digest):
             raise ValueError(
@@ -127,9 +108,7 @@ def relocate_sharegpt_route(
         tar_catalog_digest = (
             ordered_tar_catalog_digest(spec.tar_paths)
             if tar_metadata is None
-            else ordered_tar_catalog_digest_from_metadata(
-                spec.tar_paths, tar_metadata
-            )
+            else ordered_tar_catalog_digest_from_metadata(spec.tar_paths, tar_metadata)
         )
         if not hmac.compare_digest(tar_catalog_digest, header.tar_catalog_digest):
             if trust_relocated_tar_payloads:
@@ -147,23 +126,15 @@ def relocate_sharegpt_route(
                         f"{len(source_tar_paths)} and {len(spec.tar_paths)}"
                     )
                 source_catalog_digest = ordered_tar_catalog_digest(source_tar_paths)
-                if not hmac.compare_digest(
-                    source_catalog_digest, header.tar_catalog_digest
-                ):
-                    raise ValueError(
-                        "Provided source tar paths do not match the sealed route catalog."
-                    )
-                for index, (source_path, target_path) in enumerate(
-                    zip(source_tar_paths, spec.tar_paths, strict=True)
-                ):
+                if not hmac.compare_digest(source_catalog_digest, header.tar_catalog_digest):
+                    raise ValueError("Provided source tar paths do not match the sealed route catalog.")
+                for index, (source_path, target_path) in enumerate(zip(source_tar_paths, spec.tar_paths, strict=True)):
                     if "://" in str(source_path) or "://" in str(target_path):
                         raise ValueError(
                             "Cannot hash remote tar relocation at position "
                             f"{index}; use an externally verified transfer attestation."
                         )
-                    if not hmac.compare_digest(
-                        _sha256_file(source_path), _sha256_file(target_path)
-                    ):
+                    if not hmac.compare_digest(_sha256_file(source_path), _sha256_file(target_path)):
                         raise ValueError(
                             "Relocated tar payload content mismatch at position "
                             f"{index}: {source_path!r} != {target_path!r}"
@@ -174,15 +145,11 @@ def relocate_sharegpt_route(
             output_route,
             rows,
             tar_shard_count=len(spec.tar_paths),
-            manifest_spec_path_digest=ordered_manifest_spec_path_digest(
-                spec.manifest_paths, spec.manifest_specs
-            ),
+            manifest_spec_path_digest=ordered_manifest_spec_path_digest(spec.manifest_paths, spec.manifest_specs),
             manifest_content_digest=content_digest,
             manifest_source_identity_digest=manifest_identity_digest,
             tar_catalog_digest=tar_catalog_digest,
-            audio_prefix_map_digest=canonical_audio_prefix_map_digest(
-                spec.audio_prefix_map
-            ),
+            audio_prefix_map_digest=canonical_audio_prefix_map_digest(spec.audio_prefix_map),
         )
 
 
@@ -195,9 +162,7 @@ def select_route_spec(
     config = _load_input_cfg(str(input_cfg), data_blend_dir)
     specs = discover_sharegpt_route_specs(config, data_blend_dir=data_blend_dir)
     if len(specs) != 1:
-        raise ValueError(
-            f"Expected exactly one collection-mode route, discovered {len(specs)}"
-        )
+        raise ValueError(f"Expected exactly one collection-mode route, discovered {len(specs)}")
     return specs[0]
 
 
@@ -275,25 +240,16 @@ def main(
             metadata = _load_metadata_catalog(tar_metadata, "Tar")
         manifest_records = None
         if manifest_metadata is not None:
-            manifest_records = _load_metadata_catalog(
-                manifest_metadata, "Manifest"
-            )
-        offline_sources = int(bool(manifest_mirrors)) + int(
-            manifest_content_digest is not None
-        )
+            manifest_records = _load_metadata_catalog(manifest_metadata, "Manifest")
+        offline_sources = int(bool(manifest_mirrors)) + int(manifest_content_digest is not None)
         if manifest_records is None and offline_sources:
-            raise ValueError(
-                "Offline manifest relocation requires --manifest-metadata"
-            )
+            raise ValueError("Offline manifest relocation requires --manifest-metadata")
         if manifest_records is not None and offline_sources != 1:
             raise ValueError(
-                "Offline manifest relocation requires exactly one of "
-                "--manifest-mirror or --manifest-content-digest"
+                "Offline manifest relocation requires exactly one of " "--manifest-mirror or --manifest-content-digest"
             )
         if source_tar_paths and trust_relocated_tar_payloads:
-            raise ValueError(
-                "--source-tar and --trust-relocated-tar-payloads are mutually exclusive"
-            )
+            raise ValueError("--source-tar and --trust-relocated-tar-payloads are mutually exclusive")
         result = relocate_sharegpt_route(
             source_route,
             output,
@@ -316,13 +272,9 @@ def _load_metadata_catalog(path: str | Path, label: str) -> list[Mapping]:
         "schema_version",
         "objects",
     }:
-        raise ValueError(
-            f"{label} metadata must contain exactly schema_version and objects"
-        )
+        raise ValueError(f"{label} metadata must contain exactly schema_version and objects")
     if document["schema_version"] != 1 or not isinstance(document["objects"], list):
-        raise ValueError(
-            f"{label} metadata requires schema_version 1 and an objects list"
-        )
+        raise ValueError(f"{label} metadata requires schema_version 1 and an objects list")
     return document["objects"]
 
 

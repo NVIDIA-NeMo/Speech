@@ -76,9 +76,7 @@ class AudioPathPrefixMap:
             )
         )
         self.mapping = dict(sorted(canonical_mapping.items()))
-        self.canonical_json = json.dumps(
-            self.mapping, ensure_ascii=False, separators=(",", ":"), sort_keys=True
-        )
+        self.canonical_json = json.dumps(self.mapping, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
         self.digest = hashlib.sha256(self.canonical_json.encode("utf-8")).hexdigest()
 
     def resolve(self, path: str) -> str:
@@ -97,11 +95,7 @@ class AudioPathPrefixMap:
         if not self._entries:
             return path
 
-        matching = [
-            entry
-            for entry in self._entries
-            if _is_component_prefix(entry.source, source_path)
-        ]
+        matching = [entry for entry in self._entries if _is_component_prefix(entry.source, source_path)]
         if not matching:
             raise ValueError(
                 f"Absolute audio path {path!r} does not match any configured source prefix in "
@@ -123,9 +117,7 @@ def _is_url(value: str) -> bool:
 def _reject_lexical_traversal(value: str, *, field: str) -> None:
     path_part = urlsplit(value).path if _is_url(value) else value
     if any(part in {".", ".."} for part in path_part.split("/")):
-        raise ValueError(
-            f"Audio {field} {value!r} must not contain '.' or '..' path components."
-        )
+        raise ValueError(f"Audio {field} {value!r} must not contain '.' or '..' path components.")
 
 
 def _normalize_absolute_posix(value: str, *, field: str) -> str:
@@ -141,22 +133,16 @@ def _normalize_destination(value: str) -> tuple[str, SplitResult | None]:
     parsed = urlsplit(value)
     if parsed.scheme and "://" in value:
         if not parsed.netloc:
-            raise ValueError(
-                f"Audio destination root {value!r} must include a URL authority/bucket."
-            )
+            raise ValueError(f"Audio destination root {value!r} must include a URL authority/bucket.")
         if parsed.query or parsed.fragment:
-            raise ValueError(
-                f"Audio destination root {value!r} must not contain a URL query or fragment."
-            )
+            raise ValueError(f"Audio destination root {value!r} must not contain a URL query or fragment.")
         normalized_path = str(PurePosixPath(parsed.path or "/"))
         normalized = urlunsplit((parsed.scheme, parsed.netloc, normalized_path, "", ""))
         return normalized, urlsplit(normalized)
     try:
         return _normalize_absolute_posix(value, field="destination root"), None
     except ValueError as error:
-        raise ValueError(
-            f"Audio destination root {value!r} must be an absolute POSIX path or URL."
-        ) from error
+        raise ValueError(f"Audio destination root {value!r} must be an absolute POSIX path or URL.") from error
 
 
 def _is_component_prefix(prefix: str, path: str) -> bool:
@@ -169,9 +155,7 @@ def _join_local_root(destination: str, relative: PurePosixPath) -> str:
     root = PurePosixPath(destination)
     resolved = root / relative
     if resolved != root and not _is_component_prefix(str(root), str(resolved)):
-        raise ValueError(
-            f"Resolved audio path {str(resolved)!r} escapes destination root {destination!r}."
-        )
+        raise ValueError(f"Resolved audio path {str(resolved)!r} escapes destination root {destination!r}.")
     return str(resolved)
 
 
@@ -179,7 +163,5 @@ def _join_url_root(destination: SplitResult, relative: PurePosixPath) -> str:
     root = PurePosixPath(destination.path or "/")
     resolved = root / relative
     if resolved != root and not _is_component_prefix(str(root), str(resolved)):
-        raise ValueError(
-            f"Resolved URL path {str(resolved)!r} escapes destination root {str(root)!r}."
-        )
+        raise ValueError(f"Resolved URL path {str(resolved)!r} escapes destination root {str(root)!r}.")
     return urlunsplit((destination.scheme, destination.netloc, str(resolved), "", ""))

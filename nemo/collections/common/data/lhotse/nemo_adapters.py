@@ -74,6 +74,7 @@ def _warn_malformed_indexed_manifest_record(ex: BaseException, idx: int, path: s
         "Further records with the same path/error type are suppressed in this worker."
     )
 
+
 def manifest_entry_is_explicitly_skipped(data: Mapping) -> bool:
     """Return whether a manifest row carries a truthy canonical skip marker."""
     if bool(data.get("_skipme", False)):
@@ -259,9 +260,7 @@ class LazyNeMoIterator(IteratorNode):
             )
         data = self.source[token]
         if manifest_entry_is_explicitly_skipped(data):
-            raise IndexError(
-                f"Manifest row at physical index {token} is explicitly filtered by _skipme."
-            )
+            raise IndexError(f"Manifest row at physical index {token} is explicitly filtered by _skipme.")
         cut = self._build_cut_from_dict(data)
         return attach_graph_origin(cut, token) if self.indexed else cut
 

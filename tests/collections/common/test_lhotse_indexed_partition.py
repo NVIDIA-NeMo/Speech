@@ -216,9 +216,7 @@ def test_lazy_nemo_tarred_missing_manifest_entry_obeys_only_skip_policy(
             next(iter(adapter))
 
 
-def test_lazy_nemo_tarred_indexed_defers_audio_until_selected(
-    nemo_tarred_manifest, monkeypatch
-):
+def test_lazy_nemo_tarred_indexed_defers_audio_until_selected(nemo_tarred_manifest, monkeypatch):
     manifest_path, tar_path = nemo_tarred_manifest
     monkeypatch.setenv("USE_AIS_GET_BATCH", "false")
 
@@ -303,9 +301,7 @@ def test_lazy_nemo_tarred_tar_read_error_obeys_only_audio_policy(
 
 
 @pytest.mark.parametrize("use_ais_get_batch", [False, True])
-def test_lazy_nemo_tarred_indexed_skipme_is_canonical_filter(
-    nemo_tarred_manifest, monkeypatch, use_ais_get_batch
-):
+def test_lazy_nemo_tarred_indexed_skipme_is_canonical_filter(nemo_tarred_manifest, monkeypatch, use_ais_get_batch):
     manifest_path, tar_path = nemo_tarred_manifest
     monkeypatch.setenv("USE_AIS_GET_BATCH", str(use_ais_get_batch).lower())
     rows = list(load_jsonl(manifest_path))
@@ -336,9 +332,7 @@ def test_lazy_nemo_tarred_indexed_skipme_is_canonical_filter(
         assert adapter[2].custom["cut_id"] == rows[2]["cut_id"]
 
 
-def test_lazy_nemo_tarred_indexed_resume_is_stable_across_skipme(
-    nemo_tarred_manifest, monkeypatch
-):
+def test_lazy_nemo_tarred_indexed_resume_is_stable_across_skipme(nemo_tarred_manifest, monkeypatch):
     manifest_path, tar_path = nemo_tarred_manifest
     monkeypatch.setenv("USE_AIS_GET_BATCH", "true")
     rows = list(load_jsonl(manifest_path))
@@ -370,9 +364,7 @@ def test_lazy_nemo_tarred_indexed_resume_is_stable_across_skipme(
     assert len(resumed) == N_CUTS
 
 
-def test_lazy_nemo_tarred_indexed_malformed_json_is_fatal(
-    nemo_tarred_manifest, monkeypatch
-):
+def test_lazy_nemo_tarred_indexed_malformed_json_is_fatal(nemo_tarred_manifest, monkeypatch):
     manifest_path, tar_path = nemo_tarred_manifest
     monkeypatch.setenv("USE_AIS_GET_BATCH", "true")
     valid_rows = manifest_path.read_text().splitlines()
@@ -732,9 +724,7 @@ def test_sharegpt_jsonl_adapter_approved_exclusions_are_logical_and_resumable(
     sharegpt_conversation_jsonl,
 ):
     excluded_lines = [2, 5, 20]
-    line_digest = hashlib.sha256(
-        (json.dumps(excluded_lines, separators=(",", ":")) + "\n").encode()
-    ).hexdigest()
+    line_digest = hashlib.sha256((json.dumps(excluded_lines, separators=(",", ":")) + "\n").encode()).hexdigest()
 
     def build(lines=excluded_lines, digest=line_digest):
         return text_adapters.NeMoMultimodalConversationShareGPTJsonlAdapter(
@@ -748,11 +738,7 @@ def test_sharegpt_jsonl_adapter_approved_exclusions_are_logical_and_resumable(
             approved_exclusion_audit_sha256="a" * 64,
         )
 
-    expected = [
-        f"sgpt-{idx:04d}"
-        for idx in range(N_CUTS)
-        if idx + 1 not in excluded_lines
-    ]
+    expected = [f"sgpt-{idx:04d}" for idx in range(N_CUTS) if idx + 1 not in excluded_lines]
     adapter = build()
     assert len(adapter) == N_CUTS - len(excluded_lines)
     assert adapter[0].id == "sgpt-0000"

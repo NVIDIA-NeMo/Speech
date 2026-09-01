@@ -54,9 +54,7 @@ def _write_manifest(path: Path, rows: list[dict]) -> Path:
     return path
 
 
-def _write_tar(
-    path: Path, members: list[tuple[str, bytes]], *, directory: str | None = None
-) -> Path:
+def _write_tar(path: Path, members: list[tuple[str, bytes]], *, directory: str | None = None) -> Path:
     with tarfile.open(path, "w:") as archive:
         if directory is not None:
             info = tarfile.TarInfo(directory)
@@ -100,9 +98,7 @@ def test_sgroute_writer_has_exact_header_layout_and_is_deterministic(tmp_path):
     second = tmp_path / "second.sgroute"
 
     write_sharegpt_tar_routing_index(first, row_routes, tar_shard_count=3, **_digests())
-    write_sharegpt_tar_routing_index(
-        second, row_routes, tar_shard_count=3, **_digests()
-    )
+    write_sharegpt_tar_routing_index(second, row_routes, tar_shard_count=3, **_digests())
 
     raw = first.read_bytes()
     assert raw == second.read_bytes()
@@ -145,9 +141,7 @@ def test_sgroute_writer_has_exact_header_layout_and_is_deterministic(tmp_path):
 
 def test_sgroute_reader_reopens_after_worker_pickling(tmp_path):
     path = tmp_path / "routes.sgroute"
-    write_sharegpt_tar_routing_index(
-        path, [[TarRoute(0, 2)], []], tar_shard_count=1, **_digests()
-    )
+    write_sharegpt_tar_routing_index(path, [[TarRoute(0, 2)], []], tar_shard_count=1, **_digests())
 
     original = ShareGptTarRoutingIndex(path)
     restored = pickle.loads(pickle.dumps(original))
@@ -164,18 +158,14 @@ def test_sgroute_validator_checks_external_digests_counts_and_offset_bearing_req
     tmp_path,
 ):
     path = tmp_path / "routes.sgroute"
-    write_sharegpt_tar_routing_index(
-        path, [[TarRoute(0, 7)]], tar_shard_count=1, **_digests()
-    )
+    write_sharegpt_tar_routing_index(path, [[TarRoute(0, 7)]], tar_shard_count=1, **_digests())
 
     header = validate_sharegpt_tar_routing_index(
         path,
         expected_manifest_row_count=1,
         expected_manifest_spec_path_digest=_digests()["manifest_spec_path_digest"],
         expected_manifest_content_digest=_digests()["manifest_content_digest"],
-        expected_manifest_source_identity_digest=_digests()[
-            "manifest_source_identity_digest"
-        ],
+        expected_manifest_source_identity_digest=_digests()["manifest_source_identity_digest"],
         expected_tar_shard_count=1,
         expected_tar_catalog_digest=_digests()["tar_catalog_digest"],
         expected_audio_prefix_map_digest=_digests()["audio_prefix_map_digest"],
@@ -186,9 +176,7 @@ def test_sgroute_validator_checks_external_digests_counts_and_offset_bearing_req
     with pytest.raises(ValueError, match="offset-bearing"):
         validate_sharegpt_tar_routing_index(path, offset_bearing_tar_collections=False)
     with pytest.raises(ValueError, match="manifest row count"):
-        validate_sharegpt_tar_routing_index(
-            path, expected_manifest_row_count=2, offset_bearing_tar_collections=True
-        )
+        validate_sharegpt_tar_routing_index(path, expected_manifest_row_count=2, offset_bearing_tar_collections=True)
     with pytest.raises(ValueError, match="manifest content digest"):
         validate_sharegpt_tar_routing_index(
             path,
@@ -209,13 +197,9 @@ def test_sgroute_validator_checks_external_digests_counts_and_offset_bearing_req
         (272, b"x" + bytes(15), "reserved"),
     ],
 )
-def test_sgroute_reader_rejects_invalid_header_constants(
-    tmp_path, offset, value, error
-):
+def test_sgroute_reader_rejects_invalid_header_constants(tmp_path, offset, value, error):
     path = tmp_path / "routes.sgroute"
-    write_sharegpt_tar_routing_index(
-        path, [[TarRoute(0, 0)]], tar_shard_count=1, **_digests()
-    )
+    write_sharegpt_tar_routing_index(path, [[TarRoute(0, 0)]], tar_shard_count=1, **_digests())
     raw = bytearray(path.read_bytes())
     raw[offset : offset + len(value)] = value
     path.write_bytes(raw)
@@ -226,9 +210,7 @@ def test_sgroute_reader_rejects_invalid_header_constants(
 
 def test_sgroute_reader_rejects_payload_corruption_and_extent_mismatch(tmp_path):
     corrupt = tmp_path / "corrupt.sgroute"
-    write_sharegpt_tar_routing_index(
-        corrupt, [[TarRoute(0, 0)]], tar_shard_count=1, **_digests()
-    )
+    write_sharegpt_tar_routing_index(corrupt, [[TarRoute(0, 0)]], tar_shard_count=1, **_digests())
     raw = bytearray(corrupt.read_bytes())
     raw[-1] ^= 1
     corrupt.write_bytes(raw)
@@ -236,9 +218,7 @@ def test_sgroute_reader_rejects_payload_corruption_and_extent_mismatch(tmp_path)
         ShareGptTarRoutingIndex(corrupt)
 
     truncated = tmp_path / "truncated.sgroute"
-    write_sharegpt_tar_routing_index(
-        truncated, [[TarRoute(0, 0)]], tar_shard_count=1, **_digests()
-    )
+    write_sharegpt_tar_routing_index(truncated, [[TarRoute(0, 0)]], tar_shard_count=1, **_digests())
     truncated.write_bytes(truncated.read_bytes()[:-1])
     with pytest.raises(ValueError, match="file size"):
         ShareGptTarRoutingIndex(truncated)
@@ -248,9 +228,7 @@ def test_sgroute_reader_rejects_invalid_csr_and_route_shard_after_payload_rehash
     tmp_path,
 ):
     terminal = tmp_path / "terminal.sgroute"
-    write_sharegpt_tar_routing_index(
-        terminal, [[TarRoute(0, 0)]], tar_shard_count=1, **_digests()
-    )
+    write_sharegpt_tar_routing_index(terminal, [[TarRoute(0, 0)]], tar_shard_count=1, **_digests())
     raw = bytearray(terminal.read_bytes())
     struct.pack_into("<Q", raw, SGROUTE_HEADER_SIZE + 8, 0)
     _refresh_payload_digest(raw)
@@ -273,9 +251,7 @@ def test_sgroute_reader_rejects_invalid_csr_and_route_shard_after_payload_rehash
         ShareGptTarRoutingIndex(monotonic)
 
     shard = tmp_path / "shard.sgroute"
-    write_sharegpt_tar_routing_index(
-        shard, [[TarRoute(0, 0)]], tar_shard_count=1, **_digests()
-    )
+    write_sharegpt_tar_routing_index(shard, [[TarRoute(0, 0)]], tar_shard_count=1, **_digests())
     raw = bytearray(shard.read_bytes())
     routes_offset = struct.unpack_from("<Q", raw, 56)[0]
     struct.pack_into("<I", raw, routes_offset, 1)
@@ -287,9 +263,7 @@ def test_sgroute_reader_rejects_invalid_csr_and_route_shard_after_payload_rehash
 
 def test_sgroute_writer_never_overwrites_a_sealed_route(tmp_path):
     path = tmp_path / "sealed.sgroute"
-    write_sharegpt_tar_routing_index(
-        path, [[TarRoute(0, 0)]], tar_shard_count=1, **_digests()
-    )
+    write_sharegpt_tar_routing_index(path, [[TarRoute(0, 0)]], tar_shard_count=1, **_digests())
     original = path.read_bytes()
 
     with pytest.raises(FileExistsError, match="sealed"):
@@ -299,9 +273,7 @@ def test_sgroute_writer_never_overwrites_a_sealed_route(tmp_path):
     assert list(tmp_path.glob("*.tmp.*")) == []
 
 
-def test_atomic_publish_falls_back_when_filesystem_rejects_rename_noreplace(
-    tmp_path, monkeypatch
-):
+def test_atomic_publish_falls_back_when_filesystem_rejects_rename_noreplace(tmp_path, monkeypatch):
     class UnsupportedRenameNoReplace:
         argtypes = None
         restype = None
@@ -374,26 +346,15 @@ def test_builder_preserves_manifest_and_audio_path_order_with_exact_then_basenam
             (TarRoute(0, 0),),
             (TarRoute(1, 0),),
         ]
-        assert (
-            routes.header.manifest_spec_path_digest
-            == ordered_manifest_spec_path_digest(
-                [manifest_b, manifest_a], ["declared-b", "declared-a"]
-            )
+        assert routes.header.manifest_spec_path_digest == ordered_manifest_spec_path_digest(
+            [manifest_b, manifest_a], ["declared-b", "declared-a"]
         )
-        assert routes.header.manifest_content_digest == ordered_manifest_content_digest(
+        assert routes.header.manifest_content_digest == ordered_manifest_content_digest([manifest_b, manifest_a])
+        assert routes.header.manifest_source_identity_digest == ordered_manifest_source_identity_digest(
             [manifest_b, manifest_a]
         )
-        assert (
-            routes.header.manifest_source_identity_digest
-            == ordered_manifest_source_identity_digest([manifest_b, manifest_a])
-        )
-        assert routes.header.tar_catalog_digest == ordered_tar_catalog_digest(
-            [tar_a, tar_b]
-        )
-        assert (
-            routes.header.audio_prefix_map_digest
-            == canonical_audio_prefix_map_digest({})
-        )
+        assert routes.header.tar_catalog_digest == ordered_tar_catalog_digest([tar_a, tar_b])
+        assert routes.header.audio_prefix_map_digest == canonical_audio_prefix_map_digest({})
 
 
 @pytest.mark.parametrize(
@@ -403,9 +364,7 @@ def test_builder_preserves_manifest_and_audio_path_order_with_exact_then_basenam
         ("missing.flac", "missing audio member"),
     ],
 )
-def test_builder_rejects_ambiguous_or_missing_basename_resolution(
-    tmp_path, reference, error
-):
+def test_builder_rejects_ambiguous_or_missing_basename_resolution(tmp_path, reference, error):
     tar_a = _write_tar(tmp_path / "a.tar", [("left/shared.flac", b"a")])
     tar_b = _write_tar(tmp_path / "b.tar", [("right/shared.flac", b"b")])
     manifest = _write_manifest(
@@ -415,9 +374,7 @@ def test_builder_rejects_ambiguous_or_missing_basename_resolution(
     output = tmp_path / "bad.sgroute"
 
     with pytest.raises(ValueError, match=error):
-        build_sharegpt_tar_routing_index(
-            output, manifest_paths=[manifest], tar_paths=[tar_a, tar_b]
-        )
+        build_sharegpt_tar_routing_index(output, manifest_paths=[manifest], tar_paths=[tar_a, tar_b])
 
     assert not output.exists()
 
@@ -452,9 +409,7 @@ def test_audio_path_extraction_uses_alias_precedence_and_checks_cardinality():
         extract_sharegpt_audio_paths(document)
 
     with pytest.raises(ValueError, match="flat list of strings"):
-        extract_sharegpt_audio_paths(
-            {"sound": [["nested.wav"]], "conversations": _conversation("<sound>")}
-        )
+        extract_sharegpt_audio_paths({"sound": [["nested.wav"]], "conversations": _conversation("<sound>")})
 
 
 def test_audio_path_extraction_preserves_existing_sharegpt_cardinality_rules():
@@ -530,10 +485,7 @@ def test_native_tar_range_validation_scales_linearly():
 
     count = 4096
     offsets = [CountingInt(index * 1024) for index in range(count + 1)]
-    members = [
-        (f"{index}.flac", offsets[index], CountingInt(offsets[index] + 512))
-        for index in range(count)
-    ]
+    members = [(f"{index}.flac", offsets[index], CountingInt(offsets[index] + 512)) for index in range(count)]
 
     validated = _validate_native_tar_ranges(
         tar_path="synthetic.tar",

@@ -581,8 +581,7 @@ class PackedSequenceDynamicCutSampler(DynamicCutSampler):
         packing_buffer_size = state_dict.pop("packing_buffer_size", self.packing_buffer_size)
         if packing_buffer_size is None or packing_buffer_size <= 0:
             raise ValueError(
-                "Restored packing_buffer_size must be a positive packing-buffer size "
-                f"(got {packing_buffer_size})"
+                "Restored packing_buffer_size must be a positive packing-buffer size " f"(got {packing_buffer_size})"
             )
         self.packing_buffer_size = packing_buffer_size
         tokens = state_dict.pop("packing_buffer_tokens", None)

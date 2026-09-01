@@ -62,10 +62,7 @@ def configured_audio_path_resolution_modes(config) -> tuple[str, ...]:
             lookup_mode = node.get("tar_lookup_mode")
             if lookup_mode == "collection":
                 modes.add("tar_collection_route")
-            elif (
-                lookup_mode == "paired"
-                or node.get("tarred_audio_filepaths") is not None
-            ):
+            elif lookup_mode == "paired" or node.get("tarred_audio_filepaths") is not None:
                 modes.add("paired_manifest_tar")
             else:
                 modes.add("direct_or_url")
@@ -167,18 +164,13 @@ class FullValidationStats:
         audio_cuts = []
         audio_counts = []
         for conversation in conversations:
-            cuts = [
-                turn.cut for turn in conversation.turns if isinstance(turn, AudioTurn)
-            ]
+            cuts = [turn.cut for turn in conversation.turns if isinstance(turn, AudioTurn)]
             audio_counts.append(len(cuts))
             audio_cuts.extend(cuts)
 
         audio_lens_value = batch["audio_lens"]
         if torch.is_tensor(audio_lens_value):
-            audio_lens = [
-                int(value)
-                for value in audio_lens_value.detach().cpu().flatten().tolist()
-            ]
+            audio_lens = [int(value) for value in audio_lens_value.detach().cpu().flatten().tolist()]
         else:
             audio_lens = [int(value) for value in audio_lens_value]
         if len(audio_lens) != len(audio_cuts):
@@ -192,9 +184,7 @@ class FullValidationStats:
             input_ids = batch["input_ids"]
             if not torch.is_tensor(input_ids):
                 input_ids = torch.as_tensor(input_ids)
-            tokenized_count = int(
-                (input_ids == self.audio_placeholder_token_id).sum().item()
-            )
+            tokenized_count = int((input_ids == self.audio_placeholder_token_id).sum().item())
             if tokenized_count != placeholder_count:
                 raise click.ClickException(
                     "full validation placeholder/audio-turn mismatch: "
@@ -209,9 +199,7 @@ class FullValidationStats:
             sample_rate = int(cut.sampling_rate)
             channels = int(cut.num_channels)
             if sample_rate <= 0 or channels <= 0 or num_samples < 0:
-                raise click.ClickException(
-                    "full validation observed invalid decoded audio metadata"
-                )
+                raise click.ClickException("full validation observed invalid decoded audio metadata")
             duration = num_samples / sample_rate
             decoded_durations.append(duration)
             self.sample_rates.add(sample_rate)
@@ -243,14 +231,10 @@ class FullValidationStats:
             batch_min = min(decoded_durations)
             batch_max = max(decoded_durations)
             self.min_duration_seconds = (
-                batch_min
-                if self.min_duration_seconds is None
-                else min(self.min_duration_seconds, batch_min)
+                batch_min if self.min_duration_seconds is None else min(self.min_duration_seconds, batch_min)
             )
             self.max_duration_seconds = (
-                batch_max
-                if self.max_duration_seconds is None
-                else max(self.max_duration_seconds, batch_max)
+                batch_max if self.max_duration_seconds is None else max(self.max_duration_seconds, batch_max)
             )
 
         measured_bytes = _scalar_int(batch.get("bytes_read"))
@@ -313,13 +297,9 @@ class FullValidationStats:
             }
         return {"status": "measured", "value": self.measured_bytes_read}
 
-    def to_summary(
-        self, *, phase: str, rank: int, world_size: int, status: str
-    ) -> dict:
+    def to_summary(self, *, phase: str, rank: int, world_size: int, status: str) -> dict:
         steady = self.steady_batch_latencies_ms
-        placeholder_status = (
-            "measured" if self.audio_placeholder_token_id is not None else "unavailable"
-        )
+        placeholder_status = "measured" if self.audio_placeholder_token_id is not None else "unavailable"
         resolution_modes = sorted(set(self.audio_path_resolution_modes))
         return {
             "schema_version": 1,
@@ -344,19 +324,13 @@ class FullValidationStats:
                 "sample_rates_hz": sorted(self.sample_rates),
                 "channel_counts": sorted(self.channel_counts),
                 "duration_seconds": {
-                    "min": round(self.min_duration_seconds, 6)
-                    if self.min_duration_seconds is not None
-                    else None,
-                    "max": round(self.max_duration_seconds, 6)
-                    if self.max_duration_seconds is not None
-                    else None,
+                    "min": round(self.min_duration_seconds, 6) if self.min_duration_seconds is not None else None,
+                    "max": round(self.max_duration_seconds, 6) if self.max_duration_seconds is not None else None,
                 },
                 "placeholder_counts": {
                     "audio_turns": self.audio_turn_placeholders,
                     "tokenized_audio_placeholders": (
-                        self.tokenized_audio_placeholders
-                        if self.audio_placeholder_token_id is not None
-                        else None
+                        self.tokenized_audio_placeholders if self.audio_placeholder_token_id is not None else None
                     ),
                     "status": placeholder_status,
                 },
@@ -367,28 +341,20 @@ class FullValidationStats:
             },
             "latency_ms": {
                 "first_batch": (
-                    round(self.first_batch_latency_ms, 3)
-                    if self.first_batch_latency_ms is not None
-                    else None
+                    round(self.first_batch_latency_ms, 3) if self.first_batch_latency_ms is not None else None
                 ),
                 "p50_batch": round(statistics.median(steady), 3) if steady else None,
-                "p95_batch": (
-                    round(_nearest_rank_percentile(steady, 0.95), 3) if steady else None
-                ),
+                "p95_batch": (round(_nearest_rank_percentile(steady, 0.95), 3) if steady else None),
                 "steady_batch_count": len(steady),
             },
             "bytes_read": self._bytes_summary(),
             "failures": list(self.failures),
         }
 
-    def write(
-        self, path, *, phase: str, rank: int, world_size: int, status: str
-    ) -> None:
+    def write(self, path, *, phase: str, rank: int, world_size: int, status: str) -> None:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        summary = self.to_summary(
-            phase=phase, rank=rank, world_size=world_size, status=status
-        )
+        summary = self.to_summary(phase=phase, rank=rank, world_size=world_size, status=status)
         path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
 
 

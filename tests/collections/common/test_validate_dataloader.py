@@ -33,11 +33,7 @@ from _validate_dataloader import config_inject
 from _validate_dataloader import consolidate as cons
 from _validate_dataloader import pre_validation as pv
 from _validate_dataloader.cut_id_dataset import CutIdDataset
-from validate_dataloader import (
-    _extract_cuts,
-    _extract_numeric_list,
-    _extract_semantic_cut_ids,
-)
+from validate_dataloader import _extract_cuts, _extract_numeric_list, _extract_semantic_cut_ids
 
 from nemo.collections.common.data.lhotse import cutset as cutset_module
 
@@ -55,9 +51,7 @@ def test_cut_id_dataset_uses_graph_origin_when_semantic_ids_repeat():
             self.duration = duration
             self.num_tokens = num_tokens
 
-    row = CutIdDataset()[
-        [Example("0", 17, 1.25, 10), Example("0", (3, 9), 2.5, 20)]
-    ]
+    row = CutIdDataset()[[Example("0", 17, 1.25, 10), Example("0", (3, 9), 2.5, 20)]]
 
     assert row["cut_ids"] == ["graph:17", "graph:[3,9]"]
     assert row["semantic_cut_ids"] == ["0", "0"]
@@ -237,9 +231,7 @@ def test_missing_manifest_policy_overrides_explicit_nested_values():
         }
     )
 
-    config_inject.inject_missing_manifest_policy(
-        cfg, skip_missing_manifest_entries=False
-    )
+    config_inject.inject_missing_manifest_policy(cfg, skip_missing_manifest_entries=False)
 
     assert cfg.skip_missing_manifest_entries is False
     assert cfg.input_cfg[0].skip_missing_manifest_entries is False
@@ -247,9 +239,7 @@ def test_missing_manifest_policy_overrides_explicit_nested_values():
 
 
 @pytest.mark.unit
-def test_missing_manifest_policy_overrides_external_input_cfg_yaml(
-    tmp_path, monkeypatch
-):
+def test_missing_manifest_policy_overrides_external_input_cfg_yaml(tmp_path, monkeypatch):
     external = tmp_path / "external.yaml"
     external.write_text(
         OmegaConf.to_yaml(
@@ -268,9 +258,7 @@ def test_missing_manifest_policy_overrides_external_input_cfg_yaml(
             "skip_missing_manifest_entries": True,
         }
     )
-    config_inject.inject_missing_manifest_policy(
-        cfg, skip_missing_manifest_entries=False
-    )
+    config_inject.inject_missing_manifest_policy(cfg, skip_missing_manifest_entries=False)
     observed = []
 
     def capture_group(item, propagate_attrs):
@@ -384,9 +372,7 @@ def test_pre_validation_shard_seed_int_fail():
     report = pv.run_pre_validation(cfg)
     shard_check = next(c for c in report.checks if c.check_id == "shard-seed-int")
     assert shard_check.status == pv.FAIL
-    mux_check = next(
-        c for c in report.checks if c.check_id == "mux-seed-not-randomized"
-    )
+    mux_check = next(c for c in report.checks if c.check_id == "mux-seed-not-randomized")
     # force_map_dataset is False in base config, so this also fires.
     assert mux_check.status == pv.FAIL
 
@@ -413,9 +399,7 @@ def test_pre_validation_indexed_implies_root_fail():
 def test_pre_validation_constant_time_leaves_fail_when_streaming():
     cfg = _base_cfg()
     cfg.indexed = False  # turns off propagation -> all leaves go streaming
-    cfg.indexes_root = (
-        None  # avoid the dependent indexed-implies-root failing on its own.
-    )
+    cfg.indexes_root = None  # avoid the dependent indexed-implies-root failing on its own.
     report = pv.run_pre_validation(cfg)
     check = next(c for c in report.checks if c.check_id == "constant-time-leaves")
     assert check.status == pv.FAIL
@@ -567,9 +551,7 @@ def test_consolidate_q2_skip_without_groundtruth(tmp_path):
 def test_consolidate_q2_skip_detects_missing(tmp_path):
     base = tmp_path / "baseline" / "run0"
     _write_jsonl(base / "rank_000.jsonl", [_row(0, 0, ["a", "b"])])
-    _write_jsonl(
-        tmp_path / "groundtruth" / "cuts.jsonl", [{"cut_ids": ["a", "b", "c"]}]
-    )
+    _write_jsonl(tmp_path / "groundtruth" / "cuts.jsonl", [{"cut_ids": ["a", "b", "c"]}])
     report = cons.consolidate(tmp_path, checkpoint_at=0, num_determinism_runs=1)
     q2 = next(q for q in report.questions if q.q_id == "Q2")
     assert q2.status == cons.FAIL
@@ -678,9 +660,7 @@ def test_consolidate_q5_determinism_match(tmp_path):
 @pytest.mark.unit
 def test_consolidate_q5_determinism_diverges(tmp_path):
     _write_jsonl(tmp_path / "baseline" / "run0" / "rank_000.jsonl", [_row(0, 0, ["a"])])
-    _write_jsonl(
-        tmp_path / "baseline" / "run1" / "rank_000.jsonl", [_row(0, 0, ["DIFFERENT"])]
-    )
+    _write_jsonl(tmp_path / "baseline" / "run1" / "rank_000.jsonl", [_row(0, 0, ["DIFFERENT"])])
     report = cons.consolidate(tmp_path, checkpoint_at=0, num_determinism_runs=2)
     q5 = next(q for q in report.questions if q.q_id == "Q5")
     assert q5.status == cons.FAIL

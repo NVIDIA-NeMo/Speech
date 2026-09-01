@@ -32,9 +32,7 @@ _MAX_CATALOG_SHARDS = 1_000_000
 _GENERATED_CATALOG_SUFFIX = ".wds-catalog.json"
 
 
-def discover_webdataset_shards(
-    data_dir: str, *, require_catalog: bool = False
-) -> list[str]:
+def discover_webdataset_shards(data_dir: str, *, require_catalog: bool = False) -> list[str]:
     """Return WebDataset tar paths in explicit catalog order.
 
     ``data_dir`` may be a local/remote dataset root or a direct generated
@@ -69,8 +67,7 @@ def discover_webdataset_shards(
     shards = sorted(str(path) for path in root.rglob("*.tar")) if root.is_dir() else []
     if not shards:
         raise FileNotFoundError(
-            f"No wids-meta.json and no .tar files found under {root}; "
-            "no bounded shard catalog was found."
+            f"No wids-meta.json and no .tar files found under {root}; " "no bounded shard catalog was found."
         )
     return shards
 
@@ -85,9 +82,7 @@ def _is_remote(path: str) -> bool:
             f"supported schemes are {sorted(_REMOTE_SCHEMES)}"
         )
     if not parsed.netloc or parsed.query or parsed.fragment:
-        raise ValueError(
-            f"Remote WDS path must have an authority and no query/fragment: {path!r}"
-        )
+        raise ValueError(f"Remote WDS path must have an authority and no query/fragment: {path!r}")
     return True
 
 
@@ -105,9 +100,7 @@ def _read_remote_catalog(data_dir: str) -> tuple[str, str, bytes]:
             return path, kind, _read_remote_bytes(path)
         except Exception as error:
             if not _is_missing_remote_object(error):
-                raise RuntimeError(
-                    f"Could not read remote WDS catalog candidate {path}: {error}"
-                ) from error
+                raise RuntimeError(f"Could not read remote WDS catalog candidate {path}: {error}") from error
     raise _missing_catalog_error(data_dir)
 
 
@@ -117,24 +110,18 @@ def _read_remote_bytes(path: str) -> bytes:
     with AISRangeReader(path) as source:
         size = int(source.size)
         if size > _MAX_CATALOG_BYTES:
-            raise ValueError(
-                f"Remote WDS catalog {path} is {size} bytes; maximum is {_MAX_CATALOG_BYTES}"
-            )
+            raise ValueError(f"Remote WDS catalog {path} is {size} bytes; maximum is {_MAX_CATALOG_BYTES}")
         source.seek(0)
         data = source.read(size)
     if len(data) != size:
-        raise EOFError(
-            f"Short remote WDS catalog read for {path}: expected {size}, received {len(data)}"
-        )
+        raise EOFError(f"Short remote WDS catalog read for {path}: expected {size}, received {len(data)}")
     return data
 
 
 def _read_local_catalog(path: Path) -> bytes:
     size = path.stat().st_size
     if size > _MAX_CATALOG_BYTES:
-        raise ValueError(
-            f"WDS catalog {path} is {size} bytes; maximum is {_MAX_CATALOG_BYTES}"
-        )
+        raise ValueError(f"WDS catalog {path} is {size} bytes; maximum is {_MAX_CATALOG_BYTES}")
     return path.read_bytes()
 
 
@@ -174,30 +161,19 @@ def _parse_catalog(raw: bytes, catalog_path: str, kind: str, base: str) -> list[
         train = split_parts.get("train") if isinstance(split_parts, dict) else None
         specs = _extract_strings(train, catalog_path, "train shard list")
         raw_excludes = catalog.get("exclude", [])
-        excludes = _extract_strings(
-            raw_excludes, catalog_path, "exclude list", allow_empty=True
-        )
+        excludes = _extract_strings(raw_excludes, catalog_path, "exclude list", allow_empty=True)
     elif kind == "generated":
-        if (
-            not isinstance(catalog, dict)
-            or catalog.get("format") != "nemo-wds-shard-catalog"
-        ):
+        if not isinstance(catalog, dict) or catalog.get("format") != "nemo-wds-shard-catalog":
             raise ValueError(f"Invalid generated WDS catalog format in {catalog_path}")
         if catalog.get("version") != 1:
-            raise ValueError(
-                f"Unsupported generated WDS catalog version in {catalog_path}"
-            )
-        specs = _extract_urls(
-            catalog.get("shards"), catalog_path, "generated shard list"
-        )
+            raise ValueError(f"Unsupported generated WDS catalog version in {catalog_path}")
+        specs = _extract_urls(catalog.get("shards"), catalog_path, "generated shard list")
     else:  # pragma: no cover - internal invariant
         raise AssertionError(kind)
 
     expanded_excludes = []
     for spec in excludes:
-        expanded_excludes.extend(
-            _bounded_expand(spec, catalog_path, len(expanded_excludes))
-        )
+        expanded_excludes.extend(_bounded_expand(spec, catalog_path, len(expanded_excludes)))
 
     shards: list[str] = []
     seen: set[str] = set()
@@ -211,9 +187,7 @@ def _parse_catalog(raw: bytes, catalog_path: str, kind: str, base: str) -> list[
             seen.add(resolved)
             shards.append(resolved)
     if not shards:
-        raise ValueError(
-            f"Bounded shard catalog {catalog_path} resolved to zero tar paths"
-        )
+        raise ValueError(f"Bounded shard catalog {catalog_path} resolved to zero tar paths")
     return shards
 
 
@@ -224,16 +198,12 @@ def _extract_urls(value, catalog_path: str, label: str) -> list[str]:
     for position, item in enumerate(value):
         url = item.get("url") if isinstance(item, dict) else None
         if not isinstance(url, str) or not url:
-            raise ValueError(
-                f"Invalid WDS shard URL at position {position} in {catalog_path}"
-            )
+            raise ValueError(f"Invalid WDS shard URL at position {position} in {catalog_path}")
         urls.append(url)
     return urls
 
 
-def _extract_strings(
-    value, catalog_path: str, label: str, *, allow_empty: bool = False
-) -> list[str]:
+def _extract_strings(value, catalog_path: str, label: str, *, allow_empty: bool = False) -> list[str]:
     if value is None and allow_empty:
         return []
     if not isinstance(value, list) or (not value and not allow_empty):
@@ -252,9 +222,7 @@ def _bounded_expand(spec: str, catalog_path: str, already_expanded: int) -> list
     expanded = []
     for value in braceexpand(normalized, escape=False):
         if already_expanded + len(expanded) >= _MAX_CATALOG_SHARDS:
-            raise ValueError(
-                f"WDS catalog {catalog_path} exceeds the {_MAX_CATALOG_SHARDS}-shard expansion bound"
-            )
+            raise ValueError(f"WDS catalog {catalog_path} exceeds the {_MAX_CATALOG_SHARDS}-shard expansion bound")
         expanded.append(value)
     return expanded
 
@@ -269,9 +237,7 @@ def _resolve_catalog_path(base: str, spec: str, catalog_path: str) -> str:
     if path.is_absolute():
         return str(path)
     if any(part == ".." for part in path.parts):
-        raise ValueError(
-            f"WDS catalog path traversal is forbidden in {catalog_path}: {spec!r}"
-        )
+        raise ValueError(f"WDS catalog path traversal is forbidden in {catalog_path}: {spec!r}")
     return str(Path(base) / path)
 
 
@@ -291,9 +257,7 @@ def _join_remote(base: str, relative: str, *, catalog_path: str | None = None) -
             depth -= 1
             if depth < 0:
                 origin = catalog_path or base
-                raise ValueError(
-                    f"Remote WDS catalog path traversal escapes its authority in {origin}: {relative!r}"
-                )
+                raise ValueError(f"Remote WDS catalog path traversal escapes its authority in {origin}: {relative!r}")
         else:
             depth += 1
     path = posixpath.normpath(posixpath.join(parsed.path or "/", relative))

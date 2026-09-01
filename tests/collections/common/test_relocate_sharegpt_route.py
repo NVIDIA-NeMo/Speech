@@ -15,6 +15,8 @@
 from pathlib import Path
 
 import pytest
+from scripts.dataloading._sharegpt_route_config import ShareGptRouteSpec
+from scripts.dataloading.relocate_sharegpt_route import relocate_sharegpt_route
 
 from nemo.collections.common.data.lhotse.sharegpt_tar_routing import (
     ShareGptTarRoutingIndex,
@@ -28,8 +30,6 @@ from nemo.collections.common.data.lhotse.sharegpt_tar_routing import (
     ordered_tar_catalog_digest_from_metadata,
     write_sharegpt_tar_routing_index,
 )
-from scripts.dataloading._sharegpt_route_config import ShareGptRouteSpec
-from scripts.dataloading.relocate_sharegpt_route import relocate_sharegpt_route
 
 
 def _spec(manifest: Path, tar: Path) -> ShareGptRouteSpec:
@@ -48,13 +48,9 @@ def _write_source_route(path: Path, spec: ShareGptRouteSpec) -> None:
         path,
         [[(0, 3)], [(0, 7)]],
         tar_shard_count=1,
-        manifest_spec_path_digest=ordered_manifest_spec_path_digest(
-            spec.manifest_paths, spec.manifest_specs
-        ),
+        manifest_spec_path_digest=ordered_manifest_spec_path_digest(spec.manifest_paths, spec.manifest_specs),
         manifest_content_digest=ordered_manifest_content_digest(spec.manifest_paths),
-        manifest_source_identity_digest=ordered_manifest_source_identity_digest(
-            spec.manifest_paths
-        ),
+        manifest_source_identity_digest=ordered_manifest_source_identity_digest(spec.manifest_paths),
         tar_catalog_digest=ordered_tar_catalog_digest(spec.tar_paths),
         audio_prefix_map_digest=canonical_audio_prefix_map_digest({}),
     )
@@ -88,12 +84,8 @@ def test_relocate_preserves_payload_and_rebinds_digests(tmp_path: Path) -> None:
         assert route.header.manifest_spec_path_digest == ordered_manifest_spec_path_digest(
             new_spec.manifest_paths, new_spec.manifest_specs
         )
-        assert route.header.tar_catalog_digest == ordered_tar_catalog_digest(
-            new_spec.tar_paths
-        )
-        assert route.header.audio_prefix_map_digest == canonical_audio_prefix_map_digest(
-            new_spec.audio_prefix_map
-        )
+        assert route.header.tar_catalog_digest == ordered_tar_catalog_digest(new_spec.tar_paths)
+        assert route.header.audio_prefix_map_digest == canonical_audio_prefix_map_digest(new_spec.audio_prefix_map)
 
 
 def test_relocate_rejects_changed_tar_payload_with_same_size(tmp_path: Path) -> None:
@@ -204,9 +196,7 @@ def test_relocate_uses_ordered_offline_remote_metadata(tmp_path: Path) -> None:
 )
 def test_offline_remote_metadata_fails_closed(record: dict, match: str) -> None:
     with pytest.raises(ValueError, match=match):
-        ordered_tar_catalog_digest_from_metadata(
-            ("s3://fixture-bucket/payload/shard.tar",), [record]
-        )
+        ordered_tar_catalog_digest_from_metadata(("s3://fixture-bucket/payload/shard.tar",), [record])
 
 
 def test_relocate_uses_offline_manifest_mirror_and_metadata(tmp_path: Path) -> None:
@@ -249,14 +239,10 @@ def test_relocate_uses_offline_manifest_mirror_and_metadata(tmp_path: Path) -> N
 
     with ShareGptTarRoutingIndex(output) as route:
         assert route.header.manifest_content_digest == (
-            ordered_manifest_content_digest_from_mirrors(
-                target_spec.manifest_paths, (mirror,)
-            )
+            ordered_manifest_content_digest_from_mirrors(target_spec.manifest_paths, (mirror,))
         )
         assert route.header.manifest_source_identity_digest == (
-            ordered_manifest_source_identity_digest_from_metadata(
-                target_spec.manifest_paths, records
-            )
+            ordered_manifest_source_identity_digest_from_metadata(target_spec.manifest_paths, records)
         )
 
 
@@ -319,7 +305,5 @@ def test_relocate_uses_digest_only_offline_manifest_identity(tmp_path: Path) -> 
     with ShareGptTarRoutingIndex(output) as route:
         assert route.header.manifest_content_digest == digest
         assert route.header.manifest_source_identity_digest == (
-            ordered_manifest_source_identity_digest_from_metadata(
-                target_spec.manifest_paths, records
-            )
+            ordered_manifest_source_identity_digest_from_metadata(target_spec.manifest_paths, records)
         )

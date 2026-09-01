@@ -245,12 +245,8 @@ def test_group_index_pack_root_overrides_recipe_but_not_explicit_cli_root(tmp_pa
 
 def test_index_pack_collection_keys_use_structural_source_fields():
     analyzer = _load_analyzer_module()
-    path_keys = analyzer._index_pack_collection_keys(
-        {"type": "custom", "paths": ["/data/a.jsonl", "/data/b.jsonl"]}
-    )
-    directory_keys = analyzer._index_pack_collection_keys(
-        {"type": "custom", "data_dir": "/data/shards"}
-    )
+    path_keys = analyzer._index_pack_collection_keys({"type": "custom", "paths": ["/data/a.jsonl", "/data/b.jsonl"]})
+    directory_keys = analyzer._index_pack_collection_keys({"type": "custom", "data_dir": "/data/shards"})
 
     assert len(path_keys) == 2
     assert len(set(path_keys)) == 2

@@ -132,9 +132,7 @@ def _read_pack_layout(
             _layout_hash,
         ) = header
         collection_rows = [
-            _COLLECTION.unpack(
-                _read_exact(stream, _COLLECTION.size, collection_offset + index * _COLLECTION.size)
-            )
+            _COLLECTION.unpack(_read_exact(stream, _COLLECTION.size, collection_offset + index * _COLLECTION.size))
             for index in range(num_collections)
         ]
         sequences = [
@@ -198,31 +196,21 @@ def validate_rebinding_contract(
 ) -> None:
     """Require exact positional equivalence before rebinding identities."""
     if len(observed) != len(target):
-        raise ValueError(
-            "Collection count changed during relocation: "
-            f"pack={len(observed)}, target={len(target)}"
-        )
+        raise ValueError("Collection count changed during relocation: " f"pack={len(observed)}, target={len(target)}")
     target_keys = [spec.key for spec in target]
     if len(set(target_keys)) != len(target_keys):
         raise ValueError("Target configuration contains duplicate collection keys")
 
     for index, (actual, expected) in enumerate(zip(observed, target)):
         if actual.kind != expected.kind:
-            raise ValueError(
-                f"Collection {index} storage kind changed: {actual.kind!r} != {expected.kind!r}"
-            )
+            raise ValueError(f"Collection {index} storage kind changed: {actual.kind!r} != {expected.kind!r}")
         if actual.offsets_required != expected.offsets_required:
             raise ValueError(
-                f"Collection {index} offset mode changed: "
-                f"{actual.offsets_required} != {expected.offsets_required}"
+                f"Collection {index} offset mode changed: " f"{actual.offsets_required} != {expected.offsets_required}"
             )
         if actual.paths != expected.paths:
             mismatch = next(
-                (
-                    position
-                    for position, pair in enumerate(zip(actual.paths, expected.paths))
-                    if pair[0] != pair[1]
-                ),
+                (position for position, pair in enumerate(zip(actual.paths, expected.paths)) if pair[0] != pair[1]),
                 min(len(actual.paths), len(expected.paths)),
             )
             actual_path = actual.paths[mismatch] if mismatch < len(actual.paths) else "<missing>"
@@ -240,10 +228,7 @@ def validate_relocation_contract(
 ) -> tuple[str, ...]:
     """Validate positional equivalence and return one target path per segment."""
     if len(observed) != len(target):
-        raise ValueError(
-            "Collection count changed during relocation: "
-            f"pack={len(observed)}, target={len(target)}"
-        )
+        raise ValueError("Collection count changed during relocation: " f"pack={len(observed)}, target={len(target)}")
     target_keys = [spec.key for spec in target]
     if len(set(target_keys)) != len(target_keys):
         raise ValueError("Target configuration contains duplicate collection keys")
@@ -253,8 +238,7 @@ def validate_relocation_contract(
     for collection_index, (actual, expected) in enumerate(zip(observed, target)):
         if actual.kind != expected.kind:
             raise ValueError(
-                f"Collection {collection_index} storage kind changed: "
-                f"{actual.kind!r} != {expected.kind!r}"
+                f"Collection {collection_index} storage kind changed: " f"{actual.kind!r} != {expected.kind!r}"
             )
         if actual.offsets_required != expected.offsets_required:
             raise ValueError(
@@ -263,13 +247,10 @@ def validate_relocation_contract(
             )
         if len(actual.paths) != len(expected.paths):
             raise ValueError(
-                f"Collection {collection_index} path count changed: "
-                f"{len(actual.paths)} != {len(expected.paths)}"
+                f"Collection {collection_index} path count changed: " f"{len(actual.paths)} != {len(expected.paths)}"
             )
 
-        for shard_index, (segment_id, target_path) in enumerate(
-            zip(actual.segment_ids, expected.paths, strict=True)
-        ):
+        for shard_index, (segment_id, target_path) in enumerate(zip(actual.segment_ids, expected.paths, strict=True)):
             prior_path = relocated[segment_id]
             if prior_path is not None and prior_path != target_path:
                 raise ValueError(
@@ -297,10 +278,7 @@ def validate_relocation_contract(
 
 def _map_path(path: str, prefix_map: Mapping[str, str]) -> str:
     matches = [
-        source
-        for source in prefix_map
-        if path == source.rstrip("/")
-        or path.startswith(source.rstrip("/") + "/")
+        source for source in prefix_map if path == source.rstrip("/") or path.startswith(source.rstrip("/") + "/")
     ]
     if not matches:
         raise ValueError(f"No relocation prefix matches source path {path!r}")
@@ -326,10 +304,7 @@ def discover_relocated_pack_collections(
     """
     if not path_prefix_map:
         raise ValueError("Offline relocation requires at least one path-prefix mapping")
-    normalized_map = {
-        str(source).rstrip("/"): str(target).rstrip("/")
-        for source, target in path_prefix_map.items()
-    }
+    normalized_map = {str(source).rstrip("/"): str(target).rstrip("/") for source, target in path_prefix_map.items()}
     if any(not source or not target for source, target in normalized_map.items()):
         raise ValueError("Relocation path-prefix mappings must be non-empty")
 
@@ -370,10 +345,7 @@ def discover_relocated_pack_collections(
 
         version = int(node.get("wds_sample_index_version", 1))
         if version != 2:
-            raise ValueError(
-                "Offline WDS relocation requires wds_sample_index_version: 2; "
-                f"got {version}"
-            )
+            raise ValueError("Offline WDS relocation requires wds_sample_index_version: 2; " f"got {version}")
         if wds_index >= len(source_wds):
             raise ValueError("Target configuration has more WDS collections than source pack")
         data_dir = node.get("data_dir")
@@ -384,14 +356,10 @@ def discover_relocated_pack_collections(
             raise ValueError("Target WDS v2 data_dir expands to no roots")
 
         source_collection = source_wds[wds_index]
-        mapped_paths = tuple(
-            _map_path(path, normalized_map) for path in source_collection.paths
-        )
+        mapped_paths = tuple(_map_path(path, normalized_map) for path in source_collection.paths)
         for path in mapped_paths:
             if not any(path.startswith(root + "/") for root in roots):
-                raise ValueError(
-                    f"Relocated WDS shard {path!r} is outside target data_dir roots {roots!r}"
-                )
+                raise ValueError(f"Relocated WDS shard {path!r} is outside target data_dir roots {roots!r}")
         target.append(
             IndexPackCollectionSpec(
                 role="wds_tar",
@@ -419,13 +387,9 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _verify_relocated_payloads(
-    segments: Sequence[_ObservedSegment], relocated_paths: Sequence[str]
-) -> None:
+def _verify_relocated_payloads(segments: Sequence[_ObservedSegment], relocated_paths: Sequence[str]) -> None:
     """Prove byte identity for every changed local source path."""
-    for segment_id, (segment, target_path) in enumerate(
-        zip(segments, relocated_paths, strict=True)
-    ):
+    for segment_id, (segment, target_path) in enumerate(zip(segments, relocated_paths, strict=True)):
         if segment.path == target_path:
             continue
         if "://" in segment.path or "://" in target_path:
@@ -452,10 +416,8 @@ def _verify_relocated_payloads(
             )
         if _sha256_file(source_path) != _sha256_file(target):
             raise ValueError(
-                f"Relocated payload content mismatch for segment {segment_id}: "
-                f"{source_path} != {target}"
+                f"Relocated payload content mismatch for segment {segment_id}: " f"{source_path} != {target}"
             )
-
 
 
 def rebind_idxpack_collections(
@@ -493,11 +455,7 @@ def rebind_idxpack_collections(
                 if actual.key == expected.key:
                     continue
                 destination.seek(collection_offset + index * _COLLECTION.size)
-                row = list(
-                    _COLLECTION.unpack(
-                        _read_exact(destination, _COLLECTION.size, destination.tell())
-                    )
-                )
+                row = list(_COLLECTION.unpack(_read_exact(destination, _COLLECTION.size, destination.tell())))
                 row[0] = expected.key
                 destination.seek(collection_offset + index * _COLLECTION.size)
                 destination.write(_COLLECTION.pack(*row))
@@ -566,7 +524,6 @@ def relocate_idxpack_collections(
     if not trust_relocated_payloads:
         _verify_relocated_payloads(segments, relocated_paths)
 
-
     strings = _StringTableBuilder()
     kind_positions = [strings.add(spec.kind) for spec in target]
     path_positions = [strings.add(path) for path in relocated_paths]
@@ -580,14 +537,10 @@ def relocate_idxpack_collections(
     offsets_offset += (-offsets_offset) % 8
     offsets_size = sum(segment.offsets_size for segment in segments)
     if offsets_size != header[12]:
-        raise ValueError(
-            f"Pack offset payload size disagrees with its header: {offsets_size} != {header[12]}"
-        )
+        raise ValueError(f"Pack offset payload size disagrees with its header: {offsets_size} != {header[12]}")
 
     output.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{output.name}.tmp.", dir=output.parent
-    )
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{output.name}.tmp.", dir=output.parent)
     temporary = Path(temporary_name)
     try:
         with os.fdopen(descriptor, "w+b") as destination, source.open("rb") as origin:
@@ -611,9 +564,7 @@ def relocate_idxpack_collections(
             )
             destination.write(b"\0" * (_HEADER_SIZE - destination.tell()))
 
-            for actual, expected, (kind_relative, kind_length) in zip(
-                observed, target, kind_positions, strict=True
-            ):
+            for actual, expected, (kind_relative, kind_length) in zip(observed, target, kind_positions, strict=True):
                 destination.write(
                     _COLLECTION.pack(
                         expected.key,
@@ -644,8 +595,7 @@ def relocate_idxpack_collections(
                     chunk = origin.read(min(8 * 1024 * 1024, remaining))
                     if not chunk:
                         raise ValueError(
-                            f"Truncated source payload for segment {segment_id}: "
-                            f"{remaining} bytes remain"
+                            f"Truncated source payload for segment {segment_id}: " f"{remaining} bytes remain"
                         )
                     destination.write(chunk)
                     checksum = zlib.crc32(chunk, checksum)
@@ -653,8 +603,7 @@ def relocate_idxpack_collections(
                 checksum &= 0xFFFFFFFF
                 if checksum != segment.checksum:
                     raise ValueError(
-                        f"Source segment {segment_id} CRC mismatch: "
-                        f"{checksum:#010x} != {segment.checksum:#010x}"
+                        f"Source segment {segment_id} CRC mismatch: " f"{checksum:#010x} != {segment.checksum:#010x}"
                     )
                 relocated_segment_rows.append(
                     (
@@ -711,14 +660,10 @@ def relocate_idxpack_collections(
         "source": str(source),
         "output": str(output),
         "collections": len(target),
-        "keys_changed": sum(
-            actual.key != expected.key for actual, expected in zip(observed, target)
-        ),
+        "keys_changed": sum(actual.key != expected.key for actual, expected in zip(observed, target)),
         "paths_changed": sum(
             actual != expected
-            for actual, expected in zip(
-                (segment.path for segment in segments), relocated_paths, strict=True
-            )
+            for actual, expected in zip((segment.path for segment in segments), relocated_paths, strict=True)
         ),
         "segments": len(segments),
         "layout_sha256": target_layout_hash.hex(),
@@ -770,21 +715,15 @@ def main(
         config = _load_input_cfg(input_cfg, data_blend_dir)
         if relocate_paths:
             if skip_payload_verification:
-                raise ValueError(
-                    "--skip-payload-verification cannot be used with --relocate-paths"
-                )
+                raise ValueError("--skip-payload-verification cannot be used with --relocate-paths")
             if path_prefix_maps:
                 prefix_map: dict[str, str] = {}
                 for source_prefix, target_prefix in path_prefix_maps:
                     prior = prefix_map.get(source_prefix)
                     if prior is not None and prior != target_prefix:
-                        raise ValueError(
-                            f"Conflicting targets for source prefix {source_prefix!r}"
-                        )
+                        raise ValueError(f"Conflicting targets for source prefix {source_prefix!r}")
                     prefix_map[source_prefix] = target_prefix
-                observed, _header, _sequences, _segments = _read_pack_layout(
-                    Path(source_pack)
-                )
+                observed, _header, _sequences, _segments = _read_pack_layout(Path(source_pack))
                 target = discover_relocated_pack_collections(
                     config,
                     observed,
@@ -792,9 +731,7 @@ def main(
                     data_blend_dir=data_blend_dir,
                 )
             else:
-                target = discover_pack_collections(
-                    config, data_blend_dir=data_blend_dir
-                )
+                target = discover_pack_collections(config, data_blend_dir=data_blend_dir)
             result = relocate_idxpack_collections(
                 source_pack,
                 output,

@@ -66,7 +66,10 @@ def load_pretrained_nemo_config(cls, model_path_or_name: str):
 
 
 def load_pretrained_hf(
-    model_path_or_name: str, pretrained_weights: bool = True, dtype=torch.float32, trust_remote_code: bool = False
+    model_path_or_name: str,
+    pretrained_weights: bool = True,
+    dtype=torch.float32,
+    trust_remote_code: bool = False,
 ):
     """
     Load pretrained HuggingFace AutoModelForCausalLM.
@@ -322,12 +325,96 @@ def setup_speech_encoder(model: torch.nn.Module, pretrained_weights: bool = True
         # When a multilayer/Qformer connector is used, the encoder lives at
         # ``encoder_multilayer.encoder.*`` rather than ``encoder.*``; remap ASR
         # state-dict keys so pretrained encoder weights actually load.
-        if isinstance(model.perception.modality_adapter, (QformerConnector, MultiLayerProjectionConnector)):
+        if isinstance(
+            model.perception.modality_adapter,
+            (QformerConnector, MultiLayerProjectionConnector),
+        ):
             asr_sd = {("encoder_multilayer." + k if k.startswith("encoder.") else k): v for k, v in asr_sd.items()}
         model.perception.load_state_dict(asr_sd, strict=False)
 
     if model.cfg.get("pe_encoder_path", None) not in (None, "", False):
+        if model.cfg.get("speaker_encoder", None) not in (None, "", False):
+            raise ValueError("pe_encoder_path and speaker_encoder are mutually exclusive.")
         setup_parallel_expert_encoder(model)
+    elif model.cfg.get("speaker_encoder", None) not in (None, "", False):
+        setup_independent_speaker_encoder(model)
+
+
+def setup_independent_speaker_encoder(model: torch.nn.Module):
+    """Add a standalone speaker Transformer beside the pretrained ASR encoder.
+
+    ``model.speaker_encoder.path`` points at a rendered artifact directory with
+    ``model_config.yaml`` and ``model.safetensors``. The two encoders execute
+    independently inside :class:`IndependentDualEncoder`; their same-rate states
+    are concatenated before the existing perception-to-LLM projection.
+    """
+    from nemo.collections.speechlm2.modules.perception import IdentityConnector, IndependentDualEncoder
+
+    cfg = model.cfg.speaker_encoder
+    artifact = Path(str(cfg.get("path", "")))
+    config_path = artifact / "model_config.yaml"
+    weights_path = artifact / "model.safetensors"
+    if not artifact.is_dir() or not config_path.is_file() or not weights_path.is_file():
+        raise FileNotFoundError(
+            "model.speaker_encoder.path must contain model_config.yaml and model.safetensors; " f"got {artifact}."
+        )
+    if model.cfg.get("encoder_chunk_size_seconds", None) is not None:
+        raise ValueError(
+            "Independent per-encoder chunking requires model.encoder_chunk_size_seconds=null; "
+            "set model.speaker_encoder.asr_chunk_size_seconds and chunk_size_seconds instead."
+        )
+    if not isinstance(model.perception.modality_adapter, IdentityConnector) or model.perception.rote is not None:
+        raise ValueError("IndependentDualEncoder requires IdentityConnector and rote=null.")
+    if "encoder_multilayer" in model.perception._modules:
+        raise ValueError("IndependentDualEncoder does not support multi-layer perception adapters.")
+
+    speaker_config = OmegaConf.load(config_path)
+    speaker = model.perception.from_config_dict(speaker_config)
+    state = load_file(str(weights_path), device="cpu")
+    speaker.load_state_dict(state, strict=True)
+
+    frame_shift_seconds = (
+        model.perception.preprocessor.featurizer.hop_length / model.perception.preprocessor.featurizer.sample_rate
+    )
+    dual = IndependentDualEncoder(
+        model.perception.encoder,
+        speaker,
+        frame_shift_seconds=frame_shift_seconds,
+        asr_chunk_size_seconds=cfg.get("asr_chunk_size_seconds", None),
+        auxiliary_chunk_size_seconds=cfg.get("chunk_size_seconds", None),
+        freeze_auxiliary=cfg.get("frozen", True),
+    )
+    dual.auxiliary_encoder_config = OmegaConf.to_container(speaker_config, resolve=True)
+
+    old_proj = model.perception.proj
+    if not isinstance(old_proj, torch.nn.Linear):
+        raise TypeError(
+            "IndependentDualEncoder currently requires the perception stack to end in nn.Linear; "
+            f"got {type(old_proj).__name__}."
+        )
+    model.perception.encoder = dual
+    model.perception.proj = torch.nn.Linear(
+        dual.d_model,
+        old_proj.out_features,
+        bias=old_proj.bias is not None,
+        device=old_proj.weight.device,
+        dtype=old_proj.weight.dtype,
+    )
+    with open_dict(model.cfg):
+        if "d_model" in model.cfg.perception.modality_adapter:
+            model.cfg.perception.modality_adapter.d_model = dual.d_model
+
+    logging.info(
+        "Mounted independent speaker encoder from %s beside ASR encoder "
+        "(widths: ASR=%d speaker=%d combined=%d; chunks: ASR=%s speaker=%s seconds; frozen=%s).",
+        artifact,
+        IndependentDualEncoder._encoder_width(dual.asr_encoder),
+        IndependentDualEncoder._encoder_width(dual.auxiliary_encoder),
+        dual.d_model,
+        dual.asr_chunk_size_seconds,
+        dual.auxiliary_chunk_size_seconds,
+        dual.freeze_auxiliary,
+    )
 
 
 def setup_parallel_expert_encoder(model: torch.nn.Module):
@@ -369,6 +456,47 @@ def setup_parallel_expert_encoder(model: torch.nn.Module):
         strict=True,
         config_overrides=model.cfg.get("pe_encoder_overrides", None),
     )
+    for cfg_key, attribute in (
+        ("pe_asr_chunk_size_seconds", "asr_chunk_size_seconds"),
+        ("pe_diar_chunk_size_seconds", "diar_chunk_size_seconds"),
+    ):
+        if (chunk_size := model.cfg.get(cfg_key, None)) is None:
+            continue
+        chunk_size = float(chunk_size)
+        if chunk_size <= 0:
+            raise ValueError(f"model.{cfg_key} must be positive or null, got {chunk_size}.")
+        if not hasattr(pe_encoder, attribute):
+            raise TypeError(
+                f"{type(pe_encoder).__name__} does not support model.{cfg_key}; "
+                f"missing runtime attribute {attribute!r}."
+            )
+        setattr(pe_encoder, attribute, chunk_size)
+        logging.info("Overrode ParallelExpertEncoder %s=%g seconds", attribute, chunk_size)
+
+    if (execution_mode := model.cfg.get("pe_sequence_packed_execution_mode", None)) is not None:
+        if execution_mode not in ("grouped", "serial_checkpointed"):
+            raise ValueError(
+                "model.pe_sequence_packed_execution_mode must be grouped or serial_checkpointed, "
+                f"got {execution_mode!r}."
+            )
+        pe_encoder.sequence_packed_execution_mode = execution_mode
+        logging.info(
+            "Overrode ParallelExpertEncoder sequence_packed_execution_mode=%s",
+            execution_mode,
+        )
+
+    if (serial_speech_grouped := model.cfg.get("pe_sequence_packed_serial_speech_grouped_moe", None)) is not None:
+        if not isinstance(serial_speech_grouped, bool):
+            raise ValueError(
+                "model.pe_sequence_packed_serial_speech_grouped_moe must be a boolean, "
+                f"got {serial_speech_grouped!r}."
+            )
+        pe_encoder.sequence_packed_serial_speech_grouped_moe = serial_speech_grouped
+        logging.info(
+            "Overrode ParallelExpertEncoder sequence_packed_serial_speech_grouped_moe=%s",
+            serial_speech_grouped,
+        )
+
     if (spk_kernel_scale := model.cfg.get("spk_kernel_scale", None)) is not None:
         pe_encoder.spk_kernel_scale = float(spk_kernel_scale)
 
@@ -598,7 +726,7 @@ def _load_checkpoint_state(checkpoint_path: str) -> dict:
 
         return load_file(os.path.join(checkpoint_path, "model.safetensors"))
     else:
-        return torch.load(checkpoint_path, map_location='cpu')['state_dict']
+        return torch.load(checkpoint_path, map_location="cpu")["state_dict"]
 
 
 def init_perception_from_checkpoint(model: torch.nn.Module, checkpoint_path: str):
@@ -655,6 +783,7 @@ def load_pretrained_model(model: torch.nn.Module, checkpoint_path: str):
 
     import gc
     import os
+
     from nemo.utils import logging
 
     logging.info(f"Loading pretrained s2s model from {checkpoint_path}")
@@ -668,7 +797,11 @@ def load_pretrained_model(model: torch.nn.Module, checkpoint_path: str):
         loaded_keys = []
         missing_keys = []
 
-        with safe_open(os.path.join(checkpoint_path, "model.safetensors"), framework="pt", device="cpu") as f:
+        with safe_open(
+            os.path.join(checkpoint_path, "model.safetensors"),
+            framework="pt",
+            device="cpu",
+        ) as f:
             available_keys = f.keys()
             for key in available_keys:
                 if key in model_state_dict:

@@ -13,9 +13,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis, NBestHypotheses
+import os
 
-__all__ = [
-    "Hypothesis",
-    "NBestHypotheses",
-]
+
+if os.getenv("NEMO_SPEECHLM2_VLLM_ONLY") == "1":
+    __all__ = []
+else:
+    from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis, NBestHypotheses
+
+    __all__ = [
+        "Hypothesis",
+        "NBestHypotheses",
+    ]

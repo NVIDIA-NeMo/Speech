@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import math
+import os
 import random
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -24,7 +25,22 @@ import torch.distributed
 from omegaconf import DictConfig, ListConfig, open_dict
 from torch import nn
 
-from nemo.collections.asr.models.configs import CacheAwareStreamingConfig
+if os.getenv("NEMO_SPEECHLM2_VLLM_ONLY") == "1":
+
+    @dataclass
+    class CacheAwareStreamingConfig:
+        chunk_size: int = 0
+        shift_size: int = 0
+        cache_drop_size: int = 0
+        last_channel_cache_size: int = 0
+        valid_out_len: int = 0
+        pre_encode_cache_size: int = 0
+        drop_extra_pre_encoded: int = 0
+        last_channel_num: int = 0
+        last_time_num: int = 0
+
+else:
+    from nemo.collections.asr.models.configs import CacheAwareStreamingConfig
 from nemo.collections.asr.parts.mixins.streaming import StreamingEncoder
 from nemo.collections.asr.parts.submodules.causal_convs import CausalConv1D
 from nemo.collections.asr.parts.submodules.conformer_modules import ConformerLayer

@@ -943,7 +943,9 @@ class TestAudioProcessing:
         assert not hasattr(info, "get_max_audio_tokens")
 
     def test_pe_processing_ignores_exported_generic_estimator_chunking(self, monkeypatch):
-        from nemo.collections.speechlm2.vllm.salm.audio import NeMoSpeechLMProcessingInfo
+        from nemo.collections.speechlm2.vllm.salm.audio import (
+            NeMoSpeechLMProcessingInfo,
+        )
 
         exported_estimator = {
             "chunk_size_seconds": 15.0,

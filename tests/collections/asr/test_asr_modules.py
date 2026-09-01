@@ -13,11 +13,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
+import random
+
 import pytest
 import torch
 from omegaconf import OmegaConf
 
 from nemo.collections.asr import modules
+from nemo.collections.asr.parts.packed_sequence import (
+    PackedEncoderActivations,
+    pack_encoder_output,
+    split_encoder_output,
+)
+from nemo.collections.asr.parts.preprocessing.features import (
+    FilterbankFeatures,
+    normalize_batch,
+    normalize_packed_batch,
+)
+from nemo.collections.asr.parts.submodules.subsampling import FeatureStacking
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.core.utils import numba_utils
 from nemo.core.utils.numba_utils import __NUMBA_MINIMUM_VERSION__
@@ -25,6 +39,420 @@ from nemo.utils import config_utils, logging
 
 
 class TestASRModulesBasicTests:
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        ("exact_pad", "preemph", "normalize", "pad_to", "frame_splicing"),
+        [
+            (False, 0.97, "per_feature", 0, 1),
+            (False, None, "all_features", 16, 1),
+            (True, 0.97, None, 0, 1),
+            (False, 0.97, "per_feature", 16, 2),
+        ],
+    )
+    @pytest.mark.parametrize(
+        "device",
+        [
+            "cpu",
+            pytest.param("cuda", marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")),
+        ],
+    )
+    def test_AudioToMelSpectrogramPreprocessor_packed_waveform_matches_padded(
+        self, exact_pad, preemph, normalize, pad_to, frame_splicing, device
+    ):
+        preprocessor = (
+            modules.AudioToMelSpectrogramPreprocessor(
+                normalize=normalize,
+                dither=0,
+                pad_to=pad_to,
+                exact_pad=exact_pad,
+                preemph=preemph,
+                frame_splicing=frame_splicing,
+            )
+            .eval()
+            .to(device)
+        )
+        lengths = torch.tensor([4096, 2500, 701], dtype=torch.long, device=device)
+        torch.manual_seed(7)
+        audios = torch.randn(3, int(lengths.max()), device=device)
+        for row, length in zip(audios, lengths):
+            row[int(length) :] = 0.0
+        packed_audio_samples = torch.cat([row[: int(length)] for row, length in zip(audios, lengths)])
+        audio_cu_seqlens = torch.cat([lengths.new_zeros(1), lengths.cumsum(dim=0, dtype=torch.long)])
+
+        expected, expected_lens = preprocessor(input_signal=audios, length=lengths)
+        actual = preprocessor.forward_packed(
+            input_signal=packed_audio_samples,
+            length=lengths,
+            input_signal_cu_seqlens=audio_cu_seqlens,
+        )
+
+        assert isinstance(actual, PackedEncoderActivations)
+        assert torch.equal(actual.lengths, expected_lens)
+        assert actual.padded_length == expected.shape[2]
+        assert actual.data.shape == (int(expected_lens.sum()), expected.shape[1])
+        for row, (features, valid_length) in enumerate(zip(split_encoder_output(actual), expected_lens.tolist())):
+            torch.testing.assert_close(
+                features,
+                expected[row, :, :valid_length].transpose(0, 1),
+                rtol=1e-5,
+                atol=2e-6,
+            )
+
+    @pytest.mark.unit
+    def test_AudioToMelSpectrogramPreprocessor_packed_waveform_uses_one_vectorized_stft(self, monkeypatch):
+        preprocessor = modules.AudioToMelSpectrogramPreprocessor(dither=0, pad_to=16).eval()
+        lengths = torch.tensor([4096, 2500, 701], dtype=torch.long)
+        padded = torch.randn(3, int(lengths.max()))
+        packed = torch.cat([row[: int(length)] for row, length in zip(padded, lengths)])
+        cu_seqlens = torch.cat([lengths.new_zeros(1), lengths.cumsum(dim=0)])
+        calls = 0
+        stft_input_shape = None
+        original_stft = preprocessor.featurizer.stft
+
+        def count_stft(*args, **kwargs):
+            nonlocal calls, stft_input_shape
+            calls += 1
+            stft_input_shape = args[0].shape
+            return original_stft(*args, **kwargs)
+
+        def reject_dense_frontend(*args, **kwargs):
+            raise AssertionError("packed waveform preprocessing must not call the dense frontend")
+
+        monkeypatch.setattr(preprocessor.featurizer, "stft", count_stft)
+        monkeypatch.setattr(preprocessor, "forward", reject_dense_frontend)
+        actual = preprocessor.forward_packed(packed, lengths, cu_seqlens)
+
+        assert calls == 1
+        assert stft_input_shape[0] == 1
+        assert stft_input_shape[1] <= packed.numel() + lengths.numel() * (
+            preprocessor.featurizer.n_fft + preprocessor.featurizer.hop_length
+        )
+        assert actual.total_tokens == int(actual.lengths.sum())
+
+    @pytest.mark.unit
+    def test_AudioToMelSpectrogramPreprocessor_packed_waveform_isolates_boundaries(self):
+        preprocessor = modules.AudioToMelSpectrogramPreprocessor(
+            normalize="per_feature", dither=0, pad_to=0, preemph=0.97
+        ).eval()
+        first = torch.zeros(1600)
+        first[-1] = 1.0
+        second = torch.zeros(1000)
+        second[0] = -1.0
+        lengths = torch.tensor([first.numel(), second.numel()], dtype=torch.long)
+        packed = torch.cat([first, second])
+        cu_seqlens = torch.tensor([0, first.numel(), packed.numel()], dtype=torch.long)
+
+        actual = preprocessor.forward_packed(
+            input_signal=packed,
+            length=lengths,
+            input_signal_cu_seqlens=cu_seqlens,
+        )
+
+        for row, (features, waveform) in enumerate(zip(split_encoder_output(actual), (first, second))):
+            expected, expected_lens = preprocessor(input_signal=waveform.unsqueeze(0), length=lengths[row : row + 1])
+            assert actual.lengths[row] == expected_lens[0]
+            valid_length = int(expected_lens[0])
+            torch.testing.assert_close(features, expected[0, :, :valid_length].transpose(0, 1), rtol=1e-5, atol=2e-6)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("exact_pad", [False, True])
+    @pytest.mark.parametrize(
+        "device",
+        [
+            "cpu",
+            pytest.param("cuda", marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")),
+        ],
+    )
+    def test_AudioToMelSpectrogramPreprocessor_packed_waveform_preserves_zero_length_rows(self, exact_pad, device):
+        preprocessor = (
+            modules.AudioToMelSpectrogramPreprocessor(dither=0, pad_to=0, exact_pad=exact_pad).eval().to(device)
+        )
+        lengths = torch.tensor([0, 1600, 2400], dtype=torch.long, device=device)
+        audios = torch.randn(3, 2400, device=device)
+        audios[0].zero_()
+        audios[1, 1600:].zero_()
+        packed = torch.cat([audios[1, :1600], audios[2]])
+        cu_seqlens = torch.tensor([0, 0, 1600, 4000], dtype=torch.long, device=device)
+
+        expected, expected_lens = preprocessor(input_signal=audios, length=lengths)
+        actual = preprocessor.forward_packed(packed, lengths, cu_seqlens)
+
+        assert torch.equal(actual.lengths, expected_lens)
+        for row, features in enumerate(split_encoder_output(actual)):
+            valid_length = int(expected_lens[row])
+            torch.testing.assert_close(features, expected[row, :, :valid_length].transpose(0, 1), rtol=1e-5, atol=3e-6)
+
+    @pytest.mark.unit
+    def test_AudioToMelSpectrogramPreprocessor_packed_dither_is_seed_deterministic(self):
+        preprocessor = modules.AudioToMelSpectrogramPreprocessor(
+            normalize="per_feature", dither=1e-5, pad_to=0
+        ).train()
+        lengths = torch.tensor([1600, 900], dtype=torch.long)
+        packed = torch.linspace(-0.5, 0.5, int(lengths.sum()))
+        cu_seqlens = torch.tensor([0, 1600, 2500], dtype=torch.long)
+        padded = torch.zeros(2, 1600)
+        padded[0] = packed[:1600]
+        padded[1, :900] = packed[1600:]
+
+        torch.manual_seed(11)
+        expected, expected_lens = preprocessor(input_signal=padded.clone(), length=lengths)
+        torch.manual_seed(11)
+        first = preprocessor.forward_packed(packed.clone(), lengths, cu_seqlens)
+        torch.manual_seed(11)
+        second = preprocessor.forward_packed(packed.clone(), lengths, cu_seqlens)
+
+        assert torch.equal(first.lengths, expected_lens)
+        assert torch.equal(first.lengths, second.lengths)
+        assert torch.equal(first.data, second.data)
+        for row, (features, valid_length) in enumerate(zip(split_encoder_output(first), expected_lens.tolist())):
+            # Padded batches consume dither RNG for padding positions, so later rows
+            # are tolerance-equivalent rather than bitwise-identical.
+            torch.testing.assert_close(
+                features,
+                expected[row, :, :valid_length].transpose(0, 1),
+                rtol=1e-3,
+                atol=5e-4,
+            )
+
+    @pytest.mark.unit
+    def test_AudioToMelSpectrogramPreprocessor_packed_waveform_validates_metadata(self):
+        preprocessor = modules.AudioToMelSpectrogramPreprocessor(dither=0, pad_to=0)
+        packed = torch.zeros(6)
+        lengths = torch.tensor([4, 2], dtype=torch.long)
+
+        with pytest.raises(ValueError, match="must equal length"):
+            preprocessor.forward_packed(packed, lengths, torch.tensor([0, 3, 6]))
+        with pytest.raises(ValueError, match="ends at 6"):
+            preprocessor.forward_packed(packed[:5], lengths, torch.tensor([0, 4, 6]))
+        with pytest.raises(TypeError, match="integer dtype"):
+            preprocessor.forward_packed(packed, lengths, torch.tensor([0.0, 4.0, 6.0]))
+
+    @pytest.mark.unit
+    def test_AudioToMelSpectrogramPreprocessor_packed_padding_value_matches_dense_feature_stacking(self):
+        preprocessor = modules.AudioToMelSpectrogramPreprocessor(
+            features=8, normalize="per_feature", dither=0, pad_to=16, pad_value=-3.0
+        ).eval()
+        lengths = torch.tensor([4096, 2500, 701])
+        audios = torch.randn(3, int(lengths.max()))
+        audios.masked_fill_(torch.arange(audios.shape[1])[None, :] >= lengths[:, None], 0.0)
+        packed_audio = torch.cat([row[: int(length)] for row, length in zip(audios, lengths)])
+        audio_cu_seqlens = torch.cat([lengths.new_zeros(1), lengths.cumsum(0)])
+        stacking = FeatureStacking(subsampling_factor=4, feat_in=8, feat_out=16).eval()
+
+        dense_mels, mel_lengths = preprocessor(input_signal=audios, length=lengths)
+        packed_mels = preprocessor.forward_packed(packed_audio, lengths, audio_cu_seqlens)
+        dense_stacked, output_lengths = stacking(dense_mels, mel_lengths)
+        expected = pack_encoder_output(dense_stacked, output_lengths)
+        actual = stacking.forward_packed(packed_mels)
+
+        assert packed_mels.padding_value == -3.0
+        torch.testing.assert_close(actual.data, expected.data, rtol=1e-5, atol=2e-6)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("linear_spec", [False, True])
+    def test_FilterbankFeatures_packed_all_empty_has_the_right_width(self, linear_spec):
+        featurizer = FilterbankFeatures(nfilt=23, frame_splicing=2, dither=0, pad_to=0).eval()
+        packed = featurizer.forward_packed(
+            torch.empty(0), torch.tensor([0, 0]), torch.tensor([0, 0, 0]), linear_spec=linear_spec
+        )
+
+        expected_width = featurizer.n_fft // 2 + 1 if linear_spec else 46
+        assert packed.data.shape == (0, expected_width)
+        assert packed.lengths.tolist() == [0, 0]
+        assert packed.cu_seqlens.tolist() == [0, 0, 0]
+
+    @pytest.mark.unit
+    def test_FilterbankFeatures_forward_packed_honors_use_grads(self):
+        lengths = torch.tensor([1600, 900])
+        cu_seqlens = torch.cat([lengths.new_zeros(1), lengths.cumsum(0)])
+        samples = torch.randn(int(lengths.sum()), requires_grad=True)
+        frozen = FilterbankFeatures(nfilt=8, normalize=None, dither=0, pad_to=0, use_grads=False).eval()
+        differentiable = FilterbankFeatures(nfilt=8, normalize=None, dither=0, pad_to=0, use_grads=True).eval()
+
+        assert not frozen.forward_packed(samples, lengths, cu_seqlens).data.requires_grad
+        output = differentiable.forward_packed(samples, lengths, cu_seqlens)
+        output.data.sum().backward()
+        assert samples.grad is not None
+        assert torch.isfinite(samples.grad).all()
+
+    @pytest.mark.unit
+    def test_FilterbankFeatures_packed_linear_spectrum_matches_nondefault_dense_stft(self):
+        featurizer = FilterbankFeatures(
+            n_window_size=400,
+            n_window_stride=137,
+            n_fft=512,
+            nfilt=8,
+            normalize=None,
+            dither=0,
+            pad_to=0,
+        ).eval()
+        lengths = torch.tensor([4097, 2503])
+        audios = torch.randn(2, int(lengths.max()))
+        audios.masked_fill_(torch.arange(audios.shape[1])[None, :] >= lengths[:, None], 0.0)
+        packed_audio = torch.cat([row[: int(length)] for row, length in zip(audios, lengths)])
+        cu_seqlens = torch.cat([lengths.new_zeros(1), lengths.cumsum(0)])
+
+        expected, expected_lengths = featurizer(audios, lengths, linear_spec=True)
+        actual = featurizer.forward_packed(packed_audio, lengths, cu_seqlens, linear_spec=True)
+        expected = pack_encoder_output(expected.transpose(1, 2), expected_lengths)
+
+        torch.testing.assert_close(actual.data, expected.data, rtol=1e-5, atol=3e-6)
+
+    @pytest.mark.unit
+    def test_FilterbankFeatures_packed_fixed_normalization_matches_dense(self):
+        normalize = {
+            "fixed_mean": [value for row in ([0.1] * 8, [-0.2] * 8) for value in row],
+            "fixed_std": [value for row in ([1.5] * 8, [0.75] * 8) for value in row],
+        }
+        featurizer = FilterbankFeatures(nfilt=8, normalize=normalize, dither=0, pad_to=0).eval()
+        lengths = torch.tensor([4096, 2500])
+        audios = torch.randn(2, int(lengths.max()))
+        audios.masked_fill_(torch.arange(audios.shape[1])[None, :] >= lengths[:, None], 0.0)
+        packed_audio = torch.cat([row[: int(length)] for row, length in zip(audios, lengths)])
+        cu_seqlens = torch.cat([lengths.new_zeros(1), lengths.cumsum(0)])
+
+        expected, expected_lengths = featurizer(audios, lengths)
+        actual = featurizer.forward_packed(packed_audio, lengths, cu_seqlens)
+        expected = pack_encoder_output(expected.transpose(1, 2), expected_lengths)
+
+        torch.testing.assert_close(actual.data, expected.data, rtol=1e-5, atol=3e-6)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("use_vectorized_code", [False, True])
+    def test_SpectrogramAugmentation_forward_packed_matches_dense_vectorized_masks(self, use_vectorized_code):
+        augment = modules.SpectrogramAugmentation(
+            freq_masks=2,
+            time_masks=2,
+            freq_width=3,
+            time_width=4,
+            rect_masks=1,
+            rect_time=3,
+            rect_freq=2,
+            rng=random.Random(13),
+            mask_value=-2.0,
+            use_vectorized_spec_augment=use_vectorized_code,
+        ).train()
+        lengths = torch.tensor([12, 7, 0])
+        features = torch.randn(3, 8, 12)
+        features.masked_fill_(torch.arange(12)[None, None, :] >= lengths[:, None, None], 0.0)
+        packed = pack_encoder_output(features.transpose(1, 2), lengths)
+        packed_augment = copy.deepcopy(augment)
+        augment.spec_augment.use_vectorized_code = True
+
+        torch.manual_seed(29)
+        expected = augment(input_spec=features.clone(), length=lengths)
+        torch.manual_seed(29)
+        actual = packed_augment.forward_packed(packed)
+        expected = pack_encoder_output(expected.transpose(1, 2), lengths)
+
+        torch.testing.assert_close(actual.data, expected.data, rtol=0.0, atol=0.0)
+
+    @pytest.mark.unit
+    def test_SpectrogramAugmentation_packed_cutout_preserves_frontend_padded_rng_range(self):
+        preprocessor = modules.AudioToMelSpectrogramPreprocessor(
+            features=8, normalize=None, dither=0, pad_to=16
+        ).eval()
+        lengths = torch.tensor([1600, 900])
+        audios = torch.randn(2, int(lengths.max()))
+        audios.masked_fill_(torch.arange(audios.shape[1])[None, :] >= lengths[:, None], 0.0)
+        packed_audio = torch.cat([row[: int(length)] for row, length in zip(audios, lengths)])
+        cu_seqlens = torch.cat([lengths.new_zeros(1), lengths.cumsum(0)])
+        dense_mels, mel_lengths = preprocessor(input_signal=audios, length=lengths)
+        packed_mels = preprocessor.forward_packed(packed_audio, lengths, cu_seqlens)
+        augment = modules.SpectrogramAugmentation(
+            freq_masks=0,
+            time_masks=0,
+            rect_masks=2,
+            rect_time=5,
+            rect_freq=2,
+            rng=random.Random(31),
+        )
+        packed_augment = copy.deepcopy(augment)
+
+        expected = augment(input_spec=dense_mels.clone(), length=mel_lengths)
+        actual = packed_augment.forward_packed(packed_mels)
+        expected = pack_encoder_output(expected.transpose(1, 2), mel_lengths)
+
+        assert packed_mels.padded_length == dense_mels.shape[2]
+        assert torch.equal(actual.data == 0.0, expected.data == 0.0)
+        torch.testing.assert_close(actual.data, expected.data, rtol=1e-5, atol=2e-6)
+
+    @pytest.mark.unit
+    def test_SpectrogramAugmentation_packed_cutout_accepts_all_empty_batch(self):
+        augment = modules.SpectrogramAugmentation(rect_masks=1, rect_time=5, rect_freq=2)
+        packed = PackedEncoderActivations(
+            torch.empty(0, 8),
+            torch.tensor([0, 0]),
+            torch.tensor([0, 0, 0], dtype=torch.int32),
+            0,
+        )
+
+        assert augment.forward_packed(packed) is packed
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "normalize_type",
+        [
+            None,
+            "per_feature",
+            "all_features",
+            {
+                "fixed_mean": [value for row in ([0.1] * 4, [-0.2] * 4) for value in row],
+                "fixed_std": [value for row in ([1.5] * 4, [0.75] * 4) for value in row],
+            },
+        ],
+    )
+    def test_normalize_packed_batch_preserves_dense_partial_stack_padding(self, normalize_type):
+        lengths = torch.tensor([7, 4])
+        features = torch.randn(2, 4, 7)
+        features.masked_fill_(torch.arange(7)[None, None, :] >= lengths[:, None, None], -3.0)
+        packed = PackedEncoderActivations(
+            pack_encoder_output(features.transpose(1, 2), lengths).data,
+            lengths,
+            torch.tensor([0, 7, 11], dtype=torch.int32),
+            7,
+            padding_value=-3.0,
+            padded_length=7,
+        )
+        stacking = FeatureStacking(subsampling_factor=3, feat_in=4, feat_out=6).eval()
+
+        if normalize_type is None:
+            dense_normalized = features
+            packed_normalized = packed
+        else:
+            dense_normalized, _, _ = normalize_batch(features, lengths, normalize_type)
+            packed_normalized = normalize_packed_batch(packed, normalize_type)
+        expected, output_lengths = stacking(dense_normalized, lengths)
+        expected = pack_encoder_output(expected, output_lengths)
+        actual = stacking.forward_packed(packed_normalized)
+
+        torch.testing.assert_close(actual.data, expected.data, rtol=1e-5, atol=2e-6)
+
+    @pytest.mark.unit
+    def test_FilterbankFeatures_packed_narrowband_uses_configured_rng(self):
+        featurizer = FilterbankFeatures(
+            nfilt=8,
+            normalize=None,
+            dither=0,
+            pad_to=0,
+            rng=random.Random(17),
+            nb_augmentation_prob=0.5,
+            nb_max_freq=2000,
+        ).train()
+        lengths = torch.tensor([4096, 2500, 1600])
+        audios = torch.randn(3, int(lengths.max()))
+        audios.masked_fill_(torch.arange(audios.shape[1])[None, :] >= lengths[:, None], 0.0)
+        packed_audio = torch.cat([row[: int(length)] for row, length in zip(audios, lengths)])
+        cu_seqlens = torch.cat([lengths.new_zeros(1), lengths.cumsum(0)])
+        state = featurizer._rng.getstate()
+
+        expected, expected_lengths = featurizer(audios, lengths)
+        featurizer._rng.setstate(state)
+        actual = featurizer.forward_packed(packed_audio, lengths, cu_seqlens)
+        expected = pack_encoder_output(expected.transpose(1, 2), expected_lengths)
+
+        torch.testing.assert_close(actual.data, expected.data, rtol=1e-5, atol=2e-6)
+
     @pytest.mark.unit
     def test_AudioToMelSpectrogramPreprocessor_config(self):
         # Test that dataclass matches signature of module

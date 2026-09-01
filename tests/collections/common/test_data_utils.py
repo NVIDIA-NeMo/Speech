@@ -59,7 +59,8 @@ def test_get_datastore_object_forwards_retries_to_reader(tmp_path):
     local_path = tmp_path / "cache" / "sample.bin"
     local_path.parent.mkdir()
     local_path.touch()
-    reader = mock.Mock(return_value=BytesIO(b"sample bytes"))
+    source = BytesIO(b"sample bytes")
+    reader = mock.Mock(return_value=source)
 
     with (
         mock.patch.object(datastore_utils, "is_datastore_path", return_value=True),
@@ -70,4 +71,5 @@ def test_get_datastore_object_forwards_retries_to_reader(tmp_path):
 
     assert result == str(local_path)
     assert local_path.read_bytes() == b"sample bytes"
+    assert source.closed
     reader.assert_called_once_with("s3://example/sample.bin", num_retries=7)

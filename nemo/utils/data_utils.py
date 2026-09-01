@@ -281,9 +281,10 @@ def get_datastore_object(path: str, force: bool = False, num_retries: int = 5) -
 
             temp_path = None
             try:
-                with tempfile.NamedTemporaryFile(dir=local_dir, prefix='.download-', delete=False) as f:
-                    temp_path = f.name
-                    f.write(open_best(path, num_retries=num_retries).read())
+                with open_best(path, num_retries=num_retries) as source:
+                    with tempfile.NamedTemporaryFile(dir=local_dir, prefix='.download-', delete=False) as f:
+                        temp_path = f.name
+                        f.write(source.read())
                 os.replace(temp_path, local_path)
             finally:
                 if temp_path is not None and os.path.exists(temp_path):

@@ -1182,11 +1182,9 @@ def _auto_detect_bucketing_and_validate_batch_size(config) -> None:
         if bucket_batch_size is not None:
             logging.info("Auto-enabling use_bucketing=True because bucket_batch_size is set.")
             config.use_bucketing = True
-            use_bucketing = True
         elif bucket_duration_bins is not None:
             logging.info("Auto-enabling use_bucketing=True because bucket_duration_bins is set.")
             config.use_bucketing = True
-            use_bucketing = True
 
     # Validate that at least one valid batch size combination is configured.
     has_batch_size = batch_size is not None

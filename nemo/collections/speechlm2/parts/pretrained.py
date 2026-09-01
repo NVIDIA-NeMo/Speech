@@ -25,44 +25,11 @@ from transformers import AutoConfig, AutoModelForCausalLM
 from nemo.collections.asr.models import ASRModel
 from nemo.collections.asr.modules.parallel_expert_encoder import ParallelExpertEncoderPT
 from nemo.collections.speechlm2.modules import AudioPerceptionModule
+from nemo.collections.speechlm2.parts.model_loading import load_pretrained_nemo, load_pretrained_nemo_config
 from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.tts.models import AudioCodecModel
 from nemo.utils import logging
 from nemo.utils.compat import python313_pathlib_pickle_compat
-
-
-def load_pretrained_nemo(cls, model_path_or_name: str):
-    """
-    Load pretrained NeMo 1.0 model (inheriting from ModelPT). Works with ASR, TTS, codec models.
-
-    Setting ``pretrained_weights=False`` returns a model that has identical architecture with the checkpoint,
-    but is randomly initialized.
-    """
-    if Path(model_path_or_name).exists() and model_path_or_name.endswith(".nemo"):
-        # Local .nemo restore_from() doesn't resolve the config's `target` (instantiates
-        # the abstract base). Resolve the concrete class first, like from_pretrained().
-        cfg = cls.restore_from(model_path_or_name, return_config=True)
-        target = cfg.get("target", None) if hasattr(cfg, "get") else None
-        if target is not None:
-            from nemo.core.classes.common import _get_allowed_target_class
-
-            resolved_cls = _get_allowed_target_class(target)
-            concrete_cls = resolved_cls
-            while hasattr(concrete_cls, "__wrapped__"):
-                concrete_cls = concrete_cls.__wrapped__
-            if not isinstance(concrete_cls, type) or not issubclass(concrete_cls, cls):
-                raise TypeError(f"Checkpoint target {target!r} is not a subclass of {cls.__name__}.")
-            cls = resolved_cls
-        return cls.restore_from(model_path_or_name)
-    else:
-        return cls.from_pretrained(model_path_or_name)
-
-
-def load_pretrained_nemo_config(cls, model_path_or_name: str):
-    """Load a NeMo model config without loading model weights."""
-    if Path(model_path_or_name).exists() and model_path_or_name.endswith(".nemo"):
-        return cls.restore_from(model_path_or_name, return_config=True)
-    return cls.from_pretrained(model_path_or_name, return_config=True)
 
 
 def load_pretrained_hf(

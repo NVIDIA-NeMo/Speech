@@ -522,7 +522,7 @@ class AudioTranscriptionPerceptionModule(NeuralModule, Exportable):
         return self.asr.preprocessor
 
     def __init__(self, cfg: DictConfig, pretrained_asr: str):
-        from nemo.collections.speechlm2.parts.pretrained import load_pretrained_nemo
+        from nemo.collections.speechlm2.parts.model_loading import load_pretrained_nemo
 
         super().__init__()
         # Initialize components

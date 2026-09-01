@@ -40,9 +40,12 @@ _HYBRID_ARCHITECTURES = frozenset(
 # silently rendering the wrong placeholder at request time.
 _AUDIO_PLACEHOLDER = "<|audio|>"
 
-# Number of extra embedding rows the SpeechLM adds on top of the backbone's
-# native vocab during training: ``<|audio|>`` locator plus headroom for other
-# special tokens and TensorCore-friendly alignment.
+# Historical serving-time headroom above the backbone vocabulary. vLLM builds
+# the target and draft embedding tables at this padded size, and the weight
+# loader zero-pads the smaller training tensors to match. ``prepare_for_vllm``
+# validates the tokenizer's audio-token ID against this bound during export;
+# the default export flow treats a validation failure as non-fatal and leaves
+# an HF-only checkpoint.
 _SPEECHLM_EMBED_EXTRA_ROWS = 10
 
 
@@ -72,12 +75,18 @@ class NeMoSpeechLMConfig(PretrainedConfig):
         self,
         perception: dict | None = None,
         pretrained_llm: str | None = None,
+        llm_config: dict | None = None,
         pretrained_asr: str | None = None,
         audio_locator_tag: str | None = None,
         prompt_format: str | None = None,
         pretrained_weights: bool | None = None,
         lora: dict | None = None,
         encoder_chunk_size_seconds: float | None = None,
+        pe_encoder_path: str | None = None,
+        pe_encoder_config: dict | None = None,
+        pe_encoder_type: str | None = None,
+        pe_encoder_overrides: dict | None = None,
+        speaker_encoder: dict | None = None,
         **kwargs,
     ):
         required_fields = {
@@ -91,6 +100,12 @@ class NeMoSpeechLMConfig(PretrainedConfig):
             perception is None
             and lora is None
             and encoder_chunk_size_seconds is None
+            and pe_encoder_path is None
+            and pe_encoder_config is None
+            and pe_encoder_type is None
+            and pe_encoder_overrides is None
+            and speaker_encoder is None
+            and llm_config is None
             and not kwargs
             and all(value is None for value in required_fields.values())
         )
@@ -110,12 +125,18 @@ class NeMoSpeechLMConfig(PretrainedConfig):
             # path inert; real checkpoint loads continue through validation below.
             self.perception = {}
             self.pretrained_llm = None
+            self.llm_config = None
             self.pretrained_asr = None
             self.audio_locator_tag = None
             self.prompt_format = None
             self.pretrained_weights = None
             self.lora = None
             self.encoder_chunk_size_seconds = None
+            self.pe_encoder_path = None
+            self.pe_encoder_config = None
+            self.pe_encoder_type = None
+            self.pe_encoder_overrides = None
+            self.speaker_encoder = None
             return
 
         for name, value in required_fields.items():
@@ -134,8 +155,27 @@ class NeMoSpeechLMConfig(PretrainedConfig):
                 f"the model class's get_placeholder_str (vLLM-mandated "
                 f"class-level metadata) need to be updated together."
             )
+        has_pe_encoder = pe_encoder_path not in (
+            None,
+            "",
+            False,
+        ) or pe_encoder_config not in (
+            None,
+            {},
+            "",
+            False,
+        )
+        if has_pe_encoder and speaker_encoder not in (None, {}, "", False):
+            raise ValueError("ParallelExpertEncoder and speaker_encoder are mutually exclusive.")
+        if pe_encoder_overrides not in (None, {}) and pe_encoder_path in (
+            None,
+            "",
+            False,
+        ):
+            raise ValueError("pe_encoder_overrides requires pe_encoder_path.")
         self.perception = perception or {}
         self.pretrained_llm = pretrained_llm
+        self.llm_config = llm_config
         self.pretrained_asr = pretrained_asr
         self.audio_locator_tag = audio_locator_tag
         self.prompt_format = prompt_format
@@ -143,7 +183,21 @@ class NeMoSpeechLMConfig(PretrainedConfig):
         self.lora = lora
         self.encoder_chunk_size_seconds = encoder_chunk_size_seconds
 
-        self.text_config = AutoConfig.from_pretrained(pretrained_llm, trust_remote_code=True)
+        if llm_config is None:
+            self.text_config = AutoConfig.from_pretrained(pretrained_llm, trust_remote_code=True)
+        else:
+            if not isinstance(llm_config, dict):
+                raise ValueError(f"NeMo SpeechLM llm_config must be a dict, got {type(llm_config).__name__}.")
+            embedded_config = dict(llm_config)
+            model_type = embedded_config.pop("model_type", None)
+            if not model_type:
+                raise ValueError("NeMo SpeechLM llm_config must declare model_type.")
+            self.text_config = AutoConfig.for_model(model_type, **embedded_config)
+        self.pe_encoder_path = pe_encoder_path
+        self.pe_encoder_config = pe_encoder_config
+        self.pe_encoder_type = pe_encoder_type
+        self.pe_encoder_overrides = pe_encoder_overrides
+        self.speaker_encoder = speaker_encoder
 
         raw_archs = getattr(self.text_config, "architectures", [])
         if len(raw_archs) != 1:
@@ -212,6 +266,7 @@ class NeMoSpeechLMConfig(PretrainedConfig):
         if name.startswith("_") or name in (
             "perception",
             "pretrained_llm",
+            "llm_config",
             "pretrained_asr",
             "audio_locator_tag",
             "prompt_format",
@@ -220,6 +275,11 @@ class NeMoSpeechLMConfig(PretrainedConfig):
             "lora",
             "is_hybrid",
             "encoder_chunk_size_seconds",
+            "pe_encoder_path",
+            "pe_encoder_config",
+            "pe_encoder_type",
+            "pe_encoder_overrides",
+            "speaker_encoder",
         ):
             raise AttributeError(name)
         alias = self._ATTR_ALIASES.get(name, name) if self.is_hybrid else name

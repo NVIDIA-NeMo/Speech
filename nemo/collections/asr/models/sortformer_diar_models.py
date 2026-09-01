@@ -24,24 +24,58 @@ import numpy as np
 import torch
 import torch.distributed as dist
 from omegaconf import DictConfig, OmegaConf
-from pytorch_lightning import Trainer
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from nemo.collections.asr.data.audio_to_diar_label import AudioToSpeechE2ESpkDiarDataset
-from nemo.collections.asr.data.audio_to_diar_label_lhotse import LhotseAudioToSpeechE2ESpkDiarDataset
-from nemo.collections.asr.metrics.multi_binary_acc import MultiBinaryAccuracy
 from nemo.collections.asr.models.asr_model import ExportableEncDecModel
-from nemo.collections.asr.parts.mixins.diarization import DiarizeConfig, SpkDiarizationMixin
-from nemo.collections.asr.parts.preprocessing.features import FilterbankFeatures, WaveformFeaturizer
-from nemo.collections.asr.parts.preprocessing.perturb import process_augmentations
-from nemo.collections.asr.parts.utils.asr_multispeaker_utils import (
-    get_ats_targets_hungarian,
-    get_pil_targets_hungarian,
-)
-from nemo.collections.asr.parts.utils.speaker_utils import generate_diarization_output_lines
-from nemo.collections.asr.parts.utils.vad_utils import predlist_to_timestamps
-from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
+
+_VLLM_ONLY = os.getenv("NEMO_SPEECHLM2_VLLM_ONLY") == "1"
+
+if _VLLM_ONLY:
+    Trainer = Any
+    DiarizeConfig = Any
+
+    class SpkDiarizationMixin:
+        pass
+
+    class MultiBinaryAccuracy(torch.nn.Module):
+        """State-free placeholder; serving never updates training metrics."""
+
+        def reset(self):
+            return None
+
+        def compute(self):
+            return torch.tensor(0.0)
+
+    def _offline_only(*_args, **_kwargs):
+        raise RuntimeError("This Sortformer training/data API is unavailable in SpeechLM serving-only mode.")
+
+    AudioToSpeechE2ESpkDiarDataset = object
+    LhotseAudioToSpeechE2ESpkDiarDataset = object
+    FilterbankFeatures = object
+    WaveformFeaturizer = object
+    process_augmentations = _offline_only
+    get_ats_targets_hungarian = _offline_only
+    get_pil_targets_hungarian = _offline_only
+    generate_diarization_output_lines = _offline_only
+    predlist_to_timestamps = _offline_only
+    get_lhotse_dataloader_from_config = _offline_only
+else:
+    from pytorch_lightning import Trainer
+
+    from nemo.collections.asr.data.audio_to_diar_label import AudioToSpeechE2ESpkDiarDataset
+    from nemo.collections.asr.data.audio_to_diar_label_lhotse import LhotseAudioToSpeechE2ESpkDiarDataset
+    from nemo.collections.asr.metrics.multi_binary_acc import MultiBinaryAccuracy
+    from nemo.collections.asr.parts.mixins.diarization import DiarizeConfig, SpkDiarizationMixin
+    from nemo.collections.asr.parts.preprocessing.features import FilterbankFeatures, WaveformFeaturizer
+    from nemo.collections.asr.parts.preprocessing.perturb import process_augmentations
+    from nemo.collections.asr.parts.utils.asr_multispeaker_utils import (
+        get_ats_targets_hungarian,
+        get_pil_targets_hungarian,
+    )
+    from nemo.collections.asr.parts.utils.speaker_utils import generate_diarization_output_lines
+    from nemo.collections.asr.parts.utils.vad_utils import predlist_to_timestamps
+    from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
 from nemo.core.classes import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo, safe_instantiate
 from nemo.core.neural_types import AudioSignal, LengthsType, NeuralType
@@ -149,6 +183,18 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
         random.seed(42)
         self._trainer = trainer if trainer else None
         self._cfg = cfg
+        if _VLLM_ONLY:
+            self._cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
+            for data_config_name in (
+                "train_ds",
+                "validation_ds",
+                "test_ds",
+                "spec_augment",
+                "augmentor",
+            ):
+                if data_config_name in self._cfg:
+                    self._cfg[data_config_name] = None
+            cfg = self._cfg
         self.high_resolution, self.output_subsampling_factor = self._resolve_output_resolution()
 
         if self._trainer:
@@ -316,16 +362,22 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
         return dataloader_instance
 
     def setup_training_data(self, train_data_config: Optional[Union[DictConfig, Dict]]):
+        if _VLLM_ONLY:
+            return _offline_only()
         self._train_dl = self.__setup_dataloader_from_config(
             config=train_data_config,
         )
 
     def setup_validation_data(self, val_data_layer_config: Optional[Union[DictConfig, Dict]]):
+        if _VLLM_ONLY:
+            return _offline_only()
         self._validation_dl = self.__setup_dataloader_from_config(
             config=val_data_layer_config,
         )
 
     def setup_test_data(self, test_data_config: Optional[Union[DictConfig, Dict]]):
+        if _VLLM_ONLY:
+            return _offline_only()
         self._test_dl = self.__setup_dataloader_from_config(
             config=test_data_config,
         )

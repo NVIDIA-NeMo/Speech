@@ -37,11 +37,12 @@ def test_salm_manual_model_and_optimizer_state_restore_with_runtime_packed_opt_i
 
     assert set(resumed.state_dict()) == set(previous.state_dict())
     assert len(resumed_optimizer.state) == len(optimizer.state)
+    device = next(resumed.parameters()).device
     batch = {
-        "audios": torch.tensor([[1.0, 2.0, 3.0, 4.0, 5.0]]),
-        "audio_lens": torch.tensor([5], dtype=torch.long),
-        "input_ids": torch.tensor([[resumed.audio_locator_tag_id, 10]], dtype=torch.long),
-        "loss_mask": torch.tensor([[False, True]], dtype=torch.bool),
+        "audios": torch.tensor([[1.0, 2.0, 3.0, 4.0, 5.0]], device=device),
+        "audio_lens": torch.tensor([5], dtype=torch.long, device=device),
+        "input_ids": torch.tensor([[resumed.audio_locator_tag_id, 10]], dtype=torch.long, device=device),
+        "loss_mask": torch.tensor([[False, True]], dtype=torch.bool, device=device),
     }
     resumed.prepare_inputs(batch)
     assert resumed.perception.sequence_packed_calls == 1

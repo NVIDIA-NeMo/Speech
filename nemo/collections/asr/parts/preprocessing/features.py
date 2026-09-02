@@ -71,9 +71,13 @@ def normalize_batch(x, seq_len, normalize_type):
             )
         time_steps = torch.arange(max_time, device=x.device).unsqueeze(0).expand(batch_size, max_time)
         valid_mask = time_steps < seq_len.unsqueeze(1)
-        x_mean_numerator = torch.where(valid_mask.unsqueeze(1), x, 0.0).sum(axis=2)
         x_mean_denominator = valid_mask.sum(axis=1)
-        x_mean = x_mean_numerator / x_mean_denominator.unsqueeze(1)
+        # Reference-centering keeps constant inputs exact across reduction backends
+        # and matches the packed normalization path.
+        reference = x[:, :, 0] if max_time else x.new_zeros((batch_size, x.shape[1]))
+        reference = reference.masked_fill((x_mean_denominator == 0).unsqueeze(1), 0.0)
+        centered = torch.where(valid_mask.unsqueeze(1), x - reference.unsqueeze(2), 0.0)
+        x_mean = reference + centered.sum(axis=2) / x_mean_denominator.clamp_min(1).unsqueeze(1)
 
         # Subtract 1 in the denominator to correct for the bias.
         x_std = torch.sqrt(

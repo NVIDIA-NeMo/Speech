@@ -12,27 +12,17 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import os
-
-
-# The vLLM plugin only needs ``nemo.collections.speechlm2.vllm``. Importing the
-# training API here pulls in optional export/training dependencies (for example
-# ONNX and Lightning) that intentionally are not part of a lean serving image.
-# The dedicated serving launcher opts into this narrow package initialization.
-_VLLM_ONLY = os.getenv("NEMO_SPEECHLM2_VLLM_ONLY") == "1"
-
-if not _VLLM_ONLY:
-    from .data import DataModule, DuplexEARTTSDataset, DuplexS2SDataset, DuplexSTTDataset, SALMDataset  # noqa: F401
-    from .models import (  # noqa: F401
-        SALM,
-        DuplexEARTTS,
-        DuplexS2SModel,
-        DuplexS2SSpeechDecoderModel,
-        DuplexSTTModel,
-        NemotronVoiceChat,
-        SALMAutomodel,
-        SALMWithAsrDecoder,
-    )
+from .data import DataModule, DuplexEARTTSDataset, DuplexS2SDataset, DuplexSTTDataset, SALMDataset
+from .models import (
+    SALM,
+    DuplexEARTTS,
+    DuplexS2SModel,
+    DuplexS2SSpeechDecoderModel,
+    DuplexSTTModel,
+    NemotronVoiceChat,
+    SALMAutomodel,
+    SALMWithAsrDecoder,
+)
 
 __all__ = [
     'DataModule',
@@ -49,6 +39,3 @@ __all__ = [
     'SALMWithAsrDecoder',
     'NemotronVoiceChat',
 ]
-
-if _VLLM_ONLY:
-    __all__ = []

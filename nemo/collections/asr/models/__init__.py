@@ -13,62 +13,54 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
+from nemo.collections.asr.models.aed_multitask_models import EncDecMultiTaskModel  # noqa: F401
+from nemo.collections.asr.models.asr_model import ASRModel  # noqa: F401
+from nemo.collections.asr.models.classification_models import (  # noqa: F401
+    ClassificationInferConfig,
+    EncDecClassificationModel,
+    EncDecFrameClassificationModel,
+)
+from nemo.collections.asr.models.clustering_diarizer import ClusteringDiarizer  # noqa: F401
+from nemo.collections.asr.models.ctc_bpe_models import EncDecCTCModelBPE  # noqa: F401
+from nemo.collections.asr.models.ctc_models import EncDecCTCModel  # noqa: F401
+from nemo.collections.asr.models.hybrid_rnnt_ctc_bpe_models import EncDecHybridRNNTCTCBPEModel  # noqa: F401
+from nemo.collections.asr.models.hybrid_rnnt_ctc_bpe_models_prompt import (  # noqa: F401
+    EncDecHybridRNNTCTCBPEModelWithPrompt,
+)
+from nemo.collections.asr.models.hybrid_rnnt_ctc_models import EncDecHybridRNNTCTCModel  # noqa: F401
+from nemo.collections.asr.models.label_models import EncDecSpeakerLabelModel  # noqa: F401
+from nemo.collections.asr.models.multitalker_asr_models import EncDecMultiTalkerRNNTBPEModel  # noqa: F401
+from nemo.collections.asr.models.rnnt_bpe_models import EncDecRNNTBPEModel  # noqa: F401
+from nemo.collections.asr.models.rnnt_bpe_models_prompt import EncDecRNNTBPEModelWithPrompt  # noqa: F401
+from nemo.collections.asr.models.rnnt_models import EncDecRNNTModel  # noqa: F401
+from nemo.collections.asr.models.sortformer_diar_models import SortformerEncLabelModel  # noqa: F401
+from nemo.collections.asr.models.ssl_models import (  # noqa: F401
+    EncDecDenoiseMaskedTokenPredModel,
+    EncDecMaskedTokenPredModel,
+    SpeechEncDecSelfSupervisedModel,
+)
+from nemo.collections.asr.models.transformer_bpe_models import EncDecTransfModelBPE  # noqa: F401
 
-
-if os.getenv("NEMO_SPEECHLM2_VLLM_ONLY") == "1":
-    from nemo.collections.asr.models.sortformer_diar_models import SortformerEncLabelModel
-
-    __all__ = ["SortformerEncLabelModel"]
-else:
-    from nemo.collections.asr.models.aed_multitask_models import EncDecMultiTaskModel  # noqa: F401
-    from nemo.collections.asr.models.asr_model import ASRModel  # noqa: F401
-    from nemo.collections.asr.models.classification_models import (  # noqa: F401
-        ClassificationInferConfig,
-        EncDecClassificationModel,
-        EncDecFrameClassificationModel,
-    )
-    from nemo.collections.asr.models.clustering_diarizer import ClusteringDiarizer  # noqa: F401
-    from nemo.collections.asr.models.ctc_bpe_models import EncDecCTCModelBPE  # noqa: F401
-    from nemo.collections.asr.models.ctc_models import EncDecCTCModel  # noqa: F401
-    from nemo.collections.asr.models.hybrid_rnnt_ctc_bpe_models import EncDecHybridRNNTCTCBPEModel  # noqa: F401
-    from nemo.collections.asr.models.hybrid_rnnt_ctc_bpe_models_prompt import (  # noqa: F401
-        EncDecHybridRNNTCTCBPEModelWithPrompt,
-    )
-    from nemo.collections.asr.models.hybrid_rnnt_ctc_models import EncDecHybridRNNTCTCModel  # noqa: F401
-    from nemo.collections.asr.models.label_models import EncDecSpeakerLabelModel  # noqa: F401
-    from nemo.collections.asr.models.multitalker_asr_models import EncDecMultiTalkerRNNTBPEModel  # noqa: F401
-    from nemo.collections.asr.models.rnnt_bpe_models import EncDecRNNTBPEModel  # noqa: F401
-    from nemo.collections.asr.models.rnnt_bpe_models_prompt import EncDecRNNTBPEModelWithPrompt  # noqa: F401
-    from nemo.collections.asr.models.rnnt_models import EncDecRNNTModel  # noqa: F401
-    from nemo.collections.asr.models.sortformer_diar_models import SortformerEncLabelModel  # noqa: F401
-    from nemo.collections.asr.models.ssl_models import (  # noqa: F401
-        EncDecDenoiseMaskedTokenPredModel,
-        EncDecMaskedTokenPredModel,
-        SpeechEncDecSelfSupervisedModel,
-    )
-    from nemo.collections.asr.models.transformer_bpe_models import EncDecTransfModelBPE  # noqa: F401
-
-    __all__ = [
-        'ASRModel',
-        'ClassificationInferConfig',
-        'ClusteringDiarizer',
-        'EncDecCTCModel',
-        'EncDecCTCModelBPE',
-        'EncDecClassificationModel',
-        'EncDecDenoiseMaskedTokenPredModel',
-        'EncDecFrameClassificationModel',
-        'EncDecHybridRNNTCTCBPEModel',
-        'EncDecHybridRNNTCTCBPEModelWithPrompt',
-        'EncDecHybridRNNTCTCModel',
-        'EncDecMaskedTokenPredModel',
-        'EncDecMultiTaskModel',
-        'EncDecMultiTalkerRNNTBPEModel',
-        'EncDecRNNTBPEModel',
-        'EncDecRNNTBPEModelWithPrompt',
-        'EncDecRNNTModel',
-        'EncDecSpeakerLabelModel',
-        'EncDecTransfModelBPE',
-        'SortformerEncLabelModel',
-        'SpeechEncDecSelfSupervisedModel',
-    ]
+__all__ = [
+    'ASRModel',
+    'ClassificationInferConfig',
+    'ClusteringDiarizer',
+    'EncDecCTCModel',
+    'EncDecCTCModelBPE',
+    'EncDecClassificationModel',
+    'EncDecDenoiseMaskedTokenPredModel',
+    'EncDecFrameClassificationModel',
+    'EncDecHybridRNNTCTCBPEModel',
+    'EncDecHybridRNNTCTCBPEModelWithPrompt',
+    'EncDecHybridRNNTCTCModel',
+    'EncDecMaskedTokenPredModel',
+    'EncDecMultiTaskModel',
+    'EncDecMultiTalkerRNNTBPEModel',
+    'EncDecRNNTBPEModel',
+    'EncDecRNNTBPEModelWithPrompt',
+    'EncDecRNNTModel',
+    'EncDecSpeakerLabelModel',
+    'EncDecTransfModelBPE',
+    'SortformerEncLabelModel',
+    'SpeechEncDecSelfSupervisedModel',
+]

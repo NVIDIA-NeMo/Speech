@@ -13,39 +13,33 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
+from nemo.collections.asr.parts.mixins.asr_adapter_mixins import ASRAdapterModelMixin
+from nemo.collections.asr.parts.mixins.interctc_mixin import InterCTCMixin
+from nemo.collections.asr.parts.mixins.mixins import (
+    ASRAdapterModelMixin,
+    ASRBPEMixin,
+    ASRModuleMixin,
+    DiarizationMixin,
+    PromptStreamingMixin,
+)
+from nemo.collections.asr.parts.mixins.multitalker_asr_mixins import SpeakerKernelMixin
+from nemo.collections.asr.parts.mixins.transcription import (
+    ASRTranscriptionMixin,
+    TranscribeConfig,
+    TranscriptionMixin,
+    TranscriptionReturnType,
+)
 
-
-if os.getenv("NEMO_SPEECHLM2_VLLM_ONLY") == "1":
-    __all__ = []
-else:
-    from nemo.collections.asr.parts.mixins.asr_adapter_mixins import ASRAdapterModelMixin
-    from nemo.collections.asr.parts.mixins.interctc_mixin import InterCTCMixin
-    from nemo.collections.asr.parts.mixins.mixins import (
-        ASRAdapterModelMixin,
-        ASRBPEMixin,
-        ASRModuleMixin,
-        DiarizationMixin,
-        PromptStreamingMixin,
-    )
-    from nemo.collections.asr.parts.mixins.multitalker_asr_mixins import SpeakerKernelMixin
-    from nemo.collections.asr.parts.mixins.transcription import (
-        ASRTranscriptionMixin,
-        TranscribeConfig,
-        TranscriptionMixin,
-        TranscriptionReturnType,
-    )
-
-    __all__ = [
-        'ASRAdapterModelMixin',
-        'ASRBPEMixin',
-        'ASRModuleMixin',
-        'ASRTranscriptionMixin',
-        'DiarizationMixin',
-        'InterCTCMixin',
-        'PromptStreamingMixin',
-        'SpeakerKernelMixin',
-        'TranscribeConfig',
-        'TranscriptionMixin',
-        'TranscriptionReturnType',
-    ]
+__all__ = [
+    'ASRAdapterModelMixin',
+    'ASRBPEMixin',
+    'ASRModuleMixin',
+    'ASRTranscriptionMixin',
+    'DiarizationMixin',
+    'InterCTCMixin',
+    'PromptStreamingMixin',
+    'SpeakerKernelMixin',
+    'TranscribeConfig',
+    'TranscriptionMixin',
+    'TranscriptionReturnType',
+]

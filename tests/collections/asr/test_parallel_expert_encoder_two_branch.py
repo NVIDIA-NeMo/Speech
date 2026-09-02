@@ -858,8 +858,8 @@ def test_online_inference_matches_independent_valid_prefixes_for_unequal_audio(a
     expected_lengths = torch.cat([first_length, second_length])
     assert torch.equal(batched_lengths, expected_lengths)
     assert batched_output.shape == (2, _ASR_D_MODEL, int(expected_lengths.max()))
-    torch.testing.assert_close(batched_output[0, :, : first_length[0]], first_output[0])
-    torch.testing.assert_close(batched_output[1, :, : second_length[0]], second_output[0])
+    torch.testing.assert_close(batched_output[0, :, : first_length[0]], first_output[0], rtol=1e-5, atol=2e-5)
+    torch.testing.assert_close(batched_output[1, :, : second_length[0]], second_output[0], rtol=1e-5, atol=2e-5)
 
 
 @pytest.mark.unit

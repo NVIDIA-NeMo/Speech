@@ -12,16 +12,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import os
-
 from .perception import AudioPerceptionModule, IndependentDualEncoder
+from .speech_generation import TransformerARSpeechDecoder
 
 __all__ = [
-    "AudioPerceptionModule",
-    "IndependentDualEncoder",
+    'AudioPerceptionModule',
+    'IndependentDualEncoder',
+    'TransformerARSpeechDecoder',
 ]
-
-if os.environ.get("NEMO_SPEECHLM2_VLLM_ONLY") != "1":
-    from .speech_generation import TransformerARSpeechDecoder  # noqa: F401
-
-    __all__.append("TransformerARSpeechDecoder")

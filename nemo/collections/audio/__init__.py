@@ -13,10 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
-
-if os.environ.get("NEMO_SPEECHLM2_VLLM_ONLY") != "1":
-    from nemo.collections.audio import data, losses, metrics, models, modules  # noqa: F401
+from nemo.collections.audio import data, losses, metrics, models, modules
 from nemo.package_info import __version__
 
 # Set collection version equal to NeMo version.

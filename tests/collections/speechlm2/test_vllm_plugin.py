@@ -22,7 +22,6 @@ weights.
 
 import contextlib
 import importlib.util
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -49,14 +48,11 @@ _DEFAULT_CONFIG_KWARGS = {
 }
 
 
-def test_serving_only_asr_exports_grouped_encoder_dependencies():
+def test_full_stack_asr_exports_grouped_encoder_dependencies():
     repo_root = Path(__file__).parents[3]
-    env = os.environ.copy()
-    env["NEMO_SPEECHLM2_VLLM_ONLY"] = "1"
-    env["PYTHONPATH"] = os.pathsep.join(filter(None, (str(repo_root), env.get("PYTHONPATH"))))
     code = """
 from omegaconf import OmegaConf
-from nemo.collections.asr.models import SortformerEncLabelModel
+from nemo.collections.asr.models import ASRModel, SortformerEncLabelModel
 from nemo.collections.asr.modules import (
     ConvASRDecoder,
     GGEMMTransformerEncoder,
@@ -71,6 +67,8 @@ from nemo.collections.asr.modules.parallel_expert_encoder_ggemm import (
 cfg = OmegaConf.load(
     "examples/speaker_tasks/diarization/conf/neural_diarizer/streaming_sortformer_diarizer_4spk-v2.yaml"
 )
+for name in ("train_ds", "validation_ds", "test_ds"):
+    cfg.model[name] = None
 cfg.model.spec_augment = {
     "_target_": "nemo.collections.asr.modules.SpectrogramAugmentation",
     "freq_masks": 2,
@@ -79,20 +77,26 @@ cfg.model.spec_augment = {
     "time_width": 0.05,
 }
 model = SortformerEncLabelModel(cfg.model).eval()
-for name in ("train_ds", "validation_ds", "test_ds", "spec_augment", "augmentor"):
-    assert model.cfg.get(name) is None
-try:
-    model.setup_training_data({})
-except RuntimeError as error:
-    assert "serving-only mode" in str(error)
-else:
-    raise AssertionError("training data setup did not fail in serving-only mode")
+assert ASRModel is not None
+assert all(
+    dependency is not None
+    for dependency in (
+        SortformerEncLabelModel,
+        ConvASRDecoder,
+        GGEMMTransformerEncoder,
+        MoETransformerEncoder,
+        TransformerEncoder,
+        ParallelExpertEncoder,
+        ParallelExpertEncoderPT,
+    )
+)
+assert model.cfg.get("spec_augment") is not None
+assert model.spec_augmentation is not None
 """
 
     completed = subprocess.run(
         [sys.executable, "-c", code],
         cwd=repo_root,
-        env=env,
         check=False,
         capture_output=True,
         text=True,

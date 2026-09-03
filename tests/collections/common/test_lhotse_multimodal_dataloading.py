@@ -30,6 +30,7 @@ from lhotse.testing.dummies import dummy_cut, dummy_recording
 from omegaconf import OmegaConf
 
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
+from nemo.collections.common.data.lhotse.cutset import get_parser_fn
 from nemo.collections.common.data.lhotse.indexed_adapters import IndexedTarSampleReader, create_tar_index
 from nemo.collections.common.data.lhotse.sampling import (
     DurationFilter,
@@ -321,6 +322,121 @@ def test_multimodal_conversation_input_sharegpt(sharegpt_conversations_path):
     assert t.cut.duration == 2.45
     assert t.cut.start == 1
     assert t.cut.load_audio().shape == (1, 39200)
+
+
+def test_sharegpt_preserves_system_turn_role(tmp_path):
+    manifest_path = tmp_path / "sharegpt_system.jsonl"
+    lhotse.serialization.save_to_jsonl(
+        [
+            {
+                "id": "system-role",
+                "conversations": [
+                    {"from": "system", "value": "Follow the data instructions."},
+                    {"from": "human", "value": "Hello"},
+                    {"from": "gpt", "value": "Hi"},
+                ],
+            }
+        ],
+        manifest_path,
+    )
+
+    (conversation,) = list(
+        NeMoMultimodalConversationShareGPTJsonlAdapter(
+            manifest_filepath=manifest_path,
+            audio_locator_tag="[audio]",
+        )
+    )
+
+    assert [turn.role for turn in conversation.turns] == ["system", "user", "assistant"]
+    assert conversation.turns[0].value == "Follow the data instructions."
+
+
+@pytest.mark.parametrize("source_type", ["multimodal_conversation", "share_gpt"])
+@pytest.mark.parametrize("indexed", [False, True])
+@pytest.mark.parametrize(
+    ("data_system_prompt", "override_system_prompt", "expected_system_prompt"),
+    [
+        ("Data system prompt", False, "Data system prompt"),
+        ("Data system prompt", True, "Configured system prompt"),
+        (None, False, "Configured system prompt"),
+    ],
+)
+def test_conversation_source_system_prompt_policy(
+    tmp_path,
+    source_type,
+    indexed,
+    data_system_prompt,
+    override_system_prompt,
+    expected_system_prompt,
+):
+    manifest_path = tmp_path / f"{source_type}.jsonl"
+    if source_type == "share_gpt":
+        conversations = [
+            {"from": "human", "value": "Hello"},
+            {"from": "gpt", "value": "Hi"},
+        ]
+        if data_system_prompt is not None:
+            conversations.insert(0, {"from": "system", "value": data_system_prompt})
+    else:
+        conversations = [
+            {"from": "User", "value": "Hello", "type": "text"},
+            {"from": "Assistant", "value": "Hi", "type": "text"},
+        ]
+        if data_system_prompt is not None:
+            conversations.insert(0, {"from": "System", "value": data_system_prompt, "type": "text"})
+    lhotse.serialization.save_to_jsonl([{"id": "prompt-policy", "conversations": conversations}], manifest_path)
+    if indexed:
+        create_jsonl_index(str(manifest_path))
+
+    config = {
+        "manifest_filepath": manifest_path,
+        "audio_locator_tag": "[audio]",
+        "shuffle": False,
+        "shard_seed": 0,
+        "force_finite": True,
+        "indexed": indexed,
+        "tags": {
+            "system_prompt": "Configured system prompt",
+            "override_system_prompt": override_system_prompt,
+        },
+    }
+    if source_type == "share_gpt":
+        config["audio_placeholders"] = ["<sound>", "<speech>"]
+
+    cuts, _ = get_parser_fn(source_type)(OmegaConf.create(config))
+    (conversation,) = list(cuts)
+
+    assert [turn.role for turn in conversation.turns] == ["system", "user", "assistant"]
+    assert conversation.turns[0].value == expected_system_prompt
+
+
+def test_system_prompt_override_removes_all_data_system_turns(tmp_path):
+    manifest_path = tmp_path / "sharegpt_multiple_system.jsonl"
+    lhotse.serialization.save_to_jsonl(
+        [
+            {
+                "id": "multiple-system-turns",
+                "conversations": [
+                    {"from": "system", "value": "First data prompt"},
+                    {"from": "human", "value": "Hello"},
+                    {"from": "system", "value": "Second data prompt"},
+                    {"from": "gpt", "value": "Hi"},
+                ],
+            }
+        ],
+        manifest_path,
+    )
+    adapter = NeMoMultimodalConversationShareGPTJsonlAdapter(
+        manifest_filepath=manifest_path,
+        audio_locator_tag="[audio]",
+        system_prompt="Configured system prompt",
+        override_system_prompt=True,
+    )
+
+    (conversation,) = list(adapter)
+
+    assert [turn.role for turn in conversation.turns] == ["system", "user", "assistant"]
+    assert conversation.turns[0].value == "Configured system prompt"
 
 
 def test_multimodal_conversation_input_sharegpt_list_audio_paths(tmp_path):
@@ -1393,6 +1509,7 @@ def _make_webdataset_dir(
     audio_first=False,
     create_meta=True,
     add_dir_entries=False,
+    system_prompt=None,
 ):
     """
     Helper: create a WebDataset directory layout with optional wids-meta.json,
@@ -1422,19 +1539,22 @@ def _make_webdataset_dir(
                 d.type = tarfile.DIRTYPE
                 tar.addfile(d)
             for local_idx in range(shard_size):
+                conversations = [
+                    {
+                        "from": "human",
+                        "value": f"Listen to this: <sound> What is it?",
+                    },
+                    {
+                        "from": "gpt",
+                        "value": f"Response for sample {sample_idx}",
+                    },
+                ]
+                if system_prompt is not None:
+                    conversations.insert(0, {"from": "system", "value": system_prompt})
                 data = {
                     "id": f"sample_{sample_idx}",
                     "sound": f"audio_{sample_idx}.wav",
-                    "conversations": [
-                        {
-                            "from": "human",
-                            "value": f"Listen to this: <sound> What is it?",
-                        },
-                        {
-                            "from": "gpt",
-                            "value": f"Response for sample {sample_idx}",
-                        },
-                    ],
+                    "conversations": conversations,
                 }
                 json_bytes = json.dumps(data).encode("utf-8")
 
@@ -1479,6 +1599,35 @@ def _make_webdataset_dir(
         (tmp_path / "wids-meta.json").write_text(json.dumps(meta, indent=2))
 
     return tmp_path
+
+
+def test_sharegpt_webdataset_system_prompt_override(tmp_path):
+    data_dir = _make_webdataset_dir(
+        tmp_path / "sharegpt-wds-system-prompt",
+        num_samples=1,
+        num_shards=1,
+        system_prompt="Data system prompt",
+    )
+    config = OmegaConf.create(
+        {
+            "data_dir": data_dir,
+            "audio_locator_tag": "[audio]",
+            "audio_placeholders": ["<sound>", "<speech>"],
+            "shuffle": False,
+            "shard_seed": 0,
+            "force_finite": True,
+            "tags": {
+                "system_prompt": "Configured system prompt",
+                "override_system_prompt": True,
+            },
+        }
+    )
+
+    cuts, _ = get_parser_fn("share_gpt_webdataset")(config)
+    (conversation,) = list(cuts)
+
+    assert [turn.role for turn in conversation.turns] == ["system", "user", "user", "user", "assistant"]
+    assert conversation.turns[0].value == "Configured system prompt"
 
 
 @pytest.fixture(scope="session")

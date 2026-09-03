@@ -627,6 +627,14 @@ Dataloading configuration example::
       - type: multimodal_conversation
         manifest_filepath: /path/to/chat_{0..N}.jsonl
         audio_locator_tag: [audio]
+        tags:
+          system_prompt: You are a helpful assistant.
+          override_system_prompt: true
+
+``system_prompt`` is inserted when the source conversation has no system turn.
+By default, a system prompt already present in the data takes precedence. Set
+``override_system_prompt: true`` to remove data-provided system turns and use
+the configured prompt instead.
 
 Python object example::
 

@@ -220,6 +220,24 @@ the index tools.  Source JSONL and tar files are immutable; ``.idx``,
 For stateful training, put ``index_pack`` on each outer dataset entry and keep
 ``indexed: true`` and ``use_stateful_dataloader: true`` on the training dataset.
 
+System prompt policy
+^^^^^^^^^^^^^^^^^^^^
+
+ShareGPT turns whose ``from`` field is ``system`` remain system turns. The
+``share_gpt``, ``share_gpt_webdataset``, and ``multimodal_conversation`` readers
+also accept a configured prompt through ``tags``:
+
+.. code-block:: yaml
+
+    tags:
+      system_prompt: "You are a helpful assistant."
+      override_system_prompt: true
+
+Without ``override_system_prompt``, a system prompt already present in the data
+is preserved and the configured prompt is inserted only when one is absent.
+When the override is enabled, the configured prompt replaces all system turns
+from the data.
+
 Audio fields and placeholder binding
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 

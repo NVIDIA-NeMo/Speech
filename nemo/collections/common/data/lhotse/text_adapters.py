@@ -412,7 +412,7 @@ class NeMoSFTJsonlAdapter(IteratorNode):
             "conversations": [
                 {
                     "value": str,
-                    "from": "User" | "Assistant",
+                    "from": "System" | "User" | "Assistant",
                     "canonical_form": str,
                     "label": str | null
                 },
@@ -1389,6 +1389,7 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
     index_pack_max_open_files: int = 32
     skip_missing_manifest_entries: bool = False
     fault_tolerant_audio_loading: bool = True
+    override_system_prompt: bool = False
 
     def __post_init__(self):
         raw_manifest_filepath = self.manifest_filepath
@@ -1543,8 +1544,7 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
             raise RuntimeError(message) from ex
         if self.context is not None and turns[0].role == "user" and isinstance(turns[0], AudioTurn):
             turns = [TextTurn(role="user", value=self.context)] + turns
-        if self.system_prompt is not None and turns[0].role != "system":
-            turns = [TextTurn(role="system", value=self.system_prompt)] + turns
+        turns = _apply_system_prompt(turns, self.system_prompt, self.override_system_prompt)
         return NeMoMultimodalConversation(
             id=data["id"],
             turns=turns,
@@ -1626,8 +1626,7 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
         ]
         if self.context is not None and turns[0].role == "user" and isinstance(turns[0], AudioTurn):
             turns = [TextTurn(role="user", value=self.context)] + turns
-        if self.system_prompt is not None and turns[0].role != "system":
-            turns = [TextTurn(role="system", value=self.system_prompt)] + turns
+        turns = _apply_system_prompt(turns, self.system_prompt, self.override_system_prompt)
         return NeMoMultimodalConversation(
             id=data["id"],
             turns=turns,
@@ -1764,8 +1763,7 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
                 ]
                 if self.context is not None and turns[0].role == "user" and isinstance(turns[0], AudioTurn):
                     turns = [TextTurn(role="user", value=self.context)] + turns
-                if self.system_prompt is not None and turns[0].role != "system":
-                    turns = [TextTurn(role="system", value=self.system_prompt)] + turns
+                turns = _apply_system_prompt(turns, self.system_prompt, self.override_system_prompt)
                 yield NeMoMultimodalConversation(
                     id=data["id"],
                     turns=turns,
@@ -1818,7 +1816,7 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
             "conversations": [
                 {
                     "value": str,  # text message, may contain <sound> or <speech> placeholder
-                    "from": "human" | "gpt",
+                    "from": "system" | "human" | "gpt",
                 },
                 ...
             ],
@@ -1850,6 +1848,8 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
     excluded_manifest_lines: Sequence[int] | None = None
     excluded_manifest_lines_sha256: str | None = None
     approved_exclusion_audit_sha256: str | None = None
+    system_prompt: str | None = None
+    override_system_prompt: bool = False
 
     def __post_init__(self):
         raw_manifest_filepath = self.manifest_filepath
@@ -2182,6 +2182,7 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
                     conversations,
                     resolve_collection_cut,
                 )
+                turns = _apply_system_prompt(turns, self.system_prompt, self.override_system_prompt)
                 if used_route_indexes != set(range(len(routes))):
                     raise ValueError(
                         f"ShareGPT route row {route_row_idx} contains unused records: "
@@ -2195,24 +2196,26 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
             if self._tar_readers:
                 tar_reader = self._tar_readers[shard_idx]
                 tar_path = self.tarred_audio_filepaths[shard_idx]
+                turns = _ShareGPTConversationParser.create_turns(
+                    self.audio_locator_tag,
+                    conversations,
+                    lambda t: self._resolve_cut_from_indexed_tar(t, tar_reader, tar_path),
+                )
                 return NeMoMultimodalConversation(
                     id=data.get("id", "missing-example-id"),
-                    turns=_ShareGPTConversationParser.create_turns(
-                        self.audio_locator_tag,
-                        conversations,
-                        lambda t: self._resolve_cut_from_indexed_tar(t, tar_reader, tar_path),
-                    ),
+                    turns=_apply_system_prompt(turns, self.system_prompt, self.override_system_prompt),
                     token_equivalent_duration=self.token_equivalent_duration,
                 )
             if manifest_path is None:
                 manifest_path = self._cuts_readers[shard_idx].path
+            turns = _ShareGPTConversationParser.create_turns(
+                self.audio_locator_tag,
+                conversations,
+                lambda t, _p=manifest_path: self._resolve_cut_from_path(t, _p),
+            )
             return NeMoMultimodalConversation(
                 id=data.get("id", "missing-example-id"),
-                turns=_ShareGPTConversationParser.create_turns(
-                    self.audio_locator_tag,
-                    conversations,
-                    lambda t, _p=manifest_path: self._resolve_cut_from_path(t, _p),
-                ),
+                turns=_apply_system_prompt(turns, self.system_prompt, self.override_system_prompt),
                 token_equivalent_duration=self.token_equivalent_duration,
             )
         except _SHAREGPT_AUDIO_LOADING_ERRORS as e:
@@ -2441,11 +2444,12 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
                 elif cntr == self.slice_length:
                     break
 
+                turns = _ShareGPTConversationParser.create_turns(
+                    self.audio_locator_tag, conversations, lambda t: cuts.popleft()
+                )
                 yield NeMoMultimodalConversation(
                     id=data.get("id", "missing-example-id"),
-                    turns=_ShareGPTConversationParser.create_turns(
-                        self.audio_locator_tag, conversations, lambda t: cuts.popleft()
-                    ),
+                    turns=_apply_system_prompt(turns, self.system_prompt, self.override_system_prompt),
                     token_equivalent_duration=self.token_equivalent_duration,
                 )
                 cntr += 1
@@ -2474,13 +2478,14 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
             for data in jsonl_iter:
                 try:
                     conversations = _ShareGPTConversationParser(self.audio_placeholders, data).transform()
+                    turns = _ShareGPTConversationParser.create_turns(
+                        self.audio_locator_tag,
+                        conversations,
+                        lambda t, _p=path: self._resolve_cut_from_path(t, _p),
+                    )
                     yield NeMoMultimodalConversation(
                         id=data.get("id", "missing-example-id"),
-                        turns=_ShareGPTConversationParser.create_turns(
-                            self.audio_locator_tag,
-                            conversations,
-                            lambda t, _p=path: self._resolve_cut_from_path(t, _p),
-                        ),
+                        turns=_apply_system_prompt(turns, self.system_prompt, self.override_system_prompt),
                         token_equivalent_duration=self.token_equivalent_duration,
                     )
                 except _SHAREGPT_AUDIO_LOADING_ERRORS as e:
@@ -2537,6 +2542,8 @@ class NeMoMultimodalConversationShareGPTWebdatasetAdapter(IteratorNode):
     index_pack_max_open_files: int = 32
     skip_missing_manifest_entries: bool = False
     fault_tolerant_audio_loading: bool = True
+    system_prompt: str | None = None
+    override_system_prompt: bool = False
 
     def __post_init__(self):
         if self.wds_sample_index_version not in (1, 2):
@@ -2683,13 +2690,14 @@ class NeMoMultimodalConversationShareGPTWebdatasetAdapter(IteratorNode):
         conversations = _ShareGPTConversationParser(self.audio_placeholders, json_data, audio_name).transform()
         recording = _sharegpt_recording_from_bytes(audio_bytes, recording_id=sample_id)
         base_cut = recording.to_cut()
+        turns = _ShareGPTConversationParser.create_turns(
+            self.audio_locator_tag,
+            conversations,
+            lambda t: base_cut.truncate(offset=t.get("offset", 0.0), duration=t.get("duration")),
+        )
         return NeMoMultimodalConversation(
             id=json_data.get("id", sample_id),
-            turns=_ShareGPTConversationParser.create_turns(
-                self.audio_locator_tag,
-                conversations,
-                lambda t: base_cut.truncate(offset=t.get("offset", 0.0), duration=t.get("duration")),
-            ),
+            turns=_apply_system_prompt(turns, self.system_prompt, self.override_system_prompt),
             token_equivalent_duration=self.token_equivalent_duration,
         )
 
@@ -2760,13 +2768,14 @@ class NeMoMultimodalConversationShareGPTWebdatasetAdapter(IteratorNode):
                 decoded_cuts[member.name] = cut
             return cut.truncate(offset=turn.get("offset", 0.0), duration=turn.get("duration"))
 
+        turns = _ShareGPTConversationParser.create_turns(
+            self.audio_locator_tag,
+            conversations,
+            resolve_cut,
+        )
         return NeMoMultimodalConversation(
             id=bundle.json_data.get("id", bundle.sample_key),
-            turns=_ShareGPTConversationParser.create_turns(
-                self.audio_locator_tag,
-                conversations,
-                resolve_cut,
-            ),
+            turns=_apply_system_prompt(turns, self.system_prompt, self.override_system_prompt),
             token_equivalent_duration=self.token_equivalent_duration,
         )
 
@@ -2999,6 +3008,23 @@ def _normalize_audio_placeholders(val: Union[str, list[str], None]) -> list[str]
     return [val] if isinstance(val, str) else list(val)
 
 
+def _apply_system_prompt(
+    turns: list[TextTurn | AudioTurn],
+    system_prompt: str | None,
+    override_system_prompt: bool,
+) -> list[TextTurn | AudioTurn]:
+    """Apply a configured system prompt without changing the default data-first policy."""
+    if system_prompt is None:
+        return turns
+
+    configured_turn = TextTurn(role="system", value=system_prompt)
+    if override_system_prompt:
+        return [configured_turn] + [turn for turn in turns if turn.role != "system"]
+    if turns and turns[0].role == "system":
+        return turns
+    return [configured_turn] + turns
+
+
 class _ShareGPTConversationParser:
     """Normalize ShareGPT multimodal records for the conversation adapters.
 
@@ -3168,7 +3194,12 @@ class _ShareGPTConversationParser:
 
     @staticmethod
     def role(turn: dict) -> str:
-        return "user" if turn["from"].lower() in ("human", "user") else "assistant"
+        role = turn["from"].lower()
+        if role in ("human", "user"):
+            return "user"
+        if role == "system":
+            return "system"
+        return "assistant"
 
     @classmethod
     def turn_can_consume_audio(cls, turn: dict) -> bool:

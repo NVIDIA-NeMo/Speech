@@ -469,6 +469,12 @@ The route builder resolves each requested name once and writes an immutable,
 row-aligned ``.sgroute``.  Runtime uses the row's ``(tar shard, member index)``
 records and never builds a per-worker global filename table.
 
+Rows with no configured audio placeholder in a ``human``/``user`` turn are
+treated as text-only and receive an empty route, even if they retain a stale
+``sound``/``speech``/``ori_sound`` field.  Placeholder-like text in assistant
+turns is literal and does not request audio.  A user placeholder still requires
+a valid audio field and the usual path/placeholder cardinality checks.
+
 .. code-block:: json
 
     {

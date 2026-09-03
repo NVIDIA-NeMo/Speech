@@ -653,6 +653,7 @@ def test_flat_native_lists_use_aggregate_pack_and_preserve_positional_pairs(tmp_
                 {
                     "audio_filepath": member,
                     "duration": 1.0,
+                    "sampling_rate": 16000,
                     "text": text,
                     "lang": "en",
                 }
@@ -824,6 +825,7 @@ def test_lazy_nemo_tarred_iterator_uses_pack_without_expanding_shards(tmp_path, 
                         {
                             "audio_filepath": member,
                             "duration": 1.0,
+                            "sampling_rate": 16000,
                             "text": text_value,
                             "lang": "en",
                         }
@@ -1022,6 +1024,7 @@ def test_local_packed_native_tar_supports_filtered_subsets(tmp_path, monkeypatch
                     {
                         "audio_filepath": manifest_names[shard][idx],
                         "duration": 1.0,
+                        "sampling_rate": 16000,
                         "text": "text",
                     }
                 )

@@ -44,6 +44,7 @@ from lhotse.lazy import LazyFlattener
 from lhotse.utils import fix_random_seed
 from omegaconf import DictConfig, OmegaConf
 
+from nemo.collections.common.data.lhotse.audio_loading import configure_dataset_audio_loading
 from nemo.collections.common.data.lhotse.audio_token_estimator import AudioTokenEstimator
 from nemo.collections.common.data.lhotse.cutset import (
     IncompleteConfigError,
@@ -181,6 +182,9 @@ class LhotseDataLoadingConfig:
     # 3. Supported existing NeMo options.
     shuffle: bool = False
     sample_rate: int = 16000
+    # Trusted source rate for lazy NeMo tarred rows that omit sampling_rate.
+    # This is distinct from sample_rate, which is the model's target rate.
+    input_sampling_rate: int | None = None
     seed: int | str = 0
     num_workers: int = 0
     pin_memory: bool = False
@@ -608,6 +612,7 @@ def get_lhotse_dataloader_from_single_config(
     """
     logging.info("We will be using a Lhotse DataLoader.")
     config = make_structured_with_schema_warnings(config)
+    dataset = configure_dataset_audio_loading(dataset, config.fault_tolerant_audio_loading)
 
     # First, resolve the random seed in case a string value was provided.
     config.seed = resolve_seed(config.seed)
@@ -694,6 +699,7 @@ def get_lhotse_dataloader_from_multi_config(
             "metadata_only",
             "force_finite",
             "use_stateful_dataloader",
+            "fault_tolerant_audio_loading",
             # Indexed dataloading flags must propagate too — otherwise a
             # top-level ``indexed: true`` / ``indexes_root: /tmp/idx`` on the
             # train_ds namespace silently fails to reach sub-configs, and the
@@ -708,6 +714,7 @@ def get_lhotse_dataloader_from_multi_config(
         return OmegaConf.create({k: top_level_config.get(k, defaults[k]) for k in overwriting_opts})
 
     shared_opts = gather_shared_opts()
+    dataset = configure_dataset_audio_loading(dataset, shared_opts.fault_tolerant_audio_loading)
     fix_random_seed(shared_opts.seed)
 
     configs = {

@@ -321,24 +321,9 @@ def extract_sharegpt_audio_paths(
 
     Aliases use the frozen precedence ``sound`` → ``speech`` → ``ori_sound``.
     The returned order is source JSON list order and is checked against the
-    total number of configured placeholders in the conversation turns.
+    total number of configured placeholders in human/user turns. Rows without
+    such placeholders are text-only and return no paths.
     """
-    selected_field = next(
-        (field for field in _AUDIO_FIELDS if document.get(field) not in (None, "", [])),
-        None,
-    )
-    if selected_field is None:
-        raise ValueError(f"ShareGPT row has no supported audio field; expected one of {_AUDIO_FIELDS}")
-    value = document[selected_field]
-    if isinstance(value, str):
-        paths = (value,)
-    elif isinstance(value, list) and all(isinstance(item, str) for item in value):
-        paths = tuple(value)
-    else:
-        raise ValueError(f"ShareGPT {selected_field!r} must be a string or flat list of strings")
-    if not paths or any(not path for path in paths):
-        raise ValueError(f"ShareGPT {selected_field!r} must contain one or more non-empty paths")
-
     conversations = document.get("conversations")
     if not isinstance(conversations, list):
         raise TypeError("ShareGPT conversations must be a list")
@@ -355,6 +340,26 @@ def extract_sharegpt_audio_paths(
         if not isinstance(text, str):
             raise TypeError("ShareGPT conversation turn values must be strings")
         placeholder_count += _count_audio_placeholders(text, audio_placeholders)
+
+    selected_field = next(
+        (field for field in _AUDIO_FIELDS if document.get(field) not in (None, "", [])),
+        None,
+    )
+    if selected_field is None:
+        if placeholder_count == 0:
+            return ()
+        raise ValueError(f"ShareGPT row has no supported audio field; expected one of {_AUDIO_FIELDS}")
+    value = document[selected_field]
+    if isinstance(value, str):
+        paths = (value,)
+    elif isinstance(value, list) and all(isinstance(item, str) for item in value):
+        paths = tuple(value)
+    else:
+        raise ValueError(f"ShareGPT {selected_field!r} must be a string or flat list of strings")
+    if not paths or any(not path for path in paths):
+        raise ValueError(f"ShareGPT {selected_field!r} must contain one or more non-empty paths")
+    if placeholder_count == 0:
+        return ()
     if len(paths) > 1 and placeholder_count > 1 and placeholder_count != len(paths):
         raise ValueError(
             f"ShareGPT audio-path/placeholder cardinality mismatch: {len(paths)} paths but "

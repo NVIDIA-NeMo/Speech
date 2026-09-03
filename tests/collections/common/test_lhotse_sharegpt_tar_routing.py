@@ -437,6 +437,41 @@ def test_audio_path_extraction_preserves_existing_sharegpt_cardinality_rules():
     ) == ("fallback.wav",)
 
 
+def test_audio_path_extraction_treats_rows_without_user_placeholders_as_text_only():
+    assert (
+        extract_sharegpt_audio_paths(
+            {
+                "sound": "unused.wav",
+                "conversations": _conversation("text only"),
+            }
+        )
+        == ()
+    )
+    assert extract_sharegpt_audio_paths({"conversations": _conversation("text only")}) == ()
+    assert (
+        extract_sharegpt_audio_paths(
+            {
+                "sound": "unused.wav",
+                "conversations": [
+                    {"from": "human", "value": "text only"},
+                    {"from": "gpt", "value": "<sound> is literal assistant text"},
+                ],
+            }
+        )
+        == ()
+    )
+
+    with pytest.raises(ValueError, match="no supported audio field"):
+        extract_sharegpt_audio_paths({"conversations": _conversation("Listen <sound>")})
+    with pytest.raises(ValueError, match="flat list of strings"):
+        extract_sharegpt_audio_paths(
+            {
+                "sound": [["malformed.wav"]],
+                "conversations": _conversation("text only"),
+            }
+        )
+
+
 def test_native_tar_index_validation_proves_one_regular_member_per_range(tmp_path):
     tar_path = _write_tar(
         tmp_path / "audio.tar",

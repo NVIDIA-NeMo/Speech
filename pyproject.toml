@@ -115,7 +115,7 @@ asr-only = [
     "braceexpand",
     "einops",
     "kaldialign",
-    "lhotse==2.0.0a3",
+    "lhotse==2.0.0a4",
     "librosa>=0.10.1",
     "packaging",
     "sacrebleu",
@@ -138,7 +138,7 @@ tts = [
     "pyopenjtalk",
     "braceexpand",
     "kaldialign",
-    "lhotse==2.0.0a3",
+    "lhotse==2.0.0a4",
     "librosa>=0.10.1",
     "packaging",
     "sacrebleu",
@@ -161,7 +161,7 @@ tts = [
 
 audio = [
     "einops",
-    "lhotse==2.0.0a3",
+    "lhotse==2.0.0a4",
     "librosa>=0.10.0",
     "matplotlib",
     "pesq; (platform_machine != 'x86_64' or platform_system != 'Darwin')",
@@ -206,7 +206,7 @@ all = [
     "sentencepiece<1.0.0",
     "braceexpand",
     "kaldialign",
-    "lhotse==2.0.0a3",
+    "lhotse==2.0.0a4",
     "librosa>=0.10.1",
     "packaging",
     "sacrebleu",
@@ -288,7 +288,7 @@ asr = [
     "braceexpand",
     "einops",
     "kaldialign",
-    "lhotse==2.0.0a3",
+    "lhotse==2.0.0a4",
     "librosa>=0.10.1",
     "packaging",
     "sacrebleu",
@@ -317,7 +317,7 @@ speechlm2 = [
     "braceexpand",
     "einops",
     "kaldialign",
-    "lhotse==2.0.0a3",
+    "lhotse==2.0.0a4",
     "librosa>=0.10.1",
     "packaging",
     "sacrebleu",
@@ -475,7 +475,6 @@ deep-ep = ["setuptools"]
 # metadata is mirrored below so this repository controls the CUDA wheel index.
 [tool.uv.sources]
 nemo_automodel = { git = "https://github.com/NVIDIA-NeMo/Automodel.git", rev = "7b15c9bfbc620bec4dd3b819fce2e48726a7ddeb" }
-lhotse = { git = "https://github.com/lhotse-speech/lhotse.git", rev = "31912a04028b214988c949a5f7c815788409c478" }
 megatron-fsdp = { git = "https://github.com/yuhezhang-ai/Megatron-LM.git", rev = "455389c480af6b3acdca74c7830c68b3274eb083", subdirectory = "megatron/core/distributed/fsdp/src" }
 deep_ep = { git = "https://github.com/deepseek-ai/DeepEP.git", rev = "7febc6e25660af0f54d95dd781ecdcd62265ecca" }
 torch = [

@@ -462,9 +462,17 @@ class LazyNeMoTarredIterator(IteratorNode):
         indexes_root: str | Path | None = None,
         index_pack: str | Path | None = None,
         index_pack_max_open_files: int = 32,
+        input_sampling_rate: int | None = None,
     ) -> None:
         self.skip_missing_manifest_entries = skip_missing_manifest_entries
         self.fault_tolerant_audio_loading = fault_tolerant_audio_loading
+        if input_sampling_rate is not None and (
+            isinstance(input_sampling_rate, bool)
+            or not isinstance(input_sampling_rate, int)
+            or input_sampling_rate <= 0
+        ):
+            raise ValueError(f"input_sampling_rate must be a positive integer, got {input_sampling_rate!r}")
+        self.input_sampling_rate = input_sampling_rate
         self._malformed_manifest_warning_keys: set[tuple[str, ShardKey]] = set()
         self.indexed = indexed
         self.indexes_root = indexes_root
@@ -670,6 +678,7 @@ class LazyNeMoTarredIterator(IteratorNode):
                     lang_field=self.lang_field,
                     skip_missing_manifest_entries=self.skip_missing_manifest_entries,
                     fault_tolerant_audio_loading=self.fault_tolerant_audio_loading,
+                    input_sampling_rate=self.input_sampling_rate,
                     extra_fields=self.extra_fields,
                     slice_length=self.slice_length,
                     indexed=self.indexed,
@@ -748,7 +757,7 @@ class LazyNeMoTarredIterator(IteratorNode):
                     raise ValueError(message)
 
                 offset = data.get("offset", 0.0)
-                sampling_rate = data.get("sampling_rate", 16000)  # default to 16kHz if not specified
+                sampling_rate = self._resolve_input_sampling_rate(data, manifest_path, tar_path)
 
                 # Create URL-based recording
                 recording = Recording(
@@ -857,32 +866,24 @@ class LazyNeMoTarredIterator(IteratorNode):
     def _indexed_entry_is_explicitly_skipped(self, data: dict, manifest_path: str, tar_path: str) -> bool:
         return manifest_entry_is_explicitly_skipped(data)
 
-    def _build_indexed_cut(self, data: dict, audio_bytes: bytes, manifest_path: str, tar_path: str) -> Cut | None:
-        """Decode a single (manifest_entry, audio_bytes) pair into a Cut, mirroring the streaming path."""
-        if self._indexed_entry_is_explicitly_skipped(data, manifest_path, tar_path):
-            return None
-        try:
-            meta = soundfile.info(BytesIO(audio_bytes))
-        except Exception as ex:
-            message = (
-                "Failed to decode indexed NeMo tarred audio member "
-                f"{data.get('audio_filepath')!r} from tar={tar_path!r} manifest={manifest_path!r}."
+    def _resolve_input_sampling_rate(self, data: Mapping, manifest_path: str, tar_path: str) -> int:
+        sampling_rate = data.get("sampling_rate")
+        if sampling_rate is None:
+            sampling_rate = data.get("sample_rate")
+        if sampling_rate is None:
+            sampling_rate = self.input_sampling_rate
+        if sampling_rate is None:
+            raise ValueError(
+                "Lazy NeMo tarred loading requires trusted source sampling-rate metadata without opening audio. "
+                f"Add 'sampling_rate' to manifest row {data.get('audio_filepath')!r} in {manifest_path!r}, or set "
+                f"input_sampling_rate for the dataset containing tar {tar_path!r}."
             )
-            if self.fault_tolerant_audio_loading:
-                logging.warning(f"Skipping corrupted audio because fault_tolerant_audio_loading=true: {message}")
-                return None
-            raise RuntimeError(message) from ex
-        recording = Recording(
-            id=str(data["audio_filepath"]),
-            sources=[AudioSource(type="memory", channels=list(range(meta.channels)), source=audio_bytes)],
-            sampling_rate=int(meta.samplerate),
-            num_samples=meta.frames,
-            duration=meta.duration,
-        )
-        cut = make_cut_with_subset_inmemory_recording(
-            recording, offset=data.get("offset", 0.0), duration=data.get("duration")
-        )
-        return self._attach_supervision_and_metadata(cut, data, manifest_path, tar_path)
+        if isinstance(sampling_rate, bool) or not isinstance(sampling_rate, int) or sampling_rate <= 0:
+            raise ValueError(
+                f"Invalid source sampling rate {sampling_rate!r} for manifest row "
+                f"{data.get('audio_filepath')!r} in {manifest_path!r}."
+            )
+        return sampling_rate
 
     def _build_indexed_url_cut(self, data: dict, manifest_path: str, tar_path: str) -> Cut | None:
         """
@@ -907,7 +908,7 @@ class LazyNeMoTarredIterator(IteratorNode):
         # the AIS GetBatch loader still keys off the URL scheme.
         source_type = "url" if "://" in tar_path else "file"
         offset = data.get("offset", 0.0) or 0.0
-        sampling_rate = data.get("sampling_rate", 16000)
+        sampling_rate = self._resolve_input_sampling_rate(data, manifest_path, tar_path)
         recording_duration = offset + duration if offset > 0 else duration
         recording = Recording(
             id=audio_filename,

@@ -247,6 +247,34 @@ class UnsupervisedAudioDataset(torch.utils.data.Dataset):
         return {"audio": audio, "audio_lens": audio_lens, "ids": [c.id for c in cuts]}
 
 
+class PolicyAwareDataset(UnsupervisedAudioDataset):
+    def __init__(self):
+        self.fault_tolerant_audio_loading = None
+
+    def with_fault_tolerant_audio_loading(self, enabled: bool):
+        dataset = type(self)()
+        dataset.fault_tolerant_audio_loading = enabled
+        return dataset
+
+
+def test_dataloader_propagates_audio_failure_policy_to_dataset(cutset_path: Path):
+    dataset = PolicyAwareDataset()
+    dl = get_lhotse_dataloader_from_config(
+        config={
+            "cuts_path": cutset_path,
+            "sample_rate": 16000,
+            "batch_size": 2,
+            "fault_tolerant_audio_loading": False,
+        },
+        global_rank=0,
+        world_size=1,
+        dataset=dataset,
+    )
+
+    assert dataset.fault_tolerant_audio_loading is None
+    assert dl.dataset.fault_tolerant_audio_loading is False
+
+
 def test_dataloader_from_lhotse_cuts(cutset_path: Path):
     config = OmegaConf.create(
         {

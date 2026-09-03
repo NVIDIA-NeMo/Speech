@@ -974,6 +974,16 @@ Two caveats to be aware of:
   ``.tar.gz``, etc.) and only files on a backend that supports indexed reads
   (local FS, S3-compatible object stores, AIStore).
 
+Lazy URL-backed ``nemo_tarred`` rows (indexed loading and AIS GetBatch) must
+also provide trusted source sampling-rate metadata.  Put ``sampling_rate`` (or
+the legacy ``sample_rate`` spelling) on each JSONL row.  If every source in a
+dataset has the same rate, set ``input_sampling_rate`` on that dataset instead.
+This source-rate setting is deliberately separate from top-level
+``sample_rate``, which remains the model target rate used for resampling.  NeMo
+never opens an audio member or probes its header while iterating or looking up
+the indexed JSONL; missing source-rate metadata therefore raises an actionable
+error before audio loading.
+
 Building ``.idx`` sidecars
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -1168,6 +1178,8 @@ End-to-end YAML example
           - type: nemo_tarred
             manifest_filepath: /data/asr/manifest__OP_0..127_CL_.jsonl
             tarred_audio_filepaths: /data/asr/audio__OP_0..127_CL_.tar
+            # Use only when these source manifests omit per-row sampling_rate.
+            input_sampling_rate: 16000
             weight: 0.7
           - type: lhotse
             cuts_path: /data/extra/cuts.jsonl

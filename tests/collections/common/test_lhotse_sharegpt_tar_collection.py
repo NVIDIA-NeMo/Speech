@@ -117,6 +117,47 @@ def test_sharegpt_loose_index_tar_collection_routes_manifest_rows(tmp_path):
     _assert_conversations(adapter)
 
 
+def test_sharegpt_collection_keeps_text_only_rows_without_audio_routes(tmp_path):
+    manifest = tmp_path / "manifest.jsonl"
+    rows = [
+        {
+            "id": "text-only",
+            "sound": "stale-unused-path.wav",
+            "conversations": [
+                {"from": "human", "value": "Answer from text only"},
+                {"from": "gpt", "value": "done"},
+            ],
+        },
+        {
+            "id": "with-audio",
+            "sound": "audio.wav",
+            "conversations": [
+                {"from": "human", "value": "Listen <sound>"},
+                {"from": "gpt", "value": "done"},
+            ],
+        },
+    ]
+    manifest.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    create_jsonl_index(manifest)
+    tars = [_write_tar(tmp_path / "audio.tar", [("audio.wav", _wav(1.0))])]
+    route = tmp_path / "data.sgroute"
+    build_sharegpt_tar_routing_index(route, manifest_paths=[manifest], tar_paths=tars)
+
+    adapter = NeMoMultimodalConversationShareGPTJsonlAdapter(
+        manifest_filepath=str(manifest),
+        tarred_audio_filepaths=[str(path) for path in tars],
+        tar_lookup_mode="collection",
+        tar_routing_filepath=route,
+        audio_locator_tag="[audio]",
+        audio_placeholders=["<sound>"],
+        indexed=True,
+    )
+
+    text_only, with_audio = list(adapter)
+    assert [turn for turn in text_only.turns if isinstance(turn, AudioTurn)] == []
+    assert len([turn for turn in with_audio.turns if isinstance(turn, AudioTurn)]) == 1
+
+
 def test_sharegpt_packed_tar_collection_routes_without_paths_only_fallback(tmp_path):
     manifest, tars, route = _sources(tmp_path)
     raw_tars = [str(path) for path in tars]

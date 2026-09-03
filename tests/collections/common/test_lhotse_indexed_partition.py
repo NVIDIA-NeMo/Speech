@@ -43,7 +43,7 @@ from lhotse.indexing import create_jsonl_index
 from lhotse.serialization import load_jsonl, save_to_jsonl
 from lhotse.testing.dummies import DummyManifest
 
-from nemo.collections.common.data.lhotse import nemo_adapters, text_adapters
+from nemo.collections.common.data.lhotse import indexed_adapters, nemo_adapters, text_adapters
 
 _PARTITION_ENV_KEYS = ("RANK", "WORLD_SIZE", LHOTSE_USE_WORKER_PARTITION)
 
@@ -122,12 +122,17 @@ def nemo_tarred_manifest(tmp_audio_root) -> tuple[Path, Path]:
                     "audio_filepath": name,
                     "text": "irrelevant",
                     "duration": cut.duration,
+                    "sampling_rate": cut.sampling_rate,
                     "lang": "en",
                     "shard_id": 0,
                     "cut_id": cut.id,
                 }
             )
-    return Path(mft_writer.path), root / "audios_0.tar"
+    manifest_path = Path(mft_writer.path)
+    tar_path = root / "audios_0.tar"
+    create_jsonl_index(manifest_path)
+    indexed_adapters.create_tar_index(tar_path, Path(f"{tar_path}.idx"))
+    return manifest_path, tar_path
 
 
 # ---------------------------------------------------------------------------
@@ -233,6 +238,13 @@ def test_lazy_nemo_tarred_indexed_defers_audio_until_selected(nemo_tarred_manife
         raise AssertionError("indexed candidate construction must not inspect audio payloads")
 
     monkeypatch.setattr(nemo_adapters.soundfile, "info", fail_info)
+    monkeypatch.setattr(
+        indexed_adapters.IndexedTarMemberReader,
+        "_ensure_open",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("indexed candidate construction must not open audio tars")
+        ),
+    )
     adapter = nemo_adapters.LazyNeMoTarredIterator(
         manifest_path=str(manifest_path),
         tar_paths=str(tar_path),
@@ -249,6 +261,87 @@ def test_lazy_nemo_tarred_indexed_defers_audio_until_selected(nemo_tarred_manife
     assert cut.sampling_rate == eager_cut.sampling_rate
     assert cut.duration == eager_cut.duration
     np.testing.assert_array_equal(audio, eager_audio)
+
+
+def test_lazy_nemo_tarred_indexed_requires_trusted_sampling_rate_without_audio_io(nemo_tarred_manifest, monkeypatch):
+    manifest_path, tar_path = nemo_tarred_manifest
+    rows = list(load_jsonl(manifest_path))
+    rows[0].pop("sampling_rate")
+    save_to_jsonl(rows, manifest_path)
+    create_jsonl_index(manifest_path)
+
+    monkeypatch.setattr(
+        nemo_adapters.soundfile,
+        "info",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not inspect audio metadata")),
+    )
+    adapter = nemo_adapters.LazyNeMoTarredIterator(
+        manifest_path=str(manifest_path),
+        tar_paths=str(tar_path),
+        indexed=True,
+    )
+    with pytest.raises(ValueError, match="trusted source sampling-rate metadata"):
+        adapter[0]
+
+    fallback_adapter = nemo_adapters.LazyNeMoTarredIterator(
+        manifest_path=str(manifest_path),
+        tar_paths=str(tar_path),
+        indexed=True,
+        input_sampling_rate=16000,
+    )
+    assert fallback_adapter[0].sampling_rate == 16000
+
+    rows[0]["sample_rate"] = 8000
+    save_to_jsonl(rows, manifest_path)
+    create_jsonl_index(manifest_path)
+    legacy_adapter = nemo_adapters.LazyNeMoTarredIterator(
+        manifest_path=str(manifest_path),
+        tar_paths=str(tar_path),
+        indexed=True,
+    )
+    assert legacy_adapter[0].sampling_rate == 8000
+
+
+def test_lazy_nemo_tarred_indexed_uses_nonstandard_manifest_sampling_rate_for_resampling(tmp_path, monkeypatch):
+    sampling_rate = 8000
+    audio_name = "eight-khz.wav"
+    payload = BytesIO()
+    nemo_adapters.soundfile.write(payload, np.zeros(sampling_rate, dtype=np.float32), sampling_rate, format="WAV")
+    tar_path = tmp_path / "audio_0.tar"
+    with tarfile.open(tar_path, "w:") as archive:
+        info = tarfile.TarInfo(audio_name)
+        info.size = len(payload.getvalue())
+        archive.addfile(info, BytesIO(payload.getvalue()))
+    indexed_adapters.create_tar_index(tar_path, Path(f"{tar_path}.idx"))
+    manifest_path = tmp_path / "manifest.jsonl"
+    save_to_jsonl(
+        [
+            {
+                "audio_filepath": audio_name,
+                "duration": 1.0,
+                "sampling_rate": sampling_rate,
+                "text": "eight kilohertz",
+            }
+        ],
+        manifest_path,
+    )
+    create_jsonl_index(manifest_path)
+
+    monkeypatch.setattr(
+        nemo_adapters.soundfile,
+        "info",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not inspect audio metadata")),
+    )
+    adapter = nemo_adapters.LazyNeMoTarredIterator(
+        manifest_path=str(manifest_path),
+        tar_paths=str(tar_path),
+        indexed=True,
+    )
+    cut = adapter[0]
+    assert cut.sampling_rate == sampling_rate
+    resampled = cut.resample(16000)
+    assert resampled.sampling_rate == 16000
+    assert resampled.load_audio().shape[-1] == 16000
 
 
 @pytest.mark.parametrize("skip_missing_manifest_entries", [False, True])
@@ -311,6 +404,7 @@ def test_lazy_nemo_tarred_indexed_skipme_is_canonical_filter(nemo_tarred_manifes
     rows[2]["_skipme"] = ""
     rows[3]["custom"] = {"_skipme": 0}
     save_to_jsonl(rows, manifest_path)
+    create_jsonl_index(manifest_path)
 
     for skip_missing_manifest_entries in (False, True):
         adapter = nemo_adapters.LazyNeMoTarredIterator(
@@ -339,6 +433,7 @@ def test_lazy_nemo_tarred_indexed_resume_is_stable_across_skipme(nemo_tarred_man
     rows[1]["_skipme"] = True
     rows[2]["custom"] = {"_skipme": "filtered"}
     save_to_jsonl(rows, manifest_path)
+    create_jsonl_index(manifest_path)
 
     def build():
         return nemo_adapters.LazyNeMoTarredIterator(
@@ -420,6 +515,7 @@ def nemo_tarred_duplicate_bucket_manifest(tmp_audio_root) -> tuple[list[Path], l
                         "audio_filepath": name,
                         "text": "irrelevant",
                         "duration": cut.duration,
+                        "sampling_rate": cut.sampling_rate,
                         "lang": "en",
                         "shard_id": 0,
                         "cut_id": cut.id,

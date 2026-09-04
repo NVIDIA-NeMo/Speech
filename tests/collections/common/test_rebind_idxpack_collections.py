@@ -12,18 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import struct
 from pathlib import Path
 
 import pytest
-from lhotse.index_pack import IndexPack, IndexPackCollectionSpec, write_index_pack
+from lhotse.index_pack import IndexPack, IndexPackArraySpec, IndexPackCollectionSpec, write_index_pack
 from lhotse.indexing import create_jsonl_index
-
+from scripts.dataloading.convert_indexes_to_idxpack import NativeTarOrdinalMapSpec
 from scripts.dataloading.rebind_idxpack_collections import (
     _read_pack_layout,
+    discover_rebind_pack_collections,
     discover_relocated_pack_collections,
     rebind_idxpack_collections,
     relocate_idxpack_collections,
 )
+
+from nemo.collections.common.data.lhotse.nemo_tar_routing import nemo_tar_ordinal_map_source_spec
 
 
 def _spec(path: Path, declaration: str) -> IndexPackCollectionSpec:
@@ -52,6 +56,139 @@ def test_rebinds_collection_key_and_layout_without_changing_payload(tmp_path: Pa
         assert pack.collection(target_spec.key).path_for_shard(0) == str(records)
         with pytest.raises(KeyError):
             pack.collection(source_spec.key)
+
+
+@pytest.mark.parametrize("relocate", [False, True])
+def test_rebind_and_relocation_preserve_native_tar_route_array(tmp_path: Path, relocate: bool) -> None:
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    source_manifest = source_root / "manifest.jsonl"
+    source_tar = source_root / "audio.tar"
+    source_manifest.write_text("a\nb\nc\nd\n")
+    source_tar.write_text("A\nB\nC\nD\n")
+    create_jsonl_index(source_manifest)
+    create_jsonl_index(source_tar)
+    route_values = (2, 0, 3, 1)
+    route_path = tmp_path / "route.u32"
+    route_path.write_bytes(struct.pack("<IIII", *route_values))
+
+    source_manifest_spec = IndexPackCollectionSpec(
+        role="manifest",
+        kind="jsonl",
+        source_spec="old-manifest-declaration",
+        paths=(str(source_manifest),),
+    )
+    source_tar_spec = IndexPackCollectionSpec(
+        role="tar",
+        kind="nemo_tar",
+        source_spec="old-tar-declaration",
+        paths=(str(source_tar),),
+    )
+    source_route = NativeTarOrdinalMapSpec(
+        manifest_source_spec=source_manifest_spec.source_spec,
+        tar_source_spec=source_tar_spec.source_spec,
+        manifest_paths=source_manifest_spec.paths,
+        tar_paths=source_tar_spec.paths,
+    )
+    source_route_array = IndexPackArraySpec(
+        role=source_route.role,
+        kind=source_route.kind,
+        source_spec=nemo_tar_ordinal_map_source_spec(
+            source_route.manifest_source_spec,
+            source_route.tar_source_spec,
+        ),
+        shard_paths=(route_path,),
+    )
+    source = tmp_path / "source.idxpack"
+    write_index_pack(source, [source_manifest_spec, source_tar_spec, source_route_array])
+
+    if relocate:
+        target_root = tmp_path / "target"
+        target_root.mkdir()
+        target_manifest = target_root / source_manifest.name
+        target_tar = target_root / source_tar.name
+        target_manifest.write_bytes(source_manifest.read_bytes())
+        target_tar.write_bytes(source_tar.read_bytes())
+    else:
+        target_manifest = source_manifest
+        target_tar = source_tar
+    target_manifest_spec = IndexPackCollectionSpec(
+        role="manifest",
+        kind="jsonl",
+        source_spec="new-manifest-declaration",
+        paths=(str(target_manifest),),
+    )
+    target_tar_spec = IndexPackCollectionSpec(
+        role="tar",
+        kind="nemo_tar",
+        source_spec="new-tar-declaration",
+        paths=(str(target_tar),),
+    )
+    target_route = NativeTarOrdinalMapSpec(
+        manifest_source_spec=target_manifest_spec.source_spec,
+        tar_source_spec=target_tar_spec.source_spec,
+        manifest_paths=target_manifest_spec.paths,
+        tar_paths=target_tar_spec.paths,
+    )
+    target = [target_manifest_spec, target_tar_spec, target_route]
+    output = tmp_path / "output.idxpack"
+
+    if relocate:
+        result = relocate_idxpack_collections(source, output, target)
+    else:
+        result = rebind_idxpack_collections(source, output, target)
+
+    assert result["keys_changed"] == 3
+    with IndexPack(output) as pack:
+        route = pack.collection(target_route.key)
+        assert route.is_array
+        assert [route.value(index) for index in range(len(route_values))] == list(route_values)
+        with pytest.raises(KeyError):
+            pack.collection(source_route.key)
+
+
+@pytest.mark.parametrize("relocate", [False, True])
+def test_v2_native_tar_rebind_discovery_preserves_route_free_topology(tmp_path: Path, relocate: bool) -> None:
+    manifest = tmp_path / "manifest.jsonl"
+    tar_path = tmp_path / "audio.tar"
+    manifest.write_text('{"audio_filepath": "sample.wav"}\n')
+    tar_path.write_text("sample\n")
+    create_jsonl_index(manifest)
+    create_jsonl_index(tar_path)
+    config = {
+        "type": "nemo_tarred",
+        "manifest_filepath": str(manifest),
+        "tarred_audio_filepaths": str(tar_path),
+    }
+    source_specs = [
+        IndexPackCollectionSpec(
+            role="manifest",
+            kind="jsonl",
+            source_spec=str(manifest),
+            paths=(str(manifest),),
+        ),
+        IndexPackCollectionSpec(
+            role="tar",
+            kind="nemo_tar",
+            source_spec=str(tar_path),
+            paths=(str(tar_path),),
+        ),
+    ]
+    source = tmp_path / "source.idxpack"
+    write_index_pack(source, source_specs)
+    observed, _header, _sequences, _segments = _read_pack_layout(source)
+
+    target = discover_rebind_pack_collections(config, observed)
+
+    assert len(target) == 2
+    output = tmp_path / "output.idxpack"
+    if relocate:
+        relocate_idxpack_collections(source, output, target)
+    else:
+        rebind_idxpack_collections(source, output, target)
+    with IndexPack(output) as pack:
+        assert pack.version == 2
+        assert pack.num_collections == 2
 
 
 def test_rejects_ordered_path_mismatch(tmp_path: Path) -> None:

@@ -49,14 +49,16 @@ from nemo.collections.common.data.lhotse._compat import (
     attach_graph_origin,
     normalize_graph_token,
 )
+from nemo.collections.common.data.lhotse.nemo_tar_routing import (
+    NEMO_TAR_SKIP_ORDINAL,
+    manifest_entry_is_explicitly_skipped,
+    nemo_tar_audio_member_name,
+    nemo_tar_ordinal_map_collection_key,
+)
 from nemo.collections.common.parts.preprocessing.manifest import get_full_path
 from nemo.utils import logging
 from nemo.utils.data_utils import is_datastore_path
 
-# NeMo tarred manifests support per-recording offsets via "-subN" audio_filepath
-# suffixes. We use this pattern in both indexed and streaming code paths to
-# recover the actual tar member name (offsets share a single member).
-_OFFSET_PATTERN = re.compile(r'^(?P<stem>.+)(?P<sub>-sub\d+)(?P<ext>\.\w+)?$')
 ShardKey = Union[int, tuple[int, int]]
 
 
@@ -73,14 +75,6 @@ def _warn_malformed_indexed_manifest_record(ex: BaseException, idx: int, path: s
         f"first occurrence path={path!r} idx={idx} error={type(ex).__name__}: {ex}. "
         "Further records with the same path/error type are suppressed in this worker."
     )
-
-
-def manifest_entry_is_explicitly_skipped(data: Mapping) -> bool:
-    """Return whether a manifest row carries a truthy canonical skip marker."""
-    if bool(data.get("_skipme", False)):
-        return True
-    custom = data.get("custom")
-    return isinstance(custom, Mapping) and bool(custom.get("_skipme", False))
 
 
 class LazyNeMoIterator(IteratorNode):
@@ -586,6 +580,37 @@ class LazyNeMoTarredIterator(IteratorNode):
                 f"{self._packed_tar_collection.sequence_count} tars"
             )
         self._total_len = len(self._packed_manifest_collection)
+        self._packed_tar_ordinal_map = None
+        if not self.use_ais_get_batch:
+            ordinal_map_key = nemo_tar_ordinal_map_collection_key(manifest_path, tar_paths)
+            try:
+                ordinal_map = self._index_pack.collection(ordinal_map_key)
+            except KeyError as ex:
+                # Compatibility with v2 packs. Their pointers retain lazy
+                # load-time recovery when manifest and tar orders differ.
+                if self._index_pack.version != 2:
+                    raise ValueError(
+                        "Version-3 native-tar index pack is missing its expected "
+                        f"{ordinal_map_key.hex()} route collection"
+                    ) from ex
+            else:
+                if not ordinal_map.is_array or ordinal_map.value_dtype != "uint32":
+                    raise ValueError("Packed native-tar ordinal map must be a uint32 array collection")
+                if ordinal_map.sequence_count != self._packed_manifest_collection.sequence_count:
+                    raise ValueError(
+                        "Packed native-tar ordinal-map shard-count mismatch: "
+                        f"{ordinal_map.sequence_count} maps vs "
+                        f"{self._packed_manifest_collection.sequence_count} manifests"
+                    )
+                for shard_index in range(ordinal_map.sequence_count):
+                    map_length = ordinal_map.shard_length(shard_index)
+                    manifest_length = self._packed_manifest_collection.shard_length(shard_index)
+                    if map_length != manifest_length:
+                        raise ValueError(
+                            "Packed native-tar ordinal-map row-count mismatch at shard "
+                            f"{shard_index}: {map_length} map values vs {manifest_length} manifest rows"
+                        )
+                self._packed_tar_ordinal_map = ordinal_map
         if not self.use_ais_get_batch:
             from nemo.collections.common.data.lhotse.indexed_adapters import PackedTarMemberReader
 
@@ -841,11 +866,7 @@ class LazyNeMoTarredIterator(IteratorNode):
         return sid, idx - self._cum_lens[shard_pos]
 
     def _audio_member_name_from_entry(self, entry: dict) -> str:
-        af = entry["audio_filepath"]
-        m = _OFFSET_PATTERN.match(af)
-        if m is None:
-            return af
-        return m.group("stem") + ifnone(m.group("ext"), "")
+        return nemo_tar_audio_member_name(entry["audio_filepath"])
 
     def _attach_supervision_and_metadata(self, cut: Cut, data: dict, manifest_path: str, tar_path: str) -> Cut:
         cut.supervisions.append(
@@ -935,14 +956,33 @@ class LazyNeMoTarredIterator(IteratorNode):
         data, location = self._packed_manifest_source.read_with_location(idx)
         manifest_path = location.path
         tar_path = self._packed_tar_path(location.shard_index)
-        if self._indexed_entry_is_explicitly_skipped(data, manifest_path, tar_path):
+        explicitly_skipped = self._indexed_entry_is_explicitly_skipped(data, manifest_path, tar_path)
+        if self._packed_tar_ordinal_map is not None:
+            member_ordinal = self._packed_tar_ordinal_map.value_in_shard(location.shard_index, location.local_index)
+            if explicitly_skipped:
+                if member_ordinal != NEMO_TAR_SKIP_ORDINAL:
+                    raise ValueError(
+                        "Packed native-tar ordinal map does not mark explicitly skipped manifest row "
+                        f"{location.local_index} in shard {location.shard_index}"
+                    )
+                return None
+            if member_ordinal == NEMO_TAR_SKIP_ORDINAL:
+                raise ValueError(
+                    "Packed native-tar ordinal map unexpectedly skips active manifest row "
+                    f"{location.local_index} in shard {location.shard_index}"
+                )
+        elif explicitly_skipped:
             return None
         if self.use_ais_get_batch:
             return self._build_indexed_deferred_cut(data, manifest_path, tar_path)
         expected_name = self._audio_member_name_from_entry(data)
+        local_index = location.local_index if self._packed_tar_ordinal_map is None else member_ordinal
         try:
             pointer = self._packed_tar_reader.resolve_shard_member_pointer(
-                location.shard_index, location.local_index, expected_name
+                location.shard_index,
+                local_index,
+                expected_name,
+                strict=self._packed_tar_ordinal_map is not None,
             )
         except KeyError:
             if self.skip_missing_manifest_entries:
@@ -1043,11 +1083,7 @@ class LazyNeMoTarredIterator(IteratorNode):
             manifest_path = self._shard_key_to_manifest_path[sid] if len(self.paths) > 1 else self.paths[0]
 
             def basename(d: dict) -> str:
-                return (
-                    m.group("stem") + ifnone(m.group("ext"), "")
-                    if (m := _OFFSET_PATTERN.match(k := d["audio_filepath"])) is not None
-                    else k
-                )
+                return nemo_tar_audio_member_name(d["audio_filepath"])
 
             shard_manifest: dict[str, list[dict]] = groupby(basename, self.shard_id_to_manifest[sid])
             tar_path = self.shard_id_to_tar_path[sid]

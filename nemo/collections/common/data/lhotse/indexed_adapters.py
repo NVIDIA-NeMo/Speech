@@ -359,7 +359,7 @@ def _open_data_path(path: str):
     return open(read_path, "rb")
 
 
-def _load_index(data_path: str, idx_path: str | None = None):
+def _load_index(data_path: str, idx_path: str | None = None, *, sentinel_size_override: int | None = None):
     """
     Load an offset index for *data_path*, layering NeMo-specific validation
     on top of :func:`lhotse.indexing.read_index`.
@@ -383,7 +383,23 @@ def _load_index(data_path: str, idx_path: str | None = None):
     if idx_path is None:
         idx_path = data_path + ".idx"
     offsets = read_index(idx_path)
-    if _URL_RE.match(str(data_path)):
+    if sentinel_size_override is not None:
+        if offsets.shape[0] < 1:
+            raise ValueError(f"Index for {data_path} is empty; cannot override its size sentinel.")
+        data_size = int(sentinel_size_override)
+        if not _URL_RE.match(str(data_path)) and os.path.getsize(data_path) != data_size:
+            raise ValueError(
+                f"Index sentinel override for {data_path} is {data_size}, but its current file size is "
+                f"{os.path.getsize(data_path)}."
+            )
+        if int(offsets[-1]) > data_size:
+            raise ValueError(
+                f"Index for {data_path} has sentinel {int(offsets[-1])} beyond override size {data_size}."
+            )
+        offsets = offsets.copy()
+        offsets[-1] = np.uint64(data_size)
+        num_samples = offsets.shape[0] - 1
+    elif _URL_RE.match(str(data_path)):
         if offsets.shape[0] < 1:
             raise ValueError(
                 f"Index for remote source {data_path} is empty; expected at "
@@ -662,12 +678,17 @@ class IndexedTarMemberReader:
         tar_path: str | Path,
         idx_path: str | Path | None = None,
         auto_create_index: bool = True,
+        sentinel_size_override: int | None = None,
     ):
         self.data_path = str(tar_path)
         resolved_idx = str(idx_path) if idx_path else self.data_path + ".idx"
         if auto_create_index and not os.path.exists(resolved_idx):
             create_tar_index(self.data_path, resolved_idx)
-        self.offsets, self._len = _load_index(self.data_path, resolved_idx)
+        self.offsets, self._len = _load_index(
+            self.data_path,
+            resolved_idx,
+            sentinel_size_override=sentinel_size_override,
+        )
         self._fh = None
         self._name_to_idx: dict[str, int] | None = None
 
@@ -723,7 +744,7 @@ class IndexedTarMemberReader:
 
         return _read_tar_member_header(read_range, start, end, self.data_path)
 
-    def _build_name_index(self) -> dict[str, int]:
+    def _build_name_index(self, *, reject_duplicates: bool = False) -> dict[str, int]:
         """Walk the tar headers once to build a name → sample-index map.
 
         Reads only the 512-byte tar headers (no payloads), so this is
@@ -737,10 +758,28 @@ class IndexedTarMemberReader:
         name_to_idx: dict[str, int] = {}
         for i in range(self._len):
             name, _ = self._member_header(i)
+            if reject_duplicates and name in name_to_idx:
+                raise ValueError(
+                    f"Duplicate tar member name {name!r} in {self.data_path}; "
+                    "name-keyed indexed access is ambiguous"
+                )
             name_to_idx[name] = i
         return name_to_idx
 
-    def resolve_member_pointer(self, idx: int, expected_name: str) -> str:
+    def member_name_index(self, *, reject_duplicates: bool = False) -> dict[str, int]:
+        """Return the lazily built member-name index.
+
+        ``reject_duplicates`` is intended for new, unambiguous routing
+        artifacts. The default preserves the legacy last-member-wins lookup
+        behavior used by :meth:`get`.
+        """
+        if reject_duplicates:
+            return self._build_name_index(reject_duplicates=True)
+        if self._name_to_idx is None:
+            self._name_to_idx = self._build_name_index()
+        return self._name_to_idx
+
+    def resolve_member_pointer(self, idx: int, expected_name: str, *, strict: bool = False) -> str:
         """Create a pointer whose member name is validated when its payload loads."""
         resolved_idx = _resolve_idx(idx, self._len)
         return encode_pointer(
@@ -748,12 +787,12 @@ class IndexedTarMemberReader:
             int(self.offsets[resolved_idx]),
             int(self.offsets[resolved_idx + 1]),
             expected_name=expected_name,
+            strict=strict,
         )
 
     def get(self, name: str) -> bytes:
         """Return the payload bytes of the tar member named ``name``."""
-        if self._name_to_idx is None:
-            self._name_to_idx = self._build_name_index()
+        self.member_name_index()
         try:
             idx = self._name_to_idx[name]
         except KeyError as e:
@@ -766,8 +805,7 @@ class IndexedTarMemberReader:
         return data
 
     def __contains__(self, name: str) -> bool:
-        if self._name_to_idx is None:
-            self._name_to_idx = self._build_name_index()
+        self.member_name_index()
         return name in self._name_to_idx
 
 
@@ -934,7 +972,9 @@ class PackedTarMemberReader:
             self._shard_name_indexes.popitem(last=False)
         return index
 
-    def resolve_shard_member_pointer(self, shard_index: int, local_index: int, expected_name: str) -> str:
+    def resolve_shard_member_pointer(
+        self, shard_index: int, local_index: int, expected_name: str, *, strict: bool = False
+    ) -> str:
         """Create a packed pointer whose member name is validated at payload load."""
         location = self.collection.locate_in_shard(shard_index, local_index)
         return encode_pointer(
@@ -942,6 +982,7 @@ class PackedTarMemberReader:
             location.start,
             location.end,
             expected_name=expected_name,
+            strict=strict,
         )
 
     def get_shard(self, shard_index: int, name: str) -> tuple[str, bytes]:

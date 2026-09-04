@@ -31,6 +31,7 @@ import hashlib
 import json
 import os
 import shutil
+import struct
 import tempfile
 import zlib
 from collections.abc import Mapping, Sequence
@@ -40,16 +41,17 @@ from pathlib import Path
 import click
 from lhotse.index_pack import (
     _COLLECTION,
+    _COLLECTION_FIXED_ARRAY,
     _COLLECTION_PATHS_ONLY,
     _HEADER,
     _HEADER_SIZE,
     _SEGMENT,
+    _SEGMENT_FIXED_ARRAY,
     _SEGMENT_PATH_ONLY,
     _SEQUENCE,
     IndexPack,
     IndexPackCollectionSpec,
     _StringTableBuilder,
-    index_pack_layout_hash,
 )
 from omegaconf import DictConfig, ListConfig
 
@@ -61,7 +63,9 @@ from scripts.dataloading.build_indexes import (
     _load_input_cfg,
     _resolve_input_cfg,
 )
-from scripts.dataloading.convert_indexes_to_idxpack import discover_pack_collections
+from scripts.dataloading.convert_indexes_to_idxpack import NativeTarOrdinalMapSpec, discover_pack_collections
+
+from nemo.collections.common.data.lhotse.nemo_tar_routing import NEMO_TAR_ORDINAL_MAP_KIND
 
 
 @dataclass(frozen=True)
@@ -74,6 +78,8 @@ class _ObservedCollection:
     segment_ids: tuple[int, ...]
     cumulative_ends: tuple[int, ...]
     total_records: int
+    is_array: bool
+    shard_lengths: tuple[int, ...]
 
 
 @dataclass(frozen=True)
@@ -89,7 +95,11 @@ class _ObservedSegment:
 
     @property
     def offsets_required(self) -> bool:
-        return not bool(self.flags & _SEGMENT_PATH_ONLY)
+        return not self.is_array and not bool(self.flags & _SEGMENT_PATH_ONLY)
+
+    @property
+    def is_array(self) -> bool:
+        return bool(self.flags & _SEGMENT_FIXED_ARRAY)
 
 
 def _read_exact(stream, size: int, offset: int) -> bytes:
@@ -163,6 +173,8 @@ def _read_pack_layout(
             paths = []
             segment_ids = []
             cumulative_ends = []
+            shard_lengths = []
+            previous_cumulative_end = 0
             for sequence_index in range(sequence_start, sequence_start + sequence_count):
                 segment_id, cumulative_end = sequences[sequence_index]
                 if segment_id >= len(observed_segments):
@@ -170,16 +182,21 @@ def _read_pack_layout(
                 paths.append(observed_segments[segment_id].path)
                 segment_ids.append(segment_id)
                 cumulative_ends.append(cumulative_end)
+                shard_lengths.append(cumulative_end - previous_cumulative_end)
+                previous_cumulative_end = cumulative_end
+            is_array = bool(flags & _COLLECTION_FIXED_ARRAY)
             observed.append(
                 _ObservedCollection(
                     key=key,
                     kind=_decode_string(stream, kind_position, kind_length),
                     paths=tuple(paths),
-                    offsets_required=not bool(flags & _COLLECTION_PATHS_ONLY),
+                    offsets_required=not is_array and not bool(flags & _COLLECTION_PATHS_ONLY),
                     sequence_start=sequence_start,
                     segment_ids=tuple(segment_ids),
                     cumulative_ends=tuple(cumulative_ends),
                     total_records=total,
+                    is_array=is_array,
+                    shard_lengths=tuple(shard_lengths),
                 )
             )
     return observed, header, tuple(sequences), observed_segments
@@ -190,9 +207,69 @@ def _read_ordered_collections(path: Path) -> tuple[list[_ObservedCollection], tu
     return observed, header
 
 
+def _target_is_array(spec) -> bool:
+    return isinstance(spec, NativeTarOrdinalMapSpec)
+
+
+def _target_sequence_count(spec) -> int:
+    return spec.sequence_count if _target_is_array(spec) else len(spec.paths)
+
+
+def _target_layout_hash(observed: Sequence[_ObservedCollection], target: Sequence) -> bytes:
+    """Compute the Lhotse layout hash without requiring array build sidecars."""
+    digest = hashlib.sha256()
+    for actual, expected in zip(observed, target, strict=True):
+        digest.update(expected.key)
+        if actual.is_array:
+            digest.update(b"\x02")
+            digest.update(struct.pack("<Q", expected.sequence_count))
+            for shard_length in actual.shard_lengths:
+                digest.update(struct.pack("<Q", shard_length))
+            continue
+        digest.update(bytes((expected.offsets_required,)))
+        digest.update(struct.pack("<Q", len(expected.paths)))
+        for path in expected.paths:
+            encoded = path.encode("utf-8")
+            digest.update(struct.pack("<Q", len(encoded)))
+            digest.update(encoded)
+    return digest.digest()
+
+
+def _routes_for_source_topology(
+    native_routes: Sequence[NativeTarOrdinalMapSpec], observed: Sequence[_ObservedCollection]
+) -> list[NativeTarOrdinalMapSpec]:
+    observed_routes = [
+        collection for collection in observed if collection.is_array and collection.kind == NEMO_TAR_ORDINAL_MAP_KIND
+    ]
+    if not observed_routes:
+        return []
+    if len(observed_routes) != len(native_routes):
+        raise ValueError(
+            "Native-tar route collection count changed during rebinding: "
+            f"pack={len(observed_routes)}, target={len(native_routes)}"
+        )
+    return list(native_routes)
+
+
+def discover_rebind_pack_collections(
+    entry,
+    observed: Sequence[_ObservedCollection],
+    *,
+    data_blend_dir: str | Path | None = None,
+) -> list:
+    """Discover ordinary collections followed by build-free native route descriptors."""
+    native_routes = []
+    collections = discover_pack_collections(
+        entry,
+        data_blend_dir=data_blend_dir,
+        native_tar_ordinal_maps=native_routes,
+    )
+    return [*collections, *_routes_for_source_topology(native_routes, observed)]
+
+
 def validate_rebinding_contract(
     observed: Sequence[_ObservedCollection],
-    target: Sequence[IndexPackCollectionSpec],
+    target: Sequence,
 ) -> None:
     """Require exact positional equivalence before rebinding identities."""
     if len(observed) != len(target):
@@ -204,6 +281,17 @@ def validate_rebinding_contract(
     for index, (actual, expected) in enumerate(zip(observed, target)):
         if actual.kind != expected.kind:
             raise ValueError(f"Collection {index} storage kind changed: {actual.kind!r} != {expected.kind!r}")
+        if actual.is_array != _target_is_array(expected):
+            raise ValueError(
+                f"Collection {index} fixed-array mode changed: {actual.is_array} != {_target_is_array(expected)}"
+            )
+        if actual.is_array:
+            if len(actual.shard_lengths) != expected.sequence_count:
+                raise ValueError(
+                    f"Collection {index} array shard count changed: "
+                    f"{len(actual.shard_lengths)} != {expected.sequence_count}"
+                )
+            continue
         if actual.offsets_required != expected.offsets_required:
             raise ValueError(
                 f"Collection {index} offset mode changed: " f"{actual.offsets_required} != {expected.offsets_required}"
@@ -224,7 +312,7 @@ def validate_rebinding_contract(
 def validate_relocation_contract(
     observed: Sequence[_ObservedCollection],
     segments: Sequence[_ObservedSegment],
-    target: Sequence[IndexPackCollectionSpec],
+    target: Sequence,
 ) -> tuple[str, ...]:
     """Validate positional equivalence and return one target path per segment."""
     if len(observed) != len(target):
@@ -233,13 +321,25 @@ def validate_relocation_contract(
     if len(set(target_keys)) != len(target_keys):
         raise ValueError("Target configuration contains duplicate collection keys")
 
-    relocated: list[str | None] = [None] * len(segments)
+    relocated: list[str | None] = ["" if segment.is_array else None for segment in segments]
     target_owners: dict[tuple[str, bool], int] = {}
     for collection_index, (actual, expected) in enumerate(zip(observed, target)):
         if actual.kind != expected.kind:
             raise ValueError(
                 f"Collection {collection_index} storage kind changed: " f"{actual.kind!r} != {expected.kind!r}"
             )
+        if actual.is_array != _target_is_array(expected):
+            raise ValueError(
+                f"Collection {collection_index} fixed-array mode changed: "
+                f"{actual.is_array} != {_target_is_array(expected)}"
+            )
+        if actual.is_array:
+            if len(actual.shard_lengths) != expected.sequence_count:
+                raise ValueError(
+                    f"Collection {collection_index} array shard count changed: "
+                    f"{len(actual.shard_lengths)} != {expected.sequence_count}"
+                )
+            continue
         if actual.offsets_required != expected.offsets_required:
             raise ValueError(
                 f"Collection {collection_index} offset mode changed: "
@@ -309,7 +409,8 @@ def discover_relocated_pack_collections(
         raise ValueError("Relocation path-prefix mappings must be non-empty")
 
     source_wds = [collection for collection in observed if collection.kind == WDS_TAR_V2]
-    target: list[IndexPackCollectionSpec] = []
+    target: list = []
+    native_routes: list[NativeTarOrdinalMapSpec] = []
     wds_index = 0
 
     def walk(node) -> None:
@@ -340,7 +441,12 @@ def discover_relocated_pack_collections(
                 return
 
         if typ != "share_gpt_webdataset":
-            discover_pack_collections(node, target, data_blend_dir=data_blend_dir)
+            discover_pack_collections(
+                node,
+                target,
+                data_blend_dir=data_blend_dir,
+                native_tar_ordinal_maps=native_routes,
+            )
             return
 
         version = int(node.get("wds_sample_index_version", 1))
@@ -376,7 +482,7 @@ def discover_relocated_pack_collections(
             "Target configuration has fewer WDS collections than source pack: "
             f"target={wds_index}, source={len(source_wds)}"
         )
-    return target
+    return [*target, *_routes_for_source_topology(native_routes, observed)]
 
 
 def _sha256_file(path: Path) -> str:
@@ -390,6 +496,8 @@ def _sha256_file(path: Path) -> str:
 def _verify_relocated_payloads(segments: Sequence[_ObservedSegment], relocated_paths: Sequence[str]) -> None:
     """Prove byte identity for every changed local source path."""
     for segment_id, (segment, target_path) in enumerate(zip(segments, relocated_paths, strict=True)):
+        if segment.is_array:
+            continue
         if segment.path == target_path:
             continue
         if "://" in segment.path or "://" in target_path:
@@ -423,7 +531,7 @@ def _verify_relocated_payloads(segments: Sequence[_ObservedSegment], relocated_p
 def rebind_idxpack_collections(
     source: str | Path,
     output: str | Path,
-    target: Sequence[IndexPackCollectionSpec],
+    target: Sequence,
     *,
     verify_payloads: bool = True,
 ) -> dict:
@@ -437,7 +545,7 @@ def rebind_idxpack_collections(
 
     observed, header = _read_ordered_collections(source)
     validate_rebinding_contract(observed, target)
-    target_layout_hash = index_pack_layout_hash(target)
+    target_layout_hash = _target_layout_hash(observed, target)
 
     with IndexPack(source) as pack:
         if verify_payloads:
@@ -471,11 +579,15 @@ def rebind_idxpack_collections(
         with IndexPack(temporary, expected_layout_hash=target_layout_hash) as pack:
             for spec in target:
                 collection = pack.collection(spec.key)
-                if collection.sequence_count != len(spec.paths):
+                if collection.sequence_count != _target_sequence_count(spec):
                     raise ValueError("Rebound collection path count changed during publication")
-                for shard_index, expected_path in enumerate(spec.paths):
-                    if collection.path_for_shard(shard_index) != expected_path:
-                        raise ValueError("Rebound collection path changed during publication")
+                if _target_is_array(spec):
+                    if not collection.is_array:
+                        raise ValueError("Rebound fixed-array collection changed storage mode")
+                else:
+                    for shard_index, expected_path in enumerate(spec.paths):
+                        if collection.path_for_shard(shard_index) != expected_path:
+                            raise ValueError("Rebound collection path changed during publication")
         try:
             os.link(temporary, output)
         except FileExistsError as error:
@@ -506,7 +618,7 @@ def rebind_idxpack_collections(
 def relocate_idxpack_collections(
     source: str | Path,
     output: str | Path,
-    target: Sequence[IndexPackCollectionSpec],
+    target: Sequence,
     *,
     trust_relocated_payloads: bool = False,
 ) -> dict:
@@ -520,7 +632,7 @@ def relocate_idxpack_collections(
 
     observed, header, sequences, segments = _read_pack_layout(source)
     relocated_paths = validate_relocation_contract(observed, segments, target)
-    target_layout_hash = index_pack_layout_hash(target)
+    target_layout_hash = _target_layout_hash(observed, target)
     if not trust_relocated_payloads:
         _verify_relocated_payloads(segments, relocated_paths)
 
@@ -573,7 +685,11 @@ def relocate_idxpack_collections(
                         actual.total_records,
                         strings_offset + kind_relative,
                         kind_length,
-                        0 if expected.offsets_required else _COLLECTION_PATHS_ONLY,
+                        (
+                            _COLLECTION_FIXED_ARRAY
+                            if actual.is_array
+                            else 0 if expected.offsets_required else _COLLECTION_PATHS_ONLY
+                        ),
                     )
                 )
             for sequence in sequences:
@@ -637,11 +753,15 @@ def relocate_idxpack_collections(
                 pack.verify_segment(segment_id)
             for spec in target:
                 collection = pack.collection(spec.key)
-                if collection.sequence_count != len(spec.paths):
+                if collection.sequence_count != _target_sequence_count(spec):
                     raise ValueError("Relocated collection path count changed")
-                for shard_index, expected_path in enumerate(spec.paths):
-                    if collection.path_for_shard(shard_index) != expected_path:
-                        raise ValueError("Relocated collection path changed")
+                if _target_is_array(spec):
+                    if not collection.is_array:
+                        raise ValueError("Relocated fixed-array collection changed storage mode")
+                else:
+                    for shard_index, expected_path in enumerate(spec.paths):
+                        if collection.path_for_shard(shard_index) != expected_path:
+                            raise ValueError("Relocated collection path changed")
         try:
             os.link(temporary, output)
         except FileExistsError as error:
@@ -731,7 +851,12 @@ def main(
                     data_blend_dir=data_blend_dir,
                 )
             else:
-                target = discover_pack_collections(config, data_blend_dir=data_blend_dir)
+                observed, _header, _sequences, _segments = _read_pack_layout(Path(source_pack))
+                target = discover_rebind_pack_collections(
+                    config,
+                    observed,
+                    data_blend_dir=data_blend_dir,
+                )
             result = relocate_idxpack_collections(
                 source_pack,
                 output,
@@ -741,7 +866,12 @@ def main(
         else:
             if path_prefix_maps:
                 raise ValueError("--path-prefix-map requires --relocate-paths")
-            target = discover_pack_collections(config, data_blend_dir=data_blend_dir)
+            observed, _header, _sequences, _segments = _read_pack_layout(Path(source_pack))
+            target = discover_rebind_pack_collections(
+                config,
+                observed,
+                data_blend_dir=data_blend_dir,
+            )
             if trust_relocated_payloads:
                 raise ValueError("--trust-relocated-payloads requires --relocate-paths")
             result = rebind_idxpack_collections(

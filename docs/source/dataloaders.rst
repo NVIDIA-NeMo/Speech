@@ -1030,7 +1030,10 @@ read-only memory map and faults in offset pages on demand; it does not preload
 the offset payload into Python or NumPy memory.
 
 Build loose sidecars first, then convert each independently configured dataset
-to its own pack. Conversion does not rescan the source manifests or tar files:
+to its own pack. Most sidecars are copied directly. For paired native NeMo
+manifests and tars, conversion reads each indexed manifest row and each tar
+member header once (but never reads audio payloads) to embed the exact routing
+between them:
 
 .. code-block:: bash
 
@@ -1057,12 +1060,30 @@ indexed adapters can continue to use loose sidecars.
 
 Native tar ``.idx`` files remain the headerless sequence of
 little-endian uint64 offsets; no format marker or companion sidecar is
-required. Before packing member offsets, the converter compares the final
-size sentinel with current local or remote object metadata. A matching
-index is accepted unchanged. A mismatch is rejected because it cannot safely
-describe the current source; rebuild it explicitly with
+required. The converter stores the native manifest-row-to-tar-member mapping
+as a fixed uint32 collection inside the single ``.idxpack`` output. Reordered
+or filtered manifests, repeated ``-subN`` rows, and explicit ``_skipme`` rows
+therefore retain constant-time lookup without an extra runtime header probe or
+tar scan. The selected member name is validated from the same byte range when
+the audio payload is eventually loaded; a mismatch fails instead of scanning
+the tar.
+
+Before packing member offsets, the converter compares the final size sentinel
+with current local or remote object metadata. A matching index is accepted
+unchanged. A mismatch is rejected because it cannot safely describe the
+current source; rebuild it explicitly with
 ``python scripts/dataloading/build_indexes.py --force`` (and the same
 ``--indexes-root`` used for conversion, when applicable).
+
+Version-2 packs without the embedded mapping remain readable for compatibility.
+When their manifest and tar orders differ, the first mismatched audio load may
+scan the complete tar to build an in-process member-name index. Reconvert the dataset to a
+version-3 pack to remove that fallback cost. ``--native-tar-paths-only`` keeps
+the existing AIS URL/path-only behavior and intentionally does not embed the
+mapping.
+
+``rebind_idxpack_collections.py`` preserves and rekeys embedded native route
+arrays during rebinding or relocation; version-2 source packs remain route-free.
 
 At runtime, set a shared ``index_pack_root`` and declare the pack explicitly on
 each owning outer ``input_cfg`` entry:

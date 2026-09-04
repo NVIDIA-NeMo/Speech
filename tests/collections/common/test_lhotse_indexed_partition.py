@@ -38,6 +38,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 from lhotse import CutSet
+from lhotse.audio import AudioLoadingError
+from lhotse.dataset import AudioSamples
 from lhotse.dataset.dataloading import LHOTSE_USE_WORKER_PARTITION
 from lhotse.indexing import create_jsonl_index, read_index
 from lhotse.serialization import load_jsonl, save_to_jsonl
@@ -241,9 +243,9 @@ def test_lazy_nemo_tarred_indexed_defers_audio_until_selected(nemo_tarred_manife
     monkeypatch.setattr(nemo_adapters.soundfile, "info", fail_info)
     monkeypatch.setattr(
         indexed_adapters.IndexedTarMemberReader,
-        "_build_name_index",
+        "_member_header",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("positionally aligned manifests must not scan the tar member table")
+            AssertionError("indexed candidate construction must not read tar headers")
         ),
     )
     adapter = nemo_adapters.LazyNeMoTarredIterator(
@@ -256,6 +258,7 @@ def test_lazy_nemo_tarred_indexed_defers_audio_until_selected(nemo_tarred_manife
 
     source = cut.recording.sources[0]
     assert source.type == "shar_ptr"
+    assert "&n=" in source.source
     pointer_path, pointer_start, pointer_end = decode_pointer(source.source)
     tar_offsets = read_index(f"{tar_path}.idx")
     assert pointer_path == str(tar_path)
@@ -274,7 +277,7 @@ def test_lazy_nemo_tarred_indexed_defers_audio_until_selected(nemo_tarred_manife
     np.testing.assert_array_equal(audio, eager_audio)
 
 
-def test_lazy_nemo_tarred_indexed_resolves_filtered_manifest_member_range(nemo_tarred_manifest, monkeypatch):
+def test_lazy_nemo_tarred_indexed_resolves_filtered_manifest_member_at_audio_load(nemo_tarred_manifest, monkeypatch):
     manifest_path, tar_path = nemo_tarred_manifest
     monkeypatch.setenv("USE_AIS_GET_BATCH", "false")
     rows = list(load_jsonl(manifest_path))[1:]
@@ -291,8 +294,43 @@ def test_lazy_nemo_tarred_indexed_resolves_filtered_manifest_member_range(nemo_t
     tar_offsets = read_index(f"{tar_path}.idx")
 
     assert source.type == "shar_ptr"
+    assert "&n=" in source.source
     assert pointer_path == str(tar_path)
-    assert (pointer_start, pointer_end) == (tar_offsets[1], tar_offsets[2])
+    assert (pointer_start, pointer_end) == (tar_offsets[0], tar_offsets[1])
+    assert source.load_audio().shape[-1] == adapter[0].num_samples
+
+
+@pytest.mark.parametrize("skip_missing_manifest_entries", [False, True])
+@pytest.mark.parametrize("fault_tolerant_audio_loading", [False, True])
+def test_lazy_nemo_tarred_indexed_missing_audio_obeys_only_audio_policy(
+    nemo_tarred_manifest,
+    monkeypatch,
+    skip_missing_manifest_entries,
+    fault_tolerant_audio_loading,
+):
+    manifest_path, tar_path = nemo_tarred_manifest
+    monkeypatch.setenv("USE_AIS_GET_BATCH", "false")
+    rows = list(load_jsonl(manifest_path))
+    rows[0]["audio_filepath"] = "missing.wav"
+    save_to_jsonl(rows, manifest_path)
+    create_jsonl_index(manifest_path)
+
+    adapter = nemo_adapters.LazyNeMoTarredIterator(
+        manifest_path=str(manifest_path),
+        tar_paths=str(tar_path),
+        indexed=True,
+        skip_missing_manifest_entries=skip_missing_manifest_entries,
+        fault_tolerant_audio_loading=fault_tolerant_audio_loading,
+    )
+    cuts = CutSet.from_cuts([adapter[0], adapter[1]])
+    loader = AudioSamples(fault_tolerant=fault_tolerant_audio_loading)
+
+    if fault_tolerant_audio_loading:
+        _, _, surviving = loader(cuts)
+        assert [cut.custom["cut_id"] for cut in surviving] == [rows[1]["cut_id"]]
+    else:
+        with pytest.raises(AudioLoadingError, match="no member named 'missing.wav'"):
+            loader(cuts)
 
 
 def test_lazy_nemo_tarred_indexed_requires_trusted_sampling_rate_without_audio_io(nemo_tarred_manifest, monkeypatch):

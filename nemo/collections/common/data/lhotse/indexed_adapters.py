@@ -741,35 +741,14 @@ class IndexedTarMemberReader:
         return name_to_idx
 
     def resolve_member_pointer(self, idx: int, expected_name: str) -> str:
-        """Resolve ``expected_name`` to a lazy byte-range pointer.
-
-        The manifest row number is normally also the tar-member ordinal, so
-        validate that candidate with a single tar-header read. Only filtered
-        or otherwise non-positionally-aligned manifests pay for the existing
-        name-to-ordinal fallback scan.
-        """
-        try:
-            resolved_idx = _resolve_idx(idx, self._len)
-            actual_name, header_offset = self._member_header(resolved_idx)
-        except IndexError:
-            actual_name = None
-        if actual_name != expected_name:
-            if self._name_to_idx is None:
-                self._name_to_idx = self._build_name_index()
-            try:
-                resolved_idx = self._name_to_idx[expected_name]
-            except KeyError as ex:
-                raise KeyError(
-                    f"Tar {self.data_path} has no member named '{expected_name}'. "
-                    "The .idx may be stale or the manifest is referencing a different tar."
-                ) from ex
-            actual_name, header_offset = self._member_header(resolved_idx)
-        if actual_name != expected_name:
-            raise ValueError(
-                f"Tar index for {self.data_path} resolved {actual_name!r} after looking up {expected_name!r}."
-            )
-
-        return encode_pointer(self.data_path, header_offset, int(self.offsets[resolved_idx + 1]))
+        """Create a pointer whose member name is validated when its payload loads."""
+        resolved_idx = _resolve_idx(idx, self._len)
+        return encode_pointer(
+            self.data_path,
+            int(self.offsets[resolved_idx]),
+            int(self.offsets[resolved_idx + 1]),
+            expected_name=expected_name,
+        )
 
     def get(self, name: str) -> bytes:
         """Return the payload bytes of the tar member named ``name``."""
@@ -956,28 +935,14 @@ class PackedTarMemberReader:
         return index
 
     def resolve_shard_member_pointer(self, shard_index: int, local_index: int, expected_name: str) -> str:
-        """Resolve a paired manifest row to a packed tar-member byte-range pointer."""
-        try:
-            location = self.collection.locate_in_shard(shard_index, local_index)
-            actual_name, header_offset = self._member_header(location)
-        except IndexError:
-            actual_name = None
-        if actual_name != expected_name:
-            index = self._name_index_for_shard(shard_index)
-            try:
-                local_index = index[expected_name]
-            except KeyError as ex:
-                path = self.collection.path_for_shard(shard_index)
-                raise KeyError(f"Tar {path} has no member named {expected_name!r}.") from ex
-            location = self.collection.locate_in_shard(shard_index, local_index)
-            actual_name, header_offset = self._member_header(location)
-        if actual_name != expected_name:
-            raise ValueError(
-                f"Packed tar index for {location.path} resolved {actual_name!r} "
-                f"after looking up {expected_name!r}."
-            )
-
-        return encode_pointer(location.path, header_offset, location.end)
+        """Create a packed pointer whose member name is validated at payload load."""
+        location = self.collection.locate_in_shard(shard_index, local_index)
+        return encode_pointer(
+            location.path,
+            location.start,
+            location.end,
+            expected_name=expected_name,
+        )
 
     def get_shard(self, shard_index: int, name: str) -> tuple[str, bytes]:
         """Read a member by name from one shard, supporting filtered manifests."""

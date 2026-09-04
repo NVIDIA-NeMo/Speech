@@ -3036,7 +3036,7 @@ wheels = [
 
 [[package]]
 name = "lhotse"
-version = "2.0.0a4"
+version = "2.0.0a5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "audioread" },
@@ -3055,9 +3055,9 @@ dependencies = [
     { name = "torch", version = "2.12.0+cu132", source = { registry = "https://download.pytorch.org/whl/cu132" }, marker = "(sys_platform == 'linux' and extra != 'extra-12-nemo-toolkit-compiled-a100' and extra == 'extra-12-nemo-toolkit-cu13') or (sys_platform == 'linux' and extra != 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-cu13') or (extra == 'extra-12-nemo-toolkit-cu12' and extra == 'extra-12-nemo-toolkit-cu13') or (extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100')" },
     { name = "tqdm" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c5/1d/05ace088382c6cb94907d79a374dbc209106d158b8c6b9a0079235ac7e71/lhotse-2.0.0a4.tar.gz", hash = "sha256:89d215335aee733850e351f2835969049fe7e11403245cbf59c519d689538f04", size = 752424, upload-time = "2026-09-03T12:46:30.601Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/de/72/6176b4f5ce6c166549c364c7844ccf6d5562d34846d3c1104dc945276616/lhotse-2.0.0a5.tar.gz", hash = "sha256:be0fa46b0952e57bde9876be7b64859795691bf183001be18793b753e73bedf9", size = 754737, upload-time = "2026-09-04T20:43:05.876Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ac/3a/7dfe765d31c8d0675940b98ddd7bfb1eb30cabbbe26614f80b5d4c88b7b2/lhotse-2.0.0a4-py3-none-any.whl", hash = "sha256:5762c10e60d71d4a442c8cadb2d926beb9ae70fe2919343e555f39d23ed79f0e", size = 979363, upload-time = "2026-09-03T12:46:29.034Z" },
+    { url = "https://files.pythonhosted.org/packages/dc/09/47d8e44737c1d57b12e949df80ee48c46eaa2e7c58b39323a514589ac1ee/lhotse-2.0.0a5-py3-none-any.whl", hash = "sha256:1a589d677b788f9fef483883f03350023fc063925d63c235f9f147774078af97", size = 981933, upload-time = "2026-09-04T20:43:04.286Z" },
 ]
 
 [[package]]
@@ -4603,12 +4603,12 @@ requires-dist = [
     { name = "kaldialign", marker = "extra == 'asr-only'" },
     { name = "kaldialign", marker = "extra == 'speechlm2'" },
     { name = "kaldialign", marker = "extra == 'tts'" },
-    { name = "lhotse", marker = "extra == 'all'", specifier = "==2.0.0a4" },
-    { name = "lhotse", marker = "extra == 'asr'", specifier = "==2.0.0a4" },
-    { name = "lhotse", marker = "extra == 'asr-only'", specifier = "==2.0.0a4" },
-    { name = "lhotse", marker = "extra == 'audio'", specifier = "==2.0.0a4" },
-    { name = "lhotse", marker = "extra == 'speechlm2'", specifier = "==2.0.0a4" },
-    { name = "lhotse", marker = "extra == 'tts'", specifier = "==2.0.0a4" },
+    { name = "lhotse", marker = "extra == 'all'", specifier = "==2.0.0a5" },
+    { name = "lhotse", marker = "extra == 'asr'", specifier = "==2.0.0a5" },
+    { name = "lhotse", marker = "extra == 'asr-only'", specifier = "==2.0.0a5" },
+    { name = "lhotse", marker = "extra == 'audio'", specifier = "==2.0.0a5" },
+    { name = "lhotse", marker = "extra == 'speechlm2'", specifier = "==2.0.0a5" },
+    { name = "lhotse", marker = "extra == 'tts'", specifier = "==2.0.0a5" },
     { name = "librosa", marker = "extra == 'all'" },
     { name = "librosa", marker = "extra == 'all'", specifier = ">=0.10.0" },
     { name = "librosa", marker = "extra == 'all'", specifier = ">=0.10.1" },

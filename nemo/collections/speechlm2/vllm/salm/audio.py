@@ -114,7 +114,6 @@ def _maybe_mount_pe_encoder(
     perception: nn.Module,
     pe_encoder_path: str | None,
     pe_encoder_config: dict | None = None,
-    pe_encoder_type: str | None = None,
     pe_encoder_overrides: dict | None = None,
 ) -> bool:
     """Mount a configured perception encoder from a local bundle or model identifier.
@@ -135,14 +134,12 @@ def _maybe_mount_pe_encoder(
             "A ParallelExpertEncoder is configured but perception has no `encoder` attribute to replace."
         )
 
-    from nemo.collections.asr.modules.parallel_expert_encoder_resolver import resolve_parallel_expert_encoder_pt
+    from nemo.collections.asr.modules.parallel_expert_encoder import ParallelExpertEncoderPT
 
     if has_config:
-        encoder_class = resolve_parallel_expert_encoder_pt(config=pe_encoder_config)
-        pe_encoder = encoder_class.from_inline_config(pe_encoder_config, map_location="cpu")
+        pe_encoder = ParallelExpertEncoderPT.from_inline_config(pe_encoder_config, map_location="cpu")
     else:
-        encoder_class = resolve_parallel_expert_encoder_pt(pe_encoder_path, architecture=pe_encoder_type)
-        pe_encoder = encoder_class.load_from_nemo(
+        pe_encoder = ParallelExpertEncoderPT.load_from_nemo(
             pe_encoder_path,
             map_location="cpu",
             strict=True,

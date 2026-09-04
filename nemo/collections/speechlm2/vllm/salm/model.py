@@ -142,7 +142,6 @@ class NeMoSpeechLMForConditionalGeneration(
                     self.perception,
                     pe_encoder_path,
                     pe_encoder_config,
-                    getattr(config, "pe_encoder_type", None),
                     getattr(config, "pe_encoder_overrides", None),
                 )
                 self._uses_pe_encoder = _is_parallel_expert_encoder(getattr(self.perception, "encoder", None))

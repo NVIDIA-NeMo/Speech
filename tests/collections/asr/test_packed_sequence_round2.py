@@ -12,8 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import copy
-
 import pytest
 import torch
 from torch.utils._pytree import tree_flatten
@@ -165,7 +163,8 @@ def test_canonical_pee_dense_contract_is_unchanged_after_packed_use():
 def test_canonical_pee_packed_matches_dense_trainable_asr_gradients():
     torch.manual_seed(0)
     dense_encoder = build_toy_packed_pe_encoder(freeze_asr=False, freeze_diar=True).cuda().eval()
-    packed_encoder = copy.deepcopy(dense_encoder)
+    packed_encoder = build_toy_packed_pe_encoder(freeze_asr=False, freeze_diar=True).cuda().eval()
+    packed_encoder.load_state_dict(dense_encoder.state_dict(), strict=True)
     dense_mels = torch.randn(2, _MEL_FEATURES, 32, device="cuda", requires_grad=True)
     packed_mels = dense_mels.detach().clone().requires_grad_()
     lengths = torch.tensor([32, 17], device="cuda")

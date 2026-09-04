@@ -39,8 +39,9 @@ import numpy as np
 import pytest
 from lhotse import CutSet
 from lhotse.dataset.dataloading import LHOTSE_USE_WORKER_PARTITION
-from lhotse.indexing import create_jsonl_index
+from lhotse.indexing import create_jsonl_index, read_index
 from lhotse.serialization import load_jsonl, save_to_jsonl
+from lhotse.shar.lazy_pointer import decode_pointer
 from lhotse.testing.dummies import DummyManifest
 
 from nemo.collections.common.data.lhotse import indexed_adapters, nemo_adapters, text_adapters
@@ -240,9 +241,9 @@ def test_lazy_nemo_tarred_indexed_defers_audio_until_selected(nemo_tarred_manife
     monkeypatch.setattr(nemo_adapters.soundfile, "info", fail_info)
     monkeypatch.setattr(
         indexed_adapters.IndexedTarMemberReader,
-        "_ensure_open",
+        "_build_name_index",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("indexed candidate construction must not open audio tars")
+            AssertionError("positionally aligned manifests must not scan the tar member table")
         ),
     )
     adapter = nemo_adapters.LazyNeMoTarredIterator(
@@ -254,13 +255,44 @@ def test_lazy_nemo_tarred_indexed_defers_audio_until_selected(nemo_tarred_manife
     cut = next(iter(adapter))
 
     source = cut.recording.sources[0]
-    assert source.type == "file"
-    assert source.source.startswith(f"{tar_path}/")
+    assert source.type == "shar_ptr"
+    pointer_path, pointer_start, pointer_end = decode_pointer(source.source)
+    tar_offsets = read_index(f"{tar_path}.idx")
+    assert pointer_path == str(tar_path)
+    assert (pointer_start, pointer_end) == (tar_offsets[0], tar_offsets[1])
+
+    monkeypatch.setattr(
+        "lhotse.serialization.TarAsDirBackend.open",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("indexed audio loading must not search the tar member table")
+        ),
+    )
     audio = cut.load_audio()
     assert audio.shape[-1] == cut.num_samples
     assert cut.sampling_rate == eager_cut.sampling_rate
     assert cut.duration == eager_cut.duration
     np.testing.assert_array_equal(audio, eager_audio)
+
+
+def test_lazy_nemo_tarred_indexed_resolves_filtered_manifest_member_range(nemo_tarred_manifest, monkeypatch):
+    manifest_path, tar_path = nemo_tarred_manifest
+    monkeypatch.setenv("USE_AIS_GET_BATCH", "false")
+    rows = list(load_jsonl(manifest_path))[1:]
+    save_to_jsonl(rows, manifest_path)
+    create_jsonl_index(manifest_path)
+
+    adapter = nemo_adapters.LazyNeMoTarredIterator(
+        manifest_path=str(manifest_path),
+        tar_paths=str(tar_path),
+        indexed=True,
+    )
+    source = adapter[0].recording.sources[0]
+    pointer_path, pointer_start, pointer_end = decode_pointer(source.source)
+    tar_offsets = read_index(f"{tar_path}.idx")
+
+    assert source.type == "shar_ptr"
+    assert pointer_path == str(tar_path)
+    assert (pointer_start, pointer_end) == (tar_offsets[1], tar_offsets[2])
 
 
 def test_lazy_nemo_tarred_indexed_requires_trusted_sampling_rate_without_audio_io(nemo_tarred_manifest, monkeypatch):

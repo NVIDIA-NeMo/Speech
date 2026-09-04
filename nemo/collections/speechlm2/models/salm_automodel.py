@@ -370,12 +370,17 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             audio_lens,
             audio_cu_seqlens=audio_cu_seqlens,
             # A ParallelExpertEncoder applies this shared setting to both packed
-            # post-stacking branches. Do not split its waveform a second time here.
+            # post-stacking branches. Do not split its waveform a second time on
+            # that path. Dense PEE execution retains the ordinary outer chunker.
             chunk_size_seconds=(
-                None if uses_parallel_expert_encoder else self.cfg.get("encoder_chunk_size_seconds", None)
+                None
+                if uses_parallel_expert_encoder and packed_encoder_sequences
+                else self.cfg.get("encoder_chunk_size_seconds", None)
             ),
             chunk_batch_size=(
-                None if uses_parallel_expert_encoder else self.cfg.get("encoder_chunk_batch_size", None)
+                None
+                if uses_parallel_expert_encoder and packed_encoder_sequences
+                else self.cfg.get("encoder_chunk_batch_size", None)
             ),
             sampling_rate=self.sampling_rate,
             cp_mesh=cp_mesh,

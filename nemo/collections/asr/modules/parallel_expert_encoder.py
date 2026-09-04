@@ -72,9 +72,8 @@ _SPEAKER_FEATURE_MODE_THRESHOLD = "thresholded"
 _SPEAKER_FEATURE_MODES = frozenset({_SPEAKER_FEATURE_MODE_CONTINUOUS, _SPEAKER_FEATURE_MODE_THRESHOLD})
 _BUNDLE_CONFIG_OVERRIDE_KEYS = frozenset(
     {
-        "asr_chunk_size_seconds",
         "asr_normalize_type",
-        "diar_chunk_size_seconds",
+        "chunk_size_seconds",
         "diar_normalize_type",
         "frame_shift_seconds",
         "missing_rttm_target",
@@ -276,8 +275,7 @@ class ParallelExpertEncoderPT(ModelPT):
             speaker_activity_threshold=speaker_activity_threshold,
             spk_kernel_scale=self._cfg.get("spk_kernel_scale", 1.0),
             frame_shift_seconds=self._cfg.get("frame_shift_seconds", 0.01),
-            asr_chunk_size_seconds=self._cfg.get("asr_chunk_size_seconds", None),
-            diar_chunk_size_seconds=self._cfg.get("diar_chunk_size_seconds", None),
+            chunk_size_seconds=self._cfg.get("chunk_size_seconds", None),
             sync_max_audio_length=self._cfg.get("sync_max_audio_length", False),
         )
 
@@ -316,7 +314,7 @@ class ParallelExpertEncoderPT(ModelPT):
                     if not str(cfg.get("target", "")).endswith("ParallelExpertEncoderPT"):
                         return False
                     # Keep the released public probe target-based. Runtime loading
-                    # uses the schema resolver and remains strict.
+                    # validates the canonical bundle schema and remains strict.
                     return True
         except (tarfile.TarError, OSError) as error:
             logging.warning("[ParallelExpertEncoder] Could not inspect %s: %s", nemo_path, error)
@@ -468,8 +466,7 @@ class ParallelExpertEncoder(nn.Module):
         speaker_activity_threshold: Optional[float] = None,
         spk_kernel_scale: float = 1.0,
         frame_shift_seconds: float = 0.01,
-        asr_chunk_size_seconds: Optional[float] = None,
-        diar_chunk_size_seconds: Optional[float] = None,
+        chunk_size_seconds: Optional[float] = None,
         sync_max_audio_length: bool = False,
     ):
         super().__init__()
@@ -529,8 +526,7 @@ class ParallelExpertEncoder(nn.Module):
         self.frame_shift_seconds = float(frame_shift_seconds)
         if self.frame_shift_seconds <= 0:
             raise ValueError(f"frame_shift_seconds must be positive, got {frame_shift_seconds}.")
-        self.asr_chunk_size_seconds = self._validate_chunk_size("asr_chunk_size_seconds", asr_chunk_size_seconds)
-        self.diar_chunk_size_seconds = self._validate_chunk_size("diar_chunk_size_seconds", diar_chunk_size_seconds)
+        self.chunk_size_seconds = self._validate_chunk_size("chunk_size_seconds", chunk_size_seconds)
 
         self.online_inference_length = int(online_inference_length)
         self.online_inference_enabled: Optional[bool] = None
@@ -920,7 +916,7 @@ class ParallelExpertEncoder(nn.Module):
             embeddings = self._forward_packed_branch(
                 self.diarization_model.encoder,
                 features,
-                self.diar_chunk_size_seconds,
+                self.chunk_size_seconds,
             )
             modules = self.diarization_model.sortformer_modules
             projected = embeddings.data
@@ -950,7 +946,7 @@ class ParallelExpertEncoder(nn.Module):
             return self._forward_packed_branch(
                 self.asr_encoder,
                 features,
-                self.asr_chunk_size_seconds,
+                self.chunk_size_seconds,
             )
 
     def _fuse_diar_and_asr_packed(

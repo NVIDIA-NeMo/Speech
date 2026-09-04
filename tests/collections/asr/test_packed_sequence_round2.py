@@ -20,7 +20,11 @@ from torch.utils._pytree import tree_flatten
 
 from nemo.collections.asr.modules.moe_transformer_encoder import MoEFeedForward, MoETransformerEncoder
 from nemo.collections.asr.parts.packed_sequence import PackedEncoderActivations, pack_encoder_output
-from tests.collections.asr.test_parallel_expert_encoder_ggemm import _MEL_FEATURES, _N_SPK, build_toy_pe_encoder
+from tests.collections.asr.test_parallel_expert_encoder_two_branch import (
+    _MEL_FEATURES,
+    _N_SPK,
+    build_toy_packed_pe_encoder,
+)
 
 
 def test_packed_encoder_activations_is_registered_as_pytree():
@@ -124,65 +128,59 @@ def test_moe_packed_auxiliary_loss_is_padding_neutral_while_legacy_contract_is_u
     assert torch.isfinite(packed_auxiliary_loss)
 
 
-def test_pee_packed_can_return_raw_expert_outputs_without_changing_default():
+def test_canonical_pee_packed_output_preserves_compact_metadata():
     torch.manual_seed(0)
-    encoder = build_toy_pe_encoder().eval()
+    encoder = build_toy_packed_pe_encoder().eval()
     mels = torch.randn(2, _MEL_FEATURES, 24)
     lengths = torch.tensor([24, 11])
     targets = torch.zeros(2, 3, _N_SPK)
 
     with torch.no_grad():
-        default = encoder.forward_sequence_packed(mels, lengths, spk_targets=targets)
-        fused, experts = encoder.forward_sequence_packed(
-            mels,
-            lengths,
-            spk_targets=targets,
-            return_experts=True,
-        )
+        output = encoder.forward_sequence_packed(mels, lengths, spk_targets=targets)
 
-    assert isinstance(default, PackedEncoderActivations)
-    torch.testing.assert_close(fused.data, default.data)
-    assert set(experts) == {"speech", "sound", "speaker_preds"}
-    assert isinstance(experts["speech"], PackedEncoderActivations)
-    assert isinstance(experts["sound"], PackedEncoderActivations)
-    assert experts["speaker_preds"] is not None
+    assert isinstance(output, PackedEncoderActivations)
+    assert output.total_tokens == int(output.lengths.sum())
+    assert output.cu_seqlens.tolist() == [0, *output.lengths.cumsum(0).tolist()]
 
 
-def test_pee_legacy_optional_expert_return_contract_is_unchanged():
-    encoder = build_toy_pe_encoder().eval()
+def test_canonical_pee_dense_contract_is_unchanged_after_packed_use():
+    encoder = build_toy_packed_pe_encoder().eval()
     mels = torch.randn(2, _MEL_FEATURES, 24)
     lengths = torch.tensor([24, 11])
     targets = torch.zeros(2, 3, _N_SPK)
+    state_keys = set(encoder.state_dict())
 
     with torch.no_grad():
-        default = encoder(mels, lengths, spk_targets=targets)
-        with_experts = encoder(mels, lengths, spk_targets=targets, return_experts=True)
+        packed = encoder.forward_sequence_packed(mels, lengths, spk_targets=targets)
+        dense, dense_lengths = encoder(mels, lengths, spk_targets=targets)
 
-    assert len(default) == 2
-    assert len(with_experts) == 3
-    torch.testing.assert_close(with_experts[0], default[0])
-    assert torch.equal(with_experts[1], default[1])
-    assert set(with_experts[2]) == {"speech", "sound", "speaker_preds"}
+    restored = torch.cat(
+        [dense[index, :, : int(length)].transpose(0, 1) for index, length in enumerate(dense_lengths)]
+    )
+    torch.testing.assert_close(packed.data, restored, rtol=1e-5, atol=1e-6)
+    assert set(encoder.state_dict()) == state_keys
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="PEE sound-gradient parity requires CUDA")
-def test_pee_packed_matches_legacy_trainable_sound_gradients():
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="PEE ASR-gradient parity requires CUDA")
+def test_canonical_pee_packed_matches_dense_trainable_asr_gradients():
     torch.manual_seed(0)
-    legacy_encoder = build_toy_pe_encoder(freeze_speaker=True, freeze_sound=False).cuda().eval()
-    packed_encoder = copy.deepcopy(legacy_encoder)
-    legacy_mels = torch.randn(2, _MEL_FEATURES, 32, device="cuda", requires_grad=True)
-    packed_mels = legacy_mels.detach().clone().requires_grad_()
+    dense_encoder = build_toy_packed_pe_encoder(freeze_asr=False, freeze_diar=True).cuda().eval()
+    packed_encoder = copy.deepcopy(dense_encoder)
+    dense_mels = torch.randn(2, _MEL_FEATURES, 32, device="cuda", requires_grad=True)
+    packed_mels = dense_mels.detach().clone().requires_grad_()
     lengths = torch.tensor([32, 17], device="cuda")
     targets = torch.zeros(2, 4, _N_SPK, device="cuda")
 
-    legacy, output_lengths = legacy_encoder(legacy_mels, lengths, spk_targets=targets)
+    dense, output_lengths = dense_encoder(dense_mels, lengths, spk_targets=targets)
     packed = packed_encoder.forward_sequence_packed(packed_mels, lengths, spk_targets=targets)
-    valid = torch.arange(legacy.shape[-1], device="cuda")[None, :] < output_lengths[:, None]
-    legacy.transpose(1, 2)[valid].float().square().mean().backward()
+    valid = torch.arange(dense.shape[-1], device="cuda")[None, :] < output_lengths[:, None]
+    dense.transpose(1, 2)[valid].float().square().mean().backward()
     packed.data.float().square().mean().backward()
 
-    for name in ("sound_norm.weight", "pee.experts.sound.layers.0.attn.w_qkv.weight"):
-        legacy_grad = dict(legacy_encoder.named_parameters())[name].grad
+    torch.testing.assert_close(packed_mels.grad, dense_mels.grad, rtol=2e-3, atol=2e-4)
+    for name, dense_parameter in dense_encoder.named_parameters():
+        if not name.startswith(("asr_encoder.", "asr_norm.")) or not dense_parameter.requires_grad:
+            continue
         packed_grad = dict(packed_encoder.named_parameters())[name].grad
-        assert legacy_grad is not None and packed_grad is not None
-        torch.testing.assert_close(packed_grad, legacy_grad, rtol=2e-3, atol=2e-4)
+        assert dense_parameter.grad is not None and packed_grad is not None
+        torch.testing.assert_close(packed_grad, dense_parameter.grad, rtol=2e-3, atol=2e-4)

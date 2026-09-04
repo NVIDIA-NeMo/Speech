@@ -12,18 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Benchmark padded, serial-THD, and grouped-THD ASR encoder implementations.
+"""Benchmark padded and native-THD ASR encoder implementations.
 
 This is an end-to-end implementation comparison, not a controlled change of tensor
-layout alone. PEE reports its historical padded grouped path, a serial native-THD
-oracle, and its production layer-synchronous grouped-THD path. All paths use
-identical weights, inputs, valid-token output loss, and weighted MoE load-balancing
-loss. Trial order is counterbalanced to reduce cache/order bias.
+layout alone. All paths use identical weights, inputs, valid-token output loss, and
+weighted MoE load-balancing loss. Trial order is counterbalanced to reduce
+cache/order bias. PEE benchmarking loads the canonical bundle supplied with
+``--pee-model``.
 
 Example::
 
     env PYTHONPATH=. python scripts/speech_recognition/benchmark_packed_asr_encoders.py \
-        --encoders transformer moe pee --phases inference training \
+        --encoders transformer moe pee --pee-model /path/to/pee.nemo \
+        --phases inference training \
         --warmup 20 --iterations 100 --repeats 6 \
         --output packed_sequence_asr_encoders_benchmark_final.json
 """
@@ -40,10 +41,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import torch
-from omegaconf import DictConfig
-
 from nemo.collections.asr.modules.moe_transformer_encoder import MoETransformerEncoder
-from nemo.collections.asr.modules.parallel_expert_encoder_ggemm import ParallelExpertEncoder
+from nemo.collections.asr.modules.parallel_expert_encoder import ParallelExpertEncoderPT
 from nemo.collections.asr.modules.transformer_encoder import TransformerEncoder
 
 
@@ -57,13 +56,13 @@ def main() -> None:
     results = []
     equivalence = {}
     for encoder_name in args.encoders:
-        implementations = _implementation_labels(encoder_name, args.pee_implementations)
+        implementations = _implementation_labels(encoder_name)
         trials = {(phase, implementation): [] for phase in args.phases for implementation in implementations}
         for repeat in range(args.repeats):
             torch.manual_seed(args.seed)
-            model, inputs, lengths, speaker_targets = _make_workload(encoder_name, device, args.dtype)
-            if encoder_name == 'pee':
-                model.sequence_packed_moe_mode = args.pee_sequence_packed_moe_mode
+            model, inputs, lengths, speaker_targets = _make_workload(
+                encoder_name, device, args.dtype, pee_model=args.pee_model
+            )
             if repeat == 0:
                 equivalence[encoder_name] = _numerical_preflight(
                     encoder_name, model, inputs, lengths, speaker_targets, implementations
@@ -112,10 +111,9 @@ def main() -> None:
         "warmup": args.warmup,
         "iterations": args.iterations,
         "repeats": args.repeats,
-        "pee_sequence_packed_moe_mode": args.pee_sequence_packed_moe_mode,
         "provenance": _source_provenance(),
         "comparison_scope": (
-            "End-to-end legacy padded, serial native-THD, and grouped native-THD implementations; "
+            "End-to-end padded and native-THD implementations; "
             "backend and routing differences are reported and results must not be attributed to layout alone. "
             "Legacy padded MoE auxiliary loss includes padded positions for backwards compatibility, while "
             "native packed MoE routing and auxiliary loss intentionally include valid tokens only."
@@ -129,9 +127,7 @@ def main() -> None:
         args.output.write_text(json.dumps(report, indent=2) + "\n")
 
 
-def _implementation_labels(encoder_name, pee_implementations):
-    if encoder_name == 'pee':
-        return tuple(pee_implementations)
+def _implementation_labels(encoder_name):
     return ('legacy_bhsd', 'native_thd')
 
 
@@ -152,29 +148,19 @@ def _parse_args():
     parser.add_argument("--iterations", type=int, default=10)
     parser.add_argument("--repeats", type=int, default=6)
     parser.add_argument("--seed", type=int, default=17)
-    parser.add_argument(
-        "--pee-implementations",
-        nargs="+",
-        choices=("legacy_bhsd", "serial_thd", "grouped_thd"),
-        default=("legacy_bhsd", "serial_thd", "grouped_thd"),
-        help="PEE implementations to compare; the default preserves the serial THD oracle.",
-    )
-    parser.add_argument(
-        "--pee-sequence-packed-moe-mode",
-        choices=("auto", "dense", "topk", "native"),
-        default="auto",
-        help="Grouped-THD PEE MoE policy; topk is the memory-first grouped-kernel ablation.",
-    )
+    parser.add_argument("--pee-model", help="Canonical ParallelExpertEncoderPT .nemo bundle used for PEE runs.")
     parser.add_argument("--profile", action="store_true", help="Add NVTX ranges around every measured iteration.")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     if args.warmup < 0 or args.iterations < 1 or args.repeats < 1:
         parser.error("--warmup must be non-negative and --iterations/--repeats must be positive")
+    if "pee" in args.encoders and not args.pee_model:
+        parser.error("--pee-model is required when --encoders includes pee")
     args.dtype = getattr(torch, args.dtype)
     return args
 
 
-def _make_workload(name, device, dtype):
+def _make_workload(name, device, dtype, *, pee_model=None):
     if name == "transformer":
         model = TransformerEncoder(
             feat_in=512,
@@ -215,82 +201,13 @@ def _make_workload(name, device, dtype):
         lengths = torch.tensor([1024, 768, 512, 384, 256, 192, 128, 64], device=device)
         speaker_targets = None
     else:
-        model = _make_pee()
-        inputs = torch.randn(4, 128, 2048, device=device, dtype=dtype)
+        model = ParallelExpertEncoderPT.load_from_nemo(pee_model, map_location="cpu", strict=True)
+        model.chunk_size_seconds = None
+        inputs = torch.randn(4, model._feat_in, 2048, device=device, dtype=dtype)
         lengths = torch.tensor([2048, 1024, 512, 256], device=device)
-        speaker_targets = torch.zeros(4, 256, 4, device=device, dtype=dtype)
+        max_output_frames = (inputs.shape[-1] + model.subsampling_factor - 1) // model.subsampling_factor
+        speaker_targets = torch.zeros(4, max_output_frames, model.n_spk, device=device, dtype=dtype)
     return model.to(device=device, dtype=dtype), inputs, lengths, speaker_targets
-
-
-def _make_pee():
-    speech = _expert_config(
-        "nemo.collections.asr.modules.MoETransformerEncoder",
-        512,
-        8,
-        moe_num_experts=8,
-        moe_top_k=2,
-        moe_load_balance_loss_weight=0.01,
-    )
-    sound = _expert_config("nemo.collections.asr.modules.TransformerEncoder", 512, 8)
-    speaker = _expert_config("nemo.collections.asr.modules.TransformerEncoder", 256, 4)
-    sortformer = DictConfig(
-        {
-            "_target_": "nemo.collections.asr.modules.sortformer_modules.SortformerModules",
-            "num_spks": 4,
-            "dropout_rate": 0.0,
-            "fc_d_model": 256,
-            "tf_d_model": 256,
-            "subsampling_factor": 8,
-            "spkcache_len": 16,
-            "fifo_len": 0,
-            "chunk_len": 500,
-            "spkcache_update_period": 500,
-            "chunk_left_context": 0,
-            "chunk_right_context": 0,
-            "spkcache_sil_frames_per_spk": 1,
-        }
-    )
-    return ParallelExpertEncoder(
-        speech_expert_cfg=speech,
-        speaker_expert_cfg=speaker,
-        sound_expert_cfg=sound,
-        sortformer_modules_cfg=sortformer,
-        asr_normalize_type="per_feature",
-        always_run_diarization=False,
-        online_inference_length=500,
-        chunk_left_context=0,
-        chunk_right_context=0,
-        diar_spkcache_len=16,
-        diar_spkcache_update_period=500,
-        merge_sound_expert_to_asr=True,
-    )
-
-
-def _expert_config(target, d_model, n_heads, **extra):
-    config = {
-        "_target_": target,
-        "feat_in": 128,
-        "feat_out": -1,
-        "n_layers": 4,
-        "d_model": d_model,
-        "n_heads": n_heads,
-        "subsampling": "feature_stacking",
-        "subsampling_factor": 8,
-        "ff_expansion": 4.0,
-        "self_attention_model": "rope",
-        "pos_emb_max_len": 5000,
-        "xscaling": False,
-        "qkv_bias": False,
-        "qk_norm": True,
-        "pre_block_norm": True,
-        "attn_mode": "full",
-        "drop_rate": 0.0,
-        "dropout_pre_encoder": 0.0,
-        "dropout_emb": 0.0,
-        "sync_max_audio_length": False,
-    }
-    config.update(extra)
-    return DictConfig(config)
 
 
 def _source_provenance():
@@ -309,7 +226,7 @@ def _source_provenance():
     source_paths = (
         "nemo/collections/asr/modules/ggemm_transformer_encoder.py",
         "nemo/collections/asr/modules/moe_transformer_encoder.py",
-        "nemo/collections/asr/modules/parallel_expert_encoder_ggemm.py",
+        "nemo/collections/asr/modules/parallel_expert_encoder.py",
         "nemo/collections/asr/modules/transformer_encoder.py",
         "nemo/collections/asr/parts/packed_sequence.py",
         "nemo/collections/speechlm2/models/salm_automodel.py",
@@ -375,11 +292,6 @@ def _numerical_preflight(encoder_name, model, inputs, lengths, speaker_targets, 
             "atol": 0.03,
             "passed": lengths_identical,
         }
-    if 'serial_thd' in outputs and 'grouped_thd' in outputs:
-        serial_output, serial_lengths = outputs['serial_thd']
-        grouped_output, grouped_lengths = outputs['grouped_thd']
-        assert torch.equal(grouped_lengths, serial_lengths)
-        torch.testing.assert_close(grouped_output, serial_output, rtol=3e-2, atol=3e-2)
     return {"reference": reference_name, "implementations": comparisons}
 
 
@@ -434,11 +346,7 @@ def _benchmark_implementation(
         "phase": phase,
         "layout": layout,
         "implementation": implementation,
-        "qkv_projection": (
-            "grouped_bmm_or_baddbmm"
-            if implementation == "grouped_thd"
-            else "fused" if implementation in ("legacy_bhsd", "serial_thd") else "independent_slices"
-        ),
+        "qkv_projection": ("fused" if implementation == "legacy_bhsd" else "independent_slices"),
         "repeat": repeat,
         "order_index": order_index,
         "latencies_ms": elapsed,
@@ -446,13 +354,9 @@ def _benchmark_implementation(
         "resident_memory_bytes": baseline,
         "peak_total_memory_bytes": peak_total,
         "backend": _implementation_backend(encoder_name, phase, implementation),
-        "packed_execution_trace": (
-            getattr(model.pee, '_last_sequence_packed_execution', None)
-            if encoder_name == 'pee' and implementation == 'grouped_thd'
-            else None
-        ),
+        "packed_execution_trace": None,
         "moe_grouped_backends": (
-            _moe_grouped_backend_values(model, encoder_name) if implementation == 'grouped_thd' else []
+            _moe_grouped_backend_values(model, encoder_name) if implementation == 'native_thd' else []
         ),
         "runtime_attention_backends": (
             _attention_runtime_values(model, encoder_name, "_last_sequence_packed_backend") if layout == "thd" else []
@@ -478,15 +382,7 @@ def _run_iteration(encoder_name, model, inputs, lengths, speaker_targets, implem
 
 def _valid_output(encoder_name, model, inputs, lengths, speaker_targets, implementation):
     if encoder_name == "pee":
-        if implementation == 'serial_thd':
-            packed = model._forward_sequence_packed(
-                inputs,
-                lengths,
-                spk_targets=speaker_targets,
-                grouped=False,
-            )
-            return packed.data, packed.lengths
-        if implementation == 'grouped_thd':
+        if implementation == 'native_thd':
             packed = model.forward_sequence_packed(inputs, lengths, spk_targets=speaker_targets)
             return packed.data, packed.lengths
         output, output_lengths = model(inputs, lengths, spk_targets=speaker_targets)
@@ -503,8 +399,6 @@ def _valid_output(encoder_name, model, inputs, lengths, speaker_targets, impleme
 def _moe_encoder(encoder_name, model):
     if encoder_name == "moe":
         return model
-    if encoder_name == "pee":
-        return model.pee.experts["speech"]
     return None
 
 
@@ -522,17 +416,14 @@ def _clear_moe_auxiliary_loss(encoder_name, model):
 
 
 def _clear_runtime_caches(model, encoder_name):
-    if encoder_name == 'pee':
-        model.pee.clear_packed_weights()
+    pass
 
 
 def _implementation_backend(encoder_name, phase, implementation):
+    if encoder_name == "pee" and implementation == 'native_thd':
+        return "canonical_parallel_expert_encoder_native_thd"
     if implementation == 'native_thd':
         return "independent_token_flat_encoder_with_varlen_attention"
-    if implementation == 'serial_thd':
-        return "serial_token_flat_pee_experts_with_varlen_attention"
-    if implementation == 'grouped_thd':
-        return "layer_synchronous_grouped_thd_attention_projections_and_grouped_ffn_moe"
     if encoder_name != "pee":
         return "padded_flex_attention"
     if phase == "training":
@@ -554,7 +445,7 @@ def _moe_grouped_backend_values(model, encoder_name):
 
 
 def _attention_runtime_values(model, encoder_name, attribute):
-    encoders = model.pee.experts.values() if encoder_name == "pee" else (model,)
+    encoders = (model.asr_encoder, model.diarization_model.encoder) if encoder_name == "pee" else (model,)
     values = {
         value
         for encoder in encoders
@@ -645,22 +536,6 @@ def _compare_implementations(results):
                         ),
                     }
                 )
-        serial = grouped.get((encoder, phase, 'serial_thd'))
-        packed_grouped = grouped.get((encoder, phase, 'grouped_thd'))
-        if serial is not None and packed_grouped is not None:
-            comparisons.append(
-                {
-                    "encoder": encoder,
-                    "phase": phase,
-                    "baseline": "serial_thd",
-                    "candidate": "grouped_thd",
-                    "speedup": serial["latency_ms"] / packed_grouped["latency_ms"],
-                    "peak_memory_reduction": 1.0 - packed_grouped["peak_memory_bytes"] / serial["peak_memory_bytes"],
-                    "peak_total_memory_reduction": (
-                        1.0 - packed_grouped["peak_total_memory_bytes"] / serial["peak_total_memory_bytes"]
-                    ),
-                }
-            )
     return comparisons
 
 

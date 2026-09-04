@@ -20,7 +20,7 @@ from nemo.collections.asr.modules.moe_transformer_encoder import MoETransformerE
 from nemo.collections.asr.modules.transformer_encoder import TransformerEncoder
 from nemo.collections.asr.parts.packed_sequence import unpack_encoder_output
 from nemo.collections.speechlm2.modules.perception import AudioPerceptionModule, IdentityConnector
-from tests.collections.asr.test_parallel_expert_encoder_ggemm import build_toy_pe_encoder
+from tests.collections.asr.test_parallel_expert_encoder_two_branch import build_toy_packed_pe_encoder
 
 
 class _FeaturePassthrough(torch.nn.Module):
@@ -233,7 +233,7 @@ def _make_waveform_perception(encoder_kind: str) -> AudioPerceptionModule:
         )
         features = 8
     else:
-        encoder = build_toy_pe_encoder(always_run_diarization=True)
+        encoder = build_toy_packed_pe_encoder()
         features = 128
 
     perception = AudioPerceptionModule.__new__(AudioPerceptionModule)

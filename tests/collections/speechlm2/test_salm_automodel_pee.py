@@ -52,11 +52,6 @@ from tests.collections.asr.test_parallel_expert_encoder import (
     build_toy_pe_encoder,
 )
 
-# Reuse the shared toy encoder and dimensions so both suites use one fixture.
-from tests.collections.asr.test_parallel_expert_encoder_two_branch import (
-    build_toy_pe_encoder as build_toy_two_branch_encoder,
-)
-
 # SALMAutomodel.configure_model() pulls in the (gitignored) nemo_automodel package,
 # so the full-model tests need both CUDA and that dependency to be importable.
 # Build a precise skip reason that names only the piece that is actually missing
@@ -122,7 +117,7 @@ def test_multispeaker_processor_preserves_missing_rttm_sentinel_after_variable_l
     assert torch.all(batch["spk_targets"][0] == -1.0)
     assert torch.all(batch["spk_targets"][1] == 0.0)
     assert torch.equal(batch["spk_target_length"], torch.tensor([2, 4]))
-    encoder = build_toy_two_branch_encoder().eval()
+    encoder = build_toy_pe_encoder().eval()
     assert encoder._missing_target_rows(batch["spk_targets"]).tolist() == [True, False]
 
 
@@ -399,6 +394,46 @@ def test_pee_prepare_inputs_routes_spk_targets_as_spk_targets(dummy_pe_encoder):
     batch_without_spk_targets = {k: v for k, v in batch.items() if k != "spk_targets"}
     model.prepare_inputs(batch_without_spk_targets)
     assert model.perception.spk_targets_calls[-1] is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("packed_encoder_sequences", "expected_outer_chunk_size"),
+    [(False, 30.0), (True, None)],
+)
+def test_pee_prepare_inputs_routes_shared_chunk_size_at_the_correct_layer(
+    dummy_pe_encoder, monkeypatch, packed_encoder_sequences, expected_outer_chunk_size
+):
+    from nemo.collections.speechlm2.parts import cp_helpers
+
+    model = _make_pee_routing_test_model(
+        dummy_pe_encoder,
+        cfg={
+            "encoder_chunk_size_seconds": 30.0,
+            "encoder_chunk_batch_size": None,
+            "packed_encoder_sequences": packed_encoder_sequences,
+        },
+    )
+    batch = {
+        "audios": torch.tensor([[1.0, 2.0, 3.0, 4.0, 5.0]]),
+        "audio_lens": torch.tensor([5], dtype=torch.long),
+        "input_ids": torch.tensor([[model.audio_locator_tag_id, 10]], dtype=torch.long),
+        "loss_mask": torch.tensor([[False, True]], dtype=torch.bool),
+    }
+    recorded = {}
+    original = cp_helpers.encode_audio_with_cp_distribution
+
+    def record_chunk_routing(*args, **kwargs):
+        recorded["chunk_size_seconds"] = kwargs["chunk_size_seconds"]
+        # This test isolates routing. Other tests exercise the native packed path.
+        kwargs["sequence_packed"] = False
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(cp_helpers, "encode_audio_with_cp_distribution", record_chunk_routing)
+
+    model.prepare_inputs(batch)
+
+    assert recorded["chunk_size_seconds"] == expected_outer_chunk_size
 
 
 @pytest.mark.unit

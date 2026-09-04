@@ -193,6 +193,17 @@ def build_toy_pe_encoder(**overrides) -> ParallelExpertEncoder:
     return ParallelExpertEncoder(**kwargs)
 
 
+def build_toy_packed_pe_encoder(**overrides) -> ParallelExpertEncoder:
+    """Construct the canonical PEE with native packed-capable branch encoders."""
+    kwargs = {
+        "asr_encoder_type": "transformer",
+        "asr_encoder_cfg": toy_transformer_asr_encoder_cfg(),
+        "diarization_model_cfg": toy_packed_diarization_model_cfg(),
+    }
+    kwargs.update(overrides)
+    return build_toy_pe_encoder(**kwargs)
+
+
 @pytest.mark.unit
 def test_clone_config_is_deep_and_handles_none():
     config = OmegaConf.create({"a": {"b": 1}})
@@ -554,11 +565,7 @@ def test_packed_fallback_matches_padded_forward_for_dense_and_packed_inputs():
 def test_native_packed_path_normalizes_diar_and_asr_independently_without_unpack(
     monkeypatch,
 ):
-    encoder = build_toy_pe_encoder(
-        asr_encoder_type="transformer",
-        asr_encoder_cfg=toy_transformer_asr_encoder_cfg(),
-        diarization_model_cfg=toy_packed_diarization_model_cfg(),
-    ).eval()
+    encoder = build_toy_packed_pe_encoder().eval()
     lengths = torch.tensor([80, 53])
     mels = torch.randn(2, _MEL_FEATURES, 80)
     packed = pack_encoder_output(mels.transpose(1, 2), lengths)
@@ -593,11 +600,7 @@ def test_native_packed_path_normalizes_diar_and_asr_independently_without_unpack
 @pytest.mark.unit
 def test_native_packed_output_matches_padded_two_branch_path():
     torch.manual_seed(0)
-    encoder = build_toy_pe_encoder(
-        asr_encoder_type="transformer",
-        asr_encoder_cfg=toy_transformer_asr_encoder_cfg(),
-        diarization_model_cfg=toy_packed_diarization_model_cfg(),
-    ).eval()
+    encoder = build_toy_packed_pe_encoder().eval()
     lengths = torch.tensor([80, 53])
     mels = torch.randn(2, _MEL_FEATURES, 80)
     mels[1, :, 53:] = 0.0
@@ -610,14 +613,10 @@ def test_native_packed_output_matches_padded_two_branch_path():
 
 
 @pytest.mark.unit
-def test_native_packed_branches_chunk_independently_after_feature_stacking(monkeypatch):
-    encoder = build_toy_pe_encoder(
-        asr_encoder_type="transformer",
-        asr_encoder_cfg=toy_transformer_asr_encoder_cfg(),
-        diarization_model_cfg=toy_packed_diarization_model_cfg(),
+def test_native_packed_branches_share_chunk_size_after_feature_stacking(monkeypatch):
+    encoder = build_toy_packed_pe_encoder(
         frame_shift_seconds=0.01,
-        asr_chunk_size_seconds=None,
-        diar_chunk_size_seconds=0.16,
+        chunk_size_seconds=0.16,
     ).eval()
     packed = pack_encoder_output(torch.randn(2, 80, _MEL_FEATURES), torch.tensor([80, 65]))
     diar_calls = []
@@ -648,8 +647,9 @@ def test_native_packed_branches_chunk_independently_after_feature_stacking(monke
     with torch.no_grad():
         output = encoder.forward_sequence_packed(packed)
 
-    assert diar_calls == [([2, 2, 2, 2, 2, 2, 2, 2, 2, 1], True)]
-    assert asr_calls == [([80, 65], False)]
+    expected_chunks = [([2, 2, 2, 2, 2, 2, 2, 2, 2, 1], True)]
+    assert diar_calls == expected_chunks
+    assert asr_calls == expected_chunks
     assert output.lengths.tolist() == [10, 9]
 
 
@@ -662,11 +662,7 @@ def test_packed_fallback_rejects_online_scope():
 
 @pytest.mark.unit
 def test_activation_checkpointing_wraps_trainable_asr_layers_and_packed_backward():
-    encoder = build_toy_pe_encoder(
-        asr_encoder_type="transformer",
-        asr_encoder_cfg=toy_transformer_asr_encoder_cfg(),
-        diarization_model_cfg=toy_packed_diarization_model_cfg(),
-    ).train()
+    encoder = build_toy_packed_pe_encoder().train()
     encoder.set_activation_checkpointing(True)
     encoder.set_activation_checkpointing(True)
 

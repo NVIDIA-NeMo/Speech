@@ -228,11 +228,18 @@ def test_hf_export_config_embeds_portable_phpee_architecture():
         },
     }
     pe_encoder = SimpleNamespace(
-        _bundle_config=OmegaConf.create({"target": "ParallelExpertEncoderPT", "asr_chunk_size_seconds": None}),
+        _bundle_config=OmegaConf.create(
+            {
+                "target": "ParallelExpertEncoderPT",
+                "chunk_size_seconds": 15.0,
+                "asr_chunk_size_seconds": 10.0,
+                "diar_chunk_size_seconds": 20.0,
+                "align_diarization_output_resolution": True,
+            }
+        ),
         asr_normalize_type="per_feature",
         diar_normalize_type="per_feature",
-        asr_chunk_size_seconds=30.0,
-        diar_chunk_size_seconds=30.0,
+        chunk_size_seconds=30.0,
         frame_shift_seconds=0.01,
         missing_rttm_target=-1.0,
         speaker_feature_mode="thresholded",
@@ -249,17 +256,19 @@ def test_hf_export_config_embeds_portable_phpee_architecture():
     assert exported["pe_encoder_config"]["speaker_feature_mode"] == "thresholded"
     assert exported["pe_encoder_config"]["speaker_activity_threshold"] == 0.5
     assert exported["pe_encoder_config"]["diar_normalize_type"] == "per_feature"
-    assert exported["pe_encoder_config"]["asr_chunk_size_seconds"] == 30.0
-    assert exported["pe_encoder_config"]["diar_chunk_size_seconds"] == 30.0
+    assert exported["pe_encoder_config"]["chunk_size_seconds"] == 30.0
+    assert "asr_chunk_size_seconds" not in exported["pe_encoder_config"]
+    assert "diar_chunk_size_seconds" not in exported["pe_encoder_config"]
+    assert "align_diarization_output_resolution" not in exported["pe_encoder_config"]
     assert "pe_encoder_overrides" not in exported
     assert original_cfg["pe_encoder_overrides"]["speaker_feature_mode"] == "thresholded"
 
-    pe_encoder.asr_chunk_size_seconds = 60.0
+    pe_encoder.chunk_size_seconds = 60.0
     model.cfg = exported
     reexported = to_hf._hf_export_config(model, "bfloat16")
     assert reexported["pe_encoder_path"] is None
-    assert reexported["pe_encoder_config"]["asr_chunk_size_seconds"] == 60.0
-    assert exported["pe_encoder_config"]["asr_chunk_size_seconds"] == 30.0
+    assert reexported["pe_encoder_config"]["chunk_size_seconds"] == 60.0
+    assert exported["pe_encoder_config"]["chunk_size_seconds"] == 30.0
 
 
 def test_hf_export_config_embeds_portable_independent_dual_architecture():

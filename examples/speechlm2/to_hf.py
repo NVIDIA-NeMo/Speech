@@ -141,22 +141,23 @@ def _hf_export_config(model: torch.nn.Module, dtype: str | torch.dtype) -> dict[
                 "Cannot export ParallelExpertEncoder portably: the mounted perception encoder has no architecture bundle config."
             )
         bundle_config = OmegaConf.to_container(bundle_config, resolve=True)
+        for obsolete_key in (
+            "align_diarization_output_resolution",
+            "asr_chunk_size_seconds",
+            "diar_chunk_size_seconds",
+        ):
+            bundle_config.pop(obsolete_key, None)
         # Persist runtime overrides rather than the initialization bundle's
         # defaults. The consolidated root state dict supplies all weights.
         for config_key, attr_name in (
             ("asr_normalize_type", "asr_normalize_type"),
+            ("chunk_size_seconds", "chunk_size_seconds"),
             ("diar_normalize_type", "diar_normalize_type"),
-            ("asr_chunk_size_seconds", "asr_chunk_size_seconds"),
-            ("diar_chunk_size_seconds", "diar_chunk_size_seconds"),
             ("frame_shift_seconds", "frame_shift_seconds"),
             ("missing_rttm_target", "missing_rttm_target"),
             ("speaker_feature_mode", "speaker_feature_mode"),
             ("speaker_activity_threshold", "speaker_activity_threshold"),
             ("spk_kernel_scale", "spk_kernel_scale"),
-            (
-                "align_diarization_output_resolution",
-                "align_diarization_output_resolution",
-            ),
         ):
             if hasattr(pe_encoder, attr_name):
                 bundle_config[config_key] = getattr(pe_encoder, attr_name)

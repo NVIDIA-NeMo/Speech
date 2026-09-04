@@ -218,6 +218,9 @@ def bundle_config(**overrides) -> DictConfig:
         "asr_encoder_cfg": toy_asr_encoder_cfg(),
         "diarization_model_cfg": toy_diarization_model_cfg(),
         "asr_normalize_type": "per_feature",
+        "speaker_feature_config_version": 1,
+        "speaker_feature_mode": "thresholded",
+        "speaker_activity_threshold": 0.5,
     }
     config.update(overrides)
     return OmegaConf.create(config)
@@ -918,12 +921,11 @@ def test_strict_two_branch_bundle_loading(tmp_path, asr_encoder_type, asr_encode
 
 @pytest.mark.unit
 def test_inline_config_reconstructs_architecture_without_standalone_weights():
-    config = bundle_config(asr_chunk_size_seconds=30.0, diar_chunk_size_seconds=45.0)
+    config = bundle_config(chunk_size_seconds=30.0)
 
     restored = ParallelExpertEncoderPT.from_inline_config(config).eval()
 
-    assert restored.asr_chunk_size_seconds == 30.0
-    assert restored.diar_chunk_size_seconds == 45.0
+    assert restored.chunk_size_seconds == 30.0
     assert restored.diar_normalize_type == "per_feature"
     assert restored._bundle_config.diar_normalize_type == "per_feature"
     assert restored.speaker_feature_mode == "thresholded"
@@ -936,7 +938,10 @@ def test_inline_config_reconstructs_architecture_without_standalone_weights():
 
 @pytest.mark.unit
 def test_legacy_canonical_bundle_requires_explicit_speaker_contract(tmp_path):
-    config = bundle_config(target="nemo.collections.asr.modules.parallel_expert_encoder.ParallelExpertEncoderPT")
+    config = bundle_config()
+    del config.speaker_feature_config_version
+    del config.speaker_feature_mode
+    del config.speaker_activity_threshold
     with pytest.raises(ValueError, match="cannot be inferred safely"):
         ParallelExpertEncoderPT.from_inline_config(config)
 
@@ -1028,12 +1033,17 @@ def test_explicit_portable_speaker_contract_is_independent_of_target_name():
     ],
 )
 def test_invalid_speaker_feature_contract_is_rejected(overrides, match):
+    config = bundle_config()
+    for key in ("speaker_feature_config_version", "speaker_feature_mode", "speaker_activity_threshold"):
+        if key not in overrides:
+            del config[key]
+    config = OmegaConf.merge(config, overrides)
     with pytest.raises(ValueError, match=match):
-        ParallelExpertEncoderPT.from_inline_config(bundle_config(**overrides))
+        ParallelExpertEncoderPT.from_inline_config(config)
 
 
 @pytest.mark.unit
-def test_current_pee_loader_dispatches_two_branch_inline_schema():
+def test_current_pee_loader_constructs_canonical_inline_schema():
     from nemo.collections.asr.modules.parallel_expert_encoder import (
         ParallelExpertEncoderPT as CurrentParallelExpertEncoderPT,
     )
@@ -1045,21 +1055,21 @@ def test_current_pee_loader_dispatches_two_branch_inline_schema():
 
 
 @pytest.mark.unit
-def test_current_pee_loader_rejects_ambiguous_inline_schema():
+def test_current_pee_loader_rejects_obsolete_three_expert_inline_schema():
     from nemo.collections.asr.modules.parallel_expert_encoder import (
         ParallelExpertEncoderPT as CurrentParallelExpertEncoderPT,
     )
 
-    config = OmegaConf.merge(
-        bundle_config(),
+    config = OmegaConf.create(
         {
+            "target": "nemo.collections.asr.modules.parallel_expert_encoder.ParallelExpertEncoderPT",
             "speech_expert_cfg": {"_target_": "example.Speech"},
             "speaker_expert_cfg": {"_target_": "example.Speaker"},
             "sound_expert_cfg": {"_target_": "example.Sound"},
             "sortformer_modules_cfg": {"_target_": "example.Sortformer"},
-        },
+        }
     )
-    with pytest.raises(ValueError, match="ambiguously contains both"):
+    with pytest.raises(ValueError, match="missing required config sections"):
         CurrentParallelExpertEncoderPT.from_inline_config(config)
 
 
@@ -1071,8 +1081,7 @@ def test_exported_inline_config_round_trips_consolidated_weights():
     spec.loader.exec_module(to_hf)
 
     source = ParallelExpertEncoderPT(bundle_config()).encoder.eval()
-    source.asr_chunk_size_seconds = 30.0
-    source.diar_chunk_size_seconds = 45.0
+    source.chunk_size_seconds = 30.0
     root = SimpleNamespace(
         cfg={"pe_encoder_path": "/models/placeholderParallelExpertEncoder.nemo"},
         perception=SimpleNamespace(encoder=source),
@@ -1083,8 +1092,7 @@ def test_exported_inline_config_round_trips_consolidated_weights():
     restored.load_state_dict(source.state_dict(), strict=True)
 
     assert set(restored.state_dict()) == set(source.state_dict())
-    assert restored.asr_chunk_size_seconds == 30.0
-    assert restored.diar_chunk_size_seconds == 45.0
+    assert restored.chunk_size_seconds == 30.0
     assert restored.diar_normalize_type == "per_feature"
     assert restored.speaker_feature_mode == "thresholded"
     assert restored.speaker_activity_threshold == 0.5
@@ -1106,7 +1114,7 @@ def test_legacy_three_expert_bundle_is_rejected(tmp_path):
     archive = tmp_path / "legacy.nemo"
     legacy = OmegaConf.create(
         {
-            "target": "nemo.collections.asr.modules.parallel_expert_encoder_two_branch.ParallelExpertEncoderPT",
+            "target": "nemo.collections.asr.modules.parallel_expert_encoder.ParallelExpertEncoderPT",
             "speech_expert_cfg": {"_target_": "legacy.Speech"},
             "speaker_expert_cfg": {"_target_": "legacy.Speaker"},
             "sound_expert_cfg": {"_target_": "legacy.Sound"},
@@ -1114,7 +1122,7 @@ def test_legacy_three_expert_bundle_is_rejected(tmp_path):
         }
     )
     write_bundle(archive, legacy)
-    with pytest.raises(ValueError, match="Legacy three-expert"):
+    with pytest.raises(ValueError, match="missing required config sections"):
         ParallelExpertEncoderPT.load_from_nemo(str(archive), strict=True)
 
 
@@ -1123,14 +1131,14 @@ def test_legacy_three_expert_bundle_is_rejected(tmp_path):
     ("target", "expected"),
     [
         (
-            "nemo.collections.asr.modules.parallel_expert_encoder_two_branch.ParallelExpertEncoderPT",
+            "nemo.collections.asr.modules.parallel_expert_encoder.ParallelExpertEncoderPT",
             True,
         ),
         ("ParallelExpertEncoderPT", True),
         ("nemo.collections.asr.models.SomethingElse", False),
     ],
 )
-def test_is_pe_nemo_uses_target_and_two_branch_schema(tmp_path, target, expected):
+def test_is_pe_nemo_uses_declared_target(tmp_path, target, expected):
     archive = tmp_path / "bundle.nemo"
     config = bundle_config()
     config.target = target
@@ -1139,13 +1147,30 @@ def test_is_pe_nemo_uses_target_and_two_branch_schema(tmp_path, target, expected
 
 
 @pytest.mark.unit
-def test_training_loader_dispatches_two_branch_bundle_by_schema(tmp_path):
-    from nemo.collections.speechlm2.parts.pretrained import _resolve_parallel_expert_encoder_class
-
+def test_canonical_loader_recognizes_bundle(tmp_path):
     archive = tmp_path / "bundle.nemo"
     write_bundle(archive, bundle_config())
 
-    assert _resolve_parallel_expert_encoder_class(str(archive)) is ParallelExpertEncoderPT
+    assert ParallelExpertEncoderPT.is_pe_nemo(str(archive))
+
+
+@pytest.mark.unit
+def test_save_to_nemo_persists_shared_chunk_size(tmp_path, monkeypatch):
+    source = build_toy_pe_encoder(chunk_size_seconds=30.0).eval()
+    template = tmp_path / "template.nemo"
+    write_bundle(template, bundle_config())
+    captured = {}
+
+    def capture_config(shell, output_path):
+        captured["output_path"] = output_path
+        captured["config"] = OmegaConf.to_container(shell._cfg, resolve=True)
+
+    monkeypatch.setattr(ParallelExpertEncoderPT, "save_to", capture_config)
+    output = tmp_path / "output.nemo"
+    ParallelExpertEncoderPT.save_to_nemo(source, str(output), template_bundle_path=str(template))
+
+    assert captured["output_path"] == str(output)
+    assert captured["config"]["chunk_size_seconds"] == 30.0
 
 
 @pytest.mark.unit

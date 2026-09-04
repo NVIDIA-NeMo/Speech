@@ -57,12 +57,10 @@ from nemo.collections.asr.modules import (
     ConvASRDecoder,
     GGEMMTransformerEncoder,
     MoETransformerEncoder,
+    ParallelExpertEncoder,
     TransformerEncoder,
 )
-from nemo.collections.asr.modules.parallel_expert_encoder_ggemm import (
-    ParallelExpertEncoder,
-    ParallelExpertEncoderPT,
-)
+from nemo.collections.asr.modules.parallel_expert_encoder import ParallelExpertEncoderPT
 
 cfg = OmegaConf.load(
     "examples/speaker_tasks/diarization/conf/neural_diarizer/streaming_sortformer_diarizer_4spk-v2.yaml"
@@ -145,7 +143,6 @@ class TestNeMoSpeechLMConfig:
         assert cfg.pretrained_weights is None
         assert cfg.pe_encoder_path is None
         assert cfg.pe_encoder_config is None
-        assert cfg.pe_encoder_type is None
         assert cfg.pe_encoder_overrides is None
         assert cfg.speaker_encoder is None
         assert cfg.llm_architectures == []
@@ -194,18 +191,16 @@ class TestNeMoSpeechLMConfig:
 
     def test_preserves_explicit_phpee_export_schema(self):
         pe_config = {
-            "target": "ParallelExpertEncoderPT",
-            "asr_chunk_size_seconds": 30.0,
+            "target": "nemo.collections.asr.modules.parallel_expert_encoder.ParallelExpertEncoderPT",
+            "chunk_size_seconds": 30.0,
         }
         cfg = NeMoSpeechLMConfig(
             **_DEFAULT_CONFIG_KWARGS,
             pe_encoder_config=pe_config,
-            pe_encoder_type="two_branch",
         )
 
         assert cfg.pe_encoder_path is None
         assert cfg.pe_encoder_config == pe_config
-        assert cfg.pe_encoder_type == "two_branch"
 
     def test_preserves_path_phpee_overrides(self):
         overrides = {
@@ -788,12 +783,10 @@ class TestAudioProcessing:
         assert perception.encoder is pe_encoder
         assert perception.preprocessor.featurizer.normalize is None
 
-    def test_pe_mount_constructs_two_branch_encoder_from_inline_config(self, monkeypatch):
+    def test_pe_mount_constructs_canonical_encoder_from_inline_config(self, monkeypatch):
         import torch
 
-        from nemo.collections.asr.modules.parallel_expert_encoder_two_branch import (
-            ParallelExpertEncoderPT as TwoBranchParallelExpertEncoderPT,
-        )
+        from nemo.collections.asr.modules.parallel_expert_encoder import ParallelExpertEncoderPT
         from nemo.collections.speechlm2.vllm.salm.audio import _maybe_mount_pe_encoder
 
         perception, pe_encoder = self._make_pe_mount_modules(torch)
@@ -804,7 +797,7 @@ class TestAudioProcessing:
             observed["map_location"] = map_location
             return pe_encoder
 
-        monkeypatch.setattr(TwoBranchParallelExpertEncoderPT, "from_inline_config", from_inline_config)
+        monkeypatch.setattr(ParallelExpertEncoderPT, "from_inline_config", from_inline_config)
         config = {
             "asr_encoder_cfg": {"_target_": "example.TransformerEncoder"},
             "diarization_model_cfg": {"target": "example.Sortformer"},
@@ -813,28 +806,6 @@ class TestAudioProcessing:
         assert _maybe_mount_pe_encoder(perception, None, config) is True
         assert perception.encoder is pe_encoder
         assert observed == {"config": config, "map_location": "cpu"}
-
-    def test_pe_mount_constructs_ggemm_encoder_from_inline_config(self, monkeypatch):
-        import torch
-
-        from nemo.collections.asr.modules.parallel_expert_encoder_ggemm import ParallelExpertEncoderPT
-        from nemo.collections.speechlm2.vllm.salm.audio import _maybe_mount_pe_encoder
-
-        perception, pe_encoder = self._make_pe_mount_modules(torch)
-        monkeypatch.setattr(
-            ParallelExpertEncoderPT,
-            "from_inline_config",
-            lambda config, *, map_location: pe_encoder,
-        )
-        config = {
-            "speech_expert_cfg": {"_target_": "example.Speech"},
-            "speaker_expert_cfg": {"_target_": "example.Speaker"},
-            "sound_expert_cfg": {"_target_": "example.Sound"},
-            "sortformer_modules_cfg": {"_target_": "example.Sortformer"},
-        }
-
-        assert _maybe_mount_pe_encoder(perception, None, config) is True
-        assert perception.encoder is pe_encoder
 
     def test_pe_mount_rejects_ambiguous_or_unknown_inline_config(self):
         import torch
@@ -848,7 +819,7 @@ class TestAudioProcessing:
                 "/tmp/pee.nemo",
                 {"asr_encoder_cfg": {}, "diarization_model_cfg": {}},
             )
-        with pytest.raises(ValueError, match="must describe exactly one architecture"):
+        with pytest.raises(ValueError, match="missing required config sections"):
             _maybe_mount_pe_encoder(perception, None, {"unknown": "schema"})
 
     @pytest.mark.parametrize(

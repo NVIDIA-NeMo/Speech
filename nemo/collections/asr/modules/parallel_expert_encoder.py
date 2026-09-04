@@ -429,6 +429,7 @@ class ParallelExpertEncoderPT(ModelPT):
         template_cfg.speaker_feature_config_version = _SPEAKER_FEATURE_CONFIG_VERSION
         template_cfg.speaker_feature_mode = encoder.speaker_feature_mode
         template_cfg.speaker_activity_threshold = encoder.speaker_activity_threshold
+        template_cfg.chunk_size_seconds = encoder.chunk_size_seconds
         template_cfg.sync_max_audio_length = encoder.sync_max_audio_length
         shell._cfg = template_cfg
         shell.save_to(output_nemo_path)

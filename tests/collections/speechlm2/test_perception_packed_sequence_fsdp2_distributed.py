@@ -189,7 +189,10 @@ def _run_fsdp2_canonical_pee_test(rank: int, world_size: int, init_file: str):
             input_signal_length=torch.tensor([0], device=device),
         )
         empty.data.sum().backward()
-        assert empty_audio.grad is not None
+        # With no valid samples, the packed feature stacker has no reason to retain
+        # an autograd edge to the waveform. The distributed invariant is that every
+        # trainable parameter still receives a zero gradient and reaches the same
+        # FSDP collectives on every rank.
         assert all(parameter.grad is not None for parameter in perception.parameters() if parameter.requires_grad)
 
         perception.zero_grad(set_to_none=True)

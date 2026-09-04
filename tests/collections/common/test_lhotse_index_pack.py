@@ -535,7 +535,17 @@ def test_packed_range_read_falls_back_to_ais_without_local_mirror_match(tmp_path
 
 def test_converter_local_s3_mirror_preserves_remote_pack_identity(tmp_path, monkeypatch):
     manifest = tmp_path / "manifest.jsonl"
-    manifest.write_text(json.dumps({"audio_filepath": "sample.wav"}) + "\n")
+    manifest.write_text(
+        json.dumps(
+            {
+                "audio_filepath": "sample.wav",
+                "duration": 1.0,
+                "sampling_rate": 16000,
+                "text": "sample",
+            }
+        )
+        + "\n"
+    )
     create_jsonl_index(manifest)
 
     remote_tar = "s3://bucket/audio.tar"
@@ -591,6 +601,24 @@ def test_converter_local_s3_mirror_preserves_remote_pack_identity(tmp_path, monk
         assert collection.path_for_shard(0) == remote_tar
         assert collection.source_size_for_shard(0) == mirrored_tar.stat().st_size
         assert PackedTarMemberReader(collection)[0] == ("sample.wav", b"audio")
+
+    iterator = LazyNeMoTarredIterator(
+        str(manifest),
+        remote_tar,
+        indexed=True,
+        index_pack=output,
+    )
+    with monkeypatch.context() as no_tar_probes:
+        no_tar_probes.setattr(
+            "nemo.collections.common.data.lhotse.indexed_adapters._resolve_s3_to_local_mirror",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("indexed candidate construction must not resolve the tar path")
+            ),
+        )
+        source = iterator[0].recording.sources[0]
+    pointer_path, _, _ = decode_pointer(source.source)
+    assert pointer_path == remote_tar
+    assert read_payload(source.source) == b"audio"
 
 
 def test_converter_rejects_experimental_in_band_header(tmp_path):
@@ -1073,9 +1101,18 @@ def test_local_packed_native_tar_supports_filtered_subsets(tmp_path, monkeypatch
         indexed=True,
         index_pack=pack_path,
     )
-    first_source = iterator[0].recording.sources[0]
+    with monkeypatch.context() as no_header_reads:
+        no_header_reads.setattr(
+            iterator._packed_tar_reader,
+            "_member_header",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("packed candidate construction must not read tar headers")
+            ),
+        )
+        first_source = iterator[0].recording.sources[0]
     first_pointer_path, _, _ = decode_pointer(first_source.source)
     assert first_source.type == "shar_ptr"
+    assert "&n=" in first_source.source
     assert first_pointer_path == tar_paths[0]
     assert read_payload(first_source.source) == b"audio"
     assert iterator._packed_tar_reader.get_shard(0, tar_names[0][1]) == (

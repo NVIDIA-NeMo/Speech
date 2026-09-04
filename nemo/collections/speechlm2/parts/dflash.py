@@ -19,6 +19,7 @@ from __future__ import annotations
 import inspect
 from collections import defaultdict
 from collections.abc import Sequence
+from pathlib import Path
 
 import torch
 from lightning import LightningModule
@@ -43,6 +44,10 @@ from nemo.collections.speechlm2.models.salm import (
 from nemo.collections.speechlm2.parts.cp_helpers import (
     encode_audio_with_cp_distribution,
     get_perception_fsdp_group,
+)
+from nemo.collections.speechlm2.parts.packed_sequences import (
+    _validate_packed_dflash_inputs,
+    pack_audio_for_dflash,
 )
 from nemo.core.classes.common import safe_instantiate
 
@@ -107,16 +112,29 @@ def _synchronize_ep_group_before_target_forward(moe_mesh) -> None:
         torch.distributed.barrier(group=ep_mesh.get_group())
 
 
-def _has_valid_dflash_anchors(loss_mask: torch.Tensor, block_size: int) -> bool:
-    """Mirror Automodel's unpacked DFlash anchor-validity predicate.
+def _has_valid_dflash_anchors(
+    loss_mask: torch.Tensor,
+    block_size: int,
+    doc_remaining: torch.Tensor | None = None,
+) -> bool:
+    """Mirror Automodel's DFlash anchor-validity predicate.
 
-    SALM DFlash rejects packed sequences, so ``DFlashTrainerModule`` considers
-    an anchor valid exactly when its own position is supervised and it lies no
-    later than ``seq_len - block_size``. Following block positions may be masked;
-    they affect the loss denominator but not anchor validity.
+    Under packing, a valid anchor must also leave ``block_size - 1`` real
+    tokens in the same document. Keeping this precheck identical to Automodel
+    makes the subsequent skip decision rank-synchronous.
     """
+    if loss_mask.ndim != 2:
+        raise ValueError(f"DFlash loss_mask must have shape [B, S], got {tuple(loss_mask.shape)}")
+    if doc_remaining is not None and doc_remaining.shape != loss_mask.shape:
+        raise ValueError(
+            "Packed DFlash doc_remaining must match loss_mask shape; "
+            f"got {tuple(doc_remaining.shape)} and {tuple(loss_mask.shape)}"
+        )
     max_anchor = max(loss_mask.shape[1] - block_size, 0)
-    return bool((loss_mask[:, : max_anchor + 1] > 0.5).any().item())
+    valid = loss_mask[:, : max_anchor + 1] > 0.5
+    if doc_remaining is not None:
+        valid = valid & (doc_remaining[:, : max_anchor + 1] >= block_size - 1)
+    return bool(valid.any().item())
 
 
 def _validate_dflash_parallelism(mesh_context) -> None:
@@ -435,13 +453,22 @@ class SALMDFlashModule(LightningModule):
         )
 
     def _prepare_batch(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-        if self.target.cfg.get("packed_sequences", False):
-            raise NotImplementedError("SALM DFlash currently requires model.packed_sequences=false")
-
+        """Expand audio and prepare an unshifted BSHD or packed THD DFlash stream."""
         input_ids = batch["input_ids"]
         audio_embeddings = self._audio_embeddings(batch)
         text_ids = torch.where(input_ids == self.target.audio_locator_tag_id, 0, input_ids)
         text_embeddings = self.target._embed_tokens(text_ids)
+        if self.target.cfg.get("packed_sequences", False):
+            return pack_audio_for_dflash(
+                input_ids=input_ids,
+                embeds=text_embeddings,
+                loss_mask=batch["loss_mask"],
+                replacements=audio_embeddings,
+                padding_id=self.target.text_pad_id,
+                placeholder_id=self.target.audio_locator_tag_id,
+                mask_token_id=self.mask_token_id,
+            )
+
         target_ids = input_ids.where(batch["loss_mask"], -100)
         input_embeddings, target_ids, attention_mask = replace_placeholders_and_build_targets(
             input_ids=input_ids,
@@ -474,15 +501,21 @@ class SALMDFlashModule(LightningModule):
         """Run the frozen target and concatenate pre-final-norm decoder-block outputs.
 
         Args:
-            inputs: Mapping containing ``input_embeddings`` with shape
-                ``[batch, sequence, hidden]`` and ``attention_mask`` with shape
-                ``[batch, sequence]``.
+            inputs: Mapping containing BSHD ``input_embeddings`` with shape
+                ``[batch, sequence, hidden]`` and ``attention_mask``, or packed
+                THD embeddings ``[tokens, hidden]`` plus ``qkv_format``,
+                ``cu_seqlens``, ``position_ids``, and ``max_seqlen``.
 
         Returns:
             Tensor of shape ``[batch, sequence, selected_layers * hidden]``.
+            THD hook outputs are normalized to one synthetic packed batch row.
             Each feature is the raw output of the configured decoder block,
             before any separate model-level final normalization.
         """
+        packing_fields = ("qkv_format", "cu_seqlens", "position_ids", "seq_lens", "doc_remaining", "max_seqlen")
+        is_packed = any(name in inputs for name in packing_fields)
+        if is_packed:
+            _validate_packed_dflash_inputs(inputs)
         if hasattr(self.target.llm, "model") and hasattr(self.target.llm.model, "layers"):
             layer_container = self.target.llm.model.layers
         elif hasattr(self.target.llm, "layers"):
@@ -516,12 +549,22 @@ class SALMDFlashModule(LightningModule):
         accepts_extra_kwargs = any(
             parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in forward_parameters.values()
         )
-        for name, value in {
+        optional_kwargs = {
             "output_hidden_states": False,
             "use_cache": False,
             "return_dict": True,
             "compute_logits": False,
-        }.items():
+        }
+        if is_packed:
+            optional_kwargs.update(
+                {
+                    "qkv_format": "thd",
+                    "cu_seqlens": inputs["cu_seqlens"],
+                    "position_ids": inputs["position_ids"],
+                    "max_seqlen": inputs["max_seqlen"],
+                }
+            )
+        for name, value in optional_kwargs.items():
             if accepts_extra_kwargs or name in forward_parameters:
                 forward_kwargs[name] = value
         try:
@@ -531,22 +574,59 @@ class SALMDFlashModule(LightningModule):
                 handle.remove()
         if len(captured) != len(self.target_layer_ids):
             raise RuntimeError(f"Expected {len(self.target_layer_ids)} captured target layers, got {sorted(captured)}")
-        return torch.cat([captured[layer_id] for layer_id in self.target_layer_ids], dim=-1)
+        hidden_states = torch.cat([captured[layer_id] for layer_id in self.target_layer_ids], dim=-1)
+        if is_packed:
+            if hidden_states.ndim == 2:
+                hidden_states = hidden_states.unsqueeze(0)
+            if hidden_states.ndim != 3 or hidden_states.shape[0] != 1:
+                raise RuntimeError(
+                    "Packed DFlash target hooks must return [T, H] or [1, T, H], got " f"{tuple(hidden_states.shape)}"
+                )
+            expected_tokens = inputs["input_ids"].shape[1]
+            if hidden_states.shape[1] != expected_tokens:
+                raise RuntimeError(
+                    "Packed DFlash target features are not token aligned: "
+                    f"got {hidden_states.shape[1]} features for {expected_tokens} input IDs"
+                )
+        return hidden_states
 
     def _run_batch(self, batch: dict[str, torch.Tensor]):
         inputs = self._prepare_batch(batch)
+        is_packed = inputs.get("qkv_format") == "thd"
+        # Keep the expanded, non-padding target-input count next to the result
+        # without changing Automodel's public metric dataclasses. The training
+        # loop consumes it immediately after _run_batch returns. For THD this is
+        # the sum of document lengths; for padded BSHD the attention mask is the
+        # equivalent count after audio-frame expansion.
+        self._last_input_token_count = (
+            inputs["seq_lens"].sum() if is_packed else inputs["attention_mask"].sum()
+        ).detach()
+        doc_remaining = inputs["doc_remaining"] if is_packed else None
         if not _all_ranks_agree(
-            _has_valid_dflash_anchors(inputs["loss_mask"], self.block_size),
+            _has_valid_dflash_anchors(
+                inputs["loss_mask"],
+                self.block_size,
+                doc_remaining=doc_remaining,
+            ),
             inputs["loss_mask"].device,
         ):
             raise NoValidAnchorsError("At least one rank has no valid DFlash anchors")
         _synchronize_ep_group_before_target_forward(getattr(self.trainer.strategy, "moe_mesh", None))
         hidden_states = self._target_hidden_states(inputs)
-        return self.trainer_module(
-            input_ids=inputs["input_ids"],
-            hidden_states=hidden_states,
-            loss_mask=inputs["loss_mask"],
-        )
+        trainer_kwargs = {
+            "input_ids": inputs["input_ids"],
+            "hidden_states": hidden_states,
+            "loss_mask": inputs["loss_mask"],
+        }
+        if is_packed:
+            trainer_kwargs.update(
+                {
+                    "position_ids": inputs["position_ids"],
+                    "seq_lens": inputs["seq_lens"],
+                    "doc_remaining": inputs["doc_remaining"],
+                }
+            )
+        return self.trainer_module(**trainer_kwargs)
 
     def _globally_normalized_loss(self, metrics) -> torch.Tensor:
         """Weight local draft-loss means by their global draft-DP denominators.
@@ -585,6 +665,10 @@ class SALMDFlashModule(LightningModule):
     def training_step(self, batch, batch_idx):
         batches = list(batch.values()) if isinstance(batch, dict) and "input_ids" not in batch else [batch]
         losses = []
+        input_token_counts = []
+        valid_token_counts = []
+        valid_block_counts = []
+        loss_weights = []
         skip_counts = defaultdict(int)
         num_batches = _max_rank_value(len(batches), self.device)
         for dataset_index in range(num_batches):
@@ -605,6 +689,10 @@ class SALMDFlashModule(LightningModule):
                 skip_counts["no_valid_anchors"] += 1
                 continue
             losses.append(self._globally_normalized_loss(metrics))
+            input_token_counts.append(self._last_input_token_count)
+            valid_token_counts.append(metrics.valid_tokens.detach())
+            valid_block_counts.append(metrics.valid_blocks.detach())
+            loss_weights.append(metrics.loss_weight.detach())
             self.log("train/dflash_loss", metrics.loss, on_step=True, prog_bar=True)
             self.log("train/dflash_accuracy", metrics.accuracy, on_step=True)
             self.log("train/accept_len", metrics.accept_len, on_step=True)
@@ -624,8 +712,43 @@ class SALMDFlashModule(LightningModule):
             for reason, count in skip_counts.items():
                 self.log(f"train/dflash_skip/{reason}", float(count), on_step=True)
             return torch.zeros((), device=self.device, requires_grad=True)
+        additive_metrics = {
+            "train/dflash_input_tokens": input_token_counts,
+            "train/dflash_valid_tokens": valid_token_counts,
+            "train/dflash_valid_blocks": valid_block_counts,
+            "train/dflash_loss_weight": loss_weights,
+        }
+        distributed_log_kwargs = {}
+        if self._draft_dp_size > 1:
+            distributed_log_kwargs = {
+                "sync_dist": True,
+                "sync_dist_group": self._draft_dp_group,
+                "reduce_fx": "sum",
+            }
+        for name, values in additive_metrics.items():
+            local_total = torch.stack([value.to(device=self.device, dtype=torch.float64) for value in values]).sum()
+            self.log(name, local_total, on_step=True, **distributed_log_kwargs)
         self.log("train/dflash_skipped_step", 0.0, on_step=True)
         return torch.stack(losses).mean()
+
+    def on_train_batch_end(self, outputs, batch, batch_idx) -> None:
+        """Persist post-backward peak HBM for production capacity checks."""
+        if not torch.cuda.is_available():
+            return
+        distributed_log_kwargs = {}
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            distributed_log_kwargs = {"sync_dist": True, "reduce_fx": "max"}
+        memory_metrics = {
+            "train/dflash_peak_memory_allocated_bytes": torch.cuda.max_memory_allocated(),
+            "train/dflash_peak_memory_reserved_bytes": torch.cuda.max_memory_reserved(),
+        }
+        for name, value in memory_metrics.items():
+            self.log(
+                name,
+                torch.tensor(value, device=self.device, dtype=torch.float64),
+                on_step=True,
+                **distributed_log_kwargs,
+            )
 
     def on_validation_epoch_start(self) -> None:
         self._partial_val_metrics.clear()
@@ -768,4 +891,7 @@ class SALMDFlashModule(LightningModule):
             return
         state_dict = _get_consolidated_model_state_dict(self.draft_model)
         if self.trainer.is_global_zero:
-            self.draft_model.save_pretrained(self.output_dir, state_dict=state_dict)
+            output_dir = Path(self.output_dir)
+            if not output_dir.is_absolute():
+                output_dir = Path(self.trainer.log_dir) / output_dir
+            self.draft_model.save_pretrained(output_dir, state_dict=state_dict)

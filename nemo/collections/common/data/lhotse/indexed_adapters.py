@@ -26,6 +26,7 @@ from typing import NamedTuple
 from urllib.parse import urlsplit
 
 import numpy as np
+from lhotse.shar.lazy_pointer import encode_pointer
 
 try:
     from lhotse.audio.source import resolve_s3_to_local_mirror as _resolve_s3_to_local_mirror
@@ -704,6 +705,24 @@ class IndexedTarMemberReader:
             raise type(e)(f"{e} — reading sample {idx}/{self._len} at offset {offset} " f"in {self.data_path}") from e
         return name, data
 
+    def _member_header(self, idx: int) -> tuple[str, int]:
+        """Return the regular member name and header offset without reading its payload."""
+        idx = _resolve_idx(idx, self._len)
+        start = int(self.offsets[idx])
+        end = int(self.offsets[idx + 1])
+        self._ensure_open()
+
+        def read_range(range_start: int, range_end: int) -> bytes:
+            self._fh.seek(range_start)
+            data = self._fh.read(range_end - range_start)
+            if len(data) != range_end - range_start:
+                raise EOFError(
+                    f"Unexpected EOF reading tar header range [{range_start}, {range_end}) in {self.data_path}"
+                )
+            return data
+
+        return _read_tar_member_header(read_range, start, end, self.data_path)
+
     def _build_name_index(self) -> dict[str, int]:
         """Walk the tar headers once to build a name → sample-index map.
 
@@ -716,21 +735,41 @@ class IndexedTarMemberReader:
         record the *regular* file's name at each indexed offset.
         """
         name_to_idx: dict[str, int] = {}
-        self._ensure_open()
         for i in range(self._len):
-            self._fh.seek(int(self.offsets[i]))
-            while True:
-                header = self._fh.read(_TAR_BLOCK_SIZE)
-                if len(header) < _TAR_BLOCK_SIZE or header == _TAR_ZERO_BLOCK:
-                    break
-                info = tarfile.TarInfo.frombuf(header, tarfile.ENCODING, "surrogateescape")
-                if info.type in (tarfile.REGTYPE, tarfile.AREGTYPE):
-                    name_to_idx[info.name] = i
-                    break
-                # Skip non-regular member (PAX/GNU long-name) data + padding.
-                size_blocks = -(-info.size // _TAR_BLOCK_SIZE) * _TAR_BLOCK_SIZE
-                self._fh.seek(size_blocks, 1)
+            name, _ = self._member_header(i)
+            name_to_idx[name] = i
         return name_to_idx
+
+    def resolve_member_pointer(self, idx: int, expected_name: str) -> str:
+        """Resolve ``expected_name`` to a lazy byte-range pointer.
+
+        The manifest row number is normally also the tar-member ordinal, so
+        validate that candidate with a single tar-header read. Only filtered
+        or otherwise non-positionally-aligned manifests pay for the existing
+        name-to-ordinal fallback scan.
+        """
+        try:
+            resolved_idx = _resolve_idx(idx, self._len)
+            actual_name, header_offset = self._member_header(resolved_idx)
+        except IndexError:
+            actual_name = None
+        if actual_name != expected_name:
+            if self._name_to_idx is None:
+                self._name_to_idx = self._build_name_index()
+            try:
+                resolved_idx = self._name_to_idx[expected_name]
+            except KeyError as ex:
+                raise KeyError(
+                    f"Tar {self.data_path} has no member named '{expected_name}'. "
+                    "The .idx may be stale or the manifest is referencing a different tar."
+                ) from ex
+            actual_name, header_offset = self._member_header(resolved_idx)
+        if actual_name != expected_name:
+            raise ValueError(
+                f"Tar index for {self.data_path} resolved {actual_name!r} after looking up {expected_name!r}."
+            )
+
+        return encode_pointer(self.data_path, header_offset, int(self.offsets[resolved_idx + 1]))
 
     def get(self, name: str) -> bytes:
         """Return the payload bytes of the tar member named ``name``."""
@@ -786,6 +825,40 @@ def _read_tar_member(f):
             continue
         name = pax_headers.get("path") or long_name or info.name
         return name, data
+
+
+def _read_tar_member_header(read_range, start: int, end: int, source_path: str) -> tuple[str, int]:
+    """Locate one regular tar header without reading the member payload.
+
+    ``start`` may point at a PAX/GNU metadata header. The returned offset is
+    the regular-file header understood by Lhotse's ``shar_ptr`` reader, while
+    the returned name includes any long-name metadata used for validation.
+    """
+    position = start
+    pax_headers: dict[str, str] = {}
+    long_name: str | None = None
+    while position + _TAR_BLOCK_SIZE <= end:
+        header = read_range(position, position + _TAR_BLOCK_SIZE)
+        if header == _TAR_ZERO_BLOCK:
+            break
+        try:
+            info = tarfile.TarInfo.frombuf(header, tarfile.ENCODING, "surrogateescape")
+        except tarfile.TarError as ex:
+            raise type(ex)(f"{ex} — reading tar header at {position} in {source_path}") from ex
+        data_position = position + _TAR_BLOCK_SIZE
+        if info.type in (tarfile.XHDTYPE, tarfile.XGLTYPE, tarfile.GNUTYPE_LONGNAME):
+            data_end = data_position + info.size
+            if data_end > end:
+                raise EOFError(f"Tar metadata at {position} exceeds indexed range [{start}, {end}) in {source_path}")
+            data = read_range(data_position, data_end)
+            if info.type in (tarfile.XHDTYPE, tarfile.XGLTYPE):
+                pax_headers.update(_parse_pax_headers(data))
+            else:
+                long_name = data.rstrip(b"\0\n").decode(tarfile.ENCODING, "surrogateescape")
+        elif info.type in (tarfile.REGTYPE, tarfile.AREGTYPE):
+            return pax_headers.get("path") or long_name or info.name, position
+        position = data_position + (-(-info.size // _TAR_BLOCK_SIZE) * _TAR_BLOCK_SIZE)
+    raise EOFError(f"No regular tar member in indexed range [{start}, {end}) in {source_path}")
 
 
 def _parse_pax_headers(data: bytes) -> dict[str, str]:
@@ -846,8 +919,8 @@ class PackedTarMemberReader:
         location = self.collection.locate_in_shard(shard_index, local_index)
         return self._read_location(location, (shard_index, local_index)), location
 
-    def _member_name(self, location) -> str:
-        """Read only tar headers at one packed offset and return the regular member name."""
+    def _member_header(self, location) -> tuple[str, int]:
+        """Return the regular member name and header offset without reading its payload."""
         from lhotse.packed_lazy import read_packed_range
 
         def read_range(start: int, end: int) -> bytes:
@@ -861,34 +934,7 @@ class PackedTarMemberReader:
                 max_open_files=self.max_open_files,
             )
 
-        position = location.start
-        pax_headers: dict[str, str] = {}
-        long_name: str | None = None
-        while position + _TAR_BLOCK_SIZE <= location.end:
-            header = read_range(position, position + _TAR_BLOCK_SIZE)
-            if header == _TAR_ZERO_BLOCK:
-                break
-            try:
-                info = tarfile.TarInfo.frombuf(header, tarfile.ENCODING, "surrogateescape")
-            except tarfile.TarError as ex:
-                raise type(ex)(f"{ex} — reading packed tar header at {position} in {location.path}") from ex
-            data_position = position + _TAR_BLOCK_SIZE
-            if info.type in (
-                tarfile.XHDTYPE,
-                tarfile.XGLTYPE,
-                tarfile.GNUTYPE_LONGNAME,
-            ):
-                data = read_range(data_position, data_position + info.size)
-                if info.type in (tarfile.XHDTYPE, tarfile.XGLTYPE):
-                    pax_headers.update(_parse_pax_headers(data))
-                else:
-                    long_name = data.rstrip(b"\0\n").decode(tarfile.ENCODING, "surrogateescape")
-            elif info.type in (tarfile.REGTYPE, tarfile.AREGTYPE):
-                return pax_headers.get("path") or long_name or info.name
-            position = data_position + (-(-info.size // _TAR_BLOCK_SIZE) * _TAR_BLOCK_SIZE)
-        raise EOFError(
-            f"No regular tar member in packed range [{location.start}, {location.end}) " f"in {location.path}"
-        )
+        return _read_tar_member_header(read_range, location.start, location.end, location.path)
 
     def _name_index_for_shard(self, shard_index: int) -> dict[str, int]:
         try:
@@ -897,7 +943,7 @@ class PackedTarMemberReader:
             index = {}
             for local_index in range(self.collection.shard_length(shard_index)):
                 location = self.collection.locate_in_shard(shard_index, local_index)
-                name = self._member_name(location)
+                name, _ = self._member_header(location)
                 if name in index:
                     raise ValueError(
                         f"Duplicate tar member name {name!r} in {location.path}; "
@@ -908,6 +954,30 @@ class PackedTarMemberReader:
         while len(self._shard_name_indexes) > self.max_open_files:
             self._shard_name_indexes.popitem(last=False)
         return index
+
+    def resolve_shard_member_pointer(self, shard_index: int, local_index: int, expected_name: str) -> str:
+        """Resolve a paired manifest row to a packed tar-member byte-range pointer."""
+        try:
+            location = self.collection.locate_in_shard(shard_index, local_index)
+            actual_name, header_offset = self._member_header(location)
+        except IndexError:
+            actual_name = None
+        if actual_name != expected_name:
+            index = self._name_index_for_shard(shard_index)
+            try:
+                local_index = index[expected_name]
+            except KeyError as ex:
+                path = self.collection.path_for_shard(shard_index)
+                raise KeyError(f"Tar {path} has no member named {expected_name!r}.") from ex
+            location = self.collection.locate_in_shard(shard_index, local_index)
+            actual_name, header_offset = self._member_header(location)
+        if actual_name != expected_name:
+            raise ValueError(
+                f"Packed tar index for {location.path} resolved {actual_name!r} "
+                f"after looking up {expected_name!r}."
+            )
+
+        return encode_pointer(location.path, header_offset, location.end)
 
     def get_shard(self, shard_index: int, name: str) -> tuple[str, bytes]:
         """Read a member by name from one shard, supporting filtered manifests."""

@@ -885,10 +885,16 @@ class LazyNeMoTarredIterator(IteratorNode):
             )
         return sampling_rate
 
-    def _build_indexed_url_cut(self, data: dict, manifest_path: str, tar_path: str) -> Cut | None:
+    def _build_indexed_deferred_cut(
+        self,
+        data: dict,
+        manifest_path: str,
+        tar_path: str,
+        audio_source: AudioSource | None = None,
+    ) -> Cut | None:
         """
-        Lazy counterpart of ``_build_indexed_cut``: produce a Cut backed by an
-        archive-member URL/file AudioSource without reading the audio payload.
+        Produce a Cut backed by a deferred archive-member AudioSource without
+        reading the audio payload.
         ``AudioSamples(use_batch_loader=True)`` may fetch remote minibatches with
         AIS GetBatch; ordinary ``AudioSamples`` resolves local ``tar/member``
         paths only after the sampler has selected a minibatch.
@@ -903,16 +909,18 @@ class LazyNeMoTarredIterator(IteratorNode):
             )
             raise ValueError(message)
         audio_filename = self._audio_member_name_from_entry(data)
-        audio_url = f"{tar_path.rstrip('/')}/{audio_filename.lstrip('/')}"
-        # ``open_best`` handles ais://, http(s)://, and local paths uniformly;
-        # the AIS GetBatch loader still keys off the URL scheme.
-        source_type = "url" if "://" in tar_path else "file"
+        if audio_source is None:
+            audio_url = f"{tar_path.rstrip('/')}/{audio_filename.lstrip('/')}"
+            # ``open_best`` handles ais://, http(s)://, and local paths uniformly;
+            # the AIS GetBatch loader still keys off the URL scheme.
+            source_type = "url" if "://" in tar_path else "file"
+            audio_source = AudioSource(type=source_type, channels=[0], source=audio_url)
         offset = data.get("offset", 0.0) or 0.0
         sampling_rate = self._resolve_input_sampling_rate(data, manifest_path, tar_path)
         recording_duration = offset + duration if offset > 0 else duration
         recording = Recording(
             id=audio_filename,
-            sources=[AudioSource(type=source_type, channels=[0], source=audio_url)],
+            sources=[audio_source],
             sampling_rate=sampling_rate,
             num_samples=compute_num_samples(recording_duration, sampling_rate),
             duration=recording_duration,
@@ -929,7 +937,19 @@ class LazyNeMoTarredIterator(IteratorNode):
         tar_path = self._packed_tar_path(location.shard_index)
         if self._indexed_entry_is_explicitly_skipped(data, manifest_path, tar_path):
             return None
-        return self._build_indexed_url_cut(data, manifest_path, tar_path)
+        if self.use_ais_get_batch:
+            return self._build_indexed_deferred_cut(data, manifest_path, tar_path)
+        expected_name = self._audio_member_name_from_entry(data)
+        try:
+            pointer = self._packed_tar_reader.resolve_shard_member_pointer(
+                location.shard_index, location.local_index, expected_name
+            )
+        except KeyError:
+            if self.skip_missing_manifest_entries:
+                return None
+            raise
+        source = AudioSource(type="shar_ptr", channels=[0], source=pointer)
+        return self._build_indexed_deferred_cut(data, manifest_path, tar_path, source)
 
     def _decode_cut_at(self, idx: int) -> Cut | None:
         """Build the Cut for a global index in indexed mode (AIS or local).
@@ -948,7 +968,17 @@ class LazyNeMoTarredIterator(IteratorNode):
         tar_path = self.shard_id_to_tar_path[sid]
         if self._indexed_entry_is_explicitly_skipped(data, manifest_path, tar_path):
             return None
-        return self._build_indexed_url_cut(data, manifest_path, tar_path)
+        if self.use_ais_get_batch:
+            return self._build_indexed_deferred_cut(data, manifest_path, tar_path)
+        expected_name = self._audio_member_name_from_entry(data)
+        try:
+            pointer = self._tar_readers[sid].resolve_member_pointer(local_idx, expected_name)
+        except KeyError:
+            if self.skip_missing_manifest_entries:
+                return None
+            raise
+        source = AudioSource(type="shar_ptr", channels=[0], source=pointer)
+        return self._build_indexed_deferred_cut(data, manifest_path, tar_path, source)
 
     def __getitem__(self, token):
         if not self.indexed:

@@ -22,6 +22,7 @@ import yaml
 from click.testing import CliRunner
 from lhotse.index_pack import IndexPack, IndexPackCollectionSpec, index_pack_collection_key, write_index_pack
 from lhotse.indexing import create_jsonl_index
+from lhotse.shar.lazy_pointer import decode_pointer, read_payload
 from omegaconf import OmegaConf
 from scripts.dataloading import convert_indexes_to_idxpack as converter
 from scripts.dataloading import validate_idxpack_records as record_validator
@@ -1072,6 +1073,11 @@ def test_local_packed_native_tar_supports_filtered_subsets(tmp_path, monkeypatch
         indexed=True,
         index_pack=pack_path,
     )
+    first_source = iterator[0].recording.sources[0]
+    first_pointer_path, _, _ = decode_pointer(first_source.source)
+    assert first_source.type == "shar_ptr"
+    assert first_pointer_path == tar_paths[0]
+    assert read_payload(first_source.source) == b"audio"
     assert iterator._packed_tar_reader.get_shard(0, tar_names[0][1]) == (
         tar_names[0][1],
         b"audio",

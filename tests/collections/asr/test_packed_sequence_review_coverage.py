@@ -170,7 +170,8 @@ def test_pee_packed_rejects_mismatched_branch_metadata(monkeypatch):
 def test_pee_packed_matches_dense_input_and_parameter_gradients():
     torch.manual_seed(0)
     dense_encoder = build_toy_packed_pe_encoder(freeze_asr=False, freeze_diar=True).cuda().eval()
-    packed_encoder = copy.deepcopy(dense_encoder)
+    packed_encoder = build_toy_packed_pe_encoder(freeze_asr=False, freeze_diar=True).cuda().eval()
+    packed_encoder.load_state_dict(dense_encoder.state_dict(), strict=True)
     dense_mels = torch.randn(2, _MEL_FEATURES, 32, device="cuda", requires_grad=True)
     packed_mels = dense_mels.detach().clone().requires_grad_()
     lengths = torch.tensor([32, 17], device="cuda")

@@ -667,6 +667,7 @@ class TransformerBlock(nn.Module):
         else:
             new_cache = kv_in[:, -cache_size:]
         return x, new_cache
+
     def _forward_sequence_packed(
         self,
         x,
@@ -1735,6 +1736,8 @@ class StreamingTransformerEncoder(TransformerEncoder, StreamingEncoder):
             return ok
 
         return create_block_mask(mask_mod, B=cache_valid_len.shape[0], H=1, Q_LEN=C, KV_LEN=num_kv, device=device)
+
+
 def _apply_packed_rope(rope, q, k, position_ids):
     cos = rope.cos.index_select(0, position_ids).unsqueeze(1).to(q.dtype)
     sin = rope.sin.index_select(0, position_ids).unsqueeze(1).to(q.dtype)

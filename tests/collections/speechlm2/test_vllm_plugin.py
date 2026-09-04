@@ -30,6 +30,7 @@ from types import SimpleNamespace
 import pytest
 
 try:
+    import nemo.collections.speechlm2.vllm.salm as _salm_module
     from nemo.collections.speechlm2.vllm.salm import config as _config_module
 
     NeMoSpeechLMConfig = _config_module.NeMoSpeechLMConfig
@@ -102,6 +103,34 @@ assert model.spec_augmentation is not None
     )
 
     assert completed.returncode == 0, completed.stderr
+
+
+@pytest.mark.skipif(not _HAS_CONFIG, reason="SpeechLM vLLM plugin not available")
+@pytest.mark.parametrize(
+    "architecture",
+    ("Qwen3DFlash2DraftModel", "DFlashQwen3DFlash2DraftModel"),
+)
+def test_normalizes_automodel_dflash2_architecture(architecture):
+    """Normalization does not need vLLM installed or model weights loaded."""
+    config = SimpleNamespace(architectures=[architecture])
+
+    result = _salm_module._normalize_dflash2_architecture(config)
+
+    assert result is config
+    assert config.architectures == ["DFlash2DraftModel"]
+
+
+@pytest.mark.skipif(not _HAS_CONFIG, reason="SpeechLM vLLM plugin not available")
+@pytest.mark.parametrize(
+    "architectures",
+    (None, [], ["DFlash2DraftModel"], ["Qwen3DFlashDraftModel"], ["Qwen3DFlash2DraftModel", "Other"]),
+)
+def test_dflash2_normalization_preserves_unrelated_architectures(architectures):
+    config = SimpleNamespace(architectures=architectures)
+
+    _salm_module._normalize_dflash2_architecture(config)
+
+    assert config.architectures == architectures
 
 
 @pytest.mark.skipif(not _HAS_CONFIG, reason="NeMoSpeechLMConfig not available")
@@ -1328,6 +1357,41 @@ class TestDFlashPlugin:
         assert runtime_config.architectures == ["DFlashQwen3DFlashDraftModel"]
 
         for alias in ("Qwen3DFlashDraftModel", *runtime_config.architectures):
+            alias_model = ModelRegistry.models[alias]
+            assert (alias_model.module_name, alias_model.class_name) == (
+                native_model.module_name,
+                native_model.class_name,
+            )
+
+    @pytest.mark.parametrize(
+        "automodel_arch",
+        ("Qwen3DFlash2DraftModel", "DFlashQwen3DFlash2DraftModel"),
+    )
+    def test_routes_automodel_dflash2_to_candidate_selector_runtime(self, monkeypatch, automodel_arch):
+        """Automodel exports must retain DFlash2 semantics after vLLM config wrapping."""
+        from transformers import AutoConfig
+        from vllm.model_executor.models.registry import ModelRegistry
+        from vllm.transformers_utils.configs.eagle import EAGLEConfig
+
+        if "DFlash2DraftModel" not in ModelRegistry.get_supported_archs():
+            pytest.skip("installed vLLM does not provide the DFlash2 candidate-selector runtime")
+
+        monkeypatch.setattr(
+            AutoConfig,
+            "from_pretrained",
+            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError()),
+        )
+
+        register()
+
+        native_model = ModelRegistry.models["DFlash2DraftModel"]
+        automodel_config = AutoConfig.for_model("qwen3", architectures=[automodel_arch])
+        normalized_config = SpeculativeConfig.hf_config_override(automodel_config)
+        runtime_config = EAGLEConfig(normalized_config, method="dflash", model_type="eagle")
+
+        assert normalized_config.architectures == ["DFlash2DraftModel"]
+        assert runtime_config.architectures == ["DFlash2DraftModel"]
+        for alias in (automodel_arch, *runtime_config.architectures):
             alias_model = ModelRegistry.models[alias]
             assert (alias_model.module_name, alias_model.class_name) == (
                 native_model.module_name,

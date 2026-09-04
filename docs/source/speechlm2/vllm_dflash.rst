@@ -63,9 +63,17 @@ checkpoint's architecture:
        "num_speculative_tokens": 6
      }'
 
-The trained draft config must declare ``DFlash2DraftModel``. Its
-``dflash_config`` must include ``target_layer_ids``, ``conv_group_size``,
-``conv_kernel_size``, ``selector_rank``, and ``selector_top_k``. Set
+NeMo Automodel training exports ``Qwen3DFlash2DraftModel`` so the checkpoint
+can still be reopened by the training stack. The SpeechLM plugin normalizes
+that architecture to vLLM's canonical ``DFlash2DraftModel`` before vLLM wraps
+the speculative config. This is required for vLLM to force its V2 model runner
+and execute the DFlash2 candidate-selector speculator instead of silently
+falling back to plain DFlash. Native configs that already declare
+``DFlash2DraftModel`` remain supported.
+
+The draft's ``dflash_config`` must include ``target_layer_ids``,
+``conv_group_size``, ``conv_kernel_size``, ``selector_rank``, and
+``selector_top_k``. Set
 ``num_speculative_tokens`` to one less than the convolution block size used to
 train the draft: vLLM constructs each runtime block from one anchor plus the
 configured number of draft tokens and does not reject a training/inference

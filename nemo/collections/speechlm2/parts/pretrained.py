@@ -423,46 +423,39 @@ def setup_parallel_expert_encoder(model: torch.nn.Module):
         strict=True,
         config_overrides=model.cfg.get("pe_encoder_overrides", None),
     )
-    for cfg_key, attribute in (
-        ("pe_asr_chunk_size_seconds", "asr_chunk_size_seconds"),
-        ("pe_diar_chunk_size_seconds", "diar_chunk_size_seconds"),
-    ):
-        if (chunk_size := model.cfg.get(cfg_key, None)) is None:
-            continue
+    obsolete_chunk_keys = [
+        key
+        for key in ("pe_asr_chunk_size_seconds", "pe_diar_chunk_size_seconds")
+        if model.cfg.get(key, None) is not None
+    ]
+    if obsolete_chunk_keys:
+        raise ValueError(
+            f"{', '.join(f'model.{key}' for key in obsolete_chunk_keys)} are no longer supported; "
+            "use model.encoder_chunk_size_seconds to chunk both ParallelExpertEncoder branches."
+        )
+
+    chunk_size = model.cfg.get("encoder_chunk_size_seconds", None)
+    if chunk_size is not None:
         chunk_size = float(chunk_size)
         if chunk_size <= 0:
-            raise ValueError(f"model.{cfg_key} must be positive or null, got {chunk_size}.")
-        if not hasattr(pe_encoder, attribute):
-            raise TypeError(
-                f"{type(pe_encoder).__name__} does not support model.{cfg_key}; "
-                f"missing runtime attribute {attribute!r}."
-            )
-        setattr(pe_encoder, attribute, chunk_size)
-        logging.info("Overrode ParallelExpertEncoder %s=%g seconds", attribute, chunk_size)
-
-    if (execution_mode := model.cfg.get("pe_sequence_packed_execution_mode", None)) is not None:
-        if execution_mode not in ("grouped", "serial_checkpointed"):
-            raise ValueError(
-                "model.pe_sequence_packed_execution_mode must be grouped or serial_checkpointed, "
-                f"got {execution_mode!r}."
-            )
-        pe_encoder.sequence_packed_execution_mode = execution_mode
-        logging.info(
-            "Overrode ParallelExpertEncoder sequence_packed_execution_mode=%s",
-            execution_mode,
+            raise ValueError(f"model.encoder_chunk_size_seconds must be positive or null, got {chunk_size}.")
+    if (
+        model.cfg.get("packed_encoder_sequences", False)
+        and model.cfg.get("encoder_chunk_batch_size", None) is not None
+    ):
+        raise ValueError(
+            "model.encoder_chunk_batch_size is not supported for packed ParallelExpertEncoder internal chunking; "
+            "set it to null or disable model.packed_encoder_sequences to use outer waveform chunk batching."
         )
-
-    if (serial_speech_grouped := model.cfg.get("pe_sequence_packed_serial_speech_grouped_moe", None)) is not None:
-        if not isinstance(serial_speech_grouped, bool):
-            raise ValueError(
-                "model.pe_sequence_packed_serial_speech_grouped_moe must be a boolean, "
-                f"got {serial_speech_grouped!r}."
-            )
-        pe_encoder.sequence_packed_serial_speech_grouped_moe = serial_speech_grouped
-        logging.info(
-            "Overrode ParallelExpertEncoder sequence_packed_serial_speech_grouped_moe=%s",
-            serial_speech_grouped,
+    if not hasattr(pe_encoder, "chunk_size_seconds"):
+        raise TypeError(
+            f"{type(pe_encoder).__name__} does not support model.encoder_chunk_size_seconds; "
+            "missing runtime attribute 'chunk_size_seconds'."
         )
+    pe_encoder.chunk_size_seconds = chunk_size
+    if hasattr(pe_encoder, "_bundle_config"):
+        pe_encoder._bundle_config.chunk_size_seconds = chunk_size
+    logging.info("Set ParallelExpertEncoder chunk_size_seconds=%s", chunk_size)
 
     if (spk_kernel_scale := model.cfg.get("spk_kernel_scale", None)) is not None:
         pe_encoder.spk_kernel_scale = float(spk_kernel_scale)

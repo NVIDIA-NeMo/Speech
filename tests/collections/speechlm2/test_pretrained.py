@@ -58,7 +58,11 @@ def test_setup_speech_encoder_hydrates_missing_config_without_weights():
     assert model.cfg.perception.modality_adapter.output_dim == 8
 
 
-def test_setup_parallel_expert_encoder_applies_per_branch_chunk_overrides():
+@pytest.mark.parametrize(
+    ("chunk_size_seconds", "packed_encoder_sequences"),
+    [(None, False), (30, False), (30, True)],
+)
+def test_setup_parallel_expert_encoder_maps_shared_chunk_size(chunk_size_seconds, packed_encoder_sequences):
     pe_encoder_overrides = {
         "speaker_feature_config_version": 1,
         "speaker_feature_mode": "continuous",
@@ -69,23 +73,20 @@ def test_setup_parallel_expert_encoder_applies_per_branch_chunk_overrides():
         d_model=4,
         n_spk=8,
         _feat_in=80,
-        parallel_expert_encoder_kind="two_branch",
         freeze_asr=False,
         freeze_diar=True,
         spk_kernel_scale=1.0,
-        asr_chunk_size_seconds=None,
-        diar_chunk_size_seconds=None,
+        chunk_size_seconds=45.0,
+        _bundle_config=DictConfig({"chunk_size_seconds": 45.0}),
         online_inference_enabled=False,
     )
-    loader = MagicMock()
-    loader.load_from_nemo.return_value = pe_encoder
     model = SimpleNamespace(
         cfg=DictConfig(
             {
                 "pe_encoder_path": "/tmp/placeholderParallelExpertEncoder.nemo",
                 "pe_encoder_overrides": pe_encoder_overrides,
-                "pe_asr_chunk_size_seconds": 30,
-                "pe_diar_chunk_size_seconds": 45.0,
+                "encoder_chunk_size_seconds": chunk_size_seconds,
+                "packed_encoder_sequences": packed_encoder_sequences,
                 "perception": {
                     "preprocessor": {"features": 80, "normalize": "per_feature"},
                     "modality_adapter": {"d_model": 4},
@@ -100,19 +101,59 @@ def test_setup_parallel_expert_encoder_applies_per_branch_chunk_overrides():
         ),
     )
 
-    with patch.object(pretrained, "_resolve_parallel_expert_encoder_class", return_value=loader):
+    with patch.object(pretrained.ParallelExpertEncoderPT, "load_from_nemo", return_value=pe_encoder) as load:
         pretrained.setup_parallel_expert_encoder(model)
 
-    loader.load_from_nemo.assert_called_once_with(
+    load.assert_called_once_with(
         "/tmp/placeholderParallelExpertEncoder.nemo",
         map_location="cpu",
         strict=True,
         config_overrides=pe_encoder_overrides,
     )
-    assert pe_encoder.asr_chunk_size_seconds == 30.0
-    assert pe_encoder.diar_chunk_size_seconds == 45.0
+    assert pe_encoder.chunk_size_seconds == chunk_size_seconds
+    assert pe_encoder._bundle_config.chunk_size_seconds == chunk_size_seconds
     assert model.perception.preprocessor.featurizer.normalize is None
     assert model.cfg.perception.preprocessor.normalize is None
+
+
+@pytest.mark.parametrize(
+    ("cfg_update", "match"),
+    [
+        (
+            {
+                "encoder_chunk_size_seconds": 30.0,
+                "packed_encoder_sequences": True,
+                "encoder_chunk_batch_size": 2,
+            },
+            "encoder_chunk_batch_size is not supported",
+        ),
+        (
+            {"encoder_chunk_size_seconds": -1.0, "packed_encoder_sequences": True},
+            "encoder_chunk_size_seconds must be positive or null",
+        ),
+        (
+            {"pe_asr_chunk_size_seconds": 30.0},
+            "use model.encoder_chunk_size_seconds",
+        ),
+    ],
+)
+def test_setup_parallel_expert_encoder_validates_shared_chunking_config(cfg_update, match):
+    pe_encoder = SimpleNamespace(chunk_size_seconds=None)
+    cfg = {
+        "pe_encoder_path": "/tmp/placeholderParallelExpertEncoder.nemo",
+        "perception": {},
+    }
+    cfg.update(cfg_update)
+    model = SimpleNamespace(
+        cfg=DictConfig(cfg),
+        perception=SimpleNamespace(encoder=object()),
+    )
+
+    with (
+        patch.object(pretrained.ParallelExpertEncoderPT, "load_from_nemo", return_value=pe_encoder),
+        pytest.raises(ValueError, match=match),
+    ):
+        pretrained.setup_parallel_expert_encoder(model)
 
 
 def _mock_automodel_loader(config):

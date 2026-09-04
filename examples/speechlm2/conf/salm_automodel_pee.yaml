@@ -266,6 +266,8 @@ data:
       subsampling:
         type: feature_stacking
         factor: 8
+      # Dense PEE uses the outer waveform chunker. Set this to null when enabling
+      # packed_encoder_sequences, where PEE chunks internally after feature stacking.
       chunk_size_seconds: ${model.encoder_chunk_size_seconds}
     input_cfg:
       - type: lhotse_as_conversation

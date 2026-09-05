@@ -350,7 +350,7 @@ def load_evaluation_models(
     elif asr_model_type == "whisper":
         models['asr_model'] = WhisperTranscriber(model_name=asr_model_name, device=device)
     else:
-        raise ValueError(f"Unknown ASR model type {asr_model_name}")
+        raise ValueError(f"Unknown ASR model type {asr_model_type}")
 
     if sv_model_type == "wavlm":
         models['feature_extractor'] = Wav2Vec2FeatureExtractor.from_pretrained('microsoft/wavlm-base-plus-sv')

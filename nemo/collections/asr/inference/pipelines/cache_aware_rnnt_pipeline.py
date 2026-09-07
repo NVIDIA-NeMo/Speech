@@ -279,15 +279,31 @@ class CacheAwareRNNTPipeline(BasePipeline):
         """Return the separator for the text processor."""
         return self.sep
 
-    def preprocess(self, buffers: list[Tensor], right_paddings: list[int] | None = None) -> tuple[Tensor, Tensor]:
+    def preprocess(
+        self,
+        buffers: list[Tensor] | Tensor,
+        right_paddings: list[int] | Tensor | None = None,
+    ) -> tuple[Tensor, Tensor]:
         """
         Preprocess the feature buffers by stacking them and computing the lengths
         Args:
-            buffers: (list[Tensor]) List of feature buffers.
-            right_paddings: (list[int] | None) List of right paddings.
+            buffers: (list[Tensor] | Tensor) List of feature buffers, or one batched (B, F, T) tensor.
+            right_paddings: (list[int] | Tensor | None) Right paddings, per stream or batched.
         Returns:
             (tuple[Tensor, Tensor]) Processed feature buffers and their lengths.
         """
+        if isinstance(buffers, Tensor):
+            # already batched by the bufferer: no stacking, and no host round trip for the lengths
+            feature_buffers = drop_trailing_features(buffers, self.expected_feature_buffer_len)
+            feature_buffer_lens = torch.full(
+                (feature_buffers.shape[0],), feature_buffers.shape[2], device=self.device, dtype=torch.long
+            )
+            if right_paddings is not None:
+                if not isinstance(right_paddings, Tensor):
+                    right_paddings = torch.tensor(right_paddings, device=self.device)
+                feature_buffer_lens = feature_buffer_lens - right_paddings
+            return feature_buffers.to(self.device), feature_buffer_lens
+
         feature_buffers = [f_buffer.unsqueeze_(0) for f_buffer in buffers]
         # Trim to expected feature buffer length (safeguard for external feature buffer inputs)
         feature_buffers = [
@@ -295,7 +311,8 @@ class CacheAwareRNNTPipeline(BasePipeline):
         ]
         feature_buffer_lens = torch.tensor([f_buffer.shape[2] for f_buffer in feature_buffers], device=self.device)
         if right_paddings is not None:
-            right_paddings = torch.tensor(right_paddings, device=feature_buffer_lens.device)
+            if not isinstance(right_paddings, Tensor):
+                right_paddings = torch.tensor(right_paddings, device=feature_buffer_lens.device)
             feature_buffer_lens = feature_buffer_lens - right_paddings
         feature_buffers = torch.cat(feature_buffers).to(self.device)
         return feature_buffers, feature_buffer_lens
@@ -434,8 +451,8 @@ class CacheAwareRNNTPipeline(BasePipeline):
     def cache_aware_transcribe_step(
         self,
         requests: list[Request],
-        features: list[Tensor],
-        right_paddings: list[int],
+        features: list[Tensor] | Tensor,
+        right_paddings: list[int] | Tensor,
         ready_state_ids: set,
         keep_all_outputs: bool | Tensor = False,
     ) -> None:
@@ -453,8 +470,8 @@ class CacheAwareRNNTPipeline(BasePipeline):
         8. Update the ready states to indicate that the state is ready for text post-processing
         Args:
             requests: (list[Request]) List of requests (frames or feature buffers) to transcribe.
-            features: (list[Tensor]) List of feature buffers.
-            right_paddings: (list[int] | None) List of right paddings.
+            features: (list[Tensor] | Tensor) Feature buffers, per stream or batched (B, F, T).
+            right_paddings: (list[int] | Tensor | None) Right paddings, per stream or batched.
             ready_state_ids: (set) Set of ready state IDs.
             keep_all_outputs: (bool | Tensor) Whether to keep all outputs; a bool vector of shape [B]
                 keeps them per stream, so one call can serve last and non-last chunks together.

@@ -170,17 +170,21 @@ class BatchedCacheFeatureBufferer:
         self.feature_buffer.index_copy_(0, slot_ids, buffers)
         return buffers
 
-    def update(self, frames: list[Frame]) -> tuple[list[Tensor], list[int]]:
+    def update(self, frames: list[Frame]) -> tuple[Tensor, Tensor]:
         """
         Update the feature bufferers with the new frames.
+
+        The buffers and the right paddings stay batched: unbinding them here only to have the caller
+        stack them again costs a copy per stream, and reading the paddings back to Python costs a
+        device synchronization on every step.
         Args:
             frames (list[Frame]): list of frames with length equal to batch size
         Returns:
-            tuple[list[Tensor], list[int]]: feature buffers and right paddings
+            tuple[Tensor, Tensor]: feature buffers of shape (B, F, T) and right paddings of shape (B,)
         """
-        # if there are no frames, return empty lists
+        # if there are no frames, return empty batches
         if len(frames) == 0:
-            return [], []
+            return torch.empty(0, device=self.device), torch.empty(0, dtype=torch.long, device=self.device)
 
         # if the stream_id is new, we need to assign a slot to it
         slot_ids, slots_to_reset, slots_to_free = [], [], []
@@ -203,11 +207,13 @@ class BatchedCacheFeatureBufferer:
         if len(slots_to_reset) > 0:
             self.reset_slots(slots_to_reset)
 
-        right_paddings = torch.zeros(len(frames), dtype=torch.long, device=self.device)
+        # one transfer for the whole batch instead of a scalar copy per stream
+        right_paddings = torch.tensor(
+            [frame.size - frame.valid_size for frame in frames], dtype=torch.long, device=self.device
+        )
         audio_buffers = []
         for i, frame in enumerate(frames):
             slot_id = slot_ids[i]
-            right_paddings[i] = frame.size - frame.valid_size
             self.audio_bufferers[slot_id].update(frame)
 
             buffer = self.audio_bufferers[slot_id].sample_buffer
@@ -227,9 +233,7 @@ class BatchedCacheFeatureBufferer:
         buffers = self._update_feature_buffer(
             slot_ids=slot_ids_tensor, feat_chunk=features[:, :, -self.feature_chunk_len :]
         )
-        fbuffers = list(buffers.unbind(0))
-
         if len(slots_to_free) > 0:
             self.free_slots(slots_to_free)
 
-        return fbuffers, right_paddings.tolist()
+        return buffers, right_paddings

@@ -699,7 +699,7 @@ class SubsamplingReductionModule(nn.Module):
                 kernel_size=self.kernel_size,
                 stride=self.stride,
                 ceil_mode=False,
-                repeat_num=self._sampling_num,
+                repeat_num=1,  # a single MaxPool1d(kernel_size=reduction_factor) is applied below
             )
             x = self.reduction_enc(x)
             x = torch.transpose(x, 1, 2)  # [B, T, C]

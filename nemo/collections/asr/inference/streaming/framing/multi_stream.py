@@ -124,18 +124,28 @@ class ContinuousBatchedFrameStreamer:
         self._progress_bar = None
         self.processed_streams = set()
 
-    def set_audio_filepaths(self, audio_filepaths: list[str], options: list[RequestOptions]) -> None:
+    def set_audio_filepaths(
+        self,
+        audio_filepaths: list[str],
+        options: list[RequestOptions],
+        audio_samples: list[torch.Tensor] | None = None,
+    ) -> None:
         """
         Set the audio filepaths
         Args:
             audio_filepaths (list[str]): The list of audio filepaths
             options (list[RequestOptions]): The list of options
+            audio_samples (list[torch.Tensor] | None): Preloaded audio samples, one tensor per filepath.
+                When given, streams are fed from these tensors and no audio file is read from disk.
         """
         if len(audio_filepaths) != len(options):
             raise ValueError("audio_filepaths and options must have the same length")
+        if audio_samples is not None and len(audio_samples) != len(audio_filepaths):
+            raise ValueError("audio_filepaths and audio_samples must have the same length")
 
         self.audio_filepaths = audio_filepaths
         self.options = options
+        self.audio_samples = audio_samples
         self.n_audio_files = len(audio_filepaths)
         self.total_progress_steps = self.n_audio_files * 2  # One step for adding, one for processing
         self.sid2filepath = {}
@@ -183,7 +193,10 @@ class ContinuousBatchedFrameStreamer:
         options = self.options[self.stream_id]
         self.sid2filepath[self.stream_id] = audio_filepath
         self.elapsed_durations[self.stream_id] = 0.0
-        stream.load_audio(audio_filepath, options)
+        if self.audio_samples is not None:
+            stream.load_audio(self.audio_samples[self.stream_id], options)
+        else:
+            stream.load_audio(audio_filepath, options)
 
         # Add the stream to the multi streamer
         self.multi_streamer.add_stream(stream, stream_id=self.stream_id)
@@ -284,14 +297,20 @@ class ContinuousBatchedRequestStreamer:
             )
             self.right_pad_features = right_pad_features
 
-    def set_audio_filepaths(self, audio_filepaths: list[str], options: list[RequestOptions]) -> None:
+    def set_audio_filepaths(
+        self,
+        audio_filepaths: list[str],
+        options: list[RequestOptions],
+        audio_samples: list[torch.Tensor] | None = None,
+    ) -> None:
         """
         Set the audio filepaths
         Args:
             audio_filepaths (list[str]): The list of audio filepaths
             options (list[RequestOptions]): The list of options
+            audio_samples (list[torch.Tensor] | None): Preloaded audio samples, one tensor per filepath.
         """
-        self.multi_streamer.set_audio_filepaths(audio_filepaths, options)
+        self.multi_streamer.set_audio_filepaths(audio_filepaths, options, audio_samples=audio_samples)
 
     def set_progress_bar(self, progress_bar: ProgressBar) -> None:
         """

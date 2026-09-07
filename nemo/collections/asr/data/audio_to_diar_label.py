@@ -877,7 +877,6 @@ class AudioToSpeechE2ESpkDiarDataset(Dataset):
             if capacity_limited and num_speakers > self.max_spks:
                 within_capacity = speaker_counts <= self.max_spks
                 candidates = candidates[within_capacity]
-                ends = ends[within_capacity]
                 speaker_counts = speaker_counts[within_capacity]
 
         if candidates.numel() == 0:

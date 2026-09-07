@@ -1419,6 +1419,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
         lc_enc = round(left_offset / self.encoder.subsampling_factor)
         rc_enc = math.ceil(right_offset / self.encoder.subsampling_factor)
         high_resolution_preds = None
+        chunk_activity_logits = None
         inv_spk_perm = None
         if (
             not self.async_streaming
@@ -1532,7 +1533,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
                 total_logits = chunk_logits
             else:
                 total_logits = torch.cat([total_logits, chunk_logits], dim=1)
-            if spkcache_fifo_chunk_activity_logits is not None:
+            if chunk_activity_logits is not None:
                 if total_activity_logits is None:
                     total_activity_logits = chunk_activity_logits
                 else:

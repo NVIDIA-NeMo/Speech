@@ -101,9 +101,8 @@ class CacheAwareRNNTPipeline(BasePipeline):
         """
         if cfg.asr.get("use_cuda_graphs", False):
             return
-        compiled = self.asr_model.compile_encoder_layers()
-        if compiled:
-            logging.info(f"Compiled {compiled} encoder layers with torch.compile")
+        if self.asr_model.compile_encoder_layers():
+            logging.info("Compiled the encoder with torch.compile")
 
     def init_decoding_computer(self) -> None:
         """Initialize ``decoding_computer``."""

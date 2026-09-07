@@ -154,37 +154,35 @@ def cleanup_biasing(decoder, biasing_requests):
 
 
 def compute_wers(references, hypotheses, key_terms=None):
-    """Compute per-example and aggregate WER using bewer.
+    """Compute per-example WER and aggregate KTR using bewer.
 
     Args:
         references: list of reference strings
         hypotheses: list of hypothesis strings
-        key_terms: optional list of per-example key-term dicts for KTER
+        key_terms: optional list of per-example key-term lists for KTR
 
     Returns:
-        (per_example_wers, aggregate_wer, aggregate_kter_or_None)
+        (per_example_wers, aggregate_wer, aggregate_ktr_or_None)
     """
     ds = Dataset()
     for i, (ref, hyp) in enumerate(zip(references, hypotheses)):
-        kt = {"medical_terms": key_terms[i]} if key_terms else None
-        if kt is not None:
-            kt = {"medical_terms": set(key_terms[i])}
+        kt = {"medical_terms": set(key_terms[i])} if key_terms else None
         ds.add(ref=ref, hyp=hyp, key_terms=kt)
 
     wer_metric = metrics.WER(ds)
     wer_metric.set_source(ds)
     per_example = [wer_metric.get_example_metric(ex).value for ex in ds]
 
-    kter_value = None
+    ktr_value = None
     if key_terms is not None:
         try:
-            kter_metric = metrics.KTER(ds, vocab="medical_terms")
-            kter_metric.set_source(ds)
-            kter_value = kter_metric.value
+            ktr_metric = metrics.KTR(ds, vocab="medical_terms")
+            ktr_metric.set_source(ds)
+            ktr_value = ktr_metric.value
         except Exception:
             pass
 
-    return per_example, wer_metric.value, kter_value
+    return per_example, wer_metric.value, ktr_value
 
 
 def main():
@@ -239,7 +237,7 @@ def main():
         model, encoder_output, encoded_lengths, beam_size=args.beam_size,
         allow_cuda_graphs=args.cuda_graphs,
     )
-    baseline_wers, baseline_agg_wer, baseline_kter = compute_wers(
+    baseline_wers, baseline_agg_wer, baseline_ktr = compute_wers(
         references, baseline_texts, key_terms=all_key_terms
     )
     for i, text in enumerate(baseline_texts):
@@ -247,8 +245,8 @@ def main():
         print(f"      ref:   {references[i][:120]}")
         print(f"      hyp:   {text[:120]}")
     print(f"\n  Aggregate WER (baseline): {baseline_agg_wer:.4f}")
-    if baseline_kter is not None:
-        print(f"  Aggregate KTER (baseline): {baseline_kter:.4f}")
+    if baseline_ktr is not None:
+        print(f"  Aggregate KTR (baseline): {baseline_ktr:.4f}")
 
     # --- Run 2: Per-stream biasing with medical_terms from the dataset ---
     print("\n" + "=" * 100)
@@ -291,7 +289,7 @@ def main():
         )[0]
     boosted_texts = [h.text if h.text is not None else model.tokenizer.ids_to_text(h.y_sequence.tolist()) for h in boosted_hyps]
 
-    boosted_wers, boosted_agg_wer, boosted_kter = compute_wers(
+    boosted_wers, boosted_agg_wer, boosted_ktr = compute_wers(
         references, boosted_texts, key_terms=all_key_terms
     )
     for i, text in enumerate(boosted_texts):
@@ -299,8 +297,8 @@ def main():
         print(f"      ref:   {references[i][:120]}")
         print(f"      hyp:   {text[:120]}")
     print(f"\n  Aggregate WER (boosted): {boosted_agg_wer:.4f}")
-    if boosted_kter is not None:
-        print(f"  Aggregate KTER (boosted): {boosted_kter:.4f}")
+    if boosted_ktr is not None:
+        print(f"  Aggregate KTR (boosted): {boosted_ktr:.4f}")
 
     cleanup_biasing(decoder_ps, biasing_requests)
 
@@ -336,9 +334,9 @@ def main():
     print(f"  Any WER improved:      {any_improved}")
     print(f"  Avg WER (baseline):    {baseline_agg_wer:.4f}")
     print(f"  Avg WER (boosted):     {boosted_agg_wer:.4f}")
-    if baseline_kter is not None and boosted_kter is not None:
-        print(f"  Avg KTER (baseline):   {baseline_kter:.4f}")
-        print(f"  Avg KTER (boosted):    {boosted_kter:.4f}")
+    if baseline_ktr is not None and boosted_ktr is not None:
+        print(f"  Avg KTR (baseline):   {baseline_ktr:.4f}")
+        print(f"  Avg KTR (boosted):    {boosted_ktr:.4f}")
 
     print("\n" + "=" * 100)
     if any_changed:

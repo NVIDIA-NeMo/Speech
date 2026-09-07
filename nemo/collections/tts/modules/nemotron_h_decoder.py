@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -407,15 +408,17 @@ class MambaRMSNormGated(nn.Module):
                 norm_before_gate=False,
             )
         else:
-            # Fallback: simple RMSNorm + gating (works on CPU and GPU)
+            # Keep this fallback aligned with Mamba's reference implementation:
+            # https://github.com/state-spaces/mamba/blob/e9594ce1c732d97440f0332fdc43170a2294dbfa/mamba_ssm/ops/triton/layernorm_gated.py#L18-L39
             input_dtype = hidden_states.dtype
             hidden_states = hidden_states.to(torch.float32)
-            variance = hidden_states.pow(2).mean(-1, keepdim=True)
-            hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
-            hidden_states = (self.weight.to(torch.float32) * hidden_states).to(input_dtype)
             if gate is not None:
-                hidden_states = hidden_states * F.silu(gate)
-            return hidden_states
+                hidden_states = hidden_states * F.silu(gate.to(torch.float32))
+            hidden_states = hidden_states.reshape(*hidden_states.shape[:-1], -1, self.group_size)
+            variance = hidden_states.pow(2).mean(dim=-1, keepdim=True)
+            hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
+            hidden_states = hidden_states.flatten(-2)
+            return (self.weight.to(torch.float32) * hidden_states).to(input_dtype)
 
 
 def pad_tensor_by_size(input_tensor: torch.Tensor, pad_size: int):

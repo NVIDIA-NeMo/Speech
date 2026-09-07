@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -33,6 +34,10 @@ from nemo.utils import logging
 class BuildWordBoostingTreeConfig(BoostingTreeModelConfig):
     """
     Build GPU-accelerated phrase boosting tree (btree) to be used with greedy and beam search decoders of ASR models.
+
+    A per-phrase boosting multiplier (alpha) can be passed via key_phrase_items_list,
+    e.g. key_phrase_items_list='[{phrase:"word1",alpha:4.0},{phrase:"word2"}]';
+    omitted fields fall back to the global values, and the multiplier is baked into the saved boosting tree.
     """
 
     asr_pretrained_name: Optional[str] = None  # Name of a pretrained model

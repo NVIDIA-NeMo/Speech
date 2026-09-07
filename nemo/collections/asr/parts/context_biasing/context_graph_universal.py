@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -69,6 +70,7 @@ class ContextState:
         phrase: str = "",
         ac_threshold: float = 1.0,
         is_primary: bool = True,
+        phrase_alpha: float = 1.0,
     ):
         """Create a ContextState.
 
@@ -98,6 +100,9 @@ class ContextState:
             The acoustic threshold (probability) of current context phrase, the
             value is valid only when current state is end state (is_end == True).
             Note: ac_threshold only used in keywords spotting.
+          phrase_alpha:
+            The per-phrase boosting weight multiplier of current context phrase, the
+            value is valid only when current state is end state (is_end == True).
         """
         self.id = id
         self.token = token
@@ -111,6 +116,7 @@ class ContextState:
         self.phrase = phrase
         self.ac_threshold = ac_threshold
         self.is_primary = is_primary
+        self.phrase_alpha = phrase_alpha
         self.fail: "ContextState | None" = None
         self.output: "ContextState | None" = None
 
@@ -219,6 +225,7 @@ class ContextGraph:
         scores: Optional[list[float]] = None,
         ac_thresholds: Optional[list[float]] = None,
         uniform_weights: Optional[bool] = False,
+        alphas: Optional[list[float]] = None,
     ):
         """Build the ContextGraph from a list of token list.
         It first build a trie from the given token lists, then fill the fail arc
@@ -248,9 +255,17 @@ class ContextGraph:
             The length of `ac_threshold` MUST be equal to the length of `token_ids`.
           uniform_weights:
             If True, the weights will be distributed uniformly for all tokens as in Icefall.
+          alphas:
+            The customize boosting weight multiplier for each word/phrase, None (or a None
+            entry) means the default value 1.0. The multiplier scales the whole token_score
+            of the phrase (including depth scaling terms), acting as a per-phrase counterpart
+            of the decode-time boosting_tree_alpha (the effective boost is
+            decode-time alpha * per-phrase alpha * base score). The length of `alphas` MUST
+            be equal to the length of `token_ids`.
 
         Note: The phrases would have shared states, the score of the shared states is
-              the MAXIMUM value among all the tokens sharing this state.
+              the MAXIMUM value among all the tokens sharing this state (effective,
+              i.e. alpha-scaled, scores are compared).
         """
         num_phrases = len(token_ids)
         if phrases is not None:
@@ -259,11 +274,14 @@ class ContextGraph:
             assert len(scores) == num_phrases, (len(scores), num_phrases)
         if ac_thresholds is not None:
             assert len(ac_thresholds) == num_phrases, (len(ac_thresholds), num_phrases)
+        if alphas is not None:
+            assert len(alphas) == num_phrases, (len(alphas), num_phrases)
 
         for index, tokens in enumerate(token_ids):
             phrase = "" if phrases is None else phrases[index]
             score = 0.0 if scores is None else scores[index]
             ac_threshold = 0.0 if ac_thresholds is None else ac_thresholds[index]
+            alpha = 1.0 if alphas is None or alphas[index] is None else alphas[index]
             node = self.root
             # If has customized score using the customized token score, otherwise
             # using the default score
@@ -274,6 +292,7 @@ class ContextGraph:
                     token_score = self._get_token_score(
                         depth=i, uniform_weights=uniform_weights, context_score=context_score
                     )
+                    token_score *= alpha
                     self.num_nodes += 1
                     is_end = i == len(tokens) - 1
                     node_score = node.node_score + token_score
@@ -287,10 +306,11 @@ class ContextGraph:
                         level=i + 1,
                         phrase=phrase if is_end else "",
                         ac_threshold=threshold if is_end else 0.0,
+                        phrase_alpha=alpha if is_end else 1.0,
                     )
                 else:
                     # node exists, get the score of shared state.
-                    token_score = max(context_score, node.next[token].token_score)
+                    token_score = max(alpha * context_score, node.next[token].token_score)
                     node.next[token].token_score = token_score
                     node_score = node.node_score + token_score
                     node.next[token].node_score = node_score
@@ -300,6 +320,7 @@ class ContextGraph:
                     if i == len(tokens) - 1:
                         node.next[token].phrase = phrase
                         node.next[token].ac_threshold = threshold
+                        node.next[token].phrase_alpha = max(alpha, node.next[token].phrase_alpha)
                 node.primary_next[token] = node.next[token]
                 node = node.next[token]
         self._fill_fail_output()
@@ -311,6 +332,7 @@ class ContextGraph:
         scores: Optional[list[float]] = None,
         ac_thresholds: Optional[list[float]] = None,
         uniform_weights: Optional[bool] = False,
+        alphas: Optional[list[float]] = None,
         var_bpe_scoring_temp: float = 10.0,
         var_bpe_penalize_subsplits: bool = True,
     ):
@@ -349,6 +371,11 @@ class ContextGraph:
             The length of `ac_threshold` MUST be equal to the length of `token_ids`.
           uniform_weights:
             If True, the weights will be distributed uniformly for all tokens as in Icefall.
+          alphas:
+            The customize boosting weight multiplier for each word/phrase, None (or a None
+            entry) means the default value 1.0. The multiplier scales the whole per-token
+            score of the phrase, acting as a per-phrase counterpart of the decode-time
+            boosting_tree_alpha. The length of `alphas` MUST be equal to the length of `token_ids`.
           var_bpe_scoring_temp:
             scoring temperature to adjust weight assignment for "intermediate sub-tokens" (chars)
             10.0 - conservative default, assign ~100% to the last (intermediate) transition;
@@ -368,12 +395,15 @@ class ContextGraph:
             assert len(scores) == num_phrases, (len(scores), num_phrases)
         if ac_thresholds is not None:
             assert len(ac_thresholds) == num_phrases, (len(ac_thresholds), num_phrases)
+        if alphas is not None:
+            assert len(alphas) == num_phrases, (len(alphas), num_phrases)
 
         var_bpe_representation: VarBPERepresentation
         for index, var_bpe_representation in enumerate(token_ids):
             phrase = "" if phrases is None else phrases[index]
             score = 0.0 if scores is None else scores[index]
             ac_threshold = 0.0 if ac_thresholds is None else ac_thresholds[index]
+            alpha = 1.0 if alphas is None or alphas[index] is None else alphas[index]
             node = self.root
             # If has customized score using the customized token score, otherwise
             # using the default score
@@ -392,6 +422,7 @@ class ContextGraph:
                 token_score = self._get_token_score(
                     depth=depth, uniform_weights=uniform_weights, context_score=context_score
                 )
+                token_score *= alpha  # bake per-phrase alpha into the whole per-token score
                 # distribute weight between sub-chains (chars)
                 # cur_len is (canonical) BPE token length (num elementary tokens/chars)
                 probs = _softmax(np.asarray([(p + 1) ** var_bpe_scoring_temp for p in range(cur_token_len)]))
@@ -429,6 +460,7 @@ class ContextGraph:
                         phrase=phrase if is_end else "",
                         ac_threshold=threshold if is_end else 0.0,
                         is_primary=node_is_on_primary_path[i],
+                        phrase_alpha=alpha if is_end else 1.0,
                     )
                     node.next[token] = next_node
                     node.primary_next[token] = next_node
@@ -455,6 +487,7 @@ class ContextGraph:
                     if i == len(tokens_with_merges) - 1:
                         next_node.phrase = phrase
                         next_node.ac_threshold = threshold
+                        next_node.phrase_alpha = max(alpha, next_node.phrase_alpha)
                 if node_is_on_primary_path[i]:
                     # fix node score if necessary
                     ctx_node_score = cur_nodes[-primary_path_back_jumps[i]].node_score + primary_context_scores[i]

@@ -1,4 +1,5 @@
-# Copyright (c) 2023, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -69,7 +70,7 @@ class InterCTCMixin:
             self.propagate_model_guid()
         else:
             logging.warning(
-                f"Not able to propagate model_guid to the submodules. Make sure to call self.propagate_model_guid() in ModelPT class."
+                "Not able to propagate model_guid to the submodules. Make sure to call self.propagate_model_guid() in ModelPT class."
             )
 
     def setup_interctc(self, decoder_name, loss_name, wer_name):

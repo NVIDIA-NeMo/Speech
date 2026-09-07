@@ -1,4 +1,5 @@
-# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -959,7 +960,7 @@ class EncDecDenoiseMaskedTokenPredModel(EncDecMaskedTokenPredModel):
                 length=input_signal_length,
             )
 
-        ### Following code snipet is not used but kept for future reference
+        # Following code snipet is not used but kept for future reference
         #
         # has_noise_signal = noise_signal is not None and noise_signal_length is not None
         # has_processed_noise_signal = processed_noise_signal is not None and processed_noise_signal_length is not None

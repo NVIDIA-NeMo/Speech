@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,8 +21,8 @@ __all__ = ['GlobalAverageLossMetric']
 
 class GlobalAverageLossMetric(Metric):
     """
-    This class is for averaging loss across multiple processes if a distributed backend is used. True average is
-    computed not running average. It does not accumulate gradients so the averaged loss cannot be used for optimization.
+    This class averages loss across multiple processes if a distributed backend is used. It computes the true average,
+    not a running average. It does not accumulate gradients, so the averaged loss cannot be used for optimization.
     If ``take_avg_loss`` is ``True``, the :meth:`update` method ``loss`` argument has to be a mean loss. If
     ``take_avg_loss`` is ``False`` then the :meth:`update` method ``loss`` argument has to be a sum of losses.
 
@@ -54,8 +55,8 @@ class GlobalAverageLossMetric(Metric):
         Args:
             loss: A float zero dimensional ``torch.Tensor`` which is either sum or average of losses for processed
                 examples. See ``take_avg_loss`` parameter of :meth:`__init__`.
-            num_measurements: An integer zero dimensional ``torch.Tensor`` which contains a number of loss measurements.
-                The sum or mean of the results of these measurements are in the ``loss`` parameter.
+            num_measurements: An integer zero dimensional ``torch.Tensor`` which contains the number of loss
+                measurements. The sum or mean of these measurements is in the ``loss`` parameter.
         """
         if self.take_avg_loss:
             self.loss_sum += loss.detach() * num_measurements

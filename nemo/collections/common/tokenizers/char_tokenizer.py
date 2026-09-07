@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -28,6 +29,8 @@ NUMBER_OF_CHARACTERS_READ_BUFFER_SIZE = 10**7
 
 
 class SpecialTokenString(Enum):
+    """String wrapper that marks a tokenizer special token."""
+
     MASK = 'mask'
     BOS = 'bos'
     EOS = 'eos'
@@ -45,28 +48,28 @@ SpecialTokenStringType = NewType('SpecialTokenString', SpecialTokenString)
 
 
 class CharTokenizer(TokenizerSpec):
-    rf"""
+    r"""
     Each character is a token.
     Args:
-        vocab_file: path to file with vocabulary for a tokenizer. The file consists of valid Python string literals 
-            separated by the new line character. Such literals must contain 1 character. Examples of valid Python 
+        vocab_file: path to file with vocabulary for a tokenizer. The file consists of valid Python string literals
+            separated by the new line character. Such literals must contain 1 character. Examples of valid Python
             literals: ``'a'``, ``'\n'``, ``"'"``, ``'ж'``, ``'\u8976'``. Optionally the first line in the file can be a
             JSON dictionary of special tokens. The keys of the special tokens dictionary are ``'mask_token'``,
             ``'bos_token'`` and so on. Some special tokens names can be omitted in the special tokens dictionary line.
             A file ``vocab_file`` has to be in ``'utf-8'`` encoding.
         mask_token: mask token. The following is applicable to all special tokens. Parameter ``mask_token`` is used
             for adding mask token to vocabulary or for modification of mask token present in special tokens dictionary
-            in the first line of file ``vocab_file``. Parameter ``mask_token`` can be either of type ``bool`` or a 
-            ``str`` of length 1. 
-            
+            in the first line of file ``vocab_file``. Parameter ``mask_token`` can be either of type ``bool`` or a
+            ``str`` of length 1.
+
             If ``mask_token`` is ``bool`` it has to be ``False``. If ``mask_token`` is ``True`` an exception is raised.
             If ``mask_token`` is ``False`` and ``mask_token`` is present in special tokens dictionary in vocabulary
             file ``vocab_file``, then ``mask_token`` is remove from special tokens dictionary.
-            
+
             If the parameter ``mask_token`` is a string, then such strings in the input sequence are interpreted as
             mask tokens.
         bos_token: the beginning of sequence token. See more in ``mask_token`` parameter description.
-        eos_token: the end of sequence token. Usually equal to sep_token. See more in ``mask_token`` parameter 
+        eos_token: the end of sequence token. Usually equal to sep_token. See more in ``mask_token`` parameter
             description.
         pad_token: token to use for padding. See more in ``mask_token`` parameter description.
         sep_token: token used for separating sequences. See more in ``mask_token`` parameter description.
@@ -77,13 +80,13 @@ class CharTokenizer(TokenizerSpec):
             then unknown tokens are discarded. See more in ``mask_token`` parameter description.
         special_token_to_prepend: special token to prepend to the output of ``text_to_ids`` of ``text_to_tokens``
             methods. This option can be used if you decide to add EOS and BOS tokens to the input on the stage of
-            tokenization. Possible options are: {[None] + [e.value for e in SpecialTokenString]}.
+            tokenization. Possible options are: None, mask, bos, eos, pad, sep, cls, and unk.
         special_token_to_append: special token to append to the output of ``text_to_ids`` of ``text_to_tokens``
             methods. See more in the description of ``special_token_to_prepend`` parameter.
         special_tokens_to_remove_while_decoding: which special tokens are remove before detokenization. If this
             parameter equals ``'all'``, then all special tokens are removed. The parameter
-            ``special_tokens_to_remove_while_decoding`` can also be a list of values from this set
-            {set(e.value for e in SpecialTokenString)}.
+            ``special_tokens_to_remove_while_decoding`` can also be a list containing mask, bos, eos, pad, sep, cls,
+            or unk.
     """
 
     def __init__(
@@ -153,6 +156,7 @@ class CharTokenizer(TokenizerSpec):
 
     @classmethod
     def check_special_tokens_dict_from_file(cls, special_tokens_dict, vocab_file):
+        """Validate special tokens against a vocabulary file."""
         for k, v in special_tokens_dict.items():
             if k[-6:] != '_token' or not SpecialTokenString.has_value(k[:-6]):
                 raise ValueError(
@@ -175,6 +179,7 @@ class CharTokenizer(TokenizerSpec):
 
     @staticmethod
     def check_special_tokens_dict_for_duplicate_values(special_tokens_dict, err_msg_prefix):
+        """Reject duplicate values in a special-token mapping."""
         if len(special_tokens_dict) != len(set(special_tokens_dict.values())):
             tokens_with_equal_values = []
             duplicate_values = []
@@ -192,9 +197,7 @@ class CharTokenizer(TokenizerSpec):
                 dup_values_msg = '. '.join(
                     [f"Tokens {t} have value '{v}'" for t, v in zip(tokens_with_equal_values, duplicate_values)]
                 )
-                raise ValueError(
-                    err_msg_prefix + f" special tokens dictionary has duplicate values. " + dup_values_msg
-                )
+                raise ValueError(err_msg_prefix + " special tokens dictionary has duplicate values. " + dup_values_msg)
 
     @classmethod
     def update_special_tokens_dict(
@@ -208,6 +211,7 @@ class CharTokenizer(TokenizerSpec):
         cls_token: Optional[Union[str, bool]] = None,
         unk_token: Optional[Union[str, bool]] = None,
     ):
+        """Merge explicitly configured tokens into a special-token mapping."""
         special_tokens_dict = init_special_tokens_dict.copy()
         for value, name in zip(
             [pad_token, unk_token, bos_token, eos_token, sep_token, mask_token, cls_token],
@@ -264,6 +268,7 @@ class CharTokenizer(TokenizerSpec):
 
     @staticmethod
     def check_special_tokens_to_remove_while_decoding(special_tokens_to_remove_while_decoding, special_tokens_dict):
+        """Validate the special tokens removed during decoding."""
         if isinstance(special_tokens_to_remove_while_decoding, list):
             for i, value in enumerate(special_tokens_to_remove_while_decoding):
                 if not SpecialTokenString.has_value(value):
@@ -275,7 +280,8 @@ class CharTokenizer(TokenizerSpec):
                 elif value + '_token' not in special_tokens_dict:
                     raise ValueError(
                         f"You should provide `{value + '_token'}` parameter to `CharTokenizer` constructor if "
-                        f"you wish to pass token {repr(value)} in parameter `special_tokens_to_remove_while_decoding`. "
+                        f"you wish to pass token {repr(value)} in parameter "
+                        "`special_tokens_to_remove_while_decoding`. "
                         f"`{value + '_token'}` was detected in position {i} in "
                         f"`special_tokens_to_remove_while_decoding`."
                     )
@@ -383,6 +389,7 @@ class CharTokenizer(TokenizerSpec):
         cls_token: Optional[str] = None,
         unk_token: Optional[str] = None,
     ):
+        """Create a mapping from special-token roles to token strings."""
         special_tokens_dict = {}
         for value, name in zip(
             [pad_token, unk_token, bos_token, eos_token, sep_token, mask_token, cls_token],
@@ -423,15 +430,16 @@ class CharTokenizer(TokenizerSpec):
 
     @staticmethod
     def check_text_and_text_file_name(text, text_file_name):
+        """Validate mutually exclusive inline-text and text-file inputs."""
         if text is None and text_file_name is None:
             raise ValueError(
-                f'Exactly one of parameters `text` and `text_file_name` should be provided whereas both parameters '
-                f'are `None`.'
+                'Exactly one of parameters `text` and `text_file_name` should be provided whereas both parameters '
+                'are `None`.'
             )
         if text is not None and text_file_name is not None:
             raise ValueError(
-                f"Exactly one of parameters `text` and `text_file_name` has to be provided, whereas both parameters "
-                f"are not `None`."
+                "Exactly one of parameters `text` and `text_file_name` has to be provided, whereas both parameters "
+                "are not `None`."
             )
         if text is not None:
             if not isinstance(text, str):
@@ -469,13 +477,13 @@ class CharTokenizer(TokenizerSpec):
         Other lines in created vocabulary file are Python string literals containing one character each.
 
         Args:
-            save_path: path to the output text file. If ``save_path`` parent directory does not exist it will be created
+            save_path: Path to the output text file. Its parent directory is created if it does not exist.
             text: string which characters are used for vocabulary creation.
             text_file_name: path to a file which characters are used for vocabulary creation. Use this parameter if
                 the text in file is too large to be loaded in memory.
             characters_to_exclude: a list of characters which will not be added to vocabulary.
-            vocab_size: vocabulary size. If this parameter is set only most frequent ``vocab_size`` characters are added
-                to vocabulary.
+            vocab_size: Vocabulary size. If set, only the most frequent ``vocab_size`` characters are added to the
+                vocabulary.
             mask_token: mask token
             bos_token: the beginning of sequence token
             eos_token: the end of sequence token. Usually equal to sep_token.

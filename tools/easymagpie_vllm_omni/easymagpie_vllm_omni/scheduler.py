@@ -1,4 +1,5 @@
-# Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,6 +20,7 @@ Configure it on a single-stage deployment with::
 """
 from __future__ import annotations
 
+import copy
 import threading
 from types import MethodType
 
@@ -64,6 +66,35 @@ class EasyMagpieARAsyncScheduler(OmniARAsyncScheduler):
     branch), then drop this override.
     """
 
+    def add_request(self, request: Request) -> None:
+        session = self.requests.get(request.request_id)
+        if (
+            session is not None
+            and session.status == RequestStatus.WAITING_FOR_STREAMING_REQ
+            and session.resumable
+            and not request.resumable
+            and self.chunk_transfer_adapter is not None
+        ):
+            # TODO(vLLM/vLLM-Omni upstream): a final non-resumable update
+            # received while the existing session is already waiting is turned
+            # directly into FINISHED_ABORTED by Scheduler.add_request(). That
+            # bypasses the Stage-0 output path, so async-chunk never publishes
+            # its terminal payload and every downstream stage waits forever.
+            # Upstream must publish terminal connector state before freeing the
+            # waiting session; remove this bridge once it does. A shallow copy
+            # lets the sender observe a terminal Request without mutating the
+            # live session before vLLM performs its normal final-update cleanup.
+            terminal_request = copy.copy(session)
+            terminal_request.resumable = False
+            terminal_request.status = RequestStatus.FINISHED_STOPPED
+            self.chunk_transfer_adapter.save_async(
+                multimodal_output=None,
+                request=terminal_request,
+                is_segment_finished=False,
+            )
+
+        super().add_request(request)
+
     def _update_request_with_output(self, request: Request, new_token_ids):
         new_token_ids, stopped = super()._update_request_with_output(request, new_token_ids)
         if stopped:
@@ -89,6 +120,9 @@ class EasyMagpieARAsyncScheduler(OmniARAsyncScheduler):
                     request.async_tokens_to_discard = snap
                     if snap > 0:
                         request.num_computed_tokens -= snap
+                request_id = getattr(request, "request_id", None)
+                if request_id is not None and not getattr(request, "resumable", False):
+                    _set_segment_finished(outputs, request_id, False)
         finally:
             self._emp_stopped_this_step = None
         return outputs
@@ -146,6 +180,16 @@ def _codec_payload_frames(info, num_quantizers: int) -> int:
     raise ValueError(f"invalid native codec payload shape: {tuple(audio.shape)}")
 
 
+def _set_segment_finished(outputs, request_id: str, value: bool) -> None:
+    """Set the streaming-boundary bit on one scheduler output."""
+    if not isinstance(outputs, dict):
+        return
+    for client_outputs in outputs.values():
+        for output in getattr(client_outputs, "outputs", ()):
+            if getattr(output, "request_id", None) == request_id:
+                output.is_segment_finished = value
+
+
 def _poll_native_codec_chunk_unlocked(adapter: OmniChunkTransferAdapter, request: Request) -> bool:
     """Receive a chunk without resetting the vLLM state-cache position."""
     old_num_computed_tokens = request.num_computed_tokens
@@ -156,12 +200,23 @@ def _poll_native_codec_chunk_unlocked(adapter: OmniChunkTransferAdapter, request
 
     received = OmniChunkTransferAdapter._poll_single_request(adapter, request)
     if not received:
+        segment_boundary_received = request.request_id in adapter.segment_finished_requests
         request.prompt_token_ids = old_prompt
         request._all_token_ids[:] = old_all_token_ids
         request.num_prompt_tokens = len(old_prompt)
         request.num_computed_tokens = old_num_computed_tokens
         request.update_block_hashes()
-        return False
+
+        # TODO(vLLM-Omni upstream): `_poll_single_request()` consumes an empty
+        # `is_segment_finished` payload, records the boundary, and then returns
+        # False before publishing scheduler readiness through
+        # `_finished_load_reqs`. This leaves Stage 1 parked in
+        # WAITING_FOR_CHUNK forever. Upstream should treat
+        # `payload_segment_finished` like `payload_finished` in its early-return
+        # condition; remove this private-state bridge once that fix is available.
+        if segment_boundary_received:
+            adapter._finished_load_reqs.add(request.request_id)
+        return segment_boundary_received
 
     frames = _codec_payload_frames(request.additional_information, adapter._easymagpie_num_quantizers)
     placeholders = [0] * frames
@@ -179,6 +234,16 @@ def _poll_native_codec_chunk(adapter: OmniChunkTransferAdapter, request: Request
         return _poll_native_codec_chunk_unlocked(adapter, request)
 
 
+def _codec_segment_resets_state(request: Request) -> bool:
+    """Whether the completed Stage-1 segment is a dialogue utterance boundary."""
+    payload = getattr(request, "additional_information", None)
+    meta = payload.get("meta", {}) if isinstance(payload, dict) else {}
+    codec_streaming = meta.get("codec_streaming") if isinstance(meta, dict) else None
+    if isinstance(codec_streaming, torch.Tensor):
+        return codec_streaming.numel() == 1 and not bool(codec_streaming.item())
+    return codec_streaming is False
+
+
 class EasyMagpieCodecScheduler(OmniGenerationScheduler):
     """Keep each Stage-1 stream on one append-only native vLLM request."""
 
@@ -194,9 +259,10 @@ class EasyMagpieCodecScheduler(OmniGenerationScheduler):
         adapter._easymagpie_chunk_lock = threading.Lock()
         adapter._easymagpie_num_quantizers = num_quantizers
         adapter._poll_single_request = MethodType(_poll_native_codec_chunk, adapter)
+        self._easymagpie_reset_on_update: set[str] = set()
 
     def _update_request_as_session(self, session: Request, update: StreamingUpdate) -> None:
-        """Resume connector polling without resetting the stateful codec.
+        """Resume a text chunk, or reset Stage 1 for a new dialogue reply.
 
         Every incremental text update prewarms downstream stages again. vLLM
         turns the duplicate Stage-1 request into a streaming update, but the
@@ -205,6 +271,12 @@ class EasyMagpieCodecScheduler(OmniGenerationScheduler):
         codec input; it only signals that another upstream segment is coming.
         Keep the append-only prompt position and vLLM-managed codec state intact.
         """
+        reset_on_update = getattr(self, "_easymagpie_reset_on_update", set())
+        if session.request_id in reset_on_update:
+            reset_on_update.discard(session.request_id)
+            self.chunk_transfer_adapter.segment_finished_requests.discard(session.request_id)
+            return super()._update_request_as_session(session, update)
+
         prompt_token_ids = session.prompt_token_ids
         all_token_ids = list(session._all_token_ids)
         num_prompt_tokens = session.num_prompt_tokens
@@ -221,10 +293,35 @@ class EasyMagpieCodecScheduler(OmniGenerationScheduler):
         session.update_block_hashes()
 
     def _handle_stopped_request(self, request: Request) -> bool:
+        adapter = self.chunk_transfer_adapter
+        segment_boundary = request.request_id in adapter.segment_finished_requests
+        reset_codec = _codec_segment_resets_state(request)
+        if reset_codec:
+            # Arm the reset before the base handler consumes a queued update;
+            # it calls our _update_request_as_session override synchronously.
+            self._easymagpie_reset_on_update.add(request.request_id)
+
         finished = super()._handle_stopped_request(request)
-        stopped_sessions = getattr(self, "_easymagpie_stopped_sessions", None)
-        if not finished and stopped_sessions is not None:
-            stopped_sessions.append(request)
+        if finished:
+            self._easymagpie_reset_on_update.discard(request.request_id)
+        else:
+            segment_requests = getattr(self, "_easymagpie_segment_requests", None)
+            if segment_requests is not None:
+                segment_requests.add(request.request_id)
+            if not reset_codec:
+                stopped_sessions = getattr(self, "_easymagpie_stopped_sessions", None)
+                if stopped_sessions is not None:
+                    stopped_sessions.append(request)
+
+        if segment_boundary:
+            # TODO(vLLM-Omni upstream): metadata-only boundaries become ready
+            # without scheduling tokens, so the adapter never consumes these
+            # readiness entries. Clear them exactly when Stage 1 consumes the
+            # boundary; otherwise the next turn schedules its prewarm token
+            # against the previous codec payload.
+            adapter.segment_finished_requests.discard(request.request_id)
+            adapter._finished_load_reqs.discard(request.request_id)
+            adapter.requests_with_ready_chunks.discard(request.request_id)
         return finished
 
     def _resume_codec_after_segment(self, session: Request) -> None:
@@ -251,12 +348,16 @@ class EasyMagpieCodecScheduler(OmniGenerationScheduler):
         # has emitted the finish and removed them. Their next codec frames are
         # then scheduled as cached tokens against the same state pages.
         self._easymagpie_stopped_sessions = []
+        self._easymagpie_segment_requests = set()
         try:
             outputs = super().update_from_output(scheduler_output, model_runner_output)
+            for request_id in self._easymagpie_segment_requests:
+                _set_segment_finished(outputs, request_id, True)
             for session in self._easymagpie_stopped_sessions:
                 self._resume_codec_after_segment(session)
         finally:
             self._easymagpie_stopped_sessions = None
+            self._easymagpie_segment_requests = None
         return outputs
 
     def schedule(self, *args, **kwargs):

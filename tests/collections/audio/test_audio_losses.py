@@ -1,4 +1,5 @@
-# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -1085,9 +1086,12 @@ class TestAudioLosses:
 
         GOLDEN_VALUES = [
             ((1, 0, 0, True, True), 80.0),
-            ((0, 1, 0, True, True), 1.9749),
+            # asr-only and combined golden values recomputed after fixing forward()'s
+            # estimate/target routing into asr_loss (see CombinedLoss.forward); sisnr and
+            # spectral losses are unaffected because both are symmetric under that swap.
+            ((0, 1, 0, True, True), 1.9083),
             ((0, 0, 1, True, True), 19.2192),
-            ((1, 1, 1, True, True), 101.1941),
+            ((1, 1, 1, True, True), 101.1275),
         ]
         batch_size = 16
 
@@ -1118,3 +1122,51 @@ class TestAudioLosses:
             loss = loss_instance.forward(estimate=estimate, target=input_data).cpu()
 
             assert np.allclose(loss, golden, atol=ATOL)
+
+    @pytest.mark.unit
+    def test_maxine_combined_loss_asr_routing(self):
+        """Regression test for CombinedLoss.forward argument routing.
+
+        `estimate` (the model's own output) must be the signal passed as the
+        `predicted_audio` argument of `asr_loss`, and `target` (the ground-truth
+        reference) must be passed as `primary_audio`. A lightweight stand-in
+        replaces the real ASR model so this test needs neither network access
+        nor a downloaded checkpoint.
+        """
+        loss_fn = CombinedLoss(
+            sample_rate=16000,
+            fft_length=64,
+            hop_length=16,
+            num_mels=8,
+            sisnr_loss_weight=0.0,
+            spectral_loss_weight=0.0,
+            asr_loss_weight=1.0,
+            use_asr_loss=False,  # avoid downloading the real ASR checkpoint in __init__
+            use_mel_spec=False,
+        )
+        # `asr_loss` indexes `next(self.parameters())`, so register a dummy parameter.
+        loss_fn.dummy_param = torch.nn.Parameter(torch.zeros(1))
+        loss_fn.use_asr_loss = True
+
+        recorded = {}
+
+        def fake_asr_loss(self, predicted_audio, primary_audio):
+            recorded['predicted_audio'] = predicted_audio.clone()
+            recorded['primary_audio'] = primary_audio.clone()
+            return torch.tensor(0.0)
+
+        loss_fn.asr_loss = fake_asr_loss.__get__(loss_fn, CombinedLoss)
+
+        torch.manual_seed(0)
+        batch_size, num_channels, num_samples = 2, 1, 320
+        estimate = torch.randn(batch_size, num_channels, num_samples)
+        target = torch.randn(batch_size, num_channels, num_samples) + 5.0
+
+        loss_fn.forward(estimate=estimate, target=target)
+
+        assert torch.equal(
+            recorded['predicted_audio'], estimate
+        ), "asr_loss's `predicted_audio` argument must receive the model estimate, not the target signal"
+        assert torch.equal(
+            recorded['primary_audio'], target
+        ), "asr_loss's `primary_audio` argument must receive the ground-truth target, not the estimate signal"

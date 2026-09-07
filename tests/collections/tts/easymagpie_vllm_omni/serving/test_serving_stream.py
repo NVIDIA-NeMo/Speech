@@ -1,4 +1,5 @@
-# Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -112,6 +113,7 @@ async def test_http_adapter_folds_four_text_positions_into_prefill():
     request = SimpleNamespace(
         input="hello",
         voice="eng",
+        ref_audio=None,
         extra_params=None,
     )
 
@@ -127,6 +129,71 @@ async def test_http_adapter_folds_four_text_positions_into_prefill():
     assert info["text_tokens"] == [10, 11, 12, 13, 14, 99]
     assert info["prefill_text_tokens"] == [10, 11, 12, 13]
     assert info["text_prefill_num"] == 4
+
+
+@pytest.mark.asyncio
+async def test_http_adapter_builds_zero_shot_prompt_from_reference_audio():
+    class FakeServer:
+        @staticmethod
+        def _validate_ref_audio_format(ref_audio):
+            return None
+
+        @staticmethod
+        async def _resolve_ref_audio(ref_audio):
+            assert ref_audio == "data:audio/wav;base64,AAAA"
+            return [0.25, -0.5], 16000
+
+    adapter = _build_adapter_cls()(SimpleNamespace(engine_client=None, server=FakeServer()))
+    adapter._arch = lambda: SimpleNamespace(
+        num_task_embeddings=1,
+        audio_input_token_id=7,
+        codec_input_sample_rate=16000,
+        ensure_reference_audio_available=lambda: None,
+    )
+    adapter._text_stream_metadata = lambda: (99, 3)
+    adapter._model_tokenizer = lambda: SimpleNamespace(encode=lambda *_args, **_kwargs: [10, 11, 12, 13])
+    adapter._tokenize = lambda: lambda _text: [20, 21]
+    request = SimpleNamespace(
+        input="hello",
+        voice=None,
+        ref_audio="data:audio/wav;base64,AAAA",
+        extra_params={"context_text": "[EN]"},
+    )
+
+    assert adapter.validate(request) is None
+    prepared = await adapter.build(request, sampling_params_list=[], has_inline_ref_audio=True)
+
+    assert prepared.prompt == {
+        "prompt_token_ids": [0, 7, 0, 0, 0, 0, 0],
+        "multi_modal_data": {"audio": [([0.25, -0.5], 16000)]},
+        "additional_information": {
+            "context_text": "[EN]",
+            "text_tokens": [10, 11, 12, 13, 99],
+            "prefill_text_tokens": [10, 11, 12],
+            "text_prefill_num": 3,
+            "temperature": 0.7,
+            "top_k": 80,
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    ("voice", "ref_audio", "error"),
+    [
+        ("eng", "data:audio/wav;base64,AAAA", "mutually exclusive"),
+        (None, ["data:audio/wav;base64,AAAA"], "single reference"),
+    ],
+)
+def test_http_adapter_rejects_ambiguous_or_multiple_reference_audio(voice, ref_audio, error):
+    adapter = _build_adapter_cls()(
+        SimpleNamespace(
+            engine_client=None,
+            server=SimpleNamespace(_validate_ref_audio_format=lambda _ref_audio: None),
+        )
+    )
+    request = SimpleNamespace(input="hello", voice=voice, ref_audio=ref_audio, extra_params=None)
+
+    assert error in adapter.validate(request)
 
 
 def test_adapter_treats_null_text_eos_as_legacy_vocab_offset():

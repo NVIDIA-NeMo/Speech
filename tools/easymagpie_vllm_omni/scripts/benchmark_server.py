@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,6 +25,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import base64
+import io
 import random
 import time
 import wave
@@ -63,12 +66,15 @@ def _do_request(task: dict) -> RequestResult:
     uttid = task["uttid"]
     payload = {
         "input": task["text"],
-        "voice": task["speaker_id"] or "eng",
         "response_format": "pcm",
         "stream": True,
         "stream_format": "audio",
         "max_new_tokens": task["max_new_tokens"],
     }
+    if task.get("ref_audio") is not None:
+        payload["ref_audio"] = task["ref_audio"]
+    else:
+        payload["voice"] = task["speaker_id"] or "eng"
 
     t0 = time.perf_counter()
     t_first: float | None = None
@@ -135,7 +141,18 @@ def _load_items(text_file: str) -> list[tuple[str, str]]:
     return items
 
 
-def _make_tasks(items, n, url, speaker_id, max_new_tokens, sample_rate, timeout, output_dir) -> list[dict]:
+def _make_tasks(
+    items,
+    n,
+    url,
+    speaker_id,
+    max_new_tokens,
+    sample_rate,
+    timeout,
+    output_dir,
+    reference_audio=None,
+    randomize_reference_audio=False,
+) -> list[dict]:
     selected_items = random.sample(items, n) if n <= len(items) else random.choices(items, k=n)
     tasks = []
     for uttid, text in selected_items:
@@ -149,9 +166,41 @@ def _make_tasks(items, n, url, speaker_id, max_new_tokens, sample_rate, timeout,
                 "sample_rate": sample_rate,
                 "timeout": timeout,
                 "output_dir": output_dir,
+                "ref_audio": (
+                    _reference_audio_data_url(reference_audio, randomize_reference_audio)
+                    if reference_audio is not None
+                    else None
+                ),
             }
         )
     return tasks
+
+
+def _reference_audio_data_url(path: str | Path, randomize: bool) -> str:
+    """Encode a WAV reference, optionally perturbing two PCM16 samples."""
+    path = Path(path).expanduser()
+    if not randomize:
+        audio = path.read_bytes()
+    else:
+        with wave.open(str(path), "rb") as wf:
+            if wf.getcomptype() != "NONE" or wf.getsampwidth() != 2:
+                raise ValueError("Reference randomization requires an uncompressed PCM16 WAV")
+            params = wf.getparams()
+            samples = np.frombuffer(wf.readframes(wf.getnframes()), dtype="<i2").copy()
+        if samples.size == 0:
+            raise ValueError("Reference audio is empty")
+        for index in random.sample(range(samples.size), min(2, samples.size)):
+            step = random.choice((-1, 1))
+            value = int(samples[index])
+            if value + step < np.iinfo(np.int16).min or value + step > np.iinfo(np.int16).max:
+                step = -step
+            samples[index] = value + step
+        buffer = io.BytesIO()
+        with wave.open(buffer, "wb") as wf:
+            wf.setparams(params)
+            wf.writeframes(samples.tobytes())
+        audio = buffer.getvalue()
+    return f"data:audio/wav;base64,{base64.b64encode(audio).decode()}"
 
 
 def _run_level(tasks: list[dict], concurrency: int, output_dir: str | None) -> tuple[list[RequestResult], float]:
@@ -335,13 +384,22 @@ def main() -> None:
     parser.add_argument("-n", "--num-requests", type=int, required=True, help="Requests per concurrency level")
     parser.add_argument("-c", "--concurrency", type=int, nargs="+", default=[4], help="Concurrency (process) levels")
     parser.add_argument("--url", default="http://localhost:8091", help="Server base URL (default: %(default)s)")
-    parser.add_argument("--speaker-id", default=None, help="Speaker id (default: server default)")
+    conditioning = parser.add_mutually_exclusive_group()
+    conditioning.add_argument("--speaker-id", default=None, help="Speaker id (default: server default)")
+    conditioning.add_argument("--reference-audio", help="WAV reference for zero-shot synthesis")
+    parser.add_argument(
+        "--randomize-reference-audio",
+        action="store_true",
+        help="Perturb the reference for every request to bypass audio caches",
+    )
     parser.add_argument("--max-new-tokens", type=int, default=1024)
     parser.add_argument("--sample-rate", type=int, default=22050, help="Raw PCM sample rate (default: %(default)s)")
     parser.add_argument("--timeout", type=float, default=300, help="Per-request timeout, s (default: 300)")
     parser.add_argument("--no-warmup", action="store_true", help="Skip warmup phase (concurrency requests)")
     parser.add_argument("--output-dir", default=None, help="If set, write each waveform to <output-dir>/<uttid>.wav")
     args = parser.parse_args()
+    if args.randomize_reference_audio and args.reference_audio is None:
+        parser.error("--randomize-reference-audio requires --reference-audio")
 
     items = _load_items(args.text_file)
     if not items:
@@ -369,6 +427,8 @@ def main() -> None:
                 args.sample_rate,
                 args.timeout,
                 None,
+                reference_audio=args.reference_audio,
+                randomize_reference_audio=args.randomize_reference_audio,
             )
             _run_level(warmup, concurrency, None)
 
@@ -381,6 +441,8 @@ def main() -> None:
             args.sample_rate,
             args.timeout,
             output_dir,
+            reference_audio=args.reference_audio,
+            randomize_reference_audio=args.randomize_reference_audio,
         )
         results, wall = _run_level(tasks, concurrency, output_dir)
         summary = _summarize(results, wall, concurrency)

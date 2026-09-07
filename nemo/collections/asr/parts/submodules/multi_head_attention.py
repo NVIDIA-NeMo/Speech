@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -27,6 +28,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
+
+# Longformer portions:
+# Copyright 2020 The Allen Institute for AI team and The HuggingFace Inc. team.
+# Licensed under the Apache License, Version 2.0.
+# Sources: https://github.com/allenai/longformer and https://github.com/huggingface/transformers
 
 """
 Part of this code is adopted from https://github.com/espnet/espnet

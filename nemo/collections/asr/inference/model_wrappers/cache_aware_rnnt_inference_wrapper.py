@@ -94,7 +94,7 @@ class CacheAwareRNNTInferenceWrapper(CacheAwareASRInferenceWrapper):
         processed_signal_length: Tensor,
         context: CacheAwareContext,
         drop_extra_pre_encoded: int | None,
-        keep_all_outputs: bool,
+        keep_all_outputs: bool | Tensor,
         drop_left_context: int | None = None,
         valid_out_len: int | None = None,
         prompt_vectors: Tensor | None = None,
@@ -106,13 +106,17 @@ class CacheAwareRNNTInferenceWrapper(CacheAwareASRInferenceWrapper):
             processed_signal_length: (Tensor) input signal length tensor.
             context: (CacheAwareContext) context object.
             drop_extra_pre_encoded: (int | None) number of extra pre-encoded frames to drop.
-            keep_all_outputs: (bool) whether to keep all outputs or not.
+            keep_all_outputs: (bool | Tensor) whether to keep all outputs; a bool vector of shape [B]
+                keeps them per stream, which serves a batch mixing last and non-last chunks.
             drop_left_context: (int | None) number of left context frames to drop.
             valid_out_len: (int | None) number of valid output frames.
             prompt_vectors: (Tensor | None) per-stream one-hot language prompts of shape [B, num_prompts].
         Returns:
             (tuple[Tensor, Tensor, CacheAwareContext]) encoder output, encoder output lengths, and new context.
         """
+        # a boolean vector asks for a mixed batch: the encoder keeps every output and the per-stream
+        # right context is trimmed afterwards by clamping the lengths, which the decoder honours
+        per_sample_keep = isinstance(keep_all_outputs, Tensor)
         (
             encoded,
             encoded_len,
@@ -125,7 +129,7 @@ class CacheAwareRNNTInferenceWrapper(CacheAwareASRInferenceWrapper):
             cache_last_channel=context.cache_last_channel,
             cache_last_time=context.cache_last_time,
             cache_last_channel_len=context.cache_last_channel_len,
-            keep_all_outputs=keep_all_outputs,
+            keep_all_outputs=True if per_sample_keep else keep_all_outputs,
             drop_extra_pre_encoded=drop_extra_pre_encoded,
         )
         new_context = CacheAwareContext(
@@ -139,7 +143,12 @@ class CacheAwareRNNTInferenceWrapper(CacheAwareASRInferenceWrapper):
             encoded = encoded[:, :, drop_left_context:]
             encoded_len = encoded_len - drop_left_context
 
-        if valid_out_len and not keep_all_outputs:
+        if valid_out_len and per_sample_keep:
+            # drop right context per stream: the streams that are not last keep valid_out_len frames
+            encoded_len = torch.where(
+                keep_all_outputs, encoded_len, torch.full_like(encoded_len, valid_out_len)
+            )
+        elif valid_out_len and not keep_all_outputs:
             # drop right context if any
             encoded = encoded[:, :, :valid_out_len]
             encoded_len = torch.ones_like(encoded_len) * valid_out_len
@@ -158,7 +167,7 @@ class CacheAwareRNNTInferenceWrapper(CacheAwareASRInferenceWrapper):
         context: CacheAwareContext,
         previous_hypotheses: list[Hypothesis] | None,
         drop_extra_pre_encoded: int | None,
-        keep_all_outputs: bool,
+        keep_all_outputs: bool | Tensor,
         drop_left_context: int | None = None,
         valid_out_len: int | None = None,
         prompt_vectors: Tensor | None = None,
@@ -171,7 +180,8 @@ class CacheAwareRNNTInferenceWrapper(CacheAwareASRInferenceWrapper):
             context: (CacheAwareContext) context object.
             previous_hypotheses: (list[Hypothesis] | None) list of previous hypotheses for RNNT decoding.
             drop_extra_pre_encoded: (int | None) number of extra pre-encoded frames to drop.
-            keep_all_outputs: (bool) whether to keep all outputs or not.
+            keep_all_outputs: (bool | Tensor) whether to keep all outputs; a bool vector of shape [B]
+                keeps them per stream, which serves a batch mixing last and non-last chunks.
             drop_left_context: (int | None) number of left context frames to drop.
             valid_out_len: (int | None) number of valid output frames.
             prompt_vectors: (Tensor | None) Optional prompt vectors of shape [B, num_prompts].
@@ -202,7 +212,7 @@ class CacheAwareRNNTInferenceWrapper(CacheAwareASRInferenceWrapper):
         processed_signal_length: Tensor,
         context: CacheAwareContext,
         drop_extra_pre_encoded: int | None,
-        keep_all_outputs: bool,
+        keep_all_outputs: bool | Tensor,
         drop_left_context: int | None = None,
         valid_out_len: int | None = None,
         prompt_vectors: Tensor | None = None,
@@ -278,7 +288,7 @@ class CacheAwareRNNTInferenceWrapper(CacheAwareASRInferenceWrapper):
         context: CacheAwareContext = None,
         previous_hypotheses: list[Hypothesis] | None = None,
         drop_extra_pre_encoded: int | None = None,
-        keep_all_outputs: bool = False,
+        keep_all_outputs: bool | Tensor = False,
         drop_left_context: int | None = None,
         valid_out_len: int | None = None,
         prompt_vectors: Tensor | None = None,
@@ -291,7 +301,8 @@ class CacheAwareRNNTInferenceWrapper(CacheAwareASRInferenceWrapper):
             context: (CacheAwareContext) context object.
             previous_hypotheses: (list[Hypothesis] | None) list of previous hypotheses for RNNT decoding.
             drop_extra_pre_encoded: (int | None) number of extra pre-encoded frames to drop.
-            keep_all_outputs: (bool) whether to keep all outputs or not.
+            keep_all_outputs: (bool | Tensor) whether to keep all outputs; a bool vector of shape [B]
+                keeps them per stream, which serves a batch mixing last and non-last chunks.
             drop_left_context: (int | None) number of left context frames to drop.
             valid_out_len: (int | None) number of valid output frames.
             prompt_vectors: (Tensor | None) Optional prompt vectors of shape [B, num_prompts].

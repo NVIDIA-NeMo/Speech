@@ -308,7 +308,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
         context,
         previous_hypotheses: list[Hypothesis | None],
         drop_extra_pre_encoded: int,
-        keep_all_outputs: bool,
+        keep_all_outputs: bool | Tensor,
         prompt_vectors: Tensor | None,
     ) -> tuple[list[Hypothesis], object]:
         """
@@ -437,7 +437,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
         features: list[Tensor],
         right_paddings: list[int],
         ready_state_ids: set,
-        keep_all_outputs: bool = False,
+        keep_all_outputs: bool | Tensor = False,
     ) -> None:
         """
         Cache Aware Transcribe Step
@@ -456,7 +456,8 @@ class CacheAwareRNNTPipeline(BasePipeline):
             features: (list[Tensor]) List of feature buffers.
             right_paddings: (list[int] | None) List of right paddings.
             ready_state_ids: (set) Set of ready state IDs.
-            keep_all_outputs: (bool) Whether to keep all outputs or not.
+            keep_all_outputs: (bool | Tensor) Whether to keep all outputs; a bool vector of shape [B]
+                keeps them per stream, so one call can serve last and non-last chunks together.
         """
 
         feature_buffers, feature_buffer_lens = self.preprocess(features, right_paddings)
@@ -524,6 +525,24 @@ class CacheAwareRNNTPipeline(BasePipeline):
                 if eos:
                     state.reset_beam_decoding_state_()
 
+    def _keep_mask(self, is_last: list[bool]) -> bool | Tensor:
+        """
+        The keep_all_outputs argument for a batch of streams.
+
+        A batch that is all last or all non-last keeps the cheaper scalar form, which lets the encoder
+        trim the right context itself; only a mixed batch needs the per-stream vector, which is what
+        lets one call serve it instead of two.
+        Args:
+            is_last: (list[bool]) whether each stream of the batch is on its last chunk
+        Returns:
+            (bool | Tensor) scalar when the batch is uniform, otherwise a bool vector of shape [B]
+        """
+        if all(is_last):
+            return True
+        if not any(is_last):
+            return False
+        return torch.tensor(is_last, device=self.device, dtype=torch.bool)
+
     def transcribe_step_for_feature_buffers(self, fbuffers: list[FeatureBuffer]) -> None:
         """
         Transcribes the feature buffers in a streaming manner.
@@ -534,30 +553,13 @@ class CacheAwareRNNTPipeline(BasePipeline):
         """
         ready_state_ids = set()
 
-        final_fbuffers, final_features = [], []
-        nonfinal_fbuffers, nonfinal_features = [], []
-        final_right_paddings = []
+        features = [fbuffer.features for fbuffer in fbuffers]
+        right_paddings = [max(0, self.expected_feature_buffer_len - fbuffer.valid_size) for fbuffer in fbuffers]
+        is_last = [fbuffer.is_last for fbuffer in fbuffers]
 
-        for fbuffer in fbuffers:
-            feature = fbuffer.features
-            right_padding = max(0, self.expected_feature_buffer_len - fbuffer.valid_size)
-
-            if fbuffer.is_last:
-                final_fbuffers.append(fbuffer)
-                final_features.append(feature)
-                final_right_paddings.append(right_padding)
-            else:
-                nonfinal_fbuffers.append(fbuffer)
-                nonfinal_features.append(feature)
-
-        if len(nonfinal_fbuffers) > 0:
+        if len(fbuffers) > 0:
             self.cache_aware_transcribe_step(
-                nonfinal_fbuffers, nonfinal_features, None, ready_state_ids, keep_all_outputs=False
-            )
-
-        if len(final_fbuffers) > 0:
-            self.cache_aware_transcribe_step(
-                final_fbuffers, final_features, final_right_paddings, ready_state_ids, keep_all_outputs=True
+                fbuffers, features, right_paddings, ready_state_ids, keep_all_outputs=self._keep_mask(is_last)
             )
 
         if len(ready_state_ids) > 0:
@@ -580,30 +582,10 @@ class CacheAwareRNNTPipeline(BasePipeline):
 
         # streams that contains multiple frames
         if len(all_fbuffers) > 0:
-            final_frames, final_fbuffers = [], []
-            nonfinal_frames, nonfinal_fbuffers = [], []
-            final_right_paddings = []
-
-            for jdx, bfeature in enumerate(all_fbuffers):
-                bframe = frames[jdx]
-
-                if bframe.is_last:
-                    final_frames.append(bframe)
-                    final_fbuffers.append(bfeature)
-                    final_right_paddings.append(right_paddings[jdx])
-                else:
-                    nonfinal_frames.append(bframe)
-                    nonfinal_fbuffers.append(bfeature)
-
-            if len(nonfinal_frames) > 0:
-                self.cache_aware_transcribe_step(
-                    nonfinal_frames, nonfinal_fbuffers, None, ready_state_ids, keep_all_outputs=False
-                )
-
-            if len(final_frames) > 0:
-                self.cache_aware_transcribe_step(
-                    final_frames, final_fbuffers, final_right_paddings, ready_state_ids, keep_all_outputs=True
-                )
+            is_last = [frame.is_last for frame in frames]
+            self.cache_aware_transcribe_step(
+                frames, all_fbuffers, right_paddings, ready_state_ids, keep_all_outputs=self._keep_mask(is_last)
+            )
 
         # post-process the ready states
         if len(ready_state_ids) > 0:

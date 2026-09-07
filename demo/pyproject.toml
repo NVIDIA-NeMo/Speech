@@ -1,0 +1,53 @@
+[tool.poetry]
+name = "nemo-demo"
+version = "0.1.0"
+description = "Demo: TDT beam search per-stream GPU word boosting"
+authors = ["Speech Team"]
+package-mode = false
+
+[tool.poetry.dependencies]
+python = ">=3.10,<3.13"
+bewer = "*"
+torchaudio = "*"
+torch = ">=2.7.0"
+librosa = "*"
+kaldialign = "*"
+omegaconf = "*"
+lightning = ">2.2.1,<=2.4.0"
+hydra-core = ">1.3,<=1.3.2"
+transformers = "*"
+sentencepiece = "<1.0.0"
+huggingface-hub = ">=0.24"
+datasets = ">=3.2.0"
+einops = "*"
+braceexpand = "*"
+lhotse = "2.0.0a3"
+packaging = "*"
+sacrebleu = "*"
+scipy = "*"
+soundfile = "*"
+whisper-normalizer = "*"
+pandas = "*"
+wandb = "*"
+webdataset = ">=0.2.86"
+numpy = ">=1.22"
+onnx = ">=1.7.0"
+scikit-learn = "*"
+smart-open = "*"
+tensorboard = "*"
+text-unidecode = "*"
+tqdm = ">=4.41.0"
+wrapt = "*"
+aistore = "*"
+torchmetrics = ">=0.11.0"
+numba = "*"
+cuda-bindings = "*"
+
+[[tool.poetry.source]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+priority = "explicit"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

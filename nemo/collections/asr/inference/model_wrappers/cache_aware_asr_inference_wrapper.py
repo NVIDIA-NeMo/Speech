@@ -16,6 +16,7 @@
 
 from typing import Any
 
+import torch
 from torch import Tensor
 
 from nemo.collections.asr.inference.model_wrappers.asr_inference_wrapper import ASRInferenceWrapper
@@ -139,6 +140,29 @@ class CacheAwareASRInferenceWrapper(ASRInferenceWrapper):
             enabled: (bool) whether to enable CUDA graphs for the encoder streaming step.
         """
         self.asr_model.encoder.set_streaming_cuda_graphs(enabled=enabled)
+
+    def compile_encoder_layers(self) -> int:
+        """
+        Wrap each encoder layer in ``torch.compile`` so inductor fuses the layer's elementwise work.
+
+        Cache-aware streaming spends far more host time launching kernels than the device spends
+        running them, so fusing a layer into fewer, larger kernels is what shortens the step. Mode is
+        the default one, not ``reduce-overhead``: that mode replays through CUDA graphs, which this
+        pipeline deliberately does not use. Shapes are marked dynamic because the batch shrinks as
+        streams finish, and a static compile would recompile on every new width.
+
+        Compilation happens on the first call and therefore inside the warmup iteration. Fusion
+        changes the order of low-precision arithmetic, so decoded text can differ from eager in the
+        last bits; a run that must match eager exactly should not call this.
+        Returns:
+            (int) number of layers compiled.
+        """
+        layers = getattr(self.asr_model.encoder, "layers", None)
+        if layers is None:
+            return 0
+        for i, layer in enumerate(layers):
+            layers[i] = torch.compile(layer, dynamic=True)
+        return len(layers)
 
     def stream_step(self, *args, **kwargs) -> Any:
         """

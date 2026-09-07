@@ -16,6 +16,7 @@ import pytest
 import torch
 
 from nemo.collections.asr.models import ASRModel
+from nemo.collections.asr.parts.submodules.subsampling import ConvSubsampling, calc_length
 
 
 class TestASRSubsamplingConvChunking:
@@ -60,3 +61,106 @@ class TestASRSubsamplingConvChunking:
         assert diff <= 0.2
         diff = torch.mean(torch.abs(logprobs_batch4_split - logprobs_batch4_nosplit))
         assert diff <= 0.2
+
+
+class TestConvSubsamplingForwardPaths:
+    """CPU tests for ConvSubsampling paths that the chunking/splitting tests do not cover.
+
+    Covers `subsampling_conv_chunking_factor=-1` (chunking disabled), the 1-D conv
+    stacks, and ceil-mode length bookkeeping for vggnet pooling.
+    """
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    @pytest.mark.parametrize("subsampling", ["striding", "dw_striding", "vggnet"])
+    @pytest.mark.parametrize("subsampling_factor", [4, 8])
+    def test_no_chunking_forward_matches_chunked_path(self, subsampling, subsampling_factor):
+        """With chunking disabled (-1), forward must run and match the default path."""
+        torch.manual_seed(0)
+        no_chunk = ConvSubsampling(
+            subsampling=subsampling,
+            subsampling_factor=subsampling_factor,
+            feat_in=80,
+            feat_out=64,
+            conv_channels=32,
+            subsampling_conv_chunking_factor=-1,
+        ).eval()
+        default = ConvSubsampling(
+            subsampling=subsampling,
+            subsampling_factor=subsampling_factor,
+            feat_in=80,
+            feat_out=64,
+            conv_channels=32,
+        ).eval()
+        default.load_state_dict(no_chunk.state_dict())
+
+        x = torch.randn(2, 101, 80)
+        lengths = torch.tensor([101, 97])
+
+        with torch.inference_mode():
+            out, out_lengths = no_chunk(x, lengths)
+            ref_out, ref_lengths = default(x, lengths)
+
+        assert out.shape == ref_out.shape
+        assert torch.allclose(out, ref_out)
+        assert out_lengths.tolist() == ref_lengths.tolist()
+        assert bool((out_lengths <= out.shape[1]).all())
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    @pytest.mark.parametrize("subsampling", ["striding_conv1d", "dw_striding_conv1d"])
+    @pytest.mark.parametrize("subsampling_factor", [2, 4, 8])
+    def test_conv1d_stacks_forward(self, subsampling, subsampling_factor):
+        """The 1-D conv stacks must run with the default config and report calc_length lengths."""
+        module = ConvSubsampling(
+            subsampling=subsampling,
+            subsampling_factor=subsampling_factor,
+            feat_in=80,
+            feat_out=64,
+            conv_channels=32,
+        ).eval()
+
+        x = torch.randn(2, 101, 80)
+        lengths = torch.tensor([101, 97])
+
+        with torch.inference_mode():
+            out, out_lengths = module(x, lengths)
+
+        sampling_num = module._sampling_num
+        expected = calc_length(
+            lengths=lengths.to(dtype=torch.float),
+            all_paddings=module._left_padding + module._right_padding,
+            kernel_size=module._kernel_size,
+            stride=module._stride,
+            ceil_mode=module._ceil_mode,
+            repeat_num=sampling_num,
+        )
+        assert out.shape[0] == 2
+        assert out.shape[2] == 64
+        assert out_lengths.tolist() == expected.tolist()
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    @pytest.mark.parametrize("input_length", [101, 97])
+    def test_vggnet_lengths_use_ceil_mode(self, input_length):
+        """vggnet pooling runs with ceil_mode=True; reported lengths must match it."""
+        module = ConvSubsampling(
+            subsampling='vggnet', subsampling_factor=4, feat_in=80, feat_out=64, conv_channels=32
+        ).eval()
+
+        x = torch.randn(1, input_length, 80)
+        lengths = torch.tensor([input_length])
+
+        with torch.inference_mode():
+            out, out_lengths = module(x, lengths)
+
+        expected = calc_length(
+            lengths=lengths.to(dtype=torch.float),
+            all_paddings=0,
+            kernel_size=2,
+            stride=2,
+            ceil_mode=True,
+            repeat_num=2,
+        )
+        assert out.shape[1] == expected.item()
+        assert out_lengths.tolist() == expected.tolist()

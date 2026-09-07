@@ -492,7 +492,13 @@ class ConvSubsampling(torch.nn.Module):
             else:
                 x, lengths = self.conv(x, lengths)
         else:
-            x, lengths = self.conv(x)
+            if self.conv2d_subsampling:
+                # Chunking disabled (-1): run the masked conv stack directly.
+                x, lengths = self.conv(x, lengths)
+            else:
+                # 1-D conv stacks run without masking; keep the lengths computed above.
+                x = self.conv(x)
+                lengths = out_lengths
 
         # Flatten Channel and Frequency Axes
         if self.conv2d_subsampling:
@@ -725,7 +731,15 @@ class MaskedConvSequential(nn.Sequential):
     # Set by ConvSubsampling; off by default, so every other subsampling type stays on PyTorch.
     fuse_triton = False
 
-    def forward(self, x, lengths):
+    def forward(self, x, lengths=None):
+        if lengths is None:
+            # Plain pass-through, equivalent to nn.Sequential. Used by the 1-D conv
+            # stacks (striding_conv1d / dw_striding_conv1d), whose inputs are already
+            # channels-first and which do not take part in length masking.
+            for layer in self:
+                x = layer(x)
+            return x
+
         # Convert input (batch, time, features) to conv format
         x = x.unsqueeze(1)  # (batch, 1, time, features)
         current_lengths = lengths
@@ -760,10 +774,22 @@ class MaskedConvSequential(nn.Sequential):
             x = layer(x)
 
             # Update lengths for stride operations with proper padding
-            if hasattr(layer, 'stride') and layer.stride != (1, 1):
-                current_lengths = calculate_conv_output_size(
-                    current_lengths, layer.kernel_size[0], layer.stride[0], _layer_padding(layer)
-                )
+            if hasattr(layer, 'stride') and _pair_first(layer.stride) != 1:
+                kernel_size = _pair_first(layer.kernel_size)
+                stride = _pair_first(layer.stride)
+                left_pad, right_pad = _layer_padding(layer)
+                if getattr(layer, 'ceil_mode', False):
+                    # Ceil-mode pooling (e.g. vggnet's MaxPool2d) emits one extra frame
+                    # whenever the floor division drops a remainder.
+                    remainder = (current_lengths + left_pad + right_pad - kernel_size) % stride
+                    current_lengths = calculate_conv_output_size(
+                        current_lengths, kernel_size, stride, (left_pad, right_pad)
+                    )
+                    current_lengths = current_lengths + (remainder != 0).long()
+                else:
+                    current_lengths = calculate_conv_output_size(
+                        current_lengths, kernel_size, stride, (left_pad, right_pad)
+                    )
                 mask = self._create_mask(x, current_lengths.long())
 
         return x, current_lengths, mask
@@ -826,15 +852,26 @@ class MaskedConvSequential(nn.Sequential):
         return time_mask.unsqueeze(-1).expand(batch_size, time, features).to(tensor.dtype)
 
 
+def _pair_first(value):
+    """First element of an int-or-tuple kernel/stride/padding attribute.
+
+    nn.Conv2d stores tuples, but the pooling modules (nn.MaxPool2d/nn.AvgPool2d) keep
+    whatever was passed in, which ConvSubsampling passes as a plain int.
+    """
+    return value[0] if isinstance(value, tuple) else value
+
+
 def _layer_padding(layer):
     """The (start, end) padding of a convolution.
 
-    nn.Conv2d's `.padding` is (pad_h, pad_w), one value per axis and symmetric within it, so the
-    height value is both edges. CausalConv2D keeps its two edges on private attributes.
+    nn.Conv2d's `.padding` is (pad_h, pad_w), one value per axis and symmetric within it, so
+    the height value is both edges. CausalConv2D keeps its two edges on private attributes.
+    Pooling layers store an int (or an int-per-axis tuple), which is symmetric too.
     """
     if hasattr(layer, "_left_padding"):
         return layer._left_padding, layer._right_padding
-    return layer.padding[0], layer.padding[0]
+    padding = _pair_first(layer.padding)
+    return padding, padding
 
 
 def _is_depthwise(layer):

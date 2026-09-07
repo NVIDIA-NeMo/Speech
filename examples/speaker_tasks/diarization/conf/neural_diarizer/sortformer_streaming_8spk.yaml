@@ -24,7 +24,7 @@ model:
   activity_weight: 0.5  # Auxiliary activity-loss weight; 0 disables the activity head and loss.
 
   # Phantom loss suppresses confident activity in empty target channels (aka "phantom speaker").
-  phantom_weight: 0.05  # Auxiliary phantom-loss weight; 0 disables the loss.
+  phantom_weight: 0.1  # Auxiliary phantom-loss weight; 0 disables the loss.
   phantom_target: both  # Target alignment: pil, ats, or both; both requires the channel to be empty in both.
   phantom_threshold: 0.25  # Detached probability above which a frame in an empty channel is penalized.
   phantom_temperature: 0.5  # Log-mean-exp temperature; lower values emphasize the largest selected losses.
@@ -39,7 +39,7 @@ model:
   max_causal_tail_len: 222  # Upper bound on sampled tail length in encoder frames; 0 disables the augmentation.
   causal_tail_prob: 0.5  # Probability per training batch; 0 disables the augmentation.
   min_causal_tail_block_size: 1  # Inclusive lower bound for block-size sampling in encoder frames.
-  max_causal_tail_block_size: 1  # Inclusive upper bound; equal bounds fix the block size.
+  max_causal_tail_block_size: 8  # Inclusive upper bound; equal bounds fix the block size.
 
   model_defaults:
     fc_d_model: 512  # Encoder hidden dimension.

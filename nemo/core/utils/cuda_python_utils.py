@@ -256,18 +256,23 @@ def run_nvrtc(kernel_string: str, kernel_name: bytes, program_name: bytes):
     assert_drv(err)
     err, size = nvrtc.nvrtcGetProgramLogSize(prog)
     assert_drv(err)
-    buf = b" " * size
+    # NVRTC writes the log (a C string, incl. its NUL terminator) into this buffer, so it must be
+    # mutable. A `b" " * size` bytes object is immutable, and for an empty log (size == 1) CPython
+    # returns the interned, process-wide 1-byte singleton `b" "` -- writing the NUL into it would
+    # corrupt every `b" "` / `bytes([32])` / 1-byte slice in the whole process. Use a bytearray.
+    buf = bytearray(size)
     (err,) = nvrtc.nvrtcGetProgramLog(prog, buf)
     assert_drv(err)
 
     # Get PTX from compilation
     err, ptxSize = nvrtc.nvrtcGetPTXSize(prog)
     assert_drv(err)
-    ptx = b" " * ptxSize
+    # Same reasoning as the log buffer above: NVRTC writes into this buffer, so it must be mutable.
+    ptx = bytearray(ptxSize)
     (err,) = nvrtc.nvrtcGetPTX(prog, ptx)
     assert_drv(err)
 
-    ptx = np.char.array(ptx)
+    ptx = np.char.array(bytes(ptx))
     err, module = cuda.cuModuleLoadData(ptx.ctypes.data)
     assert_drv(err)
     err, kernel = cuda.cuModuleGetFunction(module, kernel_name)

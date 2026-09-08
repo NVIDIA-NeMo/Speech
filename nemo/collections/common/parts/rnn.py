@@ -276,6 +276,15 @@ class LSTMDropout(torch.nn.Module):
     def forward(
         self, x: torch.Tensor, h: Optional[Tuple[torch.Tensor, torch.Tensor]] = None
     ) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+        """
+        Run the stacked LSTM over `x`, taking the unrolled path for a single inference timestep.
+
+        Args:
+            x: (torch.Tensor) input of shape (T, B, input_size).
+            h: (tuple | None) optional initial `(h_0, c_0)`, each of shape (num_layers, B, hidden_size).
+        Returns:
+            (tuple) output of shape (T, B, hidden_size) and the final `(h_n, c_n)`.
+        """
         if not self.training and h is not None and x.shape[0] == 1 and self._single_step_supported():
             return self._single_step(x, h)
 

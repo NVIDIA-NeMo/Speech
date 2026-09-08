@@ -88,6 +88,7 @@ def _make_bucketed_sampler(
     drop_last=False,
     seed=0,
     duration_bins=(100,),
+    bucket_batch_size=None,
     concurrent=False,
 ):
     return PackedSequenceDynamicBucketingSampler(
@@ -110,6 +111,8 @@ def _make_bucketed_sampler(
             quadratic_factor=quadratic_factor,
             measure_total_length=False,
             use_packed_sequence_sampling=True,
+            bucket_duration_bins=list(duration_bins) if bucket_batch_size is not None else None,
+            bucket_batch_size=bucket_batch_size,
         ),
         duration_bins=list(duration_bins),
         buffer_size=buffer_size,
@@ -257,7 +260,7 @@ def test_best_fit_subset_is_exact_and_prefers_earlier_candidates():
     assert _select_best_fit_indices([3, 2, 2], capacity=4, max_items=1) == [0]
 
 
-def test_packed_fixed_bucket_config_preserves_regular_sampler(tmp_path):
+def test_packed_fixed_bucket_config_selects_packed_sampler_and_preserves_caps(tmp_path):
     cuts_path = tmp_path / "cuts.jsonl"
     _make_cuts().to_file(cuts_path)
     config = make_structured_with_schema_warnings(
@@ -273,6 +276,7 @@ def test_packed_fixed_bucket_config_preserves_regular_sampler(tmp_path):
                 "concurrent_bucketing": False,
                 "use_multimodal_sampling": True,
                 "pretokenize": False,
+                "batch_tokens": 10,
                 "token_equivalent_duration": 1.0,
                 "use_packed_sequence_sampling": True,
                 "seed": 0,
@@ -283,7 +287,138 @@ def test_packed_fixed_bucket_config_preserves_regular_sampler(tmp_path):
 
     sampler, _ = get_lhotse_sampler_from_config(config, global_rank=0, world_size=1, tokenizer=object())
 
+    assert type(sampler) is PackedSequenceDynamicBucketingSampler
+    assert sampler.constraint.max_examples_for_length(4) == 2
+    assert sampler.constraint.max_examples_for_length(7) == 1
+    assert sampler.constraint._internal.batch_tokens == 10
+    assert sampler.constraint.bucket_duration_bins == [5, 10]
+    assert sampler.constraint.bucket_batch_size == [2, 1]
+
+
+def test_packed_fixed_bucket_config_requires_exact_token_budget(tmp_path):
+    cuts_path = tmp_path / "cuts.jsonl"
+    _make_cuts().to_file(cuts_path)
+    config = make_structured_with_schema_warnings(
+        OmegaConf.create(
+            {
+                "cuts_path": str(cuts_path),
+                "bucket_duration_bins": [5, 10],
+                "bucket_batch_size": [2, 1],
+                "use_multimodal_sampling": True,
+                "pretokenize": False,
+                "token_equivalent_duration": 1.0,
+                "use_packed_sequence_sampling": True,
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="Packed per-bucket caps require batch_tokens"):
+        get_lhotse_sampler_from_config(config, global_rank=0, world_size=1, tokenizer=object())
+
+
+def test_packed_two_dimensional_fixed_buckets_preserve_legacy_sampler(tmp_path):
+    cuts_path = tmp_path / "cuts.jsonl"
+    _make_cuts().to_file(cuts_path)
+    config = make_structured_with_schema_warnings(
+        OmegaConf.create(
+            {
+                "cuts_path": str(cuts_path),
+                "bucket_duration_bins": [[5, 10], [10, 20]],
+                "bucket_batch_size": [2, 1],
+                "use_multimodal_sampling": True,
+                "pretokenize": False,
+                "batch_tokens": 10,
+                "token_equivalent_duration": 1.0,
+                "use_packed_sequence_sampling": True,
+            }
+        )
+    )
+
+    sampler, _ = get_lhotse_sampler_from_config(config, global_rank=0, world_size=1, tokenizer=object())
+
     assert type(sampler) is DynamicBucketingSampler
+
+
+def test_packed_fixed_buckets_filter_examples_above_highest_boundary(tmp_path):
+    cuts_path = tmp_path / "cuts.jsonl"
+    _make_cuts((4.0, 11.0)).to_file(cuts_path)
+    config = make_structured_with_schema_warnings(
+        OmegaConf.create(
+            {
+                "cuts_path": str(cuts_path),
+                "force_finite": True,
+                "shuffle": False,
+                "num_workers": 0,
+                "use_bucketing": True,
+                "bucket_duration_bins": [5, 10],
+                "bucket_batch_size": [2, 1],
+                "concurrent_bucketing": False,
+                "use_multimodal_sampling": True,
+                "pretokenize": False,
+                "batch_tokens": 12,
+                "token_equivalent_duration": 1.0,
+                "audio_token_estimator": {
+                    "preprocessor": {
+                        "n_fft": 16000,
+                        "hop_length": 16000,
+                        "stft_pad_amount": 8000,
+                    },
+                    "subsampling": [],
+                },
+                "use_packed_sequence_sampling": True,
+                "seed": 0,
+                "shard_seed": 0,
+            }
+        )
+    )
+    sampler, _ = get_lhotse_sampler_from_config(config, global_rank=0, world_size=1, tokenizer=object())
+    batches = list(sampler)
+
+    assert _batch_ids(batches) == [["dummy-mono-cut-0000"]]
+
+
+def test_packed_fixed_bucket_caps_intersect_global_batch_size(tmp_path):
+    cuts_path = tmp_path / "cuts.jsonl"
+    _make_cuts((3.0, 2.0)).to_file(cuts_path)
+
+    batches = list(
+        _make_bucketed_sampler(
+            CutSet.from_jsonl_lazy(cuts_path),
+            batch_tokens=10,
+            batch_size=1,
+            duration_bins=(5,),
+            bucket_batch_size=(2,),
+        )
+    )
+
+    assert [len(batch) for batch in batches] == [1, 1]
+
+
+def test_bucketed_packed_sampler_enforces_per_bucket_example_caps(tmp_path):
+    cuts_path = tmp_path / "cuts.jsonl"
+    _make_cuts((7.0, 4.0, 6.0, 3.0)).to_file(cuts_path)
+
+    batches = list(
+        _make_bucketed_sampler(
+            CutSet.from_jsonl_lazy(cuts_path),
+            batch_tokens=10,
+            packing_buffer_size=4,
+            buffer_size=4,
+            duration_bins=(5, 10),
+            bucket_batch_size=(2, 1),
+        )
+    )
+
+    assert sorted(cut.id for batch in batches for cut in batch) == [
+        "dummy-mono-cut-0000",
+        "dummy-mono-cut-0001",
+        "dummy-mono-cut-0002",
+        "dummy-mono-cut-0003",
+    ]
+    for batch in batches:
+        bucket_index = 0 if max(cut.num_tokens for cut in batch) <= 5 else 1
+        assert len(batch) <= (2, 1)[bucket_index]
+    assert any(len(batch) == 2 for batch in batches)
 
 
 def test_bucketed_packed_sampler_best_fits_beyond_prefix_and_enforces_cap(tmp_path):

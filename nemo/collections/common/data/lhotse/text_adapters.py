@@ -1276,20 +1276,23 @@ def measure_formattable_length(
 @registered_prompt_format_fn(NeMoMultimodalConversation)
 def default_multimodal_conversation_prompt_format_fn(example: NeMoMultimodalConversation, prompt, **prompt_kwargs):
     # Collapse consecutive same-role turns into single turn for proper prompt formatting.
+    normalized_turns = []
+    for turn_index, turn in enumerate(example.turns):
+        message = turn.value if isinstance(turn, TextTurn) else turn.audio_locator_tag
+        if not isinstance(message, str):
+            raise ValueError(
+                "Cannot prompt-format a multimodal conversation with a non-string message: "
+                f"conversation_id={example.id!r} turn_index={turn_index} role={turn.role!r} "
+                f"turn_type={type(turn).__name__} message_type={type(message).__name__}"
+            )
+        normalized_turns.append({"role": turn.role, "slots": {"message": message}})
     turns = groupby(
-        [
-            {
-                "role": turn.role,
-                "slots": {"message": turn.value if isinstance(turn, TextTurn) else turn.audio_locator_tag},
-            }
-            for turn in example.turns
-        ],
+        normalized_turns,
         key=lambda turn: turn["role"],
     )
-    turns = [(k, list(v)) for k, v in turns]
     turns = [
-        {"role": role, "slots": {"message": " ".join(t["slots"]["message"] for t in turn_grp)}}
-        for role, turn_grp in turns
+        {"role": role, "slots": {"message": " ".join(turn["slots"]["message"] for turn in turn_group)}}
+        for role, turn_group in turns
     ]
     return prompt.encode_dialog(turns, **prompt_kwargs)
 

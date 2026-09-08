@@ -1,4 +1,5 @@
-# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,6 +12,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+# BetaBinomialInterpolator is adapted from NVIDIA Deep Learning Examples:
+# Copyright (c) 2019-present, NVIDIA CORPORATION. Licensed under the BSD-3-Clause License.
+# Source: https://github.com/NVIDIA/DeepLearningExamples
 
 import functools
 import importlib
@@ -112,6 +117,15 @@ def _validate_probability(name: str, value: float):
     """
     if not 0.0 <= value <= 1.0:
         raise ValueError(f"`{name}` must be in range [0.0, 1.0], received {value}")
+
+
+def _select_text_for_tts_input(text: str, normalized_text: Optional[str], load_normalized_text_percent: float) -> str:
+    """Select the raw or normalized transcript used as TTS model input."""
+    if normalized_text is None or load_normalized_text_percent == 0.0:
+        return text
+    if load_normalized_text_percent == 1.0 or random.random() < load_normalized_text_percent:
+        return normalized_text
+    return text
 
 
 def _sample_probability_range(name: str, min_value: float, max_value: float) -> float:

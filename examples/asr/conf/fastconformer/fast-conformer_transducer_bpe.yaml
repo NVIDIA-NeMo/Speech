@@ -125,6 +125,7 @@ model:
     subsampling_factor: 8 # must be power of 2 for striding and vggnet
     subsampling_conv_channels: 256 # set to -1 to make it equal to the d_model
     causal_downsampling: false
+    use_triton: null # null auto-enables the fused Triton kernels, false disables
 
     # Reduction parameters: Can be used to add another subsampling layer at a given position.
     # Having a 2x reduction will speedup the training and inference speech while keeping similar WER.

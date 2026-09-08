@@ -1,4 +1,5 @@
-# Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -119,6 +120,7 @@ def test_text_prefill_includes_first_phoneme_bos_position():
             {"streaming_phonemes_delay": 3, "streaming_speech_delay": 3},
             "streaming_speech_delay.*greater",
         ),
+        ({"max_audio_seconds": 0}, "max_audio_seconds.*positive"),
         ({"forced_audio_eos_id": 7}, "forced_audio_eos_id"),
     ],
 )
@@ -130,3 +132,57 @@ def test_validate_rejects_unsupported_architectures(kwargs, message):
 def test_from_hf_config_validates_text_eos_id():
     with pytest.raises(ValueError, match="text_eos_id"):
         EasyMagpieOmniArch.from_hf_config(types.SimpleNamespace(text_vocab_size=10, text_eos_id=10))
+
+
+def test_audio_row_counts_come_from_converted_codec_metadata():
+    arch = EasyMagpieOmniArch(codec_samples_per_frame=640, frame_stacking_factor=2)
+
+    assert arch.codec_input_sample_rate == 16000
+    assert arch.reference_audio_num_rows(32_000) == 27
+    assert arch.user_audio_num_rows(6_400) == 6
+
+
+def test_reference_audio_capability_is_configuration_only():
+    arch = EasyMagpieOmniArch(codec_encoder_bundled=True)
+
+    assert arch.supports_reference_audio is True
+    assert arch.is_multiturn_checkpoint is False
+    assert arch.supports_user_audio_prefill is False
+    arch.ensure_reference_audio_available()
+
+
+def test_reference_audio_capability_keeps_externally_released_artifact_path_available():
+    arch = EasyMagpieOmniArch(codec_encoder_bundled=False)
+
+    assert arch.supports_reference_audio is False
+    with pytest.raises(RuntimeError, match="speaker_id"):
+        arch.ensure_reference_audio_available()
+
+
+def test_user_audio_prefill_capability_uses_authoritative_converted_flags():
+    with pytest.raises(RuntimeError, match="use_multiturn_dataset is false"):
+        EasyMagpieOmniArch().require_user_audio_prefill()
+
+    multiturn_without_audio = EasyMagpieOmniArch(use_multiturn_dataset=True)
+    with pytest.raises(RuntimeError, match="condition_on_user_speech is false"):
+        multiturn_without_audio.require_user_audio_prefill()
+
+    unbundled_multiturn = EasyMagpieOmniArch(
+        use_multiturn_dataset=True,
+        condition_on_user_speech=True,
+        use_user_speaking_token=True,
+    )
+    assert unbundled_multiturn.is_multiturn_checkpoint is True
+    assert unbundled_multiturn.supports_user_audio_prefill is False
+    with pytest.raises(RuntimeError, match="omits the raw-audio encoder tower"):
+        unbundled_multiturn.require_user_audio_prefill()
+
+    capable = EasyMagpieOmniArch(
+        codec_encoder_bundled=True,
+        use_multiturn_dataset=True,
+        condition_on_user_speech=True,
+        use_user_speaking_token=True,
+    )
+    assert capable.is_multiturn_checkpoint is True
+    assert capable.supports_user_audio_prefill is True
+    capable.require_user_audio_prefill()

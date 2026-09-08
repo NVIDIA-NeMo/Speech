@@ -1,4 +1,5 @@
-# Copyright (c) 2021, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2021, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,6 +12,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+# _zero_grad_group_helper is adapted from PyTorch:
+# Copyright (c) PyTorch contributors. Licensed under the BSD-3-Clause License.
+# Source: https://github.com/pytorch/pytorch
 
 from contextlib import contextmanager
 
@@ -88,12 +93,14 @@ class GradBucket(object):
     def __init__(self, numel, chunk_size_mb, data_group):
         if not HAVE_APEX:
             raise ImportError(
-                "Apex was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
+                "Apex was not found. Please see the NeMo README for installation instructions: "
+                "https://github.com/NVIDIA/NeMo#megatron-gpt."
             )
 
         if not HAVE_MEGATRON_CORE:
             raise ImportError(
-                "megatron-core was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
+                "megatron-core was not found. Please see the NeMo README for installation instructions: "
+                "https://github.com/NVIDIA/NeMo#megatron-gpt."
             )
 
         self.numel = numel
@@ -151,6 +158,7 @@ class GradBucket(object):
             self.computed_numel_per_chunk[chunk] += grad_chunk_info[chunk]
 
     def get_allreduce_tensor(self):
+        """Return the flattened tensor used for gradient all-reduce."""
         if self.computed_numel_per_chunk[self.current_chunk] == self.numel_per_chunk[self.current_chunk]:
             chunk_start_index = self.start_index_per_chunk[self.current_chunk]
             chunk_end_index = chunk_start_index + self.numel_per_chunk[self.current_chunk]
@@ -192,12 +200,14 @@ class MainParamsOptimizerWrapper(torch.optim.Optimizer):
     ):
         if not HAVE_APEX:
             raise ImportError(
-                "Apex was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
+                "Apex was not found. Please see the NeMo README for installation instructions: "
+                "https://github.com/NVIDIA/NeMo#megatron-gpt."
             )
 
         if not HAVE_MEGATRON_CORE:
             raise ImportError(
-                "megatron-core was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
+                "megatron-core was not found. Please see the NeMo README for installation instructions: "
+                "https://github.com/NVIDIA/NeMo#megatron-gpt."
             )
 
         self.optimizer = optimizer
@@ -401,6 +411,7 @@ class MainParamsOptimizerWrapper(torch.optim.Optimizer):
             _zero_grad_group_helper(group, set_to_none)
 
     def copy_model_grads_to_main_grads(self):
+        """Copy model gradients into the optimizer main gradients."""
         # This only needs to be done for the float16 group.
         for model_group, main_group in zip(self.float16_groups, self.fp32_from_float16_groups):
             for model_param, main_param in zip(model_group, main_group):

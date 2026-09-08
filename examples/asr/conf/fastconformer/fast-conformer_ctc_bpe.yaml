@@ -123,6 +123,7 @@ model:
     subsampling_factor: 8 # must be power of 2 for striding and vggnet
     subsampling_conv_channels: 256 # -1 sets it to d_model
     causal_downsampling: false
+    use_triton: null # null auto-enables the fused Triton kernels, false disables
 
     # Feed forward module's params
     ff_expansion_factor: 4

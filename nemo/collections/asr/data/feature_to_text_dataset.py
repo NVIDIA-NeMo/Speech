@@ -1,4 +1,5 @@
-# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,13 +13,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from nemo.collections.asr.data.feature_to_text import FeatureToBPEDataset, FeatureToCharDataset
 from nemo.utils import logging
 
+if TYPE_CHECKING:
+    from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 
-def get_char_dataset(config: dict, augmentor: Optional['FeatureAugmentor'] = None) -> FeatureToCharDataset:
+
+def get_char_dataset(config: dict, augmentor: Optional[Any] = None) -> FeatureToCharDataset:
     """
     Instantiates a Character Encoding based FeatureToCharDataset.
 
@@ -30,7 +34,7 @@ def get_char_dataset(config: dict, augmentor: Optional['FeatureAugmentor'] = Non
         An instance of FeatureToCharDataset.
     """
     if 'labels' not in config:
-        logging.warning(f"dataset does not have explicitly defined labels")
+        logging.warning("dataset does not have explicitly defined labels")
 
     dataset = FeatureToCharDataset(
         manifest_filepath=config['manifest_filepath'],
@@ -57,9 +61,7 @@ def get_char_dataset(config: dict, augmentor: Optional['FeatureAugmentor'] = Non
     return dataset
 
 
-def get_bpe_dataset(
-    config: dict, tokenizer: 'TokenizerSpec', augmentor: Optional['FeatureAugmentor'] = None
-) -> FeatureToBPEDataset:
+def get_bpe_dataset(config: dict, tokenizer: 'TokenizerSpec', augmentor: Optional[Any] = None) -> FeatureToBPEDataset:
     """
     Instantiates a Byte Pair Encoding / Word Piece Encoding based FeatureoToBPEDataset.
 

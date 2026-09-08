@@ -84,6 +84,7 @@ streaming:
 # ========================
 # Pipeline settings
 # ========================
+preload_audio: true                           # Read all audio into host memory before the timed loop, so RTFx measures inference and not disk I/O; set false for a manifest that does not fit in memory
 matmul_precision: high                        # Matrix multiplication precision: highest, high, medium
 log_level: 20                                 # Logging level: 0 (NOTSET), 10 (DEBUG), 20 (INFO), 30 (WARNING), 40 (ERROR), 50 (CRITICAL)
 pipeline_type: cache_aware                    # Pipeline type: buffered, cache_aware

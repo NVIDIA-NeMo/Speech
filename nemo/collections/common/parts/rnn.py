@@ -245,10 +245,11 @@ class LSTMDropout(torch.nn.Module):
         One timestep of the stacked LSTM, layer by layer, with `torch.lstm_cell`.
 
         Autoregressive transducer decoding calls this module once per symbol with a sequence length of
-        one. cuDNN spends about 0.4 ms of host time per such call setting up descriptors for 0.03 ms of
-        device work; `torch.lstm_cell` is the same recurrence without that setup. Accumulation order
-        inside the gate GEMM differs from cuDNN, so results agree to within low-precision rounding
-        rather than bit for bit.
+        one. Each such call pays cuDNN's fixed per-call setup — descriptors and workspace — for a single
+        timestep of work, and on a small batch that setup, not the arithmetic, is what the step costs;
+        `torch.lstm_cell` runs the same recurrence without it. How much this saves depends on the GPU,
+        the driver and the size of the prediction network. Accumulation order inside the gate GEMM
+        differs from cuDNN, so results agree to within low-precision rounding rather than bit for bit.
         Args:
             x: (torch.Tensor) input of shape (1, B, input_size).
             h: (tuple) `(h_0, c_0)`, each of shape (num_layers, B, hidden_size).

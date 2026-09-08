@@ -93,8 +93,15 @@ def main(cfg):
     # Build the pipeline
     pipeline = PipelineBuilder.build_pipeline(cfg)
 
-    # Read the audio once, outside the timed region: RTFx measures the pipeline, not disk I/O.
-    audio_samples = [read_audio(path, target_sr=cfg.streaming.sample_rate, mono=True) for path in audio_filepaths]
+    # Read the audio once, outside the timed region, so RTFx measures the pipeline and not disk I/O.
+    # Every file then stays in host memory for the whole run: set preload_audio=false for a manifest
+    # that does not fit, and the pipeline reads from disk as before, with the RTFx below including that.
+    data_dur, durations = calculate_duration(audio_filepaths)
+    audio_samples = None
+    if cfg.get("preload_audio", True):
+        needed_gib = data_dur * cfg.streaming.sample_rate * 4 / 1024**3  # mono float32 samples
+        logging.info(f"Preloading {len(audio_filepaths)} audio files into host memory, about {needed_gib:.1f} GiB")
+        audio_samples = [read_audio(path, target_sr=cfg.streaming.sample_rate, mono=True) for path in audio_filepaths]
 
     # Warmup and run the pipeline
     timer = SimpleTimer()
@@ -107,9 +114,7 @@ def main(cfg):
         progress_bar = TQDMProgressBar()
         timer.reset()
         timer.start(device=pipeline.device)
-        output = pipeline.run(
-            audio_filepaths, progress_bar=progress_bar, options=options, audio_samples=audio_samples
-        )
+        output = pipeline.run(audio_filepaths, progress_bar=progress_bar, options=options, audio_samples=audio_samples)
         timer.stop(pipeline.device)
         if run_step >= cfg.warmup_steps:
             measurements.append(timer.total_sec())
@@ -119,7 +124,6 @@ def main(cfg):
         logging.warning(
             "RTFx measurement enabled, but warmup_steps=0. At least one warmup step is recommended to measure RTFx."
         )
-    data_dur, durations = calculate_duration(audio_filepaths)
     exec_dur = sum(measurements) / len(measurements)
     rtfx = data_dur / exec_dur if exec_dur > 0 else float('inf')
     logging.info(f"RTFx: {rtfx:.2f} ({data_dur:.2f}s / {exec_dur:.2f}s)")

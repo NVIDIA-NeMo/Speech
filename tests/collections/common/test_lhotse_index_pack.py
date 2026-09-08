@@ -16,6 +16,7 @@ import io
 import json
 import struct
 import tarfile
+from concurrent.futures import Future
 from pathlib import Path
 
 import pytest
@@ -104,6 +105,46 @@ def _make_native_tar_routing_dataset(tmp_path, rows, members, *, tar_format=None
         )
     )
     return manifest, tar_path, input_cfg
+
+
+def _make_multi_shard_native_tar_routing_dataset(tmp_path, shard_rows_and_members):
+    manifest_paths = []
+    tar_paths = []
+    for shard_index, (rows, members) in enumerate(shard_rows_and_members):
+        shard_dir = tmp_path / f"shard-{shard_index}"
+        shard_dir.mkdir()
+        manifest, tar_path, _ = _make_native_tar_routing_dataset(shard_dir, rows, members)
+        manifest_paths.append(str(manifest))
+        tar_paths.append(str(tar_path))
+    input_cfg = tmp_path / "multi-shard.yaml"
+    input_cfg.write_text(
+        yaml.safe_dump(
+            {
+                "type": "nemo_tarred",
+                "manifest_filepath": manifest_paths,
+                "tarred_audio_filepaths": tar_paths,
+            }
+        )
+    )
+    return manifest_paths, tar_paths, input_cfg
+
+
+def _make_multi_map_native_tar_routing_dataset(tmp_path, shard_rows_and_members):
+    manifest_paths, tar_paths, _ = _make_multi_shard_native_tar_routing_dataset(tmp_path, shard_rows_and_members)
+    input_cfg = tmp_path / "multi-map.yaml"
+    input_cfg.write_text(
+        yaml.safe_dump(
+            [
+                {
+                    "type": "nemo_tarred",
+                    "manifest_filepath": manifest_path,
+                    "tarred_audio_filepaths": tar_path,
+                }
+                for manifest_path, tar_path in zip(manifest_paths, tar_paths)
+            ]
+        )
+    )
+    return manifest_paths, tar_paths, input_cfg
 
 
 def _write_manual_native_tar_route_pack(
@@ -626,6 +667,226 @@ def test_native_tar_route_build_opens_each_source_once_per_shard(tmp_path, monke
     assert {Path(path).name for path in opened_paths} == {"manifest.jsonl", "audio.tar"}
 
 
+def test_parallel_native_tar_route_build_is_byte_deterministic(tmp_path):
+    manifests, tars, input_cfg = _make_multi_shard_native_tar_routing_dataset(
+        tmp_path,
+        [
+            (
+                [{"audio_filepath": f"{name}.wav"} for name in "CADB"],
+                [(f"{name}.wav", name.encode()) for name in "ABCD"],
+            ),
+            (
+                [{"audio_filepath": f"{name}.wav"} for name in "ZXWY"],
+                [(f"{name}.wav", name.encode()) for name in "WXYZ"],
+            ),
+        ],
+    )
+    sequential = tmp_path / "sequential.idxpack"
+    parallel = tmp_path / "parallel.idxpack"
+
+    sequential_result = CliRunner().invoke(
+        main,
+        ["--output", str(sequential), "--native-tar-route-workers", "1", str(input_cfg)],
+    )
+    parallel_result = CliRunner().invoke(
+        main,
+        ["--output", str(parallel), "--native-tar-route-workers", "2", str(input_cfg)],
+    )
+
+    assert sequential_result.exit_code == 0, sequential_result.output
+    assert parallel_result.exit_code == 0, parallel_result.output
+    assert sequential.read_bytes() == parallel.read_bytes()
+    with IndexPack(parallel) as pack:
+        route = pack.collection(nemo_tar_ordinal_map_collection_key(manifests, tars))
+        assert [route.value_in_shard(0, index) for index in range(4)] == [2, 0, 3, 1]
+        assert [route.value_in_shard(1, index) for index in range(4)] == [3, 1, 0, 2]
+
+
+def test_parallel_native_tar_route_build_covers_multiple_maps_deterministically(tmp_path):
+    manifests, tars, input_cfg = _make_multi_map_native_tar_routing_dataset(
+        tmp_path,
+        [
+            (
+                [{"audio_filepath": f"{name}.wav"} for name in "BA"],
+                [(f"{name}.wav", name.encode()) for name in "AB"],
+            ),
+            (
+                [{"audio_filepath": f"{name}.wav"} for name in "DC"],
+                [(f"{name}.wav", name.encode()) for name in "CD"],
+            ),
+        ],
+    )
+    sequential = tmp_path / "multi-map-sequential.idxpack"
+    parallel = tmp_path / "multi-map-parallel.idxpack"
+
+    sequential_result = CliRunner().invoke(
+        main,
+        ["--output", str(sequential), "--native-tar-route-workers", "1", str(input_cfg)],
+    )
+    parallel_result = CliRunner().invoke(
+        main,
+        ["--output", str(parallel), "--native-tar-route-workers", "2", str(input_cfg)],
+    )
+
+    assert sequential_result.exit_code == 0, sequential_result.output
+    assert parallel_result.exit_code == 0, parallel_result.output
+    assert sequential.read_bytes() == parallel.read_bytes()
+    with IndexPack(parallel) as pack:
+        first_route = pack.collection(nemo_tar_ordinal_map_collection_key(manifests[0], tars[0]))
+        second_route = pack.collection(nemo_tar_ordinal_map_collection_key(manifests[1], tars[1]))
+        assert [first_route.value(index) for index in range(2)] == [1, 0]
+        assert [second_route.value(index) for index in range(2)] == [1, 0]
+
+
+def test_parallel_native_tar_route_build_schedules_all_map_shards_globally(tmp_path, monkeypatch):
+    first_root = tmp_path / "first-map"
+    second_root = tmp_path / "second-map"
+    first_root.mkdir()
+    second_root.mkdir()
+    first_manifests, first_tars, _ = _make_multi_shard_native_tar_routing_dataset(
+        first_root,
+        [
+            ([{"audio_filepath": "A.wav"}], [("A.wav", b"A")]),
+            ([{"audio_filepath": "B.wav"}], [("B.wav", b"B")]),
+            ([{"audio_filepath": "C.wav"}], [("C.wav", b"C")]),
+        ],
+    )
+    second_manifest, second_tar, _ = _make_native_tar_routing_dataset(
+        second_root,
+        [{"audio_filepath": "D.wav"}],
+        [("D.wav", b"D")],
+    )
+    input_cfg = tmp_path / "unbalanced-maps.yaml"
+    input_cfg.write_text(
+        yaml.safe_dump(
+            [
+                {
+                    "type": "nemo_tarred",
+                    "manifest_filepath": first_manifests,
+                    "tarred_audio_filepaths": first_tars,
+                },
+                {
+                    "type": "nemo_tarred",
+                    "manifest_filepath": str(second_manifest),
+                    "tarred_audio_filepaths": str(second_tar),
+                },
+            ]
+        )
+    )
+    pool_calls = []
+
+    class RecordingPool:
+        def __init__(self, *, max_workers, mp_context):
+            pool_calls.append({"max_workers": max_workers, "mp_context": mp_context, "tasks": []})
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def submit(self, function, task):
+            pool_calls[-1]["tasks"].append(task[:2])
+            future = Future()
+            try:
+                future.set_result(function(task))
+            except BaseException as error:
+                future.set_exception(error)
+            return future
+
+    monkeypatch.setattr(converter, "ProcessPoolExecutor", RecordingPool)
+    output = tmp_path / "global-schedule.idxpack"
+
+    result = CliRunner().invoke(
+        main,
+        ["--output", str(output), "--native-tar-route-workers", "4", str(input_cfg)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(pool_calls) == 1
+    assert pool_calls[0]["max_workers"] == 4
+    assert pool_calls[0]["tasks"] == [(0, 0), (0, 1), (0, 2), (1, 0)]
+
+
+def test_parallel_native_tar_route_failure_does_not_publish_pack(tmp_path):
+    _, _, input_cfg = _make_multi_map_native_tar_routing_dataset(
+        tmp_path,
+        [
+            (
+                [{"audio_filepath": "A.wav"}],
+                [("A.wav", b"valid")],
+            ),
+            (
+                [{"audio_filepath": "missing.wav"}],
+                [("B.wav", b"unrelated")],
+            ),
+        ],
+    )
+    output = tmp_path / "failed.idxpack"
+
+    result = CliRunner().invoke(
+        main,
+        ["--output", str(output), "--native-tar-route-workers", "2", str(input_cfg)],
+    )
+
+    assert result.exit_code != 0
+    assert "references missing tar member 'missing.wav'" in result.output
+    assert not output.exists()
+    assert not list(tmp_path.glob(".failed.idxpack.native-tar-route.*"))
+    assert not list(tmp_path.glob(".failed.idxpack.record-validation.*"))
+
+
+def test_parallel_single_map_route_failure_does_not_publish_pack(tmp_path):
+    _, _, input_cfg = _make_multi_shard_native_tar_routing_dataset(
+        tmp_path,
+        [
+            ([{"audio_filepath": "A.wav"}], [("A.wav", b"valid")]),
+            ([{"audio_filepath": "missing.wav"}], [("B.wav", b"unrelated")]),
+        ],
+    )
+    output = tmp_path / "failed-single-map.idxpack"
+
+    result = CliRunner().invoke(
+        main,
+        ["--output", str(output), "--native-tar-route-workers", "2", str(input_cfg)],
+    )
+
+    assert result.exit_code != 0
+    assert "references missing tar member 'missing.wav'" in result.output
+    assert not output.exists()
+    assert not list(tmp_path.glob(".failed-single-map.idxpack.native-tar-route.*"))
+    assert not list(tmp_path.glob(".failed-single-map.idxpack.record-validation.*"))
+
+
+def test_native_tar_route_workers_must_be_positive(tmp_path):
+    _, _, input_cfg = _make_native_tar_routing_dataset(
+        tmp_path,
+        [{"audio_filepath": "A.wav"}],
+        [("A.wav", b"valid")],
+    )
+
+    result = CliRunner().invoke(
+        main,
+        ["--output", str(tmp_path / "unused.idxpack"), "--native-tar-route-workers", "0", str(input_cfg)],
+    )
+
+    assert result.exit_code != 0
+    assert "0 is not in the range x>=1" in result.output
+
+
+def test_native_tar_route_writer_rejects_nonpositive_worker_count():
+    with pytest.raises(ValueError, match="workers must be positive"):
+        nemo_tar_routing.write_nemo_tar_ordinal_map_shards(
+            (),
+            manifest_paths=(),
+            manifest_index_paths=(),
+            tar_paths=(),
+            tar_index_paths=(),
+            tar_sentinel_size_overrides=(),
+            num_workers=0,
+        )
+
+
 @pytest.mark.parametrize("tar_format", [tarfile.PAX_FORMAT, tarfile.GNU_FORMAT])
 def test_converter_routes_long_native_tar_names_across_metadata_formats(tmp_path, tar_format):
     member_name = f"nested/{'long-' * 30}sample.wav"
@@ -812,11 +1073,14 @@ def test_converter_rejects_source_mutation_during_native_tar_routing(tmp_path, m
 
 
 def test_converter_rechecks_route_snapshot_immediately_before_publication(tmp_path, monkeypatch):
-    _, tar_path, input_cfg = _make_native_tar_routing_dataset(
+    _, tar_paths, input_cfg = _make_multi_shard_native_tar_routing_dataset(
         tmp_path,
-        [{"audio_filepath": "sample.wav"}],
-        [("sample.wav", b"sample")],
+        [
+            ([{"audio_filepath": "first.wav"}], [("first.wav", b"first")]),
+            ([{"audio_filepath": "second.wav"}], [("second.wav", b"second")]),
+        ],
     )
+    tar_path = Path(tar_paths[0])
     original_validation = converter.validate_idxpack_json_records
 
     def replace_tar_after_staged_validation(*args, **kwargs):
@@ -830,7 +1094,17 @@ def test_converter_rechecks_route_snapshot_immediately_before_publication(tmp_pa
     output = tmp_path / "dataset.idxpack"
     output.write_bytes(b"existing-pack-must-survive")
 
-    result = CliRunner().invoke(main, ["--overwrite", "--output", str(output), str(input_cfg)])
+    result = CliRunner().invoke(
+        main,
+        [
+            "--overwrite",
+            "--output",
+            str(output),
+            "--native-tar-route-workers",
+            "2",
+            str(input_cfg),
+        ],
+    )
 
     assert result.exit_code != 0
     assert "source changed after native-tar route construction" in result.output

@@ -9,7 +9,9 @@ import json
 import re
 import struct
 from collections.abc import Mapping
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
+from multiprocessing import get_context
 from pathlib import Path
 
 from lhotse.indexing import read_index
@@ -219,8 +221,13 @@ def write_nemo_tar_ordinal_map_shards(
     tar_paths: tuple[str, ...],
     tar_index_paths: tuple[str | Path, ...],
     tar_sentinel_size_overrides: tuple[int | None, ...],
+    num_workers: int = 1,
 ) -> NativeTarOrdinalMapBuildSummary:
-    """Write every shard of one routing collection from a stable source snapshot."""
+    """Write every shard of one routing collection from a stable source snapshot.
+
+    Multiple workers use spawn and write only their preassigned output paths.
+    Results are restored to input order so scheduling cannot affect pack layout.
+    """
     lengths = {
         "outputs": len(output_paths),
         "manifests": len(manifest_paths),
@@ -231,6 +238,8 @@ def write_nemo_tar_ordinal_map_shards(
     }
     if len(set(lengths.values())) != 1:
         raise ValueError(f"Native NeMo ordinal-map shard counts differ: {lengths}")
+    if num_workers < 1:
+        raise ValueError(f"Native NeMo ordinal-map workers must be positive, got {num_workers}")
 
     input_snapshot = NativeTarOrdinalMapInputSnapshot.capture(
         manifest_paths,
@@ -238,14 +247,14 @@ def write_nemo_tar_ordinal_map_shards(
         manifest_index_paths,
         tar_index_paths,
     )
-    shard_summaries = tuple(
-        write_nemo_tar_ordinal_map_shard(
+    tasks = tuple(
+        (
             output_path,
-            manifest_path=manifest_path,
-            manifest_index_path=manifest_index_path,
-            tar_path=tar_path,
-            tar_index_path=tar_index_path,
-            tar_sentinel_size_override=sentinel_override,
+            manifest_path,
+            manifest_index_path,
+            tar_path,
+            tar_index_path,
+            sentinel_override,
         )
         for output_path, manifest_path, manifest_index_path, tar_path, tar_index_path, sentinel_override in zip(
             output_paths,
@@ -256,6 +265,30 @@ def write_nemo_tar_ordinal_map_shards(
             tar_sentinel_size_overrides,
         )
     )
+    if num_workers == 1 or len(tasks) <= 1:
+        shard_summaries = tuple(_write_nemo_tar_ordinal_map_shard_task(task) for task in tasks)
+    else:
+        # Each task owns a distinct, preassigned output path. Results are placed
+        # back into input order so process scheduling cannot affect the array
+        # shard order or the resulting idxpack layout hash.
+        ordered_summaries: list[NativeTarOrdinalMapBuildSummary | None] = [None] * len(tasks)
+        with ProcessPoolExecutor(
+            max_workers=min(num_workers, len(tasks)),
+            mp_context=get_context("spawn"),
+        ) as executor:
+            futures = {
+                executor.submit(_write_nemo_tar_ordinal_map_shard_task, task): shard_index
+                for shard_index, task in enumerate(tasks)
+            }
+            try:
+                for future in as_completed(futures):
+                    ordered_summaries[futures[future]] = future.result()
+            except BaseException:
+                for future in futures:
+                    future.cancel()
+                raise
+        assert all(summary is not None for summary in ordered_summaries)
+        shard_summaries = tuple(summary for summary in ordered_summaries if summary is not None)
     input_snapshot.validate()
     return NativeTarOrdinalMapBuildSummary(
         shard_rows=tuple(summary.records_checked for summary in shard_summaries),
@@ -264,6 +297,21 @@ def write_nemo_tar_ordinal_map_shards(
         top_level_skip_marker_records=sum(summary.top_level_skip_marker_records for summary in shard_summaries),
         custom_skip_marker_records=sum(summary.custom_skip_marker_records for summary in shard_summaries),
         input_snapshot=input_snapshot,
+    )
+
+
+def _write_nemo_tar_ordinal_map_shard_task(
+    task: tuple[str | Path, str, str | Path, str, str | Path, int | None],
+) -> NativeTarOrdinalMapBuildSummary:
+    """Process-pool entry point for one independently addressable shard."""
+    output_path, manifest_path, manifest_index_path, tar_path, tar_index_path, sentinel_override = task
+    return write_nemo_tar_ordinal_map_shard(
+        output_path,
+        manifest_path=manifest_path,
+        manifest_index_path=manifest_index_path,
+        tar_path=tar_path,
+        tar_index_path=tar_index_path,
+        tar_sentinel_size_override=sentinel_override,
     )
 
 

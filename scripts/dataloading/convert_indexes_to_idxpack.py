@@ -47,7 +47,9 @@ import struct
 import tempfile
 import uuid
 from collections.abc import Callable, Sequence
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, replace
+from multiprocessing import get_context
 from pathlib import Path
 from typing import Optional
 
@@ -79,9 +81,11 @@ from nemo.collections.common.data.lhotse.indexed_adapters import validate_wds_v2
 from nemo.collections.common.data.lhotse.nemo_tar_routing import (
     NEMO_TAR_ORDINAL_MAP_KIND,
     NEMO_TAR_ORDINAL_MAP_ROLE,
+    NativeTarOrdinalMapBuildSummary,
+    NativeTarOrdinalMapInputSnapshot,
     nemo_tar_ordinal_map_collection_key,
     nemo_tar_ordinal_map_source_spec,
-    write_nemo_tar_ordinal_map_shards,
+    write_nemo_tar_ordinal_map_shard,
 )
 
 
@@ -431,16 +435,15 @@ def _build_native_tar_ordinal_array_specs(
     indexes_root,
     index_path_overrides: dict[str, Path],
     source_size_overrides: dict[str, int],
+    native_tar_route_workers: int,
 ) -> tuple[list[IndexPackArraySpec], IndexPackRecordValidationSummary, set[bytes], list[Callable[[], None]]]:
-    """Build temporary fixed arrays that will be embedded in the idxpack."""
+    """Build temporary fixed arrays with one global worker pool across all map shards."""
     temporary_directory = Path(temporary_directory)
     arrays = []
-    validated_manifest_keys = set()
-    records_checked = 0
-    skip_marker_records = 0
-    top_level_skip_marker_records = 0
-    custom_skip_marker_records = 0
-    final_snapshot_validators = []
+    map_snapshots = []
+    map_summaries: list[list[NativeTarOrdinalMapBuildSummary | None]] = []
+    tasks = []
+    manifest_keys = []
     for map_index, spec in enumerate(maps):
         output_paths = tuple(
             temporary_directory / f"native-tar-route-{map_index:06d}-{shard_index:06d}.u32"
@@ -457,16 +460,42 @@ def _build_native_tar_ordinal_array_specs(
             )
             for tar_path in spec.tar_paths
         )
-        build_summary = write_nemo_tar_ordinal_map_shards(
-            output_paths,
-            manifest_paths=spec.manifest_paths,
-            manifest_index_paths=manifest_index_paths,
-            tar_paths=spec.tar_paths,
-            tar_index_paths=tar_index_paths,
-            tar_sentinel_size_overrides=tuple(source_size_overrides.get(tar_path) for tar_path in spec.tar_paths),
+        map_snapshots.append(
+            NativeTarOrdinalMapInputSnapshot.capture(
+                spec.manifest_paths,
+                spec.tar_paths,
+                manifest_index_paths,
+                tar_index_paths,
+            )
         )
-        assert build_summary.input_snapshot is not None
-        final_snapshot_validators.append(build_summary.input_snapshot.validate)
+        map_summaries.append([None] * len(output_paths))
+        tasks.extend(
+            (
+                map_index,
+                shard_index,
+                output_path,
+                manifest_path,
+                manifest_index_path,
+                tar_path,
+                tar_index_path,
+                source_size_overrides.get(tar_path),
+            )
+            for shard_index, (
+                output_path,
+                manifest_path,
+                manifest_index_path,
+                tar_path,
+                tar_index_path,
+            ) in enumerate(
+                zip(
+                    output_paths,
+                    spec.manifest_paths,
+                    manifest_index_paths,
+                    spec.tar_paths,
+                    tar_index_paths,
+                )
+            )
+        )
         arrays.append(
             IndexPackArraySpec(
                 role=NEMO_TAR_ORDINAL_MAP_ROLE,
@@ -479,12 +508,52 @@ def _build_native_tar_ordinal_array_specs(
                 dtype="uint32",
             )
         )
-        manifest_key = IndexPackCollectionSpec(
-            role="manifest",
-            kind=JSONL,
-            source_spec=spec.manifest_source_spec,
-            paths=spec.manifest_paths,
-        ).key
+        manifest_keys.append(
+            IndexPackCollectionSpec(
+                role="manifest",
+                kind=JSONL,
+                source_spec=spec.manifest_source_spec,
+                paths=spec.manifest_paths,
+            ).key
+        )
+
+    if native_tar_route_workers == 1 or len(tasks) <= 1:
+        results = map(_write_native_tar_ordinal_map_shard_task, tasks)
+        for map_index, shard_index, summary in results:
+            map_summaries[map_index][shard_index] = summary
+    else:
+        with ProcessPoolExecutor(
+            max_workers=min(native_tar_route_workers, len(tasks)),
+            mp_context=get_context("spawn"),
+        ) as executor:
+            futures = [executor.submit(_write_native_tar_ordinal_map_shard_task, task) for task in tasks]
+            try:
+                for future in as_completed(futures):
+                    map_index, shard_index, summary = future.result()
+                    map_summaries[map_index][shard_index] = summary
+            except BaseException:
+                for future in futures:
+                    future.cancel()
+                raise
+
+    validated_manifest_keys = set()
+    records_checked = 0
+    skip_marker_records = 0
+    top_level_skip_marker_records = 0
+    custom_skip_marker_records = 0
+    for map_index, (spec, manifest_key, input_snapshot) in enumerate(zip(maps, manifest_keys, map_snapshots)):
+        input_snapshot.validate()
+        pending_summaries = map_summaries[map_index]
+        assert all(summary is not None for summary in pending_summaries)
+        shard_summaries = tuple(summary for summary in pending_summaries if summary is not None)
+        build_summary = NativeTarOrdinalMapBuildSummary(
+            shard_rows=tuple(summary.records_checked for summary in shard_summaries),
+            records_checked=sum(summary.records_checked for summary in shard_summaries),
+            skip_marker_records=sum(summary.skip_marker_records for summary in shard_summaries),
+            top_level_skip_marker_records=sum(summary.top_level_skip_marker_records for summary in shard_summaries),
+            custom_skip_marker_records=sum(summary.custom_skip_marker_records for summary in shard_summaries),
+            input_snapshot=input_snapshot,
+        )
         if manifest_key not in validated_manifest_keys:
             validated_manifest_keys.add(manifest_key)
             records_checked += build_summary.records_checked
@@ -509,8 +578,33 @@ def _build_native_tar_ordinal_array_specs(
             errors_reported=0,
         ),
         validated_manifest_keys,
-        final_snapshot_validators,
+        [snapshot.validate for snapshot in map_snapshots],
     )
+
+
+def _write_native_tar_ordinal_map_shard_task(
+    task: tuple[int, int, str | Path, str, str | Path, str, str | Path, int | None],
+) -> tuple[int, int, NativeTarOrdinalMapBuildSummary]:
+    """Process-pool entry point for one globally scheduled native-tar shard."""
+    (
+        map_index,
+        shard_index,
+        output_path,
+        manifest_path,
+        manifest_index_path,
+        tar_path,
+        tar_index_path,
+        sentinel_override,
+    ) = task
+    summary = write_nemo_tar_ordinal_map_shard(
+        output_path,
+        manifest_path=manifest_path,
+        manifest_index_path=manifest_index_path,
+        tar_path=tar_path,
+        tar_index_path=tar_index_path,
+        tar_sentinel_size_override=sentinel_override,
+    )
+    return map_index, shard_index, summary
 
 
 def _discover_paths_collections(
@@ -957,6 +1051,12 @@ def _write_validated_index_pack(
     default=1,
     help="Process workers for disjoint exhaustive JSONL record validation.",
 )
+@click.option(
+    "--native-tar-route-workers",
+    type=click.IntRange(min=1),
+    default=1,
+    help="Process workers for independent native NeMo manifest/tar routing shards.",
+)
 @click.option("--dry-run", is_flag=True, help="Print discovered collections without writing.")
 def main(
     input_cfg: str,
@@ -968,6 +1068,7 @@ def main(
     accept_trailing_zero_tar_padding: bool,
     repair_stale_local_native_tar_sidecars_root: Optional[str],
     record_validation_workers: int,
+    native_tar_route_workers: int,
     dry_run: bool,
 ) -> None:
     """Convert one INPUT_CFG dataset and its existing sidecars to one idxpack.
@@ -1055,6 +1156,7 @@ def main(
                 indexes_root=indexes_root,
                 index_path_overrides=index_path_overrides,
                 source_size_overrides=source_size_overrides,
+                native_tar_route_workers=native_tar_route_workers,
             )
             summary = _write_validated_index_pack(
                 output,

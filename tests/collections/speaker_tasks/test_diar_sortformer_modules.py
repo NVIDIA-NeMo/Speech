@@ -2513,6 +2513,48 @@ class TestSortformerModules_StreamingUpdateAsync:
         torch.testing.assert_close(streaming_state.mean_sil_emb, torch.tensor(expected_silence_means))
 
     @pytest.mark.unit
+    @pytest.mark.parametrize("async_streaming", [False, True])
+    def test_speaker_limit_does_not_turn_disabled_channel_activity_into_silence(self, async_streaming):
+        sortformer_modules = SortformerModules(
+            num_spks=4,
+            fc_d_model=2,
+            spkcache_len=8,
+            fifo_len=0,
+            chunk_len=2,
+            spkcache_update_period=2,
+            spkcache_sil_frames_per_spk=0,
+            use_learnable_sil_emb=False,
+        )
+        streaming_state = sortformer_modules.init_streaming_state(
+            batch_size=1, async_streaming=async_streaming, max_speakers=2
+        )
+        chunk = torch.tensor([[[1.0, 3.0], [5.0, 7.0]]])
+        silence_profile_preds = torch.zeros(1, 2, 4)
+        silence_profile_preds[0, 0, 2] = 1.0
+        state_preds = sortformer_modules.apply_max_speakers_mask(silence_profile_preds, streaming_state.max_speakers)
+
+        if async_streaming:
+            streaming_state, chunk_preds = sortformer_modules.streaming_update_async(
+                streaming_state,
+                chunk,
+                torch.tensor([2]),
+                state_preds,
+                silence_profile_preds=silence_profile_preds,
+            )
+        else:
+            streaming_state, chunk_preds = sortformer_modules.streaming_update(
+                streaming_state,
+                chunk,
+                state_preds,
+                silence_profile_preds=silence_profile_preds,
+            )
+
+        assert streaming_state.n_sil_frames.tolist() == [1]
+        torch.testing.assert_close(streaming_state.mean_sil_emb, chunk[:, 1])
+        assert torch.count_nonzero(streaming_state.spkcache_preds[..., 2:]) == 0
+        assert torch.count_nonzero(chunk_preds[..., 2:]) == 0
+
+    @pytest.mark.unit
     @pytest.mark.parametrize(
         (
             "spkcache_capacity, fifo_capacity, chunk_capacity, update_period, short_fifo_length, "

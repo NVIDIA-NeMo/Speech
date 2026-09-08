@@ -96,7 +96,8 @@ complete model input window.
 
 Use ``max_speakers`` to enable fewer than the checkpoint's maximum number of speaker channels. A scalar applies to
 every stream, while a sequence or integer tensor supplies one limit per row. Disabled channels are zeroed in returned
-probabilities and excluded before speaker-cache, FIFO, and silence-profile updates.
+probabilities and excluded from speaker-cache and FIFO state. Their raw activity is used only to prevent speech frames
+from being added to the running silence profile.
 
 ```python
 import torch

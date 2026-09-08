@@ -1069,13 +1069,17 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
                 high_resolution_preds, streaming_state.max_speakers
             )
 
-        spkcache_fifo_chunk_preds = self.sortformer_modules.apply_max_speakers_mask(
-            spkcache_fifo_chunk_preds, streaming_state.max_speakers
-        )
-
         spkcache_fifo_chunk_preds = self.sortformer_modules.apply_mask_to_preds(
             spkcache_fifo_chunk_preds, spkcache_fifo_chunk_fc_encoder_lengths
         )
+        silence_profile_preds = None
+        if streaming_state.max_speakers is not None:
+            # Disabled channels must not enter output/cache state, but their activity still prevents a speech frame
+            # from being folded into the running silence embedding.
+            silence_profile_preds = spkcache_fifo_chunk_preds
+            spkcache_fifo_chunk_preds = self.sortformer_modules.apply_max_speakers_mask(
+                spkcache_fifo_chunk_preds, streaming_state.max_speakers
+            )
         if async_streaming:
             saved_spkcache_lengths = streaming_state.spkcache_lengths.clone()
             saved_fifo_lengths = streaming_state.fifo_lengths.clone()
@@ -1086,6 +1090,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
                 preds=spkcache_fifo_chunk_preds,
                 lc=lc_enc,
                 rc=rc_enc,
+                silence_profile_preds=silence_profile_preds,
             )
             if self.high_resolution:
                 max_chunk_len = chunk_pre_encode_embs.shape[1] - lc_enc - rc_enc
@@ -1107,6 +1112,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
                 preds=spkcache_fifo_chunk_preds,
                 lc=lc_enc,
                 rc=rc_enc,
+                silence_profile_preds=silence_profile_preds,
             )
             if self.high_resolution:
                 chunk_len = chunk_pre_encode_embs.shape[1] - lc_enc - rc_enc

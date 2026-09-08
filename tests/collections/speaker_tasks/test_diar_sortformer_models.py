@@ -331,10 +331,12 @@ class TestSortformerEncLabelModelStreaming:
         model.sortformer_modules.chunk_right_context = 1
         model._check_streaming_parameters()
         captured_state_predictions = []
+        captured_silence_profile_predictions = []
         streaming_update_async = model.sortformer_modules.streaming_update_async
 
         def capture_streaming_update(**kwargs):
             captured_state_predictions.append(kwargs["preds"].clone())
+            captured_silence_profile_predictions.append(kwargs["silence_profile_preds"].clone())
             return streaming_update_async(**kwargs)
 
         model.sortformer_modules.streaming_update_async = capture_streaming_update
@@ -351,6 +353,10 @@ class TestSortformerEncLabelModelStreaming:
         assert captured_state_predictions
         for state_predictions in captured_state_predictions:
             assert torch.count_nonzero(state_predictions[0, :, 2:]) == 0
+        assert any(
+            torch.count_nonzero(silence_predictions[0, :, 2:]) > 0
+            for silence_predictions in captured_silence_profile_predictions
+        )
         assert any(
             torch.count_nonzero(state_predictions[1, :, 2:]) > 0 for state_predictions in captured_state_predictions
         )

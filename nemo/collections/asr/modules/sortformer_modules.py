@@ -702,6 +702,8 @@ class SortformerModules(NeuralModule, Exportable):
         max_chunk_len,
         max_pop_out_len,
         lc,
+        silence_fifo_preds=None,
+        silence_chunk_preds=None,
     ):
         """
         Pop and retain logical ``[FIFO | chunk]`` frames and mutate the FIFO streaming state.
@@ -723,11 +725,18 @@ class SortformerModules(NeuralModule, Exportable):
             max_chunk_len (int): Physical chunk capacity excluding context.
             max_pop_out_len (int): Physical capacity of the rectangular popped-frame buffer.
             lc (int): Left context offset of the current chunk.
+            silence_fifo_preds (Optional[torch.Tensor]): Unmasked predictions for the valid current FIFO region, used
+                only to decide whether popped frames are silent.
+            silence_chunk_preds (Optional[torch.Tensor]): Unmasked predictions for the current chunk region, used only
+                to decide whether popped frames are silent.
 
         Returns:
             pop_out_embs (torch.Tensor): Left-aligned popped embeddings.
                 Shape: (batch_size, max_pop_out_len, emb_dim)
             pop_out_preds (torch.Tensor): Left-aligned predictions for popped embeddings.
+                Shape: (batch_size, max_pop_out_len, n_spk)
+            pop_out_silence_preds (torch.Tensor): Predictions used only for silence classification. This is identical
+                to ``pop_out_preds`` unless unmasked silence-profile predictions were supplied.
                 Shape: (batch_size, max_pop_out_len, n_spk)
             valid_pop_mask (torch.Tensor): Mask identifying valid popped frames.
                 Shape: (batch_size, max_pop_out_len)
@@ -781,12 +790,27 @@ class SortformerModules(NeuralModule, Exportable):
         )
         pop_out_embs, updated_fifo = torch.split(gathered_fifo_embs, [max_pop_out_len, max_fifo_len], dim=1)
         pop_out_preds, updated_fifo_preds = torch.split(gathered_fifo_preds, [max_pop_out_len, max_fifo_len], dim=1)
+        pop_out_silence_preds = pop_out_preds
+        if silence_fifo_preds is not None and silence_chunk_preds is not None:
+            silence_fifo_chunk_preds = torch.cat(
+                [
+                    silence_fifo_preds,
+                    silence_chunk_preds,
+                    silence_fifo_preds.new_zeros((batch_size, 1, n_spk)),
+                ],
+                dim=1,
+            )
+            pop_out_silence_preds = torch.gather(
+                silence_fifo_chunk_preds,
+                1,
+                fifo_physical_indices[:, :max_pop_out_len].unsqueeze(-1).expand(-1, -1, n_spk),
+            )
         valid_pop_mask = pop_positions < pop_out_lengths.unsqueeze(1)
 
         streaming_state.fifo = updated_fifo
         streaming_state.fifo_preds = updated_fifo_preds
         streaming_state.fifo_lengths.copy_(new_fifo_lengths)
-        return pop_out_embs, pop_out_preds, valid_pop_mask
+        return pop_out_embs, pop_out_preds, pop_out_silence_preds, valid_pop_mask
 
     def _update_async_silence_profile(self, streaming_state, pop_out_embs, pop_out_preds, valid_pop_mask):
         """
@@ -901,7 +925,16 @@ class SortformerModules(NeuralModule, Exportable):
             streaming_state.spkcache_compressed[idx] = True
         streaming_state.spkcache_lengths.copy_(updated_spkcache_lengths.clamp(max=self.spkcache_len))
 
-    def streaming_update_async(self, streaming_state, chunk, chunk_lengths, preds, lc: int = 0, rc: int = 0):
+    def streaming_update_async(
+        self,
+        streaming_state,
+        chunk,
+        chunk_lengths,
+        preds,
+        lc: int = 0,
+        rc: int = 0,
+        silence_profile_preds=None,
+    ):
         """
         Update the speaker cache and FIFO queue with the chunk of embeddings and speaker predictions.
         Asynchronous version, which means speaker cache, FIFO and chunk may have different lengths within a batch.
@@ -917,6 +950,8 @@ class SortformerModules(NeuralModule, Exportable):
                 Shape: (batch_size, spkcache_len + fifo_len + lc+chunk_len+rc, num_spks)
             lc (int): Left-context offset. Only ``chunk[:, lc:chunk_len+lc]`` is used to update the state.
             rc (int): Right-context offset excluded from the speaker-cache and FIFO update.
+            silence_profile_preds (Optional[torch.Tensor]): Unmasked speaker predictions used only to classify popped
+                frames as speech or silence. State and returned predictions continue to use ``preds``.
 
         Returns:
             streaming_state (SortformerStreamingState): Current streaming state including speaker cache and FIFO
@@ -948,11 +983,25 @@ class SortformerModules(NeuralModule, Exportable):
             max_chunk_len,
             lc,
         )
+        silence_fifo_preds = None
+        silence_chunk_preds = None
+        if silence_profile_preds is not None:
+            _, silence_fifo_preds, silence_chunk_preds = self._gather_async_predictions(
+                streaming_state,
+                silence_profile_preds,
+                spkcache_lengths,
+                fifo_lengths,
+                chunk_lengths,
+                max_spkcache_len,
+                max_fifo_len,
+                max_chunk_len,
+                lc,
+            )
 
         pop_out_lengths, new_fifo_lengths = self._compute_async_fifo_pop_lengths(
             spkcache_lengths, fifo_lengths, chunk_lengths, max_fifo_len
         )
-        pop_out_embs, pop_out_preds, valid_pop_mask = self._update_async_fifo(
+        pop_out_embs, pop_out_preds, pop_out_silence_preds, valid_pop_mask = self._update_async_fifo(
             streaming_state,
             chunk,
             current_fifo_preds,
@@ -963,8 +1012,10 @@ class SortformerModules(NeuralModule, Exportable):
             max_chunk_len,
             max_pop_out_len,
             lc,
+            silence_fifo_preds=silence_fifo_preds,
+            silence_chunk_preds=silence_chunk_preds,
         )
-        self._update_async_silence_profile(streaming_state, pop_out_embs, pop_out_preds, valid_pop_mask)
+        self._update_async_silence_profile(streaming_state, pop_out_embs, pop_out_silence_preds, valid_pop_mask)
         self._update_async_spkcache(
             streaming_state,
             current_spkcache_preds,
@@ -983,7 +1034,15 @@ class SortformerModules(NeuralModule, Exportable):
 
         return streaming_state, chunk_preds
 
-    def streaming_update(self, streaming_state, chunk, preds, lc: int = 0, rc: int = 0):
+    def streaming_update(
+        self,
+        streaming_state,
+        chunk,
+        preds,
+        lc: int = 0,
+        rc: int = 0,
+        silence_profile_preds=None,
+    ):
         """
         Update the speaker cache and FIFO queue with the chunk of embeddings and speaker predictions.
         Synchronous version, which means speaker cahce, FIFO queue and chunk have same lengths within a batch.
@@ -997,6 +1056,8 @@ class SortformerModules(NeuralModule, Exportable):
                 Shape: (batch_size, spkcache_len + fifo_len + lc+chunk_len+rc, num_spks)
             lc (int): Left-context offset. Only ``chunk[:, lc:chunk_len+lc]`` is used to update the state.
             rc (int): Right-context offset excluded from the speaker-cache and FIFO update.
+            silence_profile_preds (Optional[torch.Tensor]): Unmasked speaker predictions used only to classify popped
+                frames as speech or silence. State and returned predictions continue to use ``preds``.
 
         Returns:
             streaming_state (SortformerStreamingState): current streaming state including speaker cache and FIFO
@@ -1018,10 +1079,26 @@ class SortformerModules(NeuralModule, Exportable):
             preds = torch.stack(
                 [preds[batch_index, :, inv_spk_perm[batch_index]] for batch_index in range(batch_size)]
             )
+            if silence_profile_preds is not None:
+                silence_profile_preds = torch.stack(
+                    [
+                        silence_profile_preds[batch_index, :, inv_spk_perm[batch_index]]
+                        for batch_index in range(batch_size)
+                    ]
+                )
 
         streaming_state.fifo_preds = preds[:, spkcache_len : spkcache_len + fifo_len]
         chunk = chunk[:, lc : chunk_len + lc]
         chunk_preds = preds[:, spkcache_len + fifo_len + lc : spkcache_len + fifo_len + chunk_len + lc]
+        silence_profile_fifo_preds = None
+        if silence_profile_preds is not None:
+            silence_profile_fifo_preds = torch.cat(
+                [
+                    silence_profile_preds[:, spkcache_len : spkcache_len + fifo_len],
+                    silence_profile_preds[:, spkcache_len + fifo_len + lc : spkcache_len + fifo_len + chunk_len + lc],
+                ],
+                dim=1,
+            )
 
         # append chunk to fifo
         streaming_state.fifo = torch.cat([streaming_state.fifo, chunk], dim=1)
@@ -1035,12 +1112,15 @@ class SortformerModules(NeuralModule, Exportable):
 
             pop_out_embs = streaming_state.fifo[:, :pop_out_len]
             pop_out_preds = streaming_state.fifo_preds[:, :pop_out_len]
+            silence_profile_pop_out_preds = (
+                pop_out_preds if silence_profile_fifo_preds is None else silence_profile_fifo_preds[:, :pop_out_len]
+            )
             if not self.use_learnable_sil_emb:
                 streaming_state.mean_sil_emb, streaming_state.n_sil_frames = self._get_silence_profile(
                     streaming_state.mean_sil_emb,
                     streaming_state.n_sil_frames,
                     pop_out_embs,
-                    pop_out_preds,
+                    silence_profile_pop_out_preds,
                 )
             streaming_state.fifo = streaming_state.fifo[:, pop_out_len:]
             streaming_state.fifo_preds = streaming_state.fifo_preds[:, pop_out_len:]

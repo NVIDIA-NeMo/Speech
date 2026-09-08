@@ -847,6 +847,11 @@ A :class:`~lhotse.dataset.sampling.base.SamplingConstraint` decides what
   Audio examples additionally require ``audio_token_estimator`` in this mode;
   ``token_equivalent_duration`` cannot guarantee a hard cap because frame and
   subsampling rounding (especially at encoder chunk boundaries) is discrete.
+  One-dimensional ``bucket_duration_bins`` and ``bucket_batch_size`` may be
+  combined with ``batch_tokens`` to impose a per-bucket example-count cap in
+  addition to the exact aggregate token budget. Two-dimensional fixed buckets
+  retain the regular padded sampler and their existing strict/lenient and
+  token-ratio semantics.
 * ``FixedBucketBatchSizeConstraint2D`` — activated automatically when
   ``bucket_duration_bins`` is given as a list of ``[duration, tokens]``
   pairs **and** ``bucket_batch_size`` is set. Each bucket gets its own
@@ -1067,6 +1072,12 @@ therefore retain constant-time lookup without an extra runtime header probe or
 tar scan. The selected member name is validated from the same byte range when
 the audio payload is eventually loaded; a mismatch fails instead of scanning
 the tar.
+
+Use ``--native-tar-route-workers N`` to build independent native manifest/tar
+shards concurrently. Work is scheduled across all routing maps and shards, and
+the generated pack remains byte-identical to a single-worker build. Each active
+worker opens one manifest and one tar shard, so choose the worker count with the
+available file-descriptor and storage limits in mind.
 
 Before packing member offsets, the converter compares the final size sentinel
 with current local or remote object metadata. A matching index is accepted

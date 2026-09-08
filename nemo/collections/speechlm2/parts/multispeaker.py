@@ -38,6 +38,11 @@ class MultiSpeakerConfig:
     # 8-active-speaker cut enumerates 8! = 40320 permutations and materialises a
     # (P, n_tokens, n_frames) array -- measured at 48.7 s per cut in a dataloader worker.
     max_alignment_permutations: Optional[int] = 720
+    # Value written for a cut with no resolvable RTTM. ParallelExpertEncoder detects rows that are
+    # entirely <= this and substitutes its embedded diarizer for them. Leaving `no_rttm_to_ones`
+    # output as literal ones instead would train the speaker kernel on "every speaker active at
+    # every frame" -- confidently wrong supervision rather than an abstention.
+    missing_rttm_target: float = -1.0
     # --- streaming SpeechLM only (ignored by SALM) ---
     enable: bool = True
     speaker_token_template: str = "<spk:{i}>"
@@ -67,6 +72,7 @@ class MultiSpeakerConfig:
             no_rttm_to_ones=cfg.get('no_rttm_to_ones', True),
             num_sample_per_mel_frame=int(cfg.get('window_stride', 0.01) * cfg.get('sample_rate', 16000)),
             num_mel_frame_per_target_frame=int(cfg.get('subsampling_factor', 8)),
+            missing_rttm_target=float(cfg.get('missing_rttm_target', -1.0)),
             max_alignment_permutations=(
                 None
                 if cfg.get('max_alignment_permutations', 720) is None

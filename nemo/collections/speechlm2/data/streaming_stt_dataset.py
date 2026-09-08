@@ -1172,17 +1172,30 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
                     max_permutable=self._ms.max_permutable,
                 )
             except Exception as e:  # noqa: BLE001 - one unreadable RTTM must not kill the batch
-                logging.warning("Cut %s: speaker activity failed (%s: %s); using zeros.", cut.id, type(e).__name__, e)
+                logging.warning(
+                    "Cut %s: speaker activity failed (%s: %s); emitting the missing-RTTM sentinel.",
+                    cut.id,
+                    type(e).__name__,
+                    e,
+                )
                 n_frames = get_hidden_length_from_sample_length(
                     cut.num_samples, self._ms.num_sample_per_mel_frame, self._ms.num_mel_frame_per_target_frame
                 )
-                activity = torch.zeros(n_frames, self._ms.num_speakers)
+                # Sentinel, not zeros and not ones: the encoder reads it as "no RTTM here, use your
+                # own diarizer". Zeros would mean "nobody is speaking" and ones "everybody is" --
+                # both are assertions about the audio that we cannot make.
+                activity = torch.full((n_frames, self._ms.num_speakers), self._ms.missing_rttm_target)
             activities.append(activity)
         return activities
 
     def _collate_speaker_activities(self, activities, audio_lens, dtype):
-        """Pad per-cut activities to ``(B, T, n_spk)`` and derive per-sample frame counts."""
-        return collate_speaker_activity_targets(
+        """Pad per-cut activities to ``(B, T, n_spk)`` and derive per-sample frame counts.
+
+        A sentinel row is re-stamped after padding: `collate_speaker_activity_targets` zero-pads to
+        the batch width, and a row that is part -1 and part 0 no longer reads as "entirely
+        sentinel", so the encoder would fuse it as real targets instead of abstaining.
+        """
+        targets, lengths = collate_speaker_activity_targets(
             activities,
             audio_lens,
             num_speakers=self._ms.num_speakers,
@@ -1190,6 +1203,11 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
             num_mel_frame_per_target_frame=self._ms.num_mel_frame_per_target_frame,
             dtype=dtype,
         )
+        sentinel = self._ms.missing_rttm_target
+        for i, activity in enumerate(activities):
+            if activity.numel() and bool((activity <= sentinel).all()):
+                targets[i] = sentinel
+        return targets, lengths
 
     def __getitem__(self, cuts: CutSet) -> StreamingSTTBatch | None:
         try:

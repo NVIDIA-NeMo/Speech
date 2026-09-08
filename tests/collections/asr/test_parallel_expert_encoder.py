@@ -23,6 +23,7 @@ from torch import nn
 
 from nemo.collections.asr.models import SortformerEncLabelModel
 from nemo.collections.asr.modules.conformer_encoder import ConformerEncoder
+from nemo.collections.asr.modules.transformer_encoder import StreamingTransformerEncoder
 from nemo.collections.asr.modules.parallel_expert_encoder import (
     ParallelExpertEncoder,
     ParallelExpertEncoderPT,
@@ -482,6 +483,48 @@ def test_pe_encoder_builds_and_wires_both_real_encoders():
 
 
 @pytest.mark.unit
+def test_pe_encoder_accepts_a_non_conformer_cache_aware_asr_branch():
+    """The ASR branch is duck-typed, so a StreamingTransformerEncoder mounts just like a Conformer.
+
+    It differs from the Conformer in ways the PE never touches (`feature_stacking` instead of
+    convolutional subsampling, `rope` instead of `rel_pos`), and having no convolutions is exactly
+    why it is worth trying: nothing has to be reconstructed from `cache_last_time` across chunks.
+    """
+    asr_cfg = DictConfig(
+        {
+            '_target_': 'nemo.collections.asr.modules.transformer_encoder.StreamingTransformerEncoder',
+            'feat_in': _MEL_FEATURES,
+            'n_layers': 1,
+            'd_model': _ASR_D_MODEL,
+            # head_dim = d_model / n_heads must be >= 16 for the flex-attention CUDA backend.
+            'n_heads': 2,
+            'subsampling': 'feature_stacking',
+            'subsampling_factor': _SUBSAMPLING_FACTOR,
+            'self_attention_model': 'rope',
+            'att_context_style': 'chunked_limited',
+            'att_context_size': [70, 1],
+            'drop_rate': 0.0,
+        }
+    )
+    enc = build_toy_pe_encoder(asr_encoder_cfg=asr_cfg)
+
+    assert isinstance(enc.asr_encoder, StreamingTransformerEncoder)
+    # The drop-in properties the PE re-exports still resolve off the branch.
+    assert enc.d_model == _ASR_D_MODEL
+    assert enc.subsampling_factor == _SUBSAMPLING_FACTOR
+    assert enc.diar_kernel.shape == (_N_SPK, _ASR_D_MODEL)
+
+
+@pytest.mark.unit
+def test_pe_encoder_rejects_an_asr_branch_that_cannot_stream():
+    """A branch missing the cache-aware API must fail at construction, naming what is missing."""
+    asr_cfg = DictConfig({'_target_': 'torch.nn.Linear', 'in_features': 4, 'out_features': 4})
+
+    with pytest.raises(TypeError, match="cannot serve as a ParallelExpertEncoder ASR branch"):
+        build_toy_pe_encoder(asr_encoder_cfg=asr_cfg)
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     "high_resolution, requested_diar_subsampling_factor, expected_asr_aligned_factor",
     [(True, 1, _SUBSAMPLING_FACTOR)],
@@ -887,3 +930,57 @@ def test_explicit_diar_streaming_override_is_honored():
     sm = enc.diarization_model.sortformer_modules
     assert sm.fifo_len == 7
     assert {k: getattr(sm, k) for k in baseline} == baseline, "an explicit override leaked into other knobs"
+
+
+@pytest.mark.unit
+def test_missing_rttm_rows_are_detected_per_row():
+    """The mask must be per-row: a batch normally mixes cuts with and without an RTTM."""
+    enc = build_toy_pe_encoder()
+    real = torch.rand(4, _N_SPK)
+    sentinel = torch.full((4, _N_SPK), -1.0)
+    batch = torch.stack([real, sentinel, real, sentinel])
+    mask = enc.missing_rttm_rows(batch)
+    assert mask.tolist() == [False, True, False, True]
+    assert enc.missing_rttm_rows(None) is None
+
+
+@pytest.mark.unit
+def test_partially_sentinel_row_is_not_treated_as_missing():
+    """Only a row that is ENTIRELY sentinel counts -- `.all`, not `.any`.
+
+    A row that merely dips below the sentinel somewhere still carries real supervision; treating it
+    as missing would silently discard a whole cut's RTTM.
+    """
+    enc = build_toy_pe_encoder()
+    row = torch.zeros(1, 4, _N_SPK)
+    row[0, 0, 0] = -1.0
+    assert enc.missing_rttm_rows(row).tolist() == [False]
+
+
+@pytest.mark.unit
+def test_sentinel_rows_get_diarizer_predictions_and_others_keep_rttm():
+    """End to end: in one batch, a sentinel row must be fused from diarizer output while a real
+    row keeps its own targets. Before this, an all-ones placeholder was thresholded into
+    "every speaker active at every frame" and fused as if it were ground truth."""
+    enc = build_toy_pe_encoder().eval()
+    seen = {}
+    original = enc._fuse_diar_and_asr
+
+    def spy(asr_encoded, spk_targets):
+        seen["targets"] = spk_targets.detach().clone()
+        return original(asr_encoded, spk_targets)
+
+    enc._fuse_diar_and_asr = spy
+
+    mel = torch.randn(2, _MEL_FEATURES, 256)
+    length = torch.tensor([256, 256])
+    n_frames = 256 // _SUBSAMPLING_FACTOR
+    real = torch.rand(n_frames, _N_SPK)
+    targets = torch.stack([real, torch.full((n_frames, _N_SPK), -1.0)])
+
+    with torch.no_grad():
+        enc(audio_signal=mel, length=length, spk_targets=targets.clone())
+
+    used = seen["targets"]
+    assert torch.allclose(used[0], real, atol=1e-5), "row 0 should keep its RTTM targets"
+    assert not bool((used[1] <= -1.0).all()), "row 1 should have been replaced by diarizer output"

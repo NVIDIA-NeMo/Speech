@@ -143,6 +143,9 @@ class ParallelExpertEncoderPT(ModelPT):
             diar_chunk_len=self._cfg.get('diar_chunk_len', _DIAR_UNSET),
             speaker_activity_threshold=self._cfg.get('speaker_activity_threshold', 0.5),
             spk_kernel_scale=self._cfg.get('spk_kernel_scale', 1.0),
+            spk_kernel_row_stride=self._cfg.get('spk_kernel_row_stride', 1),
+            spk_kernel_calibrate=self._cfg.get('spk_kernel_calibrate', False),
+            speaker_row_offset=self._cfg.get('speaker_row_offset', 0),
         )
 
     @classmethod
@@ -314,7 +317,8 @@ class ParallelExpertEncoder(nn.Module):
     Reconstructed from inline configs in the PE bundle's ``model_config.yaml``.
 
     Args:
-        asr_encoder_cfg (DictConfig): Inline config for the ASR-side :class:`ConformerEncoder`.
+        asr_encoder_cfg (DictConfig): Inline config for the ASR-side cache-aware encoder
+            (:class:`ConformerEncoder`, :class:`StreamingTransformerEncoder`, ...).
         diarization_model_cfg (DictConfig): Inline config for the :class:`SortformerEncLabelModel`.
         asr_normalize_type (str, optional): Normalization replayed on the ASR branch. Defaults to
             ``per_feature`` when unset; pass ``None`` or ``'NA'`` to disable it entirely (required
@@ -353,6 +357,10 @@ class ParallelExpertEncoder(nn.Module):
         diar_chunk_len: Optional[int] = _DIAR_UNSET,
         speaker_activity_threshold: Optional[float] = 0.5,
         spk_kernel_scale: float = 1.0,
+        spk_kernel_row_stride: int = 1,
+        spk_kernel_calibrate: bool = False,
+        speaker_row_offset: int = 0,
+        missing_rttm_target: float = -1.0,
         att_context_size: Optional[list] = None,
     ):
         super().__init__()
@@ -367,12 +375,9 @@ class ParallelExpertEncoder(nn.Module):
                 "these inline in their model_config.yaml."
             )
 
+        # `from_config_dict` dispatches on `_target_`, so this builds whatever the config names.
         self.asr_encoder = ConformerEncoder.from_config_dict(_clone_config(asr_encoder_cfg))
-        if not isinstance(self.asr_encoder, ConformerEncoder):
-            raise TypeError(
-                f"Expected `asr_encoder_cfg._target_` to instantiate a "
-                f"ConformerEncoder, got {type(self.asr_encoder).__name__} instead."
-            )
+        _require_asr_encoder_interface(self.asr_encoder)
         if asr_normalize_type is _NORMALIZE_UNSET:
             asr_normalize_type = 'per_feature'
         self.asr_normalize_type = None if asr_normalize_type in (None, 'NA') else asr_normalize_type
@@ -425,9 +430,23 @@ class ParallelExpertEncoder(nn.Module):
 
         self.asr_norm = nn.LayerNorm(self.asr_d_model)
         self.diar_norm = nn.LayerNorm(self.n_spk)
+        # Rows whose targets are entirely <= this sentinel had no RTTM; they fall back to the
+        # embedded diarizer instead of being fused with meaningless targets. Without it, the
+        # dataset's `no_rttm_to_ones` placeholder becomes "all speakers active at every frame"
+        # after thresholding, and the kernel is trained on confidently-wrong supervision.
+        self.missing_rttm_target = float(missing_rttm_target)
+        self.spk_kernel_row_stride = int(spk_kernel_row_stride)
+        self.spk_kernel_calibrate = bool(spk_kernel_calibrate)
+        self.speaker_row_offset = int(speaker_row_offset)
         self.register_buffer(
             "diar_kernel",
-            self._build_sinusoid_position_encoding(self.n_spk, self.asr_d_model),
+            self._build_tag_kernel(
+                self.n_spk,
+                self.speaker_row_offset,
+                self.asr_d_model,
+                stride=self.spk_kernel_row_stride,
+                calibrate=self.spk_kernel_calibrate,
+            ),
             persistent=False,
         )
 
@@ -655,6 +674,50 @@ class ParallelExpertEncoder(nn.Module):
         pe[:, 1::2] = torch.cos(position * div_term)
         return pe
 
+    @classmethod
+    def _build_tag_kernel(
+        cls,
+        n_tags: int,
+        row_offset: int,
+        embedding_dim: int,
+        stride: int = 1,
+        calibrate: bool = False,
+    ) -> torch.Tensor:
+        """Take ``n_tags`` sinusoid rows from ``row_offset``, spaced ``stride``, and optionally calibrate.
+
+        Ported from the reference PE encoder. The defaults (``row_offset=0``, ``stride=1``,
+        ``calibrate=False``) reproduce ``_build_sinusoid_position_encoding(n_tags, dim)`` exactly,
+        which is what the published bundle uses -- so behaviour is unchanged unless a caller opts in.
+
+        Why the knobs matter: adjacent sinusoid rows are highly correlated, so at ``stride=1``
+        different speakers inject nearly the same direction into the ASR states. ``calibrate``
+        rescales so one active tag injects norm ``sqrt(embedding_dim)``, matching the scale of the
+        LayerNorm'd ASR states it is added to; uncalibrated, the infusion may be far too large or
+        too small relative to the acoustics.
+
+        Args:
+            n_tags (int): Number of tag identities (rows in the kernel).
+            row_offset (int): First sinusoid row reserved for this tag family.
+            embedding_dim (int): ASR state dimension the kernel projects into.
+            stride (int): Spacing between consecutive tag rows.
+            calibrate (bool): Rescale so one active tag injects norm ``sqrt(embedding_dim)``.
+
+        Returns:
+            torch.Tensor: Tag kernel. Shape: ``(n_tags, embedding_dim)``.
+        """
+        rows = [row_offset + stride * i for i in range(n_tags)]
+        table = cls._build_sinusoid_position_encoding(rows[-1] + 1, embedding_dim)
+        kernel = table[rows].contiguous()
+        if not calibrate:
+            return kernel
+
+        # The mean single-tag code is computed with LayerNorm's initial affine values. The norms
+        # remain learnable, so training may move away from this starting point.
+        eye = torch.eye(n_tags, dtype=kernel.dtype)
+        centred = (eye - eye.mean(dim=1, keepdim=True)) / eye.std(dim=1, unbiased=False, keepdim=True)
+        mean_norm = (centred @ kernel).norm(dim=1).mean()
+        return (kernel * (math.sqrt(embedding_dim) / mean_norm)).contiguous()
+
     @staticmethod
     def _align_diar_frames(spk_targets: torch.Tensor, target_len: int) -> torch.Tensor:
         """Pad-by-repeat or truncate ``spk_targets`` to ``target_len`` along time."""
@@ -681,6 +744,17 @@ class ParallelExpertEncoder(nn.Module):
         if param is None:
             return tensor
         return tensor.to(device=param.device, dtype=param.dtype)
+
+    def missing_rttm_rows(self, spk_targets: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
+        """Per-row mask of samples whose speaker targets are the missing-RTTM sentinel.
+
+        Returns a ``(B,)`` bool tensor, or ``None`` when ``spk_targets`` is absent. Per-row, not
+        all-or-nothing: a batch normally mixes cuts that have an RTTM with cuts that do not, and
+        each should get the right speaker source.
+        """
+        if spk_targets is None:
+            return None
+        return (spk_targets <= self.missing_rttm_target).flatten(start_dim=1).all(dim=1)
 
     def _fuse_diar_and_asr(self, asr_encoded: torch.Tensor, spk_targets: torch.Tensor) -> torch.Tensor:
         """Fuse ASR states with speaker-activity preds (LayerNorm + sinusoidal kernel + ADD).
@@ -749,7 +823,12 @@ class ParallelExpertEncoder(nn.Module):
         spk_targets=None,
     ):
         """Offline (non-chunked) forward pass. See :meth:`forward` for argument semantics."""
-        if spk_targets is None:
+        # Rows with no RTTM carry the sentinel; they need diarizer predictions even though the
+        # batch as a whole supplied `spk_targets`. Run the diarizer if ANY row needs it, then
+        # splice per row below.
+        missing_rows = self.missing_rttm_rows(spk_targets)
+        needs_diar = spk_targets is None or bool(missing_rows.any())
+        if needs_diar:
             # Cast fp32 mels to the diarizer's device/dtype before its conv subsampling.
             diar_signal = self._match_module_io(audio_signal, self.diarization_model)
             diar_length = length.to(device=diar_signal.device)
@@ -759,10 +838,18 @@ class ParallelExpertEncoder(nn.Module):
                     processed_signal_length=diar_length,
                     bypass_pre_encode=False,
                 )
-                spk_targets = self.diarization_model.forward_infer(
+                diar_preds = self.diarization_model.forward_infer(
                     emb_seq=emb_seq,
                     emb_seq_length=emb_seq_length,
                 )
+            if isinstance(diar_preds, tuple):
+                diar_preds = diar_preds[0]
+            if spk_targets is None:
+                spk_targets = diar_preds
+            else:
+                # Per-row substitution: keep real RTTM targets, replace only sentinel rows.
+                diar_preds = self._align_diar_frames(diar_preds, spk_targets.shape[1]).to(spk_targets.dtype)
+                spk_targets = torch.where(missing_rows.view(-1, 1, 1), diar_preds, spk_targets)
 
         if self.asr_normalize_type:
             asr_audio_signal, _, _ = normalize_batch(
@@ -943,9 +1030,8 @@ class ParallelExpertEncoder(nn.Module):
 class StreamingParallelExpertEncoder(ParallelExpertEncoder, StreamingEncoder):
     """:class:`ParallelExpertEncoder` that also speaks the cache-aware streaming interface.
 
-    The ASR branch is required to be a :class:`ConformerEncoder` (enforced by the base class), and
-    every ``ConformerEncoder`` already implements ``cache_aware_stream_step`` /
-    ``get_initial_cache_state`` / ``setup_streaming_params``. So this subclass adds **no new
+    The base class already requires the ASR branch to implement ``cache_aware_stream_step`` /
+    ``get_initial_cache_state`` / ``setup_streaming_params``, so this subclass adds **no new
     capability** -- it exposes the branch's existing machinery through the wrapper and steps the
     Sortformer in lock-step on the same mel chunk so the fusion stays frame-aligned.
 
@@ -1155,3 +1241,31 @@ def _resolve_branch_source(path_or_name: str, model_cls, map_location):
     logging.info("Resolving PE branch %r via %s.from_pretrained", path_or_name, model_cls.__name__)
     model = model_cls.from_pretrained(model_name=path_or_name, map_location=map_location).eval()
     return OmegaConf.to_container(model.cfg, resolve=True), model.state_dict()
+
+
+# Everything the PE reads off its ASR branch. Checked by name rather than with `isinstance` so any
+# cache-aware encoder can be dropped in -- `ConformerEncoder` and `StreamingTransformerEncoder` both
+# satisfy it, and they differ in ways the PE never touches (convolutional vs `feature_stacking`
+# subsampling, `rel_pos` vs `rope`).
+_ASR_ENCODER_INTERFACE = (
+    '_feat_in',
+    'att_context_size',
+    'att_context_size_all',
+    'cache_aware_stream_step',
+    'd_model',
+    'get_initial_cache_state',
+    'pre_encode',
+    'setup_streaming_params',
+    'subsampling_factor',
+)
+
+
+def _require_asr_encoder_interface(encoder) -> None:
+    """Raise if ``encoder`` cannot stand in as a PE ASR branch."""
+    missing = [name for name in _ASR_ENCODER_INTERFACE if not hasattr(encoder, name)]
+    if missing:
+        raise TypeError(
+            f"`asr_encoder_cfg._target_` instantiated {type(encoder).__name__}, which is missing "
+            f"{missing} and so cannot serve as a ParallelExpertEncoder ASR branch. The branch must "
+            f"be a cache-aware encoder (e.g. ConformerEncoder, StreamingTransformerEncoder)."
+        )

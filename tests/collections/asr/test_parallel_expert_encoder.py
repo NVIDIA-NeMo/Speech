@@ -27,6 +27,7 @@ from nemo.collections.asr.modules.conformer_encoder import ConformerEncoder
 from nemo.collections.asr.modules.parallel_expert_encoder import (
     ParallelExpertEncoder,
     ParallelExpertEncoderPT,
+    TransformerCTCDecoder,
     _clone_config,
     _default_dtype,
     _disable_dist_feature_sync,
@@ -77,6 +78,53 @@ def test_disable_dist_feature_sync_noop_when_uninitialized():
     with _disable_dist_feature_sync():
         pass
     assert dist.is_initialized is orig  # nothing patched when dist is down
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("use_transformer", [True, False])
+def test_transformer_ctc_decoder_modes(use_transformer):
+    torch.manual_seed(7)
+    decoder = TransformerCTCDecoder(
+        feat_in=32,
+        num_classes=5,
+        use_transformer=use_transformer,
+        n_heads=2,
+        n_layers=1,
+        drop_rate=0.0,
+        ff_expansion=0.5,
+        self_attention_model="rope",
+    ).eval()
+    lengths = torch.tensor([7, 4])
+    states = torch.randn(2, 32, 7)
+
+    with torch.no_grad():
+        log_probs = decoder(encoder_output=states, encoded_lengths=lengths if use_transformer else None)
+
+    assert log_probs.shape == (2, 7, 6)
+    assert torch.allclose(log_probs.exp().sum(dim=-1), torch.ones(2, 7), atol=1e-5)
+    assert decoder.requires_encoded_lengths is use_transformer
+    assert (decoder.transformer is not None) is use_transformer
+    assert isinstance(decoder.decoder_layers[0], nn.Conv1d)
+
+    if use_transformer:
+        changed_padded_states = states.clone()
+        changed_padded_states[1, :, 4:] = torch.randn_like(changed_padded_states[1, :, 4:]) * 100
+        with torch.no_grad():
+            reference = decoder(encoder_output=states, encoded_lengths=lengths)
+            actual = decoder(encoder_output=changed_padded_states, encoded_lengths=lengths)
+        assert torch.allclose(reference[1, :4], actual[1, :4], atol=1e-6)
+
+        with pytest.raises(ValueError, match="requires encoded_lengths"):
+            decoder(encoder_output=states, encoded_lengths=None)
+
+
+@pytest.mark.unit
+def test_transformer_ctc_decoder_rejects_unsupported_modes():
+    with pytest.raises(ValueError, match="residual connections require use_transformer=True"):
+        TransformerCTCDecoder(feat_in=32, num_classes=5, use_transformer=False, residual=True)
+
+    with pytest.raises(ValueError, match="d_model to equal feat_in"):
+        TransformerCTCDecoder(feat_in=32, num_classes=5, d_model=16)
 
 
 # ----------------------------------------------------------------------------- #

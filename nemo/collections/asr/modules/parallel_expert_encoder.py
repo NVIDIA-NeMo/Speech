@@ -43,6 +43,7 @@ from torch import nn
 from tqdm import tqdm
 
 from nemo.collections.asr.modules.conformer_encoder import ConformerEncoder
+from nemo.collections.asr.modules.conv_asr import ConvASRDecoder
 from nemo.collections.asr.modules.transformer_encoder import TransformerEncoder
 from nemo.collections.asr.parts.preprocessing.features import normalize_batch
 from nemo.core.classes import ModelPT
@@ -54,6 +55,7 @@ from nemo.utils.decorators import experimental
 __all__ = [
     "ParallelExpertEncoder",
     "ParallelExpertEncoderPT",
+    "TransformerCTCDecoder",
 ]
 
 _ASR_ENCODER_TYPES = {
@@ -981,3 +983,147 @@ class ParallelExpertEncoder(nn.Module):
                 device=device,
             )
         return state, stream_dtype, diar_signal, diar_length
+
+
+class TransformerCTCDecoder(ConvASRDecoder):
+    """CTC decoder with an optional Transformer bridge before the CTC convolution.
+
+    The inherited ConvASRDecoder supplies the final 1x1 convolution and CTC
+    log-softmax. Enabling use_transformer inserts a length-aware dense
+    TransformerEncoder between encoder states and that convolution. Disabling it
+    produces the equivalent Conv-only CTC head, which makes the two alternatives
+    directly comparable.
+
+    d_model is intentionally constrained to feat_in. This keeps the head strictly
+    Transformer+Conv (or Conv-only), without a separate Linear projection layer.
+    """
+
+    requires_encoded_lengths = False
+
+    def __init__(
+        self,
+        feat_in: int,
+        num_classes: int,
+        init_mode: str = "xavier_uniform",
+        vocabulary: Optional[List[str]] = None,
+        add_blank: bool = True,
+        use_transformer: bool = True,
+        d_model: Optional[int] = None,
+        n_heads: int = 8,
+        n_layers: int = 2,
+        drop_rate: float = 0.1,
+        dropout_pre_encoder: Optional[float] = None,
+        dropout_emb: float = 0.0,
+        qkv_bias: bool = False,
+        qk_norm: bool = False,
+        ff_expansion: float = 4.0,
+        pre_block_norm: bool = True,
+        self_attention_model: Optional[str] = "rope",
+        rope_base: float = 10000.0,
+        rotary_fraction: float = 1.0,
+        pos_emb_max_len: int = 5000,
+        xscaling: bool = False,
+        attn_mode: str = "full",
+        sync_max_audio_length: bool = True,
+        residual: bool = False,
+        residual_scale: float = 1.0,
+        learnable_residual_scale: bool = False,
+    ):
+        if residual and not use_transformer:
+            raise ValueError("TransformerCTCDecoder residual connections require use_transformer=True.")
+
+        super().__init__(
+            feat_in=feat_in,
+            num_classes=num_classes,
+            init_mode=init_mode,
+            vocabulary=vocabulary,
+            add_blank=add_blank,
+        )
+
+        self.use_transformer = use_transformer
+        self.requires_encoded_lengths = use_transformer
+        self.transformer = None
+        self.residual = residual
+
+        if self.use_transformer:
+            transformer_d_model = feat_in if d_model is None else int(d_model)
+            if transformer_d_model != feat_in:
+                raise ValueError(
+                    "TransformerCTCDecoder requires d_model to equal feat_in so the head remains "
+                    "Transformer+Conv without a Linear projection. "
+                    f"Received d_model={transformer_d_model} and feat_in={feat_in}."
+                )
+
+            self.transformer = TransformerEncoder(
+                feat_in=feat_in,
+                d_model=feat_in,
+                n_heads=n_heads,
+                n_layers=n_layers,
+                subsampling=None,
+                subsampling_factor=1,
+                drop_rate=drop_rate,
+                dropout_pre_encoder=dropout_pre_encoder,
+                dropout_emb=dropout_emb,
+                qkv_bias=qkv_bias,
+                qk_norm=qk_norm,
+                ff_expansion=ff_expansion,
+                pre_block_norm=pre_block_norm,
+                self_attention_model=self_attention_model,
+                rope_base=rope_base,
+                rotary_fraction=rotary_fraction,
+                pos_emb_max_len=pos_emb_max_len,
+                xscaling=xscaling,
+                attn_mode=attn_mode,
+                sync_max_audio_length=sync_max_audio_length,
+            )
+            # The bridge consumes already encoded frame states through
+            # TransformerEncoder's bypass_pre_encode path, so it has no
+            # pre-encoder to train or checkpoint.
+            self.transformer.pre_encode = nn.Identity()
+
+            if residual:
+                if learnable_residual_scale:
+                    self.residual_scale = nn.Parameter(torch.tensor(float(residual_scale)))
+                else:
+                    self.register_buffer("residual_scale", torch.tensor(float(residual_scale)), persistent=True)
+
+    def forward(
+        self, encoder_output: torch.Tensor, encoded_lengths: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """Return CTC log probabilities from channels-first encoder states.
+
+        Args:
+            encoder_output: Acoustic states shaped (B, D, T).
+            encoded_lengths: Valid frame counts shaped (B,). Required when
+                use_transformer=True so padded frames cannot affect the Transformer bridge.
+
+        Returns:
+            Log probabilities shaped (B, T, num_classes_with_blank).
+        """
+        if encoder_output.ndim != 3:
+            raise ValueError(
+                "TransformerCTCDecoder expects encoder_output with shape (B, D, T), "
+                f"but got {tuple(encoder_output.shape)}."
+            )
+        if encoder_output.shape[1] != self._feat_in:
+            raise ValueError(
+                f"TransformerCTCDecoder expected {self._feat_in} encoder features, "
+                f"but got {encoder_output.shape[1]}."
+            )
+
+        encoded = encoder_output
+        if self.use_transformer:
+            if encoded_lengths is None:
+                raise ValueError("TransformerCTCDecoder requires encoded_lengths when use_transformer=True.")
+
+            residual_input = encoded
+            encoded, _ = self.transformer(
+                audio_signal=encoded.transpose(1, 2),
+                length=encoded_lengths,
+                bypass_pre_encode=True,
+            )
+
+            if self.residual:
+                encoded = residual_input + self.residual_scale.to(dtype=encoded.dtype) * encoded
+
+        return super().forward(encoder_output=encoded)

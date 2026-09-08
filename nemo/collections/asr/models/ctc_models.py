@@ -536,7 +536,10 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
         encoder_output = self.encoder(audio_signal=processed_signal, length=processed_signal_length)
         encoded = encoder_output[0]
         encoded_len = encoder_output[1]
-        log_probs = self.decoder(encoder_output=encoded)
+        if getattr(self.decoder, "requires_encoded_lengths", False):
+            log_probs = self.decoder(encoder_output=encoded, encoded_lengths=encoded_len)
+        else:
+            log_probs = self.decoder(encoder_output=encoded)
         greedy_predictions = log_probs.argmax(dim=-1, keepdim=False)
 
         return (

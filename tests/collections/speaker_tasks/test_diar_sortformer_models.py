@@ -31,6 +31,8 @@ from examples.speaker_tasks.diarization.neural_diarizer.e2e_diarize_speech impor
 from omegaconf import DictConfig
 from onnx.reference import ReferenceEvaluator
 
+from nemo.collections.asr.losses.aux_diarization_loss import activity_loss, phantom_loss
+from nemo.collections.asr.metrics.speaker_counting import speaker_count_metrics
 from nemo.collections.asr.models import SortformerEncLabelModel
 from nemo.collections.asr.models.sortformer_diar_models import _OversamplingDistributedSampler
 from nemo.collections.asr.parts.submodules.subsampling import FeatureStacking
@@ -634,7 +636,7 @@ class TestSortformerEncLabelModelLossRepresentation:
         expected_mae,
         expected_acc,
     ):
-        spk_count_mae, spk_count_acc = SortformerEncLabelModel._speaker_count_metrics(
+        spk_count_mae, spk_count_acc = speaker_count_metrics(
             torch.tensor(preds),
             torch.tensor(targets),
             torch.tensor(target_lens),
@@ -689,10 +691,14 @@ class TestSortformerEncLabelModelLossRepresentation:
                 4,
                 ((0, 1, 2, 0),),
             ),
+            (
+                (((1.0, 0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 0.0)),),
+                0,
+                ((1, 0),),
+            ),
         ],
     )
     def test_activity_loss_targets_padding_and_gradients(self, target_rows, target_len, expected_classes):
-        model = _create_sortformer_model(activity_weight=0.5)
         targets = torch.tensor(target_rows)
         expected_classes = torch.tensor(expected_classes)
         target_lens = torch.tensor([target_len])
@@ -703,13 +709,14 @@ class TestSortformerEncLabelModelLossRepresentation:
         activity_logits.requires_grad_()
 
         actual_classes = (targets > 0.5).sum(dim=-1).clamp(max=2).long()
-        loss = model._activity_loss(activity_logits, targets, target_lens)
+        loss = activity_loss(activity_logits, targets, target_lens)
         loss.backward()
 
         assert torch.equal(actual_classes, expected_classes)
         assert loss.item() < 1e-6
         assert activity_logits.grad is not None
-        assert activity_logits.grad[:, :target_len].abs().sum() > 0
+        if target_len > 0:
+            assert activity_logits.grad[:, :target_len].abs().sum() > 0
         assert torch.count_nonzero(activity_logits.grad[:, target_len:]) == 0
 
     @pytest.mark.unit
@@ -740,12 +747,7 @@ class TestSortformerEncLabelModelLossRepresentation:
         ],
     )
     def test_phantom_loss_selection_normalization_and_gradients(self, selected_channels, temperature):
-        model = _create_sortformer_model(
-            phantom_weight=1.0,
-            phantom_threshold=0.6,
-            phantom_temperature=temperature,
-        )
-        num_spks = model.sortformer_modules.n_spk
+        num_spks = 4
         logits = torch.full((1, 4, num_spks), -2.0)
         phantom_targets = torch.zeros_like(logits)
         for speaker in range(num_spks - 1):
@@ -758,7 +760,13 @@ class TestSortformerEncLabelModelLossRepresentation:
         logits[0, 3] = 5.0
         logits.requires_grad_()
 
-        loss = model._phantom_loss(logits, phantom_targets, torch.tensor([3]))
+        loss = phantom_loss(
+            logits=logits,
+            phantom_targets=phantom_targets,
+            target_lens=torch.tensor([3]),
+            threshold=0.6,
+            temperature=temperature,
+        )
         expected = logits.new_zeros(())
         for speaker in selected_channels:
             frame_losses = torch.nn.functional.softplus(logits.detach()[0, :2, speaker])
@@ -774,6 +782,23 @@ class TestSortformerEncLabelModelLossRepresentation:
         for speaker in selected_channels:
             expected_gradient_mask[0, :2, speaker] = True
         assert torch.equal(logits.grad != 0, expected_gradient_mask)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(("logit", "is_selected"), [(0.0, False), (1.0, True)])
+    def test_phantom_loss_uses_strict_probability_threshold(self, logit, is_selected):
+        logits = torch.tensor([[[logit]]], requires_grad=True)
+
+        loss = phantom_loss(
+            logits=logits,
+            phantom_targets=torch.zeros_like(logits),
+            target_lens=torch.tensor([1]),
+            threshold=0.5,
+            temperature=0.5,
+        )
+        loss.backward()
+
+        assert torch.isfinite(loss)
+        assert (logits.grad != 0).item() is is_selected
 
     @pytest.mark.unit
     @pytest.mark.parametrize(

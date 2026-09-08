@@ -24,7 +24,6 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 import numpy as np
 import torch
 import torch.distributed as dist
-import torch.nn.functional as F
 from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning import Trainer
 from torch.utils.data import DataLoader
@@ -32,8 +31,11 @@ from tqdm import tqdm
 
 from nemo.collections.asr.data.audio_to_diar_label import AudioToSpeechE2ESpkDiarDataset
 from nemo.collections.asr.data.audio_to_diar_label_lhotse import LhotseAudioToSpeechE2ESpkDiarDataset
+from nemo.collections.asr.losses.aux_diarization_loss import activity_loss as compute_activity_loss
+from nemo.collections.asr.losses.aux_diarization_loss import phantom_loss as compute_phantom_loss
 from nemo.collections.asr.losses.bce_loss import BCEWithLogitsLoss
 from nemo.collections.asr.metrics.multi_binary_acc import MultiBinaryAccuracy
+from nemo.collections.asr.metrics.speaker_counting import speaker_count_metrics
 from nemo.collections.asr.models.asr_model import ExportableEncDecModel
 from nemo.collections.asr.parts.mixins.diarization import DiarizeConfig, SpkDiarizationMixin
 from nemo.collections.asr.parts.preprocessing.features import FilterbankFeatures, WaveformFeaturizer
@@ -1573,70 +1575,6 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
         target_lens = target_lens.clamp(max=common_num_frames)
         return preds, targets, target_lens
 
-    @staticmethod
-    def _speaker_count_metrics(
-        preds: torch.Tensor,
-        targets: torch.Tensor,
-        target_lens: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Compute speaker-count errors over valid frames.
-
-        Args:
-            preds: Speaker probabilities with shape ``(B, T, S)``.
-            targets: Hard speaker targets with shape ``(B, T, S)``.
-            target_lens: Number of valid frames per sample with shape ``(B,)``.
-
-        Returns:
-            Scalar FP32 tensors containing the batch-mean speaker-count absolute
-            error and exact-match accuracy. Activity outside valid frames is ignored.
-        """
-        num_frames = preds.shape[1]
-        valid = (
-            torch.arange(num_frames, device=preds.device).unsqueeze(0) < target_lens.to(preds.device).unsqueeze(1)
-        ).unsqueeze(-1)
-
-        predicted_present = ((preds > 0.5) & valid).any(dim=1)
-        target_present = ((targets > 0.5) & valid).any(dim=1)
-
-        predicted_count = predicted_present.sum(dim=1)
-        target_count = target_present.sum(dim=1)
-        count_error = (predicted_count - target_count).abs().float()
-
-        return count_error.mean(), (predicted_count == target_count).float().mean()
-
-    def _activity_loss(
-        self,
-        activity_logits: torch.Tensor,
-        targets: torch.Tensor,
-        target_lens: torch.Tensor,
-    ) -> torch.Tensor:
-        """Compute three-class activity loss over valid frames.
-
-        Speaker targets are converted to mutually exclusive silence, single-speaker,
-        and overlap classes without applying PIL or ATS speaker alignment. Padded
-        frames are excluded, and cross-entropy is evaluated in FP32.
-
-        Args:
-            activity_logits: Raw activity logits with shape ``(B, T, 3)``.
-            targets: Unpermuted speaker targets with shape ``(B, T, S)``.
-            target_lens: Number of valid frames per batch item with shape ``(B,)``.
-
-        Returns:
-            Mean cross-entropy over valid frames as an FP32 scalar.
-        """
-        activity_targets = (targets > 0.5).sum(dim=-1).clamp(max=2).long()
-        valid_frames = torch.arange(activity_logits.shape[1], device=activity_logits.device).unsqueeze(
-            0
-        ) < target_lens.to(activity_logits.device).unsqueeze(1)
-        with torch.autocast(device_type=activity_logits.device.type, enabled=False):
-            frame_losses = F.cross_entropy(
-                activity_logits.float().transpose(1, 2),
-                activity_targets,
-                reduction="none",
-            )
-            loss = (frame_losses * valid_frames).sum() / valid_frames.sum().clamp_min(1).float()
-        return loss
-
     def _get_phantom_targets(
         self,
         targets_pil: torch.Tensor,
@@ -1660,80 +1598,6 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
         if self.phantom_target == "ats":
             return targets_ats
         return torch.maximum(targets_pil, targets_ats)
-
-    def _phantom_loss(
-        self,
-        logits: torch.Tensor,
-        phantom_targets: torch.Tensor,
-        target_lens: torch.Tensor,
-    ) -> torch.Tensor:
-        """Penalize ``phantom`` speakers predicted in channels with no target speaker.
-
-        Here a phantom speaker means high-confidence speaker activity assigned to an
-        output channel that is never associated with a target speaker during the valid
-        segment. Within such channels, frames whose detached probability exceeds the
-        configured threshold contribute negative-label BCE from the raw logits. Those
-        frame losses are reduced per channel with temperature-scaled normalized
-        log-mean-exp, then summed over channels, divided by the fixed speaker-slot count,
-        and averaged across the batch. Padded and unselected frames have no gradient.
-
-        Args:
-            logits: Raw speaker logits with shape ``(B, T, S)``.
-            phantom_targets: Aligned targets used to detect empty channels, with shape
-                ``(B, T, S)``.
-            target_lens: Number of valid frames per batch item with shape ``(B,)``.
-
-        Returns:
-            The FP32 batch-mean phantom loss.
-        """
-        num_frames, num_spks = logits.shape[1], logits.shape[2]
-        if num_frames == 0:
-            return logits.float().sum() * 0.0
-
-        valid_frames = torch.arange(num_frames, device=logits.device).unsqueeze(0) < target_lens.to(
-            logits.device
-        ).unsqueeze(1)
-        valid_frame_mask = valid_frames.unsqueeze(-1)
-
-        # A channel is phantom-eligible only if no valid target frame activates it.
-        target_empty_channels = ~((phantom_targets > 0.5) & valid_frame_mask).any(dim=1)
-
-        # Detach threshold selection while preserving gradients through the selected logits below.
-        detached_probs = torch.sigmoid(logits.detach())
-        selected_phantom_frames = (
-            valid_frame_mask & target_empty_channels.unsqueeze(1) & (detached_probs > self.phantom_threshold)
-        )
-
-        with torch.autocast(device_type=logits.device.type, enabled=False):
-            # softplus(z) is BCEWithLogits(z, target=0) for each frame and speaker channel.
-            negative_bce = F.softplus(logits.float())
-            selected_frame_count = selected_phantom_frames.sum(dim=1)
-            scaled_negative_bce = negative_bce / self.phantom_temperature
-
-            # In log space, -inf removes unselected frames from logsumexp exactly.
-            selected_scaled_bce = scaled_negative_bce.masked_fill(~selected_phantom_frames, float('-inf'))
-            has_selected_frames = selected_frame_count > 0
-
-            # Give empty selections one finite dummy value so logsumexp and its gradients stay finite.
-            safe_first_frame = torch.where(
-                has_selected_frames.unsqueeze(1),
-                selected_scaled_bce[:, :1, :],
-                torch.zeros_like(selected_scaled_bce[:, :1, :]),
-            )
-            selected_scaled_bce = torch.cat((safe_first_frame, selected_scaled_bce[:, 1:, :]), dim=1)
-
-            # Normalize over selected frames, then make channels without selections exact zeros.
-            per_channel_loss = self.phantom_temperature * (
-                torch.logsumexp(selected_scaled_bce, dim=1)
-                - torch.log(selected_frame_count.clamp_min(1).to(negative_bce.dtype))
-            )
-            per_channel_loss = torch.where(
-                has_selected_frames,
-                per_channel_loss,
-                torch.zeros_like(per_channel_loss),
-            )
-            phantom_loss = (per_channel_loss.sum(dim=1) / num_spks).mean()
-        return phantom_loss
 
     def _get_aux_train_evaluations(
         self,
@@ -1793,14 +1657,24 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
         if self.activity_weight > 0.0:
             if activity_logits is None:
                 raise ValueError("activity_weight is positive, but no activity logits were provided.")
-            activity_loss = self._activity_loss(activity_logits, targets, target_lens)
+            activity_loss = compute_activity_loss(
+                activity_logits=activity_logits,
+                targets=targets,
+                target_lens=target_lens,
+            )
         else:
             activity_loss = zero_loss
         if self.phantom_weight > 0.0:
             if logits is None:
                 raise ValueError("phantom_weight is positive, but no speaker logits were provided.")
             phantom_targets = self._get_phantom_targets(targets_pil, targets_ats)
-            phantom_loss = self._phantom_loss(logits, phantom_targets, target_lens)
+            phantom_loss = compute_phantom_loss(
+                logits=logits,
+                phantom_targets=phantom_targets,
+                target_lens=target_lens,
+                threshold=self.phantom_threshold,
+                temperature=self.phantom_temperature,
+            )
         else:
             phantom_loss = zero_loss
         loss = (
@@ -1816,7 +1690,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
         self._accuracy_train_ats(preds, targets_ats, target_lens)
         train_f1_acc_ats, _, _ = self._accuracy_train_ats.compute()
 
-        train_spk_count_mae, train_spk_count_acc = self._speaker_count_metrics(preds, targets, target_lens)
+        train_spk_count_mae, train_spk_count_acc = speaker_count_metrics(preds, targets, target_lens)
 
         train_metrics = {
             'loss': loss,
@@ -1930,14 +1804,24 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
         if self.activity_weight > 0.0:
             if activity_logits is None:
                 raise ValueError("activity_weight is positive, but no activity logits were provided.")
-            val_activity_loss = self._activity_loss(activity_logits, targets, target_lens)
+            val_activity_loss = compute_activity_loss(
+                activity_logits=activity_logits,
+                targets=targets,
+                target_lens=target_lens,
+            )
         else:
             val_activity_loss = zero_loss
         if self.phantom_weight > 0.0:
             if logits is None:
                 raise ValueError("phantom_weight is positive, but no speaker logits were provided.")
             phantom_targets = self._get_phantom_targets(targets_pil, targets_ats)
-            val_phantom_loss = self._phantom_loss(logits, phantom_targets, target_lens)
+            val_phantom_loss = compute_phantom_loss(
+                logits=logits,
+                phantom_targets=phantom_targets,
+                target_lens=target_lens,
+                threshold=self.phantom_threshold,
+                temperature=self.phantom_temperature,
+            )
         else:
             val_phantom_loss = zero_loss
         val_loss = (
@@ -1953,7 +1837,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
         self._accuracy_valid_ats(preds, targets_ats, target_lens)
         valid_f1_acc_ats, _, _ = self._accuracy_valid_ats.compute()
 
-        val_spk_count_mae, val_spk_count_acc = self._speaker_count_metrics(preds, targets, target_lens)
+        val_spk_count_mae, val_spk_count_acc = speaker_count_metrics(preds, targets, target_lens)
 
         self._accuracy_valid.reset()
         self._accuracy_valid_ats.reset()

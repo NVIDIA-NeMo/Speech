@@ -352,13 +352,18 @@ class SortformerModules(NeuralModule, Exportable):
         return torch.sigmoid(self.forward_speaker_logits(hidden_out))
 
     def forward_activity_logits(self, hidden_out: torch.Tensor) -> Optional[torch.Tensor]:
-        """Return raw silence, single-speaker, and overlap logits when the auxiliary head is enabled.
+        """Project hidden states to frame-level speaker-activity logits.
+
+        The three output classes represent silence (no active speakers), single-speaker
+        activity, and overlapping activity (two or more active speakers), respectively.
+        The returned values are raw, unnormalized logits intended for cross-entropy loss.
 
         Args:
             hidden_out: Post-transformer hidden states with shape ``(B, T, H)``.
 
         Returns:
-            Raw activity logits with shape ``(B, T, 3)``, or ``None`` when the head is disabled.
+            Raw activity logits with shape ``(B, T, 3)`` when the auxiliary activity
+            head is enabled, or ``None`` when it is disabled.
         """
         if self.activity_head is None:
             return None

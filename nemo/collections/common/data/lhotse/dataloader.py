@@ -1130,15 +1130,33 @@ def determine_sampling_constraint(
             assert (
                 bucket_duration_bins is not None
             ), "Cannot use bucket_batch_size option if bucket_duration_bins are not provided."
-            constraint = MultimodalFixedBucketBatchSizeConstraint2D(
-                max_seq_len_buckets=bucket_duration_bins,
-                batch_sizes=config.bucket_batch_size,
-                token_equivalent_duration=config.token_equivalent_duration,
-                audio_token_estimator=audio_token_estimator,
-                strict_2d=config.bucketing_2d_strict_mode,
-                max_ratio=config.max_tpt if isinstance(config.max_tpt, Sequence) else None,
-                measure_total_length=config.measure_total_length,
+            packed_1d_buckets = (
+                config.use_packed_sequence_sampling
+                and bool(bucket_duration_bins)
+                and not isinstance(bucket_duration_bins[0], Sequence)
             )
+            if packed_1d_buckets:
+                constraint = MultimodalSamplingConstraint(
+                    token_equivalent_duration=config.token_equivalent_duration,
+                    audio_token_estimator=audio_token_estimator,
+                    batch_size=config.batch_size,
+                    batch_tokens=config.batch_tokens,
+                    bucket_duration_bins=bucket_duration_bins,
+                    bucket_batch_size=config.bucket_batch_size,
+                    quadratic_factor=config.quadratic_factor,
+                    measure_total_length=config.measure_total_length,
+                    use_packed_sequence_sampling=True,
+                )
+            else:
+                constraint = MultimodalFixedBucketBatchSizeConstraint2D(
+                    max_seq_len_buckets=bucket_duration_bins,
+                    batch_sizes=config.bucket_batch_size,
+                    token_equivalent_duration=config.token_equivalent_duration,
+                    audio_token_estimator=audio_token_estimator,
+                    strict_2d=config.bucketing_2d_strict_mode,
+                    max_ratio=config.max_tpt if isinstance(config.max_tpt, Sequence) else None,
+                    measure_total_length=config.measure_total_length,
+                )
             cuts = cuts.filter(BucketingFilter(constraint))
         else:
             constraint = MultimodalSamplingConstraint(

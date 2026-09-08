@@ -260,7 +260,7 @@ class PackedSequenceDynamicBucketer(DynamicBucketer):
             else self._measure_integer_length(example_or_tuple)
         )
 
-    def _limits(self) -> tuple[int, int | None]:
+    def _limits(self, anchor_length: int | None = None) -> tuple[int, int | None]:
         batch_tokens = getattr(self.constraint, "batch_tokens", None)
         max_examples = getattr(self.constraint, "batch_size", None)
         if batch_tokens is None:
@@ -269,6 +269,11 @@ class PackedSequenceDynamicBucketer(DynamicBucketer):
             max_examples = getattr(internal, "max_examples", max_examples)
         if batch_tokens is None:
             raise ValueError("Packed sequence sampling requires batch_tokens to define the exact token cap.")
+        per_bucket_limit = getattr(self.constraint, "max_examples_for_length", None)
+        if anchor_length is not None and callable(per_bucket_limit):
+            bucket_max_examples = per_bucket_limit(anchor_length)
+            if bucket_max_examples is not None:
+                max_examples = bucket_max_examples if max_examples is None else min(max_examples, bucket_max_examples)
         batch_tokens = int(batch_tokens)
         if batch_tokens <= 0:
             raise ValueError(f"batch_tokens must be positive (got {batch_tokens})")
@@ -301,7 +306,7 @@ class PackedSequenceDynamicBucketer(DynamicBucketer):
         # deterministic prefix is retained as a fullness fallback below.
         raw_lengths = [self._measure_integer_length(example) for example in candidates]
         budget_lengths = [self._measure_budget_length(example) for example in candidates]
-        batch_tokens, max_examples = self._limits()
+        batch_tokens, max_examples = self._limits(raw_lengths[0])
         if raw_lengths[0] > batch_tokens:
             raise ValueError(
                 f"An individual example ({raw_lengths[0]} tokens) exceeds "

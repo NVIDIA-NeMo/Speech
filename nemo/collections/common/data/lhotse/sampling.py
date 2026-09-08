@@ -16,6 +16,7 @@
 import math
 from bisect import bisect_left
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from typing import Any, Sequence
 
 import numpy as np
@@ -73,9 +74,35 @@ class MultimodalSamplingConstraint(SamplingConstraint):
     # When True, we consider the sum of input and output lengths together (useful mostly for decoder-only models).
     measure_total_length: bool = False
 
+    # Optional per-bucket example-count caps. With packed sampling these are
+    # enforced in addition to the exact aggregate token cap.
+    bucket_duration_bins: Sequence[float] | None = None
+    bucket_batch_size: Sequence[int] | None = None
+    _active_bucket: int | None = dataclass_field(init=False, default=None, repr=False)
+
     _internal = None
 
     def __post_init__(self):
+        has_bucket_bins = self.bucket_duration_bins is not None
+        has_bucket_sizes = self.bucket_batch_size is not None
+        if has_bucket_bins != has_bucket_sizes:
+            raise ValueError("bucket_duration_bins and bucket_batch_size must be configured together")
+        if has_bucket_bins:
+            if not self.use_packed_sequence_sampling:
+                raise ValueError("Per-bucket caps on MultimodalSamplingConstraint require packed sampling")
+            if self.batch_tokens is None:
+                raise ValueError("Packed per-bucket caps require batch_tokens")
+            if any(isinstance(boundary, Sequence) for boundary in self.bucket_duration_bins):
+                raise ValueError(
+                    "Packed per-bucket caps require one-dimensional token bins; "
+                    "two-dimensional fixed buckets retain the regular padded sampler"
+                )
+            if list(self.bucket_duration_bins) != sorted(self.bucket_duration_bins):
+                raise ValueError("bucket_duration_bins must be sorted ascendingly")
+            if len(self.bucket_duration_bins) != len(self.bucket_batch_size):
+                raise ValueError("bucket_duration_bins and bucket_batch_size must have equal lengths")
+            if not self.bucket_batch_size or any(int(size) <= 0 for size in self.bucket_batch_size):
+                raise ValueError("bucket_batch_size values must be positive")
         if self.use_packed_sequence_sampling:
             self._internal = PackedTokenConstraint(
                 batch_tokens=self.batch_tokens,
@@ -89,8 +116,34 @@ class MultimodalSamplingConstraint(SamplingConstraint):
                 quadratic_length=self.quadratic_factor,
             )
 
+    def max_examples_for_length(self, num_tokens: int) -> int | None:
+        """Return the combined global and per-bucket example cap."""
+        if self.bucket_duration_bins is None:
+            return self.batch_size
+        bucket_idx = self.select_bucket(self.bucket_duration_bins, example_len=num_tokens)
+        if bucket_idx >= len(self.bucket_duration_bins):
+            raise ValueError(
+                f"Example length {num_tokens} exceeds the highest bucket boundary " f"{self.bucket_duration_bins[-1]}"
+            )
+        bucket_limit = int(self.bucket_batch_size[bucket_idx])
+        return bucket_limit if self.batch_size is None else min(int(self.batch_size), bucket_limit)
+
+    def _activate_bucket(self, num_tokens: int) -> None:
+        if self.bucket_duration_bins is None:
+            return
+        bucket_idx = self.select_bucket(self.bucket_duration_bins, example_len=num_tokens)
+        if bucket_idx >= len(self.bucket_duration_bins):
+            raise ValueError(
+                f"Example length {num_tokens} exceeds the highest bucket boundary " f"{self.bucket_duration_bins[-1]}"
+            )
+        if self._active_bucket is not None and self._active_bucket != bucket_idx:
+            raise AssertionError("Packed per-bucket constraints cannot mix buckets in one batch")
+        self._active_bucket = bucket_idx
+        self._internal.max_examples = self.max_examples_for_length(num_tokens)
+
     def add(self, example: Any) -> None:
         num_tokens = self.measure_length(example)
+        self._activate_bucket(num_tokens)
         example.num_tokens = num_tokens
         self._internal.add(example)
 
@@ -105,6 +158,7 @@ class MultimodalSamplingConstraint(SamplingConstraint):
         if not self.use_packed_sequence_sampling:
             raise RuntimeError("would_exceed() is only valid for packed sequence sampling")
         num_tokens = self.measure_length(example)
+        self._activate_bucket(num_tokens)
         if self._internal.max_examples is not None and self._internal.num_examples + 1 > self._internal.max_examples:
             return True
         return (
@@ -128,6 +182,8 @@ class MultimodalSamplingConstraint(SamplingConstraint):
 
     def reset(self) -> None:
         self._internal.reset()
+        self._active_bucket = None
+        self._internal.max_examples = self.batch_size
 
     def measure_length(self, example: Any) -> float:
         if isinstance(example, Cut):
@@ -642,12 +698,18 @@ class BucketingFilter:
 
     def __init__(self, sampling_constraint: SamplingConstraint) -> None:
         self.constraint = sampling_constraint
-        self.enabled = isinstance(self.constraint, FixedBucketBatchSizeConstraint2D)
+        self.buckets = getattr(
+            self.constraint,
+            "max_seq_len_buckets",
+            getattr(self.constraint, "bucket_duration_bins", None),
+        )
+        self.enabled = isinstance(self.constraint, FixedBucketBatchSizeConstraint2D) or self.buckets is not None
 
     def __call__(self, example) -> bool:
         if not self.enabled:
             return True
-        return self.constraint.select_bucket(self.constraint.max_seq_len_buckets, example) is not None
+        bucket_idx = self.constraint.select_bucket(self.buckets, example)
+        return bucket_idx is not None and bucket_idx < len(self.buckets)
 
 
 def _measure_tokens(cut: Cut) -> int:

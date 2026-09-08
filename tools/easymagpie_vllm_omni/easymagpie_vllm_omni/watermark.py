@@ -101,6 +101,33 @@ def _restore_length(watermarked: torch.Tensor, original: torch.Tensor) -> torch.
     return watermarked
 
 
+def _taper_watermark_delta(
+    marked: torch.Tensor,
+    original: torch.Tensor,
+    *,
+    edge_samples: int,
+) -> torch.Tensor:
+    """Fade only Perth's perturbation at independently processed chunk edges."""
+    samples = int(original.shape[-1])
+    edge = min(max(int(edge_samples), 0), samples // 2)
+    if edge == 0:
+        return marked
+
+    ramp = torch.sin(
+        torch.linspace(
+            0,
+            torch.pi / 2,
+            edge,
+            device=marked.device,
+            dtype=marked.dtype,
+        )
+    ).square()
+    envelope = torch.ones_like(marked)
+    envelope[..., :edge] = ramp
+    envelope[..., -edge:] = ramp.flip(0)
+    return original + (marked - original) * envelope
+
+
 def watermark_waveforms(
     waveforms: list[torch.Tensor],
     *,
@@ -121,6 +148,13 @@ def watermark_waveforms(
     perth_device = perth_net.device
     perth_rate = int(perth_net.hp.sample_rate)
     minimum_samples = int(perth_net.hp.n_fft // 2 + 1)
+    # Perth reconstructs each chunk independently with an STFT. Tapering its
+    # perturbation across one half-window preserves the codec waveform at both
+    # edges and prevents audible seams when streaming chunks are concatenated.
+    edge_samples = max(
+        (int(perth_net.hp.n_fft) // 2 * sample_rate + perth_rate - 1) // perth_rate,
+        1,
+    )
 
     resample = None
     if sample_rate != perth_rate:
@@ -161,7 +195,12 @@ def watermark_waveforms(
             if sample_rate != perth_rate:
                 assert resample is not None
                 marked = resample(marked, perth_rate, sample_rate)
-            marked = _restore_length(marked, originals).clamp_(-1.0, 1.0)
+            marked = _restore_length(marked, originals)
+            marked = _taper_watermark_delta(
+                marked,
+                originals,
+                edge_samples=edge_samples,
+            ).clamp_(-1.0, 1.0)
 
             for batch_index, waveform_index in enumerate(indices):
                 waveforms[waveform_index] = marked[batch_index].reshape(-1)

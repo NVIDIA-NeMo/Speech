@@ -323,7 +323,13 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
                     stacklevel=2,
                 )
 
-        return torch.load(path / _METADATA_FILENAME)
+        # Lightning drops its temporary loaded-checkpoint reference at the end
+        # of resume. Keep this metadata-only payload alive for consumers whose
+        # restored state can outlive that connector reference; model and
+        # optimizer tensors were loaded separately through DCP above.
+        checkpoint = torch.load(path / _METADATA_FILENAME)
+        self._checkpoint_keepalive = checkpoint
+        return checkpoint
 
     def __init__(
         self,
@@ -370,6 +376,7 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
         self._activation_checkpointing_perception = activation_checkpointing_perception
         self._moe_mesh = None
         self._distributed_setup = None
+        self._checkpoint_keepalive = None
 
     @property
     def moe_mesh(self):

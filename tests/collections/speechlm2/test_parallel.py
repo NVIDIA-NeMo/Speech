@@ -13,7 +13,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import gc
+import weakref
+from types import SimpleNamespace
+
 import pytest
+import torch.distributed.checkpoint as dcp
+import torch.distributed.checkpoint.state_dict as dcp_state_dict
+from lightning.pytorch.strategies import model_parallel as lightning_model_parallel
 from lightning.pytorch.strategies.model_parallel import ModelParallelStrategy
 from nemo_automodel.components.distributed.config import FSDP2Config, MoEParallelizerConfig
 from omegaconf import DictConfig
@@ -41,8 +48,46 @@ class TestAutomodelParallelStrategy:
         assert strategy._distributed_config is None
         assert strategy._moe_config is None
         assert strategy._moe_mesh is None
+        assert strategy._checkpoint_keepalive is None
         assert strategy.activation_checkpointing_llm is False
         assert strategy.activation_checkpointing_perception is False
+
+    def test_sharded_checkpoint_metadata_is_retained_after_return(self, monkeypatch, tmp_path):
+        class CheckpointMetadata:
+            pass
+
+        class Model:
+            def load_state_dict(self, state_dict, strict):
+                assert state_dict == {}
+                assert strict is True
+
+        class Reader:
+            def __init__(self, path):
+                assert path == tmp_path
+
+            def read_metadata(self):
+                return object()
+
+        strategy = AutomodelParallelStrategy()
+        strategy._model = Model()
+        strategy._lightning_module = SimpleNamespace(strict_loading=True)
+        strategy._optimizers = []
+        strategy.broadcast = lambda path: path
+        monkeypatch.setattr(lightning_model_parallel, "_is_sharded_checkpoint", lambda path: path == tmp_path)
+        monkeypatch.setattr(dcp, "FileSystemReader", Reader)
+        monkeypatch.setattr(dcp, "load", lambda state, checkpoint_id: None)
+        monkeypatch.setattr(dcp_state_dict, "get_model_state_dict", lambda model: {})
+        monkeypatch.setattr("torch.load", lambda path: CheckpointMetadata())
+
+        checkpoint = strategy.load_checkpoint(tmp_path)
+        checkpoint_ref = weakref.ref(checkpoint)
+        del checkpoint
+        gc.collect()
+
+        assert checkpoint_ref() is strategy._checkpoint_keepalive
+        strategy._checkpoint_keepalive = None
+        gc.collect()
+        assert checkpoint_ref() is None
 
     def test_accepts_activation_checkpointing_flags(self):
         strategy = AutomodelParallelStrategy(

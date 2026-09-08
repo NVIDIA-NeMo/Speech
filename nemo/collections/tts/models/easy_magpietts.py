@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -1955,6 +1956,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
     def get_lhotse_dataloader(self, dataset_cfg, mode='train') -> torch.utils.data.DataLoader:
         # TODO @xueyang: better to distinguish cfg. self.cfg is the model cfg, while cfg here is train_ds cfg. Also
         #   cfg is a classifier-free guidance.
+        load_normalized_text_percent = dataset_cfg.get("load_normalized_text_percent", 1.0)
         if self.cfg.get("use_multiturn_dataset", False):
             dataset = MagpieTTSLhotseMultiturnDataset(
                 sample_rate=self.sample_rate,
@@ -1967,6 +1969,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 load_cached_codes_if_available=self.cfg.load_cached_codes_if_available,
                 dataset_type=mode,  # train or test used for setting phone prob to 1.0 in test dataset (worker_init_fn)
                 load_16khz_audio=False,
+                load_normalized_text_percent=load_normalized_text_percent,
                 pad_context_text_to_max_duration=self.pad_context_text_to_max_duration,
                 context_duration_min=self.cfg.context_duration_min,
                 context_duration_max=self.cfg.context_duration_max,
@@ -2002,6 +2005,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 load_cached_codes_if_available=self.cfg.load_cached_codes_if_available,
                 dataset_type=mode,  # train or test used for setting phone prob to 1.0 in test dataset (worker_init_fn)
                 load_16khz_audio=False,
+                load_normalized_text_percent=load_normalized_text_percent,
                 pad_context_text_to_max_duration=self.pad_context_text_to_max_duration,
                 context_duration_min=self.cfg.context_duration_min,
                 context_duration_max=self.cfg.context_duration_max,

@@ -145,9 +145,7 @@ class CacheAwareRNNTInferenceWrapper(CacheAwareASRInferenceWrapper):
 
         if valid_out_len and per_sample_keep:
             # drop right context per stream: the streams that are not last keep valid_out_len frames
-            encoded_len = torch.where(
-                keep_all_outputs, encoded_len, torch.full_like(encoded_len, valid_out_len)
-            )
+            encoded_len = torch.where(keep_all_outputs, encoded_len, torch.full_like(encoded_len, valid_out_len))
         elif valid_out_len and not keep_all_outputs:
             # drop right context if any
             encoded = encoded[:, :, :valid_out_len]

@@ -237,8 +237,13 @@ class LSTMDropout(torch.nn.Module):
         Tracing keeps the cuDNN path whatever the shapes: `torch.lstm_cell` lowers to
         `aten::_thnn_fused_lstm_cell`, which the ONNX exporter has no symbolic for, and a traced graph
         should hold the general recurrence rather than one unrolled timestep of it.
+        Autocast keeps it too: `torch.nn.LSTM` casts to float16 under autocast whatever the autocast
+        dtype is, while `torch.lstm_cell` follows that dtype, so the two paths would return states of
+        different dtypes and a later `batch_copy_states` into a cached state would fail.
         """
         if torch.jit.is_tracing():
+            return False
+        if torch.is_autocast_enabled(self.lstm.weight_ih_l0.device.type):
             return False
         lstm = self.lstm
         return not lstm.bidirectional and lstm.proj_size == 0 and not lstm.batch_first

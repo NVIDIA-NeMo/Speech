@@ -256,10 +256,11 @@ class StreamingSTTModelConfig:
     frame_length_in_secs: float = 0.08
     # Down-weights blank targets (< 1.0) so easy no-emit decisions do not dominate.
     # NOTE: ``drop_blank_from_context`` / ``collapse_silent_audio`` change the blank
-    # fraction this weight is balancing against. A silent chunk used to contribute two
-    # supervised tokens (the blank and its turn eos) and now contributes one, so the
-    # blank/non-blank ratio shifts and a value tuned on the old format is no longer
-    # equivalent. Watch the ``blank_ratio`` metric (logged every step alongside
+    # fraction this weight is balancing against. The number of supervised DECISIONS is
+    # unchanged -- the blank is still the target once per silent chunk -- but a silent
+    # chunk no longer contributes its turn-closing eos, which was free to predict. So
+    # the blank/non-blank ratio shifts (blanks become a LARGER share of a smaller set)
+    # and a value tuned on the old format is no longer equivalent. Watch the ``blank_ratio`` metric (logged every step alongside
     # ``num_targets`` and ``sequence_length``) and re-tune rather than carrying the old
     # value across. Gated on ``has_blank``, so it is inert when ``blank_token`` is empty.
     blank_loss_weight: float = 1.0

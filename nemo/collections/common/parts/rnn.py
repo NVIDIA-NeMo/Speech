@@ -234,7 +234,12 @@ class LSTMDropout(torch.nn.Module):
 
         Only the plain unidirectional, non-projected, sequence-first case is covered, and only in eval
         mode, where the inter-layer dropout of `torch.nn.LSTM` and `self.dropout` are both identities.
+        Tracing keeps the cuDNN path whatever the shapes: `torch.lstm_cell` lowers to
+        `aten::_thnn_fused_lstm_cell`, which the ONNX exporter has no symbolic for, and a traced graph
+        should hold the general recurrence rather than one unrolled timestep of it.
         """
+        if torch.jit.is_tracing():
+            return False
         lstm = self.lstm
         return not lstm.bidirectional and lstm.proj_size == 0 and not lstm.batch_first
 

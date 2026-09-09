@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -50,6 +51,7 @@ class GemmaPromptFormatter(PromptFormatter):
 
 @registered_prompt_format_fn(Cut, GemmaPromptFormatter)
 def gemma1(cut: Cut, prompt: GemmaPromptFormatter):
+    """Format a prompted cut for Gemma 1 models."""
     if isinstance(cut, MixedCut):
         cut = cut.first_non_padding_cut
     if cut.has_custom("context"):

@@ -1,4 +1,5 @@
-# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -25,6 +26,7 @@ from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     LanguageThresholds,
     _get_sentence_separators_for_language,
     _sample_probability_range,
+    _select_text_for_tts_input,
     chunk_and_tokenize_text_by_sentence,
     chunk_text_for_inference,
     filter_dataset_by_duration,
@@ -58,6 +60,31 @@ class _FakePhonemeTokenizer:
 
 
 class TestTTSDatasetUtils:
+    @pytest.mark.parametrize(
+        "load_normalized_text_percent,random_value,expected_text",
+        [(0.0, None, "raw"), (1.0, None, "normalized"), (0.5, 0.25, "normalized"), (0.5, 0.75, "raw")],
+    )
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_select_text_for_tts_input(self, monkeypatch, load_normalized_text_percent, random_value, expected_text):
+        if random_value is None:
+            monkeypatch.setattr(
+                tts_dataset_utils.random,
+                "random",
+                lambda: pytest.fail("Endpoint probabilities should not sample the random number generator"),
+            )
+        else:
+            monkeypatch.setattr(tts_dataset_utils.random, "random", lambda: random_value)
+
+        text = _select_text_for_tts_input("raw", "normalized", load_normalized_text_percent)
+
+        assert text == expected_text
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_select_text_for_tts_input_falls_back_when_normalized_text_is_missing(self):
+        assert _select_text_for_tts_input("raw", None, 1.0) == "raw"
+
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
     def test_get_abs_rel_paths_input_abs(self):

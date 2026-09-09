@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -70,6 +71,9 @@ def test_canary_encoder_invariant_to_padding(deterministic_rng, length):
         subsampling_factor=8,
         subsampling_conv_channels=256,
         causal_downsampling=True,
+        # The hooks below record the output of each convolution module; the fused path runs
+        # those convolutions as Triton kernels, which have no module to hook.
+        use_triton=False,
         reduction=None,
         reduction_factor=1,
         ff_expansion_factor=4,
@@ -119,6 +123,7 @@ def test_canary_encoder_invariant_to_padding(deterministic_rng, length):
     inner1 = activation.copy()
     h2, h2l = encoder.pre_encode(mels2.transpose(1, 2), mels2l)
     inner2 = activation
+    assert inner1, "no convolution activations were captured"
     for k in inner1:
         torch.testing.assert_close(inner1[k], inner2[k][:, :, : inner1[k].shape[2]], atol=5e-5, rtol=0)
 

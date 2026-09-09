@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -25,7 +26,8 @@ from pathlib import Path
 import torch
 import yaml
 from easymagpie_vllm_omni.codec.config import EasyMagpieCodecConfig
-from easymagpie_vllm_omni.codec.weight_conversion import convert_decoder_state_dict
+from easymagpie_vllm_omni.codec.encoder_config import EasyMagpieCodecEncoderConfig
+from easymagpie_vllm_omni.codec.weight_conversion import convert_decoder_state_dict, convert_encoder_state_dict
 from safetensors.torch import save_file
 
 
@@ -33,6 +35,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("codec", type=Path, help="Input 25-fps spectral codec .nemo")
     parser.add_argument("output", type=Path, help="Output Hugging Face/vLLM model directory")
+    parser.add_argument(
+        "--encoder-output",
+        type=Path,
+        default=None,
+        help="Optional separate .safetensors checkpoint for the codec encoder; its config is saved beside it",
+    )
     parser.add_argument("--num-codebooks", type=int, default=8, help="EasyMagpie-side FSQ group count")
     parser.add_argument("--frame-stacking-factor", type=int, default=2)
     parser.add_argument(
@@ -81,6 +89,83 @@ def validate_decoder_config(decoder_config: dict) -> None:
         )
 
 
+def validate_encoder_config(encoder_config: dict, quantizer_config: dict) -> None:
+    """Validate encoder and FSQ features implemented by the standalone Torch module."""
+    expected_encoder = "nemo.collections.tts.modules.audio_codec_modules.MultiResolutionSTFTEncoder"
+    if encoder_config.get("_target_") != expected_encoder:
+        raise ValueError(
+            f"expected {expected_encoder}, got {encoder_config.get('_target_')}; "
+            "add a matching standalone encoder before converting this codec"
+        )
+    if encoder_config.get("activation", "lrelu") != "lrelu":
+        raise ValueError("the standalone codec encoder currently requires activation='lrelu'")
+    if encoder_config.get("pad_mode", "replicate") != "replicate":
+        raise ValueError("the standalone codec encoder currently requires pad_mode='replicate'")
+
+    expected_quantizer = "nemo.collections.tts.modules.audio_codec_modules.GroupFiniteScalarQuantizer"
+    if quantizer_config.get("_target_") != expected_quantizer:
+        raise ValueError(
+            f"expected {expected_quantizer}, got {quantizer_config.get('_target_')}; "
+            "only grouped finite scalar quantization can be repacked"
+        )
+
+
+def build_encoder_config(nemo_config: dict, args: argparse.Namespace) -> EasyMagpieCodecEncoderConfig:
+    encoder_config = nemo_config["audio_encoder"]
+    quantizer_config = nemo_config["vector_quantizer"]
+    validate_encoder_config(encoder_config, quantizer_config)
+    downsample_filters = list(encoder_config.get("down_sample_filter_list", []))
+    downsample_rates = list(encoder_config.get("down_sample_rate_list", [2] * len(downsample_filters)))
+    return EasyMagpieCodecEncoderConfig(
+        sample_rate=int(nemo_config["sample_rate"]),
+        samples_per_frame=int(nemo_config["samples_per_frame"]),
+        output_dim=int(encoder_config["out_dim"]),
+        resolutions=[list(value) for value in encoder_config["resolutions"]],
+        resolution_filters=list(encoder_config["resolution_filter_list"]),
+        downsample_filters=downsample_filters,
+        downsample_rates=downsample_rates,
+        kernel_size=int(encoder_config.get("kernel_size", 3)),
+        activation=str(encoder_config.get("activation", "lrelu")),
+        pad_mode=str(encoder_config.get("pad_mode", "replicate")),
+        original_num_codebooks=int(quantizer_config["num_groups"]),
+        original_num_levels_per_group=list(quantizer_config["num_levels_per_group"]),
+        num_codebooks=args.num_codebooks,
+        num_levels_per_group=list(args.num_levels_per_group),
+        frame_stacking_factor=args.frame_stacking_factor,
+    )
+
+
+def restore_speech_encoder(encoder_config: dict, state: dict[str, torch.Tensor]) -> torch.nn.Module:
+    """Instantiate and strictly restore the canonical Speech encoder."""
+    from hydra.utils import instantiate
+
+    prefix = "audio_encoder."
+    encoder_state = {name.removeprefix(prefix): tensor for name, tensor in state.items() if name.startswith(prefix)}
+    encoder = instantiate(encoder_config)
+    encoder.load_state_dict(encoder_state, strict=True)
+    return encoder.eval()
+
+
+def convert_encoder_checkpoint(
+    nemo_config: dict,
+    state: dict[str, torch.Tensor],
+    args: argparse.Namespace,
+) -> tuple[EasyMagpieCodecEncoderConfig, int]:
+    """Validate and save the optional standalone encoder checkpoint."""
+    config = build_encoder_config(nemo_config, args)
+    encoder = restore_speech_encoder(nemo_config["audio_encoder"], state)
+    converted = convert_encoder_state_dict(state)
+    parameter_count = sum(parameter.numel() for parameter in converted.values())
+    del encoder
+
+    if args.encoder_output.suffix != ".safetensors":
+        raise ValueError("--encoder-output must end in .safetensors")
+    args.encoder_output.parent.mkdir(parents=True, exist_ok=True)
+    save_file(converted, args.encoder_output)
+    config.to_json_file(args.encoder_output.with_suffix(".json"), use_diff=False)
+    return config, parameter_count
+
+
 def restore_speech_decoder(decoder_config: dict, state: dict[str, torch.Tensor]) -> torch.nn.Module:
     """Instantiate and strictly restore the canonical Speech decoder."""
     from hydra.utils import instantiate
@@ -96,6 +181,7 @@ def main() -> None:
     args = parse_args()
     nemo_config, state = _read_nemo(args.codec)
     decoder_config = nemo_config["audio_decoder"]
+    encoder_result = convert_encoder_checkpoint(nemo_config, state, args) if args.encoder_output is not None else None
     validate_decoder_config(decoder_config)
 
     levels = list(args.num_levels_per_group)
@@ -133,6 +219,13 @@ def main() -> None:
         f"Converted {len(converted)} tensors ({parameter_count:,} parameters) to {args.output}; "
         f"{config.num_stacked_codebooks} stacked codebooks -> {config.samples_per_frame} samples/frame"
     )
+    if encoder_result is not None:
+        encoder_config, encoder_parameter_count = encoder_result
+        print(
+            f"Converted codec encoder ({encoder_parameter_count:,} parameters) to {args.encoder_output}; "
+            f"16 kHz audio -> {encoder_config.num_stacked_codebooks} stacked codebooks at "
+            f"{encoder_config.sample_rate / encoder_config.samples_per_frame / encoder_config.frame_stacking_factor:g} fps"
+        )
 
 
 if __name__ == "__main__":

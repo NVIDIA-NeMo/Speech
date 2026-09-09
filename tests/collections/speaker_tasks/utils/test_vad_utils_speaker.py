@@ -20,6 +20,7 @@ from lhotse import SupervisionSegment
 
 from nemo.collections.asr.parts.utils.vad_utils import (
     align_labels_to_frames,
+    binarization,
     binarization_vectorized,
     convert_labels_to_speech_segments,
     frame_vad_construct_supervisions_per_file,
@@ -195,6 +196,30 @@ class TestVADUtils:
         )
 
         torch.testing.assert_close(segments, torch.tensor(expected))
+
+    @pytest.mark.parametrize(
+        ("predictions", "expected"),
+        [
+            pytest.param([0.6, 0.6], [[0.0, 0.16]], id="speech-runs-to-end-of-audio"),
+            pytest.param([0.1, 0.1, 0.9], [[0.16, 0.24]], id="lone-active-final-frame"),
+            pytest.param([0.9, 0.9, 0.1, 0.9, 0.9], [[0.0, 0.16], [0.24, 0.4]], id="trailing-matches-interior"),
+        ],
+    )
+    @pytest.mark.unit
+    def test_binarization_final_active_frame_uses_full_duration(self, predictions, expected):
+        per_args = {
+            'onset': 0.5,
+            'offset': 0.5,
+            'pad_onset': 0.0,
+            'pad_offset': 0.0,
+            'frame_length_in_sec': 0.08,
+        }
+        sequence = torch.tensor(predictions)
+
+        segments = binarization(sequence, per_args)
+
+        torch.testing.assert_close(segments, torch.tensor(expected))
+        torch.testing.assert_close(segments, binarization_vectorized(sequence, per_args))
 
     @pytest.mark.parametrize(
         "predictions",

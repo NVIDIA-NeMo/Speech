@@ -76,7 +76,8 @@ preserving each output's original sample count.
 Watermarking is enabled by default after installing the `perth` extra, and
 engine startup fails if Perth or its bundled checkpoint cannot be loaded.
 `resemble-perth==1.0.1` does not declare its own dependencies, so the extra
-also installs `librosa` and `torchaudio` unpinned. For unmarked quality
+also installs `torchaudio` unpinned. The serving loader uses `PerthNet`
+directly and does not import `librosa`/`soxr`. For unmarked quality
 comparisons only, set `NEMOTRON_TTS_PERTH_WATERMARK=0` to disable it.
 
 ### Quick start — offline synthesis

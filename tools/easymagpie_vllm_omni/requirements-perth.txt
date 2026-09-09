@@ -1,6 +1,5 @@
 # Optional codec-output watermarking. resemble-perth 1.0.1 does not declare
-# Requires-Dist, so list the packages the watermark path actually imports.
-# Do not pin librosa/torchaudio transitives; let pip resolve them.
+# Requires-Dist. The serving loader uses PerthNet + torchaudio only; it does
+# not import librosa/soxr (LGPLv2.1+).
 resemble-perth==1.0.1
-librosa>=0.11.0
 torchaudio

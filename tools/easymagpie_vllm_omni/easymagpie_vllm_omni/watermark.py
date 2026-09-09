@@ -7,6 +7,9 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
+import types
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -33,6 +36,45 @@ def watermarking_enabled() -> bool:
     return value.strip().lower() not in _DISABLED_VALUES
 
 
+def _perth_pretrained_dir() -> Path:
+    import perth
+
+    return Path(perth.__file__).resolve().parent / "perth_net" / "pretrained"
+
+
+def _ensure_perth_net_namespace() -> Path:
+    """Register ``perth.perth_net`` without running its package ``__init__``.
+
+    ``perth.perth_net`` and ``PerthImplicitWatermarker`` import
+    ``librosa.resample``, which eagerly imports ``soxr`` (LGPLv2.1+). This
+    serving path only needs ``PerthNet`` plus torchaudio resampling.
+    """
+    import perth
+
+    pretrained_dir = _perth_pretrained_dir()
+    package_name = "perth.perth_net"
+    package_path = str(Path(perth.__file__).resolve().parent / "perth_net")
+    current = sys.modules.get(package_name)
+    if current is not None and getattr(current, "__path__", None):
+        return pretrained_dir
+
+    module = types.ModuleType(package_name)
+    module.__path__ = [package_path]
+    module.__file__ = str(Path(package_path) / "__init__.py")
+    module.__package__ = package_name
+    module.PREPACKAGED_MODELS_DIR = str(pretrained_dir)
+    sys.modules[package_name] = module
+    return pretrained_dir
+
+
+def _load_perth_net(device: str) -> Any:
+    pretrained_dir = _ensure_perth_net_namespace()
+    from perth.perth_net.perth_net_implicit.model.perth_net import PerthNet
+
+    perth_net = PerthNet.load("implicit", models_dir=str(pretrained_dir))
+    return perth_net.to(device).eval()
+
+
 def initialize_watermarker(device: str | torch.device) -> Any | None:
     """Load Perth on ``device`` or fail startup when watermarking is enabled."""
     global _INITIALIZED_DEVICE, _WATERMARKER
@@ -51,13 +93,8 @@ def initialize_watermarker(device: str | torch.device) -> Any | None:
         return _WATERMARKER
 
     try:
-        import perth
-
-        watermarker_type = perth.PerthImplicitWatermarker
-        if watermarker_type is None:
-            raise ImportError("perth.PerthImplicitWatermarker is unavailable")
-        _WATERMARKER = watermarker_type(device=requested_device)
-        perth_net = _WATERMARKER.perth_net
+        perth_net = _load_perth_net(requested_device)
+        _WATERMARKER = types.SimpleNamespace(perth_net=perth_net)
         if torch.device(requested_device).type == "cuda":
             perth_net.encoder = torch.compile(
                 perth_net.encoder, mode="default", dynamic=True

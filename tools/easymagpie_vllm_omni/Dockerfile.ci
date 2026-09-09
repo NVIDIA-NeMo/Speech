@@ -16,9 +16,11 @@
 FROM vllm/vllm-openai:v0.24.0
 
 COPY tools/easymagpie_vllm_omni/requirements.txt /tmp/easymagpie-requirements.txt
+COPY tools/easymagpie_vllm_omni/requirements-perth.txt /tmp/easymagpie-requirements-perth.txt
 
 RUN python3 -m pip install --no-cache-dir \
     -r /tmp/easymagpie-requirements.txt \
+    -r /tmp/easymagpie-requirements-perth.txt \
     coverage \
     pytest \
     pytest-asyncio \

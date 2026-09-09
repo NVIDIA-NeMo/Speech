@@ -108,6 +108,7 @@ streaming:
   chunk_size: 4.8                             # Audio chunk size in seconds
   word_boundary_tolerance: 4                  # Tolerance for word boundaries
   request_type: feature_buffer                # Type of request: frame or feature_buffer
+  flush_size_in_secs: 0.0                     # Silence appended per stream so the decoder can flush its tail; 0.0 appends none
   stateful: true                              # Whether to use stateful processing
   padding_mode: right                         # Padding mode: left or right. How to pad frames to match the required buffer length
 

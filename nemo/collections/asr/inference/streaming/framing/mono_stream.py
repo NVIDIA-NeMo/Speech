@@ -26,18 +26,28 @@ class MonoStream(Stream):
     Iterates over the frames of the audio file
     """
 
-    def __init__(self, rate: int, frame_size_in_secs: float, stream_id: int, pad_last_frame: bool = False):
+    def __init__(
+        self,
+        rate: int,
+        frame_size_in_secs: float,
+        stream_id: int,
+        pad_last_frame: bool = False,
+        flush_size_in_secs: float = 0.0,
+    ):
         """
         Initialize the MonoStream
         Args:
             rate (int): sampling rate
             frame_size_in_secs (int): frame length in seconds
             stream_id (int): stream id
+            pad_last_frame (bool): whether to pad the last frame up to frame_size
+            flush_size_in_secs (float): seconds of silence appended to the audio, 0.0 to append none
         """
 
         self.rate = rate
         self.frame_size = int(frame_size_in_secs * rate)
         self.pad_last_frame = pad_last_frame
+        self.flush_size = int(flush_size_in_secs * rate)
 
         self.samples = None
         self.n_samples = None
@@ -56,6 +66,8 @@ class MonoStream(Stream):
             self.samples = read_audio(audio, target_sr=self.rate, mono=True)
         else:
             self.samples = audio
+        if self.flush_size > 0:  # appended as signal, not padding, so it is not trimmed downstream
+            self.samples = torch.cat([self.samples, torch.zeros(self.flush_size, dtype=self.samples.dtype)])
         self.n_samples = len(self.samples)
         self.frame_count = 0  # Reset frame count
         self.options = options

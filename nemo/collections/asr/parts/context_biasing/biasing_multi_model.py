@@ -562,22 +562,19 @@ class GPUBiasingMultiModel(GPUBiasingMultiModelBase):
         self.model2num_states[model_id] = 0
         self.model2num_arcs[model_id] = 0
         self.model2num_arcs_extended[model_id] = 0
-        # shift model offsets
+        # Shift the offsets of the models that lived after the removed one.
+        # Only ACTIVE models take part in the shift. An unused slot holds offset 0, and 0 is also a
+        # legitimate arena address, so a shift applied to every slot underflows every unused slot to a
+        # negative offset whenever the removed model started at 0. `model2active[model_id]` is already
+        # False here, so the removed model is excluded from the mask and its own offsets are cleared last.
+        states_shift_mask = self.model2active & (self.model2states_offset >= start_state)
+        arcs_shift_mask = self.model2active & (self.model2arcs_offset >= start_arc)
+        self.model2states_offset[states_shift_mask] -= num_states
+        self.model2arcs_offset[arcs_shift_mask] -= num_arcs
+
+        # clear the removed model's own offsets last
         self.model2states_offset[model_id] = 0
         self.model2arcs_offset[model_id] = 0
-        # shift states and arcs offsets
-        torch.where(
-            self.model2states_offset < start_state,
-            self.model2states_offset,
-            self.model2states_offset - num_states,
-            out=self.model2states_offset,
-        )
-        torch.where(
-            self.model2arcs_offset < start_arc,
-            self.model2arcs_offset,
-            self.model2arcs_offset - num_arcs,
-            out=self.model2arcs_offset,
-        )
 
     def get_init_states(self, batch_size: int, bos=True) -> torch.Tensor:
         """

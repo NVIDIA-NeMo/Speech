@@ -12,7 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from nemo.collections.asr.inference.nmt.prompts import RivaV2TranslatorPromptTemplate
+from nemo.collections.asr.inference.nmt.llm_translator import LLMTranslator
+from nemo.collections.asr.inference.nmt.prompts import (
+    QwenReasoningTranslatorPromptTemplate,
+    RivaV2TranslatorPromptTemplate,
+)
+
+
+def test_qwen_instruct_uses_streaming_incomplete_source_prompt():
+    assert LLMTranslator.get_prompt_template("Qwen/Qwen3-4B-Instruct-2507") is QwenReasoningTranslatorPromptTemplate
 
 
 def test_riva_prompt_preserves_aligned_context_as_separate_turns():

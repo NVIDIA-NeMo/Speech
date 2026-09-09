@@ -215,14 +215,9 @@ class BasePipeline(PipelineInterface):
         return stable
 
     @staticmethod
-    def _temporary_asr_suffix(stable: str, full: str, *, acoustic_eou: bool = False) -> str:
+    def _temporary_asr_suffix(stable: str, full: str) -> str:
         """Return only the temporary suffix when the two ASR views align."""
 
-        # After an acoustic EoU, ``partial_transcript`` contains only the
-        # incomplete post-boundary residue rather than a cumulative view that
-        # begins with ``final_transcript``.
-        if acoustic_eou:
-            return full
         if not stable:
             return full
         return full[len(stable) :] if full.startswith(stable) else ""
@@ -331,7 +326,6 @@ class BasePipeline(PipelineInterface):
         temporary_suffix = self._temporary_asr_suffix(
             stable,
             step_output.partial_transcript,
-            acoustic_eou=bool(step_output.final_transcript),
         )
         source = decision.source if decision.is_final else self._append_source(decision.source, temporary_suffix)
         if not source:
@@ -340,6 +334,12 @@ class BasePipeline(PipelineInterface):
 
         previous_translation, previous_prefix = state.previous_translation_info
         source_context, target_context = self._get_mt_context(state)
+        step_output._mt_request_source = source
+        step_output._mt_request_prefix = previous_prefix
+        step_output._mt_request_source_context = source_context
+        step_output._mt_request_target_context = target_context
+        step_output._mt_source_boundary_reason = decision.boundary_reason
+        step_output._mt_retained_source_suffix = decision.retained_suffix
         return BufferedTranslationRequest(
             state=state,
             step_output=step_output,

@@ -62,6 +62,14 @@ nmt:
   target_language: "Russian"                         # Target language code
   waitk: -1                                          # Max allowed lag (in words) between ASR transcript and translation; -1 disables it and uses only the longest common prefix between current and previous translations.
   prefix_boundary_mode: auto                         # LCP boundary: auto, whitespace, or model token.
+  generation_recovery:
+    enabled: false                                   # Retry an empty/invalid continuation once when target lags source.
+    min_tokens: 1                                    # Minimum tokens emitted by the bounded greedy retry.
+    deficit_threshold: 4                             # Minimum target-token deficit that enables the retry.
+    target_source_ratios:                            # Expected target/source model-token ratios by target language.
+      de: 0.9
+      it: 0.9
+      zh: 0.6
   source_buffer:
     enabled: false                                   # Decouple MT source segmentation from acoustic ASR endpointing.
     history_size: 2                                  # Completed aligned source-target units retained as MT context.

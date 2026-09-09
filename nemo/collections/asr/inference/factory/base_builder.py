@@ -70,6 +70,7 @@ class BaseBuilder:
                 llm_params=cfg.nmt.llm_params,
                 sampling_params=cfg.nmt.sampling_params,
                 prefix_boundary_mode=cfg.nmt.get("prefix_boundary_mode", "auto"),
+                generation_recovery=cfg.nmt.get("generation_recovery", None),
             )
             logging.info(f"NMT model `{cfg.nmt.model_name}` loaded")
         return nmt_model

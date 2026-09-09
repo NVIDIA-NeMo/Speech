@@ -103,7 +103,7 @@ def test_acoustic_eou_does_not_reset_mt_source():
     assert second.final_translation == "<short fragment continues.>"
 
 
-def test_acoustic_eou_residue_is_translated_in_the_same_update():
+def test_acoustic_eou_residue_waits_for_a_stable_asr_update():
     pipeline = _Pipeline(_Translator())
     state = _state()
     output = TranscribeStepOutput(
@@ -116,7 +116,16 @@ def test_acoustic_eou_residue_is_translated_in_the_same_update():
     pipeline._translate_step_buffered([state], [output])
 
     assert output.final_translation == "<Closed.>"
-    assert output.partial_translation == "<New temporary>"
+    assert output.partial_translation == ""
+
+    following = TranscribeStepOutput(
+        stream_id=0,
+        partial_transcript="New temporary",
+        current_step_transcript="New temporary",
+    )
+    pipeline._translate_step_buffered([state], [following])
+
+    assert following.partial_translation == "<New temporary>"
     assert state.mt_previous_source == "New temporary"
 
 

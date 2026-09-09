@@ -16,7 +16,10 @@ from types import SimpleNamespace
 
 from nemo.collections.asr.inference.nmt import llm_translator
 from nemo.collections.asr.inference.nmt.llm_translator import LLMTranslator
-from nemo.collections.asr.inference.nmt.prompts import RivaV2TranslatorPromptTemplate
+from nemo.collections.asr.inference.nmt.prompts import (
+    QwenReasoningTranslatorPromptTemplate,
+    RivaV2TranslatorPromptTemplate,
+)
 
 
 class _PairTokenizer:
@@ -101,6 +104,34 @@ def test_riva_v2_uses_model_chat_template():
     ]
 
 
+def test_riva_v2_does_not_insert_space_before_punctuation_continuation():
+    class _Tokenizer:
+        def apply_chat_template(self, messages, **kwargs):
+            return "tokenizer-rendered-prompt"
+
+    class _Model:
+        def generate(self, prompts, sampling_params, use_tqdm):
+            return [SimpleNamespace(outputs=[SimpleNamespace(text=".")])]
+
+    translator = LLMTranslator.__new__(LLMTranslator)
+    translator.prompt_template = RivaV2TranslatorPromptTemplate
+    translator.prefix_tokenizer = _Tokenizer()
+    translator.nmt_model = _Model()
+    translator.sampling_params = object()
+    translator.prefix_boundary_mode = "whitespace"
+
+    result = translator.translate_batch(
+        ["Current source"],
+        ["Die Übersetzung"],
+        ["en"],
+        ["de"],
+        [""],
+        [""],
+    )
+
+    assert result == ["Die Übersetzung."]
+
+
 def test_model_loading_preserves_process_level_gpu_isolation(monkeypatch):
     loaded = []
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
@@ -115,3 +146,65 @@ def test_model_loading_preserves_process_level_gpu_isolation(monkeypatch):
 
     assert llm_translator.os.environ["CUDA_VISIBLE_DEVICES"] == "1"
     assert loaded == [{"model": "nvidia/model"}]
+
+
+def test_generation_recovery_retries_empty_behind_target_greedily():
+    calls = []
+
+    class _SamplingParams:
+        temperature = 0.7
+        top_p = 0.9
+        top_k = 20
+        presence_penalty = 0.5
+        min_tokens = 0
+        bad_words = None
+
+    class _Tokenizer:
+        def encode(self, text, add_special_tokens=False):
+            return text.split()
+
+    class _Model:
+        def generate(self, prompts, sampling_params, use_tqdm):
+            calls.append((prompts, sampling_params))
+            text = "" if len(calls) == 1 else "Fortsetzung"
+            return [SimpleNamespace(outputs=[SimpleNamespace(text=text)]) for _ in prompts]
+
+    translator = LLMTranslator.__new__(LLMTranslator)
+    translator.prompt_template = QwenReasoningTranslatorPromptTemplate
+    translator.prefix_tokenizer = _Tokenizer()
+    translator.nmt_model = _Model()
+    translator.sampling_params = _SamplingParams()
+    translator.prefix_boundary_mode = "whitespace"
+    translator.generation_recovery_enabled = True
+    translator.generation_recovery_min_tokens = 1
+    translator.generation_recovery_deficit_threshold = 4
+    translator.generation_recovery_target_source_ratios = {"de": 0.9}
+
+    result = translator.translate_batch(
+        ["one two three four five six"],
+        [""],
+        ["en"],
+        ["de"],
+        [""],
+        [""],
+    )
+
+    assert result == ["Fortsetzung"]
+    assert len(calls) == 2
+    retry_params = calls[1][1]
+    assert retry_params.temperature == 0.0
+    assert retry_params.top_p == 1.0
+    assert retry_params.top_k == -1
+    assert retry_params.presence_penalty == 0.0
+    assert retry_params.min_tokens == 1
+    assert "<tool_call>" in retry_params.bad_words
+
+
+def test_generation_recovery_retries_invalid_control_output_without_deficit():
+    translator = LLMTranslator.__new__(LLMTranslator)
+    translator.generation_recovery_enabled = True
+    translator.generation_recovery_deficit_threshold = 4
+    translator.generation_recovery_target_source_ratios = {"de": 0.9}
+    translator.prefix_tokenizer = _PairTokenizer()
+
+    assert translator._needs_generation_recovery("one", "", "de", "<tool_call>")

@@ -340,6 +340,12 @@ class NeMoStreamingPipelineAdapter(SpeechProcessor):
                         {
                             "final_transcript": step_output.final_transcript,
                             "partial_transcript": step_output.partial_transcript,
+                            "mt_request_source": getattr(step_output, "_mt_request_source", ""),
+                            "mt_request_prefix": getattr(step_output, "_mt_request_prefix", ""),
+                            "mt_request_source_context": getattr(step_output, "_mt_request_source_context", ""),
+                            "mt_request_target_context": getattr(step_output, "_mt_request_target_context", ""),
+                            "mt_source_boundary_reason": getattr(step_output, "_mt_source_boundary_reason", ""),
+                            "mt_retained_source_suffix": getattr(step_output, "_mt_retained_source_suffix", ""),
                             "final_translation": step_output.final_translation,
                             "partial_translation": step_output.partial_translation,
                             "new_tokens": result.new_tokens,

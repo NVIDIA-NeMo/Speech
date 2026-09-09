@@ -38,7 +38,7 @@ class MonoStream(Stream):
         Initialize the MonoStream
         Args:
             rate (int): sampling rate
-            frame_size_in_secs (int): frame length in seconds
+            frame_size_in_secs (float): frame length in seconds
             stream_id (int): stream id
             pad_last_frame (bool): whether to pad the last frame up to frame_size
             flush_size_in_secs (float): seconds of silence appended to the audio, 0.0 to append none

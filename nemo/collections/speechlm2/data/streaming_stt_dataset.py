@@ -136,6 +136,20 @@ class StreamingSTTDataConfig:
     # and becomes a binary blank / write choice, so ``prepend_write_token`` is
     # required. Implies ``drop_blank_from_context``.
     collapse_silent_audio: bool = False
+    # Flush token: an explicit end-of-audio signal, fed by the harness after the last
+    # audio frame, whose position supervises everything still pending.
+    #
+    # Without it the last chunk is special in training (``is_last_chunk`` force-emits a
+    # sub-``words_per_group`` buffer, and residual words that the delay pushed past the
+    # final boundary are folded back into the last assistant turn) but the model cannot
+    # observe WHICH chunk is last at inference -- audio simply stops. Turning this on
+    # removes both special cases: every chunk boundary obeys the same alignment/delay
+    # rule, and everything left over is emitted after the flush token, which IS an
+    # observable input. Must match the model flag of the same name.
+    use_flush_token: bool = False
+    # The flush marker itself. Registered as a new special token and learned from
+    # scratch (no pretrained meaning to warm-start from), like ``write_token``.
+    flush_token: str = "<|flush|>"
 
 
 def decode_with_blank(
@@ -293,6 +307,8 @@ def get_llm_messages_for_sample(
     chunk_step: int = 1,
     prepend_write_token: bool = False,
     write_token: str = "",
+    use_flush_token: bool = False,
+    flush_token: str = "",
 ) -> List[dict]:
     """
     Get the LLM messages for a sample, using the alignments to determine the turns for the audio and text.
@@ -441,8 +457,13 @@ def get_llm_messages_for_sample(
                 else:
                     break
 
-            # Emit words when buffer reaches words_per_group, or at the last chunk
-            is_last_chunk = chunk_i == num_chunks - 1
+            # Emit words when buffer reaches words_per_group, or at the last chunk.
+            # The last-chunk exception is conditioned on `is_last_chunk`, which the
+            # model CANNOT observe at inference (audio just stops). With
+            # use_flush_token the exception is dropped so every boundary obeys one
+            # rule, and whatever stays pending is emitted after the flush token --
+            # an observable input. See StreamingSTTDataConfig.use_flush_token.
+            is_last_chunk = (chunk_i == num_chunks - 1) and not use_flush_token
             if word_buffer and (len(word_buffer) >= words_per_group or is_last_chunk):
                 if word_spans and transcript:
                     first_span = word_spans[word_buffer[0]]
@@ -460,6 +481,24 @@ def get_llm_messages_for_sample(
             else:
                 # Empty chunk: blank_token alone, NOT prefixed with write_token.
                 messages.append({"role": "assistant", "content": blank_token})
+
+        if use_flush_token:
+            # Everything the per-chunk rule left pending: words still buffered below
+            # words_per_group, plus words the delay pushed past the final boundary.
+            # Both index ranges are contiguous and adjacent, so one slice covers them.
+            start = word_buffer[0] if word_buffer else word_idx
+            residual_indices = list(range(start, len(alignments)))
+            messages.append({"role": "user", "content": flush_token})
+            if residual_indices:
+                content = _content_for_words(residual_indices, alignments, word_spans, transcript)
+                if prepend_write_token and write_token:
+                    content = write_token + content
+                messages.append({"role": "assistant", "content": content})
+            else:
+                # Nothing pending. Still supervised -- the model must learn that
+                # flush can legitimately mean "I have nothing left".
+                messages.append({"role": "assistant", "content": blank_token})
+            return messages
 
         # Append any residual words that weren't emitted (e.g., due to delay pushing
         # them past the last chunk boundary, or alignment end_time > audio_duration).
@@ -505,6 +544,8 @@ def get_llm_messages_for_batch(
     chunk_step: int = 1,
     prepend_write_token: bool = False,
     write_token: str = "",
+    use_flush_token: bool = False,
+    flush_token: str = "",
 ) -> List[List[dict]]:
     """
     Get the LLM messages for a batch of samples.
@@ -549,6 +590,8 @@ def get_llm_messages_for_batch(
                 chunk_step=chunk_step,
                 prepend_write_token=prepend_write_token,
                 write_token=write_token,
+                use_flush_token=use_flush_token,
+                flush_token=flush_token,
             )
         )
     return batch_messages
@@ -752,6 +795,7 @@ def _tokenize_compact_with_assistant_mask(
     drop_blank_from_context: bool = False,
     blank_token: str = "",
     collapse_silent_audio: bool = False,
+    flush_id: Optional[int] = None,
 ) -> tuple[list[int], list[int]]:
     """Tokenize chat messages in compact format and return (input_ids, assistant_mask).
 
@@ -796,6 +840,7 @@ def _tokenize_compact_with_assistant_mask(
         msg = turn_msgs[i]
         if msg["role"] == "user":
             user_ids = hf_tok.encode(msg["content"], add_special_tokens=False) if msg["content"] else []
+            is_flush = flush_id is not None and user_ids == [flush_id]
             input_ids.extend(user_ids)
             assistant_mask.extend([0] * len(user_ids))
             i += 1
@@ -803,6 +848,27 @@ def _tokenize_compact_with_assistant_mask(
             if i < len(turn_msgs) and turn_msgs[i]["role"] == "assistant":
                 asst = turn_msgs[i]
                 is_silent = bool(blank_token) and asst["content"] == blank_token
+                if is_flush and collapse_silent_audio:
+                    # Rung 2 keeps no anchor, so the flush marker IS this turn's gate:
+                    # a speaking turn runs straight from it into the write token, and a
+                    # silent one contributes nothing at all -- exactly what rung 2 does
+                    # at every other boundary. The "nothing left" case is supervised as
+                    # a blank TARGET on the marker (see get_batch_data), never as a
+                    # blank input, which is the whole point of the rung.
+                    if is_silent:
+                        i += 1
+                        continue
+                    asst_ids = hf_tok.encode(asst["content"], add_special_tokens=False)
+                    input_ids.extend(asst_ids)
+                    assistant_mask.extend([1] * len(asst_ids))
+                    input_ids.append(eos_id)
+                    assistant_mask.append(1)
+                    i += 1
+                    continue
+                # Rungs 0 and 1 fall through to the normal turn handling below, so the
+                # flush turn keeps the <eoa> anchor. Emission then triggers off the same
+                # position it does at every other chunk boundary; flush only modifies
+                # THAT boundary rather than introducing a second, rarely-seen trigger.
                 if collapse_silent_audio:
                     # Rung 2: no anchor at all. A silent chunk contributes nothing
                     # beyond its audio; a speaking chunk goes straight from the last
@@ -1103,6 +1169,33 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
                 )
             logging.info("collapse_silent_audio enabled: silent chunks contribute audio frames only")
 
+        # Flush token, resolved once. Fixed chunking only: in dynamic chunking (K=0)
+        # segments are already sized to word boundaries, so there is no
+        # ``is_last_chunk`` special case to remove and nothing pending at audio end.
+        self._use_flush = bool(getattr(self.cfg, "use_flush_token", False))
+        self._flush_id = None
+        if self._use_flush:
+            cs = self.cfg.chunk_size
+            sizes = cs if isinstance(cs, (list, tuple)) else [cs]
+            if any(int(s) <= 0 for s in sizes):
+                raise ValueError(
+                    "use_flush_token=True requires fixed chunking (all chunk_size > 0); got "
+                    f"chunk_size={cs!r}. Dynamic/offline modes have no last-chunk special case "
+                    "to remove."
+                )
+            flush_ids = self.tokenizer.tokenizer.encode(self.cfg.flush_token, add_special_tokens=False)
+            if len(flush_ids) != 1:
+                raise ValueError(
+                    f"flush_token {self.cfg.flush_token!r} must encode to exactly 1 token, got "
+                    f"{flush_ids}. Register it on the tokenizer first (the model does this when "
+                    "StreamingSTTModelConfig.use_flush_token is set)."
+                )
+            self._flush_id = flush_ids[0]
+            logging.info(
+                f"use_flush_token enabled: flush_token={self.cfg.flush_token!r} (id={self._flush_id}); "
+                "the last-chunk emit exception is disabled and residual words move to the flush turn"
+            )
+
         if self._drop_blank and not self.cfg.compact_template:
             raise NotImplementedError(
                 "drop_blank_from_context is only implemented for compact_template=True so far "
@@ -1233,6 +1326,8 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
             chunk_step=K,
             prepend_write_token=self.cfg.prepend_write_token,
             write_token=self.cfg.write_token,
+            use_flush_token=self._use_flush,
+            flush_token=self.cfg.flush_token,
         )
 
         # Pre-computed audio chunk token IDs for this batch's fixed-chunk size
@@ -1253,6 +1348,7 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
                     drop_blank_from_context=self._drop_blank,
                     blank_token=self.cfg.blank_token,
                     collapse_silent_audio=self._collapse_audio,
+                    flush_id=self._flush_id,
                 )
             else:
                 input_ids, assistant_mask = _tokenize_with_assistant_mask(messages, self.tokenizer)
@@ -1312,6 +1408,25 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
                     # With ``prepend_write_token`` that is the write token, giving a binary
                     # gate; without it, it is the first text token. Both are "not blank",
                     # which is all the inference-side gate tests.
+                    #
+                    # The flush token is force-fed scaffold, never predicted: a boundary
+                    # followed by flush emitted nothing, so its target is blank. Making
+                    # flush the target would train the model to announce end-of-audio,
+                    # which is precisely the unobservable this knob exists to remove.
+                    if nxt is None or nxt == AUDIO_TOKEN_IDX or (self._flush_id is not None and nxt == self._flush_id):
+                        target_ids[i] = self.blank_id
+                    else:
+                        target_ids[i] = nxt
+
+            # Rung 2 + flush: the marker has no audio frame of its own, so it is its own
+            # gate -- blank when the turn emitted nothing, otherwise whatever token
+            # starts the emission. Identical rule to the audio-frame gate above.
+            if self._collapse_audio and self._flush_id is not None and chunk_size > 0:
+                n_ids = len(input_ids)
+                for i, tid in enumerate(input_ids):
+                    if tid != self._flush_id:
+                        continue
+                    nxt = input_ids[i + 1] if i + 1 < n_ids else None
                     target_ids[i] = self.blank_id if (nxt is None or nxt == AUDIO_TOKEN_IDX) else nxt
 
             # Rung 1: the blank is gone from the input, so re-attach it as the target at
@@ -1324,7 +1439,9 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
                     if tid != self._eoa_id:
                         continue
                     nxt = input_ids[i + 1] if i + 1 < n_ids else None
-                    if nxt is None or nxt == AUDIO_TOKEN_IDX:
+                    # Flush is force-fed scaffold (see the rung-2 branch above): an
+                    # anchor followed by flush emitted nothing, so its target is blank.
+                    if nxt is None or nxt == AUDIO_TOKEN_IDX or (self._flush_id is not None and nxt == self._flush_id):
                         target_ids[i] = self.blank_id
 
             # Dynamic chunking: train the model to predict at audio positions.
@@ -1453,3 +1570,23 @@ def _assert_prefix(longer: list[int], shorter: list[int], hf_tok, what: str) -> 
             f"Chat template for {name!r} is not append-only: {what}. "
             f"parse_chat_template_ids cannot derive turn spans for this template."
         )
+
+
+def _content_for_words(
+    indices: list[int],
+    alignments: List[WordAlignment],
+    word_spans: Optional[list],
+    transcript: Optional[str],
+) -> str:
+    """Render a contiguous run of aligned words as assistant content.
+
+    Prefers slicing the original transcript by character span, which preserves the
+    source punctuation and spacing exactly; falls back to joining the alignment
+    texts when spans are unavailable.
+    """
+    if word_spans and transcript:
+        first_span = word_spans[indices[0]]
+        last_span = word_spans[indices[-1]]
+        if first_span is not None and last_span is not None:
+            return transcript[first_span[0] : last_span[1]]
+    return " ".join(alignments[i].text for i in indices)

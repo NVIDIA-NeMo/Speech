@@ -3034,3 +3034,265 @@ class TestCollapseSilentAudio:
 
     def test_off_by_default(self):
         assert StreamingSTTDataConfig.collapse_silent_audio is False
+
+
+class TestFlushToken:
+    """``use_flush_token``: replace the unobservable last chunk with an observable marker.
+
+    Training makes the final chunk special twice over -- ``is_last_chunk`` force-emits a
+    sub-``words_per_group`` buffer, and delay-pushed residual words are folded back into
+    the last assistant turn -- but at inference the model cannot tell which chunk is last,
+    because audio simply stops. With the knob on, every boundary obeys one rule and
+    everything left over moves to a flush turn the harness actually feeds.
+    """
+
+    WORDS = ["hello", "world", "again"]
+    # The last word ends at 1.95s: frame 25, +3 delay = 28, past the final boundary at
+    # frame 26 -- so it is genuinely residual and must be carried by the flush turn.
+    ALIGNED = [
+        WordAlignment(text="hello", start_time=0.00, end_time=0.25),
+        WordAlignment(text="world", start_time=0.60, end_time=0.85),
+        WordAlignment(text="again", start_time=1.70, end_time=1.95),
+    ]
+    C = 2
+    FLUSH = "<|flush|>"
+
+    def _dataset(self, use_flush, collapse=False, chunk_size=None):
+        from nemo.collections.common.tokenizers import AutoTokenizer as NeMoTok
+
+        tok = NeMoTok("Qwen/Qwen3-1.7B", use_fast=True)
+        tok.add_special_tokens({"additional_special_tokens": ["<blank>", "<|write|>", self.FLUSH]})
+        cfg = OmegaConf.create(
+            {
+                "sample_rate": 16000,
+                "frame_length_in_secs": 0.08,
+                "chunk_size": self.C if chunk_size is None else chunk_size,
+                "num_delay_frames": 3,
+                "audio_tag": "<audio>",
+                "blank_token": "<blank>",
+                "system_role": "system",
+                "system_prompt": "Transcribe the audio into text.",
+                "compact_template": True,
+                "prepend_write_token": True,
+                "write_token": "<|write|>",
+                "collapse_silent_audio": collapse,
+                "use_flush_token": use_flush,
+                "flush_token": self.FLUSH,
+            }
+        )
+        return StreamingSTTDataset(cfg=cfg, tokenizer=tok), tok
+
+    def _messages(self, use_flush, words_per_group=1):
+        return get_llm_messages_for_sample(
+            system_role="system",
+            system_prompt="Transcribe the audio into text.",
+            audio_tag="<audio>",
+            blank_token="<blank>",
+            chunk_size=self.C,
+            num_delay_frames=3,
+            audio_duration_secs=2.0,
+            frame_length_in_secs=0.08,
+            alignments=self.ALIGNED,
+            transcript=" ".join(self.WORDS),
+            words_per_group=words_per_group,
+            prepend_write_token=True,
+            write_token="<|write|>",
+            use_flush_token=use_flush,
+            flush_token=self.FLUSH,
+        )
+
+    def _encode(self, ds, tok, messages):
+        ids, mask = _tokenize_compact_with_assistant_mask(
+            messages,
+            tok,
+            ds._eoa_id,
+            ds._compact_eos_id,
+            drop_blank_from_context=ds._drop_blank,
+            blank_token=ds.cfg.blank_token,
+            collapse_silent_audio=ds._collapse_audio,
+            flush_id=ds._flush_id,
+        )
+        ids, mask = _replace_audio_chunks(ids, ds._audio_chunk_ids_by_size[self.C], self.C, mask=mask)
+        targets = [t if m else IGNORE_INDEX for t, m in zip(ids[1:] + [IGNORE_INDEX], mask[1:] + [0])]
+        # Mirrors the rung-2 gate loop in get_batch_data, including its flush case.
+        if ds._collapse_audio:
+            n, seen = len(ids), 0
+            for i, tid in enumerate(ids):
+                if tid != AUDIO_TOKEN_IDX:
+                    continue
+                seen += 1
+                if seen % self.C:
+                    continue
+                nxt = ids[i + 1] if i + 1 < n else None
+                if nxt is None or nxt == AUDIO_TOKEN_IDX or (ds._flush_id is not None and nxt == ds._flush_id):
+                    targets[i] = ds.blank_id
+                else:
+                    targets[i] = nxt
+            if ds._flush_id is not None:
+                for i, tid in enumerate(ids):
+                    if tid != ds._flush_id:
+                        continue
+                    nxt = ids[i + 1] if i + 1 < len(ids) else None
+                    targets[i] = ds.blank_id if (nxt is None or nxt == AUDIO_TOKEN_IDX) else nxt
+        return ids, mask, targets
+
+    def test_flush_turn_is_appended_and_carries_the_tail(self):
+        msgs = self._messages(use_flush=True)
+        assert msgs[-2]["role"] == "user" and msgs[-2]["content"] == self.FLUSH
+        assert msgs[-1]["role"] == "assistant"
+        # Every word must still be supervised exactly once across the whole sample.
+        emitted = " ".join(m["content"] for m in msgs if m["role"] == "assistant")
+        for w in self.WORDS:
+            assert emitted.count(w) == 1, f"{w!r} should appear exactly once"
+
+    def test_last_chunk_exception_is_dropped(self):
+        """The whole point: with the knob on, no chunk boundary behaves specially."""
+        off = self._messages(use_flush=False, words_per_group=2)
+        on = self._messages(use_flush=True, words_per_group=2)
+
+        # Baseline: a leftover buffer below words_per_group is force-emitted at the
+        # last chunk, conditioned on `is_last_chunk` -- unobservable at inference.
+        assert off[-1]["role"] == "assistant" and off[-1]["content"] != "<blank>"
+        # With flush: the same leftover is carried by the flush turn instead.
+        assert on[-2]["content"] == self.FLUSH
+        assert on[-1]["content"] != "<blank>", "the leftover words should land after flush"
+
+    def test_no_pending_words_still_supervises_blank(self):
+        """Flush must also teach 'nothing left', or it only ever means 'dump'."""
+        msgs = get_llm_messages_for_sample(
+            system_role="system",
+            system_prompt="p",
+            audio_tag="<audio>",
+            blank_token="<blank>",
+            chunk_size=self.C,
+            num_delay_frames=0,
+            audio_duration_secs=2.0,
+            frame_length_in_secs=0.08,
+            alignments=[WordAlignment(text="hi", start_time=0.0, end_time=0.1)],
+            transcript="hi",
+            prepend_write_token=True,
+            write_token="<|write|>",
+            use_flush_token=True,
+            flush_token=self.FLUSH,
+        )
+        assert msgs[-2]["content"] == self.FLUSH
+        assert msgs[-1]["content"] == "<blank>"
+
+    def test_flush_turn_follows_the_rung_convention(self):
+        """Flush is a prefix; the turn after it is formatted like any other turn.
+
+        Rungs 0/1 keep the anchor, so emission still triggers off the same position it
+        does at every other chunk boundary instead of a second, once-per-utterance
+        trigger. Rung 2 has no anchor anywhere, so none appears here either.
+        """
+        ds, tok = self._dataset(use_flush=True, collapse=False)
+        ids, _, _ = self._encode(ds, tok, self._messages(use_flush=True))
+        i = ids.index(ds._flush_id)
+        assert ids[i + 1] == ds._eoa_id, "rungs 0/1 keep the anchor on the flush turn"
+
+        ds2, tok2 = self._dataset(use_flush=True, collapse=True)
+        ids2, _, _ = self._encode(ds2, tok2, self._messages(use_flush=True))
+        j = ids2.index(ds2._flush_id)
+        assert ids2[j + 1] != ds2._eoa_id, "rung 2 keeps no anchor, including here"
+
+    @pytest.mark.parametrize("collapse", [False, True])
+    def test_flush_turn_emission_is_supervised(self, collapse):
+        """Whatever the layout, the flush turn's emission must be trained.
+
+        Rungs 0/1 put the anchor between marker and content, rung 2 does not, so the
+        content index differs -- but in both the marker is scaffold, the content is
+        supervised, and the position right before the content carries it as its target.
+        """
+        ds, tok = self._dataset(use_flush=True, collapse=collapse)
+        ids, mask, targets = self._encode(ds, tok, self._messages(use_flush=True))
+        i = ids.index(ds._flush_id)
+        assert mask[i] == 0, "the marker itself is force-fed scaffold"
+
+        content = next(k for k in range(i + 1, len(ids)) if mask[k] == 1)
+        assert content - i <= 2, "content should follow the marker (plus at most an anchor)"
+        assert targets[content - 1] == ids[content], "the gate position must predict the emission"
+
+    def test_flush_is_never_a_target(self):
+        """The model must never be trained to predict end-of-audio -- it cannot know it."""
+        for collapse in (False, True):
+            ds, tok = self._dataset(use_flush=True, collapse=collapse)
+            _, _, targets = self._encode(ds, tok, self._messages(use_flush=True))
+            assert ds._flush_id not in targets, f"flush leaked into targets (collapse={collapse})"
+
+    def test_gate_before_flush_targets_blank(self):
+        ds, tok = self._dataset(use_flush=True, collapse=True)
+        ids, _, targets = self._encode(ds, tok, self._messages(use_flush=True))
+        i = ids.index(ds._flush_id)
+        assert ids[i - 1] == AUDIO_TOKEN_IDX, "flush should follow the final audio frame"
+        assert targets[i - 1] == ds.blank_id, "a boundary that emitted nothing targets blank"
+
+    def _messages_empty_tail(self, use_flush=True):
+        """One early word, so the alignment rule leaves nothing pending at flush."""
+        return get_llm_messages_for_sample(
+            system_role="system",
+            system_prompt="Transcribe the audio into text.",
+            audio_tag="<audio>",
+            blank_token="<blank>",
+            chunk_size=self.C,
+            num_delay_frames=0,
+            audio_duration_secs=2.0,
+            frame_length_in_secs=0.08,
+            alignments=[WordAlignment(text="hi", start_time=0.0, end_time=0.1)],
+            transcript="hi",
+            prepend_write_token=True,
+            write_token="<|write|>",
+            use_flush_token=use_flush,
+            flush_token=self.FLUSH,
+        )
+
+    def test_rung2_empty_flush_is_a_target_not_an_input(self):
+        """'Nothing left' must not put a blank back into the context.
+
+        Rung 2 represents a no-emit decision as a blank TARGET at the gate with nothing
+        added to the context; the flush turn follows the same convention, with the
+        marker acting as its own gate. Writing `<blank> <eos>` here instead would
+        reintroduce exactly the tokens the rung exists to remove.
+        """
+        ds, tok = self._dataset(use_flush=True, collapse=True)
+        ids, _, targets = self._encode(ds, tok, self._messages_empty_tail())
+        i = ids.index(ds._flush_id)
+        assert i == len(ids) - 1, "nothing may follow the marker when nothing is pending"
+        assert targets[i] == ds.blank_id, "the marker is its own gate and targets blank"
+        assert ds.blank_id not in ids, "no blank ever enters rung 2's context"
+
+    def test_rung1_empty_flush_keeps_anchor_and_targets_blank(self):
+        """Rung 1's convention: the anchor stays, the blank is only a target."""
+        ds, tok = self._dataset(use_flush=True, collapse=False)
+        ids, _, targets = self._encode(ds, tok, self._messages_empty_tail())
+        i = ids.index(ds._flush_id)
+        assert ids[i + 1] == ds._eoa_id, "rung 1 keeps the anchor on the flush turn"
+        assert targets[i + 1] == ds.blank_id, "and the anchor carries the blank target"
+
+    def test_dynamic_chunking_is_rejected(self):
+        with pytest.raises(ValueError, match="requires fixed chunking"):
+            self._dataset(use_flush=True, chunk_size=0)
+
+    def test_multi_token_flush_marker_is_rejected(self):
+        with pytest.raises(ValueError, match="exactly 1 token"):
+            from nemo.collections.common.tokenizers import AutoTokenizer as NeMoTok
+
+            tok = NeMoTok("Qwen/Qwen3-1.7B", use_fast=True)
+            tok.add_special_tokens({"additional_special_tokens": ["<blank>", "<|write|>"]})
+            cfg = OmegaConf.create(
+                {
+                    "sample_rate": 16000,
+                    "frame_length_in_secs": 0.08,
+                    "chunk_size": self.C,
+                    "num_delay_frames": 3,
+                    "audio_tag": "<audio>",
+                    "blank_token": "<blank>",
+                    "system_role": "system",
+                    "system_prompt": "p",
+                    "compact_template": True,
+                    "prepend_write_token": True,
+                    "write_token": "<|write|>",
+                    "use_flush_token": True,
+                    "flush_token": "not a registered single token",
+                }
+            )
+            StreamingSTTDataset(cfg=cfg, tokenizer=tok)

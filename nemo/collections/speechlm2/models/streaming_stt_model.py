@@ -250,6 +250,19 @@ class StreamingSTTModelConfig:
     # becomes a binary blank/write choice, so ``prepend_write_token`` is required.
     # Implies ``drop_blank_from_context``. Must match the dataset flag of the same name.
     collapse_silent_audio: bool = False
+    # Flush token: an explicit end-of-audio signal fed after the last audio frame,
+    # whose position supervises whatever is still pending.
+    #
+    # Training makes the last chunk special (it force-emits a sub-``words_per_group``
+    # buffer, and delay-pushed residual words are folded back into it) but the model
+    # cannot observe WHICH chunk is last at inference -- audio simply stops. This knob
+    # removes both special cases in favour of one observable token, and lets inference
+    # stop relying on trailing ``pad_extra_duration`` silence to shake out the tail.
+    # Fixed chunking + state-machine inference only. Must match the dataset flag.
+    use_flush_token: bool = False
+    # The flush marker. Registered as a new special token and learned from scratch,
+    # like ``write_token`` -- there is no pretrained meaning to warm-start from.
+    flush_token: str = "<|flush|>"
     att_context_size: Optional[List[int]] = None
     audio_pad_to: Optional[int] = None
     sample_rate: int = 16000
@@ -626,6 +639,19 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                 wt_id = self.tokenizer.tokenizer.convert_tokens_to_ids(wt)
                 logging.info(f"Using existing vocab token `{wt}` as write_token: {wt_id}")
 
+        # Flush token registration: the explicit end-of-audio signal. Added as a new
+        # special token and learned from scratch (like write_token / blank_token).
+        if getattr(self.core_cfg, "use_flush_token", False):
+            ft = self.core_cfg.flush_token
+            if not token_in_vocab(ft, self.tokenizer):
+                self.tokenizer.add_special_tokens({"additional_special_tokens": [ft]})
+                self._resize_llm_embeddings()
+                ft_id = self.tokenizer.tokenizer.convert_tokens_to_ids(ft)
+                logging.info(f"Added flush_token `{ft}` to tokenizer: {ft_id}")
+            else:
+                ft_id = self.tokenizer.tokenizer.convert_tokens_to_ids(ft)
+                logging.info(f"Using existing vocab token `{ft}` as flush_token: {ft_id}")
+
         # Audio placeholder registration: makes the audio tag a single vocab id so the
         # dataset can map frames one-to-one instead of matching a multi-token span.
         if self.core_cfg.register_audio_token:
@@ -799,6 +825,18 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         if self.blank_token == "":
             return -1
         return self.tokenizer.text_to_ids(self.blank_token)[0]
+
+    @property
+    def flush_token_id(self) -> Optional[int]:
+        """Vocab id of the flush marker, or ``None`` when the knob is off.
+
+        ``None`` rather than a -1 sentinel because the flush token is only ever fed,
+        never compared against a sampled token -- an absent id must fail loudly at the
+        feed site rather than silently matching nothing.
+        """
+        if not getattr(self.core_cfg, "use_flush_token", False):
+            return None
+        return self.tokenizer.text_to_ids(self.core_cfg.flush_token)[0]
 
     @property
     def audio_token_id(self) -> Optional[int]:
@@ -1501,7 +1539,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         """
         if data_cfg is None:
             return
-        for flag in ("drop_blank_from_context", "collapse_silent_audio"):
+        for flag in ("drop_blank_from_context", "collapse_silent_audio", "use_flush_token"):
             model_val = bool(getattr(self.core_cfg, flag, False))
             data_val = bool(data_cfg.get(flag, False) if hasattr(data_cfg, "get") else getattr(data_cfg, flag, False))
             if model_val != data_val:
@@ -1509,6 +1547,22 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                     f"model.{flag}={model_val} but data.dataset.{flag}={data_val}. These must match: "
                     f"the dataset supervises the emit gate and the model reads it, so a mismatch "
                     f"trains one position and infers another with no error at runtime."
+                )
+        # The marker string must match too: the dataset writes the flush turn and the
+        # FSM feeds the token, so two different strings mean two different vocab ids
+        # and the model is fed a symbol it never saw supervised.
+        if bool(getattr(self.core_cfg, "use_flush_token", False)):
+            model_tok = self.core_cfg.flush_token
+            data_tok = (
+                data_cfg.get("flush_token", None)
+                if hasattr(data_cfg, "get")
+                else getattr(data_cfg, "flush_token", None)
+            )
+            if data_tok is not None and data_tok != model_tok:
+                raise ValueError(
+                    f"model.flush_token={model_tok!r} but data.dataset.flush_token={data_tok!r}. "
+                    f"These must match: the dataset supervises the position after the flush marker "
+                    f"and inference feeds it, so differing strings feed an unsupervised token."
                 )
 
     def _set_encoder_att_context(self, chunk_size: Optional[int], recompute_streaming: bool = False) -> None:
@@ -2463,10 +2517,20 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         )
 
         # --- Per-stream state machine ---
-        HEADER, LISTENING, FOOTER, GENERATING, BLANK_FEED, ASST_FOOTER, DONE = range(7)
+        HEADER, LISTENING, FOOTER, GENERATING, BLANK_FEED, ASST_FOOTER, FLUSH, DONE = range(8)
         # When user_header_ids is empty (compact template), skip HEADER entirely.
         _initial_state = LISTENING if not self._user_header_ids else HEADER
         stream_state = [_initial_state] * B
+
+        # Flush: fed exactly once per stream, after all audio is consumed and after any
+        # final normal emission. Replaces the two heuristics the FSM used at end-of-audio
+        # (force a sweep, which can hallucinate; or trust blank, which drops the tail)
+        # with the token the model was actually supervised on.
+        use_flush = bool(getattr(self.core_cfg, "use_flush_token", False)) and chunk_size > 0
+        flush_token_id = self.flush_token_id if use_flush else None
+        if use_flush and flush_token_id is None:
+            raise ValueError("use_flush_token=True but the flush marker is not in the tokenizer.")
+        flushed = [not use_flush] * B  # True = no flush owed for this stream
         template_pos = [0] * B  # position within current template seq
         audio_sample_idx = [0] * B  # next audio sample offset for perception
         gen_token_count = [0] * B  # tokens generated in current GENERATING phase
@@ -2631,6 +2695,41 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                     embs_list.append(
                         self._embed_tokens(torch.tensor([last_gen_token[b]], device=device)).squeeze(0)  # (H,)
                     )
+                elif stream_state[b] == FLUSH:
+                    # The marker was fed on this step.
+                    #
+                    # Rungs 0 and 1 keep the per-chunk anchor on the flush turn, so hand
+                    # off to FOOTER: emission then triggers off exactly the position it
+                    # does at every other chunk boundary, reusing one well-trained
+                    # circuit instead of a second one seen once per utterance. Rung 2
+                    # has no anchor anywhere, so the flush logits ARE the answer.
+                    flushed[b] = True
+                    if not collapse_audio and uf_ah_ids:
+                        stream_state[b] = FOOTER
+                        template_pos[b] = 0
+                        continue
+                    first_token = self._sample_token(
+                        out.logits[b : b + 1, -1, :],
+                        None,
+                        generation_config,
+                        **generation_kwargs,
+                    ).item()
+                    first_is_stop = (
+                        self._eos_id is not None and first_token == self._eos_id
+                    ) or first_token == self.blank_token_id
+                    if first_is_stop:
+                        # The supervised "nothing left" case. Record the chunk separator
+                        # so decoding splits identically to every other chunk, then stop:
+                        # audio is exhausted by construction, so there is nothing to
+                        # return to.
+                        all_tokens[b].append(self.blank_token_id if self.has_blank else self._eos_id)
+                        stream_state[b] = DONE
+                    else:
+                        all_tokens[b].append(first_token)
+                        last_gen_token[b] = first_token
+                        gen_token_count[b] = 1
+                        stream_state[b] = GENERATING
+
                 elif stream_state[b] == BLANK_FEED:
                     # Only reached when has_blank is True (guarded at transition sites).
                     embs_list.append(
@@ -2642,6 +2741,10 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                 elif stream_state[b] == HEADER:
                     tid = uh_ids[template_pos[b]]
                     embs_list.append(self._embed_tokens(torch.tensor([tid], device=device)).squeeze(0))  # (H,)
+                elif stream_state[b] == FLUSH:
+                    embs_list.append(
+                        self._embed_tokens(torch.tensor([flush_token_id], device=device)).squeeze(0)  # (H,)
+                    )
                 else:  # DONE
                     embs_list.append(pad_emb)
 
@@ -2859,6 +2962,13 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                                         template_pos[b] = 0
                                         frames_in_segment[b] = 0
                                         decision_str = "emit_model"
+                                elif audio_exhausted_now and use_flush and not flushed[b]:
+                                    # Audio is over and a flush is owed. Don't guess:
+                                    # feed the marker and let the model say what (if
+                                    # anything) is still pending -- exactly what it was
+                                    # trained to answer at this token.
+                                    stream_state[b] = FLUSH
+                                    decision_str = "flush_audio_end"
                                 elif audio_exhausted_now and not all_tokens[b]:
                                     # Audio exhausted in [min, max] window AND
                                     # no text emitted yet for this stream —
@@ -2888,7 +2998,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                     # paths above transition to FOOTER; non-emit terminations
                     # (done_audio_end → DONE) and continuations (keep_listening,
                     # below_min_keep, emit_pending) leave the state alone.
-                    if stream_state[b] == FOOTER:
+                    if stream_state[b] in (FOOTER, FLUSH):
                         chunk_intervals[b].append((segment_start_frame[b], total_frame_idx[b]))
                         segment_start_frame[b] = total_frame_idx[b]
                         # Per-emit content score capture (dynamic chunking).
@@ -2973,7 +3083,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                                     audio_sample_idx,
                                     n_samples_list,
                                     _initial_state,
-                                    DONE,
+                                    FLUSH if (use_flush and not flushed[b]) else DONE,
                                 )
                             elif fixed_chunk_mode and self.has_blank:
                                 # Feed blank to LLM first (matches training sequence)
@@ -2990,7 +3100,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                                     audio_sample_idx,
                                     n_samples_list,
                                     _initial_state,
-                                    DONE,
+                                    FLUSH if (use_flush and not flushed[b]) else DONE,
                                 )
                         else:
                             all_tokens[b].append(first_token)
@@ -3034,7 +3144,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                                 audio_sample_idx,
                                 n_samples_list,
                                 _initial_state,
-                                DONE,
+                                FLUSH if (use_flush and not flushed[b]) else DONE,
                             )
                     else:
                         all_tokens[b].append(token)
@@ -3055,7 +3165,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                             audio_sample_idx,
                             n_samples_list,
                             _initial_state,
-                            DONE,
+                            FLUSH if (use_flush and not flushed[b]) else DONE,
                         )
 
                 elif stream_state[b] == ASST_FOOTER:
@@ -3069,7 +3179,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                             audio_sample_idx,
                             n_samples_list,
                             _initial_state,
-                            DONE,
+                            FLUSH if (use_flush and not flushed[b]) else DONE,
                         )
 
                 elif stream_state[b] == HEADER:
@@ -3407,6 +3517,26 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                     "context and report numbers that look valid. Pass "
                     "use_state_machine_inference=True (the standard MCS eval setting)."
                 )
+
+            # Same reasoning for the flush token: only the state machine feeds it, so
+            # the fast path would decode a model trained WITH a flush turn while never
+            # supplying one -- the tail the model was taught to hold back would just
+            # be dropped, and the WER would look plausible.
+            if bool(getattr(self.core_cfg, "use_flush_token", False)) and chunk_size > 0:
+                if not use_state_machine_inference:
+                    raise ValueError(
+                        "use_flush_token is only implemented on the state-machine inference path, "
+                        f"but use_state_machine_inference=False with chunk_size={chunk_size}. The "
+                        "fast path never feeds the flush marker, so residual words the model was "
+                        "trained to emit there would be silently dropped. Pass "
+                        "use_state_machine_inference=True."
+                    )
+                if self.flush_token_id is None:
+                    raise ValueError(
+                        "use_flush_token=True but flush_token_id is None -- the marker is not in "
+                        "the tokenizer. It is registered in _register_special_tokens; a checkpoint "
+                        "trained without the knob cannot be decoded with it."
+                    )
 
             if chunk_size < 0:
                 result = self._generate_offline(

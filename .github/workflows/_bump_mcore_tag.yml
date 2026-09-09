@@ -18,7 +18,7 @@ jobs:
   update-branch:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ inputs.nemo-target-branch }}
 
@@ -42,7 +42,7 @@ jobs:
           git push -u origin $SOURCE_BRANCH
 
   mcore:
-    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_bump_yamlfile.yml@v0.27.1
+    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_bump_yamlfile.yml@e9234b737e49c67369671a51d103d3e1f2ff821c # v0.27.1
     needs: [update-branch]
     with:
       source-repository: NVIDIA/Megatron-LM

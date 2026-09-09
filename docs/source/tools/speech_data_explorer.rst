@@ -20,7 +20,7 @@ Speech Data Explorer (SDE) is a `Dash <https://plotly.com/dash/>`__-based web ap
 
 Getting Started
 ---------------
-SDE could be found in `NeMo/tools/speech_data_explorer <https://github.com/NVIDIA/NeMo/tree/stable/tools/speech_data_explorer>`__.
+SDE could be found in `NeMo/tools/speech_data_explorer <https://github.com/NVIDIA-NeMo/Speech/tree/stable/tools/speech_data_explorer>`__.
 
 Please install the SDE requirements:
 

@@ -36,7 +36,7 @@ jobs:
       cache-from: ${{ steps.cache_from.outputs.LAST_PRS }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Get last merged PR
         id: cache_from
@@ -67,7 +67,7 @@ jobs:
       image: ${{ steps.image-tag.outputs.image }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Compute image tag
         id: image-tag
@@ -88,10 +88,10 @@ jobs:
           echo "cache-to=type=registry,ref=${{ inputs.registry }}/nemo-speech:${{ inputs.image-name }}-buildcache-${KEY},mode=max" | tee -a $GITHUB_OUTPUT
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Build and push
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         with:
           file: ${{ inputs.dockerfile }}
           push: true
@@ -99,7 +99,7 @@ jobs:
           build-args: |
             IMAGE_LABEL=nemo-core
             NEMO_TAG=${{ github.sha }}
-            NEMO_REPO=https://github.com/NVIDIA/NeMo
+            NEMO_REPO=https://github.com/NVIDIA-NeMo/Speech
             PR_NUMBER=${{ github.event.pull_request.number || 0 }}
           cache-from: |
             type=registry,ref=${{ inputs.registry }}/nemo-speech:${{ inputs.image-name }}-buildcache-main,mode=max

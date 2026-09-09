@@ -29,20 +29,30 @@ The primary reference is the docstring example in get_llm_messages_for_sample:
 """
 
 import math
+from types import SimpleNamespace
 
 import pytest
+import torch
+
+from omegaconf import OmegaConf
 
 from nemo.collections.speechlm2.data.streaming_stt_dataset import (
     AUDIO_TOKEN_IDX,
     IGNORE_INDEX,
+    StreamingSTTDataConfig,
+    StreamingSTTDataset,
     _replace_audio_chunks,
     _tokenize_compact_with_assistant_mask,
     _tokenize_with_assistant_mask,
+    apply_chat_template_ids,
     build_compact_turn_markers,
     compute_word_spans,
     decode_with_blank,
     get_llm_messages_for_batch,
     get_llm_messages_for_sample,
+    parse_chat_template_ids,
+    resolve_pad_id,
+    right_collate_vectors,
 )
 from nemo.collections.speechlm2.parts.alignments import WordAlignment
 
@@ -133,6 +143,18 @@ class _MockHFTokenizer:
             return list(self._content_cache[content])
         # system
         return [self.SYSTEM_CONTENT_ID]
+
+    def decode(self, ids, **kwargs):
+        """Minimal inverse of encode(), enough for the whitespace-footer guard."""
+        pieces = {
+            self.HEADER_START: "<|im_start|>",
+            self.HEADER_END: "\n",
+            self.FOOTER: "<|im_end|>",
+            self.NEWLINE: "\n",
+            self.AUDIO_TAG_ID: self.audio_tag,
+            self.BLANK_ID: self.blank_token,
+        }
+        return "".join(pieces.get(int(i), "x") for i in ids)
 
     def encode(self, text, add_special_tokens=False):
         if text == self.audio_tag:
@@ -1694,8 +1716,15 @@ _REAL_TOKENIZER_MODELS = {
     "qwen3": "Qwen/Qwen3-1.7B",
     "nemotron_mini": "nvidia/Nemotron-Mini-4B-Instruct",
     "nemotron_nano_v3": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
+    "lightning35": "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
     "gemma4": "google/gemma-4-E4B-it",
 }
+
+# Backbones whose chat template emits a system block unconditionally. Their
+# per-turn user header therefore does NOT contain one, while the legacy
+# string-splitting parser folded an empty system block into it — see
+# TestParseChatTemplateSpans.test_matches_legacy_parser_where_legacy_was_correct.
+_SYSTEM_BLOCK_BACKBONES = {"nemotron_mini", "nemotron_nano_v3", "lightning35"}
 
 
 def _run_mask_test(hf_tok, messages):
@@ -1718,6 +1747,90 @@ def real_tokenizer(request):
     if hf_tok is None:
         pytest.skip(f"Tokenizer {model_id} not available")
     return label, hf_tok
+
+
+class TestResolvePadId:
+    """Some LLM tokenizers ship without a pad token (e.g. NVIDIA-Nemotron-3-Nano:
+    ``pad_id`` None, ``unk_id`` 0). Feeding that None to ``pad_sequence`` raises,
+    and the dataset's padding value must match the model's ``text_pad_id``,
+    which is how the attention mask is derived."""
+
+    @staticmethod
+    def _tok(pad_id, unk_id):
+        return SimpleNamespace(pad_id=pad_id, unk_id=unk_id)
+
+    def test_uses_pad_id_when_present(self):
+        assert resolve_pad_id(self._tok(pad_id=7, unk_id=0)) == 7
+
+    def test_falls_back_to_unk(self):
+        assert resolve_pad_id(self._tok(pad_id=None, unk_id=0)) == 0
+
+    def test_falls_back_to_zero_with_warning(self):
+        with pytest.warns(UserWarning, match="no <pad> or <unk> token"):
+            assert resolve_pad_id(self._tok(pad_id=None, unk_id=None)) == 0
+
+    def test_tolerates_tokenizer_without_unk_attribute(self):
+        with pytest.warns(UserWarning):
+            assert resolve_pad_id(SimpleNamespace(pad_id=None)) == 0
+
+    def test_collation_pads_with_the_resolved_id(self):
+        """A padless tokenizer must not crash collation, and the pad value used
+        must be the resolved one (not None)."""
+        pad = resolve_pad_id(self._tok(pad_id=None, unk_id=0))
+        collated = right_collate_vectors(
+            [torch.tensor([5, 6, 7]), torch.tensor([8])],
+            padding_value=pad,
+        )
+        assert collated[1].tolist() == [8, pad, pad]
+
+
+class TestApplyChatTemplateIds:
+    """``apply_chat_template(tokenize=True)`` returns ``list[int]`` on transformers 4.x
+    but a ``BatchEncoding`` on 5.x. ``apply_chat_template_ids`` must flatten both to
+    the same ``list[int]`` — otherwise callers iterate the mapping's *keys* and blow up
+    later with "too many dimensions 'str'"."""
+
+    MESSAGES = [{"role": "system", "content": "hi"}]
+
+    class _FakeTok:
+        """Returns whichever shape a given transformers version would."""
+
+        IDS = [1, 2, 3]
+
+        def __init__(self, shape):
+            self.shape = shape
+            self.seen_kwargs = None
+
+        def apply_chat_template(self, messages, **kwargs):
+            self.seen_kwargs = kwargs
+            if self.shape == "list":  # transformers 4.x
+                return list(self.IDS)
+            if self.shape == "dict":  # transformers 5.x
+                return {"input_ids": list(self.IDS), "attention_mask": [1, 1, 1]}
+            if self.shape == "batched_dict":  # hypothetical future batching
+                return {"input_ids": [list(self.IDS)], "attention_mask": [[1, 1, 1]]}
+            if self.shape == "tensor_dict":
+                import torch
+
+                return {"input_ids": torch.tensor(self.IDS)}
+            raise AssertionError(self.shape)
+
+    @pytest.mark.parametrize("shape", ["list", "dict", "batched_dict", "tensor_dict"])
+    def test_all_return_shapes_flatten_to_ids(self, shape):
+        tok = self._FakeTok(shape)
+        assert apply_chat_template_ids(tok, self.MESSAGES) == [1, 2, 3]
+
+    def test_forwards_kwargs_and_forces_tokenize(self):
+        tok = self._FakeTok("dict")
+        apply_chat_template_ids(tok, self.MESSAGES, add_generation_prompt=False, enable_thinking=False)
+        assert tok.seen_kwargs == {"tokenize": True, "add_generation_prompt": False, "enable_thinking": False}
+
+    def test_matches_the_raw_call_on_this_transformers_version(self, real_tokenizer):
+        """Whatever the installed version returns, the helper yields the same IDs."""
+        _, hf_tok = real_tokenizer
+        raw = hf_tok.apply_chat_template(self.MESSAGES, tokenize=True, add_generation_prompt=False)
+        expected = list(raw["input_ids"]) if hasattr(raw, "keys") else list(raw)
+        assert apply_chat_template_ids(hf_tok, self.MESSAGES, add_generation_prompt=False) == expected
 
 
 class TestTokenizeWithAssistantMaskRealTokenizers:
@@ -1811,6 +1924,280 @@ class TestTokenizeWithAssistantMaskRealTokenizers:
 # ===========================================================================
 # Tests: compact chat template
 # ===========================================================================
+class TestSingleTokenAudioTag:
+    """M2: a single-token audio tag replaces the whole-chunk matcher.
+
+    The matcher exists only because a multi-token ``<audio>`` can BPE-merge with
+    adjacent tags. With one id per frame the replacement is a plain map, which
+    cannot mis-fire — but it must produce byte-identical token streams, and the
+    legacy path must stay the default so existing checkpoints keep loading (R8).
+    """
+
+    ALIGNED = [
+        WordAlignment(text=w, start_time=0.35 * i, end_time=0.35 * i + 0.30)
+        for i, w in enumerate(["the", "quick", "brown", "fox", "jumps", "over"])
+    ]
+    TRANSCRIPT = "the quick brown fox jumps over"
+
+    def _dataset(self, hf_tok_id, audio_tag, register):
+        from nemo.collections.common.tokenizers import AutoTokenizer as NeMoTok
+
+        tok = NeMoTok(hf_tok_id, use_fast=True)
+        tok.add_special_tokens({"additional_special_tokens": ["<blank>"]})
+        if register:
+            tok.add_special_tokens({"additional_special_tokens": [audio_tag]})
+        cfg = OmegaConf.create(
+            {
+                "sample_rate": 16000,
+                "frame_length_in_secs": 0.08,
+                "chunk_size": [2, 4, 7, 14],
+                "num_delay_frames": 3,
+                "audio_tag": audio_tag,
+                "blank_token": "<blank>",
+                "system_role": "system",
+                "system_prompt": "Transcribe the audio into text.",
+                "compact_template": True,
+            }
+        )
+        return StreamingSTTDataset(cfg=cfg, tokenizer=tok), tok
+
+    def _stream(self, ds, tok, chunk_size):
+        msgs = get_llm_messages_for_sample(
+            system_role="system",
+            system_prompt="Transcribe the audio into text.",
+            audio_tag=ds.cfg.audio_tag,
+            blank_token="<blank>",
+            chunk_size=chunk_size,
+            num_delay_frames=3,
+            audio_duration_secs=2.4,
+            frame_length_in_secs=0.08,
+            alignments=self.ALIGNED,
+            transcript=self.TRANSCRIPT,
+        )
+        ids, mask = _tokenize_compact_with_assistant_mask(msgs, tok, ds._eoa_id, ds._compact_eos_id)
+        if ds._audio_token_id is not None:
+            return [AUDIO_TOKEN_IDX if t == ds._audio_token_id else t for t in ids]
+        ids, _ = _replace_audio_chunks(ids, ds._audio_chunk_ids_by_size[chunk_size], chunk_size, mask=mask)
+        return ids
+
+    @pytest.mark.parametrize("chunk_size", [2, 4, 7, 14])
+    def test_streams_are_identical_to_the_whole_chunk_matcher(self, chunk_size):
+        """The whole point: this is a refactor, not a change to what the model sees."""
+        legacy, tok_l = self._dataset("Qwen/Qwen3-1.7B", "<audio>", register=False)
+        fast, tok_f = self._dataset("Qwen/Qwen3-1.7B", "<|_audio_placeholder_|>", register=True)
+        assert legacy._audio_token_id is None, "multi-token tag must use the matcher"
+        assert fast._audio_token_id is not None, "single-token tag must use the map"
+        assert self._stream(legacy, tok_l, chunk_size) == self._stream(fast, tok_f, chunk_size)
+
+    def test_per_size_cache_is_retired_on_the_fast_path(self):
+        fast, _ = self._dataset("Qwen/Qwen3-1.7B", "<|_audio_placeholder_|>", register=True)
+        legacy, _ = self._dataset("Qwen/Qwen3-1.7B", "<audio>", register=False)
+        assert fast._audio_chunk_ids_by_size == {}
+        assert sorted(legacy._audio_chunk_ids_by_size) == [2, 4, 7, 14]
+
+    def test_legacy_tag_is_untouched_by_default(self):
+        """R8: no recipe sets model.audio_tag, so the default path must not move."""
+        legacy, _ = self._dataset("Qwen/Qwen3-1.7B", "<audio>", register=False)
+        assert legacy._audio_token_id is None
+        assert legacy.cfg.audio_tag == "<audio>"
+
+
+class TestParseChatTemplateSpans:
+    """M1 acceptance: the index-derived turn spans are the ones training emits.
+
+    ``parse_chat_template_ids`` locates the four structural spans of a
+    mid-conversation turn by diffing renders, replacing a parser that split the
+    rendered template string and re-encoded the fragments.  The property that
+    matters is not "matches the old parser" but "matches what
+    ``apply_chat_template`` actually emits for a turn during training" — the two
+    differ on every backbone whose template emits a system block unconditionally.
+    """
+
+    @pytest.fixture(scope="class")
+    def qwen3_hf(self):
+        tok = _try_load_tokenizer("Qwen/Qwen3-1.7B")
+        if tok is None:
+            pytest.skip("Qwen3 tokenizer not available")
+        return tok
+
+    @staticmethod
+    def _count(haystack, needle):
+        if not needle:
+            return -1
+        return sum(1 for i in range(len(haystack) - len(needle) + 1) if haystack[i : i + len(needle)] == needle)
+
+    @staticmethod
+    def _training_render(hf_tok, n_turns=3, content="<audio><audio>"):
+        """A realistic training conversation: one system turn, then N user/assistant pairs."""
+        messages = [{"role": "system", "content": "Transcribe the audio into text."}]
+        for i in range(n_turns):
+            messages.append({"role": "user", "content": content})
+            messages.append({"role": "assistant", "content": f"word{i}"})
+        return apply_chat_template_ids(hf_tok, messages, add_generation_prompt=False, enable_thinking=False)
+
+    def test_tokenizer_matrix_is_actually_populated(self):
+        """Guard against the whole class reporting green because every load failed.
+
+        ``real_tokenizer`` skips silently when a tokenizer cannot be loaded, so a
+        cold HF cache would otherwise turn these acceptance tests into no-ops.
+        """
+        loaded = [m for m in _REAL_TOKENIZER_MODELS.values() if _try_load_tokenizer(m) is not None]
+        assert len(loaded) >= 2, f"Need >=2 real tokenizers to make this suite meaningful, got {loaded}"
+
+    @pytest.mark.parametrize("last_turn", [False, True])
+    def test_spans_occur_in_a_real_training_render(self, real_tokenizer, last_turn):
+        """The invariant that matters: inference feeds exactly what training emitted.
+
+        This is what catches a header carrying a spurious empty system block —
+        such a header appears zero times in a real conversation, so inference
+        would inject it once per chunk while training never did.
+        """
+        label, hf_tok = real_tokenizer
+        uh, uf, ah, _ = parse_chat_template_ids(hf_tok, last_turn=last_turn, probe_content="<audio>")
+        render = self._training_render(hf_tok, n_turns=3)
+
+        assert self._count(render, uh) == 3, f"{label}: user_header occurs {self._count(render, uh)}x, want 3"
+        if not last_turn:
+            # The assistant header is only guaranteed to match mid-conversation
+            # turns; the last-turn variant may carry thinking-suppression tags.
+            assert self._count(render, uf + ah) == 3, f"{label}: user_footer+asst_header should occur 3x"
+
+    def test_content_slice_decodes_back_to_the_probe(self, real_tokenizer):
+        """Boundaries are exact: what sits between the spans is the content, nothing more."""
+        label, hf_tok = real_tokenizer
+        uh, uf, _, _ = parse_chat_template_ids(hf_tok, probe_content="<audio>")
+        sys_msg = {"role": "system", "content": "probe"}
+        s_ids = apply_chat_template_ids(hf_tok, [sys_msg], add_generation_prompt=False, enable_thinking=False)
+        a_ids = apply_chat_template_ids(
+            hf_tok,
+            [sys_msg, {"role": "user", "content": "<audio>"}],
+            add_generation_prompt=False,
+            enable_thinking=False,
+        )
+        content = a_ids[len(s_ids) + len(uh) : len(a_ids) - len(uf)]
+        assert hf_tok.decode(content).strip() == "<audio>", f"{label}: content slice is {hf_tok.decode(content)!r}"
+
+    @pytest.mark.parametrize("last_turn", [False, True])
+    def test_matches_legacy_parser_where_legacy_was_correct(self, real_tokenizer, last_turn):
+        """Byte-equality with the pre-M1 parser, and the exact expected divergence where not.
+
+        Qwen3 and Gemma-4 only render a system block when a system message is
+        present, so the legacy system-less probe was already correct for them and
+        M1 must be a pure refactor.  The Nemotron templates always render one, so
+        the legacy ``user_header`` carried an empty system block that training
+        never emits — there M1 is a deliberate fix and the spans MUST differ.
+        """
+        label, hf_tok = real_tokenizer
+        uh, uf, ah, af = parse_chat_template_ids(hf_tok, last_turn=last_turn, probe_content="<audio>")
+        legacy_uh, legacy_mid, legacy_af = _legacy_parse_chat_template_ids(hf_tok, last_turn=last_turn)
+
+        assert af == legacy_af, f"{label}: assistant footer changed"
+
+        if label == "nemotron_mini":
+            # Third behaviour change, pinned rather than waved through. The legacy
+            # parser re-encoded a split string fragment, which prepended a spurious
+            # SentencePiece empty-string token to the boundary span. Dropping it
+            # moves `_user_footer_first_id` — the dynamic-chunking supervised target
+            # and the inference emit-gate id — from 252303 to 1014 ('\n'), so a
+            # model trained before this change would not fire its gate after it.
+            assert legacy_mid[0] == 252303, "expected the legacy spurious empty-string token"
+            assert hf_tok.decode([252303]) == "", "252303 should decode to the empty string"
+            assert uf + ah == legacy_mid[1:], f"{label}: boundary span should be the legacy one minus 252303"
+            assert (uf or ah)[0] == 1014, f"{label}: emit-gate id should now be the newline byte"
+        else:
+            assert uf + ah == legacy_mid, f"{label}: boundary span changed unexpectedly"
+
+        if label in _SYSTEM_BLOCK_BACKBONES:
+            assert uh != legacy_uh, f"{label}: expected the empty-system-block header to be fixed"
+            assert self._count(legacy_uh, uh) == 1, f"{label}: fixed header should be a suffix of the legacy one"
+            assert len(legacy_uh) > len(uh), f"{label}: legacy header should be the longer, buggy one"
+        else:
+            assert uh == legacy_uh, f"{label}: M1 must be a pure refactor for {label}"
+
+    def test_probe_content_does_not_affect_the_spans(self, real_tokenizer):
+        """The derivation must not depend on how much content the probe carries."""
+        label, hf_tok = real_tokenizer
+        one = parse_chat_template_ids(hf_tok, probe_content="<audio>")
+        many = parse_chat_template_ids(hf_tok, probe_content="<audio>" * 13)
+        assert one == many, f"{label}: spans changed with probe length"
+
+    def test_system_folding_template_raises(self, qwen3_hf):
+        """A template that folds the system message into the first user turn must fail loudly.
+
+        This is the case the append-only guard cannot see: the system-only render
+        carries nothing to exclude, so ``A[:len(S)] == S`` passes trivially and the
+        probe system prompt would land inside ``user_header`` — which streaming
+        inference then re-feeds once per chunk. Only the post-condition catches it.
+        """
+
+        class _SystemFoldingTokenizer:
+            """Renders system content inline in the first user turn, ChatML-style."""
+
+            name_or_path = "fake/system-folding-template"
+
+            def __init__(self, inner):
+                self._inner = inner
+
+            def __getattr__(self, name):
+                return getattr(self._inner, name)
+
+            def apply_chat_template(self, messages, **kwargs):
+                sys_txt = "".join(m["content"] for m in messages if m["role"] == "system")
+                text = ""
+                for m in messages:
+                    if m["role"] == "system":
+                        continue
+                    body = m["content"]
+                    if m["role"] == "user" and sys_txt:
+                        body = f"{sys_txt}\n{body}"
+                        sys_txt = ""
+                    text += f"<|im_start|>{m['role']}\n{body}<|im_end|>\n"
+                ids = self._inner.encode(text, add_special_tokens=False)
+                return {"input_ids": ids} if kwargs.get("return_dict") else ids
+
+        with pytest.raises(ValueError, match="folds the system message"):
+            parse_chat_template_ids(_SystemFoldingTokenizer(qwen3_hf), probe_content="<audio>")
+
+    def test_degenerate_probe_content_raises(self, qwen3_hf):
+        """Content the template strips away leaves nothing to diff against."""
+        with pytest.raises(ValueError, match="did not survive rendering"):
+            parse_chat_template_ids(qwen3_hf, probe_content="")
+
+    def test_qwen3_golden_ids(self, qwen3_hf):
+        """Drift canary: the exact Qwen3 spans this refactor must preserve."""
+        im_start, im_end, newline = 151644, 151645, 198
+        uh, uf, ah, af = parse_chat_template_ids(qwen3_hf, last_turn=False, probe_content="<audio>")
+        assert uh == [im_start, 872, newline]  # <|im_start|>user\n
+        assert uf == [im_end, newline]  # <|im_end|>\n
+        assert ah == [im_start, 77091, newline]  # <|im_start|>assistant\n
+        assert af == [im_end, newline]  # <|im_end|>\n
+
+    def test_non_append_only_template_raises(self, qwen3_hf):
+        """A template that rewrites earlier turns must fail loudly, not silently mis-slice."""
+
+        class _RewritingTokenizer:
+            name_or_path = "fake/rewriting-template"
+
+            def __init__(self, inner):
+                self._inner = inner
+                self._calls = 0
+
+            def __getattr__(self, name):
+                return getattr(self._inner, name)
+
+            def apply_chat_template(self, messages, **kwargs):
+                out = self._inner.apply_chat_template(messages, **kwargs)
+                self._calls += 1
+                # Corrupt the head of a later render to break the prefix relation.
+                if self._calls > 2 and kwargs.get("tokenize", True):
+                    ids = list(out["input_ids"] if hasattr(out, "keys") else out)
+                    return [ids[0] + 1] + ids[1:]
+                return out
+
+        with pytest.raises(ValueError, match="not append-only"):
+            parse_chat_template_ids(_RewritingTokenizer(qwen3_hf), probe_content="<audio>")
+
+
 class TestCompactTemplate:
     """Tests for the compact chat template feature (Qwen3 tokenizer).
 
@@ -1847,11 +2234,16 @@ class TestCompactTemplate:
 
     def test_build_compact_turn_markers_qwen3(self, qwen3_hf):
         """Default <|im_start|> → 1-token header; <|im_end|> → 1-token footer."""
-        uh, ufah, af = build_compact_turn_markers(qwen3_hf, "<|im_start|>")
+        uh, uf, ah, af = build_compact_turn_markers(qwen3_hf, "<|im_start|>")
         assert uh == []
         im_start_id = qwen3_hf.convert_tokens_to_ids("<|im_start|>")
         im_end_id = qwen3_hf.eos_token_id
-        assert ufah == [im_start_id]
+        # The end-of-audio anchor is the USER FOOTER (the audio->text boundary),
+        # with an empty assistant header — not the other way round. This is what
+        # `_user_footer_first_id` must point at on both the training and the
+        # inference side.
+        assert uf == [im_start_id]
+        assert ah == []
         assert af == [im_end_id]
 
     def test_build_compact_turn_markers_multi_token_raises(self, qwen3_hf):
@@ -2238,18 +2630,30 @@ class TestMultiChunkSizeDataset:
 
     # --- __init__ normalization & precompute ---
 
+    @staticmethod
+    def _assert_audio_mapping_ready(ds, sizes):
+        """Every candidate chunk size must be mappable, by whichever path applies.
+
+        A single-token audio tag maps one id per frame and needs no per-size
+        patterns; a multi-token tag needs ``audio_tag * chunk_size`` precomputed
+        for each size so BPE cannot merge across adjacent tags.
+        """
+        if ds._audio_token_id is not None:
+            assert ds._audio_chunk_ids_by_size == {}, "single-token path should not build per-size patterns"
+        else:
+            assert set(ds._audio_chunk_ids_by_size) == set(sizes)
+            for size in sizes:
+                assert len(ds._audio_chunk_ids_by_size[size]) == size
+
     def test_list_candidates_and_audio_ids(self):
         ds = self._make_dataset([2, 4])
         assert ds._chunk_size_candidates == [2, 4]
-        assert set(ds._audio_chunk_ids_by_size) == {2, 4}
-        assert len(ds._audio_chunk_ids_by_size[2]) == 2
-        assert len(ds._audio_chunk_ids_by_size[4]) == 4
+        self._assert_audio_mapping_ready(ds, [2, 4])
 
     def test_scalar_backward_compatible(self):
         ds = self._make_dataset(2)
         assert ds._chunk_size_candidates is None
-        assert set(ds._audio_chunk_ids_by_size) == {2}
-        assert len(ds._audio_chunk_ids_by_size[2]) == 2
+        self._assert_audio_mapping_ready(ds, [2])
 
     def test_scalar_dynamic_and_offline_have_no_audio_ids(self):
         for cs in (0, -1):
@@ -2312,3 +2716,583 @@ class TestMultiChunkSizeDataset:
         assert batch.chunk_size == 2
         n_audio = int((batch.input_tokens == AUDIO_TOKEN_IDX).sum().item())
         assert n_audio == 14  # ceil(13/2)=7 chunks * 2
+
+
+def _legacy_parse_chat_template_ids(hf_tok, last_turn: bool = False):
+    """Byte-for-byte copy of ``parse_chat_template_ids`` as of commit f1e14f5e2a.
+
+    Kept ONLY as the reference for
+    ``TestParseChatTemplateSpans.test_matches_legacy_parser_where_legacy_was_correct``,
+    which pins M1 as a pure refactor on the backbones where this implementation
+    was already correct, and pins the exact divergence where it was not.
+
+    Do not "fix" this function — its bugs are the point. It renders a
+    system-less probe conversation, so on templates that emit a system block
+    unconditionally the empty block ends up inside ``user_header_ids``.
+
+    Returns the old 3-tuple ``(user_header, user_footer_and_asst_header, asst_footer)``.
+    """
+    _SENTINEL = "XSENTINELX"
+    convo_2msg = hf_tok.apply_chat_template(
+        [{"role": "user", "content": _SENTINEL}, {"role": "assistant", "content": _SENTINEL}],
+        tokenize=False,
+        add_generation_prompt=False,
+        enable_thinking=False,
+    )
+    parts = convo_2msg.split(_SENTINEL)
+    user_header_ids = hf_tok.encode(parts[0], add_special_tokens=False)
+    asst_footer_ids = hf_tok.encode(parts[2], add_special_tokens=False) if parts[2].strip() else []
+
+    bos_id = getattr(hf_tok, "bos_token_id", None)
+    if user_header_ids and bos_id is not None and user_header_ids[0] == bos_id:
+        user_header_ids = user_header_ids[1:]
+
+    if last_turn:
+        mid_ids = hf_tok.encode(parts[1], add_special_tokens=False)
+    else:
+        convo_4msg = hf_tok.apply_chat_template(
+            [
+                {"role": "user", "content": _SENTINEL},
+                {"role": "assistant", "content": _SENTINEL},
+                {"role": "user", "content": "x"},
+                {"role": "assistant", "content": "x"},
+            ],
+            tokenize=False,
+            add_generation_prompt=False,
+            enable_thinking=False,
+        )
+        mid_ids = hf_tok.encode(convo_4msg.split(_SENTINEL)[1], add_special_tokens=False)
+
+    return user_header_ids, mid_ids, asst_footer_ids
+
+
+class TestDropBlankFromContext:
+    """M3 / rung 1: the blank leaves the context but stays supervised.
+
+    The point of the knob is that the model still learns to predict blank at the
+    gate — it simply never attends to a blank it emitted earlier. So the two
+    properties to pin are complementary: zero blanks among the INPUT ids, and an
+    unchanged count of blanks among the TARGETS.
+    """
+
+    WORDS = ["hello", "world", "again"]
+    ALIGNED = [WordAlignment(text=w, start_time=0.6 * i, end_time=0.6 * i + 0.25) for i, w in enumerate(WORDS)]
+
+    def _dataset(self, drop, blank_token="<blank>", compact=True):
+        from nemo.collections.common.tokenizers import AutoTokenizer as NeMoTok
+
+        tok = NeMoTok("Qwen/Qwen3-1.7B", use_fast=True)
+        tok.add_special_tokens({"additional_special_tokens": ["<blank>", "<|write|>"]})
+        cfg = OmegaConf.create(
+            {
+                "sample_rate": 16000,
+                "frame_length_in_secs": 0.08,
+                "chunk_size": 2,
+                "num_delay_frames": 3,
+                "audio_tag": "<audio>",
+                "blank_token": blank_token,
+                "system_role": "system",
+                "system_prompt": "Transcribe the audio into text.",
+                "compact_template": compact,
+                "prepend_write_token": True,
+                "write_token": "<|write|>",
+                "drop_blank_from_context": drop,
+            }
+        )
+        return StreamingSTTDataset(cfg=cfg, tokenizer=tok), tok
+
+    def _encode(self, ds, tok):
+        msgs = get_llm_messages_for_sample(
+            system_role="system",
+            system_prompt="Transcribe the audio into text.",
+            audio_tag="<audio>",
+            blank_token=ds.cfg.blank_token,
+            chunk_size=2,
+            num_delay_frames=3,
+            audio_duration_secs=2.0,
+            frame_length_in_secs=0.08,
+            alignments=self.ALIGNED,
+            transcript=" ".join(self.WORDS),
+            prepend_write_token=True,
+            write_token="<|write|>",
+        )
+        ids, mask = _tokenize_compact_with_assistant_mask(
+            msgs,
+            tok,
+            ds._eoa_id,
+            ds._compact_eos_id,
+            drop_blank_from_context=ds._drop_blank,
+            blank_token=ds.cfg.blank_token,
+        )
+        ids, mask = _replace_audio_chunks(ids, ds._audio_chunk_ids_by_size[2], 2, mask=mask)
+        targets = [t if m else IGNORE_INDEX for t, m in zip(ids[1:] + [IGNORE_INDEX], mask[1:] + [0])]
+        if ds._drop_blank:
+            n = len(ids)
+            for i, tid in enumerate(ids):
+                if tid != ds._eoa_id:
+                    continue
+                nxt = ids[i + 1] if i + 1 < n else None
+                if nxt is None or nxt == AUDIO_TOKEN_IDX:
+                    targets[i] = ds.blank_id
+        return ids, targets
+
+    def test_blank_leaves_the_input_but_stays_supervised(self):
+        off_ds, off_tok = self._dataset(drop=False)
+        on_ds, on_tok = self._dataset(drop=True)
+        off_ids, off_tgt = self._encode(off_ds, off_tok)
+        on_ids, on_tgt = self._encode(on_ds, on_tok)
+
+        blank = off_ds.blank_id
+        assert sum(1 for t in off_ids if t == blank) > 0, "baseline should contain blanks as input"
+        assert sum(1 for t in on_ids if t == blank) == 0, "blank must not be an input token"
+        assert sum(1 for t in on_tgt if t == blank) == sum(
+            1 for t in off_tgt if t == blank
+        ), "every blank that was supervised before must still be supervised"
+
+    def test_audio_is_untouched_and_the_sequence_shrinks(self):
+        off_ds, off_tok = self._dataset(drop=False)
+        on_ds, on_tok = self._dataset(drop=True)
+        off_ids, _ = self._encode(off_ds, off_tok)
+        on_ids, _ = self._encode(on_ds, on_tok)
+
+        n_audio = lambda ids: sum(1 for t in ids if t == AUDIO_TOKEN_IDX)
+        assert n_audio(on_ids) == n_audio(off_ids), "dropping blanks must not change the audio span"
+        assert len(on_ids) < len(off_ids)
+
+    def test_emitted_text_is_unchanged(self):
+        """Only silent chunks lose scaffolding; spoken content must survive verbatim."""
+        off_ds, off_tok = self._dataset(drop=False)
+        on_ds, on_tok = self._dataset(drop=True)
+        off_ids, _ = self._encode(off_ds, off_tok)
+        on_ids, _ = self._encode(on_ds, on_tok)
+
+        keep = lambda ids, ds: [
+            t for t in ids if t not in (AUDIO_TOKEN_IDX, ds._eoa_id, ds._compact_eos_id, ds.blank_id)
+        ]
+        assert keep(on_ids, on_ds) == keep(off_ids, off_ds)
+
+    def test_disabled_without_a_blank_token(self):
+        """blank_token='' leaves nothing to drop and no defined gate target."""
+        with pytest.warns(UserWarning, match="requires a non-empty blank_token"):
+            ds, _ = self._dataset(drop=True, blank_token="")
+        assert ds._drop_blank is False
+
+    def test_non_compact_is_rejected_not_half_applied(self):
+        with pytest.raises(NotImplementedError, match="compact_template=True"):
+            self._dataset(drop=True, compact=False)
+
+    def test_off_by_default(self):
+        ds, _ = self._dataset(drop=False)
+        assert ds._drop_blank is False
+        assert StreamingSTTDataConfig.drop_blank_from_context is False
+
+
+class TestCollapseSilentAudio:
+    """M5 / rung 2: the per-chunk anchor goes too, so silent audio becomes contiguous.
+
+    The gate moves to the last audio frame of each chunk. Since no boundary marker
+    survives in the token stream, it is located by counting audio frames — every
+    chunk contributes exactly ``chunk_size``. Its target is ``blank`` when nothing
+    but more audio follows, and otherwise whatever token actually starts the
+    emission, so the inference-side test is ``!= blank`` and needs no fixed token.
+    """
+
+    WORDS = ["hello", "world", "again"]
+    ALIGNED = [WordAlignment(text=w, start_time=0.6 * i, end_time=0.6 * i + 0.25) for i, w in enumerate(WORDS)]
+    C = 2
+
+    def _dataset(self, collapse, prepend=True, blank_token="<blank>"):
+        from nemo.collections.common.tokenizers import AutoTokenizer as NeMoTok
+
+        tok = NeMoTok("Qwen/Qwen3-1.7B", use_fast=True)
+        tok.add_special_tokens({"additional_special_tokens": ["<blank>", "<|write|>"]})
+        cfg = OmegaConf.create(
+            {
+                "sample_rate": 16000,
+                "frame_length_in_secs": 0.08,
+                "chunk_size": self.C,
+                "num_delay_frames": 3,
+                "audio_tag": "<audio>",
+                "blank_token": blank_token,
+                "system_role": "system",
+                "system_prompt": "Transcribe the audio into text.",
+                "compact_template": True,
+                "prepend_write_token": prepend,
+                "write_token": "<|write|>",
+                "collapse_silent_audio": collapse,
+            }
+        )
+        return StreamingSTTDataset(cfg=cfg, tokenizer=tok), tok
+
+    def _encode(self, ds, tok, prepend=True):
+        msgs = get_llm_messages_for_sample(
+            system_role="system",
+            system_prompt="Transcribe the audio into text.",
+            audio_tag="<audio>",
+            blank_token=ds.cfg.blank_token,
+            chunk_size=self.C,
+            num_delay_frames=3,
+            audio_duration_secs=2.0,
+            frame_length_in_secs=0.08,
+            alignments=self.ALIGNED,
+            transcript=" ".join(self.WORDS),
+            prepend_write_token=prepend,
+            write_token="<|write|>",
+        )
+        ids, mask = _tokenize_compact_with_assistant_mask(
+            msgs,
+            tok,
+            ds._eoa_id,
+            ds._compact_eos_id,
+            drop_blank_from_context=ds._drop_blank,
+            blank_token=ds.cfg.blank_token,
+            collapse_silent_audio=ds._collapse_audio,
+        )
+        ids, mask = _replace_audio_chunks(ids, ds._audio_chunk_ids_by_size[self.C], self.C, mask=mask)
+        targets = [t if m else IGNORE_INDEX for t, m in zip(ids[1:] + [IGNORE_INDEX], mask[1:] + [0])]
+        gates = []
+        if ds._collapse_audio:
+            n, seen = len(ids), 0
+            for i, tid in enumerate(ids):
+                if tid != AUDIO_TOKEN_IDX:
+                    continue
+                seen += 1
+                if seen % self.C:
+                    continue
+                nxt = ids[i + 1] if i + 1 < n else None
+                targets[i] = ds.blank_id if (nxt is None or nxt == AUDIO_TOKEN_IDX) else nxt
+                gates.append(targets[i])
+        return ids, targets, gates
+
+    @staticmethod
+    def _longest_audio_run(ids):
+        best = cur = 0
+        for t in ids:
+            cur = cur + 1 if t == AUDIO_TOKEN_IDX else 0
+            best = max(best, cur)
+        return best
+
+    def test_silent_chunks_merge_into_one_contiguous_audio_run(self):
+        """The M5 acceptance criterion."""
+        off_ds, off_tok = self._dataset(collapse=False)
+        on_ds, on_tok = self._dataset(collapse=True)
+        off_ids, _, _ = self._encode(off_ds, off_tok)
+        on_ids, _, _ = self._encode(on_ds, on_tok)
+
+        assert self._longest_audio_run(off_ids) == self.C, "baseline audio is chunked every C frames"
+        assert self._longest_audio_run(on_ids) > self.C, "consecutive silent chunks should merge"
+        assert len(on_ids) < len(off_ids)
+
+    def test_no_anchor_survives_and_audio_is_untouched(self):
+        on_ds, on_tok = self._dataset(collapse=True)
+        off_ds, off_tok = self._dataset(collapse=False)
+        on_ids, _, _ = self._encode(on_ds, on_tok)
+        off_ids, _, _ = self._encode(off_ds, off_tok)
+
+        n_audio = lambda ids: sum(1 for t in ids if t == AUDIO_TOKEN_IDX)
+        assert n_audio(on_ids) == n_audio(off_ids), "dropping anchors must not change the audio span"
+        # The only <eoa> left is the system block's, which is not a per-chunk anchor.
+        assert sum(1 for t in on_ids if t == on_ds._eoa_id) < sum(1 for t in off_ids if t == off_ds._eoa_id)
+
+    @pytest.mark.parametrize("prepend", [True, False])
+    def test_gate_target_is_never_blank_on_a_speaking_chunk(self, prepend):
+        """The gate needs no fixed token: 'not blank' identifies emission either way.
+
+        With prepend_write_token the emit target is the write token; without it, the
+        first text token. Both are distinguishable from blank, which is all the
+        inference-side gate tests.
+        """
+        ds, tok = self._dataset(collapse=True, prepend=prepend)
+        _, _, gates = self._encode(ds, tok, prepend=prepend)
+
+        assert gates, "expected at least one gate"
+        emit = [g for g in gates if g != ds.blank_id]
+        blank = [g for g in gates if g == ds.blank_id]
+        assert emit and blank, "both silent and speaking chunks should be represented"
+        if prepend:
+            write_id = tok.tokenizer.convert_tokens_to_ids("<|write|>")
+            assert all(g == write_id for g in emit)
+        else:
+            assert all(g != ds.blank_id for g in emit)
+
+    def test_supervision_count_matches_the_unmodified_format(self):
+        """Rung 2 changes the context, never how many decisions are supervised."""
+        off_ds, off_tok = self._dataset(collapse=False)
+        on_ds, on_tok = self._dataset(collapse=True)
+        _, off_tgt, _ = self._encode(off_ds, off_tok)
+        _, on_tgt, on_gates = self._encode(on_ds, on_tok)
+
+        assert sum(1 for t in on_tgt if t == on_ds.blank_id) == sum(1 for t in off_tgt if t == off_ds.blank_id)
+
+    def test_requires_a_blank_token(self):
+        with pytest.raises(ValueError, match="requires a non-empty blank_token"):
+            self._dataset(collapse=True, blank_token="")
+
+    def test_implies_rung_1(self):
+        ds, _ = self._dataset(collapse=True)
+        assert ds._drop_blank is True, "collapse_silent_audio implies drop_blank_from_context"
+
+    def test_off_by_default(self):
+        assert StreamingSTTDataConfig.collapse_silent_audio is False
+
+
+class TestFlushToken:
+    """``use_flush_token``: replace the unobservable last chunk with an observable marker.
+
+    Training makes the final chunk special twice over -- ``is_last_chunk`` force-emits a
+    sub-``words_per_group`` buffer, and delay-pushed residual words are folded back into
+    the last assistant turn -- but at inference the model cannot tell which chunk is last,
+    because audio simply stops. With the knob on, every boundary obeys one rule and
+    everything left over moves to a flush turn the harness actually feeds.
+    """
+
+    WORDS = ["hello", "world", "again"]
+    # The last word ends at 1.95s: frame 25, +3 delay = 28, past the final boundary at
+    # frame 26 -- so it is genuinely residual and must be carried by the flush turn.
+    ALIGNED = [
+        WordAlignment(text="hello", start_time=0.00, end_time=0.25),
+        WordAlignment(text="world", start_time=0.60, end_time=0.85),
+        WordAlignment(text="again", start_time=1.70, end_time=1.95),
+    ]
+    C = 2
+    FLUSH = "<|flush|>"
+
+    def _dataset(self, use_flush, collapse=False, chunk_size=None):
+        from nemo.collections.common.tokenizers import AutoTokenizer as NeMoTok
+
+        tok = NeMoTok("Qwen/Qwen3-1.7B", use_fast=True)
+        tok.add_special_tokens({"additional_special_tokens": ["<blank>", "<|write|>", self.FLUSH]})
+        cfg = OmegaConf.create(
+            {
+                "sample_rate": 16000,
+                "frame_length_in_secs": 0.08,
+                "chunk_size": self.C if chunk_size is None else chunk_size,
+                "num_delay_frames": 3,
+                "audio_tag": "<audio>",
+                "blank_token": "<blank>",
+                "system_role": "system",
+                "system_prompt": "Transcribe the audio into text.",
+                "compact_template": True,
+                "prepend_write_token": True,
+                "write_token": "<|write|>",
+                "collapse_silent_audio": collapse,
+                "use_flush_token": use_flush,
+                "flush_token": self.FLUSH,
+            }
+        )
+        return StreamingSTTDataset(cfg=cfg, tokenizer=tok), tok
+
+    def _messages(self, use_flush, words_per_group=1):
+        return get_llm_messages_for_sample(
+            system_role="system",
+            system_prompt="Transcribe the audio into text.",
+            audio_tag="<audio>",
+            blank_token="<blank>",
+            chunk_size=self.C,
+            num_delay_frames=3,
+            audio_duration_secs=2.0,
+            frame_length_in_secs=0.08,
+            alignments=self.ALIGNED,
+            transcript=" ".join(self.WORDS),
+            words_per_group=words_per_group,
+            prepend_write_token=True,
+            write_token="<|write|>",
+            use_flush_token=use_flush,
+            flush_token=self.FLUSH,
+        )
+
+    def _encode(self, ds, tok, messages):
+        ids, mask = _tokenize_compact_with_assistant_mask(
+            messages,
+            tok,
+            ds._eoa_id,
+            ds._compact_eos_id,
+            drop_blank_from_context=ds._drop_blank,
+            blank_token=ds.cfg.blank_token,
+            collapse_silent_audio=ds._collapse_audio,
+            flush_id=ds._flush_id,
+        )
+        ids, mask = _replace_audio_chunks(ids, ds._audio_chunk_ids_by_size[self.C], self.C, mask=mask)
+        targets = [t if m else IGNORE_INDEX for t, m in zip(ids[1:] + [IGNORE_INDEX], mask[1:] + [0])]
+        # Mirrors the rung-2 gate loop in get_batch_data, including its flush case.
+        if ds._collapse_audio:
+            n, seen = len(ids), 0
+            for i, tid in enumerate(ids):
+                if tid != AUDIO_TOKEN_IDX:
+                    continue
+                seen += 1
+                if seen % self.C:
+                    continue
+                nxt = ids[i + 1] if i + 1 < n else None
+                if nxt is None or nxt == AUDIO_TOKEN_IDX or (ds._flush_id is not None and nxt == ds._flush_id):
+                    targets[i] = ds.blank_id
+                else:
+                    targets[i] = nxt
+            if ds._flush_id is not None:
+                for i, tid in enumerate(ids):
+                    if tid != ds._flush_id:
+                        continue
+                    nxt = ids[i + 1] if i + 1 < len(ids) else None
+                    targets[i] = ds.blank_id if (nxt is None or nxt == AUDIO_TOKEN_IDX) else nxt
+        return ids, mask, targets
+
+    def test_flush_turn_is_appended_and_carries_the_tail(self):
+        msgs = self._messages(use_flush=True)
+        assert msgs[-2]["role"] == "user" and msgs[-2]["content"] == self.FLUSH
+        assert msgs[-1]["role"] == "assistant"
+        # Every word must still be supervised exactly once across the whole sample.
+        emitted = " ".join(m["content"] for m in msgs if m["role"] == "assistant")
+        for w in self.WORDS:
+            assert emitted.count(w) == 1, f"{w!r} should appear exactly once"
+
+    def test_last_chunk_exception_is_dropped(self):
+        """The whole point: with the knob on, no chunk boundary behaves specially."""
+        off = self._messages(use_flush=False, words_per_group=2)
+        on = self._messages(use_flush=True, words_per_group=2)
+
+        # Baseline: a leftover buffer below words_per_group is force-emitted at the
+        # last chunk, conditioned on `is_last_chunk` -- unobservable at inference.
+        assert off[-1]["role"] == "assistant" and off[-1]["content"] != "<blank>"
+        # With flush: the same leftover is carried by the flush turn instead.
+        assert on[-2]["content"] == self.FLUSH
+        assert on[-1]["content"] != "<blank>", "the leftover words should land after flush"
+
+    def test_no_pending_words_still_supervises_blank(self):
+        """Flush must also teach 'nothing left', or it only ever means 'dump'."""
+        msgs = get_llm_messages_for_sample(
+            system_role="system",
+            system_prompt="p",
+            audio_tag="<audio>",
+            blank_token="<blank>",
+            chunk_size=self.C,
+            num_delay_frames=0,
+            audio_duration_secs=2.0,
+            frame_length_in_secs=0.08,
+            alignments=[WordAlignment(text="hi", start_time=0.0, end_time=0.1)],
+            transcript="hi",
+            prepend_write_token=True,
+            write_token="<|write|>",
+            use_flush_token=True,
+            flush_token=self.FLUSH,
+        )
+        assert msgs[-2]["content"] == self.FLUSH
+        assert msgs[-1]["content"] == "<blank>"
+
+    def test_flush_turn_follows_the_rung_convention(self):
+        """Flush is a prefix; the turn after it is formatted like any other turn.
+
+        Rungs 0/1 keep the anchor, so emission still triggers off the same position it
+        does at every other chunk boundary instead of a second, once-per-utterance
+        trigger. Rung 2 has no anchor anywhere, so none appears here either.
+        """
+        ds, tok = self._dataset(use_flush=True, collapse=False)
+        ids, _, _ = self._encode(ds, tok, self._messages(use_flush=True))
+        i = ids.index(ds._flush_id)
+        assert ids[i + 1] == ds._eoa_id, "rungs 0/1 keep the anchor on the flush turn"
+
+        ds2, tok2 = self._dataset(use_flush=True, collapse=True)
+        ids2, _, _ = self._encode(ds2, tok2, self._messages(use_flush=True))
+        j = ids2.index(ds2._flush_id)
+        assert ids2[j + 1] != ds2._eoa_id, "rung 2 keeps no anchor, including here"
+
+    @pytest.mark.parametrize("collapse", [False, True])
+    def test_flush_turn_emission_is_supervised(self, collapse):
+        """Whatever the layout, the flush turn's emission must be trained.
+
+        Rungs 0/1 put the anchor between marker and content, rung 2 does not, so the
+        content index differs -- but in both the marker is scaffold, the content is
+        supervised, and the position right before the content carries it as its target.
+        """
+        ds, tok = self._dataset(use_flush=True, collapse=collapse)
+        ids, mask, targets = self._encode(ds, tok, self._messages(use_flush=True))
+        i = ids.index(ds._flush_id)
+        assert mask[i] == 0, "the marker itself is force-fed scaffold"
+
+        content = next(k for k in range(i + 1, len(ids)) if mask[k] == 1)
+        assert content - i <= 2, "content should follow the marker (plus at most an anchor)"
+        assert targets[content - 1] == ids[content], "the gate position must predict the emission"
+
+    def test_flush_is_never_a_target(self):
+        """The model must never be trained to predict end-of-audio -- it cannot know it."""
+        for collapse in (False, True):
+            ds, tok = self._dataset(use_flush=True, collapse=collapse)
+            _, _, targets = self._encode(ds, tok, self._messages(use_flush=True))
+            assert ds._flush_id not in targets, f"flush leaked into targets (collapse={collapse})"
+
+    def test_gate_before_flush_targets_blank(self):
+        ds, tok = self._dataset(use_flush=True, collapse=True)
+        ids, _, targets = self._encode(ds, tok, self._messages(use_flush=True))
+        i = ids.index(ds._flush_id)
+        assert ids[i - 1] == AUDIO_TOKEN_IDX, "flush should follow the final audio frame"
+        assert targets[i - 1] == ds.blank_id, "a boundary that emitted nothing targets blank"
+
+    def _messages_empty_tail(self, use_flush=True):
+        """One early word, so the alignment rule leaves nothing pending at flush."""
+        return get_llm_messages_for_sample(
+            system_role="system",
+            system_prompt="Transcribe the audio into text.",
+            audio_tag="<audio>",
+            blank_token="<blank>",
+            chunk_size=self.C,
+            num_delay_frames=0,
+            audio_duration_secs=2.0,
+            frame_length_in_secs=0.08,
+            alignments=[WordAlignment(text="hi", start_time=0.0, end_time=0.1)],
+            transcript="hi",
+            prepend_write_token=True,
+            write_token="<|write|>",
+            use_flush_token=use_flush,
+            flush_token=self.FLUSH,
+        )
+
+    def test_rung2_empty_flush_is_a_target_not_an_input(self):
+        """'Nothing left' must not put a blank back into the context.
+
+        Rung 2 represents a no-emit decision as a blank TARGET at the gate with nothing
+        added to the context; the flush turn follows the same convention, with the
+        marker acting as its own gate. Writing `<blank> <eos>` here instead would
+        reintroduce exactly the tokens the rung exists to remove.
+        """
+        ds, tok = self._dataset(use_flush=True, collapse=True)
+        ids, _, targets = self._encode(ds, tok, self._messages_empty_tail())
+        i = ids.index(ds._flush_id)
+        assert i == len(ids) - 1, "nothing may follow the marker when nothing is pending"
+        assert targets[i] == ds.blank_id, "the marker is its own gate and targets blank"
+        assert ds.blank_id not in ids, "no blank ever enters rung 2's context"
+
+    def test_rung1_empty_flush_keeps_anchor_and_targets_blank(self):
+        """Rung 1's convention: the anchor stays, the blank is only a target."""
+        ds, tok = self._dataset(use_flush=True, collapse=False)
+        ids, _, targets = self._encode(ds, tok, self._messages_empty_tail())
+        i = ids.index(ds._flush_id)
+        assert ids[i + 1] == ds._eoa_id, "rung 1 keeps the anchor on the flush turn"
+        assert targets[i + 1] == ds.blank_id, "and the anchor carries the blank target"
+
+    def test_dynamic_chunking_is_rejected(self):
+        with pytest.raises(ValueError, match="requires fixed chunking"):
+            self._dataset(use_flush=True, chunk_size=0)
+
+    def test_multi_token_flush_marker_is_rejected(self):
+        with pytest.raises(ValueError, match="exactly 1 token"):
+            from nemo.collections.common.tokenizers import AutoTokenizer as NeMoTok
+
+            tok = NeMoTok("Qwen/Qwen3-1.7B", use_fast=True)
+            tok.add_special_tokens({"additional_special_tokens": ["<blank>", "<|write|>"]})
+            cfg = OmegaConf.create(
+                {
+                    "sample_rate": 16000,
+                    "frame_length_in_secs": 0.08,
+                    "chunk_size": self.C,
+                    "num_delay_frames": 3,
+                    "audio_tag": "<audio>",
+                    "blank_token": "<blank>",
+                    "system_role": "system",
+                    "system_prompt": "p",
+                    "compact_template": True,
+                    "prepend_write_token": True,
+                    "write_token": "<|write|>",
+                    "use_flush_token": True,
+                    "flush_token": "not a registered single token",
+                }
+            )
+            StreamingSTTDataset(cfg=cfg, tokenizer=tok)

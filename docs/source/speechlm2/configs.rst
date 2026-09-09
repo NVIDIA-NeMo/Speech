@@ -216,7 +216,7 @@ net aux-loss gradient scale stays at 1.
         attn: te                  # "te" | "sdpa" | "flex"
         linear: te                # "torch" | "te"
         rms_norm: torch_fp32      # "torch" | "torch_fp32" | "te"
-        rope_fusion: true
+        rope_fusion: false          # Current Automodel main force-disables fused RoPE
         experts: torch_mm         # "torch" | "te" | "gmm" | "torch_mm"
         dispatcher: deepep        # "torch" | "deepep" | "hybridep" | "uccl_ep"
         dispatcher_num_sms: 20
@@ -225,9 +225,10 @@ net aux-loss gradient scale stays at 1.
       # E.g. ["flash_attention"] forces FA2 and errors if unavailable.
       sdpa_method: null
 
-Defaults come from Automodel's ``BackendConfig`` and auto-select TransformerEngine /
-DeepEP when available; override here to pin a specific backend (for example,
-``attn: sdpa`` to bypass TE).
+Defaults come from Automodel's ``BackendConfig`` and select available kernels and
+dispatchers; override here to pin a specific backend (for example, ``attn: sdpa``
+to bypass TE). ``enable_deepep`` is no longer supported; set ``dispatcher`` and
+``experts`` explicitly.
 
 **Packed sequences (THD):**
 

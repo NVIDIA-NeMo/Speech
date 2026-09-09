@@ -1,8 +1,8 @@
 :orphan:
 
-================
-NeMo Collections
-================
+=======================
+NeMo Speech Collections
+=======================
 
 Documentation for the individual collections
 

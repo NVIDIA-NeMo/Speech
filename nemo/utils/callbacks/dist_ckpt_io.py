@@ -54,7 +54,7 @@ except (ImportError, ModuleNotFoundError) as e:
     HAVE_MEGATRON_CORE = False
     IMPORT_ERROR = (
         "megatron-core was not found. "
-        "Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
+        "Please see the NeMo README for installation instructions: https://github.com/NVIDIA-NeMo/Speech#megatron-gpt."
         f" Exact error: {e}"
     )
 

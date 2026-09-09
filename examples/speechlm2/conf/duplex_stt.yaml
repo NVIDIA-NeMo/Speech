@@ -1,6 +1,6 @@
 model:
   # Every name/path here starting with 'pretrained' is used to initialize the model weights.
-  pretrained_llm: TinyLlama/TinyLlama_v1.1
+  pretrained_llm: TinyLlama/TinyLlama-1.1B-Chat-v1.0
   pretrained_asr: nvidia/stt_en_fastconformer_hybrid_large_streaming_multi
   scoring_asr: stt_en_fastconformer_transducer_large  # used only in validation/evaluation
   source_sample_rate: 16000
@@ -115,7 +115,7 @@ exp_manager:
 
    checkpoint_callback_params:
      filename: "{step}"
-     monitor: val_bleu
+     monitor: val_txt_bleu
      mode: max
      every_n_train_steps: null
      every_n_epochs: 1

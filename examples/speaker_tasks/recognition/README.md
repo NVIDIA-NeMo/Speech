@@ -29,14 +29,14 @@ For training ecapa_tdnn (channel-attention) model:
 ```bash
 python speaker_reco.py --config_path='conf' --config_name='ecapa_tdnn.yaml'
 ```
-For step by step tutorial see [notebook](https://github.com/NVIDIA/NeMo/blob/main/tutorials/speaker_tasks/Speaker_Identification_Verification.ipynb).
+For step by step tutorial see [notebook](https://github.com/NVIDIA-NeMo/Speech/blob/main/tutorials/speaker_tasks/Speaker_Identification_Verification.ipynb).
 
 ### Fine Tuning
 For fine tuning on a pretrained .nemo speaker recognition model,
 ```bash
 python speaker_reco_finetune.py --config_path='conf' --config_name='titanet-finetune.yaml'
 ```
-for fine tuning tips see this [tutorial](https://github.com/NVIDIA/NeMo/blob/main/tutorials/speaker_tasks/Speaker_Identification_Verification.ipynb)
+for fine tuning tips see this [tutorial](https://github.com/NVIDIA-NeMo/Speech/blob/main/tutorials/speaker_tasks/Speaker_Identification_Verification.ipynb)
 
 ## Inference
 We provide generic scripts for manifest file creation, embedding extraction, Voxceleb evaluation and speaker ID inference. Hence most of the steps would be common and differ slightly based on your end application.

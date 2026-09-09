@@ -87,7 +87,7 @@ else:
         def __init__(self):
             super().__init__()
             logging.warning(
-                "Apex was not found. ColumnLinear will not work. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
+                "Apex was not found. ColumnLinear will not work. Please see the NeMo README for installation instructions: https://github.com/NVIDIA-NeMo/Speech#megatron-gpt."
             )
 
 

@@ -354,7 +354,7 @@ class BufferedRNNTPipeline(BasePipeline):
                     lpad = int(lpad / self.sample_rate / self.model_stride_in_secs)
                     encoded[i] = encoded[i].roll(lpad, dims=1)
                     encoded[i][:, :lpad] = self.zero_encoded[:, :lpad]
-                    encoded_len[i] = encoded_len[i] + lpad
+                    encoded_len[i] = torch.clamp(encoded_len[i] + lpad, max=encoded.shape[-1])
 
         return encoded, encoded_len
 
@@ -400,7 +400,7 @@ class BufferedRNNTPipeline(BasePipeline):
                 if lpad > 0:
                     encoded[i] = encoded[i].roll(lpad, dims=1)
                     encoded[i][:, :lpad] = self.zero_encoded[:, :lpad]
-                    encoded_len[i] = encoded_len[i] + lpad
+                    encoded_len[i] = torch.clamp(encoded_len[i] + lpad, max=encoded.shape[-1])
         return encoded, encoded_len
 
     def encode_frames(self, frames: list[Frame]) -> tuple[Tensor, Tensor]:

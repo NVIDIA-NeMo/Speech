@@ -23,8 +23,10 @@ multi-utterance minibatch into a single packed sequence so the LLM is fed
 All tensor logic is kept here (no `SALMAutomodel` knowledge) so it is unit
 testable on CPU.
 """
+
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Optional
 
 import torch
@@ -203,12 +205,29 @@ def pack_audio_into_text_embeds(
     }
 
 
-def _shard_packed_for_cp(packed: dict[str, Tensor], cp_mesh) -> dict[str, Tensor]:
+def _shard_packed_for_cp(
+    packed: dict[str, Tensor],
+    cp_mesh,
+    mtp_inputs: _PackedMTPInputs | None = None,
+) -> tuple[dict[str, Tensor], _PackedMTPInputs | None]:
     """Partition a packed THD batch across CP ranks (TE's interleaved scheme).
 
     Mirrors ``nemo_automodel.components.distributed.cp_utils._shard_thd_chunk_for_te``
     but preserves the float dtype of ``inputs_embeds`` (the upstream helper
     casts everything to int64, which would silently corrupt embeddings).
+
+    Args:
+        packed: Global packed tensors. ``inputs_embeds`` has shape [tokens,
+            hidden], while ``labels`` and ``position_ids`` have shape [tokens].
+        cp_mesh: One-dimensional context-parallel device mesh.
+        mtp_inputs: Optional globally shifted and boundary-masked MTP tensors.
+            Embeddings have shape [tokens, hidden]; position IDs and targets
+            have shape [tokens].
+
+    Returns:
+        The rank-local packed mapping and optional rank-local MTP tensors. All
+        token tensors use TE's identical interleaved CP partition and have
+        local shape [tokens / cp_size, ...].
     """
     import transformer_engine_torch as tex  # local import — only needed when CP > 1
 
@@ -224,15 +243,29 @@ def _shard_packed_for_cp(packed: dict[str, Tensor], cp_mesh) -> dict[str, Tensor
     inputs_embeds = inputs_embeds.index_select(0, index)
     labels = labels.index_select(0, index)
     position_ids = position_ids.index_select(0, index)
+    if mtp_inputs is not None:
+        mtp_inputs = _PackedMTPInputs(
+            embed_inputs=tuple(embeds.index_select(0, index).contiguous() for embeds in mtp_inputs.embed_inputs),
+            position_ids=tuple(
+                position_ids.index_select(0, index).to(torch.int64).contiguous()
+                for position_ids in mtp_inputs.position_ids
+            ),
+            targets=tuple(
+                targets.index_select(0, index).to(torch.int64).contiguous() for targets in mtp_inputs.targets
+            ),
+        )
 
-    return {
-        "inputs_embeds": inputs_embeds.contiguous(),
-        "labels": labels.to(torch.int64).contiguous(),
-        "position_ids": position_ids.to(torch.int64).contiguous(),
-        "cu_seqlens": cu_seqlens.to(torch.int32).contiguous(),
-        "max_seqlen": packed["max_seqlen"],
-        "qkv_format": "thd",
-    }
+    return (
+        {
+            "inputs_embeds": inputs_embeds.contiguous(),
+            "labels": labels.to(torch.int64).contiguous(),
+            "position_ids": position_ids.to(torch.int64).contiguous(),
+            "cu_seqlens": cu_seqlens.to(torch.int32).contiguous(),
+            "max_seqlen": packed["max_seqlen"],
+            "qkv_format": "thd",
+        },
+        mtp_inputs,
+    )
 
 
 def prepare_packed_llm_inputs(
@@ -243,26 +276,30 @@ def prepare_packed_llm_inputs(
     padding_id: int,
     placeholder_id: int,
     device_mesh: Optional[Any] = None,
+    mtp_num_depths: int = 0,
 ) -> dict[str, Any]:
     """Pack a SALM minibatch and (optionally) shard it across CP ranks.
 
-    Returns a dict with the same top-level keys produced by the BSHD branch of
-    ``SALMAutomodel.prepare_inputs`` plus an ``llm_kwargs`` dict carrying the
-    THD metadata to splat into ``self.llm(...)``::
+    Args:
+        input_ids: Token IDs of shape [batch, sequence].
+        text_embs: Text embeddings of shape [batch, sequence, hidden].
+        audio_embs: Audio replacement tensors, each of shape [audio_frames, hidden].
+        target_ids: Unshifted labels of shape [batch, sequence].
+        padding_id: Token ID used for left padding.
+        placeholder_id: Token ID replaced by audio frames.
+        device_mesh: Optional device mesh containing CP and TP axes.
+        mtp_num_depths: Number of future-token MTP input/target tensors to
+            prepare. These are emitted only when CP is active because
+            rank-local rolling is otherwise incorrect.
 
-        {
-            "input_embeds":   Tensor [T, H] (2D, no leading batch dim;
-                              matches the canonical Automodel THD contract
-                              produced by ``_shard_thd_chunk_for_te``),
-            "attention_mask": None,
-            "target_ids":     Tensor [T],
-            "llm_kwargs": {
-                "qkv_format":        "thd",
-                "cu_seqlens":        Tensor [B+1] int32,
-                "position_ids":      Tensor [T] int64,
-                "max_seqlen":        int32 scalar,
-            },
-        }
+    Returns:
+        Mapping containing rank-local THD model inputs. ``input_embeds`` has
+        shape [local_tokens, hidden], ``target_ids`` and ``position_ids`` have
+        shape [local_tokens], and ``cu_seqlens`` describes the global packed
+        stream. Under CP with MTP, ``llm_kwargs`` also contains future
+        embeddings [local_tokens, hidden] and position IDs [local_tokens], and
+        ``mtp_per_depth_targets`` contains one [local_tokens] target tensor per
+        depth. All are shifted in global order before TE partitioning.
     """
     from nemo.collections.speechlm2.parts.cp_helpers import get_cp_mesh
 
@@ -283,21 +320,28 @@ def prepare_packed_llm_inputs(
         cp_size=cp_size,
         tp_size=tp_size,
     )
+    num_tokens = packed["seq_lens"].sum()
+    num_examples = torch.tensor(input_ids.shape[0], dtype=torch.long, device=input_ids.device)
 
+    mtp_inputs = None
+    if cp_mesh is not None and mtp_num_depths > 0:
+        mtp_inputs = _build_packed_mtp_inputs(packed, mtp_num_depths)
     if cp_mesh is not None:
-        packed = _shard_packed_for_cp(packed, cp_mesh)
+        packed, mtp_inputs = _shard_packed_for_cp(packed, cp_mesh, mtp_inputs)
 
-    return {
+    result = {
         "input_embeds": packed["inputs_embeds"],
         "attention_mask": None,
         "target_ids": packed["labels"],
+        "num_tokens": num_tokens,
+        "num_examples": num_examples,
         "llm_kwargs": {
             "qkv_format": "thd",
             # Match Automodel's standard THD contract (``thd_utils.process_input_for_thd``
             # and ``cp_utils._shard_thd_chunk_for_te``): emit only ``cu_seqlens`` (the
             # padded cumsum) and a single ``max_seqlen``. Passing ``cu_seqlens_padded``
             # too would activate the ``pad_between_seqs=True`` branch in
-            # ``Automodel/.../attention/utils.py``, which routes TE down a different
+            # ``nemo_automodel/.../attention/utils.py``, which routes TE down a different
             # attention path. Passing pre-split ``max_seqlen_q`` / ``max_seqlen_kv``
             # gets them silently dropped by the preprocessor.
             "cu_seqlens": packed["cu_seqlens"],
@@ -305,3 +349,91 @@ def prepare_packed_llm_inputs(
             "max_seqlen": packed["max_seqlen"],
         },
     }
+    if mtp_inputs is not None:
+        result["llm_kwargs"]["mtp_embed_inputs"] = mtp_inputs.embed_inputs
+        result["llm_kwargs"]["mtp_per_depth_position_ids"] = mtp_inputs.position_ids
+        result["mtp_per_depth_targets"] = mtp_inputs.targets
+    return result
+
+
+@dataclass(frozen=True)
+class _PackedMTPInputs:
+    """MTP tensors prepared in global packed order and optionally CP-sharded.
+
+    Every tuple contains one tensor per MTP depth. ``embed_inputs`` tensors
+    have shape [tokens, hidden]; ``position_ids`` and ``targets`` tensors have
+    shape [tokens]. Invalid future positions at packed-sequence boundaries are
+    zero-filled for model inputs and use ``ignore_index`` for targets.
+    """
+
+    embed_inputs: tuple[Tensor, ...]
+    position_ids: tuple[Tensor, ...]
+    targets: tuple[Tensor, ...]
+
+
+def _build_packed_mtp_shift_masks(seq_idx: Tensor, num_depths: int) -> tuple[Tensor, ...]:
+    """Build one packed-boundary validity mask per MTP depth."""
+    if num_depths < 1:
+        raise ValueError(f"num_depths must be positive, got {num_depths}")
+
+    token_idx = torch.arange(seq_idx.numel(), device=seq_idx.device)
+    return tuple(
+        (token_idx + depth < seq_idx.numel()) & (torch.roll(seq_idx, shifts=-depth, dims=0) == seq_idx)
+        for depth in range(1, num_depths + 1)
+    )
+
+
+def _shift_packed_tensor_for_mtp(tensor: Tensor, depth: int, valid_mask: Tensor) -> Tensor:
+    """Shift a packed tensor left without crossing document boundaries.
+
+    Args:
+        tensor: Global packed tensor of shape [tokens, ...].
+        depth: Number of future-token positions to shift.
+        valid_mask: Precomputed packed-boundary validity mask of shape [tokens].
+
+    Returns:
+        A tensor with the same shape and dtype as ``tensor``. Positions whose
+        future token is outside their current document are zero.
+    """
+    if depth < 1:
+        raise ValueError(f"MTP depth must be positive, got {depth}")
+    if tensor.shape[0] != valid_mask.shape[0]:
+        raise ValueError(
+            f"Packed tensor token count {tensor.shape[0]} does not match validity mask token count {valid_mask.shape[0]}"
+        )
+
+    shifted = torch.roll(tensor, shifts=-depth, dims=0)
+    valid = valid_mask
+    while valid.ndim < shifted.ndim:
+        valid = valid.unsqueeze(-1)
+    return torch.where(valid, shifted, torch.zeros((), dtype=tensor.dtype, device=tensor.device))
+
+
+def _build_packed_mtp_inputs(packed: dict[str, Tensor], num_depths: int) -> _PackedMTPInputs:
+    """Prepare globally shifted, boundary-safe MTP tensors before CP sharding.
+
+    ``packed`` contains embeddings [tokens, hidden], position IDs [tokens],
+    labels [tokens], and global ``cu_seqlens``. The returned tensors retain
+    those layouts and global token order.
+    """
+    from nemo.collections.speechlm2.parts.mtp import iter_mtp_depth_targets, resolve_mtp_seq_idx
+
+    if num_depths < 1:
+        raise ValueError(f"num_depths must be positive, got {num_depths}")
+    seq_idx = resolve_mtp_seq_idx(packed["position_ids"], cu_seqlens=packed["cu_seqlens"])
+    if seq_idx is None:
+        raise RuntimeError("Could not derive packed sequence IDs from cu_seqlens")
+
+    depths = range(1, num_depths + 1)
+    valid_masks = _build_packed_mtp_shift_masks(seq_idx, num_depths)
+    return _PackedMTPInputs(
+        embed_inputs=tuple(
+            _shift_packed_tensor_for_mtp(packed["inputs_embeds"], depth, valid_mask)
+            for depth, valid_mask in zip(depths, valid_masks)
+        ),
+        position_ids=tuple(
+            _shift_packed_tensor_for_mtp(packed["position_ids"], depth, valid_mask)
+            for depth, valid_mask in zip(depths, valid_masks)
+        ),
+        targets=tuple(iter_mtp_depth_targets(packed["labels"], num_depths, seq_idx=seq_idx)),
+    )

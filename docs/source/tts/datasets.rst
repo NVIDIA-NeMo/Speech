@@ -1,7 +1,7 @@
 Data Preprocessing
 ==================
 
-NeMo TTS recipes support most of public TTS datasets that consist of multiple languages, multiple emotions, and multiple speakers. Current recipes covered English (en-US), German (de-DE), Spanish (es-ES), and Mandarin Chinese (zh-CN), while the support for many other languages is under planning. NeMo provides corpus-specific data preprocessing scripts, as shown in the directory of `scripts/data_processing/tts/ <https://github.com/NVIDIA/NeMo/tree/stable/scripts/dataset_processing/tts/>`_, to convert common public TTS datasets into the format expected by the dataloaders as defined in `nemo/collections/tts/data/dataset.py <https://github.com/NVIDIA/NeMo/tree/stable/nemo/collections/tts/data/dataset.py>`_. The ``nemo_tts`` collection expects each dataset to consist of a set of utterances in individual audio files plus a ``JSON`` manifest that describes the dataset, with information about one utterance per line. We recommend ``WAV`` files as they are the default and have been most thoroughly tested. NeMo supports any original sampling rates of audios, although our scripts of extracting supplementary data and model training all specify the common target sampling rates as either 44100 Hz or 22050 Hz. If the original sampling rate mismatches the target sampling rate, the `feature preprocessing <https://github.com/NVIDIA/NeMo/blob/stable/nemo/collections/asr/parts/preprocessing/features.py>`__ can automatically resample the original sampling rate into the target one.
+NeMo TTS recipes support most of public TTS datasets that consist of multiple languages, multiple emotions, and multiple speakers. Current recipes covered English (en-US), German (de-DE), Spanish (es-ES), and Mandarin Chinese (zh-CN), while the support for many other languages is under planning. NeMo provides corpus-specific data preprocessing scripts, as shown in the directory of `scripts/data_processing/tts/ <https://github.com/NVIDIA-NeMo/Speech/tree/stable/scripts/dataset_processing/tts/>`_, to convert common public TTS datasets into the format expected by the dataloaders as defined in `nemo/collections/tts/data/dataset.py <https://github.com/NVIDIA-NeMo/Speech/tree/stable/nemo/collections/tts/data/dataset.py>`_. The ``nemo_tts`` collection expects each dataset to consist of a set of utterances in individual audio files plus a ``JSON`` manifest that describes the dataset, with information about one utterance per line. We recommend ``WAV`` files as they are the default and have been most thoroughly tested. NeMo supports any original sampling rates of audios, although our scripts of extracting supplementary data and model training all specify the common target sampling rates as either 44100 Hz or 22050 Hz. If the original sampling rate mismatches the target sampling rate, the `feature preprocessing <https://github.com/NVIDIA-NeMo/Speech/blob/stable/nemo/collections/asr/parts/preprocessing/features.py>`__ can automatically resample the original sampling rate into the target one.
 
 There should be one ``JSON`` manifest file per dataset that will be passed in, therefore, if the user wants separate training and validation datasets, they should also have separate manifests. Otherwise, they will be loading validation data with their training data and vice versa. Each line of the manifest should be in the following format:
 
@@ -76,12 +76,12 @@ This table below summarizes the statistics for a collection of high-quality publ
 
 Corpus-Specific Data Preprocessing
 ----------------------------------
-NeMo implements model-agnostic data preprocessing scripts that wrap up steps of **downloading raw datasets, extracting files, and/or normalizing raw texts, and generating data manifest files**. Most scripts are able to be reused for any datasets with only minor adaptations. Most TTS models work out-of-the-box with the LJSpeech dataset, so it would be straightforward to start adapting your custom script from `LJSpeech script <https://github.com/NVIDIA/NeMo/tree/stable/scripts/dataset_processing/tts/ljspeech/get_data.py>`_. For some models that may require supplementary data for training and validating, such as speech/text alignment prior, pitch, speaker ID, emotion ID, energy, etc, you may need an extra step of **supplementary data extraction** by calling `script/dataset_processing/tts/extract_sup_data.py <https://github.com/NVIDIA/NeMo/tree/stable/scripts/dataset_processing/tts/extract_sup_data.py>`_ . The following sub-sections demonstrate detailed instructions for running data preprocessing scripts.
+NeMo implements model-agnostic data preprocessing scripts that wrap up steps of **downloading raw datasets, extracting files, and/or normalizing raw texts, and generating data manifest files**. Most scripts are able to be reused for any datasets with only minor adaptations. Most TTS models work out-of-the-box with the LJSpeech dataset, so it would be straightforward to start adapting your custom script from `LJSpeech script <https://github.com/NVIDIA-NeMo/Speech/tree/stable/scripts/dataset_processing/tts/ljspeech/get_data.py>`_. For some models that may require supplementary data for training and validating, such as speech/text alignment prior, pitch, speaker ID, emotion ID, energy, etc, you may need an extra step of **supplementary data extraction** by calling `script/dataset_processing/tts/extract_sup_data.py <https://github.com/NVIDIA-NeMo/Speech/tree/stable/scripts/dataset_processing/tts/extract_sup_data.py>`_ . The following sub-sections demonstrate detailed instructions for running data preprocessing scripts.
 
 LJSpeech
 ~~~~~~~~
 * Dataset URL: https://keithito.com/LJ-Speech-Dataset/
-* Dataset Processing Script: https://github.com/NVIDIA/NeMo/tree/stable/scripts/dataset_processing/tts/ljspeech/get_data.py
+* Dataset Processing Script: https://github.com/NVIDIA-NeMo/Speech/tree/stable/scripts/dataset_processing/tts/ljspeech/get_data.py
 * Command Line Instruction:
 
 .. code-block:: shell-session
@@ -99,7 +99,7 @@ LJSpeech
 LibriTTS
 ~~~~~~~~
 * Dataset URL: https://www.openslr.org/60/
-* Dataset Processing Script: https://github.com/NVIDIA/NeMo/tree/stable/scripts/dataset_processing/tts/libritts/get_data.py
+* Dataset Processing Script: https://github.com/NVIDIA-NeMo/Speech/tree/stable/scripts/dataset_processing/tts/libritts/get_data.py
 * Command Line Instruction:
 
 .. code-block:: console
@@ -130,7 +130,7 @@ The texts of this dataset has been normalized already. So there is no extra need
 
 Thorsten Müller's German Neutral-TTS Datasets
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-There are two German neutral datasets released by Thorsten Müller for now, 21.02 and 22.10, respectively. Version 22.10 has been recorded with a better recording setup, such as recording chamber and better microphone. So it is advised to train models on the 22.10 version because its audio quality is better and it has a way more natural speech flow and higher character rate per second speech. The two datasets are described below and defined in `scripts/dataset_processing/tts/thorsten_neutral/get_data.py <https://github.com/NVIDIA/NeMo/tree/stable/scripts/dataset_processing/tts/thorsten_neutral/get_data.py>`_.
+There are two German neutral datasets released by Thorsten Müller for now, 21.02 and 22.10, respectively. Version 22.10 has been recorded with a better recording setup, such as recording chamber and better microphone. So it is advised to train models on the 22.10 version because its audio quality is better and it has a way more natural speech flow and higher character rate per second speech. The two datasets are described below and defined in `scripts/dataset_processing/tts/thorsten_neutral/get_data.py <https://github.com/NVIDIA-NeMo/Speech/tree/stable/scripts/dataset_processing/tts/thorsten_neutral/get_data.py>`_.
 
 .. code-block:: python
 
@@ -149,7 +149,7 @@ There are two German neutral datasets released by Thorsten Müller for now, 21.0
     }
 
 * Thorsten Müller's German Datasets repo: https://github.com/thorstenMueller/Thorsten-Voice
-* Dataset Processing Script: https://github.com/NVIDIA/NeMo/tree/stable/scripts/dataset_processing/tts/thorsten_neutral/get_data.py
+* Dataset Processing Script: https://github.com/NVIDIA-NeMo/Speech/tree/stable/scripts/dataset_processing/tts/thorsten_neutral/get_data.py
 * Command Line Instruction:
 
 .. code-block:: bash
@@ -184,7 +184,7 @@ There are two German neutral datasets released by Thorsten Müller for now, 21.0
 HUI Audio Corpus German
 ~~~~~~~~~~~~~~~~~~~~~~~
 * Dataset URL: https://github.com/iisys-hof/HUI-Audio-Corpus-German
-* Dataset Processing Script: https://github.com/NVIDIA/NeMo/tree/stable/scripts/dataset_processing/tts/hui_acg/get_data.py
+* Dataset Processing Script: https://github.com/NVIDIA-NeMo/Speech/tree/stable/scripts/dataset_processing/tts/hui_acg/get_data.py
 * Command Line Instruction:
 
 .. code-block:: bash
@@ -213,8 +213,8 @@ HUI Audio Corpus German
 SFSpeech Chinese/English Bilingual Speech
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 * Dataset URL: https://catalog.ngc.nvidia.com/orgs/nvidia/resources/sf_bilingual_speech_zh_en
-* Dataset Processing Script: https://github.com/NVIDIA/NeMo/tree/stable/scripts/dataset_processing/tts/sfbilingual/get_data.py
-* Command Line Instruction: please refer details in Section 1 (NGC Registry CLI installation), Section 2 (Downloading SFSpeech Dataset), and Section 3 (Creatiung Data Manifests) from https://github.com/NVIDIA/NeMo/blob/main/tutorials/tts/FastPitch_ChineseTTS_Training.ipynb. Below code block briefly describes the steps.
+* Dataset Processing Script: https://github.com/NVIDIA-NeMo/Speech/tree/stable/scripts/dataset_processing/tts/sfbilingual/get_data.py
+* Command Line Instruction: please refer details in Section 1 (NGC Registry CLI installation), Section 2 (Downloading SFSpeech Dataset), and Section 3 (Creatiung Data Manifests) from https://github.com/NVIDIA-NeMo/Speech/blob/main/tutorials/tts/FastPitch_ChineseTTS_Training.ipynb. Below code block briefly describes the steps.
 
 .. code-block:: bash
 

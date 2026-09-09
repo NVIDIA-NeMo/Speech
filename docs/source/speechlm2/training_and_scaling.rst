@@ -101,8 +101,10 @@ AutomodelParallelStrategy (SALMAutomodel)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 For ``SALMAutomodel``, the collection provides ``AutomodelParallelStrategy`` which
-delegates device mesh creation and parallelism to NeMo Automodel. This strategy
-supports FSDP2, TP, PP, CP, EP (MoE), and HSDP.
+delegates topology resolution and parallelism to NeMo Automodel. The strategy can
+construct topologies for FSDP2, TP, PP, CP, EP (MoE), and HSDP, but actual
+support depends on the selected LLM architecture, backend, and combination of
+parallelism axes.
 
 .. code-block:: yaml
 
@@ -120,9 +122,11 @@ supports FSDP2, TP, PP, CP, EP (MoE), and HSDP.
         activation_checkpointing_llm: false         # LLM transformer blocks
         activation_checkpointing_perception: false  # speech encoder layers
 
-The model's ``configure_model()`` receives the device mesh and passes it to
-Automodel's ``from_pretrained`` for memory-efficient loading (each GPU only
-loads its own shard).
+The model's ``configure_model()`` receives a resolved ``distributed_setup`` and
+passes it to Automodel's ``from_pretrained`` for memory-efficient loading
+(each GPU only loads its own shard). ``SALMAutomodel`` currently rejects
+``pp_size > 1``; use pipeline parallelism only after model integration adds
+pipeline execution support.
 
 The speech encoder / perception module currently only supports FSDP2 (controlled via ``dp_size``).
 
@@ -164,6 +168,16 @@ optimizations:
 * **DeepEP** (Deep Expert Parallelism): An efficient all-to-all communication
   primitive for routing tokens to experts across GPUs, significantly reducing the
   communication overhead of Expert Parallelism.
+
+.. important::
+   For the native Nemotron-V3 backbone, the validated ``SALMAutomodel``
+   parallelism axes are FSDP2, EP, and CP. CP requires packed sequences and
+   Transformer Engine attention, as described in the Context Parallelism
+   section below.
+
+   Nemotron-V3 does not provide a TP plan, so set ``tp_size: 1``. HSDP is not
+   supported in this path, so set ``dp_replicate_size: 1``. PP has not been
+   validated for this SpeechLM2 configuration, so set ``pp_size: 1``.
 
 Example: training SALMAutomodel with Nemotron Nano V3 on 8 GPUs with EP=8:
 

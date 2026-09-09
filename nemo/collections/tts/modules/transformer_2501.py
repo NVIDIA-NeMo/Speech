@@ -20,7 +20,6 @@ import torch.nn.functional as F
 
 from nemo.collections.tts.modules.ffn_modules import PositionwiseConvFF
 from nemo.collections.tts.modules.moe_modules import PositionwiseConvFFMoE
-from nemo.utils import logging
 
 # TODO: Move the cache implementation out of the Module class, and pass it as part of the forward so we can reset
 # as needed in the inference pipeline.
@@ -120,6 +119,7 @@ class Attention(torch.nn.Module):
 
         # attn_prior or square mask or vanilla attention
         if attn_prior is not None:
+            attn_prior = attn_prior.to(device=attn_score.device, dtype=attn_score.dtype)
             eps = torch.finfo(attn_prior.dtype).tiny
             attn_prior = attn_prior[:, :T]  # trim for inference
             attn_prior = attn_prior[:, None] + eps
@@ -129,7 +129,7 @@ class Attention(torch.nn.Module):
                 attn_score_log = F.log_softmax(attn_score, dim=-1) + attn_prior_log
                 if self.make_prior_window_strict:
                     # Make sure attention scores are lowest (eps) where prior is zero.
-                    min_score = torch.log(torch.tensor(eps)).to(attn_score_log.device)
+                    min_score = torch.log(torch.tensor(eps, device=attn_score_log.device, dtype=attn_score_log.dtype))
                     attn_score_log = attn_score_log.masked_fill(
                         attn_prior == 0, min_score
                     )  # Wherever prior is zero, set scores to eps.
@@ -244,6 +244,7 @@ class SelfAttention(Attention):
 
         mask = None
         if query_mask is not None:
+            query_mask = query_mask.to(device=query.device)
             # query_mask is a boolean mask of shape (B, T)
             # mask should be of shape (B, 1, T, T) where mask[:,0,i,:] == mask[:,0,:,i] == query_mask
             mask = query_mask.unsqueeze(1) * query_mask.unsqueeze(2)
@@ -310,7 +311,7 @@ class CrossAttention(Attention):
                 self.cache['cross_k'] = k
                 self.cache['cross_v'] = v
 
-        mask = memory_mask[:, None, None] if memory_mask is not None else None
+        mask = memory_mask.to(device=query.device)[:, None, None] if memory_mask is not None else None
         return q, k, v, mask
 
 

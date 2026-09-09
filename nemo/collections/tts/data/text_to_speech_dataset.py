@@ -35,9 +35,8 @@ from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     get_tokenizer_for_language,
     get_weighted_sampler,
     load_audio,
-    setup_pronunciation_control_g2p,
     stack_tensors,
-    tokenize_text_with_pronunciation_control,
+    tokenize_text_with_phoneme_spans,
 )
 from nemo.core.classes import Dataset
 from nemo.utils import logging
@@ -392,8 +391,10 @@ class MagpieTTSDataset(TextToSpeechDataset):
         text_context_remapping: Dict[str, str] = None,
         text_context_remapping_prob: float = 0.0,
         ignore_phoneme_languages: List[str] = None,
-        phoneme_as_text_prob: float = 0.0,
-        pronunciation_control_g2p: Dict = None,
+        enable_phoneme_text_input: bool = False,
+        text_phoneme_token_offset: int = None,
+        phoneme_text_bop_marker: str = "<bop>",
+        phoneme_text_eop_marker: str = "<eop>",
         add_language_to_context_text: bool = False,
         default_tokenizer_name: str = "english_phoneme",
     ):
@@ -421,7 +422,6 @@ class MagpieTTSDataset(TextToSpeechDataset):
         self.tokenizer_config = tokenizer_config
         self.text_tokenizer = None  # Assigned in worker_init_fn in model file
         self.phoneme_tokenizer = None  # Assigned in worker_init_fn in model file (if any)
-        self.pronunciation_control_g2p = None
         self.load_16khz_audio = load_16khz_audio
         self.use_text_conditioning_tokenizer = use_text_conditioning_tokenizer
         self.text_conditioning_tokenizer_name = text_conditioning_tokenizer_name
@@ -431,8 +431,10 @@ class MagpieTTSDataset(TextToSpeechDataset):
         self.text_context_remapping = text_context_remapping
         self.text_context_remapping_prob = text_context_remapping_prob
         self.ignore_phoneme_languages = ignore_phoneme_languages or []
-        self.phoneme_as_text_prob = phoneme_as_text_prob
-        self.pronunciation_control_g2p_config = pronunciation_control_g2p
+        self.enable_phoneme_text_input = enable_phoneme_text_input
+        self.text_phoneme_token_offset = text_phoneme_token_offset
+        self.phoneme_text_bop_marker = phoneme_text_bop_marker
+        self.phoneme_text_eop_marker = phoneme_text_eop_marker
         self.add_language_to_context_text = add_language_to_context_text
         self.default_tokenizer_name = default_tokenizer_name
 
@@ -443,12 +445,6 @@ class MagpieTTSDataset(TextToSpeechDataset):
 
     def __getitem__(self, index):
         data = self.data_samples[index]
-        if (
-            self.pronunciation_control_g2p is None
-            and self.pronunciation_control_g2p_config is not None
-            and self.phoneme_as_text_prob > 0.0
-        ):
-            self.pronunciation_control_g2p = setup_pronunciation_control_g2p(self.pronunciation_control_g2p_config)
 
         def _sample_context_duration_with_available_limit(available_duration_sec: float) -> float:
             effective_duration_max = min(self.context_duration_max, available_duration_sec)
@@ -466,14 +462,16 @@ class MagpieTTSDataset(TextToSpeechDataset):
         else:
             language = 'en'
 
-        tokens = tokenize_text_with_pronunciation_control(
+        # partial phoneme tokenization
+        tokens = tokenize_text_with_phoneme_spans(
             text_tokenizer=self.text_tokenizer,
             text_str=data.text,
-            language=language,
             tokenizer_name=tokenizer_name,
-            dataset_type=self.dataset_type,
-            phoneme_as_text_prob=self.phoneme_as_text_prob,
-            pronunciation_control_g2p=self.pronunciation_control_g2p,
+            enable_phoneme_text_input=self.enable_phoneme_text_input,
+            phoneme_tokenizer=self.phoneme_tokenizer,
+            text_phoneme_token_offset=self.text_phoneme_token_offset,
+            bop_marker=self.phoneme_text_bop_marker,
+            eop_marker=self.phoneme_text_eop_marker,
         )
         tokens = tokens + [self.eos_id]  # Not adding BOS id
         tokens = torch.tensor(tokens, dtype=torch.int32)
@@ -1012,6 +1010,11 @@ class ChunkedTTSInferenceDataset(MagpieTTSDataset):
             tokenizer_name=tokenizer_name,
             text_tokenizer=self.text_tokenizer,
             eos_token_id=self.eos_id,
+            enable_phoneme_text_input=self.enable_phoneme_text_input,
+            phoneme_tokenizer=self.phoneme_tokenizer,
+            text_phoneme_token_offset=self.text_phoneme_token_offset,
+            bop_marker=self.phoneme_text_bop_marker,
+            eop_marker=self.phoneme_text_eop_marker,
         )
 
         # Handle empty text edge case

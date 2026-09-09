@@ -45,6 +45,9 @@ from nemo.collections.asr.inference.utils.per_stream_biasing import (
 from nemo.collections.asr.inference.utils.pipeline_utils import (
     check_existance_of_required_attributes,
     drop_trailing_features,
+    filter_token_sequences,
+    filter_token_triples,
+    filter_tokens_from_greedy_output,
     get_confidence_utils,
 )
 from nemo.collections.asr.parts.submodules.rnnt_malsd_batched_computer import ModifiedALSDBatchedRNNTComputer
@@ -86,8 +89,6 @@ class CacheAwareRNNTPipeline(BasePipeline):
         self.init_text_processor(cfg, itn_model)
         self.init_nmt_model(nmt_model)
         self.init_decoding_computer()
-        if self.beam_decoder_computer is not None and self.prompt_enabled:
-            raise ValueError("Cache-aware RNNT MALSD beam search does not yet support prompt vectors.")
         super().__init__()
 
     def init_decoding_computer(self) -> None:
@@ -115,6 +116,15 @@ class CacheAwareRNNTPipeline(BasePipeline):
         """
         if cfg.streaming.att_context_size is not None:
             self.asr_model.set_default_att_context_size(att_context_size=cfg.streaming.att_context_size)
+
+        # Language prompt for multilingual models, taken from the top-level `lang` field.
+        self.strip_lang_tags = cfg.asr.get("strip_lang_tags", True)
+        if self.prompt_enabled:
+            self.default_language_code = cfg.get("lang", None) or self._resolve_default_language_code()
+            logging.info(f"Multilingual ASR model: conditioning on language '{self.default_language_code}'.")
+        else:
+            self.default_language_code = None
+        self.language_token_sequences = self._build_language_token_sequences()
 
         self.sample_rate = cfg.streaming.sample_rate
         self.asr_output_granularity = cfg.asr_output_granularity
@@ -223,7 +233,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
             default_target_language=self.nmt_model.target_language if self.nmt_enabled else None,
             default_stop_history_eou=self.stop_history_eou_in_milliseconds,
             default_asr_output_granularity=self.asr_output_granularity,
-            default_language_code="en-US" if self.prompt_enabled else None,
+            default_language_code=self.default_language_code,
         )
 
         eou_label_buffer_size = 0
@@ -314,6 +324,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
             keep_all_outputs=keep_all_outputs,
             drop_left_context=self.drop_left_context,
             valid_out_len=self.valid_out_len,
+            prompt_vectors=prompt_vectors,
         )
 
     def _prepare_per_stream_biasing(
@@ -354,6 +365,17 @@ class CacheAwareRNNTPipeline(BasePipeline):
             self.beam_decoder_computer.select_beam_in_state_item_(state.hyp_decoding_state, beam_idx)
         state.update_(eou_detected)
 
+        if self._lang_tag_filtering_enabled() and state.tokens:
+            # ``update_`` rebuilds the tokens from the raw beam stream, so language tags reappear here.
+            state.tokens, state.timesteps, state.confidences = filter_token_triples(
+                state.tokens, state.timesteps, state.confidences, self.language_token_ids
+            )
+            state.tokens, state.timesteps, state.confidences = filter_token_sequences(
+                state.tokens, state.timesteps, state.confidences, self.language_token_sequences
+            )
+            state.last_token = state.tokens[-1] if state.tokens else None
+            state.last_token_idx = state.timesteps[-1] if state.timesteps else None
+
     def run_greedy_decoder(self, state: CacheAwareRNNTStreamingState, request: Request, hyp: Hypothesis) -> bool:
         """
         Run the greedy RNNT decoder on the hypothesis and update the state
@@ -375,6 +397,13 @@ class CacheAwareRNNTPipeline(BasePipeline):
             confidences=hyp.non_blank_step_confidence_precomputed,
         )
         state.set_offset(new_offset)
+
+        if self._lang_tag_filtering_enabled():
+            # Drop language tags (e.g. <en-US>) so they are excluded from the transcript
+            # and are not counted as speech for EOU detection.
+            cur_output, cur_labels = filter_tokens_from_greedy_output(
+                cur_output, cur_labels, self.language_token_ids, self.blank_id, self.language_token_sequences
+            )
 
         # cur labels contains blank tokens as well, it is needed for EOU detection
         state.update_label_buffer(cur_labels)
@@ -589,3 +618,36 @@ class CacheAwareRNNTPipeline(BasePipeline):
             pad_last_frame=True,
         )
         return request_generator
+
+    def _build_language_token_sequences(self) -> tuple[tuple[int, ...], ...]:
+        """
+        Token id sequences for language tags that are not single vocabulary tokens.
+
+        Locales such as ``mt-MT`` and ``sl-SI`` have no dedicated vocabulary token, so the model
+        spells the tag out from sub-word pieces and ``language_token_ids`` cannot match it.
+        Returns:
+            (tuple[tuple[int, ...], ...]) Token id sequences, longest first.
+        """
+        if not self.prompt_enabled or not self.strip_lang_tags:
+            return ()
+
+        vocabulary = set(self.vocabulary)
+        sequences = set()
+        for language_code in self._prompt_config["prompt_dict"]:
+            tag = f"<{language_code}>"
+            if tag in vocabulary:
+                continue  # already covered by `language_token_ids`
+            token_ids = self.tokenizer.text_to_ids(tag)
+            if len(token_ids) > 1:
+                sequences.add(tuple(token_ids))
+                # the leading SentencePiece underscore is absent when the tag is not space-preceded
+                sequences.add(tuple(token_ids[1:]))
+        return tuple(sorted(sequences, key=len, reverse=True))
+
+    def _lang_tag_filtering_enabled(self) -> bool:
+        """
+        Whether language tags should be stripped from the decoded output.
+        Returns:
+            (bool) True if the model is prompt-conditioned, stripping is on and the vocabulary has language tokens.
+        """
+        return bool(self.prompt_enabled and self.strip_lang_tags and self.language_token_ids)

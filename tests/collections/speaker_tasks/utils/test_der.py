@@ -41,6 +41,7 @@ to the legacy label-string path.
 """
 
 import io
+from unittest.mock import patch
 
 import pytest
 from lhotse import SupervisionSegment, SupervisionSet
@@ -475,12 +476,28 @@ class TestScoreLabelsFromRttmLabels:
         """``metric.report()`` returns a non-empty string."""
         metric, _, _ = _score(
             [(0, 5, "A"), (5, 10, "B")],
-            [(0, 5, "A"), (5, 10, "B")],
+            [(0, 4, "A"), (4, 8, "B"), (10, 12, "C")],
         )
         report = metric.report()
         assert isinstance(report, str)
         assert len(report) > 0
         assert "file1" in report
+        expected_total_column = len("file1") + 1 + 11 - len("total")
+        assert report.splitlines()[0].index("total") == expected_total_column
+        header = report.splitlines()[0]
+        assert header.count("%") == 4
+        assert header.index("false alarm") < header.index("missed") < header.index("confusion") < header.index("DER")
+        assert report.splitlines()[2].split() == [
+            "file1",
+            "10.00",
+            "2.00",
+            "20.00%",
+            "2.00",
+            "20.00%",
+            "1.00",
+            "10.00%",
+            "50.00%",
+        ]
 
     @pytest.mark.unit
     def test_results_list(self):
@@ -1471,6 +1488,26 @@ class TestLhotseAnnotation:
         metric, _, (DER, _, _, _) = result
         assert_der(DER, 4.0 / 13.0)
         assert len(metric.results_) == 2
+
+    @pytest.mark.unit
+    def test_speaker_count_uses_manifest_region_and_reports_mae(self):
+        ref = make_diar_annotation(["0 5 A", "10 15 B"], uniq_name="f1")
+        hyp = make_diar_annotation(["0 5 X"], uniq_name="f1")
+
+        with patch("nemo.collections.asr.metrics.der.logging.info") as log_info:
+            result = score_labels(
+                {"f1": {"offset": 0.0, "duration": 5.0}},
+                [("f1", ref)],
+                [("f1", hyp)],
+                collar=0.0,
+                ignore_overlap=False,
+                verbose=False,
+            )
+
+        assert result is not None
+        log_text = "\n".join(str(call.args[0]) for call in log_info.call_args_list)
+        assert "Spk. Count Acc. 1.0000" in log_text
+        assert "Spk. Count MAE: 0.0000" in log_text
 
 
 class TestLhotseStringEquivalence:

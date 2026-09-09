@@ -404,6 +404,7 @@ class BasePipeline(PipelineInterface):
             confidence_aggregator=self.confidence_aggregator,
             sep=self.sep,
             enable_itn=cfg.enable_itn,
+            prompt_enabled=getattr(self, "prompt_enabled", False),
         )
 
     def init_nmt_model(self, nmt_model: LLMTranslator | None) -> None:
@@ -538,6 +539,20 @@ class BasePipeline(PipelineInterface):
                 f"Available languages: {list(prompt_dict.keys())}"
             )
         return lang_index
+
+    def _resolve_default_language_code(self) -> str:
+        """
+        Pick the language used when a request does not specify one.
+
+        Prefers the model's automatic language-detection prompt when available, so that a
+        multilingual model does not silently transcribe every language as English.
+        Returns:
+            (str) "auto" when the model's prompt dictionary supports it, otherwise "en-US".
+        """
+        if not getattr(self, '_prompt_config', None):
+            return "en-US"
+        prompt_dict = self._prompt_config['prompt_dict']
+        return "auto" if "auto" in prompt_dict else "en-US"
 
     def _create_one_hot_prompts(self, indices: Tensor) -> Tensor:
         """

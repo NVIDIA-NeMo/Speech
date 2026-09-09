@@ -70,9 +70,9 @@ model:
     shuffle: true
     num_workers: 8
     # To understand the settings below, please refer to Lhotse Dataloading documentation:
-    # https://github.com/NVIDIA/NeMo/blob/main/docs/source/asr/datasets.rst#lhotse-dataloading
+    # https://github.com/NVIDIA-NeMo/Speech/blob/main/docs/source/asr/datasets.rst#lhotse-dataloading
     # You can also check the following configuration dataclass:
-    # https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/common/data/lhotse/dataloader.py#L36
+    # https://github.com/NVIDIA-NeMo/Speech/blob/main/nemo/collections/common/data/lhotse/dataloader.py#L36
     batch_size: null
     batch_duration: 360
     quadratic_duration: 15

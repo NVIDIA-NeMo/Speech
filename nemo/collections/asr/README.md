@@ -15,14 +15,14 @@
         * Transducer/RNNT
         * Hybrid Transducer/CTC
         * NeMo Original [Multi-blank Transducers](https://arxiv.org/abs/2211.03541) and [Token-and-Duration Transducers (TDT)](https://arxiv.org/abs/2304.06795)
-    * Streaming/Buffered ASR (CTC/Transducer) - [Chunked Inference Examples](https://github.com/NVIDIA/NeMo/tree/stable/examples/asr/asr_chunked_inference)
-    * [Cache-aware Streaming Conformer](https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/asr/models.html#cache-aware-streaming-conformer) with multiple lookaheads (including microphone streaming [tutorial](https://github.com/NVIDIA/NeMo/blob/main/tutorials/asr/Online_ASR_Microphone_Demo_Cache_Aware_Streaming.ipynb).
+    * Streaming/Buffered ASR (CTC/Transducer) - [Chunked Inference Examples](https://github.com/NVIDIA-NeMo/Speech/tree/stable/examples/asr/asr_chunked_inference)
+    * [Cache-aware Streaming Conformer](https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/asr/models.html#cache-aware-streaming-conformer) with multiple lookaheads (including microphone streaming [tutorial](https://github.com/NVIDIA-NeMo/Speech/blob/main/tutorials/asr/Online_ASR_Microphone_Demo_Cache_Aware_Streaming.ipynb).
     * Beam Search decoding
     * [Language Modelling for ASR (CTC and RNNT)](https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/asr/asr_language_modeling.html): N-gram LM in fusion with Beam Search decoding, Neural Rescoring with Transformer
     * [Support of long audios for Conformer with memory efficient local attention](https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/asr/results.html#inference-on-long-audio)
 * [Speech Classification, Speech Command Recognition and Language Identification](https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/asr/speech_classification/intro.html): MatchboxNet (Command Recognition), AmberNet (LangID)
 * [Voice activity Detection (VAD)](https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/asr/speech_classification/models.html#marblenet-vad): MarbleNet
-    * ASR with VAD Inference - [Example](https://github.com/NVIDIA/NeMo/tree/stable/examples/asr/asr_vad)
+    * ASR with VAD Inference - [Example](https://github.com/NVIDIA-NeMo/Speech/tree/stable/examples/asr/asr_vad)
 * [Speaker Recognition](https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/asr/speaker_recognition/intro.html): TitaNet, ECAPA_TDNN, SpeakerNet
 * [Speaker Diarization](https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/asr/speaker_diarization/intro.html)
     * Clustering Diarizer: TitaNet, ECAPA_TDNN, SpeakerNet

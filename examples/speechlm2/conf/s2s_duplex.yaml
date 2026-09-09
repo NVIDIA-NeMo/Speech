@@ -1,6 +1,6 @@
 model:
   # Every name/path here starting with 'pretrained' is used to initialize the model weights.
-  pretrained_llm: TinyLlama/TinyLlama_v1.1
+  pretrained_llm: TinyLlama/TinyLlama-1.1B-Chat-v1.0
   pretrained_audio_codec: ???  # to be released
   pretrained_asr: nvidia/stt_en_fastconformer_hybrid_large_streaming_multi
   scoring_asr: stt_en_fastconformer_transducer_large  # used only in validation/evaluation

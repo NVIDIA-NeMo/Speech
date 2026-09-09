@@ -182,7 +182,9 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         """Load language model for RVQ-EAR-TTS."""
         if cfg.pretrained_lm_name:
             language_model = load_pretrained_hf(
-                self.cfg.pretrained_lm_name, pretrained_weights=True, trust_remote_code=True
+                self.cfg.pretrained_lm_name,
+                pretrained_weights=True,
+                trust_remote_code=self.cfg.get("trust_remote_code", False),
             ).eval()
         else:
             language_model = None

@@ -105,29 +105,45 @@ def test_lhotse_asr_dataset_metadata(tokenizer):
 def test_lhotse_asr_dataset_ais_batch_loading_enabled(tokenizer, monkeypatch):
     """Test that USE_AIS_GET_BATCH=true passes use_batch_loader=True to AudioSamples."""
     monkeypatch.setenv("USE_AIS_GET_BATCH", "true")
+    monkeypatch.delenv("USE_AIS_INDIVIDUAL_GETS", raising=False)
 
     with patch.object(AudioSamples, "__init__", return_value=None) as mock_init:
         mock_init.side_effect = lambda *args, **kwargs: None
         try:
-            dataset = LhotseSpeechToTextBpeDataset(tokenizer=tokenizer)
+            LhotseSpeechToTextBpeDataset(tokenizer=tokenizer)
         except Exception:
             pass
         # Check that AudioSamples was called with use_batch_loader=True
-        mock_init.assert_called_with(fault_tolerant=True, use_batch_loader=True)
+        mock_init.assert_called_with(fault_tolerant=True, use_batch_loader=True, ais_force_individual=False)
+
+
+def test_lhotse_asr_dataset_ais_batch_loading_force_individual(tokenizer, monkeypatch):
+    """Test that USE_AIS_INDIVIDUAL_GETS=true is passed to AudioSamples."""
+    monkeypatch.setenv("USE_AIS_GET_BATCH", "true")
+    monkeypatch.setenv("USE_AIS_INDIVIDUAL_GETS", "true")
+
+    with patch.object(AudioSamples, "__init__", return_value=None) as mock_init:
+        mock_init.side_effect = lambda *args, **kwargs: None
+        try:
+            LhotseSpeechToTextBpeDataset(tokenizer=tokenizer)
+        except Exception:
+            pass
+        mock_init.assert_called_with(fault_tolerant=True, use_batch_loader=True, ais_force_individual=True)
 
 
 def test_lhotse_asr_dataset_ais_batch_loading_disabled(tokenizer, monkeypatch):
     """Test that without USE_AIS_GET_BATCH, use_batch_loader=False is passed to AudioSamples."""
     monkeypatch.delenv("USE_AIS_GET_BATCH", raising=False)
+    monkeypatch.delenv("USE_AIS_INDIVIDUAL_GETS", raising=False)
 
     with patch.object(AudioSamples, "__init__", return_value=None) as mock_init:
         mock_init.side_effect = lambda *args, **kwargs: None
         try:
-            dataset = LhotseSpeechToTextBpeDataset(tokenizer=tokenizer)
+            LhotseSpeechToTextBpeDataset(tokenizer=tokenizer)
         except Exception:
             pass
         # Check that AudioSamples was called with use_batch_loader=False
-        mock_init.assert_called_with(fault_tolerant=True, use_batch_loader=False)
+        mock_init.assert_called_with(fault_tolerant=True, use_batch_loader=False, ais_force_individual=False)
 
 
 def test_lhotse_asr_dataset_ais_batch_loading_fallback(tokenizer, monkeypatch):
@@ -145,8 +161,30 @@ def test_lhotse_asr_dataset_ais_batch_loading_fallback(tokenizer, monkeypatch):
         return original_init(self, *args, **kwargs)
 
     with patch.object(AudioSamples, "__init__", mock_init):
-        dataset = LhotseSpeechToTextBpeDataset(tokenizer=tokenizer)
+        LhotseSpeechToTextBpeDataset(tokenizer=tokenizer)
 
-    # First call should have use_batch_loader=True, second call should not
-    assert call_args[0] == {"fault_tolerant": True, "use_batch_loader": True}
+    # First call should use AIS batch options, second call should not.
+    assert call_args[0] == {"fault_tolerant": True, "use_batch_loader": True, "ais_force_individual": False}
     assert call_args[1] == {"fault_tolerant": True}
+
+
+def test_lhotse_asr_dataset_ais_force_individual_fallback(tokenizer, monkeypatch):
+    """Test fallback when Lhotse supports use_batch_loader but not ais_force_individual."""
+    monkeypatch.setenv("USE_AIS_GET_BATCH", "true")
+    monkeypatch.setenv("USE_AIS_INDIVIDUAL_GETS", "true")
+
+    call_args = []
+
+    original_init = AudioSamples.__init__
+
+    def mock_init(self, *args, **kwargs):
+        call_args.append(kwargs.copy())
+        if "ais_force_individual" in kwargs:
+            raise TypeError("unexpected keyword argument 'ais_force_individual'")
+        return original_init(self, *args, **kwargs)
+
+    with patch.object(AudioSamples, "__init__", mock_init):
+        LhotseSpeechToTextBpeDataset(tokenizer=tokenizer)
+
+    assert call_args[0] == {"fault_tolerant": True, "use_batch_loader": True, "ais_force_individual": True}
+    assert call_args[1] == {"fault_tolerant": True, "use_batch_loader": True}

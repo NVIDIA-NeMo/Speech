@@ -66,7 +66,38 @@
 
     .sidebar-left {
       grid-column: 1;
-      padding-right: 20px;
+      min-width: 0;
+      height: var(--sidebar-height);
+      padding-right: 12px;
+      max-height: calc(100vh - 64px);
+
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .sidebar-left > h2 {
+      flex: 0 0 auto;
+      align-self: flex-start;
+    }
+
+    .sidebar-left > ul {
+      flex: 1 1 auto;
+      min-height: 0;
+      padding-bottom: 64px;
+      overflow-y: auto;
+      overflow-x: hidden;
+      overscroll-behavior: contain;
+
+      /* Hide scrollbar */
+      /* Firefox and old Microsoft browsers */
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+    }
+
+    /* Chrome, Edge, and Safari */
+    .sidebar-left > ul::-webkit-scrollbar {
+      display: none;
     }
 
     .sidebar-right {
@@ -113,8 +144,8 @@
 
     .sidebar ul ul {
       margin-top: 8px;
-      margin-left: 14px;
-      padding-left: 12px;
+      margin-left: 6px;
+      padding-left: 8px;
       border-left: 1px solid var(--border);
     }
 
@@ -215,6 +246,24 @@
     .config-text {
       overflow-wrap: anywhere;
       word-break: break-word;
+    }
+
+    .benchmark-link {
+      position: relative;
+      display: block;
+      max-width: 100%;
+      padding-left: 14px;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    .benchmark-link::before {
+      content: "›";
+      position: absolute;
+      left: 0;
+      top: 0;
+      color: currentColor;
+      font-weight: 700;
     }
 
     .link-comment {
@@ -323,7 +372,7 @@
           <a href="#per-test-set-results">Per-Test-Set Results</a>
           <ul>
             {% for section_id, section_name in benchmark_section_info %}
-            <li><a href="#{{ section_id }}">{{ section_name }}</a></li>
+            <li><a class="benchmark-link" href="#{{ section_id }}">{{ section_name }}</a></li>
             {% endfor %}
           </ul>
         </li>
@@ -400,9 +449,12 @@
 <script>
   const ACTIVE_SECTION_OFFSET = 140;
   const BOTTOM_THRESHOLD = 20;
+  const SIDEBAR_STICKY_TOP = 32;
 
   const sections = [...document.querySelectorAll("h2[id], h3[id]")];
   const navLinks = [...document.querySelectorAll('.sidebar-left a[href^="#"]')];
+
+  let clickedNavLink = null;
 
   const linkMap = new Map();
   navLinks.forEach(link => {
@@ -410,6 +462,8 @@
     linkMap.set(href.slice(1), link);
 
     link.addEventListener("click", () => {
+      clickedNavLink = link;
+
       navLinks.forEach(l => l.classList.remove("active"));
       link.classList.add("active");
     });
@@ -436,12 +490,41 @@
       const activeLink = linkMap.get(currentSection);
       if (activeLink) {
         activeLink.classList.add("active");
+
+        if (activeLink !== clickedNavLink) {
+          clickedNavLink = null;
+          activeLink.scrollIntoView({
+            block: "nearest",
+            inline: "nearest",
+            behavior: "auto",
+          });
+        }
       }
     }
   }
 
+  const sidebar = document.querySelector(".sidebar-left");
+
+  function updateSidebarHeight() {
+    if (!sidebar) return;
+
+    const top = Math.max(
+      sidebar.getBoundingClientRect().top,
+      SIDEBAR_STICKY_TOP
+    );
+    sidebar.style.setProperty(
+      "--sidebar-height",
+      `${Math.max(0, window.innerHeight - top)}px`
+    );
+  }
+
   window.addEventListener("scroll", updateActiveLink, { passive: true });
+  window.addEventListener("scroll", updateSidebarHeight, { passive: true });
+  window.addEventListener("resize", updateSidebarHeight);
   window.addEventListener("load", updateActiveLink);
+  window.addEventListener("load", updateSidebarHeight);
+
+  updateSidebarHeight();
 </script>
 
 </body>

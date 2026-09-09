@@ -18,8 +18,10 @@ import torch
 from omegaconf import MISSING, open_dict
 
 from nemo.collections.asr.inference.utils.manifest_io import prepare_audio_data
+from nemo.collections.asr.inference.utils.text_segment import normalize_text
 from nemo.collections.asr.metrics.wer import word_error_rate
-from nemo.collections.asr.models import EncDecRNNTBPEModel
+from nemo.collections.asr.models import ASRModel, EncDecRNNTBPEModel
+from nemo.collections.asr.models.hybrid_rnnt_ctc_bpe_models import EncDecHybridRNNTCTCBPEModel
 from nemo.collections.asr.parts.context_biasing.biasing_multi_model import BiasingRequestItemConfig
 from nemo.collections.asr.parts.context_biasing.boosting_graph_batched import BoostingTreeModelConfig
 from nemo.collections.asr.parts.utils.manifest_utils import write_manifest
@@ -39,6 +41,11 @@ class TranscriptionBoostGroundTruthConfig:
     boosting_alpha: float = 1.0
     output_filename: str | None = None
     device: str | None = None
+    case_insensitive: bool = False
+
+
+def _normalize_text_for_wer(text: str) -> str:
+    return normalize_text(text, punct_marks=set(".,?!"), sep="")
 
 
 @hydra_runner(config_name="TranscriptionBoostGroundTruthConfig", schema=TranscriptionBoostGroundTruthConfig)
@@ -54,14 +61,16 @@ def main(cfg: TranscriptionBoostGroundTruthConfig):
     assert manifest is not None, "This script works only with manifest"
     device = torch.device(cfg.device) if cfg.device is not None else get_auto_inference_device()
 
-    asr_model: EncDecRNNTBPEModel
+    asr_model: EncDecRNNTBPEModel | EncDecHybridRNNTCTCBPEModel
     if cfg.model_path is not None:
-        asr_model = EncDecRNNTBPEModel.restore_from(cfg.model_path)
+        asr_model = ASRModel.restore_from(cfg.model_path)
     elif cfg.pretrained_name is not None:
-        asr_model = EncDecRNNTBPEModel.from_pretrained(model_name=cfg.pretrained_name)
+        asr_model = ASRModel.from_pretrained(model_name=cfg.pretrained_name)
     else:
         raise NeMoBaseException("Either `model_path` or `pretrained_name` should be not None")
-    assert isinstance(asr_model, EncDecRNNTBPEModel), "Only RNN-T model supported"
+    assert isinstance(
+        asr_model, (EncDecRNNTBPEModel, EncDecHybridRNNTCTCBPEModel)
+    ), "Only RNN-T BPE model decoding supported"
     asr_model.to(device)
 
     # Change Decoding Config: ensure greedy_batch + label-looping enabled
@@ -69,7 +78,12 @@ def main(cfg: TranscriptionBoostGroundTruthConfig):
         asr_model.cfg.decoding.strategy = "greedy_batch"
         asr_model.cfg.decoding.greedy.loop_labels = True
         asr_model.cfg.decoding.greedy.enable_per_stream_biasing = True
-    asr_model.change_decoding_strategy(asr_model.cfg.decoding)
+
+    if isinstance(asr_model, EncDecRNNTBPEModel):
+        asr_model.change_decoding_strategy(asr_model.cfg.decoding)
+    else:
+        assert isinstance(asr_model, EncDecHybridRNNTCTCBPEModel)
+        asr_model.change_decoding_strategy(asr_model.cfg.decoding, decoder_type="rnnt")
 
     batch_size = cfg.batch_size
     for start_batch_i in range(0, len(manifest), batch_size):
@@ -82,6 +96,7 @@ def main(cfg: TranscriptionBoostGroundTruthConfig):
                     biasing_cfg=BiasingRequestItemConfig(
                         boosting_model_cfg=BoostingTreeModelConfig(
                             key_phrases_list=[manifest[i]["text"]],
+                            bpe_mode="case_insensitive" if cfg.case_insensitive else "default",
                         ),
                         boosting_model_alpha=cfg.boosting_alpha,
                     ),
@@ -96,13 +111,13 @@ def main(cfg: TranscriptionBoostGroundTruthConfig):
             manifest[i]["pred_text"] = result.text
 
     cer = word_error_rate(
-        hypotheses=[record["pred_text"] for record in manifest],
-        references=[record["text"] for record in manifest],
+        hypotheses=[_normalize_text_for_wer(record["pred_text"]) for record in manifest],
+        references=[_normalize_text_for_wer(record["text"]) for record in manifest],
         use_cer=True,
     )
     wer = word_error_rate(
-        hypotheses=[record["pred_text"] for record in manifest],
-        references=[record["text"] for record in manifest],
+        hypotheses=[_normalize_text_for_wer(record["pred_text"]) for record in manifest],
+        references=[_normalize_text_for_wer(record["text"]) for record in manifest],
         use_cer=False,
     )
     logging.info(f"Dataset WER/CER {wer:.2%}/{cer:.2%}")

@@ -217,6 +217,30 @@ def unique_speakers(annotation: Any) -> List[str]:
     return seen
 
 
+def _count_speakers_in_manifest_region(annotation: Any, manifest_entry: Optional[Dict[str, Any]]) -> int:
+    """Count speakers whose segments overlap the manifest's ``[offset, offset + duration]`` region."""
+    if not manifest_entry:
+        return len(unique_speakers(annotation))
+    offset = manifest_entry.get("offset")
+    duration = manifest_entry.get("duration")
+    if offset is None or duration is None:
+        return len(unique_speakers(annotation))
+    try:
+        region_start = float(offset)
+        region_end = region_start + float(duration)
+    except (TypeError, ValueError):
+        return len(unique_speakers(annotation))
+    if region_end <= region_start:
+        return 0
+
+    speakers = {
+        speaker
+        for start, end, speaker in _iter_annotation_segments(annotation)
+        if end > region_start and start < region_end
+    }
+    return len(speakers)
+
+
 def write_supervisions_to_rttm(
     annotation: Any,
     file_handle: IO[str],
@@ -560,17 +584,20 @@ def score_labels(
     sys_dicts = []
     uem_dicts = []
     correct_spk_count = 0
+    speaker_count_abs_error = 0
 
     for idx, (reference, hypothesis) in enumerate(zip(all_reference, all_hypothesis)):
         ref_key, ref_labels = reference
         _, hyp_labels = hypothesis
 
-        ref_n_spk = len(unique_speakers(ref_labels))
-        hyp_n_spk = len(unique_speakers(hyp_labels))
+        manifest_entry = AUDIO_RTTM_MAP.get(ref_key, {}) if AUDIO_RTTM_MAP else {}
+        ref_n_spk = _count_speakers_in_manifest_region(ref_labels, manifest_entry)
+        hyp_n_spk = _count_speakers_in_manifest_region(hyp_labels, manifest_entry)
+        speaker_count_abs_error += abs(ref_n_spk - hyp_n_spk)
         if ref_n_spk == hyp_n_spk:
             correct_spk_count += 1
         if verbose and ref_n_spk != hyp_n_spk:
-            logging.info(f"Wrong Spk. Count with uniq_id:...{ref_key[-10:]}, " f"Ref: {ref_n_spk}, Hyp: {hyp_n_spk}")
+            logging.info(f"Wrong Spk. Count with uniq_id: {ref_key}, Ref: {ref_n_spk}, Hyp: {hyp_n_spk}")
 
         ref_dicts.append(_annotation_to_rttm_data(ref_key, ref_labels))
         sys_dicts.append(_annotation_to_rttm_data(ref_key, hyp_labels))
@@ -610,6 +637,7 @@ def score_labels(
     DER, CER, FA, MISS = _extract_errors(cum)
     itemized_errors = (DER, CER, FA, MISS)
     spk_count_acc = correct_spk_count / len(all_reference)
+    spk_count_mae = speaker_count_abs_error / len(all_reference)
 
     metric = DiarizationErrorResult(
         all_scores=all_scores,
@@ -624,7 +652,7 @@ def score_labels(
     logging.info(
         f"Cumulative Results for collar {collar} sec and ignore_overlap {ignore_overlap}: \n"
         f"| FA: {FA:.4f} | MISS: {MISS:.4f} | CER: {CER:.4f} | DER: {DER:.4f} | "
-        f"Spk. Count Acc. {spk_count_acc:.4f}\n"
+        f"Spk. Count Acc. {spk_count_acc:.4f} | Spk. Count MAE: {spk_count_mae:.4f}\n"
     )
 
     return metric, mapping_dict, itemized_errors
@@ -745,12 +773,15 @@ def score_labels_from_rttm_labels(
     itemized_errors = (DER, CER, FA, MISS)
 
     correct_spk_count = 0
+    speaker_count_abs_error = 0
     for (_, ref_labels), (_, hyp_labels) in zip(ref_labels_list, hyp_labels_list):
         ref_spkrs = {lbl.strip().split()[2] for lbl in ref_labels}
         hyp_spkrs = {lbl.strip().split()[2] for lbl in hyp_labels}
+        speaker_count_abs_error += abs(len(ref_spkrs) - len(hyp_spkrs))
         if len(ref_spkrs) == len(hyp_spkrs):
             correct_spk_count += 1
     spk_count_acc = correct_spk_count / len(ref_labels_list)
+    spk_count_mae = speaker_count_abs_error / len(ref_labels_list)
 
     metric = DiarizationErrorResult(
         all_scores=all_scores,
@@ -765,7 +796,7 @@ def score_labels_from_rttm_labels(
     logging.info(
         f"Cumulative Results for collar {collar} sec and ignore_overlap {ignore_overlap}: \n"
         f"| FA: {FA:.4f} | MISS: {MISS:.4f} | CER: {CER:.4f} | DER: {DER:.4f} | "
-        f"Spk. Count Acc. {spk_count_acc:.4f}\n"
+        f"Spk. Count Acc. {spk_count_acc:.4f} | Spk. Count MAE: {spk_count_mae:.4f}\n"
     )
 
     return metric, mapping_dict, itemized_errors

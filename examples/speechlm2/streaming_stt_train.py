@@ -63,8 +63,18 @@ def train(cfg):
         forced_aligner = None
         defer_get_batch = False
 
+    # Set model.use_nemo_automodel=true to train with the NeMo Automodel LLM
+    # backend (FSDP2/TP/EP via AutomodelParallelStrategy) instead of the
+    # HuggingFace backend with DDP. The two classes share the same recipe;
+    # see conf/streaming_stt_automodel.yaml for the config deltas.
+    model_cls = StreamingSTTModel
+    if cfg.model.get("use_nemo_automodel", False):
+        from nemo.collections.speechlm2 import StreamingSTTModelAutomodel
+
+        model_cls = StreamingSTTModelAutomodel
+
     with trainer.init_module():
-        model = StreamingSTTModel(
+        model = model_cls(
             OmegaConf.to_container(cfg.model, resolve=True),
             forced_aligner=forced_aligner,
             data_cfg=dataset_cfg,

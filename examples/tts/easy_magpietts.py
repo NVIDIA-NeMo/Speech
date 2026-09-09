@@ -16,10 +16,16 @@ import lightning.pytorch as pl
 import torch.multiprocessing as mp
 from omegaconf import OmegaConf, open_dict
 
-from nemo.collections.tts.models import EasyMagpieTTSModel, EasyMagpieTTSModelOnlinePO
+from nemo.collections.tts.models import EasyMagpieCFGDistillation, EasyMagpieTTSModel, EasyMagpieTTSModelOnlinePO
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 from nemo.utils.exp_manager import exp_manager
+
+_TRAIN_MODES: list[str] = [
+    "train",
+    "online_cfg_distillation_train",
+    "onlinepo_train",
+]
 
 
 @hydra_runner(config_path="conf/magpietts", config_name="easy_magpietts")
@@ -43,8 +49,12 @@ def main(cfg):
     exp_manager(trainer, cfg.get("exp_manager", None))
 
     mode = cfg.get('mode', 'train')
+    train_modes_msg = ", ".join(_TRAIN_MODES)
+
     if mode == 'train':
         model = EasyMagpieTTSModel(cfg=cfg.model, trainer=trainer)
+    elif mode == "online_cfg_distillation_train":
+        model = EasyMagpieCFGDistillation(cfg=cfg.model, trainer=trainer)
     elif mode == 'onlinepo_train':
         model_cfg = cfg.model
         with open_dict(model_cfg):
@@ -53,11 +63,14 @@ def main(cfg):
     elif mode == 'test':
         model = EasyMagpieTTSModel(cfg=cfg.model, trainer=trainer)
     else:
-        raise NotImplementedError(f"Only train, onlinepo_train and test modes are supported. Got {mode}")
+        raise NotImplementedError(f"Only {train_modes_msg} and test modes are supported. Got {mode}.")
+
+    if cfg.get("pretrained_model", None):
+        model.restore_from_pretrained_checkpoint(cfg.pretrained_model)
 
     model.maybe_init_from_pretrained_checkpoint(cfg=cfg)
 
-    if mode in ['train', 'onlinepo_train']:
+    if mode in _TRAIN_MODES:
         trainer.fit(model)
     elif mode == 'test':
         trainer.test(model)

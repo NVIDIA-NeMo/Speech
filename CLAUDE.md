@@ -10,16 +10,25 @@ NeMo Speech — toolkit for training/deploying speech models (ASR, TTS, Speech L
 
 See the canonical installation guide — [`docs/source/starthere/install.rst`](docs/source/starthere/install.rst) (published at https://docs.nvidia.com/nemo/speech/nightly/) — for the uv, pip (bring-your-own Python/PyTorch/CUDA), Docker, and optional `compiled` (SpeechLM2/Automodel) install paths.
 
-Dev quickstart: `uv sync --extra all --extra cu13` (Python 3.12+, PyTorch 2.7+; `test`/`docs` are `--group`s, not extras).
+Dev quickstart matching the current CI/container baseline: `uv sync --locked --python 3.13 --extra all --extra cu13 --group test`. Use `cu12` for CUDA 12.x or omit the CUDA extra on macOS. `test` and `docs` are dependency groups, not extras.
 
-## Code Style
+## Code Style & Pre-commit
 
 - **Line length: 119** (not default 88) — consistent across black, isort, flake8
 - Black with `skip_string_normalization = true`
 - isort with `profile = black`
-- Check: `isort --check <path> && black --check <path>` or `isort --check . && black --check .`
-- Fix: `isort <path> && black <path>` or `isort . && black .`
 - Jupyter Notebooks are excluded from automatic black reformatting (see `extend-exclude`), but can be still reformatted when passed directly. Do not reformat notebooks outside your changes.
+- **Helper placement**: keep public APIs and top-level classes/functions near the top of a file; place private
+  helpers and utilities at the bottom of the file unless a local module convention requires otherwise.
+
+Set up the repository's checks once; the installed hook then checks staged files automatically on every commit:
+
+```bash
+uv tool install pre-commit
+pre-commit install
+```
+
+For an immediate check, stage the intended files and run `pre-commit run`. After committing, verify the complete branch with `pre-commit run --from-ref origin/main --to-ref HEAD`. Use `pre-commit run --all-files` only when changing shared formatting configuration or when a full-repository check is needed. Hooks may modify files; review and stage those fixes, then rerun until clean.
 
 ## Testing
 
@@ -34,11 +43,24 @@ Markers: `unit`, `integration`, `system`, `pleasefixme` (broken — skip), `skip
 ## CI & PRs
 
 - NVIDIA developers: feature branches off `main`; community: fork-based workflow
-- CI triggered by adding **"Run CICD"** label to the PR
-- E2E nightly tests: only when really needed. Add both **"Run e2e nightly"** and **"Run CICD"** labels
+- Trusted PRs trigger CI automatically through copy-pr-bot. For an untrusted PR, a maintainer must comment `/ok to test <head-sha>`; repeat after a new push if the PR remains untrusted.
+- E2E nightly tests: only when really needed. Add **"Run e2e nightly"** before CI starts; labels are read by the pre-flight job.
 - `skip-linting` / `skip-docs` labels bypass those checks
-- Formatting CI auto-commits black/isort fixes back to the PR branch
+- Formatting CI is check-only and does not fix the branch. Run pre-commit locally before pushing.
 - CI: GitHub Actions in `.github/workflows/`
+
+Every commit must carry a Developer Certificate of Origin sign-off. Create commits with `git commit -s`; when amending, use `git commit --amend --no-edit -s`. Before pushing, inspect every branch commit with `git log --format='%h %s%n%(trailers:key=Signed-off-by)' origin/main..HEAD` and repair any missing sign-off. The `-s` sign-off trailer is distinct from a cryptographic `-S` signature.
+
+## PR Verification & Review
+
+Before committing or requesting review:
+
+1. Review the full diff against the target branch and run `git diff --check`.
+2. Run pre-commit and the smallest relevant test set. Bug fixes require a regression test that fails before the fix; behavior changes require unit tests covering the new behavior and important edge cases.
+3. Check whether public APIs, configuration, CLI behavior, examples, or user workflows changed. Update the relevant documentation in the same PR, or state why no documentation change is needed.
+4. Record the exact checks run and any intentionally skipped checks in the PR description.
+
+When reviewing a PR, explicitly assess whether unit test coverage is appropriate for the changed behavior and whether affected documentation is accurate and complete. Treat unjustified gaps in either area as actionable review findings.
 
 ## Documentation
 

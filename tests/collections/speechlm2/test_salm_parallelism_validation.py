@@ -68,8 +68,9 @@ def test_thd_cp2_te_with_fused_attn_off_passes():
 # BSHD + CP > 1 — hard error regardless of other knobs.
 
 
+@pytest.mark.parametrize("check_backward", [True, False])
 @pytest.mark.parametrize("cp_size", [2, 4, 8])
-def test_bshd_with_cp_raises(cp_size):
+def test_bshd_with_cp_raises(cp_size, check_backward):
     with pytest.raises(ValueError, match="BSHD .* incompatible with cp_size > 1"):
         validate_parallelism_compatibility(
             packed_sequences=False,
@@ -77,14 +78,16 @@ def test_bshd_with_cp_raises(cp_size):
             attn_backend="te",
             nvte_fused_attn="0",
             device_capability=(9, 0),
+            check_backward=check_backward,
         )
 
 
 # THD + non-TE attention — hard error.
 
 
+@pytest.mark.parametrize("check_backward", [True, False])
 @pytest.mark.parametrize("attn_backend", ["sdpa", "flex"])
-def test_thd_with_non_te_attn_raises(attn_backend):
+def test_thd_with_non_te_attn_raises(attn_backend, check_backward):
     with pytest.raises(ValueError, match=r"THD.*requires.*attn=te"):
         validate_parallelism_compatibility(
             packed_sequences=True,
@@ -92,6 +95,7 @@ def test_thd_with_non_te_attn_raises(attn_backend):
             attn_backend=attn_backend,
             nvte_fused_attn="0",
             device_capability=(9, 0),
+            check_backward=check_backward,
         )
 
 
@@ -135,6 +139,21 @@ def test_thd_te_with_fused_attn_off_does_not_warn_on_sm120():
             attn_backend="te",
             nvte_fused_attn="0",
             device_capability=(12, 0),
+        )
+    assert len(caught) == 0
+
+
+def test_forward_only_thd_te_without_fused_attn_off_passes_on_sm120():
+    """The sm_120 fused-attention issue is backward-only."""
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        validate_parallelism_compatibility(
+            packed_sequences=True,
+            cp_size=2,
+            attn_backend="te",
+            nvte_fused_attn=None,
+            device_capability=(12, 0),
+            check_backward=False,
         )
     assert len(caught) == 0
 

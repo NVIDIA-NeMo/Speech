@@ -1,0 +1,16 @@
+diff --git a/interface.py b/interface.py
+--- a/interface.py
++++ b/interface.py
+@@ -16,6 +16,12 @@ import cuda.bindings.driver as cuda
+ import cutlass
+ import cutlass.cute as cute
+ from cutlass import Int32, Float32
++
++# CUTLASS 4.6 removed this deprecated alias while FlashAttention 4.0.0b15
++# still uses it in type annotations.
++if not hasattr(cute.core, "ThrMma"):
++    cute.core.ThrMma = cute.ThrMma
++
+ from quack.compile_utils import make_fake_tensor as fake_tensor
+ from flash_attn.cute.cache_utils import get_jit_cache
+ from flash_attn.cute.testing import is_fake_mode

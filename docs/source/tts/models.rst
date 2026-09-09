@@ -2,8 +2,8 @@ Models
 =======
 This section provides a brief overview of TTS models that NeMo's TTS collection currently supports.
 
-* **Model Recipes** can be accessed through `examples/tts/*.py <https://github.com/NVIDIA/NeMo/tree/stable/examples/tts>`_.
-* **Configuration Files** can be found in the directory of `examples/tts/conf/ <https://github.com/NVIDIA/NeMo/tree/stable/examples/tts/conf>`_. For detailed information about TTS configuration files and how they
+* **Model Recipes** can be accessed through `examples/tts/*.py <https://github.com/NVIDIA-NeMo/Speech/tree/stable/examples/tts>`_.
+* **Configuration Files** can be found in the directory of `examples/tts/conf/ <https://github.com/NVIDIA-NeMo/Speech/tree/stable/examples/tts/conf>`_. For detailed information about TTS configuration files and how they
   should be structured, please refer to the section :doc:`./configs`.
 * **Pretrained Model Checkpoints** are available for any users for immediately synthesizing speech or fine-tuning models on
   your custom datasets. Please follow the section :doc:`./checkpoints` for instructions on how to use those pretrained models.

@@ -2,8 +2,8 @@ Models
 =======
 This section provides a brief overview of models that NeMo's audio collection currently supports.
 
-* **Model Recipes** can be accessed through `examples/audio <https://github.com/NVIDIA/NeMo/tree/main/examples/audio>`_.
-* **Configuration Files** can be found in the directory of `examples/audio/conf <https://github.com/NVIDIA/NeMo/tree/main/examples/audio/conf>`_. For detailed information about configuration files and how they
+* **Model Recipes** can be accessed through `examples/audio <https://github.com/NVIDIA-NeMo/Speech/tree/main/examples/audio>`_.
+* **Configuration Files** can be found in the directory of `examples/audio/conf <https://github.com/NVIDIA-NeMo/Speech/tree/main/examples/audio/conf>`_. For detailed information about configuration files and how they
   should be structured, please refer to the section :doc:`./configs`.
 * **Pretrained Model Checkpoints** are available for any users for immediately synthesizing speech or fine-tuning models on
   your custom datasets. Please follow the section :doc:`./checkpoints` for instructions on how to use those pretrained models.

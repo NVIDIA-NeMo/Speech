@@ -34,7 +34,10 @@ import torch.distributed as dist
 from torch import Tensor
 from torch.distributed.nn.functional import all_gather as differentiable_all_gather
 
-from nemo.collections.speechlm2.parts.encoder_chunking import encode_audio_with_optional_chunking
+from nemo.collections.speechlm2.parts.encoder_chunking import (
+    _get_min_chunk_size_samples,
+    encode_audio_with_optional_chunking,
+)
 
 
 def get_cp_mesh(device_mesh) -> tuple[Optional[object], int, int]:
@@ -49,6 +52,22 @@ def get_cp_mesh(device_mesh) -> tuple[Optional[object], int, int]:
     return cp_mesh, cp_mesh.size(), cp_rank
 
 
+def get_perception_fsdp_group(device_mesh):
+    """Return the process group used to FSDP-shard the perception module, if any."""
+    if device_mesh is None:
+        return None
+    dim_names = device_mesh.mesh_dim_names or ()
+    if "dp_replicate" in dim_names and "dp_shard_cp" in dim_names:
+        fsdp_mesh = device_mesh["dp_replicate", "dp_shard_cp"]
+    elif "dp_shard_cp" in dim_names:
+        fsdp_mesh = device_mesh["dp_shard_cp"]
+    else:
+        fsdp_mesh = device_mesh["dp"]
+    if fsdp_mesh.size() <= 1:
+        return None
+    return fsdp_mesh.get_group()
+
+
 def encode_audio_with_cp_distribution(
     perception,
     audios: Tensor,
@@ -58,11 +77,13 @@ def encode_audio_with_cp_distribution(
     sampling_rate: int,
     cp_mesh=None,
     spk_targets: Tensor | None = None,
-) -> list[Tensor]:
+    fsdp_sync_group=None,
+    return_dummy_loss: bool = False,
+) -> list[Tensor] | tuple[list[Tensor], Tensor | None]:
     """Distribute the audio encoder forward across CP ranks.
 
     Falls back to :func:`encode_audio_with_optional_chunking` when ``cp_mesh is
-    None`` or there are no audios in the batch.
+    None``.
 
     With CP active, each rank encodes a contiguous slice of the audio batch
     (rank ``r`` gets ``audios[r*per_rank : (r+1)*per_rank]`` where
@@ -78,10 +99,33 @@ def encode_audio_with_cp_distribution(
     zero-padded to a globally-consistent ``max_L`` and ``all_gather``ed across
     the CP group. The full ordered list is reconstructed and dummies are
     dropped, so the return value is identical on every CP rank.
+
+    When ``fsdp_sync_group`` is provided and this rank has a text-only batch
+    while another rank in the perception FSDP group has audio, this function
+    runs a single dummy audio row through ``perception`` and returns a zero-valued
+    loss term. Adding that term to the training loss preserves the autograd edge
+    so FSDP forward/backward hooks fire on the text-only rank without affecting
+    gradients numerically.
     """
     B_aud = int(audios.shape[0])
-    if cp_mesh is None or B_aud == 0:
-        return encode_audio_with_optional_chunking(
+    fsdp_group_has_audio = _fsdp_group_has_audio(B_aud, audios.device, fsdp_sync_group)
+    if B_aud == 0:
+        dummy_loss = (
+            _dummy_audio_loss_for_fsdp_sync(
+                perception,
+                audios,
+                audio_lens,
+                chunk_size_seconds=chunk_size_seconds,
+                sampling_rate=sampling_rate,
+            )
+            if fsdp_group_has_audio
+            else None
+        )
+        ans = []
+        return (ans, dummy_loss) if return_dummy_loss else ans
+
+    if cp_mesh is None:
+        ans = encode_audio_with_optional_chunking(
             perception,
             audios,
             audio_lens,
@@ -89,6 +133,7 @@ def encode_audio_with_cp_distribution(
             sampling_rate=sampling_rate,
             spk_targets=spk_targets,
         )
+        return (ans, None) if return_dummy_loss else ans
 
     cp_size = cp_mesh.size()
     cp_group = cp_mesh.get_group()
@@ -157,4 +202,36 @@ def encode_audio_with_cp_distribution(
             L = int(gathered_lens[r][i].item())
             full_embs.append(gathered_stack[r][i, :L])
 
-    return full_embs
+    return (full_embs, None) if return_dummy_loss else full_embs
+
+
+def _fsdp_group_has_audio(B_aud: int, device: torch.device, fsdp_sync_group=None) -> bool:
+    if fsdp_sync_group is None or not (dist.is_available() and dist.is_initialized()):
+        return False
+    local_has_audio = torch.tensor(1 if B_aud > 0 else 0, dtype=torch.int32, device=device)
+    dist.all_reduce(local_has_audio, op=dist.ReduceOp.MAX, group=fsdp_sync_group)
+    return bool(int(local_has_audio.item()))
+
+
+def _dummy_audio_loss_for_fsdp_sync(
+    perception,
+    audios: Tensor,
+    audio_lens: Tensor,
+    *,
+    chunk_size_seconds: Optional[float],
+    sampling_rate: int,
+) -> Tensor | None:
+    # The preprocessor minimum alone can be too short after Conformer
+    # subsampling, leaving BatchNorm with a single value per channel.
+    dummy_len = max(_get_min_chunk_size_samples(perception), int(sampling_rate))
+    dummy_audio = torch.zeros(1, dummy_len, dtype=audios.dtype, device=audios.device)
+    dummy_lens = torch.full((1,), dummy_len, dtype=audio_lens.dtype, device=audio_lens.device)
+    dummy_embs = encode_audio_with_optional_chunking(
+        perception,
+        dummy_audio,
+        dummy_lens,
+        chunk_size_seconds=chunk_size_seconds,
+        sampling_rate=sampling_rate,
+    )
+    dummy_loss = sum(emb.float().sum() for emb in dummy_embs)
+    return dummy_loss * 0.0

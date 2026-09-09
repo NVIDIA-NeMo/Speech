@@ -3,16 +3,16 @@
 Key Concepts in Speech AI
 =========================
 
-This page introduces the fundamental concepts you'll encounter when working with speech models in NeMo. No prior NeMo experience is required — we start from the basics of audio and work up to how NeMo structures its models.
+This page introduces the fundamental concepts you'll encounter when working with speech models in NeMo Speech. No prior NeMo Speech experience is required — we start from the basics of audio and work up to how NeMo Speech structures its models.
 
-Audio Conventions in NeMo
--------------------------
+Audio Conventions in NeMo Speech
+--------------------------------
 
 **Sampling rate** — ASR models often use **16 kHz**; TTS and audio processing models may use higher rates (e.g. 22.05 kHz, 44.1 kHz). Check each model's or preprocessor's config for the expected sample rate.
 
 **Channels** — Most models use mono input, but some support **multi-channel** audio (e.g. for spatial or multi-mic setups). See the model and preprocessor documentation for your use case.
 
-**Preprocessing** — NeMo models typically include a **preprocessor** that converts waveform input into features (e.g. mel-spectrogram). For most setups, you should provide audio that already matches the model's expected **sample rate** and **channel layout** (often mono); automatic resampling or stereo→mono is not guaranteed and depends on the collection, dataset, and preprocessor config. Check the model and preprocessor documentation for your use case.
+**Preprocessing** — NeMo Speech models typically include a **preprocessor** that converts waveform input into features (e.g. mel-spectrogram). For most setups, you should provide audio that already matches the model's expected **sample rate** and **channel layout** (often mono); automatic resampling or stereo→mono is not guaranteed and depends on the collection, dataset, and preprocessor config. Check the model and preprocessor documentation for your use case.
 
 **Mel-spectrogram** — For models that use it, the preprocessor turns raw waveform into mel-spectrogram features; this is handled inside the model, not as a separate offline step.
 
@@ -20,7 +20,7 @@ Audio Conventions in NeMo
 Speech AI Tasks
 ---------------
 
-NeMo supports several speech AI tasks, each solving a different problem:
+NeMo Speech supports several speech AI tasks, each solving a different problem:
 
 .. list-table::
    :widths: 20 40 40
@@ -55,19 +55,19 @@ Encoder Architectures
 The *encoder* converts audio features into a sequence of high-level representations:
 
 **Transformer**
-   The standard encoder from `Vaswani et al. (2017) <https://arxiv.org/abs/1706.03762>`_ — stacked self-attention and feed-forward layers with no convolutions. Used in NeMo as an encoder or decoder in encoder-decoder models (e.g. Canary).
+   The standard encoder from `Vaswani et al. (2017) <https://arxiv.org/abs/1706.03762>`_ — stacked self-attention and feed-forward layers with no convolutions. Used in NeMo Speech as an encoder or decoder in encoder-decoder models (e.g. Canary).
 
 **Conformer**
    The original architecture from `Gulati et al. (2020) <https://arxiv.org/abs/2005.08100>`_ that combines self-attention with convolutions for both global and local patterns.
 
 **FastConformer**
-   A faster variant of Conformer (`Rekesh et al. (2023) <https://arxiv.org/abs/2305.05084>`_) with 8× subsampling and optimized attention. NeMo's default choice for ASR; recommended for new projects.
+   A faster variant of Conformer (`Rekesh et al. (2023) <https://arxiv.org/abs/2305.05084>`_) with 8× subsampling and optimized attention. NeMo Speech's default choice for ASR; recommended for new projects.
 
 
-How NeMo Models Work
----------------------
+How NeMo Speech Models Work
+----------------------------
 
-Every NeMo model wraps these components into a single, cohesive unit:
+Every NeMo Speech model wraps these components into a single, cohesive unit:
 
 .. raw:: html
 
@@ -111,12 +111,12 @@ Every NeMo model wraps these components into a single, cohesive unit:
 Overview of NeMo Speech
 ========================
 
-NeMo models are PyTorch modules that also integrate with `PyTorch Lightning <https://lightning.ai/>`__ for training and `Hydra <https://hydra.cc/>`__ + `OmegaConf <https://omegaconf.readthedocs.io/>`__ for configuration.
+NeMo Speech models are PyTorch modules that also integrate with `PyTorch Lightning <https://lightning.ai/>`__ for training and `Hydra <https://hydra.cc/>`__ + `OmegaConf <https://omegaconf.readthedocs.io/>`__ for configuration.
 
 Configuration with YAML
 ------------------------
 
-NeMo experiments are configured with YAML files. A typical config has three main sections:
+NeMo Speech experiments are configured with YAML files. A typical config has three main sections:
 
 .. code-block:: yaml
 
@@ -159,7 +159,7 @@ You can override any value from the command line:
 Manifest Files
 --------------
 
-NeMo uses **manifest files** (JSONL format) to describe datasets. Each line is one training example:
+NeMo Speech uses **manifest files** (JSONL format) to describe datasets. Each line is one training example:
 
 .. code-block:: json
 
@@ -178,7 +178,7 @@ See :doc:`../asr/datasets` for details on preparing datasets.
 Model Checkpoints
 -----------------
 
-NeMo models are saved as ``.nemo`` files — tar archives containing model weights, configuration, and tokenizer files. You can load models in two ways:
+NeMo Speech models are saved as ``.nemo`` files — tar archives containing model weights, configuration, and tokenizer files. You can load models in two ways:
 
 .. code-block:: python
 
@@ -189,4 +189,3 @@ NeMo models are saved as ``.nemo`` files — tar archives containing model weigh
    model = nemo_asr.models.ASRModel.restore_from("path/to/model.nemo")
 
 See :doc:`../checkpoints/intro` for more details on checkpoint formats.
-

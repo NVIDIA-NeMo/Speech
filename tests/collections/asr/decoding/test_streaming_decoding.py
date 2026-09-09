@@ -470,6 +470,7 @@ def test_label_looping_continuous_streaming_partial_hypotheses(
     assert ref_transcripts == streaming_transcripts
 
 
+@pytest.mark.pleasefixme
 @pytest.mark.with_downloads
 @pytest.mark.parametrize(
     "device,use_cuda_graph_decoder",

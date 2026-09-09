@@ -38,7 +38,6 @@ from nemo.collections.asr.parts.mixins.transcription import TranscribeConfig
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
 from nemo.collections.audio.parts.utils.transforms import resample
 from nemo.collections.common.parts.utils import mask_sequence_tensor
-from nemo.core.classes.common import safe_instantiate
 
 try:
     from nemo_text_processing.text_normalization.normalize import Normalizer
@@ -101,67 +100,232 @@ def normalize_volume(audio: np.array, volume_level: float = 0.95) -> np.array:
     return volume_level * (audio / np.max(np.abs(audio)))
 
 
-def setup_pronunciation_control_g2p(pronunciation_control_g2p_config):
-    """Instantiate per-language G2P modules used for pronunciation-control text augmentation.
+def _validate_probability(name: str, value: float):
+    """Validate that a probability lies in the inclusive range ``[0.0, 1.0]``.
 
     Args:
-        pronunciation_control_g2p_config: Optional mapping from language code to Hydra config for the G2P module
-            that should be used when pronunciation-control augmentation is sampled.
+        name: Parameter name to include in the error message.
+        value: Probability value to validate.
+
+    Raises:
+        ValueError: If ``value`` is outside the valid probability range.
+    """
+    if not 0.0 <= value <= 1.0:
+        raise ValueError(f"`{name}` must be in range [0.0, 1.0], received {value}")
+
+
+def _sample_probability_range(name: str, min_value: float, max_value: float) -> float:
+    """Sample a probability uniformly from an inclusive configured range.
+
+    Args:
+        name: Base parameter name to include in validation errors.
+        min_value: Lower bound of the probability range.
+        max_value: Upper bound of the probability range.
 
     Returns:
-        A dictionary mapping language code to the instantiated G2P module. Returns an empty dictionary when no
-        pronunciation-control config is provided.
+        A uniformly sampled probability between ``min_value`` and ``max_value``.
+
+    Raises:
+        ValueError: If either bound is outside ``[0.0, 1.0]`` or the lower
+            bound is greater than the upper bound.
     """
-    g2p_modules = {}
-    if pronunciation_control_g2p_config is None:
-        return g2p_modules
-
-    for language in pronunciation_control_g2p_config:
-        g2p_modules[language] = safe_instantiate(pronunciation_control_g2p_config[language])
-
-    return g2p_modules
+    _validate_probability(f"{name}_min", min_value)
+    _validate_probability(f"{name}_max", max_value)
+    if min_value > max_value:
+        raise ValueError(f"`{name}_min` must be <= `{name}_max`, received {min_value} > {max_value}")
+    return random.uniform(min_value, max_value)
 
 
-def tokenize_text_with_pronunciation_control(
+def has_phoneme_text_spans(text: str, bop_marker: str = "<bop>", eop_marker: str = "<eop>") -> bool:
+    """Check whether text contains either an opening or closing phoneme-span marker.
+
+    Checking for either marker also identifies malformed or incomplete spans so
+    callers can avoid transforming the marked input before it is validated.
+
+    Args:
+        text: Text to inspect.
+        bop_marker: Marker that opens an inline phoneme span.
+        eop_marker: Marker that closes an inline phoneme span.
+
+    Returns:
+        ``True`` if either marker occurs in ``text``; otherwise ``False``.
+    """
+    return bop_marker in text or eop_marker in text
+
+
+def _split_text_and_phoneme_spans(
+    text: str,
+    bop_marker: str = "<bop>",
+    eop_marker: str = "<eop>",
+) -> List[Tuple[str, str]]:
+    """Split mixed text into ordered text and phoneme segments.
+
+    Args:
+        text: Input containing regular text and optionally marked phoneme spans.
+        bop_marker: Marker that opens an inline phoneme span.
+        eop_marker: Marker that closes an inline phoneme span.
+
+    Returns:
+        Non-empty ``("text", segment)`` and ``("phoneme", segment)`` tuples
+        in their original order. Phoneme-span markers are omitted.
+
+    Raises:
+        ValueError: If an opening or closing marker has no matching counterpart.
+    """
+    segments = []
+    cursor = 0
+
+    while cursor < len(text):
+        bop_idx = text.find(bop_marker, cursor)
+        if bop_idx == -1:
+            if eop_marker in text[cursor:]:
+                raise ValueError(f"Found `{eop_marker}` without a matching `{bop_marker}` in text: {text}")
+            segments.append(("text", text[cursor:]))
+            break
+
+        eop_before_bop_idx = text.find(eop_marker, cursor, bop_idx)
+        if eop_before_bop_idx != -1:
+            raise ValueError(f"Found `{eop_marker}` without a matching `{bop_marker}` in text: {text}")
+
+        if bop_idx > cursor:
+            segments.append(("text", text[cursor:bop_idx]))
+
+        span_start = bop_idx + len(bop_marker)
+        eop_idx = text.find(eop_marker, span_start)
+        if eop_idx == -1:
+            raise ValueError(f"Found `{bop_marker}` without a matching `{eop_marker}` in text: {text}")
+
+        segments.append(("phoneme", text[span_start:eop_idx].strip()))
+        cursor = eop_idx + len(eop_marker)
+
+    return [(kind, segment) for kind, segment in segments if segment]
+
+
+def partially_phonemize_text(
+    text: str,
+    ipa_alignment: Optional[List],
+    partial_phoneme_portion: float,
+    full_ipa_text: Optional[str] = None,
+    bop_marker: str = "<bop>",
+    eop_marker: str = "<eop>",
+) -> str:
+    """Replace a sampled portion of aligned words with marked IPA spans.
+
+    The requested portion determines how many aligned words are selected.
+    Adjacent selected words are merged into one span. If every aligned word is
+    selected, the supplied full IPA transcription is emitted as a single span.
+    Invalid or unavailable alignment data leaves the original text unchanged.
+
+    Args:
+        text: Original text whose character offsets are referenced by the alignment.
+        ipa_alignment: Word alignments in the form
+            ``(text_start, text_end, word, ipa_text)``.
+        partial_phoneme_portion: Fraction of aligned words to replace, in
+            ``[0.0, 1.0]``.
+        full_ipa_text: IPA transcription of the complete input text.
+        bop_marker: Marker to place before each generated IPA span.
+        eop_marker: Marker to place after each generated IPA span.
+
+    Returns:
+        Text with sampled words replaced by marked IPA spans, or the original
+        text when replacement cannot be performed.
+
+    Raises:
+        ValueError: If ``partial_phoneme_portion`` is outside ``[0.0, 1.0]``.
+    """
+    _validate_probability("partial_phoneme_portion", partial_phoneme_portion)
+    if partial_phoneme_portion == 0.0 or not text or not ipa_alignment or not full_ipa_text:
+        return text
+
+    num_selected = min(len(ipa_alignment), max(1, round(partial_phoneme_portion * len(ipa_alignment))))
+    if num_selected == len(ipa_alignment):
+        return f"{bop_marker}{full_ipa_text}{eop_marker}"
+
+    ipa_ranges = []
+    ipa_cursor = 0
+    for _, _, _, ipa_text in ipa_alignment:
+        ipa_start = full_ipa_text.find(ipa_text.strip(), ipa_cursor)
+        if ipa_start < 0:
+            return text
+        ipa_end = ipa_start + len(ipa_text.strip())
+        ipa_ranges.append((ipa_start, ipa_end))
+        ipa_cursor = ipa_end
+
+    selected_indices = sorted(random.sample(range(len(ipa_alignment)), num_selected))
+    selected_runs = []
+    for index in selected_indices:
+        if selected_runs and index == selected_runs[-1][1] + 1:
+            selected_runs[-1] = (selected_runs[-1][0], index)
+        else:
+            selected_runs.append((index, index))
+
+    output_parts = []
+    cursor = 0
+    for first_index, last_index in selected_runs:
+        start = ipa_alignment[first_index][0]
+        end = ipa_alignment[last_index][1]
+        ipa_start = ipa_ranges[first_index][0]
+        ipa_end = ipa_ranges[last_index][1]
+        output_parts.append(text[cursor:start])
+        output_parts.append(f"{bop_marker}{full_ipa_text[ipa_start:ipa_end]}{eop_marker}")
+        cursor = end
+    output_parts.append(text[cursor:])
+
+    return ''.join(output_parts)
+
+
+def tokenize_text_with_phoneme_spans(
     text_tokenizer,
     text_str: str,
-    language: str,
     tokenizer_name: str,
-    dataset_type: str,
-    phoneme_as_text_prob: float,
-    pronunciation_control_g2p: Optional[Dict],
+    enable_phoneme_text_input: bool = False,
+    phoneme_tokenizer=None,
+    text_phoneme_token_offset: Optional[int] = None,
+    bop_marker: str = "<bop>",
+    eop_marker: str = "<eop>",
 ) -> List[int]:
-    """Tokenize text, optionally replacing it with G2P output for pronunciation-control training.
+    """Tokenize regular text with optional inline IPA spans marked by ``<bop>...<eop>``.
 
-    Pronunciation control is only applied for training samples, when ``phoneme_as_text_prob`` is sampled, and when a
-    G2P module is available for the sample language. Otherwise the original text is tokenized.
+    Span markers are syntax only and are not emitted as token IDs. IPA span IDs are encoded with the phoneme tokenizer
+    and shifted by ``text_phoneme_token_offset`` so they live in the text-channel vocabulary.
 
     Args:
-        text_tokenizer: Aggregated TTS tokenizer used to encode either original text or G2P text.
-        text_str: Input text from the dataset sample.
-        language: Language code for selecting the pronunciation-control G2P module.
-        tokenizer_name: Name of the tokenizer inside ``text_tokenizer`` to use for encoding.
-        dataset_type: Dataset split/type. Pronunciation-control augmentation is restricted to ``"train"``.
-        phoneme_as_text_prob: Probability of replacing the text with G2P output for eligible training samples.
-        pronunciation_control_g2p: Optional mapping from language code to instantiated G2P module.
+        text_tokenizer: Text tokenizer that supports named tokenizer selection.
+        text_str: Text to encode, optionally containing marked IPA spans.
+        tokenizer_name: Name of the text tokenizer used for regular text segments.
+        enable_phoneme_text_input: Whether to parse and separately encode marked
+            phoneme spans. If disabled, the complete input is encoded as text.
+        phoneme_tokenizer: Tokenizer used to encode IPA span contents. Required
+            when ``enable_phoneme_text_input`` is enabled.
+        text_phoneme_token_offset: Offset added to every phoneme token ID so it
+            occupies the text-channel vocabulary. Required when phoneme text
+            input is enabled.
+        bop_marker: Marker that opens an inline phoneme span.
+        eop_marker: Marker that closes an inline phoneme span.
 
     Returns:
-        Encoded token ids for either ``text_str`` or the sampled pronunciation-control G2P text.
+        Token IDs containing interleaved text IDs and offset phoneme IDs.
+
+    Raises:
+        ValueError: If phoneme text input is enabled without its tokenizer or
+            token offset, or if span markers are unmatched.
     """
-    use_pronunciation_control = (
-        dataset_type == 'train'
-        and phoneme_as_text_prob > 0.0
-        and random.random() < phoneme_as_text_prob
-        and pronunciation_control_g2p is not None
-        and language in pronunciation_control_g2p
-    )
-    if not use_pronunciation_control:
+    if not enable_phoneme_text_input:
         return text_tokenizer.encode(text=text_str, tokenizer_name=tokenizer_name)
 
-    g2p_module = pronunciation_control_g2p[language]
-    g2p_text = g2p_module(text_str)
-    text_for_tokens = ''.join(g2p_text) if isinstance(g2p_text, list) else str(g2p_text)
-    return text_tokenizer.encode(text=text_for_tokens, tokenizer_name=tokenizer_name)
+    if phoneme_tokenizer is None:
+        raise ValueError("`phoneme_tokenizer` is required when `enable_phoneme_text_input=True`.")
+    if text_phoneme_token_offset is None:
+        raise ValueError("`text_phoneme_token_offset` is required when `enable_phoneme_text_input=True`.")
+
+    token_ids = []
+    for segment_type, segment in _split_text_and_phoneme_spans(text_str, bop_marker=bop_marker, eop_marker=eop_marker):
+        if segment_type == "text":
+            token_ids.extend(text_tokenizer.encode(text=segment, tokenizer_name=tokenizer_name))
+        else:
+            token_ids.extend(text_phoneme_token_offset + token_id for token_id in phoneme_tokenizer.encode(segment))
+
+    return token_ids
 
 
 class BetaBinomialInterpolator:
@@ -607,6 +771,11 @@ def chunk_and_tokenize_text_by_sentence(
     text_tokenizer: Any,
     eos_token_id: int,
     language: str = "en",
+    enable_phoneme_text_input: bool = False,
+    phoneme_tokenizer=None,
+    text_phoneme_token_offset: Optional[int] = None,
+    bop_marker: str = "<bop>",
+    eop_marker: str = "<eop>",
 ) -> Tuple[List[torch.Tensor], List[int], List[str]]:
     """
     Tokenize text split by sentences, adding EOS token after each sentence.
@@ -619,6 +788,14 @@ def chunk_and_tokenize_text_by_sentence(
         language: Language code for selecting appropriate sentence separators.
             Supported: "en", "ja", "hi", "zh", "es", "fr", "it", "de", "vi".
             Defaults to "en".
+        enable_phoneme_text_input: Whether to parse and separately encode marked
+            phoneme spans.
+        phoneme_tokenizer: Tokenizer used for marked phoneme spans. Required
+            when ``enable_phoneme_text_input`` is enabled.
+        text_phoneme_token_offset: Offset added to phoneme token IDs in the
+            text-channel vocabulary.
+        bop_marker: Marker that opens an inline phoneme span.
+        eop_marker: Marker that closes an inline phoneme span.
 
     Returns:
         Tuple of:
@@ -634,7 +811,16 @@ def chunk_and_tokenize_text_by_sentence(
 
     for sentence in split_sentences:
         chunked_text.append(sentence)
-        tokens = text_tokenizer.encode(text=sentence, tokenizer_name=tokenizer_name)
+        tokens = tokenize_text_with_phoneme_spans(
+            text_tokenizer=text_tokenizer,
+            text_str=sentence,
+            tokenizer_name=tokenizer_name,
+            enable_phoneme_text_input=enable_phoneme_text_input,
+            phoneme_tokenizer=phoneme_tokenizer,
+            text_phoneme_token_offset=text_phoneme_token_offset,
+            bop_marker=bop_marker,
+            eop_marker=eop_marker,
+        )
         tokens = tokens + [eos_token_id]
         tokens = torch.tensor(tokens, dtype=torch.int32)
         tokens_len = tokens.shape[0]
@@ -784,6 +970,11 @@ def chunk_text_for_inference(
     text_tokenizer: Any,
     eos_token_id: int,
     language_thresholds: Optional[LanguageThresholds] = None,
+    enable_phoneme_text_input: bool = False,
+    phoneme_tokenizer=None,
+    text_phoneme_token_offset: Optional[int] = None,
+    bop_marker: str = "<bop>",
+    eop_marker: str = "<eop>",
 ) -> Tuple[List[torch.Tensor], List[int], List[str]]:
     """
     Unified text chunking for inference: returns single chunk if below threshold,
@@ -799,6 +990,15 @@ def chunk_text_for_inference(
         text_tokenizer: The tokenizer instance.
         eos_token_id: End-of-sequence token ID to append.
         language_thresholds: Optional custom thresholds. Uses defaults if None.
+        enable_phoneme_text_input: Whether to parse and separately encode marked
+            phoneme spans.
+        phoneme_tokenizer: Tokenizer used for marked phoneme spans. Required
+            when ``enable_phoneme_text_input`` is enabled.
+        text_phoneme_token_offset: Offset added to phoneme token IDs in the
+            text-channel vocabulary.
+        bop_marker: Marker that opens an inline phoneme span.
+        eop_marker: Marker that closes an inline phoneme span. Text containing
+            either span marker is kept as one chunk to preserve span boundaries.
 
     Returns:
         Tuple of:
@@ -827,7 +1027,8 @@ def chunk_text_for_inference(
         language_thresholds = DEFAULT_LANGUAGE_THRESHOLDS
 
     # Check if text exceeds threshold for this language
-    should_split = language_thresholds.exceeds_threshold(text, language)
+    has_explicit_phoneme_spans = has_phoneme_text_spans(text, bop_marker=bop_marker, eop_marker=eop_marker)
+    should_split = language_thresholds.exceeds_threshold(text, language) and not has_explicit_phoneme_spans
 
     if should_split:
         # Long text: split by sentences
@@ -837,10 +1038,24 @@ def chunk_text_for_inference(
             text_tokenizer=text_tokenizer,
             eos_token_id=eos_token_id,
             language=language,
+            enable_phoneme_text_input=enable_phoneme_text_input,
+            phoneme_tokenizer=phoneme_tokenizer,
+            text_phoneme_token_offset=text_phoneme_token_offset,
+            bop_marker=bop_marker,
+            eop_marker=eop_marker,
         )
     else:
         # Short text: return as single chunk
-        tokens = text_tokenizer.encode(text=text, tokenizer_name=tokenizer_name)
+        tokens = tokenize_text_with_phoneme_spans(
+            text_tokenizer=text_tokenizer,
+            text_str=text,
+            tokenizer_name=tokenizer_name,
+            enable_phoneme_text_input=enable_phoneme_text_input,
+            phoneme_tokenizer=phoneme_tokenizer,
+            text_phoneme_token_offset=text_phoneme_token_offset,
+            bop_marker=bop_marker,
+            eop_marker=eop_marker,
+        )
         tokens = tokens + [eos_token_id]
         tokens_tensor = torch.tensor(tokens, dtype=torch.int32)
         tokens_len = tokens_tensor.shape[0]

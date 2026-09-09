@@ -216,6 +216,11 @@ class SALM(LightningModule, HFHubMixin):
                 m.eval()
 
         inputs = self.prepare_inputs(batch)
+        # Counters consumed by TrainingStatsCallback. ``attention_mask`` is 1
+        # for every real LLM input position (text non-pad + audio frames
+        # post-perception) and 0 for padding.
+        self._last_batch_num_tokens = int(inputs["attention_mask"].long().sum().item())
+        self._last_batch_num_examples = int(inputs["input_embeds"].shape[0])
         forward_outputs = self(inputs["input_embeds"], attention_mask=inputs["attention_mask"])
         num_frames = (inputs["target_ids"] != -100).long().sum()
         with loss_parallel():

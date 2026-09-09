@@ -102,4 +102,5 @@ def release_auto_managed_stream_biasing(state: Any, biasing_multi_model: GPUBias
     if not state.has_biasing_request():
         return
     if state.options.biasing_cfg.auto_manage_multi_model:
-        state.options.biasing_cfg.remove_from_multi_model(biasing_multi_model)
+        with torch.inference_mode():
+            state.options.biasing_cfg.remove_from_multi_model(biasing_multi_model)

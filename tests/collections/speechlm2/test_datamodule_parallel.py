@@ -136,11 +136,13 @@ def test_dp_rank_via_strategy(fake_dist, pp, dp_rep, dp_shard, cp, tp):
         cp_size=cp,
         dp_size=dp_size,
         dp_replicate_size=dp_rep,
-        distributed_config=FSDP2Config(backend="gloo"),
+        distributed_config=FSDP2Config(),
     )
 
     with LocalTensorMode(world_size):
         device_mesh, _ = strategy.create_device_mesh()
+        assert strategy.distributed_setup is not None
+        assert strategy.distributed_setup.mesh_context.device_mesh is device_mesh
 
         data = DataModule(DictConfig({"train_ds": {"batch_size": 2}}), tokenizer=None, dataset=Identity())
         data.trainer = SimpleNamespace(model=SimpleNamespace(device_mesh=device_mesh))
@@ -184,7 +186,7 @@ def test_non_dp_dims_share_dp_rank(fake_dist):
             cp_size=cp,
             dp_size=dp_size,
             dp_replicate_size=dp_rep,
-            distributed_config=FSDP2Config(backend="gloo"),
+            distributed_config=FSDP2Config(),
         )
         device_mesh, _ = strategy.create_device_mesh()
 
@@ -223,7 +225,7 @@ def test_datamodule_get_dp_rank_automodel(fake_dist, tokenizer):
         cp_size=cp,
         dp_size=dp_size,
         dp_replicate_size=dp_rep,
-        distributed_config=FSDP2Config(backend="gloo"),
+        distributed_config=FSDP2Config(),
     )
     # Create mesh outside LocalTensorMode → real int values for fake rank 0
     device_mesh, _ = strategy.create_device_mesh()

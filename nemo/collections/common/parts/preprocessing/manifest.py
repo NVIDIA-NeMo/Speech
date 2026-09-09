@@ -29,7 +29,7 @@ class ManifestBase:
 
     def __init__(self, *args, **kwargs):
         raise ValueError(
-            "This class is deprecated, look at https://github.com/NVIDIA/NeMo/pull/284 for correct behaviour."
+            "This class is deprecated, look at https://github.com/NVIDIA-NeMo/Speech/pull/284 for correct behaviour."
         )
 
 
@@ -38,7 +38,7 @@ class ManifestEN:
 
     def __init__(self, *args, **kwargs):
         raise ValueError(
-            "This class is deprecated, look at https://github.com/NVIDIA/NeMo/pull/284 for correct behaviour."
+            "This class is deprecated, look at https://github.com/NVIDIA-NeMo/Speech/pull/284 for correct behaviour."
         )
 
 

@@ -21,7 +21,7 @@ jobs:
             tail -n1)
           echo "mcore_release_branch=$latest_branch" >> $GITHUB_OUTPUT
 
-          latest_branch=$(git ls-remote --heads https://github.com/NVIDIA/NeMo.git 'refs/heads/r*' | 
+          latest_branch=$(git ls-remote --heads https://github.com/NVIDIA-NeMo/Speech.git 'refs/heads/r*' | 
             grep -o 'r[0-9]\+\.[0-9]\+\.[0-9]\+' | 
             sort -V | 
             tail -n1)

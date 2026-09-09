@@ -95,7 +95,7 @@ def get_tokenizer(
         except (ImportError, ModuleNotFoundError):
             raise ImportError(
                 "Megatron-core was not found. Please see the NeMo README for installation instructions: "
-                " https://github.com/NVIDIA/NeMo#megatron-gpt."
+                " https://github.com/NVIDIA-NeMo/Speech#megatron-gpt."
             )
         if vocab_file is None:
             vocab_file = get_megatron_vocab_file(tokenizer_name)

@@ -1,0 +1,211 @@
+# Streaming STT SpeechLM trained with the NeMo Automodel LLM backend.
+#
+# Same recipe as ``streaming_stt_lora_multichunk.yaml``; the deltas are:
+#   * model.use_nemo_automodel: true      -> StreamingSTTModelAutomodel
+#   * model.lora uses Automodel PeftConfig keys (dim/alpha/dropout/target_modules)
+#     instead of HuggingFace PEFT keys (r/lora_alpha/lora_dropout)
+#   * trainer.strategy: AutomodelParallelStrategy (FSDP2/TP/PP/CP/EP) instead of DDP
+model:
+  pretrained_llm: Qwen/Qwen3-1.7B
+  pretrained_asr: nvidia/nemotron-speech-streaming-en-0.6b
+  load_llm_weights: true
+  load_asr_weights: true
+
+  # Use the NeMo Automodel backend (nemo_automodel package required).
+  # The LLM is loaded *and sharded* inside configure_model(), so each rank only
+  # materializes its own shard.
+  use_nemo_automodel: true
+
+  sample_rate: 16000
+  blank_token: "<blank>"
+  frame_length_in_secs: 0.08
+  # --- Multi chunk-size training ---
+  # A list of positive frame counts enables multi chunk-size training: one value
+  # is drawn at random per batch. Inference defaults to the longest value (here
+  # 14); override per call with generate(chunk_size_override=N).
+  chunk_size: [2, 6, 14]
+  # Encoder attention look-ahead. The LEFT context (70) is fixed; the RIGHT
+  # context (look-ahead) is set automatically each batch to (chunk_size - 1).
+  att_context_size: [70, 13]
+  audio_pad_to: 16
+
+  freeze_speech_encoder: false
+  freeze_modality_adapter: false
+  freeze_modality_proj: false
+  freeze_llm_model: true
+  freeze_llm_head: false
+  freeze_embed_tokens: false
+
+  freeze_params: []
+  prevent_freeze_params: []  # Use to make specific submodules trainable; overrides freeze_params
+
+  # Fine-tune from a previous training checkpoint (model weights only — optimizer,
+  # scheduler, and step counter start fresh). Supports DCP directories (from
+  # FSDP2/TP training), HuggingFace directories (model.safetensors), and
+  # single-file .ckpt checkpoints.
+  init_from_checkpoint: null
+
+  # LoRA on the LLM, applied by Automodel's PEFT implementation (NOT HuggingFace
+  # PEFT — the key names differ; passing `r`/`lora_alpha`/`lora_dropout` here
+  # raises an explicit error). LoRA params stay trainable even when the LLM is
+  # frozen. Comment the block out to disable.
+  lora:
+    dim: 128                 # HF PEFT `r`
+    alpha: 256               # HF PEFT `lora_alpha`
+    dropout: 0.01            # HF PEFT `lora_dropout`
+    target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
+    # match_all_linear: false
+    # exclude_modules: []
+    # use_dora: false
+
+  # Automodel backend dispatch. ONLY valid for Automodel-native backbones (the
+  # MoE/Nemotron implementations); plain HuggingFace architectures such as
+  # Qwen3 are constructed by transformers and raise
+  # `TypeError: __init__() got an unexpected keyword argument 'backend'`.
+  # Defaults auto-select TransformerEngine/DeepEP when available.
+  # automodel_backend:
+  #   attn: sdpa                # "te" | "sdpa" | "flex"
+  #   linear: torch             # "torch" | "te"
+  #   rms_norm: torch_fp32      # "torch" | "torch_fp32" | "te"
+  # sdpa_method: ["flash_attention"]
+
+  # MoE knobs — only meaningful with an MoE ``pretrained_llm``; harmless no-ops
+  # for dense backbones such as Qwen3-1.7B.
+  aux_loss_coeff: 0.0
+  train_gate: false
+  moe_metrics:
+    enabled: false
+    mode: brief
+    detailed_every_steps: null
+    top_k_experts: 5
+
+  perception:
+    spec_augment:
+      _target_: nemo.collections.asr.modules.SpectrogramAugmentation
+      freq_masks: 2 # set to zero to disable it
+      # you may use lower time_masks for smaller models to have a faster convergence
+      time_masks: 10 # set to zero to disable it
+      freq_width: 27
+      time_width: 0.05
+
+    modality_adapter:
+      _target_: nemo.collections.speechlm2.modules.perception.IdentityConnector
+
+  optimizer:
+    _target_: torch.optim.AdamW
+    lr: 5e-4
+    betas: [0.9, 0.98]
+    weight_decay: 1e-3
+    foreach: true
+
+  lr_scheduler:
+    _target_: nemo.core.optim.lr_scheduler.CosineAnnealing
+    warmup_steps: 1000
+    min_lr: 1e-6
+    max_steps: ${trainer.max_steps}
+
+data:
+  # --- StreamingSTTDataset config ---
+  dataset:
+    sample_rate: ${model.sample_rate}
+    frame_length_in_secs: ${model.frame_length_in_secs}
+    # Inherits the multi chunk-size list from model.chunk_size; the dataset draws
+    # one value per batch and records it in StreamingSTTBatch.chunk_size so the
+    # model can match the encoder look-ahead.
+    chunk_size: ${model.chunk_size}
+    num_delay_frames: 0
+    audio_tag: "<audio>"
+    blank_token: ${model.blank_token}
+    system_role: system
+    system_prompt: "Transcribe the audio into text."
+
+  val_dataset_overrides:
+    chunk_size: 6
+
+  # --- Lhotse dataloader config ---
+  train_ds:
+    sample_rate: ${data.dataset.sample_rate}
+    input_cfg: null
+    manifest_filepath: null
+    seed: 42
+    shuffle: true
+    shard_seed: "randomized"
+    num_workers: 4
+    batch_size: 4
+
+  validation_ds:
+    datasets:
+      val_set_0:
+        input_cfg: null
+        manifest_filepath: null
+    sample_rate: ${data.dataset.sample_rate}
+    batch_size: 4
+    num_workers: 4
+    seed: 42
+    shard_seed: "randomized"
+
+trainer:
+  devices: -1
+  accelerator: gpu
+  num_nodes: 1
+  # bf16-true keeps params in bf16; the model derives its dtype from this value.
+  precision: bf16-true
+  logger: false
+  enable_checkpointing: false
+  use_distributed_sampler: false
+  max_steps: 100000
+  limit_train_batches: 5000
+  val_check_interval: ${trainer.limit_train_batches}
+  limit_val_batches: 10
+  log_every_n_steps: 10
+  num_sanity_val_steps: 1
+  gradient_clip_val: 1.0
+  accumulate_grad_batches: 1
+  strategy:
+    # AutomodelParallelStrategy delegates device mesh creation to nemo_automodel.
+    # The model's configure_model() receives the device_mesh and passes it to
+    # Automodel's from_pretrained for memory-efficient loading (each GPU only
+    # loads its own shard).
+    # This model supports FSDP2/HSDP (dp_size, dp_replicate_size) and EP.
+    # tp_size > 1 and cp_size > 1 are REJECTED at fit start: the interleaved
+    # audio/text sequence must stay on one rank, and the streaming loss is not
+    # DTensor-safe against a vocab-sharded lm_head.
+    _target_: nemo.collections.speechlm2.parts.parallel.AutomodelParallelStrategy
+    dp_size: null         # null = inferred from world_size / other dims
+    dp_replicate_size: 1  # HSDP replication group size (>1 enables hybrid sharding)
+    tp_size: 1            # must stay 1 (see above)
+    pp_size: 1            # must stay 1 (no pipeline schedule in this recipe)
+    cp_size: 1            # must stay 1 (see above)
+    ep_size: 1            # Expert parallel size (MoE backbones only)
+    activation_checkpointing_llm: false
+    activation_checkpointing_perception: false
+
+
+exp_manager:
+  exp_dir: null
+  explicit_log_dir: null
+  name: streaming_stt_automodel
+  create_tensorboard_logger: false
+  create_checkpoint_callback: true
+  use_datetime_version: true
+  max_time_per_run: "00:03:50:00"
+
+  resume_from_checkpoint: null
+  resume_if_exists: true
+  resume_ignore_no_checkpoint: true
+
+  create_wandb_logger: false
+  wandb_logger_kwargs:
+    name: ${exp_manager.name}
+    project: null
+    resume: true
+
+  checkpoint_callback_params:
+    filename: "{step}"
+    monitor: val_acc
+    mode: max
+    every_n_train_steps: null
+    every_n_epochs: 1
+    save_top_k: 1
+    always_save_nemo: false
+    save_nemo_on_train_end: false

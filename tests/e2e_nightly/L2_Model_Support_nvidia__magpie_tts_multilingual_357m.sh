@@ -14,4 +14,5 @@
 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     -m pytest \
     "tests/e2e_nightly/test_model_support_nvidia__magpie_tts_multilingual_357m.py" \
+    --with_downloads \
     -v

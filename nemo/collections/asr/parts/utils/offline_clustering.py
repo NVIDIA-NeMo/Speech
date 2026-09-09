@@ -627,6 +627,7 @@ def getEnhancedSpeakerCount(
     anchor_sample_n: int = 10,
     sigma: float = 50,
     cuda: bool = False,
+    max_num_speakers: int = 8,
 ) -> torch.Tensor:
     """
     Calculate the number of speakers using NME analysis with anchor embeddings. Add dummy speaker
@@ -638,6 +639,8 @@ def getEnhancedSpeakerCount(
             The input embedding from the embedding extractor.
         cuda (bool):
             Use cuda for the operations if cuda==True.
+        max_num_speakers (int):
+            Maximum number of speakers to estimate, excluding anchor speakers.
         random_test_count (int):
             Number of trials of the enhanced counting with randomness.
             The higher the count, the more accurate the enhanced counting is.
@@ -659,13 +662,14 @@ def getEnhancedSpeakerCount(
             number of speakers to factor out the dummy speaker embedding vectors.
     """
     est_num_of_spk_list: List[int] = []
+    max_num_speakers_aug = min(max_num_speakers, emb.shape[0]) + anchor_spk_n
     for seed in range(random_test_count):
         torch.manual_seed(seed)
         emb_aug = addAnchorEmb(emb, anchor_sample_n, anchor_spk_n, sigma)
         mat = getCosAffinityMatrix(emb_aug)
         nmesc = NMESC(
             mat,
-            max_num_speakers=emb.shape[0],
+            max_num_speakers=max_num_speakers_aug,
             max_rp_threshold=0.15,
             sparse_search=True,
             sparse_search_volume=10,
@@ -1371,7 +1375,9 @@ class SpeakerClustering(torch.nn.Module):
         if emb.shape[0] == 1:
             return torch.zeros((1,), dtype=torch.int64)
         elif emb.shape[0] <= max(enhanced_count_thres, self.min_samples_for_nmesc) and oracle_num_speakers < 0:
-            est_num_of_spk_enhanced = getEnhancedSpeakerCount(emb=emb, cuda=self.cuda)
+            est_num_of_spk_enhanced = getEnhancedSpeakerCount(
+                emb=emb, cuda=self.cuda, max_num_speakers=max_num_speakers
+            )
         else:
             est_num_of_spk_enhanced = torch.tensor(-1)
 

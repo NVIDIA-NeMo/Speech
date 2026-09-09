@@ -23,6 +23,15 @@ from nemo.collections.asr.modules.sortformer_modules import SortformerModules
 class TestSortformerModules_CheckStreamingParameters:
     @pytest.mark.unit
     @pytest.mark.parametrize(
+        "num_spks, error_match",
+        [(0, "Parameter 'num_spks' must be at least 1")],
+    )
+    def test_num_speakers_is_validated_during_initialization(self, num_spks, error_match):
+        with pytest.raises(ValueError, match=error_match):
+            SortformerModules(num_spks=num_spks)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
         "n_spk, spkcache_len, fifo_len, chunk_len, lc, rc, spkcache_update_period, spkcache_sil_frames_per_spk",
         [
             (4, 188, 376, 376, 1, 1, 376, 0),  # Example 1: All equal values
@@ -273,6 +282,117 @@ class TestSortformerModules_GeneralUtils:
         assert torch.allclose(full_masked_preds, spkcache_fifo_chunk_preds)
 
 
+class TestSortformerModules_HighResolution:
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "model_dim, input_shape, expected_identity",
+        [(4, (2, 5, 4), True)],
+    )
+    def test_upsampler_is_parameter_free_by_default(self, model_dim, input_shape, expected_identity):
+        sortformer_modules = SortformerModules(tf_d_model=model_dim)
+        hidden = torch.randn(input_shape)
+
+        result = sortformer_modules.upsample_hidden(hidden)
+
+        assert (result is hidden) is expected_identity
+        assert not any("subpixel_upsample" in key for key in sortformer_modules.state_dict())
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "model_dim, upsample_factor, input_shape, expected_output_shape",
+        [(4, 3, (2, 5, 4), (2, 15, 4))],
+    )
+    def test_upsampler_initializes_as_repeat_interleave(
+        self, model_dim, upsample_factor, input_shape, expected_output_shape
+    ):
+        sortformer_modules = SortformerModules(tf_d_model=model_dim, upsample_factor=upsample_factor)
+        hidden = torch.randn(input_shape, requires_grad=True)
+
+        result = sortformer_modules.upsample_hidden(hidden)
+
+        assert result.shape == expected_output_shape
+        assert torch.allclose(result, hidden.repeat_interleave(upsample_factor, dim=1))
+        assert "subpixel_upsample.weight" in sortformer_modules.state_dict()
+        result.sum().backward()
+        assert hidden.grad is not None
+        assert sortformer_modules.subpixel_upsample.weight.grad is not None
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "dtype, upsample_factor, input_shape, expected_output_shape, atol, rtol",
+        [(torch.bfloat16, 2, (2, 5, 4), (2, 10, 4), 1e-2, 1e-2)],
+    )
+    def test_upsampler_supports_bfloat16_autocast(
+        self, dtype, upsample_factor, input_shape, expected_output_shape, atol, rtol
+    ):
+        sortformer_modules = SortformerModules(tf_d_model=input_shape[-1], upsample_factor=upsample_factor)
+        hidden = torch.randn(input_shape)
+
+        with torch.autocast(device_type="cpu", dtype=dtype):
+            result = sortformer_modules.upsample_hidden(hidden)
+
+        assert result.dtype == dtype
+        assert result.shape == expected_output_shape
+        assert torch.allclose(result.float(), hidden.repeat_interleave(upsample_factor, dim=1), atol=atol, rtol=rtol)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "input_values, downsample_factor, logical_lengths, expected_values",
+        [(((1.0, 3.0, 5.0, 7.0, 9.0),), 2, None, ((2.0, 6.0, 9.0),))],
+    )
+    def test_downsample_preds_averages_full_and_partial_windows(
+        self, input_values, downsample_factor, logical_lengths, expected_values
+    ):
+        preds = torch.tensor(input_values).unsqueeze(-1)
+        lengths = None if logical_lengths is None else torch.tensor(logical_lengths)
+
+        result = SortformerModules.downsample_preds(
+            preds,
+            downsample_factor=downsample_factor,
+            lengths=lengths,
+        )
+
+        assert torch.equal(result, torch.tensor(expected_values).unsqueeze(-1))
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "input_rows, input_lengths, downsample_factor, expected_rows",
+        [
+            (
+                ((1.0, 3.0, 5.0, 7.0, 9.0), (1.0, 3.0, 5.0, 0.0, 0.0)),
+                (5, 3),
+                2,
+                ((2.0, 6.0, 9.0), (2.0, 5.0, 0.0)),
+            )
+        ],
+    )
+    def test_downsample_preds_excludes_per_sample_padding(
+        self, input_rows, input_lengths, downsample_factor, expected_rows
+    ):
+        preds = torch.tensor(input_rows).unsqueeze(-1)
+
+        result = SortformerModules.downsample_preds(
+            preds,
+            downsample_factor=downsample_factor,
+            lengths=torch.tensor(input_lengths),
+        )
+
+        assert torch.equal(result[0], torch.tensor(expected_rows[0]).unsqueeze(-1))
+        assert torch.equal(result[1], torch.tensor(expected_rows[1]).unsqueeze(-1))
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "input_shape, downsample_factor",
+        [((2, 5, 3), 1)],
+    )
+    def test_downsample_preds_factor_one_returns_input(self, input_shape, downsample_factor):
+        preds = torch.randn(input_shape)
+
+        result = SortformerModules.downsample_preds(preds, downsample_factor=downsample_factor)
+
+        assert result is preds
+
+
 class TestSortformerModules_StreamingUtils:
     @pytest.mark.unit
     @pytest.mark.parametrize(
@@ -360,6 +480,18 @@ class TestSortformerModules_StreamingUtils:
         assert total_processed >= feat_len - (chunk_len * subsampling_factor)  # Allow for some overlap/remainder
 
     @pytest.mark.unit
+    @pytest.mark.parametrize("param_name", ["chunk_len", "subsampling_factor"])
+    def test_streaming_feat_loader_revalidates_mutated_parameters(self, param_name):
+        sortformer_modules = SortformerModules(chunk_len=10, subsampling_factor=8)
+        setattr(sortformer_modules, param_name, 0)
+        feat_seq = torch.randn(1, 80, 20)
+        feat_seq_length = torch.tensor([20])
+        feat_seq_offset = torch.tensor([0])
+
+        with pytest.raises(ValueError, match=f"Parameter '{param_name}' must be at least 1"):
+            list(sortformer_modules.streaming_feat_loader(feat_seq, feat_seq_length, feat_seq_offset))
+
+    @pytest.mark.unit
     @pytest.mark.parametrize(
         "batch_size, emb_dim, n_frames, num_tensors",
         [
@@ -418,10 +550,72 @@ class TestSortformerModules_StreamingUtils:
 
     @pytest.mark.unit
     @pytest.mark.parametrize(
+        (
+            "embedding_dim, tensor_widths, row_lengths, output_length, expected_output_shape, "
+            "expected_total_lengths, invalid_output_length"
+        ),
+        [(4, (4, 2, 3), ((4, 0, 2), (1, 2, 0), (0, 1, 3)), 9, (3, 9, 4), (5, 3, 5), 8)],
+    )
+    def test_concat_and_pad_ragged_tensor_widths(
+        self,
+        embedding_dim,
+        tensor_widths,
+        row_lengths,
+        output_length,
+        expected_output_shape,
+        expected_total_lengths,
+        invalid_output_length,
+    ):
+        """Test packing inputs with different physical widths, including empty rows."""
+        batch_size = len(row_lengths[0])
+        embs = [
+            torch.arange(batch_size * width * embedding_dim).reshape(batch_size, width, embedding_dim)
+            + tensor_index * 100
+            for tensor_index, width in enumerate(tensor_widths)
+        ]
+        lengths = [torch.tensor(lengths_per_tensor) for lengths_per_tensor in row_lengths]
+
+        output, total_lengths = SortformerModules.concat_and_pad(embs, lengths)
+
+        assert output.is_contiguous()
+        torch.testing.assert_close(total_lengths, torch.tensor(expected_total_lengths))
+        for batch_idx in range(batch_size):
+            expected = torch.cat([emb[batch_idx, : length[batch_idx]] for emb, length in zip(embs, lengths)], dim=0)
+            torch.testing.assert_close(output[batch_idx, : total_lengths[batch_idx]], expected)
+            assert torch.count_nonzero(output[batch_idx, total_lengths[batch_idx] :]) == 0
+
+        fixed_output, fixed_lengths = SortformerModules.concat_and_pad(embs, lengths, output_length=output_length)
+        assert fixed_output.shape == expected_output_shape
+        torch.testing.assert_close(fixed_output[:, : output.shape[1]], output)
+        torch.testing.assert_close(fixed_lengths, total_lengths)
+        for batch_idx in range(batch_size):
+            assert torch.count_nonzero(fixed_output[batch_idx, fixed_lengths[batch_idx] :]) == 0
+
+        full_lengths = [torch.full((batch_size,), emb.shape[1], dtype=torch.long) for emb in embs]
+        full_output, full_total_lengths = SortformerModules.concat_and_pad(
+            embs, full_lengths, output_length=output_length
+        )
+        assert full_output.shape == fixed_output.shape
+        torch.testing.assert_close(full_total_lengths, torch.full((batch_size,), output_length, dtype=torch.long))
+        for batch_idx in range(batch_size):
+            torch.testing.assert_close(full_output[batch_idx], torch.cat([emb[batch_idx] for emb in embs]))
+
+        with pytest.raises(ValueError, match="output_length"):
+            SortformerModules.concat_and_pad(embs, lengths, output_length=invalid_output_length)
+
+        empty_output, empty_lengths = SortformerModules.concat_and_pad(
+            embs, [torch.zeros(batch_size, dtype=torch.long) for _ in embs]
+        )
+        assert empty_output.shape == (batch_size, 0, embedding_dim)
+        torch.testing.assert_close(empty_lengths, torch.zeros(batch_size, dtype=torch.long))
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
         "tensor_shapes, dim, return_lengths, device",
         [
             ([(2, 3, 4), (2, 5, 4)], 1, False, None),  # Example 1: Concatenate along dim 1, no lengths
             ([(1, 5), (1, 3)], 1, True, torch.device('cpu')),  # Example 2: With device specification
+            ([(2, 3, 4), (2, 3, 2)], 2, False, None),  # Example 3: Concatenate feature dimensions
         ],
     )
     def test_concat_embs(self, tensor_shapes, dim, return_lengths, device):
@@ -477,6 +671,29 @@ class TestSortformerModules_StreamingUtils:
                 assert lengths.device == device
             else:
                 assert lengths.device == list_of_tensors[0].device
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "tensor_shapes, dim",
+        [
+            ([(2, 3), (4, 3)], 0),
+            ([(2, 3, 4), (2, 3, 2)], 2),
+        ],
+    )
+    def test_concat_embs_rejects_lengths_for_non_temporal_dimensions(self, tensor_shapes, dim):
+        tensors = [torch.randn(*shape) for shape in tensor_shapes]
+
+        with pytest.raises(ValueError, match="temporal dimension"):
+            SortformerModules.concat_embs(tensors, return_lengths=True, dim=dim)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "call_args, error_type",
+        [((), TypeError)],
+    )
+    def test_concat_embs_requires_input_tensors(self, call_args, error_type):
+        with pytest.raises(error_type):
+            SortformerModules.concat_embs(*call_args)
 
     @pytest.mark.unit
     @pytest.mark.parametrize(
@@ -541,6 +758,12 @@ class TestSortformerModules_StreamingUtils:
             assert streaming_state.spkcache_lengths.dtype == torch.long
             assert torch.all(streaming_state.spkcache_lengths == 0)
 
+            # Check the per-row speaker-cache compression state
+            assert streaming_state.spkcache_compressed.shape == (batch_size,)
+            assert streaming_state.spkcache_compressed.device == expected_device
+            assert streaming_state.spkcache_compressed.dtype == torch.bool
+            assert not streaming_state.spkcache_compressed.any()
+
             # Check fifo tensor
             assert streaming_state.fifo is not None
             assert streaming_state.fifo.shape == (
@@ -576,6 +799,7 @@ class TestSortformerModules_StreamingUtils:
             # Check that other attributes are None (not initialized in sync mode)
             assert streaming_state.spkcache_preds is None
             assert streaming_state.spkcache_lengths is None
+            assert streaming_state.spkcache_compressed is False
             assert streaming_state.fifo_lengths is None
             assert streaming_state.fifo_preds is None
             assert streaming_state.spk_perm is None
@@ -1353,6 +1577,82 @@ class TestSortformerModules_StreamingScoreComputations:
             assert edge_spkcache.shape == (batch_size, spkcache_len, emb_dim)
             assert edge_spkcache_preds.shape == (batch_size, spkcache_len, n_spk)
 
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        (
+            "num_speakers, model_dim, spkcache_length, silence_frames_per_speaker, input_length, "
+            "learned_silence_values, expected_silence_slot_count"
+        ),
+        [(2, 4, 6, 1, 8, (4.0, 3.0, 2.0, 1.0), 2)],
+    )
+    def test_compress_spkcache_with_learnable_silence_embedding(
+        self,
+        num_speakers,
+        model_dim,
+        spkcache_length,
+        silence_frames_per_speaker,
+        input_length,
+        learned_silence_values,
+        expected_silence_slot_count,
+    ):
+        sortformer_modules = SortformerModules(
+            num_spks=num_speakers,
+            fc_d_model=model_dim,
+            spkcache_len=spkcache_length,
+            spkcache_sil_frames_per_spk=silence_frames_per_speaker,
+            use_learnable_sil_emb=True,
+        )
+        sortformer_modules.eval()
+        learned_silence = torch.tensor(learned_silence_values)
+        with torch.no_grad():
+            sortformer_modules.learnable_sil_emb.copy_(learned_silence)
+
+        emb_seq = torch.arange(input_length * model_dim, dtype=torch.float32).reshape(1, input_length, model_dim)
+        prediction_pattern = [[0.9, 0.1], [0.1, 0.9]]
+        preds = torch.tensor([prediction_pattern * (input_length // len(prediction_pattern))])
+        running_mean_silence = torch.full((1, model_dim), -1.0)
+
+        spkcache, spkcache_preds, _ = sortformer_modules._compress_spkcache(emb_seq, preds, running_mean_silence)
+        silence_slots = torch.all(spkcache_preds == 0, dim=2)
+
+        assert silence_slots.sum() == expected_silence_slot_count
+        assert torch.equal(spkcache[silence_slots], learned_silence.expand(expected_silence_slot_count, -1))
+        assert "learnable_sil_emb" in sortformer_modules.state_dict()
+
+        spkcache.sum().backward()
+        assert torch.equal(
+            sortformer_modules.learnable_sil_emb.grad,
+            torch.full((model_dim,), float(expected_silence_slot_count)),
+        )
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("async_streaming", [False, True])
+    def test_learnable_silence_embedding_skips_running_profile_update(self, async_streaming):
+        sortformer_modules = SortformerModules(
+            num_spks=2,
+            fc_d_model=4,
+            spkcache_len=6,
+            fifo_len=0,
+            chunk_len=3,
+            spkcache_update_period=3,
+            spkcache_sil_frames_per_spk=1,
+            use_learnable_sil_emb=True,
+        )
+        streaming_state = sortformer_modules.init_streaming_state(batch_size=1, async_streaming=async_streaming)
+        chunk = torch.ones(1, 3, 4)
+
+        if async_streaming:
+            preds = torch.zeros(1, sortformer_modules.spkcache_len + chunk.shape[1], 2)
+            streaming_state, _ = sortformer_modules.streaming_update_async(
+                streaming_state, chunk, torch.tensor([chunk.shape[1]]), preds
+            )
+        else:
+            preds = torch.zeros(1, chunk.shape[1], 2)
+            streaming_state, _ = sortformer_modules.streaming_update(streaming_state, chunk, preds)
+
+        assert torch.count_nonzero(streaming_state.mean_sil_emb) == 0
+        assert torch.count_nonzero(streaming_state.n_sil_frames) == 0
+
 
 class TestSortformerModules_StreamingUpdate:
     @pytest.mark.unit
@@ -1483,6 +1783,9 @@ class TestSortformerModules_StreamingUpdate:
         expected_fifo_embs = fifo_embs_before_split[:, pop_out_len:]
         expected_fifo_preds = fifo_preds_before_split[:, pop_out_len:]
         expected_spkcache_embs = torch.cat([streaming_state.spkcache, pop_out_embs], dim=1)
+        expected_spkcache_preds = torch.cat(
+            [preds[:, :cur_spkcache_len], fifo_preds_before_split[:, :pop_out_len]], dim=1
+        )
 
         # Call streaming_update
         streaming_state, chunk_preds = sortformer_modules.streaming_update(streaming_state, chunk, preds, lc, rc)
@@ -1500,7 +1803,8 @@ class TestSortformerModules_StreamingUpdate:
         # Check updated streaming state's spkcache
         assert streaming_state.spkcache.shape == (batch_size, cur_spkcache_len + pop_out_len, emb_dim)
         assert torch.allclose(streaming_state.spkcache, expected_spkcache_embs)
-        assert streaming_state.spkcache_preds is None
+        assert torch.allclose(streaming_state.spkcache_preds, expected_spkcache_preds)
+        assert not streaming_state.spkcache_compressed
 
     @pytest.mark.unit
     @pytest.mark.parametrize(
@@ -1584,6 +1888,7 @@ class TestSortformerModules_StreamingUpdate:
         # Check updated streaming state's spkcache
         assert streaming_state.spkcache.shape == (batch_size, spkcache_len, emb_dim)
         assert streaming_state.spkcache_preds.shape == (batch_size, spkcache_len, n_spk)
+        assert streaming_state.spkcache_compressed
 
     @pytest.mark.unit
     @pytest.mark.parametrize(
@@ -1839,19 +2144,22 @@ class TestSortformerModules_StreamingUpdateAsync:
             expected_fifo_embs = torch.zeros(max_fifo_len, emb_dim)
             expected_fifo_preds = torch.zeros(max_fifo_len, n_spk)
 
-            # Case 1: Fifo not full
-            if fifo_len + chunk_len <= max_fifo_len:
+            # Case 1: FIFO not full and stream is still active
+            if chunk_len > 0 and fifo_len + chunk_len <= max_fifo_len:
                 expected_fifo_len = fifo_len + chunk_len
                 expected_spkcache_len = spkcache_len
                 expected_spkcache_embs = initial_spkcache[b]
-                expected_spkcache_preds = initial_spkcache_preds[b]
+                expected_spkcache_preds[:spkcache_len] = initial_spkcache_preds[b, :spkcache_len]
                 expected_fifo_embs[: fifo_len + chunk_len] = updated_fifo_embs[: fifo_len + chunk_len]
                 expected_fifo_preds[: fifo_len + chunk_len] = updated_fifo_preds[: fifo_len + chunk_len]
 
             else:
-                pop_out_len = spkcache_update_period
-                pop_out_len = max(pop_out_len, max_chunk_len - max_fifo_len + fifo_len)
-                pop_out_len = min(pop_out_len, fifo_len + chunk_len)
+                if chunk_len == 0:
+                    pop_out_len = fifo_len
+                else:
+                    pop_out_len = spkcache_update_period
+                    pop_out_len = max(pop_out_len, chunk_len - max_fifo_len + fifo_len)
+                    pop_out_len = min(pop_out_len, fifo_len + chunk_len)
 
                 expected_fifo_len = fifo_len + chunk_len - pop_out_len
                 expected_fifo_embs[:expected_fifo_len] = updated_fifo_embs[
@@ -1868,7 +2176,8 @@ class TestSortformerModules_StreamingUpdateAsync:
                     expected_spkcache_len = spkcache_len + pop_out_len
                     expected_spkcache_embs[:spkcache_len] = initial_spkcache[b, :spkcache_len]
                     expected_spkcache_embs[spkcache_len : spkcache_len + pop_out_len] = pop_out_embs
-                    expected_spkcache_preds[:spkcache_len] = initial_spkcache_preds[b, :spkcache_len]
+                    if spkcache_len > 0:
+                        expected_spkcache_preds[:spkcache_len] = initial_spkcache_preds[b, :spkcache_len]
                     expected_spkcache_preds[spkcache_len : spkcache_len + pop_out_len] = pop_out_preds
 
                 # Case 3: spkcache is full (do compression)
@@ -1895,3 +2204,400 @@ class TestSortformerModules_StreamingUpdateAsync:
                 streaming_state.spkcache_preds[b, :max_spkcache_len],
                 expected_spkcache_preds,
             )
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        (
+            "num_speakers, model_dim, spkcache_length, fifo_length, chunk_length, update_period, "
+            "chunk_lengths, expected_spkcache_lengths, initial_prediction_value, "
+            "first_pop_prediction_value, second_chunk_prediction_value, current_cache_prediction_value, "
+            "current_fifo_prediction_value, current_chunk_prediction_value"
+        ),
+        [(2, 4, 4, 4, 4, 4, (4,), (4,), 0.2, 0.1, 0.3, 0.9, 0.4, 0.6)],
+    )
+    def test_async_first_compression_reseeds_cached_predictions(
+        self,
+        num_speakers,
+        model_dim,
+        spkcache_length,
+        fifo_length,
+        chunk_length,
+        update_period,
+        chunk_lengths,
+        expected_spkcache_lengths,
+        initial_prediction_value,
+        first_pop_prediction_value,
+        second_chunk_prediction_value,
+        current_cache_prediction_value,
+        current_fifo_prediction_value,
+        current_chunk_prediction_value,
+    ):
+        sortformer_modules = SortformerModules(
+            num_spks=num_speakers,
+            fc_d_model=model_dim,
+            spkcache_len=spkcache_length,
+            fifo_len=fifo_length,
+            chunk_len=chunk_length,
+            spkcache_update_period=update_period,
+            spkcache_sil_frames_per_spk=0,
+            use_learnable_sil_emb=True,
+        )
+        batch_size = len(chunk_lengths)
+        streaming_state = sortformer_modules.init_streaming_state(batch_size=batch_size, async_streaming=True)
+        chunk = torch.ones(batch_size, chunk_length, model_dim)
+        chunk_lengths = torch.tensor(chunk_lengths)
+
+        streaming_state, _ = sortformer_modules.streaming_update_async(
+            streaming_state,
+            chunk,
+            chunk_lengths,
+            torch.full((batch_size, chunk_length, num_speakers), initial_prediction_value),
+        )
+        first_pop_preds = torch.full((batch_size, chunk_length, num_speakers), first_pop_prediction_value)
+        streaming_state, _ = sortformer_modules.streaming_update_async(
+            streaming_state,
+            chunk * 2,
+            chunk_lengths,
+            torch.cat(
+                [
+                    first_pop_preds,
+                    torch.full((batch_size, chunk_length, num_speakers), second_chunk_prediction_value),
+                ],
+                dim=1,
+            ),
+        )
+
+        assert streaming_state.spkcache_lengths.tolist() == list(expected_spkcache_lengths)
+        assert not streaming_state.spkcache_compressed.any()
+        torch.testing.assert_close(streaming_state.spkcache_preds[0, :spkcache_length], first_pop_preds[0])
+
+        captured = {}
+
+        def capture_compression(*, emb_seq, preds, mean_sil_emb, permute_spk):
+            captured["preds"] = preds.clone()
+            return emb_seq[:, :spkcache_length], preds[:, :spkcache_length], None
+
+        sortformer_modules._compress_spkcache = capture_compression
+        current_cache_preds = torch.full((batch_size, spkcache_length, num_speakers), current_cache_prediction_value)
+        current_fifo_preds = torch.full((batch_size, fifo_length, num_speakers), current_fifo_prediction_value)
+        current_chunk_preds = torch.full((batch_size, chunk_length, num_speakers), current_chunk_prediction_value)
+        sortformer_modules.streaming_update_async(
+            streaming_state,
+            chunk * 3,
+            chunk_lengths,
+            torch.cat([current_cache_preds, current_fifo_preds, current_chunk_preds], dim=1),
+        )
+
+        torch.testing.assert_close(captured["preds"][:, :spkcache_length], current_cache_preds)
+        torch.testing.assert_close(
+            captured["preds"][:, spkcache_length : spkcache_length + fifo_length],
+            current_fifo_preds,
+        )
+        assert not torch.equal(captured["preds"][:, :spkcache_length], first_pop_preds)
+        assert streaming_state.spkcache_compressed.all()
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "initial_fifo_lengths, chunk_lengths, expected_fifo_lengths, expected_spkcache_lengths",
+        [((5, 9), (6, 2), (9, 9), (2, 2))],
+    )
+    def test_ragged_batch_uses_per_item_chunk_length_for_fifo_pop(
+        self,
+        initial_fifo_lengths,
+        chunk_lengths,
+        expected_fifo_lengths,
+        expected_spkcache_lengths,
+    ):
+        sortformer_modules = SortformerModules(
+            num_spks=2,
+            fc_d_model=4,
+            spkcache_len=16,
+            fifo_len=10,
+            chunk_len=6,
+            spkcache_update_period=2,
+            use_learnable_sil_emb=True,
+        )
+        batch_size = len(initial_fifo_lengths)
+        streaming_state = sortformer_modules.init_streaming_state(batch_size=batch_size, async_streaming=True)
+        streaming_state.fifo_lengths = torch.tensor(initial_fifo_lengths)
+        streaming_state.fifo.copy_(torch.arange(80, dtype=torch.float32).reshape(2, 10, 4))
+
+        chunk = torch.arange(48, dtype=torch.float32).reshape(2, 6, 4) + 100
+        chunk_lengths = torch.tensor(chunk_lengths)
+        preds_length = max(
+            initial_fifo_length + chunk_length
+            for initial_fifo_length, chunk_length in zip(initial_fifo_lengths, chunk_lengths)
+        )
+        preds = torch.rand(batch_size, preds_length, 2)
+        expected_combined = [
+            torch.cat(
+                [
+                    streaming_state.fifo[batch_index, :initial_fifo_length].clone(),
+                    chunk[batch_index, :chunk_length],
+                ]
+            )
+            for batch_index, (initial_fifo_length, chunk_length) in enumerate(zip(initial_fifo_lengths, chunk_lengths))
+        ]
+
+        streaming_state, _ = sortformer_modules.streaming_update_async(streaming_state, chunk, chunk_lengths, preds)
+
+        assert streaming_state.fifo_lengths.tolist() == list(expected_fifo_lengths)
+        assert streaming_state.spkcache_lengths.tolist() == list(expected_spkcache_lengths)
+        for batch_index, (expected_fifo_length, expected_spkcache_length) in enumerate(
+            zip(expected_fifo_lengths, expected_spkcache_lengths)
+        ):
+            torch.testing.assert_close(
+                streaming_state.spkcache[batch_index, :expected_spkcache_length],
+                expected_combined[batch_index][:expected_spkcache_length],
+            )
+            torch.testing.assert_close(
+                streaming_state.fifo[batch_index, :expected_fifo_length],
+                expected_combined[batch_index][
+                    expected_spkcache_length : expected_spkcache_length + expected_fifo_length
+                ],
+            )
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        (
+            "initial_spkcache_lengths, initial_fifo_lengths, chunk_lengths, expected_fifo_lengths, "
+            "expected_spkcache_lengths, expected_compression_state"
+        ),
+        [((3, 1), (3, 2), (0, 2), (0, 4), (4, 1), (True, False))],
+    )
+    def test_async_zero_length_chunk_flushes_fifo_and_compresses_cache(
+        self,
+        initial_spkcache_lengths,
+        initial_fifo_lengths,
+        chunk_lengths,
+        expected_fifo_lengths,
+        expected_spkcache_lengths,
+        expected_compression_state,
+    ):
+        sortformer_modules = SortformerModules(
+            num_spks=2,
+            fc_d_model=2,
+            spkcache_len=4,
+            fifo_len=6,
+            chunk_len=2,
+            spkcache_update_period=4,
+            spkcache_sil_frames_per_spk=0,
+            use_learnable_sil_emb=True,
+        )
+        streaming_state = sortformer_modules.init_streaming_state(batch_size=2, async_streaming=True)
+        streaming_state.spkcache_lengths[:] = torch.tensor(initial_spkcache_lengths)
+        streaming_state.fifo_lengths[:] = torch.tensor(initial_fifo_lengths)
+        streaming_state.spkcache.copy_(torch.arange(16, dtype=torch.float32).reshape(2, 4, 2))
+        streaming_state.fifo.copy_(torch.arange(24, dtype=torch.float32).reshape(2, 6, 2) + 100)
+        chunk = torch.arange(8, dtype=torch.float32).reshape(2, 2, 2) + 200
+        preds = torch.rand(2, 6, 2)
+        expected_flush_candidates = torch.cat(
+            [
+                streaming_state.spkcache[0, : initial_spkcache_lengths[0]],
+                streaming_state.fifo[0, : initial_fifo_lengths[0]],
+            ]
+        )
+        captured = {}
+
+        def capture_compression(*, emb_seq, preds, mean_sil_emb, permute_spk):
+            captured["emb_seq"] = emb_seq.clone()
+            return emb_seq[:, :4], preds[:, :4], None
+
+        sortformer_modules._compress_spkcache = capture_compression
+        streaming_state, _ = sortformer_modules.streaming_update_async(
+            streaming_state,
+            chunk,
+            torch.tensor(chunk_lengths),
+            preds,
+        )
+
+        assert streaming_state.fifo_lengths.tolist() == list(expected_fifo_lengths)
+        assert streaming_state.spkcache_lengths.tolist() == list(expected_spkcache_lengths)
+        assert streaming_state.spkcache_compressed.tolist() == list(expected_compression_state)
+        torch.testing.assert_close(captured["emb_seq"][0, :6], expected_flush_candidates)
+        assert torch.count_nonzero(streaming_state.fifo[0]) == 0
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        (
+            "random_seed, batch_size, spkcache_length, fifo_length, chunk_length, update_period, "
+            "initial_fifo_length, expected_min_pop, expected_max_pop"
+        ),
+        [(7, 32, 64, 10, 6, 8, 9, 5, 8)],
+    )
+    def test_async_desync_updates_randomizes_initial_fifo_pop(
+        self,
+        random_seed,
+        batch_size,
+        spkcache_length,
+        fifo_length,
+        chunk_length,
+        update_period,
+        initial_fifo_length,
+        expected_min_pop,
+        expected_max_pop,
+    ):
+        sortformer_modules = SortformerModules(
+            num_spks=2,
+            fc_d_model=2,
+            spkcache_len=spkcache_length,
+            fifo_len=fifo_length,
+            chunk_len=chunk_length,
+            spkcache_update_period=update_period,
+            use_learnable_sil_emb=True,
+            async_desync_updates=True,
+        )
+        streaming_state = sortformer_modules.init_streaming_state(batch_size=batch_size, async_streaming=True)
+        streaming_state.fifo_lengths.fill_(initial_fifo_length)
+        chunk = torch.randn(batch_size, chunk_length, 2)
+        preds = torch.rand(batch_size, initial_fifo_length + chunk_length, 2)
+
+        with torch.random.fork_rng(devices=[]):
+            torch.manual_seed(random_seed)
+            streaming_state, _ = sortformer_modules.streaming_update_async(
+                streaming_state, chunk, torch.full((batch_size,), chunk_length), preds
+            )
+
+        pop_out_lengths = streaming_state.spkcache_lengths
+        assert pop_out_lengths.min() >= expected_min_pop
+        assert pop_out_lengths.max() <= expected_max_pop
+        assert torch.unique(pop_out_lengths).numel() > 1
+        torch.testing.assert_close(streaming_state.fifo_lengths, initial_fifo_length + chunk_length - pop_out_lengths)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "fifo_capacity, chunk_values, chunk_lengths, expected_silence_counts, expected_silence_means",
+        [
+            (
+                0,
+                (((1.0, 3.0), (5.0, 7.0)), ((2.0, 4.0), (100.0, 200.0))),
+                (2, 1),
+                (2, 1),
+                ((3.0, 5.0), (2.0, 4.0)),
+            )
+        ],
+    )
+    def test_async_zero_capacity_fifo_masks_ragged_silence_updates(
+        self,
+        fifo_capacity,
+        chunk_values,
+        chunk_lengths,
+        expected_silence_counts,
+        expected_silence_means,
+    ):
+        sortformer_modules = SortformerModules(
+            num_spks=2,
+            fc_d_model=2,
+            spkcache_len=8,
+            fifo_len=fifo_capacity,
+            chunk_len=2,
+            spkcache_update_period=2,
+            spkcache_sil_frames_per_spk=0,
+            use_learnable_sil_emb=False,
+        )
+        streaming_state = sortformer_modules.init_streaming_state(batch_size=2, async_streaming=True)
+        chunk = torch.tensor(chunk_values)
+        chunk_lengths_tensor = torch.tensor(chunk_lengths)
+        preds = torch.zeros(2, 2, 2)
+
+        streaming_state, _ = sortformer_modules.streaming_update_async(
+            streaming_state, chunk, chunk_lengths_tensor, preds
+        )
+
+        assert streaming_state.fifo.shape == (2, fifo_capacity, 2)
+        assert streaming_state.fifo_lengths.tolist() == [fifo_capacity, fifo_capacity]
+        assert streaming_state.spkcache_lengths.tolist() == list(chunk_lengths)
+        torch.testing.assert_close(streaming_state.spkcache[0, :2], chunk[0])
+        torch.testing.assert_close(streaming_state.spkcache[1, :1], chunk[1, :1])
+        assert streaming_state.n_sil_frames.tolist() == list(expected_silence_counts)
+        torch.testing.assert_close(streaming_state.mean_sil_emb, torch.tensor(expected_silence_means))
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        (
+            "spkcache_capacity, fifo_capacity, chunk_capacity, update_period, short_fifo_length, "
+            "long_fifo_length, short_chunk_length, long_chunk_length"
+        ),
+        [(16, 10, 6, 2, 9, 5, 2, 6)],
+    )
+    def test_short_stream_state_is_invariant_to_longer_batch_companion(
+        self,
+        spkcache_capacity,
+        fifo_capacity,
+        chunk_capacity,
+        update_period,
+        short_fifo_length,
+        long_fifo_length,
+        short_chunk_length,
+        long_chunk_length,
+    ):
+        sortformer_modules = SortformerModules(
+            num_spks=2,
+            fc_d_model=4,
+            spkcache_len=spkcache_capacity,
+            fifo_len=fifo_capacity,
+            chunk_len=chunk_capacity,
+            spkcache_update_period=update_period,
+            use_learnable_sil_emb=True,
+        )
+        short_spkcache = torch.tensor([[1.0, 2.0, 3.0, 4.0]])
+        short_spkcache_preds = torch.tensor([[0.2, 0.8]])
+        short_fifo = torch.arange(short_fifo_length * 4, dtype=torch.float32).reshape(short_fifo_length, 4) + 10
+        short_chunk = torch.arange(short_chunk_length * 4, dtype=torch.float32).reshape(short_chunk_length, 4) + 100
+        prediction_length = 1 + short_fifo_length + short_chunk_length
+        short_preds = torch.arange(prediction_length * 2, dtype=torch.float32).reshape(1, prediction_length, 2) / (
+            prediction_length * 2
+        )
+
+        single_state = sortformer_modules.init_streaming_state(batch_size=1, async_streaming=True)
+        single_state.spkcache_lengths[0] = 1
+        single_state.spkcache[0, :1] = short_spkcache
+        single_state.spkcache_preds[0, :1] = short_spkcache_preds
+        single_state.fifo_lengths[0] = short_fifo_length
+        single_state.fifo[0, :short_fifo_length] = short_fifo
+
+        batched_state = sortformer_modules.init_streaming_state(batch_size=2, async_streaming=True)
+        batched_state.spkcache_lengths[:] = 1
+        batched_state.spkcache[1, :1] = short_spkcache
+        batched_state.spkcache_preds[1, :1] = short_spkcache_preds
+        batched_state.fifo_lengths[:] = torch.tensor([long_fifo_length, short_fifo_length])
+        batched_state.fifo[0, :long_fifo_length] = (
+            torch.arange(long_fifo_length * 4, dtype=torch.float32).reshape(long_fifo_length, 4) + 200
+        )
+        batched_state.fifo[1, :short_fifo_length] = short_fifo
+
+        batched_chunk = torch.zeros(2, chunk_capacity, 4)
+        batched_chunk[0, :long_chunk_length] = (
+            torch.arange(long_chunk_length * 4, dtype=torch.float32).reshape(long_chunk_length, 4) + 300
+        )
+        batched_chunk[1, :short_chunk_length] = short_chunk
+        batched_preds = torch.rand(2, prediction_length, 2)
+        batched_preds[1] = short_preds[0]
+
+        single_state, single_chunk_preds = sortformer_modules.streaming_update_async(
+            single_state,
+            short_chunk.unsqueeze(0),
+            torch.tensor([short_chunk_length]),
+            short_preds,
+        )
+        batched_state, batched_chunk_preds = sortformer_modules.streaming_update_async(
+            batched_state,
+            batched_chunk,
+            torch.tensor([long_chunk_length, short_chunk_length]),
+            batched_preds,
+        )
+
+        assert single_state.fifo_lengths[0] == batched_state.fifo_lengths[1]
+        assert single_state.spkcache_lengths[0] == batched_state.spkcache_lengths[1]
+        fifo_len = single_state.fifo_lengths[0]
+        spkcache_len = single_state.spkcache_lengths[0]
+        torch.testing.assert_close(single_state.fifo[0, :fifo_len], batched_state.fifo[1, :fifo_len])
+        torch.testing.assert_close(single_state.fifo_preds[0, :fifo_len], batched_state.fifo_preds[1, :fifo_len])
+        torch.testing.assert_close(single_state.spkcache[0, :spkcache_len], batched_state.spkcache[1, :spkcache_len])
+        torch.testing.assert_close(
+            single_state.spkcache_preds[0, :spkcache_len], batched_state.spkcache_preds[1, :spkcache_len]
+        )
+        torch.testing.assert_close(
+            single_chunk_preds[0, :short_chunk_length],
+            batched_chunk_preds[1, :short_chunk_length],
+        )

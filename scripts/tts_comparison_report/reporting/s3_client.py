@@ -17,6 +17,8 @@ from typing import BinaryIO, Optional
 import boto3
 from botocore.config import Config
 
+from scripts.tts_comparison_report.reporting.constants import S3_SIGNATURE_VERSION
+
 
 @dataclass
 class S3Config:
@@ -26,6 +28,7 @@ class S3Config:
     endpoint_url: str
     region_name: str
     connect_timeout: int = 10
+    signature_version: str = S3_SIGNATURE_VERSION
 
 
 class S3Client:
@@ -38,13 +41,17 @@ class S3Client:
         aws_secret_access_key: str,
     ) -> None:
         self.cfg = cfg
+        config = Config(
+            connect_timeout=cfg.connect_timeout,
+            signature_version=cfg.signature_version,
+        )
         self.client = boto3.client(
             "s3",
             endpoint_url=cfg.endpoint_url,
             aws_access_key_id=aws_access_key_id,
             aws_secret_access_key=aws_secret_access_key,
             region_name=cfg.region_name,
-            config=Config(connect_timeout=cfg.connect_timeout),
+            config=config,
         )
 
     def upload_fileobj(

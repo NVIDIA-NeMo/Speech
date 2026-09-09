@@ -3,7 +3,7 @@
 Choosing a Model
 ================
 
-NeMo offers many pretrained speech models. This guide helps you pick the right one for your use case.
+NeMo Speech offers many pretrained speech models. This guide helps you pick the right one for your use case.
 
 ASR: Which Model Should I Use?
 ------------------------------
@@ -101,11 +101,10 @@ Speech Language Models: Which Model Should I Use?
 Where to Find Models
 --------------------
 
-All pretrained NeMo models are available on:
+All pretrained NeMo Speech models are available on:
 
 - `HuggingFace Hub (nvidia) <https://huggingface.co/nvidia>`_ — search for "nemo" or specific model names
 - `NGC Model Catalog <https://catalog.ngc.nvidia.com/models?query=nemo&orderBy=weightPopularDESC>`_ — NVIDIA's model registry
 - :doc:`Featured Community Checkpoints </asr/featured_community_checkpoints>` — fine-tunes from external users
 
 See :doc:`../checkpoints/intro` for instructions on loading pretrained models.
-

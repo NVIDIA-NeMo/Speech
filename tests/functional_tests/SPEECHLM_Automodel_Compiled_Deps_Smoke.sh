@@ -16,8 +16,10 @@ set -e
 
 SMOKE_TEST=tests/functional_tests/speechlm_automodel_compiled_deps_smoke.py
 export SMOKE_TEST
+# Override this for runners with more than two NVLink-connected GPUs.
+NPROC_PER_NODE="${SPEECHLM_AUTOMODEL_SMOKE_NPROC_PER_NODE:-2}"
 
-timeout 300s torchrun --nproc-per-node 2 --no-python python -c \
+timeout 300s torchrun --nproc-per-node "${NPROC_PER_NODE}" --no-python python -c \
   '
 import os
 import pytest

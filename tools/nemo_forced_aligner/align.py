@@ -50,7 +50,7 @@ except ImportError:
         "Install NeMo with NFA utilities support:\n"
         "  pip install 'nemo-toolkit[all]>=2.5.0'\n"
         "Or install the latest development version:\n"
-        "  pip install git+https://github.com/NVIDIA-NeMo/NeMo.git"
+        "  pip install git+https://github.com/NVIDIA-NeMo/Speech.git"
     )
 """
 Align the utterances in manifest_filepath. 

@@ -114,7 +114,7 @@ def test_normalizes_automodel_dflash2_architecture(architecture):
     """Normalization does not need vLLM installed or model weights loaded."""
     config = SimpleNamespace(architectures=[architecture])
 
-    result = _salm_module._normalize_dflash2_architecture(config)
+    result = _salm_module._normalize_dflash2_architecture(config, supported_archs={"DFlash2DraftModel"})
 
     assert result is config
     assert config.architectures == ["DFlash2DraftModel"]
@@ -128,9 +128,51 @@ def test_normalizes_automodel_dflash2_architecture(architecture):
 def test_dflash2_normalization_preserves_unrelated_architectures(architectures):
     config = SimpleNamespace(architectures=architectures)
 
-    _salm_module._normalize_dflash2_architecture(config)
+    _salm_module._normalize_dflash2_architecture(config, supported_archs={"DFlash2DraftModel"})
 
     assert config.architectures == architectures
+
+
+@pytest.mark.skipif(not _HAS_CONFIG, reason="SpeechLM vLLM plugin not available")
+@pytest.mark.parametrize(
+    "supported_archs",
+    (
+        set(),
+        {"Qwen3DFlash2DraftModel"},
+        {"Qwen3DFlash2DraftModel", "DFlash2DraftModel"},
+    ),
+)
+def test_dflash2_normalization_requires_canonical_only_runtime(supported_archs):
+    config = SimpleNamespace(architectures=["Qwen3DFlash2DraftModel"])
+
+    _salm_module._normalize_dflash2_architecture(config, supported_archs=supported_archs)
+
+    assert config.architectures == ["Qwen3DFlash2DraftModel"]
+
+
+@pytest.mark.skipif(not _HAS_CONFIG, reason="SpeechLM vLLM plugin not available")
+def test_dflash_alias_registration_supports_class_backed_registry():
+    class NativeModel:
+        pass
+
+    class FakeRegistry:
+        models = {"DFlashDraftModel": SimpleNamespace(model_cls=NativeModel)}
+
+        @classmethod
+        def get_supported_archs(cls):
+            return list(cls.models)
+
+        @classmethod
+        def register_model(cls, architecture, model_ref):
+            cls.models[architecture] = model_ref
+
+    _salm_module._register_model_aliases(
+        FakeRegistry,
+        "DFlashDraftModel",
+        ("AutomodelDraft",),
+    )
+
+    assert FakeRegistry.models["AutomodelDraft"] is NativeModel
 
 
 @pytest.mark.skipif(not _HAS_CONFIG, reason="NeMoSpeechLMConfig not available")
@@ -1334,11 +1376,29 @@ class TestPluginRegistration:
 class TestDFlashPlugin:
     """Tests for the target-model contract required by DFlash and DFlash2."""
 
+    @pytest.fixture(autouse=True)
+    def restore_plugin_state(self):
+        from vllm.config.speculative import SpeculativeConfig
+        from vllm.model_executor.models.registry import ModelRegistry
+
+        from nemo.collections.speechlm2.vllm import salm as salm_module
+
+        original_models = dict(ModelRegistry.models)
+        original_override = SpeculativeConfig.hf_config_override
+        original_nemo_override = salm_module._ORIGINAL_VLLM_HF_CONFIG_OVERRIDE
+        yield
+        ModelRegistry.models.clear()
+        ModelRegistry.models.update(original_models)
+        SpeculativeConfig.hf_config_override = staticmethod(original_override)
+        salm_module._ORIGINAL_VLLM_HF_CONFIG_OVERRIDE = original_nemo_override
+
     def test_registers_automodel_dflash_architecture_alias(self, monkeypatch):
         """An untouched Automodel draft config should resolve to vLLM's native DFlash model."""
         from transformers import AutoConfig
         from vllm.model_executor.models.registry import ModelRegistry
         from vllm.transformers_utils.configs.eagle import EAGLEConfig
+
+        from nemo.collections.speechlm2.vllm.salm import register
 
         if "DFlashDraftModel" not in ModelRegistry.get_supported_archs():
             pytest.skip("installed vLLM does not provide native DFlash support")
@@ -1370,8 +1430,11 @@ class TestDFlashPlugin:
     def test_routes_automodel_dflash2_to_candidate_selector_runtime(self, monkeypatch, automodel_arch):
         """Automodel exports must retain DFlash2 semantics after vLLM config wrapping."""
         from transformers import AutoConfig
+        from vllm.config.speculative import SpeculativeConfig
         from vllm.model_executor.models.registry import ModelRegistry
         from vllm.transformers_utils.configs.eagle import EAGLEConfig
+
+        from nemo.collections.speechlm2.vllm.salm import register
 
         if "DFlash2DraftModel" not in ModelRegistry.get_supported_archs():
             pytest.skip("installed vLLM does not provide the DFlash2 candidate-selector runtime")
@@ -1391,19 +1454,32 @@ class TestDFlashPlugin:
 
         assert normalized_config.architectures == ["DFlash2DraftModel"]
         assert runtime_config.architectures == ["DFlash2DraftModel"]
-        for alias in (automodel_arch, *runtime_config.architectures):
-            alias_model = ModelRegistry.models[alias]
-            assert (alias_model.module_name, alias_model.class_name) == (
-                native_model.module_name,
-                native_model.class_name,
-            )
+        runtime_model = ModelRegistry.models[runtime_config.architectures[0]]
+        assert (runtime_model.module_name, runtime_model.class_name) == (
+            native_model.module_name,
+            native_model.class_name,
+        )
 
     def test_model_advertises_eagle3_support(self):
-        from vllm.model_executor.models.interfaces import supports_eagle3
+        from vllm.model_executor.models.interfaces import SupportsEagle3, supports_eagle3
 
         from nemo.collections.speechlm2.vllm.salm.model import NeMoSpeechLMForConditionalGeneration
 
         assert supports_eagle3(NeMoSpeechLMForConditionalGeneration)
+        for method_name in ("set_aux_hidden_state_layers", "get_eagle3_default_aux_hidden_state_layers"):
+            assert method_name in SupportsEagle3.__dict__
+            assert method_name in NeMoSpeechLMForConditionalGeneration.__dict__
+
+    @pytest.mark.parametrize("architecture", ("Qwen3ForCausalLM", "NemotronHForCausalLM"))
+    def test_supported_backbone_implements_installed_eagle3_protocol(self, architecture):
+        from vllm.model_executor.models.interfaces import supports_eagle3
+        from vllm.model_executor.models.registry import ModelRegistry
+
+        if architecture not in ModelRegistry.get_supported_archs():
+            pytest.skip(f"installed vLLM does not provide {architecture}")
+
+        model_cls = ModelRegistry.models[architecture].load_model_cls()
+        assert supports_eagle3(model_cls)
 
     def test_get_language_model_exposes_wrapped_decoder(self):
         from nemo.collections.speechlm2.vllm.salm.model import NeMoSpeechLMForConditionalGeneration
@@ -1420,7 +1496,12 @@ class TestDFlashPlugin:
         from nemo.collections.speechlm2.vllm.salm.model import NeMoSpeechLMForConditionalGeneration
 
         layers = (2, 6, 20, 30, 42, 52)
-        language_model = Mock()
+        language_model = Mock(
+            spec=[
+                "set_aux_hidden_state_layers",
+                "get_eagle3_default_aux_hidden_state_layers",
+            ]
+        )
         language_model.get_eagle3_default_aux_hidden_state_layers.return_value = layers
 
         model = object.__new__(NeMoSpeechLMForConditionalGeneration)
@@ -1430,6 +1511,19 @@ class TestDFlashPlugin:
 
         language_model.set_aux_hidden_state_layers.assert_called_once_with(layers)
         assert model.get_eagle3_default_aux_hidden_state_layers() == layers
+
+    def test_aux_hidden_state_methods_reject_unsupported_decoder(self):
+        from nemo.collections.speechlm2.vllm.salm.model import NeMoSpeechLMForConditionalGeneration
+
+        model = object.__new__(NeMoSpeechLMForConditionalGeneration)
+        object.__setattr__(model, "language_model", object())
+        config = SimpleNamespace(text_config=SimpleNamespace(architectures=["UnsupportedForCausalLM"]))
+        object.__setattr__(model, "config", config)
+
+        with pytest.raises(NotImplementedError, match="UnsupportedForCausalLM.*set_aux_hidden_state_layers"):
+            model.set_aux_hidden_state_layers((1,))
+        with pytest.raises(NotImplementedError, match="UnsupportedForCausalLM.*get_eagle3_default"):
+            model.get_eagle3_default_aux_hidden_state_layers()
 
     def test_forward_preserves_auxiliary_hidden_state_output(self):
         from unittest.mock import Mock

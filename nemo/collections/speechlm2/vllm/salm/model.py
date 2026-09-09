@@ -33,7 +33,7 @@ Requires NeMo toolkit for the audio encoder:
     pip install 'nemo-toolkit[asr]'
 """
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 import torch
@@ -162,13 +162,29 @@ class NeMoSpeechLMForConditionalGeneration(
         """
         return self.language_model
 
+    def _require_eagle3_method(self, method_name: str) -> Callable:
+        method = getattr(self.language_model, method_name, None)
+        if callable(method):
+            return method
+
+        text_config = getattr(self.config, "text_config", None)
+        architectures = getattr(text_config, "architectures", None)
+        if isinstance(architectures, (list, tuple)) and architectures:
+            backbone = ", ".join(str(architecture) for architecture in architectures)
+        else:
+            backbone = type(self.language_model).__name__
+        raise NotImplementedError(
+            f"SpeechLM backbone {backbone!r} does not support DFlash/Eagle3 "
+            f"hidden-state export: missing {method_name}()."
+        )
+
     def set_aux_hidden_state_layers(self, layers: tuple[int, ...]) -> None:
         """Select target layers whose hidden states are consumed by DFlash drafters."""
-        self.language_model.set_aux_hidden_state_layers(layers)
+        self._require_eagle3_method("set_aux_hidden_state_layers")(layers)
 
     def get_eagle3_default_aux_hidden_state_layers(self) -> tuple[int, ...]:
         """Delegate vLLM's fallback auxiliary-layer selection to the decoder."""
-        return self.language_model.get_eagle3_default_aux_hidden_state_layers()
+        return self._require_eagle3_method("get_eagle3_default_aux_hidden_state_layers")()
 
     # ── audio processing ──
 

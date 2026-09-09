@@ -24,7 +24,10 @@ decoder-only LLMs like Qwen3, hybrid Mamba+MoE like NemotronH).
 Backbone-specific behavior is selected at instantiation time.
 """
 
+import logging
+
 _PKG = "nemo.collections.speechlm2.vllm.salm"
+_LOGGER = logging.getLogger(__name__)
 _ORIGINAL_VLLM_HF_CONFIG_OVERRIDE = None
 _AUTOMODEL_DFLASH2_ARCHITECTURES = frozenset(
     {
@@ -34,7 +37,7 @@ _AUTOMODEL_DFLASH2_ARCHITECTURES = frozenset(
 )
 
 
-def _normalize_dflash2_architecture(hf_config):
+def _normalize_dflash2_architecture(hf_config, *, supported_archs=None):
     """Route Automodel DFlash2 exports to vLLM's canonical runtime.
 
     Automodel keeps its training class in ``config.json`` so the checkpoint can
@@ -45,9 +48,50 @@ def _normalize_dflash2_architecture(hf_config):
     Automodel name and silently selects the plain-DFlash speculator.
     """
     architectures = getattr(hf_config, "architectures", None) or []
-    if len(architectures) == 1 and architectures[0] in _AUTOMODEL_DFLASH2_ARCHITECTURES:
+    if len(architectures) != 1 or architectures[0] not in _AUTOMODEL_DFLASH2_ARCHITECTURES:
+        return hf_config
+
+    if supported_archs is None:
+        try:
+            from vllm.model_executor.models.registry import ModelRegistry
+        except (ImportError, RuntimeError):
+            return hf_config
+        supported_archs = ModelRegistry.get_supported_archs()
+
+    supported_archs = set(supported_archs)
+    automodel_arch = architectures[0]
+    if "DFlash2DraftModel" in supported_archs and automodel_arch not in supported_archs:
         hf_config.architectures = ["DFlash2DraftModel"]
     return hf_config
+
+
+def _register_model_aliases(model_registry, native_arch, aliases, supported_archs=None) -> None:
+    """Register aliases without assuming vLLM's private registry-entry representation."""
+    if supported_archs is None:
+        supported_archs = model_registry.get_supported_archs()
+    supported_archs = set(supported_archs)
+    if native_arch not in supported_archs:
+        return
+
+    native_model = model_registry.models[native_arch]
+    module_name = getattr(native_model, "module_name", None)
+    class_name = getattr(native_model, "class_name", None)
+    if isinstance(module_name, str) and isinstance(class_name, str):
+        model_ref = f"{module_name}:{class_name}"
+    else:
+        model_ref = getattr(native_model, "model_cls", None)
+
+    if model_ref is None:
+        _LOGGER.warning(
+            "Cannot register aliases for %s: unsupported vLLM registry entry %s.",
+            native_arch,
+            type(native_model).__name__,
+        )
+        return
+
+    for alias in aliases:
+        if alias not in supported_archs:
+            model_registry.register_model(alias, model_ref)
 
 
 def _nemo_speechlm_mtp_hf_config_override(hf_config):
@@ -179,19 +223,6 @@ def register():
         "NeMoSpeechLMForConditionalGeneration",
         f"{_PKG}.model:NeMoSpeechLMForConditionalGeneration",
     )
-    supported_archs = ModelRegistry.get_supported_archs()
-    if "DFlashDraftModel" in supported_archs:
-        native_dflash_model = ModelRegistry.models["DFlashDraftModel"]
-        native_dflash_model_ref = f"{native_dflash_model.module_name}:{native_dflash_model.class_name}"
-        for automodel_arch in ("Qwen3DFlashDraftModel", "DFlashQwen3DFlashDraftModel"):
-            if automodel_arch not in supported_archs:
-                ModelRegistry.register_model(automodel_arch, native_dflash_model_ref)
-    if "DFlash2DraftModel" in supported_archs:
-        native_dflash2_model = ModelRegistry.models["DFlash2DraftModel"]
-        native_dflash2_model_ref = f"{native_dflash2_model.module_name}:{native_dflash2_model.class_name}"
-        for automodel_arch in _AUTOMODEL_DFLASH2_ARCHITECTURES:
-            if automodel_arch not in supported_archs:
-                ModelRegistry.register_model(automodel_arch, native_dflash2_model_ref)
 
     from vllm.model_executor.models.config import MODELS_CONFIG_MAP
 
@@ -204,3 +235,12 @@ def register():
     from nemo.collections.speechlm2.vllm.salm.runtime_compat import install_prompt_contract
 
     install_prompt_contract()
+
+    # DFlash aliases are optional compatibility shims. Install them only after
+    # the mandatory SpeechLM model, MTP hook, and prompt contract are active so
+    # a future registry representation cannot leave the server half-patched.
+    _register_model_aliases(
+        ModelRegistry,
+        "DFlashDraftModel",
+        ("Qwen3DFlashDraftModel", "DFlashQwen3DFlashDraftModel"),
+    )

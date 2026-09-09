@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -824,6 +825,8 @@ def _group_multiturn_filewise_metrics_by_sample(filewise_metrics: list) -> list:
                 "predicted_phoneme_text_turns": predicted_phoneme_text_turns,
                 "predicted_phoneme_tokens_turns": predicted_phoneme_tokens_turns,
                 "predicted_phoneme_token_labels_turns": predicted_phoneme_token_labels_turns,
+                "tts_text_input": [r.get("tts_text_input", "") for r in turns],
+                "dataloader_normalized_text": [r.get("dataloader_normalized_text") for r in turns],
                 "reference_text": [r.get("gt_text", "") for r in turns],
                 "asr_hyp": [r.get("pred_text", "") for r in turns],
                 "pred_audio_paths": [r.get("pred_audio_filepath", "") for r in turns],
@@ -884,6 +887,8 @@ def _write_grouped_multiturn_filewise_metrics_csv(csv_path: str, grouped_rows: l
         "target_audio_path",
         "context_audio_path",
         "pred_audio_paths",
+        "tts_text_input",
+        "dataloader_normalized_text",
         "reference_text",
         "asr_hyp",
         "predicted_phoneme_text_turns",

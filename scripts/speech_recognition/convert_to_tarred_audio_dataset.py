@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -622,7 +623,7 @@ class ASRTarredDatasetBuilder:
         # Trim audio based on offset and duration.
         start_sample = int(offset * sampling_rate)
         num_frames = int(duration * sampling_rate) if duration else -1
-        audio, sampling_rate = soundfile.read(file_path, start=start_sample, frames=num_frames)
+        audio, sampling_rate = soundfile.read(audio_filepath, start=start_sample, frames=num_frames)
 
         # Determine codec parameters.
         if codec is not None:

@@ -1,4 +1,5 @@
-# Copyright (c) 2021, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2021, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -103,8 +104,8 @@ def numba_cpu_is_supported(min_version: str) -> bool:
     # If numba is not installed
     if module_available is None:
         return False
-    else:
-        return True
+
+    return module_available is True
 
 
 def numba_cuda_is_supported(min_version: str) -> bool:

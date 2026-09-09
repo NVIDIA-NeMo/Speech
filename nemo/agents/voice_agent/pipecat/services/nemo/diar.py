@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -39,19 +40,19 @@ from nemo.agents.voice_agent.pipecat.services.nemo.streaming_diar import Diariza
 
 
 class NeMoDiarInputParams(BaseModel):
-    threshold: Optional[float] = (
-        0.4  # threshold value used to determine if a speaker exists or not, setting it to a lower value will increase the sensitivity of the diarization model
-    )
+    # Lower values increase the diarization model's speaker-detection sensitivity.
+    threshold: Optional[float] = 0.4
     language: Optional[Language] = Language.EN_US
     frame_len_in_secs: Optional[float] = 0.08  # 80ms for FastConformer model
     config_path: Optional[str] = None  # path to the Niva ASR config file
     raw_audio_frame_len_in_secs: Optional[float] = 0.016  # 16ms for websocket transport
-    buffer_size: Optional[int] = (
-        30  # number of audio frames to buffer, 1 frame is 16ms, streaming Sortformer was trained with 6*0.08=0.48s chunks
-    )
+    # Each audio frame is 16 ms; streaming Sortformer was trained with 6 * 0.08 = 0.48 s chunks.
+    buffer_size: Optional[int] = 30
 
 
 class NemoDiarService(STTService):
+    """Pipecat service that performs online speaker diarization."""
+
     def __init__(
         self,
         *,

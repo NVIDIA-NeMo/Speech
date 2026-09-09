@@ -1,5 +1,6 @@
 # Copyright (c) 2019, Myrtle Software Limited. All rights reserved.
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -51,7 +52,7 @@ def rnn(
         forget_gate_bias: float, set by default to 1.0, which constructs a forget gate
                 initialized to 1.0.
                 Reference:
-                [An Empirical Exploration of Recurrent Network Architectures](http://proceedings.mlr.press/v37/jozefowicz15.pdf)
+                [RNN architecture exploration](http://proceedings.mlr.press/v37/jozefowicz15.pdf)
 
         dropout: Optional dropout to apply to end of multi-layered RNN.
 
@@ -136,6 +137,7 @@ class OverLastDim(torch.nn.Module):
         self.module = module
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply the recurrent cell to an input sequence."""
         *dims, _ = x.size()
 
         reduced_dims = 1
@@ -149,6 +151,8 @@ class OverLastDim(torch.nn.Module):
 
 
 class LSTMDropout(torch.nn.Module):
+    """LSTM layer with recurrent dropout."""
+
     def __init__(
         self,
         input_size: int,
@@ -171,7 +175,7 @@ class LSTMDropout(torch.nn.Module):
             forget_gate_bias: float, set by default to 1.0, which constructs a forget gate
                 initialized to 1.0.
                 Reference:
-                [An Empirical Exploration of Recurrent Network Architectures](http://proceedings.mlr.press/v37/jozefowicz15.pdf)
+                [RNN architecture exploration](http://proceedings.mlr.press/v37/jozefowicz15.pdf)
 
             t_max: int value, set to None by default. If an int is specified, performs Chrono Initialization
                 of the LSTM network, based on the maximum number of timesteps `t_max` expected during the course
@@ -336,6 +340,7 @@ class BNRNNSum(torch.nn.Module):
     def forward(
         self, x: torch.Tensor, hx: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = None
     ) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+        """Run the layer over an input sequence and initial state."""
         hx = self._parse_hidden_state(hx)
 
         hs = []
@@ -437,6 +442,8 @@ def ln_lstm(
 
 
 class LSTMLayer(torch.nn.Module):
+    """Single LSTM layer composed from explicit recurrent cells."""
+
     def __init__(self, cell, *cell_args):
         super(LSTMLayer, self).__init__()
         self.cell = cell(*cell_args)
@@ -453,6 +460,8 @@ class LSTMLayer(torch.nn.Module):
 
 
 class LayerNormLSTMCell(torch.nn.Module):
+    """LSTM cell with layer normalization."""
+
     def __init__(self, input_size, hidden_size, forget_gate_bias):
         super().__init__()
         self.input_size = input_size
@@ -478,6 +487,7 @@ class LayerNormLSTMCell(torch.nn.Module):
     def forward(
         self, input: torch.Tensor, state: Tuple[torch.Tensor, torch.Tensor]
     ) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+        """Advance the LSTM cell by one time step."""
         hx, cx = state
         igates = self.layernorm_i(torch.mm(input, self.weight_ih.t()))
         hgates = self.layernorm_h(torch.mm(hx, self.weight_hh.t()))
@@ -503,6 +513,8 @@ def init_stacked_lstm(
 
 
 class StackedLSTM(torch.nn.Module):
+    """Stack multiple LSTM layers."""
+
     def __init__(self, num_layers: int, layer: torch.nn.Module, first_layer_args: List, other_layer_args: List):
         super(StackedLSTM, self).__init__()
         self.layers: torch.nn.ModuleList = init_stacked_lstm(num_layers, layer, first_layer_args, other_layer_args)
@@ -510,6 +522,7 @@ class StackedLSTM(torch.nn.Module):
     def forward(
         self, input: torch.Tensor, states: Optional[List[Tuple[torch.Tensor, torch.Tensor]]]
     ) -> Tuple[torch.Tensor, List[Tuple[torch.Tensor, torch.Tensor]]]:
+        """Run the stacked LSTM over an input sequence."""
         if states is None:
             temp_states: List[Tuple[torch.Tensor, torch.Tensor]] = []
             batch = input.size(1)

@@ -95,7 +95,7 @@ class LangIdPromptMixin:
                 "`model_defaults.initialize_lang_id_prompt=true` is inference-only: the prompt "
                 "projection would be a trainable parameter that no training or validation step "
                 "conditions on, which fails under DDP and otherwise scores unconditioned metrics. "
-                "Transcribe with `transcribe(target_lang=...)` or the chunked streaming script "
+                "Transcribe with `transcribe(source_lang=...)` or the chunked streaming script "
                 "instead of attaching a trainer."
             )
 
@@ -143,23 +143,25 @@ class LangIdPromptMixin:
             (key for key in self.DEFAULT_LANG_ID_PROMPT_PREFERENCE if key in self.lang_id_prompt_dictionary), None
         )
 
-    def resolve_lang_id_prompt(self, target_lang: Optional[str]) -> int:
-        """Resolve a language/task name to its prompt index.
+    def resolve_lang_id_prompt(self, source_lang: Optional[str]) -> int:
+        """Resolve a spoken-language name to its prompt index.
 
         The prompt projection is part of the trained forward pass and must always be applied, so this
-        always returns an index. When ``target_lang`` is missing or unknown, the model's
+        always returns an index. When ``source_lang`` is missing or unknown, the model's
         :attr:`default_lang_id_prompt` is used and a warning is logged.
 
         Args:
-            target_lang: A key of ``lang_id_prompt_dictionary`` (e.g. ``"en-US"``), or None.
+            source_lang: A key of ``lang_id_prompt_dictionary`` (e.g. ``"en-US"``), or None. This is
+                the language spoken in the audio; the unified model is ASR-only, so there is no
+                separate translation target.
 
         Returns:
             The prompt index to condition on.
         """
         self._assert_lang_id_prompt_supported()
 
-        if target_lang is not None and target_lang in self.lang_id_prompt_dictionary:
-            return self.lang_id_prompt_dictionary[target_lang]
+        if source_lang is not None and source_lang in self.lang_id_prompt_dictionary:
+            return self.lang_id_prompt_dictionary[source_lang]
 
         preview = self._language_preview()
         fallback = self.default_lang_id_prompt
@@ -167,18 +169,18 @@ class LangIdPromptMixin:
             raise ValueError(
                 f"Cannot pick a default language-ID prompt: the model defines none of "
                 f"{list(self.DEFAULT_LANG_ID_PROMPT_PREFERENCE)}. Please pass an explicit "
-                f"`target_lang`. Available: {preview}"
+                f"`source_lang`. Available: {preview}"
             )
 
-        if target_lang is None:
+        if source_lang is None:
             logging.warning(
-                f"No `target_lang` provided for a language-ID prompt model; falling back to the "
-                f"'{fallback}' prompt. Pass `target_lang=<lang>` (e.g. target_lang=en-US) to force a "
+                f"No `source_lang` provided for a language-ID prompt model; falling back to the "
+                f"'{fallback}' prompt. Pass `source_lang=<lang>` (e.g. source_lang=en-US) to force a "
                 f"specific language."
             )
         else:
             logging.warning(
-                f"Unknown target_lang='{target_lang}' (available: {preview}); falling back to the "
+                f"Unknown source_lang='{source_lang}' (available: {preview}); falling back to the "
                 f"'{fallback}' prompt."
             )
         return self.lang_id_prompt_dictionary[fallback]
@@ -199,6 +201,27 @@ class LangIdPromptMixin:
         """
         prompt = torch.zeros(batch_size, self.num_lang_id_prompts, dtype=dtype, device=device)
         prompt[:, prompt_id] = 1.0
+        return prompt
+
+    def create_lang_id_prompts(self, prompt_ids: Tensor, dtype: torch.dtype, device: torch.device) -> Tensor:
+        """Create a one-hot language-ID prompt with a possibly different language per utterance.
+
+        Use this when a batch mixes languages (e.g. per-sample ``lang`` fields from a manifest);
+        pass a single index to :meth:`create_lang_id_prompt` instead when the whole batch shares one.
+
+        Args:
+            prompt_ids: 1-D tensor (or sequence) of per-utterance prompt indices, e.g. each from
+                :meth:`resolve_lang_id_prompt`.
+            dtype: Dtype of the returned tensor.
+            device: Device of the returned tensor.
+
+        Returns:
+            One-hot prompt of shape ``(len(prompt_ids), num_lang_id_prompts)``.
+        """
+        self._assert_lang_id_prompt_supported()
+        prompt_ids = torch.as_tensor(prompt_ids, dtype=torch.long, device=device)
+        prompt = torch.zeros(prompt_ids.shape[0], self.num_lang_id_prompts, dtype=dtype, device=device)
+        prompt.scatter_(1, prompt_ids.unsqueeze(1), 1.0)
         return prompt
 
     def apply_lang_id_prompt(self, encoded: Tensor, prompt: Tensor) -> Tensor:
@@ -247,14 +270,15 @@ class LangIdPromptMixin:
             encoded = self.lang_id_prompt_kernel(torch.cat([encoded.float(), prompt.float()], dim=-1))
         return encoded.to(out_dtype).transpose(1, 2)  # (B, T, D) -> (B, D, T)
 
-    def apply_lang_id_prompt_for_transcribe(self, encoded: Tensor, target_lang: Optional[str]) -> Tensor:
-        """Resolve ``target_lang`` and condition the encoder output on it, for whole-batch inference.
+    def apply_lang_id_prompt_for_transcribe(self, encoded: Tensor, source_lang: Optional[str]) -> Tensor:
+        """Resolve ``source_lang`` and condition the encoder output on it, for whole-batch inference.
 
         A no-op for models without language-ID prompts, so transcription paths can call it directly.
 
         Args:
             encoded: Encoder output of shape ``(B, D, T)``.
-            target_lang: A key of ``lang_id_prompt_dictionary``, or None to use the ``unk`` prompt.
+            source_lang: A key of ``lang_id_prompt_dictionary`` (the language spoken in the audio), or
+                None to use the default (``unk``) prompt.
 
         Returns:
             Encoder output of shape ``(B, D, T)``, conditioned if the model supports prompts.
@@ -262,7 +286,7 @@ class LangIdPromptMixin:
         if not self.use_lang_id_prompt:
             return encoded
 
-        prompt_id = self.resolve_lang_id_prompt(target_lang)
+        prompt_id = self.resolve_lang_id_prompt(source_lang)
         prompt = self.create_lang_id_prompt(encoded.shape[0], prompt_id, dtype=encoded.dtype, device=encoded.device)
         return self.apply_lang_id_prompt(encoded, prompt)
 

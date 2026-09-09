@@ -251,6 +251,21 @@ class TestApplyLangIdPrompt:
         assert torch.all(prompt[:, 5] == 1.0)
 
     @pytest.mark.unit
+    def test_batched_onehot_prompts_one_language_per_row(self, prompt_model):
+        """Per-sample prompting (e.g. per-utterance manifest languages) selects a language per row."""
+        prompt = prompt_model.create_lang_id_prompts(
+            torch.tensor([0, 5, 3]), dtype=torch.float32, device=torch.device('cpu')
+        )
+        assert prompt.shape == (3, NUM_PROMPTS)
+        assert torch.equal(prompt.sum(dim=-1), torch.ones(3))
+        assert prompt[0, 0] == 1.0 and prompt[1, 5] == 1.0 and prompt[2, 3] == 1.0
+        # A single-index batch must match the scalar builder.
+        assert torch.equal(
+            prompt_model.create_lang_id_prompts([5, 5], dtype=torch.float32, device=torch.device('cpu')),
+            prompt_model.create_lang_id_prompt(2, 5, dtype=torch.float32, device=torch.device('cpu')),
+        )
+
+    @pytest.mark.unit
     @pytest.mark.parametrize('time_steps', [1, 7, 13, 91])
     def test_broadcasts_over_any_encoder_length(self, prompt_model, time_steps):
         """A (B, num_lang_id_prompts) prompt must fit any encoder length.

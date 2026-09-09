@@ -262,7 +262,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         augmentor: DictConfig = None,
         verbose: bool = True,
         timestamps: Optional[bool] = None,
-        target_lang: Optional[str] = None,
+        source_lang: Optional[str] = None,
         override_config: Optional[TranscribeConfig] = None,
     ) -> TranscriptionReturnType:
         """
@@ -292,9 +292,10 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             timestamps: Optional(Bool): timestamps will be returned if set to True as part of hypothesis object
                 (output.timestep['segment']/output.timestep['word']). Refer to `Hypothesis` class for more details.
                 Default is None and would retain the previous state set by using self.change_decoding_strategy().
-            target_lang: Optional(str) language-ID prompt for prompt-conditioned ("unified") models, e.g.
-                `"en-US"`; must be a key of the model's `lang_id_prompt_dictionary`. Defaults to the
-                model's language-agnostic `"unk"` prompt. Ignored by models without prompt conditioning.
+            source_lang: Optional(str) spoken-language prompt for prompt-conditioned ("unified") ASR
+                models, e.g. `"en-US"`; must be a key of the model's `lang_id_prompt_dictionary`. This is
+                the language of the audio, not a translation target. Defaults to the model's
+                language-agnostic `"unk"` prompt. Ignored by models without prompt conditioning.
             override_config: (Optional[TranscribeConfig]) override transcription config pre-defined by the user.
                 **Note**: All other arguments in the function will be ignored if override_config is passed.
                 You should call this argument as `model.transcribe(audio, override_config=TranscribeConfig(...))`.
@@ -343,7 +344,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             override_config=override_config,
             # Additional arguments
             partial_hypothesis=partial_hypothesis,
-            target_lang=target_lang,
+            source_lang=source_lang,
         )
 
     def change_vocabulary(self, new_vocabulary: List[str], decoding_cfg: Optional[DictConfig] = None):
@@ -977,7 +978,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
 
     def _transcribe_forward(self, batch: Any, trcfg: TranscribeConfig):
         encoded, encoded_len = self.forward(input_signal=batch[0], input_signal_length=batch[1])
-        encoded = self.apply_lang_id_prompt_for_transcribe(encoded, getattr(trcfg, 'target_lang', None))
+        encoded = self.apply_lang_id_prompt_for_transcribe(encoded, getattr(trcfg, 'source_lang', None))
 
         output = dict(encoded=encoded, encoded_len=encoded_len)
         return output

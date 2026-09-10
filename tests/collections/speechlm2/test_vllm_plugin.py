@@ -55,8 +55,6 @@ from omegaconf import OmegaConf
 from nemo.collections.asr.models import ASRModel, SortformerEncLabelModel
 from nemo.collections.asr.modules import (
     ConvASRDecoder,
-    GGEMMTransformerEncoder,
-    MoETransformerEncoder,
     ParallelExpertEncoder,
     TransformerEncoder,
 )
@@ -81,8 +79,6 @@ assert all(
     for dependency in (
         SortformerEncLabelModel,
         ConvASRDecoder,
-        GGEMMTransformerEncoder,
-        MoETransformerEncoder,
         TransformerEncoder,
         ParallelExpertEncoder,
         ParallelExpertEncoderPT,

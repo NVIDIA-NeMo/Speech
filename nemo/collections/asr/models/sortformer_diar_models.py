@@ -1004,7 +1004,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
             spkcache_fifo_chunk_pre_encode_embs = self.sortformer_modules.concat_embs(
                 [streaming_state.spkcache, streaming_state.fifo, chunk_pre_encode_embs],
                 dim=1,
-                # A Sortformer nested in phPEE can retain Lightning's cached
+                # A Sortformer nested in ParallelExpertEncoder can retain Lightning's cached
                 # construction device after its parent moves. Activations are
                 # authoritative for streaming lengths and masks.
                 device=chunk_pre_encode_embs.device,

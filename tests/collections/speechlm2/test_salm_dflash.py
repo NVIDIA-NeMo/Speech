@@ -26,12 +26,8 @@ pytest.importorskip("nemo_automodel")
 pytestmark = pytest.mark.unit
 
 from nemo_automodel.components.loss.dllm_loss import DFlashDecayLoss  # noqa: E402
-from nemo_automodel.components.speculative.dflash.draft_qwen3 import (  # noqa: E402
-    Qwen3DFlashDraftModel,
-)
-from nemo_automodel.components.speculative.dflash.draft_qwen3_dflash2 import (  # noqa: E402
-    Qwen3DFlash2DraftModel,
-)
+from nemo_automodel.components.speculative.dflash.draft_qwen3 import Qwen3DFlashDraftModel  # noqa: E402
+from nemo_automodel.components.speculative.dflash.draft_qwen3_dflash2 import Qwen3DFlash2DraftModel  # noqa: E402
 
 from nemo.collections.speechlm2.parts import dflash as salm_dflash  # noqa: E402
 from nemo.collections.speechlm2.parts import packed_sequences  # noqa: E402

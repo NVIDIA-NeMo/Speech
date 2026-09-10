@@ -23,39 +23,18 @@ from pathlib import Path
 
 import torch
 from lightning import LightningModule
-from nemo_automodel.components.distributed.mesh_utils import (
-    get_flat_mesh,
-    get_fsdp_dp_mesh,
-)
-from nemo_automodel.components.speculative.dflash.core import (
-    DFlashTrainerModule,
-    NoValidAnchorsError,
-)
-from nemo_automodel.components.speculative.dflash.dflash2_core import (
-    DFlash2TrainerModule,
-)
-from nemo_automodel.components.speculative.dflash.draft_qwen3 import (
-    Qwen3DFlashDraftModel,
-    build_target_layer_ids,
-)
-from nemo_automodel.components.speculative.dflash.draft_qwen3_dflash2 import (
-    Qwen3DFlash2DraftModel,
-)
+from nemo_automodel.components.distributed.mesh_utils import get_flat_mesh, get_fsdp_dp_mesh
+from nemo_automodel.components.speculative.dflash.core import DFlashTrainerModule, NoValidAnchorsError
+from nemo_automodel.components.speculative.dflash.dflash2_core import DFlash2TrainerModule
+from nemo_automodel.components.speculative.dflash.draft_qwen3 import Qwen3DFlashDraftModel, build_target_layer_ids
+from nemo_automodel.components.speculative.dflash.draft_qwen3_dflash2 import Qwen3DFlash2DraftModel
 from torch import nn
 from torch.distributed.tensor import DTensor
 from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
 
-from nemo.collections.speechlm2.models.salm import (
-    replace_placeholders_and_build_targets,
-)
-from nemo.collections.speechlm2.parts.cp_helpers import (
-    encode_audio_with_cp_distribution,
-    get_perception_fsdp_group,
-)
-from nemo.collections.speechlm2.parts.packed_sequences import (
-    _validate_packed_dflash_inputs,
-    pack_audio_for_dflash,
-)
+from nemo.collections.speechlm2.models.salm import replace_placeholders_and_build_targets
+from nemo.collections.speechlm2.parts.cp_helpers import encode_audio_with_cp_distribution, get_perception_fsdp_group
+from nemo.collections.speechlm2.parts.packed_sequences import _validate_packed_dflash_inputs, pack_audio_for_dflash
 from nemo.core.classes.common import safe_instantiate
 
 _DRAFT_CONFIG_MANAGED_KEYS = {
@@ -277,10 +256,7 @@ def _get_consolidated_model_state_dict(model: nn.Module) -> dict[str, torch.Tens
     if not (torch.distributed.is_available() and torch.distributed.is_initialized()):
         return model.state_dict()
 
-    from torch.distributed.checkpoint.state_dict import (
-        StateDictOptions,
-        get_model_state_dict,
-    )
+    from torch.distributed.checkpoint.state_dict import StateDictOptions, get_model_state_dict
 
     return get_model_state_dict(model, options=StateDictOptions(full_state_dict=True, cpu_offload=True))
 

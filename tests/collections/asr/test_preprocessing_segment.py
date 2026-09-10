@@ -23,7 +23,12 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from nemo.collections.asr.parts.preprocessing.perturb import NoisePerturbation, ShiftPerturbation, SilencePerturbation
+from nemo.collections.asr.parts.preprocessing.perturb import (
+    NoisePerturbation,
+    RandomSegmentPerturbation,
+    ShiftPerturbation,
+    SilencePerturbation,
+)
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment, select_channels
 
 
@@ -531,3 +536,71 @@ class TestShiftPerturbation:
         original = segment.samples.copy()
         perturb.perturb(segment)
         np.testing.assert_array_equal(segment.samples, original, "Zero shift should not modify audio")
+
+
+class TestRandomSegmentPerturbation:
+    sample_rate = 16000
+
+    def _make_audio_segment(self, duration_sec, sample_rate=None):
+        """Create an AudioSegment holding a sine wave of the requested duration."""
+        sample_rate = self.sample_rate if sample_rate is None else sample_rate
+        num_samples = int(duration_sec * sample_rate)
+        t = np.linspace(0, duration_sec, num_samples, dtype=np.float32)
+        samples = np.sin(2 * np.pi * 440 * t)
+        return AudioSegment(samples=samples, sample_rate=sample_rate)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("duration_sec", [32.0, 32, 16.0, 16])
+    def test_random_segment_pads_short_audio(self, duration_sec):
+        """Short audio must be padded to duration_sec whether it is spelled as int or float."""
+        perturb = RandomSegmentPerturbation(duration_sec=duration_sec, pad_to_duration=True)
+        segment = self._make_audio_segment(duration_sec=5.0)
+        perturb.perturb(segment)
+        assert len(segment.samples) == int(duration_sec) * self.sample_rate
+
+    @pytest.mark.unit
+    def test_random_segment_pads_with_zeros_after_original_audio(self):
+        """The original audio is kept at the front and the tail is zero-filled."""
+        perturb = RandomSegmentPerturbation(duration_sec=2.0, pad_to_duration=True)
+        segment = self._make_audio_segment(duration_sec=0.5)
+        original = segment.samples.copy()
+        perturb.perturb(segment)
+        assert len(segment.samples) == 2 * self.sample_rate
+        np.testing.assert_array_equal(segment.samples[: len(original)], original)
+        np.testing.assert_array_equal(segment.samples[len(original) :], 0.0)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("duration_sec, expected_num_samples", [(0.05, 1102), (0.25, 5512), (0.35, 7717)])
+    def test_random_segment_pads_when_duration_is_not_a_whole_number_of_samples(
+        self, duration_sec, expected_num_samples
+    ):
+        """duration_sec * sample_rate need not be an integer.
+
+        At 22050 Hz these durations land on a half sample, so the padded segment must be rounded
+        *up* to stay at least duration_sec long -- rounding down leaves subsegment() out of bounds.
+        """
+        sample_rate = 22050
+        perturb = RandomSegmentPerturbation(duration_sec=duration_sec, pad_to_duration=True)
+        segment = self._make_audio_segment(duration_sec=duration_sec / 2, sample_rate=sample_rate)
+        perturb.perturb(segment)
+        assert len(segment.samples) == expected_num_samples
+
+    @pytest.mark.unit
+    def test_random_segment_without_padding_leaves_short_audio_untouched(self):
+        """With pad_to_duration disabled (the default), short audio is returned unchanged."""
+        perturb = RandomSegmentPerturbation(duration_sec=32.0)
+        segment = self._make_audio_segment(duration_sec=5.0)
+        original = segment.samples.copy()
+        perturb.perturb(segment)
+        np.testing.assert_array_equal(segment.samples, original)
+
+    @pytest.mark.unit
+    def test_random_segment_extracts_segment_from_long_audio(self):
+        """Audio longer than duration_sec is cut down to duration_sec.
+
+        The cut boundaries are rounded independently, so allow a one-sample tolerance.
+        """
+        perturb = RandomSegmentPerturbation(duration_sec=1.0, pad_to_duration=True)
+        segment = self._make_audio_segment(duration_sec=5.0)
+        perturb.perturb(segment)
+        assert abs(len(segment.samples) - self.sample_rate) <= 1

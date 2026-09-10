@@ -36,6 +36,7 @@
 import copy
 import inspect
 import io
+import math
 import os
 import random
 import subprocess
@@ -1096,7 +1097,10 @@ class RandomSegmentPerturbation(Perturbation):
                 # don't do anything if pad_to_duration is False
                 return
             start_time = 0.0
-            pad_size = self._duration_sec * data.sample_rate - data.num_samples
+            # `pad_size` must be an integer number of samples for np.pad, and `math.ceil`
+            # (rather than round/truncate) keeps the padded segment at least `duration_sec`
+            # long so that the subsegment() call below stays in bounds.
+            pad_size = math.ceil(self._duration_sec * data.sample_rate) - data.num_samples
             data.pad(pad_size=pad_size)
         else:
             start_time = random.uniform(0.0, data.duration - self._duration_sec)

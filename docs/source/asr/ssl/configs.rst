@@ -28,6 +28,7 @@ dataset config:
     random_segment:
       prob: 1.0
       duration_sec: 16 # specify the duration you want
+      pad_to_duration: true # zero-pad utterances shorter than duration_sec (defaults to false)
 
 3) You can also use bucketing to ensure similar utterance lengths within batches.
 See :ref:`Bucketing documentation <Bucketing_Datasets>`.

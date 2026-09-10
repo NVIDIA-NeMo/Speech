@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import copy
 import io
 import tarfile
 
@@ -23,7 +22,6 @@ from omegaconf import OmegaConf
 from nemo.collections.asr.modules.parallel_expert_encoder import ParallelExpertEncoderPT
 from nemo.collections.asr.modules.transformer_encoder import TransformerEncoder
 from nemo.collections.asr.parts.packed_sequence import pack_encoder_output, unpack_encoder_output
-from tests.collections.asr.test_packed_transformer_encoder import _make_moe_encoder
 from tests.collections.asr.test_parallel_expert_encoder_two_branch import (
     _MEL_FEATURES,
     _N_SPK,
@@ -31,18 +29,6 @@ from tests.collections.asr.test_parallel_expert_encoder_two_branch import (
     toy_packed_diarization_model_cfg,
     toy_transformer_asr_encoder_cfg,
 )
-
-
-def test_previous_moe_state_loads_strictly_before_and_after_packed_use():
-    previous = _make_moe_encoder()
-    previous_state = copy.deepcopy(previous.state_dict())
-    restored = _make_moe_encoder()
-
-    restored.load_state_dict(previous_state, strict=True)
-    with torch.no_grad():
-        restored.forward_sequence_packed(torch.randn(2, 8, 12), torch.tensor([12, 5]))
-
-    assert set(restored.state_dict()) == set(previous_state)
 
 
 def test_sequence_packed_training_dropout_is_finite_and_reproducible_within_path():

@@ -19,6 +19,20 @@ from typing import Any
 import torch
 
 
+def _current_device_type() -> str:
+    """Return the current accelerator device type ('cuda', 'xpu', etc.).
+    Falls back to 'cuda' for backwards compatibility."""
+    if torch.cuda.is_available():
+        return 'cuda'
+    try:
+        if torch.xpu.is_available():
+            return 'xpu'
+    except AttributeError:
+        pass
+    return 'cuda'
+
+
+
 def avoid_bfloat16_autocast_context():
     """
     If the current autocast context is bfloat16,
@@ -26,7 +40,7 @@ def avoid_bfloat16_autocast_context():
     """
 
     if torch.is_autocast_enabled() and torch.get_autocast_gpu_dtype() == torch.bfloat16:
-        return torch.amp.autocast('cuda', dtype=torch.float32)
+        return torch.amp.autocast(_current_device_type(), dtype=torch.float32)
     else:
         return nullcontext()
 
@@ -39,12 +53,12 @@ def avoid_float16_autocast_context():
 
     if torch.is_autocast_enabled() and torch.get_autocast_gpu_dtype() == torch.float16:
         if torch.jit.is_scripting() or torch.jit.is_tracing():
-            return torch.amp.autocast('cuda', dtype=torch.float32)
+            return torch.amp.autocast(_current_device_type(), dtype=torch.float32)
 
         if torch.cuda.is_bf16_supported():
-            return torch.amp.autocast('cuda', dtype=torch.bfloat16)
+            return torch.amp.autocast(_current_device_type(), dtype=torch.bfloat16)
         else:
-            return torch.amp.autocast('cuda', dtype=torch.float32)
+            return torch.amp.autocast(_current_device_type(), dtype=torch.float32)
     else:
         return nullcontext()
 

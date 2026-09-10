@@ -624,7 +624,7 @@ def _encode_perception_unpadded(
     if not bool(getattr(perception, 'supports_sequence_packed_output', False)):
         raise ValueError(
             "packed_encoder_sequences=true, but the mounted perception stack does not support native packed output. "
-            "Use TransformerEncoder/MoETransformerEncoder/ParallelExpertEncoder with IdentityConnector and rote=null."
+            "Use TransformerEncoder/ParallelExpertEncoder with IdentityConnector and rote=null."
         )
     packed = perception.forward_sequence_packed(**perception_kwargs)
     return split_encoder_output(packed)

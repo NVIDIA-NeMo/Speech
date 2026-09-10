@@ -16,7 +16,6 @@ import pytest
 import torch
 
 from nemo.collections.asr.modules.audio_preprocessing import AudioToMelSpectrogramPreprocessor, SpectrogramAugmentation
-from nemo.collections.asr.modules.moe_transformer_encoder import MoETransformerEncoder
 from nemo.collections.asr.modules.transformer_encoder import TransformerEncoder
 from nemo.collections.asr.parts.packed_sequence import unpack_encoder_output
 from nemo.collections.speechlm2.modules.perception import AudioPerceptionModule, IdentityConnector
@@ -94,8 +93,8 @@ def test_perception_sequence_packed_rejects_adapter_that_cannot_preserve_thd():
     "device",
     ["cpu", pytest.param("cuda", marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable"))],
 )
-@pytest.mark.parametrize("encoder_kind", ["transformer", "moe", "pee"])
-def test_perception_packed_waveform_matches_padded_waveform_for_all_new_encoders(encoder_kind, device):
+@pytest.mark.parametrize("encoder_kind", ["transformer", "pee"])
+def test_perception_packed_waveform_matches_padded_waveform_for_supported_encoders(encoder_kind, device):
     torch.manual_seed(17)
     perception = _make_waveform_perception(encoder_kind).to(device)
     lengths = torch.tensor([4096, 2600, 1200], dtype=torch.long, device=device)
@@ -131,7 +130,7 @@ def test_perception_packed_waveform_matches_padded_waveform_for_all_new_encoders
     torch.testing.assert_close(reloaded_output.data, actual.data, rtol=0.0, atol=0.0)
 
 
-@pytest.mark.parametrize("encoder_kind", ["transformer", "moe", "pee"])
+@pytest.mark.parametrize("encoder_kind", ["transformer", "pee"])
 def test_perception_legacy_forward_accepts_packed_waveform(encoder_kind):
     torch.manual_seed(23)
     perception = _make_waveform_perception(encoder_kind)
@@ -154,7 +153,7 @@ def test_perception_legacy_forward_accepts_packed_waveform(encoder_kind):
     torch.testing.assert_close(actual[valid], expected[valid], rtol=2e-5, atol=3e-6)
 
 
-@pytest.mark.parametrize("encoder_kind", ["transformer", "moe", "pee"])
+@pytest.mark.parametrize("encoder_kind", ["transformer", "pee"])
 def test_perception_packed_waveform_all_empty_batch(encoder_kind):
     perception = _make_waveform_perception(encoder_kind)
     lengths = torch.tensor([0, 0])
@@ -213,22 +212,6 @@ def _make_waveform_perception(encoder_kind: str) -> AudioPerceptionModule:
             dropout_pre_encoder=0.0,
             dropout_emb=0.0,
             self_attention_model="rope",
-            sync_max_audio_length=False,
-        )
-        features = 8
-    elif encoder_kind == "moe":
-        encoder = MoETransformerEncoder(
-            feat_in=8,
-            d_model=32,
-            n_heads=2,
-            n_layers=2,
-            subsampling_factor=2,
-            drop_rate=0.0,
-            dropout_pre_encoder=0.0,
-            dropout_emb=0.0,
-            self_attention_model="rope",
-            moe_num_experts=4,
-            moe_top_k=2,
             sync_max_audio_length=False,
         )
         features = 8

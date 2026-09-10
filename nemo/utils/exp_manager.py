@@ -35,11 +35,18 @@ from hydra.utils import get_original_cwd
 from lightning.pytorch.callbacks import Callback, ModelCheckpoint
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 from lightning.pytorch.callbacks.timer import Interval, Timer
-from lightning.pytorch.loggers import MLFlowLogger, NeptuneLogger, TensorBoardLogger, WandbLogger
+from lightning.pytorch.loggers import MLFlowLogger, TensorBoardLogger, WandbLogger
 from lightning.pytorch.loops import _TrainingEpochLoop
 from lightning.pytorch.strategies.ddp import DDPStrategy
 from lightning.pytorch.trainer.connectors.checkpoint_connector import _CheckpointConnector
 from omegaconf import DictConfig, OmegaConf, open_dict
+
+try:
+    # NeptuneLogger was removed from lightning in 2.6.0; keep it optional so the rest of
+    # exp_manager keeps working on newer lightning versions.
+    from lightning.pytorch.loggers import NeptuneLogger
+except ImportError:
+    NeptuneLogger = None
 
 from nemo.collections.common.callbacks import EMA
 from nemo.collections.common.callbacks.ipl_epoch_stopper import IPLEpochStopper
@@ -1279,6 +1286,11 @@ def configure_loggers(
         logging.info("ClearMLLogger has been set up")
 
     if create_neptune_logger:
+        if NeptuneLogger is None:
+            raise ValueError(
+                "create_neptune_logger was requested, but NeptuneLogger is not available in the installed "
+                "lightning version (it was removed in lightning 2.6.0)."
+            )
         if neptune_kwargs is None:
             neptune_kwargs = {}
         if "name" not in neptune_kwargs and "project" not in neptune_kwargs:

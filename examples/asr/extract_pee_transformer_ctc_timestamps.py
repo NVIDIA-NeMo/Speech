@@ -116,9 +116,21 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.5,
         help=(
-            "Hard-gate non-blank CTC emissions below this Sortformer probability in parallel mode "
-            "(default: 0.5). Use a negative value to disable the hard gate."
+            "Sortformer threshold that selects active CTC regions and hard-masks non-blank tokens "
+            "in parallel mode (default: 0.5). Use a negative value for the unrestricted CTC timeline."
         ),
+    )
+    parser.add_argument(
+        "--parallel-active-region-padding-seconds",
+        type=float,
+        default=0.16,
+        help="Context added to both sides of each Sortformer-active region before parallel CTC alignment (default: 0.16).",
+    )
+    parser.add_argument(
+        "--parallel-active-region-merge-gap-seconds",
+        type=float,
+        default=0.40,
+        help="Merge padded speaker regions whose remaining gap is no more than this many seconds (default: 0.40).",
     )
     parser.add_argument(
         "--device",
@@ -543,6 +555,10 @@ def main() -> int:
         raise ValueError("--parallel-speaker-gate-threshold must be between zero and one, or negative to disable.")
     else:
         parallel_gate_threshold = args.parallel_speaker_gate_threshold
+    if args.parallel_active_region_padding_seconds < 0.0:
+        raise ValueError("--parallel-active-region-padding-seconds must be non-negative.")
+    if args.parallel_active_region_merge_gap_seconds < 0.0:
+        raise ValueError("--parallel-active-region-merge-gap-seconds must be non-negative.")
     dtype = torch.bfloat16 if args.model_dtype == "bf16" else torch.float32
 
     print(f"Loading PEE: {pee_path}", file=sys.stderr, flush=True)
@@ -563,6 +579,8 @@ def main() -> int:
         speaker_assignment_mode=args.speaker_assignment_mode,
         speaker_logprob_weight=args.speaker_logprob_weight,
         parallel_speaker_gate_threshold=parallel_gate_threshold,
+        parallel_active_region_padding_seconds=args.parallel_active_region_padding_seconds,
+        parallel_active_region_merge_gap_seconds=args.parallel_active_region_merge_gap_seconds,
     )
 
     waveform, waveform_length, duration = load_waveform(audio_path, device)

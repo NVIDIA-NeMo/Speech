@@ -1170,10 +1170,17 @@ class PEETransformerCTCTimestampExtractor:
         speaker_logprob_weight: Weight of ``log(sigmoid)`` added to CTC token-state
             emissions. A value of one is the literal CTC-probability ×
             ``max(activity, epsilon)`` product; zero disables the soft gate.
-        parallel_speaker_gate_threshold: Optional hard Sortformer gate for parallel
-            alignment. Non-blank token emissions below this probability are disabled
-            while CTC blank emissions remain available. Set ``None`` to use only the
-            soft gate.
+        parallel_speaker_gate_threshold: Optional Sortformer threshold used to
+            select each speaker's CTC regions and hard-mask non-blank token
+            emissions below that probability in ``parallel`` mode. Long inactive
+            gaps become explicit word-boundary separators, so a word cannot be
+            aligned across another speaker's silence. Set ``None`` to use the
+            unrestricted CTC timeline.
+        parallel_active_region_padding_seconds: Context added on both sides of a
+            selected Sortformer speech region; it provides blank-state context at
+            active-region boundaries before CTC alignment.
+        parallel_active_region_merge_gap_seconds: Maximum remaining gap between
+            padded active regions to merge. Longer gaps remain hard word boundaries.
         alignment_mode: ``'serialized'`` (default) or ``'parallel'``.
         speaker_assignment_mode: ``'optimal'`` learns a per-audio one-to-one mapping
             from t-SOT tags to Sortformer columns using an initial CTC alignment;
@@ -1195,6 +1202,8 @@ class PEETransformerCTCTimestampExtractor:
         speaker_activity_threshold: float = 0.5,
         speaker_logprob_weight: float = 0.25,
         parallel_speaker_gate_threshold: Optional[float] = 0.5,
+        parallel_active_region_padding_seconds: float = 0.16,
+        parallel_active_region_merge_gap_seconds: float = 0.40,
         alignment_mode: str = 'serialized',
         speaker_assignment_mode: str = 'optimal',
         epsilon: float = 1.0e-6,
@@ -1211,6 +1220,10 @@ class PEETransformerCTCTimestampExtractor:
             raise ValueError("speaker_logprob_weight must be non-negative.")
         if parallel_speaker_gate_threshold is not None and not 0.0 <= float(parallel_speaker_gate_threshold) <= 1.0:
             raise ValueError("parallel_speaker_gate_threshold must be between zero and one or None.")
+        if parallel_active_region_padding_seconds < 0:
+            raise ValueError("parallel_active_region_padding_seconds must be non-negative.")
+        if parallel_active_region_merge_gap_seconds < 0:
+            raise ValueError("parallel_active_region_merge_gap_seconds must be non-negative.")
         if epsilon <= 0:
             raise ValueError("epsilon must be positive.")
 
@@ -1226,6 +1239,8 @@ class PEETransformerCTCTimestampExtractor:
         self.parallel_speaker_gate_threshold = (
             None if parallel_speaker_gate_threshold is None else float(parallel_speaker_gate_threshold)
         )
+        self.parallel_active_region_padding_seconds = float(parallel_active_region_padding_seconds)
+        self.parallel_active_region_merge_gap_seconds = float(parallel_active_region_merge_gap_seconds)
         self.alignment_mode = self._validate_alignment_mode(alignment_mode)
         self.speaker_assignment_mode = self._validate_assignment_mode(speaker_assignment_mode)
         self.epsilon = float(epsilon)
@@ -1440,9 +1455,10 @@ class PEETransformerCTCTimestampExtractor:
             speaker_assignment_mode: Per-call ``'optimal'`` or ``'identity'``
                 Sortformer-column mapping override.
             speaker_logprob_weight: Per-call Sortformer DP-prior weight override.
-            parallel_speaker_gate_threshold: Per-call hard token-emission gate for
-                ``parallel`` alignment. Omit it to use the extractor default; pass
-                ``None`` to disable the hard gate for this call.
+            parallel_speaker_gate_threshold: Per-call Sortformer threshold that
+                selects active CTC regions and hard-masks non-blank token states.
+                Omit it to use the extractor default; pass ``None`` to align the
+                unrestricted CTC timeline for this call.
 
         Returns:
             A dictionary whose ``speaker_word_timestamps`` contains one ordered list
@@ -1574,6 +1590,7 @@ class PEETransformerCTCTimestampExtractor:
         )
 
         alignment_scores: Dict[Optional[int], float] = {}
+        parallel_active_region_diagnostics: Dict[Optional[int], Dict[str, Any]] = {}
         if mode == 'serialized':
             rows, path_score = self._align_word_sequence(
                 tokenized_words=tokenized_words,
@@ -1588,6 +1605,14 @@ class PEETransformerCTCTimestampExtractor:
             )
             alignment_scores[None] = path_score
         else:
+            parallel_timelines, parallel_active_region_diagnostics = self._build_parallel_active_timelines(
+                tokenized_words=tokenized_words,
+                speaker_mapping=speaker_mapping,
+                speaker_probs=sortformer_on_ctc,
+                ctc_num_frames=ctc.shape[0],
+                ctc_step_seconds=ctc_step_seconds,
+                active_threshold=parallel_gate_threshold,
+            )
             rows, alignment_scores = self._align_parallel_word_streams_batched(
                 tokenized_words=tokenized_words,
                 ctc_log_probs=ctc,
@@ -1597,7 +1622,10 @@ class PEETransformerCTCTimestampExtractor:
                 ctc_step_seconds=ctc_step_seconds,
                 time_offset=time_offset,
                 speaker_logprob_weight=float(speaker_weight),
+                # Keep token emissions inside the measured speech regions. The
+                # padded collar supplies blank-state context, not extra speech.
                 speaker_gate_threshold=parallel_gate_threshold,
+                speaker_timelines=parallel_timelines,
             )
 
         speaker_word_timestamps: Dict[Optional[int], List[Dict[str, Any]]] = {}
@@ -1620,6 +1648,9 @@ class PEETransformerCTCTimestampExtractor:
                 'final_path_scores': alignment_scores,
                 'speaker_assignment_scores': assignment_scores,
                 'parallel_speaker_gate_threshold': parallel_gate_threshold if mode == 'parallel' else None,
+                'parallel_active_regions': parallel_active_region_diagnostics if mode == 'parallel' else {},
+                'parallel_active_region_padding_seconds': self.parallel_active_region_padding_seconds,
+                'parallel_active_region_merge_gap_seconds': self.parallel_active_region_merge_gap_seconds,
             },
         }
 
@@ -1816,6 +1847,121 @@ class PEETransformerCTCTimestampExtractor:
         )
         return len(token_ids) + repeated_neighbours
 
+    def _build_parallel_active_timelines(
+        self,
+        *,
+        tokenized_words: Sequence[Dict[str, Any]],
+        speaker_mapping: Dict[int, Optional[int]],
+        speaker_probs: Optional[torch.Tensor],
+        ctc_num_frames: int,
+        ctc_step_seconds: float,
+        active_threshold: Optional[float],
+    ) -> Tuple[Dict[Optional[int], Dict[str, torch.Tensor]], Dict[Optional[int], Dict[str, Any]]]:
+        """Build compact CTC timelines for independently aligned speaker streams.
+
+        A timeline contains original CTC frame indices and ``-1`` virtual frames.
+        A virtual frame is inserted only between disjoint active regions and can
+        emit a blank state at a complete-word boundary. This prevents a word from
+        spanning a long Sortformer-inactive gap while preserving one CTC DP per
+        speaker transcript.
+        """
+        if ctc_num_frames <= 0:
+            raise ValueError("ctc_num_frames must be positive.")
+        full_source_frames = torch.arange(ctc_num_frames, dtype=torch.long)
+        full_region_ids = torch.zeros(ctc_num_frames, dtype=torch.long)
+        timelines: Dict[Optional[int], Dict[str, torch.Tensor]] = {}
+        diagnostics: Dict[Optional[int], Dict[str, Any]] = {}
+        padding_frames = int(round(self.parallel_active_region_padding_seconds / ctc_step_seconds))
+        merge_gap_frames = int(round(self.parallel_active_region_merge_gap_seconds / ctc_step_seconds))
+
+        for speaker_tag in self._group_words_by_speaker(tokenized_words):
+            column = speaker_mapping.get(speaker_tag)
+            constrained = (
+                speaker_tag is not None
+                and speaker_probs is not None
+                and column is not None
+                and active_threshold is not None
+            )
+            if not constrained:
+                timelines[speaker_tag] = {
+                    'source_frame_indices': full_source_frames.clone(),
+                    'region_ids': full_region_ids.clone(),
+                }
+                diagnostics[speaker_tag] = {
+                    'constrained_to_active_regions': False,
+                    'sortformer_column': column,
+                    'selected_ctc_frames': ctc_num_frames,
+                    'virtual_separator_count': 0,
+                }
+                continue
+
+            if speaker_probs.ndim != 2 or speaker_probs.shape[0] != ctc_num_frames:
+                raise ValueError("speaker_probs must have shape (T_ctc, num_speakers).")
+            column = int(column)
+            if not 0 <= column < speaker_probs.shape[1]:
+                raise ValueError(
+                    f"Speaker tag {speaker_tag!r} maps to unavailable Sortformer column {column}."
+                )
+            activity = speaker_probs[:, column]
+            active_frames = torch.nonzero(activity >= float(active_threshold), as_tuple=False).flatten().tolist()
+            if not active_frames:
+                raise ValueError(
+                    "Parallel alignment found no Sortformer-active CTC frames for "
+                    f"speaker tag {speaker_tag!r} (column {column}, threshold {active_threshold}). "
+                    "Lower the threshold or use serialized alignment."
+                )
+
+            raw_regions: List[Tuple[int, int]] = []
+            start = previous = int(active_frames[0])
+            for frame in active_frames[1:]:
+                frame = int(frame)
+                if frame == previous + 1:
+                    previous = frame
+                    continue
+                raw_regions.append((start, previous))
+                start = previous = frame
+            raw_regions.append((start, previous))
+
+            padded_regions = [
+                (max(0, start - padding_frames), min(ctc_num_frames - 1, end + padding_frames))
+                for start, end in raw_regions
+            ]
+            merged_regions: List[Tuple[int, int]] = []
+            for start, end in padded_regions:
+                if merged_regions and start <= merged_regions[-1][1] + 1 + merge_gap_frames:
+                    merged_regions[-1] = (merged_regions[-1][0], max(merged_regions[-1][1], end))
+                else:
+                    merged_regions.append((start, end))
+
+            source_frames: List[int] = []
+            region_ids: List[int] = []
+            for region_id, (start, end) in enumerate(merged_regions):
+                if source_frames:
+                    source_frames.append(-1)
+                    region_ids.append(-1)
+                source_frames.extend(range(start, end + 1))
+                region_ids.extend([region_id] * (end - start + 1))
+            timelines[speaker_tag] = {
+                'source_frame_indices': torch.tensor(source_frames, dtype=torch.long),
+                'region_ids': torch.tensor(region_ids, dtype=torch.long),
+            }
+            diagnostics[speaker_tag] = {
+                'constrained_to_active_regions': True,
+                'sortformer_column': column,
+                'active_threshold': float(active_threshold),
+                'padding_frames': padding_frames,
+                'merge_gap_frames': merge_gap_frames,
+                'raw_active_regions': [
+                    {'start_frame': start, 'end_frame': end} for start, end in raw_regions
+                ],
+                'selected_active_regions': [
+                    {'start_frame': start, 'end_frame': end} for start, end in merged_regions
+                ],
+                'selected_ctc_frames': len(source_frames) - max(0, len(merged_regions) - 1),
+                'virtual_separator_count': max(0, len(merged_regions) - 1),
+            }
+        return timelines, diagnostics
+
     def _align_word_sequence(
         self,
         *,
@@ -1879,45 +2025,113 @@ class PEETransformerCTCTimestampExtractor:
         time_offset: float,
         speaker_logprob_weight: float,
         speaker_gate_threshold: Optional[float],
+        speaker_timelines: Optional[Mapping[Optional[int], Mapping[str, torch.Tensor]]] = None,
     ) -> Tuple[List[Dict[str, Any]], Dict[Optional[int], float]]:
         """Align independent speaker streams in one padded CTC Viterbi batch.
 
-        All streams share the same CTC frames. Only the target-state axis is padded;
-        no ``(speakers, frames, vocabulary)`` tensor is materialized.
+        Each stream can provide a compact timeline containing original CTC frames
+        plus virtual separators between disjoint Sortformer-active regions. The
+        DP evaluates all streams together without materializing a
+        ``(speakers, frames, vocabulary)`` tensor.
         """
         grouped_words = self._group_words_by_speaker(tokenized_words)
-        streams: List[Tuple[Optional[int], List[Dict[str, Any]], List[int], List[Optional[int]], List[Optional[int]]]] = []
+        full_source_frames = torch.arange(ctc_log_probs.shape[0], dtype=torch.long)
+        full_region_ids = torch.zeros(ctc_log_probs.shape[0], dtype=torch.long)
+        streams: List[Dict[str, Any]] = []
         for speaker_tag, speaker_words in grouped_words.items():
             speaker_words = list(speaker_words)
             labels, state_to_word, flat_tokens = self._build_ctc_target(speaker_words, blank_id)
+            timeline = None if speaker_timelines is None else speaker_timelines.get(speaker_tag)
+            if timeline is None:
+                source_frame_indices = full_source_frames.clone()
+                active_region_ids = full_region_ids.clone()
+            else:
+                source_frame_indices = timeline.get('source_frame_indices')
+                active_region_ids = timeline.get('region_ids')
+                if not isinstance(source_frame_indices, torch.Tensor) or not isinstance(active_region_ids, torch.Tensor):
+                    raise TypeError(
+                        "speaker_timelines entries must contain tensor-valued "
+                        "'source_frame_indices' and 'region_ids'."
+                    )
+                source_frame_indices = source_frame_indices.detach().to(device='cpu', dtype=torch.long)
+                active_region_ids = active_region_ids.detach().to(device='cpu', dtype=torch.long)
+            if source_frame_indices.ndim != 1 or active_region_ids.ndim != 1:
+                raise ValueError("speaker timeline tensors must be one-dimensional.")
+            if source_frame_indices.numel() == 0 or source_frame_indices.shape != active_region_ids.shape:
+                raise ValueError(f"Speaker timeline for {speaker_tag!r} is empty or has mismatched region IDs.")
+            invalid_source = (source_frame_indices < -1) | (source_frame_indices >= ctc_log_probs.shape[0])
+            invalid_region = ((source_frame_indices < 0) & (active_region_ids != -1)) | (
+                (source_frame_indices >= 0) & (active_region_ids < 0)
+            )
+            if invalid_source.any() or invalid_region.any():
+                raise ValueError(f"Speaker timeline for {speaker_tag!r} contains invalid CTC frame or region IDs.")
+            if source_frame_indices[0] < 0 or source_frame_indices[-1] < 0:
+                raise ValueError(f"Speaker timeline for {speaker_tag!r} must begin and end on an acoustic CTC frame.")
+            actual_frame_count = int((source_frame_indices >= 0).sum().item())
             minimum_frames = self._minimum_ctc_frames(flat_tokens)
-            if minimum_frames > ctc_log_probs.shape[0]:
+            if minimum_frames > actual_frame_count:
                 raise ValueError(
-                    "CTC target is infeasible for speaker "
-                    f"{speaker_tag!r}: it needs at least {minimum_frames} frames but only "
-                    f"{ctc_log_probs.shape[0]} are available."
+                    "CTC target is infeasible in selected active regions for speaker "
+                    f"{speaker_tag!r}: it needs at least {minimum_frames} acoustic CTC frames but only "
+                    f"{actual_frame_count} are available. Lower the active-region threshold, increase "
+                    "the region padding or merge gap, or use serialized alignment."
                 )
+
             state_speaker_columns: List[Optional[int]] = [None] * len(labels)
             for state_index, local_word_index in enumerate(state_to_word):
                 if local_word_index is not None:
                     state_speaker_columns[state_index] = speaker_mapping.get(
                         speaker_words[local_word_index]['speaker_tag']
                     )
-            streams.append((speaker_tag, speaker_words, labels, state_to_word, state_speaker_columns))
+            separator_state_mask = torch.tensor(
+                [
+                    label == blank_id
+                    and (
+                        state_index == 0
+                        or state_index == len(labels) - 1
+                        or state_to_word[state_index - 1] != state_to_word[state_index + 1]
+                    )
+                    for state_index, label in enumerate(labels)
+                ],
+                dtype=torch.bool,
+            )
+            streams.append(
+                {
+                    'speaker_tag': speaker_tag,
+                    'speaker_words': speaker_words,
+                    'labels': labels,
+                    'state_to_word': state_to_word,
+                    'state_speaker_columns': state_speaker_columns,
+                    'source_frame_indices': source_frame_indices,
+                    'active_region_ids': active_region_ids,
+                    'separator_state_mask': separator_state_mask,
+                }
+            )
 
         if not streams:
             return [], {}
 
         num_streams = len(streams)
-        max_states = max(len(labels) for _, _, labels, _, _ in streams)
-        state_lengths = torch.tensor([len(labels) for _, _, labels, _, _ in streams], dtype=torch.long)
+        max_states = max(len(stream['labels']) for stream in streams)
+        max_time = max(int(stream['source_frame_indices'].numel()) for stream in streams)
+        state_lengths = torch.tensor([len(stream['labels']) for stream in streams], dtype=torch.long)
+        time_lengths = torch.tensor(
+            [int(stream['source_frame_indices'].numel()) for stream in streams], dtype=torch.long
+        )
         labels_batch = torch.full((num_streams, max_states), blank_id, dtype=torch.long)
         columns_batch = torch.full((num_streams, max_states), -1, dtype=torch.long)
-        for stream_index, (_, _, labels, _, columns) in enumerate(streams):
+        source_frames_batch = torch.full((num_streams, max_time), -1, dtype=torch.long)
+        separator_states_batch = torch.zeros((num_streams, max_states), dtype=torch.bool)
+        for stream_index, stream in enumerate(streams):
+            labels = stream['labels']
+            columns = stream['state_speaker_columns']
+            source_frame_indices = stream['source_frame_indices']
             labels_batch[stream_index, : len(labels)] = torch.tensor(labels, dtype=torch.long)
             columns_batch[stream_index, : len(columns)] = torch.tensor(
                 [-1 if column is None else int(column) for column in columns], dtype=torch.long
             )
+            source_frames_batch[stream_index, : source_frame_indices.numel()] = source_frame_indices
+            separator_states_batch[stream_index, : len(labels)] = stream['separator_state_mask']
 
         paths, scores = self._ctc_viterbi_align_batched(
             ctc_log_probs=ctc_log_probs,
@@ -1928,25 +2142,30 @@ class PEETransformerCTCTimestampExtractor:
             speaker_probs=speaker_probs,
             speaker_logprob_weight=speaker_logprob_weight,
             speaker_gate_threshold=speaker_gate_threshold,
+            source_frame_indices=source_frames_batch,
+            time_lengths=time_lengths,
+            separator_state_mask=separator_states_batch,
         )
 
         rows: List[Dict[str, Any]] = []
         score_by_speaker: Dict[Optional[int], float] = {}
-        for (speaker_tag, speaker_words, labels, state_to_word, _), path, score in zip(streams, paths, scores):
+        for stream, path, score in zip(streams, paths, scores):
             rows.extend(
                 self._word_rows_from_path(
-                    tokenized_words=speaker_words,
-                    labels=labels,
-                    state_to_word=state_to_word,
+                    tokenized_words=stream['speaker_words'],
+                    labels=stream['labels'],
+                    state_to_word=stream['state_to_word'],
                     path=path,
                     ctc_log_probs=ctc_log_probs,
                     speaker_probs=speaker_probs,
                     speaker_mapping=speaker_mapping,
                     ctc_step_seconds=ctc_step_seconds,
                     time_offset=time_offset,
+                    source_frame_indices=stream['source_frame_indices'],
+                    active_region_ids=stream['active_region_ids'],
                 )
             )
-            score_by_speaker[speaker_tag] = score
+            score_by_speaker[stream['speaker_tag']] = score
         return rows, score_by_speaker
 
 
@@ -2075,12 +2294,16 @@ class PEETransformerCTCTimestampExtractor:
         speaker_probs: Optional[torch.Tensor],
         speaker_logprob_weight: float,
         speaker_gate_threshold: Optional[float] = None,
+        source_frame_indices: Optional[torch.Tensor] = None,
+        time_lengths: Optional[torch.Tensor] = None,
+        separator_state_mask: Optional[torch.Tensor] = None,
     ) -> Tuple[List[torch.Tensor], List[float]]:
         """Run independent CTC Viterbi paths in a padded speaker batch.
 
-        ``labels`` has shape ``(num_speakers, max_states)``. Padded states are
-        masked to ``-inf``; the recurrence remains vectorized across speakers and
-        states while retaining the normal time-axis loop and exact CTC tie behavior.
+        ``source_frame_indices`` selects a compact per-stream CTC timeline. A
+        value of ``-1`` denotes a virtual separator: only a blank state at a
+        complete-word boundary is allowed there. This makes a long Sortformer
+        silence an actual alignment boundary rather than a cheap CTC blank run.
         """
         if ctc_log_probs.ndim != 2:
             raise ValueError(f"ctc_log_probs must have shape (T, V), got {tuple(ctc_log_probs.shape)}.")
@@ -2096,24 +2319,64 @@ class PEETransformerCTCTimestampExtractor:
         state_lengths = state_lengths.detach().to(device='cpu', dtype=torch.long)
         state_speaker_columns = state_speaker_columns.detach().to(device='cpu', dtype=torch.long)
         num_streams, max_states = labels.shape
-        num_frames = log_probs.shape[0]
+        num_source_frames = log_probs.shape[0]
         if num_streams == 0 or max_states < 2 or int(state_lengths.min().item()) < 2:
             raise ValueError("Each CTC stream must contain at least blank and one token state.")
         if int(state_lengths.max().item()) > max_states:
             raise ValueError("state_lengths cannot exceed labels.shape[1].")
 
+        if source_frame_indices is None:
+            source_frame_indices = torch.arange(num_source_frames, dtype=torch.long).unsqueeze(0).expand(num_streams, -1)
+        else:
+            source_frame_indices = source_frame_indices.detach().to(device='cpu', dtype=torch.long)
+        if source_frame_indices.ndim != 2 or source_frame_indices.shape[0] != num_streams:
+            raise ValueError("source_frame_indices must have shape (num_streams, max_time).")
+        max_time = source_frame_indices.shape[1]
+        if max_time == 0:
+            raise ValueError("source_frame_indices must contain at least one time step.")
+        if time_lengths is None:
+            time_lengths = torch.full((num_streams,), max_time, dtype=torch.long)
+        else:
+            time_lengths = time_lengths.detach().to(device='cpu', dtype=torch.long)
+        if time_lengths.ndim != 1 or time_lengths.shape[0] != num_streams:
+            raise ValueError("time_lengths must have shape (num_streams,).")
+        if int(time_lengths.min().item()) < 1 or int(time_lengths.max().item()) > max_time:
+            raise ValueError("time_lengths must be in [1, source_frame_indices.shape[1]].")
+
+        time_mask = torch.arange(max_time, dtype=torch.long).unsqueeze(0) < time_lengths.unsqueeze(1)
+        invalid_source = time_mask & ((source_frame_indices < -1) | (source_frame_indices >= num_source_frames))
+        if invalid_source.any():
+            raise ValueError("source_frame_indices contains an invalid original CTC frame index.")
+        start_frames = source_frame_indices[:, 0]
+        end_frames = source_frame_indices.gather(1, (time_lengths - 1).unsqueeze(1)).squeeze(1)
+        if (start_frames < 0).any() or (end_frames < 0).any():
+            raise ValueError("Each compact CTC timeline must begin and end on an acoustic frame.")
+        actual_time_mask = time_mask & (source_frame_indices >= 0)
+        virtual_time_mask = time_mask & (source_frame_indices < 0)
+
         state_mask = torch.arange(max_states, dtype=torch.long).unsqueeze(0) < state_lengths.unsqueeze(1)
         valid_labels = labels[state_mask]
         if valid_labels.numel() == 0 or int(valid_labels.min().item()) < 0 or int(valid_labels.max().item()) >= log_probs.shape[1]:
             raise ValueError("CTC target contains labels outside the CTC vocabulary.")
-        emissions = log_probs[:, labels.reshape(-1)].reshape(num_frames, num_streams, max_states)
-        emissions = emissions.permute(1, 0, 2).contiguous()
+        if separator_state_mask is None:
+            if virtual_time_mask.any():
+                raise ValueError("Virtual compact-timeline frames require separator_state_mask.")
+            separator_state_mask = torch.zeros((num_streams, max_states), dtype=torch.bool)
+        else:
+            separator_state_mask = separator_state_mask.detach().to(device='cpu', dtype=torch.bool)
+        if separator_state_mask.shape != labels.shape:
+            raise ValueError("separator_state_mask must have shape (num_streams, max_states).")
+        separator_state_mask = separator_state_mask & state_mask
+
+        safe_source_frames = source_frame_indices.clamp_min(0)
+        emissions = log_probs[safe_source_frames.unsqueeze(-1), labels.unsqueeze(1)]
         neg_inf = -float('inf')
         emissions.masked_fill_(~state_mask.unsqueeze(1), neg_inf)
+        emissions.masked_fill_(~time_mask.unsqueeze(-1), neg_inf)
 
         if speaker_probs is not None and (speaker_logprob_weight > 0.0 or speaker_gate_threshold is not None):
             speaker_probs = speaker_probs.detach().to(device='cpu', dtype=torch.float32)
-            if speaker_probs.ndim != 2 or speaker_probs.shape[0] != num_frames:
+            if speaker_probs.ndim != 2 or speaker_probs.shape[0] != num_source_frames:
                 raise ValueError("speaker_probs must have shape (T_ctc, num_speakers).")
             token_states = state_mask & (state_speaker_columns >= 0)
             if token_states.any():
@@ -2121,28 +2384,36 @@ class PEETransformerCTCTimestampExtractor:
                 if int(speaker_columns.max().item()) >= speaker_probs.shape[1]:
                     raise ValueError("speaker mapping references a missing Sortformer column.")
                 safe_columns = state_speaker_columns.clamp_min(0)
-                activity = speaker_probs[:, safe_columns.reshape(-1)]
-                activity = activity.reshape(num_frames, num_streams, max_states).permute(1, 0, 2)
+                activity = speaker_probs[safe_source_frames.unsqueeze(-1), safe_columns.unsqueeze(1)]
+                token_emissions = actual_time_mask.unsqueeze(-1) & token_states.unsqueeze(1)
                 if speaker_logprob_weight > 0.0:
                     soft_gate = torch.where(
-                        token_states.unsqueeze(1),
+                        token_emissions,
                         float(speaker_logprob_weight) * torch.log(activity.clamp_min(self.epsilon)),
                         torch.zeros_like(activity),
                     )
                     emissions = emissions + soft_gate
                 if speaker_gate_threshold is not None:
-                    inactive_tokens = token_states.unsqueeze(1) & (activity < float(speaker_gate_threshold))
+                    inactive_tokens = token_emissions & (activity < float(speaker_gate_threshold))
                     emissions.masked_fill_(inactive_tokens, neg_inf)
+
+        if virtual_time_mask.any():
+            separator_emissions = torch.where(
+                separator_state_mask.unsqueeze(1),
+                torch.zeros_like(emissions),
+                torch.full_like(emissions, neg_inf),
+            )
+            emissions = torch.where(virtual_time_mask.unsqueeze(-1), separator_emissions, emissions)
 
         previous_scores = torch.full((num_streams, max_states), neg_inf, dtype=torch.float32)
         previous_scores[:, 0] = emissions[:, 0, 0]
         previous_scores[:, 1] = emissions[:, 0, 1]
-        backpointers = torch.full((num_frames, num_streams, max_states), -1, dtype=torch.long)
+        backpointers = torch.full((max_time, num_streams, max_states), -1, dtype=torch.long)
         backpointers[0, :, 0] = 0
         backpointers[0, :, 1] = 1
         state_indices = torch.arange(max_states, dtype=torch.long).unsqueeze(0).expand(num_streams, -1)
 
-        for frame_index in range(1, num_frames):
+        for frame_index in range(1, max_time):
             best_scores = previous_scores.clone()
             best_previous_states = state_indices.clone()
 
@@ -2164,9 +2435,15 @@ class PEETransformerCTCTimestampExtractor:
                 best_scores = torch.where(take_skip, skip_scores, best_scores)
                 best_previous_states = torch.where(take_skip, state_indices - 2, best_previous_states)
 
-            previous_scores = best_scores + emissions[:, frame_index, :]
-            previous_scores.masked_fill_(~state_mask, neg_inf)
-            backpointers[frame_index] = torch.where(state_mask, best_previous_states, -torch.ones_like(best_previous_states))
+            updated_scores = best_scores + emissions[:, frame_index, :]
+            updated_scores.masked_fill_(~state_mask, neg_inf)
+            valid_time = time_mask[:, frame_index]
+            previous_scores = torch.where(valid_time.unsqueeze(1), updated_scores, previous_scores)
+            backpointers[frame_index] = torch.where(
+                valid_time.unsqueeze(1) & state_mask,
+                best_previous_states,
+                -torch.ones_like(best_previous_states),
+            )
 
         last_blank_states = state_lengths - 1
         last_token_states = state_lengths - 2
@@ -2177,26 +2454,27 @@ class PEETransformerCTCTimestampExtractor:
         final_scores = torch.where(choose_token, last_token_scores, last_blank_scores)
         if not torch.isfinite(final_scores).all():
             failed_streams = torch.nonzero(~torch.isfinite(final_scores), as_tuple=False).flatten().tolist()
-            gate_hint = (
-                "; lower or disable the hard speaker gate threshold."
-                if speaker_gate_threshold is not None
-                else "."
-            )
+            region_hint = " after restricting to the selected active regions" if virtual_time_mask.any() else ""
             raise ValueError(
                 "No valid CTC Viterbi path exists for speaker stream(s) "
-                f"{failed_streams}{gate_hint}"
+                f"{failed_streams}{region_hint}. Lower the active-region threshold, increase the region "
+                "padding or merge gap, or use serialized alignment."
             )
 
-        paths = torch.empty((num_streams, num_frames), dtype=torch.long)
+        paths = torch.full((num_streams, max_time), -1, dtype=torch.long)
         states = final_states.clone()
         stream_indices = torch.arange(num_streams, dtype=torch.long)
-        for frame_index in range(num_frames - 1, -1, -1):
-            paths[:, frame_index] = states
+        for frame_index in range(max_time - 1, -1, -1):
+            valid_time = time_mask[:, frame_index]
+            paths[valid_time, frame_index] = states[valid_time]
             if frame_index > 0:
-                states = backpointers[frame_index, stream_indices, states]
-                if (states < 0).any():
+                previous_states = backpointers[frame_index, stream_indices, states]
+                if (previous_states[valid_time] < 0).any():
                     raise RuntimeError("CTC Viterbi backtrace reached an invalid state.")
-        return [paths[index] for index in range(num_streams)], [float(score.item()) for score in final_scores]
+                states = torch.where(valid_time, previous_states, states)
+        return [paths[index, : int(time_lengths[index].item())] for index in range(num_streams)], [
+            float(score.item()) for score in final_scores
+        ]
 
 
     def _word_rows_from_path(
@@ -2211,21 +2489,57 @@ class PEETransformerCTCTimestampExtractor:
         speaker_mapping: Dict[int, Optional[int]],
         ctc_step_seconds: float,
         time_offset: float,
+        source_frame_indices: Optional[torch.Tensor] = None,
+        active_region_ids: Optional[torch.Tensor] = None,
     ) -> List[Dict[str, Any]]:
         """Convert a Viterbi state path into CTC word intervals and speaker metadata."""
-        frames_by_word: List[List[int]] = [[] for _ in tokenized_words]
-        for frame_index, state_index in enumerate(path.tolist()):
+        path = path.detach().to(device='cpu', dtype=torch.long)
+        if path.ndim != 1:
+            raise ValueError("path must be one-dimensional.")
+        if source_frame_indices is None:
+            source_frame_indices = torch.arange(path.numel(), dtype=torch.long)
+        else:
+            source_frame_indices = source_frame_indices.detach().to(device='cpu', dtype=torch.long)
+        if source_frame_indices.ndim != 1 or source_frame_indices.numel() != path.numel():
+            raise ValueError("source_frame_indices must be one-dimensional and match path length.")
+        if active_region_ids is not None:
+            active_region_ids = active_region_ids.detach().to(device='cpu', dtype=torch.long)
+            if active_region_ids.ndim != 1 or active_region_ids.shape != source_frame_indices.shape:
+                raise ValueError("active_region_ids must match source_frame_indices.")
+
+        frames_by_word: List[List[Tuple[int, int, Optional[int]]]] = [[] for _ in tokenized_words]
+        for compact_frame, state_index in enumerate(path.tolist()):
+            if not 0 <= state_index < len(state_to_word):
+                raise RuntimeError("CTC path contains a state outside the CTC target.")
             word_index = state_to_word[state_index]
-            if word_index is not None:
-                frames_by_word[word_index].append(frame_index)
+            if word_index is None:
+                continue
+            source_frame = int(source_frame_indices[compact_frame].item())
+            if source_frame < 0:
+                raise RuntimeError("A CTC token state was assigned to a virtual active-region separator.")
+            region_id: Optional[int] = None
+            if active_region_ids is not None:
+                region_id = int(active_region_ids[compact_frame].item())
+                if region_id < 0:
+                    raise RuntimeError("A CTC token state was assigned to an invalid active-region ID.")
+            frames_by_word[word_index].append((source_frame, state_index, region_id))
 
         rows: List[Dict[str, Any]] = []
-        for word, frames in zip(tokenized_words, frames_by_word):
-            if not frames:
+        for word, word_frames in zip(tokenized_words, frames_by_word):
+            if not word_frames:
                 raise RuntimeError(f"CTC path did not visit any token state for word {word['word']!r}.")
+            frames = [frame for frame, _, _ in word_frames]
+            state_indices = [state_index for _, state_index, _ in word_frames]
+            region_ids = {region_id for _, _, region_id in word_frames if region_id is not None}
+            if active_region_ids is not None and len(region_ids) != 1:
+                raise RuntimeError(
+                    f"CTC word {word['word']!r} crossed multiple active regions; this violates parallel alignment."
+                )
+            if frames != sorted(frames):
+                raise RuntimeError("Compact CTC timeline did not map token frames to increasing original frames.")
             start_frame, end_frame = frames[0], frames[-1]
             selected_log_probs = torch.tensor(
-                [ctc_log_probs[frame, labels[int(path[frame].item())]].item() for frame in frames],
+                [ctc_log_probs[frame, labels[state_index]].item() for frame, state_index in zip(frames, state_indices)],
                 dtype=torch.float32,
             )
             speaker_tag = word['speaker_tag']
@@ -2234,31 +2548,31 @@ class PEETransformerCTCTimestampExtractor:
             speaker_activity_start: Optional[float] = None
             speaker_activity_end: Optional[float] = None
             if speaker_probs is not None and sortformer_column is not None:
-                activity = speaker_probs[start_frame : end_frame + 1, sortformer_column]
+                frame_tensor = torch.tensor(frames, dtype=torch.long)
+                activity = speaker_probs.index_select(0, frame_tensor)[:, sortformer_column]
                 speaker_confidence = float(activity.mean().item())
                 active_indices = torch.nonzero(activity >= self.speaker_activity_threshold, as_tuple=False).flatten()
                 if active_indices.numel() > 0:
-                    activity_start = start_frame + int(active_indices[0].item())
-                    activity_end = start_frame + int(active_indices[-1].item())
+                    activity_start = frames[int(active_indices[0].item())]
+                    activity_end = frames[int(active_indices[-1].item())]
                     speaker_activity_start = time_offset + activity_start * ctc_step_seconds
                     speaker_activity_end = time_offset + (activity_end + 1) * ctc_step_seconds
 
-            rows.append(
-                {
-                    'word': word['word'],
-                    'word_index': word['word_index'],
-                    'speaker_tag': speaker_tag,
-                    'start': time_offset + start_frame * ctc_step_seconds,
-                    'end': time_offset + (end_frame + 1) * ctc_step_seconds,
-                    'start_frame': start_frame,
-                    'end_frame': end_frame,
-                    'ctc_confidence': float(torch.exp(selected_log_probs.mean()).item()),
-                    'sortformer_column': sortformer_column,
-                    'speaker_confidence': speaker_confidence,
-                    'speaker_activity_start': speaker_activity_start,
-                    'speaker_activity_end': speaker_activity_end,
-                }
-            )
+            row = {
+                'word': word['word'],
+                'word_index': word['word_index'],
+                'speaker_tag': speaker_tag,
+                'start': time_offset + start_frame * ctc_step_seconds,
+                'end': time_offset + (end_frame + 1) * ctc_step_seconds,
+                'start_frame': start_frame,
+                'end_frame': end_frame,
+                'ctc_confidence': float(torch.exp(selected_log_probs.mean()).item()),
+                'sortformer_column': sortformer_column,
+                'speaker_confidence': speaker_confidence,
+                'speaker_activity_start': speaker_activity_start,
+                'speaker_activity_end': speaker_activity_end,
+            }
+            rows.append(row)
         return rows
 
     def _resolve_speaker_mapping(

@@ -856,7 +856,15 @@ class FeatureMasking(NeuralModule):
 
         return mask
 
-    def forward(self, inputs, mask):
+    def forward(self, inputs, input_len):
+        if not self.training:
+            return inputs
+
+        mask = self._create_dropout_mask(input_len=input_len)
+        out = self.infer(inputs=inputs, mask=mask)
+        return out
+
+    def infer(self, inputs, mask):
         """
         The input mask specifies which ground truth values to mask.
 
@@ -865,9 +873,4 @@ class FeatureMasking(NeuralModule):
         """
         mask = rearrange(mask, 'B T -> B T 1')
         out = torch.where(mask, self.masked_emb, inputs)
-        return out
-
-    def apply_dropout(self, inputs, input_len):
-        mask = self._create_dropout_mask(input_len=input_len)
-        out = self.forward(inputs=inputs, mask=mask)
         return out

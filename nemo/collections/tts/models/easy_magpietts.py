@@ -1038,9 +1038,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             )
 
         # 5. Prepare audio channel embeddings
-        dropout_audio_conditioning = (
-            (self.feature_masking is not None) and self.training and (not dropout_conditional_input)
-        )
+        dropout_audio_conditioning = (self.feature_masking is not None) and (not dropout_conditional_input)
         (
             audio_channel_embedding,
             audio_channel_lens,

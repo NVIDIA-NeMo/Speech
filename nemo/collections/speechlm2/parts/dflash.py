@@ -23,17 +23,24 @@ from pathlib import Path
 
 import torch
 from lightning import LightningModule
-from nemo_automodel.components.distributed.mesh_utils import get_flat_mesh, get_fsdp_dp_mesh
+from nemo_automodel.components.distributed.mesh_utils import (
+    get_flat_mesh,
+    get_fsdp_dp_mesh,
+)
 from nemo_automodel.components.speculative.dflash.core import (
     DFlashTrainerModule,
     NoValidAnchorsError,
 )
-from nemo_automodel.components.speculative.dflash.dflash2_core import DFlash2TrainerModule
+from nemo_automodel.components.speculative.dflash.dflash2_core import (
+    DFlash2TrainerModule,
+)
 from nemo_automodel.components.speculative.dflash.draft_qwen3 import (
     Qwen3DFlashDraftModel,
     build_target_layer_ids,
 )
-from nemo_automodel.components.speculative.dflash.draft_qwen3_dflash2 import Qwen3DFlash2DraftModel
+from nemo_automodel.components.speculative.dflash.draft_qwen3_dflash2 import (
+    Qwen3DFlash2DraftModel,
+)
 from torch import nn
 from torch.distributed.tensor import DTensor
 from transformers.models.qwen3.configuration_qwen3 import Qwen3Config

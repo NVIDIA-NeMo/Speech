@@ -36,7 +36,6 @@ from nemo_automodel.components.speculative.dflash.draft_qwen3_dflash2 import (  
 from nemo.collections.speechlm2.parts import dflash as salm_dflash  # noqa: E402
 from nemo.collections.speechlm2.parts import packed_sequences  # noqa: E402
 
-
 REPO_ROOT = Path(__file__).parents[3]
 
 

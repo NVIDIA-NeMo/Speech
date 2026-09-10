@@ -16,15 +16,15 @@
 import math
 import random
 from dataclasses import dataclass
-from functools import lru_cache
 from typing import Optional, Sequence
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.nn.attention.flex_attention import and_masks, create_block_mask, flex_attention
+from torch.nn.attention.flex_attention import and_masks, create_block_mask
 
 from nemo.collections.asr.models.configs import CacheAwareStreamingConfig
+from nemo.collections.asr.modules import transformer_encoder_utils as _transformer_utils
 from nemo.collections.asr.parts.mixins.streaming import StreamingEncoder
 from nemo.collections.asr.parts.packed_sequence import (
     PackedEncoderActivations,
@@ -41,8 +41,6 @@ from nemo.collections.asr.parts.submodules.subsampling import FeatureStacking, S
 from nemo.core.classes.module import freeze, unfreeze
 from nemo.utils import logging
 from nemo.utils.decorators import experimental
-
-flex_attention_compiled = torch.compile(flex_attention, dynamic=True)
 
 
 @dataclass
@@ -225,6 +223,9 @@ class MultiHeadAttention(nn.Module):
         self.self_attention_model = cfg.self_attention_model
         self._uses_rel_pos = self.self_attention_model == "rel_pos"
         self._uses_rope = self.self_attention_model == "rope"
+        self._flash_attention_varlen_static_eligible = (
+            not self._uses_rel_pos and self.head_dim <= 256 and self.head_dim % 8 == 0
+        )
         if self.self_attention_model not in _SUPPORTED_SELF_ATTENTION_MODELS:
             raise ValueError(
                 f"self_attention_model='{self.self_attention_model}' is not supported. "
@@ -347,7 +348,7 @@ class MultiHeadAttention(nn.Module):
         if self._uses_rel_pos:
             score_mod, q = self._build_rel_pos_score_mod(q, pos_emb)
 
-        attn_fn = flex_attention_compiled if q.is_cuda else flex_attention
+        attn_fn = _transformer_utils._get_flex_attention(q)
         out = attn_fn(q, k, v, block_mask=block_mask, score_mod=score_mod)
         out = out.transpose(1, 2).contiguous().view(B, T, self.d_model)
         return self.out_proj(out)
@@ -470,7 +471,7 @@ class MultiHeadAttention(nn.Module):
         if k_mod is not None:
             k = k_mod
 
-        attn_fn = flex_attention_compiled if q.is_cuda else flex_attention
+        attn_fn = _transformer_utils._get_flex_attention(q)
         out = attn_fn(q, k, v, block_mask=block_mask, score_mod=score_mod)
         out = out.transpose(1, 2).contiguous().view(B, num_cur, self.d_model)
         return self.out_proj(out)
@@ -562,7 +563,7 @@ class MultiHeadAttention(nn.Module):
         if self._uses_rope:
             if position_ids is None:
                 raise ValueError("Packed RoPE attention requires per-token position_ids.")
-            q, k = _apply_packed_rope(self.rope, q, k, position_ids)
+            q, k = _transformer_utils._apply_packed_rope(self.rope, q, k, position_ids)
         return q, k, v
 
     def _compute_sequence_packed_attention(
@@ -579,9 +580,10 @@ class MultiHeadAttention(nn.Module):
         causal,
         sequence_offsets,
     ):
-        use_flash = not self._uses_rel_pos and _can_use_flash_attention_varlen(q)
-        if use_flash:
-            flash_attention = _get_flash_attention_varlen()
+        flash_attention = _transformer_utils._select_flash_attention_varlen(
+            q, static_eligible=self._flash_attention_varlen_static_eligible
+        )
+        if flash_attention is not None:
             out = flash_attention(
                 q,
                 k,
@@ -602,7 +604,7 @@ class MultiHeadAttention(nn.Module):
                 and torch.is_grad_enabled()
                 and any(tensor.requires_grad for tensor in (q, k, v))
             )
-            out = _packed_flex_attention_reference(
+            out = _transformer_utils._packed_flex_attention_reference(
                 self,
                 q,
                 k,
@@ -1118,13 +1120,16 @@ class TransformerEncoder(nn.Module):
             packed = pack_encoder_output(x, length)
         position_ids = packed_encoder_position_ids(packed) if self.self_attention_model == "rope" else None
         x = packed.data
-        fast_path = self.self_attention_model != "rel_pos" and _can_use_flash_attention_varlen_layout(
-            x,
-            self.d_model // self.n_heads,
+        fast_path = (
+            self.self_attention_model != "rel_pos"
+            and _transformer_utils._can_use_flash_attention_varlen_layout(
+                x,
+                self.d_model // self.n_heads,
+            )
         )
         sequence_offsets = None if fast_path else tuple(packed.cu_seqlens.tolist())
         for layer in self.layers:
-            x = _forward_sequence_packed_layer(
+            x = _transformer_utils._forward_sequence_packed_layer(
                 layer,
                 x,
                 lengths=packed.lengths,
@@ -1736,141 +1741,3 @@ class StreamingTransformerEncoder(TransformerEncoder, StreamingEncoder):
             return ok
 
         return create_block_mask(mask_mod, B=cache_valid_len.shape[0], H=1, Q_LEN=C, KV_LEN=num_kv, device=device)
-
-
-def _apply_packed_rope(rope, q, k, position_ids):
-    cos = rope.cos.index_select(0, position_ids).unsqueeze(1).to(q.dtype)
-    sin = rope.sin.index_select(0, position_ids).unsqueeze(1).to(q.dtype)
-    return rope._apply_rotary(q, cos, sin), rope._apply_rotary(k, cos.to(k.dtype), sin.to(k.dtype))
-
-
-def _packed_flex_attention_reference(
-    attn,
-    q,
-    k,
-    v,
-    *,
-    lengths,
-    pos_emb,
-    padded_length,
-    causal,
-    sequence_offsets,
-    use_math_reference=False,
-):
-    if sequence_offsets is None:
-        sequence_offsets = tuple(torch.cat([lengths.new_zeros(1), lengths.cumsum(0)]).tolist())
-    outputs = []
-    attn_fn = flex_attention_compiled if q.is_cuda else flex_attention
-    for offset, end in zip(sequence_offsets[:-1], sequence_offsets[1:]):
-        length = end - offset
-        if length == 0:
-            continue
-        qi = q[offset:end].transpose(0, 1).unsqueeze(0)
-        ki = k[offset:end].transpose(0, 1).unsqueeze(0)
-        vi = v[offset:end].transpose(0, 1).unsqueeze(0)
-        score_mod = None
-        if attn._uses_rel_pos:
-            if pos_emb is None or padded_length is None:
-                raise ValueError("Packed relative-position attention requires max-length positional metadata.")
-            pos_i = pos_emb[:, padded_length - length : padded_length + length - 1]
-            score_mod, qi = attn._build_rel_pos_score_mod(qi, pos_i)
-        if use_math_reference:
-            out = _packed_math_attention_reference(qi, ki, vi, causal=causal, score_mod=score_mod)
-        else:
-            block_mask = None
-            if causal:
-                block_mask = create_block_mask(
-                    _make_causal_mod(), B=1, H=1, Q_LEN=length, KV_LEN=length, device=q.device
-                )
-            out = attn_fn(qi, ki, vi, block_mask=block_mask, score_mod=score_mod)
-        outputs.append(out.squeeze(0).transpose(0, 1))
-    if not outputs:
-        # Keep every attention branch in the autograd graph even when a rank owns
-        # no valid tokens. FSDP/DDP otherwise observes missing gradients for q/k
-        # (and relative-position parameters), which can break collectives when
-        # another rank in the same step has non-empty input.
-        anchor = q.sum() + k.sum()
-        if attn._uses_rel_pos:
-            anchor = anchor + 0.0 * (attn.pos_bias_u.sum() + attn.pos_bias_v.sum())
-            anchor = anchor + sum(0.0 * parameter.sum() for parameter in attn.linear_pos.parameters())
-        return v + anchor.to(v.dtype)
-    return torch.cat(outputs, dim=0)
-
-
-def _packed_math_attention_reference(q, k, v, *, causal, score_mod):
-    scores = torch.matmul(q, k.transpose(-2, -1)) * (q.shape[-1] ** -0.5)
-    if score_mod is not None:
-        scores = scores + score_mod._relative_position_bias
-    if causal:
-        causal_mask = torch.ones(scores.shape[-2:], dtype=torch.bool, device=scores.device).tril()
-        scores = scores.masked_fill(~causal_mask, torch.finfo(scores.dtype).min)
-    return torch.matmul(torch.softmax(scores, dim=-1).to(v.dtype), v)
-
-
-def _can_use_flash_attention_varlen(q):
-    return _can_use_flash_attention_varlen_layout(q, q.shape[-1])
-
-
-def _can_use_flash_attention_varlen_layout(x, head_dim):
-    if not x.is_cuda or x.dtype not in (torch.float16, torch.bfloat16) or x.shape[0] == 0:
-        return False
-    if head_dim > 256 or head_dim % 8 != 0:
-        return False
-    if torch.version.cuda is None or torch.cuda.get_device_capability(x.device)[0] < 8:
-        return False
-    return _get_flash_attention_varlen() is not None
-
-
-@lru_cache(maxsize=1)
-def _get_flash_attention_varlen():
-    try:
-        from flash_attn import flash_attn_varlen_func
-    except (ImportError, ModuleNotFoundError):
-        flash_forward = getattr(torch.ops.aten, "_flash_attention_forward", None)
-        if flash_forward is None:
-            return None
-
-        def torch_flash_attention_varlen(
-            q,
-            k,
-            v,
-            cu_seqlens_q,
-            cu_seqlens_k,
-            max_seqlen_q,
-            max_seqlen_k,
-            *,
-            dropout_p,
-            softmax_scale,
-            causal,
-        ):
-            return flash_forward(
-                q,
-                k,
-                v,
-                cu_seqlens_q,
-                cu_seqlens_k,
-                max_seqlen_q,
-                max_seqlen_k,
-                dropout_p,
-                causal,
-                False,
-                scale=softmax_scale,
-            )[0]
-
-        torch_flash_attention_varlen._sequence_packed_provider = "aten"
-        return torch_flash_attention_varlen
-    return flash_attn_varlen_func
-
-
-def _forward_sequence_packed_layer(layer, x, **kwargs):
-    """Preserve packed execution through PyTorch's activation-checkpoint wrapper."""
-    wrapped = getattr(layer, '_checkpoint_wrapped_module', None)
-    if wrapped is None:
-        return layer._forward_sequence_packed(x, **kwargs)
-    packed_forward = getattr(wrapped, '_forward_sequence_packed', None)
-    checkpoint_fn = getattr(layer, 'checkpoint_fn', None)
-    if packed_forward is None or checkpoint_fn is None:
-        raise TypeError(
-            f"Activation-checkpoint wrapper around {type(wrapped).__name__} cannot execute sequence-packed layers."
-        )
-    return checkpoint_fn(packed_forward, x, **kwargs)

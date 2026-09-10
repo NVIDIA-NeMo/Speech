@@ -15,12 +15,13 @@
 import builtins
 import copy
 import gc
+from types import SimpleNamespace
 
 import pytest
 import torch
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
 
-from nemo.collections.asr.modules import transformer_encoder as transformer_encoder_module
+from nemo.collections.asr.modules import transformer_encoder_utils as transformer_encoder_utils_module
 from nemo.collections.asr.modules.transformer_encoder import (
     MultiHeadAttention,
     TransformerEncoder,
@@ -39,7 +40,7 @@ from nemo.collections.asr.parts.packed_sequence import (
 def _supports_cuda_varlen_flash_attention():
     if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 8:
         return False
-    return transformer_encoder_module._get_flash_attention_varlen() is not None
+    return transformer_encoder_utils_module._get_flash_attention_varlen() is not None
 
 
 requires_cuda_varlen_flash_attention = pytest.mark.skipif(
@@ -349,8 +350,11 @@ def test_sequence_packed_varlen_dispatch_contract(monkeypatch):
         recorded.update(q=q, k=k, v=v, cu_q=cu_q, cu_k=cu_k, max_q=max_q, max_k=max_k, kwargs=kwargs)
         return v
 
-    monkeypatch.setattr(transformer_encoder_module, "_can_use_flash_attention_varlen", lambda q: True)
-    monkeypatch.setattr(transformer_encoder_module, "_get_flash_attention_varlen", lambda: fake_flash)
+    monkeypatch.setattr(
+        transformer_encoder_utils_module,
+        "_select_flash_attention_varlen",
+        lambda q, *, static_eligible: fake_flash,
+    )
     lengths = torch.tensor([3, 2])
     cu_seqlens = torch.tensor([0, 3, 5], dtype=torch.int32)
 
@@ -374,6 +378,38 @@ def test_sequence_packed_varlen_dispatch_contract(monkeypatch):
     assert attention._last_sequence_packed_provider == "external"
 
 
+def test_sequence_packed_flash_device_probe_is_cached(monkeypatch):
+    provider = object()
+    capability_probes = []
+    provider_probes = []
+    tensor = SimpleNamespace(
+        is_cuda=True,
+        dtype=torch.bfloat16,
+        shape=(1, 2, 16),
+        device=torch.device("cuda:0"),
+    )
+
+    def get_device_capability(device):
+        capability_probes.append(device)
+        return (9, 0)
+
+    def get_provider():
+        provider_probes.append(None)
+        return provider
+
+    monkeypatch.setattr(torch.version, "cuda", "12.8")
+    monkeypatch.setattr(torch.cuda, "get_device_capability", get_device_capability)
+    monkeypatch.setattr(transformer_encoder_utils_module, "_get_flash_attention_varlen", get_provider)
+    transformer_encoder_utils_module._get_flash_attention_varlen_for_device.cache_clear()
+    try:
+        assert transformer_encoder_utils_module._can_use_flash_attention_varlen_layout(tensor, head_dim=16)
+        assert transformer_encoder_utils_module._can_use_flash_attention_varlen_layout(tensor, head_dim=16)
+        assert capability_probes == [torch.device("cuda:0")]
+        assert provider_probes == [None]
+    finally:
+        transformer_encoder_utils_module._get_flash_attention_varlen_for_device.cache_clear()
+
+
 def test_flash_attention_varlen_aten_provider_is_reported(monkeypatch):
     if getattr(torch.ops.aten, "_flash_attention_forward", None) is None:
         pytest.skip("PyTorch build does not expose the ATen FlashAttention operator")
@@ -384,14 +420,14 @@ def test_flash_attention_varlen_aten_provider_is_reported(monkeypatch):
             raise ImportError("simulate flash-attn not installed")
         return original_import(name, *args, **kwargs)
 
-    transformer_encoder_module._get_flash_attention_varlen.cache_clear()
+    transformer_encoder_utils_module._get_flash_attention_varlen.cache_clear()
     monkeypatch.setattr(builtins, "__import__", import_without_external_flash)
     try:
-        provider = transformer_encoder_module._get_flash_attention_varlen()
+        provider = transformer_encoder_utils_module._get_flash_attention_varlen()
         assert provider is not None
         assert provider._sequence_packed_provider == "aten"
     finally:
-        transformer_encoder_module._get_flash_attention_varlen.cache_clear()
+        transformer_encoder_utils_module._get_flash_attention_varlen.cache_clear()
 
 
 def test_sequence_packed_adds_no_state_dict_keys_and_loads_strictly():

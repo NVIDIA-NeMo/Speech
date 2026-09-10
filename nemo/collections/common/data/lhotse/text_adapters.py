@@ -322,6 +322,11 @@ class LhotseTextPairAdapter:
             ), f"Source ({len(self.source_paths)}) and target ({len(self.target_paths)}) path lists must have the same number of items."
         self.source_paths = expand_sharded_filepaths(self.source_paths)
         self.target_paths = expand_sharded_filepaths(self.target_paths)
+        if len(self.source_paths) != len(self.target_paths):
+            raise ValueError(
+                "Source and target path patterns must expand to the same number of shards, "
+                f"but got {len(self.source_paths)} and {len(self.target_paths)}."
+            )
 
     def __iter__(self) -> Iterator[SourceTargetTextExample]:
         seed = resolve_seed(self.shard_seed)

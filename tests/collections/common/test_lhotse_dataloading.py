@@ -32,7 +32,11 @@ from lhotse.testing.random import deterministic_rng
 from omegaconf import OmegaConf
 
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
-from nemo.collections.common.data.lhotse.text_adapters import SourceTargetTextExample, TextExample
+from nemo.collections.common.data.lhotse.text_adapters import (
+    LhotseTextPairAdapter,
+    SourceTargetTextExample,
+    TextExample,
+)
 from nemo.collections.common.tokenizers.sentencepiece_tokenizer import SentencePieceTokenizer, create_spt_model
 from nemo.utils.dependency import is_module_available
 
@@ -1432,6 +1436,18 @@ def test_text_file_pairs_input(txt_en_path, txt_es_path, questions_path):
     assert all(isinstance(c, SourceTargetTextExample) for c in b)
     assert all(c.source.language == "en" for c in b)
     assert all(c.target.language == "es" for c in b)
+
+
+def test_text_file_pair_rejects_mismatched_shard_counts(tmp_path):
+    for shard_idx in range(2):
+        (tmp_path / f"source_{shard_idx}.txt").write_text(f"source {shard_idx}\n")
+    target_path = tmp_path / "target_0.txt"
+    target_path.write_text("target 0\n")
+
+    source_paths = f"{tmp_path}/source__OP_0..1_CL_.txt"
+
+    with pytest.raises(ValueError, match="same number of shards"):
+        LhotseTextPairAdapter(source_paths, target_path)
 
 
 @pytest.fixture(scope="session")

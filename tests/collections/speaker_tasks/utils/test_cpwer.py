@@ -23,6 +23,7 @@ import pytest
 import torch
 
 from nemo.collections.asr.metrics.cpwer import (
+    calculate_corpus_cpWER,
     calculate_session_cpWER,
     calculate_session_cpWER_bruteforce,
     concat_perm_word_error_rate,
@@ -243,3 +244,93 @@ class TestConcatPermWordErrorRate:
     def test_length_mismatch_raises(self):
         with pytest.raises(ValueError):
             concat_perm_word_error_rate([["a"]], [["a"], ["b"]])
+
+
+def write_ctm(ctm_path, uniq_id, spk_texts):
+    """Write a minimal CTM file: `<uniq_id> <speaker> <start> <duration> <word>` per line."""
+    with open(ctm_path, "w") as ctm_file:
+        start_time = 0.0
+        for spk_idx, text in enumerate(spk_texts):
+            for word in text.split():
+                ctm_file.write(f"{uniq_id} speaker_{spk_idx} {start_time:.2f} 0.10 {word}\n")
+                start_time += 0.10
+
+
+class TestCorpusCpWER:
+    """Corpus-level cpWER aggregation: total errors over total reference words, as MeetEval reports it."""
+
+    @pytest.mark.unit
+    def test_corpus_cpwer_cross_boundary(self):
+        """A corpus of identical cross-boundary sessions aggregates to the session value, not to 0.0."""
+        hyps = [["the cat sat", "on"]] * 3
+        refs = [["the cat", "sat on"]] * 3
+        corpus_cpwer, cpwer_values = calculate_corpus_cpWER(hyps, refs)
+        assert_cpwer_equals(corpus_cpwer, 0.5)
+        assert all(abs(value - 0.5) < 1e-6 for value in cpwer_values)
+
+    @pytest.mark.unit
+    def test_corpus_cpwer_is_length_weighted(self):
+        """Sessions are weighted by reference length, matching how `word_error_rate` aggregates WER.
+
+        Session 1: errors=2, length=4 (cpWER=0.5). Session 2: errors=2, length=11 (cpWER=2/11).
+        Corpus: 4/15. An unweighted mean would give ~0.3409, and concatenating the per-speaker
+        transcripts before scoring would give 2/15.
+        """
+        hyps = [["the cat sat", "on"], ["z", "b c d e f g h i j x"]]
+        refs = [["the cat", "sat on"], ["a", "b c d e f g h i j k"]]
+        corpus_cpwer, cpwer_values = calculate_corpus_cpWER(hyps, refs)
+        assert_cpwer_equals(corpus_cpwer, 4 / 15)
+        assert_cpwer_equals(cpwer_values[0], 0.5)
+        assert_cpwer_equals(cpwer_values[1], 2 / 11)
+
+    @pytest.mark.unit
+    def test_corpus_cpwer_single_session_matches_session_cpwer(self):
+        hyp = ["alpha x", "gamma delta y", "zeta"]
+        ref = ["alpha beta", "gamma delta epsilon", "zeta"]
+        session_cpwer, _, _ = calculate_session_cpWER(hyp, ref)
+        corpus_cpwer, cpwer_values = calculate_corpus_cpWER([hyp], [ref])
+        assert_cpwer_equals(corpus_cpwer, session_cpwer)
+        assert_cpwer_equals(cpwer_values[0], session_cpwer)
+
+    @pytest.mark.unit
+    def test_corpus_cpwer_length_mismatch_raises(self):
+        with pytest.raises(ValueError):
+            calculate_corpus_cpWER([["a"]], [["a"], ["b"]])
+
+    @pytest.mark.unit
+    def test_evaluate_corpus_cpwer_agrees_with_sessions(self, tmp_path):
+        """`OfflineDiarWithASR.evaluate` must report a corpus cpWER consistent with its session values.
+
+        Each session is the cross-boundary case pinned by `test_cross_boundary` (cpWER=0.5), so the
+        corpus value must also be 0.5. Concatenating the per-speaker transcripts and running plain
+        `word_error_rate` on them lets edits cross speaker boundaries again and yields 0.0.
+        """
+        # Imported inside the test: `diarization_utils` pulls in the ASR stack, which is far heavier
+        # than the rest of this module needs.
+        from nemo.collections.asr.parts.utils.diarization_utils import OfflineDiarWithASR
+
+        hyp_dir = tmp_path / "hyp"
+        hyp_dir.mkdir()
+        audio_file_list, ref_ctm_file_list, hyp_ctm_file_list = [], [], []
+        for session_idx in range(3):
+            uniq_id = f"session{session_idx}"
+            audio_path = tmp_path / f"{uniq_id}.wav"
+            audio_path.touch()
+            ref_ctm_path = tmp_path / f"{uniq_id}.ctm"
+            hyp_ctm_path = hyp_dir / f"{uniq_id}.ctm"
+            write_ctm(ref_ctm_path, uniq_id, ["the cat", "sat on"])
+            write_ctm(hyp_ctm_path, uniq_id, ["the cat sat", "on"])
+            audio_file_list.append(str(audio_path))
+            ref_ctm_file_list.append(str(ref_ctm_path))
+            hyp_ctm_file_list.append(str(hyp_ctm_path))
+
+        wer_results = OfflineDiarWithASR.evaluate(
+            audio_file_list=audio_file_list,
+            hyp_trans_info_dict=None,
+            hyp_ctm_file_list=hyp_ctm_file_list,
+            ref_ctm_file_list=ref_ctm_file_list,
+        )
+
+        for session_idx in range(3):
+            assert_cpwer_equals(wer_results[f"session{session_idx}"]["cpWER"], 0.5)
+        assert_cpwer_equals(wer_results["total"]["average_cpWER"], 0.5)

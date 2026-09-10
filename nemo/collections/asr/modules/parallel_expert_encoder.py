@@ -278,6 +278,14 @@ class ParallelExpertEncoderPT(ModelPT):
             chunk_size_seconds=self._cfg.get("chunk_size_seconds", None),
             sync_max_audio_length=self._cfg.get("sync_max_audio_length", False),
         )
+        # Preserve the architecture-only bundle configuration for consolidated
+        # SpeechLM checkpoint export and serving reconstruction.
+        self.encoder._bundle_config = _clone_config(self._cfg)
+        self.encoder._bundle_config.diar_normalize_type = self.encoder.diar_normalize_type
+        self.encoder._bundle_config.speaker_feature_config_version = _SPEAKER_FEATURE_CONFIG_VERSION
+        self.encoder._bundle_config.speaker_feature_mode = self.encoder.speaker_feature_mode
+        self.encoder._bundle_config.speaker_activity_threshold = self.encoder.speaker_activity_threshold
+        self.encoder._bundle_config.sync_max_audio_length = self.encoder.sync_max_audio_length
 
     @staticmethod
     def _validate_bundle_schema(cfg: DictConfig) -> None:
@@ -376,6 +384,21 @@ class ParallelExpertEncoderPT(ModelPT):
         return bundle.encoder
 
     @classmethod
+    def from_inline_config(
+        cls,
+        cfg: Union[DictConfig, dict],
+        *,
+        map_location: Union[str, torch.device] = "cpu",
+    ) -> ParallelExpertEncoder:
+        """Construct the encoder architecture without loading standalone weights.
+
+        Consolidated SpeechLM checkpoints supply the encoder tensors from their
+        root state dictionary after constructing it from this embedded config.
+        """
+        shell = cls(cfg=OmegaConf.create(cfg), trainer=None)
+        return shell.encoder.to(map_location)
+
+    @classmethod
     def save_to_nemo(
         cls,
         encoder: ParallelExpertEncoder,
@@ -445,6 +468,7 @@ class ParallelExpertEncoder(nn.Module):
     :class:`TransformerEncoder` used by Transformer AED ASR checkpoints.
     """
 
+    supports_external_speaker_targets = True
     supports_sequence_packed_output = True
 
     def __init__(

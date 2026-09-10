@@ -19,6 +19,7 @@ import os
 import pathlib
 import shutil
 import subprocess
+import tempfile
 from functools import lru_cache
 from typing import Any, Callable, Dict, Iterable, Tuple
 from urllib.parse import urlparse
@@ -138,6 +139,38 @@ def ais_endpoint_to_dir(endpoint: str) -> str:
     return os.path.join(result.hostname, str(result.port))
 
 
+class _AISProcessStream:
+    """Wrap an AIS subprocess stream and keep the process alive until the stream is closed."""
+
+    def __init__(self, process: subprocess.Popen):
+        self._process = process
+        self._stream = process.stdout
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return next(self._stream)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+
+    def close(self):
+        """Close the output stream and wait for the AIS subprocess to finish."""
+        try:
+            self._stream.close()
+        finally:
+            if self._process.stderr is not None:
+                self._process.stderr.close()
+            self._process.wait()
+
+
 @lru_cache(maxsize=1)
 def ais_binary() -> str:
     """Return location of `ais` binary if available."""
@@ -212,35 +245,32 @@ def open_datastore_object_with_binary(path: str, num_retries: int = 5):
 
         cmd = [binary, 'get', path, '-']
 
-        done = False
-
+        last_error = ""
         for _ in range(num_retries):
-            with subprocess.Popen(
+            proc = subprocess.Popen(
                 cmd, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=False  # bytes mode
-            ) as proc:
-                stream = proc.stdout
-                if stream.peek(1):
-                    done = True
-                    return stream
-
-        if not done:
-            with subprocess.Popen(
-                cmd, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=False
-            ) as proc:
-                error = proc.stderr.read().decode("utf-8", errors="ignore").strip()
-            raise ValueError(
-                f"{path} couldn't be opened with AIS binary "
-                f"after {num_retries} attempts because of the following exception: {error}"
             )
+            if proc.stdout.peek(1):
+                return _AISProcessStream(proc)
+
+            with proc:
+                last_error = proc.stderr.read().decode("utf-8", errors="ignore").strip()
+
+        raise ValueError(
+            f"{path} couldn't be opened with AIS binary "
+            f"after {num_retries} attempts because of the following exception: {last_error}"
+        )
     return None
 
 
-def open_best(path: str, mode: str = "rb"):
+def open_best(path: str, mode: str = "rb", num_retries: int = 5):
     """Open a file using the best available method (Lhotse, datastore binary, or standard open).
 
     Args:
         path: path to the file or datastore object
         mode: file opening mode (default: "rb")
+        num_retries: number of retries if the get command fails with ais binary,
+            as AIS Python SDK has its own retry mechanism
 
     Returns:
         File-like object
@@ -248,7 +278,7 @@ def open_best(path: str, mode: str = "rb"):
     if LHOTSE_AVAILABLE:
         return lhotse_open_best(path, mode=mode)
     if is_datastore_path(path):
-        return open_datastore_object_with_binary(path)
+        return open_datastore_object_with_binary(path, num_retries=num_retries)
     return open(path, mode=mode, encoding='utf-8' if 'b' not in mode else None)
 
 
@@ -277,8 +307,16 @@ def get_datastore_object(path: str, force: bool = False, num_retries: int = 5) -
             if not os.path.isdir(local_dir):
                 os.makedirs(local_dir, exist_ok=True)
 
-            with open(local_path, 'wb') as f:
-                f.write(open_best(path).read(), num_retries=num_retries)
+            temp_path = None
+            try:
+                with tempfile.NamedTemporaryFile(mode='wb', dir=local_dir, prefix='.download-', delete=False) as f:
+                    temp_path = f.name
+                    with open_best(path, num_retries=num_retries) as stream:
+                        shutil.copyfileobj(stream, f)
+                os.replace(temp_path, local_path)
+            finally:
+                if temp_path is not None and os.path.exists(temp_path):
+                    os.unlink(temp_path)
 
         return local_path
 

@@ -220,8 +220,12 @@ def join_char_level_timestamps(
     subsamp = subsampling_factor
     stride = window_stride  # sec per raw frame
     for i, h in enumerate(hypotheses):
-        chunk_frame_offset = chunk_offsets[i] // subsamp
-        cumulative_offset += chunk_frame_offset
+        # accumulate in raw frames and divide once below: the 1 s chunk overlap (100 raw frames)
+        # subtracted from every chunk offset is not divisible by the default subsampling factor of
+        # 8, so dividing per chunk would truncate in the same direction on every chunk and the
+        # error would accumulate over long audios
+        cumulative_offset += chunk_offsets[i]
+        chunk_frame_offset = cumulative_offset // subsamp  # global shift of this chunk, in subsampled frames
 
         # 1) figure out how much of the *front* of this chunk we will drop
         for char in h.timestamp['char']:
@@ -235,9 +239,9 @@ def join_char_level_timestamps(
             # adjust offsets: chunk start + global chunk shift − total removed
             upd = dict(char)
             if char['start_offset'] != -1:
-                upd['start_offset'] = char['start_offset'] + cumulative_offset  # place chunk globally
+                upd['start_offset'] = char['start_offset'] + chunk_frame_offset  # place chunk globally
             if char['end_offset'] != -1:
-                upd['end_offset'] = char['end_offset'] + cumulative_offset
+                upd['end_offset'] = char['end_offset'] + chunk_frame_offset
 
             if char_timestamps:
                 if upd['start_offset'] != -1 and upd['start_offset'] < char_timestamps[-1]['end_offset']:

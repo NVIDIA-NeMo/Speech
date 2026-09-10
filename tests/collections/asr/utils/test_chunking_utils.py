@@ -71,7 +71,7 @@ def test_join_char_level_timestamps_without_filter():
     )
 
     assert len(out) == 4
-    shift = chunk_offsets[1] // subsampling_factor
+    shift = 4  # (0 + 32) raw frames // 8
 
     assert out[0]["start_offset"] == 0 and out[0]["end_offset"] == 1
     assert out[1]["start_offset"] == 2 and out[1]["end_offset"] == 3
@@ -144,6 +144,46 @@ def test_join_char_level_timestamps_with_filter():
 
     assert [d["start"] for d in out] == pytest.approx(expected_starts)
     assert [d["end"] for d in out] == pytest.approx(expected_ends)
+
+
+@pytest.mark.unit
+def test_join_char_level_timestamps_no_drift_over_many_chunks():
+    # Chunk offsets are raw frames built as `encoded_len * subsampling_factor - 100`, where -100
+    # removes the 1 s chunk overlap. 100 is not divisible by the default subsampling factor of 8,
+    # so dividing each chunk offset before accumulating truncates half a subsampled frame per
+    # chunk, always in the same direction, and the timestamps drift earlier over long audio.
+    subsampling_factor = 8
+    window_stride = 0.01
+    num_chunks = 60  # 60 chunks of ~60 s == 1 hour of audio
+    encoded_len = 750
+    chunk_offsets = [0] + [(encoded_len * subsampling_factor - 100)] * (num_chunks - 1)
+
+    hypotheses = [
+        Hypothesis(
+            score=0.0,
+            y_sequence=torch.tensor([]),
+            timestamp={"char": [_make_char("a", 1, 0, 1)]},
+        )
+        for _ in range(num_chunks)
+    ]
+
+    out = join_char_level_timestamps(
+        hypotheses=hypotheses,
+        chunk_offsets=chunk_offsets,
+        subsampling_factor=subsampling_factor,
+        window_stride=window_stride,
+        merged_tokens=None,
+    )
+
+    assert len(out) == num_chunks
+    # 59 * 5900 == 348100 raw frames; 348100 // 8 == 43512 subsampled frames (exact value 43512.5).
+    # Dividing per chunk instead gives 59 * (5900 // 8) == 43483, i.e. 29 frames == 2.32 s too early.
+    expected_shift = 43512
+    assert out[-1]["start_offset"] == expected_shift
+    assert out[-1]["end_offset"] == 1 + expected_shift
+
+    # 43512 subsampled frames * 0.08 s per subsampled frame
+    assert out[-1]["start"] == pytest.approx(3480.96)
 
 
 @pytest.mark.unit

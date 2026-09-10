@@ -1747,7 +1747,10 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
                 # if it's in option 3
                 manifest_path = manifest_info
             # First, convert manifest_path[+tar_path] to an iterator.
-            if is_tarred and not metadata_only:
+            # Note: only the tarred iterator is shardable; ``metadata_only`` reads the manifests
+            #   without any audio I/O and therefore always yields a non-shardable iterator.
+            is_shardable = is_tarred and not metadata_only
+            if is_shardable:
                 nemo_iter = LazyNeMoTarredIterator(
                     manifest_path=manifest_path,
                     tar_paths=tar_path,
@@ -1777,7 +1780,10 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
             #   split the manifest to individual shards if applicable.
             #   This helps the multiplexing achieve closer data distribution
             #   to the one desired in spite of the limit.
-            if config.get("max_open_streams") is not None:
+            #   Non-shardable iterators are passed through as a single stream instead, so that
+            #   ``mux`` below can validate the option combination and raise a meaningful error
+            #   (e.g. max_open_streams together with metadata_only/force_finite).
+            if config.get("max_open_streams") is not None and is_shardable:
                 for subiter in nemo_iter.to_shards():
                     cutsets.append(CutSet(subiter))
                     weights.append(weight)

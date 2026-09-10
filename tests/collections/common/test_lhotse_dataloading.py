@@ -32,6 +32,7 @@ from lhotse.testing.random import deterministic_rng
 from omegaconf import OmegaConf
 
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
+from nemo.collections.common.data.lhotse.cutset import read_nemo_manifest
 from nemo.collections.common.data.lhotse.text_adapters import SourceTargetTextExample, TextExample
 from nemo.collections.common.tokenizers.sentencepiece_tokenizer import SentencePieceTokenizer, create_spt_model
 from nemo.utils.dependency import is_module_available
@@ -768,6 +769,43 @@ def test_dataloader_from_tarred_nemo_manifest_multi_max_open_streams(nemo_tarred
     )
 
     _ = next(iter(dl))
+
+
+def test_read_tarred_nemo_manifest_multi_max_open_streams_metadata_only(
+    nemo_tarred_manifest_path_multi: tuple[str, str]
+):
+    """
+    ``metadata_only`` iterates manifests without audio I/O, which yields a non-shardable iterator.
+    Combining it with ``max_open_streams`` must raise the dedicated error from ``mux``
+    (it used to fail earlier with ``AttributeError: 'LazyNeMoIterator' object has no attribute 'to_shards'``).
+    """
+    json_mft, tar_mft = nemo_tarred_manifest_path_multi
+    config = OmegaConf.create(
+        {
+            "manifest_filepath": [[json_mft], [json_mft]],
+            "tarred_audio_filepaths": [[tar_mft], [tar_mft]],
+            "max_open_streams": 1,
+            "metadata_only": True,
+        }
+    )
+
+    with pytest.raises(AssertionError, match="max_open_streams and metadata_only/force_finite"):
+        read_nemo_manifest(config)
+
+
+def test_read_nemo_manifest_multi_max_open_streams_non_tarred(nemo_manifest_path: Path):
+    """Non-tarred manifests are a single stream each; ``max_open_streams`` must not crash on them."""
+    config = OmegaConf.create(
+        {
+            "manifest_filepath": [[str(nemo_manifest_path)], [str(nemo_manifest_path)]],
+            "max_open_streams": 1,
+        }
+    )
+
+    cuts, is_tarred = read_nemo_manifest(config)
+
+    assert not is_tarred
+    assert len(list(islice(cuts, 5))) == 5
 
 
 @pytest.mark.skipif(not is_module_available("pyloudnorm"), reason="pyloudnorm is required to concatenate samples")

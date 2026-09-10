@@ -434,6 +434,7 @@ class SALMDFlashModule(LightningModule):
 
     def _audio_embeddings(self, batch: dict[str, torch.Tensor]) -> list[torch.Tensor]:
         spk_targets = batch.get("spk_targets")
+        spk_target_lengths = batch.get("spk_target_length")
         if self.target._uses_parallel_expert_encoder() and spk_targets is None:
             embeddings, lengths = self.target.perception(
                 input_signal=batch["audios"], input_signal_length=batch["audio_lens"]
@@ -446,9 +447,11 @@ class SALMDFlashModule(LightningModule):
             batch["audios"],
             batch["audio_lens"],
             chunk_size_seconds=self.target.cfg.get("encoder_chunk_size_seconds"),
+            chunk_batch_size=self.target.cfg.get("encoder_chunk_batch_size"),
             sampling_rate=self.target.sampling_rate,
             cp_mesh=None,
             spk_targets=spk_targets,
+            spk_target_lengths=spk_target_lengths,
             fsdp_sync_group=get_perception_fsdp_group(device_mesh),
         )
 

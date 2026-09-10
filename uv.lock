@@ -4181,7 +4181,7 @@ wheels = [
 [[package]]
 name = "nemo-automodel"
 version = "0.5.0+cb03cf61"
-source = { git = "https://github.com/NVIDIA-NeMo/Automodel.git?rev=7b15c9bfbc620bec4dd3b819fce2e48726a7ddeb#7b15c9bfbc620bec4dd3b819fce2e48726a7ddeb" }
+source = { git = "https://github.com/Slyne/Automodel.git?rev=ee03a5364fff5e5e0367b1abce4273b9211f00c7#ee03a5364fff5e5e0367b1abce4273b9211f00c7" }
 dependencies = [
     { name = "datasets" },
     { name = "flashoptim" },
@@ -4634,9 +4634,9 @@ requires-dist = [
     { name = "matplotlib", marker = "extra == 'audio'" },
     { name = "matplotlib", marker = "extra == 'speechlm2'" },
     { name = "matplotlib", marker = "extra == 'tts'" },
-    { name = "nemo-automodel", marker = "extra == 'all'", git = "https://github.com/NVIDIA-NeMo/Automodel.git?rev=7b15c9bfbc620bec4dd3b819fce2e48726a7ddeb" },
-    { name = "nemo-automodel", marker = "extra == 'speechlm2'", git = "https://github.com/NVIDIA-NeMo/Automodel.git?rev=7b15c9bfbc620bec4dd3b819fce2e48726a7ddeb" },
-    { name = "nemo-automodel", marker = "extra == 'speechlm2-only'", git = "https://github.com/NVIDIA-NeMo/Automodel.git?rev=7b15c9bfbc620bec4dd3b819fce2e48726a7ddeb" },
+    { name = "nemo-automodel", marker = "extra == 'all'", git = "https://github.com/Slyne/Automodel.git?rev=ee03a5364fff5e5e0367b1abce4273b9211f00c7" },
+    { name = "nemo-automodel", marker = "extra == 'speechlm2'", git = "https://github.com/Slyne/Automodel.git?rev=ee03a5364fff5e5e0367b1abce4273b9211f00c7" },
+    { name = "nemo-automodel", marker = "extra == 'speechlm2-only'", git = "https://github.com/Slyne/Automodel.git?rev=ee03a5364fff5e5e0367b1abce4273b9211f00c7" },
     { name = "nemo-text-processing", marker = "'aarch' not in platform_machine and 'arm' not in platform_machine and sys_platform != 'darwin' and extra == 'all'" },
     { name = "nemo-text-processing", marker = "'aarch' not in platform_machine and 'arm' not in platform_machine and sys_platform != 'darwin' and extra == 'speechlm2'" },
     { name = "nemo-text-processing", marker = "'aarch' not in platform_machine and 'arm' not in platform_machine and sys_platform != 'darwin' and extra == 'tts'" },

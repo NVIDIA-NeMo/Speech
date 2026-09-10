@@ -26,9 +26,9 @@ pytest.importorskip("nemo_automodel")
 pytestmark = pytest.mark.unit
 
 from nemo_automodel.components.loss.dllm_loss import DFlashDecayLoss  # noqa: E402
-from nemo_automodel.components.speculative.dflash.draft_qwen3 import (
+from nemo_automodel.components.speculative.dflash.draft_qwen3 import (  # noqa: E402
     Qwen3DFlashDraftModel,
-)  # noqa: E402
+)
 from nemo_automodel.components.speculative.dflash.draft_qwen3_dflash2 import (  # noqa: E402
     Qwen3DFlash2DraftModel,
 )
@@ -186,6 +186,40 @@ class _BatchTarget(nn.Module):
 
     def _embed_tokens(self, input_ids):
         return input_ids.to(torch.float32).unsqueeze(-1).expand(-1, -1, 4).clone()
+
+
+class _AudioTarget(_BatchTarget):
+    def __init__(self):
+        super().__init__()
+        self.cfg = {"encoder_chunk_size_seconds": 30.0, "encoder_chunk_batch_size": 8}
+        self.perception = nn.Linear(1, 1)
+        self.sampling_rate = 16000
+        self._device_mesh = None
+
+    def _uses_parallel_expert_encoder(self):
+        return False
+
+
+def test_audio_embeddings_forwards_bounded_chunking_and_speaker_lengths(monkeypatch):
+    target = _AudioTarget()
+    module = salm_dflash.SALMDFlashModule(target, {"dflash": {"mask_token_id": 18}})
+    expected = [torch.randn(2, 3)]
+    encode = Mock(return_value=expected)
+    monkeypatch.setattr(salm_dflash, "encode_audio_with_cp_distribution", encode)
+    speaker_targets = torch.randn(1, 5, 8)
+    speaker_lengths = torch.tensor([5])
+    batch = {
+        "audios": torch.randn(1, 32000),
+        "audio_lens": torch.tensor([32000]),
+        "spk_targets": speaker_targets,
+        "spk_target_length": speaker_lengths,
+    }
+
+    assert module._audio_embeddings(batch) is expected
+    assert encode.call_args.kwargs["chunk_size_seconds"] == 30.0
+    assert encode.call_args.kwargs["chunk_batch_size"] == 8
+    assert encode.call_args.kwargs["spk_targets"] is speaker_targets
+    assert encode.call_args.kwargs["spk_target_lengths"] is speaker_lengths
 
 
 class _CaptureDFlashTrainer(nn.Module):

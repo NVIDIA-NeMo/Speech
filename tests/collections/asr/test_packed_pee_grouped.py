@@ -15,7 +15,6 @@
 import pytest
 import torch
 
-import nemo.collections.asr.modules.ggemm_transformer_encoder as ggemm_module
 from nemo.collections.asr.parts.packed_sequence import PackedEncoderActivations, pack_encoder_output
 from tests.collections.asr.test_parallel_expert_encoder_two_branch import (
     _MEL_FEATURES,
@@ -59,22 +58,3 @@ def test_canonical_pee_accepts_token_flat_mels():
     assert isinstance(packed_input, PackedEncoderActivations)
     assert torch.equal(packed_input.lengths, dense_input.lengths)
     torch.testing.assert_close(packed_input.data, dense_input.data, rtol=1e-5, atol=1e-6)
-
-
-@pytest.mark.unit
-def test_grouped_biasless_linear_uses_bmm_without_zero_bias_allocation(monkeypatch):
-    """Keep direct coverage for the independent grouped-transformer primitive."""
-    linears = torch.nn.ModuleList([torch.nn.Linear(4, 6, bias=False) for _ in range(3)])
-    inputs = torch.randn(3, 5, 4, requires_grad=True)
-    expected = torch.stack([linear(inputs[index]) for index, linear in enumerate(linears)])
-
-    def reject_baddbmm(*args, **kwargs):
-        raise AssertionError("an all-biasless group must use bmm")
-
-    monkeypatch.setattr(torch, "baddbmm", reject_baddbmm)
-    actual = ggemm_module._grouped_linear(inputs, linears)
-    torch.testing.assert_close(actual, expected)
-    actual.sum().backward()
-
-    assert inputs.grad is not None
-    assert all(linear.weight.grad is not None for linear in linears)

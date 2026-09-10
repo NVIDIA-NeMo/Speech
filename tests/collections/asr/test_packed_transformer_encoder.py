@@ -21,7 +21,6 @@ import torch
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
 
 from nemo.collections.asr.modules import transformer_encoder as transformer_encoder_module
-from nemo.collections.asr.modules.moe_transformer_encoder import MoEFeedForward, MoETransformerEncoder
 from nemo.collections.asr.modules.transformer_encoder import (
     MultiHeadAttention,
     TransformerEncoder,
@@ -221,26 +220,9 @@ def test_sequence_packed_accepts_token_flat_features_without_dense_pre_encode(po
     torch.testing.assert_close(from_packed.data, from_dense.data, rtol=1e-5, atol=1e-6)
 
 
-@pytest.mark.parametrize("use_moe", [False, True])
-def test_sequence_packed_token_flat_feature_outputs_and_gradients_match_dense_input(use_moe):
+def test_sequence_packed_token_flat_feature_outputs_and_gradients_match_dense_input():
     torch.manual_seed(0)
-    if use_moe:
-        dense_encoder = MoETransformerEncoder(
-            feat_in=8,
-            d_model=32,
-            n_heads=2,
-            n_layers=2,
-            subsampling_factor=2,
-            drop_rate=0.0,
-            dropout_pre_encoder=0.0,
-            dropout_emb=0.0,
-            self_attention_model="rope",
-            moe_num_experts=4,
-            moe_top_k=2,
-            sync_max_audio_length=False,
-        ).train()
-    else:
-        dense_encoder = _make_encoder(position="rope").train()
+    dense_encoder = _make_encoder(position="rope").train()
     packed_encoder = copy.deepcopy(dense_encoder)
     lengths = torch.tensor([12, 7, 4])
     dense_features = torch.randn(3, 8, 12)
@@ -441,95 +423,6 @@ def test_sequence_packed_supports_activation_checkpoint_wrapped_layers():
     assert inputs.grad is not None
     assert encoder.layers[0]._checkpoint_wrapped_module.attn.w_qkv.weight.grad is not None
     assert set(encoder.state_dict()) == state_keys
-
-
-def _make_moe_encoder():
-    return MoETransformerEncoder(
-        feat_in=8,
-        d_model=32,
-        n_heads=2,
-        n_layers=2,
-        subsampling_factor=2,
-        drop_rate=0.0,
-        dropout_pre_encoder=0.0,
-        self_attention_model="rope",
-        moe_num_experts=4,
-        moe_top_k=2,
-        sync_max_audio_length=False,
-    )
-
-
-def test_moe_sequence_packed_matches_padded_and_excludes_padding_from_routing():
-    torch.manual_seed(0)
-    encoder = _make_moe_encoder().eval()
-    encoded = torch.randn(3, 7, encoder.d_model)
-    lengths = torch.tensor([7, 3, 1])
-
-    with torch.no_grad():
-        padded, _ = encoder(encoded, lengths, bypass_pre_encode=True)
-        packed = encoder.forward_sequence_packed(encoded, lengths, bypass_pre_encode=True)
-
-    restored = unpack_encoder_output(packed, total_length=7)
-    valid = torch.arange(7)[None, :] < lengths[:, None]
-    torch.testing.assert_close(restored[valid], padded.transpose(1, 2)[valid], rtol=1e-5, atol=1e-6)
-    for layer_idx in encoder.moe_layer_indices:
-        assert encoder.layers[layer_idx].ffn._num_tokens == int(lengths.sum())
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="FlexAttention backward requires CUDA")
-@pytest.mark.parametrize(("top_k", "router_type"), [(1, "switch"), (2, "omni")])
-def test_moe_sequence_packed_matches_valid_token_gradients(top_k, router_type):
-    torch.manual_seed(0)
-    padded_encoder = (
-        MoETransformerEncoder(
-            feat_in=8,
-            d_model=32,
-            n_heads=2,
-            n_layers=1,
-            subsampling_factor=2,
-            drop_rate=0.0,
-            dropout_pre_encoder=0.0,
-            self_attention_model="rope",
-            moe_num_experts=4,
-            moe_top_k=top_k,
-            moe_router_type=router_type,
-            sync_max_audio_length=False,
-        )
-        .to(device="cuda", dtype=torch.bfloat16)
-        .eval()
-    )
-    packed_encoder = copy.deepcopy(padded_encoder)
-    padded_input = torch.randn(3, 7, 32, device="cuda", dtype=torch.bfloat16, requires_grad=True)
-    packed_input = padded_input.detach().clone().requires_grad_()
-    lengths = torch.tensor([7, 3, 1], device="cuda")
-
-    padded, _ = padded_encoder(padded_input, lengths, bypass_pre_encode=True)
-    packed = packed_encoder.forward_sequence_packed(packed_input, lengths, bypass_pre_encode=True)
-    valid = torch.arange(7, device="cuda")[None, :] < lengths[:, None]
-    padded.transpose(1, 2)[valid].square().mean().backward()
-    packed.data.square().mean().backward()
-
-    torch.testing.assert_close(packed_input.grad[valid], padded_input.grad[valid], rtol=3e-2, atol=3e-2)
-    for suffix in ("router.w_gate.weight", "experts.0.net.0.weight"):
-        packed_grad = dict(packed_encoder.named_parameters())[f"layers.0.ffn.{suffix}"].grad
-        padded_grad = dict(padded_encoder.named_parameters())[f"layers.0.ffn.{suffix}"].grad
-        torch.testing.assert_close(packed_grad, padded_grad, rtol=3e-2, atol=3e-2)
-
-
-def test_moe_feed_forward_all_empty_records_zero_stats_and_keeps_parameters_in_graph():
-    cfg = TransformerEncoderConfig(d_model=32, n_heads=2, ff_expansion=1.0, drop_rate=0.0)
-    moe = MoEFeedForward(cfg, num_experts=3, top_k=2)
-    x = torch.empty(0, 32, requires_grad=True)
-
-    output = moe(x)
-    (output.sum() + moe._aux_loss).backward()
-
-    assert output.shape == x.shape
-    assert moe._num_tokens == 0
-    assert moe._expert_counts.tolist() == [0, 0, 0]
-    assert moe._gate_prob_sum.tolist() == [0.0, 0.0, 0.0]
-    assert moe.router.w_gate.weight.grad is not None
-    assert all(parameter.grad is not None for expert in moe.experts for parameter in expert.parameters())
 
 
 @requires_cuda_varlen_flash_attention

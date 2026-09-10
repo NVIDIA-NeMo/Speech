@@ -794,6 +794,13 @@ def _is_dcp_checkpoint(path: str) -> bool:
     return os.path.isdir(path) and os.path.exists(os.path.join(path, ".metadata"))
 
 
+def _model_has_dtensors(model: torch.nn.Module) -> bool:
+    """Return whether any model parameter or buffer is a DTensor."""
+    from torch.distributed.tensor import DTensor
+
+    return any(isinstance(value, DTensor) for values in (model.parameters(), model.buffers()) for value in values)
+
+
 def init_from_training_checkpoint(model: torch.nn.Module, checkpoint_path: str):
     """Initialize model weights from a previous training checkpoint.
 
@@ -838,6 +845,20 @@ def init_from_training_checkpoint(model: torch.nn.Module, checkpoint_path: str):
             dcp.load(state_dict, checkpoint_id=str(checkpoint_path))
         model.load_state_dict(state_dict["state_dict"])
         logging.info(f"Loaded distributed checkpoint from {checkpoint_path}")
+    elif Path(checkpoint_path).is_dir() and _model_has_dtensors(model):
+        # A regular load_state_dict cannot copy CPU tensors into parameters
+        # that FSDP2 has already converted to DTensors. Reuse the HF storage
+        # reader so DCP narrows every safetensors value to its local shard and
+        # writes it directly into the existing DTensor storage.
+        from nemo.collections.speechlm2.parts.hf_hub import _load_state_dict_with_dtensors
+
+        strict = bool(model.cfg.get("init_from_checkpoint_strict", True))
+        _load_state_dict_with_dtensors(model, checkpoint_path, strict=strict)
+        logging.info(
+            "Loaded Hugging Face checkpoint into DTensor model from %s (strict=%s)",
+            checkpoint_path,
+            strict,
+        )
     else:
         init_model_from_checkpoint(model, checkpoint_path)
 

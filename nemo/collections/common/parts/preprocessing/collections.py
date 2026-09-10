@@ -1686,7 +1686,6 @@ class FeatureLabel(_Collection):
         data = []
         duration_filtered = 0.0
         total_duration = 0.0
-        self.uniq_labels = set()
 
         if index_by_file_id:
             self.mapping = {}
@@ -1702,7 +1701,6 @@ class FeatureLabel(_Collection):
                 continue
 
             data.append(output_type(feature_file, label, duration))
-            self.uniq_labels |= set(label)
             total_duration += duration
 
             if index_by_file_id:
@@ -1719,7 +1717,9 @@ class FeatureLabel(_Collection):
             else:
                 data.sort(key=lambda entity: entity.duration)
 
-        logging.info(f"Filtered duration for loading collection is {duration_filtered / 2600:.2f} hours.")
+        self.uniq_labels = sorted(set(map(lambda x: x.label, data)))
+
+        logging.info(f"Filtered duration for loading collection is {duration_filtered / 3600:.2f} hours.")
         logging.info(f"Dataset loaded with {len(data)} items, total duration of {total_duration / 3600: .2f} hours.")
         logging.info("# {} files loaded including # {} unique labels".format(len(data), len(self.uniq_labels)))
         super().__init__(data)

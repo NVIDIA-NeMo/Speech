@@ -22,9 +22,14 @@ import soundfile as sf
 import torch
 
 from nemo.collections.asr.data.audio_to_label import AudioToMultiLabelDataset, TarredAudioToClassificationLabelDataset
-from nemo.collections.asr.data.feature_to_label import FeatureToLabelDataset, FeatureToSeqSpeakerLabelDataset
+from nemo.collections.asr.data.feature_to_label import (
+    FeatureToLabelDataset,
+    FeatureToMultiLabelDataset,
+    FeatureToSeqSpeakerLabelDataset,
+)
 from nemo.collections.asr.parts.preprocessing.feature_loader import ExternalFeatureLoader
 from nemo.collections.asr.parts.preprocessing.features import WaveformFeaturizer
+from nemo.collections.common.parts.preprocessing.collections import ASRFeatureLabel, ASRSpeechLabel
 
 
 class TestASRDatasets:
@@ -135,6 +140,74 @@ class TestASRDatasets:
             for _ in dataset:
                 count += 1
             assert count == 2
+
+    @staticmethod
+    def _write_feature_manifest(tmpdir, labels, key='feature_file', name='manifest_input.json'):
+        manifest_path = os.path.join(tmpdir, name)
+        with open(manifest_path, 'w', encoding='utf-8') as fp:
+            for i, label in enumerate(labels):
+                feat_file = os.path.join(tmpdir, f"feat_{i}.pt")
+                torch.save(torch.randn(80, 5), feat_file)
+                fp.write(json.dumps({key: feat_file, 'duration': 1.0, 'label': label}) + '\n')
+        return manifest_path
+
+    @pytest.mark.unit
+    def test_feature_label_collection_collects_whole_labels(self):
+        """`uniq_labels` must hold the labels themselves, not the characters they are spelled with."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest_path = self._write_feature_manifest(tmpdir, ['speech', 'background', 'speech'])
+
+            collection = ASRFeatureLabel(manifests_files=[manifest_path])
+
+            assert collection.uniq_labels == ['background', 'speech']
+
+    @pytest.mark.unit
+    def test_feature_label_collection_matches_audio_sibling(self):
+        """Control: `ASRSpeechLabel` is the audio-side equivalent and already gets this right."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            feat_manifest = self._write_feature_manifest(tmpdir, ['speech', 'background'])
+            audio_manifest = self._write_feature_manifest(
+                tmpdir, ['speech', 'background'], key='audio_filepath', name='manifest_audio.json'
+            )
+
+            feature_collection = ASRFeatureLabel(manifests_files=[feat_manifest])
+            audio_collection = ASRSpeechLabel(manifests_files=[audio_manifest])
+
+            assert feature_collection.uniq_labels == audio_collection.uniq_labels
+
+    @pytest.mark.unit
+    def test_feat_label_dataset_infers_labels_when_none(self):
+        """`labels=None` is the documented fallback; it must build a usable label vocabulary."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest_path = self._write_feature_manifest(tmpdir, ['speech', 'background'])
+
+            dataset = FeatureToLabelDataset(manifest_filepath=manifest_path, labels=None)
+
+            assert dataset.labels == ['background', 'speech']
+            assert dataset.num_classes == 2
+            assert dataset.label2id == {'background': 0, 'speech': 1}
+            assert torch.equal(dataset[0][2], torch.tensor(1))
+
+    @pytest.mark.unit
+    def test_feat_label_dataset_matches_multilabel_sibling_when_labels_none(self):
+        """Control: `FeatureToMultiLabelDataset` derives the same vocabulary from the same manifest."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest_path = self._write_feature_manifest(tmpdir, ['speech', 'background'])
+
+            dataset = FeatureToLabelDataset(manifest_filepath=manifest_path, labels=None)
+            multi_label_dataset = FeatureToMultiLabelDataset(manifest_filepath=manifest_path, labels=None)
+
+            assert dataset.labels == multi_label_dataset.labels
+
+    @pytest.mark.unit
+    def test_feature_label_collection_supports_regression_labels(self):
+        """Regression labels are floats; iterating over them is not possible."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest_path = self._write_feature_manifest(tmpdir, ['0.5', '1.5'])
+
+            collection = ASRFeatureLabel(manifests_files=[manifest_path], is_regression_task=True)
+
+            assert collection.uniq_labels == [0.5, 1.5]
 
     @pytest.mark.unit
     def test_audio_multilabel_dataset(self):

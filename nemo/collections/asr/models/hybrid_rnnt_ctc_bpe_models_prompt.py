@@ -952,7 +952,12 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(PromptStreamingMixin, EncDecHybridRN
         # dataloader is the total number of samples rather than the number of batches,
         # and this messes up the tqdm progress bar. So we set the number of steps manually
         # (to the correct number) to fix this.
-        if 'is_tarred' in train_data_config and train_data_config['is_tarred']:
+        if (
+            self._train_dl is not None
+            and hasattr(self._train_dl, 'dataset')
+            and isinstance(self._train_dl.dataset, torch.utils.data.IterableDataset)
+            and hasattr(self._train_dl.dataset, '__len__')  # unsized (e.g. Lhotse) would crash the len() below
+        ):
             # We also need to check if limit_train_batches is already set.
             # If it's an int, we assume that the user has set it to something sane,
             # i.e. <= # training batches, and don't change it. Otherwise, adjust

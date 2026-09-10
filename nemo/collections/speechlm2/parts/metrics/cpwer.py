@@ -62,6 +62,7 @@ class CpWER:
         max_speakers: Optional[int] = None,
         report_notag_ceiling: bool = True,
         verbose: bool = True,
+        placement: str = 'prefix',
     ):
         if normalize:
             self.normalizer = normalizer if normalizer is not None else EnglishTextNormalizer()
@@ -72,6 +73,8 @@ class CpWER:
         self.report_notag_ceiling = report_notag_ceiling
         self.verbose = verbose
         self.reset()
+        # 'suffix' when targets close a run with `<spk:N>` instead of opening it.
+        self.placement = placement
 
     def reset(self):
         """Drop all accumulated sessions."""
@@ -92,6 +95,7 @@ class CpWER:
             default_speaker=self.untagged_speaker,
             keep_empty=True,
             max_speakers=self.max_speakers,
+            placement=self.placement,
         )
         return [self.normalizer(t).strip() for t in grouped.values()]
 

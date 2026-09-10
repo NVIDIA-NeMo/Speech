@@ -156,3 +156,40 @@ def test_micro_aggregate_is_error_weighted():
     out = metric.compute()
     assert out["cpwer_val"] == pytest.approx(1 / 12)
     assert out["cpwer_macro_val"] == pytest.approx(0.05)
+
+
+# --------------------------------------------------------------------------- #
+# Deferred-identity (suffix) tag placement
+# --------------------------------------------------------------------------- #
+@pytest.mark.unit
+def test_suffix_placement_matches_prefix_on_the_same_content():
+    """`a b <spk:0> c <spk:1>` must bucket identically to `<spk:0> a b <spk:1> c`.
+
+    The two target formats differ only in WHERE the identity is emitted; scoring must not see a
+    difference, or an arm comparison would measure the parser rather than the model.
+    """
+    prefix = sot_to_speaker_texts("<spk:0> how are you <spk:1> i am fine")
+    suffix = sot_to_speaker_texts("how are you <spk:0> i am fine <spk:1>", placement='suffix')
+    assert prefix == suffix == {0: "how are you", 1: "i am fine"}
+
+
+@pytest.mark.unit
+def test_suffix_placement_drops_the_structural_switch_marker():
+    """`<spk_switch>` opens a run but is not a word; scoring it would inflate the reference."""
+    got = sot_to_speaker_texts("<spk_switch> how are you <spk:0> <spk_switch> i am fine <spk:1>", placement='suffix')
+    assert got == {0: "how are you", 1: "i am fine"}
+    assert remove_speaker_tags("<spk_switch> how are you <spk:0>") == "how are you"
+
+
+@pytest.mark.unit
+def test_suffix_placement_orphans_an_unclosed_trailing_run():
+    """A run the model never closed falls to `default_speaker`, it does not inherit the previous.
+
+    This is the failure mode suffix placement adds: in prefix form a missing tag means the words
+    continue the previous speaker, here they are attributed to whoever `default_speaker` names.
+    """
+    got = sot_to_speaker_texts("how are you <spk:0> i am fine", placement='suffix', default_speaker=0)
+    assert got == {0: "how are you i am fine"}
+    assert sot_to_speaker_texts("how are you <spk:1> i am fine", placement='suffix', default_speaker=None) == {
+        1: "how are you"
+    }

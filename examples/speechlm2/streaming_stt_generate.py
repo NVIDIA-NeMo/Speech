@@ -217,6 +217,10 @@ class StreamingSTTEvalConfig:
     cpwer_untagged_speaker: Optional[int] = 0
     # Fold tag indices >= N into one bucket instead of inventing speakers. None = no folding.
     cpwer_max_speakers: Optional[int] = None
+    # 'suffix' when the model closes a speaker run with `<spk:N>` instead of opening it
+    # (deferred-identity targets). Must match how the checkpoint was trained, or every
+    # word is attributed to the wrong speaker and cpWER is meaningless.
+    cpwer_placement: str = 'prefix'
     # Also score a word-perfect but tagless pseudo-hypothesis: the score a system that attributes
     # nothing would get. Makes the control arm's cpWER interpretable.
     cpwer_report_notag_ceiling: bool = True
@@ -494,6 +498,7 @@ def main(cfg: StreamingSTTEvalConfig):
             normalize=True,
             normalizer=normalizer,
             untagged_speaker=cfg.cpwer_untagged_speaker,
+            placement=cfg.cpwer_placement,
             max_speakers=cfg.cpwer_max_speakers,
             report_notag_ceiling=cfg.cpwer_report_notag_ceiling,
             verbose=False,

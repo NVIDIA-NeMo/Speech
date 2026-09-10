@@ -109,6 +109,17 @@ class StreamingSTTDataConfig:
     chunk_size: Union[int, List[int]]
     num_delay_frames: int = 0
     words_per_group: int = 1
+    # Where the `<spk:N>` identity tag sits relative to its speaker's words.
+    #   'prefix' (default) -- `<spk:0> words <spk:1> words`. The model must name the speaker
+    #     at the change point, BEFORE hearing any of the new speaker's audio; at chunk 2 that
+    #     is 160 ms of new voice. It does let the tag condition the words that follow.
+    #   'suffix' -- `words <spk:0> words <spk:1>`. Identity is decided after the whole turn
+    #     has been heard, at the cost of losing that conditioning.
+    speaker_tag_placement: str = 'prefix'
+    # Optional content-free boundary marker opening each new speaker run, e.g. `<spk_switch>`.
+    # Splits 'a speaker changed' from 'who it is' into two decisions. Costs one extra token
+    # per run, which matters most where the emission budget is tight (low latency).
+    speaker_switch_token: Optional[str] = None
     audio_tag: str = "<audio>"
     blank_token: str = "<blank>"
     system_role: str = "system"
@@ -236,6 +247,9 @@ def decode_with_blank(
     return text
 
 
+_SPECIAL_TOKEN_SPAN = re.compile(r"<[^<>\s]*>")
+
+
 def compute_word_spans(
     alignments: List[WordAlignment],
     transcript: str,
@@ -272,9 +286,15 @@ def compute_word_spans(
             "preserve_trailing_whitespace and preserve_leading_whitespace cannot be True at the same time"
         )
     spans: List[tuple[int, int] | None] = []
+    # Search against a copy with every `<...>` special token blanked to NULs of the same length.
+    # A naive substring search matches word text INSIDE a tag -- the word "i" matches the "i" of
+    # `<spk_switch>`, which then anchors the span mid-tag and leaks "itch>" into the target.
+    # `<spk:N>` escapes this only by luck (it contains just "spk" and digits). Same length, so the
+    # indices returned still refer to the real transcript.
+    haystack = _SPECIAL_TOKEN_SPAN.sub(lambda m: "\x00" * (m.end() - m.start()), transcript).lower()
     search_pos = 0
     for word in alignments:
-        idx = transcript.lower().find(word.text.lower(), search_pos)
+        idx = haystack.find(word.text.lower(), search_pos)
         if idx == -1:
             spans.append(None)
             continue
@@ -313,6 +333,8 @@ def get_llm_messages_for_sample(
     prepend_write_token: bool = False,
     write_token: str = "",
     speaker_token_template: Optional[str] = None,
+    speaker_tag_placement: str = 'prefix',
+    speaker_switch_token: Optional[str] = None,
 ) -> List[dict]:
     """
     Get the LLM messages for a sample, using the alignments to determine the turns for the audio and text.
@@ -412,6 +434,25 @@ def get_llm_messages_for_sample(
             return content
         first_speaker = alignments[word_indices[0]].speaker
         last_speaker = alignments[word_indices[-1]].speaker
+
+        if speaker_tag_placement == 'suffix':
+            # Mirror image of the prefix case. `compute_word_spans` spans first-word-start to
+            # last-word-end, so a tag sitting AFTER the group's last word falls outside the slice
+            # and must be added here; tags for runs that END mid-group come free in the slice.
+            out = content
+            if speaker_switch_token and first_speaker is not None and first_speaker != last_emitted_speaker:
+                out = (
+                    f"{speaker_switch_token}{out}" if out.startswith((" ", "\t")) else f"{speaker_switch_token} {out}"
+                )
+            nxt = word_indices[-1] + 1
+            next_speaker = alignments[nxt].speaker if nxt < len(alignments) else None
+            # Close the run only when it actually ends here -- otherwise the next group continues it.
+            if last_speaker is not None and next_speaker != last_speaker:
+                out = f"{out} {speaker_token_template.format(i=last_speaker)}"
+            if last_speaker is not None:
+                last_emitted_speaker = last_speaker
+            return out
+
         if first_speaker is not None and first_speaker != last_emitted_speaker:
             tag = speaker_token_template.format(i=first_speaker)
             # The slice usually keeps a leading space (BPE treats it as part of the word); do not
@@ -566,6 +607,8 @@ def get_llm_messages_for_batch(
     prepend_write_token: bool = False,
     write_token: str = "",
     speaker_token_template: Optional[str] = None,
+    speaker_tag_placement: str = 'prefix',
+    speaker_switch_token: Optional[str] = None,
 ) -> List[List[dict]]:
     """
     Get the LLM messages for a batch of samples.
@@ -613,6 +656,8 @@ def get_llm_messages_for_batch(
                 prepend_write_token=prepend_write_token,
                 write_token=write_token,
                 speaker_token_template=speaker_token_template,
+                speaker_tag_placement=speaker_tag_placement,
+                speaker_switch_token=speaker_switch_token,
             )
         )
     return batch_messages
@@ -1301,6 +1346,8 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
             transcripts=text,
             words_per_group=self.cfg.words_per_group,
             speaker_token_template=self._speaker_token_template,
+            speaker_tag_placement=self.cfg.speaker_tag_placement,
+            speaker_switch_token=(self.cfg.speaker_switch_token if self._multispeaker_enabled else None),
             chunk_step=K,
             prepend_write_token=self.cfg.prepend_write_token,
             write_token=self.cfg.write_token,

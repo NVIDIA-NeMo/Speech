@@ -24,6 +24,13 @@ import torch
 SPEAKER_TOKEN_PATTERN = re.compile(r"<spk:(\d+)>")
 _SPEAKER_TOKEN_SPLIT_PATTERN = re.compile(r"(<spk:\d+>)")
 # Residue of a malformed/unclosed tag, e.g. "<spk:0" or "<spk>" -- dropped rather than scored.
+# Structural, content-free markers that may appear in SOT text but are NOT words and NOT
+# speaker identities: they open a new speaker run in the deferred-identity (suffix) format.
+# They must be stripped before scoring, or the model adding/dropping one counts as a word
+# error and the reference word count is inflated.
+SPEAKER_SWITCH_TOKEN = "<spk_switch>"
+_SPEAKER_STRUCTURAL_PATTERN = re.compile(r"<spk_[a-z]+>")
+
 _MALFORMED_SPEAKER_TOKEN = re.compile(r"<spk:?\d*>?")
 
 __all__ = [
@@ -143,7 +150,7 @@ def remove_speaker_tags(text: Optional[str]) -> str:
     """
     if not text:
         return ""
-    return " ".join(SPEAKER_TOKEN_PATTERN.sub(" ", text).split())
+    return " ".join(_SPEAKER_STRUCTURAL_PATTERN.sub(" ", SPEAKER_TOKEN_PATTERN.sub(" ", text)).split())
 
 
 def sot_to_speaker_texts(
@@ -151,6 +158,7 @@ def sot_to_speaker_texts(
     default_speaker: Optional[int] = 0,
     keep_empty: bool = True,
     max_speakers: Optional[int] = None,
+    placement: str = 'prefix',
 ) -> dict:
     """Group SOT-tagged text into ``{speaker_index: concatenated_text}``, keys ascending.
 
@@ -169,6 +177,11 @@ def sot_to_speaker_texts(
             it, deleting a whole reference speaker and misaligning the permutation search.
         max_speakers: Fold indices ``>= max_speakers`` into one bucket rather than creating new
             speakers. Folds, never drops.
+        placement: ``'prefix'`` (default) assigns words to the tag that PRECEDES them, i.e.
+            ``<spk:0> a b <spk:1> c``. ``'suffix'`` assigns words to the tag that FOLLOWS them,
+            ``a b <spk:0> c <spk:1>`` -- the deferred-identity target format. In suffix mode a
+            trailing run with no closing tag falls to ``default_speaker``; those words are orphaned
+            rather than inheriting the previous speaker, which is the failure mode worth watching.
 
     Returns:
         dict: speaker index -> concatenated text, ordered by ascending index.
@@ -189,6 +202,29 @@ def sot_to_speaker_texts(
     # eagerly would invent an empty speaker for "<spk:2> hi", inflating the speaker count and adding
     # a padding slot the permutation search then has to absorb.
     current = _fold(default_speaker)
+    if placement == 'suffix':
+        pending: list = []
+        for piece in _SPEAKER_TOKEN_SPLIT_PATTERN.split(text):
+            if not piece:
+                continue
+            tag = SPEAKER_TOKEN_PATTERN.fullmatch(piece)
+            if tag is not None:
+                owner = _fold(int(tag.group(1)))
+                if owner is not None:
+                    buckets.setdefault(owner, []).extend(pending)
+                pending = []
+                continue
+            pending += [
+                w
+                for w in piece.split()
+                if not _MALFORMED_SPEAKER_TOKEN.fullmatch(w) and not _SPEAKER_STRUCTURAL_PATTERN.fullmatch(w)
+            ]
+        # Words after the last tag never got closed: the model omitted the trailing identity.
+        if pending and current is not None:
+            buckets.setdefault(current, []).extend(pending)
+        out = {i: " ".join(w) for i, w in sorted(buckets.items())}
+        return out if keep_empty else {i: t for i, t in out.items() if t}
+
     for piece in _SPEAKER_TOKEN_SPLIT_PATTERN.split(text):
         if not piece:
             continue
@@ -200,7 +236,11 @@ def sot_to_speaker_texts(
             continue
         # Drop malformed tag residue (e.g. an unclosed "<spk:0") so it does not survive
         # normalization as the fake words "spk" and "0".
-        words = [w for w in piece.split() if not _MALFORMED_SPEAKER_TOKEN.fullmatch(w)]
+        words = [
+            w
+            for w in piece.split()
+            if not _MALFORMED_SPEAKER_TOKEN.fullmatch(w) and not _SPEAKER_STRUCTURAL_PATTERN.fullmatch(w)
+        ]
         if words and current is not None:
             buckets.setdefault(current, []).extend(words)
 

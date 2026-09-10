@@ -597,6 +597,12 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                 for i in range(max_speakers)
                 if not token_in_vocab(template.format(i=i), self.tokenizer)
             ]
+            # Optional content-free run-opening marker for deferred-identity (suffix) targets.
+            # It carries no speaker identity, so it is registered but kept out of
+            # `speaker_token_ids`, which downstream code treats as the identity vocabulary.
+            switch_token = cfg.get("switch_token")
+            if switch_token and not token_in_vocab(switch_token, self.tokenizer):
+                new_tokens.append(switch_token)
             if new_tokens:
                 self.tokenizer.add_special_tokens({"additional_special_tokens": new_tokens})
                 self._resize_llm_embeddings()
@@ -616,7 +622,18 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                     f"speaker token {template.format(i=0)!r} resolved to id {self.speaker_token_ids[0]}, "
                     f"expected base_token_id={base}. The tokenizer does not match the configured layout."
                 )
-            logging.info("Registered %d speaker tokens: ids %s", max_speakers, self.speaker_token_ids)
+            self.speaker_switch_token_id = (
+                self.tokenizer.tokenizer.convert_tokens_to_ids(switch_token) if switch_token else None
+            )
+            if switch_token and not token_in_vocab(switch_token, self.tokenizer):
+                raise ValueError(f"speaker switch token {switch_token!r} is not a single token after registration.")
+            logging.info(
+                "Registered %d speaker tokens: ids %s (switch token %s -> %s)",
+                max_speakers,
+                self.speaker_token_ids,
+                switch_token,
+                self.speaker_switch_token_id,
+            )
 
     def _setup_forced_aligner(self, forced_aligner, data_cfg, val_data_cfg, dataset_cls) -> None:
         """Attach the optional online forced aligner and its dataset(s)."""

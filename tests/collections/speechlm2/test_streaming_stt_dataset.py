@@ -418,6 +418,36 @@ class TestComputeWordSpans:
         spans = compute_word_spans(alignments, "hello world")
         assert spans == [(0, 5), (6, 11)]
 
+    def test_word_does_not_match_inside_a_special_token(self):
+        """A word must never anchor its span inside a `<...>` tag.
+
+        Regression: the search was a plain `transcript.find(word)`, so "i" matched the "i" of
+        `<spk_switch>` and the span started mid-tag, leaking "itch>" into the training target.
+        `<spk:N>` escaped this only by luck -- it contains just "spk" and digits.
+        """
+        alignments = [
+            WordAlignment(text="i", start_time=0.0, end_time=0.2),
+            WordAlignment(text="think", start_time=0.3, end_time=0.5),
+        ]
+        transcript = "<spk_switch> i think <spk:0>"
+        spans = compute_word_spans(alignments, transcript)
+        # Assert the POSITION, not the text: without the fix "i" anchors at index 7, inside
+        # "<spk_sw|i|tch>", and transcript[7:8] is still "i" -- so a text-only assertion passes
+        # while the span is wrong.
+        assert spans[0][0] > transcript.index(">"), f"span started inside the tag: {spans[0]}"
+        assert [transcript[a:b] for a, b in spans] == ["i", "think"]
+
+    def test_word_matching_the_tag_text_is_not_swallowed(self):
+        """Words that look like tag internals ("spk", a bare digit) must still be located."""
+        alignments = [
+            WordAlignment(text="spk", start_time=0.0, end_time=0.2),
+            WordAlignment(text="0", start_time=0.3, end_time=0.5),
+        ]
+        transcript = "<spk:0> spk 0"
+        spans = compute_word_spans(alignments, transcript)
+        assert [transcript[a:b] for a, b in spans] == ["spk", "0"]
+        assert spans[0][0] >= transcript.index(">") + 1, "span started inside the tag"
+
     def test_trailing_punctuation_included(self):
         alignments = [
             WordAlignment(text="hello", start_time=0.0, end_time=0.3),

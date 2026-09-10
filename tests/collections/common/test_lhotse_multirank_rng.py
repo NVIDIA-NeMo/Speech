@@ -202,3 +202,68 @@ def test_dataloader_multiple_ranks_trng(nemo_tarred_manifest_path: tuple[str, st
     assert b0_batches != b1_batches
     assert b0_incrseed_batches != b1_batches
     assert b0_batches != b0_incrseed_batches
+
+
+def _find_transform(sampler, cls):
+    """Return the first sampler-level transform of type ``cls`` (they are attached via ``sampler.map``)."""
+    matches = [t for t in sampler._transforms if isinstance(t, cls)]
+    assert matches, f"{cls.__name__} was not attached to the sampler; transforms={sampler._transforms}"
+    return matches[0]
+
+
+def _rir_dataloader(cutset_path: Path, rank: int, shard_seed):
+    config = OmegaConf.create(
+        {
+            "cuts_path": str(cutset_path),
+            "sample_rate": 16000,
+            "use_lhotse": True,
+            "num_workers": 0,
+            "batch_size": 2,
+            "seed": 0,
+            "shard_seed": shard_seed,
+            # RIR is the transform under test; lowpass is a sibling used as a control.
+            "rir_enabled": True,
+            "rir_prob": 0.5,
+            "lowpass_enabled": True,
+            "lowpass_prob": 0.5,
+        }
+    )
+    return get_lhotse_dataloader_from_config(config=config, global_rank=rank, world_size=2, dataset=_Identity())
+
+
+def test_rir_augmentation_rng_differs_across_ranks(cutset_path: Path):
+    """RIR augmentation must draw its randomness from ``shard_seed``, like every other online
+    augmentation attached to the sampler.
+
+    ``seed`` is resolved to a concrete integer before the sampler is built, so it is bit-identical
+    on every data-parallel rank; ``shard_seed`` defaults to ``"trng"`` and is resolved per process.
+    Seeding the RIR transform from ``seed`` therefore made every rank apply the same reverberation
+    coin flips and pick the same impulse responses, silently collapsing RIR augmentation diversity.
+    """
+    from lhotse.dataset import LowpassUsingResampling, ReverbWithImpulseResponse
+
+    dl0 = _rir_dataloader(cutset_path, rank=0, shard_seed="trng")
+    dl1 = _rir_dataloader(cutset_path, rank=1, shard_seed="trng")
+
+    rir0 = _find_transform(dl0.sampler, ReverbWithImpulseResponse)
+    rir1 = _find_transform(dl1.sampler, ReverbWithImpulseResponse)
+    assert [rir0.random.random() for _ in range(32)] != [rir1.random.random() for _ in range(32)]
+
+    # Control: a sibling augmentation that already used ``shard_seed`` differentiates the same way,
+    # so the assertion above is testing the seed source and not the harness.
+    lowpass0 = _find_transform(dl0.sampler, LowpassUsingResampling)
+    lowpass1 = _find_transform(dl1.sampler, LowpassUsingResampling)
+    assert [lowpass0.rng.random() for _ in range(32)] != [lowpass1.rng.random() for _ in range(32)]
+
+
+def test_rir_augmentation_rng_reproducible_with_fixed_shard_seed(cutset_path: Path):
+    """Counterpart to the test above: an explicit integer ``shard_seed`` must still give every rank
+    the same RIR randomness, so that fully reproducible runs remain possible."""
+    from lhotse.dataset import ReverbWithImpulseResponse
+
+    dl0 = _rir_dataloader(cutset_path, rank=0, shard_seed=1234)
+    dl1 = _rir_dataloader(cutset_path, rank=1, shard_seed=1234)
+
+    rir0 = _find_transform(dl0.sampler, ReverbWithImpulseResponse)
+    rir1 = _find_transform(dl1.sampler, ReverbWithImpulseResponse)
+    assert [rir0.random.random() for _ in range(32)] == [rir1.random.random() for _ in range(32)]

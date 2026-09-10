@@ -1014,7 +1014,13 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
             ReverbWithImpulseResponse(
                 rir_recordings=RecordingSet.from_file(config.rir_path) if config.rir_path is not None else None,
                 p=config.rir_prob,
-                randgen=random.Random(config.seed),
+                # ``ReverbWithImpulseResponse`` takes a pre-built ``random.Random`` rather than a
+                # ``seed`` argument, so resolve ``shard_seed`` here to give every rank its
+                # own RIR randomness. This mirrors what the sibling augmentations above and below
+                # do internally with ``seed=config.shard_seed``. Using ``config.seed`` would make
+                # every rank draw the same impulse responses, because it is resolved to a fixed
+                # integer before the sampler is built.
+                randgen=random.Random(resolve_seed(config.shard_seed)),
             )
         )
 

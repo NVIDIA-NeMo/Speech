@@ -1254,6 +1254,11 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
         help='Comma-separated list of dataset names to process',
     )
     data_group.add_argument(
+        '--ignore_manifest_language',
+        action='store_true',
+        help='Ignore per-record manifest language and use the dataset or CLI language instead.',
+    )
+    data_group.add_argument(
         '--tokenizer_name',
         type=str,
         default="english_phoneme",

@@ -53,6 +53,7 @@ class DatasetMeta:
     sample_weight: float = 1.0
     language: Optional[str] = None
     tokenizer_names: List[str] = None
+    ignore_manifest_language: bool = False
 
 
 @dataclass
@@ -204,7 +205,7 @@ class TextToSpeechDataset(Dataset):
                 speaker = None
                 speaker_index = 0
 
-            if "language" in entry:
+            if "language" in entry and not dataset.ignore_manifest_language:
                 language = entry.get("language")
             elif dataset.language:
                 language = dataset.language

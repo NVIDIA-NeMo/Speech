@@ -132,6 +132,11 @@ def convert_num_to_words(_str: str, langid: str = "en") -> str:
         for word in words:
             if word.isdigit():
                 num = int(word)
+                if num == 0:
+                    # `while num` below is skipped for 0 (it is falsy), which would silently drop
+                    # the token; emit "zero" explicitly so a standalone "0" is not lost.
+                    out_str += num_to_words[0] + " "
+                    continue
                 while num:
                     digit = num % 10
                     digit_word = num_to_words[digit]

@@ -40,13 +40,15 @@ so checkpoint/resume works transparently with ``DataLoader``,
 ``torchdata.StatefulDataLoader``, or any other source object that
 implements those methods.
 
-Iteration termination is handled with two broadcasts per step: a
-continue/stop boolean followed by the batch. This works regardless of
+Each iteration broadcasts one framed message containing a data batch, a stop
+signal, or details about a source-side error. This works regardless of
 whether the source loader exposes ``__len__`` (Lhotse training loaders
-typically don't).
+typically don't) and prevents receivers from waiting indefinitely when the
+source loader fails.
 """
 from __future__ import annotations
 
+import pickle
 from typing import Any, Iterable, Iterator, Sequence
 
 import torch
@@ -102,9 +104,8 @@ def broadcast_batch(
     if resolved is None:
         return batch
     group, src = resolved
-    obj_list = [batch]
-    dist.broadcast_object_list(obj_list, src=src, group=group, device=_broadcast_device(group))
-    return obj_list[0]
+    packet = (_PACKET_DATA, batch) if dist.get_rank() == src else None
+    return _packet_payload(_broadcast_packet(packet, group, src))
 
 
 class BroadcastingDataLoader:
@@ -114,10 +115,10 @@ class BroadcastingDataLoader:
 
     Pass ``source=real_loader`` on the DP source rank (``cp_rank == 0`` and
     ``tp_rank == 0``); pass ``source=None`` on every other rank. Iteration
-    issues two broadcasts per step on every rank: a continue/stop boolean
-    followed by the batch. After the source loader is exhausted, the
-    continue broadcast is False and iteration ends in lockstep on all
-    ranks regardless of whether the source exposes ``__len__``.
+    issues one framed broadcast per step on every rank. The frame contains a
+    data batch, clean-exhaustion signal, or source-side error. This lets all
+    ranks finish or fail in lockstep regardless of whether the source exposes
+    ``__len__``.
 
     ``state_dict`` / ``load_state_dict`` are delegated to the source on the
     source rank (no-ops on non-source ranks), so checkpoint/resume keeps
@@ -138,6 +139,7 @@ class BroadcastingDataLoader:
         self._source = source
         self._mesh = device_mesh
         self._axes = axes
+        self._group_and_source = None
         if not _is_noop(device_mesh, axes):
             self._is_source = is_dp_source_rank(device_mesh, axes)
             if self._is_source and source is None:
@@ -149,19 +151,41 @@ class BroadcastingDataLoader:
                 return
             yield from self._source
             return
+        if not (dist.is_available() and dist.is_initialized()):
+            if self._source is None:
+                return
+            yield from self._source
+            return
+
+        if self._group_and_source is None:
+            self._group_and_source = _resolve_group_and_source(self._mesh, self._axes)
+        if self._group_and_source is None:
+            if self._source is None:
+                return
+            yield from self._source
+            return
+
+        group, src = self._group_and_source
         if self._is_source:
-            for batch in self._source:
-                broadcast_batch(True, self._mesh, self._axes)
-                broadcast_batch(batch, self._mesh, self._axes)
+            source_iterator = iter(self._source)
+            while True:
+                try:
+                    batch = next(source_iterator)
+                except StopIteration:
+                    _broadcast_packet((_PACKET_STOP, None), group, src)
+                    return
+                except Exception as error:
+                    _broadcast_packet(_error_packet(error, "source iterator failed"), group, src)
+                    raise
+
+                _broadcast_packet((_PACKET_DATA, batch), group, src)
                 yield batch
-            broadcast_batch(False, self._mesh, self._axes)
         else:
             while True:
-                keep_iterating = broadcast_batch(None, self._mesh, self._axes)
-                if not keep_iterating:
+                packet = _broadcast_packet(None, group, src)
+                if packet[0] == _PACKET_STOP:
                     return
-                batch = broadcast_batch(None, self._mesh, self._axes)
-                yield batch
+                yield _packet_payload(packet)
 
     def __len__(self) -> int:
         # Pass-through when the source defines __len__; raise TypeError
@@ -186,10 +210,9 @@ class BroadcastingDataLoader:
 # ---------------------------------------------------------------------------
 
 
-# Cache: (id(device_mesh), tuple_of_axes) -> (process_group, source_global_rank).
-# Sub-mesh creation calls ``_flatten`` which materializes a process group;
-# we don't want to repeat that per training step.
-_GROUP_CACHE: dict[tuple[int, tuple[str, ...]], tuple[Any, int]] = {}
+_PACKET_DATA = "data"
+_PACKET_STOP = "stop"
+_PACKET_ERROR = "error"
 
 
 def _present_axes(device_mesh, axes: Sequence[str]) -> tuple[str, ...]:
@@ -219,10 +242,6 @@ def _resolve_group_and_source(device_mesh, axes: Sequence[str]):
     if _is_noop(device_mesh, axes):
         return None
     present = _present_axes(device_mesh, axes)
-    cache_key = (id(device_mesh), present)
-    cached = _GROUP_CACHE.get(cache_key)
-    if cached is not None:
-        return cached
 
     if len(present) == 1:
         sub = device_mesh[present[0]]
@@ -231,5 +250,67 @@ def _resolve_group_and_source(device_mesh, axes: Sequence[str]):
 
     group = sub.get_group()
     source_global_rank = int(sub.mesh.flatten()[0].item())
-    _GROUP_CACHE[cache_key] = (group, source_global_rank)
     return group, source_global_rank
+
+
+def _broadcast_packet(packet, group, src: int):
+    """Broadcast one pre-serialized protocol packet over ``group``.
+
+    Serializing before the first tensor collective lets the source replace an
+    unpicklable data packet with a small error packet while receivers are still
+    waiting for the packet size. Failures after a collective begins must be
+    handled by the process-group timeout and distributed job teardown.
+    """
+    is_source = dist.get_rank() == src
+    source_error = None
+    if is_source:
+        try:
+            serialized = pickle.dumps(packet, protocol=pickle.HIGHEST_PROTOCOL)
+        except Exception as error:
+            source_error = error
+            packet = _error_packet(error, "batch serialization failed")
+            serialized = pickle.dumps(packet, protocol=pickle.HIGHEST_PROTOCOL)
+    else:
+        serialized = b""
+
+    device = _broadcast_device(group)
+    serialized_size = torch.tensor([len(serialized)], dtype=torch.long, device=device)
+    dist.broadcast(serialized_size, src=src, group=group)
+
+    if is_source:
+        serialized_buffer = bytearray(serialized)
+        serialized_tensor = torch.frombuffer(serialized_buffer, dtype=torch.uint8).to(device)
+    else:
+        serialized_tensor = torch.empty(int(serialized_size.item()), dtype=torch.uint8, device=device)
+    dist.broadcast(serialized_tensor, src=src, group=group)
+
+    if source_error is not None:
+        raise source_error
+    if not is_source:
+        packet = pickle.loads(serialized_tensor.cpu().numpy().tobytes())
+    _validate_packet(packet)
+    return packet
+
+
+def _packet_payload(packet):
+    kind, payload = packet
+    if kind == _PACKET_ERROR:
+        raise RuntimeError(f"BroadcastingDataLoader source error: {payload}")
+    if kind != _PACKET_DATA:
+        raise RuntimeError(f"Expected a data packet, received {kind!r}")
+    return payload
+
+
+def _error_packet(error: Exception, context: str):
+    try:
+        error_text = f"{type(error).__module__}.{type(error).__qualname__}: {error}"
+    except Exception:
+        error_text = f"{type(error).__module__}.{type(error).__qualname__}"
+    return _PACKET_ERROR, f"{context}: {error_text}"
+
+
+def _validate_packet(packet) -> None:
+    if not isinstance(packet, tuple) or len(packet) != 2:
+        raise RuntimeError(f"Received an invalid broadcast packet: {type(packet).__name__}")
+    if packet[0] not in (_PACKET_DATA, _PACKET_STOP, _PACKET_ERROR):
+        raise RuntimeError(f"Received an unknown broadcast packet kind: {packet[0]!r}")

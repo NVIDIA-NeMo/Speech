@@ -1307,8 +1307,9 @@ The :class:`~nemo.collections.common.data.lhotse.broadcasting.BroadcastingDataLo
 fixes this at the data layer: construct the real Lhotse loader on a
 single DP-source rank (``cp_rank == 0`` and ``tp_rank == 0``) and let the
 wrapper broadcast each batch to the other ranks in the ``(cp, tp)``
-sub-mesh over NCCL. Iteration ends in lockstep via a continue/stop
-broadcast — no length needs to be known up-front.
+sub-mesh over NCCL. Each step broadcasts one framed message containing a
+batch, clean-exhaustion signal, or source-side error, so all ranks finish
+or fail in lockstep without requiring the loader length up-front.
 
 .. code-block:: python
 

@@ -15,6 +15,7 @@
 
 import os
 import unicodedata
+from unittest.mock import patch
 
 import pytest
 
@@ -209,6 +210,43 @@ class TestIpaG2p:
         phonemes_dict = g2p_dict(input_text)
         assert phonemes_dict == expected_output
         assert phonemes_file == phonemes_dict
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_parse_phoneme_dict_warns_about_skipped_entries(self, tmp_path):
+        # `_parse_phoneme_dict` only accepts entries whose first character is an ASCII letter, an accented latin
+        # letter up to U+00FF, an Indic or Korean letter, or an apostrophe. Anything else is dropped, which must
+        # not happen quietly: the words simply vanish from the dictionary and become OOV at training time.
+        phoneme_dict_path = tmp_path / "test_dict_skipped.txt"
+        phoneme_dict_path.write_text("MAISON  mɛzˈɔ̃\nŒUVRE  ˈœvʁ\nŒUF  ˈœf\nĐƯỜNG  dɨəŋ\n", encoding="utf-8")
+
+        with patch("nemo.collections.tts.g2p.models.i18n_ipa.logging.warning") as mock_warning:
+            phoneme_dict_obj = IpaG2p._parse_phoneme_dict(str(phoneme_dict_path))
+
+        assert set(phoneme_dict_obj) == {"MAISON"}
+
+        mock_warning.assert_called_once()
+        warning_msg = mock_warning.call_args[0][0]
+        assert "Skipped 3 entries" in warning_msg
+        for skipped_word in ["ŒUVRE", "ŒUF", "ĐƯỜNG"]:
+            assert skipped_word in warning_msg
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_parse_phoneme_dict_does_not_warn_about_non_letter_entries(self, tmp_path):
+        # The ";;;" header of CMUdict-format dictionaries, blank lines, and entries that do not start with a letter
+        # (such as CMUdict's "!EXCLAMATION-POINT") are skipped on purpose, so they must not be reported as lost
+        # entries: only a word starting with an unsupported *letter* signals a gap in the accepted alphabet.
+        phoneme_dict_path = tmp_path / "test_dict_comments.txt"
+        phoneme_dict_path.write_text(
+            ";;; # CMUdict\n;;;\n\nHELLO  həˈɫoʊ\n!EXCLAMATION-POINT  ɛkskləmˈeɪʃənpˈɔɪnt\n\n", encoding="utf-8"
+        )
+
+        with patch("nemo.collections.tts.g2p.models.i18n_ipa.logging.warning") as mock_warning:
+            phoneme_dict_obj = IpaG2p._parse_phoneme_dict(str(phoneme_dict_path))
+
+        assert set(phoneme_dict_obj) == {"HELLO"}
+        mock_warning.assert_not_called()
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit

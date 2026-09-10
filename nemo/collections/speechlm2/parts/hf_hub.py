@@ -22,6 +22,10 @@ from transformers.utils import cached_file
 
 SAFETENSORS_SINGLE_FILE = "model.safetensors"
 LLM_BACKBONE_DIR = "llm_backbone"
+# Distributed loading defaults to ``strict=False``. Allow small forward-
+# compatible gaps, but reject checkpoints that would leave a substantial
+# fraction of the model randomly initialized.
+_MIN_CHECKPOINT_PARAMETER_COVERAGE = 0.9
 
 
 class HFHubMixin(
@@ -60,6 +64,11 @@ class HFHubMixin(
         taken from the caller and overwrites any value stored in the downloaded
         checkpoint config so that a model repository cannot opt itself into
         executing remote code.
+
+        When ``strict=True``, distributed loading rejects missing model state
+        and unused checkpoint tensors. The default ``strict=False`` permits
+        small compatibility gaps with warnings, while still rejecting
+        catastrophic parameter mismatches.
         """
         if not isinstance(trust_remote_code, bool):
             raise TypeError(f"trust_remote_code must be a bool, got {type(trust_remote_code).__name__}")
@@ -124,6 +133,7 @@ class HFHubMixin(
             model_id=model_id,
             model_kwargs=model_kwargs,
             torch_dtype=torch_dtype,
+            strict=strict,
             distributed_setup=distributed_setup,
             cached_file_kwargs=_cached_file_kwargs,
         )
@@ -186,6 +196,7 @@ def _distributed_from_pretrained(
     model_id,
     model_kwargs,
     torch_dtype,
+    strict,
     distributed_setup,
     cached_file_kwargs,
 ):
@@ -213,42 +224,40 @@ def _distributed_from_pretrained(
     weight_file = cached_file(model_id, SAFETENSORS_SINGLE_FILE, **cached_file_kwargs)
     if weight_file is None:
         raise RuntimeError(f"Missing {SAFETENSORS_SINGLE_FILE} file for {model_id=}")
-    _load_state_dict_with_dtensors(instance, str(Path(weight_file).parent))
+    _load_state_dict_with_dtensors(instance, str(Path(weight_file).parent), strict=strict)
 
     return instance
 
 
-def _load_state_dict_with_dtensors(model, weight_dir):
+def _load_state_dict_with_dtensors(model, weight_dir, strict=False):
     """Load safetensors weights into a model with DTensor parameters using DCP.
 
     Uses ``torch.distributed.checkpoint`` with ``_HuggingFaceStorageReader``
     to load weights directly into model parameters in-place.  This mirrors
-    the loading path used by ``NeMoAutoModelForCausalLM``.
+    the loading path used by ``NeMoAutoModelForCausalLM``. Model names are
+    canonicalized before matching, and catastrophic parameter-coverage gaps
+    are rejected before any checkpoint data is copied.
 
     Args:
         model: The model with DTensor parameters (after ``configure_model``).
         weight_dir: Directory containing ``.safetensors`` file(s).
+        strict: Whether to reject every missing model tensor or unused
+            checkpoint tensor.
     """
-    from itertools import chain
-
     import torch.distributed.checkpoint as dcp
     from nemo_automodel.components.checkpoint._backports.hf_storage import _HuggingFaceStorageReader
 
-    # Build state dict from named_parameters/named_buffers.
-    # This avoids FSDP2 state-dict hooks that model.state_dict() triggers.
-    # DCP will write directly into these tensors in-place.
-    all_params = dict(chain(model.named_parameters(), model.named_buffers()))
-
     # DCP is strict by default — it errors on model keys missing from the
     # checkpoint (e.g. positional-encoding buffers computed at init).
-    # Read the checkpoint metadata first and keep only matching keys.
+    # Read the checkpoint metadata first and keep only matching model state.
     reader = _HuggingFaceStorageReader(path=weight_dir)
-    checkpoint_keys = reader.read_metadata().state_dict_metadata.keys()
-    state_dict = {k: v for k, v in all_params.items() if k in checkpoint_keys}
+    checkpoint_metadata = reader.read_metadata().state_dict_metadata
+    state_dict = _checkpoint_state_dict(model, checkpoint_metadata.keys(), strict=strict)
 
     # DCP + HF storage reader: parses safetensors header for byte offsets,
     # the planner narrows each tensor to the local DTensor shard,
     # and copies directly into model parameter storage.
+    # DefaultLoadPlanner rejects checkpoint/model shape mismatches before scheduling reads.
     dcp.load(state_dict, storage_reader=reader)
 
 
@@ -275,3 +284,152 @@ def _inject_local_artifact_paths(cfg: dict, model_id: str, cached_file_kwargs: d
         cfg["pretrained_llm"] = llm_backbone_path
     if "pretrained_lm_name" in cfg:
         cfg["pretrained_lm_name"] = llm_backbone_path
+
+
+def _checkpoint_state_dict(model, checkpoint_keys, strict=False):
+    """Map unique model tensors to stable checkpoint names and validate coverage."""
+    from nemo_automodel.shared.parameter_names import canonical_parameter_fqn
+
+    model_state = {}
+    state_groups = {}
+    parameter_group_ids = set()
+    parameter_groups_by_top_level = {}
+    persistent_buffer_group_ids = set()
+
+    def add_model_state(raw_name, value):
+        name = canonical_parameter_fqn(raw_name)
+        if name in model_state and model_state[name] is not value:
+            raise RuntimeError(f"Multiple model tensors map to checkpoint key {name!r}")
+        model_state[name] = value
+        group_id = id(value)
+        if group_id not in state_groups:
+            state_groups[group_id] = (value, [])
+        _, aliases = state_groups[group_id]
+        if name not in aliases:
+            aliases.append(name)
+        return name, group_id
+
+    # Safetensors keeps one state-dict name for tied parameters. Preserve every
+    # alias here so whichever name was saved can target the shared tensor.
+    for raw_name, value in model.named_parameters(remove_duplicate=False):
+        canonical_name, group_id = add_model_state(raw_name, value)
+        parameter_group_ids.add(group_id)
+        if "." in canonical_name:
+            top_level = canonical_name.partition(".")[0]
+            parameter_groups_by_top_level.setdefault(top_level, set()).add(group_id)
+
+    # Walk direct module buffers to preserve every alias while distinguishing
+    # persistent state from runtime-only buffers without invoking state_dict()
+    # and its FSDP2 hooks.
+    for module_name, module in model.named_modules(remove_duplicate=False):
+        for buffer_name, value in module._buffers.items():
+            if value is None:
+                continue
+            if buffer_name in module._non_persistent_buffers_set:
+                continue
+            raw_name = f"{module_name}.{buffer_name}" if module_name else buffer_name
+            _, group_id = add_model_state(raw_name, value)
+            persistent_buffer_group_ids.add(group_id)
+
+    checkpoint_keys = set(checkpoint_keys)
+    matched_parameters = []
+    missing_parameters = []
+    missing_persistent_buffers = []
+    matched_parameter_group_ids = set()
+    matched_checkpoint_keys = set()
+    duplicate_tied_alias_groups = []
+    state_dict = {}
+    for group_id, (value, aliases) in state_groups.items():
+        matched_aliases = [name for name in aliases if name in checkpoint_keys]
+        if matched_aliases:
+            # DCP should copy into each shared tensor only once, even when a
+            # checkpoint contains more than one tied alias.
+            matched_checkpoint_key = matched_aliases[0]
+            matched_checkpoint_keys.update(matched_aliases)
+            state_dict[matched_checkpoint_key] = value
+            if len(matched_aliases) > 1:
+                duplicate_tied_alias_groups.append(matched_aliases)
+
+        if group_id in parameter_group_ids:
+            if matched_aliases:
+                matched_parameters.append(value)
+                matched_parameter_group_ids.add(group_id)
+            else:
+                missing_parameters.append(aliases[0])
+        elif group_id in persistent_buffer_group_ids and not matched_aliases:
+            missing_persistent_buffers.append(aliases[0])
+
+    matched_numel = sum(value.numel() for value in matched_parameters)
+    model_numel = sum(state_groups[group_id][0].numel() for group_id in parameter_group_ids)
+    coverage = matched_numel / model_numel if model_numel else 1.0
+    undercovered_top_levels = []
+    for name, group_ids in parameter_groups_by_top_level.items():
+        component_numel = sum(state_groups[group_id][0].numel() for group_id in group_ids)
+        matched_component_numel = sum(
+            state_groups[group_id][0].numel() for group_id in group_ids & matched_parameter_group_ids
+        )
+        component_coverage = matched_component_numel / component_numel if component_numel else 1.0
+        if component_coverage < _MIN_CHECKPOINT_PARAMETER_COVERAGE:
+            undercovered_top_levels.append(
+                f"{name} ({component_coverage:.1%}, {matched_component_numel}/{component_numel})"
+            )
+    undercovered_top_levels.sort()
+    unmatched_checkpoint_keys = checkpoint_keys - matched_checkpoint_keys
+    ignored_extra_state_keys = sorted(key for key in unmatched_checkpoint_keys if key.endswith("_extra_state"))
+    unexpected_checkpoint_keys = sorted(key for key in unmatched_checkpoint_keys if not key.endswith("_extra_state"))
+
+    diagnostics = []
+    if missing_parameters:
+        diagnostics.append(
+            f"Safetensors checkpoint matched only {coverage:.1%} of model parameter elements "
+            f"({matched_numel}/{model_numel}); missing model parameters "
+            f"({len(missing_parameters)} groups, first 8): {sorted(missing_parameters)[:8]}"
+        )
+    if undercovered_top_levels:
+        diagnostics.append(
+            f"top-level model components below {_MIN_CHECKPOINT_PARAMETER_COVERAGE:.0%} parameter coverage "
+            f"(first 8): {undercovered_top_levels[:8]}"
+        )
+    if missing_persistent_buffers:
+        diagnostics.append(
+            f"missing persistent model buffers ({len(missing_persistent_buffers)}, first 8): "
+            f"{sorted(missing_persistent_buffers)[:8]}"
+        )
+    if unexpected_checkpoint_keys:
+        diagnostics.append(
+            f"unused checkpoint tensors ({len(unexpected_checkpoint_keys)}, first 8): "
+            f"{unexpected_checkpoint_keys[:8]}"
+        )
+
+    advisory_warnings = []
+    if ignored_extra_state_keys:
+        advisory_warnings.append(
+            f"Ignoring checkpoint extra-state tensors ({len(ignored_extra_state_keys)}, first 8): "
+            f"{ignored_extra_state_keys[:8]}. These tensors have no direct parameter or buffer load destination."
+        )
+    if duplicate_tied_alias_groups:
+        advisory_warnings.append(
+            f"Checkpoint stores multiple aliases for {len(duplicate_tied_alias_groups)} tied model tensors "
+            f"(first 8 groups): {duplicate_tied_alias_groups[:8]}. Each shared tensor is loaded once."
+        )
+
+    if advisory_warnings or diagnostics:
+        from nemo.utils import logging
+
+    if advisory_warnings:
+        for warning in advisory_warnings:
+            logging.warning(warning)
+
+    diagnostic_message = "; ".join(diagnostics)
+    if strict and diagnostics:
+        raise RuntimeError(f"Strict checkpoint loading failed: {diagnostic_message}")
+    if coverage < _MIN_CHECKPOINT_PARAMETER_COVERAGE or undercovered_top_levels:
+        raise RuntimeError(
+            f"Refusing to load checkpoint: global or per-top-level-component parameter coverage is below "
+            f"{_MIN_CHECKPOINT_PARAMETER_COVERAGE:.0%}: {diagnostic_message}"
+        )
+
+    if diagnostics:
+        logging.warning(f"{diagnostic_message}. Continuing because strict checkpoint loading is disabled.")
+
+    return state_dict

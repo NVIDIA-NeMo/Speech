@@ -382,3 +382,23 @@ def test_state_dict_is_identical_with_and_without_triton():
 
     without_triton.load_state_dict(with_triton.state_dict())
     with_triton.load_state_dict(without_triton.state_dict())
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
+def test_bin_taps_survive_dynamo():
+    """The geometry constants must reach Dynamo as ints; a ``tl.constexpr`` is not one to it.
+
+    Eager code may index with the wrappers, since ``tl.constexpr`` implements ``__index__``, but
+    ``torch.compile`` traces rather than runs, and a wrapper used as a slice bound raises
+    ``TypeError: slice indices must be integers``. A caller that compiles the encoder puts this
+    function under Dynamo, so the host code holds the plain ints.
+    """
+    from nemo.collections.asr.parts.triton.subsampling import _build_bin_taps
+
+    depth_weight = torch.arange(CONV_CHANNELS * 9, dtype=torch.float32, device="cuda").reshape(CONV_CHANNELS, 9)
+
+    eager = _build_bin_taps(depth_weight)
+    compiled = torch.compile(_build_bin_taps, backend="eager")(depth_weight)
+
+    assert all(torch.equal(before, after) for before, after in zip(eager, compiled))

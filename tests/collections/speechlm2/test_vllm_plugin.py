@@ -1726,6 +1726,14 @@ class TestMTPPlugin:
         assert native_calls == [hf_cfg]
         assert salm_module._ORIGINAL_VLLM_HF_CONFIG_OVERRIDE is _recording_native
 
+    def test_mtp_declares_external_multimodal_embedding_support(self):
+        """The vLLM proposer should forward target-produced audio embeddings."""
+        from vllm.model_executor.models import supports_multimodal_embeddings
+
+        from nemo.collections.speechlm2.vllm.salm.mtp import NeMoSpeechLMMTP
+
+        assert supports_multimodal_embeddings(NeMoSpeechLMMTP)
+
     def test_embed_input_ids_text_only(self):
         """embed_input_ids with no audio embeddings should return plain text embeddings."""
         import torch

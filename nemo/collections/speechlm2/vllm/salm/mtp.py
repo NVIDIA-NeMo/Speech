@@ -107,13 +107,16 @@ class NeMoSpeechLMMTP(NemotronHMTP):
     * ``embed_input_ids`` fuses audio-feature embeddings into the token
       embeddings at placeholder positions, exactly like the target model.
       The MTP heads were trained on the same mixed text+audio embedding
-      stream as the backbone, so the draft must see it too. vLLM probes
-      ``draft_model.embed_input_ids(ids, multimodal_embeddings=None)`` at
-      load time (``llm_base_proposer.load_model``); without this method
-      the probe raises AttributeError and speculative decoding silently
-      falls back to text-only draft inputs, which collapses acceptance
-      rates on audio prompts.
+      stream as the backbone, so the draft must see it too. vLLM forwards
+      target-produced multimodal embeddings only when the draft declares
+      ``supports_multimodal_embeddings`` and implements ``embed_input_ids``;
+      otherwise it silently falls back to text-only draft inputs, which
+      collapses acceptance rates on audio prompts.
     """
+
+    # vLLM gates forwarding target-produced multimodal embeddings on this
+    # capability flag; implementing ``embed_input_ids`` alone is not enough.
+    supports_multimodal_embeddings = True
 
     def embed_input_ids(
         self,

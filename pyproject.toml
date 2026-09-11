@@ -189,6 +189,12 @@ speechlm2-only = [
     "peft>=0.18.1",
 ]
 
+# vLLM owns its exact Torch and CUDA-kernel stack.
+# Install this serving extra separately from the cu*/compiled* extras below.
+speechlm2-vllm = [
+    "vllm==0.28.0; sys_platform == 'linux'",
+]
+
 all = [
     "hydra-core>1.3,<=1.3.2",
     "lightning>2.2.1,<=2.4.0",
@@ -434,10 +440,12 @@ conflicts = [
     [
         { extra = "cu12" },
         { extra = "cu13" },
+        { extra = "speechlm2-vllm" },
     ],
     [
         { extra = "compiled" },
         { extra = "compiled-a100" },
+        { extra = "speechlm2-vllm" },
     ],
 ]
 override-dependencies = [
@@ -446,6 +454,7 @@ override-dependencies = [
     "wandb>=0.28.0",
     "urllib3>=2.6.0",
     "opencv-python-headless; sys_platform == 'never'",
+    "quack-kernels==0.6.4; sys_platform == 'linux'",
     "lxml>=6.1.0",
     "gitpython>=3.1.50",
     "mako>=1.3.12",

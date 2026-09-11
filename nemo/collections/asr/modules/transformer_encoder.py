@@ -931,7 +931,7 @@ class StreamingTransformerEncoder(TransformerEncoder, StreamingEncoder):
             that recomputes the mel spectrogram per chunk does: with no look-back the first ~2 mel
             frames of every chunk are built from reflect-padded audio instead of the true preceding
             samples. Set to ``subsampling_factor`` to give the STFT window its context back.
-        *args, **kwargs: Forwarded to :class:`TransformerEncoder` (``attn_mode`` is managed
+        ``*args``, ``**kwargs``: Forwarded to :class:`TransformerEncoder` (``attn_mode`` is managed
             internally and ignored).
     """
 

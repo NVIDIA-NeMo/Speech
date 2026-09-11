@@ -71,6 +71,18 @@ WINDOW_SIZE = tl.constexpr(KERNEL.value * WINDOW_COLS.value)
 TAPS = tl.constexpr(KERNEL.value * KERNEL.value)
 PAD = tl.constexpr(1 << (max(TAPS.value, WINDOW_SIZE.value) - 1).bit_length())  # a power of two
 
+# The same geometry as plain ints, for the host code below. A ``tl.constexpr`` implements
+# ``__index__``, so eager host code can reshape and slice with the wrappers directly, but Dynamo
+# does not honour it: under ``torch.compile`` a wrapper used as a slice bound raises TypeError.
+# The kernels keep the wrappers; everything outside them uses these.
+_KERNEL = KERNEL.value
+_STRIDE = STRIDE.value
+_NUM_BINS = NUM_BINS.value
+_WINDOW_COLS = WINDOW_COLS.value
+_WINDOW_SIZE = WINDOW_SIZE.value
+_TAPS = TAPS.value
+_PAD = PAD.value
+
 
 def _forward_configs():
     return [
@@ -373,18 +385,18 @@ def _backward_kernel(
 
 def _downsampled_length(length, pad_total):
     """Output extent of one strided convolution stage, floor mode. Takes ints or int tensors."""
-    return (length + pad_total - KERNEL.value) // STRIDE.value + 1
+    return (length + pad_total - _KERNEL) // _STRIDE + 1
 
 
 def _as_window(row):
     """Read a flat PAD-wide row back as the KERNEL x WINDOW_COLS window it holds."""
-    return row[:, :WINDOW_SIZE].reshape(-1, KERNEL, WINDOW_COLS)
+    return row[:, :_WINDOW_SIZE].reshape(-1, _KERNEL, _WINDOW_COLS)
 
 
 def _as_row(window):
     """Flatten a window into the PAD-wide row the kernel loads; PAD is the next power of two."""
-    row = window.new_zeros(window.shape[0], PAD)
-    row[:, :WINDOW_SIZE] = window.reshape(window.shape[0], WINDOW_SIZE)
+    row = window.new_zeros(window.shape[0], _PAD)
+    row[:, :_WINDOW_SIZE] = window.reshape(window.shape[0], _WINDOW_SIZE)
     return row
 
 
@@ -403,11 +415,11 @@ def _build_bin_taps(depth_weight):
     zeros stand in for a slice, which the flattened window tile cannot express.
     """
     channels = depth_weight.shape[0]
-    taps = depth_weight.reshape(channels, KERNEL, KERNEL)
-    bin0 = depth_weight.new_zeros(channels, KERNEL, WINDOW_COLS)
-    bin1 = depth_weight.new_zeros(channels, KERNEL, WINDOW_COLS)
-    bin0[..., :KERNEL] = taps
-    bin1[..., STRIDE:] = taps
+    taps = depth_weight.reshape(channels, _KERNEL, _KERNEL)
+    bin0 = depth_weight.new_zeros(channels, _KERNEL, _WINDOW_COLS)
+    bin1 = depth_weight.new_zeros(channels, _KERNEL, _WINDOW_COLS)
+    bin0[..., :_KERNEL] = taps
+    bin1[..., _STRIDE:] = taps
     return _as_row(bin0), _as_row(bin1)
 
 
@@ -438,7 +450,7 @@ class _FusedSubsampling(torch.autograd.Function):
 
         def grid(meta):
             return (
-                triton.cdiv(out_time, meta["TIME_ROWS"]) * triton.cdiv(out_freq, NUM_BINS),
+                triton.cdiv(out_time, meta["TIME_ROWS"]) * triton.cdiv(out_freq, _NUM_BINS),
                 triton.cdiv(channels, meta["CHANNEL_BLOCK"]),
                 batch_size,
             )
@@ -489,14 +501,14 @@ class _FusedSubsampling(torch.autograd.Function):
         (batch_size, channels, mel_freq, relu_out_freq, out_time, out_freq, pad_start) = ctx.shapes
         grad_output = grad_output.contiguous()
         device = grad_output.device
-        grad_conv_weight = torch.zeros((channels, PAD), device=device, dtype=torch.float32)
+        grad_conv_weight = torch.zeros((channels, _PAD), device=device, dtype=torch.float32)
         grad_conv_bias = torch.zeros((channels,), device=device, dtype=torch.float32)
-        acc_bin0 = torch.zeros((channels, PAD), device=device, dtype=torch.float32)
-        acc_bin1 = torch.zeros((channels, PAD), device=device, dtype=torch.float32)
+        acc_bin0 = torch.zeros((channels, _PAD), device=device, dtype=torch.float32)
+        acc_bin1 = torch.zeros((channels, _PAD), device=device, dtype=torch.float32)
         grad_depth_bias = torch.zeros((channels,), device=device, dtype=torch.float32)
 
         def grid(meta):
-            tiles = batch_size * triton.cdiv(out_time, meta["TIME_ROWS"]) * triton.cdiv(out_freq, NUM_BINS)
+            tiles = batch_size * triton.cdiv(out_time, meta["TIME_ROWS"]) * triton.cdiv(out_freq, _NUM_BINS)
             return triton.cdiv(channels, meta["CHANNEL_BLOCK"]), min(meta["TILE_SPLITS"], tiles)
 
         _backward_kernel[grid](
@@ -528,15 +540,15 @@ class _FusedSubsampling(torch.autograd.Function):
             grad_output.stride(2),
         )
         # Undo `_build_bin_taps`: each bin accumulated into the columns it read.
-        grad_depth_weight = (_as_window(acc_bin0)[..., :KERNEL] + _as_window(acc_bin1)[..., STRIDE:]).reshape(
-            channels, TAPS
+        grad_depth_weight = (_as_window(acc_bin0)[..., :_KERNEL] + _as_window(acc_bin1)[..., _STRIDE:]).reshape(
+            channels, _TAPS
         )
         conv_w_dtype, conv_b_dtype, depth_w_dtype, depth_b_dtype = ctx.param_dtypes
         return (
             None,  # mel
-            grad_conv_weight[:, :TAPS].view(channels, 1, KERNEL, KERNEL).to(conv_w_dtype),
+            grad_conv_weight[:, :_TAPS].view(channels, 1, _KERNEL, _KERNEL).to(conv_w_dtype),
             grad_conv_bias.to(conv_b_dtype),
-            grad_depth_weight.view(channels, 1, KERNEL, KERNEL).to(depth_w_dtype),
+            grad_depth_weight.view(channels, 1, _KERNEL, _KERNEL).to(depth_w_dtype),
             grad_depth_bias.to(depth_b_dtype),
             None,  # mel_lengths
             None,  # relu_out_lengths

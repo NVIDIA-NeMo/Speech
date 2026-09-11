@@ -50,7 +50,8 @@ def prepare_audio_data(
     Args:
         audio_file: (str) Path to the audio file, folder or manifest file
         per_stream_biasing_defaults: default params for per-stream biasing
-        sort_by_duration: (bool) If True, sort the audio files by duration from shortest to longest
+        sort_by_duration: (bool) If True, sort the audio files by duration from longest to shortest, so the
+            continuous-batching tail (when no files are left to refill the batch) is made of short streams
     Returns:
         (list[str], list[dict] | None, list[ASRRequestOptions] | None, dict[str, int])
         List of audio filepaths, manifest, options and filepath order
@@ -98,7 +99,7 @@ def prepare_audio_data(
         indices = list(range(len(filepaths)))
         durations = [librosa.get_duration(path=filepaths[i]) for i in indices]
         indices_with_durations = list(zip(indices, durations))
-        indices_with_durations.sort(key=lambda x: x[1])
+        indices_with_durations.sort(key=lambda x: x[1], reverse=True)
         filepaths = [filepaths[i] for i, duration in indices_with_durations]
         if manifest is not None:
             # keep manifest in the same order as filepaths for consistency

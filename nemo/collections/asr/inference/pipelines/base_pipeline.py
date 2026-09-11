@@ -589,6 +589,7 @@ class BasePipeline(PipelineInterface):
         audio_filepaths: list[str],
         options: list[ASRRequestOptions] | None = None,
         progress_bar: ProgressBar | None = None,
+        audio_samples: list[Tensor] | None = None,
     ) -> dict:
         """
         Orchestrates reading from audio_filepaths in a streaming manner,
@@ -597,6 +598,8 @@ class BasePipeline(PipelineInterface):
             audio_filepaths (list[str]): List of audio filepaths to transcribe.
             options (list[ASRRequestOptions] | None): List of RequestOptions for each stream.
             progress_bar (ProgressBar | None): Progress bar to show the progress. Default is None.
+            audio_samples (list[Tensor] | None): Preloaded audio samples, one tensor per filepath, already at
+                the pipeline's sample rate. When given, no audio file is read from disk during the run.
         Returns:
             dict: A dictionary containing transcriptions and segments for each stream.
         """
@@ -611,7 +614,7 @@ class BasePipeline(PipelineInterface):
             raise ValueError("options must be the same length as audio_filepaths")
 
         request_generator = self.get_request_generator()
-        request_generator.set_audio_filepaths(audio_filepaths, options)
+        request_generator.set_audio_filepaths(audio_filepaths, options, audio_samples=audio_samples)
         request_generator.set_progress_bar(progress_bar)
 
         pipeline_output = {}

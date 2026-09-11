@@ -213,6 +213,89 @@ def test_configure_model_requests_mtp_and_applies_training_mode(monkeypatch, tra
         assert all(param.requires_grad for param in model.perception.parameters())
 
 
+def test_configure_model_passes_replacement_mtp_moe_intermediate_size(monkeypatch):
+    captured_kwargs = {}
+
+    class _Perception(torch.nn.Module):
+        def set_activation_checkpointing(self, _enabled):
+            return None
+
+    class _LLM(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = type("Config", (), {"hidden_size": 4})()
+            self.mtp = torch.nn.Linear(4, 4)
+
+    model = _bare_model()
+    model.cfg = DictConfig(
+        {
+            "pretrained_llm": "native-mtp-checkpoint",
+            "pretrained_asr": "unused-in-test",
+            "pretrained_weights": True,
+            "freeze_params": [],
+            "prevent_freeze_params": [],
+            "mtp": {
+                "enabled": True,
+                "training_mode": "head_only",
+                "replace_existing_head": True,
+                "hybrid_override_pattern": "*E",
+                "moe_intermediate_size": 768,
+            },
+        }
+    )
+    model._trainer = None
+    model._use_fsdp = False
+    model._use_tp = False
+    model.setup_moe_options = lambda: None
+
+    def _load_llm(*_args, **kwargs):
+        captured_kwargs.update(kwargs)
+        return _LLM()
+
+    monkeypatch.setattr(salm_module, "load_pretrained_automodel_llm", _load_llm)
+    monkeypatch.setattr(
+        salm_module, "setup_speech_encoder", lambda model, **_kwargs: setattr(model, "perception", _Perception())
+    )
+    monkeypatch.setattr(salm_module, "update_perception_output_dim", lambda _model: None)
+    monkeypatch.setattr(salm_module, "maybe_load_pretrained_models", lambda _model: None)
+
+    SALMAutomodel.configure_model(model)
+
+    assert captured_kwargs["mtp_config_overrides"] == {
+        "num_nextn_predict_layers": 1,
+        "mtp_hybrid_override_pattern": "*E",
+        "mtp_layers_block_type": None,
+        "mtp_moe_intermediate_size": 768,
+    }
+    assert captured_kwargs["replace_mtp_config"] is True
+
+
+def test_mtp_moe_intermediate_size_requires_replacement_head(monkeypatch):
+    model = _bare_model()
+    model.cfg = DictConfig(
+        {
+            "pretrained_llm": "unused",
+            "pretrained_asr": "unused",
+            "mtp": {
+                "enabled": True,
+                "replace_existing_head": False,
+                "moe_intermediate_size": 768,
+            },
+        }
+    )
+    model._trainer = None
+    model._use_fsdp = False
+    model._use_tp = False
+    monkeypatch.setattr(
+        salm_module,
+        "load_pretrained_automodel_llm",
+        lambda *_args, **_kwargs: pytest.fail("invalid MTP resize must fail before loading"),
+    )
+
+    with pytest.raises(ValueError, match="requires mtp.replace_existing_head=true"):
+        SALMAutomodel.configure_model(model)
+
+
 def test_invalid_mtp_training_mode_fails_before_loading(monkeypatch):
     from omegaconf import DictConfig
 

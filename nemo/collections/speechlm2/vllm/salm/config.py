@@ -151,12 +151,24 @@ def _resolve_speechlm_mtp_config(
     if use_repeated_layer is None:
         use_repeated_layer = bool(explicit_mtp.get("use_repeated_layer", False)) if explicit_mtp else False
 
-    return {
+    resolved = {
         "enabled": True,
         "num_nextn_predict_layers": num_nextn_predict_layers,
         "use_repeated_layer": bool(use_repeated_layer),
         "hybrid_override_pattern": pattern,
     }
+    mtp_moe_intermediate_size = explicit_mtp.get("moe_intermediate_size") if explicit_mtp is not None else None
+    if mtp_moe_intermediate_size is None:
+        mtp_moe_intermediate_size = getattr(text_config, "mtp_moe_intermediate_size", None)
+    if mtp_moe_intermediate_size is not None:
+        mtp_moe_intermediate_size = int(mtp_moe_intermediate_size)
+        if mtp_moe_intermediate_size <= 0:
+            raise ValueError(
+                "SpeechLM MTP moe_intermediate_size must be positive when set, "
+                f"got {mtp_moe_intermediate_size}."
+            )
+        resolved["moe_intermediate_size"] = mtp_moe_intermediate_size
+    return resolved
 
 
 class NeMoSpeechLMConfig(PretrainedConfig):

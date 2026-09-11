@@ -123,16 +123,26 @@ def _nemo_speechlm_mtp_hf_config_override(hf_config):
                     f"execution model."
                 )
             hf_config.model_type = "nemo_speechlm_mtp"
-            hf_config.update(
-                {
-                    # vLLM instantiates one physical prediction step and reuses
-                    # it for arbitrary speculative K. Repeated-layer training
-                    # produces exactly that checkpoint layout.
-                    "n_predict": 1,
-                    "num_nextn_predict_layers": 1,
-                    "architectures": ["NeMoSpeechLMMTPModel"],
-                }
-            )
+            draft_updates = {
+                # vLLM instantiates one physical prediction step and reuses
+                # it for arbitrary speculative K. Repeated-layer training
+                # produces exactly that checkpoint layout.
+                "n_predict": 1,
+                "num_nextn_predict_layers": 1,
+                "architectures": ["NeMoSpeechLMMTPModel"],
+            }
+            mtp_moe_intermediate_size = mtp_cfg.get("moe_intermediate_size", None)
+            if mtp_moe_intermediate_size is not None:
+                mtp_moe_intermediate_size = int(mtp_moe_intermediate_size)
+                if mtp_moe_intermediate_size <= 0:
+                    raise ValueError(
+                        "NeMo SpeechLM MTP moe_intermediate_size must be positive when set, "
+                        f"got {mtp_moe_intermediate_size}."
+                    )
+                # The target keeps delegating this field to its backbone config;
+                # the draft copy shadows it with the MTP-only expert width.
+                draft_updates["moe_intermediate_size"] = mtp_moe_intermediate_size
+            hf_config.update(draft_updates)
             return hf_config
 
     global _ORIGINAL_VLLM_HF_CONFIG_OVERRIDE

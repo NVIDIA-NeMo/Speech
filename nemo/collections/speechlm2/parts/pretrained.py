@@ -840,10 +840,21 @@ def init_from_training_checkpoint(model: torch.nn.Module, checkpoint_path: str):
         # Wrapping with the same structure lets DCP match keys correctly.
         # Optimizer states and other trainer state are ignored automatically
         # because we only provide the model's state_dict.
-        state_dict = {"state_dict": model.state_dict()}
+        model_state_dict = model.state_dict()
+        mtp_cfg = model.cfg.get("mtp", None)
+        preserve_replacement_mtp = bool(
+            mtp_cfg is not None
+            and mtp_cfg.get("enabled", False)
+            and mtp_cfg.get("replace_existing_head", False)
+        )
+        if preserve_replacement_mtp:
+            model_state_dict = {
+                key: value for key, value in model_state_dict.items() if not _is_mtp_state_key(key)
+            }
+        state_dict = {"state_dict": model_state_dict}
         with python313_pathlib_pickle_compat():
             dcp.load(state_dict, checkpoint_id=str(checkpoint_path))
-        model.load_state_dict(state_dict["state_dict"])
+        model.load_state_dict(state_dict["state_dict"], strict=not preserve_replacement_mtp)
         logging.info(f"Loaded distributed checkpoint from {checkpoint_path}")
     elif Path(checkpoint_path).is_dir() and _model_has_dtensors(model):
         # A regular load_state_dict cannot copy CPU tensors into parameters

@@ -699,3 +699,37 @@ def test_exclude_mtp_checkpoint_state_restores_hook_and_adapter_after_error():
     assert not model._load_state_dict_pre_hooks
     assert "from_hf" not in model.state_dict_adapter.__dict__
     assert model.state_dict_adapter.from_hf.__func__ is IdentityStateDictAdapter.from_hf
+
+
+def test_dcp_init_preserves_replacement_mtp(tmp_path):
+    class TinyModel(torch.nn.Module):
+        def __init__(self, *, replace_existing_head):
+            super().__init__()
+            self.base = torch.nn.Linear(2, 2, bias=False)
+            self.mtp = torch.nn.Linear(2, 2, bias=False)
+            self.cfg = DictConfig(
+                {
+                    "mtp": {
+                        "enabled": True,
+                        "replace_existing_head": replace_existing_head,
+                    }
+                }
+            )
+
+    checkpoint_model = TinyModel(replace_existing_head=False)
+    with torch.no_grad():
+        checkpoint_model.base.weight.fill_(3.0)
+        checkpoint_model.mtp.weight.fill_(9.0)
+    torch.distributed.checkpoint.save(
+        {"state_dict": checkpoint_model.state_dict()},
+        checkpoint_id=str(tmp_path),
+    )
+
+    replacement_model = TinyModel(replace_existing_head=True)
+    with torch.no_grad():
+        replacement_model.base.weight.zero_()
+        replacement_model.mtp.weight.fill_(5.0)
+    pretrained.init_from_training_checkpoint(replacement_model, str(tmp_path))
+
+    torch.testing.assert_close(replacement_model.base.weight, torch.full_like(replacement_model.base.weight, 3.0))
+    torch.testing.assert_close(replacement_model.mtp.weight, torch.full_like(replacement_model.mtp.weight, 5.0))

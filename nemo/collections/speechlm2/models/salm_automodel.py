@@ -1483,7 +1483,21 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 "mtp_hybrid_override_pattern": str(mtp_cfg.get("hybrid_override_pattern", "*")),
                 "mtp_layers_block_type": None,
             }
-            automodel_kwargs["replace_mtp_config"] = bool(mtp_cfg.get("replace_existing_head", False))
+            replace_existing_head = bool(mtp_cfg.get("replace_existing_head", False))
+            mtp_moe_intermediate_size = mtp_cfg.get("moe_intermediate_size", None)
+            if mtp_moe_intermediate_size is not None:
+                mtp_moe_intermediate_size = int(mtp_moe_intermediate_size)
+                if mtp_moe_intermediate_size <= 0:
+                    raise ValueError(
+                        f"mtp.moe_intermediate_size must be positive when set, got {mtp_moe_intermediate_size}."
+                    )
+                if not replace_existing_head:
+                    raise ValueError(
+                        "mtp.moe_intermediate_size changes the checkpoint-native MTP tensor shapes and requires "
+                        "mtp.replace_existing_head=true."
+                    )
+                automodel_kwargs["mtp_config_overrides"]["mtp_moe_intermediate_size"] = mtp_moe_intermediate_size
+            automodel_kwargs["replace_mtp_config"] = replace_existing_head
             automodel_kwargs["mtp_loss_scaling_factor"] = self._mtp_loss_scaling_factor
             if use_repeated_layer:
                 # HF exports contain the physical depth so their state dict has the

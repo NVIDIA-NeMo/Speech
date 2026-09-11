@@ -1649,6 +1649,22 @@ class TestMTPPlugin:
         assert result.n_predict == 1
         assert result.num_nextn_predict_layers == 1
 
+    def test_patched_override_applies_mtp_only_moe_intermediate_size(self):
+        from nemo.collections.speechlm2.vllm.salm import _nemo_speechlm_mtp_hf_config_override
+
+        hf_cfg = self._HFConfigLike(
+            model_type="nemo_speechlm",
+            mtp={
+                "enabled": True,
+                "num_nextn_predict_layers": 8,
+                "use_repeated_layer": True,
+                "moe_intermediate_size": 768,
+            },
+        )
+        result = _nemo_speechlm_mtp_hf_config_override(hf_cfg)
+
+        assert result.moe_intermediate_size == 768
+
     def test_patched_override_is_pickleable_for_spawned_engine(self, monkeypatch):
         """The callable retained on draft ModelConfig must survive multiprocessing spawn."""
         import pickle
@@ -2274,6 +2290,21 @@ class TestMTPPlugin:
             },
         )
         assert cfg.mtp_hybrid_override_pattern == "*E"
+
+    @pytest.mark.skipif(not _HAS_CONFIG, reason="NeMoSpeechLMConfig not available")
+    def test_mtp_moe_intermediate_size_is_preserved(self):
+        cfg = NeMoSpeechLMConfig(
+            **_DEFAULT_CONFIG_KWARGS,
+            mtp={
+                "enabled": True,
+                "num_nextn_predict_layers": 8,
+                "use_repeated_layer": True,
+                "hybrid_override_pattern": "*E",
+                "moe_intermediate_size": 768,
+            },
+        )
+
+        assert cfg.mtp["moe_intermediate_size"] == 768
 
     @pytest.mark.skipif(not _HAS_CONFIG, reason="NeMoSpeechLMConfig not available")
     def test_mtp_hybrid_override_pattern_default_all_attention(self):

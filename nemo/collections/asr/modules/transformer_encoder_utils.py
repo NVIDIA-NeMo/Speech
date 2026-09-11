@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Private packed-attention helpers shared by Transformer encoder execution paths."""
+
 from functools import lru_cache
 
 import torch
@@ -23,14 +25,17 @@ _flex_attention_compiled = torch.compile(flex_attention, dynamic=True)
 
 
 def _get_flex_attention(x):
+    """Select compiled CUDA FlexAttention or its eager CPU implementation."""
     return _flex_attention_compiled if x.is_cuda else flex_attention
 
 
 def _causal_mask(b, h, q_idx, kv_idx):
+    """Return whether a query may attend to a key under causal attention."""
     return q_idx >= kv_idx
 
 
 def _apply_packed_rope(rope, q, k, position_ids):
+    """Apply rotary embeddings to token-flat query and key tensors."""
     cos = rope.cos.index_select(0, position_ids).unsqueeze(1).to(q.dtype)
     sin = rope.sin.index_select(0, position_ids).unsqueeze(1).to(q.dtype)
     return rope._apply_rotary(q, cos, sin), rope._apply_rotary(k, cos.to(k.dtype), sin.to(k.dtype))
@@ -49,6 +54,7 @@ def _packed_flex_attention_reference(
     sequence_offsets,
     use_math_reference=False,
 ):
+    """Evaluate packed attention one sequence at a time without padded activations."""
     if sequence_offsets is None:
         sequence_offsets = tuple(torch.cat([lengths.new_zeros(1), lengths.cumsum(0)]).tolist())
     outputs = []
@@ -88,6 +94,7 @@ def _packed_flex_attention_reference(
 
 
 def _packed_math_attention_reference(q, k, v, *, causal, score_mod):
+    """Compute differentiable CPU reference attention for one packed sequence."""
     scores = torch.matmul(q, k.transpose(-2, -1)) * (q.shape[-1] ** -0.5)
     if score_mod is not None:
         scores = scores + score_mod._relative_position_bias
@@ -105,17 +112,20 @@ def _select_flash_attention_varlen(x, *, static_eligible):
 
 
 def _can_use_flash_attention_varlen(q):
+    """Return whether packed Q can use an available variable-length FlashAttention provider."""
     static_eligible = q.shape[-1] <= 256 and q.shape[-1] % 8 == 0
     return _select_flash_attention_varlen(q, static_eligible=static_eligible) is not None
 
 
 def _can_use_flash_attention_varlen_layout(x, head_dim):
+    """Return whether a packed layout can use variable-length FlashAttention."""
     static_eligible = head_dim <= 256 and head_dim % 8 == 0
     return _select_flash_attention_varlen(x, static_eligible=static_eligible) is not None
 
 
 @lru_cache(maxsize=None)
 def _get_flash_attention_varlen_for_device(device):
+    """Resolve and cache a variable-length FlashAttention provider for one CUDA device."""
     if torch.version.cuda is None or torch.cuda.get_device_capability(device)[0] < 8:
         return None
     return _get_flash_attention_varlen()
@@ -123,6 +133,7 @@ def _get_flash_attention_varlen_for_device(device):
 
 @lru_cache(maxsize=1)
 def _get_flash_attention_varlen():
+    """Resolve the external or ATen variable-length FlashAttention implementation."""
     try:
         from flash_attn import flash_attn_varlen_func
     except (ImportError, ModuleNotFoundError):
@@ -143,6 +154,7 @@ def _get_flash_attention_varlen():
             softmax_scale,
             causal,
         ):
+            """Adapt the ATen FlashAttention operator to the external provider signature."""
             return flash_forward(
                 q,
                 k,

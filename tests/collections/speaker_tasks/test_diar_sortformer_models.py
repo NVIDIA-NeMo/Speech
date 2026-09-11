@@ -269,6 +269,89 @@ class TestSortformerEncLabelModelStreaming:
         assert isinstance(instance2, SortformerEncLabelModel)
 
     @pytest.mark.unit
+    def test_raw_audio_streaming_session_batches_independent_streams(self):
+        model = _create_sortformer_model().eval()
+        model.streaming_mode = True
+        model.sortformer_modules.chunk_len = 2
+        model.sortformer_modules.chunk_left_context = 1
+        model.sortformer_modules.chunk_right_context = 1
+        model._check_streaming_parameters()
+        audio = [torch.randn(8193), torch.randn(5001)]
+
+        reference_preds = []
+        for signal in audio:
+            session = model.create_streaming_session(batch_size=1)
+            preds, pred_lengths = session.diarize_step(
+                signal.unsqueeze(0),
+                audio_chunk_lengths=torch.tensor([signal.numel()]),
+                is_final=torch.tensor([True]),
+            )
+            reference_preds.append(preds[0, : pred_lengths[0]])
+
+        session = model.create_streaming_session(batch_size=2)
+        emitted = [[], []]
+        offsets = [0, 0]
+        step_sizes = [(17, 503), (1600, 81), (2999, 4417), (3577, 0)]
+        for step_index, sizes in enumerate(step_sizes):
+            chunks = []
+            lengths = []
+            final = []
+            for stream_index, size in enumerate(sizes):
+                end = min(offsets[stream_index] + size, audio[stream_index].numel())
+                chunks.append(audio[stream_index][offsets[stream_index] : end])
+                offsets[stream_index] = end
+                lengths.append(chunks[-1].numel())
+                final.append(end == audio[stream_index].numel())
+            padded_audio = torch.nn.utils.rnn.pad_sequence(chunks, batch_first=True)
+            preds, pred_lengths = session.diarize_step(
+                padded_audio,
+                audio_chunk_lengths=torch.tensor(lengths),
+                is_final=torch.tensor(final),
+            )
+            for stream_index in range(2):
+                emitted[stream_index].append(preds[stream_index, : pred_lengths[stream_index]])
+
+            if step_index == 2:
+                assert final == [False, True]
+
+        for stream_index in range(2):
+            batched_preds = torch.cat(emitted[stream_index])
+            torch.testing.assert_close(batched_preds, reference_preds[stream_index])
+            assert (
+                session._audio_buffers[stream_index].untyped_storage().nbytes()
+                < audio[stream_index].untyped_storage().nbytes()
+            )
+
+    @pytest.mark.unit
+    def test_raw_audio_streaming_session_reset_and_validation(self):
+        offline_model = _create_sortformer_model().eval()
+        with pytest.raises(ValueError, match="streaming_mode=True"):
+            offline_model.create_streaming_session()
+
+        model = _create_sortformer_model().eval()
+        model.streaming_mode = True
+        model.sortformer_modules.chunk_len = 2
+        model.sortformer_modules.chunk_left_context = 1
+        model.sortformer_modules.chunk_right_context = 1
+        model._check_streaming_parameters()
+        audio = torch.randn(4097)
+        session = model.create_streaming_session(batch_size=1)
+
+        first_preds, first_lengths = session.diarize_step(audio, is_final=True)
+        with pytest.raises(RuntimeError, match="finalized stream 0"):
+            session.diarize_step(torch.ones(1))
+        session.reset()
+        second_preds, second_lengths = session.diarize_step(audio.unsqueeze(0), is_final=torch.tensor([True]))
+
+        assert torch.equal(second_lengths, first_lengths)
+        torch.testing.assert_close(second_preds, first_preds)
+        with pytest.raises(ValueError, match="batch dimension"):
+            session.reset()
+            session.diarize_step(torch.randn(2, 100))
+        with pytest.raises(ValueError, match="positive integer"):
+            model.create_streaming_session(batch_size=0)
+
+    @pytest.mark.unit
     @pytest.mark.parametrize(
         "stacking_factor, feature_shape, input_lengths, expected_encoded_lengths",
         [(8, (2, 120, 80), (120, 91), (15, 12))],

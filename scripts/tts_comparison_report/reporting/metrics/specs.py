@@ -51,3 +51,5 @@ class DistributionMetricSpec:
     add_to_box_plot: bool = True
     # Optional y-axis range applied to the metric plot as (min, max).
     plot_range: Optional[tuple[float, float]] = None
+    # Whether this metric may be absent from filewise metrics.
+    optional: bool = False

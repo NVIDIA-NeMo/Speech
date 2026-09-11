@@ -495,6 +495,29 @@ class BucketData:
             return self._aggregate_metric_stats(metric_name)
         return self._get_metric_stats(metric_name, benchmark_name)
 
+    def has_metric_samples(
+        self,
+        metric_name: str,
+        benchmark_name: Optional[str] = None,
+    ) -> bool:
+        """Return whether filewise samples contain a metric for the requested benchmark scope."""
+        benchmark_names = self.benchmarks if benchmark_name is None else [benchmark_name]
+
+        for name in benchmark_names:
+            if name not in self.benchmarks:
+                raise ValueError(f"Unknown benchmark: '{name}'.")
+
+            items = self.benchmarks[name].filewise_metrics
+            if items is None or not items:
+                raise ValueError(f"Filewise metrics not loaded for benchmark: '{name}'.")
+            values = [item[metric_name] for item in items if metric_name in item]
+            if not values:
+                return False
+            if all(isinstance(value, (int, float)) and math.isnan(value) for value in values):
+                return False
+
+        return True
+
     def get_benchmark_audio_paths(self, benchmark_name: str) -> dict[str, Path]:
         """Return generated audio file paths for a benchmark.
 

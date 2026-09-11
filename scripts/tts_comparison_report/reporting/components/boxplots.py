@@ -182,7 +182,12 @@ def prepare_boxplots(
     baseline_name = bucket_baseline.name
     candidate_name = bucket_candidate.name
     winner_lookup = {res.metric_name: res.winner for res in stat_test_results}
-    num_rows = sum(m.add_to_box_plot for m in DistributionMetricsRegistry)
+    plotted_metrics = [
+        metric
+        for metric in DistributionMetricsRegistry
+        if metric.add_to_box_plot and metric.report_name in winner_lookup
+    ]
+    num_rows = len(plotted_metrics)
     fig_height = max(2.0 * num_rows, 4.5)
 
     with plt.rc_context({"font.family": cfg.font_family, "font.sans-serif": cfg.font_list}):
@@ -190,10 +195,7 @@ def prepare_boxplots(
         axs = axs.flatten()
         plot_idx = 0
 
-        for metric in DistributionMetricsRegistry:
-            if not metric.add_to_box_plot:
-                continue
-
+        for metric in plotted_metrics:
             baseline = bucket_baseline.get_metric_samples(
                 metric_name=metric.key,
                 benchmark_name=benchmark_name,

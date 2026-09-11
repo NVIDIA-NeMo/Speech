@@ -1,4 +1,5 @@
-# Copyright (c) 2023, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -54,7 +55,7 @@ def compute_stochastic_depth_drop_probs(
     if (L := num_layers - stochastic_depth_start_layer) > 0:
         if stochastic_depth_mode == "linear":
             # we start with 1/L * drop_prob and and end with the desired drop probability.
-            layer_drop_probs += [l / L * stochastic_depth_drop_prob for l in range(1, L + 1)]
+            layer_drop_probs += [layer_idx / L * stochastic_depth_drop_prob for layer_idx in range(1, L + 1)]
         elif stochastic_depth_mode == "uniform":
             layer_drop_probs += [stochastic_depth_drop_prob] * L
         else:

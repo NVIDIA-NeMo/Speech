@@ -7,3 +7,6 @@ select =
     E741, # ambiguous variable name 'l'
     F821, # undefined name 'x'
     E266, # too many leading '#' for block comment
+# Package initializers intentionally re-export public APIs.
+per-file-ignores =
+    __init__.py: F401

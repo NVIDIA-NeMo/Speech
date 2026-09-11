@@ -1,4 +1,5 @@
-# Copyright (c) 2023, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -35,6 +36,7 @@ def build_engine(
     int8=False,
     builder_optimization_level=None,
 ):
+    """Build and serialize a TensorRT engine from an ONNX model."""
     print(f"Building TensorRT engine for {onnx_path}: {output_path}")
     p = Profile()
     if input_profile:

@@ -1,4 +1,5 @@
-# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -29,6 +30,8 @@ from nemo.collections.tts.parts.preprocessing.feature_processors import FeatureP
 from nemo.collections.tts.parts.preprocessing.features import Featurizer
 from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     _read_audio,
+    _select_text_for_tts_input,
+    _validate_probability,
     beta_binomial_prior_distribution,
     chunk_text_for_inference,
     filter_dataset_by_duration,
@@ -89,6 +92,8 @@ class TextToSpeechDataset(Dataset):
         max_duration: Optional float, if provided audio files in the training manifest longer than 'max_duration'
             will be ignored.
         volume_norm: Whether to apply volume normalization to loaded audio.
+        load_normalized_text_percent: Probability in `[0.0, 1.0]` of loading the normalized transcript when
+            available. Defaults to `1.0`.
     """
 
     def __init__(
@@ -104,6 +109,7 @@ class TextToSpeechDataset(Dataset):
         min_duration: Optional[float] = None,
         max_duration: Optional[float] = None,
         volume_norm: bool = True,
+        load_normalized_text_percent: float = 1.0,
     ):
         super().__init__()
 
@@ -113,6 +119,8 @@ class TextToSpeechDataset(Dataset):
         self.align_prior_hop_length = align_prior_hop_length
         self.include_align_prior = self.align_prior_hop_length is not None
         self.volume_norm = volume_norm
+        _validate_probability("load_normalized_text_percent", load_normalized_text_percent)
+        self.load_normalized_text_percent = load_normalized_text_percent
 
         if speaker_path:
             self.include_speaker = True
@@ -183,10 +191,11 @@ class TextToSpeechDataset(Dataset):
         sample_weights = []
         for entry in filtered_entries:
 
-            if "normalized_text" in entry:
-                text = entry["normalized_text"]
-            else:
-                text = entry["text"]
+            text = _select_text_for_tts_input(
+                text=entry["text"],
+                normalized_text=entry.get("normalized_text"),
+                load_normalized_text_percent=self.load_normalized_text_percent,
+            )
 
             if self.include_speaker:
                 speaker = entry["speaker"]
@@ -349,6 +358,8 @@ class MagpieTTSDataset(TextToSpeechDataset):
         max_duration: Optional float, if provided audio files in the training manifest longer than 'max_duration'
             will be ignored.
         volume_norm: Whether to apply volume normalization to loaded audio.
+        load_normalized_text_percent: Probability in `[0.0, 1.0]` of loading the normalized transcript when
+            available. Defaults to `1.0`.
         codec_model_samples_per_frame: Num samples in waveform per codec frame (codec downsample factor).
         bos_id: Text BOS token id.
         eos_id: Text EOS token id.
@@ -397,6 +408,7 @@ class MagpieTTSDataset(TextToSpeechDataset):
         phoneme_text_eop_marker: str = "<eop>",
         add_language_to_context_text: bool = False,
         default_tokenizer_name: str = "english_phoneme",
+        load_normalized_text_percent: float = 1.0,
     ):
         super().__init__(
             dataset_meta=dataset_meta,
@@ -410,6 +422,7 @@ class MagpieTTSDataset(TextToSpeechDataset):
             min_duration=min_duration,
             max_duration=max_duration,
             volume_norm=volume_norm,
+            load_normalized_text_percent=load_normalized_text_percent,
         )
         self.bos_id = bos_id  # TODO @xueyang: this should be removed since no other places used it.
         self.eos_id = eos_id
@@ -911,6 +924,8 @@ class ChunkedTTSInferenceDataset(MagpieTTSDataset):
         text_conditioning_tokenizer_name: Name of text conditioning tokenizer.
         pad_context_text_to_max_duration: Whether to pad context text.
         load_16khz_audio: Whether to load 16kHz audio for SV model.
+        load_normalized_text_percent: Probability in `[0.0, 1.0]` of loading the normalized transcript when
+            available. Defaults to `1.0`.
     """
 
     def __init__(
@@ -926,6 +941,7 @@ class ChunkedTTSInferenceDataset(MagpieTTSDataset):
         text_conditioning_tokenizer_name: str = None,
         pad_context_text_to_max_duration: bool = False,
         load_16khz_audio: bool = False,
+        load_normalized_text_percent: float = 1.0,
         **kwargs,
     ):
         # Initialize parent - handles manifest reading and context audio loading
@@ -943,6 +959,7 @@ class ChunkedTTSInferenceDataset(MagpieTTSDataset):
             load_16khz_audio=load_16khz_audio,
             load_cached_codes_if_available=True,  # Prefer codes for inference
             dataset_type='test',
+            load_normalized_text_percent=load_normalized_text_percent,
             **kwargs,
         )
 

@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -773,7 +774,7 @@ class GermanPhonemesTokenizer(BaseCharsTokenizer):
                 logging.warning(f"Text: [{text}] contains unknown char: [{c}]. Symbol will be skipped.")
 
         # Remove trailing spaces
-        while cs[-1] == space:
+        while cs and cs[-1] == space:
             cs.pop()
 
         if self.pad_with_space:
@@ -848,7 +849,7 @@ class ItalianPhonemesTokenizer(BaseCharsTokenizer):
                 logging.warning(f"Text: [{text}] contains unknown char: [{c}]. Symbol will be skipped.")
 
         # Remove trailing spaces
-        while cs[-1] == space:
+        while cs and cs[-1] == space:
             cs.pop()
 
         if self.pad_with_space:

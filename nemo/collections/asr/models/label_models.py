@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -765,8 +766,14 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel, VerificationMixin)
         X = embs1.unsqueeze(dim=1)
         Y = embs2.unsqueeze(dim=2)
         # Score
-        similarity_scores = torch.matmul(X, Y).squeeze() / (
-            (torch.matmul(X, X.permute(0, 2, 1)).squeeze() * torch.matmul(Y.permute(0, 2, 1), Y).squeeze()) ** 0.5
+        # NOTE: squeeze only the trailing two singleton dims (not a bare .squeeze()), so a batch of
+        # exactly one pair keeps its batch dimension instead of collapsing to a 0-d scalar.
+        similarity_scores = torch.matmul(X, Y).squeeze(-1).squeeze(-1) / (
+            (
+                torch.matmul(X, X.permute(0, 2, 1)).squeeze(-1).squeeze(-1)
+                * torch.matmul(Y.permute(0, 2, 1), Y).squeeze(-1).squeeze(-1)
+            )
+            ** 0.5
         )
         similarity_scores = (similarity_scores + 1) / 2
 

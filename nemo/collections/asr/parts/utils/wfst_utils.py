@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,6 +15,7 @@
 
 import os
 import re
+import shutil
 import tempfile
 from abc import ABC, abstractmethod, abstractproperty
 from collections import defaultdict, namedtuple
@@ -322,7 +324,7 @@ def add_tokenwords_(
 
 
 def generate_lexicon_sentencepiece(
-    tokenizer: 'TokenizerSpec',
+    tokenizer,
     id2word: Dict[int, str],
     oov: str = "<unk>",
     add_epsilon: bool = False,
@@ -875,7 +877,7 @@ def build_minimal_topo(token2id: Dict[str, int]) -> 'kaldifst.StdVectorFst':
 
 
 def mkgraph_ctc_ov(
-    tokenizer: 'TokenizerSpec',
+    tokenizer,
     lm_path: Union[Path, str],
     topology_name: str = "default",
     write_tlg_path: Optional[Union[Path, str]] = None,
@@ -997,7 +999,7 @@ class AbstractLattice(ABC):
         self._properties = None
 
     @abstractmethod
-    def as_tensor(self) -> 'torch.Tensor':
+    def as_tensor(self):
         """Represents the lattice as a tensor.
 
         Returns:
@@ -1008,7 +1010,7 @@ class AbstractLattice(ABC):
     @abstractmethod
     def draw(
         self, filename: Optional[Union[Path, str]] = None, title: Optional[Union[Path, str]] = None, zoom: float = 1.0
-    ) -> Union['graphviz.Digraph', 'IPython.display.HTML']:
+    ):
         """Render FSA as an image via graphviz, and return the Digraph object; and optionally save to file filename.
         filename must have a suffix that graphviz understands, such as pdf, svg or png.
 
@@ -1153,7 +1155,7 @@ class KaldiWordLattice(AbstractLattice):
     def auxiliary_tables(self) -> Optional[Tuple[Any]]:
         return self._auxiliary_tables
 
-    def as_tensor(self) -> 'torch.Tensor':
+    def as_tensor(self):
         """Represents the lattice as a tensor.
 
         Returns:
@@ -1174,9 +1176,9 @@ class KaldiWordLattice(AbstractLattice):
         _kaldifst_maybe_raise()
 
         if not self.properties.InputEpsilonFree:
-            logging.warning(f"Lattice contains input epsilons. Edit distance calculations may not be accurate.")
+            logging.warning("Lattice contains input epsilons. Edit distance calculations may not be accurate.")
         if not all(reference_sequence):
-            raise ValueError(f"reference_sequence contains zeros, which is not allowed.")
+            raise ValueError("reference_sequence contains zeros, which is not allowed.")
         ref = levenshtein_graph_kaldi(kaldifst.make_linear_acceptor(reference_sequence))
         hyp = levenshtein_graph_kaldi(self._lattice)
         kaldifst.invert(hyp)
@@ -1188,7 +1190,7 @@ class KaldiWordLattice(AbstractLattice):
 
     def draw(
         self, filename: Optional[Union[Path, str]] = None, title: Optional[Union[Path, str]] = None, zoom: float = 1.0
-    ) -> Union['graphviz.Digraph', 'IPython.display.HTML']:
+    ):
         """Render FSA as an image via graphviz, and return the Digraph object; and optionally save to file filename.
         filename must have a suffix that graphviz understands, such as pdf, svg or png.
 

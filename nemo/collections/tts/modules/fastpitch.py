@@ -1,4 +1,5 @@
-# Copyright (c) 2021, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2021, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -68,10 +69,10 @@ def average_features(pitch, durs):
     pitch_nonzero_cums = torch.nn.functional.pad(torch.cumsum(pitch != 0.0, dim=2), (1, 0))
     pitch_cums = torch.nn.functional.pad(torch.cumsum(pitch, dim=2), (1, 0))
 
-    bs, l = durs_cums_ends.size()
+    bs, seq_len = durs_cums_ends.size()
     n_formants = pitch.size(1)
-    dcs = durs_cums_starts[:, None, :].expand(bs, n_formants, l)
-    dce = durs_cums_ends[:, None, :].expand(bs, n_formants, l)
+    dcs = durs_cums_starts[:, None, :].expand(bs, n_formants, seq_len)
+    dce = durs_cums_ends[:, None, :].expand(bs, n_formants, seq_len)
 
     pitch_sums = (torch.gather(pitch_cums, 2, dce) - torch.gather(pitch_cums, 2, dcs)).float()
     pitch_nelems = (torch.gather(pitch_nonzero_cums, 2, dce) - torch.gather(pitch_nonzero_cums, 2, dcs)).float()
@@ -361,7 +362,7 @@ class FastPitchModule(NeuralModule, adapter_mixins.AdapterModuleMixin):
             len_regulated, dec_lens = regulate_len(durs_predicted, enc_out, pace)
         else:
             raise ValueError(
-                f"Something unexpected happened when 'spec' is not None and 'self.learn_alignment' is False."
+                "Something unexpected happened when 'spec' is not None and 'self.learn_alignment' is False."
             )
 
         # Output FFT

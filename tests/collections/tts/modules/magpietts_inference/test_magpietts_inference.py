@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,11 +18,20 @@ Tests for MagpieTTS inference.
 """
 
 import csv
+import json
 import os
 
 import pytest
 
 from examples.tts.magpietts_inference import main as magpietts_inference_main
+from nemo.collections.tts.modules.magpietts_inference.evaluate_generated_audio import (
+    FILEWISE_METRICS_TO_SAVE,
+    _get_record_texts,
+)
+from nemo.collections.tts.modules.magpietts_inference.utils import (
+    _group_multiturn_filewise_metrics_by_sample,
+    _write_grouped_multiturn_filewise_metrics_csv,
+)
 
 
 class TestMagpieTTSInferenceCLI:
@@ -89,3 +99,47 @@ class TestMagpieTTSInferenceCLI:
         metric_value = metrics.get(metric_key)
         assert metric_value is not None, f"{metric_key} key not found in metrics"
         assert "nan" in metric_value.lower(), f"{metric_key} should be NaN but got: {metric_value}"
+
+
+@pytest.mark.unit
+def test_evaluation_uses_normalized_text_for_metrics():
+    record = {
+        "text": "July 15th",
+        "normalized_text": "july fifteenth",
+        "original_text": "legacy original text",
+    }
+
+    tts_text_input, dataloader_normalized_text, metric_reference_text = _get_record_texts(record)
+
+    assert tts_text_input == "July 15th"
+    assert dataloader_normalized_text == "july fifteenth"
+    assert metric_reference_text == "july fifteenth"
+    assert "tts_text_input" in FILEWISE_METRICS_TO_SAVE
+    assert "dataloader_normalized_text" in FILEWISE_METRICS_TO_SAVE
+
+
+@pytest.mark.unit
+def test_grouped_multiturn_exports_input_and_normalized_text(tmp_path):
+    grouped_rows = _group_multiturn_filewise_metrics_by_sample(
+        [
+            {
+                "source_sample_idx": 0,
+                "turn_id": 0,
+                "tts_text_input": "July 15th",
+                "dataloader_normalized_text": "july fifteenth",
+                "gt_text": "july fifteenth",
+                "pred_text": "july fifteenth",
+            }
+        ]
+    )
+
+    assert grouped_rows[0]["tts_text_input"] == ["July 15th"]
+    assert grouped_rows[0]["dataloader_normalized_text"] == ["july fifteenth"]
+
+    csv_path = tmp_path / "metrics.csv"
+    _write_grouped_multiturn_filewise_metrics_csv(str(csv_path), grouped_rows)
+    with csv_path.open(encoding="utf-8") as csv_file:
+        csv_row = next(csv.DictReader(csv_file))
+
+    assert json.loads(csv_row["tts_text_input"]) == ["July 15th"]
+    assert json.loads(csv_row["dataloader_normalized_text"]) == ["july fifteenth"]

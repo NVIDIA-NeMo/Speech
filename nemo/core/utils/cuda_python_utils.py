@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -255,7 +256,7 @@ def run_nvrtc(kernel_string: str, kernel_name: bytes, program_name: bytes):
     assert_drv(err)
     err, size = nvrtc.nvrtcGetProgramLogSize(prog)
     assert_drv(err)
-    buf = b" " * size
+    buf = bytearray(size)
     (err,) = nvrtc.nvrtcGetProgramLog(prog, buf)
     assert_drv(err)
 

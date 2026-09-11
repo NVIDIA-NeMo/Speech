@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -83,6 +84,9 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             Should be power of 2, 1 (auto-chunking, default), or -1 (no chunking)
         subsampling_conv_channels (int): the size of the convolutions in the subsampling module
             Defaults to -1 which would set it to d_model.
+        use_triton (bool, Optional): use the fused Triton subsampling kernels, for CUDA input with
+            'dw_striding' subsampling. Defaults to None, enabling them whenever Triton is
+            installed. Export always uses the PyTorch path.
         reduction (str, Optional): the method of reduction, choices=['pooling', 'striding']. If no value
             is passed, then no reduction is performed and the models runs with the original 4x subsampling.
         reduction_position (int, Optional): the index of the layer to apply reduction. If -1, apply reduction
@@ -345,6 +349,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         sync_max_audio_length: bool = True,
         rope_base: float = 10000.0,
         rotary_fraction: float = 1.0,
+        use_triton: bool | None = None,
     ):
         super().__init__()
         d_ff = d_model * ff_expansion_factor
@@ -422,6 +427,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                     subsampling_conv_chunking_factor=subsampling_conv_chunking_factor,
                     activation=nn.ReLU(True),
                     is_causal=causal_downsampling,
+                    use_triton=use_triton,
                 )
         else:
             self.pre_encode = nn.Linear(feat_in, d_model)

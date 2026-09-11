@@ -1,4 +1,5 @@
-# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,7 +15,7 @@
 
 import math
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 import torch
 from torch import nn as nn
@@ -22,6 +23,9 @@ from torch import nn as nn
 from nemo.collections.asr.parts.submodules import multi_head_attention as mha
 from nemo.collections.common.parts import adapter_modules
 from nemo.core.classes.mixins import adapter_mixin_strategies
+
+if TYPE_CHECKING:
+    from nemo.core.classes.mixins.adapter_mixins import AdapterModuleMixin
 
 
 class MHAResidualAddAdapterStrategy(adapter_mixin_strategies.ResidualAddAdapterStrategy):

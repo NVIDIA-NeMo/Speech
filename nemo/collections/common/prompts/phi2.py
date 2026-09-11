@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,13 +25,13 @@ class Phi2QAPromptFormatter(PromptFormatter):
     OUTPUT_ROLE = "assistant"
     TEMPLATE = {
         "user": {
-            "template": f"Instruct: |message|\nOutput: ",
+            "template": "Instruct: |message|\nOutput: ",
             "slots": {
                 "message": Modality.Text,
             },
         },
         OUTPUT_ROLE: {
-            "template": f"|message|",
+            "template": "|message|",
             "slots": {
                 "message": Modality.Text,
             },
@@ -43,13 +44,13 @@ class Phi2ChatPromptFormatter(PromptFormatter):
     OUTPUT_ROLE = "assistant"
     TEMPLATE = {
         "user": {
-            "template": f"Human: |message|\nAI: ",
+            "template": "Human: |message|\nAI: ",
             "slots": {
                 "message": Modality.Text,
             },
         },
         OUTPUT_ROLE: {
-            "template": f"|message|",
+            "template": "|message|",
             "slots": {
                 "message": Modality.Text,
             },
@@ -62,13 +63,13 @@ class Phi2CodePromptFormatter(PromptFormatter):
     OUTPUT_ROLE = "assistant"
     TEMPLATE = {
         "user": {
-            "template": f"|message|\n",
+            "template": "|message|\n",
             "slots": {
                 "message": Modality.Text,
             },
         },
         OUTPUT_ROLE: {
-            "template": f"|message|",
+            "template": "|message|",
             "slots": {
                 "message": Modality.Text,
             },

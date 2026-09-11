@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -36,7 +37,7 @@ concurrency:
 
 jobs:
   ephemeral-runner-routing:
-    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_ephemeral_runner_routing.yml@d0878a142525ff79366ca96fbc0b306cd8d64670 # v1.9.0
+    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_ephemeral_runner_routing.yml@4fe957d4ea5816af1d67fae130bbab4b434c10b3 # v1.9.2
     with:
       lane: ${{ vars.NEMO_CI_EPHEMERAL_LANE }}
       legacy_label: ${{ vars.NON_NVIDIA_RUNNER_PREFIX }}
@@ -48,7 +49,7 @@ jobs:
     uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_cicd_preflight.yml@d0878a142525ff79366ca96fbc0b306cd8d64670 # v1.9.0
     with:
       default_runner_prefix: ${{ vars.DEFAULT_RUNNER_PREFIX }}
-      non_nvidia_runner_prefix: ${{ needs.ephemeral-runner-routing.outputs.runner_label }}
+      non_nvidia_runner_prefix: ${{ needs.ephemeral-runner-routing.outputs.runner_label_base }}
       default_test_data_path: ${{ vars.DEFAULT_TEST_DATA_PATH }}
       non_nvidia_test_data_path: ${{ vars.NON_NVIDIA_TEST_DATA_PATH }}
       default_registry: ${{ vars.DEFAULT_CONTAINER_REGISTRY }}
@@ -62,7 +63,6 @@ jobs:
     needs: [pre-flight]
     outputs:
       test_to_run: ${{ steps.test_to_run.outputs.main }}
-      is_ci_workload: ${{ steps.is_ci_workload.outputs.main }}
       no_fail_fast: ${{ steps.no_fail_fast.outputs.main }}
       components_to_run: ${{ steps.components_to_run.outputs.main }}
       run_nightly: ${{ steps.pr_labels.outputs.run_nightly }}
@@ -100,21 +100,6 @@ jobs:
 
           parsed_string=$(echo "$TESTS_TO_RUN" | jq -c --raw-input 'split(",")')
           echo "main=${parsed_string}" | tee -a "$GITHUB_OUTPUT"
-
-      - name: Check if this is a CI workload
-        shell: bash
-        id: is_ci_workload
-        run: |
-          branch_name=${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}
-
-          if [[ "$branch_name" =~ ^bump-ci-container || "$EVENT_NAME" == "schedule" ]]; then
-            is_ci_workload=true
-            echo "main=true" | tee -a "$GITHUB_OUTPUT"
-          else
-            is_ci_workload=false
-          fi
-
-          echo "main=$is_ci_workload" | tee -a "$GITHUB_OUTPUT"
 
       - name: Fetch PR labels
         id: pr_labels
@@ -157,13 +142,13 @@ jobs:
       skip_linting: ${{ needs.configure.outputs.skip_linting }}
 
   cicd-wait-in-queue:
-    needs: [configure, code-linting]
+    needs: [pre-flight, configure, code-linting]
     runs-on: ubuntu-latest
     environment: test
     if: |
       needs.configure.outputs.test_to_run != '[]'
       && needs.configure.outputs.components_to_run != '[]'
-      && needs.configure.outputs.is_ci_workload == 'false'
+      && needs.pre-flight.outputs.is_ci_workload == 'false'
     steps:
       - name: Running CI tests
         run: |
@@ -179,14 +164,15 @@ jobs:
         success()
         || (
           needs.cicd-wait-in-queue.result == 'skipped'
-          && needs.configure.outputs.is_ci_workload == 'true'
+          && needs.pre-flight.outputs.is_ci_workload == 'true'
         )
       )
       && !cancelled()
     with:
       image-name: nemo_container
       dockerfile: docker/Dockerfile
-      runner: ${{ needs.pre-flight.outputs.runner_prefix }}
+      # Append the attempt in each rerun-eligible job because partial reruns inherit successful prerequisite outputs.
+      runner: ${{ startsWith(needs.pre-flight.outputs.runner_prefix, 'ephe-v2-') && format('{0}-a{1}', needs.pre-flight.outputs.runner_prefix, github.run_attempt) || needs.pre-flight.outputs.runner_prefix }}
       registry: ${{ needs.pre-flight.outputs.registry }}
 
   cicd-import-tests:
@@ -197,12 +183,12 @@ jobs:
         success()
         || (
           needs.cicd-wait-in-queue.result == 'skipped'
-          && needs.configure.outputs.is_ci_workload == 'true'
+          && needs.pre-flight.outputs.is_ci_workload == 'true'
         )
       )
       && !cancelled()
     needs: [cicd-test-container-build, configure, pre-flight]
-    runs-on: ${{ needs.pre-flight.outputs.runner_prefix }}
+    runs-on: ${{ startsWith(needs.pre-flight.outputs.runner_prefix, 'ephe-v2-') && format('{0}-a{1}', needs.pre-flight.outputs.runner_prefix, github.run_attempt) || needs.pre-flight.outputs.runner_prefix }}
     steps:
       - name: Create UUID
         id: uuid
@@ -218,7 +204,6 @@ jobs:
         run: |
           docker run \
               --rm \
-            --device=/dev/nvidia0 \
             --gpus all \
             --shm-size=8g \
             --volume $(pwd)/${{ github.run_id }}/${{steps.uuid.outputs.id }}/NeMo:/workspace \
@@ -234,7 +219,7 @@ jobs:
 
   L0_Setup_Test_Data_And_Models:
     needs: [configure, cicd-test-container-build, cicd-wait-in-queue, pre-flight]
-    runs-on: ${{ needs.pre-flight.outputs.runner_prefix }}
+    runs-on: ${{ startsWith(needs.pre-flight.outputs.runner_prefix, 'ephe-v2-') && format('{0}-a{1}', needs.pre-flight.outputs.runner_prefix, github.run_attempt) || needs.pre-flight.outputs.runner_prefix }}
     if: |
       needs.configure.outputs.test_to_run != '[]'
       && needs.configure.outputs.components_to_run != '[]'
@@ -242,7 +227,7 @@ jobs:
         success()
         || (
           needs.cicd-wait-in-queue.result == 'skipped'
-          && needs.configure.outputs.is_ci_workload == 'true'
+          && needs.pre-flight.outputs.is_ci_workload == 'true'
         )
       )
       && !cancelled()
@@ -273,13 +258,13 @@ jobs:
         success()
         || (
           needs.cicd-wait-in-queue.result == 'skipped'
-          && needs.configure.outputs.is_ci_workload == 'true'
+          && needs.pre-flight.outputs.is_ci_workload == 'true'
         )
       )
       && !cancelled()
     with:
       test_to_run: ${{ needs.configure.outputs.test_to_run }}
-      runner: ${{ needs.pre-flight.outputs.runner_prefix }}
+      runner: ${{ startsWith(needs.pre-flight.outputs.runner_prefix, 'ephe-v2-') && format('{0}-a{1}', needs.pre-flight.outputs.runner_prefix, github.run_attempt) || needs.pre-flight.outputs.runner_prefix }}
       container-image: ${{ needs.cicd-test-container-build.outputs.image }}
 
   cicd-main-speech:
@@ -296,13 +281,13 @@ jobs:
         success()
         || (
           needs.cicd-wait-in-queue.result == 'skipped'
-          && needs.configure.outputs.is_ci_workload == 'true'
+          && needs.pre-flight.outputs.is_ci_workload == 'true'
         )
       )
       && !cancelled()
     with:
       test_to_run: ${{ needs.configure.outputs.test_to_run }}
-      runner: ${{ needs.pre-flight.outputs.runner_prefix }}
+      runner: ${{ startsWith(needs.pre-flight.outputs.runner_prefix, 'ephe-v2-') && format('{0}-a{1}', needs.pre-flight.outputs.runner_prefix, github.run_attempt) || needs.pre-flight.outputs.runner_prefix }}
       run_nightly: ${{ needs.configure.outputs.run_nightly }}
 
   Nemo_CICD_Test:

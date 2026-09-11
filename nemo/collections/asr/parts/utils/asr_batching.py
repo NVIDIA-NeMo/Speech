@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -97,7 +98,7 @@ class SemiSortBatchSampler(DistributedSampler):
 
         self.local_num_batches: int = self._calculate_local_num_batches()
 
-        logging.info(f"Semi Sorted Batch Sampler will be used")
+        logging.info("Semi Sorted Batch Sampler will be used")
 
     def _calculate_local_num_batches(self) -> int:
         init_num_samples = len(self.durations)

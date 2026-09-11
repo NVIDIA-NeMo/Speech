@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -22,6 +23,8 @@ __all__ = ['YouTokenToMeTokenizer']
 
 
 class YouTokenToMeTokenizer(TokenizerSpec):
+    """Tokenizer backed by a YouTokenToMe model."""
+
     def __init__(self, model_path, bpe_dropout=0.0, legacy=False, r2l=False):
         model_path = Path(model_path).expanduser()
         self.tokenizer = yttm.BPE(model=str(model_path))

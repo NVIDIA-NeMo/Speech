@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -103,6 +104,24 @@ def strip_text_annotations_from_text(text: str) -> str:
     return text.strip()
 
 
+def _get_record_texts(record: dict) -> tuple[str, Optional[str], str]:
+    """Return raw model-input text, dataloader-normalized text, and metric-reference text."""
+    if "text" in record:
+        tts_text_input = record["text"]
+    elif "original_text" in record:
+        tts_text_input = record["original_text"]
+    else:
+        raise KeyError("Evaluation manifest entry must contain text or original_text.")
+
+    dataloader_normalized_text = record.get("normalized_text")
+    if dataloader_normalized_text is not None:
+        metric_reference_text = dataloader_normalized_text
+    else:
+        metric_reference_text = record.get("original_text", tts_text_input)
+
+    return tts_text_input, dataloader_normalized_text, metric_reference_text
+
+
 FILEWISE_METRICS_TO_SAVE = [
     'cer',
     'cer_pred_gt_audio',
@@ -114,6 +133,8 @@ FILEWISE_METRICS_TO_SAVE = [
     *PROSODY_DISTANCE_KEYS,
     'pred_text',
     'gt_audio_text',
+    'tts_text_input',
+    'dataloader_normalized_text',
     'gt_text',
     'predicted_phoneme_text',
     'predicted_phoneme_tokens',
@@ -523,18 +544,14 @@ def evaluate_dir(
         gt_audio_texts = [None] * len(records)
 
     # 6. Pre-compute ground-truth texts for all records
+    record_texts = []
     gt_texts_processed = []
     for record in records:
-        if "original_text" in record:
-            text_field = 'original_text'
-        elif 'normalized_text' in record:
-            text_field = 'normalized_text'
-        else:
-            text_field = 'text'
-        text = record[text_field]
+        tts_text_input, dataloader_normalized_text, metric_reference_text = _get_record_texts(record)
+        record_texts.append((tts_text_input, dataloader_normalized_text))
         if strip_text_annotations_for_metrics:
-            text = strip_text_annotations_from_text(text)
-        processed_text = text_processor.process_text_for_wer(text)
+            metric_reference_text = strip_text_annotations_from_text(metric_reference_text)
+        processed_text = text_processor.process_text_for_wer(metric_reference_text)
         gt_texts_processed.append(processed_text)
 
     # 7. Batched EoU classification
@@ -560,6 +577,7 @@ def evaluate_dir(
             utmosv2_score = float('nan')
 
         gt_text = gt_texts_processed[ridx]
+        tts_text_input, dataloader_normalized_text = record_texts[ridx]
 
         detailed_cer = word_error_rate_detail(hypotheses=[pred_text], references=[gt_text], use_cer=True)
         detailed_wer = word_error_rate_detail(hypotheses=[pred_text], references=[gt_text], use_cer=False)
@@ -688,6 +706,8 @@ def evaluate_dir(
             'gt_text': gt_text,
             'pred_text': pred_text,
             'gt_audio_text': gt_audio_text,
+            'tts_text_input': tts_text_input,
+            'dataloader_normalized_text': dataloader_normalized_text,
             'predicted_phoneme_text': record.get('predicted_phoneme_text', ''),
             'predicted_phoneme_tokens': record.get('predicted_phoneme_tokens', []),
             'predicted_phoneme_token_labels': record.get('predicted_phoneme_token_labels', []),

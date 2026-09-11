@@ -1,4 +1,5 @@
-# Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,6 +14,11 @@
 # limitations under the License.
 from __future__ import annotations
 
+import base64
+import io
+import random
+import sys
+import wave
 
 import pytest
 
@@ -37,6 +43,21 @@ class _StreamingResponse:
         yield b"\x00"
         yield b"\x40\xff"
         yield b"\x7f"
+
+
+def _write_wav(path, samples):
+    with wave.open(str(path), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(16000)
+        wf.writeframes(samples)
+
+
+def _decode_data_url(url):
+    prefix, encoded = url.split(",", 1)
+    assert prefix == "data:audio/wav;base64"
+    with wave.open(io.BytesIO(base64.b64decode(encoded)), "rb") as wf:
+        return benchmark.np.frombuffer(wf.readframes(wf.getnframes()), dtype="<i2").copy()
 
 
 def test_request_uses_openai_speech_endpoint_and_decodes_streaming_pcm(monkeypatch):
@@ -73,6 +94,81 @@ def test_request_uses_openai_speech_endpoint_and_decodes_streaming_pcm(monkeypat
     assert result.error is None
     assert result.num_samples == 2
     assert result.sr == 22050
+
+
+def test_request_uses_reference_audio_without_voice(monkeypatch):
+    sent = {}
+
+    def post(url, **kwargs):
+        sent["url"] = url
+        sent.update(kwargs)
+        return _StreamingResponse()
+
+    monkeypatch.setattr(benchmark.requests, "post", post)
+    result = benchmark._do_request(
+        {
+            "url": "http://localhost:8091",
+            "uttid": "test",
+            "text": "Hello",
+            "speaker_id": None,
+            "ref_audio": "data:audio/wav;base64,reference",
+            "max_new_tokens": 128,
+            "sample_rate": 22050,
+            "timeout": 10,
+            "output_dir": None,
+        }
+    )
+
+    assert sent["json"] == {
+        "input": "Hello",
+        "ref_audio": "data:audio/wav;base64,reference",
+        "response_format": "pcm",
+        "stream": True,
+        "stream_format": "audio",
+        "max_new_tokens": 128,
+    }
+    assert result.error is None
+
+
+def test_reference_audio_randomization_changes_only_two_samples(tmp_path):
+    samples = benchmark.np.arange(-1000, 1000, dtype="<i2")
+    reference = tmp_path / "reference.wav"
+    _write_wav(reference, samples.tobytes())
+
+    cached = benchmark._reference_audio_data_url(reference, randomize=False)
+    random.seed(7)
+    randomized_one = benchmark._reference_audio_data_url(reference, randomize=True)
+    randomized_two = benchmark._reference_audio_data_url(reference, randomize=True)
+
+    assert cached == benchmark._reference_audio_data_url(reference, randomize=False)
+    assert randomized_one != randomized_two
+    for waveform in (_decode_data_url(randomized_one), _decode_data_url(randomized_two)):
+        changed = benchmark.np.flatnonzero(waveform != samples)
+        assert len(changed) == 2
+        benchmark.np.testing.assert_array_equal(
+            benchmark.np.abs(waveform[changed].astype(int) - samples[changed].astype(int)),
+            benchmark.np.ones(2, dtype=int),
+        )
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    [
+        ["--speaker-id", "eng", "--reference-audio", "reference.wav"],
+        ["--randomize-reference-audio"],
+    ],
+)
+def test_main_rejects_invalid_conditioning_arguments(monkeypatch, extra_args):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["benchmark_server.py", "--text-file", "unused.txt", "-n", "1", *extra_args],
+    )
+
+    with pytest.raises(SystemExit) as error:
+        benchmark.main()
+
+    assert error.value.code == 2
 
 
 def test_make_tasks_avoids_output_filename_collisions_when_corpus_is_large_enough():

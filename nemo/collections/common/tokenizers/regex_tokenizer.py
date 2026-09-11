@@ -1,4 +1,5 @@
-# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -200,7 +201,7 @@ class RegExTokenizer(TokenizerSpec):
         """
         regex_file = regex_file or self.regex_file
         if not regex_file:
-            raise ValueError(f"regex_file must be specified")
+            raise ValueError("regex_file must be specified")
 
         vocab_file = vocab_file or self.vocab_file
         # try to infer vocab_file from regex_file

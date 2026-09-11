@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -38,8 +39,8 @@ __all__ = ['ExportFormat', 'Exportable']
 
 class Exportable(ABC):
     """
-    This Interface should be implemented by particular classes derived from nemo.core.NeuralModule or nemo.core.ModelPT.
-    It gives these entities ability to be exported for deployment to formats such as ONNX.
+    This interface should be implemented by classes derived from nemo.core.NeuralModule or nemo.core.ModelPT.
+    It gives these entities the ability to be exported for deployment to formats such as ONNX.
 
     Usage:
         # exporting pre-trained model to ONNX file for deployment.
@@ -78,9 +79,9 @@ class Exportable(ABC):
             output (str): Output file name. File extension be .onnx, .pt, or .ts, and is used to select export
                 path of the model.
             input_example (list or dict): Example input to the model's forward function. This is used to
-                trace the model and export it to ONNX/TorchScript. If the model takes multiple inputs, then input_example
-                should be a list of input examples. If the model takes named inputs, then input_example
-                should be a dictionary of input examples.
+                trace the model and export it to ONNX/TorchScript. If the model takes multiple inputs, then
+                input_example should be a list of input examples. If the model takes named inputs, then
+                input_example should be a dictionary of input examples.
             verbose (bool): If True, will print out a detailed description of the model's export steps, along with
                 the internal trace logs of the export process.
             do_constant_folding (bool): If True, will execute constant folding optimization on the model's graph
@@ -99,8 +100,8 @@ class Exportable(ABC):
                 the traced model is not guaranteed to be 100% accurate.
             export_modules_as_functions (bool): If True, will export the model's submodules as functions. This is
                 ONNX specific.
-            keep_initializers_as_inputs (bool): If True, will keep the model's initializers as inputs in the onnx graph.
-                This is ONNX specific.
+            keep_initializers_as_inputs (bool): If True, will keep the model's initializers as inputs in the ONNX
+                graph. This is ONNX specific.
             use_dynamo (bool): If True, use onnx.dynamo_export() instead of onnx.export(). This is ONNX specific.
 
         Returns:

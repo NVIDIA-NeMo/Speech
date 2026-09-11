@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,6 +12,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+# MCQ evaluation logic adapted from VoiceBench, licensed under Apache-2.0.
+# Copyright is held by the VoiceBench authors and contributors.
+# Source: https://github.com/MatthewCYM/VoiceBench
 
 """
 Simplified MCQ (Multiple Choice Question) evaluator for openbookqa and mmsu datasets.

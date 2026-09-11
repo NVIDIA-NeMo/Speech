@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -124,6 +125,7 @@ class BufferedRNNTPipeline(BasePipeline):
             self.buffer_size_in_secs = self.chunk_size + self.left_padding_size + self.right_padding_size
 
         self.request_type = RequestType.from_str(cfg.streaming.request_type)
+        self.flush_size_in_secs = cfg.streaming.get("flush_size_in_secs", 0.0)  # 0.0 disables
         self.padding_mode = FeatureBufferPaddingMode.from_str(cfg.streaming.padding_mode)
         self.right_padding = self.padding_mode is FeatureBufferPaddingMode.RIGHT
         self.stop_history_eou_in_milliseconds = cfg.endpointing.stop_history_eou
@@ -813,6 +815,7 @@ class BufferedRNNTPipeline(BasePipeline):
             buffer_size_in_secs=self.buffer_size_in_secs,
             device=self.device,
             pad_last_frame=True,
+            flush_size_in_secs=self.flush_size_in_secs,
             right_pad_features=self.right_padding,
         )
         return request_generator

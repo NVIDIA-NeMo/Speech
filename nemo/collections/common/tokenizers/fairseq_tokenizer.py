@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -43,6 +44,7 @@ NUMERICS = ''.join(get_unicode_categories()['No'])
 
 
 def tokenize_en(line):
+    """Tokenize and normalize an English text line."""
     line = line.strip()
     line = ' ' + line + ' '
     # remove ASCII junk

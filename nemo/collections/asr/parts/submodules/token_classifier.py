@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,7 +22,7 @@ from torch import nn as nn
 from nemo.collections.asr.parts.submodules.classifier import Classifier
 from nemo.collections.common.parts import MultiLayerPerceptron
 from nemo.core.classes import typecheck
-from nemo.core.neural_types import ChannelType, FloatType, LogitsType, LogprobsType, NeuralType
+from nemo.core.neural_types import ChannelType, LogitsType, LogprobsType, NeuralType
 
 __all__ = ['BertPretrainingTokenClassifier', 'TokenClassifier']
 

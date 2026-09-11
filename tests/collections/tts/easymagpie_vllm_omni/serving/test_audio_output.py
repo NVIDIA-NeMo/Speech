@@ -1,4 +1,5 @@
-# Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,7 +21,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from easymagpie_vllm_omni.audio_output import extract_audio_from_stage_output
+from easymagpie_vllm_omni.audio_output import extract_audio_from_stage_output, is_audio_segment_finished
 
 
 def test_extract_audio_unwraps_list_and_mapping_payload():
@@ -38,3 +39,10 @@ def test_extract_audio_unwraps_list_and_mapping_payload():
 
     torch.testing.assert_close(torch.from_numpy(waveform), payload["audio"])
     assert sample_rate == 22050
+
+
+def test_audio_segment_finished_reads_explicit_request_output_marker():
+    stage_output = SimpleNamespace(request_output=SimpleNamespace(is_segment_finished=True))
+
+    assert is_audio_segment_finished(stage_output) is True
+    assert is_audio_segment_finished(SimpleNamespace()) is False

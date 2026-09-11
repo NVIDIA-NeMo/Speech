@@ -1,4 +1,5 @@
-# Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,8 +12,17 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Native vLLM implementation of the EasyMagpie spectral codec decoder."""
+"""Native Torch implementations of the EasyMagpie spectral codec."""
 
 from easymagpie_vllm_omni.codec.config import EasyMagpieCodecConfig
+from easymagpie_vllm_omni.codec.encoder import EasyMagpieCodecEncoder, EasyMagpieCodecEncoderOutput
+from easymagpie_vllm_omni.codec.encoder_config import EasyMagpieCodecEncoderConfig
+from easymagpie_vllm_omni.codec.reference_speaker_encoder import EasyMagpieReferenceSpeakerEncoder
 
-__all__ = ["EasyMagpieCodecConfig"]
+__all__ = [
+    "EasyMagpieCodecConfig",
+    "EasyMagpieCodecEncoder",
+    "EasyMagpieCodecEncoderConfig",
+    "EasyMagpieCodecEncoderOutput",
+    "EasyMagpieReferenceSpeakerEncoder",
+]

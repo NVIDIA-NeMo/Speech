@@ -1,4 +1,5 @@
-# Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -143,6 +144,20 @@ def _build_adapter_cls() -> type:
             extra = request.extra_params
             if extra is not None and not isinstance(extra, dict):
                 return "extra_params must be a JSON object/dict"
+            ref_audio = request.ref_audio
+            if ref_audio is None:
+                return None
+            if request.voice and request.voice.strip():
+                return "'voice' and 'ref_audio' are mutually exclusive; provide a known voice or raw reference audio"
+            if not isinstance(ref_audio, str):
+                return "EasyMagpie supports a single reference in 'ref_audio', not a list"
+            format_error = self.ctx.server._validate_ref_audio_format(ref_audio)
+            if format_error:
+                return format_error
+            try:
+                self._arch().ensure_reference_audio_available()
+            except RuntimeError as error:
+                return str(error)
             return None
 
         async def build(
@@ -151,15 +166,13 @@ def _build_adapter_cls() -> type:
             sampling_params_list: list,
             has_inline_ref_audio: bool,
         ) -> "PreparedRequest":
-            del sampling_params_list, has_inline_ref_audio  # EasyMagpie needs neither.
-            speaker_id = (request.voice or _DEFAULT_SPEAKER).strip()
+            del sampling_params_list, has_inline_ref_audio
             extra = request.extra_params or {}
             text_eos_id, text_prefill_num = self._text_stream_metadata()
             text_tokens = self._model_tokenizer().encode(request.input, add_special_tokens=False)
             text_tokens.append(text_eos_id)
 
             prompt = {
-                "prompt_token_ids": [0] * (self._prompt_len(speaker_id) + text_prefill_num),
                 "additional_information": {
                     "context_text": extra.get("context_text", _DEFAULT_CONTEXT_TEXT),
                     "text_tokens": text_tokens,
@@ -167,9 +180,29 @@ def _build_adapter_cls() -> type:
                     "text_prefill_num": text_prefill_num,
                     "temperature": float(extra.get("temperature", _DEFAULT_TEMPERATURE)),
                     "top_k": int(extra.get("top_k", _DEFAULT_TOP_K)),
-                    "speaker_id": speaker_id,
                 },
             }
+            ref_audio = request.ref_audio
+            if ref_audio is None:
+                speaker_id = (request.voice or _DEFAULT_SPEAKER).strip()
+                prompt["prompt_token_ids"] = [0] * (self._prompt_len(speaker_id) + text_prefill_num)
+                prompt["additional_information"]["speaker_id"] = speaker_id
+                return PreparedRequest(prompt=prompt, tts_params={}, model_type=MODEL_TYPE)
+
+            arch = self._arch()
+            arch.ensure_reference_audio_available()
+            waveform, sample_rate = await self.ctx.server._resolve_ref_audio(ref_audio)
+            if sample_rate != arch.codec_input_sample_rate:
+                raise ValueError(
+                    f"EasyMagpie reference audio must be {arch.codec_input_sample_rate} Hz; received {sample_rate} Hz"
+                )
+            context_text = prompt["additional_information"]["context_text"]
+            context_len = len(self._tokenize()(context_text))
+            task_len = int(arch.num_task_embeddings > 0)
+            prompt["prompt_token_ids"] = (
+                [0] * task_len + [arch.audio_input_token_id] + [0] * context_len + [0] * text_prefill_num
+            )
+            prompt["multi_modal_data"] = {"audio": [(waveform, sample_rate)]}
             return PreparedRequest(prompt=prompt, tts_params={}, model_type=MODEL_TYPE)
 
         def build_streaming_spec(self, request: OpenAICreateSpeechRequest) -> EasyMagpieStreamingSpec:

@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,12 +15,15 @@
 
 import io
 import logging
-from typing import Any, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
 import torch.utils.data as pt_data
 from torch.utils.data import Dataset, IterableDataset
+
+if TYPE_CHECKING:
+    from nemo.collections.asr.parts.preprocessing.perturb import AudioAugmentor
 
 __all__ = ['ConcatDataset', 'ConcatMapDataset', 'CodeSwitchedDataset']
 
@@ -103,6 +107,7 @@ class ConcatDataset(IterableDataset):
             logging.info(f'applying {sampling_scale} sampling scale, concat ds len: {self.length}')
 
     def get_iterable(self, dataset):
+        """Returns an iterator over the dataset, shuffling the indices first for map-style datasets when enabled."""
         if isinstance(dataset, IterableDataset):
             return dataset.__iter__()
         else:
@@ -123,20 +128,23 @@ class ConcatDataset(IterableDataset):
             max_elements = len(range(wid, self.length, wnum))
 
         if self.kind == 'map':
+            datasets = []
             for idx in range(len(self.datasets)):
                 start_idx = (len(self.datasets[idx]) // self.world_size) * self.global_rank
                 end_idx = start_idx + (len(self.datasets[idx]) // self.world_size)
                 if self.global_rank == self.world_size - 1:
                     end_idx = len(self.datasets[idx])
                 indices = range(start_idx + wid, end_idx, wnum)
-                self.datasets[idx] = pt_data.Subset(self.datasets[idx], indices)
+                datasets.append(pt_data.Subset(self.datasets[idx], indices))
+        else:
+            datasets = self.datasets
 
-        for idx, dataset in enumerate(self.datasets):
+        for idx, dataset in enumerate(datasets):
             iterable = self.get_iterable(dataset)
             self.iterables[idx] = iterable
 
         n = 0
-        ind_gen = self.index_generator(self.datasets, **self.sampling_kwargs)
+        ind_gen = self.index_generator(datasets, **self.sampling_kwargs)
         while n < max_elements:
             n += 1
             try:
@@ -146,10 +154,10 @@ class ConcatDataset(IterableDataset):
             try:
                 val = next(self.iterables[ind])
                 if self.kind == 'map':
-                    val = self.datasets[ind][val]
+                    val = datasets[ind][val]
                 yield val
             except StopIteration:
-                self.iterables[ind] = self.get_iterable(self.datasets[ind])
+                self.iterables[ind] = self.get_iterable(datasets[ind])
                 n -= 1
 
     def __len__(self):
@@ -157,6 +165,7 @@ class ConcatDataset(IterableDataset):
 
     @staticmethod
     def temperature_generator(datasets, **kwargs):
+        """Yield dataset samples using temperature-based sampling."""
         temp = kwargs.get('temperature')
         if not temp:
             raise ValueError("Temperature generator expects a 'temperature' keyword argument.")
@@ -178,6 +187,7 @@ class ConcatDataset(IterableDataset):
 
     @staticmethod
     def round_robin_generator(datasets, **kwargs):
+        """Yields dataset indices by cycling through the datasets in order."""
         num = len(datasets)
         while True:
             for i in range(num):
@@ -185,6 +195,7 @@ class ConcatDataset(IterableDataset):
 
     @staticmethod
     def random_generator(datasets, **kwargs):
+        """Yield samples by choosing datasets uniformly at random."""
         p = kwargs.get('p')
         if not p:
             raise ValueError("Random generator expects a 'p' keyowrd argument for sampling probabilities.")
@@ -296,15 +307,17 @@ class ConcatMapDataset(Dataset):
 
 class CodeSwitchedDataset(IterableDataset):
     """
-    A dataset that accepts as argument multiple sub-datasets (usually from different languages, but that's not required) and then
-    samples from them in order to create synthetic code-switched samples of up to N different sub-datasets
+    A dataset that accepts multiple sub-datasets (usually from different languages, though that is not required)
+    and samples from them to create synthetic code-switched samples of up to N different sub-datasets.
 
     Args:
         datasets (list): A list of datasets
-        lang_probs (list): A list of probabilities (which must sum to 1) corresponding to the sampling probability for each dataset
+        lang_probs (list): Probabilities (which must sum to 1) corresponding to each dataset's sampling
+            probability.
         shuffle (bool): Whether to shuffle individual datasets. Only works with non-iterable datasets.
             Defaults to True.
-        min_duration (int): the minimum duration (secs) of each synthetic code-switched sample. Will draw randomly until this is hit.
+        min_duration (int): Minimum duration (secs) of each synthetic code-switched sample. Draws randomly
+            until this is reached.
             Defaults to 4
         max_duration (int): the maximum duration (secs) of each synthetic code-switched sample.
             Defaults to 20
@@ -322,8 +335,8 @@ class CodeSwitchedDataset(IterableDataset):
         seed: Optional value to seed the numpy RNG.
         global_rank (int): Worker rank, used for partitioning map style datasets. Defaults to 0.
         world_size (int): Total number of processes, used for partitioning map style datasets. Defaults to 1.
-        pure_random (bool): If true, then always draw random sample from lang_probs. If false, you only draw from those datasets
-            which you haven't sampled from yet for the composite sample
+        pure_random (bool): If true, always draw random samples according to lang_probs. If false, draw only
+            from datasets not yet sampled for the composite sample.
         force_monochannel (bool): If true, then all output audio will be mono-channel
         infinity_mode (bool): If true, then the dataset iterable will generate an infinite amount of samples
         sample_rate (int): the sample rate of all audio being sent to this Dataset
@@ -379,12 +392,12 @@ class CodeSwitchedDataset(IterableDataset):
         self.sample_rate = sample_rate
         self.length = 0
         if lang_probs is None:
-            self.prob_dict = {l: 1.0 / len(self.langs) for l in self.langs}
+            self.prob_dict = {lang: 1.0 / len(self.langs) for lang in self.langs}
         else:
             assert len(self.langs) == len(
                 lang_probs
             ), "Size mismatch between languages and respective probs in CodeSwitchedDataset"
-            self.prob_dict = {l: lang_probs[l] for l in self.langs}
+            self.prob_dict = {lang: lang_probs[lang] for lang in self.langs}
         self.lang_probs = np.array(list(self.prob_dict.values()))
         if sampling_scales is not None and not isinstance(sampling_scales, list):
             self.sampling_scales = {k: sampling_scales for k in self.langs}
@@ -437,9 +450,8 @@ class CodeSwitchedDataset(IterableDataset):
         else:
             raise RuntimeError("CodeSwitchedDataset could not locate a valid dataset collate_fn to bind to")
 
-    # this method returns an iterator object for a given language ID
-    # it correctly handles whether the underlying dataset is IterableDataset or mappable
     def get_iterable_by_lang(self, lang):
+        """Returns an iterator for the given language ID, handling both IterableDataset and map-style datasets."""
         dataset = self.datasets[lang]
 
         if isinstance(dataset, IterableDataset):
@@ -450,10 +462,8 @@ class CodeSwitchedDataset(IterableDataset):
                 np.random.shuffle(indices)
             return iter(indices)
 
-    # this method is the main function which builds and returns a composite, synthetic code-switched
-    # utterance on the fly. It automatically works with all of the class-based variables stored to create
-    # the synthetic utterance
     def build_single_CS_sample(self):
+        """Build one code-switched sample from the configured datasets."""
         # get_sample_from_language returns a LongTensor for the transcripts so we create a LongTensor to hold
         # all returned transcripts
         comp_text = torch.LongTensor([])
@@ -514,7 +524,8 @@ class CodeSwitchedDataset(IterableDataset):
         sample_channels = list(set([s.ndim for s in created_sample_audios]))
         if len(sample_channels) > 1:
             raise RuntimeError(
-                "Mixture of audios with different number of channels in CodeSwitchedDataset. All sources must be same number of channels."
+                "Mixture of audios with different numbers of channels in CodeSwitchedDataset. "
+                "All sources must have the same number of channels."
             )
 
         multichannel = sample_channels[0] > 1
@@ -581,13 +592,14 @@ class CodeSwitchedDataset(IterableDataset):
                 axis=0,
             )
 
-        # we only want augmentation to happen on the final, synthetic utterance, and not on any of the individual
-        # languages, which is why we set augmentor=None when building the individual language datasets in audio_to_text_dataset.get_code_switched_dataset
+        # We only want augmentation on the final synthetic utterance, not on individual languages. This is why
+        # augmentor=None when building individual language datasets in audio_to_text_dataset.get_code_switched_dataset.
         # here we now apply augmentation to the final, synthetic utterance only
         # all of this logic here happens in-memory, nothing is written to disk
         if self.augmentor is not None:
             # import here to avoid circular import error
-            # import here because otherwise CI test-nlp-imports fails since soundfile is only in requirements_asr and not in requirements_common
+            # Import here because CI test-nlp-imports otherwise fails: soundfile is in requirements_asr, not
+            # requirements_common.
             import soundfile as sf
 
             from nemo.collections.asr.parts.preprocessing import AudioSegment
@@ -606,9 +618,8 @@ class CodeSwitchedDataset(IterableDataset):
             torch.tensor(len(comp_text), device=labels_len.device).long(),
         )
 
-    # this is a helper method which prepares all of the iterator objects for all languages
-    # based on whether that language's underlying dataset is a map or an IterableDataset
     def prep_underlying_datasets(self):
+        """Prepare the datasets and sampling metadata used by this dataset."""
         worker_info = pt_data.get_worker_info()
         if worker_info is None:
             max_elements = self.length
@@ -632,11 +643,8 @@ class CodeSwitchedDataset(IterableDataset):
 
         return max_elements
 
-    # returns a sample (audio and transcript) from any underlying language stored by the class on instantiation
-    # the sample returned is a tensor for the audio and a tensor of ints for the transcript
-    # this method automatically handles StopIteration errors for the underyling language and rebuilds
-    # the iterator if necessary
     def get_sample_from_language(self, lang):
+        """Returns a sample (audio and transcript) from the given language, rebuilding its iterator on exhaustion."""
         while True:
             try:
                 val = next(self.lang_iterables[lang])

@@ -1,4 +1,5 @@
-# Copyright (c) 2023, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -42,7 +43,6 @@ import torch
 from lightning.pytorch import LightningModule
 from lightning.pytorch.callbacks import Callback
 from lightning.pytorch.loops.optimization.automatic import ClosureResult
-from lightning.pytorch.trainer.connectors.logger_connector.result import _ResultCollection, _ResultMetric
 from lightning.pytorch.utilities import CombinedLoader, rank_zero_info
 from lightning.pytorch.utilities.signature_utils import is_param_in_hook_signature
 from lightning.pytorch.utilities.types import STEP_OUTPUT
@@ -52,6 +52,7 @@ __all__ = ["CUDAGraphCallback"]
 
 
 def struct_copy_one(src):
+    """Copy a nested structure while cloning tensor leaves."""
     if isinstance(src, tuple):
         return tuple(struct_copy_one(i) for i in src)
     elif isinstance(src, list):
@@ -65,6 +66,7 @@ def struct_copy_one(src):
 
 
 def struct_copy_two(tgt, src):
+    """Copy values between matching nested structures."""
     if isinstance(src, tuple):
         raise Exception(f"Unsupported copy for tuple yet: {type(src)}")
     elif isinstance(src, list):
@@ -126,6 +128,7 @@ def zero_grad(optimizer, *args, **kwargs):
 
 
 def to_tensor(self, value, name):
+    """Convert a state value to a named tensor."""
     # Log metrics in PyTorch Lightning often invokes CPU & GPU synchronizations. Here
     # we implement smart metrics to avoid those synchronizations.
     # Refer to: https://github.com/Lightning-AI/pytorch-lightning/blob/2.0.7/src/lightning/pytorch/core/module.py#L615
@@ -140,6 +143,8 @@ def to_tensor(self, value, name):
 
 
 def get_optimizer_step(state):
+    """Create the optimizer-step function for the current capture state."""
+
     def optimizer_step(
         self,
         epoch,
@@ -206,6 +211,8 @@ def get_optimizer_step(state):
 
 
 def get_training_step(state):
+    """Create the training-step function for the current capture state."""
+
     def training_step(self, batch):
         results = self.__orig_training_step__(batch)
         if state.output is None:

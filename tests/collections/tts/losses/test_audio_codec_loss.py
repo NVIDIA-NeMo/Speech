@@ -1,4 +1,5 @@
-# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,10 +18,55 @@ import torch
 from torchmetrics import ScaleInvariantSignalDistortionRatio
 
 from nemo.collections.common.parts.utils import mask_sequence_tensor
-from nemo.collections.tts.losses.audio_codec_loss import MaskedMAELoss, MaskedMSELoss, SISDRLoss
+from nemo.collections.tts.losses.audio_codec_loss import (
+    MaskedMAELoss,
+    MaskedMSELoss,
+    MMDCodebookLoss,
+    MMDEmbeddingLoss,
+    MMDLoss,
+    MMDTimeLoss,
+    SISDRLoss,
+)
 
 
 class TestAudioCodecLoss:
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "loss_fn",
+        [
+            MMDEmbeddingLoss(loss_fn=MMDLoss()),
+            MMDCodebookLoss(num_codebooks=2, codebook_dim=3, loss_fn=MMDLoss()),
+            MMDTimeLoss(loss_fn=MMDLoss()),
+        ],
+        ids=["embedding", "codebook", "time"],
+    )
+    def test_mmd_flavors_respect_gradient_gated_inputs(self, loss_fn):
+        batch_size, embedding_dim, num_frames = 16, 6, 4
+        shared_values = torch.linspace(-1, 1, batch_size).reshape(batch_size, 1, 1)
+        encoded = shared_values.expand(batch_size, embedding_dim, num_frames).clone().requires_grad_()
+        keep_mask = torch.ones_like(encoded)
+        keep_mask[::2, embedding_dim // 2 :] = 0
+
+        # Forward values remain complete while the mask controls which representation gradients pass through.
+        mmd_inputs = encoded.detach() + keep_mask * (encoded - encoded.detach())
+        torch.testing.assert_close(mmd_inputs, encoded)
+
+        reference_inputs = encoded.detach().clone().requires_grad_()
+        torch.manual_seed(1234)
+        reference_loss = loss_fn(inputs=reference_inputs)
+        assert reference_loss > 0
+        reference_loss.backward()
+
+        torch.manual_seed(1234)
+        gated_loss = loss_fn(inputs=mmd_inputs)
+        gated_loss.backward()
+
+        # Every MMD flavor keeps the full-code objective while suppressing gradients for dropped entries.
+        torch.testing.assert_close(gated_loss, reference_loss)
+        torch.testing.assert_close(encoded.grad, reference_inputs.grad * keep_mask)
+        assert torch.count_nonzero(encoded.grad[keep_mask == 1]) > 0
+
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
     def test_masked_loss_l1(self):

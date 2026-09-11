@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -68,6 +69,8 @@ class NemoConfig:
 
 
 class ModelConfigBuilder:
+    """Fluent builder for model configuration objects."""
+
     def __init__(self, model_cfg: ModelConfig):
         """
         Base class for any Model Config Builder.
@@ -151,6 +154,8 @@ class ModelConfigBuilder:
         self.model_cfg.test_ds = cfg
 
     def set_optim(self, cfg: config.OptimizerParams, sched_cfg: Optional[config.SchedulerParams] = None):
+        """Set optimizer and scheduler configuration."""
+
         @dataclass
         class WrappedOptimConfig(OptimConfig, cfg.__class__):
             pass

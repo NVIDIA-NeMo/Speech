@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -187,6 +188,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
         self.return_tail_result = cfg.return_tail_result
 
         self.request_type = RequestType.from_str(cfg.streaming.request_type)
+        self.flush_size_in_secs = cfg.streaming.get("flush_size_in_secs", 0.0)  # 0.0 disables
 
     def init_greedy_rnnt_decoder(self) -> None:
         """Initialize the RNNT decoder."""
@@ -616,6 +618,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
             buffer_size_in_secs=self.buffer_size_in_secs,
             device=self.device,
             pad_last_frame=True,
+            flush_size_in_secs=self.flush_size_in_secs,
         )
         return request_generator
 

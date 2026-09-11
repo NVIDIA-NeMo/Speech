@@ -36,12 +36,14 @@ from typing import Any, Callable, Dict, List, Optional, Set
 import torch
 from omegaconf import DictConfig, OmegaConf
 
+from nemo.collections.asr.losses.flash_rnnt import FlashRNNTLoss
 from nemo.collections.asr.losses.rnnt_pytorch import MultiblankRNNTLossPytorch, RNNTLossPytorch, TDTLossPytorch
 from nemo.core.classes import Loss, typecheck
 from nemo.core.neural_types import LabelsType, LengthsType, LogprobsType, LossType, NeuralType
 from nemo.core.utils import numba_utils
 from nemo.core.utils.k2_utils import K2_INSTALLATION_MESSAGE
 from nemo.core.utils.numba_utils import NUMBA_INSTALLATION_MESSAGE
+from nemo.core.utils.optional_libs import TRITON_AVAILABLE, TRITON_INSTALLATION_MESSAGE
 from nemo.utils import logging, logging_mode, model_utils
 
 try:
@@ -138,6 +140,13 @@ RNNT_LOSS_RESOLVER = {
         lib_name="k2",
         is_available=K2_AVAILABLE,
         installation_msg=K2_INSTALLATION_MESSAGE,
+        force_float32=False,
+    ),
+    "flash_rnnt": RNNTLossConfig(
+        loss_name="flash_rnnt",
+        lib_name="triton",
+        is_available=TRITON_AVAILABLE,
+        installation_msg=TRITON_INSTALLATION_MESSAGE,
         force_float32=False,
     ),
     "tdt": RNNTLossConfig(
@@ -323,6 +332,9 @@ def resolve_rnnt_loss(loss_name: str, blank_idx: int, loss_kwargs: dict = None) 
     elif loss_name == "graph_w_transducer":
         loss_kwargs = _clean_kwargs(loss_name, loss_kwargs, GraphWTransducerLoss.__init__, ignore_params={"blank"})
         loss_func = GraphWTransducerLoss(blank=blank_idx, **loss_kwargs)
+    elif loss_name == "flash_rnnt":
+        loss_kwargs = _clean_kwargs(loss_name, loss_kwargs, FlashRNNTLoss.__init__, ignore_params={"blank"})
+        loss_func = FlashRNNTLoss(blank=blank_idx, **loss_kwargs)
     else:
         raise ValueError(
             f"Invalid value of `loss_name`: {loss_name}. Allowed loss names are :" f"{loss_function_names}"
@@ -370,6 +382,30 @@ class RNNTLoss(Loss):
                         loss_name: "warprnnt_numba"
                         warprnnt_numba_kwargs:
                             fastemit_lambda: 0.0
+
+            Flash RNN-T additionally requires ``joint.fuse_loss_wer=true`` and a
+            positive ``joint.fused_batch_size``:
+
+            .. code-block:: yaml
+
+                model:
+                    joint:
+                        fuse_loss_wer: true
+                        # Required by the fused joint step; this loss does not read it.
+                        fused_batch_size: 4
+                        jointnet:
+                            dropout: 0.1
+                    loss:
+                        loss_name: "flash_rnnt"
+                        flash_rnnt_kwargs:
+                            fastemit_lambda: 0.0
+                            clamp: -1.0
+                            # Rows per lattice tile; sets peak workspace.
+                            max_joint_rows: 200000
+
+            ``max_joint_rows`` is the only knob on cost and does not change what is computed.
+            Rows are packed rather than padded to a rectangle, so a tile costs the same whatever mix
+            of utterance lengths falls inside it.
 
         Warning:
             In the case that GPU memory is exhausted in order to compute RNNTLoss, it might cause
@@ -419,6 +455,11 @@ class RNNTLoss(Loss):
         self._force_float32 = RNNT_LOSS_RESOLVER[loss_name].force_float32
         self._fp16_compat_checked = False
 
+    @property
+    def requires_factorized_joint(self) -> bool:
+        """Whether this loss consumes encoder/predictor projections before dense joint logits."""
+        return isinstance(self._loss, FlashRNNTLoss)
+
     def reduce(self, losses, target_lengths):
 
         if isinstance(losses, List):
@@ -436,8 +477,36 @@ class RNNTLoss(Loss):
 
         return losses
 
+    def forward_from_joint(
+        self,
+        joint,
+        encoder: torch.Tensor,
+        predictor: torch.Tensor,
+        targets: torch.Tensor,
+        input_lengths: torch.Tensor,
+        target_lengths: torch.Tensor,
+    ) -> torch.Tensor:
+        """Run Flash RNN-T before the joint network materializes dense logits."""
+        if not self.requires_factorized_joint:
+            raise RuntimeError("forward_from_joint is only valid for a factorized-joint loss")
+        targets = targets.long()
+        input_lengths = input_lengths.long()
+        target_lengths = target_lengths.long()
+        losses = self._loss(
+            joint=joint,
+            encoder=encoder,
+            predictor=predictor,
+            targets=targets,
+            source_lengths=input_lengths,
+            target_lengths=target_lengths,
+        )
+        return self.reduce(losses, target_lengths) if self.reduction is not None else losses
+
     @typecheck()
     def forward(self, log_probs, targets, input_lengths, target_lengths):
+        if self.requires_factorized_joint:
+            raise RuntimeError("loss_name='flash_rnnt' requires joint.fuse_loss_wer=true")
+
         # Cast to int 64
         targets = targets.long()
         input_lengths = input_lengths.long()

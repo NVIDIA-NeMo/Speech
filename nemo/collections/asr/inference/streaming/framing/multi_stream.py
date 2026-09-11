@@ -103,6 +103,7 @@ class ContinuousBatchedFrameStreamer:
         batch_size: int,
         n_frames_per_stream: int,
         pad_last_frame: bool = False,
+        flush_size_in_secs: float = 0.0,
     ):
         """
         Args:
@@ -111,12 +112,14 @@ class ContinuousBatchedFrameStreamer:
             batch_size (int): The batch size
             n_frames_per_stream (int): The number of frames per stream
             pad_last_frame (bool): Whether to pad the last frame
+            flush_size_in_secs (float): Seconds of silence appended to every stream, 0.0 for none
         """
 
         self.sample_rate = sample_rate
         self.frame_size_in_secs = frame_size_in_secs
         self.batch_size = batch_size
         self.pad_last_frame = pad_last_frame
+        self.flush_size_in_secs = flush_size_in_secs
 
         self.multi_streamer = MultiStream(n_frames_per_stream=n_frames_per_stream)
         self.stream_id = 0
@@ -176,7 +179,11 @@ class ContinuousBatchedFrameStreamer:
 
         # Create a new stream
         stream = MonoStream(
-            self.sample_rate, self.frame_size_in_secs, stream_id=self.stream_id, pad_last_frame=self.pad_last_frame
+            self.sample_rate,
+            self.frame_size_in_secs,
+            stream_id=self.stream_id,
+            pad_last_frame=self.pad_last_frame,
+            flush_size_in_secs=self.flush_size_in_secs,
         )
         # Load the next audio file
         audio_filepath = self.audio_filepaths[self.stream_id]
@@ -244,6 +251,7 @@ class ContinuousBatchedRequestStreamer:
         device: torch.device = None,
         pad_last_frame: bool = False,
         right_pad_features: bool = False,
+        flush_size_in_secs: float = 0.0,
     ):
         """
         Args:
@@ -274,6 +282,7 @@ class ContinuousBatchedRequestStreamer:
             batch_size=batch_size,
             n_frames_per_stream=n_frames_per_stream,
             pad_last_frame=pad_last_frame,
+            flush_size_in_secs=flush_size_in_secs,
         )
 
         if self.request_type is RequestType.FEATURE_BUFFER:

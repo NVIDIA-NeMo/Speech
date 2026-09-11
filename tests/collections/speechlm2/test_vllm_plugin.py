@@ -428,6 +428,65 @@ class TestSpecialTokens:
 class TestAudioProcessing:
     """Tests for audio encoding with a tiny perception module."""
 
+    @staticmethod
+    def _make_pe_mount_modules(torch, encoder_d_model=1024, pe_d_model=2048):
+        class _Encoder(torch.nn.Module):
+            def __init__(self, d_model, feat_in=None):
+                super().__init__()
+                self.d_model = d_model
+                self._feat_in = feat_in
+                self.weight = torch.nn.Parameter(torch.ones(1))
+
+        perception = torch.nn.Module()
+        perception.encoder = _Encoder(encoder_d_model)
+        perception.preprocessor = SimpleNamespace(featurizer=SimpleNamespace(normalize="per_feature"))
+        perception.proj = torch.nn.Linear(pe_d_model, 4096)
+        perception.cfg = {
+            "preprocessor": {"features": 128},
+            "modality_adapter": {"d_model": pe_d_model},
+        }
+        pe_encoder = _Encoder(pe_d_model, feat_in=128)
+        return perception, pe_encoder
+
+    def test_pe_mount_allows_replacing_canary_encoder_with_wider_pee(self, monkeypatch):
+        import torch
+
+        from nemo.collections.asr.modules.parallel_expert_encoder import ParallelExpertEncoderPT
+        from nemo.collections.speechlm2.vllm.salm.audio import _maybe_mount_pe_encoder
+
+        perception, pe_encoder = self._make_pe_mount_modules(torch)
+        monkeypatch.setattr(ParallelExpertEncoderPT, "load_from_nemo", lambda *args, **kwargs: pe_encoder)
+
+        assert _maybe_mount_pe_encoder(perception, "nvidia/ParallelExpertEncoder") is True
+        assert perception.encoder is pe_encoder
+        assert perception.preprocessor.featurizer.normalize is None
+
+    @pytest.mark.parametrize(
+        "mismatch, expected_error",
+        [
+            ("mel", "expects 128 mel bins"),
+            ("adapter", "modality_adapter.d_model=1024"),
+            ("projection", "proj.in_features=1024"),
+        ],
+    )
+    def test_pe_mount_rejects_unchanged_component_dimension_mismatches(self, monkeypatch, mismatch, expected_error):
+        import torch
+
+        from nemo.collections.asr.modules.parallel_expert_encoder import ParallelExpertEncoderPT
+        from nemo.collections.speechlm2.vllm.salm.audio import _maybe_mount_pe_encoder
+
+        perception, pe_encoder = self._make_pe_mount_modules(torch)
+        if mismatch == "mel":
+            perception.cfg["preprocessor"]["features"] = 80
+        elif mismatch == "adapter":
+            perception.cfg["modality_adapter"]["d_model"] = 1024
+        else:
+            perception.proj = torch.nn.Linear(1024, 4096)
+        monkeypatch.setattr(ParallelExpertEncoderPT, "load_from_nemo", lambda *args, **kwargs: pe_encoder)
+
+        with pytest.raises(ValueError, match=expected_error):
+            _maybe_mount_pe_encoder(perception, "nvidia/ParallelExpertEncoder")
+
     def test_data_parser_normalizes_audio(self, monkeypatch):
         from nemo.collections.speechlm2.vllm.salm.audio import NeMoSpeechLMProcessingInfo
 

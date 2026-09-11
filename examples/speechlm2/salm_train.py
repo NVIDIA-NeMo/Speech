@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
+from datetime import timedelta
 
 import torch
 from lightning.pytorch import Trainer, seed_everything
@@ -28,6 +29,25 @@ if torch.cuda.is_available():
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
 
 
+def _process_group_timeout(cfg):
+    """Resolve the NCCL collective timeout from Hydra, then the cluster environment.
+
+    The strategy applies ``timeout_minutes`` only to the sub-groups it creates. The
+    default process group is initialized below, before the Trainer exists, so
+    without this it keeps the c10d 10-minute default and a slow cold start aborts
+    the run on a watchdog timeout no config value can raise.
+    """
+    timeout_minutes = OmegaConf.select(cfg, "trainer.strategy.timeout_minutes", default=None)
+    if timeout_minutes is not None:
+        return timedelta(minutes=float(timeout_minutes))
+
+    timeout_seconds = os.environ.get("TORCH_NCCL_TIMEOUT_S") or os.environ.get("TORCH_NCCL_TIMEOUT_SEC")
+    if timeout_seconds is not None:
+        return timedelta(seconds=float(timeout_seconds))
+
+    return None
+
+
 def _create_salm_dataset(tokenizer, data_cfg: DictConfig | dict) -> SALMDataset:
     """Build SALMDataset without forwarding unset options to legacy NeMo packages."""
     multispeaker_cfg = data_cfg.get("multispeaker_cfg", None)
@@ -41,7 +61,10 @@ def _create_salm_dataset(tokenizer, data_cfg: DictConfig | dict) -> SALMDataset:
 def train(cfg):
     OmegaConf.resolve(cfg)
     if torch.cuda.is_available():
-        torch.distributed.init_process_group(backend="nccl")
+        init_kwargs = {}
+        if timeout := _process_group_timeout(cfg):
+            init_kwargs["timeout"] = timeout
+        torch.distributed.init_process_group(backend="nccl", **init_kwargs)
     seed_everything(cfg.data.train_ds.seed)
     torch.set_float32_matmul_precision("medium")
     trainer = Trainer(**resolve_trainer_cfg(cfg.trainer))

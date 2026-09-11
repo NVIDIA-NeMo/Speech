@@ -153,6 +153,108 @@ def test_split_spk_targets_into_chunks_uses_chunk_spans(
 
 
 @pytest.mark.parametrize(
+    ("input_mel_frame_lengths", "expected_chunks_per_audio"),
+    [
+        ([7_501, 3_001, 1_501, 4_501], [3, 1, 1, 2]),
+        ([9_001, 3_001, 6_001, 4_501], [3, 1, 2, 2]),
+    ],
+)
+def test_split_spk_targets_into_chunks_preserves_realistic_mixed_batch(
+    input_mel_frame_lengths,
+    expected_chunks_per_audio,
+):
+    """Preserve every valid RTTM frame in a realistic mixed-length batch.
+
+    This models realistic multispeaker production settings:
+
+    * batch size 4;
+    * 100 mel frames per second;
+    * 30-second chunks (3,000 mel frames);
+    * ASR subsampling factor 8, so one RTTM/ASR frame spans 80 ms;
+    * four possible speakers.
+
+    ``spk_targets`` is padded to the longest recording, but every row has its
+    own valid ``spk_target_length``. Row 1 lasts 30 seconds plus one mel frame,
+    so it has 376 valid RTTM frames. Its one-frame tail is too short to encode
+    independently and is folded into the preceding 30-second chunk.
+
+    For the first parameter set, the old batch-max calculation mapped row 1
+    through the 75-second row: ``round(3001 * 938 / 7501) == 375``. It silently
+    dropped the 376th RTTM frame. Per-row lengths preserve all 376 frames.
+    """
+    mel_frames_per_second = 100
+    chunk_size_mel_frames = 30 * mel_frames_per_second
+    mel_frames_per_asr_frame = 8
+    num_speakers = 4
+    spk_target_asr_frame_lengths = torch.tensor(
+        [(length + mel_frames_per_asr_frame - 1) // mel_frames_per_asr_frame for length in input_mel_frame_lengths]
+    )
+    input_signal = torch.zeros(len(input_mel_frame_lengths), max(input_mel_frame_lengths))
+    _, _, chunks_per_audio, chunk_spans = _split_audio_into_chunks(
+        input_signal=input_signal,
+        input_signal_lengths=input_mel_frame_lengths,
+        chunk_size_samples=chunk_size_mel_frames,
+        min_chunk_size_samples=2,
+    )
+    assert chunks_per_audio == expected_chunks_per_audio
+
+    spk_targets = torch.zeros(
+        len(input_mel_frame_lengths),
+        int(spk_target_asr_frame_lengths.max()),
+        num_speakers,
+    )
+    # Cycle activity across all four speakers, gradually growing each contiguous
+    # segment from 1 ASR frame (80 ms) toward 25 frames (2 s) near the end.
+    for row, target_length in enumerate(spk_target_asr_frame_lengths.tolist()):
+        segment_start = 0
+        segment_idx = 0
+        while segment_start < target_length:
+            progress = segment_start / max(target_length - 1, 1)
+            segment_length = round(1 + progress * 24)
+            segment_end = min(segment_start + segment_length, target_length)
+            speaker = (segment_idx + row) % num_speakers
+            spk_targets[row, segment_start:segment_end, speaker] = 1.0
+            segment_start = segment_end
+            segment_idx += 1
+
+    chunked_spk_targets = _split_spk_targets_into_chunks(
+        spk_targets,
+        input_mel_frame_lengths,
+        chunk_spans,
+        spk_target_lengths=spk_target_asr_frame_lengths,
+        spk_target_stride=mel_frames_per_asr_frame,
+    )
+
+    for chunk, (audio_idx, begin, end) in zip(chunked_spk_targets, chunk_spans):
+        target_begin = begin // mel_frames_per_asr_frame
+        target_end = (end + mel_frames_per_asr_frame - 1) // mel_frames_per_asr_frame
+        expected = spk_targets[audio_idx, target_begin:target_end]
+        assert torch.equal(chunk[: expected.shape[0]], expected)
+
+
+def test_split_spk_targets_into_chunks_bounds_overestimated_lengths():
+    spk_targets = torch.arange(10, dtype=torch.float32).reshape(2, 5, 1)
+
+    chunked_spk_targets = _split_spk_targets_into_chunks(
+        spk_targets,
+        input_signal_lengths=[4, 5],
+        chunk_spans=[(0, 0, 4), (1, 0, 5)],
+        spk_target_lengths=torch.tensor([4, 6]),
+        spk_target_stride=1,
+    )
+
+    assert torch.equal(
+        chunked_spk_targets,
+        torch.tensor(
+            [
+                [[0.0], [1.0], [2.0], [3.0], [3.0]],
+                [[5.0], [6.0], [7.0], [8.0], [9.0]],
+            ]
+        ),
+    )
+
+
+@pytest.mark.parametrize(
     ("audio_values", "audio_len", "expected_chunk_lens"),
     [
         ([1.0, 2.0, 3.0, 4.0, 5.0], 5, [2, 3]),

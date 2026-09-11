@@ -27,6 +27,7 @@ def encode_audio_with_optional_chunking(
     chunk_size_seconds: float | None,
     sampling_rate: int,
     spk_targets: Tensor | None = None,
+    spk_target_lengths: Tensor | None = None,
 ) -> list[Tensor]:
     """Encode audio rows, splitting long rows into time chunks before the perception forward.
 
@@ -46,6 +47,8 @@ def encode_audio_with_optional_chunking(
         spk_targets: Optional speaker-activity targets with shape ``(B, T_spk, N)``.
             When present, targets are forwarded to ``perception`` and split to match
             audio chunks.
+        spk_target_lengths: Optional valid speaker-target frame counts with shape
+            ``(B,)``. Required for exact slicing of padded, mixed-length target batches.
 
     Returns:
         List of length ``B`` of fp32 embedding tensors with shape ``(T_emb_i, D)`` and
@@ -84,7 +87,16 @@ def encode_audio_with_optional_chunking(
     chunk_start_samples = [begin for _, begin, _ in chunk_spans]
     time_offset = torch.as_tensor(chunk_start_samples, device=input_signal_length.device, dtype=torch.float32)
     time_offset = time_offset / float(sampling_rate)
-    chunked_spk_targets = _split_spk_targets_into_chunks(spk_targets, input_signal_lengths, chunk_spans)
+    spk_target_stride = (
+        _get_spk_target_stride(perception) if spk_targets is not None and spk_target_lengths is not None else None
+    )
+    chunked_spk_targets = _split_spk_targets_into_chunks(
+        spk_targets,
+        input_signal_lengths,
+        chunk_spans,
+        spk_target_lengths=spk_target_lengths,
+        spk_target_stride=spk_target_stride,
+    )
     chunked_perception_kwargs = {
         "input_signal": chunked_signal,
         "input_signal_length": chunked_lens,
@@ -136,6 +148,31 @@ def _get_min_chunk_size_samples(perception: Callable) -> int:
             return samples
         samples += hop_length
     return max(samples, 2 * hop_length)
+
+
+def _get_spk_target_stride(perception: Callable) -> int:
+    """Derive waveform samples per speaker target from the mounted encoder.
+
+    ``multispeaker_cfg.subsampling_factor`` must describe the same encoder
+    subsampling exposed here (8 for Canary-v2). Combining it with the
+    preprocessor's mel hop avoids passing duplicate stride metadata in batches.
+    """
+    featurizer = getattr(getattr(perception, "preprocessor", None), "featurizer", None)
+    encoder = getattr(perception, "encoder", None)
+    hop_length = getattr(featurizer, "hop_length", None)
+    subsampling_factor = getattr(encoder, "subsampling_factor", None)
+    if hop_length is None or subsampling_factor is None:
+        raise ValueError(
+            "Exact speaker-target chunking requires perception.preprocessor.featurizer.hop_length "
+            "and perception.encoder.subsampling_factor."
+        )
+    stride = int(hop_length) * int(subsampling_factor)
+    if stride <= 0:
+        raise ValueError(
+            f"Speaker-target stride must be positive, got hop_length={hop_length} "
+            f"and subsampling_factor={subsampling_factor}."
+        )
+    return stride
 
 
 def _split_audio_into_chunks(
@@ -200,6 +237,9 @@ def _split_spk_targets_into_chunks(
     spk_targets: Tensor | None,
     input_signal_lengths: list[int],
     chunk_spans: list[tuple[int, int, int]],
+    *,
+    spk_target_lengths: Tensor | None = None,
+    spk_target_stride: int | None = None,
 ) -> Tensor | None:
     """Slice speaker-activity targets to match previously computed audio chunks.
 
@@ -209,6 +249,13 @@ def _split_spk_targets_into_chunks(
             spans to proportional speaker-target frame spans.
         chunk_spans: Flat list of ``(audio_idx, begin_sample, end_sample)`` entries,
             parallel to the chunks emitted by :func:`_split_audio_into_chunks`.
+        spk_target_lengths: Optional valid target-frame counts with shape ``(B,)``.
+            When omitted, each row is assumed to use the full padded target length
+            for backward compatibility. Values above the available padded target
+            length are bounded to it.
+        spk_target_stride: Number of input time units per target frame. When
+            provided, chunk boundaries use this fixed frame grid instead of a
+            proportional approximation.
 
     Returns:
         A padded tensor of chunk-level speaker targets with shape
@@ -223,19 +270,43 @@ def _split_spk_targets_into_chunks(
             f"({len(input_signal_lengths)})."
         )
 
-    max_audio_len = max(input_signal_lengths) if input_signal_lengths else 0
     max_target_len = spk_targets.shape[1]
+    if spk_target_lengths is None:
+        target_lengths = [max_target_len] * len(input_signal_lengths)
+    else:
+        if spk_target_lengths.numel() != len(input_signal_lengths):
+            raise ValueError(
+                f"spk_target_lengths size ({spk_target_lengths.numel()}) must match input_signal batch size "
+                f"({len(input_signal_lengths)})."
+            )
+        target_lengths = [int(length) for length in spk_target_lengths.tolist()]
+        if any(length < 0 for length in target_lengths):
+            raise ValueError(f"spk_target_lengths values must be non-negative, got {target_lengths}.")
+        # The target tensor is the hard upper bound on available activity frames.
+        # Audio-derived length metadata can exceed it slightly because of duration
+        # rounding, resampling, or augmentation. Use every available frame instead
+        # of aborting an otherwise valid training batch.
+        target_lengths = [min(length, max_target_len) for length in target_lengths]
+    if spk_target_stride is not None and spk_target_stride <= 0:
+        raise ValueError(f"spk_target_stride must be positive, got {spk_target_stride}.")
+
     target_chunks = []
     for audio_idx, begin, end in chunk_spans:
-        if max_audio_len == 0 or max_target_len == 0:
+        audio_len = input_signal_lengths[audio_idx]
+        target_len = target_lengths[audio_idx]
+        if audio_len == 0 or target_len == 0:
             target_chunks.append(spk_targets[audio_idx, :0])
             continue
-        target_begin = round(begin * max_target_len / max_audio_len)
-        target_end = round(end * max_target_len / max_audio_len)
-        target_begin = min(max(target_begin, 0), max_target_len)
-        target_end = min(max(target_end, target_begin), max_target_len)
+        if spk_target_stride is None:
+            target_begin = round(begin * target_len / audio_len)
+            target_end = round(end * target_len / audio_len)
+        else:
+            target_begin = round(begin / spk_target_stride)
+            target_end = target_len if end == audio_len else round(end / spk_target_stride)
+        target_begin = min(max(target_begin, 0), target_len)
+        target_end = min(max(target_end, target_begin), target_len)
         if end > begin and target_end == target_begin:
-            target_end = min(target_begin + 1, max_target_len)
+            target_end = min(target_begin + 1, target_len)
         target_chunks.append(spk_targets[audio_idx, target_begin:target_end])
 
     max_len = max(chunk.shape[0] for chunk in target_chunks)

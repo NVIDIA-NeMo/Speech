@@ -62,7 +62,9 @@ class SALMDataset(torch.utils.data.Dataset):
         multispeaker_cfg (dict | None):
             Optional Serialized Output Training (SOT) speaker-activity settings.
             When provided, each batch additionally includes RTTM-derived
-            ``spk_targets`` / ``spk_target_length``.
+            ``spk_targets`` / ``spk_target_length``. Rows without an explicit
+            RTTM path contain the reserved value ``-1`` so the perception encoder
+            can replace them with inferred speaker activity.
 
             [ SOT Example for overlapping speakers ]
             Speaker-parallel transcription as a timeline:
@@ -210,13 +212,13 @@ class MultiSpeakerConfig:
 
 
 class SALMMultiSpeakerProcessor:
-    """Adds auxiliary SOT speaker-activity targets to an otherwise prepared SALM batch."""
+    """Add SOT activity targets, using ``-1`` rows to request inferred diarization."""
 
     def __init__(self, cfg: MultiSpeakerConfig) -> None:
         self.cfg = cfg
 
     def __call__(self, batch: dict) -> None:
-        """Attach RTTM-derived ``spk_targets`` / ``spk_target_length`` to ``batch`` in place."""
+        """Attach RTTM targets or missing-RTTM sentinels to ``batch`` in place."""
         cfg = self.cfg
         speaker_activities = self._build_speaker_activities(batch["conversations"])
         if not speaker_activities:
@@ -240,6 +242,7 @@ class SALMMultiSpeakerProcessor:
                 if not isinstance(turn, AudioTurn):
                     continue
 
+                has_rttm = self._has_rttm_filepath(turn.cut)
                 cut = self._prepare_audio_turn_cut(turn)
                 speaker_activity = speaker_activity_from_cut(
                     cut,
@@ -253,8 +256,22 @@ class SALMMultiSpeakerProcessor:
                 new_text, _, _ = ensure_single_speaker_sot(text)
 
                 speaker_activity = fix_speaker_activity(new_text, speaker_activity, cfg.num_speakers)
+                if not has_rttm:
+                    # Request inferred activity instead of the synthetic
+                    # single-speaker fallback.
+                    speaker_activity = torch.full_like(speaker_activity, -1.0)
                 speaker_activities.append(speaker_activity)
         return speaker_activities
+
+    @staticmethod
+    def _has_rttm_filepath(cut) -> bool:
+        """Return whether a cut or any constituent mixed track has an explicit RTTM file."""
+        custom = getattr(cut, "custom", None) or {}
+        if custom.get("rttm_filepath", None):
+            return True
+        if isinstance(cut, MixedCut):
+            return any(SALMMultiSpeakerProcessor._has_rttm_filepath(track.cut) for track in cut.tracks)
+        return False
 
     @staticmethod
     def _prepare_audio_turn_cut(turn: AudioTurn):

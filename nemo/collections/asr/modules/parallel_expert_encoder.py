@@ -306,6 +306,9 @@ class ParallelExpertEncoder(nn.Module):
         diar_spkcache_len (int): Sortformer streaming ``spkcache_len``. Default ``188``.
     """
 
+    supports_external_speaker_targets = True
+    parallel_expert_encoder_kind = "two_branch"
+
     def __init__(
         self,
         asr_encoder_cfg: DictConfig,
@@ -356,6 +359,9 @@ class ParallelExpertEncoder(nn.Module):
 
         # Long-form / online inference configuration.
         self.online_inference_length = int(online_inference_length)
+        # None preserves current-main direct use: long eval inputs stream automatically.
+        # SALM mounts set this to False; generation enables it through a context.
+        self.online_inference_enabled: Optional[bool] = None
         # Overlap-and-trim context (output frames) shared by both branches.
         self.chunk_left_context = max(0, int(chunk_left_context))
         self.chunk_right_context = max(0, int(chunk_right_context))
@@ -487,6 +493,16 @@ class ParallelExpertEncoder(nn.Module):
 
         return fused.transpose(1, 2)  # (B, D, T)
 
+    @contextlib.contextmanager
+    def online_inference(self, enabled: bool = True):
+        """Temporarily select the windowed inference path."""
+        previous = getattr(self, "online_inference_enabled", None)
+        self.online_inference_enabled = bool(enabled)
+        try:
+            yield
+        finally:
+            self.online_inference_enabled = previous
+
     # Forward — identical signature to ConformerEncoder.forward
     def forward(
         self,
@@ -510,6 +526,8 @@ class ParallelExpertEncoder(nn.Module):
         """
         if spk_targets is not None:
             use_online = False
+        elif getattr(self, "online_inference_enabled", None) is not None:
+            use_online = bool(self.online_inference_enabled) and self.online_inference_length > 0
         elif self.online_inference_length > 0 and not self.training:
             # Even if spk_targets is None, use offline if audio is short enough
             use_online = audio_signal.shape[-1] > self.chunk_feat_len

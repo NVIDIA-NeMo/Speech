@@ -34,7 +34,6 @@ Public surface used by the rest of the package:
   registry binds to the registered model class.
 """
 
-import os
 import re
 from collections.abc import Mapping
 from typing import Annotated, Literal
@@ -62,6 +61,7 @@ from vllm.multimodal.processing.dummy_inputs import BaseDummyInputsBuilder
 from vllm.utils.tensor_schema import TensorSchema, TensorShape
 
 from nemo.collections.speechlm2.vllm.salm.config import _AUDIO_PLACEHOLDER
+from nemo.utils import logging
 
 _SAMPLING_RATE = 16000
 _AUDIO_CHANNELS = 1
@@ -107,53 +107,56 @@ def _load_nemo_perception(perception_cfg: dict) -> nn.Module:
 
 
 def _maybe_mount_pe_encoder(perception: nn.Module, pe_encoder_path: str | None) -> bool:
-    """Replace ``perception.encoder`` with a ParallelExpertEncoder bundle so PE-trained
-    checkpoints (nested ``asr_encoder.*`` / ``diarization_model.*`` weights) load correctly.
+    """Mount a configured perception encoder from a local bundle or model identifier.
 
-    ``pe_encoder_path`` comes straight from the checkpoint's ``config.json`` (the
-    training recipe's ``model.pe_encoder_path``) and may be **either**:
-
-    * a local ``.nemo`` file -- restored directly, or
-    * a pretrained model identifier (HuggingFace Hub ``{repo}/{name}`` or NGC
-      alias) -- resolved via ``ParallelExpertEncoderPT.load_from_nemo`` ->
-      ``Model.from_pretrained``, which honours the HuggingFace cache and
-      ``HF_HUB_OFFLINE`` so a prefetched cache works on offline compute nodes.
-
-    We therefore defer resolution to ``load_from_nemo`` (which dispatches local
-    vs. model-id) instead of pre-rejecting anything that is not already a local
-    file. The only fail-fast here is a local ``.nemo`` file that exists but is
-    not a PE bundle -- that is an unambiguous user error.
-
-    Args:
-        perception (nn.Module): Perception module whose ``encoder`` is swapped in place.
-        pe_encoder_path (str | None): Local ``.nemo`` path or pretrained model id; no-op if falsy.
-
-    Returns:
-        bool: True if a PE encoder was mounted, False otherwise.
+    Remote identifiers are resolved through the model cache; invalid local bundles
+    fail before the encoder is replaced.
     """
     if pe_encoder_path in (None, "", False):
         return False
     if not hasattr(perception, "encoder"):
         raise RuntimeError("pe_encoder_path is set but perception has no `encoder` attribute to replace.")
 
-    from nemo.collections.asr.modules.parallel_expert_encoder import ParallelExpertEncoderPT
+    from nemo.collections.asr.modules.parallel_expert_encoder_resolver import resolve_parallel_expert_encoder_pt
 
-    # Only fail-fast for a *local* ``.nemo`` file that is not a PE bundle. A
-    # non-local reference (HF repo id / NGC alias) is resolved offline from the
-    # HuggingFace cache by load_from_nemo -> from_pretrained, so do not reject it.
-    is_local_nemo_file = (
-        isinstance(pe_encoder_path, str) and pe_encoder_path.endswith(".nemo") and os.path.isfile(pe_encoder_path)
-    )
-    if is_local_nemo_file and not ParallelExpertEncoderPT.is_pe_nemo(pe_encoder_path):
-        raise ValueError(f"pe_encoder_path={pe_encoder_path!r} is not a ParallelExpertEncoderPT .nemo bundle.")
+    encoder_class = resolve_parallel_expert_encoder_pt(pe_encoder_path)
+    pe_encoder = encoder_class.load_from_nemo(pe_encoder_path, map_location="cpu", strict=True)
 
-    pe_encoder = ParallelExpertEncoderPT.load_from_nemo(pe_encoder_path, map_location="cpu", strict=True)
-
+    # The outgoing width is unconstrained; unchanged frontend and downstream
+    # components must match the replacement encoder.
     existing_d_model = int(getattr(perception.encoder, "d_model", -1))
     if existing_d_model > 0 and int(pe_encoder.d_model) != existing_d_model:
+        logging.info(
+            "ParallelExpertEncoder d_model=%d replaces a perception encoder of d_model=%d; "
+            "the outgoing encoder is discarded.",
+            int(pe_encoder.d_model),
+            existing_d_model,
+        )
+
+    perception_cfg = getattr(perception, "cfg", {})
+    preprocessor_cfg = perception_cfg.get("preprocessor", {}) if hasattr(perception_cfg, "get") else {}
+    pe_feat_in = int(getattr(pe_encoder, "_feat_in", -1) or -1)
+    mel_bins = preprocessor_cfg.get("features", None) if hasattr(preprocessor_cfg, "get") else None
+    if pe_feat_in > 0 and mel_bins is not None and int(mel_bins) != pe_feat_in:
         raise ValueError(
-            f"ParallelExpertEncoder d_model={pe_encoder.d_model} does not match the existing "
-            f"perception encoder d_model={existing_d_model}."
+            f"ParallelExpertEncoder expects {pe_feat_in} mel bins but the vLLM perception "
+            f"preprocessor produces {int(mel_bins)}. The preprocessor is not replaced by "
+            "the mount, so these must agree."
+        )
+
+    adapter_cfg = perception_cfg.get("modality_adapter", {}) if hasattr(perception_cfg, "get") else {}
+    adapter_d_model = adapter_cfg.get("d_model", None) if hasattr(adapter_cfg, "get") else None
+    if adapter_d_model is not None and int(adapter_d_model) != int(pe_encoder.d_model):
+        raise ValueError(
+            f"ParallelExpertEncoder d_model={pe_encoder.d_model} does not match "
+            f"vLLM perception modality_adapter.d_model={adapter_d_model}."
+        )
+
+    proj = getattr(perception, "proj", None)
+    if isinstance(proj, torch.nn.Linear) and int(proj.in_features) != int(pe_encoder.d_model):
+        raise ValueError(
+            f"ParallelExpertEncoder d_model={pe_encoder.d_model} does not match "
+            f"vLLM perception proj.in_features={proj.in_features}."
         )
 
     # load_from_nemo restores onto CPU; copy the replaced encoder's device/dtype to avoid CPU/dtype mismatches.
@@ -161,7 +164,7 @@ def _maybe_mount_pe_encoder(perception: nn.Module, pe_encoder_path: str | None) 
     if ref_param is not None:
         pe_encoder = pe_encoder.to(device=ref_param.device, dtype=ref_param.dtype)
 
-    # PE encoder consumes un-normalised mels and replays ASR norm internally, so disable preprocessor norm.
+    # The replacement consumes un-normalised mels and applies ASR normalization internally.
     try:
         perception.preprocessor.featurizer.normalize = None
     except AttributeError:

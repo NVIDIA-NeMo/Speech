@@ -41,7 +41,7 @@ def _default_device_cuda():
     """Run this module's tests on CUDA by default, but scope the change so it does
     not leak. ``torch.set_default_device`` is a global, process-wide mutation; setting
     it at import time bleeds into other modules collected in the same pytest session
-    (e.g. the CPU tests in tests/collections/asr/test_parallel_expert_encoder.py),
+    (e.g. device-agnostic ASR module tests),
     causing spurious cuda/cpu device-mismatch failures. The previous default device
     is always restored on teardown.
     """
@@ -376,10 +376,9 @@ def test_salm_automodel_prepare_inputs_chunks_long_audio(device):
     chunked_signal, chunked_lens = model.perception.calls[0]
     assert chunked_signal.shape == (2, 3)
     assert torch.equal(chunked_lens, torch.tensor([2, 3], dtype=torch.long, device=device))
-    assert torch.equal(
-        model.perception.spk_targets_calls[0],
-        torch.stack([torch.cat([spk_targets[0, :2], spk_targets[0, 1:2]]), spk_targets[0, 2:5]]),
-    )
+    # Ordinary encoders keep their existing audio-chunking path and ignore
+    # unsupported speaker targets.
+    assert model.perception.spk_targets_calls[0] is None
     assert torch.equal(inputs["input_embeds"][0, :, 0], torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0], device=device))
     assert torch.equal(inputs["attention_mask"], torch.ones((1, 5), dtype=torch.bool, device=device))
 
@@ -465,10 +464,9 @@ def test_salm_automodel_generate_chunks_audio_before_llm(device):
     chunked_signal, chunked_lens = model.perception.calls[0]
     assert chunked_signal.shape == (2, 3)
     assert torch.equal(chunked_lens, torch.tensor([2, 3], dtype=torch.long, device=device))
-    assert torch.equal(
-        model.perception.spk_targets_calls[0],
-        torch.stack([torch.cat([spk_targets[0, :2], spk_targets[0, 1:2]]), spk_targets[0, 2:5]]),
-    )
+    # Ordinary encoders keep their existing audio-chunking path and ignore
+    # unsupported speaker targets.
+    assert model.perception.spk_targets_calls[0] is None
     assert torch.equal(
         model.llm.generate_kwargs["inputs_embeds"][0, :5, 0],
         torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0], device=device),

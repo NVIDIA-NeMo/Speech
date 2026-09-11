@@ -496,6 +496,21 @@ class MultiHeadAttention(nn.Module):
         FlashAttention's native variable-length THD kernel when available. Other
         inputs use a compact per-utterance FlexAttention reference without
         recreating a padded batch-wide activation.
+
+        Args:
+            x: Token-flat encoder states with shape ``(total_tokens, d_model)``.
+            lengths: Number of tokens in each sequence.
+            cu_seqlens: Exclusive cumulative sequence lengths with shape ``(batch_size + 1,)``.
+            max_seqlen: Maximum sequence length in the packed batch.
+            position_ids: Optional token-flat positions required by RoPE attention.
+            pos_emb: Optional relative-position embeddings shared by the packed sequences.
+            padded_length: Padded source width used to slice relative-position embeddings.
+            causal: Whether to prevent queries from attending to future keys.
+            sequence_offsets: Optional host-side sequence boundaries for the reference backend.
+            fused_qkv: Whether to project Q/K/V with one fused linear operation.
+
+        Returns:
+            Token-flat attention output with shape ``(total_tokens, d_model)``.
         """
         return self._forward_sequence_packed(
             x,
@@ -524,6 +539,7 @@ class MultiHeadAttention(nn.Module):
         sequence_offsets,
         fused_qkv,
     ):
+        """Project and attend to one token-flat packed batch."""
         q, k, v = self._project_sequence_packed_qkv(x, position_ids=position_ids, fused_qkv=fused_qkv)
         out = self._compute_sequence_packed_attention(
             q,
@@ -540,6 +556,7 @@ class MultiHeadAttention(nn.Module):
         return self.out_proj(out.reshape(x.shape[0], self.d_model))
 
     def _project_sequence_packed_qkv(self, x, *, position_ids, fused_qkv):
+        """Project packed states to Q/K/V and apply any Q/K preparation."""
         total_tokens = x.shape[0]
         if fused_qkv:
             qkv = self.w_qkv(x).view(total_tokens, 3, self.n_heads, self.head_dim)
@@ -556,6 +573,7 @@ class MultiHeadAttention(nn.Module):
         return self._prepare_sequence_packed_qkv(q, k, v, position_ids=position_ids)
 
     def _prepare_sequence_packed_qkv(self, q, k, v, *, position_ids):
+        """Apply Q/K normalization and rotary position embeddings when configured."""
         if self.qk_norm:
             q = self.q_norm(q).to(v.dtype)
             k = self.k_norm(k).to(v.dtype)
@@ -580,6 +598,7 @@ class MultiHeadAttention(nn.Module):
         causal,
         sequence_offsets,
     ):
+        """Dispatch packed Q/K/V to the fastest compatible attention backend."""
         flash_attention = _transformer_utils._select_flash_attention_varlen(
             q, static_eligible=self._flash_attention_varlen_static_eligible
         )
@@ -684,6 +703,7 @@ class TransformerBlock(nn.Module):
         sequence_offsets,
         fused_qkv,
     ):
+        """Run one Transformer block without materializing batch padding."""
         attn_out = self.attn.forward_sequence_packed(
             self.norm1(x),
             lengths=lengths,
@@ -1078,6 +1098,16 @@ class TransformerEncoder(nn.Module):
         requires three compacting copies, so it is an explicit performance option,
         not a promise of fewer launches. The default remains the lower-peak
         independent projection path.
+
+        Args:
+            audio_signal: A packed feature batch, a padded mel batch with shape ``(B, C, T)``,
+                or padded pre-encoded states with shape ``(B, T, D)``.
+            length: Valid input length for each padded sample, or lengths matching packed input.
+            bypass_pre_encode: Whether ``audio_signal`` already contains encoder-width states.
+            fused_qkv: Whether each attention layer should use one fused Q/K/V projection.
+
+        Returns:
+            Token-flat encoded states and their validated packing metadata.
         """
         if self.self_attention_model == "rel_pos" and not getattr(self, "_packed_rel_pos_warned", False):
             logging.warning(
@@ -1148,6 +1178,7 @@ class TransformerEncoder(nn.Module):
         return packed.with_data(x)
 
     def _prepare_sequence_packed_input(self, audio_signal, length, bypass_pre_encode):
+        """Prepare padded input for packing while preserving the ordinary frontend path."""
         if length is None:
             length = audio_signal.new_full(
                 (audio_signal.size(0),),
@@ -1186,6 +1217,7 @@ class TransformerEncoder(nn.Module):
         return self.embed_norm(x), length, pos_emb
 
     def _prepare_packed_input(self, audio_signal: PackedEncoderActivations, bypass_pre_encode: bool):
+        """Apply supported pre-encoding and position handling to packed input."""
         if bypass_pre_encode:
             packed = audio_signal
         else:
@@ -1199,6 +1231,7 @@ class TransformerEncoder(nn.Module):
         return self._apply_packed_position(packed)
 
     def _apply_packed_position(self, packed: PackedEncoderActivations):
+        """Apply the configured positional encoding directly to token-flat states."""
         x = packed.data
         if self.self_attention_model == "rope":
             if self.xscale:

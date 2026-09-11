@@ -288,6 +288,54 @@ def test_load_pretrained_automodel_llm_can_replace_native_mtp_config():
     base_load.assert_called_once_with(result, "native-mtp-checkpoint", {})
 
 
+def test_load_pretrained_automodel_llm_replaces_read_only_transformers_mtp_pattern():
+    class ReadOnlyNemotronHConfig:
+        def __init__(self):
+            self.num_nextn_predict_layers = 1
+            self.mtp_layers_block_type = ["attention"]
+            self.name_or_path = "native-mtp-checkpoint"
+
+        @property
+        def mtp_hybrid_override_pattern(self):
+            symbol = {
+                "mamba": "M",
+                "attention": "*",
+                "mlp": "-",
+                "moe": "E",
+            }
+            return "".join(symbol[block_type] for block_type in self.mtp_layers_block_type)
+
+    config = ReadOnlyNemotronHConfig()
+    automodel, config_patch, module_patch, compat_patch = _mock_automodel_loader(config)
+
+    with (
+        config_patch,
+        module_patch,
+        compat_patch,
+        patch.object(
+            pretrained,
+            "_resolve_automodel_checkpoint_path",
+            return_value="native-mtp-checkpoint",
+        ),
+        patch.object(pretrained, "_load_automodel_base_checkpoint_without_mtp", create=True),
+    ):
+        pretrained.load_pretrained_automodel_llm(
+            "native-mtp-checkpoint",
+            mtp_config_overrides={
+                "num_nextn_predict_layers": 1,
+                "mtp_layers_block_type": ["attention", "moe"],
+                "mtp_hybrid_override_pattern": "*E",
+                "mtp_moe_intermediate_size": 768,
+            },
+            replace_mtp_config=True,
+        )
+
+    assert config.mtp_layers_block_type == ["attention", "moe"]
+    assert config.mtp_hybrid_override_pattern == "*E"
+    assert config.mtp_moe_intermediate_size == 768
+    automodel.from_config.assert_called_once()
+
+
 _REPEATED_MTP_OVERRIDES = {
     "num_nextn_predict_layers": 1,
     "mtp_hybrid_override_pattern": "*",

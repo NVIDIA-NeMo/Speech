@@ -193,7 +193,7 @@ def test_configure_model_requests_mtp_and_applies_training_mode(monkeypatch, tra
     assert captured_kwargs["mtp_config_overrides"] == {
         "num_nextn_predict_layers": 1,
         "mtp_hybrid_override_pattern": "*",
-        "mtp_layers_block_type": None,
+        "mtp_layers_block_type": ["attention"],
     }
     assert captured_kwargs["replace_mtp_config"] is replace_existing_head
     assert model._mtp_enabled
@@ -264,7 +264,7 @@ def test_configure_model_passes_replacement_mtp_moe_intermediate_size(monkeypatc
     assert captured_kwargs["mtp_config_overrides"] == {
         "num_nextn_predict_layers": 1,
         "mtp_hybrid_override_pattern": "*E",
-        "mtp_layers_block_type": None,
+        "mtp_layers_block_type": ["attention", "moe"],
         "mtp_moe_intermediate_size": 768,
     }
     assert captured_kwargs["replace_mtp_config"] is True
@@ -409,7 +409,7 @@ def test_repeated_layer_settings_reach_native_mtp_constructor(monkeypatch):
     assert captured_kwargs["mtp_config_overrides"] == {
         "num_nextn_predict_layers": 1,
         "mtp_hybrid_override_pattern": "*",
-        "mtp_layers_block_type": None,
+        "mtp_layers_block_type": ["attention"],
     }
     assert captured_kwargs["replace_mtp_config"] is False
     assert captured_kwargs["num_nextn_predict_layers"] == 3

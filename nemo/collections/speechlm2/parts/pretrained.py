@@ -140,8 +140,7 @@ def load_pretrained_automodel_llm(
                 **automodel_kwargs,
             )
         if initialize_fresh_mtp:
-            for name, value in mtp_config_overrides.items():
-                setattr(config, name, value)
+            _apply_mtp_config_overrides(config, mtp_config_overrides)
         model = NeMoAutoModelForCausalLM.from_config(
             config,
             torch_dtype=dtype,
@@ -903,6 +902,30 @@ def maybe_load_pretrained_models(model: torch.nn.Module):
 
     if model.cfg.get("init_from_checkpoint", None):
         init_from_training_checkpoint(model, model.cfg.init_from_checkpoint)
+
+
+def _apply_mtp_config_overrides(config, overrides: dict) -> None:
+    """Apply replacement MTP fields while tolerating Transformers compatibility properties."""
+    ordered_names = [name for name in overrides if name != "mtp_hybrid_override_pattern"]
+    if "mtp_hybrid_override_pattern" in overrides:
+        ordered_names.append("mtp_hybrid_override_pattern")
+
+    for name in ordered_names:
+        value = overrides[name]
+        try:
+            setattr(config, name, value)
+        except AttributeError:
+            if (
+                name != "mtp_hybrid_override_pattern"
+                or "mtp_layers_block_type" not in overrides
+                or getattr(config, name, None) != value
+            ):
+                raise
+            logging.info(
+                "NemotronHConfig.%s is read-only; applied equivalent canonical mtp_layers_block_type=%s",
+                name,
+                overrides["mtp_layers_block_type"],
+            )
 
 
 def _automodel_config_mtp_depth(config) -> int:

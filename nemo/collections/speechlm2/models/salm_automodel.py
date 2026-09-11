@@ -1475,13 +1475,26 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             self._mtp_loss_fn = build_mtp_loss_fn() if mtp_loss_type == "cross_entropy" else None
             requested_depth = int(mtp_cfg.get("num_nextn_predict_layers", 1))
             use_repeated_layer = bool(mtp_cfg.get("use_repeated_layer", False))
+            mtp_pattern = str(mtp_cfg.get("hybrid_override_pattern", "*"))
+            mtp_symbol_to_block_type = {
+                "M": "mamba",
+                "*": "attention",
+                "-": "mlp",
+                "E": "moe",
+            }
+            try:
+                mtp_block_types = [mtp_symbol_to_block_type[symbol] for symbol in mtp_pattern]
+            except KeyError as error:
+                raise ValueError(
+                    f"Unknown MTP layer symbol {error.args[0]!r} in hybrid_override_pattern={mtp_pattern!r}"
+                ) from error
             # HF/vLLM exports describe physical layers. A repeated MTP head has one
             # physical layer even when it performs multiple logical prediction steps.
             physical_depth = 1 if use_repeated_layer else requested_depth
             automodel_kwargs["mtp_config_overrides"] = {
                 "num_nextn_predict_layers": physical_depth,
-                "mtp_hybrid_override_pattern": str(mtp_cfg.get("hybrid_override_pattern", "*")),
-                "mtp_layers_block_type": None,
+                "mtp_layers_block_type": mtp_block_types,
+                "mtp_hybrid_override_pattern": mtp_pattern,
             }
             replace_existing_head = bool(mtp_cfg.get("replace_existing_head", False))
             mtp_moe_intermediate_size = mtp_cfg.get("moe_intermediate_size", None)

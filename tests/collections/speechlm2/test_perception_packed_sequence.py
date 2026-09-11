@@ -116,7 +116,8 @@ def test_perception_packed_waveform_matches_padded_waveform_for_supported_encode
     restored = unpack_encoder_output(actual, total_length=expected.shape[1])
     valid = torch.arange(expected.shape[1], device=device)[None, :] < expected_lengths[:, None]
     assert torch.equal(actual.lengths, expected_lengths)
-    torch.testing.assert_close(restored[valid], expected[valid], rtol=2e-5, atol=3e-6)
+    atol = 1e-5 if encoder_kind == "pee" else 3e-6
+    torch.testing.assert_close(restored[valid], expected[valid], rtol=2e-5, atol=atol)
     assert set(perception.state_dict()) == set(checkpoint)
 
     reloaded = _make_waveform_perception(encoder_kind).to(device)
@@ -150,19 +151,21 @@ def test_perception_legacy_forward_accepts_packed_waveform(encoder_kind):
 
     assert torch.equal(actual_lengths, expected_lengths)
     valid = torch.arange(expected.shape[1])[None, :] < expected_lengths[:, None]
-    torch.testing.assert_close(actual[valid], expected[valid], rtol=2e-5, atol=3e-6)
+    atol = 1e-5 if encoder_kind == "pee" else 3e-6
+    torch.testing.assert_close(actual[valid], expected[valid], rtol=2e-5, atol=atol)
 
 
 @pytest.mark.parametrize("encoder_kind", ["transformer", "pee"])
-def test_perception_packed_waveform_all_empty_batch(encoder_kind):
-    perception = _make_waveform_perception(encoder_kind)
-    lengths = torch.tensor([0, 0])
+def test_perception_packed_waveform_all_empty_batch(encoder_kind, device):
+    torch_device = "cuda" if device == "GPU" and torch.cuda.is_available() else "cpu"
+    perception = _make_waveform_perception(encoder_kind).to(torch_device)
+    lengths = torch.tensor([0, 0], device=torch_device)
 
     with torch.no_grad():
         output = perception.forward_sequence_packed(
-            input_signal=torch.empty(0),
+            input_signal=torch.empty(0, device=torch_device),
             input_signal_length=lengths,
-            input_signal_cu_seqlens=torch.tensor([0, 0, 0]),
+            input_signal_cu_seqlens=torch.tensor([0, 0, 0], device=torch_device),
         )
 
     assert output.data.shape == (0, 24)

@@ -20,9 +20,9 @@ dataset-level ``.idxpack``.
 
 The input YAML may contain nested groups and transform wrappers. This initial
 integration packs the formats consumed by the indexed runtime: native NeMo
-manifests/tars, Nemotron text JSONL/tars, and ShareGPT JSONL manifests. No
-source manifest or tar is rescanned: the command consumes existing ``.idx``
-files, normally from ``--indexes-root``. Native tar sidecars keep their
+manifests/tars, Nemotron text JSONL/tars, and ShareGPT/multimodal-conversation
+JSONL manifests. No source manifest or tar is rescanned: the command consumes
+existing ``.idx`` files, normally from ``--indexes-root``. Native tar sidecars keep their
 headerless uint64 layout. The converter determines compatibility from
 the data itself: a sidecar is current exactly when its sentinel equals the
 physical local or remote source size. Stale sidecars fail before packing;
@@ -339,6 +339,7 @@ def discover_pack_collections(
     supported = {
         "nemo",
         "nemo_tarred",
+        "multimodal_conversation",
         "nemotron_text_converation",
         "share_gpt",
         *_TRANSFORM_TYPES,
@@ -346,9 +347,12 @@ def discover_pack_collections(
     if typ not in supported:
         raise NotImplementedError(f"idxpack conversion does not support dataset type {typ!r}.")
 
-    if typ in {"nemo", "nemo_tarred", "share_gpt", *_TRANSFORM_TYPES} and entry.get("manifest_filepath") is not None:
+    if (
+        typ in {"nemo", "nemo_tarred", "multimodal_conversation", "share_gpt", *_TRANSFORM_TYPES}
+        and entry.get("manifest_filepath") is not None
+    ):
         raw = entry.get("manifest_filepath")
-        if typ == "share_gpt":
+        if typ in {"multimodal_conversation", "share_gpt"}:
             _require_scalar_spec(raw, "manifest_filepath")
         else:
             _require_scalar_or_flat_path_list(raw, "manifest_filepath")
@@ -361,6 +365,11 @@ def discover_pack_collections(
                 raise NotImplementedError(
                     "Packed ShareGPT supports JSONL manifests with direct/remote "
                     "audio paths, not paired audio tar files."
+                )
+            if typ == "multimodal_conversation":
+                raise NotImplementedError(
+                    "Packed multimodal_conversation supports JSONL manifests with "
+                    "direct/remote audio paths, not paired audio tar files."
                 )
             _require_scalar_or_flat_path_list(raw_tars, "tarred_audio_filepaths")
             manifest_is_flat_list = _is_nonempty_flat_path_list(raw)

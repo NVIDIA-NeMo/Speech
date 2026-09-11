@@ -284,6 +284,30 @@ def test_encode_audio_with_optional_chunking_does_not_forward_absent_spk_targets
     assert torch.equal(embs[0].squeeze(-1), audios[0])
 
 
+def test_encode_audio_with_optional_chunking_can_microbatch_chunks():
+    perception = ChunkingTestPerception(sampling_rate=2, hop_length=1)
+    audios = torch.tensor([[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]])
+    audio_lens = torch.tensor([6], dtype=torch.long)
+
+    embs, dummy_loss = encode_audio_with_optional_chunking(
+        perception,
+        audios,
+        audio_lens,
+        chunk_size_seconds=1.0,
+        sampling_rate=2,
+        chunk_batch_size=2,
+        return_dummy_loss=True,
+    )
+
+    assert dummy_loss is None
+    assert len(perception.calls) == 2
+    assert torch.equal(perception.calls[0][1], torch.tensor([2, 2], dtype=torch.long))
+    assert torch.equal(perception.calls[1][1], torch.tensor([2], dtype=torch.long))
+    assert torch.equal(perception.time_offsets[0], torch.tensor([0.0, 1.0]))
+    assert torch.equal(perception.time_offsets[1], torch.tensor([2.0]))
+    assert torch.equal(embs[0].squeeze(-1), audios[0])
+
+
 @pytest.mark.parametrize(
     ("audio_values", "audio_len", "expected_chunk_lens", "expected_spk_targets"),
     [

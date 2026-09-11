@@ -343,6 +343,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 batch["audios"],
                 batch["audio_lens"],
                 chunk_size_seconds=self.cfg.get("encoder_chunk_size_seconds", None),
+                chunk_batch_size=self.cfg.get("encoder_chunk_batch_size", None),
                 sampling_rate=self.sampling_rate,
                 cp_mesh=cp_mesh,
                 spk_targets=spk_targets if self._uses_ext_spk_tgts() else None,
@@ -468,12 +469,15 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         batch, batch_idx = read_batch(dataloader_iter, self)
         return self._training_step_batch(batch, batch_idx)
 
-    def _training_step_batch(self, batch: dict, batch_idx: int):
+    def _training_step_batch(self, batch: dict | None, batch_idx: int):
         self._current_batch_idx = batch_idx
         for m in (self.perception.preprocessor, self.perception.encoder, self.llm):
             if is_frozen(m):
                 m.eval()
 
+        self._log_training_batch_debug(batch, batch_idx)
+        if batch is None:
+            batch = self._build_empty_training_batch()
         inputs = self.prepare_inputs(batch)
         self._record_training_stats(batch, inputs)
         forward_outputs = self(
@@ -587,6 +591,73 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         self.log_dict({k: v for k, v in ans.items() if k != "loss"}, on_step=True, batch_size=B)
         self.maybe_log_moe_metrics(batch_idx)
         return ans
+
+    def _build_empty_training_batch(self) -> dict:
+        """Return a tiny no-label batch for ranks whose local data was entirely skipped."""
+        token_id = self.text_eos_id
+        if token_id is None:
+            token_id = self.text_bos_id
+        if token_id is None:
+            token_id = self.text_pad_id
+        device = self.device
+        input_ids = torch.full((1, 2), int(token_id), dtype=torch.long, device=device)
+        return {
+            "audios": torch.empty(0, dtype=torch.float32, device=device),
+            "audio_lens": torch.empty(0, dtype=torch.long, device=device),
+            "input_ids": input_ids,
+            "loss_mask": torch.zeros_like(input_ids, dtype=torch.bool),
+            "conversations": [],
+        }
+
+    def _log_training_batch_debug(self, batch: dict | None, batch_idx: int) -> None:
+        max_logged = int(self.cfg.get("debug_log_training_batches", 2) or 0)
+        logged = getattr(self, "_debug_logged_training_batches", 0)
+        if logged >= max_logged:
+            return
+        self._debug_logged_training_batches = logged + 1
+
+        rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+        if batch is None:
+            logging.warning(
+                "training_batch_debug "
+                f"rank={rank} batch_idx={batch_idx} batch=None; using empty no-label fallback batch"
+            )
+            return
+
+        def shape_of(key: str):
+            value = batch.get(key)
+            return tuple(value.shape) if torch.is_tensor(value) else None
+
+        audio_lens = batch.get("audio_lens")
+        if torch.is_tensor(audio_lens) and audio_lens.numel() > 0:
+            lens = audio_lens.detach()
+            audio_lens_min = int(lens.min().item())
+            audio_lens_max = int(lens.max().item())
+            audio_sec_max = audio_lens_max / float(self.sampling_rate)
+        else:
+            audio_lens_min = audio_lens_max = 0
+            audio_sec_max = 0.0
+
+        input_ids = batch.get("input_ids")
+        nonpad_tokens = None
+        if torch.is_tensor(input_ids):
+            nonpad_tokens = int((input_ids != self.text_pad_id).long().sum().detach().cpu().item())
+
+        loss_mask = batch.get("loss_mask")
+        loss_tokens = None
+        if torch.is_tensor(loss_mask):
+            loss_tokens = int(loss_mask.long().sum().detach().cpu().item())
+
+        logging.info(
+            "training_batch_debug "
+            f"rank={rank} batch_idx={batch_idx} "
+            f"input_ids_shape={shape_of('input_ids')} audios_shape={shape_of('audios')} "
+            f"audio_lens_min={audio_lens_min} audio_lens_max={audio_lens_max} "
+            f"audio_sec_max={audio_sec_max:.2f} nonpad_tokens={nonpad_tokens} loss_tokens={loss_tokens} "
+            f"spk_targets_shape={shape_of('spk_targets')} "
+            f"encoder_chunk_size_seconds={self.cfg.get('encoder_chunk_size_seconds', None)} "
+            f"encoder_chunk_batch_size={self.cfg.get('encoder_chunk_batch_size', None)}"
+        )
 
     def _record_training_stats(self, batch: dict, inputs: dict) -> None:
         # Counters consumed by TrainingStatsCallback. In BSHD, the attention mask

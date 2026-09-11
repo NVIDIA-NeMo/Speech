@@ -452,6 +452,8 @@ def read_multimodal_conversation_jsonl(config: DictConfig) -> tuple[CutSet, bool
             slice_length=config.get("slice_length"),
             indexed=config.get("indexed", False),
             indexes_root=config.get("indexes_root", None),
+            index_pack=_resolve_index_pack(config),
+            index_pack_max_open_files=config.get("index_pack_max_open_files", 32),
         )
     )
     if not config.get("force_finite", False):

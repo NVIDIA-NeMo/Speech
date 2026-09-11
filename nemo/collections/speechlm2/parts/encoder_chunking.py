@@ -12,9 +12,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from contextlib import contextmanager
 from typing import Callable
 
 import torch
+import torch.distributed as dist
 from torch import Tensor
 from torch.nn.utils.rnn import pad_sequence
 
@@ -28,7 +30,10 @@ def encode_audio_with_optional_chunking(
     sampling_rate: int,
     spk_targets: Tensor | None = None,
     spk_target_lengths: Tensor | None = None,
-) -> list[Tensor]:
+    chunk_batch_size: int | None = None,
+    sync_group=None,
+    return_dummy_loss: bool = False,
+) -> list[Tensor] | tuple[list[Tensor], Tensor | None]:
     """Encode audio rows, splitting long rows into time chunks before the perception forward.
 
     If ``chunk_size_seconds`` is ``None`` or every audio in the batch is shorter than the
@@ -49,6 +54,14 @@ def encode_audio_with_optional_chunking(
             audio chunks.
         spk_target_lengths: Optional valid speaker-target frame counts with shape
             ``(B,)``. Required for exact slicing of padded, mixed-length target batches.
+        chunk_batch_size: Optional maximum number of time chunks to send through
+            ``perception`` in one forward. When unset, all chunks are encoded in
+            the historical single forward.
+        sync_group: Optional process group whose ranks must execute the same
+            number of ``perception`` forwards. Used with ``chunk_batch_size`` for
+            FSDP-sharded perception modules.
+        return_dummy_loss: When ``True``, also return a zero-valued tensor that
+            keeps dummy perception forwards attached to autograd.
 
     Returns:
         List of length ``B`` of fp32 embedding tensors with shape ``(T_emb_i, D)`` and
@@ -56,8 +69,19 @@ def encode_audio_with_optional_chunking(
         embeddings are concatenated along the time axis to recover a single tensor per
         original audio row.
     """
+    _validate_chunk_config(chunk_size_seconds, chunk_batch_size)
+
     if input_signal_length.numel() == 0:
-        return []
+        dummy_loss = _run_dummy_chunk_forwards(
+            perception,
+            input_signal,
+            input_signal_length,
+            chunk_size_seconds=chunk_size_seconds,
+            sampling_rate=sampling_rate,
+            chunk_batch_size=chunk_batch_size,
+            sync_group=sync_group,
+        )
+        return _maybe_return_dummy_loss([], dummy_loss, return_dummy_loss)
 
     chunk_size_samples = _get_chunk_size_samples(chunk_size_seconds, sampling_rate)
     perception_kwargs = {"input_signal": input_signal, "input_signal_length": input_signal_length}
@@ -65,14 +89,16 @@ def encode_audio_with_optional_chunking(
         perception_kwargs["spk_targets"] = spk_targets
     if chunk_size_samples is None or input_signal_length.numel() == 0:
         audio_embs, audio_emb_lens = perception(**perception_kwargs)
-        return _unpad_audio_embeddings(audio_embs, audio_emb_lens)
+        ans = _unpad_audio_embeddings(audio_embs, audio_emb_lens)
+        return _maybe_return_dummy_loss(ans, None, return_dummy_loss)
 
     min_chunk_size_samples = _get_min_chunk_size_samples(perception)
     chunk_size_samples = max(chunk_size_samples, min_chunk_size_samples)
     input_signal_lengths = input_signal_length.tolist()
-    if max(input_signal_lengths) <= chunk_size_samples:
+    if max(input_signal_lengths) <= chunk_size_samples and chunk_batch_size is None:
         audio_embs, audio_emb_lens = perception(**perception_kwargs)
-        return _unpad_audio_embeddings(audio_embs, audio_emb_lens)
+        ans = _unpad_audio_embeddings(audio_embs, audio_emb_lens)
+        return _maybe_return_dummy_loss(ans, None, return_dummy_loss)
 
     chunks, chunk_lens, chunks_per_audio, chunk_spans = _split_audio_into_chunks(
         input_signal=input_signal,
@@ -104,8 +130,130 @@ def encode_audio_with_optional_chunking(
     }
     if chunked_spk_targets is not None:
         chunked_perception_kwargs["spk_targets"] = chunked_spk_targets
-    chunked_embs, chunked_emb_lens = perception(**chunked_perception_kwargs)
-    return _recombine_chunked_audio_embeddings(chunked_embs, chunked_emb_lens, chunks_per_audio)
+    if chunk_batch_size is None:
+        chunked_embs, chunked_emb_lens = perception(**chunked_perception_kwargs)
+        ans = _recombine_chunked_audio_embeddings(chunked_embs, chunked_emb_lens, chunks_per_audio)
+        return _maybe_return_dummy_loss(ans, None, return_dummy_loss)
+
+    chunked_embs, dummy_loss = _encode_chunk_microbatches(
+        perception,
+        chunked_perception_kwargs,
+        chunk_batch_size=chunk_batch_size,
+        sync_group=sync_group,
+    )
+    ans = _recombine_chunked_audio_embedding_list(chunked_embs, chunks_per_audio)
+    return _maybe_return_dummy_loss(ans, dummy_loss, return_dummy_loss)
+
+
+def _maybe_return_dummy_loss(
+    audio_embs: list[Tensor],
+    dummy_loss: Tensor | None,
+    return_dummy_loss: bool,
+) -> list[Tensor] | tuple[list[Tensor], Tensor | None]:
+    return (audio_embs, dummy_loss) if return_dummy_loss else audio_embs
+
+
+def _validate_chunk_config(chunk_size_seconds: float | None, chunk_batch_size: int | None) -> None:
+    if chunk_batch_size is None:
+        return
+    if chunk_size_seconds is None:
+        raise ValueError("encoder_chunk_batch_size requires encoder_chunk_size_seconds to be set.")
+    if int(chunk_batch_size) != chunk_batch_size or int(chunk_batch_size) <= 0:
+        raise ValueError(f"encoder_chunk_batch_size must be a positive integer when set, got {chunk_batch_size}.")
+
+
+@contextmanager
+def _preserve_module_buffers(module: Callable):
+    if not isinstance(module, torch.nn.Module):
+        yield
+        return
+
+    buffers = [(buffer, buffer.detach().clone()) for buffer in module.buffers()]
+    try:
+        yield
+    finally:
+        with torch.no_grad():
+            for buffer, value in buffers:
+                buffer.copy_(value)
+
+
+def _encode_chunk_microbatches(
+    perception: Callable,
+    chunked_perception_kwargs: dict[str, Tensor],
+    *,
+    chunk_batch_size: int,
+    sync_group=None,
+) -> tuple[list[Tensor], Tensor | None]:
+    """Encode chunks in smaller forwards while keeping FSDP ranks synchronized."""
+    input_signal = chunked_perception_kwargs["input_signal"]
+    num_chunks = int(input_signal.shape[0])
+    local_microbatches = (num_chunks + chunk_batch_size - 1) // chunk_batch_size
+    total_microbatches = _sync_max_count(local_microbatches, input_signal.device, sync_group)
+
+    chunked_embs: list[Tensor] = []
+    dummy_loss = None
+    for microbatch_idx in range(total_microbatches):
+        start = microbatch_idx * chunk_batch_size
+        end = min(start + chunk_batch_size, num_chunks)
+        if start < end:
+            mb_kwargs = _slice_perception_kwargs(chunked_perception_kwargs, start, end)
+            mb_embs, mb_lens = perception(**mb_kwargs)
+            chunked_embs.extend(_unpad_audio_embeddings(mb_embs, mb_lens))
+            continue
+
+        dummy_kwargs = _slice_perception_kwargs(chunked_perception_kwargs, 0, 1)
+        with _preserve_module_buffers(perception):
+            mb_embs, _ = perception(**dummy_kwargs)
+        zero = mb_embs.float().sum() * 0.0
+        dummy_loss = zero if dummy_loss is None else dummy_loss + zero
+
+    return chunked_embs, dummy_loss
+
+
+def _slice_perception_kwargs(perception_kwargs: dict[str, Tensor], start: int, end: int) -> dict[str, Tensor]:
+    return {name: value[start:end] for name, value in perception_kwargs.items()}
+
+
+def _sync_max_count(local_count: int, device: torch.device, sync_group=None) -> int:
+    if sync_group is None or not (dist.is_available() and dist.is_initialized()):
+        return local_count
+    count = torch.tensor(local_count, dtype=torch.int32, device=device)
+    dist.all_reduce(count, op=dist.ReduceOp.MAX, group=sync_group)
+    return int(count.item())
+
+
+def _run_dummy_chunk_forwards(
+    perception: Callable,
+    input_signal: Tensor,
+    input_signal_length: Tensor,
+    *,
+    chunk_size_seconds: float | None,
+    sampling_rate: int,
+    chunk_batch_size: int | None,
+    sync_group=None,
+) -> Tensor | None:
+    """Run synced zero-valued perception forwards for audio-free ranks."""
+    if chunk_batch_size is None or sync_group is None or not (dist.is_available() and dist.is_initialized()):
+        return None
+
+    total_microbatches = _sync_max_count(0, input_signal.device, sync_group)
+    if total_microbatches == 0:
+        return None
+
+    chunk_size_samples = _get_chunk_size_samples(chunk_size_seconds, sampling_rate)
+    if chunk_size_samples is None:
+        dummy_len = max(_get_min_chunk_size_samples(perception), int(sampling_rate))
+    else:
+        dummy_len = max(chunk_size_samples, _get_min_chunk_size_samples(perception))
+    dummy_audio = torch.zeros(1, dummy_len, dtype=input_signal.dtype, device=input_signal.device)
+    dummy_lens = torch.full((1,), dummy_len, dtype=input_signal_length.dtype, device=input_signal_length.device)
+    dummy_loss = None
+    for _ in range(total_microbatches):
+        with _preserve_module_buffers(perception):
+            dummy_embs, _ = perception(input_signal=dummy_audio, input_signal_length=dummy_lens)
+        zero = dummy_embs.float().sum() * 0.0
+        dummy_loss = zero if dummy_loss is None else dummy_loss + zero
+    return dummy_loss
 
 
 def _get_chunk_size_samples(chunk_size_seconds: float | None, sampling_rate: int) -> int | None:
@@ -339,6 +487,20 @@ def _recombine_chunked_audio_embeddings(
     chunk_idx = 0
     for num_chunks in chunks_per_audio:
         parts = [chunked_embs[i, : chunked_emb_lens[i]] for i in range(chunk_idx, chunk_idx + num_chunks)]
+        audio_embs.append(parts[0] if len(parts) == 1 else torch.cat(parts, dim=0))
+        chunk_idx += num_chunks
+    return audio_embs
+
+
+def _recombine_chunked_audio_embedding_list(
+    chunked_embs: list[Tensor],
+    chunks_per_audio: list[int],
+) -> list[Tensor]:
+    """Concatenate an unpadded list of per-chunk embeddings back to original audio rows."""
+    audio_embs = []
+    chunk_idx = 0
+    for num_chunks in chunks_per_audio:
+        parts = chunked_embs[chunk_idx : chunk_idx + num_chunks]
         audio_embs.append(parts[0] if len(parts) == 1 else torch.cat(parts, dim=0))
         chunk_idx += num_chunks
     return audio_embs

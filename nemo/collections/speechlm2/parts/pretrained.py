@@ -832,6 +832,8 @@ def init_from_training_checkpoint(model: torch.nn.Module, checkpoint_path: str):
                 "Use model.pe_encoder_path for PE encoder bundles."
             )
 
+    mtp_cfg = getattr(model, "cfg", {}).get("mtp", None)
+
     if _is_dcp_checkpoint(checkpoint_path):
         import torch.distributed.checkpoint as dcp
 
@@ -840,7 +842,6 @@ def init_from_training_checkpoint(model: torch.nn.Module, checkpoint_path: str):
         # Optimizer states and other trainer state are ignored automatically
         # because we only provide the model's state_dict.
         model_state_dict = model.state_dict()
-        mtp_cfg = model.cfg.get("mtp", None)
         preserve_replacement_mtp = bool(
             mtp_cfg is not None and mtp_cfg.get("enabled", False) and mtp_cfg.get("replace_existing_head", False)
         )
@@ -873,7 +874,16 @@ def init_from_training_checkpoint(model: torch.nn.Module, checkpoint_path: str):
         from nemo.collections.speechlm2.parts.hf_hub import _load_state_dict_with_dtensors
 
         strict = bool(model.cfg.get("init_from_checkpoint_strict", True))
-        _load_state_dict_with_dtensors(model, checkpoint_path, strict=strict)
+        reuse_compatible_mtp = bool(
+            mtp_cfg is not None
+            and mtp_cfg.get("enabled", False)
+            and mtp_cfg.get("replace_existing_head", False)
+            and mtp_cfg.get("reuse_compatible_weights", False)
+        )
+        load_kwargs = {"strict": strict}
+        if reuse_compatible_mtp:
+            load_kwargs["reuse_compatible_mtp"] = True
+        _load_state_dict_with_dtensors(model, checkpoint_path, **load_kwargs)
         logging.info(
             "Loaded Hugging Face checkpoint into DTensor model from %s (strict=%s)",
             checkpoint_path,

@@ -241,7 +241,13 @@ def _canonicalize_named_tensors(named_tensors, kind: str):
     return result
 
 
-def _load_state_dict_with_dtensors(model, weight_dir, *, strict: bool = True):
+def _load_state_dict_with_dtensors(
+    model,
+    weight_dir,
+    *,
+    strict: bool = True,
+    reuse_compatible_mtp: bool = False,
+):
     """Load safetensors weights into a model with DTensor parameters using DCP.
 
     Uses ``torch.distributed.checkpoint`` with ``_HuggingFaceStorageReader``
@@ -253,6 +259,8 @@ def _load_state_dict_with_dtensors(model, weight_dir, *, strict: bool = True):
         weight_dir: Directory containing ``.safetensors`` file(s).
         strict: Require every named model parameter to exist in the checkpoint.
             Set this to ``False`` only for an intentional partial initialization.
+        reuse_compatible_mtp: Load replacement-MTP tensors only when their global
+            shapes match the checkpoint, retaining fresh initialization otherwise.
     """
     from itertools import chain
 
@@ -270,8 +278,22 @@ def _load_state_dict_with_dtensors(model, weight_dir, *, strict: bool = True):
     # checkpoint (e.g. positional-encoding buffers computed at init).
     # Read the checkpoint metadata first and keep only matching keys.
     reader = _HuggingFaceStorageReader(path=weight_dir)
-    checkpoint_keys = set(reader.read_metadata().state_dict_metadata)
-    missing_parameters = sorted(parameters.keys() - checkpoint_keys)
+    checkpoint_metadata = reader.read_metadata().state_dict_metadata
+    checkpoint_keys = set(checkpoint_metadata)
+
+    fresh_mtp_keys = []
+    if reuse_compatible_mtp:
+        for key, value in all_tensors.items():
+            if "mtp" not in key.split("."):
+                continue
+            metadata = checkpoint_metadata.get(key)
+            checkpoint_shape = getattr(metadata, "size", None)
+            model_shape = getattr(value, "shape", None)
+            if checkpoint_shape is None or model_shape is None or tuple(checkpoint_shape) != tuple(model_shape):
+                fresh_mtp_keys.append(key)
+
+    fresh_mtp_key_set = set(fresh_mtp_keys)
+    missing_parameters = sorted(parameters.keys() - checkpoint_keys - fresh_mtp_key_set)
     if missing_parameters and strict:
         examples = ", ".join(missing_parameters[:10])
         raise RuntimeError(
@@ -280,17 +302,32 @@ def _load_state_dict_with_dtensors(model, weight_dir, *, strict: bool = True):
             f"at {weight_dir}. First missing keys: {examples}"
         )
 
-    state_dict = {key: value for key, value in all_tensors.items() if key in checkpoint_keys}
-    missing_buffers = sorted(buffers.keys() - checkpoint_keys)
+    state_dict = {
+        key: value
+        for key, value in all_tensors.items()
+        if key in checkpoint_keys and key not in fresh_mtp_key_set
+    }
+    missing_buffers = sorted(buffers.keys() - checkpoint_keys - fresh_mtp_key_set)
     unexpected_keys = sorted(checkpoint_keys - all_tensors.keys())
+    loaded_parameters = sum(key in state_dict for key in parameters)
+    loaded_buffers = sum(key in state_dict for key in buffers)
     logging.info(
         "Distributed HF checkpoint coverage: %d/%d parameters and %d/%d buffers; " "%d checkpoint-only keys",
-        len(parameters) - len(missing_parameters),
+        loaded_parameters,
         len(parameters),
-        len(buffers) - len(missing_buffers),
+        loaded_buffers,
         len(buffers),
         len(unexpected_keys),
     )
+    if fresh_mtp_keys:
+        reused_mtp_count = sum("mtp" in key.split(".") for key in state_dict)
+        logging.info(
+            "Selectively initializing replacement MTP from HF checkpoint: reusing %d compatible tensors and "
+            "keeping fresh initialization for %d missing or shape-incompatible tensors (examples=%s)",
+            reused_mtp_count,
+            len(fresh_mtp_keys),
+            fresh_mtp_keys[:10],
+        )
     if missing_parameters:
         logging.warning(
             "Leaving %d model parameters at their initialized values because strict loading is disabled "

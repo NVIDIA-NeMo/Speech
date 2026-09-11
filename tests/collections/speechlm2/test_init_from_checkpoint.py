@@ -192,6 +192,37 @@ class TestInitFromTrainingCheckpoint:
         distributed_load.assert_called_once_with(model, str(hf_dir), strict=False)
 
 
+    def test_hf_directory_with_dtensors_selectively_reuses_replacement_mtp(self, tmp_path):
+        hf_dir = tmp_path / "hf_model"
+        hf_dir.mkdir()
+        (hf_dir / "model.safetensors").touch()
+        model = ConfigurableModel(
+            {
+                "mtp": {
+                    "enabled": True,
+                    "replace_existing_head": True,
+                    "reuse_compatible_weights": True,
+                }
+            }
+        )
+
+        with (
+            patch(
+                "nemo.collections.speechlm2.parts.pretrained._model_has_dtensors",
+                return_value=True,
+            ),
+            patch("nemo.collections.speechlm2.parts.hf_hub._load_state_dict_with_dtensors") as distributed_load,
+        ):
+            init_from_training_checkpoint(model, str(hf_dir))
+
+        distributed_load.assert_called_once_with(
+            model,
+            str(hf_dir),
+            strict=True,
+            reuse_compatible_mtp=True,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Distributed HF checkpoint namespace canonicalization
 # ---------------------------------------------------------------------------
@@ -244,6 +275,46 @@ def test_wrapper_aware_distributed_hf_loader_copies_checkpoint_value(tmp_path):
     _load_state_dict_with_dtensors(model, str(tmp_path))
 
     torch.testing.assert_close(model.model._checkpoint_wrapped_module.weight, expected)
+
+
+@pytest.mark.unit
+def test_distributed_hf_loader_reuses_only_shape_compatible_mtp_weights(tmp_path):
+    class TinyMTP(torch.nn.Module):
+        def __init__(self, expert_width):
+            super().__init__()
+            self.attention = torch.nn.Linear(2, 2, bias=False)
+            self.experts = torch.nn.Linear(2, expert_width, bias=False)
+
+    class TinyModel(torch.nn.Module):
+        def __init__(self, expert_width):
+            super().__init__()
+            self.base = torch.nn.Linear(2, 2, bias=False)
+            self.mtp = TinyMTP(expert_width)
+
+    source = TinyModel(expert_width=3)
+    with torch.no_grad():
+        source.base.weight.fill_(3.0)
+        source.mtp.attention.weight.fill_(7.0)
+        source.mtp.experts.weight.fill_(11.0)
+    save_file(source.state_dict(), str(tmp_path / "model.safetensors"))
+
+    target = TinyModel(expert_width=2)
+    with torch.no_grad():
+        target.base.weight.zero_()
+        target.mtp.attention.weight.fill_(5.0)
+        target.mtp.experts.weight.fill_(13.0)
+
+    _load_state_dict_with_dtensors(target, str(tmp_path), reuse_compatible_mtp=True)
+
+    torch.testing.assert_close(target.base.weight, torch.full_like(target.base.weight, 3.0))
+    torch.testing.assert_close(
+        target.mtp.attention.weight,
+        torch.full_like(target.mtp.attention.weight, 7.0),
+    )
+    torch.testing.assert_close(
+        target.mtp.experts.weight,
+        torch.full_like(target.mtp.experts.weight, 13.0),
+    )
 
 
 # ---------------------------------------------------------------------------

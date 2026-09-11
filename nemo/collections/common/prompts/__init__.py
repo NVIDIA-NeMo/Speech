@@ -17,6 +17,7 @@ from nemo.collections.common.prompts.canary import CanaryPromptFormatter
 from nemo.collections.common.prompts.canary2 import Canary2PromptFormatter
 from nemo.collections.common.prompts.formatter import PromptFormatter
 from nemo.collections.common.prompts.gemma import GemmaPromptFormatter
+from nemo.collections.common.prompts.gemma4 import Gemma4PromptFormatter
 from nemo.collections.common.prompts.llama import Llama2PromptFormatter, Llama3PromptFormatter
 from nemo.collections.common.prompts.mistral import MistralPromptFormatter
 from nemo.collections.common.prompts.nemotron_h import NemotronHPromptFormatter

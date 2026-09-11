@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import inspect
 import math
 import random
 from collections import OrderedDict
@@ -1460,6 +1461,10 @@ class ConformerMultiLayerFeatureExtractor(NeuralModule, Exportable, AccessMixin)
             "convert_to_cpu": convert_to_cpu,
         }
         self.aggregator = aggregator
+        # Not every encoder implementation supports cache-aware streaming (e.g. the experimental
+        # TransformerEncoder only accepts audio_signal/length/bypass_pre_encode), so only forward
+        # the cache_* kwargs to encoders whose forward() actually declares them.
+        self._encoder_accepts_cache_kwargs = "cache_last_channel" in inspect.signature(encoder.forward).parameters
 
     def forward(
         self, audio_signal, length, cache_last_channel=None, cache_last_time=None, cache_last_channel_len=None
@@ -1475,13 +1480,14 @@ class ConformerMultiLayerFeatureExtractor(NeuralModule, Exportable, AccessMixin)
         self.update_access_cfg(self.enc_access_cfg, guid=getattr(self, "model_guid", None))
         self.set_access_enabled(access_enabled=True, guid=getattr(self, "model_guid", None))
 
-        encoder_ret = self.encoder(
-            audio_signal=audio_signal,
-            length=length,
-            cache_last_channel=cache_last_channel,
-            cache_last_time=cache_last_time,
-            cache_last_channel_len=cache_last_channel_len,
-        )
+        encoder_kwargs = {"audio_signal": audio_signal, "length": length}
+        if self._encoder_accepts_cache_kwargs:
+            encoder_kwargs.update(
+                cache_last_channel=cache_last_channel,
+                cache_last_time=cache_last_time,
+                cache_last_channel_len=cache_last_channel_len,
+            )
+        encoder_ret = self.encoder(**encoder_kwargs)
         # ConformerEncoder.forward_internal returns (audio_signal, length) when caches are unused
         # and a 5-tuple (+ cache tensors) otherwise. First two elements are always the final
         # [B, D, T] output and the [B] length.

@@ -47,6 +47,7 @@ from nemo.collections.speechlm2.parts.optim_setup import configure_optimizers, i
 from nemo.collections.speechlm2.parts.pretrained import (
     load_pretrained_automodel_llm,
     maybe_load_pretrained_models,
+    resolve_text_config,
     setup_speech_encoder,
     update_perception_output_dim,
 )
@@ -442,6 +443,27 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 "and fused MTP loss cannot materialize a TP-sharded LM-head weight with a DP-only "
                 "gradient-reduction group."
             )
+
+        # Hybrid backbones (e.g. qwen3_5) interleave recurrent "linear_attention" layers with
+        # ordinary attention. Those layers keep per-sequence recurrent state, have no cu_seqlens
+        # contract, and cannot be split along the sequence dimension, so packed sequences and
+        # context parallelism would silently compute wrong results instead of raising.
+        llm = getattr(self, "llm", None)
+        if llm is not None:
+            layer_types = getattr(resolve_text_config(llm.config), "layer_types", None) or ()
+            if "linear_attention" in layer_types:
+                unsupported = []
+                if self.cfg.get("packed_sequences", False):
+                    unsupported.append("packed_sequences=true")
+                if cp_size > 1:
+                    unsupported.append(f"cp_size={cp_size}")
+                if unsupported:
+                    raise ValueError(
+                        "The LLM backbone is hybrid-attention (it declares 'linear_attention' layers), "
+                        f"which is incompatible with {', '.join(unsupported)}. Linear-attention layers hold "
+                        "recurrent state with no cu_seqlens contract and cannot be sharded along the "
+                        "sequence dimension, so these options would silently produce wrong results."
+                    )
 
     def training_step(self, dataloader_iter):
         # ``dataloader_iter`` signature → Lightning selects

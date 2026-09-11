@@ -123,11 +123,7 @@ class Qwen3PromptFormatter(PromptFormatter):
                 # Add empty thinking block
                 turn["slots"]["message"] = self.NO_THINK_PREFIX + turn["slots"]["message"]
                 # A simplified version: add only one "/no_think" to a previous user or system turn
-                random_turn = random.choice(system_and_user_turns)
-                if random.random() < 0.5:
-                    random_turn["slots"]["message"] = random_turn["slots"]["message"] + " /no_think"
-                else:
-                    random_turn["slots"]["message"] = "/no_think " + random_turn["slots"]["message"]
+                self._inject_thinking_tag(system_and_user_turns, "/no_think")
             else:
                 assert turn["slots"]["message"].startswith("<think>"), turn["slots"]["message"]
                 assert "</think>" in turn["slots"]["message"], turn["slots"]["message"]
@@ -137,19 +133,11 @@ class Qwen3PromptFormatter(PromptFormatter):
 
                 if not reasoning_content:
                     # A simplified version: add only one "/no_think" to a previous user or system turn
-                    random_turn = random.choice(system_and_user_turns)
-                    if random.random() < 0.5:
-                        random_turn["slots"]["message"] = random_turn["slots"]["message"] + " /no_think"
-                    else:
-                        random_turn["slots"]["message"] = "/no_think " + random_turn["slots"]["message"]
+                    self._inject_thinking_tag(system_and_user_turns, "/no_think")
                 else:
                     # Add "/think" or nothing
                     if random.random() < 0.5:
-                        random_turn = random.choice(system_and_user_turns)
-                        if random.random() < 0.5:
-                            random_turn["slots"]["message"] = random_turn["slots"]["message"] + " /think"
-                        else:
-                            random_turn["slots"]["message"] = "/think " + random_turn["slots"]["message"]
+                        self._inject_thinking_tag(system_and_user_turns, "/think")
 
         # 4) (Training and Inference) Remove empty system turn
         if turns[0]["role"] == "system" and turns[0]["slots"]["message"].strip() == "":
@@ -188,10 +176,7 @@ class Qwen3PromptFormatter(PromptFormatter):
             turn_mask_values.append(role == self.OUTPUT_ROLE and idx == len(turns) - 1)
 
         if is_inference and self.INFERENCE_PREFIX is not None:
-            inference_prefix = self.INFERENCE_PREFIX
-            if not enable_thinking:
-                inference_prefix = inference_prefix + self.NO_THINK_PREFIX
-            inference_prefix = self._apply_tokenizer(inference_prefix)
+            inference_prefix = self._apply_tokenizer(self._inference_prefix(enable_thinking))
             turn_tokens.extend(inference_prefix)
             turn_token_counts.append(len(inference_prefix))
             turn_mask_values.append(False)  # not a training example
@@ -220,3 +205,45 @@ class Qwen3PromptFormatter(PromptFormatter):
             ans["context_ids"] = ans["input_ids"]  # context == input for inference
 
         return ans
+
+    def _inject_thinking_tag(self, turns: list[dict], tag: str) -> None:
+        """Attach a ``/think`` or ``/no_think`` marker to a random system or user turn."""
+        turn = random.choice(turns)
+        if random.random() < 0.5:
+            turn["slots"]["message"] = turn["slots"]["message"] + f" {tag}"
+        else:
+            turn["slots"]["message"] = f"{tag} " + turn["slots"]["message"]
+
+    def _inference_prefix(self, enable_thinking: bool) -> str:
+        """Return the generation prompt appended after the last non-assistant turn."""
+        if enable_thinking:
+            return self.INFERENCE_PREFIX
+        return self.INFERENCE_PREFIX + self.NO_THINK_PREFIX
+
+
+class Qwen3_5PromptFormatter(Qwen3PromptFormatter):
+    """Qwen3.5 shares Qwen3's ChatML templates but controls reasoning differently.
+
+    Its chat template has no ``/think`` / ``/no_think`` markers — reasoning is selected purely by
+    the generation prompt, which always opens a thinking block: ``<think>\\n`` to reason, or an
+    immediately closed block to skip it.
+    """
+
+    NAME = "qwen3.5"
+    THINK_PREFIX = "<think>\n"
+
+    def encode_dialog(self, turns: list[dict], enable_thinking: bool = False) -> dict[str, torch.Tensor]:
+        """Overrides the base class method to default to non-thinking.
+
+        Qwen3.5 gates reasoning on the generation prompt: ``<think>\\n`` opens a reasoning block,
+        an immediately closed one skips it. Its chat template opens the block only when
+        ``enable_thinking`` is explicitly true, and training targets carry a closed block, so
+        thinking is off unless the caller asks for it.
+        """
+        return super().encode_dialog(turns, enable_thinking=enable_thinking)
+
+    def _inject_thinking_tag(self, turns: list[dict], tag: str) -> None:
+        """Disable Qwen3's tag injection: Qwen3.5's template defines no such markers."""
+
+    def _inference_prefix(self, enable_thinking: bool) -> str:
+        return self.INFERENCE_PREFIX + (self.THINK_PREFIX if enable_thinking else self.NO_THINK_PREFIX)

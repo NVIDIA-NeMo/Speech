@@ -48,6 +48,7 @@ from nemo.collections.speechlm2.parts.pretrained import (
     load_pretrained_hf,
     maybe_load_pretrained_models,
     move_embedding,
+    per_layer_inputs_prefill_only,
     setup_speech_encoder,
 )
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, MaskType, NeuralType
@@ -74,11 +75,18 @@ class SALM(LightningModule, HFHubMixin):
             self.cfg.pretrained_llm,
             pretrained_weights=self.cfg.pretrained_weights,
             trust_remote_code=self.cfg.get("trust_remote_code", False),
+            text_only=self.cfg.get("llm_text_only", False),
         )
         # Note: we have to "move out" the token embedding outside of LLM to avoid
         #       messing up FSDP/TP hooks.
         self.embed_tokens = self.llm.model.embed_tokens
         del self.llm.model.embed_tokens
+        # Gemma 4 Per-Layer Embeddings: a second token-identity embedding the decoder needs alongside
+        # inputs_embeds. Without it the HF model tries to reverse-lookup input_ids from inputs_embeds,
+        # which fails once audio embeddings are spliced in.
+        self.embed_tokens_per_layer = getattr(self.llm.model, "embed_tokens_per_layer", None)
+        if self.embed_tokens_per_layer is not None:
+            del self.llm.model.embed_tokens_per_layer
 
         maybe_install_lora(self)
         # Load the pretrained streaming ASR model and copy its parameters into the audio perception module.
@@ -135,6 +143,7 @@ class SALM(LightningModule, HFHubMixin):
         input_embeds: Tensor,
         attention_mask: Tensor = None,
         cache=None,
+        per_layer_inputs: Tensor = None,
     ) -> dict[str, Tensor]:
         """
         Implements a fully offline forward pass through the entire model.
@@ -144,12 +153,16 @@ class SALM(LightningModule, HFHubMixin):
 
         """
         # input_embeds and out: (B, T, H)
+        llm_kwargs = {}
+        if per_layer_inputs is not None:
+            llm_kwargs["per_layer_inputs"] = per_layer_inputs
         out = self.llm(
             inputs_embeds=input_embeds,
             attention_mask=attention_mask,
             past_key_values=cache,
             use_cache=cache is not None,
             return_dict=True,
+            **llm_kwargs,
         )
         ans = {"logits": out['logits']}  # (B, T, text_vocab_size)
         if cache is not None:
@@ -180,6 +193,7 @@ class SALM(LightningModule, HFHubMixin):
         )
         input_ids_to_embed = torch.where(batch["input_ids"] == self.audio_locator_tag_id, 0, batch["input_ids"])
         text_embs = self.embed_tokens(input_ids_to_embed)
+        text_embs, audio_embs = self._attach_per_layer_inputs(input_ids_to_embed, text_embs, audio_embs)
         input_embs, target_ids, attention_mask = replace_placeholders_and_build_targets(
             input_ids=batch["input_ids"],
             embeds=text_embs,
@@ -188,9 +202,12 @@ class SALM(LightningModule, HFHubMixin):
             replacements=audio_embs,
             target_ids=batch["input_ids"].where(batch["loss_mask"], -100),  # CrossEntropyLoss().ignore_index
         )
+        input_embs, per_layer_inputs = self._detach_per_layer_inputs(input_embs)
         input_embs = input_embs[:, :-1]
         attention_mask = attention_mask[:, :-1]
         target_ids = target_ids[:, 1:]
+        if per_layer_inputs is not None:
+            per_layer_inputs = per_layer_inputs[:, :-1]
 
         # Combine target audio and text into a single tensor to slice them together.
         # It will also help us truncate the sequence lengths to be divisible by TP world size,
@@ -204,12 +221,39 @@ class SALM(LightningModule, HFHubMixin):
                 input_embs = input_embs[:, :-remainder]
                 attention_mask = attention_mask[:, :-remainder]
                 target_ids = target_ids[:, :-remainder]
+                if per_layer_inputs is not None:
+                    per_layer_inputs = per_layer_inputs[:, :-remainder]
 
         return {
             "input_embeds": input_embs,
             "attention_mask": attention_mask,
             "target_ids": target_ids,
+            "per_layer_inputs": per_layer_inputs,
         }
+
+    def _attach_per_layer_inputs(
+        self, input_ids: Tensor, text_embs: Tensor, audio_embs: list[Tensor]
+    ) -> tuple[Tensor, list[Tensor]]:
+        """Packs PLE token-identity vectors onto the hidden dim so placeholder replacement keeps them aligned."""
+        if self.embed_tokens_per_layer is None:
+            return text_embs, audio_embs
+        ple = self.embed_tokens_per_layer(input_ids).to(text_embs.dtype)  # (B, T, L*D)
+        # Audio frames get the pad token's PLE, like HF Gemma4Model does for multimodal positions.
+        pad_ids = torch.full((1,), self.text_pad_id, dtype=torch.long, device=input_ids.device)
+        pad_ple = self.embed_tokens_per_layer(pad_ids)
+        text_embs = torch.cat([text_embs, ple], dim=-1)
+        audio_embs = [torch.cat([a, pad_ple.expand(a.shape[0], -1).to(a.dtype)], dim=-1) for a in audio_embs]
+        return text_embs, audio_embs
+
+    def _detach_per_layer_inputs(self, input_embs: Tensor) -> tuple[Tensor, Optional[Tensor]]:
+        if self.embed_tokens_per_layer is None:
+            return input_embs, None
+        hidden = self.embed_tokens.embedding_dim
+        cfg = self.llm.config
+        per_layer_inputs = input_embs[..., hidden:].reshape(
+            *input_embs.shape[:2], cfg.num_hidden_layers, cfg.hidden_size_per_layer_input
+        )
+        return input_embs[..., :hidden], per_layer_inputs
 
     def training_step(self, batch: dict, batch_idx: int):
         for m in (self.perception.preprocessor, self.perception.encoder, self.llm):
@@ -222,7 +266,11 @@ class SALM(LightningModule, HFHubMixin):
         # post-perception) and 0 for padding.
         self._last_batch_num_tokens = int(inputs["attention_mask"].long().sum().item())
         self._last_batch_num_examples = int(inputs["input_embeds"].shape[0])
-        forward_outputs = self(inputs["input_embeds"], attention_mask=inputs["attention_mask"])
+        forward_outputs = self(
+            inputs["input_embeds"],
+            attention_mask=inputs["attention_mask"],
+            per_layer_inputs=inputs["per_layer_inputs"],
+        )
         num_frames = (inputs["target_ids"] != -100).long().sum()
         with loss_parallel():
             loss = (
@@ -278,7 +326,11 @@ class SALM(LightningModule, HFHubMixin):
             if dataset_batch is None:
                 continue  # some dataset is exhausted
             inputs = self.prepare_inputs(dataset_batch)
-            forward_outputs = self(inputs["input_embeds"], attention_mask=inputs["attention_mask"])
+            forward_outputs = self(
+                inputs["input_embeds"],
+                attention_mask=inputs["attention_mask"],
+                per_layer_inputs=inputs["per_layer_inputs"],
+            )
             num_frames = (inputs["target_ids"] != -100).long().sum()
             with loss_parallel():
                 loss = (
@@ -419,6 +471,7 @@ class SALM(LightningModule, HFHubMixin):
                 chunk_size_seconds=self.cfg.get("encoder_chunk_size_seconds", None),
                 sampling_rate=self.sampling_rate,
             )
+            token_embeds, audio_embeds = self._attach_per_layer_inputs(tokens_to_embed, token_embeds, audio_embeds)
             # Insert audio embeddings into relevant positions in text embeddings.
             input_embeds, _, attention_mask = replace_placeholders_and_build_targets(
                 input_ids=tokens,
@@ -428,7 +481,10 @@ class SALM(LightningModule, HFHubMixin):
                 replacements=audio_embeds,
                 target_ids=None,
             )
+            input_embeds, per_layer_inputs = self._detach_per_layer_inputs(input_embeds)
             generation_inputs = {"inputs_embeds": input_embeds, "attention_mask": attention_mask}
+            if per_layer_inputs is not None:
+                generation_inputs["per_layer_inputs"] = per_layer_inputs
         else:
             # Text-only generation.
             attention_mask = tokens != self.text_pad_id
@@ -441,7 +497,7 @@ class SALM(LightningModule, HFHubMixin):
             )
         # Generate the answers using HF Generate API.
         # Note: we need to put the text embedding layer back to the LLM for processing.
-        with move_embedding(self):
+        with move_embedding(self), per_layer_inputs_prefill_only(self.llm):
             answer_tokens = self.llm.generate(
                 **generation_inputs,
                 **generation_kwargs,

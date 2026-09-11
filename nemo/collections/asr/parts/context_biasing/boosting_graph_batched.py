@@ -78,7 +78,7 @@ class BoostingTreeModelConfig:
     )
     score_per_phrase: float = 0.0  # Custom score for each phrase in the context graph
     source_lang: str = "en"  # The source language of the context-biasing phrases (for aggregate tokenizer)
-    use_triton: bool = True  # Whether to use Triton for inference.
+    use_triton: bool | None = None  # Whether to use Triton for inference; None means "auto" (used if available)
     uniform_weights: bool = False  # Whether to use uniform weights for the context-biasing tree as in Icefall
     bpe_mode: str = "default"  # BPE Mode: default, bpe_dropout, var_bpe, case_insensitive
     use_bpe_dropout: bool | None = (

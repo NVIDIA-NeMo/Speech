@@ -186,6 +186,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
         self.residue_tokens_at_end = cfg.endpointing.residue_tokens_at_end
         self.word_boundary_tolerance = cfg.streaming.word_boundary_tolerance
         self.return_tail_result = cfg.return_tail_result
+        self.length_norm_power = cfg.asr.decoding.beam.get("length_norm_power", 1.0)
 
         self.request_type = RequestType.from_str(cfg.streaming.request_type)
         self.flush_size_in_secs = cfg.streaming.get("flush_size_in_secs", 0.0)  # 0.0 disables
@@ -363,8 +364,9 @@ class CacheAwareRNNTPipeline(BasePipeline):
     def _apply_beam_update_(self, state: CacheAwareRNNTBeamStreamingState, eou_detected: bool) -> None:
         """After endpointing: refresh beam publish tokens and fold cumulative prefix on EOU."""
         if eou_detected and state.hyp_decoding_state is not None:
-            beam_idx = state.select_best_beam_idx_(score_norm=True)
+            beam_idx = state.select_best_beam_idx_(score_norm=True, length_norm_power=self.length_norm_power)
             self.beam_decoder_computer.select_beam_in_state_item_(state.hyp_decoding_state, beam_idx)
+            state.set_beam_score_baseline_()
         state.update_(eou_detected)
 
         if self._lang_tag_filtering_enabled() and state.tokens:

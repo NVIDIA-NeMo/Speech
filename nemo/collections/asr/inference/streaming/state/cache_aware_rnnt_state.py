@@ -93,6 +93,11 @@ class CacheAwareRNNTBeamStreamingState(CacheAwareRNNTStreamingState):
         self.partial_confidences: list[list[float]] | None = None
         self._cumulative_tokens_len: int = 0
         self.best_hyp_idx: int | None = None
+        # Score/length normalization baseline, snapshotted at each EOU beam collapse so
+        # `select_best_beam_idx_(score_norm=True)` ranks the *current* utterance's hypotheses instead
+        # of the whole-session cumulative score/length (see `set_beam_score_baseline_`).
+        self._score_baseline: float = 0.0
+        self._length_baseline: float = 0.0
 
     def reset_beam_decoding_state_(self) -> None:
         """Clear beam search carry and cumulative/partial tokens when a stream ends."""
@@ -105,6 +110,8 @@ class CacheAwareRNNTBeamStreamingState(CacheAwareRNNTStreamingState):
         self.partial_confidences = None
         self._cumulative_tokens_len = 0
         self.best_hyp_idx = None
+        self._score_baseline = 0.0
+        self._length_baseline = 0.0
 
     def append_chunk_beam_(
         self,
@@ -135,21 +142,49 @@ class CacheAwareRNNTBeamStreamingState(CacheAwareRNNTStreamingState):
         self.partial_confidences = next_confidences
         self.best_hyp_idx = best_hyp_idx
 
-    def select_best_beam_idx_(self, *, score_norm: bool = False) -> int:
+    def select_best_beam_idx_(self, *, score_norm: bool = False, length_norm_power: float = 1.0) -> int:
         """Pick beam index into ``partial_*``; updates ``best_hyp_idx``.
 
         Per-chunk publish uses raw ``scores.argmax`` (via ``append_chunk_beam_``). At EOU,
         use ``score_norm=True`` to match offline :meth:`BatchedBeamHyps.flatten_sort_`.
+
+        ``score``/``current_lengths_nb`` on ``hyp_decoding_state`` accumulate over the whole session,
+        not per utterance -- they are only ever collapsed (not reset) at each EOU (see
+        ``ModifiedALSDBatchedRNNTComputer.select_beam_in_state_item_``). Subtracting
+        ``_score_baseline``/``_length_baseline`` (set by ``set_beam_score_baseline_`` right after each
+        collapse) restores per-utterance normalization: without it, on a long multi-utterance stream the
+        huge shared prior mass swamps the ratio and beam selection stops discriminating between
+        hypotheses for utterance 2, 3, ...
+
+        ``length_norm_power`` is the exponent on the length term, i.e.
+        ``(score - baseline) / (length - baseline + 1) ** length_norm_power``. ``1.0`` is the plain
+        average above; ``0.0`` disables length normalization entirely (raw baselined score) -- this is
+        unsafe with LM fusion, since an unnormalized RNNT+LM score can favor near-empty hypotheses.
         """
         if self.hyp_decoding_state is None:
             raise RuntimeError("Cannot select beam without decoding carry.")
 
         scores = self.hyp_decoding_state.score
         lengths_nb = self.hyp_decoding_state.current_lengths_nb
-        ranking = scores / (lengths_nb.to(dtype=scores.dtype) + 1) if score_norm else scores
+        if score_norm:
+            denom = (lengths_nb.to(dtype=scores.dtype) - self._length_baseline + 1) ** length_norm_power
+            ranking = (scores - self._score_baseline) / denom
+        else:
+            ranking = scores
 
         self.best_hyp_idx = int(ranking.argmax().item())
         return self.best_hyp_idx
+
+    def set_beam_score_baseline_(self) -> None:
+        """
+        Snapshot the winning beam's cumulative score/length right after an EOU beam collapse, so the
+        next utterance's ``select_best_beam_idx_(score_norm=True)`` normalizes relative to tokens/score
+        generated since this fold, not since session start.
+        """
+        if self.hyp_decoding_state is None:
+            return
+        self._score_baseline = float(self.hyp_decoding_state.score[0].item())
+        self._length_baseline = float(self.hyp_decoding_state.current_lengths_nb[0].item())
 
     def get_best_hyp_idx(self) -> int:
         """Index into ``partial_*`` for publish (chunk argmax, or score argmax from carry)."""

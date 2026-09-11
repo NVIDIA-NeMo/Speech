@@ -86,6 +86,33 @@ diar_model.sortformer_modules.spkcache_update_period = 300
 predicted_segments = diar_model.diarize(audio="/path/to/audio.wav", batch_size=1)
 ```
 
+For live mono waveforms, create a session with a fixed number of streams and push a padded float tensor at the model
+sample rate together with its valid sample lengths. Each row owns independent preprocessing buffers and asynchronous
+Sortformer cache state. A step can return no frames for a row until its configured chunk and right context are
+available. Use a per-row ``is_final`` mask to flush streams independently; finalized rows remain in the batch with a
+zero input length while other rows continue. Call ``reset()`` before reusing the session. The session disables dither
+and feature padding while extracting each chunk, then applies the checkpoint's feature normalization over each
+complete model input window.
+
+Use ``max_speakers`` to enable fewer than the checkpoint's maximum number of speaker channels. A scalar applies to
+every stream, while a sequence or integer tensor supplies one limit per row. Disabled channels are zeroed in returned
+probabilities and excluded from speaker-cache and FIFO state. Their raw activity is used only to prevent speech frames
+from being added to the running silence profile.
+
+```python
+import torch
+
+session = diar_model.create_streaming_session(batch_size=2, max_speakers=[2, 4])
+for audio_batch, audio_lengths, final_mask in audio_stream:
+    probabilities, probability_lengths = session.diarize_step(
+        audio_batch,
+        audio_chunk_lengths=audio_lengths,
+        is_final=final_mask,
+    )
+    stream_0_probabilities = probabilities[0, : probability_lengths[0]]
+session.reset()
+```
+
 Diarization Error Rate (DER) with post-processing — all evaluations include overlapping speech:
 
 | Dataset | Collar | 30.4s latency | 10.0s latency | 1.04s latency | 0.32s latency |

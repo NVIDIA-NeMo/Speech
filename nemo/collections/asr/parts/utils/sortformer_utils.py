@@ -13,19 +13,312 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
 import logging
+import math
 import os
 import time
 from functools import wraps
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import TYPE_CHECKING, Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple, Union
 
 import torch
 from omegaconf import open_dict
 
+from nemo.collections.asr.parts.preprocessing.features import normalize_batch
+
 if TYPE_CHECKING:
     from nemo.collections.asr.models import SortformerEncLabelModel
+
+
+class SortformerStreamingSession:
+    """Stateful raw-audio session for a fixed batch of streaming Sortformer inputs.
+
+    Each row owns independent waveform buffering, progress, finalization, and speaker-cache state. Incoming waveform
+    chunks may have different valid lengths, and the session uses Sortformer's asynchronous streaming update so idle,
+    active, and finalized rows can coexist in one batch.
+
+    Args:
+        model: Streaming ``SortformerEncLabelModel`` in evaluation mode.
+        batch_size: Fixed number of independent audio streams owned by the session.
+        max_speakers: Number of enabled speaker channels for every stream. A scalar applies to the complete batch; a
+            sequence or tensor supplies one value per row. By default, every model speaker channel is enabled.
+    """
+
+    def __init__(
+        self,
+        model: "SortformerEncLabelModel",
+        batch_size: int = 1,
+        max_speakers: Optional[Union[int, Sequence[int], torch.Tensor]] = None,
+    ):
+        if not model.streaming_mode:
+            raise ValueError("SortformerStreamingSession requires a model with streaming_mode=True")
+        if model.training:
+            raise ValueError("SortformerStreamingSession requires an evaluation model; call model.eval() first")
+        if not isinstance(batch_size, int) or isinstance(batch_size, bool) or batch_size < 1:
+            raise ValueError(f"batch_size must be a positive integer, got {batch_size}")
+
+        self.model = model
+        self.batch_size = batch_size
+        self._max_speakers = max_speakers
+        self.device = model.device
+        self._normalization = model.preprocessor.featurizer.normalize
+        self._preprocessor = copy.deepcopy(model.preprocessor).to(self.device).eval()
+        self._preprocessor.featurizer.normalize = None
+        self._preprocessor.featurizer.dither = 0.0
+        self._preprocessor.featurizer.pad_to = 0
+
+        self._hop_length = self._preprocessor.hop_length
+        self._n_fft = self._preprocessor.featurizer.n_fft
+        self._stft_margin_frames = math.ceil((self._n_fft // 2 + 1) / self._hop_length) + 1
+        self._chunk_frames = model.sortformer_modules.chunk_len * model.encoder.subsampling_factor
+        self._left_context_frames = model.sortformer_modules.chunk_left_context * model.encoder.subsampling_factor
+        self._right_context_frames = model.sortformer_modules.chunk_right_context * model.encoder.subsampling_factor
+        self.reset()
+
+    @torch.inference_mode()
+    def diarize_step(
+        self,
+        audio_chunks: torch.Tensor,
+        audio_chunk_lengths: Optional[torch.Tensor] = None,
+        is_final: Union[bool, torch.Tensor] = False,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Consume one raw-audio chunk per stream and return newly committed speaker probabilities.
+
+        Args:
+            audio_chunks: Float waveforms with shape ``(batch_size, max_num_samples)``. A one-dimensional tensor is
+                also accepted when ``batch_size=1``.
+            audio_chunk_lengths: Valid sample count for each padded row, with shape ``(batch_size,)``. If omitted,
+                every row uses the complete waveform width.
+            is_final: Boolean finalization mask with shape ``(batch_size,)`` or one boolean applied to every row.
+                Finalized rows can remain in later calls with a zero audio length while other rows continue.
+
+        Returns:
+            padded_probabilities: Newly committed probabilities with shape
+                ``(batch_size, max_new_frames, num_speakers)``.
+            probability_lengths: Valid output frames for each row, with shape ``(batch_size,)``.
+        """
+        audio_chunks, audio_chunk_lengths = self._validate_audio_chunks(audio_chunks, audio_chunk_lengths)
+        final_mask = self._validate_final_mask(is_final)
+        input_lengths = audio_chunk_lengths.tolist()
+        final_flags = final_mask.tolist()
+
+        for stream_index, chunk_length in enumerate(input_lengths):
+            if self._finalized[stream_index] and chunk_length > 0:
+                raise RuntimeError(
+                    f"Cannot supply audio to finalized stream {stream_index}; call reset() before reusing the session"
+                )
+            if chunk_length > 0:
+                chunk = audio_chunks[stream_index, :chunk_length]
+                self._audio_buffers[stream_index] = torch.cat([self._audio_buffers[stream_index], chunk])
+                self._received_samples[stream_index] += chunk_length
+
+        emitted = [[] for _ in range(self.batch_size)]
+        while True:
+            ready_groups = self._get_ready_groups(final_flags)
+            if not ready_groups:
+                break
+
+            for (left_offset, right_offset), requests in ready_groups.items():
+                processed_signal, processed_signal_length = self._extract_feature_batch(requests)
+                empty_preds = processed_signal.new_zeros((self.batch_size, 0, self.model.sortformer_modules.n_spk))
+                self.streaming_state, chunk_preds = self.model.forward_streaming_step(
+                    processed_signal=processed_signal,
+                    processed_signal_length=processed_signal_length,
+                    streaming_state=self.streaming_state,
+                    total_preds=empty_preds,
+                    left_offset=left_offset,
+                    right_offset=right_offset,
+                    async_streaming=True,
+                )
+
+                for stream_index, _, _, central_end in requests:
+                    committed_feature_frames = central_end - self._next_feature_frames[stream_index]
+                    output_length = math.ceil(committed_feature_frames / self.model.output_subsampling_factor)
+                    if output_length > chunk_preds.shape[1]:
+                        raise RuntimeError(
+                            "Streaming model returned fewer prediction frames than required: "
+                            f"needed {output_length}, got {chunk_preds.shape[1]}"
+                        )
+                    emitted[stream_index].append(chunk_preds[stream_index, :output_length])
+                    self._next_feature_frames[stream_index] = central_end
+
+        self._compact_audio_buffers()
+        for stream_index, is_final_stream in enumerate(final_flags):
+            if is_final_stream:
+                self._finalized[stream_index] = True
+
+        return self._pad_emitted_outputs(emitted)
+
+    def reset(self) -> None:
+        """Clear every stream's buffered audio and initialize a fresh batched asynchronous model state."""
+        self.streaming_state = self.model.sortformer_modules.init_streaming_state(
+            batch_size=self.batch_size,
+            async_streaming=True,
+            device=self.device,
+            max_speakers=self._max_speakers,
+        )
+        self._max_speakers = self.streaming_state.max_speakers
+        self._audio_buffers = [torch.empty(0, dtype=torch.float32, device=self.device) for _ in range(self.batch_size)]
+        self._audio_buffer_starts = [0] * self.batch_size
+        self._received_samples = [0] * self.batch_size
+        self._next_feature_frames = [0] * self.batch_size
+        self._finalized = [False] * self.batch_size
+
+    def _get_ready_groups(self, final_flags: List[bool]):
+        ready_groups = {}
+        for stream_index in range(self.batch_size):
+            if self._finalized[stream_index]:
+                continue
+            available_frames = self._available_feature_frames(stream_index, is_final=final_flags[stream_index])
+            next_frame = self._next_feature_frames[stream_index]
+            if next_frame >= available_frames:
+                continue
+
+            central_end = min(next_frame + self._chunk_frames, available_frames)
+            if not final_flags[stream_index] and central_end + self._right_context_frames > available_frames:
+                continue
+
+            feature_start = max(0, next_frame - self._left_context_frames)
+            feature_end = min(central_end + self._right_context_frames, available_frames)
+            offsets = (next_frame - feature_start, feature_end - central_end)
+            ready_groups.setdefault(offsets, []).append((stream_index, feature_start, feature_end, central_end))
+        return ready_groups
+
+    def _available_feature_frames(self, stream_index: int, is_final: bool) -> int:
+        received_samples = self._received_samples[stream_index]
+        sample_count = torch.tensor(received_samples, device=self.device)
+        offline_frames = int(self._preprocessor.featurizer.get_seq_len(sample_count).item())
+        if is_final:
+            return max(0, offline_frames)
+
+        stable_samples = received_samples - self._n_fft // 2
+        if stable_samples < 0:
+            return 0
+        stable_frames = stable_samples // self._hop_length + 1
+        return max(0, min(offline_frames, stable_frames))
+
+    def _compact_audio_buffers(self) -> None:
+        for stream_index in range(self.batch_size):
+            first_needed_frame = max(
+                0,
+                self._next_feature_frames[stream_index] - self._left_context_frames - self._stft_margin_frames,
+            )
+            first_needed_sample = first_needed_frame * self._hop_length
+            drop_samples = first_needed_sample - self._audio_buffer_starts[stream_index]
+            if drop_samples > 0:
+                self._audio_buffers[stream_index] = self._audio_buffers[stream_index][drop_samples:].clone()
+                self._audio_buffer_starts[stream_index] = first_needed_sample
+
+    def _extract_feature_batch(self, requests):
+        audio_segments = []
+        audio_lengths = []
+        local_feature_ranges = []
+        for stream_index, feature_start, feature_end, _ in requests:
+            segment_start_frame = max(0, feature_start - self._stft_margin_frames)
+            segment_start_sample = segment_start_frame * self._hop_length
+            segment_end_sample = min(
+                self._received_samples[stream_index],
+                (feature_end + self._stft_margin_frames) * self._hop_length,
+            )
+            buffer_start = segment_start_sample - self._audio_buffer_starts[stream_index]
+            buffer_end = segment_end_sample - self._audio_buffer_starts[stream_index]
+            audio_segment = self._audio_buffers[stream_index][buffer_start:buffer_end]
+            audio_segments.append(audio_segment)
+            audio_lengths.append(audio_segment.shape[0])
+            local_start = feature_start - segment_start_frame
+            local_feature_ranges.append((local_start, local_start + feature_end - feature_start))
+
+        padded_audio = torch.nn.utils.rnn.pad_sequence(audio_segments, batch_first=True)
+        audio_lengths = torch.tensor(audio_lengths, dtype=torch.long, device=self.device)
+        features, feature_lengths = self._preprocessor(input_signal=padded_audio, length=audio_lengths)
+
+        feature_windows = []
+        window_lengths = []
+        for request_index, (local_start, local_end) in enumerate(local_feature_ranges):
+            if feature_lengths[request_index] < local_end:
+                raise RuntimeError(
+                    "Streaming preprocessor returned fewer feature frames than required: "
+                    f"needed {local_end}, got {feature_lengths[request_index].item()}"
+                )
+            window = features[request_index, :, local_start:local_end].transpose(0, 1)
+            feature_windows.append(window)
+            window_lengths.append(window.shape[0])
+
+        active_features = torch.nn.utils.rnn.pad_sequence(feature_windows, batch_first=True).transpose(1, 2)
+        active_lengths = torch.tensor(window_lengths, dtype=torch.long, device=self.device)
+        if self._normalization:
+            active_features, _, _ = normalize_batch(active_features, active_lengths, self._normalization)
+        active_features = active_features.transpose(1, 2)
+
+        batch_features = active_features.new_zeros(
+            (self.batch_size, active_features.shape[1], active_features.shape[2])
+        )
+        batch_lengths = torch.zeros(self.batch_size, dtype=torch.long, device=self.device)
+        for request_index, (stream_index, _, _, _) in enumerate(requests):
+            feature_length = window_lengths[request_index]
+            batch_features[stream_index, :feature_length] = active_features[request_index, :feature_length]
+            batch_lengths[stream_index] = feature_length
+        return batch_features, batch_lengths
+
+    def _pad_emitted_outputs(self, emitted):
+        num_speakers = self.model.sortformer_modules.n_spk
+        dtype = next(self.model.parameters()).dtype
+        row_outputs = [
+            torch.cat(row, dim=0) if row else torch.zeros((0, num_speakers), dtype=dtype, device=self.device)
+            for row in emitted
+        ]
+        output_lengths = torch.tensor([row.shape[0] for row in row_outputs], dtype=torch.long, device=self.device)
+        max_output_length = max((row.shape[0] for row in row_outputs), default=0)
+        padded_outputs = torch.zeros(
+            (self.batch_size, max_output_length, num_speakers), dtype=dtype, device=self.device
+        )
+        for stream_index, row in enumerate(row_outputs):
+            padded_outputs[stream_index, : row.shape[0]] = row
+        return padded_outputs, output_lengths
+
+    def _validate_audio_chunks(self, audio_chunks, audio_chunk_lengths):
+        if not isinstance(audio_chunks, torch.Tensor):
+            raise TypeError(f"audio_chunks must be a torch.Tensor, got {type(audio_chunks).__name__}")
+        if audio_chunks.ndim == 1 and self.batch_size == 1:
+            audio_chunks = audio_chunks.unsqueeze(0)
+        if audio_chunks.ndim != 2 or audio_chunks.shape[0] != self.batch_size:
+            raise ValueError(
+                f"audio_chunks must have batch dimension {self.batch_size} and shape "
+                f"({self.batch_size}, max_num_samples); got {tuple(audio_chunks.shape)}"
+            )
+        audio_chunks = audio_chunks.detach().to(device=self.device, dtype=torch.float32)
+
+        if audio_chunk_lengths is None:
+            audio_chunk_lengths = torch.full(
+                (self.batch_size,), audio_chunks.shape[1], dtype=torch.long, device=self.device
+            )
+        elif not isinstance(audio_chunk_lengths, torch.Tensor):
+            raise TypeError(
+                f"audio_chunk_lengths must be a torch.Tensor or None, got {type(audio_chunk_lengths).__name__}"
+            )
+        elif audio_chunk_lengths.shape != (self.batch_size,):
+            raise ValueError(
+                f"audio_chunk_lengths must have shape ({self.batch_size},), got {tuple(audio_chunk_lengths.shape)}"
+            )
+        elif torch.is_floating_point(audio_chunk_lengths) or audio_chunk_lengths.dtype == torch.bool:
+            raise TypeError("audio_chunk_lengths must contain integers")
+        else:
+            audio_chunk_lengths = audio_chunk_lengths.to(device=self.device, dtype=torch.long)
+
+        if torch.any(audio_chunk_lengths < 0) or torch.any(audio_chunk_lengths > audio_chunks.shape[1]):
+            raise ValueError(f"audio_chunk_lengths must be between 0 and {audio_chunks.shape[1]} samples")
+        return audio_chunks, audio_chunk_lengths
+
+    def _validate_final_mask(self, is_final):
+        if isinstance(is_final, bool):
+            return torch.full((self.batch_size,), is_final, dtype=torch.bool, device=self.device)
+        if not isinstance(is_final, torch.Tensor):
+            raise TypeError(f"is_final must be a boolean or torch.Tensor, got {type(is_final).__name__}")
+        if is_final.dtype != torch.bool or is_final.shape != (self.batch_size,):
+            raise ValueError(f"is_final must be boolean with shape ({self.batch_size},), got {tuple(is_final.shape)}")
+        return is_final.to(device=self.device)
 
 
 def configure_output_subsampling_factor(

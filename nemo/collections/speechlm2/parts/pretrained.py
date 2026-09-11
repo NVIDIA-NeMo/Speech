@@ -843,14 +843,24 @@ def init_from_training_checkpoint(model: torch.nn.Module, checkpoint_path: str):
         model_state_dict = model.state_dict()
         mtp_cfg = model.cfg.get("mtp", None)
         preserve_replacement_mtp = bool(
-            mtp_cfg is not None
-            and mtp_cfg.get("enabled", False)
-            and mtp_cfg.get("replace_existing_head", False)
+            mtp_cfg is not None and mtp_cfg.get("enabled", False) and mtp_cfg.get("replace_existing_head", False)
         )
-        if preserve_replacement_mtp:
-            model_state_dict = {
-                key: value for key, value in model_state_dict.items() if not _is_mtp_state_key(key)
-            }
+        reuse_compatible_mtp = preserve_replacement_mtp and bool(mtp_cfg.get("reuse_compatible_weights", False))
+        if reuse_compatible_mtp:
+            checkpoint_metadata = dcp.FileSystemReader(str(checkpoint_path)).read_metadata()
+            model_state_dict, reused_mtp_keys, fresh_mtp_keys = _select_shape_compatible_mtp_state(
+                model_state_dict,
+                checkpoint_metadata.state_dict_metadata,
+            )
+            logging.info(
+                "Selectively initializing replacement MTP from DCP: reusing %d compatible tensors and "
+                "keeping fresh initialization for %d missing or shape-incompatible tensors (examples=%s)",
+                len(reused_mtp_keys),
+                len(fresh_mtp_keys),
+                fresh_mtp_keys[:10],
+            )
+        elif preserve_replacement_mtp:
+            model_state_dict = {key: value for key, value in model_state_dict.items() if not _is_mtp_state_key(key)}
         state_dict = {"state_dict": model_state_dict}
         with python313_pathlib_pickle_compat():
             dcp.load(state_dict, checkpoint_id=str(checkpoint_path))
@@ -965,6 +975,29 @@ def _resolve_automodel_checkpoint_path(
 
 def _is_mtp_state_key(key: str) -> bool:
     return "mtp" in key.split(".")
+
+
+def _select_shape_compatible_mtp_state(model_state_dict: dict, checkpoint_metadata: dict):
+    """Request only replacement-MTP tensors whose global shapes match the DCP checkpoint."""
+    selected_state = {}
+    reused_mtp_keys = []
+    fresh_mtp_keys = []
+    for key, value in model_state_dict.items():
+        if not _is_mtp_state_key(key):
+            selected_state[key] = value
+            continue
+
+        metadata = checkpoint_metadata.get(f"state_dict.{key}")
+        checkpoint_shape = getattr(metadata, "size", None)
+        model_shape = getattr(value, "shape", None)
+        if checkpoint_shape is None or model_shape is None or tuple(checkpoint_shape) != tuple(model_shape):
+            fresh_mtp_keys.append(key)
+            continue
+
+        selected_state[key] = value
+        reused_mtp_keys.append(key)
+
+    return selected_state, reused_mtp_keys, fresh_mtp_keys
 
 
 @contextmanager

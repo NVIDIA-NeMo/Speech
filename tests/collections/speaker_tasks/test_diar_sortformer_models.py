@@ -15,6 +15,7 @@
 
 import math
 from collections import Counter
+from pathlib import Path
 from types import SimpleNamespace
 from typing import List, Union
 from unittest.mock import patch
@@ -28,10 +29,11 @@ from examples.speaker_tasks.diarization.neural_diarizer.e2e_diarize_speech impor
     get_tensor_path,
     load_diarization_model,
 )
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from onnx.reference import ReferenceEvaluator
 
-from nemo.collections.asr.losses.aux_diarization_loss import activity_loss, phantom_loss
+from nemo.collections.asr.losses.aux_diarization_loss import ActivityLoss, PhantomLoss
+from nemo.collections.asr.losses.bce_loss import BCELoss
 from nemo.collections.asr.metrics.speaker_counting import speaker_count_metrics
 from nemo.collections.asr.models import SortformerEncLabelModel
 from nemo.collections.asr.models.sortformer_diar_models import _OversamplingDistributedSampler
@@ -41,6 +43,10 @@ from nemo.collections.asr.parts.utils.sortformer_utils import (
     configure_output_subsampling_factor,
     get_prediction_cache_metadata,
 )
+from nemo.core.classes.common import safe_instantiate
+
+
+REPO_ROOT = Path(__file__).parents[3]
 
 
 class RecordingSpecAugment(torch.nn.Module):
@@ -69,8 +75,7 @@ def _create_sortformer_model(
     activity_weight=0.0,
     phantom_weight=0.0,
     phantom_target="both",
-    phantom_threshold=0.25,
-    phantom_temperature=0.5,
+    include_auxiliary_weights=True,
 ):
     if output_subsampling_factor is None:
         output_subsampling_factor = 1 if high_resolution else 8
@@ -82,8 +87,6 @@ def _create_sortformer_model(
         'activity_weight': activity_weight,
         'phantom_weight': phantom_weight,
         'phantom_target': phantom_target,
-        'phantom_threshold': phantom_threshold,
-        'phantom_temperature': phantom_temperature,
         'max_num_of_spks': 4,
         'high_resolution': high_resolution,
         'output_subsampling_factor': output_subsampling_factor,
@@ -213,11 +216,7 @@ def _create_sortformer_model(
         'sample_rate': 16000,
         'pil_weight': 0.5,
         'ats_weight': 0.5,
-        'activity_weight': activity_weight,
-        'phantom_weight': phantom_weight,
         'phantom_target': phantom_target,
-        'phantom_threshold': phantom_threshold,
-        'phantom_temperature': phantom_temperature,
         'max_num_of_spks': 4,
         'high_resolution': high_resolution,
         'output_subsampling_factor': output_subsampling_factor,
@@ -237,6 +236,13 @@ def _create_sortformer_model(
             'betas': (0.9, 0.98),
         },
     }
+    if include_auxiliary_weights:
+        model_config.update(
+            {
+                'activity_weight': activity_weight,
+                'phantom_weight': phantom_weight,
+            }
+        )
     if include_transformer_encoder:
         model_config['transformer_encoder'] = DictConfig(transformer_encoder)
     modelConfig = DictConfig(model_config)
@@ -582,6 +588,67 @@ class TestSortformerEncLabelModelLossRepresentation:
 
     @pytest.mark.unit
     @pytest.mark.parametrize(
+        "config_name",
+        ["sortformer_offline_8spk.yaml", "sortformer_streaming_8spk.yaml"],
+    )
+    def test_8spk_configs_instantiate_auxiliary_loss_classes(self, config_name):
+        config_path = REPO_ROOT / "examples/speaker_tasks/diarization/conf/neural_diarizer" / config_name
+        model_config = OmegaConf.load(config_path).model
+
+        configured_activity_loss = safe_instantiate(model_config.activity_loss)
+        configured_phantom_loss = safe_instantiate(model_config.phantom_loss)
+
+        assert isinstance(configured_activity_loss, ActivityLoss)
+        assert isinstance(configured_phantom_loss, PhantomLoss)
+        assert configured_phantom_loss.threshold == 0.25
+        assert configured_phantom_loss.temperature == 0.5
+
+    @pytest.mark.unit
+    def test_positive_auxiliary_weights_use_default_fallback_losses(self):
+        model = _create_sortformer_model(activity_weight=0.2, phantom_weight=0.3)
+
+        assert isinstance(model.activity_loss, ActivityLoss)
+        assert isinstance(model.phantom_loss, PhantomLoss)
+        assert model.phantom_loss.threshold == 0.25
+        assert model.phantom_loss.temperature == 0.5
+        assert not model.activity_loss.state_dict()
+        assert not model.phantom_loss.state_dict()
+
+    @pytest.mark.unit
+    def test_legacy_bce_inference_without_auxiliary_configuration_loads_strictly(self):
+        legacy_model = _create_sortformer_model(
+            logits_loss=False,
+            include_auxiliary_weights=False,
+        ).eval()
+        restored_model = _create_sortformer_model(
+            logits_loss=False,
+            include_auxiliary_weights=False,
+        ).eval()
+
+        assert isinstance(legacy_model.loss, BCELoss)
+        assert legacy_model.activity_loss is None
+        assert legacy_model.phantom_loss is None
+        assert legacy_model.sortformer_modules.activity_head is None
+        assert not any("activity_head" in key for key in legacy_model.state_dict())
+
+        load_result = restored_model.load_state_dict(legacy_model.state_dict(), strict=True)
+        assert not load_result.missing_keys
+        assert not load_result.unexpected_keys
+
+        audio = torch.randn(1, 3200)
+        audio_lengths = torch.tensor([2800])
+        with torch.no_grad():
+            predictions = restored_model(
+                audio_signal=audio,
+                audio_signal_length=audio_lengths,
+            )
+
+        assert isinstance(predictions, torch.Tensor)
+        assert predictions.shape[0] == 1
+        assert torch.isfinite(predictions).all()
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
         ("preds", "targets", "target_lens", "expected_mae", "expected_acc"),
         [
             (
@@ -709,7 +776,11 @@ class TestSortformerEncLabelModelLossRepresentation:
         activity_logits.requires_grad_()
 
         actual_classes = (targets > 0.5).sum(dim=-1).clamp(max=2).long()
-        loss = activity_loss(activity_logits, targets, target_lens)
+        loss = ActivityLoss()(
+            activity_logits=activity_logits,
+            targets=targets,
+            target_lens=target_lens,
+        )
         loss.backward()
 
         assert torch.equal(actual_classes, expected_classes)
@@ -760,12 +831,10 @@ class TestSortformerEncLabelModelLossRepresentation:
         logits[0, 3] = 5.0
         logits.requires_grad_()
 
-        loss = phantom_loss(
+        loss = PhantomLoss(threshold=0.6, temperature=temperature)(
             logits=logits,
             phantom_targets=phantom_targets,
             target_lens=torch.tensor([3]),
-            threshold=0.6,
-            temperature=temperature,
         )
         expected = logits.new_zeros(())
         for speaker in selected_channels:
@@ -788,12 +857,10 @@ class TestSortformerEncLabelModelLossRepresentation:
     def test_phantom_loss_uses_strict_probability_threshold(self, logit, is_selected):
         logits = torch.tensor([[[logit]]], requires_grad=True)
 
-        loss = phantom_loss(
+        loss = PhantomLoss(threshold=0.5, temperature=0.5)(
             logits=logits,
             phantom_targets=torch.zeros_like(logits),
             target_lens=torch.tensor([1]),
-            threshold=0.5,
-            temperature=0.5,
         )
         loss.backward()
 
@@ -807,14 +874,30 @@ class TestSortformerEncLabelModelLossRepresentation:
             ("activity_weight", -0.1, ValueError, "activity_weight must be a non-negative float"),
             ("phantom_weight", True, TypeError, "phantom_weight must be a non-negative float"),
             ("phantom_target", "union", ValueError, "phantom_target must be one of"),
-            ("phantom_threshold", -0.1, ValueError, "phantom_threshold must be in"),
-            ("phantom_threshold", 1.0, ValueError, "phantom_threshold must be in"),
-            ("phantom_temperature", 0.0, ValueError, "phantom_temperature must be greater than zero"),
         ],
     )
     def test_auxiliary_loss_configuration_validation(self, field_name, invalid_value, exception_type, error_match):
         with pytest.raises(exception_type, match=error_match):
             _create_sortformer_model(**{field_name: invalid_value})
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "field_name, invalid_value, exception_type",
+        [
+            ("threshold", True, TypeError),
+            ("threshold", "0.25", TypeError),
+            ("threshold", -0.1, ValueError),
+            ("threshold", 1.0, ValueError),
+            ("threshold", float("nan"), ValueError),
+            ("temperature", False, TypeError),
+            ("temperature", "0.5", TypeError),
+            ("temperature", 0.0, ValueError),
+            ("temperature", float("inf"), ValueError),
+        ],
+    )
+    def test_phantom_loss_rejects_invalid_configuration(self, field_name, invalid_value, exception_type):
+        with pytest.raises(exception_type, match=field_name):
+            PhantomLoss(**{field_name: invalid_value})
 
 
 class TestSortformerEncLabelModelStreaming:

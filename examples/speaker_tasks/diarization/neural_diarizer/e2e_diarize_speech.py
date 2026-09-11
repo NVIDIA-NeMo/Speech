@@ -32,12 +32,12 @@ If you want to reproduce DER scores reported on NeMo model cards, you need to ap
 Use batch_size = 1 to have the longest inference window and the highest possible accuracy.
 
 python $BASEPATH/neural_diarizer/e2e_diarize_speech.py \
-    model_path=/path/to/diar_sortformer_4spk_v1.nemo \
+    model_path=/path/to/diar_streaming_sortformer_4spk_v2.1.nemo \
     batch_size=1 \
     dataset_manifest=/path/to/diarization_manifest.json
 
 python $BASEPATH/neural_diarizer/e2e_diarize_speech.py \
-    pretrained_name=nvidia/diar_sortformer_4spk-v1 \
+    pretrained_name=nvidia/diar_streaming_sortformer_4spk-v2.1 \
     batch_size=1 \
     dataset_manifest=/path/to/diarization_manifest.json
 

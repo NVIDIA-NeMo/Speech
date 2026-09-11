@@ -22,12 +22,16 @@ model:
 
   # Activity loss classifies frames as silence, single-speaker, or overlap.
   activity_weight: 0.5  # Auxiliary activity-loss weight; 0 disables the activity head and loss.
+  activity_loss:
+    _target_: nemo.collections.asr.losses.aux_diarization_loss.ActivityLoss
 
   # Phantom loss suppresses confident activity in empty target channels (aka "phantom speaker").
   phantom_weight: 0.1  # Auxiliary phantom-loss weight; 0 disables the loss.
   phantom_target: both  # Target alignment: pil, ats, or both; both requires the channel to be empty in both.
-  phantom_threshold: 0.25  # Detached probability above which a frame in an empty channel is penalized.
-  phantom_temperature: 0.5  # Log-mean-exp temperature; lower values emphasize the largest selected losses.
+  phantom_loss:
+    _target_: nemo.collections.asr.losses.aux_diarization_loss.PhantomLoss
+    threshold: 0.25  # Detached probability above which an eligible frame is penalized.
+    temperature: 0.5  # Log-mean-exp temperature; lower values emphasize the largest selected losses.
 
   max_num_of_spks: 8  # Maximum number of output speaker channels.
   high_resolution: true  # If true, emit outputs at the preprocessor frame step.

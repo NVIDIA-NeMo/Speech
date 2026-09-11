@@ -31,8 +31,7 @@ from tqdm import tqdm
 
 from nemo.collections.asr.data.audio_to_diar_label import AudioToSpeechE2ESpkDiarDataset
 from nemo.collections.asr.data.audio_to_diar_label_lhotse import LhotseAudioToSpeechE2ESpkDiarDataset
-from nemo.collections.asr.losses.aux_diarization_loss import activity_loss as compute_activity_loss
-from nemo.collections.asr.losses.aux_diarization_loss import phantom_loss as compute_phantom_loss
+from nemo.collections.asr.losses.aux_diarization_loss import ActivityLoss, PhantomLoss
 from nemo.collections.asr.losses.bce_loss import BCEWithLogitsLoss
 from nemo.collections.asr.metrics.multi_binary_acc import MultiBinaryAccuracy
 from nemo.collections.asr.metrics.speaker_counting import speaker_count_metrics
@@ -291,6 +290,22 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
         self.encoder = SortformerEncLabelModel.from_config_dict(self._cfg.encoder).to(self.device)
         self.upsample_factor = self.encoder.subsampling_factor if self.high_resolution else 1
         self._init_loss_weights()
+        if self.activity_weight > 0.0:
+            self.activity_loss = (
+                safe_instantiate(self._cfg.activity_loss)
+                if self._cfg.get("activity_loss") is not None
+                else ActivityLoss()
+            )
+        else:
+            self.activity_loss = None
+        if self.phantom_weight > 0.0:
+            self.phantom_loss = (
+                safe_instantiate(self._cfg.phantom_loss)
+                if self._cfg.get("phantom_loss") is not None
+                else PhantomLoss()
+            )
+        else:
+            self.phantom_loss = None
         sortformer_modules_cfg = OmegaConf.create(OmegaConf.to_container(self._cfg.sortformer_modules, resolve=True))
         sortformer_modules_cfg.subsampling_factor = self.encoder.subsampling_factor
         sortformer_modules_cfg.upsample_factor = self.upsample_factor
@@ -382,7 +397,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
             )
 
     def _init_loss_weights(self) -> None:
-        """Resolve and validate primary and logits-based auxiliary loss settings."""
+        """Resolve and validate primary and auxiliary loss orchestration settings."""
         pil_weight = self._cfg.get("pil_weight", 0.0)
         ats_weight = self._cfg.get("ats_weight", 1.0)
         if pil_weight + ats_weight == 0:
@@ -405,20 +420,6 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
         self.phantom_target = self._cfg.get("phantom_target", "both")
         if not isinstance(self.phantom_target, str) or self.phantom_target not in {"pil", "ats", "both"}:
             raise ValueError(f"phantom_target must be one of 'pil', 'ats', or 'both', got {self.phantom_target!r}")
-
-        phantom_threshold = self._cfg.get("phantom_threshold", 0.25)
-        if isinstance(phantom_threshold, bool) or not isinstance(phantom_threshold, (int, float)):
-            raise TypeError(f"phantom_threshold must be a float in [0, 1), got {type(phantom_threshold).__name__}")
-        self.phantom_threshold = float(phantom_threshold)
-        if not math.isfinite(self.phantom_threshold) or not 0.0 <= self.phantom_threshold < 1.0:
-            raise ValueError(f"phantom_threshold must be in [0, 1), got {self.phantom_threshold}")
-
-        phantom_temperature = self._cfg.get("phantom_temperature", 0.5)
-        if isinstance(phantom_temperature, bool) or not isinstance(phantom_temperature, (int, float)):
-            raise TypeError(f"phantom_temperature must be greater than zero, got {type(phantom_temperature).__name__}")
-        self.phantom_temperature = float(phantom_temperature)
-        if not math.isfinite(self.phantom_temperature) or self.phantom_temperature <= 0.0:
-            raise ValueError(f"phantom_temperature must be greater than zero, got {self.phantom_temperature}")
 
     def _init_eval_metrics(self):
         """
@@ -1657,7 +1658,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
         if self.activity_weight > 0.0:
             if activity_logits is None:
                 raise ValueError("activity_weight is positive, but no activity logits were provided.")
-            activity_loss = compute_activity_loss(
+            activity_loss = self.activity_loss(
                 activity_logits=activity_logits,
                 targets=targets,
                 target_lens=target_lens,
@@ -1668,12 +1669,10 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
             if logits is None:
                 raise ValueError("phantom_weight is positive, but no speaker logits were provided.")
             phantom_targets = self._get_phantom_targets(targets_pil, targets_ats)
-            phantom_loss = compute_phantom_loss(
+            phantom_loss = self.phantom_loss(
                 logits=logits,
                 phantom_targets=phantom_targets,
                 target_lens=target_lens,
-                threshold=self.phantom_threshold,
-                temperature=self.phantom_temperature,
             )
         else:
             phantom_loss = zero_loss
@@ -1804,7 +1803,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
         if self.activity_weight > 0.0:
             if activity_logits is None:
                 raise ValueError("activity_weight is positive, but no activity logits were provided.")
-            val_activity_loss = compute_activity_loss(
+            val_activity_loss = self.activity_loss(
                 activity_logits=activity_logits,
                 targets=targets,
                 target_lens=target_lens,
@@ -1815,12 +1814,10 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
             if logits is None:
                 raise ValueError("phantom_weight is positive, but no speaker logits were provided.")
             phantom_targets = self._get_phantom_targets(targets_pil, targets_ats)
-            val_phantom_loss = compute_phantom_loss(
+            val_phantom_loss = self.phantom_loss(
                 logits=logits,
                 phantom_targets=phantom_targets,
                 target_lens=target_lens,
-                threshold=self.phantom_threshold,
-                temperature=self.phantom_temperature,
             )
         else:
             val_phantom_loss = zero_loss

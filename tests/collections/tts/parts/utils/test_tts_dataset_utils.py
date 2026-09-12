@@ -30,6 +30,7 @@ from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     chunk_and_tokenize_text_by_sentence,
     chunk_text_for_inference,
     filter_dataset_by_duration,
+    segment_wav,
     get_abs_rel_paths,
     get_audio_filepaths,
     get_tokenizer_for_language,
@@ -263,6 +264,34 @@ class TestTTSDatasetUtils:
         assert filtered_entries[1]["duration"] == 5.0
         assert total_hours == (135.6 / 3600.0)
         assert filtered_hours == (15.0 / 3600.0)
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_segment_wav_pads_short_input(self):
+        wav = torch.arange(4, dtype=torch.float)
+
+        segments = segment_wav(wav, segment_length=10, segment_hop_size=5, min_segment_length=3)
+
+        assert len(segments) == 1
+        assert len(segments[0]) == 10
+        assert torch.equal(segments[0][:4], wav)
+        assert torch.equal(segments[0][4:], torch.zeros(6))
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_segment_wav_sliding_window(self):
+        wav = torch.arange(20, dtype=torch.float)
+
+        segments = segment_wav(wav, segment_length=10, segment_hop_size=5, min_segment_length=3)
+
+        assert len(segments) == 4
+        assert torch.equal(segments[0], wav[0:10])
+        assert torch.equal(segments[1], wav[5:15])
+        assert torch.equal(segments[2], wav[10:20])
+
+        assert len(segments[3]) == 10
+        assert torch.equal(segments[3][:5], wav[15:20])
+        assert torch.equal(segments[3][5:], torch.zeros(5))
 
 
 class TestLanguageThresholds:

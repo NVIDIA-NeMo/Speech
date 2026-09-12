@@ -142,6 +142,10 @@ Mixins
     :show-inheritance:
     :members:
 
+.. autoclass:: nemo.collections.asr.parts.mixins.lang_id_prompt.LangIdPromptMixin
+    :show-inheritance:
+    :members:
+
 .. autoclass:: nemo.collections.asr.parts.mixins.multitalker_asr_mixins.SpeakerKernelMixin
     :show-inheritance:
     :members: 

@@ -66,6 +66,10 @@ class TranscribeConfig:
     timestamps: Optional[bool] = None  # returns timestamps for each word and segments if model supports punctuations
     verbose: bool = True
 
+    # Spoken-language prompt for prompt-conditioned ("unified") ASR models (e.g. "en", "de"); this is
+    # the language of the audio, not a translation target. Ignored by models without prompt conditioning.
+    source_lang: Optional[str] = None
+
     # Utility
     partial_hypothesis: Optional[List[Any]] = None
 

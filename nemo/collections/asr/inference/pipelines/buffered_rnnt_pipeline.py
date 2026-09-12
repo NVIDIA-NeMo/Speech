@@ -81,6 +81,14 @@ class BufferedRNNTPipeline(BasePipeline):
         self.init_nmt_model(nmt_model)
         super().__init__()
 
+    def init_prompt_support(self) -> None:
+        """Initialize prompt support, plus the default language for prompt-conditioned models."""
+        super().init_prompt_support()
+
+        # Default prompt language used when the user does not pass `lang`, taken from the model's own
+        # vocabulary so that no language code is hardcoded here.
+        self._default_prompt_language_code = self._resolve_default_language_code() if self.prompt_enabled else None
+
     def init_parameters(self, cfg: DictConfig) -> None:
         """
         Initialize the configuration parameters.
@@ -132,6 +140,8 @@ class BufferedRNNTPipeline(BasePipeline):
         self.residue_tokens_at_end = cfg.endpointing.residue_tokens_at_end
         self.word_boundary_tolerance = cfg.streaming.word_boundary_tolerance
         self.return_tail_result = cfg.return_tail_result
+        # Default language code used to select the prompt for prompt-conditioned (unified ML) models.
+        self.default_language_code = cfg.get('lang', None)
         self.tokens_to_move = self.punctuation_ids.union(self.language_token_ids)
 
         self.zero_encoded = self.init_zero_enc() if self.right_padding else None
@@ -200,9 +210,14 @@ class BufferedRNNTPipeline(BasePipeline):
         )
 
         if self.prompt_enabled:
-            # Use "en-US" as the default prompt for zero encoding
-            # This region is sliced out before decoding, so language choice doesn't matter
-            default_prompt_idx = self._resolve_prompt_index("en-US")
+            # This region is sliced out before decoding, so the language choice doesn't matter; any
+            # index the model defines will do, which keeps construction working for a model whose
+            # vocabulary contains none of the usual default keys.
+            default_prompt_idx = (
+                self._resolve_prompt_index(self._default_prompt_language_code)
+                if self._default_prompt_language_code
+                else next(iter(self._prompt_config['prompt_dict'].values()))
+            )
             prompt_indices = torch.tensor([default_prompt_idx], device=self.device, dtype=torch.long)
             prompt_vector = self._create_one_hot_prompts(prompt_indices)  # [1, num_prompts]
 
@@ -235,7 +250,9 @@ class BufferedRNNTPipeline(BasePipeline):
             default_target_language=self.nmt_model.target_language if self.nmt_enabled else None,
             default_stop_history_eou=self.stop_history_eou_in_milliseconds,
             default_asr_output_granularity=self.asr_output_granularity,
-            default_language_code="en-US" if self.prompt_enabled else None,
+            default_language_code=(
+                (self.default_language_code or self._default_prompt_language_code) if self.prompt_enabled else None
+            ),
         )
         state.set_options(new_options)
 

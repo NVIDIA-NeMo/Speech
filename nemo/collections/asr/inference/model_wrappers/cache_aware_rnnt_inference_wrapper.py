@@ -338,6 +338,9 @@ class CacheAwareRNNTInferenceWrapper(CacheAwareASRInferenceWrapper):
         ``_apply_prompt_vectors`` reimplements the model-side prompt injection so that per-stream
         prompts can be applied during batched cache-aware streaming. This check fails loudly if the
         upstream prompt scheme ever changes shape, instead of silently mis-conditioning the encoder.
+
+        Only the ``concat`` scheme is checked here; unified models delegate to their own mixin, which
+        validates shapes itself.
         """
         model = self.asr_model
         if not getattr(model, "concat", False):
@@ -387,9 +390,11 @@ class CacheAwareRNNTInferenceWrapper(CacheAwareASRInferenceWrapper):
         """
         Inject per-stream language prompts into the encoder output.
 
-        Batched counterpart of the model-side ``PromptStreamingMixin._apply_prompt_to_encoded``
-        (see ``nemo/collections/asr/parts/mixins/mixins.py``), which is the source of truth for this
-        math. The mixin conditions a whole batch on one global language; cache-aware streaming
+        Unified models apply their own per-row prompt, so this delegates to them. For the ``concat``
+        scheme this is the batched counterpart of the model-side
+        ``PromptStreamingMixin._apply_prompt_to_encoded`` (see
+        ``nemo/collections/asr/parts/mixins/mixins.py``), which is the source of truth for that math:
+        the mixin conditions a whole batch on one global language, whereas cache-aware streaming
         batches independent streams, so each row needs its own prompt.
         Args:
             encoded: (Tensor) encoder output of shape [B, D, T].
@@ -398,6 +403,9 @@ class CacheAwareRNNTInferenceWrapper(CacheAwareASRInferenceWrapper):
             (Tensor) prompt-conditioned encoder output of shape [B, D, T].
         """
         model = self.asr_model
+        if model.use_lang_id_prompt:
+            return model.apply_lang_id_prompt(encoded, prompt_vectors.to(encoded.device))
+
         if not getattr(model, "concat", False):
             raise ValueError("prompt_vectors were provided, but the ASR model does not support prompt conditioning.")
 

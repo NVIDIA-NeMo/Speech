@@ -23,6 +23,7 @@ import torch
 import torch.nn as nn
 from easymagpie_vllm_omni.codec.config import EasyMagpieCodecConfig
 from easymagpie_vllm_omni.codec.packed import PackedEasyMagpieCodec
+from easymagpie_vllm_omni.watermark import initialize_watermarker, watermark_waveforms
 from vllm.config import VllmConfig
 from vllm.model_executor.layers.mamba.mamba_utils import MambaStateCopyFuncCalculator
 from vllm.model_executor.models.utils import AutoWeightsLoader
@@ -74,6 +75,7 @@ class EasyMagpieCodecForConditionalGeneration(nn.Module):
         self.has_preprocess = False
         self.has_postprocess = False
         self.requires_raw_input_tokens = True
+        initialize_watermarker(vllm_config.device_config.device)
 
     def embed_input_ids(self, input_ids: torch.Tensor, **_: Any) -> torch.Tensor:
         return torch.zeros((input_ids.shape[0], 1), dtype=torch.float32, device=input_ids.device)
@@ -184,6 +186,12 @@ class EasyMagpieCodecForConditionalGeneration(nn.Module):
             outputs.append(packed_audio[offset : offset + valid_samples].float())
             frame_offset += frames
             offset += samples
+        if codec_codes is not None or runtime_additional_information:
+            outputs = watermark_waveforms(
+                outputs,
+                sample_rate=self.config.output_sample_rate,
+                device=packed_audio.device,
+            )
         sample_rate = torch.tensor(self.config.output_sample_rate, dtype=torch.int32)
         return OmniOutput(
             text_hidden_states=None,

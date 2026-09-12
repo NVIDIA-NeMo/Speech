@@ -27,6 +27,7 @@ from omegaconf import DictConfig
 from torch import Tensor
 
 from nemo.collections.asr.inference.model_wrappers.asr_inference_wrapper import ASRInferenceWrapper
+from nemo.collections.asr.inference.nmt.text_source_buffer import MTSourceDecision, TextMTSourceBuffer
 from nemo.collections.asr.inference.pipelines.pipeline_interface import PipelineInterface
 from nemo.collections.asr.inference.streaming.buffering.audio_bufferer import BatchedAudioBufferer
 from nemo.collections.asr.inference.streaming.buffering.cache_feature_bufferer import BatchedCacheFeatureBufferer
@@ -121,6 +122,22 @@ class TranscribeStepOutput:
         return json.dumps(info, indent=4, ensure_ascii=False)
 
 
+@dataclass
+class BufferedTranslationRequest:
+    """One stream's prepared input and state for a buffered MT update."""
+
+    state: StreamingState
+    step_output: TranscribeStepOutput
+    decision: MTSourceDecision
+    temporary_suffix: str
+    source: str
+    previous_translation: str
+    previous_prefix: str
+    previous_source: str
+    source_context: object
+    target_context: object
+
+
 class BasePipeline(PipelineInterface):
     """
     Base class for all pipelines.
@@ -187,6 +204,281 @@ class BasePipeline(PipelineInterface):
         """Return the separator for the text postprocessor."""
         pass
 
+    def _stable_asr_view(self, state: StreamingState, step_output: TranscribeStepOutput) -> str:
+        """Return ASR text that excludes tokens decoded from right context."""
+
+        if step_output.final_transcript:
+            return step_output.final_transcript
+        stable = ids_to_text_without_stripping(state.tokens, self.tokenizer, self.get_sep())
+        if self.leading_regex_pattern:
+            stable = re.sub(self.leading_regex_pattern, r'\1', stable)
+        return stable
+
+    @staticmethod
+    def _temporary_asr_suffix(stable: str, full: str) -> str:
+        """Return only the temporary suffix when the two ASR views align."""
+
+        if not stable:
+            return full
+        return full[len(stable) :] if full.startswith(stable) else ""
+
+    @staticmethod
+    def _append_source(base: str, suffix: str) -> str:
+        if not base:
+            return suffix.strip()
+        if not suffix:
+            return base.strip()
+        return f"{base}{suffix}".strip()
+
+    def _join_translation_units(self, left: str, right: str) -> str:
+        """Join finalized target units without introducing spaces for token-mode targets."""
+
+        if not left:
+            return right.strip()
+        if not right:
+            return left.strip()
+        separator = "" if getattr(self.nmt_model, "prefix_boundary_mode", "whitespace") == "token" else " "
+        return f"{left.rstrip()}{separator}{right.lstrip()}"
+
+    def _get_mt_source_buffer(self, state: StreamingState) -> TextMTSourceBuffer:
+        if state.mt_source_buffer is None:
+            state.mt_source_buffer = TextMTSourceBuffer(
+                max_source_units=self.mt_max_source_units,
+                max_duration_ms=self.mt_max_source_duration_ms,
+            )
+        return state.mt_source_buffer
+
+    def _context_token_count(self, source: str, target: str) -> int:
+        tokenizer = getattr(self.nmt_model, "prefix_tokenizer", None)
+        if tokenizer is None:
+            return len(source.split()) + len(target.split())
+        return len(tokenizer.encode(source, add_special_tokens=False)) + len(
+            tokenizer.encode(target, add_special_tokens=False)
+        )
+
+    def _store_mt_context(self, state: StreamingState, source: str, target: str) -> None:
+        source = re.sub(r"\s+", " ", source).strip()
+        target = re.sub(r"\s+", " ", target).strip()
+        if not source or not target:
+            return
+        if self.mt_history_size == 0:
+            state.mt_context_history.clear()
+            return
+
+        state.mt_context_history.append((source, target))
+        del state.mt_context_history[: -self.mt_history_size]
+        while (
+            state.mt_context_history
+            and sum(self._context_token_count(src, tgt) for src, tgt in state.mt_context_history)
+            > self.mt_history_max_tokens
+        ):
+            del state.mt_context_history[0]
+
+    def _get_mt_context(self, state: StreamingState):
+        if not state.mt_context_history:
+            return "", ""
+        if getattr(self.nmt_model, "supports_structured_context_turns", False):
+            return (
+                [source for source, _ in state.mt_context_history],
+                [target for _, target in state.mt_context_history],
+            )
+        return (
+            " ".join(source for source, _ in state.mt_context_history),
+            " ".join(target for _, target in state.mt_context_history),
+        )
+
+    def _translate_one(
+        self,
+        source: str,
+        prefix: str,
+        state: StreamingState,
+        *,
+        context: tuple[object, object] | None = None,
+    ) -> str:
+        src_context, tgt_context = context if context is not None else self._get_mt_context(state)
+        return self.nmt_model.translate(
+            [source],
+            [prefix],
+            [state.options.source_language],
+            [state.options.target_language],
+            [src_context],
+            [tgt_context],
+        )[0]
+
+    def _prepare_buffered_translation(
+        self,
+        state: StreamingState,
+        step_output: TranscribeStepOutput,
+    ) -> BufferedTranslationRequest | None:
+        """Prepare one stream for the batched buffered-translation call."""
+
+        if not state.options.enable_nmt:
+            return None
+        if not state.options.source_language or not state.options.target_language:
+            raise ValueError("Source and target languages must be set when NMT is enabled")
+
+        stable = self._stable_asr_view(state, step_output)
+        decision = self._get_mt_source_buffer(state).update(
+            stable,
+            acoustic_eou=bool(step_output.final_transcript),
+            elapsed_ms=round(self.chunk_size * 1000),
+        )
+        temporary_suffix = self._temporary_asr_suffix(
+            stable,
+            step_output.partial_transcript,
+        )
+        source = decision.source if decision.is_final else self._append_source(decision.source, temporary_suffix)
+        if not source:
+            step_output.partial_translation = state.previous_translation_info[0]
+            return None
+
+        previous_translation, previous_prefix = state.previous_translation_info
+        source_context, target_context = self._get_mt_context(state)
+        step_output._mt_request_source = source
+        step_output._mt_request_prefix = previous_prefix
+        step_output._mt_request_source_context = source_context
+        step_output._mt_request_target_context = target_context
+        step_output._mt_source_boundary_reason = decision.boundary_reason
+        step_output._mt_retained_source_suffix = decision.retained_suffix
+        return BufferedTranslationRequest(
+            state=state,
+            step_output=step_output,
+            decision=decision,
+            temporary_suffix=temporary_suffix,
+            source=source,
+            previous_translation=previous_translation,
+            previous_prefix=previous_prefix,
+            previous_source=state.mt_previous_source,
+            source_context=source_context,
+            target_context=target_context,
+        )
+
+    def _defer_mt_boundary(
+        self,
+        request: BufferedTranslationRequest,
+        translation: str,
+        prefix: str,
+    ) -> None:
+        """Restore a failed boundary without changing the user-visible hypothesis."""
+
+        self._get_mt_source_buffer(request.state).defer_boundary(
+            request.decision.source, request.decision.retained_suffix
+        )
+        request.state.mt_handoff_deferrals += 1
+        if translation.strip():
+            request.step_output.partial_translation = translation
+            request.state.set_translation_info(translation, prefix)
+            request.state.mt_previous_source = request.source
+        else:
+            request.step_output.partial_translation = request.previous_translation
+            request.state.set_translation_info(request.previous_translation, request.previous_prefix)
+            request.state.mt_previous_source = request.previous_source
+
+    def _apply_buffered_translation(
+        self,
+        request: BufferedTranslationRequest,
+        translation: str,
+        prefix: str,
+    ) -> None:
+        """Apply one buffered MT result and handle a possible text-boundary handoff."""
+
+        state, step_output, decision = request.state, request.step_output, request.decision
+        if not decision.is_final:
+            step_output.partial_translation = translation
+            state.set_translation_info(translation, prefix)
+            state.mt_previous_source = request.source
+            common = os.path.commonprefix([request.previous_prefix, prefix])
+            step_output.current_step_translation = prefix[len(common) :]
+            return
+
+        catchup_source = self._append_source(decision.retained_suffix, request.temporary_suffix)
+        catchup_translation = ""
+        catchup_preflight = bool(decision.boundary_reason == "punctuation" and decision.retained_suffix)
+        if catchup_preflight and translation.strip():
+            saved_history = list(state.mt_context_history)
+            self._store_mt_context(state, decision.source, translation)
+            catchup_translation = self._translate_one(catchup_source, "", state)
+            state.mt_context_history[:] = saved_history
+
+        should_defer = decision.boundary_reason == "punctuation" and (
+            not translation.strip() or (catchup_preflight and not catchup_translation.strip())
+        )
+        if should_defer and state.mt_handoff_deferrals < self.mt_max_handoff_deferrals:
+            self._defer_mt_boundary(request, translation, prefix)
+            return
+
+        state.mt_handoff_deferrals = 0
+        step_output.final_translation = translation
+        common = os.path.commonprefix([request.previous_prefix, translation])
+        step_output.current_step_translation = translation[len(common) :]
+        self._store_mt_context(state, decision.source, translation)
+        state.cleanup_translation_info_after_eou()
+        state.mt_previous_source = ""
+        if catchup_source:
+            if not catchup_preflight:
+                catchup_translation = self._translate_one(catchup_source, "", state)
+            step_output.partial_translation = catchup_translation
+            state.set_translation_info(catchup_translation, "")
+            state.mt_previous_source = catchup_source
+
+    def _translate_step_buffered(self, states: list[StreamingState], step_outputs: list[TranscribeStepOutput]) -> None:
+        """Translate with MT source segmentation independent of acoustic EoU."""
+
+        pending: list[BufferedTranslationRequest] = []
+        for state, step_output in zip(states, step_outputs):
+            request = self._prepare_buffered_translation(state, step_output)
+            if request is not None:
+                pending.append(request)
+
+        if not pending:
+            return
+
+        translations = self.nmt_model.translate(
+            [item.source for item in pending],
+            [item.previous_prefix for item in pending],
+            [item.state.options.source_language for item in pending],
+            [item.state.options.target_language for item in pending],
+            [item.source_context for item in pending],
+            [item.target_context for item in pending],
+        )
+        prefixes = self.nmt_model.get_prefixes(
+            [item.source for item in pending],
+            translations,
+            [item.previous_translation for item in pending],
+        )
+
+        for request, translation, prefix in zip(pending, translations, prefixes):
+            self._apply_buffered_translation(request, translation, prefix)
+
+    def flush_translation_stream(self, stream_id: int) -> TranscribeStepOutput | None:
+        """Promote the remaining buffered MT hypothesis before stream teardown."""
+
+        if not self.nmt_enabled or not getattr(self, "mt_source_buffer_enabled", False):
+            return None
+        if not self.mt_flush_at_stream_end:
+            return None
+        state = self.get_state(stream_id)
+        if state is None or state.mt_source_buffer is None:
+            return None
+        decision = state.mt_source_buffer.flush()
+        if not decision.source:
+            return None
+
+        previous_translation, prefix = state.previous_translation_info
+        if previous_translation and state.mt_previous_source == decision.source:
+            translation = previous_translation
+        else:
+            translation = self._translate_one(decision.source, prefix, state)
+        common = os.path.commonprefix([prefix, translation])
+        self._store_mt_context(state, decision.source, translation)
+        state.cleanup_translation_info_after_eou()
+        state.mt_previous_source = ""
+        return TranscribeStepOutput(
+            stream_id=stream_id,
+            final_translation=translation,
+            current_step_translation=translation[len(common) :],
+        )
+
     def translate_step(self, states: list[StreamingState], step_outputs: list[TranscribeStepOutput]) -> None:
         """
         Translate step
@@ -194,6 +486,10 @@ class BasePipeline(PipelineInterface):
             states (list[StreamingState]): List of StreamingState objects.
             step_outputs (list[TranscribeStepOutput]): List of TranscribeStepOutput objects.
         """
+        if getattr(self, "mt_source_buffer_enabled", False):
+            self._translate_step_buffered(states, step_outputs)
+            return
+
         src_langs, tgt_langs = [], []
         asr_transcripts, current_prefixes, previous_translations = [], [], []
         final_transcript_mask = []
@@ -291,6 +587,22 @@ class BasePipeline(PipelineInterface):
         # Perform the translation step
         if self.nmt_enabled:
             self.translate_step(states=states, step_outputs=outputs)
+
+        # Native request generators identify their final request. Flush any MT
+        # source that has not reached a text boundary before the state is deleted.
+        for request, step_output in zip(requests, outputs):
+            if not request.is_last:
+                continue
+            flushed_output = self.flush_translation_stream(request.stream_id)
+            if flushed_output is None:
+                continue
+            step_output.final_translation = self._join_translation_units(
+                step_output.final_translation, flushed_output.final_translation
+            )
+            step_output.partial_translation = ""
+            step_output.current_step_translation = self._join_translation_units(
+                step_output.current_step_translation, flushed_output.current_step_translation
+            )
 
         # Cleanup the states after the response is sent
         # If last request, delete state from the state pool to free memory

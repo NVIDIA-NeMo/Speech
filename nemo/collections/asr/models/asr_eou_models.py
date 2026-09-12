@@ -836,7 +836,6 @@ class EncDecHybridRNNTCTCBPEEOUModel(EncDecHybridRNNTCTCBPEModel, ASREOUModelMix
             tensorboard_logs['val_wer'] = wer
             tensorboard_logs['val_eou_metrics'] = eou_metrics_list
             tensorboard_logs['val_eob_metrics'] = eob_metrics_list
-            tensorboard_logs['val_text_pred'] = text_pred
 
         else:
             # If experimental fused Joint-Loss-WER is used

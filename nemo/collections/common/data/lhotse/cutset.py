@@ -15,6 +15,7 @@
 """Lhotse CutSet utilities and Parquet manifest support for NeMo."""
 
 import io
+import json
 import logging
 import random
 import re
@@ -32,7 +33,7 @@ from lhotse import CutSet, Features, MonoCut, Recording, SupervisionSegment
 from lhotse.array import Array, TemporalArray
 from lhotse.cut import Cut, MixedCut, PaddingCut
 from lhotse.lazy import LazyIteratorChain
-from lhotse.serialization import load_yaml
+from lhotse.serialization import load_yaml, open_best
 from lhotse.utils import fastcopy
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
@@ -1923,6 +1924,78 @@ def mux(
     return cuts
 
 
+# Every record of a NeMo non-tarred manifest carries an ``audio_filepath`` field, and Lhotse
+# manifests never use that field, so a single record is enough to tell the two formats apart.
+_NEMO_MANIFEST_FIELD = "audio_filepath"
+
+# Upper bound on how much of a manifest we read to detect its format. NeMo and Lhotse JSON Lines
+# records are small, so this is generous, and it keeps us from loading a huge single-line manifest.
+_MANIFEST_SNIFF_BYTES = 65536
+
+
+def _sniff_manifest_format(path: str) -> Union[str, None]:
+    """
+    Detect whether ``path`` holds a NeMo or a Lhotse manifest by looking at its first record.
+
+    Returns ``"nemo"``, ``"lhotse"``, or ``None`` when the format cannot be determined cheaply,
+    e.g. the path is unreadable, is a shard pattern, is empty, or does not hold JSON at all.
+    Callers must treat ``None`` as "no opinion" and keep their existing behaviour.
+    """
+    try:
+        with open_best(path, "r") as f:
+            head = f.read(_MANIFEST_SNIFF_BYTES)
+    except Exception:
+        return None
+    if not isinstance(head, str):
+        return None
+    truncated = len(head) >= _MANIFEST_SNIFF_BYTES
+    head = head.lstrip()
+    if not head:
+        return None
+    if head.startswith("["):
+        # Only Lhotse manifests are serialized as a JSON array. NeMo manifests are always JSON Lines.
+        return "lhotse"
+    first_line, newline_found, _ = head.partition("\n")
+    if not newline_found and truncated:
+        # The first record is longer than the sniffing window, so we cannot parse it.
+        return None
+    try:
+        record = json.loads(first_line)
+    except ValueError:
+        return None
+    if not isinstance(record, dict):
+        return None
+    return "nemo" if _NEMO_MANIFEST_FIELD in record else "lhotse"
+
+
+def _check_manifest_format(path: str, expected: str) -> None:
+    """
+    Raise an actionable error when ``path``'s extension and its contents disagree on the manifest format.
+
+    NeMo and Lhotse manifests are told apart by extension alone, so a NeMo manifest saved as
+    ``.jsonl`` (or a Lhotse manifest saved as ``.json``) is handed to the wrong parser and fails
+    deep inside it with an error that says nothing about the extension. See issue #14287.
+    """
+    detected = _sniff_manifest_format(path)
+    if detected is None or detected == expected:
+        return
+    convention = (
+        "NeMo and Lhotse manifests are told apart by their extension: use '.json' for NeMo "
+        "manifests and '.jsonl' or '.jsonl.gz' for Lhotse manifests."
+    )
+    if detected == "nemo":
+        raise ValueError(
+            f"Cannot read '{path}' as a Lhotse manifest: its extension says Lhotse, but its first record has an "
+            f"'{_NEMO_MANIFEST_FIELD}' field, which makes it a NeMo manifest. {convention} Rename the file so that "
+            f"it ends with '.json', or pass it as 'manifest_filepath' instead of 'cuts_path'."
+        )
+    raise ValueError(
+        f"Cannot read '{path}' as a NeMo manifest: its extension says NeMo, but its contents are a Lhotse manifest. "
+        f"{convention} Rename the file so that it ends with '.jsonl', or pass it as 'cuts_path' instead of "
+        f"'manifest_filepath'."
+    )
+
+
 def guess_parse_cutset(inp: Union[str, dict, omegaconf.DictConfig]) -> CutSet:
     """
     Utility function that supports opening a CutSet from:
@@ -1933,6 +2006,10 @@ def guess_parse_cutset(inp: Union[str, dict, omegaconf.DictConfig]) -> CutSet:
         :class:`nemo.collections.common.data.lhotse.dataloader.LhotseDataLoadingConfig`
 
     It's intended to be used in a generic context where we are not sure which way the user will specify the inputs.
+
+    String inputs are routed by extension. When the extension and the file contents disagree on the
+    manifest format, a :class:`ValueError` naming the extension convention is raised instead of
+    letting the wrong parser fail with an unrelated message.
     """
     from nemo.collections.common.data.lhotse.dataloader import make_structured_with_schema_warnings
 
@@ -1951,9 +2028,11 @@ def guess_parse_cutset(inp: Union[str, dict, omegaconf.DictConfig]) -> CutSet:
             config = make_structured_with_schema_warnings(OmegaConf.from_dotlist([f"input_cfg={inp}"]))
         elif inp.endswith(".jsonl") or inp.endswith(".jsonl.gz"):
             # Path to a Lhotse non-tarred manifest
+            _check_manifest_format(inp, expected="lhotse")
             config = make_structured_with_schema_warnings(OmegaConf.from_dotlist([f"cuts_path={inp}"]))
         else:
             # Assume anything else is a NeMo non-tarred manifest
+            _check_manifest_format(inp, expected="nemo")
             config = make_structured_with_schema_warnings(OmegaConf.from_dotlist([f"manifest_filepath={inp}"]))
         cuts, _ = read_cutset_from_config(config)
         return cuts

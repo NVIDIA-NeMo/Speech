@@ -69,6 +69,24 @@ shut down before the procedure has completed. To auto-resume training, set the f
         exp_manager.version: my_experiment_version
 
 
+Wall-clock Time Limits
+----------------------
+
+Set ``max_time_per_run`` to stop training and save the last checkpoint after a wall-clock duration in
+``DD:HH:MM:SS`` format. By default, the timer starts when the training loop starts. To include preprocessing and
+other setup performed earlier in the same SLURM allocation, anchor the timer to the job start:
+
+.. code-block:: yaml
+
+    exp_manager:
+        max_time_per_run: 00:03:45:00
+        max_time_per_run_from_slurm: True
+
+When enabled, the timer reads the SLURM-provided ``SLURM_JOB_START_TIME`` UNIX timestamp and checks the elapsed
+allocation time before training starts and after each configured timer interval. A missing or invalid timestamp
+raises an error instead of silently starting a fresh timer. Leave enough time between ``max_time_per_run`` and the
+SLURM limit for the final checkpoint to finish writing.
+
 Experiment Loggers
 ------------------
 

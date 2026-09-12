@@ -281,6 +281,8 @@ class ExpManagerConfig:
     ema: Optional[EMAParams] = field(default_factory=lambda: EMAParams())
     # Wall clock time limit
     max_time_per_run: Optional[str] = None
+    # Count from the SLURM allocation start instead of the training loop start.
+    max_time_per_run_from_slurm: Optional[bool] = False
     # time to sleep non 0 ranks during initialization
     seconds_to_sleep: float = 5
     # Straggler detection
@@ -739,13 +741,17 @@ def exp_manager(trainer: 'lightning.pytorch.Trainer', cfg: Optional[Union[DictCo
                     'Found a PTL Timer callback, replacing with a StatelessTimer callback. '
                     'This will happen if you set trainer.max_time as well as exp_manager.max_time_per_run.'
                 )
-                trainer.callbacks[idx] = StatelessTimer(cfg.max_time_per_run)
+                trainer.callbacks[idx] = StatelessTimer(
+                    cfg.max_time_per_run, max_time_from_slurm=cfg.max_time_per_run_from_slurm
+                )
                 found_ptl_timer = True
                 break
 
         if not found_ptl_timer:
             trainer.max_time = cfg.max_time_per_run
-            trainer.callbacks.append(StatelessTimer(cfg.max_time_per_run))
+            trainer.callbacks.append(
+                StatelessTimer(cfg.max_time_per_run, max_time_from_slurm=cfg.max_time_per_run_from_slurm)
+            )
 
     if cfg.create_straggler_detection_callback:
         if HAVE_STRAGGLER_DET:
@@ -1430,15 +1436,18 @@ class StatelessTimer(Timer):
         duration: timedelta = None,
         interval: str = Interval.step,
         verbose: bool = True,
+        max_time_from_slurm: bool = False,
     ) -> None:
-        """stateless timer
+        """Create a timer whose elapsed state is reset for every training run.
 
         Args:
-            duration (timedelta, optional): _description_. Defaults to None.
-            interval (str, optional): _description_. Defaults to Interval.step.
-            verbose (bool, optional): _description_. Defaults to True.
+            duration: Maximum elapsed time for this run.
+            interval: Check the time limit after each step or epoch.
+            verbose: Log when the time limit is reached.
+            max_time_from_slurm: Include time elapsed since ``SLURM_JOB_START_TIME``.
         """
         super().__init__(duration, interval, verbose)
+        self._slurm_job_start_time = self._read_slurm_job_start_time() if max_time_from_slurm else None
 
     # Override PTL Timer's state dict to not store elapsed time information so that we can
     # restore and continue training.
@@ -1449,6 +1458,16 @@ class StatelessTimer(Timer):
     def load_state_dict(self, state_dict: Dict[str, Any]) -> None:
         """load_state_dict"""
         return
+
+    def on_fit_start(self, trainer: lightning.pytorch.Trainer, *args: Any, **kwargs: Any) -> None:
+        """Refresh the SLURM offset before the initial deadline check."""
+        self._update_slurm_time_offset()
+        super().on_fit_start(trainer, *args, **kwargs)
+
+    def on_train_start(self, trainer: lightning.pytorch.Trainer, pl_module: lightning.pytorch.LightningModule) -> None:
+        """Refresh the SLURM offset when the monotonic training clock starts."""
+        self._update_slurm_time_offset()
+        super().on_train_start(trainer, pl_module)
 
     def _check_time_remaining(self, trainer: lightning.pytorch.Trainer) -> None:
         """_check_time_remaining"""
@@ -1490,6 +1509,27 @@ class StatelessTimer(Timer):
             from lightning.pytorch.utilities.exceptions import _TunerExitException
 
             raise _TunerExitException()
+
+    def _update_slurm_time_offset(self) -> None:
+        """Set the elapsed-time offset to the time used by the current SLURM job."""
+        if self._slurm_job_start_time is not None:
+            self._offset = max(0.0, time.time() - self._slurm_job_start_time)
+
+    @staticmethod
+    def _read_slurm_job_start_time() -> float:
+        """Read and validate the UNIX timestamp exported by SLURM."""
+        value = os.getenv("SLURM_JOB_START_TIME")
+        try:
+            start_time = int(value)
+        except (TypeError, ValueError):
+            raise ValueError(
+                "SLURM-based max_time_per_run requires SLURM_JOB_START_TIME to be a positive UNIX timestamp"
+            ) from None
+        if start_time <= 0:
+            raise ValueError(
+                "SLURM-based max_time_per_run requires SLURM_JOB_START_TIME to be a positive UNIX timestamp"
+            )
+        return float(start_time)
 
 
 def _describe_batch_progress(trainer: lightning.pytorch.Trainer) -> Dict[str, Any]:

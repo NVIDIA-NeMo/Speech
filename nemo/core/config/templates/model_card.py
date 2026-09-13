@@ -96,9 +96,9 @@ model = ModelPT.from_pretrained("{repo_id}")
 
     An example is provided below for ASR
 
-    The NeMo toolkit [3] was used for training the models for over several hundred epochs. These model are trained with this [example script](https://github.com/NVIDIA/NeMo/blob/main/examples/asr/asr_transducer/speech_to_text_rnnt_bpe.py) and this [base config](https://github.com/NVIDIA/NeMo/blob/main/examples/asr/conf/fastconformer/fast-conformer_transducer_bpe.yaml).
+    The NeMo toolkit [3] was used for training the models for over several hundred epochs. These model are trained with this [example script](https://github.com/NVIDIA-NeMo/Speech/blob/main/examples/asr/asr_transducer/speech_to_text_rnnt_bpe.py) and this [base config](https://github.com/NVIDIA-NeMo/Speech/blob/main/examples/asr/conf/fastconformer/fast-conformer_transducer_bpe.yaml).
 
-    The tokenizers for these models were built using the text transcripts of the train set with this [script](https://github.com/NVIDIA/NeMo/blob/main/scripts/tokenizers/process_asr_text_tokenizer.py).
+    The tokenizers for these models were built using the text transcripts of the train set with this [script](https://github.com/NVIDIA-NeMo/Speech/blob/main/scripts/tokenizers/process_asr_text_tokenizer.py).
 
 
 ### Datasets
@@ -206,5 +206,5 @@ License to use this model is covered by the [CC-BY-4.0](https://creativecommons.
 
 **Provide appropriate references in the markdown link format below. Please order them numerically.**
 
-[1] [NVIDIA NeMo Toolkit](https://github.com/NVIDIA/NeMo)
+[1] [NVIDIA NeMo Toolkit](https://github.com/NVIDIA-NeMo/Speech)
 """

@@ -30,7 +30,8 @@ from nemo.utils import logging, model_utils
 
 PYNINI_AVAILABLE = True
 try:
-    import nemo_text_processing
+    # Used to define PYNINI_AVAILABLE global var which is used in L44
+    import nemo_text_processing  # noqa: F401 # pylint: disable=unused-import
 except (ImportError, ModuleNotFoundError):
     PYNINI_AVAILABLE = False
 

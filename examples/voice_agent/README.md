@@ -103,7 +103,7 @@ Edit the `server/server_configs/default.yaml` file to configure the server as ne
 Open a terminal and run the server via:
 
 ```bash
-NEMO_PATH=???  # Use your local NeMo path with the latest main branch from: https://github.com/NVIDIA-NeMo/NeMo
+NEMO_PATH=???  # Use your local NeMo path with the latest main branch from: https://github.com/NVIDIA-NeMo/Speech
 export PYTHONPATH=$NEMO_PATH:$PYTHONPATH
 # export HF_TOKEN="hf_..."  # Use your own HuggingFace API token if needed, as some models may require.
 # export HF_HUB_CACHE="/path/to/your/huggingface/cache"  # change where HF cache is stored if you don't want to use the default cache

@@ -1081,7 +1081,7 @@ def check_ranges(range_tensor):
     for k in range(range_tensor.shape[0]):
         range_tup = range_tensor[k]
         if range_tup[1] < range_tup[0]:
-            raise ValueError("Range start time should be preceding the end time but we got: {range_tup}")
+            raise ValueError(f"Range start time should be preceding the end time but we got: {range_tup}")
     return True
 
 

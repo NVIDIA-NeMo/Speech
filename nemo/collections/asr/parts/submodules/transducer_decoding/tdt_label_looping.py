@@ -533,7 +533,10 @@ class GreedyBatchedTDTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBase
                 # same as: scores[advance_mask] = more_scores[advance_mask], but non-blocking
                 torch.where(advance_mask, more_scores, scores, out=scores)
                 jump_durations_indices = logits[:, -num_durations:].argmax(dim=-1)
-                durations = model_durations[jump_durations_indices]
+                more_durations = model_durations[jump_durations_indices]
+                # same as: durations[advance_mask] = more_durations[advance_mask], but non-blocking;
+                # elements that already found a non-blank label must keep the duration predicted with it
+                torch.where(advance_mask, more_durations, durations, out=durations)
 
                 if self.record_all_steps:
                     batched_hyps.add_results_masked_(

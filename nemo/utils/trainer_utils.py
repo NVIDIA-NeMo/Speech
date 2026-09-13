@@ -107,7 +107,7 @@ def _resolve_automodel_configs(strategy) -> None:
         strategy._distributed_config = FSDP2Config(**resolved)
 
     if isinstance(getattr(strategy, '_moe_config', None), Mapping):
-        from nemo_automodel.components.moe.config import MoEParallelizerConfig
+        from nemo_automodel.components.distributed.config import MoEParallelizerConfig
 
         strategy._moe_config = MoEParallelizerConfig(**strategy._moe_config)
 

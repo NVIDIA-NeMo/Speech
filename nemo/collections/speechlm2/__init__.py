@@ -22,6 +22,7 @@ from .models import (
     SALMAutomodel,
     SALMWithAsrDecoder,
     StreamingSTTModel,
+    StreamingSTTModelAutomodel,
 )
 
 __all__ = [
@@ -40,4 +41,5 @@ __all__ = [
     'SALMWithAsrDecoder',
     'NemotronVoiceChat',
     'StreamingSTTModel',
+    'StreamingSTTModelAutomodel',
 ]

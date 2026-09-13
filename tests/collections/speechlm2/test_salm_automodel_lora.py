@@ -335,7 +335,7 @@ def test_lora_training_step(salm_with_lora, dataset, prompt_formatter, training_
     training_cutset_batch = training_cutset_batch.map(lambda c: c.apply_prompt_format(prompt_formatter), apply_fn=None)
     batch = dataset[training_cutset_batch]
     batch = move_data_to_device(batch, device=salm_with_lora.device)
-    results = salm_with_lora.training_step(batch, batch_idx=0)
+    results = salm_with_lora._training_step_batch(batch, batch_idx=0)
     assert torch.is_tensor(results["loss"])
     assert not torch.isnan(results["loss"])
     assert results["loss"] > 0

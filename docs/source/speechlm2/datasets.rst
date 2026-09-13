@@ -4,6 +4,16 @@ Datasets
 The speechlm2 collection supports datasets that contain both audio and text data for training models that can understand speech and generate appropriate responses.
 This section describes the dataset format, preparation, and usage with the speechlm2 models.
 
+.. seealso::
+
+   :doc:`/dataloaders` is the canonical reference for the underlying Lhotse
+   dataloader: ``input_cfg`` shape, supported formats, sampling/bucketing
+   options, indexed manifests + resumable dataloading, and
+   ``LhotseDataLoadingConfig`` field schema. The page below covers what's
+   speech-LM-specific on top of that — datamodule resume contract,
+   AIStore GetBatch, conversation type semantics in the SALM/duplex
+   recipes.
+
 Dataset Format
 --------------
 
@@ -228,6 +238,27 @@ When enabled:
 
 Leave the env var unset to keep the original tar-iterating loader.
 
+Combining with ``indexed: true``
+""""""""""""""""""""""""""""""""
+
+``USE_AIS_GET_BATCH=true`` coexists with ``indexed: true`` on
+``LazyNeMoTarredIterator`` (and on the multimodal-conversation adapters).
+Indexed mode keeps the JSONL-driven O(1) global indexing and graph-token
+checkpointing, while AIStore GetBatch handles the actual audio fetch:
+
+* The audio-tar ``.idx`` sidecar is **not** required when GetBatch is enabled
+  — the iterator skips opening tar files entirely and emits URL-backed cuts
+  whose ``AudioSource`` points at ``{tar_path}/{audio_filename}``
+  (``type="url"`` for ``ais://...`` paths, ``type="file"`` otherwise).
+* Manifest JSONLs still need their ``.idx`` sidecars; they drive the indexed
+  iterator graph and the ``state_dict`` / ``load_state_dict`` round-trip.
+* Audio bytes are fetched lazily by ``AudioSamples(use_batch_loader=True)`` at
+  collation time, which issues one batched GetBatch request per minibatch.
+
+Use this combination when shards live on AIStore and you want both the
+network efficiency of GetBatch and the exact-resume guarantees of the
+indexed/stateful pipeline.
+
 DuplexSTTDataset
 ****************
 
@@ -261,9 +292,43 @@ The DataModule class in the speechlm2 collection manages dataset loading, prepar
     )
 
 The DataModule takes care of:
+
 1. Setting up proper data parallel ranks for dataloaders
 2. Instantiating the dataloaders with configuration from YAML
 3. Managing multiple datasets for validation/testing
+4. Persisting the train dataloader's iterator state across checkpoints
+   (when ``use_stateful_dataloader: true``)
+
+Checkpointed / resumable training
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The DataModule caches the train dataloader on first ``train_dataloader()``
+call and exposes ``state_dict()`` / ``load_state_dict()`` that delegate to the
+cached dataloader when it supports them. Lightning's trainer wires those into
+every checkpoint automatically, so an experiment configured with::
+
+    data:
+      train_ds:
+        indexed: true
+        use_stateful_dataloader: true
+        ...
+
+resumes O(1) — sampler RNG, bucketer state, multiplexer choice RNG,
+per-source iterator cursors, and per-worker prefetch queues are all restored
+exactly without replay.
+
+With a regular ``DataLoader`` (``use_stateful_dataloader`` unset or
+``False``) ``state_dict``/``load_state_dict`` become no-ops and resume falls
+back to Lhotse's ``_fast_forward()`` replay path.
+
+Two constraints to keep in mind across save/restore:
+
+* ``num_workers`` and ``world_size`` must match between save and restore
+  (a hard requirement of ``StatefulDataLoader``).
+* All data files must be **uncompressed** and accompanied by ``.idx``
+  sidecars. Build them in one shot with ``scripts/dataloading/build_indexes.py``
+  (see :ref:`indexed-resumable-dataloading` in the main Lhotse dataloading
+  guide).
 
 Bucketing for Efficient Training
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

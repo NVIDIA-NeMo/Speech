@@ -22,6 +22,8 @@ The script performs the following steps:
     (3) Runs inference on the input audio files.
     (4) Writes the transcriptions to an output json/jsonl file. Word/Segment level output is written to a separate JSON file.
 
+For cache-aware streaming, pass ``asr.use_cuda_graphs=true`` to enable encoder CUDA graphs.
+
 Example usage:
 python asr_streaming_infer.py \
         --config-path=../conf/asr_streaming_inference/ \
@@ -76,7 +78,11 @@ def main(cfg):
         raise ValueError("run_steps must be at least 1")
 
     # Reading audio filepaths
-    audio_filepaths, manifest, options, filepath_order = prepare_audio_data(cfg.audio_file, sort_by_duration=True)
+    audio_filepaths, manifest, options, filepath_order = prepare_audio_data(
+        cfg.audio_file,
+        per_stream_biasing_defaults=cfg.asr.get("per_stream_biasing_defaults", None),
+        sort_by_duration=True,
+    )
     logging.info(f"Found {len(audio_filepaths)} audio files")
     if manifest:
         keys = list(manifest[0].keys())

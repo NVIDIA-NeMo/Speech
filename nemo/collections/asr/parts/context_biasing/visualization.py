@@ -1,0 +1,112 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+
+import copy
+
+from nemo.core.utils.optional_libs import GRAPHVIZ_AVAILABLE, graphviz_required
+
+if GRAPHVIZ_AVAILABLE:
+    import graphviz
+
+DEFAULT_GRAPH_ATTR = {
+    "rankdir": "LR",
+    "size": "8.5,11",
+    "center": "1",
+    "orientation": "Portrait",
+    "ranksep": "0.4",
+    "nodesep": "0.25",
+}
+
+DEFAULT_STATE_ATTR = {
+    "shape": "circle",
+    "style": "bold",
+    "fontsize": "14",
+}
+
+DEFAULT_FINAL_STATE_ATTR = {
+    "shape": "doublecircle",
+    "style": "bold",
+    "fontsize": "14",
+}
+
+
+@graphviz_required
+def draw_linear(
+    labels: list[str], title="", merges: list[tuple[str, ...]] | None = None, case_insensitive: bool = False
+):
+    """
+    Visualize linear graph from labels with optional merges
+
+    Args:
+        labels: list of labels (minimal units, usually characters)
+        title: title of the graph
+        merges: list tuples containing label that can be merged
+        case_insensitive: if the graph should show case-insensitive approach
+    """
+    if merges is None:
+        merges = []
+    graph_attr = copy.deepcopy(DEFAULT_GRAPH_ATTR)
+    if title:
+        graph_attr["label"] = title
+
+    dot = graphviz.Digraph(name="Context Graph", graph_attr=graph_attr)
+    dot.node(str(0), label=str(0), **DEFAULT_STATE_ATTR)
+    for i, label in enumerate(labels):
+        is_final = i == len(labels) - 1
+        node_attr = DEFAULT_FINAL_STATE_ATTR if is_final else DEFAULT_STATE_ATTR
+        dot.node(str(i + 1), label=str(i + 1), **node_attr)
+        if case_insensitive:
+            label = label.lower()
+            dot.edge(str(i), str(i + 1), label=f"{label}")
+            if label.upper() != label:
+                dot.edge(str(i), str(i + 1), label=f"{label.upper()}")
+        else:
+            dot.edge(str(i), str(i + 1), label=f"{label}")
+        for merge in merges:
+            merge_str = "".join(merge)
+            if case_insensitive:
+                is_valid_merge = ("".join(labels[i + 1 - len(merge) : i + 1])).lower() == merge_str.lower()
+            else:
+                is_valid_merge = "".join(labels[i + 1 - len(merge) : i + 1]) == merge_str
+            if is_valid_merge:
+                dot.edge(str(i + 1 - len(merge)), str(i + 1), label=f"{merge_str}")
+    return dot
+
+
+@graphviz_required
+def draw_linear_bpe(labels: list[str], title=""):
+    """
+    Visualize linear graph from BPE labels
+
+    Args:
+        labels: list of labels (minimal units, usually characters)
+        title: title of the graph
+    """
+    graph_attr = copy.deepcopy(DEFAULT_GRAPH_ATTR)
+    if title:
+        graph_attr["label"] = title
+
+    dot = graphviz.Digraph(name="Context Graph", graph_attr=graph_attr)
+    dot.node(str(0), label=str(0), **DEFAULT_STATE_ATTR)
+    node_id = 0
+    for i, label in enumerate(labels):
+        is_final = i == len(labels) - 1
+        node_id_end = node_id + len(label)
+        node_attr = DEFAULT_FINAL_STATE_ATTR if is_final else DEFAULT_STATE_ATTR
+        dot.node(str(node_id_end), label=str(node_id_end), **node_attr)
+        node_id = node_id_end
+
+        dot.edge(str(node_id - len(label)), str(node_id), label=f"{label}")
+    return dot

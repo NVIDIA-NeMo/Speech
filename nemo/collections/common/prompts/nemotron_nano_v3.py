@@ -40,6 +40,12 @@ class NemotronNanoV3PromptFormatter(PromptFormatter):
                 "message": Modality.Text,
             },
         },
+        "tool": {
+            "template": f"{NANO_BOT}tool\n|message|{NANO_EOT}\n",
+            "slots": {
+                "message": Modality.Text,
+            },
+        },
         OUTPUT_ROLE: {
             "template": f"{NANO_BOT}assistant\n|message|{NANO_EOT}\n",
             "slots": {

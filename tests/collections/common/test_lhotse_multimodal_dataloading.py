@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import logging
 import os
 import random
 from itertools import islice
@@ -21,17 +22,14 @@ import numpy as np
 import pytest
 import torch
 from lhotse import CutSet, SupervisionSegment, compute_num_samples
+from lhotse.audio import AudioLoadingError
+from lhotse.indexing import create_jsonl_index
 from lhotse.shar import JsonlShardWriter
 from lhotse.testing.dummies import dummy_cut, dummy_recording
 from omegaconf import OmegaConf
 
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
-from nemo.collections.common.data.lhotse.indexed_adapters import (
-    IndexedTarSampleReader,
-    LazyShuffledRange,
-    create_index,
-    create_tar_index,
-)
+from nemo.collections.common.data.lhotse.indexed_adapters import IndexedTarSampleReader, create_tar_index
 from nemo.collections.common.data.lhotse.sampling import (
     DurationFilter,
     MultimodalFixedBucketBatchSizeConstraint2D,
@@ -317,6 +315,211 @@ def test_multimodal_conversation_input_sharegpt(sharegpt_conversations_path):
     assert t.cut.duration == 2.45
     assert t.cut.start == 1
     assert t.cut.load_audio().shape == (1, 39200)
+
+
+def test_multimodal_conversation_input_sharegpt_list_audio_paths(tmp_path):
+    manifest_path = tmp_path / "sharegpt_list_manifest.jsonl"
+    dummy_recording(0, 1.0, with_data=True).to_cut().save_audio(tmp_path / "clip_a.wav")
+    dummy_recording(1, 1.5, with_data=True).to_cut().save_audio(tmp_path / "clip_b.wav")
+    dummy_recording(2, 2.0, with_data=True).to_cut().save_audio(tmp_path / "clip_c.wav")
+    data = [
+        {
+            "id": "single_list_path",
+            "sound": ["clip_a.wav"],
+            "conversations": [
+                {"from": "human", "value": "Listen <sound>"},
+                {"from": "gpt", "value": "done"},
+            ],
+        },
+        {
+            "id": "multi_list_path",
+            "sound": ["clip_b.wav", "clip_c.wav"],
+            "conversations": [
+                {"from": "human", "value": "Compare <sound> now"},
+                {"from": "gpt", "value": "done"},
+            ],
+        },
+    ]
+    lhotse.serialization.save_to_jsonl(data, manifest_path)
+
+    adapter = NeMoMultimodalConversationShareGPTJsonlAdapter(
+        manifest_filepath=manifest_path,
+        audio_locator_tag="[audio]",
+        audio_placeholders=["<sound>"],
+    )
+
+    single, multi = list(adapter)
+    single_audio = [t for t in single.turns if isinstance(t, AudioTurn)]
+    assert len(single_audio) == 1
+    assert single_audio[0].cut.duration == 1.0
+    assert single_audio[0].cut.load_audio().shape == (1, 16000)
+
+    assert [type(t) for t in multi.turns] == [TextTurn, AudioTurn, AudioTurn, TextTurn, TextTurn]
+    assert multi.turns[0].value == "Compare"
+    assert multi.turns[3].value == "now"
+    multi_audio = [t for t in multi.turns if isinstance(t, AudioTurn)]
+    assert [t.cut.duration for t in multi_audio] == [1.5, 2.0]
+
+
+def test_multimodal_conversation_input_sharegpt_nested_audio_path_list_raises(tmp_path):
+    manifest_path = tmp_path / "sharegpt_bad_list_manifest.jsonl"
+    lhotse.serialization.save_to_jsonl(
+        [
+            {
+                "id": "bad_nested_path",
+                "sound": [["clip_a.wav"]],
+                "conversations": [{"from": "human", "value": "Listen <sound>"}],
+            }
+        ],
+        manifest_path,
+    )
+    adapter = NeMoMultimodalConversationShareGPTJsonlAdapter(
+        manifest_filepath=manifest_path,
+        audio_locator_tag="[audio]",
+        audio_placeholders=["<sound>"],
+    )
+
+    with pytest.raises(ValueError, match=r"unsupported sound\[0\]"):
+        list(adapter)
+
+
+def test_multimodal_conversation_input_sharegpt_ignores_assistant_literal_audio_tag(tmp_path):
+    manifest_path = tmp_path / "sharegpt_assistant_literal_audio_manifest.jsonl"
+    dummy_recording(0, 1.0, with_data=True).to_cut().save_audio(tmp_path / "clip_a.wav")
+    dummy_recording(1, 1.5, with_data=True).to_cut().save_audio(tmp_path / "clip_b.wav")
+    dummy_recording(2, 2.0, with_data=True).to_cut().save_audio(tmp_path / "clip_c.wav")
+    lhotse.serialization.save_to_jsonl(
+        [
+            {
+                "id": "assistant_literal_audio_tag",
+                "sound": ["clip_a.wav", "clip_b.wav", "clip_c.wav"],
+                "conversations": [
+                    {"from": "human", "value": "First prompt <sound>"},
+                    {"from": "gpt", "value": "Use an HTML <audio> tag in the page."},
+                    {"from": "human", "value": "Second prompt <sound>"},
+                    {"from": "gpt", "value": "Then wire audio.play() to a button."},
+                    {"from": "human", "value": "Third prompt <sound>"},
+                    {"from": "gpt", "value": "done"},
+                ],
+            }
+        ],
+        manifest_path,
+    )
+
+    adapter = NeMoMultimodalConversationShareGPTJsonlAdapter(
+        manifest_filepath=manifest_path,
+        audio_locator_tag="[audio]",
+        audio_placeholders=["<audio>", "<sound>", "<speech>"],
+    )
+
+    (conversation,) = list(adapter)
+    audio_turns = [t for t in conversation.turns if isinstance(t, AudioTurn)]
+    assert [t.cut.duration for t in audio_turns] == [1.0, 1.5, 2.0]
+    assistant_texts = [t.value for t in conversation.turns if isinstance(t, TextTurn) and t.role == "assistant"]
+    assert "Use an HTML <audio> tag in the page." in assistant_texts
+
+
+def test_multimodal_conversation_input_sharegpt_user_audio_path_placeholder_mismatch_raises(tmp_path):
+    manifest_path = tmp_path / "sharegpt_user_mismatch_manifest.jsonl"
+    lhotse.serialization.save_to_jsonl(
+        [
+            {
+                "id": "bad_user_mismatch",
+                "sound": ["clip_a.wav", "clip_b.wav", "clip_c.wav"],
+                "conversations": [
+                    {"from": "human", "value": "A <sound> B <sound> C <sound> D <sound>"},
+                    {"from": "gpt", "value": "done"},
+                ],
+            }
+        ],
+        manifest_path,
+    )
+    adapter = NeMoMultimodalConversationShareGPTJsonlAdapter(
+        manifest_filepath=manifest_path,
+        audio_locator_tag="[audio]",
+        audio_placeholders=["<sound>"],
+    )
+
+    with pytest.raises(ValueError, match="3 audio paths but 4 audio placeholders"):
+        list(adapter)
+
+
+def test_multimodal_conversation_input_sharegpt_missing_audio_path_raises(tmp_path):
+    manifest_path = tmp_path / "sharegpt_missing_audio_manifest.jsonl"
+    lhotse.serialization.save_to_jsonl(
+        [
+            {
+                "id": "missing_audio",
+                "sound": "missing.wav",
+                "conversations": [
+                    {"from": "human", "value": "Listen <sound>"},
+                    {"from": "gpt", "value": "done"},
+                ],
+            }
+        ],
+        manifest_path,
+    )
+    adapter = NeMoMultimodalConversationShareGPTJsonlAdapter(
+        manifest_filepath=manifest_path,
+        audio_locator_tag="[audio]",
+        audio_placeholders=["<sound>"],
+    )
+
+    with pytest.raises(AudioLoadingError):
+        list(adapter)
+
+
+@pytest.mark.parametrize("indexed", [False, True])
+def test_multimodal_conversation_input_sharegpt_missing_audio_path_skips_when_enabled(tmp_path, caplog, indexed):
+    manifest_path = tmp_path / "sharegpt_skip_missing_audio_manifest.jsonl"
+    dummy_recording(0, 1.0, with_data=True).to_cut().save_audio(tmp_path / "good_a.wav")
+    dummy_recording(1, 1.5, with_data=True).to_cut().save_audio(tmp_path / "good_b.wav")
+    lhotse.serialization.save_to_jsonl(
+        [
+            {
+                "id": "good_a",
+                "sound": "good_a.wav",
+                "conversations": [
+                    {"from": "human", "value": "Listen <sound>"},
+                    {"from": "gpt", "value": "done"},
+                ],
+            },
+            {
+                "id": "missing_audio",
+                "sound": "missing.wav",
+                "conversations": [
+                    {"from": "human", "value": "Listen <sound>"},
+                    {"from": "gpt", "value": "done"},
+                ],
+            },
+            {
+                "id": "good_b",
+                "sound": "good_b.wav",
+                "conversations": [
+                    {"from": "human", "value": "Listen <sound>"},
+                    {"from": "gpt", "value": "done"},
+                ],
+            },
+        ],
+        manifest_path,
+    )
+    if indexed:
+        create_jsonl_index(str(manifest_path))
+    adapter = NeMoMultimodalConversationShareGPTJsonlAdapter(
+        manifest_filepath=manifest_path,
+        audio_locator_tag="[audio]",
+        audio_placeholders=["<sound>"],
+        indexed=indexed,
+        skip_missing_manifest_entries=True,
+    )
+
+    with caplog.at_level(logging.WARNING):
+        conversations = list(adapter)
+
+    assert [c.id for c in conversations] == ["good_a", "good_b"]
+    assert "Skipping ShareGPT sample due to audio loading failure" in caplog.text
+    assert "missing_audio" in caplog.text
+    assert "missing.wav" in caplog.text
 
 
 @pytest.fixture
@@ -952,7 +1155,7 @@ def indexed_sharegpt_conversations_path(tmp_path_factory):
         for i in range(10)
     ]
     lhotse.serialization.save_to_jsonl(data, manifest_path)
-    create_index(str(manifest_path), str(manifest_path) + ".idx")
+    create_jsonl_index(str(manifest_path))
     return manifest_path
 
 
@@ -964,45 +1167,10 @@ def test_sharegpt_indexed_sequential_no_shuffle(indexed_sharegpt_conversations_p
         shuffle_shards=False,
         shard_seed=0,
     )
-    assert adapter._has_index is True
     conversations = list(adapter)
     assert len(conversations) == 10
     ids = [c.id for c in conversations]
     assert ids == [f"convo_{i}" for i in range(10)]
-
-
-def test_sharegpt_indexed_shuffle_uses_random_access(indexed_sharegpt_conversations_path):
-    """When shuffle is on and .idx files exist, all items are yielded in shuffled order."""
-    adapter = NeMoMultimodalConversationShareGPTJsonlAdapter(
-        manifest_filepath=str(indexed_sharegpt_conversations_path),
-        audio_locator_tag="[audio]",
-        shuffle_shards=True,
-        shard_seed=0,
-    )
-    assert adapter._has_index is True
-    conversations = list(adapter)
-    assert len(conversations) == 10
-    ids = [c.id for c in conversations]
-    # All items present
-    assert sorted(ids) == [f"convo_{i}" for i in range(10)]
-    # Order is shuffled (with 10 items the chance of identical order is 1/10! ≈ 0)
-    assert ids != [f"convo_{i}" for i in range(10)]
-
-
-def test_sharegpt_indexed_different_epochs_different_order(indexed_sharegpt_conversations_path):
-    """Different epochs produce different shuffled orders."""
-    adapter = NeMoMultimodalConversationShareGPTJsonlAdapter(
-        manifest_filepath=str(indexed_sharegpt_conversations_path),
-        audio_locator_tag="[audio]",
-        shuffle_shards=True,
-        shard_seed=0,
-    )
-    epoch0_ids = [c.id for c in adapter]
-    epoch1_ids = [c.id for c in adapter]
-    # Both epochs have all items
-    assert sorted(epoch0_ids) == sorted(epoch1_ids)
-    # But in different order (epoch counter increments the seed)
-    assert epoch0_ids != epoch1_ids
 
 
 def test_sharegpt_no_index_falls_back_to_in_memory_shuffle(tmp_path_factory):
@@ -1020,7 +1188,6 @@ def test_sharegpt_no_index_falls_back_to_in_memory_shuffle(tmp_path_factory):
         for i in range(10)
     ]
     lhotse.serialization.save_to_jsonl(data, manifest_path)
-    # No .idx file created
 
     adapter = NeMoMultimodalConversationShareGPTJsonlAdapter(
         manifest_filepath=str(manifest_path),
@@ -1028,82 +1195,12 @@ def test_sharegpt_no_index_falls_back_to_in_memory_shuffle(tmp_path_factory):
         shuffle_shards=True,
         shard_seed=0,
     )
-    assert adapter._has_index is False
     conversations = list(adapter)
     assert len(conversations) == 10
     ids = [c.id for c in conversations]
     assert sorted(ids) == [f"convo_{i}" for i in range(10)]
     # Should still be shuffled (in-memory path)
     assert ids != [f"convo_{i}" for i in range(10)]
-
-
-def test_sharegpt_indexed_with_audio(tmp_path_factory):
-    """Indexed reading works correctly with audio turns (ShareGPT format with <sound> placeholders)."""
-    tmp_path = tmp_path_factory.mktemp("indexed_sharegpt_audio")
-    manifest_path = tmp_path / "manifest.jsonl"
-
-    # Create audio files
-    for i in range(5):
-        dummy_recording(i, duration=1.0 + i * 0.5, with_data=True).to_cut().save_audio(tmp_path / f"audio_{i}.wav")
-
-    data = [
-        {
-            "id": f"audio_convo_{i}",
-            "sound": f"audio_{i}.wav",
-            "conversations": [
-                {"from": "human", "value": f"Listen to this: <sound> What do you think?"},
-                {"from": "gpt", "value": f"Response {i}"},
-            ],
-        }
-        for i in range(5)
-    ]
-    lhotse.serialization.save_to_jsonl(data, manifest_path)
-    create_index(str(manifest_path), str(manifest_path) + ".idx")
-
-    adapter = NeMoMultimodalConversationShareGPTJsonlAdapter(
-        manifest_filepath=str(manifest_path),
-        audio_locator_tag="[audio]",
-        shuffle_shards=True,
-        shard_seed=42,
-    )
-    assert adapter._has_index is True
-    conversations = list(adapter)
-    assert len(conversations) == 5
-
-    ids = sorted([c.id for c in conversations])
-    assert ids == [f"audio_convo_{i}" for i in range(5)]
-
-    # Verify audio turns were created correctly
-    for conv in conversations:
-        assert conv.has_audio_turns
-        audio_turns = [t for t in conv.turns if isinstance(t, AudioTurn)]
-        assert len(audio_turns) == 1
-        assert audio_turns[0].audio_locator_tag == "[audio]"
-        assert audio_turns[0].cut.load_audio().shape[0] == 1  # mono audio
-
-
-@pytest.mark.parametrize("n", [0, 1, 2, 3, 5, 10, 100, 1000, 1023, 1024, 1025])
-def test_lazy_shuffled_range_is_a_permutation(n):
-    """LazyShuffledRange must yield every element of [0, n) exactly once."""
-    rng = random.Random(42)
-    result = list(LazyShuffledRange(n, rng))
-    assert len(result) == n
-    assert sorted(result) == list(range(n))
-
-
-def test_lazy_shuffled_range_is_shuffled():
-    """LazyShuffledRange should not produce the identity permutation (for non-trivial n)."""
-    rng = random.Random(0)
-    result = list(LazyShuffledRange(50, rng))
-    assert result != list(range(50))
-
-
-def test_lazy_shuffled_range_different_seeds():
-    """Different RNG seeds produce different permutations."""
-    a = list(LazyShuffledRange(100, random.Random(0)))
-    b = list(LazyShuffledRange(100, random.Random(1)))
-    assert a != b
-    assert sorted(a) == sorted(b) == list(range(100))
 
 
 # ─── WebDataset ShareGPT adapter tests ──────────────────────────────────────
@@ -1248,37 +1345,6 @@ def test_webdataset_sequential_turn_structure(webdataset_dir):
     assert conv.turns[3].value == "Response for sample 0"
 
 
-def test_webdataset_indexed_shuffle(webdataset_dir):
-    """When shuffle is on and .idx files exist, all items are yielded in shuffled order."""
-    adapter = NeMoMultimodalConversationShareGPTWebdatasetAdapter(
-        data_dir=str(webdataset_dir),
-        audio_locator_tag="[audio]",
-        shuffle_shards=True,
-        shard_seed=0,
-    )
-    assert adapter._has_index is True
-    conversations = list(adapter)
-    assert len(conversations) == 6
-    ids = [c.id for c in conversations]
-    assert sorted(ids) == [f"sample_{i}" for i in range(6)]
-    # Order is shuffled (1/6! ≈ 0 chance of identity)
-    assert ids != [f"sample_{i}" for i in range(6)]
-
-
-def test_webdataset_indexed_different_epochs(webdataset_dir):
-    """Different epochs produce different shuffled orders."""
-    adapter = NeMoMultimodalConversationShareGPTWebdatasetAdapter(
-        data_dir=str(webdataset_dir),
-        audio_locator_tag="[audio]",
-        shuffle_shards=True,
-        shard_seed=0,
-    )
-    epoch0_ids = [c.id for c in adapter]
-    epoch1_ids = [c.id for c in adapter]
-    assert sorted(epoch0_ids) == sorted(epoch1_ids)
-    assert epoch0_ids != epoch1_ids
-
-
 def test_webdataset_no_index_falls_back_to_sequential_shuffle(webdataset_dir_no_idx):
     """Without .idx files, shuffle_shards still works (shard-level shuffle, sequential within)."""
     adapter = NeMoMultimodalConversationShareGPTWebdatasetAdapter(
@@ -1287,7 +1353,6 @@ def test_webdataset_no_index_falls_back_to_sequential_shuffle(webdataset_dir_no_
         shuffle_shards=True,
         shard_seed=0,
     )
-    assert adapter._has_index is False
     conversations = list(adapter)
     assert len(conversations) == 6
     ids = [c.id for c in conversations]
@@ -1308,25 +1373,6 @@ def test_webdataset_audio_loads_correctly(webdataset_dir):
         assert abs(audio_turns[0].cut.duration - expected_dur) < 0.01
         audio = audio_turns[0].cut.load_audio()
         assert audio.shape[0] == 1  # mono
-
-
-def test_webdataset_indexed_audio_loads_correctly(webdataset_dir):
-    """Audio loaded via indexed random access is valid and decodable."""
-    adapter = NeMoMultimodalConversationShareGPTWebdatasetAdapter(
-        data_dir=str(webdataset_dir),
-        audio_locator_tag="[audio]",
-        shuffle_shards=True,
-        shard_seed=42,
-    )
-    assert adapter._has_index is True
-    conversations = list(adapter)
-    assert len(conversations) == 6
-    for conv in conversations:
-        audio_turns = [t for t in conv.turns if isinstance(t, AudioTurn)]
-        assert len(audio_turns) == 1
-        audio = audio_turns[0].cut.load_audio()
-        assert audio.shape[0] == 1
-        assert audio.shape[1] > 0
 
 
 def test_sharegpt_audio_root(tmp_path_factory):
@@ -1423,7 +1469,6 @@ def test_webdataset_auto_discover_shards_no_meta(tmp_path_factory, create_idx):
         audio_locator_tag="[audio]",
         shuffle_shards=False,
     )
-    assert adapter._has_index == create_idx
     conversations = list(adapter)
     assert len(conversations) == 4
     ids = sorted(c.id for c in conversations)

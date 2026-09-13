@@ -183,12 +183,21 @@ class FeedForward(nn.Module):
     def __init__(self, cfg: TransformerEncoderConfig):
         super().__init__()
         ff_hidden = int(cfg.ff_expansion * cfg.d_model)
+        # No dropout after the output projection: ``TransformerBlock`` already applies
+        # dropout to this module's output on the residual branch, and stacking the two
+        # gives an effective rate of ``1 - (1 - drop_rate)^2`` (19% at the default 0.1)
+        # with ~2.1x the intended noise variance, in every layer. Matches
+        # ``ConformerFeedForward``, which also drops only after the activation.
+        #
+        # Keep the trailing position free rather than renumbering: the module indices are
+        # state_dict keys (``net.0.*``, ``net.3.*``), so removing this last entry stays
+        # load-compatible with existing checkpoints, while dropping the *inner* Dropout
+        # would shift the second Linear to ``net.2.*`` and break them.
         self.net = nn.Sequential(
             nn.Linear(cfg.d_model, ff_hidden),
             nn.GELU(),
             nn.Dropout(cfg.drop_rate),
             nn.Linear(ff_hidden, cfg.d_model),
-            nn.Dropout(cfg.drop_rate),
         )
 
     def forward(self, x):
@@ -734,13 +743,18 @@ class TransformerEncoder(nn.Module):
             )
 
         if not bypass_pre_encode:
-            if isinstance(self.pre_encode, FeatureStacking):
+            # Unwrap activation-checkpointing (CheckpointWrapper) and match by name: both
+            # the wrapper and duplicate module copies defeat isinstance(FeatureStacking).
+            pre_encode_module = getattr(self.pre_encode, "_checkpoint_wrapped_module", self.pre_encode)
+            is_feature_stacking = type(pre_encode_module).__name__ == "FeatureStacking"
+            if is_feature_stacking:
+                # FeatureStacking takes raw (B, C, T) and transposes internally.
                 x, length = self.pre_encode(audio_signal, length)
             else:
                 x = torch.transpose(audio_signal, 1, 2)
-            if isinstance(self.pre_encode, nn.Linear):
+            if isinstance(pre_encode_module, nn.Linear):
                 x = self.pre_encode(x)
-            elif not isinstance(self.pre_encode, FeatureStacking):
+            elif not is_feature_stacking:
                 x, length = self.pre_encode(x=x, lengths=length)
             length = length.to(torch.int64)
         else:
@@ -1149,7 +1163,12 @@ class StreamingTransformerEncoder(TransformerEncoder, StreamingEncoder):
         cache_last_channel = torch.zeros(
             self.n_layers, batch_size, cache_size, self.d_model, dtype=dtype, device=device
         )
-        cache_last_time = torch.zeros(self.n_layers, batch_size, 0, dtype=dtype, device=device)
+        # Zero *width*, but the same RANK as ``ConformerEncoder``'s conv cache
+        # ``(n_layers, B, d_model, conv_cache)`` -- the shared cache-aware tooling slices this
+        # tensor positionally (e.g. ``StreamingContextManager.get_context`` does
+        # ``cache_last_time[:, slot_ids, :, :]``), so a 3-D placeholder raises
+        # "IndexError: too many indices" even though the encoder never reads it.
+        cache_last_time = torch.zeros(self.n_layers, batch_size, self.d_model, 0, dtype=dtype, device=device)
         cache_last_channel_len = torch.zeros(batch_size, dtype=torch.int64, device=device)
         return cache_last_channel, cache_last_time, cache_last_channel_len
 

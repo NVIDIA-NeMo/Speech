@@ -50,6 +50,8 @@ class BoxPlotsConfig:
     outlier_markersize: float = 3.0
     outlier_alpha: float = 0.5
 
+    unavailable_text_color: str = "#CD5C5C"
+
 
 def _style_boxplot(
     bp: dict[str, PathPatch],
@@ -96,6 +98,42 @@ def _add_mean_ci_labels(
             y_offset = -y_offset
 
         ax.text(x + x_offset, mean + y_offset, label, ha="left", va="center", fontsize=cfg.fontsize)
+
+
+def _mean_exceeds_plot_range(
+    baseline: np.ndarray,
+    candidate: np.ndarray,
+    metric: DistributionMetricSpec,
+) -> bool:
+    if metric.plot_range is None:
+        return False
+
+    upper_limit = metric.plot_range[1]
+    return bool(baseline.mean() > upper_limit or candidate.mean() > upper_limit)
+
+
+def _render_plot_not_shown(
+    ax: Axes,
+    metric: DistributionMetricSpec,
+    cfg: BoxPlotsConfig,
+) -> None:
+    if metric.plot_range is None:
+        raise ValueError(f"Metric '{metric.report_name}' does not define a plot range.")
+
+    upper_limit = metric.plot_range[1]
+
+    ax.set_title(metric.report_name, fontsize=cfg.fontsize_title)
+    ax.set_axis_off()
+    ax.text(
+        0.5,
+        0.5,
+        f"Plot not shown.\nMean {metric.report_name} exceeds {upper_limit:.0%} display limit.",
+        ha="center",
+        va="center",
+        color=cfg.unavailable_text_color,
+        fontsize=cfg.fontsize_title,
+        transform=ax.transAxes,
+    )
 
 
 def _configure_boxplot_axis(
@@ -169,6 +207,10 @@ def prepare_boxplots(
 
             ax = axs[plot_idx]
             plot_idx += 1
+
+            if _mean_exceeds_plot_range(baseline, candidate, metric):
+                _render_plot_not_shown(ax, metric, cfg)
+                continue
 
             bp = ax.boxplot(
                 [baseline, candidate],

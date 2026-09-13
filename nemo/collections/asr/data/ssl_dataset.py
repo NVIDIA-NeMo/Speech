@@ -16,7 +16,7 @@ import copy
 import io
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from math import isclose
 from typing import Any, Dict, List, Optional, Union
 
@@ -56,6 +56,15 @@ class AudioNoiseBatch:
     noise_len: Union[Tensor, None] = None
     noisy_audio: Union[Tensor, None] = None
     noisy_audio_len: Union[Tensor, None] = None
+
+    def pin_memory(self):
+        # Enables `pin_memory=True` for custom return types; otherwise large audio tensors
+        # use slower pageable H2D copies.
+        for field in fields(self):
+            value = getattr(self, field.name)
+            if isinstance(value, Tensor):
+                setattr(self, field.name, value.pin_memory())
+        return self
 
 
 def _parse_manifest_item(line: str, manifest_file: str) -> Dict[str, Any]:

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+
 import numpy as np
 import pytest
 import torch
@@ -839,6 +840,51 @@ class TestSpeakerClustering:
         assert len(set(permuted_Y.tolist())) == n_spks
         assert Y_out.shape[0] == mc[-1]
         assert all(permuted_Y == gt)
+
+    @pytest.mark.run_only_on('GPU')
+    @pytest.mark.unit
+    @pytest.mark.parametrize("max_num_speakers", [2, 3])
+    @pytest.mark.parametrize("jit_script", [False, True])
+    def test_offline_speaker_clustering_enhanced_count_respects_max_num_speakers_gpu(
+        self, max_num_speakers, jit_script, cuda=True
+    ):
+        torch.manual_seed(0)
+        n_spks, samples_per_spk, emb_dim = 8, 3, 16
+        emb = torch.eye(emb_dim)[:n_spks].repeat_interleave(samples_per_spk, dim=0)
+        emb += 0.01 * torch.rand(n_spks * samples_per_spk, emb_dim)
+        segment_starts = torch.arange(emb.shape[0], dtype=torch.float32)
+        timestamps = torch.stack([segment_starts, segment_starts + 1], dim=1)
+
+        offline_speaker_clustering = SpeakerClustering(maj_vote_spk_count=False, min_samples_for_nmesc=0, cuda=cuda)
+        if jit_script:
+            offline_speaker_clustering = torch.jit.script(offline_speaker_clustering)
+
+        Y_out = offline_speaker_clustering.forward_infer(
+            embeddings_in_scales=emb,
+            timestamps_in_scales=timestamps,
+            multiscale_segment_counts=torch.tensor([emb.shape[0]]),
+            multiscale_weights=torch.ones(1, 1),
+            oracle_num_speakers=-1,
+            max_num_speakers=max_num_speakers,
+            enhanced_count_thres=40,
+            sparse_search_volume=5,
+            max_rp_threshold=0.15,
+            fixed_thres=-1.0,
+        )
+
+        assert Y_out.shape[0] == emb.shape[0]
+        assert torch.unique(Y_out).numel() <= max_num_speakers
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    @pytest.mark.parametrize("max_num_speakers", [2, 3])
+    @pytest.mark.parametrize("jit_script", [False, True])
+    def test_offline_speaker_clustering_enhanced_count_respects_max_num_speakers_cpu(
+        self, max_num_speakers, jit_script
+    ):
+        self.test_offline_speaker_clustering_enhanced_count_respects_max_num_speakers_gpu(
+            max_num_speakers=max_num_speakers, jit_script=jit_script, cuda=False
+        )
 
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit

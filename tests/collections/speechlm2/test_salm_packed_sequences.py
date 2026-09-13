@@ -12,12 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import ast
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
 
-from nemo.collections.speechlm2.parts.packed_sequences import pack_audio_into_text_embeds, prepare_packed_llm_inputs
+import nemo.collections.speechlm2.parts.packed_sequences as packed_sequences_module
+from nemo.collections.speechlm2.parts.mtp import iter_mtp_depth_targets
+
+_build_packed_mtp_inputs = packed_sequences_module._build_packed_mtp_inputs
+_shard_packed_for_cp = packed_sequences_module._shard_packed_for_cp
+pack_audio_into_text_embeds = packed_sequences_module.pack_audio_into_text_embeds
+prepare_packed_llm_inputs = packed_sequences_module.prepare_packed_llm_inputs
 
 PAD = 0
 AUDIO = 100
@@ -96,6 +104,177 @@ def test_basic_pack_shapes_and_cu_seqlens():
     assert out["inputs_embeds"].shape == (T_total, 2)
     assert out["labels"].shape == (T_total,)
     assert out["position_ids"].shape == (T_total,)
+
+
+def test_mtp_inputs_are_shifted_before_te_context_parallel_partition(monkeypatch):
+    """Each CP rank receives globally shifted MTP inputs and targets."""
+    labels = torch.tensor([10, 11, 12, 13, 20, 21, 22, 23])
+    cu_seqlens = torch.tensor([0, 4, 8], dtype=torch.int32)
+    packed = {
+        "inputs_embeds": torch.arange(16, dtype=torch.float32).reshape(8, 2).requires_grad_(),
+        "labels": labels,
+        "position_ids": torch.tensor([0, 1, 2, 3, 0, 1, 2, 3]),
+        "cu_seqlens": cu_seqlens,
+        "max_seqlen": torch.tensor(4, dtype=torch.int32),
+        "qkv_format": "thd",
+    }
+    global_mtp = _build_packed_mtp_inputs(packed, 2)
+    rank = {"value": 0}
+
+    def _partition_indices(_cu_seqlens, _total_tokens, cp_size, cp_rank):
+        indices = []
+        for seq_start, seq_end in zip(_cu_seqlens[:-1], _cu_seqlens[1:]):
+            seq_start = int(seq_start)
+            seq_end = int(seq_end)
+            chunk = (seq_end - seq_start) // (2 * cp_size)
+            head_start = seq_start + cp_rank * chunk
+            tail_start = seq_start + (2 * cp_size - 1 - cp_rank) * chunk
+            indices.extend(
+                (torch.arange(head_start, head_start + chunk), torch.arange(tail_start, tail_start + chunk))
+            )
+        return torch.cat(indices)
+
+    class _CPMesh:
+        def size(self):
+            return 2
+
+        def get_group(self):
+            return object()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "transformer_engine_torch",
+        SimpleNamespace(thd_get_partitioned_indices=_partition_indices),
+    )
+    monkeypatch.setattr(torch.distributed, "get_rank", lambda group: rank["value"])
+
+    local_results = []
+    for cp_rank in range(2):
+        rank["value"] = cp_rank
+        local_packed, local_mtp = _shard_packed_for_cp(packed, _CPMesh(), global_mtp)
+        indices = _partition_indices(cu_seqlens, labels.numel(), 2, cp_rank)
+
+        assert local_mtp is not None
+        torch.testing.assert_close(local_packed["labels"], labels.index_select(0, indices))
+        for actual, expected in zip(local_mtp.embed_inputs, global_mtp.embed_inputs):
+            torch.testing.assert_close(actual, expected.index_select(0, indices))
+        for actual, expected in zip(local_mtp.position_ids, global_mtp.position_ids):
+            torch.testing.assert_close(actual, expected.index_select(0, indices))
+        for actual, expected in zip(local_mtp.targets, global_mtp.targets):
+            torch.testing.assert_close(actual, expected.index_select(0, indices))
+        local_results.append((indices, local_packed, local_mtp))
+
+    all_indices = torch.cat([indices for indices, _, _ in local_results])
+    restore_global_order = torch.argsort(all_indices)
+    for depth in range(2):
+        reassembled_embeds = torch.cat([mtp.embed_inputs[depth] for _, _, mtp in local_results])
+        reassembled_positions = torch.cat([mtp.position_ids[depth] for _, _, mtp in local_results])
+        reassembled_targets = torch.cat([mtp.targets[depth] for _, _, mtp in local_results])
+        torch.testing.assert_close(
+            reassembled_embeds.index_select(0, restore_global_order), global_mtp.embed_inputs[depth]
+        )
+        torch.testing.assert_close(
+            reassembled_positions.index_select(0, restore_global_order), global_mtp.position_ids[depth]
+        )
+        torch.testing.assert_close(
+            reassembled_targets.index_select(0, restore_global_order), global_mtp.targets[depth]
+        )
+
+    # Future inputs never leak across either packed-document boundary.
+    torch.testing.assert_close(global_mtp.embed_inputs[0][3], torch.zeros(2))
+    torch.testing.assert_close(global_mtp.embed_inputs[0][7], torch.zeros(2))
+    assert global_mtp.targets[0][[3, 7]].tolist() == [-100, -100]
+
+    weights = tuple(
+        torch.arange(value.numel(), dtype=value.dtype).reshape_as(value) + 1 for value in global_mtp.embed_inputs
+    )
+    local_loss = sum(
+        (mtp.embed_inputs[depth] * weights[depth].index_select(0, indices)).sum()
+        for indices, _, mtp in local_results
+        for depth in range(2)
+    )
+    global_loss = sum((global_mtp.embed_inputs[depth] * weights[depth]).sum() for depth in range(2))
+    torch.testing.assert_close(local_loss, global_loss, rtol=0, atol=0)
+    local_grad = torch.autograd.grad(local_loss, packed["inputs_embeds"], retain_graph=True)[0]
+    global_grad = torch.autograd.grad(global_loss, packed["inputs_embeds"])[0]
+    torch.testing.assert_close(local_grad, global_grad, rtol=0, atol=0)
+
+    from nemo.collections.speechlm2.parts import cp_helpers
+
+    monkeypatch.setattr(cp_helpers, "get_cp_mesh", lambda _mesh: (_CPMesh(), 2, 0))
+    rank["value"] = 0
+    input_ids, text_embeds, target_ids, replacements = _basic_batch()
+    prepared = prepare_packed_llm_inputs(
+        input_ids=input_ids,
+        text_embs=text_embeds,
+        audio_embs=replacements,
+        target_ids=target_ids,
+        padding_id=PAD,
+        placeholder_id=AUDIO,
+        device_mesh=SimpleNamespace(mesh_dim_names=()),
+        mtp_num_depths=2,
+    )
+    assert len(prepared["llm_kwargs"]["mtp_embed_inputs"]) == 2
+    assert len(prepared["llm_kwargs"]["mtp_per_depth_position_ids"]) == 2
+    assert len(prepared["mtp_per_depth_targets"]) == 2
+    for value in (
+        *prepared["llm_kwargs"]["mtp_embed_inputs"],
+        *prepared["llm_kwargs"]["mtp_per_depth_position_ids"],
+        *prepared["mtp_per_depth_targets"],
+    ):
+        assert value.shape[0] == prepared["target_ids"].shape[0]
+
+    rank_zero_labels = local_results[0][1]["labels"]
+    rank_zero_wrong_local_targets = list(iter_mtp_depth_targets(rank_zero_labels, 2))
+    assert not torch.equal(local_results[0][2].targets[0], rank_zero_wrong_local_targets[0])
+
+
+def test_build_packed_mtp_inputs_reuses_resolved_seq_idx(monkeypatch):
+    """Target construction reuses the sequence IDs already resolved for input shifts."""
+    packed = {
+        "inputs_embeds": torch.arange(16, dtype=torch.float32).reshape(8, 2),
+        "labels": torch.arange(8),
+        "position_ids": torch.tensor([0, 1, 2, 3, 0, 1, 2, 3]),
+        "cu_seqlens": torch.tensor([0, 4, 8], dtype=torch.int32),
+    }
+    searchsorted = torch.searchsorted
+    calls = []
+
+    def _record_searchsorted(*args, **kwargs):
+        calls.append((args, kwargs))
+        return searchsorted(*args, **kwargs)
+
+    monkeypatch.setattr(torch, "searchsorted", _record_searchsorted)
+
+    mtp_inputs = _build_packed_mtp_inputs(packed, 2)
+
+    assert len(calls) == 1
+    assert len(mtp_inputs.targets) == 2
+
+
+def test_build_packed_mtp_inputs_reuses_shift_masks(monkeypatch):
+    """Embeddings and position IDs reuse one packed-boundary mask per depth."""
+    packed = {
+        "inputs_embeds": torch.arange(16, dtype=torch.float32).reshape(8, 2),
+        "labels": torch.arange(8),
+        "position_ids": torch.tensor([0, 1, 2, 3, 0, 1, 2, 3]),
+        "cu_seqlens": torch.tensor([0, 4, 8], dtype=torch.int32),
+    }
+    shift = packed_sequences_module._shift_packed_tensor_for_mtp
+    masks_by_depth = {}
+
+    def _record_shift(tensor, depth, valid_mask):
+        masks_by_depth.setdefault(depth, []).append(valid_mask)
+        return shift(tensor, depth, valid_mask)
+
+    monkeypatch.setattr(packed_sequences_module, "_shift_packed_tensor_for_mtp", _record_shift)
+
+    _build_packed_mtp_inputs(packed, 2)
+
+    assert set(masks_by_depth) == {1, 2}
+    for masks in masks_by_depth.values():
+        assert len(masks) == 2
+        assert masks[0] is masks[1]
 
 
 def test_position_ids_reset_per_utt():
@@ -343,7 +522,7 @@ def test_prepare_packed_llm_inputs_attention_kwargs_reach_te_preprocessor():
     Regression for: ``prepare_packed_llm_inputs`` previously emitted
     ``max_seqlen_q``/``max_seqlen_kv`` (plural), but the preprocessor only
     inspects the singular ``max_seqlen`` key in the ``cu_seqlens`` branch
-    (``Automodel/.../attention/utils.py``). The plural keys were silently
+    (``nemo_automodel/.../attention/utils.py``). The plural keys were silently
     dropped, TE fell back to a degenerate varlen path, and step-1 backward
     produced NaN gradients that poisoned every subsequent step.
     """
@@ -372,14 +551,14 @@ def test_prepare_packed_llm_inputs_attention_kwargs_reach_te_preprocessor():
     assert "cu_seqlens_padded" not in llm_kwargs, (
         "Standard Automodel pipeline emits only `cu_seqlens`, never both `cu_seqlens` "
         "and `cu_seqlens_padded`. Passing both activates the `pad_between_seqs=True` "
-        "branch in Automodel/.../attention/utils.py, routing TE down a different path."
+        "branch in nemo_automodel/.../attention/utils.py, routing TE down a different path."
     )
 
     # Run the LLM kwargs through the preprocessor exactly as the attention
     # layer does: 4D BSHD-shaped Q/K/V plus attention_mask=None plus the
     # llm_kwargs splatted in. ``input_embeds`` is now 2D ``[T, H]`` per the
     # canonical Automodel THD shape contract.
-    B, T, H = 1, int(out["input_embeds"].shape[0]), 2
+    B, T = 1, int(out["input_embeds"].shape[0])
     nh, hd = 2, 4
     q = torch.zeros(B, T, nh, hd)
     k = torch.zeros(B, T, nh, hd)

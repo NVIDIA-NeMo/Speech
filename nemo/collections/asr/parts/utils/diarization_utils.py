@@ -15,17 +15,22 @@
 import copy
 import csv
 import json
+import math
 import os
 import string
 from collections import OrderedDict as od
 from collections import defaultdict
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+import torch
+from lhotse import SupervisionSegment
+from omegaconf import OmegaConf
 
 from nemo.collections.asr.metrics.cpwer import calculate_session_cpWER, concat_perm_word_error_rate
-from nemo.collections.asr.metrics.der import score_labels_from_rttm_labels
+from nemo.collections.asr.metrics.der import score_labels, score_labels_from_rttm_labels
 from nemo.collections.asr.metrics.wer import word_error_rate
 from nemo.collections.asr.models import ClusteringDiarizer
 from nemo.collections.asr.parts.utils.speaker_utils import (
@@ -33,11 +38,202 @@ from nemo.collections.asr.parts.utils.speaker_utils import (
     get_uniqname_from_filepath,
     labels_to_rttmfile,
     rttm_to_labels,
+    timestamps_to_supervisions,
     write_rttm2manifest,
 )
+from nemo.collections.asr.parts.utils.vad_utils import PostProcessingParams, predlist_to_timestamps
 from nemo.utils import logging
 
 __all__ = ['OfflineDiarWithASR']
+
+
+def collect_diar_predictions(
+    diar_preds: torch.Tensor,
+    samples: List[Dict[str, Any]],
+    feature_lengths: torch.Tensor,
+    feature_frame_length_sec: float,
+    diar_frame_length_sec: float,
+) -> Tuple[List[torch.Tensor], List[Dict[str, Any]]]:
+    """
+    Collect valid, unpadded diarization predictions and their metadata.
+
+    A missing manifest duration is derived as ``feature_lengths * feature_frame_length_sec``.
+
+    Args:
+        diar_preds (torch.Tensor): Diarization predictions whose leading dimension is the current batch size.
+        samples (List[Dict[str, Any]]): Metadata dictionaries corresponding to the rows of ``diar_preds``.
+        feature_lengths (torch.Tensor): Per-recording valid lengths measured in input-feature frames.
+        feature_frame_length_sec (float): Duration in seconds of one input-feature frame.
+        diar_frame_length_sec (float): Duration in seconds represented by one diarization output frame.
+
+    Returns:
+        predictions_and_metadata (Tuple[List[torch.Tensor], List[Dict[str, Any]]]): A two-item tuple containing a
+            list of CPU prediction tensors trimmed to each recording's valid duration and copied metadata
+            dictionaries with resolved ``duration`` values and a default ``offset`` of zero.
+
+    Raises:
+        ValueError: If the prediction, sample, and feature-length batch sizes disagree.
+    """
+    if diar_preds.shape[0] != len(samples) or len(samples) != len(feature_lengths):
+        raise ValueError(
+            f"Batch size mismatch: diar_preds={diar_preds.shape[0]}, samples={len(samples)}, "
+            f"feature_lengths={len(feature_lengths)}"
+        )
+
+    diar_preds = diar_preds.detach().cpu()
+    feature_lengths = feature_lengths.detach().cpu()
+    predictions, metadata = [], []
+
+    for batch_idx, sample in enumerate(samples):
+        duration = sample.get("duration")
+        if duration is None:
+            duration = feature_lengths[batch_idx].item() * feature_frame_length_sec
+        valid_frames = min(
+            diar_preds.shape[1],
+            math.ceil(duration / diar_frame_length_sec),
+        )
+        predictions.append(diar_preds[batch_idx : batch_idx + 1, :valid_frames])
+        sample_metadata = dict(sample)
+        sample_metadata["duration"] = duration
+        sample_metadata.setdefault("offset", 0.0)
+        metadata.append(sample_metadata)
+    return predictions, metadata
+
+
+def convert_pred_mat_to_segments(
+    audio_rttm_map_dict: Dict[str, Dict[str, Any]],
+    postprocessing_cfg: Optional[PostProcessingParams],
+    batch_preds_list: List[torch.Tensor],
+    unit_10ms_frame_count: int = 8,
+    bypass_postprocessing: bool = False,
+    out_rttm_dir: Optional[str] = None,
+) -> Tuple[
+    List[Tuple[str, List[SupervisionSegment]]],
+    List[Tuple[str, List[SupervisionSegment]]],
+    List[Tuple[str, List[SupervisionSegment]]],
+]:
+    """
+    Convert prediction matrix to time-stamp segments.
+
+    Args:
+        audio_rttm_map_dict (Dict[str, Dict[str, Any]]): Dictionary of audio paths and associated manifest values.
+        postprocessing_cfg (Optional[PostProcessingParams]): Postprocessing parameters, or ``None`` when
+            ``bypass_postprocessing`` is enabled.
+        batch_preds_list (List[torch.Tensor]): List of prediction matrices containing sigmoid values for each speaker.
+            Dimension: [(1, num_frames, num_speakers), ..., (1, num_frames, num_speakers)]
+        unit_10ms_frame_count (int, optional): Number of 10ms segments in a frame. Defaults to 8.
+        bypass_postprocessing (bool, optional): If True, postprocessing will be bypassed. Defaults to False.
+        out_rttm_dir (Optional[str]): Directory in which to write RTTM files, or ``None`` to skip writing them.
+
+    Returns:
+        all_hypothesis (List[Tuple[str, List[SupervisionSegment]]]): Hypothesis annotations per audio file.
+        all_reference (List[Tuple[str, List[SupervisionSegment]]]): Reference annotations per audio file.
+        all_uems (List[Tuple[str, List[SupervisionSegment]]]): UEM timelines per audio file.
+    """
+    all_hypothesis, all_reference, all_uems = [], [], []
+    if postprocessing_cfg is None and not bypass_postprocessing:
+        raise ValueError("postprocessing_cfg is required when postprocessing is enabled")
+    cfg_vad_params = OmegaConf.structured(postprocessing_cfg) if postprocessing_cfg is not None else None
+    total_speaker_timestamps = predlist_to_timestamps(
+        batch_preds_list=batch_preds_list,
+        audio_rttm_map_dict=audio_rttm_map_dict,
+        cfg_vad_params=cfg_vad_params,
+        unit_10ms_frame_count=unit_10ms_frame_count,
+        bypass_postprocessing=bypass_postprocessing,
+    )
+    for sample_idx, (uniq_id, audio_rttm_values) in enumerate(audio_rttm_map_dict.items()):
+        speaker_timestamps = total_speaker_timestamps[sample_idx]
+        if uniq_id is None:
+            if audio_rttm_values.get("uniq_id", None) is not None:
+                uniq_id = audio_rttm_values["uniq_id"]
+            else:
+                uniq_id = get_uniqname_from_filepath(audio_rttm_values["audio_filepath"])
+        all_hypothesis, all_reference, all_uems = timestamps_to_supervisions(
+            speaker_timestamps,
+            uniq_id,
+            audio_rttm_values,
+            all_hypothesis,
+            all_reference,
+            all_uems,
+            out_rttm_dir,
+        )
+    return all_hypothesis, all_reference, all_uems
+
+
+def write_and_score_diar_predictions(
+    predictions: List[torch.Tensor],
+    samples: List[Dict[str, Any]],
+    output_subsampling_factor: int,
+    diar_output_rttm_dir: Optional[str] = None,
+    diar_collar: float = 0.0,
+    diar_ignore_overlap: bool = False,
+) -> None:
+    """
+    Convert predictions to diarization segments, write RTTMs, and score when references exist.
+
+    Each recording ID is resolved from a non-empty ``uniq_id`` or, when unavailable, from the audio filename stem.
+    RTTM files are written when an output directory is configured, and DER is calculated only when every reference
+    RTTM file exists.
+
+    Args:
+        predictions (List[torch.Tensor]): One diarization prediction tensor per recording.
+        samples (List[Dict[str, Any]]): Metadata dictionaries corresponding to ``predictions``.
+        output_subsampling_factor (int): Number of 10 ms feature frames represented by one diarization output frame.
+        diar_output_rttm_dir (Optional[str]): Directory in which to write RTTM files, or ``None`` to skip writing.
+        diar_collar (float): Collar in seconds for DER scoring.
+        diar_ignore_overlap (bool): Whether to ignore overlapping speech during DER scoring.
+
+    Raises:
+        ValueError: If prediction and metadata counts differ, recording IDs are duplicated, or the resolved
+            recording IDs are otherwise inconsistent with the predictions.
+    """
+    if len(predictions) != len(samples):
+        raise ValueError(
+            f"Expected one metadata entry per prediction, but found {len(samples)} samples "
+            f"for {len(predictions)} predictions."
+        )
+
+    audio_rttm_map_dict = od()
+    for sample in samples:
+        uniq_id = sample.get("uniq_id")
+        recording_id = str(uniq_id).strip() if uniq_id is not None else ""
+        if not recording_id:
+            recording_id = Path(sample["audio_filepath"]).stem
+        if recording_id in audio_rttm_map_dict:
+            previous_path = audio_rttm_map_dict[recording_id]["audio_filepath"]
+            raise ValueError(
+                f"Duplicate recording ID '{recording_id}' resolved for conflicting audio paths "
+                f"'{previous_path}' and '{sample['audio_filepath']}'."
+            )
+        audio_rttm_map_dict[recording_id] = sample
+
+    if len(audio_rttm_map_dict) != len(predictions):
+        raise ValueError(f"Expected {len(predictions)} unique recording IDs, but resolved {len(audio_rttm_map_dict)}.")
+
+    if diar_output_rttm_dir is not None:
+        Path(diar_output_rttm_dir).mkdir(parents=True, exist_ok=True)
+    all_hyps, all_refs, all_uems = convert_pred_mat_to_segments(
+        audio_rttm_map_dict=audio_rttm_map_dict,
+        postprocessing_cfg=None,
+        batch_preds_list=predictions,
+        unit_10ms_frame_count=output_subsampling_factor,
+        bypass_postprocessing=True,
+        out_rttm_dir=diar_output_rttm_dir,
+    )
+
+    has_references = all(sample.get("rttm_filepath") and os.path.exists(sample["rttm_filepath"]) for sample in samples)
+    if has_references:
+        logging.info(f"Calculating DER on {len(samples)} recordings...")
+        score_labels(
+            AUDIO_RTTM_MAP=audio_rttm_map_dict,
+            all_reference=all_refs,
+            all_hypothesis=all_hyps,
+            all_uem=all_uems,
+            collar=diar_collar,
+            ignore_overlap=diar_ignore_overlap,
+        )
+    elif any(sample.get("rttm_filepath") for sample in samples):
+        logging.warning("Skipping DER because one or more reference RTTM files do not exist.")
 
 
 def get_color_palette() -> Dict[str, str]:

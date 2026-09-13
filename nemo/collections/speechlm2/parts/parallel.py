@@ -38,11 +38,12 @@ def validate_parallelism_compatibility(
     attn_backend: str,
     nvte_fused_attn: Optional[str],
     device_capability: Optional[tuple[int, int]],
+    check_backward: bool = True,
 ) -> None:
     """Raise on known-incompatible SALMAutomodel configurations.
 
-    Catches three combinations that produce silent NaN gradients or
-    hangs at training time:
+    Catches three combinations that produce incorrect forward execution,
+    silent NaN gradients, or hangs at training time:
 
     1. ``packed_sequences=False`` (BSHD) under ``cp_size > 1``: TE's
        fused-attention CP path rejects ``padding_causal``, so the
@@ -64,14 +65,14 @@ def validate_parallelism_compatibility(
        ``NVTE_FUSED_ATTN=0`` in the launcher environment to force
        FlashAttention dispatch.
 
-    Hard error on (1), (2), and (3)-on-sm_120; ``warnings.warn`` on
-    (3) for other architectures (the bug may not apply but we have no
-    way to be certain).
+    Hard error on (1) and (2). When ``check_backward`` is true, hard error
+    on (3)-on-sm_120 and ``warnings.warn`` on (3) for other architectures
+    (the bug may not apply but we have no way to be certain).
 
     Pure function — no side effects on globals or environment, so it
-    can be unit-tested with synthetic inputs. Called from
-    :meth:`SALMAutomodel.on_fit_start` once the device mesh is wired
-    up.
+    can be unit-tested with synthetic inputs. ``check_backward=False``
+    skips only case (3) for validation/test forwards that do not run a
+    backward pass.
     """
     # Case 1: BSHD + CP > 1 — hard incompatibility.
     if not packed_sequences and cp_size > 1:
@@ -97,7 +98,7 @@ def validate_parallelism_compatibility(
             )
 
         # Case 3: THD + TE attention without NVTE_FUSED_ATTN=0.
-        if nvte_fused_attn != "0":
+        if check_backward and nvte_fused_attn != "0":
             msg = (
                 "SALMAutomodel: ``packed_sequences=true`` with ``attn=te`` and "
                 "``NVTE_FUSED_ATTN`` not set to ``\"0\"`` (got "
@@ -132,8 +133,8 @@ def setup_distributed(
     This is a convenience function for inference scripts that need distributed
     model-parallel loading without a Lightning Trainer.
 
-    Returns an :class:`AutomodelParallelStrategy` with ``device_mesh``,
-    ``distributed_config``, ``moe_config``, and ``moe_mesh`` ready to use.
+    Returns an :class:`AutomodelParallelStrategy` with its resolved
+    ``distributed_setup`` ready to pass to a model.
     """
     if not dist.is_initialized():
         dist.init_process_group(backend=backend)
@@ -158,19 +159,18 @@ def setup_distributed(
 
 
 class AutomodelParallelStrategy(ModelParallelStrategy):
-    """A Lightning strategy using nemo_automodel for device mesh creation,
+    """A Lightning strategy using nemo_automodel for topology resolution,
     supporting extended parallelism: FSDP2, TP, PP, CP, EP, and HSDP.
 
     This is a drop-in replacement for ``ModelParallelStrategy`` that delegates
-    device mesh creation to
-    ``nemo_automodel.components.distributed.mesh_utils.create_device_mesh``.
+    topology resolution to Automodel's public ``DistributedSetup`` builder.
 
     The resulting device mesh has dimensions ``(pp, dp_replicate, dp_shard, cp, tp)``
     with flattened submeshes ``dp``, ``dp_shard_cp``, and ``dp_cp``.
 
-    Models using this strategy access the mesh in ``configure_model()`` via
-    ``self.device_mesh`` and can use dimension names like ``"tp"``, ``"dp"``,
-    ``"dp_shard"``, ``"cp"``, ``"pp"``, etc.
+    Models using this strategy receive ``self.distributed_setup`` in
+    ``configure_model()`` and can access its mesh dimensions through
+    ``distributed_setup.mesh_context.device_mesh``.
 
     Args:
         dp_size: Data parallel size. If None, inferred from world_size and
@@ -212,7 +212,15 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
         save_distributed_checkpoint: bool = True,
         process_group_backend: Optional[str] = None,
         timeout: Optional[timedelta] = default_pg_timeout,
+        timeout_minutes: Optional[float] = None,
     ) -> None:
+        # YAML-friendly override that avoids NeMo's _target_ allowlist blocking
+        # datetime.timedelta. Pass `timeout_minutes: <N>` in the strategy config
+        # to extend the c10d/PG init timeout (default ~10-30 min depending on
+        # Lightning/PyTorch version), useful when rank-0 model loading from
+        # Lustre exceeds the default before reaching init_process_group.
+        if timeout_minutes is not None:
+            timeout = timedelta(minutes=timeout_minutes)
         super().__init__(
             # These are unused because we override setup_environment(),
             # but the base class requires them.
@@ -233,6 +241,7 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
         self._activation_checkpointing_llm = activation_checkpointing_llm
         self._activation_checkpointing_perception = activation_checkpointing_perception
         self._moe_mesh = None
+        self._distributed_setup = None
 
     @property
     def moe_mesh(self):
@@ -262,6 +271,11 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
         """Whether activation checkpointing is enabled for the perception encoder."""
         return self._activation_checkpointing_perception
 
+    @property
+    def distributed_setup(self):
+        """The resolved Automodel distributed setup, after mesh creation."""
+        return self._distributed_setup
+
     def create_device_mesh(self):
         """Create the device mesh from the configured parallelism sizes.
 
@@ -273,22 +287,29 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
         Returns:
             Tuple of ``(device_mesh, moe_mesh)``.
         """
-        from nemo_automodel.components.distributed.config import FSDP2Config
-        from nemo_automodel.components.distributed.mesh_utils import create_device_mesh
+        from nemo_automodel.components.distributed import DistributedSetup, FSDP2Config, ParallelismSizes
 
         if self._distributed_config is None:
             self._distributed_config = FSDP2Config()
 
-        self._device_mesh, self._moe_mesh = create_device_mesh(
-            self._distributed_config,
-            dp_size=self._dp_size,
-            dp_replicate_size=self._dp_replicate_size,
-            tp_size=self._tp_size,
-            pp_size=self._pp_size,
-            cp_size=self._cp_size,
-            ep_size=self._ep_size,
+        self._distributed_setup = DistributedSetup.build(
+            strategy=self._distributed_config,
+            parallelism_sizes=ParallelismSizes(
+                dp_size=self._dp_size,
+                dp_replicate_size=self._dp_replicate_size,
+                tp_size=self._tp_size,
+                pp_size=self._pp_size,
+                cp_size=self._cp_size,
+                ep_size=self._ep_size,
+            ),
+            moe_parallel_config=self._moe_config,
+            activation_checkpointing=self._activation_checkpointing_llm,
             world_size=dist.get_world_size(),
         )
+        self._distributed_config = self._distributed_setup.strategy_config
+        self._moe_config = self._distributed_setup.moe_parallel_config
+        self._device_mesh = self._distributed_setup.mesh_context.device_mesh
+        self._moe_mesh = self._distributed_setup.mesh_context.moe_mesh
         return self._device_mesh, self._moe_mesh
 
     @override
@@ -302,6 +323,7 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
         assert self.lightning_module is not None
         self.lightning_module._device_mesh = self._device_mesh
         self.lightning_module._moe_mesh = self._moe_mesh
+        self.lightning_module._distributed_setup = self._distributed_setup
 
     @property
     @override

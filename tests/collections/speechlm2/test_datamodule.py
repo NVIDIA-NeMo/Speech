@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from types import SimpleNamespace
+
 import pytest
 import torch
 from lhotse import CutSet
@@ -18,6 +20,7 @@ from lhotse.testing.dummies import DummyManifest
 from lightning.pytorch.utilities import CombinedLoader
 from omegaconf import DictConfig
 
+import nemo.collections.speechlm2.data.datamodule as datamodule_module
 from nemo.collections.common.data.lhotse.broadcasting import BroadcastingDataLoader
 from nemo.collections.common.tokenizers.sentencepiece_tokenizer import SentencePieceTokenizer, create_spt_model
 from nemo.collections.speechlm2.data import DataModule
@@ -98,6 +101,59 @@ def test_datamodule_train_dataloader(data_config, tokenizer):
     assert isinstance(batch, CutSet)
     assert len(batch) == 2
     assert all(c.tag == "train" for c in batch)
+
+
+def test_datamodule_train_dataloader_caches_broadcast_wrapper_and_passes_dp_group(data_config, tokenizer, monkeypatch):
+    data = DataModule(data_config, tokenizer=tokenizer, dataset=Identity())
+    mesh = SimpleNamespace(mesh_dim_names=())
+    dp_group = object()
+    source = object()
+    calls = []
+
+    monkeypatch.setattr(data, "_get_device_mesh", lambda: mesh)
+    monkeypatch.setattr(data, "_get_dp_rank", lambda: 3)
+    monkeypatch.setattr(data, "_get_world_size", lambda: 8)
+    monkeypatch.setattr(data, "_get_dp_group", lambda: dp_group)
+    monkeypatch.setattr(datamodule_module, "is_dp_source_rank", lambda candidate: candidate is mesh)
+
+    def fake_get_lhotse_dataloader_from_config(**kwargs):
+        calls.append(kwargs)
+        return source
+
+    monkeypatch.setattr(
+        datamodule_module,
+        "get_lhotse_dataloader_from_config",
+        fake_get_lhotse_dataloader_from_config,
+    )
+
+    dl1 = data.train_dataloader()
+    dl2 = data.train_dataloader()
+
+    assert dl1 is dl2
+    assert isinstance(dl1, BroadcastingDataLoader)
+    assert dl1._source is source
+    assert len(calls) == 1
+    assert calls[0]["global_rank"] == 3
+    assert calls[0]["world_size"] == 8
+    assert calls[0]["dp_group"] is dp_group
+
+
+def test_datamodule_train_dataloader_non_source_rank_does_not_build_source(data_config, tokenizer, monkeypatch):
+    data = DataModule(data_config, tokenizer=tokenizer, dataset=Identity())
+    mesh = SimpleNamespace(mesh_dim_names=())
+
+    monkeypatch.setattr(data, "_get_device_mesh", lambda: mesh)
+    monkeypatch.setattr(datamodule_module, "is_dp_source_rank", lambda candidate: False)
+
+    def fail_if_called(**kwargs):
+        raise AssertionError("non-source CP/TP ranks must not build a Lhotse source loader")
+
+    monkeypatch.setattr(datamodule_module, "get_lhotse_dataloader_from_config", fail_if_called)
+
+    dl = data.train_dataloader()
+
+    assert isinstance(dl, BroadcastingDataLoader)
+    assert dl._source is None
 
 
 def test_datamodule_validation_dataloader(data_config, tokenizer):

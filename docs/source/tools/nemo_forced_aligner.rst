@@ -1,7 +1,7 @@
 NeMo Forced Aligner (NFA)
 =========================
 
-NFA is hosted here: https://github.com/NVIDIA/NeMo/tree/main/tools/nemo_forced_aligner.
+NFA is hosted here: https://github.com/NVIDIA-NeMo/Speech/tree/main/tools/nemo_forced_aligner.
 
 
 NFA is a tool for generating token-, word- and segment-level timestamps of speech in audio using NeMo's CTC-based Automatic Speech Recognition models. 
@@ -14,7 +14,7 @@ Demos & Tutorials
 
 * HuggingFace Space `demo <https://huggingface.co/spaces/erastorgueva-nv/NeMo-Forced-Aligner>`__ to quickly try out NFA in various languages.
 * NFA "how-to" notebook `tutorial <https://nvidia.github.io/NeMo/blogs/2023/2023-08-forced-alignment/>`__.
-* "How forced alignment works" NeMo blog `tutorial <https://colab.research.google.com/github/NVIDIA/NeMo/blob/main/tutorials/tools/NeMo_Forced_Aligner_Tutorial.ipynb>`__.
+* "How forced alignment works" NeMo blog `tutorial <https://colab.research.google.com/github/NVIDIA-NeMo/Speech/blob/main/tutorials/tools/NeMo_Forced_Aligner_Tutorial.ipynb>`__.
 
 Quickstart
 ----------
@@ -30,7 +30,7 @@ Quickstart
 	    manifest_filepath=<path to manifest of utterances you want to align> \
 	    output_dir=<path to where your output files will be saved>
 
-.. image:: https://github.com/NVIDIA/NeMo/releases/download/v1.20.0/nfa_run.png
+.. image:: https://github.com/NVIDIA-NeMo/Speech/releases/download/v1.20.0/nfa_run.png
 
 How do I use NeMo Forced Aligner?
 ---------------------------------

@@ -72,7 +72,7 @@ concurrency:
 jobs:
   pre-flight:
     if: github.event_name != 'workflow_dispatch'
-    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_cicd_preflight.yml@v0.94.1
+    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_cicd_preflight.yml@cf5acebace78c7c339bc1f804357a991336f1c4d # v1.8.10
 
   release:
     needs: [pre-flight]
@@ -80,7 +80,7 @@ jobs:
       !cancelled() && !failure()
       && !(needs.pre-flight.outputs.docs_only == 'true'
            || needs.pre-flight.outputs.is_deployment_workflow == 'true')
-    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_release_library.yml@v1.4.3
+    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_release_library.yml@f7af92c4d1caea5a58577ce4ac5314f7de1bc5d4 # v1.4.3
     with:
       release-ref: ${{ inputs.release-ref || github.sha }}
       python-package: nemo

@@ -2728,11 +2728,12 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
                 time_idx += skip
                 need_loop = skip == 0
 
-            # this rarely happens, but we manually increment the `skip` number
-            # if blank is emitted and duration=0 is predicted. This prevents possible
-            # infinite loops.
+            # The inner loop exits either because a non-zero duration was predicted (`time_idx` has already
+            # been advanced by it) or because the symbol budget ran out on a zero-duration prediction. Only
+            # the latter needs a manual advance, which also prevents possible infinite loops.
             if skip == 0:
                 skip = 1
+                time_idx += 1
 
             if self.preserve_alignments:
                 # convert Ti-th logits into a torch array
@@ -2742,9 +2743,6 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
             if self.preserve_frame_confidence:
                 for i in range(skip):
                     hypothesis.frame_confidence.append([])  # blank buffer for next timestep
-
-            if symbols_added == self.max_symbols:
-                time_idx += 1
 
         # Remove trailing empty list of Alignments
         if self.preserve_alignments:

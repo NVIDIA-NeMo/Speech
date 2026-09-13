@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
 import os
 from typing import Dict, Optional, Tuple
 
@@ -53,20 +54,12 @@ class LhotseSpeechToTextBpeDataset(torch.utils.data.Dataset):
         super().__init__()
         self.tokenizer = TokenizerWrapper(tokenizer)
         self.use_ais_get_batch = os.environ.get("USE_AIS_GET_BATCH", "False").lower() == "true"
+        self.ais_force_individual = os.environ.get("USE_AIS_INDIVIDUAL_GETS", "False").lower() == "true"
 
-        # Try to use use_batch_loader if available (Lhotse >= 1.32.0)
-        try:
-            self.load_audio = AudioSamples(fault_tolerant=True, use_batch_loader=self.use_ais_get_batch)
-        except TypeError:
-            # Lhotse < 1.32.0 doesn't support use_batch_loader
-            if self.use_ais_get_batch:
-                import logging
-
-                logging.warning(
-                    "AIS batch loading requested but not supported by this Lhotse version. "
-                    "Please upgrade to Lhotse >= 1.32.0"
-                )
-            self.load_audio = AudioSamples(fault_tolerant=True)
+        self.load_audio = _make_audio_samples(
+            use_batch_loader=self.use_ais_get_batch,
+            ais_force_individual=self.ais_force_individual,
+        )
 
         self.return_cuts = return_cuts
 
@@ -87,3 +80,30 @@ class LhotseSpeechToTextBpeDataset(torch.utils.data.Dataset):
         if self.return_cuts:
             return audio, audio_lens, tokens, token_lens, cuts.drop_in_memory_data()
         return audio, audio_lens, tokens, token_lens
+
+
+def _make_audio_samples(use_batch_loader: bool, ais_force_individual: bool) -> AudioSamples:
+    kwargs = {
+        "fault_tolerant": True,
+        "use_batch_loader": use_batch_loader,
+        "ais_force_individual": ais_force_individual,
+    }
+    try:
+        return AudioSamples(**kwargs)
+    except TypeError as exc:
+        if "ais_force_individual" in str(exc):
+            kwargs.pop("ais_force_individual")
+            try:
+                return AudioSamples(**kwargs)
+            except TypeError as retry_exc:
+                exc = retry_exc
+
+        if "use_batch_loader" not in str(exc):
+            raise
+
+        if use_batch_loader:
+            logging.warning(
+                "AIS batch loading requested but not supported by this Lhotse version. "
+                "Please upgrade to Lhotse >= 1.32.0"
+            )
+        return AudioSamples(fault_tolerant=True)

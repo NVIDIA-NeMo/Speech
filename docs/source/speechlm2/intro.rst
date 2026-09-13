@@ -104,18 +104,14 @@ using MoE-specific optimizations (Grouped GEMM, DeepEP). It uses deferred initia
     import nemo.collections.speechlm2 as slm
     from nemo.collections.speechlm2.parts.parallel import setup_distributed
 
-    # Initialize distributed and create an Automodel-compatible device mesh with EP=2.
-    # setup_distributed delegates mesh creation to nemo_automodel, which builds
-    # the full (pp, dp_replicate, dp_shard, cp, tp) mesh with MoE submeshes.
+    # Initialize distributed and resolve the Automodel topology with EP=2.
+    # The strategy packages the mesh and execution policies in distributed_setup.
     strategy = setup_distributed(ep_size=2)
 
-    # Load a pretrained SALMAutomodel with the Automodel device mesh
+    # Load a pretrained SALMAutomodel with the resolved distributed setup.
     model = slm.models.SALMAutomodel.from_pretrained(
         "path/to/checkpoint",
-        device_mesh=strategy.device_mesh,
-        distributed_config=strategy.distributed_config,
-        moe_config=strategy.moe_config,
-        moe_mesh=strategy.moe_mesh,
+        distributed_setup=strategy.distributed_setup,
     ).eval()
 
     # Inference is identical to SALM

@@ -221,7 +221,7 @@ def list_available_models() -> Optional[PretrainedModelInfo]:
                     # pylint: disable=C0301
                     location=f"https://api.ngc.nvidia.com/v2/models/nvidia/nemo/biomegatron345m_biovocab_{vocab_size}_{vocab}/versions/1/files/BioMegatron345m-biovocab-{vocab_size}-{vocab}.nemo",
                     # pylint: disable=C0301
-                    description="Megatron 345m parameters model with biomedical vocabulary ({vocab_size} size) {vocab}, pre-trained on PubMed biomedical text corpus.",
+                    description=f"Megatron 345m parameters model with biomedical vocabulary ({vocab_size} size) {vocab}, pre-trained on PubMed biomedical text corpus.",
                 )
             )
     for vocab in ['cased', 'uncased']:

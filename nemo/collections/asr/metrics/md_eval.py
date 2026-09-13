@@ -1204,7 +1204,15 @@ class DiarizationErrorResult:
     def report(self) -> str:
         """Return a human-readable string of per-file DER scores."""
         lines = []
-        header = f"{'file':<40} {'total':>10} {'confusion':>10} {'false alarm':>12} {'missed':>10} {'DER':>8}"
+        file_width = max(
+            len("file"),
+            len("TOTAL"),
+            *(len(str(file_id)) for file_id, _score in self.results_),
+        )
+        header = (
+            f"{'file':<{file_width}} {'total':>11} {'false alarm':>11} {'%':>7} "
+            f"{'missed':>11} {'%':>7} {'confusion':>11} {'%':>7} {'DER %':>11}"
+        )
         lines.append(header)
         lines.append("-" * len(header))
         for file_id, score in self.results_:
@@ -1212,13 +1220,23 @@ class DiarizationErrorResult:
             conf = score["confusion"]
             fa = score["false alarm"]
             miss = score["missed detection"]
+            conf_pct = 100.0 * conf / total if total > 0 else 0.0
+            fa_pct = 100.0 * fa / total if total > 0 else 0.0
+            miss_pct = 100.0 * miss / total if total > 0 else 0.0
             der = 100.0 * (conf + fa + miss) / total if total > 0 else 0.0
-            lines.append(f"{file_id:<40} {total:>10.2f} {conf:>10.2f} {fa:>12.2f} {miss:>10.2f} {der:>7.2f}%")
+            lines.append(
+                f"{file_id:<{file_width}} {total:>11.2f} {fa:>11.2f} {fa_pct:>6.2f}% "
+                f"{miss:>11.2f} {miss_pct:>6.2f}% {conf:>11.2f} {conf_pct:>6.2f}% {der:>10.2f}%"
+            )
         total = self._total
+        conf_pct = 100.0 * self._confusion / total if total > 0 else 0.0
+        fa_pct = 100.0 * self._false_alarm / total if total > 0 else 0.0
+        miss_pct = 100.0 * self._missed / total if total > 0 else 0.0
         lines.append("-" * len(header))
         lines.append(
-            f"{'TOTAL':<40} {total:>10.2f} {self._confusion:>10.2f} "
-            f"{self._false_alarm:>12.2f} {self._missed:>10.2f} {abs(self) * 100:>7.2f}%"
+            f"{'TOTAL':<{file_width}} {total:>11.2f} {self._false_alarm:>11.2f} {fa_pct:>6.2f}% "
+            f"{self._missed:>11.2f} {miss_pct:>6.2f}% "
+            f"{self._confusion:>11.2f} {conf_pct:>6.2f}% {abs(self) * 100:>10.2f}%"
         )
         return "\n".join(lines)
 

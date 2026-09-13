@@ -374,7 +374,9 @@ def test_salm_dataset_batch_loader_enabled(monkeypatch):
     with patch("nemo.collections.speechlm2.data.salm_dataset.AudioSamples") as audio_samples:
         ds = SALMDataset(tokenizer=_FakeTokenizer())
 
-    audio_samples.assert_called_once_with(fault_tolerant=True, use_batch_loader=True, mono_downmix=True)
+    audio_samples.assert_called_once_with(
+        fault_tolerant=True, use_batch_loader=True, ais_force_individual=False, mono_downmix=True
+    )
     assert ds.load_audio is audio_samples.return_value
 
 
@@ -386,5 +388,7 @@ def test_salm_dataset_batch_loader_disabled(monkeypatch):
     with patch("nemo.collections.speechlm2.data.salm_dataset.AudioSamples") as audio_samples:
         ds = SALMDataset(tokenizer=_FakeTokenizer())
 
-    audio_samples.assert_called_once_with(fault_tolerant=True, use_batch_loader=False, mono_downmix=True)
+    audio_samples.assert_called_once_with(
+        fault_tolerant=True, use_batch_loader=False, ais_force_individual=False, mono_downmix=True
+    )
     assert ds.load_audio is audio_samples.return_value

@@ -46,4 +46,4 @@ For NVIDIA-published checkpoints, see :doc:`./asr_checkpoints` and the `NVIDIA H
 Submit a Community Checkpoint
 -----------------------------
 
-To suggest a checkpoint for this page, open a `GitHub issue <https://github.com/NVIDIA-NeMo/NeMo/issues/new>`__ with the Hugging Face model link, NeMo base checkpoint, task, languages, evaluation results, and inference framework.
+To suggest a checkpoint for this page, open a `GitHub issue <https://github.com/NVIDIA-NeMo/Speech/issues/new>`__ with the Hugging Face model link, NeMo base checkpoint, task, languages, evaluation results, and inference framework.

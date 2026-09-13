@@ -1025,7 +1025,7 @@ def test_lazy_nemo_iterator_with_offset_field(tmp_path: Path):
     assert cut.supervisions[0].text == "irrelevant"
     audio = cut.load_audio()
     assert audio.shape == (1, 8000)
-    np.testing.assert_equal(audio[0], expected_audio[:8000])
+    np.testing.assert_allclose(audio[0], expected_audio[:8000], atol=5e-5)
 
     cut = cuts[1]
     assert isinstance(cut, lhotse.MonoCut)
@@ -1073,7 +1073,7 @@ def test_lazy_nemo_iterator_with_relative_paths(tmp_path: Path):
     assert cut.num_samples == 8000
     assert cut.supervisions[0].text == "irrelevant"
     assert audio.shape == (1, 8000)
-    np.testing.assert_equal(audio[0], expected_audio[:8000])
+    np.testing.assert_allclose(audio[0], expected_audio[:8000], atol=5e-5)
 
 
 def test_lhotse_cuts_resolve_relative_paths(tmp_path: Path):

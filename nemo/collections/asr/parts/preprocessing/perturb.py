@@ -184,7 +184,7 @@ class TimeStretchPerturbation(Perturbation):
     .. [1] Ellis, D. P. W. "A phase vocoder in Matlab." Columbia University, 2002.
        `<http://www.ee.columbia.edu/~dpwe/resources/matlab/pvoc/>`_
     .. [2] librosa.effects.time_stretch
-       `<https://librosa.org/doc/main/generated/librosa.effects.time_stretch.html>`_
+       `<https://librosa.org/doc/latest/api/generated/librosa.effects.time_stretch.html#librosa.effects.time_stretch>`_
 
     Args:
         min_speed_rate: Minimum sampling rate modifier.

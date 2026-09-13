@@ -112,6 +112,45 @@ def get_test_ds_config(manifest_filepath, batch_size, num_workers) -> DictConfig
 
 
 class TestLhotseAudioToSpeechE2ESpkDiarDataset:
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "speaker_counts, expected_num_speakers",
+        [
+            ((2, 3), 3),
+            ((0, 0), 1),
+        ],
+    )
+    def test_unlimited_speaker_targets_use_num_spks_and_batch_padding(self, speaker_counts, expected_num_speakers):
+        class FakeCutSet(list):
+            @classmethod
+            def from_cuts(cls, cuts):
+                return cls(cuts)
+
+        cuts = FakeCutSet([mock.Mock(num_channels=1), mock.Mock(num_channels=1)])
+        for cut in cuts:
+            cut.with_channels.return_value = cut
+
+        dataset = LhotseAudioToSpeechE2ESpkDiarDataset(
+            cfg=DictConfig(
+                {
+                    'num_spks': -1,
+                    'sample_rate': 16000,
+                    'window_stride': 0.01,
+                    'subsampling_factor': 8,
+                }
+            )
+        )
+        dataset.load_audio = mock.Mock(return_value=(torch.zeros(2, 1600), torch.tensor([1600, 1600]), cuts))
+
+        with mock.patch(
+            'nemo.collections.asr.data.audio_to_diar_label_lhotse.speaker_to_target',
+            side_effect=[torch.ones(2, speaker_counts[0]), torch.ones(3, speaker_counts[1])],
+        ):
+            _, _, targets, _ = dataset[cuts]
+
+        assert dataset.num_speakers == -1
+        assert targets.shape == (2, 3, expected_num_speakers)
+        assert torch.count_nonzero(targets[0, :, -1]) == 0
 
     @pytest.mark.unit
     @pytest.mark.parametrize(

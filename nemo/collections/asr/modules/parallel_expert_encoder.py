@@ -340,7 +340,15 @@ class ParallelExpertEncoder(nn.Module):
         self.asr_normalize_type = asr_normalize_type or 'per_feature'
         self._feat_in = self.asr_encoder._feat_in
 
-        self.diarization_model = SortformerEncLabelModel.from_config_dict(_clone_config(diarization_model_cfg))
+        diarization_model_cfg = _clone_config(diarization_model_cfg)
+        diarization_model_cfg.output_subsampling_factor = self.asr_encoder.subsampling_factor
+        self.diarization_model = SortformerEncLabelModel.from_config_dict(diarization_model_cfg)
+        if self.diarization_model.output_subsampling_factor != self.asr_encoder.subsampling_factor:
+            raise ValueError(
+                "ParallelExpertEncoder requires the diarization output subsampling factor "
+                f"({self.diarization_model.output_subsampling_factor}) to equal the ASR encoder subsampling factor "
+                f"({self.asr_encoder.subsampling_factor})."
+            )
 
         self.freeze_diar = freeze_diar
         self.freeze_asr = freeze_asr
@@ -696,7 +704,7 @@ class ParallelExpertEncoder(nn.Module):
         sm.fifo_len = self.diar_fifo_len
         sm.spkcache_update_period = self.diar_spkcache_update_period
         sm.spkcache_len = self.diar_spkcache_len
-        sm._check_streaming_parameters()
+        self.diarization_model._check_streaming_parameters()
 
         diar_param = next(self.diarization_model.parameters(), None)
         if diar_param is not None:

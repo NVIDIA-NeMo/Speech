@@ -12,6 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 name: NeMo E2E Speech Tests
+
+env:
+  HF_HUB_OFFLINE: 1
+  HF_DATASETS_OFFLINE: 1
+  TRANSFORMERS_OFFLINE: 1
+
 on:
   workflow_call:
     inputs:
@@ -40,6 +46,92 @@ jobs:
       image-name: ${{ inputs.image-name }}
       dockerfile: docker/Dockerfile
       runner: ${{ inputs.runner }}
+
+  easymagpie-vllm-serving-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.decision.outputs.run }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Get PR info
+        id: get-pr-info
+        if: startsWith(github.ref, 'refs/heads/pull-request/')
+        uses: nv-gha-runners/get-pr-info@main
+      - name: Get changed files
+        id: changed-files
+        uses: step-security/changed-files@v45.0.1
+        with:
+          sha: ${{ github.sha }}
+          base_sha: ${{ fromJSON(steps.get-pr-info.outputs.pr-info || '{}').base.sha || github.event.pull_request.base.sha }}
+          files: |
+            .github/actions/test-template/action.yml
+            .github/workflows/cicd-main-speech.yml
+            tools/easymagpie_vllm_omni/**
+            tests/collections/tts/easymagpie_vllm_omni/conversion/**
+            tests/collections/tts/easymagpie_vllm_omni/serving/**
+            tests/functional_tests/L0_Unit_Tests_GPU_TTS_EasyMagpie_vLLM.sh
+      - name: Decide whether to run serving tests
+        id: decision
+        env:
+          ANY_CHANGED: ${{ steps.changed-files.outputs.any_changed }}
+          EVENT_NAME: ${{ github.event_name }}
+          TESTS_TO_RUN: ${{ inputs.test_to_run }}
+        run: |
+          run="$ANY_CHANGED"
+
+          if [[ "$EVENT_NAME" == "schedule" ]]; then
+            run=false
+          elif [[ "$EVENT_NAME" == "workflow_dispatch" ]] && \
+              jq -e 'index("all") != null or index("L0_Unit_Tests_GPU_TTS_EasyMagpie_vLLM") != null' \
+                <<<"$TESTS_TO_RUN" >/dev/null; then
+            run=true
+          fi
+
+          echo "run=$run" | tee -a "$GITHUB_OUTPUT"
+
+  easymagpie-vllm-serving-build:
+    needs: [easymagpie-vllm-serving-changes]
+    if: needs.easymagpie-vllm-serving-changes.outputs.run == 'true'
+    uses: ./.github/workflows/_build_container.yml
+    with:
+      image-name: nemo_container_easymagpie_vllm
+      dockerfile: tools/easymagpie_vllm_omni/Dockerfile.ci
+      runner: ${{ inputs.runner }}
+
+  easymagpie-codec-contract:
+    needs: [build, easymagpie-vllm-serving-changes]
+    if: needs.easymagpie-vllm-serving-changes.outputs.run == 'true'
+    runs-on: ${{ inputs.runner }}
+    name: EasyMagpie codec parity contract
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Pull Speech image
+        run: docker pull ${{ needs.build.outputs.image }}
+      - name: Generate contract with Speech decoder
+        run: |
+          mkdir -p .ci-artifacts/easymagpie-codec-contract
+          docker run \
+            --rm \
+            --shm-size=8g \
+            --env NEMO_HOME=/tmp/nemo_home \
+            --volume "$(pwd):/workspace" \
+            --workdir /workspace \
+            ${{ needs.build.outputs.image }} \
+            bash -c "python tests/collections/tts/easymagpie_vllm_omni/conversion/generate_codec_contract.py \
+              .ci-artifacts/easymagpie-codec-contract"
+          du -h .ci-artifacts/easymagpie-codec-contract/*
+      - name: Upload codec contract
+        uses: actions/upload-artifact@v6
+        with:
+          name: easymagpie-codec-contract
+          path: .ci-artifacts/easymagpie-codec-contract
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
 
   unit-tests:
     strategy:
@@ -128,9 +220,9 @@ jobs:
     name: ${{ matrix.script }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Checkout NeMo
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           path: ${{ github.run_id }}
       - name: main
@@ -145,6 +237,30 @@ jobs:
           timeout: ${{ matrix.timeout || 10 }}
           cpu-only: ${{ matrix.cpu-only || false }}
           is_optional: ${{ matrix.is-optional || false }}
+
+  easymagpie-vllm-serving-tests:
+    needs: [easymagpie-vllm-serving-build, easymagpie-codec-contract]
+    runs-on: ${{ inputs.runner }}
+    name: L0_Unit_Tests_GPU_TTS_EasyMagpie_vLLM
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Checkout NeMo
+        uses: actions/checkout@v6
+        with:
+          path: ${{ github.run_id }}
+      - name: main
+        uses: ./.github/actions/test-template
+        with:
+          runner: ${{ runner.name }}
+          script: L0_Unit_Tests_GPU_TTS_EasyMagpie_vLLM
+          is_unit_test: true
+          tests_to_run: ${{ inputs.test_to_run }}
+          image: ${{ needs.easymagpie-vllm-serving-build.outputs.image }}
+          test-data-path: ${{ vars.DEFAULT_TEST_DATA_PATH || '/mnt/datadrive/TestData' }}
+          timeout: 15
+          download-artifact-name: easymagpie-codec-contract
+          download-artifact-path: .ci_artifacts/easymagpie-codec-contract
 
   e2e-tests:
     strategy:
@@ -287,6 +403,9 @@ jobs:
             script: L2_TTS_Fast_dev_runs_EasyMagpietts_OnlinePO
             timeout: 20
           - runner: ${{ inputs.runner }}
+            script: L2_TTS_Fast_dev_runs_EasyMagpietts_OnlineCFGDistillation
+            timeout: 20
+          - runner: ${{ inputs.runner }}
             script: L2_TTS_InferEvaluate_EasyMagpietts
             timeout: 20
     needs: [build, unit-tests]
@@ -294,9 +413,9 @@ jobs:
     name: ${{ matrix.is-optional && 'PLEASEFIXME_' || '' }}${{ matrix.script }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Checkout NeMo
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           path: ${{ github.run_id }}
       - name: main
@@ -561,9 +680,9 @@ jobs:
     name: ${{ matrix.script }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Checkout NeMo
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           path: ${{ github.run_id }}
       - name: main

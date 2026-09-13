@@ -12,7 +12,10 @@ model:
   sample_rate: 16000
   pil_weight: 0.5 # Weight for Permutation Invariant Loss (PIL) used in training the Sortformer diarizer model
   ats_weight: 0.5 # Weight for Arrival Time Sort (ATS) loss in training the Sortformer diarizer model
+  ats_tolerance: 0 # Arrival-time tolerance in output frames; tied speakers are matched by prediction overlap
   max_num_of_spks: 4 # Maximum number of speakers per model; currently set to 4
+  high_resolution: false # If true, learn predictions at the preprocessor frame step (normally 10 ms)
+  output_subsampling_factor: ${model.encoder.subsampling_factor} # Returned prediction step in preprocessor frames
   streaming_mode: True
 
   model_defaults:
@@ -44,7 +47,7 @@ model:
     bucket_buffer_size: 20000
     shuffle_buffer_size: 10000
     window_stride: ${model.preprocessor.window_stride}
-    subsampling_factor: ${model.encoder.subsampling_factor}
+    subsampling_factor: ${model.encoder.subsampling_factor} # Overridden by the model in high-resolution mode
 
   validation_ds:
     manifest_filepath: ???
@@ -66,7 +69,7 @@ model:
     drop_last: False
     pin_memory: True
     window_stride: ${model.preprocessor.window_stride}
-    subsampling_factor: ${model.encoder.subsampling_factor}
+    subsampling_factor: ${model.encoder.subsampling_factor} # Overridden by the model in high-resolution mode
   
   test_ds:
     manifest_filepath: null
@@ -89,7 +92,7 @@ model:
     drop_last: False
     pin_memory: True
     window_stride: ${model.preprocessor.window_stride}
-    subsampling_factor: ${model.encoder.subsampling_factor}
+    subsampling_factor: ${model.encoder.subsampling_factor} # Overridden by the model in high-resolution mode
 
   preprocessor:
     _target_: nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor
@@ -123,6 +126,7 @@ model:
     max_index: 99999 # Maximum allowed index value for internal processing in speaker cache update
     scores_boost_latest: 0.05 # Gain for scores for recently added frames in speaker cache update
     sil_threshold: 0.2 # Threshold for determining silence frames to calculate average silence embedding
+    use_learnable_sil_emb: false # Use a learned embedding instead of the running mean for silence cache slots
     strong_boost_rate: 0.75 # Rate determining number of frames per speaker that receive strong score boosting
     weak_boost_rate: 1.5 # Rate determining number of frames per speaker that receive weak score boosting
     min_pos_scores_rate: 0.5 # Rate threshold for dropping overlapping frames when enough non-overlapping exist
@@ -206,7 +210,7 @@ trainer:
   max_epochs: 800
   max_steps: -1 # computed at runtime if not set
   num_nodes: 1
-  strategy: ddp_find_unused_parameters_true # Could be "ddp"
+  strategy: ddp
   accumulate_grad_batches: 1
   deterministic: True
   enable_checkpointing: False

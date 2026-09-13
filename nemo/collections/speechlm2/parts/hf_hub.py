@@ -26,7 +26,7 @@ LLM_BACKBONE_DIR = "llm_backbone"
 class HFHubMixin(
     PyTorchModelHubMixin,
     library_name="NeMo",
-    repo_url="https://github.com/NVIDIA/NeMo",
+    repo_url="https://github.com/NVIDIA-NeMo/Speech",
     docs_url="https://docs.nvidia.com/nemo-framework/user-guide/latest/nemotoolkit",
 ):
     @classmethod
@@ -41,29 +41,30 @@ class HFHubMixin(
         token: Union[str, bool, None],
         map_location: str = "cpu",
         strict: bool = False,
+        trust_remote_code: bool = False,
         **model_kwargs,
     ):
         """
         Load Pytorch pretrained weights and return the loaded model.
         Wrapper over PyTorchModelHubMixin that auto-handles config in **model_kwargs.
 
-        Supports distributed model-parallel loading via ``device_mesh``:
+        Supports distributed model-parallel loading via ``distributed_setup``:
 
-            >>> from nemo.collections.speechlm2.parts.parallel import setup_distributed
             >>> strategy = setup_distributed(tp_size=2)
             >>> model = SALM.from_pretrained(
-            ...     "nvidia/salm-model",
-            ...     device_mesh=strategy.device_mesh,
-            ...     distributed_config=strategy.distributed_config,
-            ...     moe_config=strategy.moe_config,
-            ...     moe_mesh=strategy.moe_mesh,
+            ...     "nvidia/salm-model", distributed_setup=strategy.distributed_setup
             ... )
+
+        ``trust_remote_code`` is a runtime security decision. It is deliberately
+        taken from the caller and overwrites any value stored in the downloaded
+        checkpoint config so that a model repository cannot opt itself into
+        executing remote code.
         """
-        # Pop distributed kwargs before they reach the constructor.
-        device_mesh = model_kwargs.pop("device_mesh", None)
-        distributed_config = model_kwargs.pop("distributed_config", None)
-        moe_config = model_kwargs.pop("moe_config", None)
-        moe_mesh = model_kwargs.pop("moe_mesh", None)
+        if not isinstance(trust_remote_code, bool):
+            raise TypeError(f"trust_remote_code must be a bool, got {type(trust_remote_code).__name__}")
+
+        distributed_setup = model_kwargs.pop("distributed_setup", None)
+        device_mesh = distributed_setup.mesh_context.device_mesh if distributed_setup is not None else None
         torch_dtype = model_kwargs.pop("torch_dtype", None)
 
         _cached_file_kwargs = dict(
@@ -81,6 +82,7 @@ class HFHubMixin(
         if resolved_config_file is None:
             raise RuntimeError(f"Missing {CONFIG_NAME} file for {model_id=}")
         model_kwargs['cfg'] = OmegaConf.to_container(OmegaConf.load(resolved_config_file))
+        model_kwargs['cfg']['trust_remote_code'] = trust_remote_code
         _inject_local_artifact_paths(model_kwargs['cfg'], model_id, _cached_file_kwargs)
         # The setting below tells the model's __init__ not to load the original pretrained weights
         # for individual children modules.
@@ -121,10 +123,7 @@ class HFHubMixin(
             model_id=model_id,
             model_kwargs=model_kwargs,
             torch_dtype=torch_dtype,
-            device_mesh=device_mesh,
-            distributed_config=distributed_config,
-            moe_config=moe_config,
-            moe_mesh=moe_mesh,
+            distributed_setup=distributed_setup,
             cached_file_kwargs=_cached_file_kwargs,
         )
 
@@ -165,6 +164,10 @@ class HFHubMixin(
                 config = OmegaConf.to_container(self.cfg)
         # Ensure HF-compatible fields are present so vLLM / transformers can identify the model.
         if isinstance(config, dict):
+            config = dict(config)
+            # Remote-code trust is a runtime choice and must never be persisted
+            # in a checkpoint that can be loaded by another user.
+            config.pop("trust_remote_code", None)
             config.setdefault("model_type", "nemo_speechlm")
             config.setdefault("architectures", ["NeMoSpeechLMForConditionalGeneration"])
         return super().save_pretrained(
@@ -182,10 +185,7 @@ def _distributed_from_pretrained(
     model_id,
     model_kwargs,
     torch_dtype,
-    device_mesh,
-    distributed_config,
-    moe_config,
-    moe_mesh,
+    distributed_setup,
     cached_file_kwargs,
 ):
     """Create a distributed model instance outside of a classmethod frame.
@@ -206,12 +206,7 @@ def _distributed_from_pretrained(
     instance = cls(**model_kwargs)
 
     # 2. Build parallelized architecture
-    instance.configure_model(
-        device_mesh=device_mesh,
-        distributed_config=distributed_config,
-        moe_config=moe_config,
-        moe_mesh=moe_mesh,
-    )
+    instance.configure_model(distributed_setup=distributed_setup)
 
     # 3. Load weights
     weight_file = cached_file(model_id, SAFETENSORS_SINGLE_FILE, **cached_file_kwargs)

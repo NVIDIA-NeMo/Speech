@@ -18,7 +18,7 @@ ARG BASE_IMAGE=pytorch/pytorch:2.9.0-cuda12.8-cudnn9-runtime
 
 FROM ${BASE_IMAGE}
 
-ARG GIT_URL="https://github.com/NVIDIA-NeMo/NeMo.git"
+ARG GIT_URL="https://github.com/NVIDIA-NeMo/Speech.git"
 ARG CHECKOUT="main"
 
 ENV DEBIAN_FRONTEND=noninteractive

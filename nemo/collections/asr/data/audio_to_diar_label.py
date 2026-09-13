@@ -55,6 +55,9 @@ def get_subsegments_to_timestamps(
         ts (torch.tensor):
             A tensor containing the scaled and rounded timestamps for each subsegment.
     """
+    if len(subsegments) == 0:
+        # Each row stores the start and end frame indices.
+        return torch.zeros((0, 2), dtype=torch.long)
     seg_ts = (torch.tensor(subsegments) * feat_per_sec).float()
     ts_round = torch.round(seg_ts, decimals=decimals)
     ts = ts_round.long()
@@ -125,35 +128,35 @@ def get_frame_targets_from_rttm(
     `feat_level_target` will later be converted to base-segment level diarization label.
 
     Args:
-        rttm_timestamps (list):
-            List containing start and end time for each speaker segment label.
-            stt_list, end_list and speaker_list are contained.
-        feat_per_sec (int):
-            Number of feature frames per second.
-            This quantity is determined by window_stride variable in preprocessing module.
-        target_spks (tuple):
-            Speaker indices that are generated from combinations. If there are only one or two speakers,
-            only a single target_spks variable is generated.
+        rttm_timestamps (list): Lists of start times, end times, and speaker indices for the RTTM segments.
+        offset (float): Start time of the selected audio region in seconds.
+        duration (float): Duration of the selected audio region in seconds.
+        round_digits (int): Decimal precision associated with the prepared RTTM timestamps.
+        feat_per_sec (int): Number of feature frames per second, as determined by the preprocessing window stride.
+        max_spks (int): Maximum number of target speakers. Use ``-1`` to preserve all speakers.
 
     Returns:
-        feat_level_target (torch.tensor):
-            Tensor containing label for each feature level frame.
+        feat_level_target (torch.Tensor): Speaker labels for each feature-level frame.
     """
     stt_list, end_list, speaker_list = rttm_timestamps
     sorted_speakers = sorted(list(set(speaker_list)))
     total_fr_len = int(duration * feat_per_sec)
-    if len(sorted_speakers) > max_spks:
+    if max_spks == -1:
+        num_target_speakers = max(1, len(sorted_speakers))
+    else:
+        num_target_speakers = max_spks
+    if max_spks != -1 and len(sorted_speakers) > max_spks:
         logging.warning(
             f"Number of speakers in RTTM file {len(sorted_speakers)} exceeds the maximum number of speakers: "
             f"{max_spks}! Only {max_spks} first speakers remain, and this will affect frame metrics!"
         )
-    feat_level_target = torch.zeros(total_fr_len, max_spks)
+    feat_level_target = torch.zeros(total_fr_len, num_target_speakers)
     for count, (stt, end, spk_rttm_key) in enumerate(zip(stt_list, end_list, speaker_list)):
         if end < offset or stt > offset + duration:
             continue
         stt, end = max(offset, stt), min(offset + duration, end)
         spk = spk_rttm_key
-        if spk < max_spks:
+        if spk < num_target_speakers:
             stt_fr, end_fr = int((stt - offset) * feat_per_sec), int((end - offset) * feat_per_sec)
             feat_level_target[stt_fr:end_fr, spk] = 1
     return feat_level_target
@@ -298,7 +301,8 @@ class _AudioToSpeechE2ESpkDiarDataset(Dataset):
         """
         if rttm_file in [None, '']:
             num_seg = torch.max(target_len)
-            targets = torch.zeros(num_seg, self.max_spks)
+            num_target_speakers = 1 if self.max_spks == -1 else self.max_spks
+            targets = torch.zeros(num_seg, num_target_speakers)
             return targets
 
         with open(rttm_file, 'r') as f:
@@ -339,8 +343,11 @@ class _AudioToSpeechE2ESpkDiarDataset(Dataset):
                 Tensor variable containing soft-labels of speaker activity in each step-level segment.
         """
         num_seg = torch.max(target_len)
-        targets = torch.zeros(num_seg, self.max_spks)
         stride = int(self.feat_per_sec * self.diar_frame_length)
+        if stride <= 1:
+            return feat_level_target[:num_seg, :].clone()
+
+        targets = feat_level_target.new_zeros((num_seg, feat_level_target.shape[1]))
         for index in range(num_seg):
             if index == 0:
                 seg_stt_feat = 0
@@ -372,6 +379,11 @@ class _AudioToSpeechE2ESpkDiarDataset(Dataset):
                 Number of segments for each scale. This information is used for reshaping embedding batch
                 during forward propagation.
         """
+        stride = int(self.feat_per_sec * self.diar_frame_length)
+        if stride <= 1:
+            num_frames = int(np.ceil((1 + duration * sample_rate) / int(sample_rate / self.feat_per_sec)))
+            return torch.tensor([num_frames])
+
         subsegments = get_subsegments(
             offset=offset,
             window=round(self.diar_frame_length * 2, self.round_digits),
@@ -454,6 +466,7 @@ def _eesd_train_collate_fn(self, batch):
 
     max_raw_feat_len = max([x.shape[0] for x in audio_signal])
     max_target_len = max([x.shape[0] for x in targets])
+    max_target_speakers = max([x.shape[1] for x in targets])
     if max([len(feat.shape) for feat in audio_signal]) > 1:
         max_ch = max([feat.shape[1] for feat in audio_signal])
     else:
@@ -467,7 +480,7 @@ def _eesd_train_collate_fn(self, batch):
         if feat.shape[0] < feat_len:
             feat_len_pad = feat_len - feat.shape[0]
             feat = torch.nn.functional.pad(feat, (0, feat_len_pad))
-        pad_tgt = (0, 0, 0, max_target_len - seq_len)
+        pad_tgt = (0, max_target_speakers - tgt.shape[1], 0, max_target_len - seq_len)
         padded_feat = torch.nn.functional.pad(feat, pad_feat)
         padded_tgt = torch.nn.functional.pad(tgt, pad_tgt)
         if max_ch > 1 and padded_feat.shape[1] < max_ch:
@@ -477,7 +490,7 @@ def _eesd_train_collate_fn(self, batch):
         feature_length_list.append(feat_len.clone().detach())
         target_len_list.append(segment_ct.clone().detach())
         targets_list.append(padded_tgt)
-        audio_signal = torch.stack(audio_signal_list)
+    audio_signal = torch.stack(audio_signal_list)
     feature_length = torch.stack(feature_length_list)
     target_lens = torch.stack(target_len_list).squeeze(1)
     targets = torch.stack(targets_list)
@@ -507,23 +520,17 @@ class AudioToSpeechE2ESpkDiarDataset(_AudioToSpeechE2ESpkDiarDataset):
     }
 
     Args:
-        manifest_filepath (str):
-            Path to the input manifest JSON file containing paths to audio and RTTM files.
-        soft_label_thres (float):
-            Threshold for assigning soft labels to segments based on RTTM file information.
-        session_len_sec (float):
-            Duration of each session (in seconds) for training or fine-tuning.
-        num_spks (int):
-            Number of speakers in the audio files.
-        featurizer:
-            Instance of a featurizer for generating features from the raw waveform.
-        window_stride (float):
-            Window stride (in seconds) for extracting acoustic features, used to calculate
-            the number of feature frames.
-        global_rank (int):
-            Global rank of the current process (used for distributed training).
-        soft_targets (bool):
-            Whether or not to use soft targets during training.
+        manifest_filepath (str): Path to the input manifest JSON file containing paths to audio and RTTM files.
+        soft_label_thres (float): Threshold for assigning soft labels from RTTM information.
+        session_len_sec (float): Duration of each session in seconds for training or fine-tuning.
+        num_spks (int): Number of speakers in the audio files.
+        featurizer (WaveformFeaturizer): Featurizer that loads raw waveforms.
+        fb_featurizer (FilterbankFeatures): Filterbank featurizer that defines the feature frame geometry.
+        window_stride (float): Window stride in seconds used to calculate the number of feature frames.
+        global_rank (int): Global rank of the current process for distributed training.
+        soft_targets (bool): Whether to retain soft speaker-activity targets.
+        device (str or torch.device): Device on which collated audio and targets are placed.
+        subsampling_factor (int): Number of feature frames represented by each diarization target frame. Defaults to 8.
 
     Methods:
         eesd_train_collate_fn(batch):
@@ -543,6 +550,7 @@ class AudioToSpeechE2ESpkDiarDataset(_AudioToSpeechE2ESpkDiarDataset):
         global_rank: int,
         soft_targets: bool,
         device: str,
+        subsampling_factor: int = 8,
     ):
         super().__init__(
             manifest_filepath=manifest_filepath,
@@ -554,6 +562,7 @@ class AudioToSpeechE2ESpkDiarDataset(_AudioToSpeechE2ESpkDiarDataset):
             window_stride=window_stride,
             global_rank=global_rank,
             soft_targets=soft_targets,
+            subsampling_factor=subsampling_factor,
             device=device,
         )
 

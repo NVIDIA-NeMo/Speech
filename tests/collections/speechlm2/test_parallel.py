@@ -14,13 +14,11 @@
 
 import pytest
 from lightning.pytorch.strategies.model_parallel import ModelParallelStrategy
-from nemo_automodel.components.distributed.config import FSDP2Config
-from nemo_automodel.components.moe.config import MoEParallelizerConfig
+from nemo_automodel.components.distributed.config import FSDP2Config, MoEParallelizerConfig
 from omegaconf import DictConfig
 
 from nemo.collections.speechlm2.parts.parallel import AutomodelParallelStrategy
 from nemo.utils.trainer_utils import _resolve_automodel_configs, resolve_trainer_cfg
-
 
 # ---------------------------------------------------------------------------
 # AutomodelParallelStrategy

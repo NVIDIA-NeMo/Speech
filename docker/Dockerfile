@@ -58,6 +58,9 @@ ENV PATH="/root/.local/bin:${VIRTUAL_ENV}/bin:${PATH}"
 
 RUN <<"EOF" bash -ex
 apt-get update
+apt-get install -y --only-upgrade --no-install-recommends \
+    libssl3t64 \
+    openssl
 apt-get install -y \
     curl \
     git
@@ -122,7 +125,7 @@ uv pip install \
     orjson
 
 case "$(nemo-cuda-flavor)" in
-    cu12) torchcodec_index=https://download.pytorch.org/whl/cu126 ;;
+    cu12) torchcodec_index=https://download.pytorch.org/whl/cu129 ;;
     cu13) torchcodec_index=https://download.pytorch.org/whl/cu132 ;;
 esac
 uv pip install --index-url "${torchcodec_index}" torchcodec
@@ -131,7 +134,7 @@ EOF
 FROM base-image AS automodel-deps
 ARG GPU_TARGET=h100plus
 ARG DEEPEP_REPO=https://github.com/deepseek-ai/DeepEP.git
-ARG DEEPEP_REF=v1.2.1
+ARG DEEPEP_REF=7febc6e25660af0f54d95dd781ecdcd62265ecca
 ARG FLASH_ATTN_MAX_JOBS=8
 ARG FLASH_ATTN_NVCC_THREADS=1
 
@@ -221,6 +224,16 @@ uv sync \
     --group test
 nemo-install-cuda-python
 
+automodel_site_packages="$(
+    python - <<'PY'
+from pathlib import Path
+
+import nemo_automodel
+
+print(Path(nemo_automodel.__file__).resolve().parent.parent)
+PY
+)"
+
 if [[ "${GPU_TARGET}" == "a100" ]]; then
     git clone "${DEEPEP_REPO}" /opt/automodel-src/DeepEP
     git -C /opt/automodel-src/DeepEP checkout -f "${DEEPEP_REF}"
@@ -228,25 +241,18 @@ if [[ "${GPU_TARGET}" == "a100" ]]; then
     TORCH_CUDA_ARCH_LIST="${DEEPEP_TORCH_CUDA_ARCH_LIST}" \
         uv pip install \
         --no-build-isolation \
-        --no-deps \
         /opt/automodel-src/DeepEP
 fi
 
 if [[ "${GPU_TARGET}" == "h100plus" ]]; then
     # flash-attn-4 requires apache-tvm-ffi 0.1.11, while mamba-ssm
     # currently constrains the solved environment to apache-tvm-ffi<=0.1.9.
-    cutlass_packages=(
-        "nvidia-cutlass-dsl==4.5.2"
-        "nvidia-cutlass-dsl-libs-base==4.5.2"
-    )
-    if [[ "$(nemo-cuda-flavor)" == "cu13" ]]; then
-        cutlass_packages+=("nvidia-cutlass-dsl-libs-cu13==4.5.2")
-    fi
+    # Keep CUTLASS and Quack at the versions resolved by uv.lock. Automodel
+    # main now requires quack-kernels 0.6.1, which in turn requires CUTLASS
+    # 4.6.0; installing the old 4.5.2 override leaves the runtime inconsistent.
     uv pip install \
         --no-deps \
         "apache-tvm-ffi==0.1.11" \
-        "${cutlass_packages[@]}" \
-        "quack-kernels==0.5.0" \
         "torch-c-dlpack-ext==0.1.5"
 
     mkdir -p /opt/automodel-src/flash-attn-4 /tmp/flash-attn-4
@@ -267,9 +273,26 @@ if [[ "${GPU_TARGET}" == "h100plus" ]]; then
 fi
 EOF
 
+COPY external/patches/flash_attn_4_cutlass46_compat.patch /tmp/patches/
+RUN <<"EOF" bash -euxo pipefail
+if [[ "${GPU_TARGET}" == "h100plus" ]]; then
+    patch -d "${VIRTUAL_ENV}/lib/python${UV_PYTHON}/site-packages/flash_attn/cute" -p1 \
+        < /tmp/patches/flash_attn_4_cutlass46_compat.patch
+fi
+EOF
+
 FROM base-image
 COPY --from=automodel-deps /opt/venv /opt/venv
 
+# Prefer the locked wheel libraries so PyTorch and compiled extensions resolve one CUDA runtime stack.
+ENV PYTHON_SITE_PACKAGES="${VIRTUAL_ENV}/lib/python${UV_PYTHON}/site-packages" \
+    CUDNN_HOME="${VIRTUAL_ENV}/lib/python${UV_PYTHON}/site-packages/nvidia/cudnn" \
+    CURAND_HOME="${VIRTUAL_ENV}/lib/python${UV_PYTHON}/site-packages/nvidia/curand" \
+    NVRTC_HOME="${VIRTUAL_ENV}/lib/python${UV_PYTHON}/site-packages/nvidia/cuda_nvrtc" \
+    NVTE_FRAMEWORK=pytorch
+ENV LD_LIBRARY_PATH="${PYTHON_SITE_PACKAGES}/torch/lib:${PYTHON_SITE_PACKAGES}/nvidia/cublas/lib:${PYTHON_SITE_PACKAGES}/nvidia/cuda_cupti/lib:${PYTHON_SITE_PACKAGES}/nvidia/cuda_nvrtc/lib:${PYTHON_SITE_PACKAGES}/nvidia/cuda_runtime/lib:${PYTHON_SITE_PACKAGES}/nvidia/cudnn/lib:${PYTHON_SITE_PACKAGES}/nvidia/cufft/lib:${PYTHON_SITE_PACKAGES}/nvidia/cufile/lib:${PYTHON_SITE_PACKAGES}/nvidia/curand/lib:${PYTHON_SITE_PACKAGES}/nvidia/cusolver/lib:${PYTHON_SITE_PACKAGES}/nvidia/cusparse/lib:${PYTHON_SITE_PACKAGES}/nvidia/cusparselt/lib:${PYTHON_SITE_PACKAGES}/nvidia/nccl/lib:${PYTHON_SITE_PACKAGES}/nvidia/nvjitlink/lib:${PYTHON_SITE_PACKAGES}/nvidia/nvshmem/lib:${PYTHON_SITE_PACKAGES}/nvidia/nvtx/lib:${LD_LIBRARY_PATH}"
+
+ARG NVIDIA_BUILD_ID
 ENV NVIDIA_BUILD_ID=${NVIDIA_BUILD_ID:-<unknown>}
 LABEL com.nvidia.build.id="${NVIDIA_BUILD_ID}"
 ARG NVIDIA_BUILD_REF

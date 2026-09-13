@@ -216,7 +216,7 @@ def canary2(cut: Cut, prompt: Canary2PromptFormatter) -> dict[str, torch.Tensor]
         eos = prompt.tokenizer.eos
     else:  # SPE
         eos = prompt.tokenizer.token_to_id(CANARY_EOS)
-    assert eos > -1, "Invalid tokenizer: tokenizer.token_to_id('{CANARY_EOS}') returned {eos}"
+    assert eos > -1, f"Invalid tokenizer: tokenizer.token_to_id('{CANARY_EOS}') returned {eos}"
     assert (
         ans["answer_ids"][-1].item() == eos
     ), f"Expected the last token in answer_ids to be EOS, but we got {ans['answer_ids']}"

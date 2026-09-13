@@ -229,7 +229,7 @@ class Wav2VecTransformerEncoder(TransformerEncoder):
     Takes convolutional encodings of all time steps and adds to features before applying series
     of self-attention layers.
 
-    Example configs may be found at: https://github.com/NVIDIA/NeMo/tree/main/examples/asr/conf/wav2vec
+    Example configs may be found at: https://github.com/NVIDIA-NeMo/Speech/tree/main/examples/asr/conf/wav2vec
 
     Args:
             layer_drop: Floating point value specifying proportion of module for layer dropout (See Fan et al. https://arxiv.org/pdf/1909.11556.pdf).

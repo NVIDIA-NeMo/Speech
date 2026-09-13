@@ -18,9 +18,9 @@ from typing import Optional, Union
 import torch.utils.data
 from lhotse import CutSet
 from lhotse.cut import MixedCut
-from lhotse.dataset import AudioSamples
 from lhotse.dataset.collation import collate_vectors
 
+from nemo.collections.asr.data.audio_to_text_lhotse import _make_audio_samples
 from nemo.collections.common.data import apply_prompt_format_fn
 from nemo.collections.common.prompts import PromptFormatter
 from nemo.collections.common.tokenizers import TokenizerSpec
@@ -83,20 +83,12 @@ class PromptedAudioToTextLhotseDataset(torch.utils.data.Dataset):
         super().__init__()
         self.tokenizer = tokenizer
         self.use_ais_get_batch = os.environ.get("USE_AIS_GET_BATCH", "False").lower() == "true"
+        self.ais_force_individual = os.environ.get("USE_AIS_INDIVIDUAL_GETS", "False").lower() == "true"
 
-        # Try to use use_batch_loader if available (Lhotse >= 1.32.0)
-        try:
-            self.load_audio = AudioSamples(fault_tolerant=True, use_batch_loader=self.use_ais_get_batch)
-        except TypeError:
-            # Lhotse < 1.32.0 doesn't support use_batch_loader
-            if self.use_ais_get_batch:
-                import logging
-
-                logging.warning(
-                    "AIS batch loading requested but not supported by this Lhotse version. "
-                    "Please upgrade to Lhotse >= 1.32.0"
-                )
-            self.load_audio = AudioSamples(fault_tolerant=True)
+        self.load_audio = _make_audio_samples(
+            use_batch_loader=self.use_ais_get_batch,
+            ais_force_individual=self.ais_force_individual,
+        )
 
         self.padding_value = self.tokenizer.pad_id
         self.prompt = prompt

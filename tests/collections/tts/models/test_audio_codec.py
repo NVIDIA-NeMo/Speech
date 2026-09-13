@@ -13,10 +13,13 @@
 # limitations under the License.
 
 
+from unittest.mock import Mock
+
 import pytest
 import torch
 from omegaconf import DictConfig
 
+import nemo.collections.tts.models.audio_codec as audio_codec_module
 from nemo.collections.tts.models import AudioCodecModel
 
 
@@ -97,6 +100,26 @@ def acoustic_codec_model():
 
 class TestAudioCodecModel:
     @pytest.mark.unit
+    def test_speaker_encoder_checkpoint_uses_hf_cache(self, monkeypatch):
+        model_cfg = create_codec_config()
+        model_cfg.use_scl_loss = True
+        checkpoint_path = '/cache/Edresson/Speaker_Encoder_H_ASP/pytorch_model.bin'
+        mock_hf_hub_download = Mock(return_value=checkpoint_path)
+        speaker_encoder = torch.nn.Module()
+        speaker_encoder.audio_config = {'sample_rate': model_cfg.sample_rate}
+        speaker_encoder.load_checkpoint = Mock()
+        speaker_encoder.freeze = Mock()
+        monkeypatch.setattr(audio_codec_module, 'hf_hub_download', mock_hf_hub_download, raising=False)
+        monkeypatch.setattr(audio_codec_module, 'ResNetSpeakerEncoder', Mock(return_value=speaker_encoder))
+
+        AudioCodecModel(cfg=model_cfg)
+
+        mock_hf_hub_download.assert_called_once_with(
+            repo_id='Edresson/Speaker_Encoder_H_ASP', filename='pytorch_model.bin'
+        )
+        speaker_encoder.load_checkpoint.assert_called_once_with(checkpoint_path, strict=False)
+
+    @pytest.mark.unit
     def test_forward(self, codec_model):
         batch_size = 2
         audio = torch.randn(size=(batch_size, 20000))
@@ -147,3 +170,34 @@ class TestAudioCodecModel:
         output_audio, output_audio_len = acoustic_codec_model.decode(tokens=tokens, tokens_len=tokens_len)
         assert output_audio.shape[0] == batch_size
         assert output_audio.shape[1] == output_audio_len.max()
+
+    @pytest.mark.unit
+    def test_encode_with_dropout(self, codec_model):
+        batch_size = 4
+        audio = torch.randn(size=(batch_size, 20000))
+        audio_len = torch.randint(size=[batch_size], low=10000, high=20000)
+
+        tokens, tokens_len = codec_model.encode(
+            audio=audio,
+            audio_len=audio_len,
+            sample_rate=codec_model.sample_rate,
+        )
+
+        # Setting num_codebooks to the total number of codebooks should not modify the output
+        tokens_without_dropout, _ = codec_model.encode(
+            audio=audio,
+            audio_len=audio_len,
+            sample_rate=codec_model.sample_rate,
+            num_codebooks=codec_model.num_codebooks,
+        )
+        torch.testing.assert_close(actual=tokens_without_dropout, expected=tokens)
+
+        for i in range(1, codec_model.num_codebooks):
+            tokens_with_dropout, _ = codec_model.encode(
+                audio=audio, audio_len=audio_len, sample_rate=codec_model.sample_rate, num_codebooks=i
+            )
+            encoded = codec_model.dequantize(tokens=tokens_with_dropout, tokens_len=tokens_len)  # (B, D, T)
+            # Validate appropriate dimensions are zero
+            dropout_start_i = i * codec_model.vector_quantizer.codebook_dim
+            dropped_codes = encoded[:, dropout_start_i:, :]
+            torch.testing.assert_close(actual=dropped_codes, expected=torch.zeros_like(dropped_codes))

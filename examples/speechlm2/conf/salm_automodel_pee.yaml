@@ -3,7 +3,7 @@ model:
   pretrained_llm: nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
   pretrained_asr: nvidia/canary-1b-v2
 
-  pretrained_weights: True  # When False, we use pretrained_name to load the architecture, but with random init
+  pretrained_weights: True  # When False, load the pretrained_llm/asr architectures with random init
 
   # Fine-tune from a previous training checkpoint (model weights only — optimizer,
   # scheduler, and step counter start fresh). Supports DCP directories (from
@@ -106,9 +106,9 @@ model:
   #   dynamo_cache_size_limit: 256  # Triton compilation cache limit
 
   # Automodel backend dispatch. Selects the kernel/backend for each major module
-  # in the LLM (attention, linear, rms_norm, MoE experts/dispatcher). Defaults
-  # come from Automodel's BackendConfig and auto-select TE/DeepEP when available;
-  # override here to pin a specific backend (e.g. attn=sdpa to bypass TE).
+  # in the LLM (attention, linear, rms_norm, MoE experts/dispatcher). BackendConfig
+  # selects installed kernels by default; override here to pin a specific backend
+  # (e.g. attn=sdpa to bypass TE).
   # automodel_backend:
   #   attn: te                  # "te" | "sdpa" | "flex"
   #   linear: te                # "torch" | "te"
@@ -173,10 +173,10 @@ trainer:
   gradient_clip_val: 1.0
   accumulate_grad_batches: 1
   strategy:
-    # AutomodelParallelStrategy delegates device mesh creation to nemo_automodel and supports
-    # FSDP2, TP, PP, CP, EP (MoE), and HSDP. The model's configure_model() receives the
-    # device_mesh and passes it to automodel's from_pretrained for memory-efficient loading
-    # (each GPU only loads its own shard).
+    # AutomodelParallelStrategy delegates topology resolution to nemo_automodel and supports
+    # FSDP2, TP, PP, CP, EP (MoE), and HSDP. configure_model() receives the resolved
+    # distributed_setup and passes it to Automodel's from_pretrained. SALMAutomodel currently
+    # requires pp_size=1.
     _target_: nemo.collections.speechlm2.parts.parallel.AutomodelParallelStrategy
 
     # --- Parallelism dimensions ---
@@ -192,7 +192,7 @@ trainer:
     # ``activation_checkpointing_llm`` is a single switch that covers both the
     # non-EP FSDP2 path (via FSDP2Config.activation_checkpointing) and the
     # EP/MoE parallelizer path.
-    # ``activation_checkpointing_perception`` wraps each layer in ``perception.encoder.layers`` 
+    # ``activation_checkpointing_perception`` wraps each layer in ``perception.encoder.layers``
     # with ``checkpoint_wrapper`` before FSDP2 sharding.
     activation_checkpointing_llm: false
     activation_checkpointing_perception: false
@@ -205,7 +205,7 @@ trainer:
 
     # --- MoE config (plain dict, resolved to MoEParallelizerConfig automatically) ---
     # moe_config:
-    #   ignore_router_for_ac: false       # Selective AC: save router outputs, recompute the rest
+    #   ignore_router_for_ac: true        # Default; save router outputs during AC recomputation
     #   reshard_after_forward: false       # Reshard params after forward (saves memory, more comms)
     #   lm_head_precision: null            # Override LM head precision (e.g., "float32" for stability)
     #   wrap_outer_model: true             # Apply FSDP to the outer model wrapper

@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
+from typing import List, Optional
 
 from nemo.collections.common.tokenizers.char_tokenizer import CharTokenizer
 
@@ -68,6 +68,6 @@ class WordTokenizer(CharTokenizer):
                 tokens.append(self.unk_token)
         return tokens
 
-    def ids_to_text(self, ids):
-        ids_ = [id_ for id_ in ids if id_ not in self.special_tokens]
+    def ids_to_text(self, ids: List[int]) -> str:
+        ids_ = [id_ for id_ in ids if id_ not in self.special_token_ids_to_remove_while_decoding]
         return " ".join(self.ids_to_tokens(ids_))

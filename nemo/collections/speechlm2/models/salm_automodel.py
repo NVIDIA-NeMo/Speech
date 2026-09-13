@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import os
 import re
 import warnings
 from collections import defaultdict
@@ -464,7 +465,37 @@ class SALMAutomodel(LightningModule, HFHubMixin):
     def optimizer_step(self, epoch, batch_idx, optimizer, optimizer_closure=None) -> None:
         """Run configured manual GC after each completed optimizer step."""
         super().optimizer_step(epoch, batch_idx, optimizer, optimizer_closure)
+        self._debug_cuda_sync("optimizer_step")
         self._garbage_collection.on_optimizer_step()
+
+    def on_before_backward(self, loss: Tensor) -> None:
+        """Surface asynchronous CUDA failures at the training/backward boundary when requested."""
+        self._debug_cuda_sync("before_backward")
+
+    def on_after_backward(self) -> None:
+        """Surface asynchronous CUDA failures at the backward/optimizer boundary when requested."""
+        self._debug_cuda_sync("after_backward")
+
+    def _debug_cuda_sync(self, stage: str) -> None:
+        """Synchronize CUDA at a named stage when ``SPEECHLM_DEBUG_CUDA_STAGES=1``.
+
+        This is intentionally environment-gated because synchronizing the device
+        in normal training would serialize otherwise asynchronous GPU work.
+        """
+        if os.environ.get("SPEECHLM_DEBUG_CUDA_STAGES") != "1" or not torch.cuda.is_available():
+            return
+        rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+        try:
+            torch.cuda.synchronize(self.device)
+        except RuntimeError as error:
+            raise RuntimeError(
+                f"CUDA failure surfaced after stage={stage} rank={rank} "
+                f"batch_idx={getattr(self, '_current_batch_idx', None)}"
+            ) from error
+        logging.info(
+            f"cuda_stage_sync stage={stage} rank={rank} "
+            f"batch_idx={getattr(self, '_current_batch_idx', None)}"
+        )
 
     def on_validation_start(self) -> None:
         """Reject unsupported parallel layouts for fit and standalone validation."""
@@ -581,12 +612,14 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         if batch is None:
             batch = self._build_empty_training_batch()
         inputs = self.prepare_inputs(batch)
+        self._debug_cuda_sync("prepare_inputs")
         self._record_training_stats(batch, inputs)
         forward_outputs = self(
             inputs["input_embeds"],
             attention_mask=inputs["attention_mask"],
             **inputs.get("llm_kwargs", {}),
         )
+        self._debug_cuda_sync("forward")
         num_frames = (inputs["target_ids"] != -100).long().sum()
 
         # Match Automodel's training recipe: normalize CE by the *global* token count across
@@ -616,6 +649,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             if lm_head is None:
                 lm_head = self.llm.lm_head
             shared_lm_weight = main_materialize(lm_head.weight, grad_reduce_group=dp_group)
+        self._debug_cuda_sync("lm_weight_materialize")
 
         with loss_parallel():
             loss_sum, logits = self._compute_training_cross_entropy_sum(
@@ -627,6 +661,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             loss = loss_sum * dp_size / num_frames_global
         if (dummy_audio_loss := inputs.get("dummy_audio_loss")) is not None:
             loss = loss + dummy_audio_loss
+        self._debug_cuda_sync("main_ce")
 
         # Latent speaker supervision loss (auxiliary, optional).
         if self.lss_loss is not None and num_frames > 0:
@@ -694,6 +729,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             mtp_metrics["mtp_loss"] = mtp_loss.detach()
             for head_idx, head_loss in enumerate(mtp_raw_loss_by_head, start=1):
                 mtp_metrics[f"mtp_loss_unscaled/head_{head_idx}"] = head_loss.detach()
+        self._debug_cuda_sync("mtp_loss")
 
         # Input embeds shape is (B, T, H) for BSHD or (T, H) for THD packed.
         input_embeds = inputs["input_embeds"]

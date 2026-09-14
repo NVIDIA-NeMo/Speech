@@ -191,6 +191,13 @@ def sortformer_model():
     return _create_sortformer_model()
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize('method_name', ['forward', 'forward_infer', 'forward_streaming'])
+def test_forward_docstring_return_type(method_name):
+    return_section = getattr(SortformerEncLabelModel, method_name).__doc__.split('Returns:', maxsplit=1)[1]
+    assert return_section.lstrip().startswith('torch.Tensor:')
+
+
 class TestSortformerEncLabelModelOffline:
     @pytest.mark.unit
     def test_constructor(self, sortformer_model):

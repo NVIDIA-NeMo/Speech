@@ -413,7 +413,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
                 Shape: (batch_size,)
 
         Returns:
-            preds (torch.Tensor): Sorted tensor containing Sigmoid values for predicted speaker labels.
+            torch.Tensor: Sorted tensor containing Sigmoid values for predicted speaker labels.
                 Shape: (batch_size, diar_frame_count, num_speakers)
         """
         encoder_mask = self.sortformer_modules.length_to_mask(emb_seq_length, emb_seq.shape[1])
@@ -629,7 +629,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
                 Shape: (batch_size,)
 
         Returns:
-            preds (torch.Tensor): Sorted tensor containing predicted speaker labels
+            torch.Tensor: Sorted tensor containing predicted speaker labels
                 Shape: (batch_size, max. diar frame count, num_speakers)
         """
         processed_signal, processed_signal_length = self.process_signal(
@@ -803,7 +803,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
                 Shape: (batch_size,)
 
         Returns:
-            total_preds (torch.Tensor): Tensor containing predicted speaker labels for the current chunk
+            torch.Tensor: Tensor containing predicted speaker labels for the current chunk
                 and all previous chunks
                 Shape: (batch_size, pred_len, num_speakers)
         """

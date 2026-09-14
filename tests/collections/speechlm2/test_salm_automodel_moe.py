@@ -60,9 +60,7 @@ def test_moe_metrics_skip_collective_between_intervals(monkeypatch):
     ("global_step", "expected_metric"),
     [(100, "brief"), (500, "detailed")],
 )
-def test_moe_metrics_use_global_step_for_collection_and_detail_cadence(
-    monkeypatch, global_step, expected_metric
-):
+def test_moe_metrics_use_global_step_for_collection_and_detail_cadence(monkeypatch, global_step, expected_metric):
     import nemo_automodel.components.moe.load_balance_metrics as metrics
 
     collect = MagicMock(return_value={"layer": torch.tensor([1.0])})

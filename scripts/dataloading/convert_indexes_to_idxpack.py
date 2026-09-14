@@ -58,15 +58,29 @@ from pathlib import Path
 from typing import Optional
 
 import click
-from lhotse.index_pack import (
-    IndexPack,
-    IndexPackArraySpec,
-    IndexPackCollectionSpec,
-    write_index_pack,
-)
+from lhotse.index_pack import IndexPack, IndexPackArraySpec, IndexPackCollectionSpec, write_index_pack
 from lhotse.indexing import index_file_path
 from lhotse.serialization import decode_json_line
 from omegaconf import DictConfig, ListConfig
+from scripts.dataloading._sharegpt_route_cli import ensure_sharegpt_route
+from scripts.dataloading._sharegpt_route_config import discover_sharegpt_route_specs
+from scripts.dataloading.build_indexes import (
+    _NO_INDEX_TYPES,
+    _TRANSFORM_TYPES,
+    JSONL,
+    NEMO_TAR,
+    WDS_TAR_V2,
+    _discover_share_gpt_webdataset,
+    _expand_jsonl,
+    _expand_tars,
+    _flatten_path_spec,
+    _load_input_cfg,
+    _resolve_input_cfg,
+)
+from scripts.dataloading.validate_idxpack_records import (
+    IndexPackRecordValidationSummary,
+    validate_idxpack_json_records,
+)
 
 from nemo.collections.common.data.lhotse.indexed_adapters import (
     _open_data_path,
@@ -90,25 +104,6 @@ from nemo.collections.common.data.lhotse.nemo_tar_routing import (
     nemo_tar_shard_map_source_spec,
     write_nemo_tar_aggregate_ordinal_maps,
     write_nemo_tar_ordinal_map_shard,
-)
-from scripts.dataloading._sharegpt_route_cli import ensure_sharegpt_route
-from scripts.dataloading._sharegpt_route_config import discover_sharegpt_route_specs
-from scripts.dataloading.build_indexes import (
-    _NO_INDEX_TYPES,
-    _TRANSFORM_TYPES,
-    JSONL,
-    NEMO_TAR,
-    WDS_TAR_V2,
-    _discover_share_gpt_webdataset,
-    _expand_jsonl,
-    _expand_tars,
-    _flatten_path_spec,
-    _load_input_cfg,
-    _resolve_input_cfg,
-)
-from scripts.dataloading.validate_idxpack_records import (
-    IndexPackRecordValidationSummary,
-    validate_idxpack_json_records,
 )
 
 _MANIFEST_REUSE_BATCH_BYTES = 64 << 20
@@ -306,9 +301,7 @@ def _read_raw_tar_sentinel(idx_path: Path) -> tuple[int, os.stat_result]:
 def _repair_local_native_tar_sidecar(path: str, repair_root) -> Path:
     if _is_remote_path(path):
         raise ValueError(f"Refusing to repair non-local native tar source: {path}")
-    from nemo.collections.common.data.lhotse.indexed_adapters import (
-        create_tar_index as create_nemo_tar_index,
-    )
+    from nemo.collections.common.data.lhotse.indexed_adapters import create_tar_index as create_nemo_tar_index
 
     repair_idx = _resolve_local_sidecar(path, repair_root)
     repair_idx.parent.mkdir(parents=True, exist_ok=True)

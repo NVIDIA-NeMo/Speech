@@ -645,9 +645,7 @@ class LazyNeMoTarredIterator(IteratorNode):
         return ordinal_map
 
     def _open_packed_tar_reader(self, *, max_open_files: int) -> None:
-        from nemo.collections.common.data.lhotse.indexed_adapters import (
-            PackedTarMemberReader,
-        )
+        from nemo.collections.common.data.lhotse.indexed_adapters import PackedTarMemberReader
 
         if not self._packed_tar_collection.offsets_required:
             raise ValueError(
@@ -674,9 +672,7 @@ class LazyNeMoTarredIterator(IteratorNode):
         """Build per-shard IndexedJsonlReaders + audio-tar index for indexed/random access."""
         from lhotse.indexing import IndexedJsonlReader, index_file_path
 
-        from nemo.collections.common.data.lhotse.indexed_adapters import (
-            IndexedTarMemberReader,
-        )
+        from nemo.collections.common.data.lhotse.indexed_adapters import IndexedTarMemberReader
 
         if self.extra_fields:
             raise ValueError(
@@ -1381,9 +1377,7 @@ def validate_extra_fields(extra_fields):
 
 def expand_sharded_filepaths(paths: str | Path | list[str]) -> list[str]:
     # local import to avoid circular imports
-    from nemo.collections.asr.data.audio_to_text import (
-        expand_sharded_filepaths as _expand_sharded_filepaths,
-    )
+    from nemo.collections.asr.data.audio_to_text import expand_sharded_filepaths as _expand_sharded_filepaths
 
     if isinstance(paths, Path):
         paths = str(paths)

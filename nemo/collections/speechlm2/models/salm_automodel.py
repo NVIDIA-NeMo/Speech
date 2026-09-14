@@ -1376,9 +1376,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         if activation_checkpointing_perception is None:
             activation_checkpointing_perception = False
         if perception_fsdp_wrap_asr_layers is None and self._trainer is not None:
-            perception_fsdp_wrap_asr_layers = getattr(
-                self._trainer.strategy, "perception_fsdp_wrap_asr_layers", None
-            )
+            perception_fsdp_wrap_asr_layers = getattr(self._trainer.strategy, "perception_fsdp_wrap_asr_layers", None)
         if perception_fsdp_wrap_asr_layers is None:
             perception_fsdp_wrap_asr_layers = False
         if distributed_setup is not None and distributed_setup.mesh_context.pp_size > 1:
@@ -1597,9 +1595,7 @@ def _fully_shard_perception(perception, mesh, *, wrap_asr_layers: bool = False):
     qualified parameter names, keeping DCP model/optimizer restore compatible.
     """
     if not isinstance(wrap_asr_layers, bool):
-        raise TypeError(
-            f"wrap_asr_layers must be a bool, got {type(wrap_asr_layers).__name__}."
-        )
+        raise TypeError(f"wrap_asr_layers must be a bool, got {type(wrap_asr_layers).__name__}.")
     if wrap_asr_layers:
         mounted_encoder = getattr(perception, "encoder", None)
         asr_encoder = getattr(mounted_encoder, "asr_encoder", mounted_encoder)

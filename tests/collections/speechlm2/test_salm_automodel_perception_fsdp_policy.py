@@ -5,9 +5,10 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
+
 from nemo.collections.speechlm2.models import salm_automodel
 from nemo.collections.speechlm2.parts.parallel import AutomodelParallelStrategy
-from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
 
 
 class _PackedLayer(torch.nn.Linear):
@@ -21,21 +22,15 @@ class _Perception(torch.nn.Module):
     def __init__(self, *, parallel_expert: bool):
         super().__init__()
         asr_encoder = torch.nn.Module()
-        asr_encoder.layers = torch.nn.ModuleList(
-            [_PackedLayer(4, 4), _PackedLayer(4, 4)]
-        )
-        self.encoder = (
-            SimpleNamespace(asr_encoder=asr_encoder) if parallel_expert else asr_encoder
-        )
+        asr_encoder.layers = torch.nn.ModuleList([_PackedLayer(4, 4), _PackedLayer(4, 4)])
+        self.encoder = SimpleNamespace(asr_encoder=asr_encoder) if parallel_expert else asr_encoder
 
     def forward_sequence_packed(self, **kwargs):
         return kwargs
 
 
 @pytest.mark.parametrize("parallel_expert", [False, True])
-def test_perception_finer_fsdp_wraps_each_asr_layer_then_root(
-    monkeypatch, parallel_expert
-):
+def test_perception_finer_fsdp_wraps_each_asr_layer_then_root(monkeypatch, parallel_expert):
     perception = _Perception(parallel_expert=parallel_expert)
     asr_encoder = getattr(perception.encoder, "asr_encoder", perception.encoder)
     layers = list(asr_encoder.layers)
@@ -54,9 +49,7 @@ def test_perception_finer_fsdp_wraps_each_asr_layer_then_root(
         lambda module, method: registered.append((module, method)),
     )
 
-    result = salm_automodel._fully_shard_perception(
-        perception, mesh, wrap_asr_layers=True
-    )
+    result = salm_automodel._fully_shard_perception(perception, mesh, wrap_asr_layers=True)
 
     assert result is perception
     assert shard_calls == [
@@ -73,9 +66,7 @@ def test_perception_finer_fsdp_wraps_each_asr_layer_then_root(
 
 def test_perception_finer_fsdp_registers_checkpointed_packed_entrypoint(monkeypatch):
     perception = _Perception(parallel_expert=True)
-    perception.encoder.asr_encoder.layers[0] = checkpoint_wrapper(
-        perception.encoder.asr_encoder.layers[0]
-    )
+    perception.encoder.asr_encoder.layers[0] = checkpoint_wrapper(perception.encoder.asr_encoder.layers[0])
     layers = list(perception.encoder.asr_encoder.layers)
     registered = []
 
@@ -86,9 +77,7 @@ def test_perception_finer_fsdp_registers_checkpointed_packed_entrypoint(monkeypa
         lambda module, method: registered.append((module, method)),
     )
 
-    salm_automodel._fully_shard_perception(
-        perception, object(), wrap_asr_layers=True
-    )
+    salm_automodel._fully_shard_perception(perception, object(), wrap_asr_layers=True)
 
     assert registered == [
         (layers[0], "checkpoint_fn"),
@@ -107,9 +96,7 @@ def test_perception_default_keeps_single_root_fsdp_unit(monkeypatch):
         "fully_shard",
         lambda module, *, mesh: shard_calls.append((module, mesh)) or module,
     )
-    monkeypatch.setattr(
-        salm_automodel, "register_fsdp_forward_method", lambda *_args: None
-    )
+    monkeypatch.setattr(salm_automodel, "register_fsdp_forward_method", lambda *_args: None)
 
     salm_automodel._fully_shard_perception(perception, mesh)
 
@@ -124,9 +111,7 @@ def test_perception_default_keeps_single_root_fsdp_unit(monkeypatch):
         SimpleNamespace(layers=[torch.nn.Linear(4, 4)]),
     ],
 )
-def test_perception_finer_fsdp_fails_closed_without_nonempty_module_list(
-    monkeypatch, encoder
-):
+def test_perception_finer_fsdp_fails_closed_without_nonempty_module_list(monkeypatch, encoder):
     perception = torch.nn.Module()
     perception.encoder = encoder
     monkeypatch.setattr(
@@ -136,25 +121,16 @@ def test_perception_finer_fsdp_fails_closed_without_nonempty_module_list(
     )
 
     with pytest.raises(ValueError, match="non-empty torch.nn.ModuleList"):
-        salm_automodel._fully_shard_perception(
-            perception, object(), wrap_asr_layers=True
-        )
+        salm_automodel._fully_shard_perception(perception, object(), wrap_asr_layers=True)
 
 
 def test_perception_finer_fsdp_rejects_non_bool():
     with pytest.raises(TypeError, match="wrap_asr_layers must be a bool"):
-        salm_automodel._fully_shard_perception(
-            torch.nn.Module(), object(), wrap_asr_layers="true"
-        )
+        salm_automodel._fully_shard_perception(torch.nn.Module(), object(), wrap_asr_layers="true")
 
 
 def test_strategy_exposes_finer_perception_fsdp_flag():
     assert AutomodelParallelStrategy().perception_fsdp_wrap_asr_layers is False
-    assert (
-        AutomodelParallelStrategy(
-            perception_fsdp_wrap_asr_layers=True
-        ).perception_fsdp_wrap_asr_layers
-        is True
-    )
+    assert AutomodelParallelStrategy(perception_fsdp_wrap_asr_layers=True).perception_fsdp_wrap_asr_layers is True
     with pytest.raises(TypeError, match="must be a bool"):
         AutomodelParallelStrategy(perception_fsdp_wrap_asr_layers="true")

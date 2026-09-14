@@ -194,9 +194,7 @@ def test_preference_sampling_can_skip_invalid_converted_targets(monkeypatch, cap
 
     empty = _make_cut(
         unique_id=23,
-        custom={
-            "preference_instructions": [{"prompt": "Empty target.", "target": "", "tags": {"type": "invalid"}}]
-        },
+        custom={"preference_instructions": [{"prompt": "Empty target.", "target": "", "tags": {"type": "invalid"}}]},
     )
     empty.supervisions[0].text = ""
 

@@ -1,13 +1,25 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 import io
 import tarfile
 
 from lhotse.index_pack import IndexPackCollectionSpec
 from lhotse.indexing import index_file_path
+from scripts.dataloading.convert_indexes_to_idxpack import _preflight_native_tar_sidecars
 
 from nemo.collections.common.data.lhotse.indexed_adapters import create_tar_index
-from scripts.dataloading.convert_indexes_to_idxpack import (
-    _preflight_native_tar_sidecars,
-)
 
 
 def test_native_tar_preflight_uses_read_only_fallback_when_primary_is_missing(tmp_path):

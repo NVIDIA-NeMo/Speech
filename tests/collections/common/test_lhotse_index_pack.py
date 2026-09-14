@@ -2307,32 +2307,33 @@ def test_share_gpt_jsonl_uses_pack(tmp_path, monkeypatch):
     assert [turn.value for turn in conversation.turns] == ["question", "answer"]
 
 
-def test_v3_aggregate_native_manifest_routes_rows_by_shard_id(tmp_path):
+@pytest.mark.parametrize("native_tar_paths_only", [False, True])
+def test_v3_aggregate_native_manifest_routes_rows_by_shard_id(tmp_path, monkeypatch, native_tar_paths_only):
     manifest = tmp_path / "aggregate.jsonl"
     rows = [
         {
-            "audio_filepath": "one.wav",
-            "shard_id": 1,
-            "duration": 1.0,
-            "sampling_rate": 16000,
-            "text": "one",
-        },
-        {
             "audio_filepath": "zero.wav",
-            "shard_id": 0,
+            "shard_id": 2,
             "duration": 1.0,
             "sampling_rate": 16000,
             "text": "zero",
+        },
+        {
+            "audio_filepath": "one.wav",
+            "shard_id": 7,
+            "duration": 1.0,
+            "sampling_rate": 16000,
+            "text": "one",
         },
     ]
     manifest.write_text("".join(json.dumps(row) + "\n" for row in rows))
     create_jsonl_index(manifest)
 
-    tar_members = [
-        [("unused.wav", b"unused"), ("zero.wav", b"zero")],
-        [("one.wav", b"one")],
-    ]
-    for shard, members in enumerate(tar_members):
+    tar_members = {
+        7: [("one.wav", b"one")],
+        2: [("unused.wav", b"unused"), ("zero.wav", b"zero")],
+    }
+    for shard, members in tar_members.items():
         tar_path = tmp_path / f"audio_{shard}.tar"
         with tarfile.open(tar_path, "w") as archive:
             for name, payload in members:
@@ -2341,7 +2342,7 @@ def test_v3_aggregate_native_manifest_routes_rows_by_shard_id(tmp_path):
                 archive.addfile(info, io.BytesIO(payload))
         create_nemo_tar_index(tar_path, tmp_path / f"audio_{shard}.tar.idx")
 
-    tar_spec = str(tmp_path / "audio__OP_0..1_CL_.tar")
+    tar_spec = str(tmp_path / "audio__OP_7,2_CL_.tar")
     input_cfg = tmp_path / "aggregate.yaml"
     input_cfg.write_text(
         yaml.safe_dump(
@@ -2353,16 +2354,110 @@ def test_v3_aggregate_native_manifest_routes_rows_by_shard_id(tmp_path):
         )
     )
     output = tmp_path / "aggregate.idxpack"
-    result = CliRunner().invoke(main, ["--output", str(output), str(input_cfg)])
+    args = ["--output", str(output)]
+    if native_tar_paths_only:
+        args.append("--native-tar-paths-only")
+    result = CliRunner().invoke(main, [*args, str(input_cfg)])
     assert result.exit_code == 0, result.output
 
     with IndexPack(output) as pack:
         assert pack.version == 3
-        member_route = pack.collection(nemo_tar_ordinal_map_collection_key(str(manifest), tar_spec))
         shard_route = pack.collection(nemo_tar_shard_map_collection_key(str(manifest), tar_spec))
-        assert [member_route.value(index) for index in range(2)] == [0, 1]
         assert [shard_route.value(index) for index in range(2)] == [1, 0]
+        if native_tar_paths_only:
+            with pytest.raises(KeyError):
+                pack.collection(nemo_tar_ordinal_map_collection_key(str(manifest), tar_spec))
+        else:
+            member_route = pack.collection(nemo_tar_ordinal_map_collection_key(str(manifest), tar_spec))
+            assert [member_route.value(index) for index in range(2)] == [1, 0]
 
+    if native_tar_paths_only:
+        monkeypatch.setenv("USE_AIS_GET_BATCH", "true")
     iterator = LazyNeMoTarredIterator(str(manifest), tar_spec, indexed=True, index_pack=output)
-    assert read_payload(iterator[0].recording.sources[0].source) == b"one"
-    assert read_payload(iterator[1].recording.sources[0].source) == b"zero"
+    if native_tar_paths_only:
+        assert [iterator[index].recording.sources[0].source for index in range(2)] == [
+            f"{tmp_path}/audio_2.tar/zero.wav",
+            f"{tmp_path}/audio_7.tar/one.wav",
+        ]
+    else:
+        assert read_payload(iterator[0].recording.sources[0].source) == b"zero"
+        assert read_payload(iterator[1].recording.sources[0].source) == b"one"
+
+
+def test_aggregate_native_manifest_rejects_missing_tar_shard_id(tmp_path):
+    manifest = tmp_path / "aggregate.jsonl"
+    manifest.write_text(
+        json.dumps(
+            {
+                "audio_filepath": "missing.wav",
+                "shard_id": 9,
+                "duration": 1.0,
+                "sampling_rate": 16000,
+                "text": "missing",
+            }
+        )
+        + "\n"
+    )
+    create_jsonl_index(manifest)
+    for shard in (2, 7):
+        (tmp_path / f"audio_{shard}.tar").touch()
+    tar_spec = str(tmp_path / "audio__OP_2,7_CL_.tar")
+    input_cfg = tmp_path / "aggregate.yaml"
+    input_cfg.write_text(
+        yaml.safe_dump(
+            {
+                "type": "nemo_tarred",
+                "manifest_filepath": str(manifest),
+                "tarred_audio_filepaths": tar_spec,
+            }
+        )
+    )
+
+    result = CliRunner().invoke(
+        main,
+        ["--output", str(tmp_path / "aggregate.idxpack"), "--native-tar-paths-only", str(input_cfg)],
+    )
+
+    assert result.exit_code != 0
+    assert "shard_id=9, which has no matching tar path" in result.output
+    assert "available shard IDs: [2, 7]" in result.output
+
+
+def test_aggregate_native_manifest_rejects_duplicate_tar_shard_ids(tmp_path):
+    manifest = tmp_path / "aggregate.jsonl"
+    manifest.write_text(
+        json.dumps(
+            {
+                "audio_filepath": "sample.wav",
+                "shard_id": 2,
+                "duration": 1.0,
+                "sampling_rate": 16000,
+                "text": "sample",
+            }
+        )
+        + "\n"
+    )
+    create_jsonl_index(manifest)
+    for bucket in ("a", "b"):
+        directory = tmp_path / f"bucket_{bucket}"
+        directory.mkdir()
+        (directory / "audio_2.tar").touch()
+    tar_spec = str(tmp_path / "bucket__OP_a,b_CL_" / "audio_2.tar")
+    input_cfg = tmp_path / "aggregate.yaml"
+    input_cfg.write_text(
+        yaml.safe_dump(
+            {
+                "type": "nemo_tarred",
+                "manifest_filepath": str(manifest),
+                "tarred_audio_filepaths": tar_spec,
+            }
+        )
+    )
+
+    result = CliRunner().invoke(
+        main,
+        ["--output", str(tmp_path / "aggregate.idxpack"), "--native-tar-paths-only", str(input_cfg)],
+    )
+
+    assert result.exit_code != 0
+    assert "duplicate shard_id 2" in result.output

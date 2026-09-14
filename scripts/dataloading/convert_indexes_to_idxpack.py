@@ -94,6 +94,7 @@ from nemo.collections.common.data.lhotse.nemo_tar_routing import (
     NEMO_TAR_SHARD_MAP_ROLE,
     NativeTarOrdinalMapBuildSummary,
     NativeTarOrdinalMapInputSnapshot,
+    NativeTarShardMapInputSnapshot,
     _iter_indexed_manifest_rows,
     _source_identity,
     manifest_entry_is_explicitly_skipped,
@@ -103,6 +104,7 @@ from nemo.collections.common.data.lhotse.nemo_tar_routing import (
     nemo_tar_shard_map_collection_key,
     nemo_tar_shard_map_source_spec,
     write_nemo_tar_aggregate_ordinal_maps,
+    write_nemo_tar_aggregate_shard_map,
     write_nemo_tar_ordinal_map_shard,
 )
 
@@ -147,6 +149,8 @@ class NativeTarOrdinalMapSpec:
 
 def _native_tar_array_identities(
     spec: NativeTarOrdinalMapSpec,
+    *,
+    include_member_ordinals: bool = True,
 ) -> tuple[tuple[str, str, object, bytes], ...]:
     identities = []
     if spec.aggregate_manifest:
@@ -158,7 +162,8 @@ def _native_tar_array_identities(
                 nemo_tar_shard_map_collection_key(spec.manifest_source_spec, spec.tar_source_spec),
             )
         )
-    identities.append((spec.role, spec.kind, spec.source_spec, spec.key))
+    if include_member_ordinals:
+        identities.append((spec.role, spec.kind, spec.source_spec, spec.key))
     return tuple(identities)
 
 
@@ -1074,6 +1079,79 @@ def _reuse_native_tar_ordinal_array_specs(
     )
 
 
+def _build_aggregate_native_tar_array_specs(
+    spec: NativeTarOrdinalMapSpec,
+    map_index: int,
+    temporary_directory: Path,
+    manifest_index_path: Path,
+    *,
+    indexes_root,
+    index_path_overrides: dict[str, Path],
+    source_size_overrides: dict[str, int],
+    include_member_ordinals: bool,
+) -> tuple[
+    list[IndexPackArraySpec],
+    NativeTarOrdinalMapInputSnapshot | NativeTarShardMapInputSnapshot,
+    NativeTarOrdinalMapBuildSummary,
+]:
+    """Build the shard route and, when requested, the member-ordinal route."""
+    shard_output_path = temporary_directory / f"native-tar-shard-route-{map_index:06d}-000000.u32"
+    arrays = [
+        IndexPackArraySpec(
+            role=NEMO_TAR_SHARD_MAP_ROLE,
+            kind=NEMO_TAR_SHARD_MAP_KIND,
+            source_spec=nemo_tar_shard_map_source_spec(
+                spec.manifest_source_spec,
+                spec.tar_source_spec,
+            ),
+            shard_paths=(shard_output_path,),
+            dtype="uint32",
+        )
+    ]
+    if not include_member_ordinals:
+        summary = write_nemo_tar_aggregate_shard_map(
+            shard_output_path,
+            manifest_path=spec.manifest_paths[0],
+            manifest_index_path=manifest_index_path,
+            tar_paths=spec.tar_paths,
+        )
+        assert isinstance(summary.input_snapshot, NativeTarShardMapInputSnapshot)
+        return arrays, summary.input_snapshot, summary
+
+    tar_index_paths = tuple(
+        (
+            index_path_overrides[tar_path]
+            if tar_path in index_path_overrides
+            else _resolve_local_sidecar(tar_path, indexes_root)
+        )
+        for tar_path in spec.tar_paths
+    )
+    ordinal_output_path = temporary_directory / f"native-tar-route-{map_index:06d}-000000.u32"
+    summary = write_nemo_tar_aggregate_ordinal_maps(
+        ordinal_output_path,
+        shard_output_path,
+        manifest_path=spec.manifest_paths[0],
+        manifest_index_path=manifest_index_path,
+        tar_paths=spec.tar_paths,
+        tar_index_paths=tar_index_paths,
+        tar_sentinel_size_overrides=tuple(source_size_overrides.get(tar_path) for tar_path in spec.tar_paths),
+    )
+    arrays.append(
+        IndexPackArraySpec(
+            role=NEMO_TAR_ORDINAL_MAP_ROLE,
+            kind=NEMO_TAR_ORDINAL_MAP_KIND,
+            source_spec=nemo_tar_ordinal_map_source_spec(
+                spec.manifest_source_spec,
+                spec.tar_source_spec,
+            ),
+            shard_paths=(ordinal_output_path,),
+            dtype="uint32",
+        )
+    )
+    assert isinstance(summary.input_snapshot, NativeTarOrdinalMapInputSnapshot)
+    return arrays, summary.input_snapshot, summary
+
+
 def _build_native_tar_ordinal_array_specs(
     maps: list[NativeTarOrdinalMapSpec],
     temporary_directory: str | Path,
@@ -1082,6 +1160,7 @@ def _build_native_tar_ordinal_array_specs(
     index_path_overrides: dict[str, Path],
     source_size_overrides: dict[str, int],
     native_tar_route_workers: int,
+    include_member_ordinals: bool = True,
 ) -> tuple[
     list[IndexPackArraySpec],
     IndexPackRecordValidationSummary,
@@ -1091,7 +1170,7 @@ def _build_native_tar_ordinal_array_specs(
     """Build temporary fixed arrays with one global worker pool across all map shards."""
     temporary_directory = Path(temporary_directory)
     arrays = []
-    map_snapshots = []
+    map_snapshots: list[NativeTarOrdinalMapInputSnapshot | NativeTarShardMapInputSnapshot] = []
     map_summaries: list[list[NativeTarOrdinalMapBuildSummary | None]] = []
     tasks = []
     manifest_keys = []
@@ -1099,47 +1178,30 @@ def _build_native_tar_ordinal_array_specs(
         manifest_index_paths = tuple(
             _resolve_local_sidecar(manifest_path, indexes_root) for manifest_path in spec.manifest_paths
         )
-        tar_index_paths = tuple(
-            (
-                index_path_overrides[tar_path]
-                if tar_path in index_path_overrides
-                else _resolve_local_sidecar(tar_path, indexes_root)
-            )
-            for tar_path in spec.tar_paths
-        )
         if spec.aggregate_manifest:
-            output_paths = (temporary_directory / f"native-tar-route-{map_index:06d}-000000.u32",)
-            shard_output_paths = (temporary_directory / f"native-tar-shard-route-{map_index:06d}-000000.u32",)
-            snapshot = NativeTarOrdinalMapInputSnapshot.capture(
-                spec.manifest_paths * len(spec.tar_paths),
-                spec.tar_paths,
-                manifest_index_paths * len(spec.tar_paths),
-                tar_index_paths,
+            aggregate_arrays, snapshot, summary = _build_aggregate_native_tar_array_specs(
+                spec,
+                map_index,
+                temporary_directory,
+                manifest_index_paths[0],
+                indexes_root=indexes_root,
+                index_path_overrides=index_path_overrides,
+                source_size_overrides=source_size_overrides,
+                include_member_ordinals=include_member_ordinals,
             )
-            summary = write_nemo_tar_aggregate_ordinal_maps(
-                output_paths[0],
-                shard_output_paths[0],
-                manifest_path=spec.manifest_paths[0],
-                manifest_index_path=manifest_index_paths[0],
-                tar_paths=spec.tar_paths,
-                tar_index_paths=tar_index_paths,
-                tar_sentinel_size_overrides=tuple(source_size_overrides.get(tar_path) for tar_path in spec.tar_paths),
-            )
+            arrays.extend(aggregate_arrays)
             map_snapshots.append(snapshot)
             map_summaries.append([summary])
-            arrays.append(
-                IndexPackArraySpec(
-                    role=NEMO_TAR_SHARD_MAP_ROLE,
-                    kind=NEMO_TAR_SHARD_MAP_KIND,
-                    source_spec=nemo_tar_shard_map_source_spec(
-                        spec.manifest_source_spec,
-                        spec.tar_source_spec,
-                    ),
-                    shard_paths=shard_output_paths,
-                    dtype="uint32",
-                )
-            )
         else:
+            assert include_member_ordinals
+            tar_index_paths = tuple(
+                (
+                    index_path_overrides[tar_path]
+                    if tar_path in index_path_overrides
+                    else _resolve_local_sidecar(tar_path, indexes_root)
+                )
+                for tar_path in spec.tar_paths
+            )
             output_paths = tuple(
                 temporary_directory / f"native-tar-route-{map_index:06d}-{shard_index:06d}.u32"
                 for shard_index in range(len(spec.manifest_paths))
@@ -1180,18 +1242,18 @@ def _build_native_tar_ordinal_array_specs(
                     )
                 )
             )
-        arrays.append(
-            IndexPackArraySpec(
-                role=NEMO_TAR_ORDINAL_MAP_ROLE,
-                kind=NEMO_TAR_ORDINAL_MAP_KIND,
-                source_spec=nemo_tar_ordinal_map_source_spec(
-                    spec.manifest_source_spec,
-                    spec.tar_source_spec,
-                ),
-                shard_paths=output_paths,
-                dtype="uint32",
+            arrays.append(
+                IndexPackArraySpec(
+                    role=NEMO_TAR_ORDINAL_MAP_ROLE,
+                    kind=NEMO_TAR_ORDINAL_MAP_KIND,
+                    source_spec=nemo_tar_ordinal_map_source_spec(
+                        spec.manifest_source_spec,
+                        spec.tar_source_spec,
+                    ),
+                    shard_paths=output_paths,
+                    dtype="uint32",
+                )
             )
-        )
         manifest_keys.append(
             IndexPackCollectionSpec(
                 role="manifest",
@@ -1717,7 +1779,12 @@ def _configure_native_tar_path_only_collections(collections, *, enabled: bool):
     ]
 
 
-def _print_discovered_collections(collections, native_tar_maps: list[NativeTarOrdinalMapSpec]) -> None:
+def _print_discovered_collections(
+    collections,
+    native_tar_maps: list[NativeTarOrdinalMapSpec],
+    *,
+    include_member_ordinals: bool = True,
+) -> None:
     """Print the concrete and derived collections selected by a dry run."""
     for collection in collections:
         click.echo(
@@ -1725,7 +1792,9 @@ def _print_discovered_collections(collections, native_tar_maps: list[NativeTarOr
             f"paths={len(collection.paths)} offsets={collection.offsets_required} key={collection.key.hex()}"
         )
     for spec in native_tar_maps:
-        for role, kind, _source_spec, key in _native_tar_array_identities(spec):
+        for role, kind, _source_spec, key in _native_tar_array_identities(
+            spec, include_member_ordinals=include_member_ordinals
+        ):
             click.echo(
                 f"  role={role} kind={kind} paths={spec.sequence_count} "
                 f"dtype=uint32 key={key.hex()} (derived, embedded)"
@@ -1754,6 +1823,8 @@ def _merge_native_tar_route_arrays(
     native_tar_maps: list[NativeTarOrdinalMapSpec],
     built_arrays: list[IndexPackArraySpec],
     reused_arrays: dict[bytes, IndexPackArraySpec],
+    *,
+    include_member_ordinals: bool = True,
 ) -> list[IndexPackArraySpec]:
     """Merge rebuilt and reused routes in the deterministic configured order."""
     arrays_by_key = {array.key: array for array in built_arrays}
@@ -1764,7 +1835,9 @@ def _merge_native_tar_route_arrays(
     return [
         arrays_by_key[key]
         for spec in native_tar_maps
-        for _role, _kind, _source_spec, key in _native_tar_array_identities(spec)
+        for _role, _kind, _source_spec, key in _native_tar_array_identities(
+            spec, include_member_ordinals=include_member_ordinals
+        )
     ]
 
 
@@ -1891,14 +1964,18 @@ def main(
     collections = discover_pack_collections(
         config,
         data_blend_dir=data_blend_dir,
-        native_tar_ordinal_maps=(None if native_tar_paths_only else native_tar_ordinal_maps),
+        native_tar_ordinal_maps=native_tar_ordinal_maps,
     )
     route_specs = discover_sharegpt_route_specs(config, data_blend_dir=data_blend_dir)
     collections = _configure_native_tar_path_only_collections(collections, enabled=native_tar_paths_only)
     num_paths = sum(len(collection.paths) for collection in collections)
     click.echo(f"Discovered {len(collections)} collections with {num_paths} ordered paths.")
     if dry_run:
-        _print_discovered_collections(collections, native_tar_ordinal_maps)
+        _print_discovered_collections(
+            collections,
+            native_tar_ordinal_maps,
+            include_member_ordinals=not native_tar_paths_only,
+        )
         return
     try:
         source_size_overrides, index_path_overrides = _preflight_native_tar_sidecars(
@@ -1920,7 +1997,11 @@ def main(
             prefix=f".{output_path.name}.native-tar-route.", dir=output_path.parent
         ) as temporary_directory:
             reused_arrays: dict[bytes, IndexPackArraySpec] = {}
-            maps_to_build = native_tar_ordinal_maps
+            maps_to_build = (
+                native_tar_ordinal_maps
+                if not native_tar_paths_only
+                else [spec for spec in native_tar_ordinal_maps if spec.aggregate_manifest]
+            )
             reused_summary = _empty_validation_summary()
             reused_manifest_keys: set[bytes] = set()
             reused_snapshot_validators: list[Callable[[], None]] = []
@@ -1954,8 +2035,14 @@ def main(
                 index_path_overrides=index_path_overrides,
                 source_size_overrides=source_size_overrides,
                 native_tar_route_workers=native_tar_route_workers,
+                include_member_ordinals=not native_tar_paths_only,
             )
-            ordinal_arrays = _merge_native_tar_route_arrays(native_tar_ordinal_maps, built_arrays, reused_arrays)
+            ordinal_arrays = _merge_native_tar_route_arrays(
+                native_tar_ordinal_maps,
+                built_arrays,
+                reused_arrays,
+                include_member_ordinals=not native_tar_paths_only,
+            )
             route_validation_summary = _sum_validation_summaries(reused_summary, built_summary)
             route_manifest_keys = reused_manifest_keys | built_manifest_keys
             route_snapshot_validators = [

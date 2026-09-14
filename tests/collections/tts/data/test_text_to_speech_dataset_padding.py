@@ -20,7 +20,6 @@ import pytest
 import soundfile as sf
 
 import nemo.collections.tts.data.text_to_speech_dataset as text_to_speech_dataset
-from nemo.collections.tts.data.text_to_speech_dataset import DatasetSample, MagpieTTSDataset
 
 pytestmark = pytest.mark.unit
 
@@ -32,12 +31,12 @@ def _write_wav(path: Path, num_samples: int) -> None:
     sf.write(str(path), np.zeros(num_samples, dtype=np.float32), SAMPLE_RATE, format="WAV")
 
 
-def _make_dataset(audio_dir: Path, monkeypatch) -> MagpieTTSDataset:
+def _make_dataset(audio_dir: Path, monkeypatch) -> text_to_speech_dataset.MagpieTTSDataset:
     # Bypass __init__ (and the heavyweight phoneme tokenizer it wires up) and set only the
     # attributes the raw-audio branch of __getitem__ actually reads.
     monkeypatch.setattr(text_to_speech_dataset, "tokenize_text_with_phoneme_spans", lambda **kwargs: [1, 2, 3])
 
-    dataset = object.__new__(MagpieTTSDataset)
+    dataset = object.__new__(text_to_speech_dataset.MagpieTTSDataset)
     dataset.sample_rate = SAMPLE_RATE
     dataset.codec_model_samples_per_frame = CODEC_MODEL_SAMPLES_PER_FRAME
     dataset.load_cached_codes_if_available = False
@@ -63,7 +62,7 @@ def _get_audio_len(tmp_path: Path, monkeypatch, num_input_samples: int) -> int:
     _write_wav(tmp_path / "sample.wav", num_input_samples)
     dataset = _make_dataset(tmp_path, monkeypatch)
     dataset.data_samples = [
-        DatasetSample(
+        text_to_speech_dataset.DatasetSample(
             dataset_name="unit",
             manifest_entry={"audio_filepath": "sample.wav"},
             audio_dir=tmp_path,

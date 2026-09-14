@@ -25,9 +25,8 @@ Add a one line overview of what this PR aims to accomplish.
 
 The Jenkins CI system has been replaced by GitHub Actions self-hosted runners.
 
-The GitHub Actions CI will run automatically when the "Run CICD" label is added to the PR.
-To re-run CI remove and add the label again.
-To run CI on an untrusted fork, a NeMo user with write access must first click "Approve and run".
+Trusted PRs run automatically through copy-pr-bot. For an untrusted PR, a maintainer can trigger CI by commenting
+`/ok to test <head-sha>`; repeat this after a new push if the PR remains untrusted.
 
 # Before your PR is "Ready for review"
 

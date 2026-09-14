@@ -36,6 +36,8 @@ nmt:
   llm_params:                                        # See https://docs.vllm.ai/en/v0.8.1/api/offline_inference/llm.html for more details
     dtype: "auto"                                    # Compute precision
     seed: 42                                         # The seed to initialize the random number generator for sampling
+    gpu_memory_utilization: 0.85                     # Sets what fraction of each GPU's memory vLLM is allowed to reserve and use. Use smaller values for reducing GPU memory usage.
+    max_model_len: 4096                              # Maximum length of the model tokens.
   sampling_params:                                   # See https://docs.vllm.ai/en/v0.6.4/dev/sampling_params.html for more details
     max_tokens: 100                                  # Maximum number of tokens to generate with LLM
     temperature: 0.0                                 # LLM sampling temperature, default for translation is 0 (greedy)

@@ -1,4 +1,5 @@
-# Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,6 +17,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Any, Optional
+
+
+def is_audio_segment_finished(stage_output) -> bool:
+    """Whether a final-stage output closes one resumable audio segment."""
+    request_output = getattr(stage_output, "request_output", stage_output)
+    return bool(getattr(request_output, "is_segment_finished", False))
 
 
 def extract_audio_from_stage_output(stage_output) -> Optional[tuple[Any, int]]:

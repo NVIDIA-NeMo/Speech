@@ -1,4 +1,5 @@
-# Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,13 +15,14 @@
 
 import random
 from contextlib import contextmanager
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
 import pytest
 import torch
+from huggingface_hub import snapshot_download
+from huggingface_hub.errors import LocalEntryNotFoundError
 from omegaconf import OmegaConf
 from torch import nn
 
@@ -34,9 +36,12 @@ pytestmark = pytest.mark.unit
 
 BPE_TOKENIZER_NAME = "nemotron_bpe"
 BPE_TOKENIZER_MODEL = "nvidia/NVIDIA-Nemotron-Nano-9B-v2"
-BPE_TOKENIZER_CACHED_PATH = Path("/home/TestData/nvidia--NVIDIA-Nemotron-Nano-9B-v2/")
-if BPE_TOKENIZER_CACHED_PATH.exists():
-    BPE_TOKENIZER_MODEL = str(BPE_TOKENIZER_CACHED_PATH)
+try:
+    # Attempt to resolve local cache for CI tests
+    BPE_TOKENIZER_MODEL = snapshot_download(BPE_TOKENIZER_MODEL, local_files_only=True)
+except LocalEntryNotFoundError:
+    # For local tests, can call into HF servers to download as needed
+    pass
 
 
 @pytest.fixture(autouse=True, scope="module")

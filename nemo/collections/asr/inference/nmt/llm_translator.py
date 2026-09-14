@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,11 +16,19 @@
 
 import os
 import string
+from typing import Final
 
 import torch
+from huggingface_hub import snapshot_download
+from huggingface_hub.utils import LocalEntryNotFoundError
 from omegaconf import DictConfig, OmegaConf
 
-from nemo.collections.asr.inference.nmt.prompts import EuroLLMTranslatorPromptTemplate, PromptTemplate
+from nemo.collections.asr.inference.nmt.prompts import (
+    EuroLLMTranslatorPromptTemplate,
+    PromptTemplate,
+    QwenReasoningTranslatorPromptTemplate,
+    RivaTranslatorPromptTemplate,
+)
 
 try:
     from vllm import LLM, SamplingParams
@@ -28,9 +37,26 @@ except ImportError as e:
 
 from nemo.utils import logging
 
-EURO_LLM_INSTRUCT_SMALL = "utter-project/EuroLLM-1.7B-Instruct"
-EURO_LLM_INSTRUCT_LARGE = "utter-project/EuroLLM-9B-Instruct"
-SUPPORTED_TRANSLATION_MODELS = [EURO_LLM_INSTRUCT_SMALL, EURO_LLM_INSTRUCT_LARGE]
+TRANSLATION_MODELS_BY_SERIES: Final[dict[str, tuple[str, ...]]] = {
+    "eurollm": (
+        "utter-project/EuroLLM-1.7B-Instruct",
+        "utter-project/EuroLLM-9B-Instruct",
+    ),
+    "qwen3": (
+        "Qwen/Qwen3-4B-Instruct-2507",
+        "Qwen/Qwen3-8B",
+    ),
+    "qwen3.5": (
+        "Qwen/Qwen3.5-4B",
+        "Qwen/Qwen3.5-9B",
+        "Qwen/Qwen3.5-27B",
+        "Qwen/Qwen3.5-35B-A3B",
+    ),
+    "riva": ("nvidia/Riva-Translate-4B-Instruct",),
+}
+SUPPORTED_TRANSLATION_MODELS: Final[tuple[str, ...]] = tuple(
+    model for series_models in TRANSLATION_MODELS_BY_SERIES.values() for model in series_models
+)
 
 
 class LLMTranslator:
@@ -145,16 +171,31 @@ class LLMTranslator:
         Raises:
             ValueError: if model is not supported for translation
         """
-        if model_name in [EURO_LLM_INSTRUCT_SMALL, EURO_LLM_INSTRUCT_LARGE]:
+        if model_name not in SUPPORTED_TRANSLATION_MODELS:
+            raise ValueError(
+                f"Model {model_name} is not supported for translation. Supported models are: {SUPPORTED_TRANSLATION_MODELS}"
+            )
+
+        if model_name in TRANSLATION_MODELS_BY_SERIES["eurollm"]:
             return EuroLLMTranslatorPromptTemplate
 
-        raise ValueError(
-            f"Model {model_name} is not supported for translation. Supported models are: {SUPPORTED_TRANSLATION_MODELS}"
-        )
+        # Instruct qwen model template is similar to EuroLLM, so we use the same prompt template
+        if model_name == "Qwen/Qwen3-4B-Instruct-2507":
+            return EuroLLMTranslatorPromptTemplate
+
+        if (
+            model_name in TRANSLATION_MODELS_BY_SERIES["qwen3.5"]
+            or model_name in TRANSLATION_MODELS_BY_SERIES["qwen3"]
+        ):
+            return QwenReasoningTranslatorPromptTemplate
+
+        if model_name in TRANSLATION_MODELS_BY_SERIES["riva"]:
+            return RivaTranslatorPromptTemplate
 
     def load_model(self, llm_params: dict) -> LLM:
         """
         Load NMT model in vLLM format.
+        If the model is not found in the local cache, it will be downloaded from the HuggingFace model hub.
         Args:
             llm_params: (dict) parameters for the LLM model
         Returns:
@@ -164,10 +205,38 @@ class LLMTranslator:
         """
         try:
             os.environ["CUDA_VISIBLE_DEVICES"] = str(self.device_id)
-            model = LLM(model=self.model_name, **llm_params)
+            local_path = self._get_local_model_path(self.model_name)
+            if local_path is not None and os.path.exists(local_path):
+                logging.info(f"Loading LLM from local cache path: {local_path}")
+                model_name = local_path
+            else:
+                logging.info(f"Loading LLM from model name: {self.model_name}")
+                model_name = self.model_name
+            model = LLM(model=model_name, **llm_params)
             return model
         except Exception as e:
             raise RuntimeError(f"Model loading failed: {str(e)}") from e
+
+    def _get_local_model_path(self, repo_id):
+        """
+        Get local model path from HuggingFace model hub.
+        Args:
+            repo_id: (str) repository ID of the model
+        Returns:
+            local_path: (str) local path of the model
+        Raises:
+            LocalEntryNotFoundError: If model is not found in the local cache
+        """
+        try:
+            return snapshot_download(
+                repo_id=repo_id,
+                local_files_only=True,
+            )
+        except LocalEntryNotFoundError:
+            logging.warning(
+                f"Model {repo_id} is not found in the local cache. Downloading from HuggingFace model hub."
+            )
+            return None
 
     def translate_batch(
         self,
@@ -201,8 +270,11 @@ class LLMTranslator:
         translations = []
         for tgt_prefix, output in zip(prefixes, outputs):
             output_text = output.outputs[0].text
-            output_text = self.prompt_template.extract(output_text)
-            translations.append(f"{tgt_prefix}{output_text}")
+            output_text = self.prompt_template.extract(output_text).strip()
+            if tgt_prefix:
+                translations.append(f"{tgt_prefix} {output_text}")
+            else:
+                translations.append(output_text)
         return translations
 
     def translate(

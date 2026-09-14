@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -66,7 +67,8 @@ class S3CheckpointIO(CheckpointIO):
         """
         if not S3Utils.is_s3_url(dirpath):
             raise AssertionError(
-                f"Error attempting to initialize an S3CheckpointIO when {dirpath} is not an S3 url. Please use TorchCheckpointIO when using a non-S3 dirpath."
+                f"Cannot initialize S3CheckpointIO because {dirpath} is not an S3 URL. "
+                "Use TorchCheckpointIO with a non-S3 dirpath."
             )
 
         self.chunk_size_MB = chunk_size_MB
@@ -74,8 +76,8 @@ class S3CheckpointIO(CheckpointIO):
         self.max_write_concurrency = max_write_concurrency
         self._async_checkpointing = async_checkpointing
         '''
-        When using shared memory, we create a temporary file to hold the checkpoint before uploading to S3. 
-        This list will track those temporary files, and clean up any leaked files that are still around during teardown. 
+        When using shared memory, we create a temporary file to hold the checkpoint before uploading to S3.
+        This list tracks those temporary files and cleans up any leaked files still present during teardown.
         '''
         self._temp_files = []
 
@@ -86,13 +88,13 @@ class S3CheckpointIO(CheckpointIO):
             # Eager creating a subprocess now so that forked subprocess does not inherit cuda context from parent
             if get_start_method() == 'fork' and torch.cuda.is_initialized() is True:
                 raise Exception(
-                    f'torch.cuda should not be initialized when checkpointing subprocess is created by fork method'
+                    'torch.cuda should not be initialized when checkpointing subprocess is created by fork method'
                 )
-            logging.info(f'Creating asynchronous checkpointing subprocess')
+            logging.info('Creating asynchronous checkpointing subprocess')
             future = self._executor.submit(dummy_func)
             try:
                 future.result()
-                logging.info(f'Asynchronous heckpointing subprocess created successfully')
+                logging.info('Asynchronous heckpointing subprocess created successfully')
             except Exception as e:
                 logging.error(f'Failed to create asynchronous checkpointing subprocess, exception: {e}')
                 raise e
@@ -113,7 +115,8 @@ class S3CheckpointIO(CheckpointIO):
         tempfile = NamedTemporaryFile(dir=SHARED_MEM_DIR, delete=False)
         torch.save(checkpoint, tempfile)
         logging.info(
-            f'Time elapsed saving checkpoint dict to {tempfile.name} for {path}: {(time.perf_counter() - start_time):.2f} seconds, rank {torch.distributed.get_rank()}'
+            f'Time elapsed saving checkpoint dict to {tempfile.name} for {path}: '
+            f'{(time.perf_counter() - start_time):.2f} seconds, rank {torch.distributed.get_rank()}'
         )
         del checkpoint
         return tempfile.name
@@ -128,7 +131,8 @@ class S3CheckpointIO(CheckpointIO):
         torch.save(checkpoint, bytes)
         tt = time.perf_counter() - ss
         logging.info(
-            f'Time elapsed saving checkpoint dict to bytes for {path}: {tt:.2f} seconds, rank {torch.distributed.get_rank()}'
+            f'Time elapsed saving checkpoint dict to bytes for {path}: {tt:.2f} seconds, '
+            f'rank {torch.distributed.get_rank()}'
         )
         del checkpoint
         return bytes
@@ -137,7 +141,8 @@ class S3CheckpointIO(CheckpointIO):
         """
         self._future is a list of tuples of form (future, destination path, source path)
         This function checks the result of all the futures, and updates the self._futures list appropriately.
-        It also updates the list of self._temp_files, which is used to clean up leaked temporary files in SHARED_MEM during teardown.
+        It also updates self._temp_files, which is used to clean up leaked temporary files in SHARED_MEM during
+        teardown.
         """
         if not self._futures:
             return
@@ -156,11 +161,12 @@ class S3CheckpointIO(CheckpointIO):
             except Exception as e:
                 logging.error(f'Failed to upload {item[2]} to {item[1]}, exception: {e}')
                 raise e
-            # If the future is complete, we can remove the temp file since we choose to clear the temp file when uploading.
+            # If the future is complete, remove the temp file because it is cleared when uploading.
             try:
                 self._temp_files.remove(item[2])
             except:
-                pass  # When not using shared memory, we do not append anything to the temp_files list, so remove will do nothing.
+                # Without shared memory, nothing is appended to temp_files, so remove does nothing.
+                pass
         self._futures = in_progress_futures
         logging.debug(
             f'Time elapsed checking uploading future results: {(time.perf_counter() - start_time):.2f} seconds'
@@ -205,7 +211,8 @@ class S3CheckpointIO(CheckpointIO):
         if os.path.exists(SHARED_MEM_DIR):
             with NamedTemporaryFile(dir=SHARED_MEM_DIR, delete=True) as tempfile:
                 logging.info(
-                    f'Loading checkpoint {path} into a temp file in shared memory {tempfile.name}, rank {torch.distributed.get_rank()}'
+                    f'Loading checkpoint {path} into a temp file in shared memory {tempfile.name}, '
+                    f'rank {torch.distributed.get_rank()}'
                 )
                 S3Utils.download_s3_file_to_path(
                     s3_path=path,
@@ -237,8 +244,8 @@ class S3CheckpointIO(CheckpointIO):
             logging.info(f'executor shut down after {(time.perf_counter() - start_time):.2f} seconds, rank {rank}')
 
         '''
-        this will be non-empty at the end of training if using asynchronous uploading since the futures are not processed with _check_uploading_results_so_far.
-        therefore, we check that the path exists first before trying to delete. 
+        This will be non-empty at the end of training with asynchronous uploading because the futures are not
+        processed with _check_uploading_results_so_far. Therefore, check that the path exists before deleting.
         '''
         if self._temp_files:
             for tfile in self._temp_files:

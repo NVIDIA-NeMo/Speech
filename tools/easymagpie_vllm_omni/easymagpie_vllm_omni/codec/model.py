@@ -1,4 +1,5 @@
-# Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -167,10 +168,21 @@ class EasyMagpieCodecForConditionalGeneration(nn.Module):
             )
         packed_audio = self.codec(codes)
         outputs: list[torch.Tensor] = []
+        frame_offset = 0
         offset = 0
         for frames in frame_counts:
             samples = frames * self.config.samples_per_frame
-            outputs.append(packed_audio[offset : offset + samples].float())
+            valid_samples = samples
+            if frames > 0:
+                last = codes[frame_offset + frames - 1].view(-1, self.config.frame_stacking_factor)
+                control = (last >= self.config.codebook_size).any(dim=0)
+                if control.any():
+                    valid_subframes = int(control.to(torch.int64).argmax().item())
+                    valid_samples -= (self.config.frame_stacking_factor - valid_subframes) * (
+                        self.config.samples_per_codec_frame
+                    )
+            outputs.append(packed_audio[offset : offset + valid_samples].float())
+            frame_offset += frames
             offset += samples
         sample_rate = torch.tensor(self.config.output_sample_rate, dtype=torch.int32)
         return OmniOutput(

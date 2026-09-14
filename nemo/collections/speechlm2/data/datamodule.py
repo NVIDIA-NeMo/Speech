@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -71,6 +72,17 @@ class DataModule(LightningDataModule):
         self.dataset = dataset
         self._train_dl = None
 
+    def _dataset_for_config(self, cfg, *, training: bool) -> torch.utils.data.Dataset:
+        """Apply the loader's audio I/O failure policy to the shared dataset."""
+        fault_tolerant_audio_loading = bool(cfg.get("fault_tolerant_audio_loading", True))
+        dataset = self.dataset
+        configure_policy = getattr(dataset, "with_fault_tolerant_audio_loading", None)
+        if callable(configure_policy):
+            dataset = configure_policy(fault_tolerant_audio_loading)
+        if training and fault_tolerant_audio_loading:
+            dataset = FallbackDataset(dataset)
+        return dataset
+
     def train_dataloader(self):
         if "train_ds" not in self.cfg:
             return None
@@ -81,7 +93,7 @@ class DataModule(LightningDataModule):
                     config=self.cfg.train_ds,
                     global_rank=self._get_dp_rank(),
                     world_size=self._get_world_size(),
-                    dataset=FallbackDataset(self.dataset),
+                    dataset=self._dataset_for_config(self.cfg.train_ds, training=True),
                     tokenizer=self.tokenizer,
                     dp_group=self._get_dp_group(),
                 )
@@ -157,7 +169,7 @@ class DataModule(LightningDataModule):
                     config=cfg,
                     global_rank=self._get_dp_rank(),
                     world_size=self._get_world_size(),
-                    dataset=self.dataset,
+                    dataset=self._dataset_for_config(cfg, training=False),
                     tokenizer=self.tokenizer,
                     dp_group=self._get_dp_group(),
                 )

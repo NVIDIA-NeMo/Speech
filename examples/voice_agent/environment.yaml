@@ -142,7 +142,6 @@ dependencies:
     - fonttools==4.60.1
     - frozendict==2.4.6
     - frozenlist==1.7.0
-    - fsspec==2024.12.0
     - ftfy==6.3.1
     - future==1.0.0
     - gdown==5.2.0

@@ -83,6 +83,8 @@ nmt:
   llm_params:                                        # See https://docs.vllm.ai/en/v0.8.1/api/offline_inference/llm.html for more details
     dtype: "auto"                                    # Compute precision
     seed: 42                                         # The seed to initialize the random number generator for sampling
+    gpu_memory_utilization: 0.85                     # Sets what fraction of each GPU's memory vLLM is allowed to reserve and use. Use smaller values for reducing GPU memory usage.
+    max_model_len: 4096                              # Maximum length of the model input tokens.
   sampling_params:                                   # See https://docs.vllm.ai/en/v0.6.4/dev/sampling_params.html for more details
     max_tokens: 100                                  # Maximum number of tokens to generate with LLM
     temperature: 0.0                                 # LLM sampling temperature, default for translation is 0 (greedy)
@@ -119,10 +121,15 @@ streaming:
   batch_size: 64                             # Number of audio frames per batch
   word_boundary_tolerance: 4                  # Tolerance for word boundaries
   att_context_size: [70,13]                   # Attention context size: [70,13],[70,6],[70,1],[70,0]
+                                              # Values are model-specific. The [70,*] sizes above apply to the English
+                                              # nemotron-speech-streaming-en-0.6b. Multilingual prompt-conditioned models
+                                              # such as nvidia/nemotron-3.5-asr-streaming-0.6b use [56,*]:
+                                              # [56,13],[56,6],[56,3],[56,1],[56,0].
   use_cache: true                             # Whether to use cache for streaming
   use_feat_cache: true                        # Whether to cache mel-spec features, set false to re-calculate all mel-spec features in audio buffer
   chunk_size_in_secs: null                    # Amount of audio to load for each streaming step, e.g., 0.08s for FastConformer. Set to `null` for using default size equal to 1+lookahead frames.
   request_type: frame                         # Type of request: frame or feature_buffer
+  flush_size_in_secs: 0.0                     # Silence appended per stream so the decoder can flush its tail; 0.0 appends none
   num_slots: 256                             # Number of slots in the context manager: must be >= batch_size
 
 

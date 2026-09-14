@@ -1,7 +1,8 @@
 # Source: https://github.com/tartley/colorama/blob/master/colorama/ansi.py
 # Copyright: Jonathan Hartley 2013. BSD 3-Clause license.
 #
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -48,6 +49,8 @@ class AnsiCodes(object):
 
 
 class AnsiCursor(object):
+    """ANSI escape sequences for moving the terminal cursor."""
+
     def UP(self, n=1):
         return CSI + str(n) + "A"
 
@@ -65,6 +68,8 @@ class AnsiCursor(object):
 
 
 class AnsiFore(AnsiCodes):
+    """ANSI escape sequences for foreground colors."""
+
     BLACK = 30
     RED = 31
     GREEN = 32
@@ -87,6 +92,8 @@ class AnsiFore(AnsiCodes):
 
 
 class AnsiBack(AnsiCodes):
+    """ANSI escape sequences for background colors."""
+
     BLACK = 40
     RED = 41
     GREEN = 42

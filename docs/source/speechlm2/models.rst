@@ -314,6 +314,21 @@ All models in the speechlm2 collection can be instantiated from pretrained check
     # Load NemotronVoiceChat (Inference Only)
     voicechat_model = slm.models.NemotronVoiceChat.from_pretrained("path/to/checkpoint")
 
+Remote HuggingFace code is disabled by default. If a trusted checkpoint requires
+custom code, opt in at runtime and pin the repository to a reviewed revision:
+
+.. code-block:: python
+
+    model = slm.models.SALM.from_pretrained(
+        "trusted/model",
+        revision="reviewed-commit-sha",
+        trust_remote_code=True,
+    )
+
+The ``trust_remote_code`` setting stored in a checkpoint configuration is ignored.
+This prevents a model repository from opting itself into executing downloaded
+Python code.
+
 Fine-Tuning from a Checkpoint
 ------------------------------
 

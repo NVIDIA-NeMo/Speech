@@ -1,4 +1,5 @@
-# Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -43,3 +44,40 @@ def test_payload_codes_rejects_scheduled_frame_mismatch():
 
     with pytest.raises(ValueError, match="scheduled 1 placeholders.*2 frames"):
         EasyMagpieCodecForConditionalGeneration._payload_codes(model, [_payload(2)], torch.device("cpu"), [(0, 1)])
+
+
+class _FakeCodec(torch.nn.Module):
+    def forward(self, codes: torch.Tensor) -> torch.Tensor:
+        return torch.arange(codes.shape[0] * 6, dtype=torch.float32, device=codes.device)
+
+
+@pytest.mark.parametrize(
+    ("terminal_row", "expected_samples"),
+    [
+        ([3, 1025, 103, 1025], 9),
+        ([1025, 3, 1025, 103], 6),
+    ],
+)
+def test_forward_trims_terminal_control_subframes(terminal_row, expected_samples):
+    model = EasyMagpieCodecForConditionalGeneration.__new__(EasyMagpieCodecForConditionalGeneration)
+    torch.nn.Module.__init__(model)
+    model.config = SimpleNamespace(
+        num_stacked_codebooks=4,
+        frame_stacking_factor=2,
+        codebook_size=1024,
+        samples_per_codec_frame=3,
+        samples_per_frame=6,
+        output_sample_rate=22050,
+    )
+    model.vllm_config = SimpleNamespace(device_config=SimpleNamespace(device=torch.device("cpu")))
+    model.codec = _FakeCodec()
+    info = {"codes": {"audio": torch.tensor([[1, 2, 101, 102], terminal_row])}}
+
+    output = model.forward(
+        input_ids=torch.zeros(2, dtype=torch.long),
+        runtime_additional_information=[info],
+        request_token_spans=[(0, 2)],
+    )
+
+    audio = output.multimodal_outputs["model_outputs"][0]
+    torch.testing.assert_close(audio, torch.arange(expected_samples, dtype=torch.float32))

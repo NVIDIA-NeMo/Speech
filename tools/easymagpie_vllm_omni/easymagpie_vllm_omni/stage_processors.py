@@ -1,4 +1,5 @@
-# Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -202,9 +203,6 @@ def _extract_last_frame(multimodal_output: OmniPayload | dict[str, Any]) -> torc
         frame = audio_codes[-1]
         if frame.numel() == 0 or not bool(frame.any().item()):
             return None
-        if int(frame.max().item()) >= _CODEBOOK_SIZE:
-            # Control frame (audio eos/mask) — not audio.
-            return None
         return frame.to(torch.long).reshape(-1)
     if audio_codes.ndim == 1:
         return audio_codes.to(torch.long).reshape(-1)
@@ -285,15 +283,15 @@ def talker2code2wav_async_chunk(
     """
     request_id = request.external_req_id
     finished = bool(is_finished or request.is_finished())
+    info = deserialize_additional_information(getattr(request, "additional_information", None))
+    reset_codec = finished and bool(info.get("reset_codec_on_segment", False))
 
     if isinstance(multimodal_output, Mapping):
         frame = _extract_last_frame(multimodal_output)
-        # EOS and other control rows intentionally become ``None`` here: they
-        # stop Stage 0 and flush pending audio, but never enter the codec stream.
+        # Keep the terminal control row so the codec can retain any valid subframe before it.
         delay_state = _persistent_state(transfer_manager, "_emp_request_speech_delay")
         if request_id not in delay_state:
             base_speech_delay = _resolve_speech_delay(transfer_manager)
-            info = deserialize_additional_information(getattr(request, "additional_information", None))
             text_prefill_num = int(info.get("text_prefill_num", 0) or 0)
             if not 0 <= text_prefill_num <= base_speech_delay:
                 raise ValueError(
@@ -357,7 +355,7 @@ def talker2code2wav_async_chunk(
     emitted_chunks_state = _persistent_state(transfer_manager, "_emp_emitted_chunks")
     emitted_chunks = emitted_chunks_state[request_id]
 
-    true_finished = _is_true_request_finish(request)
+    true_finished = _is_true_request_finish(request) or reset_codec
 
     def _cleanup() -> None:
         emitted_state.pop(request_id, None)
@@ -373,16 +371,21 @@ def talker2code2wav_async_chunk(
                 _cleanup()
             return OmniPayloadStruct(
                 codes=CodesStruct(audio=torch.empty(0, dtype=torch.long)),
-                meta=MetaStruct(finished=torch.tensor(True, dtype=torch.bool)),
+                meta=MetaStruct(
+                    finished=torch.tensor(True, dtype=torch.bool),
+                    codec_streaming=not reset_codec,
+                ),
             )
         return None
 
     pending = length - emitted
     if pending <= 0:
-        # Nothing new to emit. Never re-emit already-sent frames; the adapter
-        # still forwards segment/request finish markers when we return None.
+        # Nothing new to emit. Never re-emit already-sent frames. Dialogue
+        # boundaries still carry a reset marker to the codec scheduler.
         if true_finished:
             _cleanup()
+        if reset_codec:
+            return OmniPayloadStruct(meta=MetaStruct(codec_streaming=False))
         return None
 
     # Startup targets ramp independently from the steady codec chunk size.
@@ -413,6 +416,7 @@ def talker2code2wav_async_chunk(
         meta=MetaStruct(
             left_context_size=0,
             finished=torch.tensor(finished, dtype=torch.bool),
+            codec_streaming=not reset_codec,
         ),
     )
 

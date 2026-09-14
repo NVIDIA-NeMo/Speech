@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -36,8 +37,10 @@ from nemo.utils.exceptions import NeMoBaseException
 @dataclass
 class PhraseItem:
     phrase: str  # phrase itself
-    lang: str  # per-phrase language (for aggregate tokenizer)
-    # custom weight can be further added
+    lang: Optional[str] = None  # per-phrase language (for aggregate tokenizer); None -> cfg.source_lang
+    # per-phrase boosting weight multiplier applied on top of the decode-time boosting_tree_alpha,
+    # baked into the graph weights at build time; None -> 1.0 (global behavior)
+    alpha: Optional[float] = None
 
 
 class BPEMode(PrettyStrEnum):
@@ -58,9 +61,10 @@ class BoostingTreeModelConfig:
     key_phrases_list: Optional[list[str]] = (
         None  # The list of context-biasing phrases ['word1', 'word2', 'word3', ...]
     )
-    # The list of context-biasing phrases with custom options:
-    # [PhraseItem("word1", lang="en"), PhraseItem("frase dos", lang="es"), ...]
-    # in CLI: key_phrase_items_list='[{phrase:"word1",lang:en},{phrase:"frase dos",lang:es}]'
+    # The list of context-biasing phrases with custom per-phrase options (lang, alpha):
+    # [PhraseItem("word1", lang="en"), PhraseItem("word2", alpha=4.0), ...]
+    # in CLI: key_phrase_items_list='[{phrase:"word1",lang:en},{phrase:"word2",alpha:4.0}]'
+    # omitted per-phrase fields fall back to the global values
     key_phrase_items_list: list[PhraseItem] | None = None
     context_score: float = 1.0  # The score for each arc transition in the context graph
     depth_scaling: float = (
@@ -201,7 +205,7 @@ class BoostingTreeStorage:
                 self.states[self.start_state]["order"] + 1,
                 self.start_state,
                 backoff_weight,
-                self.final_eos_score if tbranch.next_node.is_end else 0.0,
+                self.final_eos_score * tbranch.next_node.phrase_alpha if tbranch.next_node.is_end else 0.0,
             )
             num_vocab_labels += 1
             self._node_cache[tbranch.next_node.id] = next_state
@@ -249,7 +253,7 @@ class BoostingTreeStorage:
                 self.states[from_state]["order"] + 1,
                 backoff_state,
                 backoff_weight,
-                self.final_eos_score if tbranch.next_node.is_end else 0.0,
+                self.final_eos_score * tbranch.next_node.phrase_alpha if tbranch.next_node.is_end else 0.0,
             )
 
             self._node_cache[tbranch.next_node.id] = next_state
@@ -571,6 +575,19 @@ class GPUBoostingTreeModel(NGramGPULanguageModel):
         raise NeMoBaseException("Boosting tree cannot be loaded from ARPA file")
 
     @classmethod
+    def _validate_phrase_items(cls, phrase_items_list: list[PhraseItem]) -> None:
+        """Validate per-phrase boosting parameters (alpha)."""
+        for item in phrase_items_list:
+            if item.alpha is not None:
+                if item.alpha < 0:
+                    raise ValueError(
+                        f"Negative alpha {item.alpha} for phrase '{item.phrase}' is not allowed "
+                        "(it would turn boosting into penalization)"
+                    )
+                if item.alpha == 0.0:
+                    logging.warning(f"alpha is 0.0 for phrase '{item.phrase}': the phrase is effectively disabled")
+
+    @classmethod
     def from_config(cls, cfg: BoostingTreeModelConfig, tokenizer: TokenizerSpec) -> "GPUBoostingTreeModel":
         """
         Constructor boosting tree model from config file
@@ -595,8 +612,13 @@ class GPUBoostingTreeModel(NGramGPULanguageModel):
         else:
             raise ValueError("No key phrases file or list specified")
 
+        cls._validate_phrase_items(phrase_items_list)
+
         # 2. tokenize key phrases
         phrases_dict = {}
+        # map each (possibly transformed, e.g. lowercased) phrase key back to its PhraseItem
+        # to recover the per-phrase alpha in step 3 (last occurrence wins)
+        items_by_phrase: dict[str, PhraseItem] = {}
         is_aggregate_tokenizer = isinstance(tokenizer, AggregateTokenizer)
 
         bpe_mode = BPEMode(cfg.bpe_mode)  # validate BPE mode
@@ -616,16 +638,18 @@ class GPUBoostingTreeModel(NGramGPULanguageModel):
             phrase = phrase_item.phrase
             if bpe_mode is BPEMode.CASE_INSENSITIVE:
                 phrase = phrase.lower()
+            items_by_phrase[phrase] = phrase_item
+            lang = phrase_item.lang or cfg.source_lang
             if bpe_mode is BPEMode.BPE_DROPOUT:
                 phrases_dict[phrase] = cls.get_alternative_transcripts(cfg, tokenizer, phrase)
             else:
                 if is_aggregate_tokenizer:
                     if bpe_mode in {BPEMode.VAR_BPE, BPEMode.CASE_INSENSITIVE}:
                         phrases_dict[phrase] = tokenizer.text_to_ids_var_bpe(
-                            phrase, lang_id=phrase_item.lang, case_insensitive=is_case_insensitive
+                            phrase, lang_id=lang, case_insensitive=is_case_insensitive
                         )
                     else:
-                        phrases_dict[phrase] = tokenizer.text_to_ids(phrase, lang_id=phrase_item.lang)
+                        phrases_dict[phrase] = tokenizer.text_to_ids(phrase, lang_id=lang)
                 else:
                     if bpe_mode in {BPEMode.VAR_BPE, BPEMode.CASE_INSENSITIVE}:
                         phrases_dict[phrase] = tokenizer.text_to_ids_var_bpe(
@@ -635,16 +659,20 @@ class GPUBoostingTreeModel(NGramGPULanguageModel):
                         phrases_dict[phrase] = tokenizer.text_to_ids(phrase)
 
         # 3. build python context graph
-        contexts, scores, phrases = [], [], []
+        contexts, scores, phrases, alphas = [], [], [], []
         for phrase in phrases_dict:
+            phrase_alpha = items_by_phrase[phrase].alpha  # None -> 1.0 (global) in build()
+            phrase_score = round(cfg.score_per_phrase / len(phrase), 2)
             if bpe_mode is BPEMode.BPE_DROPOUT:
                 for transcript in phrases_dict[phrase]:
                     contexts.append(transcript)
-                    scores.append(round(cfg.score_per_phrase / len(phrase), 2))
+                    scores.append(phrase_score)
+                    alphas.append(phrase_alpha)
                     phrases.append(phrase)
             else:
                 contexts.append(phrases_dict[phrase])
-                scores.append(round(cfg.score_per_phrase / len(phrase), 2))
+                scores.append(phrase_score)
+                alphas.append(phrase_alpha)
                 phrases.append(phrase)
 
         context_graph = ContextGraph(context_score=cfg.context_score, depth_scaling=cfg.depth_scaling)
@@ -654,6 +682,7 @@ class GPUBoostingTreeModel(NGramGPULanguageModel):
                 scores=scores,
                 phrases=phrases,
                 uniform_weights=cfg.uniform_weights,
+                alphas=alphas,
                 var_bpe_scoring_temp=cfg.var_bpe_scoring_temp,
                 var_bpe_penalize_subsplits=cfg.var_bpe_penalize_subsplits,
             )
@@ -663,6 +692,7 @@ class GPUBoostingTreeModel(NGramGPULanguageModel):
                 scores=scores,
                 phrases=phrases,
                 uniform_weights=cfg.uniform_weights,
+                alphas=alphas,
             )
 
         # 4. build GPU boosting tree model from python context graph

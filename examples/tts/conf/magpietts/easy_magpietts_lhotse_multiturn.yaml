@@ -93,6 +93,14 @@ model:
   phoneme_corruption_timestep_ratio: 0.15
   phoneme_corruption_unk_mode_prob: 0.5
   phoneme_corruption_type: "repeat_skip_unk" # "repeat_skip_unk" or "complete_channel"
+  enable_phoneme_text_input: false # Enable inline IPA spans in text as <bop>...<eop>; requires phoneme_tokenizer.
+  partial_phoneme_text_prob: 0.0 # Training-only probability of using precomputed IPA alignments.
+  partial_phoneme_portion_min: 0.25 # Minimum portion of aligned words to phonemize in a selected sample.
+  partial_phoneme_portion_max: 0.75 # Maximum portion of aligned words to phonemize in a selected sample.
+  phoneme_text_bop_marker: "<bop>"
+  phoneme_text_eop_marker: "<eop>"
+  ignore_phoneme_languages: [] # Languages for which missing IPA phoneme fields are allowed during training.
+  add_language_to_context_text: false # Prefix context text with language metadata for multilingual conditioning.
   phoneme_turn_dropout_batch_prob: 0.0  # prob of applying turn dropout to a sample
   phoneme_turn_dropout_turn_prob: 0.0  # prob of dropping each phoneme turn within a sample
   phoneme_turn_max_words_to_drop: 0  # turns with <= this many words keep phoneme tokens as pad_id
@@ -109,6 +117,7 @@ model:
   train_ds:
     use_lhotse: ${model.use_lhotse}
     volume_norm: true
+    load_normalized_text_percent: 1.0  # Probability of loading the normalized transcript when available.
     dataset:
       multi_config: true
       shuffle: true

@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,6 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Portions adapted from NeMo Curator and cuML safe_imports:
+# Copyright (c) 2019-2025, NVIDIA CORPORATION & AFFILIATES.
+# Licensed under the Apache License, Version 2.0.
 # This file is taken from https://github.com/NVIDIA-NeMo/Curator/blob/dask/nemo_curator/utils/import_utils.py,
 # which is adapted from cuML's safe_imports module:
 # https://github.com/rapidsai/cuml/blob/e93166ea0dddfa8ef2f68c6335012af4420bc8ac/python/cuml/internals/safe_imports.py

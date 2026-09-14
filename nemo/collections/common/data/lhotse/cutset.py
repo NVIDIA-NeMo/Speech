@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -46,6 +47,7 @@ from nemo.collections.common.data.lhotse.text_adapters import (
     LhotseTextAdapter,
     LhotseTextJsonlAdapter,
     LhotseTextPairAdapter,
+    MaterializedSFTMessagesAdapter,
     NeMoMultimodalConversation,
     NeMoMultimodalConversationJsonlAdapter,
     NeMoMultimodalConversationShareGPTJsonlAdapter,
@@ -283,6 +285,8 @@ def read_dataset_config(config) -> tuple[CutSet, bool]:
         "audio_locator_tag": config.get("audio_locator_tag", None),
         "token_equivalent_duration": config.get("token_equivalent_duration", None),
         "skip_missing_manifest_entries": config.get("skip_missing_manifest_entries", False),
+        "fault_tolerant_audio_loading": config.get("fault_tolerant_audio_loading", True),
+        "input_sampling_rate": config.get("input_sampling_rate", None),
         "force_map_dataset": config.get("force_map_dataset", False),
         "force_iterable_dataset": config.get("force_iterable_dataset", False),
         "slice_length": config.get("slice_length", None),
@@ -435,6 +439,26 @@ def read_nemotron_text_converation(config: DictConfig) -> tuple[CutSet, bool]:
     return cuts, True
 
 
+@data_type_parser("materialized_sft_messages")
+def read_materialized_sft_messages(config: DictConfig) -> tuple[CutSet, bool]:
+    """Read packed SFT JSONL whose message contents are already prompt-rendered."""
+    cuts = CutSet(
+        MaterializedSFTMessagesAdapter(
+            paths=config.paths,
+            shuffle_shards=config.shuffle,
+            shard_seed=config.shard_seed,
+            indexed=config.get("indexed", False),
+            indexes_root=config.get("indexes_root", None),
+            index_pack=_resolve_index_pack(config),
+            index_pack_max_open_files=config.get("index_pack_max_open_files", 32),
+            validate_chunk_tokenization=config.get("validate_chunk_tokenization", True),
+        )
+    )
+    if not config.get("force_finite", False):
+        cuts = cuts.repeat(preserve_id=True)
+    return cuts, True
+
+
 @data_type_parser("multimodal_conversation")
 def read_multimodal_conversation_jsonl(config: DictConfig) -> tuple[CutSet, bool]:
     """Read paths to multimodal conversation JSONL files and create a CutSet."""
@@ -447,10 +471,15 @@ def read_multimodal_conversation_jsonl(config: DictConfig) -> tuple[CutSet, bool
             shuffle_shards=config.shuffle,
             shard_seed=config.shard_seed,
             system_prompt=config.get("tags", {}).get("system_prompt"),
+            override_system_prompt=config.get("tags", {}).get("override_system_prompt", False),
             context=config.get("tags", {}).get("context"),
             slice_length=config.get("slice_length"),
             indexed=config.get("indexed", False),
             indexes_root=config.get("indexes_root", None),
+            index_pack=_resolve_index_pack(config),
+            index_pack_max_open_files=config.get("index_pack_max_open_files", 32),
+            skip_missing_manifest_entries=config.get("skip_missing_manifest_entries", False),
+            fault_tolerant_audio_loading=config.get("fault_tolerant_audio_loading", True),
         )
     )
     if not config.get("force_finite", False):
@@ -465,10 +494,15 @@ def read_share_gpt_as_conversation(config) -> tuple[CutSet, bool]:
         NeMoMultimodalConversationShareGPTJsonlAdapter(
             manifest_filepath=config.manifest_filepath,
             tarred_audio_filepaths=config.get("tarred_audio_filepaths"),
+            tar_lookup_mode=config.get("tar_lookup_mode"),
+            tar_routing_filepath=config.get("tar_routing_filepath", config.get("tar_routing_index")),
             audio_locator_tag=config.audio_locator_tag,
             audio_placeholders=config.audio_placeholders,
             audio_root=config.get("audio_root"),
+            audio_path_prefix_map=config.get("audio_path_prefix_map"),
             token_equivalent_duration=config.get("token_equivalent_duration"),
+            system_prompt=config.get("tags", {}).get("system_prompt"),
+            override_system_prompt=config.get("tags", {}).get("override_system_prompt", False),
             shuffle_shards=config.shuffle,
             shard_seed=config.shard_seed,
             slice_length=config.get("slice_length"),
@@ -477,6 +511,10 @@ def read_share_gpt_as_conversation(config) -> tuple[CutSet, bool]:
             index_pack=_resolve_index_pack(config),
             index_pack_max_open_files=config.get("index_pack_max_open_files", 32),
             skip_missing_manifest_entries=config.get("skip_missing_manifest_entries", False),
+            fault_tolerant_audio_loading=config.get("fault_tolerant_audio_loading", True),
+            excluded_manifest_lines=config.get("excluded_manifest_lines"),
+            excluded_manifest_lines_sha256=config.get("excluded_manifest_lines_sha256"),
+            approved_exclusion_audit_sha256=config.get("approved_exclusion_audit_sha256"),
         )
     )
     if not config.get("force_finite", False):
@@ -493,10 +531,17 @@ def read_share_gpt_webdataset_as_conversation(config) -> tuple[CutSet, bool]:
             audio_locator_tag=config.audio_locator_tag,
             audio_placeholders=config.get("audio_placeholders"),
             token_equivalent_duration=config.get("token_equivalent_duration"),
+            system_prompt=config.get("tags", {}).get("system_prompt"),
+            override_system_prompt=config.get("tags", {}).get("override_system_prompt", False),
             shuffle_shards=config.shuffle,
             shard_seed=config.shard_seed,
             indexed=config.get("indexed", False),
             indexes_root=config.get("indexes_root", None),
+            wds_sample_index_version=config.get("wds_sample_index_version", 1),
+            index_pack=_resolve_index_pack(config),
+            index_pack_max_open_files=config.get("index_pack_max_open_files", 32),
+            skip_missing_manifest_entries=config.get("skip_missing_manifest_entries", False),
+            fault_tolerant_audio_loading=config.get("fault_tolerant_audio_loading", True),
         )
     )
     # When force_finite is False (default), repeat the dataset infinitely so that
@@ -555,7 +600,7 @@ def count_input_cfg_levels(config: Union[DictConfig, dict]) -> int:
 
     _cache: dict[str, object] = {}
 
-    def _resolve_if_path(val):
+    def _resolve_if_path(val, containing_dir: Path | None):
         """If *val* is a string/Path, load the YAML file it points to.
 
         Raises on I/O or parse errors except ``FileNotFoundError``, which is
@@ -565,29 +610,38 @@ def count_input_cfg_levels(config: Union[DictConfig, dict]) -> int:
         runtime via ``OmegaConf.create()``.
         """
         if isinstance(val, (str, Path)):
-            key = str(val)
+            raw_path = str(val)
+            if "://" in raw_path:
+                key = raw_path
+                next_dir = containing_dir
+            else:
+                path = Path(raw_path)
+                if containing_dir is not None and not path.is_absolute():
+                    path = containing_dir / path
+                key = str(path)
+                next_dir = path.parent
             if key not in _cache:
                 try:
                     _cache[key] = load_yaml(key)
                 except FileNotFoundError:
                     logging.debug("count_input_cfg_levels: could not load %r, treating as leaf", key)
                     _cache[key] = val
-            return _cache[key]
-        return val
+            return _cache[key], next_dir
+        return val, containing_dir
 
-    def _max_depth(obj) -> int:
+    def _max_depth(obj, containing_dir: Path | None = None) -> int:
         if isinstance(obj, (dict, DictConfig)):
             depths = []
             for key, val in obj.items():
                 if key == "input_cfg":
-                    resolved = _resolve_if_path(val)
-                    depths.append(1 + _max_depth(resolved))
+                    resolved, next_dir = _resolve_if_path(val, containing_dir)
+                    depths.append(1 + _max_depth(resolved, next_dir))
                 else:
-                    depths.append(_max_depth(val))
+                    depths.append(_max_depth(val, containing_dir))
             return max(depths, default=0)
         elif isinstance(obj, (list, ListConfig)):
             # For lists, find the max depth across all items (siblings)
-            return max((_max_depth(item) for item in obj), default=0)
+            return max((_max_depth(item, containing_dir) for item in obj), default=0)
         return 0
 
     return _max_depth(config)
@@ -610,20 +664,44 @@ def parse_and_combine_datasets(
         temperature, *next_temperatures = propagate_attrs["reweight_temperature"]
     propagate_attrs["reweight_temperature"] = next_temperatures
 
+    containing_dir = None
     if isinstance(config_list, (str, Path)):
         # Resolve local filepath /path/to/input_cfg.yaml or
         # remote url s3://bucket/path/to/input_cfg.yaml into config contents if needed.
-        config_list = OmegaConf.create(load_yaml(config_list))
+        config_path = str(config_list)
+        config_list = OmegaConf.create(load_yaml(config_path))
+        if "://" not in config_path:
+            containing_dir = Path(config_path).parent
     assert len(config_list) > 0, "Empty group in dataset config list."
 
     for item in config_list:
-        # Check if we have any attributes that are propagated downwards to each item in the group.
-        # If a key already exists in the item, it takes precedence (we will not overwrite);
-        # otherwise we will assign it.
-        # We also update propagate_atts for the next sub-groups based on what's present in this group
+        # External blend YAMLs may refer to another YAML relative to their own
+        # location. Resolve that reference before descending so frozen blend
+        # trees remain portable when their common parent directory is moved.
+        if containing_dir is not None and isinstance((nested := item.get("input_cfg")), (str, Path)):
+            nested_path = str(nested)
+            if "://" not in nested_path and not Path(nested_path).is_absolute():
+                item["input_cfg"] = str(containing_dir / nested_path)
+
+        # Propagate loader attributes into each leaf. Most leaf values may
+        # override their parent, but both failure policies remain loader-wide.
+        # SALMDataset and FallbackDataset are shared across the blended graph,
+        # and preserving one authoritative policy also avoids changing existing
+        # external-input_cfg override semantics. Keep top-level values authoritative
+        # through external YAMLs.
         next_propagate_attrs = propagate_attrs.copy()
         for k, v in propagate_attrs.items():
-            if k not in item:
+            if k in ("skip_missing_manifest_entries", "fault_tolerant_audio_loading"):
+                if k in item and item[k] != v:
+                    logging.info(
+                        "Overriding nested %s=%s with loader-wide value %s.",
+                        k,
+                        item[k],
+                        v,
+                    )
+                item[k] = v
+                next_propagate_attrs[k] = v
+            elif k not in item:
                 item[k] = v
             else:
                 next_propagate_attrs[k] = item[k]
@@ -1206,6 +1284,69 @@ def read_lhotse_magpietts_data_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
     return cuts, is_tarred
 
 
+def s2s_duplex_reverse_role_for_one_speaker(
+    speaker: str | None,
+    agent_roles: tuple[str, ...],
+    user_roles: tuple[str, ...],
+    target_agent_name: str,
+    target_user_name: str,
+) -> str | None:
+    """Swap one speaker label for the reverse-role duplex view."""
+    if speaker is None:
+        return speaker
+
+    speaker_l = speaker.lower()
+    if speaker_l in user_roles:
+        return target_agent_name
+    if speaker_l in agent_roles:
+        return target_user_name
+    return speaker
+
+
+def s2s_duplex_reverse_role_for_one_cut(
+    cut: Cut,
+    agent_roles: tuple[str, ...],
+    user_roles: tuple[str, ...],
+    target_agent_name: str,
+    target_user_name: str,
+) -> Cut:
+    """Swap speaker roles and source/target audio streams for one duplex cut."""
+    new_cut = deepcopy(cut)
+
+    if getattr(new_cut, "supervisions", None):
+        new_sups = []
+        for supervision in new_cut.supervisions:
+            swapped_supervision = deepcopy(supervision)
+            swapped_supervision.speaker = s2s_duplex_reverse_role_for_one_speaker(
+                getattr(swapped_supervision, "speaker", None),
+                agent_roles=agent_roles,
+                user_roles=user_roles,
+                target_agent_name=target_agent_name,
+                target_user_name=target_user_name,
+            )
+            new_sups.append(swapped_supervision)
+        new_cut.supervisions = new_sups
+
+    old_recording = new_cut.recording
+    old_target_audio = new_cut.target_audio
+    old_rec_id = old_recording.id
+    old_tar_id = old_target_audio.id
+
+    new_cut.recording = old_target_audio
+    new_cut.target_audio = old_recording
+
+    if hasattr(new_cut, "duration"):
+        new_cut.duration = new_cut.recording.duration
+
+    assert new_cut.target_audio.id == old_rec_id, f"{new_cut.id}: recording swap failed"
+    assert new_cut.recording.id == old_tar_id, f"{new_cut.id}: target_audio swap failed"
+    assert new_cut.recording is old_target_audio, f"{new_cut.id}: recording object not swapped"
+    assert new_cut.target_audio is old_recording, f"{new_cut.id}: target_audio object not swapped"
+
+    new_cut.task = "s2s_duplex_reverse_role"
+    return new_cut
+
+
 @data_type_parser(["s2s_duplex_reverse_role"])
 def read_s2s_duplex_reverse_role(config) -> Tuple[CutSet, bool]:
     """
@@ -1233,74 +1374,19 @@ def read_s2s_duplex_reverse_role(config) -> Tuple[CutSet, bool]:
     """
     cuts, is_tarred = read_cutset_from_config(config)
 
-    # Roles coming from config
-    agent_roles = config.get("agent_roles", ["agent", "Agent", "Assistant", "assistant"])
-    user_roles = config.get("user_roles", ["user", "User"])
-
-    # Normalize for robust matching
-    agent_roles_set = {r.lower() for r in agent_roles}
-    user_roles_set = {r.lower() for r in user_roles}
-
-    # Canonical names you want after swapping
+    agent_roles = tuple(r.lower() for r in config.get("agent_roles", ["agent", "Agent", "Assistant", "assistant"]))
+    user_roles = tuple(r.lower() for r in config.get("user_roles", ["user", "User"]))
     target_agent_name = config.get("target_agent_name", "agent")
     target_user_name = config.get("target_user_name", "user")
 
-    def swap_speaker(role: str) -> str:
-        """Swap a given role based on the configured user/agent sets."""
-        if role is None:
-            return role
-
-        role_l = role.lower()
-
-        # user -> agent
-        if role_l in user_roles_set:
-            return target_agent_name
-
-        # agent -> user
-        if role_l in agent_roles_set:
-            return target_user_name
-
-        # untouched roles (e.g., narrator, system, etc.)
-        return role
-
-    def convert_cut_fn(cut: Cut) -> Cut:
-        """Convert a single cut by swapping supervisions and audio streams."""
-        new_cut = deepcopy(cut)
-
-        # swap supervisions
-        if getattr(new_cut, "supervisions", None):
-            new_sups = []
-            for s in new_cut.supervisions:
-                s2 = deepcopy(s)
-                s2.speaker = swap_speaker(getattr(s2, "speaker", None))
-                new_sups.append(s2)
-            new_cut.supervisions = new_sups
-
-        # swap audio streams
-        old_recording = new_cut.recording
-        old_target_audio = new_cut.target_audio
-        old_rec_id = old_recording.id
-        old_tar_id = old_target_audio.id
-
-        new_cut.recording = old_target_audio
-        new_cut.target_audio = old_recording
-
-        # keep duration consistent
-        if hasattr(new_cut, "duration"):
-            new_cut.duration = new_cut.recording.duration
-
-        # Debug assertions
-        assert new_cut.target_audio.id == old_rec_id, f"{new_cut.id}: recording swap failed"
-        assert new_cut.recording.id == old_tar_id, f"{new_cut.id}: target_audio swap failed"
-
-        # Optional stronger assertions (object identity)
-        assert new_cut.recording is old_target_audio, f"{new_cut.id}: recording object not swapped"
-        assert new_cut.target_audio is old_recording, f"{new_cut.id}: target_audio object not swapped"
-
-        new_cut.task = "s2s_duplex_reverse_role"
-        return new_cut
-
-    cuts = cuts.map(convert_cut_fn)
+    convert_fn = partial(
+        s2s_duplex_reverse_role_for_one_cut,
+        agent_roles=agent_roles,
+        user_roles=user_roles,
+        target_agent_name=target_agent_name,
+        target_user_name=target_user_name,
+    )
+    cuts = cuts.map(convert_fn)
     return cuts, is_tarred
 
 
@@ -1702,6 +1788,8 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
                     manifest_filepath,
                     tar_paths=tarred_audio_filepaths,
                     skip_missing_manifest_entries=config.get("skip_missing_manifest_entries", False),
+                    fault_tolerant_audio_loading=config.get("fault_tolerant_audio_loading", True),
+                    input_sampling_rate=config.get("input_sampling_rate", None),
                     slice_length=config.get("slice_length", None),
                     **tar_kwargs_extra,
                     **common_kwargs,
@@ -1743,6 +1831,8 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
                     manifest_path=manifest_path,
                     tar_paths=tar_path,
                     skip_missing_manifest_entries=config.get("skip_missing_manifest_entries", False),
+                    fault_tolerant_audio_loading=config.get("fault_tolerant_audio_loading", True),
+                    input_sampling_rate=config.get("input_sampling_rate", None),
                     slice_length=config.get("slice_length", None),
                     **tar_kwargs_extra,
                     **common_kwargs,

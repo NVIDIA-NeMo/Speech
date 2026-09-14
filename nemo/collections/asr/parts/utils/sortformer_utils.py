@@ -1,4 +1,5 @@
-# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,12 +19,46 @@ import time
 from functools import wraps
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import TYPE_CHECKING, Dict, List
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 import torch
+from omegaconf import open_dict
 
 if TYPE_CHECKING:
     from nemo.collections.asr.models import SortformerEncLabelModel
+
+
+def configure_output_subsampling_factor(
+    diar_model: "SortformerEncLabelModel",
+    output_subsampling_factor: Optional[int],
+) -> int:
+    """
+    Apply an inference-time output resolution override and return the effective factor.
+
+    Args:
+        diar_model (SortformerEncLabelModel): Model whose output resolution is configured.
+        output_subsampling_factor (Optional[int]): Requested output factor in 10 ms feature frames. If ``None``,
+            the model's current factor is retained.
+
+    Returns:
+        effective_output_subsampling_factor (int): Applied output subsampling factor.
+    """
+    if output_subsampling_factor is None:
+        return diar_model.output_subsampling_factor
+    if type(output_subsampling_factor) is not int or output_subsampling_factor < 1:
+        raise ValueError(f"output_subsampling_factor must be a positive integer, got {output_subsampling_factor}")
+    native_output_factor = 1 if diar_model.high_resolution else diar_model.encoder.subsampling_factor
+    if output_subsampling_factor % native_output_factor != 0:
+        logging.warning(
+            f"output_subsampling_factor={output_subsampling_factor} must be an integer multiple of the model's "
+            f"native subsampling factor ({native_output_factor}). Using {native_output_factor} instead."
+        )
+        output_subsampling_factor = native_output_factor
+
+    diar_model.output_subsampling_factor = output_subsampling_factor
+    with open_dict(diar_model._cfg):
+        diar_model._cfg.output_subsampling_factor = output_subsampling_factor
+    return output_subsampling_factor
 
 
 class InferenceProfiler:
@@ -245,16 +280,29 @@ def get_prediction_cache_metadata(cfg, diar_model, infer_audio_rttm_dict) -> Dic
     Returns:
         metadata (Dict): Cache schema, input identities, and inference settings.
     """
-    model_path = Path(cfg.model_path).expanduser().resolve()
+    configured_model_path = getattr(cfg, "model_path", None)
+    pretrained_name = getattr(cfg, "pretrained_name", None)
+    if configured_model_path is not None:
+        model_path = Path(configured_model_path).expanduser().resolve()
+        model_identity = str(model_path)
+        model_stat = model_path.stat()
+        model_size = model_stat.st_size
+        model_mtime_ns = model_stat.st_mtime_ns
+    elif pretrained_name is not None:
+        model_identity = pretrained_name
+        model_size = None
+        model_mtime_ns = None
+    else:
+        raise ValueError("Either model_path or pretrained_name must be specified.")
+
     manifest_path = Path(cfg.dataset_manifest).expanduser().resolve()
-    model_stat = model_path.stat()
     manifest_stat = manifest_path.stat()
     modules = diar_model.sortformer_modules
     return {
         "version": 1,
-        "model_path": str(model_path),
-        "model_size": model_stat.st_size,
-        "model_mtime_ns": model_stat.st_mtime_ns,
+        "model_path": model_identity,
+        "model_size": model_size,
+        "model_mtime_ns": model_mtime_ns,
         "manifest_path": str(manifest_path),
         "manifest_size": manifest_stat.st_size,
         "manifest_mtime_ns": manifest_stat.st_mtime_ns,

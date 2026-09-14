@@ -1,4 +1,5 @@
-# Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -50,6 +51,9 @@ SEED: int = 42
 
 # Number of decimal digits used when formatting p-values in statistical tests.
 P_VAL_ROUND_DIGITS: int = 4
+
+# Default signature version used to sign S3 client requests.
+S3_SIGNATURE_VERSION: str = "s3"
 
 # Default lifetime of generated S3 presigned links in seconds (one year).
 S3_LINK_EXPIRES_IN: int = 31536000

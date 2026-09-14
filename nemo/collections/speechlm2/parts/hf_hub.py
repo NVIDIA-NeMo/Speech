@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -41,6 +42,7 @@ class HFHubMixin(
         token: Union[str, bool, None],
         map_location: str = "cpu",
         strict: bool = False,
+        trust_remote_code: bool = False,
         **model_kwargs,
     ):
         """
@@ -53,7 +55,15 @@ class HFHubMixin(
             >>> model = SALM.from_pretrained(
             ...     "nvidia/salm-model", distributed_setup=strategy.distributed_setup
             ... )
+
+        ``trust_remote_code`` is a runtime security decision. It is deliberately
+        taken from the caller and overwrites any value stored in the downloaded
+        checkpoint config so that a model repository cannot opt itself into
+        executing remote code.
         """
+        if not isinstance(trust_remote_code, bool):
+            raise TypeError(f"trust_remote_code must be a bool, got {type(trust_remote_code).__name__}")
+
         distributed_setup = model_kwargs.pop("distributed_setup", None)
         device_mesh = distributed_setup.mesh_context.device_mesh if distributed_setup is not None else None
         torch_dtype = model_kwargs.pop("torch_dtype", None)
@@ -73,6 +83,7 @@ class HFHubMixin(
         if resolved_config_file is None:
             raise RuntimeError(f"Missing {CONFIG_NAME} file for {model_id=}")
         model_kwargs['cfg'] = OmegaConf.to_container(OmegaConf.load(resolved_config_file))
+        model_kwargs['cfg']['trust_remote_code'] = trust_remote_code
         _inject_local_artifact_paths(model_kwargs['cfg'], model_id, _cached_file_kwargs)
         # The setting below tells the model's __init__ not to load the original pretrained weights
         # for individual children modules.
@@ -154,6 +165,10 @@ class HFHubMixin(
                 config = OmegaConf.to_container(self.cfg)
         # Ensure HF-compatible fields are present so vLLM / transformers can identify the model.
         if isinstance(config, dict):
+            config = dict(config)
+            # Remote-code trust is a runtime choice and must never be persisted
+            # in a checkpoint that can be loaded by another user.
+            config.pop("trust_remote_code", None)
             config.setdefault("model_type", "nemo_speechlm")
             config.setdefault("architectures", ["NeMoSpeechLMForConditionalGeneration"])
         return super().save_pretrained(

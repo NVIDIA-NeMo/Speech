@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,10 +14,13 @@
 # limitations under the License.
 
 import os
+from types import SimpleNamespace
+
 import pytest
 import torch
 from lhotse import CutSet, SupervisionSegment
 from lhotse.testing.dummies import dummy_cut, dummy_recording
+from omegaconf import DictConfig
 
 from nemo.collections.common.data.utils import move_data_to_device
 from nemo.collections.speechlm2.data.duplex_ear_tts_dataset import (
@@ -29,6 +33,25 @@ from nemo.collections.speechlm2.models import DuplexEARTTS
 
 if torch.cuda.is_available():
     torch.set_default_device('cuda')
+
+
+def test_load_language_model_uses_configured_remote_code_policy(monkeypatch):
+    captured = {}
+
+    class DummyLanguageModel:
+        def eval(self):
+            return self
+
+    def fake_load_pretrained_hf(*args, **kwargs):
+        captured.update(kwargs)
+        return DummyLanguageModel()
+
+    monkeypatch.setattr("nemo.collections.speechlm2.models.duplex_ear_tts.load_pretrained_hf", fake_load_pretrained_hf)
+    cfg = DictConfig({"pretrained_lm_name": "untrusted/repository", "trust_remote_code": False})
+
+    DuplexEARTTS._load_language_model(SimpleNamespace(cfg=cfg), cfg)
+
+    assert captured["trust_remote_code"] is False
 
 
 test_eartts_config = {

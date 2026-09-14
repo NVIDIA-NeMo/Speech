@@ -1,4 +1,5 @@
-# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -39,14 +40,123 @@ _HYBRID_ARCHITECTURES = frozenset(
 # silently rendering the wrong placeholder at request time.
 _AUDIO_PLACEHOLDER = "<|audio|>"
 
-# Number of extra embedding rows the SpeechLM adds on top of the backbone's
-# native vocab during training: ``<|audio|>`` locator plus headroom for other
-# special tokens and TensorCore-friendly alignment.
+# Historical serving-time headroom above the backbone vocabulary. vLLM builds
+# the target and draft embedding tables at this padded size, and the weight
+# loader zero-pads the smaller training tensors to match. ``prepare_for_vllm``
+# validates the tokenizer's audio-token ID against this bound during export;
+# the default export flow treats a validation failure as non-fatal and leaves
+# an HF-only checkpoint.
 _SPEECHLM_EMBED_EXTRA_ROWS = 10
+
+_MTP_BLOCK_TYPE_TO_VLLM_SYMBOL = {
+    "attention": "*",
+    "moe": "E",
+}
 
 
 def _is_hybrid_backend(architectures: list[str]) -> bool:
     return bool(set(architectures) & _HYBRID_ARCHITECTURES)
+
+
+def _mtp_pattern_from_backbone_config(text_config) -> str | None:
+    """Return the vLLM Nemotron-H MTP pattern encoded by a backbone config.
+
+    Nemotron 3.5 exports the physical MTP topology in one of two forms:
+    ``mtp_hybrid_override_pattern`` (symbol string) or
+    ``mtp_layers_block_type`` (list of block names). vLLM 0.23 supports only
+    attention (``*``) and MoE (``E``) MTP sublayers, so unsupported topology
+    must fail before model construction rather than load the wrong draft head.
+    """
+    pattern = getattr(text_config, "mtp_hybrid_override_pattern", None)
+    if pattern:
+        unsupported = sorted(set(pattern) - set(_MTP_BLOCK_TYPE_TO_VLLM_SYMBOL.values()))
+        if unsupported:
+            raise ValueError(
+                f"vLLM Nemotron-H MTP does not support pattern symbols {unsupported!r} "
+                f"in mtp_hybrid_override_pattern={pattern!r}; supported symbols are '*' and 'E'."
+            )
+        return pattern
+
+    block_types = getattr(text_config, "mtp_layers_block_type", None)
+    if not block_types:
+        return None
+    try:
+        return "".join(_MTP_BLOCK_TYPE_TO_VLLM_SYMBOL[block_type] for block_type in block_types)
+    except KeyError as error:
+        raise ValueError(
+            f"vLLM Nemotron-H MTP does not support block type {error.args[0]!r} in "
+            f"mtp_layers_block_type={list(block_types)!r}; supported block types are "
+            f"{sorted(_MTP_BLOCK_TYPE_TO_VLLM_SYMBOL)!r}."
+        ) from error
+
+
+def _resolve_speechlm_mtp_config(
+    *,
+    mtp: dict | None,
+    compute_mtp: bool,
+    text_config,
+    num_nextn_predict_layers: int | None = None,
+    use_repeated_layer: bool | None = None,
+) -> dict | None:
+    """Normalize the SpeechLM MTP contract consumed by the vLLM plugin.
+
+    New exports carry an explicit root ``mtp`` dictionary. Older SpeechLM
+    exports, including the first Nemotron 3.5 Lightning checkpoints, only
+    carry ``compute_mtp`` at the root and keep MTP topology in the saved
+    backbone config. Derive the missing dictionary for those checkpoints so
+    they do not need to be re-exported.
+    """
+    explicit_mtp = dict(mtp) if isinstance(mtp, dict) else None
+    if explicit_mtp is not None:
+        enabled = bool(explicit_mtp.get("enabled", True))
+    else:
+        enabled = bool(compute_mtp)
+
+    if not enabled:
+        return None
+
+    if num_nextn_predict_layers is None:
+        if explicit_mtp is not None and "num_nextn_predict_layers" in explicit_mtp:
+            num_nextn_predict_layers = explicit_mtp["num_nextn_predict_layers"]
+        else:
+            num_nextn_predict_layers = getattr(text_config, "num_nextn_predict_layers", 0)
+    num_nextn_predict_layers = int(num_nextn_predict_layers or 0)
+    if num_nextn_predict_layers <= 0:
+        raise ValueError(
+            "SpeechLM MTP is enabled but num_nextn_predict_layers is not positive in either "
+            "the root mtp config or the backbone config."
+        )
+
+    explicit_pattern = explicit_mtp.get("hybrid_override_pattern") if explicit_mtp is not None else None
+    backbone_pattern = _mtp_pattern_from_backbone_config(text_config)
+    if explicit_pattern and backbone_pattern and explicit_pattern != backbone_pattern:
+        raise ValueError(
+            f"Root mtp.hybrid_override_pattern={explicit_pattern!r} disagrees with "
+            f"backbone MTP topology {backbone_pattern!r}."
+        )
+    pattern = explicit_pattern or backbone_pattern
+    if not pattern:
+        raise ValueError(
+            "SpeechLM MTP is enabled but neither mtp.hybrid_override_pattern nor the backbone's "
+            "mtp_hybrid_override_pattern/mtp_layers_block_type declares the physical MTP topology."
+        )
+    # Validate explicit patterns as well as backbone-derived patterns.
+    unsupported = sorted(set(pattern) - set(_MTP_BLOCK_TYPE_TO_VLLM_SYMBOL.values()))
+    if unsupported:
+        raise ValueError(
+            f"vLLM Nemotron-H MTP does not support pattern symbols {unsupported!r} "
+            f"in hybrid_override_pattern={pattern!r}; supported symbols are '*' and 'E'."
+        )
+
+    if use_repeated_layer is None:
+        use_repeated_layer = bool(explicit_mtp.get("use_repeated_layer", False)) if explicit_mtp else False
+
+    return {
+        "enabled": True,
+        "num_nextn_predict_layers": num_nextn_predict_layers,
+        "use_repeated_layer": bool(use_repeated_layer),
+        "hybrid_override_pattern": pattern,
+    }
 
 
 class NeMoSpeechLMConfig(PretrainedConfig):
@@ -71,12 +181,17 @@ class NeMoSpeechLMConfig(PretrainedConfig):
         self,
         perception: dict | None = None,
         pretrained_llm: str | None = None,
+        llm_config: dict | None = None,
         pretrained_asr: str | None = None,
         audio_locator_tag: str | None = None,
         prompt_format: str | None = None,
         pretrained_weights: bool | None = None,
         lora: dict | None = None,
         encoder_chunk_size_seconds: float | None = None,
+        pe_encoder_path: str | None = None,
+        pe_encoder_config: dict | None = None,
+        pe_encoder_overrides: dict | None = None,
+        speaker_encoder: dict | None = None,
         **kwargs,
     ):
         required_fields = {
@@ -90,6 +205,11 @@ class NeMoSpeechLMConfig(PretrainedConfig):
             perception is None
             and lora is None
             and encoder_chunk_size_seconds is None
+            and pe_encoder_path is None
+            and pe_encoder_config is None
+            and pe_encoder_overrides is None
+            and speaker_encoder is None
+            and llm_config is None
             and not kwargs
             and all(value is None for value in required_fields.values())
         )
@@ -100,6 +220,7 @@ class NeMoSpeechLMConfig(PretrainedConfig):
         # path; real checkpoint loads replace it below after field validation.
         self.text_config = PretrainedConfig()
         self.is_hybrid = False
+        self._pending_image_token_index = None
 
         super().__init__(**kwargs)
 
@@ -109,12 +230,18 @@ class NeMoSpeechLMConfig(PretrainedConfig):
             # path inert; real checkpoint loads continue through validation below.
             self.perception = {}
             self.pretrained_llm = None
+            self.llm_config = None
             self.pretrained_asr = None
             self.audio_locator_tag = None
             self.prompt_format = None
             self.pretrained_weights = None
             self.lora = None
             self.encoder_chunk_size_seconds = None
+            self.pe_encoder_path = None
+            self.pe_encoder_config = None
+            self.pe_encoder_overrides = None
+            self.speaker_encoder = None
+            self.__dict__.pop("_pending_image_token_index", None)
             return
 
         for name, value in required_fields.items():
@@ -133,8 +260,27 @@ class NeMoSpeechLMConfig(PretrainedConfig):
                 f"the model class's get_placeholder_str (vLLM-mandated "
                 f"class-level metadata) need to be updated together."
             )
+        has_pe_encoder = pe_encoder_path not in (
+            None,
+            "",
+            False,
+        ) or pe_encoder_config not in (
+            None,
+            {},
+            "",
+            False,
+        )
+        if has_pe_encoder and speaker_encoder not in (None, {}, "", False):
+            raise ValueError("ParallelExpertEncoder and speaker_encoder are mutually exclusive.")
+        if pe_encoder_overrides not in (None, {}) and pe_encoder_path in (
+            None,
+            "",
+            False,
+        ):
+            raise ValueError("pe_encoder_overrides requires pe_encoder_path.")
         self.perception = perception or {}
         self.pretrained_llm = pretrained_llm
+        self.llm_config = llm_config
         self.pretrained_asr = pretrained_asr
         self.audio_locator_tag = audio_locator_tag
         self.prompt_format = prompt_format
@@ -142,7 +288,30 @@ class NeMoSpeechLMConfig(PretrainedConfig):
         self.lora = lora
         self.encoder_chunk_size_seconds = encoder_chunk_size_seconds
 
-        self.text_config = AutoConfig.from_pretrained(pretrained_llm, trust_remote_code=True)
+        if llm_config is None:
+            self.text_config = AutoConfig.from_pretrained(pretrained_llm, trust_remote_code=True)
+        else:
+            if not isinstance(llm_config, dict):
+                raise ValueError(f"NeMo SpeechLM llm_config must be a dict, got {type(llm_config).__name__}.")
+            embedded_config = dict(llm_config)
+            model_type = embedded_config.pop("model_type", None)
+            if not model_type:
+                raise ValueError("NeMo SpeechLM llm_config must declare model_type.")
+            self.text_config = AutoConfig.for_model(model_type, **embedded_config)
+        self.pe_encoder_path = pe_encoder_path
+        self.pe_encoder_config = pe_encoder_config
+        self.pe_encoder_overrides = pe_encoder_overrides
+        self.speaker_encoder = speaker_encoder
+
+        # Backward compatibility for early Nemotron 3.5 SpeechLM exports:
+        # they carry ``compute_mtp`` at the root and the MTP topology only in
+        # llm_backbone/config.json. Normalize that into the explicit contract
+        # used by the vLLM speculative-config hook.
+        self.mtp = _resolve_speechlm_mtp_config(
+            mtp=self.__dict__.get("mtp"),
+            compute_mtp=bool(self.__dict__.get("compute_mtp", False)),
+            text_config=self.text_config,
+        )
 
         raw_archs = getattr(self.text_config, "architectures", [])
         if len(raw_archs) != 1:
@@ -177,6 +346,13 @@ class NeMoSpeechLMConfig(PretrainedConfig):
                 self.text_config.layer_types = ["attention"] * num_layers
 
         self.text_config.vocab_size += _SPEECHLM_EMBED_EXTRA_ROWS
+        pending_image_token_index = self.__dict__.pop("_pending_image_token_index", None)
+        if pending_image_token_index is not None and pending_image_token_index != self.image_token_index:
+            raise ValueError(
+                f"image_token_index={pending_image_token_index!r} does not match the backbone vocabulary "
+                f"boundary {self.image_token_index}. Remove this legacy serialized field; SpeechLM derives "
+                f"the vLLM compatibility value at runtime."
+            )
 
     @property
     def llm_architectures(self) -> list[str]:
@@ -185,6 +361,46 @@ class NeMoSpeechLMConfig(PretrainedConfig):
 
     def get_text_config(self, decoder=False) -> PretrainedConfig:
         return self.text_config
+
+    @property
+    def image_token_index(self) -> int | None:
+        """Return the vocabulary-boundary value expected by vLLM's MTP proposer.
+
+        vLLM calls this compatibility field ``image_token_index`` even for an
+        audio multimodal target. Actual audio locations come from vLLM's
+        placeholder ranges; no token-index field is serialized by SpeechLM.
+        """
+        vocab_size = getattr(self.text_config, "vocab_size", None)
+        if vocab_size is None:
+            return None
+        return int(vocab_size) - _SPEECHLM_EMBED_EXTRA_ROWS
+
+    @image_token_index.setter
+    def image_token_index(self, value: int | None) -> None:
+        """Accept vLLM's runtime target-to-draft copy without serializing it."""
+        expected = self.image_token_index
+        if expected is None:
+            # Transformers applies unknown config kwargs in its base-class
+            # constructor, before this wrapper has loaded the real backbone.
+            # Defer validation and discard the temporary value afterwards so
+            # it never becomes serialized state.
+            self._pending_image_token_index = value
+        elif value is not None and value != expected:
+            raise ValueError(
+                f"image_token_index={value!r} does not match the backbone vocabulary boundary {expected}."
+            )
+
+    @property
+    def mtp_hybrid_override_pattern(self) -> str:
+        """Hybrid layer pattern for MTP heads, consumed by NemotronHMultiTokenPredictor.
+
+        Reads from the ``mtp.hybrid_override_pattern`` field in config.json.
+        vLLM supports any sequence of ``"*"`` (attention) and ``"E"`` (MoE),
+        with one physical MTP layer module instantiated per character. Other
+        characters are rejected by vLLM during model construction.
+        """
+        mtp_cfg = self.__dict__.get("mtp") or {}
+        return mtp_cfg.get("hybrid_override_pattern", "*") if isinstance(mtp_cfg, dict) else "*"
 
     _ATTR_ALIASES = {
         "rms_norm_eps": "layer_norm_epsilon",
@@ -211,14 +427,20 @@ class NeMoSpeechLMConfig(PretrainedConfig):
         if name.startswith("_") or name in (
             "perception",
             "pretrained_llm",
+            "llm_config",
             "pretrained_asr",
             "audio_locator_tag",
+            "image_token_index",
             "prompt_format",
             "pretrained_weights",
             "text_config",
             "lora",
             "is_hybrid",
             "encoder_chunk_size_seconds",
+            "pe_encoder_path",
+            "pe_encoder_config",
+            "pe_encoder_overrides",
+            "speaker_encoder",
         ):
             raise AttributeError(name)
         alias = self._ATTR_ALIASES.get(name, name) if self.is_hybrid else name

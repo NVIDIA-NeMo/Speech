@@ -1,4 +1,5 @@
-# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,6 +18,7 @@ from __future__ import annotations
 import os
 import warnings
 from datetime import timedelta
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 import torch
@@ -25,10 +27,84 @@ from lightning.fabric.plugins.collectives.torch_collective import default_pg_tim
 from lightning.pytorch.strategies.model_parallel import ModelParallelStrategy
 from typing_extensions import override
 
-
 # Blackwell sm_120, where TE 2.14's cuDNN fused-attention backward kernel
 # silently amplifies THD/padding_causal gradients 8x-960x per layer.
 _SM120 = (12, 0)
+
+
+def _validate_missing_optimizer_state(
+    *,
+    target_keys: set[str],
+    checkpoint_keys: set[str],
+    parameter_names: set[str],
+    optimizer_key: str,
+) -> list[str]:
+    """Allow only wholly absent per-parameter optimizer state.
+
+    PyTorch optimizers create state lazily. A parameter that has never received
+    a gradient therefore has no checkpoint entries, while
+    ``get_optimizer_state_dict`` initializes placeholders for every parameter
+    when preparing a fresh restore target. DCP's strict planner treats that
+    expected asymmetry as a missing-key error.
+
+    Missing *complete* parameter states are safe to leave initialized locally.
+    A partially present state (for example ``step`` without ``exp_avg``), or a
+    missing key outside ``optimizer.<state>.<parameter>``, still indicates an
+    incompatible/corrupt checkpoint and is rejected.
+    """
+    missing_keys = target_keys - checkpoint_keys
+    if not missing_keys:
+        return []
+
+    prefixes = {name: f"{optimizer_key}.state.{name}" for name in parameter_names}
+    owned_target_keys: dict[str, set[str]] = {name: set() for name in parameter_names}
+    for key in target_keys:
+        owners = [name for name, prefix in prefixes.items() if key == prefix or key.startswith(f"{prefix}.")]
+        if owners:
+            # Parameter FQNs are normally not prefixes of each other. Choosing
+            # the longest match also handles that edge case deterministically.
+            owned_target_keys[max(owners, key=len)].add(key)
+
+    missing_parameters = []
+    classified_missing_keys = set()
+    for name, expected_keys in owned_target_keys.items():
+        missing_for_parameter = expected_keys - checkpoint_keys
+        if not missing_for_parameter:
+            continue
+        if missing_for_parameter != expected_keys:
+            present = sorted(expected_keys & checkpoint_keys)
+            missing = sorted(missing_for_parameter)
+            raise RuntimeError(
+                f"Checkpoint contains partial optimizer state for parameter {name!r}: "
+                f"present={present[:3]} missing={missing[:3]}"
+            )
+        missing_parameters.append(name)
+        classified_missing_keys.update(missing_for_parameter)
+
+    unexpected_missing = missing_keys - classified_missing_keys
+    if unexpected_missing:
+        raise RuntimeError(
+            "Checkpoint is missing optimizer metadata or unrecognized state keys: " f"{sorted(unexpected_missing)[:5]}"
+        )
+    return sorted(missing_parameters)
+
+
+def _optimizer_load_planner(optimizer_state: dict, metadata, optimizer_key: str):
+    """Return a DCP planner that tolerates only never-initialized parameters."""
+    from torch.distributed.checkpoint.default_planner import DefaultLoadPlanner
+
+    strict_planner = DefaultLoadPlanner()
+    strict_planner.set_up_planner(optimizer_state, metadata, is_coordinator=False)
+    parameter_state = optimizer_state[optimizer_key].get("state", {})
+    missing_parameters = _validate_missing_optimizer_state(
+        target_keys=set(strict_planner.state_dict),
+        checkpoint_keys=set(metadata.state_dict_metadata),
+        parameter_names=set(parameter_state),
+        optimizer_key=optimizer_key,
+    )
+    if not missing_parameters:
+        return strict_planner, missing_parameters
+    return DefaultLoadPlanner(allow_partial_load=True), missing_parameters
 
 
 def validate_parallelism_compatibility(
@@ -38,11 +114,12 @@ def validate_parallelism_compatibility(
     attn_backend: str,
     nvte_fused_attn: Optional[str],
     device_capability: Optional[tuple[int, int]],
+    check_backward: bool = True,
 ) -> None:
     """Raise on known-incompatible SALMAutomodel configurations.
 
-    Catches three combinations that produce silent NaN gradients or
-    hangs at training time:
+    Catches three combinations that produce incorrect forward execution,
+    silent NaN gradients, or hangs at training time:
 
     1. ``packed_sequences=False`` (BSHD) under ``cp_size > 1``: TE's
        fused-attention CP path rejects ``padding_causal``, so the
@@ -64,14 +141,14 @@ def validate_parallelism_compatibility(
        ``NVTE_FUSED_ATTN=0`` in the launcher environment to force
        FlashAttention dispatch.
 
-    Hard error on (1), (2), and (3)-on-sm_120; ``warnings.warn`` on
-    (3) for other architectures (the bug may not apply but we have no
-    way to be certain).
+    Hard error on (1) and (2). When ``check_backward`` is true, hard error
+    on (3)-on-sm_120 and ``warnings.warn`` on (3) for other architectures
+    (the bug may not apply but we have no way to be certain).
 
     Pure function — no side effects on globals or environment, so it
-    can be unit-tested with synthetic inputs. Called from
-    :meth:`SALMAutomodel.on_fit_start` once the device mesh is wired
-    up.
+    can be unit-tested with synthetic inputs. ``check_backward=False``
+    skips only case (3) for validation/test forwards that do not run a
+    backward pass.
     """
     # Case 1: BSHD + CP > 1 — hard incompatibility.
     if not packed_sequences and cp_size > 1:
@@ -97,10 +174,10 @@ def validate_parallelism_compatibility(
             )
 
         # Case 3: THD + TE attention without NVTE_FUSED_ATTN=0.
-        if nvte_fused_attn != "0":
+        if check_backward and nvte_fused_attn != "0":
             msg = (
                 "SALMAutomodel: ``packed_sequences=true`` with ``attn=te`` and "
-                "``NVTE_FUSED_ATTN`` not set to ``\"0\"`` (got "
+                '``NVTE_FUSED_ATTN`` not set to ``"0"`` (got '
                 f"{nvte_fused_attn!r}). TE 2.14's cuDNN fused-attention "
                 "backward kernel amplifies THD/padding_causal gradients "
                 "8x-960x per layer on Blackwell sm_120; the resulting ``inf`` "
@@ -196,6 +273,64 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
         timeout: Process group initialization timeout.
     """
 
+    @override
+    def load_checkpoint(self, checkpoint_path):
+        """Load DCP optimizer state while preserving lazy-state semantics.
+
+        Model tensors remain strict. Optimizer loading alone permits a complete
+        per-parameter state to be absent when the parameter never received a
+        gradient before the save; partial states and missing optimizer metadata
+        remain hard errors.
+        """
+        from lightning.pytorch.strategies.model_parallel import _METADATA_FILENAME, _is_sharded_checkpoint
+
+        path = Path(self.broadcast(checkpoint_path))
+        if not _is_sharded_checkpoint(path):
+            return super().load_checkpoint(path)
+
+        from torch.distributed.checkpoint import FileSystemReader, load
+        from torch.distributed.checkpoint.state_dict import (
+            StateDictOptions,
+            get_model_state_dict,
+            get_optimizer_state_dict,
+            set_optimizer_state_dict,
+        )
+
+        assert self.model is not None
+        assert self.lightning_module is not None
+        module_state = {"state_dict": get_model_state_dict(self.model)}
+        load(module_state, checkpoint_id=path)
+        self.model.load_state_dict(module_state["state_dict"], strict=self.lightning_module.strict_loading)
+
+        state_dict_options = StateDictOptions(cpu_offload=True)
+        metadata = FileSystemReader(path).read_metadata()
+        for idx, optimizer in enumerate(self.optimizers):
+            optimizer_key = f"optimizer_{idx}"
+            optimizer_state = {optimizer_key: get_optimizer_state_dict(self.model, optimizer)}
+            planner, missing_parameters = _optimizer_load_planner(optimizer_state, metadata, optimizer_key)
+            load(optimizer_state, checkpoint_id=path, planner=planner)
+            set_optimizer_state_dict(
+                self.model,
+                optimizer,
+                optim_state_dict=optimizer_state[optimizer_key],
+                options=state_dict_options,
+            )
+            if missing_parameters and self.global_rank == 0:
+                warnings.warn(
+                    f"Initialized empty optimizer state for {len(missing_parameters)} parameter(s) that had no "
+                    "state in the checkpoint because they had not received a gradient. "
+                    f"Examples: {missing_parameters[:3]}",
+                    stacklevel=2,
+                )
+
+        # Lightning drops its temporary loaded-checkpoint reference at the end
+        # of resume. Keep this metadata-only payload alive for consumers whose
+        # restored state can outlive that connector reference; model and
+        # optimizer tensors were loaded separately through DCP above.
+        checkpoint = torch.load(path / _METADATA_FILENAME)
+        self._checkpoint_keepalive = checkpoint
+        return checkpoint
+
     def __init__(
         self,
         dp_size: Optional[int] = None,
@@ -241,6 +376,7 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
         self._activation_checkpointing_perception = activation_checkpointing_perception
         self._moe_mesh = None
         self._distributed_setup = None
+        self._checkpoint_keepalive = None
 
     @property
     def moe_mesh(self):

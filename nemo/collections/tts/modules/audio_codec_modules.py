@@ -1,4 +1,5 @@
-# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,9 +13,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Portions adapted from the VoxCeleb trainer:
+# Copyright (c) 2020-present NAVER Corp. Licensed under the MIT License.
+# Source: https://github.com/clovaai/voxceleb_trainer
+#
+# ResNet portions adapted through the VoxCeleb trainer from torchvision:
+# Copyright (c) 2016 Soumith Chintala. Licensed under the BSD-3-Clause License.
+# Source: https://github.com/pytorch/vision
+#
+# Wav2Vec2 and EnCodec helpers adapted from Hugging Face Transformers:
+# Copyright 2022 The HuggingFace Inc. team. Licensed under the Apache License, Version 2.0.
+# Source: https://github.com/huggingface/transformers
+
 import math
-import os
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from typing import Iterable, List, Optional, Tuple
 
 import numpy as np
@@ -40,16 +53,6 @@ from nemo.core.neural_types.elements import (
 )
 from nemo.core.neural_types.neural_type import NeuralType
 from nemo.utils import logging
-
-try:
-    import fsspec
-
-    HAVE_FSSPEC = True
-except ModuleNotFoundError:
-    HAVE_FSSPEC = False
-
-
-from contextlib import contextmanager
 
 
 @contextmanager
@@ -340,33 +343,6 @@ def zero_mean_unit_var_norm(input_values):
     return normed_input_values
 
 
-##############
-# Speaker encoder #
-##############
-def load_fsspec(path: str, map_location: str = None, **kwargs):
-    """Like torch.load but can load from other locations (e.g. s3:// , gs://).
-
-    Args:
-        path: Any path or url supported by fsspec.
-        map_location: torch.device or str.
-        cache: If True, cache a remote file locally for subsequent calls. It is cached under `get_user_data_dir()/tts_cache`. Defaults to True.
-        **kwargs: Keyword arguments forwarded to torch.load.
-
-    Returns:
-        Object stored in path.
-    """
-    is_local = os.path.isdir(path) or os.path.isfile(path)
-    if is_local:
-        return torch.load(path, map_location=map_location, **kwargs)
-    else:
-        if HAVE_FSSPEC:
-            with fsspec.open(path, "rb") as f:
-                return torch.load(f, map_location=map_location, **kwargs)
-        else:
-            logging.error('Could not import fsspec. Loading a checkpoint link is not supported!')
-            raise ModuleNotFoundError("fsspec is not installed but is necessary to download remote checkpoints !!")
-
-
 class PreEmphasis(NeuralModule):
     def __init__(self, coefficient=0.97):
         super().__init__()
@@ -609,7 +585,7 @@ class ResNetSpeakerEncoder(NeuralModule):
         )
 
     def load_checkpoint(self, checkpoint_path: str, strict=True):
-        state = load_fsspec(checkpoint_path, map_location=torch.device("cpu"))
+        state = torch.load(checkpoint_path, map_location=torch.device("cpu"))
         self.load_state_dict(state["model"], strict=strict)
 
 

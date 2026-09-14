@@ -1,0 +1,217 @@
+# Streaming Sortformer diarizer with a FlexAttention Transformer backbone.
+# This is a second stage training configuration for the Nemotron-3-Diarization model.
+# Example manifest line:
+# {"audio_filepath": "/path/to/audio.wav", "offset": 0.0, "duration": 1000.0, "num_speakers": 8, "rttm_filepath": "/path/to/audio.rttm"}
+name: "SortformerDiarizer_streaming_8spk"
+num_workers: 18
+batch_size: 42  # Per-device training batch size.
+seed: 42  # Seed for reproducible initialization, sampling, and training.
+
+init_from_nemo_model: null  # Initialization from another .nemo model; null disables it.
+# init_from_nemo_model:
+#   stage1:
+#     path: /path/to/SortformerDiarizer_offline_8spk.nemo  # Set to the path to the first stage offline model
+#     include: ["encoder", "sortformer_modules"]
+
+model:
+  sample_rate: 16000
+  # PIL and ATS weights are normalized to sum to one.
+  pil_weight: 0.75  # Relative weight of permutation-invariant loss.
+  ats_weight: 0.25  # Relative weight of arrival-time-sort loss.
+  ats_tolerance: 0  # Arrival-time tolerance in output frames.
+
+  # Activity loss classifies frames as silence, single-speaker, or overlap.
+  activity_weight: 0.5  # Auxiliary activity-loss weight; 0 disables the activity head and loss.
+  activity_loss:
+    _target_: nemo.collections.asr.losses.aux_diarization_loss.ActivityLoss
+
+  # Phantom loss suppresses confident activity in empty target channels (aka "phantom speaker").
+  phantom_weight: 0.1  # Auxiliary phantom-loss weight; 0 disables the loss.
+  phantom_target: both  # Target alignment: pil, ats, or both; both requires the channel to be empty in both.
+  phantom_loss:
+    _target_: nemo.collections.asr.losses.aux_diarization_loss.PhantomLoss
+    threshold: 0.25  # Detached probability above which an eligible frame is penalized.
+    temperature: 0.5  # Log-mean-exp temperature; lower values emphasize the largest selected losses.
+
+  max_num_of_spks: 8  # Maximum number of output speaker channels.
+  high_resolution: true  # If true, emit outputs at the preprocessor frame step.
+  output_subsampling_factor: 1  # Preprocessor frames represented by one output step.
+  streaming_mode: true  # Use the streaming/cache execution path when true.
+
+  # Training-only attention augmentation: keep a bidirectional prefix and divide a sampled tail into blocks.
+  # Attention is bidirectional within each tail block; blocks attend to the prefix and earlier blocks, not later ones.
+  max_causal_tail_len: 222  # Upper bound on sampled tail length in encoder frames; 0 disables the augmentation.
+  causal_tail_prob: 0.5  # Probability per training batch; 0 disables the augmentation.
+  min_causal_tail_block_size: 1  # Inclusive lower bound for block-size sampling in encoder frames.
+  max_causal_tail_block_size: 8  # Inclusive upper bound; equal bounds fix the block size.
+
+  model_defaults:
+    fc_d_model: 512  # Encoder hidden dimension.
+    tf_d_model: 192  # Hidden dimension after projecting encoder outputs.
+
+  train_ds:
+    manifest_filepath: ???  # Required training manifest.
+    validate_manifest_paths: false  # Set true to validate unique audio and RTTM paths when loading the manifest.
+    sample_rate: ${model.sample_rate}
+    num_spks: ${model.max_num_of_spks}
+    session_len_sec: 105  # Maximum sampled session duration in seconds.
+    soft_targets: false  # Use continuous activity targets; false hard-thresholds them.
+    batch_size: ${batch_size}
+    shuffle: true
+    num_workers: ${num_workers}
+    pin_memory: true
+    use_lhotse: false  # Construct the dataset through Lhotse when true.
+
+    # Long-session subsegment sampling
+    subsegment_mode: true  # Plan ATS-safe chunks from RTTM activity instead of one contiguous region.
+    subsegment_single_chunk_min_len_sec: 45  # Minimum one-chunk candidate length in seconds.
+    subsegment_two_chunks_rate: 0.5  # Probability of trying two chunks before falling back to one.
+    subsegment_two_chunk_min_len_sec: 22  # Minimum length in seconds of each chunk in a two-chunk sample.
+    subsegment_nspk_bias: 1.5  # Sampling multiplier per active speaker; 1.0 is uniform, larger favors more speakers.
+    subsegment_start_guard_sec: 0.25  # Look-back interval requiring no competing activity at the start.
+    subsegment_min_first_spk_sec: 0.50  # Minimum initial first-speaker activity before another may enter.
+    subsegment_splice_silence_sec: 0.10  # Required silence in seconds on both sides of a two-chunk splice.
+
+  validation_ds:
+    manifest_filepath: ???  # Required validation manifest.
+    sample_rate: ${model.sample_rate}
+    num_spks: ${model.max_num_of_spks}
+    session_len_sec: -1  # Use the complete annotated region without a duration cap.
+    soft_targets: false  # Use continuous activity targets; false hard-thresholds them.
+    batch_size: 32
+    shuffle: false
+    num_workers: ${num_workers}
+    drop_last: false
+    pin_memory: true
+    use_lhotse: false  # Construct the dataset through Lhotse when true.
+
+  test_ds:
+    manifest_filepath: null  # Null keeps the test dataloader disabled until overridden.
+    sample_rate: ${model.sample_rate}
+    num_spks: ${model.max_num_of_spks}
+    session_len_sec: -1  # Use the complete annotated region without a duration cap.
+    soft_targets: false  # Use continuous activity targets; false hard-thresholds them.
+    batch_size: 32
+    shuffle: false
+    num_workers: ${num_workers}
+    drop_last: false
+    pin_memory: true
+    use_lhotse: false  # Construct the dataset through Lhotse when true.
+
+  preprocessor:
+    _target_: nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor
+    normalize: NA
+    window_size: 0.025
+    sample_rate: ${model.sample_rate}
+    window_stride: 0.01
+    window: hann
+    features: 128
+    n_fft: 512
+    frame_splicing: 1
+    dither: 0.00001
+
+  spec_augment:
+    _target_: nemo.collections.asr.modules.SpectrogramAugmentation
+    freq_masks: 2
+    time_masks: 0
+    freq_width: 24
+    time_width: 0.02
+    mask_value: -15  # Fill masked bins near the unnormalized log-mel floor.
+
+  sortformer_modules:
+    _target_: nemo.collections.asr.modules.sortformer_modules.SortformerModules
+    num_spks: ${model.max_num_of_spks}  # Number of output speaker channels.
+    dropout_rate: 0.5  # Sortformer-module dropout probability.
+    fc_d_model: ${model.model_defaults.fc_d_model}  # Input dimension from the encoder.
+    tf_d_model: ${model.model_defaults.tf_d_model}  # Hidden dimension after projecting encoder outputs.
+    spkcache_len: 264  # Total speaker-cache capacity in encoder frames.
+    fifo_len: 0  # FIFO cache capacity in encoder frames; 0 disables it.
+    chunk_len: 264  # Number of encoder frames processed per streaming chunk.
+    spkcache_update_period: 264  # Speaker-cache update period in encoder frames.
+    chunk_left_context: 0  # Prior encoder frames exposed to each chunk.
+    chunk_right_context: 0  # Future encoder frames exposed to each chunk.
+    spkcache_sil_frames_per_spk: 1  # Silence frames reserved per speaker in the cache.
+    scores_add_rnd: 0  # Maximum uniform noise added to cache scores during training; 0 disables it.
+    pred_score_threshold: 0.25  # Probability floor used when converting predictions to cache scores.
+    max_index: 99999  # Sentinel index for disabled cache entries; keep above all valid flattened indices.
+    scores_boost_latest: 0.05  # Additive score boost for newly added cache frames.
+    sil_threshold: 0.2  # Maximum summed speaker probability used to identify silence frames.
+    strong_boost_rate: 0.75  # Multiplier controlling the number of strongly boosted frames per speaker.
+    weak_boost_rate: 1.5  # Multiple of each speaker's cache quota receiving weak score boosts.
+    min_pos_scores_rate: 0.5  # Cache-quota fraction required before non-positive scores are dropped.
+    use_learnable_sil_emb: true  # Use a learned silence embedding instead of the running mean.
+
+  encoder:
+    _target_: nemo.collections.asr.modules.TransformerEncoder
+    feat_in: ${model.preprocessor.features}
+    feat_out: -1
+    n_layers: 31  # Number of Transformer encoder layers.
+    d_model: ${model.model_defaults.fc_d_model}  # Transformer model dimension.
+    n_heads: 8  # Number of self-attention heads.
+    subsampling: feature_stacking  # Stack adjacent input frames before the Transformer.
+    subsampling_factor: 8  # Preprocessor frames represented by one encoder step.
+    ff_expansion: 4.0  # Feed-forward hidden-size multiplier relative to d_model.
+    self_attention_model: rope  # Use rotary-position self-attention.
+    pos_emb_max_len: 5000
+    xscaling: false
+    qkv_bias: false
+    qk_norm: false
+    pre_block_norm: true
+    attn_mode: full  # Use full attention by default; selected training batches apply causal-tail masking.
+    drop_rate: 0.1  # Dropout probability in Transformer blocks.
+    dropout_pre_encoder: 0.1  # Dropout probability before the encoder.
+    dropout_emb: 0.0  # Input-embedding dropout probability.
+    sync_max_audio_length: true
+
+  loss:
+    _target_: nemo.collections.asr.losses.bce_loss.BCEWithLogitsLoss
+    reduction: mean
+
+  lr: 0.0001  # Peak learning rate reached after warmup.
+  optim:
+    name: adamw
+    lr: ${model.lr}
+    betas: [0.9, 0.98]
+    weight_decay: 1e-3
+    sched:
+      name: InverseSquareRootAnnealing  # Learning-rate scheduler type.
+      warmup_steps: 2000  # Linear warmup duration in optimizer steps.
+      warmup_ratio: null
+      min_lr: 1e-06  # Minimum learning rate after annealing.
+
+trainer:
+  devices: 1  # Number of accelerator devices per node.
+  accelerator: gpu
+  precision: bf16-mixed  # Mixed-precision mode used for training.
+  max_epochs: 1000
+  max_steps: 20000  # Overall optimizer-step limit.
+  num_nodes: 1
+  strategy: ddp
+  accumulate_grad_batches: 1
+  deterministic: true
+  enable_checkpointing: false
+  logger: false
+  log_every_n_steps: 1
+  gradient_clip_val: 1.0  # Gradient-clipping threshold.
+  limit_train_batches: 500  # Number of training batches per epoch; max_steps remains the overall limit.
+  val_check_interval: 500  # Run validation every 500 training batches.
+
+exp_manager:
+  use_datetime_version: false
+  exp_dir: null
+  name: ${name}
+  resume_if_exists: true  # Resume from an existing checkpoint in the experiment directory.
+  resume_from_checkpoint: null  # Explicit checkpoint path; overrides automatic checkpoint discovery when set.
+  resume_ignore_no_checkpoint: true
+  create_tensorboard_logger: true
+  create_checkpoint_callback: true
+  create_wandb_logger: false
+  checkpoint_callback_params:
+    monitor: val_f1_acc  # Validation metric used to rank checkpoints.
+    mode: max  # Treat larger monitored values as better.
+    save_top_k: 10  # Keep the ten best ranked checkpoints.
+    every_n_epochs: 1
+  wandb_logger_kwargs:
+    resume: true
+    name: null
+    project: null

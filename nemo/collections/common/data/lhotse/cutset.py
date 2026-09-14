@@ -1267,6 +1267,7 @@ def read_lhotse_magpietts_data_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
         return (
             len(cut.supervisions) == 0
             or not cut.supervisions[0].has_custom("context_speaker_similarity")
+            or cut.supervisions[0].context_speaker_similarity is None
             or cut.supervisions[0].context_speaker_similarity >= min_context_speaker_similarity
         )
 

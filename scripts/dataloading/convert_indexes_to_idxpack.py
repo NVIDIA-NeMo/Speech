@@ -363,6 +363,7 @@ def _select_native_tar_sidecar(
     fallback_indexes_root=None,
     repair_stale_local_sidecars_root=None,
 ) -> Path:
+    """Choose the preferred existing sidecar across primary, fallback, and repair roots."""
     shared_idx_path = _resolve_local_sidecar(path, indexes_root)
     if not shared_idx_path.exists() and fallback_indexes_root is not None:
         fallback_idx_path = _resolve_local_sidecar(path, fallback_indexes_root)
@@ -383,6 +384,11 @@ def _validate_native_tar_sentinel(
     accept_trailing_zero_padding: bool,
     repair_stale_local_sidecars_root,
 ) -> tuple[Path, os.stat_result, int | None]:
+    """Validate source size against the sidecar sentinel, repairing when allowed.
+
+    Returns the usable sidecar, its stat snapshot, and an optional accepted
+    source-size override for verified trailing zero padding.
+    """
     sentinel, index_stat = _read_raw_tar_sentinel(idx_path)
     source_size = _source_size(path)
     if sentinel == source_size:
@@ -423,6 +429,7 @@ def _validate_local_tar_index_freshness(
     *,
     repair_stale_local_sidecars_root=None,
 ) -> Path:
+    """Ensure a local tar is not newer than its sidecar, repairing when allowed."""
     if _is_remote_path(path) or source_size_override is not None:
         return idx_path
 
@@ -442,6 +449,7 @@ def _validate_native_tar_sidecar(
     accept_trailing_zero_padding: bool = False,
     repair_stale_local_sidecars_root=None,
 ) -> tuple[Path, int | None]:
+    """Select and fully validate the sidecar used to pack one native tar."""
     idx_path = _select_native_tar_sidecar(
         path,
         indexes_root,
@@ -572,6 +580,7 @@ def _sha256_file(path: str | Path) -> str:
 
 
 def _validate_source_pack_digest(source_pack: IndexPack, expected_sha256: str) -> None:
+    """Authenticate the route source pack against the required SHA-256 digest."""
     expected_sha256 = expected_sha256.strip().lower()
     if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
         raise ValueError("Native-tar route source-pack SHA-256 must contain exactly 64 hexadecimal characters")
@@ -586,6 +595,7 @@ def _expected_source_pack_keys(
     source_collections: Sequence[IndexPackCollectionSpec],
     source_routes: Sequence[NativeTarOrdinalMapSpec],
 ) -> list[bytes]:
+    """Return the exact, duplicate-free collection keys expected in a source pack."""
     keys = [spec.key for spec in source_collections]
     keys.extend(
         key for route in source_routes for _role, _kind, _source_spec, key in _native_tar_array_identities(route)
@@ -596,6 +606,7 @@ def _expected_source_pack_keys(
 
 
 def _validate_source_pack_collection(source_pack: IndexPack, spec: IndexPackCollectionSpec) -> None:
+    """Verify one source-pack collection matches its configured mode and path order."""
     collection = source_pack.collection(spec.key)
     if collection.is_array or collection.kind != spec.kind or collection.offsets_required != spec.offsets_required:
         raise ValueError(f"Source-pack collection mode disagrees with source configuration: key={spec.key.hex()}")
@@ -610,6 +621,7 @@ def _validate_source_pack_collection(source_pack: IndexPack, spec: IndexPackColl
 
 
 def _validate_source_pack_routes(source_pack: IndexPack, spec: NativeTarOrdinalMapSpec) -> None:
+    """Verify route arrays have the expected type and align with manifest rows."""
     manifest_key = IndexPackCollectionSpec(
         role="manifest",
         kind=JSONL,
@@ -637,6 +649,7 @@ def _authenticate_native_tar_route_source_pack(
     source_routes: Sequence[NativeTarOrdinalMapSpec],
     expected_sha256: str,
 ) -> None:
+    """Authenticate a v3 source pack and validate its complete collection schema."""
     _validate_source_pack_digest(source_pack, expected_sha256)
     expected_keys = _expected_source_pack_keys(source_collections, source_routes)
     actual_keys = set(source_pack._collections)
@@ -836,6 +849,7 @@ def _sum_validation_summaries(
 
 
 def _empty_validation_summary() -> IndexPackRecordValidationSummary:
+    """Create the neutral validation summary used before any routes are processed."""
     return IndexPackRecordValidationSummary(
         records_checked=0,
         jsonl_collections_checked=0,
@@ -902,6 +916,7 @@ def _iter_native_tar_route_reuse_results(
     *,
     workers: int,
 ):
+    """Yield route-reuse results serially or from a bounded process pool."""
     if workers == 1 or len(tasks) <= 1:
         for task in tasks:
             yield _reuse_native_tar_ordinal_map_with_pack(source_pack, task)
@@ -1670,6 +1685,7 @@ def _validate_native_tar_reuse_options(
     *,
     native_tar_paths_only: bool,
 ) -> None:
+    """Validate the all-or-none route-reuse CLI options and incompatible modes."""
     reuse_options = (source_input_cfg, source_pack, source_pack_sha256)
     if any(option is not None for option in reuse_options) and not all(option is not None for option in reuse_options):
         raise click.ClickException(
@@ -1683,6 +1699,7 @@ def _validate_native_tar_reuse_options(
 
 
 def _configure_native_tar_path_only_collections(collections, *, enabled: bool):
+    """Disable native-tar offsets for path-only mode after checking compatibility."""
     if not enabled:
         return collections
     if any(collection.role == "tar_collection" for collection in collections):
@@ -1701,6 +1718,7 @@ def _configure_native_tar_path_only_collections(collections, *, enabled: bool):
 
 
 def _print_discovered_collections(collections, native_tar_maps: list[NativeTarOrdinalMapSpec]) -> None:
+    """Print the concrete and derived collections selected by a dry run."""
     for collection in collections:
         click.echo(
             f"  role={collection.role} kind={collection.kind} "
@@ -1715,6 +1733,7 @@ def _print_discovered_collections(collections, native_tar_maps: list[NativeTarOr
 
 
 def _ensure_sharegpt_routes(route_specs, *, output: str, indexes_root) -> None:
+    """Materialize any missing ShareGPT route files beside the output pack."""
     for route_spec in route_specs:
         route_path = Path(route_spec.route_path)
         if not route_path.is_absolute():
@@ -1736,6 +1755,7 @@ def _merge_native_tar_route_arrays(
     built_arrays: list[IndexPackArraySpec],
     reused_arrays: dict[bytes, IndexPackArraySpec],
 ) -> list[IndexPackArraySpec]:
+    """Merge rebuilt and reused routes in the deterministic configured order."""
     arrays_by_key = {array.key: array for array in built_arrays}
     overlap = arrays_by_key.keys() & reused_arrays.keys()
     if overlap:

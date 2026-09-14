@@ -551,6 +551,7 @@ class LazyNeMoTarredIterator(IteratorNode):
         return self.indexed
 
     def _validate_indexed_pack_options(self) -> None:
+        """Reject iterator options that cannot be reproduced by random access."""
         if self.extra_fields:
             raise ValueError(
                 "LazyNeMoTarredIterator(indexed=True) does not support 'extra_fields' "
@@ -560,6 +561,7 @@ class LazyNeMoTarredIterator(IteratorNode):
             raise ValueError("LazyNeMoTarredIterator(indexed=True) does not support 'slice_length'.")
 
     def _open_indexed_pack_collections(self, manifest_path, tar_paths, *, max_open_files: int) -> None:
+        """Open the pack and cache the manifest and native-tar collections."""
         from lhotse.index_pack import index_pack_collection_key, open_index_pack
         from lhotse.packed_lazy import LazyPackedManifestIterator
 
@@ -578,6 +580,10 @@ class LazyNeMoTarredIterator(IteratorNode):
         self._packed_tar_collection = self._index_pack.collection(tar_key)
 
     def _load_packed_tar_shard_map(self, manifest_path, tar_paths):
+        """Load and validate the row-to-tar map required by aggregate manifests.
+
+        A map is unnecessary when manifest and tar shard counts already match.
+        """
         manifest_sequences = self._packed_manifest_collection.sequence_count
         tar_sequences = self._packed_tar_collection.sequence_count
         if manifest_sequences == tar_sequences:
@@ -612,6 +618,11 @@ class LazyNeMoTarredIterator(IteratorNode):
         return shard_map
 
     def _load_packed_tar_ordinal_map(self, manifest_path, tar_paths):
+        """Load and validate the row-to-member map for local v3 tar access.
+
+        AIS batch reads do not need member ordinals, while v2 packs may omit
+        them and recover the member lazily by name for compatibility.
+        """
         if self.use_ais_get_batch:
             return None
         ordinal_map_key = nemo_tar_ordinal_map_collection_key(manifest_path, tar_paths)
@@ -645,6 +656,7 @@ class LazyNeMoTarredIterator(IteratorNode):
         return ordinal_map
 
     def _open_packed_tar_reader(self, *, max_open_files: int) -> None:
+        """Create the bounded local tar reader after verifying offsets exist."""
         from nemo.collections.common.data.lhotse.indexed_adapters import PackedTarMemberReader
 
         if not self._packed_tar_collection.offsets_required:
@@ -655,6 +667,7 @@ class LazyNeMoTarredIterator(IteratorNode):
         self._packed_tar_reader = PackedTarMemberReader(self._packed_tar_collection, max_open_files=max_open_files)
 
     def _init_indexed_pack(self, manifest_path, tar_paths, *, max_open_files: int) -> None:
+        """Initialize constant-time native-tar access from a single index pack."""
         self._validate_indexed_pack_options()
         self._open_indexed_pack_collections(manifest_path, tar_paths, max_open_files=max_open_files)
         self._packed_tar_shard_map = self._load_packed_tar_shard_map(manifest_path, tar_paths)
@@ -994,6 +1007,7 @@ class LazyNeMoTarredIterator(IteratorNode):
         return self._attach_supervision_and_metadata(cut, data, manifest_path, tar_path)
 
     def _resolve_packed_tar_shard(self, data: dict, location) -> int:
+        """Resolve and validate the tar shard selected for one manifest row."""
         tar_shard_index = location.shard_index
         if self._packed_tar_shard_map is None:
             return tar_shard_index
@@ -1016,6 +1030,7 @@ class LazyNeMoTarredIterator(IteratorNode):
     def _resolve_packed_member_ordinal(
         self, data: dict, location, manifest_path: str, tar_path: str
     ) -> tuple[bool, int | None]:
+        """Resolve a row's tar-member ordinal and whether it is explicitly skipped."""
         explicitly_skipped = self._indexed_entry_is_explicitly_skipped(data, manifest_path, tar_path)
         if self._packed_tar_ordinal_map is None:
             return explicitly_skipped, None
@@ -1036,6 +1051,7 @@ class LazyNeMoTarredIterator(IteratorNode):
         return False, member_ordinal
 
     def _decode_packed_cut_at(self, idx: int) -> Cut | None:
+        """Decode one packed manifest row into a deferred-audio cut, or skip it."""
         data, location = self._packed_manifest_source.read_with_location(idx)
         manifest_path = location.path
         tar_shard_index = self._resolve_packed_tar_shard(data, location)

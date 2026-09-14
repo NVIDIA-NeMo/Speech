@@ -154,6 +154,7 @@ def _load_native_tar_member_indexes(
     tar_index_paths: tuple[str | Path, ...],
     tar_sentinel_size_overrides: tuple[int | None, ...],
 ) -> list[dict[str, int]]:
+    """Load each tar's unique member-name-to-ordinal lookup and close its reader."""
     member_indexes = []
     for tar_path, tar_index_path, sentinel_override in zip(tar_paths, tar_index_paths, tar_sentinel_size_overrides):
         reader = IndexedTarMemberReader(
@@ -177,6 +178,10 @@ def _resolve_aggregate_manifest_route(
     tar_paths: tuple[str, ...],
     member_indexes: list[dict[str, int]],
 ) -> tuple[int, int, bool, bool]:
+    """Resolve one aggregate-manifest row to tar shard and member ordinals.
+
+    The booleans preserve which supported skip marker caused a sentinel route.
+    """
     top_level_marker = bool(data.get("_skipme", False))
     custom = data.get("custom")
     custom_marker = isinstance(custom, Mapping) and bool(custom.get("_skipme", False))

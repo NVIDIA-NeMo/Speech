@@ -148,33 +148,43 @@ class BatchedCacheFeatureBufferer:
         right_padding = (features.shape[2] - feature_lens).clamp(min=0).to(torch.long)
         return features, right_padding
 
-    def _update_feature_buffer(self, slot_ids: list[int], feat_chunk: Tensor) -> None:
+    def _update_feature_buffer(self, slot_ids: Tensor, feat_chunk: Tensor) -> Tensor:
         """
-        Add an extracted feature to `feature_buffer`
+        Shift the buffers of `slot_ids` left by the chunk length and append the new feature chunk.
+
+        The whole batch is shifted with one gather, one concatenation and one scatter instead of three
+        copies per slot; every slot of a batch holds one distinct stream and every chunk has the same
+        length, so this moves exactly the same data as the per-slot loop did.
         Args:
-            slot_ids (list[int]): list of slot ids
-            feat_chunk (Tensor): feature chunk of shape (B, F, T)
+            slot_ids (Tensor): slot indices of the batch, shape (B,).
+            feat_chunk (Tensor): feature chunk of shape (B, F, T).
+        Returns:
+            (Tensor) the updated feature buffers of the batch, shape (B, F, feature_buffer_len).
         """
-        for i, slot_id in enumerate(slot_ids):
-            chunk_len = feat_chunk[i].shape[-1]
-            if chunk_len > self.feature_buffer_len:
-                raise ValueError(f"feat_chunk ({chunk_len}) longer than buffer ({self.feature_buffer_len})")
+        chunk_len = feat_chunk.shape[-1]
+        if chunk_len > self.feature_buffer_len:
+            raise ValueError(f"feat_chunk ({chunk_len}) longer than buffer ({self.feature_buffer_len})")
 
-            shifted = self.feature_buffer[slot_id, :, chunk_len:].clone()
-            self.feature_buffer[slot_id, :, :-chunk_len].copy_(shifted)
-            self.feature_buffer[slot_id, :, -chunk_len:].copy_(feat_chunk[i])
+        buffers = self.feature_buffer.index_select(0, slot_ids)
+        buffers = torch.cat([buffers[:, :, chunk_len:], feat_chunk], dim=2)
+        self.feature_buffer.index_copy_(0, slot_ids, buffers)
+        return buffers
 
-    def update(self, frames: list[Frame]) -> tuple[list[Tensor], list[int]]:
+    def update(self, frames: list[Frame]) -> tuple[Tensor, Tensor]:
         """
         Update the feature bufferers with the new frames.
+
+        The buffers and the right paddings stay batched: unbinding them here only to have the caller
+        stack them again costs a copy per stream, and reading the paddings back to Python costs a
+        device synchronization on every step.
         Args:
             frames (list[Frame]): list of frames with length equal to batch size
         Returns:
-            tuple[list[Tensor], list[int]]: feature buffers and right paddings
+            tuple[Tensor, Tensor]: feature buffers of shape (B, F, T) and right paddings of shape (B,)
         """
-        # if there are no frames, return empty lists
+        # if there are no frames, return empty batches
         if len(frames) == 0:
-            return [], []
+            return torch.empty(0, device=self.device), torch.empty(0, dtype=torch.long, device=self.device)
 
         # if the stream_id is new, we need to assign a slot to it
         slot_ids, slots_to_reset, slots_to_free = [], [], []
@@ -197,11 +207,13 @@ class BatchedCacheFeatureBufferer:
         if len(slots_to_reset) > 0:
             self.reset_slots(slots_to_reset)
 
-        right_paddings = torch.zeros(len(frames), dtype=torch.long, device=self.device)
+        # one transfer for the whole batch instead of a scalar copy per stream
+        right_paddings = torch.tensor(
+            [frame.size - frame.valid_size for frame in frames], dtype=torch.long, device=self.device
+        )
         audio_buffers = []
         for i, frame in enumerate(frames):
             slot_id = slot_ids[i]
-            right_paddings[i] = frame.size - frame.valid_size
             self.audio_bufferers[slot_id].update(frame)
 
             buffer = self.audio_bufferers[slot_id].sample_buffer
@@ -217,10 +229,11 @@ class BatchedCacheFeatureBufferer:
             right_paddings=right_paddings,
             expected_feat_len=self.feature_chunk_len + self.plus_one,
         )
-        self._update_feature_buffer(slot_ids=slot_ids, feat_chunk=features[:, :, -self.feature_chunk_len :])
-        fbuffers = list(self.feature_buffer[slot_ids].unbind(0))
-
+        slot_ids_tensor = torch.tensor(slot_ids, device=self.device, dtype=torch.long)
+        buffers = self._update_feature_buffer(
+            slot_ids=slot_ids_tensor, feat_chunk=features[:, :, -self.feature_chunk_len :]
+        )
         if len(slots_to_free) > 0:
             self.free_slots(slots_to_free)
 
-        return fbuffers, right_paddings.tolist()
+        return buffers, right_paddings

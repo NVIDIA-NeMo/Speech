@@ -89,6 +89,27 @@ class CacheAwareContextManager:
             self.cache_last_channel_len,  # B
         ) = self.cache_aware_model.get_initial_cache_state(self.num_slots)
         self.device = self.cache_last_channel.device
+        # reusable buffers for the slot ids of the active batch, so no tensor is built per step
+        self._slot_ids_host = torch.empty(self.num_slots, dtype=torch.long, pin_memory=True)
+        self._slot_ids_dev = torch.empty(self.num_slots, dtype=torch.long, device=self.device)
+        self._slot_ids_list: list[int] = []
+        self._slot_ids_contiguous = False
+
+    def _set_active_slots(self, slot_ids: list[int]) -> Tensor:
+        """
+        Records the slots of the active batch in the reusable buffers and returns them as a tensor.
+        Args:
+            slot_ids: slot index per element of the active batch, in batch order
+        Returns:
+            (Tensor) the slot ids on the cache device
+        """
+        self._slot_ids_list = slot_ids
+        self._slot_ids_contiguous = slot_ids == list(range(len(slot_ids)))
+        host = self._slot_ids_host[: len(slot_ids)]
+        host.copy_(torch.tensor(slot_ids, dtype=torch.long))
+        dev = self._slot_ids_dev[: len(slot_ids)]
+        dev.copy_(host, non_blocking=True)
+        return dev
 
     def _reset_slots(self, slot_ids: list[int]) -> None:
         """
@@ -96,7 +117,7 @@ class CacheAwareContextManager:
         Args:
             slot_ids: list of slot indices to reset
         """
-        if self.cache_disabled:
+        if self.cache_disabled or len(slot_ids) == 0:
             return
 
         slot_ids_tensor = torch.tensor(slot_ids, device=self.device, dtype=torch.long)
@@ -124,19 +145,19 @@ class CacheAwareContextManager:
             return
 
         slot_ids_list = [self.streamidx2slotidx[sid] for sid in stream_ids]
-        slot_ids = torch.tensor(slot_ids_list, device=self.device, dtype=torch.long)
-        tgt_slot_ids = torch.tensor(
-            [mapping[sid] for sid in slot_ids_list],
-            device=self.device,
-            dtype=torch.long,
-        )
+        # `mapping` sends each slot to its position in the batch, so the gather it would drive is the
+        # identity and is skipped; new_context is already in batch order.
+        num = len(slot_ids_list)
+
+        if slot_ids_list == self._slot_ids_list:
+            slot_ids = self._slot_ids_dev[:num]
+        else:
+            slot_ids = torch.tensor(slot_ids_list, device=self.device, dtype=torch.long)
 
         # In-place copy along batch/slot dimension
-        self.cache_last_channel.index_copy_(1, slot_ids, new_context.cache_last_channel.index_select(1, tgt_slot_ids))
-        self.cache_last_time.index_copy_(1, slot_ids, new_context.cache_last_time.index_select(1, tgt_slot_ids))
-        self.cache_last_channel_len.index_copy_(
-            0, slot_ids, new_context.cache_last_channel_len.index_select(0, tgt_slot_ids)
-        )
+        self.cache_last_channel.index_copy_(1, slot_ids, new_context.cache_last_channel)
+        self.cache_last_time.index_copy_(1, slot_ids, new_context.cache_last_time)
+        self.cache_last_channel_len.index_copy_(0, slot_ids, new_context.cache_last_channel_len)
 
     def reset_slots(self, stream_ids: list[int], eos_flags: list[bool]) -> None:
         """
@@ -182,9 +203,12 @@ class CacheAwareContextManager:
 
         # get the cache for the particular stream_ids
         slot_ids = [self.streamidx2slotidx[stream_id] for stream_id in stream_ids]
-        cache_last_channel = self.cache_last_channel[:, slot_ids, :, :]
-        cache_last_time = self.cache_last_time[:, slot_ids, :, :]
-        cache_last_channel_len = self.cache_last_channel_len[slot_ids]
+        slot_ids_dev = self._set_active_slots(slot_ids)
+        # a gather, not a view of the slot prefix: the encoder is sensitive to the layout of the cache
+        # it reads, and a strided view changes which bf16 kernels it picks
+        cache_last_channel = self.cache_last_channel.index_select(1, slot_ids_dev)
+        cache_last_time = self.cache_last_time.index_select(1, slot_ids_dev)
+        cache_last_channel_len = self.cache_last_channel_len.index_select(0, slot_ids_dev)
 
         # create a context object
         context = CacheAwareContext(

@@ -82,17 +82,13 @@ class NativeTarOrdinalMapInputSnapshot:
             for manifest_path, tar_path in self.source_paths
         )
         if self.source_identities != current_sources:
-            raise ValueError(
-                "A native NeMo source changed after native-tar route construction"
-            )
+            raise ValueError("A native NeMo source changed after native-tar route construction")
         current_indexes = tuple(
             (_file_identity(manifest_index_path), _file_identity(tar_index_path))
             for manifest_index_path, tar_index_path in self.index_paths
         )
         if self.index_identities != current_indexes:
-            raise ValueError(
-                "A native NeMo index changed after native-tar route construction"
-            )
+            raise ValueError("A native NeMo index changed after native-tar route construction")
 
 
 def manifest_entry_is_explicitly_skipped(data: Mapping) -> bool:
@@ -106,9 +102,7 @@ def manifest_entry_is_explicitly_skipped(data: Mapping) -> bool:
 def nemo_tar_audio_member_name(audio_filepath: str) -> str:
     """Normalize a NeMo tarred-manifest audio path to its actual tar member."""
     if not isinstance(audio_filepath, str) or not audio_filepath:
-        raise ValueError(
-            f"audio_filepath must be a non-empty string, got {audio_filepath!r}"
-        )
+        raise ValueError(f"audio_filepath must be a non-empty string, got {audio_filepath!r}")
     match = _OFFSET_PATTERN.match(audio_filepath)
     if match is None:
         return audio_filepath
@@ -155,6 +149,77 @@ def nemo_tar_shard_map_collection_key(manifest_source_spec, tar_source_spec) -> 
     )
 
 
+def _load_native_tar_member_indexes(
+    tar_paths: tuple[str, ...],
+    tar_index_paths: tuple[str | Path, ...],
+    tar_sentinel_size_overrides: tuple[int | None, ...],
+) -> list[dict[str, int]]:
+    member_indexes = []
+    for tar_path, tar_index_path, sentinel_override in zip(tar_paths, tar_index_paths, tar_sentinel_size_overrides):
+        reader = IndexedTarMemberReader(
+            tar_path,
+            idx_path=tar_index_path,
+            auto_create_index=False,
+            sentinel_size_override=sentinel_override,
+        )
+        try:
+            member_indexes.append(reader.member_name_index(reject_duplicates=True))
+        finally:
+            reader.close()
+    return member_indexes
+
+
+def _resolve_aggregate_manifest_route(
+    data: Mapping,
+    *,
+    row_index: int,
+    manifest_path: str,
+    tar_paths: tuple[str, ...],
+    member_indexes: list[dict[str, int]],
+) -> tuple[int, int, bool, bool]:
+    top_level_marker = bool(data.get("_skipme", False))
+    custom = data.get("custom")
+    custom_marker = isinstance(custom, Mapping) and bool(custom.get("_skipme", False))
+    if top_level_marker or custom_marker:
+        return (
+            NEMO_TAR_SKIP_ORDINAL,
+            NEMO_TAR_SKIP_ORDINAL,
+            top_level_marker,
+            custom_marker,
+        )
+
+    tar_shard = data.get("shard_id")
+    if isinstance(tar_shard, bool) or not isinstance(tar_shard, int):
+        raise ValueError(
+            f"Aggregate native NeMo manifest row {row_index} in {manifest_path!r} "
+            f"requires an integer shard_id, got {tar_shard!r}"
+        )
+    if tar_shard < 0 or tar_shard >= len(tar_paths):
+        raise ValueError(
+            f"Aggregate native NeMo manifest row {row_index} in {manifest_path!r} "
+            f"has shard_id={tar_shard}, outside [0, {len(tar_paths)})"
+        )
+    try:
+        expected_name = nemo_tar_audio_member_name(data["audio_filepath"])
+    except KeyError as ex:
+        raise ValueError(
+            f"Aggregate native NeMo manifest row {row_index} in {manifest_path!r} " "is missing audio_filepath"
+        ) from ex
+    try:
+        member_ordinal = member_indexes[tar_shard][expected_name]
+    except KeyError as ex:
+        raise ValueError(
+            f"Aggregate native NeMo manifest row {row_index} in {manifest_path!r} "
+            f"references missing tar member {expected_name!r} in {tar_paths[tar_shard]!r}"
+        ) from ex
+    if member_ordinal >= NEMO_TAR_SKIP_ORDINAL:
+        raise ValueError(
+            f"Native NeMo tar member ordinal {member_ordinal} in {tar_paths[tar_shard]!r} "
+            "cannot be represented by the uint32 routing format"
+        )
+    return tar_shard, member_ordinal, False, False
+
+
 def write_nemo_tar_aggregate_ordinal_maps(
     ordinal_output_path: str | Path,
     shard_output_path: str | Path,
@@ -167,13 +232,8 @@ def write_nemo_tar_aggregate_ordinal_maps(
 ) -> NativeTarOrdinalMapBuildSummary:
     """Route one aggregate manifest to many tar shards via each row's ``shard_id``."""
     if not tar_paths:
-        raise ValueError(
-            "Aggregate native NeMo routing requires at least one tar shard"
-        )
-    if (
-        len({len(tar_paths), len(tar_index_paths), len(tar_sentinel_size_overrides)})
-        != 1
-    ):
+        raise ValueError("Aggregate native NeMo routing requires at least one tar shard")
+    if len({len(tar_paths), len(tar_index_paths), len(tar_sentinel_size_overrides)}) != 1:
         raise ValueError(
             "Aggregate native NeMo tar/index/sentinel counts differ: "
             f"tars={len(tar_paths)} indexes={len(tar_index_paths)} "
@@ -185,20 +245,7 @@ def write_nemo_tar_aggregate_ordinal_maps(
         (manifest_index_path,) * len(tar_paths),
         tar_index_paths,
     )
-    member_indexes = []
-    for tar_path, tar_index_path, sentinel_override in zip(
-        tar_paths, tar_index_paths, tar_sentinel_size_overrides
-    ):
-        reader = IndexedTarMemberReader(
-            tar_path,
-            idx_path=tar_index_path,
-            auto_create_index=False,
-            sentinel_size_override=sentinel_override,
-        )
-        try:
-            member_indexes.append(reader.member_name_index(reject_duplicates=True))
-        finally:
-            reader.close()
+    member_indexes = _load_native_tar_member_indexes(tar_paths, tar_index_paths, tar_sentinel_size_overrides)
 
     row_count = 0
     skip_marker_records = 0
@@ -210,51 +257,18 @@ def write_nemo_tar_aggregate_ordinal_maps(
     ):
         ordinal_buffer = bytearray()
         shard_buffer = bytearray()
-        for row_index, data in enumerate(
-            _iter_indexed_manifest_rows(manifest_path, manifest_index_path)
-        ):
-            top_level_marker = bool(data.get("_skipme", False))
-            custom = data.get("custom")
-            custom_marker = isinstance(custom, Mapping) and bool(
-                custom.get("_skipme", False)
+        for row_index, data in enumerate(_iter_indexed_manifest_rows(manifest_path, manifest_index_path)):
+            tar_shard, member_ordinal, top_level_marker, custom_marker = _resolve_aggregate_manifest_route(
+                data,
+                row_index=row_index,
+                manifest_path=manifest_path,
+                tar_paths=tar_paths,
+                member_indexes=member_indexes,
             )
             if top_level_marker or custom_marker:
-                tar_shard = NEMO_TAR_SKIP_ORDINAL
-                member_ordinal = NEMO_TAR_SKIP_ORDINAL
                 skip_marker_records += 1
                 top_level_skip_marker_records += int(top_level_marker)
                 custom_skip_marker_records += int(custom_marker)
-            else:
-                tar_shard = data.get("shard_id")
-                if isinstance(tar_shard, bool) or not isinstance(tar_shard, int):
-                    raise ValueError(
-                        f"Aggregate native NeMo manifest row {row_index} in {manifest_path!r} "
-                        f"requires an integer shard_id, got {tar_shard!r}"
-                    )
-                if tar_shard < 0 or tar_shard >= len(tar_paths):
-                    raise ValueError(
-                        f"Aggregate native NeMo manifest row {row_index} in {manifest_path!r} "
-                        f"has shard_id={tar_shard}, outside [0, {len(tar_paths)})"
-                    )
-                try:
-                    expected_name = nemo_tar_audio_member_name(data["audio_filepath"])
-                except KeyError as ex:
-                    raise ValueError(
-                        f"Aggregate native NeMo manifest row {row_index} in {manifest_path!r} "
-                        "is missing audio_filepath"
-                    ) from ex
-                try:
-                    member_ordinal = member_indexes[tar_shard][expected_name]
-                except KeyError as ex:
-                    raise ValueError(
-                        f"Aggregate native NeMo manifest row {row_index} in {manifest_path!r} "
-                        f"references missing tar member {expected_name!r} in {tar_paths[tar_shard]!r}"
-                    ) from ex
-                if member_ordinal >= NEMO_TAR_SKIP_ORDINAL:
-                    raise ValueError(
-                        f"Native NeMo tar member ordinal {member_ordinal} in {tar_paths[tar_shard]!r} "
-                        "cannot be represented by the uint32 routing format"
-                    )
             ordinal_buffer.extend(_U32.pack(member_ordinal))
             shard_buffer.extend(_U32.pack(tar_shard))
             row_count += 1
@@ -313,14 +327,10 @@ def write_nemo_tar_ordinal_map_shard(
         custom_skip_marker_records = 0
         with Path(output_path).open("xb") as output:
             buffer = bytearray()
-            for row_index, data in enumerate(
-                _iter_indexed_manifest_rows(manifest_path, manifest_index_path)
-            ):
+            for row_index, data in enumerate(_iter_indexed_manifest_rows(manifest_path, manifest_index_path)):
                 top_level_marker = bool(data.get("_skipme", False))
                 custom = data.get("custom")
-                custom_marker = isinstance(custom, Mapping) and bool(
-                    custom.get("_skipme", False)
-                )
+                custom_marker = isinstance(custom, Mapping) and bool(custom.get("_skipme", False))
                 if top_level_marker or custom_marker:
                     ordinal = NEMO_TAR_SKIP_ORDINAL
                     skip_marker_records += 1
@@ -328,13 +338,10 @@ def write_nemo_tar_ordinal_map_shard(
                     custom_skip_marker_records += int(custom_marker)
                 else:
                     try:
-                        expected_name = nemo_tar_audio_member_name(
-                            data["audio_filepath"]
-                        )
+                        expected_name = nemo_tar_audio_member_name(data["audio_filepath"])
                     except KeyError as ex:
                         raise ValueError(
-                            f"Native NeMo manifest row {row_index} in {manifest_path!r} "
-                            "is missing audio_filepath"
+                            f"Native NeMo manifest row {row_index} in {manifest_path!r} " "is missing audio_filepath"
                         ) from ex
                     try:
                         ordinal = member_ordinals[expected_name]
@@ -408,9 +415,7 @@ def write_nemo_tar_ordinal_map_shards(
     if len(set(lengths.values())) != 1:
         raise ValueError(f"Native NeMo ordinal-map shard counts differ: {lengths}")
     if num_workers < 1:
-        raise ValueError(
-            f"Native NeMo ordinal-map workers must be positive, got {num_workers}"
-        )
+        raise ValueError(f"Native NeMo ordinal-map workers must be positive, got {num_workers}")
 
     input_snapshot = NativeTarOrdinalMapInputSnapshot.capture(
         manifest_paths,
@@ -437,24 +442,18 @@ def write_nemo_tar_ordinal_map_shards(
         )
     )
     if num_workers == 1 or len(tasks) <= 1:
-        shard_summaries = tuple(
-            _write_nemo_tar_ordinal_map_shard_task(task) for task in tasks
-        )
+        shard_summaries = tuple(_write_nemo_tar_ordinal_map_shard_task(task) for task in tasks)
     else:
         # Each task owns a distinct, preassigned output path. Results are placed
         # back into input order so process scheduling cannot affect the array
         # shard order or the resulting idxpack layout hash.
-        ordered_summaries: list[NativeTarOrdinalMapBuildSummary | None] = [None] * len(
-            tasks
-        )
+        ordered_summaries: list[NativeTarOrdinalMapBuildSummary | None] = [None] * len(tasks)
         with ProcessPoolExecutor(
             max_workers=min(num_workers, len(tasks)),
             mp_context=get_context("spawn"),
         ) as executor:
             futures = {
-                executor.submit(
-                    _write_nemo_tar_ordinal_map_shard_task, task
-                ): shard_index
+                executor.submit(_write_nemo_tar_ordinal_map_shard_task, task): shard_index
                 for shard_index, task in enumerate(tasks)
             }
             try:
@@ -465,22 +464,14 @@ def write_nemo_tar_ordinal_map_shards(
                     future.cancel()
                 raise
         assert all(summary is not None for summary in ordered_summaries)
-        shard_summaries = tuple(
-            summary for summary in ordered_summaries if summary is not None
-        )
+        shard_summaries = tuple(summary for summary in ordered_summaries if summary is not None)
     input_snapshot.validate()
     return NativeTarOrdinalMapBuildSummary(
         shard_rows=tuple(summary.records_checked for summary in shard_summaries),
         records_checked=sum(summary.records_checked for summary in shard_summaries),
-        skip_marker_records=sum(
-            summary.skip_marker_records for summary in shard_summaries
-        ),
-        top_level_skip_marker_records=sum(
-            summary.top_level_skip_marker_records for summary in shard_summaries
-        ),
-        custom_skip_marker_records=sum(
-            summary.custom_skip_marker_records for summary in shard_summaries
-        ),
+        skip_marker_records=sum(summary.skip_marker_records for summary in shard_summaries),
+        top_level_skip_marker_records=sum(summary.top_level_skip_marker_records for summary in shard_summaries),
+        custom_skip_marker_records=sum(summary.custom_skip_marker_records for summary in shard_summaries),
         input_snapshot=input_snapshot,
     )
 
@@ -510,13 +501,9 @@ def _write_nemo_tar_ordinal_map_shard_task(
 def _iter_indexed_manifest_rows(path: str, index_path: str | Path):
     offsets = read_index(index_path)
     if len(offsets) < 1 or int(offsets[0]) != 0:
-        raise ValueError(
-            f"Native NeMo manifest index must begin at byte zero: {index_path}"
-        )
+        raise ValueError(f"Native NeMo manifest index must begin at byte zero: {index_path}")
     if len(offsets) > 1 and (offsets[1:] <= offsets[:-1]).any():
-        raise ValueError(
-            f"Native NeMo manifest index must contain strictly increasing offsets: {index_path}"
-        )
+        raise ValueError(f"Native NeMo manifest index must contain strictly increasing offsets: {index_path}")
 
     row_index = 0
     row_count = len(offsets) - 1
@@ -526,8 +513,7 @@ def _iter_indexed_manifest_rows(path: str, index_path: str | Path):
             batch_end_index = row_index + 1
             while (
                 batch_end_index < row_count
-                and int(offsets[batch_end_index + 1]) - batch_start
-                <= _MANIFEST_BATCH_BYTES
+                and int(offsets[batch_end_index + 1]) - batch_start <= _MANIFEST_BATCH_BYTES
             ):
                 batch_end_index += 1
             batch_end = int(offsets[batch_end_index])
@@ -545,9 +531,7 @@ def _iter_indexed_manifest_rows(path: str, index_path: str | Path):
                     encoded = raw[start:end].decode("utf-8")
                     data = decode_json_line(encoded)
                 except (UnicodeDecodeError, json.JSONDecodeError) as ex:
-                    raise ValueError(
-                        f"Malformed JSON at indexed row {row_index} in {path!r}: {ex}"
-                    ) from ex
+                    raise ValueError(f"Malformed JSON at indexed row {row_index} in {path!r}: {ex}") from ex
                 if not isinstance(data, Mapping):
                     raise ValueError(
                         f"Native NeMo indexed row {row_index} in {path!r} must be a JSON object, "

@@ -15,6 +15,7 @@
 
 import glob
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -244,6 +245,7 @@ class ExpManagerConfig:
     resume_past_end: Optional[bool] = False
     resume_ignore_no_checkpoint: Optional[bool] = False
     resume_from_checkpoint: Optional[str] = None
+    resume_select_latest_last_checkpoint: Optional[bool] = False
     # Logging parameters
     create_tensorboard_logger: Optional[bool] = True
     summary_writer_kwargs: Optional[Dict[Any, Any]] = None
@@ -526,6 +528,9 @@ def exp_manager(trainer: 'lightning.pytorch.Trainer', cfg: Optional[Union[DictCo
             - resume_from_checkpoint (str): Can be used to specify a path to a specific checkpoint
                 file to load from. This will override any checkpoint found when resume_if_exists
                 is True. Defaults to None.
+            - resume_select_latest_last_checkpoint (bool): When multiple ``*last.ckpt`` checkpoints
+                exist, select the unique checkpoint with the greatest integer ``step=...`` in its
+                basename. Defaults to False, preserving the fail-closed ambiguity check.
             - create_tensorboard_logger (bool): Whether to create a tensorboard logger and attach it
                 to the pytorch lightning trainer. Defaults to True.
             - summary_writer_kwargs (dict): A dictionary of kwargs that can be passed to lightning's
@@ -618,6 +623,7 @@ def exp_manager(trainer: 'lightning.pytorch.Trainer', cfg: Optional[Union[DictCo
         cfg.resume_ignore_no_checkpoint,
         cfg.checkpoint_callback_params.dirpath,
         cfg.resume_from_checkpoint,
+        cfg.resume_select_latest_last_checkpoint,
     )
 
     checkpoint_name = name
@@ -884,6 +890,7 @@ def check_resume(
     resume_ignore_no_checkpoint: bool = False,
     dirpath: str = None,
     resume_from_checkpoint: str = None,
+    resume_select_latest_last_checkpoint: bool = False,
 ):
     """Checks that resume=True was used correctly with the arguments pass to exp_manager. Sets
     trainer._checkpoint_connector._ckpt_path as necessary.
@@ -1025,8 +1032,33 @@ def check_resume(
                 if any([s for s in ['mp_rank', 'tp_rank', 'fsdp_shard'] if s in str(last_checkpoints[0])]):
                     checkpoint = last_checkpoints[0]
                     checkpoint = uninject_model_parallel_rank(checkpoint)
+                elif resume_select_latest_last_checkpoint:
+                    checkpoints_by_step = {}
+                    for candidate in last_checkpoints:
+                        matches = re.findall(r'(?:^|[-_])step=(\d+)(?:[-_.]|$)', Path(str(candidate)).name)
+                        if len(matches) != 1:
+                            raise ValueError(
+                                "Cannot select the latest *last.ckpt because every candidate must have "
+                                f"exactly one step=<integer> in its basename: {last_checkpoints}"
+                            )
+                        step = int(matches[0])
+                        if step in checkpoints_by_step:
+                            raise ValueError(
+                                f"Cannot select a unique latest *last.ckpt: step={step} appears in both "
+                                f"{checkpoints_by_step[step]} and {candidate}."
+                            )
+                        checkpoints_by_step[step] = candidate
+                    checkpoint = checkpoints_by_step[max(checkpoints_by_step)]
+                    logging.warning(
+                        "Multiple *last.ckpt checkpoints found; selected the unique greatest step: %s",
+                        checkpoint,
+                    )
                 else:
-                    raise ValueError(f"Multiple checkpoints {last_checkpoints} that matches *last.ckpt.")
+                    raise ValueError(
+                        f"Multiple checkpoints {last_checkpoints} match *last.ckpt. "
+                        "Set resume_select_latest_last_checkpoint=True to select the unique checkpoint "
+                        "with the greatest step=<integer> in its basename."
+                    )
             else:
                 checkpoint = last_checkpoints[0]
 

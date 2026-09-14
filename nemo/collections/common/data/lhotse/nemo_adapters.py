@@ -14,6 +14,7 @@
 # limitations under the License.
 
 """Lhotse adapters for NeMo datasets including Parquet support."""
+
 import bisect
 import os
 import random
@@ -54,6 +55,7 @@ from nemo.collections.common.data.lhotse.nemo_tar_routing import (
     manifest_entry_is_explicitly_skipped,
     nemo_tar_audio_member_name,
     nemo_tar_ordinal_map_collection_key,
+    nemo_tar_shard_map_collection_key,
 )
 from nemo.collections.common.parts.preprocessing.manifest import get_full_path
 from nemo.utils import logging
@@ -65,7 +67,9 @@ ShardKey = Union[int, tuple[int, int]]
 _MALFORMED_INDEXED_MANIFEST_WARNING_KEYS: set[tuple[str, str]] = set()
 
 
-def _warn_malformed_indexed_manifest_record(ex: BaseException, idx: int, path: str | Path) -> None:
+def _warn_malformed_indexed_manifest_record(
+    ex: BaseException, idx: int, path: str | Path
+) -> None:
     key = (str(path), type(ex).__name__)
     if key in _MALFORMED_INDEXED_MANIFEST_WARNING_KEYS:
         return
@@ -166,7 +170,11 @@ class LazyNeMoIterator(IteratorNode):
         self.index_pack = index_pack
         self.skip_missing_manifest_entries = skip_missing_manifest_entries
         validate_extra_fields(self.extra_fields)
-        paths = None if indexed and index_pack is not None else expand_sharded_filepaths(path)
+        paths = (
+            None
+            if indexed and index_pack is not None
+            else expand_sharded_filepaths(path)
+        )
 
         if indexed:
             if extra_fields:
@@ -179,7 +187,11 @@ class LazyNeMoIterator(IteratorNode):
                 from lhotse.index_pack import index_pack_collection_key
                 from lhotse.packed_lazy import LazyPackedManifestIterator
 
-                seed = resolve_seed(shard_seed) if shard_seed not in (None, "trng", "randomized") else 0
+                seed = (
+                    resolve_seed(shard_seed)
+                    if shard_seed not in (None, "trng", "randomized")
+                    else 0
+                )
                 self.source = LazyPackedManifestIterator(
                     index_pack,
                     index_pack_collection_key("manifest", "jsonl", path),
@@ -194,7 +206,11 @@ class LazyNeMoIterator(IteratorNode):
 
             from lhotse.indexing import index_file_path
 
-            seed = resolve_seed(shard_seed) if shard_seed not in (None, "trng", "randomized") else 0
+            seed = (
+                resolve_seed(shard_seed)
+                if shard_seed not in (None, "trng", "randomized")
+                else 0
+            )
             indexed_sources = [
                 LazyIndexedManifestIterator(
                     p,
@@ -208,7 +224,9 @@ class LazyNeMoIterator(IteratorNode):
             if len(indexed_sources) == 1:
                 self.source = indexed_sources[0]
             else:
-                self.source = LazyIteratorChain(*indexed_sources, shuffle_iters=shuffle_shards, seed=seed)
+                self.source = LazyIteratorChain(
+                    *indexed_sources, shuffle_iters=shuffle_shards, seed=seed
+                )
         else:
             if len(paths) == 1:
                 self.source = LazyJsonlIterator(paths[0])
@@ -234,7 +252,10 @@ class LazyNeMoIterator(IteratorNode):
     def __iter__(self) -> Generator[Cut, None, None]:
         seed = resolve_seed(self.shard_seed)
         # Propagate the random seed
-        extra_fields = [ExtraField.from_dict({"seed": seed, **field_cfg}) for field_cfg in self.extra_fields or ()]
+        extra_fields = [
+            ExtraField.from_dict({"seed": seed, **field_cfg})
+            for field_cfg in self.extra_fields or ()
+        ]
         for data in self.source:
             graph_token = getattr(data, "_graph_origin", None) if self.indexed else None
             if manifest_entry_is_explicitly_skipped(data):
@@ -254,7 +275,9 @@ class LazyNeMoIterator(IteratorNode):
             )
         data = self.source[token]
         if manifest_entry_is_explicitly_skipped(data):
-            raise IndexError(f"Manifest row at physical index {token} is explicitly filtered by _skipme.")
+            raise IndexError(
+                f"Manifest row at physical index {token} is explicitly filtered by _skipme."
+            )
         cut = self._build_cut_from_dict(data)
         return attach_graph_origin(cut, token) if self.indexed else cut
 
@@ -279,7 +302,9 @@ class LazyNeMoIterator(IteratorNode):
         # Note: ``data`` may be reused across calls in indexed mode (the reader returns
         # a fresh dict each time, but we still avoid mutating the inner object).
         data = dict(data)
-        audio_path = get_full_path(str(data.pop("audio_filepath")), str(self.path), force_cache=False)
+        audio_path = get_full_path(
+            str(data.pop("audio_filepath")), str(self.path), force_cache=False
+        )
         duration = data.pop("duration")
         offset = data.pop("offset", None)
         sampling_rate = data.pop("sampling_rate", None)
@@ -317,7 +342,9 @@ class LazyNeMoIterator(IteratorNode):
             cut = recording.to_cut()
             if offset is not None:
                 cut = cut.truncate(offset=offset, duration=duration, preserve_id=True)
-                cut.id = f"{cut.id}-{round(offset * 1e2):06d}-{round(duration * 1e2):06d}"
+                cut.id = (
+                    f"{cut.id}-{round(offset * 1e2):06d}-{round(duration * 1e2):06d}"
+                )
         else:
             # Only metadata requested.
             # We'll provide accurate metadata for Cut but inaccurate metadata for Recording to avoid
@@ -353,7 +380,9 @@ class LazyNeMoIterator(IteratorNode):
             source_type = "url" if is_datastore_path(audio_path) else "file"
             return Recording(
                 id=audio_path,
-                sources=[AudioSource(type=source_type, channels=[0], source=audio_path)],
+                sources=[
+                    AudioSource(type=source_type, channels=[0], source=audio_path)
+                ],
                 sampling_rate=sampling_rate,
                 num_samples=compute_num_samples(duration, sampling_rate),
                 duration=duration,
@@ -465,13 +494,17 @@ class LazyNeMoTarredIterator(IteratorNode):
             or not isinstance(input_sampling_rate, int)
             or input_sampling_rate <= 0
         ):
-            raise ValueError(f"input_sampling_rate must be a positive integer, got {input_sampling_rate!r}")
+            raise ValueError(
+                f"input_sampling_rate must be a positive integer, got {input_sampling_rate!r}"
+            )
         self.input_sampling_rate = input_sampling_rate
         self._malformed_manifest_warning_keys: set[tuple[str, ShardKey]] = set()
         self.indexed = indexed
         self.indexes_root = indexes_root
         self.index_pack = index_pack
-        self.use_ais_get_batch = os.environ.get("USE_AIS_GET_BATCH", "False").lower() == "true"
+        self.use_ais_get_batch = (
+            os.environ.get("USE_AIS_GET_BATCH", "False").lower() == "true"
+        )
         if indexed and index_pack is not None:
             self.shuffle_shards = shuffle_shards
             self.shard_seed = shard_seed
@@ -511,17 +544,26 @@ class LazyNeMoTarredIterator(IteratorNode):
                 self.shard_id_to_manifest = groupby("shard_id", self.source)
         else:
             json_pattern = re.compile(r"manifest[^/]*_(\d+)[^/]*\.json")
-            shard_keys, _ = _extract_unique_shard_keys(self.paths, json_pattern, path_kind="manifest")
-            self._shard_key_to_manifest_path = {key: path for key, path in zip(shard_keys, self.paths)}
+            shard_keys, _ = _extract_unique_shard_keys(
+                self.paths, json_pattern, path_kind="manifest"
+            )
+            self._shard_key_to_manifest_path = {
+                key: path for key, path in zip(shard_keys, self.paths)
+            }
             self.shard_id_to_manifest = {
-                key: LazyJsonlIterator(path) for key, path in self._shard_key_to_manifest_path.items()
+                key: LazyJsonlIterator(path)
+                for key, path in self._shard_key_to_manifest_path.items()
             }
             self.source = LazyIteratorChain(*self.shard_id_to_manifest.values())
 
         self.tar_paths = expand_sharded_filepaths(tar_paths)
         tar_pattern = re.compile(r"audio[^/]*_(\d+)[^/]*\.tar")
-        shard_keys, _ = _extract_unique_shard_keys(self.tar_paths, tar_pattern, path_kind="tar")
-        self.shard_id_to_tar_path: dict[ShardKey, str] = {key: path for key, path in zip(shard_keys, self.tar_paths)}
+        shard_keys, _ = _extract_unique_shard_keys(
+            self.tar_paths, tar_pattern, path_kind="tar"
+        )
+        self.shard_id_to_tar_path: dict[ShardKey, str] = {
+            key: path for key, path in zip(shard_keys, self.tar_paths)
+        }
 
         self.shuffle_shards = shuffle_shards
         self.shard_seed = shard_seed
@@ -531,7 +573,9 @@ class LazyNeMoTarredIterator(IteratorNode):
         self.slice_length = slice_length
         self.epoch = 0
         self._validate()
-        self.use_ais_get_batch = os.environ.get("USE_AIS_GET_BATCH", "False").lower() == "true"
+        self.use_ais_get_batch = (
+            os.environ.get("USE_AIS_GET_BATCH", "False").lower() == "true"
+        )
 
         if indexed:
             self._init_indexed()
@@ -548,7 +592,9 @@ class LazyNeMoTarredIterator(IteratorNode):
     def has_constant_time_access(self) -> bool:
         return self.indexed
 
-    def _init_indexed_pack(self, manifest_path, tar_paths, *, max_open_files: int) -> None:
+    def _init_indexed_pack(
+        self, manifest_path, tar_paths, *, max_open_files: int
+    ) -> None:
         from lhotse.index_pack import index_pack_collection_key, open_index_pack
         from lhotse.packed_lazy import LazyPackedManifestIterator
 
@@ -558,7 +604,9 @@ class LazyNeMoTarredIterator(IteratorNode):
                 "because their values are positional and cannot be reproduced under graph-token random access."
             )
         if self.slice_length is not None:
-            raise ValueError("LazyNeMoTarredIterator(indexed=True) does not support 'slice_length'.")
+            raise ValueError(
+                "LazyNeMoTarredIterator(indexed=True) does not support 'slice_length'."
+            )
 
         self._index_pack = open_index_pack(self.index_pack)
         manifest_key = index_pack_collection_key("manifest", "jsonl", manifest_path)
@@ -573,16 +621,47 @@ class LazyNeMoTarredIterator(IteratorNode):
         )
         self._packed_manifest_collection = self._index_pack.collection(manifest_key)
         self._packed_tar_collection = self._index_pack.collection(tar_key)
-        if self._packed_manifest_collection.sequence_count != self._packed_tar_collection.sequence_count:
-            raise ValueError(
-                "Packed manifest/tar shard-count mismatch: "
-                f"{self._packed_manifest_collection.sequence_count} manifests vs "
-                f"{self._packed_tar_collection.sequence_count} tars"
-            )
+        manifest_sequences = self._packed_manifest_collection.sequence_count
+        tar_sequences = self._packed_tar_collection.sequence_count
+        self._packed_tar_shard_map = None
+        if manifest_sequences != tar_sequences:
+            if manifest_sequences != 1 or tar_sequences < 1:
+                raise ValueError(
+                    "Packed manifest/tar shard-count mismatch: "
+                    f"{manifest_sequences} manifests vs {tar_sequences} tars"
+                )
+            shard_map_key = nemo_tar_shard_map_collection_key(manifest_path, tar_paths)
+            try:
+                shard_map = self._index_pack.collection(shard_map_key)
+            except KeyError as ex:
+                raise ValueError(
+                    "Packed aggregate native-tar manifest is missing its expected "
+                    f"{shard_map_key.hex()} tar-shard route collection"
+                ) from ex
+            if not shard_map.is_array or shard_map.value_dtype != "uint32":
+                raise ValueError(
+                    "Packed native-tar shard map must be a uint32 array collection"
+                )
+            if shard_map.sequence_count != manifest_sequences:
+                raise ValueError(
+                    "Packed native-tar shard-map sequence-count mismatch: "
+                    f"{shard_map.sequence_count} maps vs {manifest_sequences} manifests"
+                )
+            if shard_map.shard_length(
+                0
+            ) != self._packed_manifest_collection.shard_length(0):
+                raise ValueError(
+                    "Packed native-tar shard-map row-count mismatch: "
+                    f"{shard_map.shard_length(0)} map values vs "
+                    f"{self._packed_manifest_collection.shard_length(0)} manifest rows"
+                )
+            self._packed_tar_shard_map = shard_map
         self._total_len = len(self._packed_manifest_collection)
         self._packed_tar_ordinal_map = None
         if not self.use_ais_get_batch:
-            ordinal_map_key = nemo_tar_ordinal_map_collection_key(manifest_path, tar_paths)
+            ordinal_map_key = nemo_tar_ordinal_map_collection_key(
+                manifest_path, tar_paths
+            )
             try:
                 ordinal_map = self._index_pack.collection(ordinal_map_key)
             except KeyError as ex:
@@ -595,8 +674,13 @@ class LazyNeMoTarredIterator(IteratorNode):
                     ) from ex
             else:
                 if not ordinal_map.is_array or ordinal_map.value_dtype != "uint32":
-                    raise ValueError("Packed native-tar ordinal map must be a uint32 array collection")
-                if ordinal_map.sequence_count != self._packed_manifest_collection.sequence_count:
+                    raise ValueError(
+                        "Packed native-tar ordinal map must be a uint32 array collection"
+                    )
+                if (
+                    ordinal_map.sequence_count
+                    != self._packed_manifest_collection.sequence_count
+                ):
                     raise ValueError(
                         "Packed native-tar ordinal-map shard-count mismatch: "
                         f"{ordinal_map.sequence_count} maps vs "
@@ -604,7 +688,9 @@ class LazyNeMoTarredIterator(IteratorNode):
                     )
                 for shard_index in range(ordinal_map.sequence_count):
                     map_length = ordinal_map.shard_length(shard_index)
-                    manifest_length = self._packed_manifest_collection.shard_length(shard_index)
+                    manifest_length = self._packed_manifest_collection.shard_length(
+                        shard_index
+                    )
                     if map_length != manifest_length:
                         raise ValueError(
                             "Packed native-tar ordinal-map row-count mismatch at shard "
@@ -612,7 +698,9 @@ class LazyNeMoTarredIterator(IteratorNode):
                         )
                 self._packed_tar_ordinal_map = ordinal_map
         if not self.use_ais_get_batch:
-            from nemo.collections.common.data.lhotse.indexed_adapters import PackedTarMemberReader
+            from nemo.collections.common.data.lhotse.indexed_adapters import (
+                PackedTarMemberReader,
+            )
 
             if not self._packed_tar_collection.offsets_required:
                 raise ValueError(
@@ -620,7 +708,9 @@ class LazyNeMoTarredIterator(IteratorNode):
                     "rebuild without --native-tar-paths-only or enable "
                     "USE_AIS_GET_BATCH."
                 )
-            self._packed_tar_reader = PackedTarMemberReader(self._packed_tar_collection, max_open_files=max_open_files)
+            self._packed_tar_reader = PackedTarMemberReader(
+                self._packed_tar_collection, max_open_files=max_open_files
+            )
         self._iter_state = PartitionedIndexedIterator()
         self._packed_indexed = True
 
@@ -631,7 +721,9 @@ class LazyNeMoTarredIterator(IteratorNode):
         """Build per-shard IndexedJsonlReaders + audio-tar index for indexed/random access."""
         from lhotse.indexing import IndexedJsonlReader, index_file_path
 
-        from nemo.collections.common.data.lhotse.indexed_adapters import IndexedTarMemberReader
+        from nemo.collections.common.data.lhotse.indexed_adapters import (
+            IndexedTarMemberReader,
+        )
 
         if self.extra_fields:
             raise ValueError(
@@ -640,13 +732,17 @@ class LazyNeMoTarredIterator(IteratorNode):
                 "graph-token random access."
             )
         if self.slice_length is not None:
-            raise ValueError("LazyNeMoTarredIterator(indexed=True) does not support 'slice_length'.")
+            raise ValueError(
+                "LazyNeMoTarredIterator(indexed=True) does not support 'slice_length'."
+            )
 
         # Order shards by stable shard key so global indices are reproducible.
         # Multi-bucket NeMo specs may expand to paths such as
         # bucket_1/audio_0.tar and bucket_2/audio_0.tar; the occurrence suffix in
         # ShardKey prevents those duplicate numeric shard ids from overwriting.
-        self._sorted_shard_ids: list[ShardKey] = sorted(self.shard_id_to_tar_path.keys())
+        self._sorted_shard_ids: list[ShardKey] = sorted(
+            self.shard_id_to_tar_path.keys()
+        )
         self._cuts_readers: dict[ShardKey, IndexedJsonlReader] = {}
         # In USE_AIS_GET_BATCH mode we never open the tar files locally — audio is
         # fetched lazily via URL/file AudioSource by AudioSamples (typically batched).
@@ -654,7 +750,9 @@ class LazyNeMoTarredIterator(IteratorNode):
 
         # Map shard key → manifest path (single or multi-file).
         if len(self.paths) == 1:
-            shard_id_to_manifest_path = {sid: self.paths[0] for sid in self._sorted_shard_ids}
+            shard_id_to_manifest_path = {
+                sid: self.paths[0] for sid in self._sorted_shard_ids
+            }
         else:
             shard_id_to_manifest_path = self._shard_key_to_manifest_path
 
@@ -782,7 +880,9 @@ class LazyNeMoTarredIterator(IteratorNode):
                     raise ValueError(message)
 
                 offset = data.get("offset", 0.0)
-                sampling_rate = self._resolve_input_sampling_rate(data, manifest_path, tar_path)
+                sampling_rate = self._resolve_input_sampling_rate(
+                    data, manifest_path, tar_path
+                )
 
                 # Create URL-based recording
                 recording = Recording(
@@ -796,7 +896,9 @@ class LazyNeMoTarredIterator(IteratorNode):
                 # Create cut from recording (audio will be loaded lazily from URL when needed)
                 cut = recording.to_cut()
                 if offset > 0:
-                    cut = cut.truncate(offset=offset, duration=duration, preserve_id=True)
+                    cut = cut.truncate(
+                        offset=offset, duration=duration, preserve_id=True
+                    )
                     cut.id = f"{cut.id}-{round(offset * 1e2):06d}-{round(duration * 1e2):06d}"
 
                 # Add supervision (transcript metadata)
@@ -860,7 +962,9 @@ class LazyNeMoTarredIterator(IteratorNode):
         if idx < 0:
             idx += self._total_len
         if idx < 0 or idx >= self._total_len:
-            raise IndexError(f"index {idx} out of range for LazyNeMoTarredIterator with {self._total_len} cuts")
+            raise IndexError(
+                f"index {idx} out of range for LazyNeMoTarredIterator with {self._total_len} cuts"
+            )
         shard_pos = bisect.bisect_right(self._cum_lens, idx) - 1
         sid = self._sorted_shard_ids[shard_pos]
         return sid, idx - self._cum_lens[shard_pos]
@@ -868,7 +972,9 @@ class LazyNeMoTarredIterator(IteratorNode):
     def _audio_member_name_from_entry(self, entry: dict) -> str:
         return nemo_tar_audio_member_name(entry["audio_filepath"])
 
-    def _attach_supervision_and_metadata(self, cut: Cut, data: dict, manifest_path: str, tar_path: str) -> Cut:
+    def _attach_supervision_and_metadata(
+        self, cut: Cut, data: dict, manifest_path: str, tar_path: str
+    ) -> Cut:
         cut.supervisions.append(
             SupervisionSegment(
                 id=cut.id,
@@ -884,10 +990,14 @@ class LazyNeMoTarredIterator(IteratorNode):
         cut.tar_origin = tar_path
         return cut
 
-    def _indexed_entry_is_explicitly_skipped(self, data: dict, manifest_path: str, tar_path: str) -> bool:
+    def _indexed_entry_is_explicitly_skipped(
+        self, data: dict, manifest_path: str, tar_path: str
+    ) -> bool:
         return manifest_entry_is_explicitly_skipped(data)
 
-    def _resolve_input_sampling_rate(self, data: Mapping, manifest_path: str, tar_path: str) -> int:
+    def _resolve_input_sampling_rate(
+        self, data: Mapping, manifest_path: str, tar_path: str
+    ) -> int:
         sampling_rate = data.get("sampling_rate")
         if sampling_rate is None:
             sampling_rate = data.get("sample_rate")
@@ -899,7 +1009,11 @@ class LazyNeMoTarredIterator(IteratorNode):
                 f"Add 'sampling_rate' to manifest row {data.get('audio_filepath')!r} in {manifest_path!r}, or set "
                 f"input_sampling_rate for the dataset containing tar {tar_path!r}."
             )
-        if isinstance(sampling_rate, bool) or not isinstance(sampling_rate, int) or sampling_rate <= 0:
+        if (
+            isinstance(sampling_rate, bool)
+            or not isinstance(sampling_rate, int)
+            or sampling_rate <= 0
+        ):
             raise ValueError(
                 f"Invalid source sampling rate {sampling_rate!r} for manifest row "
                 f"{data.get('audio_filepath')!r} in {manifest_path!r}."
@@ -955,10 +1069,31 @@ class LazyNeMoTarredIterator(IteratorNode):
     def _decode_packed_cut_at(self, idx: int) -> Cut | None:
         data, location = self._packed_manifest_source.read_with_location(idx)
         manifest_path = location.path
-        tar_path = self._packed_tar_path(location.shard_index)
-        explicitly_skipped = self._indexed_entry_is_explicitly_skipped(data, manifest_path, tar_path)
+        tar_shard_index = location.shard_index
+        if self._packed_tar_shard_map is not None:
+            tar_shard_index = self._packed_tar_shard_map.value_in_shard(
+                location.shard_index, location.local_index
+            )
+            if tar_shard_index == NEMO_TAR_SKIP_ORDINAL:
+                if manifest_entry_is_explicitly_skipped(data):
+                    return None
+                raise ValueError(
+                    "Packed native-tar shard map unexpectedly skips active aggregate-manifest row "
+                    f"{location.local_index}"
+                )
+            if tar_shard_index >= self._packed_tar_collection.sequence_count:
+                raise ValueError(
+                    f"Packed native-tar shard map selects out-of-range tar shard {tar_shard_index} "
+                    f"for aggregate-manifest row {location.local_index}"
+                )
+        tar_path = self._packed_tar_path(tar_shard_index)
+        explicitly_skipped = self._indexed_entry_is_explicitly_skipped(
+            data, manifest_path, tar_path
+        )
         if self._packed_tar_ordinal_map is not None:
-            member_ordinal = self._packed_tar_ordinal_map.value_in_shard(location.shard_index, location.local_index)
+            member_ordinal = self._packed_tar_ordinal_map.value_in_shard(
+                location.shard_index, location.local_index
+            )
             if explicitly_skipped:
                 if member_ordinal != NEMO_TAR_SKIP_ORDINAL:
                     raise ValueError(
@@ -976,10 +1111,14 @@ class LazyNeMoTarredIterator(IteratorNode):
         if self.use_ais_get_batch:
             return self._build_indexed_deferred_cut(data, manifest_path, tar_path)
         expected_name = self._audio_member_name_from_entry(data)
-        local_index = location.local_index if self._packed_tar_ordinal_map is None else member_ordinal
+        local_index = (
+            location.local_index
+            if self._packed_tar_ordinal_map is None
+            else member_ordinal
+        )
         try:
             pointer = self._packed_tar_reader.resolve_shard_member_pointer(
-                location.shard_index,
+                tar_shard_index,
                 local_index,
                 expected_name,
                 strict=self._packed_tar_ordinal_map is not None,
@@ -1012,7 +1151,9 @@ class LazyNeMoTarredIterator(IteratorNode):
             return self._build_indexed_deferred_cut(data, manifest_path, tar_path)
         expected_name = self._audio_member_name_from_entry(data)
         try:
-            pointer = self._tar_readers[sid].resolve_member_pointer(local_idx, expected_name)
+            pointer = self._tar_readers[sid].resolve_member_pointer(
+                local_idx, expected_name
+            )
         except KeyError:
             if self.skip_missing_manifest_entries:
                 return None
@@ -1028,7 +1169,9 @@ class LazyNeMoTarredIterator(IteratorNode):
         idx = int(normalize_graph_token(token))
         cut = self._decode_cut_at(idx)
         if cut is None:
-            raise IndexError(f"Cut at global index {idx} is not decodable; cannot satisfy random-access __getitem__.")
+            raise IndexError(
+                f"Cut at global index {idx} is not decodable; cannot satisfy random-access __getitem__."
+            )
         return attach_graph_origin(cut, idx)
 
     def __len__(self) -> int:
@@ -1075,17 +1218,26 @@ class LazyNeMoTarredIterator(IteratorNode):
             rng.shuffle(shard_ids)
 
         # Propagate the random seed
-        extra_fields = [ExtraField.from_dict({"seed": seed, **field_cfg}) for field_cfg in self.extra_fields or ()]
+        extra_fields = [
+            ExtraField.from_dict({"seed": seed, **field_cfg})
+            for field_cfg in self.extra_fields or ()
+        ]
 
         # NeMo tarred manifests can have multiple JSONL entries pointing at the
         # same audio member with -subN audio_filepath suffixes (per-offset cuts).
         for sid in shard_ids:
-            manifest_path = self._shard_key_to_manifest_path[sid] if len(self.paths) > 1 else self.paths[0]
+            manifest_path = (
+                self._shard_key_to_manifest_path[sid]
+                if len(self.paths) > 1
+                else self.paths[0]
+            )
 
             def basename(d: dict) -> str:
                 return nemo_tar_audio_member_name(d["audio_filepath"])
 
-            shard_manifest: dict[str, list[dict]] = groupby(basename, self.shard_id_to_manifest[sid])
+            shard_manifest: dict[str, list[dict]] = groupby(
+                basename, self.shard_id_to_manifest[sid]
+            )
             tar_path = self.shard_id_to_tar_path[sid]
 
             if self.use_ais_get_batch:
@@ -1095,7 +1247,9 @@ class LazyNeMoTarredIterator(IteratorNode):
                 )
                 continue
             try:
-                for data, raw_audio, tar_info in self._iter_sequential(tar_path, shard_manifest, manifest_path, rng):
+                for data, raw_audio, tar_info in self._iter_sequential(
+                    tar_path, shard_manifest, manifest_path, rng
+                ):
                     try:
                         meta = soundfile.info(BytesIO(raw_audio))
                     except Exception as ex:
@@ -1111,18 +1265,28 @@ class LazyNeMoTarredIterator(IteratorNode):
                         raise RuntimeError(message) from ex
                     recording = Recording(
                         id=tar_info.path,
-                        sources=[AudioSource(type="memory", channels=list(range(meta.channels)), source=raw_audio)],
+                        sources=[
+                            AudioSource(
+                                type="memory",
+                                channels=list(range(meta.channels)),
+                                source=raw_audio,
+                            )
+                        ],
                         sampling_rate=int(meta.samplerate),
                         num_samples=meta.frames,
                         duration=meta.duration,
                     )
                     cuts_for_recording = []
-                    for data in sorted(shard_manifest[tar_info.name], key=lambda d: d["audio_filepath"]):
+                    for data in sorted(
+                        shard_manifest[tar_info.name], key=lambda d: d["audio_filepath"]
+                    ):
                         if manifest_entry_is_explicitly_skipped(data):
                             continue
                         # Cut the recording into corresponding segment and discard audio data outside the segment.
                         cut = make_cut_with_subset_inmemory_recording(
-                            recording, offset=data.get("offset", 0.0), duration=data.get("duration")
+                            recording,
+                            offset=data.get("offset", 0.0),
+                            duration=data.get("duration"),
                         )
                         cut.supervisions.append(
                             SupervisionSegment(
@@ -1146,7 +1310,9 @@ class LazyNeMoTarredIterator(IteratorNode):
             except tarfile.ReadError as ex:
                 message = f"Failed to read NeMo tar archive {tar_path!r} for manifest {manifest_path!r}."
                 if self.fault_tolerant_audio_loading:
-                    logging.warning(f"Skipping tar because fault_tolerant_audio_loading=true: {message}")
+                    logging.warning(
+                        f"Skipping tar because fault_tolerant_audio_loading=true: {message}"
+                    )
                     continue
                 raise RuntimeError(message) from ex
 
@@ -1183,7 +1349,9 @@ def make_cut_with_subset_inmemory_recording(
         ) from e
 
     audiobytes = BytesIO()
-    LibsndfileBackend().save_audio(audiobytes, cut.load_audio(), sampling_rate=cut.sampling_rate, format="wav")
+    LibsndfileBackend().save_audio(
+        audiobytes, cut.load_audio(), sampling_rate=cut.sampling_rate, format="wav"
+    )
     audiobytes.seek(0)
     new_recording = Recording(
         id=recording.id,
@@ -1215,8 +1383,12 @@ class ExtraField:
 
     @staticmethod
     def from_dict(data: dict) -> "ExtraField":
-        assert data["type"] in ExtraField.SUPPORTED_TYPES, f"Unknown transform type: {data['type']}"
-        return ExtraField.SUPPORTED_TYPES[data["type"]](**{k: v for k, v in data.items() if k != 'type'})
+        assert data["type"] in ExtraField.SUPPORTED_TYPES, (
+            f"Unknown transform type: {data['type']}"
+        )
+        return ExtraField.SUPPORTED_TYPES[data["type"]](
+            **{k: v for k, v in data.items() if k != "type"}
+        )
 
     @classmethod
     def is_supported(cls, field_type: str) -> bool:
@@ -1244,7 +1416,9 @@ class TextIteratorExtraField(ExtraField):
         try:
             attached_value = next(self.iterator)
         except StopIteration:
-            raise RuntimeError(f"Not enough lines in file {self.path} to attach to cuts under field {self.name}.")
+            raise RuntimeError(
+                f"Not enough lines in file {self.path} to attach to cuts under field {self.name}."
+            )
         setattr(cut, self.name, attached_value)
         return cut
 
@@ -1274,13 +1448,13 @@ class TextSampleExtraField(ExtraField):
 def validate_extra_fields(extra_fields):
     if extra_fields is None:
         return
-    assert isinstance(
-        extra_fields, Sequence
-    ), f"The argument provided to 'extra_fields' must be a list of dicts. We received {extra_fields=}"
+    assert isinstance(extra_fields, Sequence), (
+        f"The argument provided to 'extra_fields' must be a list of dicts. We received {extra_fields=}"
+    )
     for field in extra_fields:
-        assert isinstance(
-            field, Mapping
-        ), f"Each item in 'extra_fields' must be a dict. We received {field=} in {extra_fields=}"
+        assert isinstance(field, Mapping), (
+            f"Each item in 'extra_fields' must be a dict. We received {field=} in {extra_fields=}"
+        )
         field_type = field.get("type")
         assert ExtraField.is_supported(field_type), (
             f"Each item in 'extra_fields' must contain a 'type' field with one of "
@@ -1295,15 +1469,21 @@ def validate_extra_fields(extra_fields):
 
 def expand_sharded_filepaths(paths: str | Path | list[str]) -> list[str]:
     # local import to avoid circular imports
-    from nemo.collections.asr.data.audio_to_text import expand_sharded_filepaths as _expand_sharded_filepaths
+    from nemo.collections.asr.data.audio_to_text import (
+        expand_sharded_filepaths as _expand_sharded_filepaths,
+    )
 
     if isinstance(paths, Path):
         paths = str(paths)
 
-    return _expand_sharded_filepaths(paths, shard_strategy="replicate", world_size=1, global_rank=0)
+    return _expand_sharded_filepaths(
+        paths, shard_strategy="replicate", world_size=1, global_rank=0
+    )
 
 
-def _to_custom_attr_dict(d: dict, _excluded_fields: set[str] = {"duration", "audio_filepath"}) -> dict:
+def _to_custom_attr_dict(
+    d: dict, _excluded_fields: set[str] = {"duration", "audio_filepath"}
+) -> dict:
     return {k: v for k, v in d.items() if k not in _excluded_fields}
 
 
@@ -1379,7 +1559,9 @@ class LazyParquetIterator(IteratorNode):
             with closing(pq.ParquetFile(self.path)) as parquet_file:
                 offsets = [0]
                 for i in range(parquet_file.num_row_groups):
-                    offsets.append(offsets[-1] + parquet_file.metadata.row_group(i).num_rows)
+                    offsets.append(
+                        offsets[-1] + parquet_file.metadata.row_group(i).num_rows
+                    )
                 self._row_group_offsets = offsets
                 self._num_row_groups = parquet_file.num_row_groups
                 self._total_rows = offsets[-1]
@@ -1403,21 +1585,25 @@ class LazyParquetIterator(IteratorNode):
         for rg_idx in range(self._num_row_groups):
             if idx < offsets[rg_idx + 1]:
                 return rg_idx, idx - offsets[rg_idx]
-        raise IndexError(f"index {idx} out of range for parquet file with {self._total_rows} rows")
+        raise IndexError(
+            f"index {idx} out of range for parquet file with {self._total_rows} rows"
+        )
 
     def _build_cut_from_row(self, row: dict, fallback_idx: int) -> Cut | None:
         audio_data = row.get(self.audio_field)
-        if isinstance(audio_data, dict) and 'bytes' in audio_data:
-            audio_bytes = audio_data['bytes']
+        if isinstance(audio_data, dict) and "bytes" in audio_data:
+            audio_bytes = audio_data["bytes"]
         elif isinstance(audio_data, bytes):
             audio_bytes = audio_data
         else:
-            logging.warning(f"Skipping row {fallback_idx}: Audio column '{self.audio_field}' format unrecognized.")
+            logging.warning(
+                f"Skipping row {fallback_idx}: Audio column '{self.audio_field}' format unrecognized."
+            )
             return None
 
         text = row.get(self.text_field, "")
         language = row.get(self.lang_field, None)
-        row_id = str(row.get('id', f"{Path(self.path).stem}_{fallback_idx}"))
+        row_id = str(row.get("id", f"{Path(self.path).stem}_{fallback_idx}"))
         try:
             recording = Recording.from_bytes(data=audio_bytes, recording_id=row_id)
         except (RuntimeError, ValueError, TypeError) as e:
@@ -1444,12 +1630,16 @@ class LazyParquetIterator(IteratorNode):
         if idx < 0:
             idx += self._total_rows
         if idx < 0 or idx >= self._total_rows:
-            raise IndexError(f"index {token} out of range for parquet file with {self._total_rows} rows")
+            raise IndexError(
+                f"index {token} out of range for parquet file with {self._total_rows} rows"
+            )
         rg_idx, local_idx = self._resolve_row_group(idx)
         rows = self._load_row_group(rg_idx)
         cut = self._build_cut_from_row(rows[local_idx], fallback_idx=idx)
         if cut is None:
-            raise IndexError(f"Row {idx} in {self.path} is not decodable; cannot satisfy random-access __getitem__.")
+            raise IndexError(
+                f"Row {idx} in {self.path} is not decodable; cannot satisfy random-access __getitem__."
+            )
         return attach_graph_origin(cut, idx)
 
     def __len__(self) -> int:

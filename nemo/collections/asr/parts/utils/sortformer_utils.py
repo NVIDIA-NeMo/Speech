@@ -280,16 +280,29 @@ def get_prediction_cache_metadata(cfg, diar_model, infer_audio_rttm_dict) -> Dic
     Returns:
         metadata (Dict): Cache schema, input identities, and inference settings.
     """
-    model_path = Path(cfg.model_path).expanduser().resolve()
+    configured_model_path = getattr(cfg, "model_path", None)
+    pretrained_name = getattr(cfg, "pretrained_name", None)
+    if configured_model_path is not None:
+        model_path = Path(configured_model_path).expanduser().resolve()
+        model_identity = str(model_path)
+        model_stat = model_path.stat()
+        model_size = model_stat.st_size
+        model_mtime_ns = model_stat.st_mtime_ns
+    elif pretrained_name is not None:
+        model_identity = pretrained_name
+        model_size = None
+        model_mtime_ns = None
+    else:
+        raise ValueError("Either model_path or pretrained_name must be specified.")
+
     manifest_path = Path(cfg.dataset_manifest).expanduser().resolve()
-    model_stat = model_path.stat()
     manifest_stat = manifest_path.stat()
     modules = diar_model.sortformer_modules
     return {
         "version": 1,
-        "model_path": str(model_path),
-        "model_size": model_stat.st_size,
-        "model_mtime_ns": model_stat.st_mtime_ns,
+        "model_path": model_identity,
+        "model_size": model_size,
+        "model_mtime_ns": model_mtime_ns,
         "manifest_path": str(manifest_path),
         "manifest_size": manifest_stat.st_size,
         "manifest_mtime_ns": manifest_stat.st_mtime_ns,

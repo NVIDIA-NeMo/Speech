@@ -58,12 +58,113 @@ def test_setup_speech_encoder_hydrates_missing_config_without_weights():
     assert model.cfg.perception.modality_adapter.output_dim == 8
 
 
+@pytest.mark.parametrize(
+    ("chunk_size_seconds", "packed_encoder_sequences"),
+    [(None, False), (30, False), (30, True)],
+)
+def test_setup_parallel_expert_encoder_maps_shared_chunk_size(chunk_size_seconds, packed_encoder_sequences):
+    pe_encoder_overrides = {
+        "speaker_feature_config_version": 1,
+        "speaker_feature_mode": "continuous",
+        "speaker_activity_threshold": None,
+        "diar_normalize_type": "per_feature",
+    }
+    pe_encoder = SimpleNamespace(
+        d_model=4,
+        n_spk=8,
+        _feat_in=80,
+        freeze_asr=False,
+        freeze_diar=True,
+        spk_kernel_scale=1.0,
+        chunk_size_seconds=45.0,
+        _bundle_config=DictConfig({"chunk_size_seconds": 45.0}),
+        online_inference_enabled=False,
+    )
+    model = SimpleNamespace(
+        cfg=DictConfig(
+            {
+                "pe_encoder_path": "/tmp/placeholderParallelExpertEncoder.nemo",
+                "pe_encoder_overrides": pe_encoder_overrides,
+                "encoder_chunk_size_seconds": chunk_size_seconds,
+                "packed_encoder_sequences": packed_encoder_sequences,
+                "perception": {
+                    "preprocessor": {"features": 80, "normalize": "per_feature"},
+                    "modality_adapter": {"d_model": 4},
+                },
+            }
+        ),
+        perception=SimpleNamespace(
+            encoder=SimpleNamespace(d_model=4),
+            modality_adapter=object(),
+            proj=torch.nn.Linear(4, 8),
+            preprocessor=SimpleNamespace(featurizer=SimpleNamespace(normalize="per_feature")),
+        ),
+    )
+
+    with patch.object(pretrained.ParallelExpertEncoderPT, "load_from_nemo", return_value=pe_encoder) as load:
+        pretrained.setup_parallel_expert_encoder(model)
+
+    load.assert_called_once_with(
+        "/tmp/placeholderParallelExpertEncoder.nemo",
+        map_location="cpu",
+        strict=True,
+        config_overrides=pe_encoder_overrides,
+    )
+    assert pe_encoder.chunk_size_seconds == chunk_size_seconds
+    assert pe_encoder._bundle_config.chunk_size_seconds == chunk_size_seconds
+    assert model.perception.preprocessor.featurizer.normalize is None
+    assert model.cfg.perception.preprocessor.normalize is None
+
+
+@pytest.mark.parametrize(
+    ("cfg_update", "match"),
+    [
+        (
+            {
+                "encoder_chunk_size_seconds": 30.0,
+                "packed_encoder_sequences": True,
+                "encoder_chunk_batch_size": 2,
+            },
+            "encoder_chunk_batch_size is not supported",
+        ),
+        (
+            {"encoder_chunk_size_seconds": -1.0, "packed_encoder_sequences": True},
+            "encoder_chunk_size_seconds must be positive or null",
+        ),
+        (
+            {"pe_asr_chunk_size_seconds": 30.0},
+            "use model.encoder_chunk_size_seconds",
+        ),
+    ],
+)
+def test_setup_parallel_expert_encoder_validates_shared_chunking_config(cfg_update, match):
+    pe_encoder = SimpleNamespace(chunk_size_seconds=None)
+    cfg = {
+        "pe_encoder_path": "/tmp/placeholderParallelExpertEncoder.nemo",
+        "perception": {},
+    }
+    cfg.update(cfg_update)
+    model = SimpleNamespace(
+        cfg=DictConfig(cfg),
+        perception=SimpleNamespace(encoder=object()),
+    )
+
+    with (
+        patch.object(pretrained.ParallelExpertEncoderPT, "load_from_nemo", return_value=pe_encoder),
+        pytest.raises(ValueError, match=match),
+    ):
+        pretrained.setup_parallel_expert_encoder(model)
+
+
 def _mock_automodel_loader(config):
     automodel = SimpleNamespace(from_config=MagicMock(return_value=object()), from_pretrained=MagicMock())
     return (
         automodel,
         patch.object(pretrained.AutoConfig, "from_pretrained", return_value=config),
-        patch.dict("sys.modules", {"nemo_automodel": SimpleNamespace(NeMoAutoModelForCausalLM=automodel)}),
+        patch.dict(
+            "sys.modules",
+            {"nemo_automodel": SimpleNamespace(NeMoAutoModelForCausalLM=automodel)},
+        ),
         patch("nemo.collections.speechlm2.parts.automodel_compat.remove_automodel_backend_for_hf_fallback"),
     )
 
@@ -76,7 +177,11 @@ def test_load_pretrained_automodel_llm_builds_missing_mtp_before_loading_weights
         config_patch,
         module_patch,
         compat_patch,
-        patch.object(pretrained, "_resolve_automodel_checkpoint_path", return_value="base-checkpoint"),
+        patch.object(
+            pretrained,
+            "_resolve_automodel_checkpoint_path",
+            return_value="base-checkpoint",
+        ),
         patch.object(pretrained, "_load_automodel_base_checkpoint_without_mtp", create=True) as base_load,
     ):
         result = pretrained.load_pretrained_automodel_llm(
@@ -116,7 +221,11 @@ def test_load_pretrained_automodel_llm_preserves_native_mtp_config_by_default():
         config_patch,
         module_patch,
         compat_patch,
-        patch.object(pretrained, "_resolve_automodel_checkpoint_path", return_value="native-mtp-checkpoint"),
+        patch.object(
+            pretrained,
+            "_resolve_automodel_checkpoint_path",
+            return_value="native-mtp-checkpoint",
+        ),
         patch.object(pretrained, "_load_automodel_base_checkpoint_without_mtp", create=True) as base_load,
     ):
         pretrained.load_pretrained_automodel_llm(
@@ -150,7 +259,11 @@ def test_load_pretrained_automodel_llm_can_replace_native_mtp_config():
         config_patch,
         module_patch,
         compat_patch,
-        patch.object(pretrained, "_resolve_automodel_checkpoint_path", return_value="native-mtp-checkpoint"),
+        patch.object(
+            pretrained,
+            "_resolve_automodel_checkpoint_path",
+            return_value="native-mtp-checkpoint",
+        ),
         patch.object(pretrained, "_load_automodel_base_checkpoint_without_mtp", create=True) as base_load,
     ):
         result = pretrained.load_pretrained_automodel_llm(
@@ -188,7 +301,9 @@ _REPEATED_MTP_OVERRIDES = {
         pytest.param(_REPEATED_MTP_OVERRIDES, id="fallback-config-present"),
     ],
 )
-def test_load_pretrained_automodel_llm_accepts_one_depth_native_head_as_repeated(mtp_config_overrides):
+def test_load_pretrained_automodel_llm_accepts_one_depth_native_head_as_repeated(
+    mtp_config_overrides,
+):
     config = SimpleNamespace(
         num_nextn_predict_layers=1,
         mtp_hybrid_override_pattern="*E",
@@ -237,7 +352,9 @@ def test_load_pretrained_automodel_llm_accepts_one_depth_native_head_as_repeated
         pytest.param(_REPEATED_MTP_OVERRIDES, id="fallback-config-present"),
     ],
 )
-def test_load_pretrained_automodel_llm_rejects_multi_depth_native_head_as_repeated(mtp_config_overrides):
+def test_load_pretrained_automodel_llm_rejects_multi_depth_native_head_as_repeated(
+    mtp_config_overrides,
+):
     config = SimpleNamespace(
         num_nextn_predict_layers=4,
         mtp_hybrid_override_pattern="*E",
@@ -276,7 +393,11 @@ def test_load_pretrained_automodel_llm_builds_repeated_head_for_checkpoint_witho
         config_patch,
         module_patch,
         compat_patch,
-        patch.object(pretrained, "_resolve_automodel_checkpoint_path", return_value="base-checkpoint"),
+        patch.object(
+            pretrained,
+            "_resolve_automodel_checkpoint_path",
+            return_value="base-checkpoint",
+        ),
         patch.object(pretrained, "_load_automodel_base_checkpoint_without_mtp", create=True) as base_load,
     ):
         result = pretrained.load_pretrained_automodel_llm(
@@ -362,7 +483,11 @@ def test_load_pretrained_automodel_llm_rejects_repeated_mode_without_head_defini
         config_patch,
         module_patch,
         compat_patch,
-        patch.object(pretrained, "_resolve_automodel_checkpoint_path", return_value="base-checkpoint"),
+        patch.object(
+            pretrained,
+            "_resolve_automodel_checkpoint_path",
+            return_value="base-checkpoint",
+        ),
         pytest.raises(ValueError, match="requires either a checkpoint with a native MTP head"),
     ):
         pretrained.load_pretrained_automodel_llm(
@@ -402,7 +527,10 @@ def test_load_pretrained_automodel_llm_forwards_hf_resolution_kwargs():
         result = pretrained.load_pretrained_automodel_llm(
             "private-checkpoint",
             trust_remote_code=True,
-            mtp_config_overrides={"num_nextn_predict_layers": 1, "mtp_hybrid_override_pattern": "*"},
+            mtp_config_overrides={
+                "num_nextn_predict_layers": 1,
+                "mtp_hybrid_override_pattern": "*",
+            },
             token="secret-token",
             revision="exact-revision",
             cache_dir="/cache",
@@ -471,7 +599,11 @@ def test_resolve_automodel_checkpoint_path_uses_exact_snapshot(tmp_path, include
 def test_automodel_mtp_depth_supports_non_nemotron_config_fields():
     assert (
         pretrained._automodel_config_mtp_depth(
-            SimpleNamespace(num_nextn_predict_layers=2, mtp_hybrid_override_pattern=None, mtp_layers_block_type=None)
+            SimpleNamespace(
+                num_nextn_predict_layers=2,
+                mtp_hybrid_override_pattern=None,
+                mtp_layers_block_type=None,
+            )
         )
         == 2
     )

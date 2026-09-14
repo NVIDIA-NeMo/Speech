@@ -101,8 +101,8 @@ def test_run_nvrtc_uses_mutable_log_buffer(monkeypatch):
     monkeypatch.setitem(sys.modules, "cuda.bindings.runtime", fake_runtime)
     monkeypatch.setitem(sys.modules, "cuda.bindings.nvrtc", fake_nvrtc)
 
-    import nemo.core.utils.optional_libs as optional_libs
     import nemo.core.utils.cuda_python_utils as cuda_python_utils
+    import nemo.core.utils.optional_libs as optional_libs
 
     monkeypatch.setattr(optional_libs, "CUDA_PYTHON_AVAILABLE", True, raising=False)
     monkeypatch.setattr(optional_libs, "cuda_python_required", lambda func: func, raising=False)

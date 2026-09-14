@@ -73,8 +73,8 @@ Wall-clock Time Limits
 ----------------------
 
 Set ``max_time_per_run`` to stop training and save the last checkpoint after a wall-clock duration in
-``DD:HH:MM:SS`` format. By default, the timer starts when the training loop starts. To include preprocessing and
-other setup performed earlier in the same SLURM allocation, anchor the timer to the job start:
+``DD:HH:MM:SS`` format. By default, the timer starts at the beginning of the current SLURM allocation so that
+preprocessing and other setup time count toward the limit:
 
 .. code-block:: yaml
 
@@ -82,10 +82,11 @@ other setup performed earlier in the same SLURM allocation, anchor the timer to 
         max_time_per_run: 00:03:45:00
         max_time_per_run_from_slurm: True
 
-When enabled, the timer reads the SLURM-provided ``SLURM_JOB_START_TIME`` UNIX timestamp and checks the elapsed
+The timer reads the SLURM-provided ``SLURM_JOB_START_TIME`` UNIX timestamp and checks the elapsed
 allocation time before training starts and after each configured timer interval. A missing or invalid timestamp
 raises an error instead of silently starting a fresh timer. Leave enough time between ``max_time_per_run`` and the
-SLURM limit for the final checkpoint to finish writing.
+SLURM limit for the final checkpoint to finish writing. Set ``max_time_per_run_from_slurm`` to ``False`` to start
+the timer when the training loop starts instead.
 
 Experiment Loggers
 ------------------

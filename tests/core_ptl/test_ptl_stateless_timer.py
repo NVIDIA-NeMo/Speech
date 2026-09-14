@@ -120,6 +120,7 @@ class TestStatelessTimer:
             checkpoint_callback_params=callback_params,
             resume_if_exists=True,
             max_time_per_run="00:00:00:03",
+            max_time_per_run_from_slurm=False,
         )
         exp_manager(trainer, cfg=OmegaConf.structured(exp_manager_cfg))
         model = ExampleModel(trainer=trainer)
@@ -220,7 +221,7 @@ class TestStatelessTimerSlurmStartTime:
             StatelessTimer(duration="00:00:20:00", max_time_from_slurm=True)
 
     @pytest.mark.unit
-    def test_exp_manager_enables_slurm_timing(self, monkeypatch, tmp_path):
+    def test_exp_manager_enables_slurm_timing_by_default(self, monkeypatch, tmp_path):
         monkeypatch.setenv("SLURM_JOB_START_TIME", "100")
         trainer = Trainer(accelerator="cpu", logger=False, enable_checkpointing=False)
         cfg = ExpManagerConfig(
@@ -230,7 +231,6 @@ class TestStatelessTimerSlurmStartTime:
             log_step_timing=False,
             disable_validation_on_resume=False,
             max_time_per_run="00:00:20:00",
-            max_time_per_run_from_slurm=True,
         )
 
         exp_manager(trainer, cfg=OmegaConf.structured(cfg))

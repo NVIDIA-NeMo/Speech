@@ -739,6 +739,41 @@ The loss config is based on a resolver pattern and can be used as follows:
     warprnnt_numba_kwargs:
       fastemit_lambda: 0.0
 
+Flash Transducer Loss
+^^^^^^^^^^^^^^^^^^^^^
+
+The Transducer objective sums over an alignment lattice of ``[B, T, U + 1]`` positions, each scored
+across the whole vocabulary. The default loss builds that ``[B, T, U + 1, V]`` tensor in full, which
+dominates the memory of a Transducer step. ``flash_rnnt`` returns the same loss and the same
+gradients without it: the encoder and prediction network are projected once, every utterance's
+lattice is laid end to end into one flat list of ``T * (U + 1)`` rows, and that list is scored in
+tiles, each tile reduced to the two transition log-probabilities the dynamic program needs and then
+rebuilt during the backward pass instead of being kept. Only the ``[B, T, U + 1]`` scores survive
+into backward, so the vocabulary axis costs one tile rather than one batch.
+
+It requires Triton, CUDA, and a standard Transducer joint -- no adapters, no HAT, unnormalized
+logits at temperature 1 -- and reads the joint's projections directly, so it must be paired with a
+fused joint step:
+
+.. code-block:: yaml
+
+  model:
+    joint:
+      fuse_loss_wer: true
+      fused_batch_size: 4  # required by the fused joint step; this loss does not read it
+    loss:
+      loss_name: "flash_rnnt"
+      flash_rnnt_kwargs:
+        fastemit_lambda: 0.0
+        clamp: -1.0
+        max_joint_rows: 200000  # rows of one tile
+
+``max_joint_rows`` is the only knob on cost and does not change the result: it sets peak workspace
+and the size of the projection's problem. Raise it to trade memory for speed, lower it to fit a
+larger batch. Rows are packed rather than padded out to a rectangle, so a tile costs the same
+whatever mix of utterance lengths falls inside it. ``fused_batch_size`` is still required by the
+fused joint step, but does not reach this loss.
+
 FastEmit Regularization
 ^^^^^^^^^^^^^^^^^^^^^^^
 

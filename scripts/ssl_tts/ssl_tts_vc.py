@@ -26,7 +26,7 @@ import torch
 
 from nemo.collections.asr.parts.preprocessing.features import WaveformFeaturizer
 from nemo.collections.tts.models import fastpitch_ssl, hifigan, ssl_tts
-from nemo.collections.tts.parts.utils.tts_dataset_utils import get_base_dir
+from nemo.collections.tts.parts.utils.tts_dataset_utils import get_base_dir, segment_wav
 
 
 def load_wav(wav_path, wav_featurizer, pad_multiple=1024):
@@ -63,43 +63,29 @@ def get_pitch_contour(wav, pitch_mean=None, pitch_std=None, compute_mean_std=Fal
     return pitch_contour
 
 
-def segment_wav(wav, segment_length=44100, hop_size=44100, min_segment_size=22050):
-    if len(wav) < segment_length:
-        pad = torch.zeros(segment_length - len(wav))
-        segment = torch.cat([wav, pad])
-        return [segment]
-    else:
-        si = 0
-        segments = []
-        while si < len(wav) - min_segment_size:
-            segment = wav[si : si + segment_length]
-            if len(segment) < segment_length:
-                pad = torch.zeros(segment_length - len(segment))
-                segment = torch.cat([segment, pad])
-
-            segments.append(segment)
-            si += hop_size
-        return segments
-
-
 def get_speaker_embedding(ssl_model, wav_featurizer, audio_paths, duration=None, device="cpu"):
     all_segments = []
     all_wavs = []
+
     for audio_path in audio_paths:
         wav = load_wav(audio_path, wav_featurizer)
-        segments = segment_wav(wav)
+        segments = segment_wav(wav=wav)
+
         all_segments += segments
         all_wavs.append(wav)
+
         if duration is not None and len(all_segments) >= duration:
-            # each segment is 2 seconds with one second overlap.
-            # so 10 segments would mean 0 to 2, 1 to 3.. 9 to 11 (11 seconds.)
+            # Each segment is 2 seconds with one second overlap.
+            # So 10 segments would mean 0 to 2, 1 to 3...9 to 11 (11 seconds).
             all_segments = all_segments[: int(duration)]
             break
 
     signal_batch = torch.stack(all_segments)
     signal_length_batch = torch.stack([torch.tensor(signal_batch.shape[1]) for _ in range(len(all_segments))])
+
     signal_batch = signal_batch.to(device)
     signal_length_batch = signal_length_batch.to(device)
+
     _, speaker_embeddings, _, _, _ = ssl_model.forward_for_export(
         input_signal=signal_batch, input_signal_length=signal_length_batch, normalize_content=True
     )

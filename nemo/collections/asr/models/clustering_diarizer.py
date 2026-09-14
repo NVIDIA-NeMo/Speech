@@ -70,6 +70,12 @@ class ClusteringDiarizer(torch.nn.Module, Model, DiarizationMixin):
     All the parameters are passed through config file
     """
 
+    # Fallback batch size used for the VAD and speaker-embedding dataloaders when the config does
+    # not specify a (top-level) ``batch_size``. Must be a positive int so DataLoader keeps automatic
+    # batching enabled (``batch_size=None`` would feed un-batched 0-d tensor samples to the collate
+    # function and raise ``TypeError: iteration over a 0-d tensor``).
+    _DEFAULT_BATCH_SIZE = 64
+
     def __init__(self, cfg: Union[DictConfig, Any], speaker_model=None):
         super().__init__()
         if isinstance(cfg, DictConfig):
@@ -157,11 +163,26 @@ class ClusteringDiarizer(torch.nn.Module, Model, DiarizationMixin):
             self._diarizer_params.speaker_embeddings.parameters.multiscale_weights,
         )
 
+    def _get_batch_size(self):
+        """
+        Resolve the batch size used for VAD and speaker-embedding dataloaders.
+
+        The batch size may legitimately be absent from the config (e.g. when only ``diarizer.*``
+        keys are provided). A missing or ``None`` value must not be forwarded to
+        ``torch.utils.data.DataLoader``, because ``batch_size=None`` disables automatic batching and
+        feeds raw un-batched (0-d tensor) samples to the collate function, raising
+        ``TypeError: iteration over a 0-d tensor``. Coalesce to a sensible positive default instead.
+        """
+        batch_size = self._cfg.get('batch_size')
+        if batch_size is None:
+            batch_size = self._DEFAULT_BATCH_SIZE
+        return batch_size
+
     def _setup_vad_test_data(self, manifest_vad_input):
         vad_dl_config = {
             'manifest_filepath': manifest_vad_input,
             'sample_rate': self._cfg.sample_rate,
-            'batch_size': self._cfg.get('batch_size'),
+            'batch_size': self._get_batch_size(),
             'vad_stream': True,
             'labels': [
                 'infer',
@@ -177,7 +198,7 @@ class ClusteringDiarizer(torch.nn.Module, Model, DiarizationMixin):
         spk_dl_config = {
             'manifest_filepath': manifest_file,
             'sample_rate': self._cfg.sample_rate,
-            'batch_size': self._cfg.get('batch_size'),
+            'batch_size': self._get_batch_size(),
             'trim_silence': False,
             'labels': None,
             'num_workers': self._cfg.num_workers,

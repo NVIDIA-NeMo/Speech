@@ -193,3 +193,25 @@ class TestSerialization:
         assert config == new_config
         assert isinstance(obj, MockSerializationImplV2)
         assert obj.value == "MockSerializationImplV2"
+
+
+class TestWeightsOnlyCheckpointLoading:
+    """NeMo registers omegaconf classes as torch safe globals (see ``nemo.utils``) so that
+    checkpoints carrying omegaconf objects in ``hyper_parameters`` stay loadable with
+    ``torch.load(..., weights_only=True)`` — the default in torch >= 2.6 and the loading mode
+    lightning >= 2.6 uses for resume and ``load_from_checkpoint``."""
+
+    @pytest.mark.unit
+    def test_omegaconf_checkpoint_loads_with_weights_only(self, tmp_path):
+        import torch
+        from omegaconf import OmegaConf
+
+        if not hasattr(torch.serialization, "add_safe_globals"):
+            pytest.skip("torch too old for weights-only safe globals")
+
+        cfg = OmegaConf.create({'a': 1, 'b': [1, 2], 'c': {'d': 'x', 'e': None}, 'f': 2.5, 'g': True})
+        ckpt_path = tmp_path / "ckpt.pt"
+        torch.save({'hyper_parameters': cfg, 'state_dict': {}}, str(ckpt_path))
+        loaded = torch.load(str(ckpt_path), weights_only=True)
+        assert isinstance(loaded['hyper_parameters'], DictConfig)
+        assert OmegaConf.to_container(loaded['hyper_parameters']) == OmegaConf.to_container(cfg)

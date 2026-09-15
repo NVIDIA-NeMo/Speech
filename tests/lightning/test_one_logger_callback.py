@@ -26,6 +26,7 @@ from omegaconf import OmegaConf
 
 from nemo.lightning.base_callback import BaseCallback
 from nemo.lightning.one_logger_callback import (
+    HAVE_ONE_LOGGER_PTL,
     OneLoggerNeMoCallback,
     _get_base_callback_config,
     _should_enable_for_current_rank,
@@ -33,7 +34,15 @@ from nemo.lightning.one_logger_callback import (
     get_one_logger_init_config,
 )
 
+# Tests exercising the real OneLogger PTL integration only run when it imports cleanly against the
+# installed lightning version (nv-one-logger <= 2.3.1 is incompatible with lightning >= 2.6).
+requires_one_logger_ptl = pytest.mark.skipif(
+    not HAVE_ONE_LOGGER_PTL,
+    reason="nv-one-logger PTL integration is incompatible with the installed lightning version",
+)
 
+
+@requires_one_logger_ptl
 class TestOneLoggerNeMoCallback:
     """Test suite for OneLoggerNeMoCallback."""
 
@@ -278,6 +287,7 @@ class TestOneLoggerCallback:
             result = _should_enable_for_current_rank()
             assert result is False
 
+    @requires_one_logger_ptl
     @patch('nemo.lightning.one_logger_callback.TrainingTelemetryProvider')
     @patch('nemo.lightning.one_logger_callback.get_nemo_v1_callback_config')
     @patch('nemo.lightning.one_logger_callback.TrainingTelemetryConfig')
@@ -323,6 +333,7 @@ class TestOneLoggerCallback:
         mock_telemetry_config_class.assert_called_once_with(**mock_v1_config)
         mock_provider_instance.set_training_telemetry_config.assert_called_once_with(mock_telemetry_config_instance)
 
+    @requires_one_logger_ptl
     @patch('nemo.lightning.one_logger_callback.TrainingTelemetryProvider')
     @patch('nemo.lightning.one_logger_callback.get_nemo_v1_callback_config')
     @patch('nemo.lightning.one_logger_callback.TrainingTelemetryConfig')
@@ -374,6 +385,7 @@ class TestOneLoggerCallback:
 
         assert 'OneLoggerNeMoCallback' in __all__
 
+    @requires_one_logger_ptl
     @patch.dict(os.environ, {'EXP_NAME': 'test-experiment', 'WORLD_SIZE': '4'})
     @patch('nemo.lightning.one_logger_callback.TrainingTelemetryProvider')
     @patch('nemo.lightning.one_logger_callback.get_one_logger_init_config')
@@ -409,6 +421,7 @@ class TestOneLoggerCallback:
         assert call_args['session_tag_or_fn'] == 'test-experiment'
         assert call_args['world_size_or_fn'] == 4
 
+    @requires_one_logger_ptl
     @patch('nemo.lightning.one_logger_callback.TrainingTelemetryProvider')
     @patch('nemo.lightning.one_logger_callback.get_nemo_v1_callback_config')
     @patch('nemo.lightning.one_logger_callback.TrainingTelemetryConfig')
@@ -453,6 +466,7 @@ class TestOneLoggerCallback:
         mock_telemetry_config_class.assert_called_once_with(**{})
         mock_provider_instance.set_training_telemetry_config.assert_called_once_with(mock_telemetry_config_instance)
 
+    @requires_one_logger_ptl
     def test_callback_instantiation_without_mocks_raises_import_error(self):
         """Test that callback instantiation without proper mocks raises appropriate errors."""
         # This test verifies that the callback properly depends on external libraries
@@ -466,6 +480,7 @@ class TestOneLoggerCallback:
             ):
                 OneLoggerNeMoCallback()
 
+    @requires_one_logger_ptl
     @patch('nemo.lightning.one_logger_callback.TrainingTelemetryProvider')
     @patch('nemo.lightning.one_logger_callback.get_one_logger_init_config')
     @patch('nemo.lightning.one_logger_callback.OneLoggerConfig')
@@ -496,3 +511,33 @@ class TestOneLoggerCallback:
         # Verify PTL callback was initialized with provider instance and explicit on_app_start was called
         mock_ptl_callback_init.assert_called_once_with(mock_provider_instance, call_on_app_start=False)
         mock_on_app_start.assert_called_once_with()
+
+
+class TestOneLoggerFallback:
+    """The callback must degrade to a no-op instead of breaking `import nemo` when the
+    nv-one-logger PTL integration cannot be imported (e.g. nv-one-logger <= 2.3.1 raises
+    TypeError against lightning >= 2.6 due to the Trainer.save_checkpoint signature change)."""
+
+    @pytest.mark.unit
+    def test_noop_fallback_when_integration_unavailable(self, monkeypatch):
+        import importlib
+        import sys
+
+        import nemo.lightning.one_logger_callback as olc_module
+
+        integration_module = 'nv_one_logger.training_telemetry.integration.pytorch_lightning'
+        # A None entry in sys.modules makes the import raise ImportError, simulating an
+        # unavailable/incompatible integration module.
+        monkeypatch.setitem(sys.modules, integration_module, None)
+        try:
+            reloaded = importlib.reload(olc_module)
+            assert reloaded.HAVE_ONE_LOGGER_PTL is False
+            callback = reloaded.OneLoggerNeMoCallback()
+            assert isinstance(callback, BaseCallback)
+            # All lifecycle hooks must be safe no-ops.
+            callback.update_config(nemo_version='v1', trainer=None)
+            callback.on_app_start()
+            callback.on_app_end()
+        finally:
+            monkeypatch.undo()
+            importlib.reload(olc_module)

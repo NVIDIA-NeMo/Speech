@@ -27,9 +27,24 @@ from nv_one_logger.api.config import OneLoggerConfig
 from nv_one_logger.training_telemetry.api.callbacks import on_app_start
 from nv_one_logger.training_telemetry.api.config import TrainingTelemetryConfig
 from nv_one_logger.training_telemetry.api.training_telemetry_provider import TrainingTelemetryProvider
-from nv_one_logger.training_telemetry.integration.pytorch_lightning import TimeEventCallback as OneLoggerPTLCallback
 
 from nemo.lightning.base_callback import BaseCallback
+
+# The nv-one-logger PTL integration subclasses `lightning.pytorch.Trainer` and validates overridden method
+# signatures at import time. Released nv-one-logger versions (<=2.3.1) predate the `Trainer.save_checkpoint`
+# signature change in lightning 2.6.0 and raise `TypeError` when imported against lightning>=2.6. Telemetry is
+# not required for training, so fall back to a no-op callback instead of breaking `import nemo` entirely.
+try:
+    from nv_one_logger.training_telemetry.integration.pytorch_lightning import (
+        TimeEventCallback as OneLoggerPTLCallback,
+    )
+
+    HAVE_ONE_LOGGER_PTL = True
+    ONE_LOGGER_PTL_IMPORT_ERROR = None
+except (ImportError, TypeError) as _import_error:
+    OneLoggerPTLCallback = None
+    HAVE_ONE_LOGGER_PTL = False
+    ONE_LOGGER_PTL_IMPORT_ERROR = _import_error
 
 # Export all symbols for testing and usage
 __all__ = ['OneLoggerNeMoCallback']
@@ -218,38 +233,68 @@ def _should_enable_for_current_rank() -> bool:
     return rank == 0
 
 
-class OneLoggerNeMoCallback(OneLoggerPTLCallback, BaseCallback):
-    """Adapter extending OneLogger's PTL callback with init + config update.
+if HAVE_ONE_LOGGER_PTL:
 
-    __init__ configures the provider from meta info, then calls super().__init__.
-    update_config computes TrainingTelemetryConfig and applies it.
-    """
+    class OneLoggerNeMoCallback(OneLoggerPTLCallback, BaseCallback):
+        """Adapter extending OneLogger's PTL callback with init + config update.
 
-    _instance = None
+        __init__ configures the provider from meta info, then calls super().__init__.
+        update_config computes TrainingTelemetryConfig and applies it.
+        """
 
-    def __new__(cls, *args, **kwargs):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
+        _instance = None
 
-    def __init__(self) -> None:
-        if getattr(self, '_initialized', False):
-            return
-        init_config = get_one_logger_init_config()
-        one_logger_config = OneLoggerConfig(**init_config)
-        TrainingTelemetryProvider.instance().with_base_config(
-            one_logger_config
-        ).with_export_config().configure_provider()
-        # Initialize underlying OneLogger PTL callback
-        super().__init__(TrainingTelemetryProvider.instance(), call_on_app_start=False)
-        # Explicitly signal application start after provider configuration
-        on_app_start()
+        def __new__(cls, *args, **kwargs):
+            if cls._instance is None:
+                cls._instance = super().__new__(cls)
+            return cls._instance
 
-    def update_config(self, nemo_version: str, trainer: Trainer, **kwargs) -> None:
-        # Avoid this function being called multiple times
-        if TrainingTelemetryProvider.instance().config.telemetry_config is not None:
-            return
-        else:
-            config = get_nemo_v1_callback_config(trainer=trainer)
-        training_telemetry_config = TrainingTelemetryConfig(**config)
-        TrainingTelemetryProvider.instance().set_training_telemetry_config(training_telemetry_config)
+        def __init__(self) -> None:
+            if getattr(self, '_initialized', False):
+                return
+            init_config = get_one_logger_init_config()
+            one_logger_config = OneLoggerConfig(**init_config)
+            TrainingTelemetryProvider.instance().with_base_config(
+                one_logger_config
+            ).with_export_config().configure_provider()
+            # Initialize underlying OneLogger PTL callback
+            super().__init__(TrainingTelemetryProvider.instance(), call_on_app_start=False)
+            # Explicitly signal application start after provider configuration
+            on_app_start()
+
+        def update_config(self, nemo_version: str, trainer: Trainer, **kwargs) -> None:
+            # Avoid this function being called multiple times
+            if TrainingTelemetryProvider.instance().config.telemetry_config is not None:
+                return
+            else:
+                config = get_nemo_v1_callback_config(trainer=trainer)
+            training_telemetry_config = TrainingTelemetryConfig(**config)
+            TrainingTelemetryProvider.instance().set_training_telemetry_config(training_telemetry_config)
+
+else:
+
+    class OneLoggerNeMoCallback(BaseCallback):
+        """No-op stand-in used when the nv-one-logger PTL integration cannot be imported.
+
+        Keeps `import nemo` working (telemetry disabled) when the installed nv-one-logger
+        release is incompatible with the installed lightning version.
+        """
+
+        _instance = None
+
+        def __new__(cls, *args, **kwargs):
+            if cls._instance is None:
+                cls._instance = super().__new__(cls)
+            return cls._instance
+
+        def __init__(self) -> None:
+            if getattr(self, '_initialized', False):
+                return
+            self._initialized = True
+            from nemo.utils import logging
+
+            logging.warning(
+                'OneLogger telemetry is disabled because the nv-one-logger PyTorch Lightning integration could '
+                f'not be imported with the installed lightning version: {ONE_LOGGER_PTL_IMPORT_ERROR}. '
+                'Upgrade the nv-one-logger packages to a lightning-compatible release to re-enable telemetry.'
+            )

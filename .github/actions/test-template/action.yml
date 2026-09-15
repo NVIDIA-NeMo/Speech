@@ -103,17 +103,20 @@ runs:
 
     - name: Download input artifact
       if: ${{ inputs.download-artifact-name != '' }}
-      uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+      uses: actions/download-artifact@v7
       with:
         name: ${{ inputs.download-artifact-name }}
         path: >-
           ${{ github.run_id }}/${{ steps.uuid.outputs.id }}/NeMo/${{ inputs.download-artifact-path }}
 
-    - name: Restore prepared test data
-      uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
-      with:
-        name: speech-test-data-v1.0.0rc1-bcaf346953ddb7dbd73c67925230886546cfea7120fdab8b199f938ed5960c5d
-        path: ${{ github.run_id }}/${{ steps.uuid.outputs.id }}/NeMo/tests/.data
+    - name: Restore validated test data
+      shell: bash
+      env:
+        CHECKOUT: ${{ github.run_id }}/${{ steps.uuid.outputs.id }}/NeMo
+      run: |
+        python "$CHECKOUT/.github/scripts/prepare_test_data.py" \
+          --output "$CHECKOUT/tests/.data" \
+          --persistent-root "${{ inputs.test-data-path }}"
 
     - name: Start container
       shell: bash

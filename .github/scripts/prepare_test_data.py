@@ -42,6 +42,8 @@ def safe_members(archive: tarfile.TarFile, output: Path) -> list[tarfile.TarInfo
             raise ValueError(f"Unsafe test-data archive path: {member.name}")
         if member.issym() or member.islnk():
             raise ValueError(f"Test-data archive links are not allowed: {member.name}")
+        if not member.isdir() and not member.isfile():
+            raise ValueError(f"Unsupported test-data archive member: {member.name}")
         members.append(member)
     return members
 
@@ -54,13 +56,19 @@ def extracted_data_is_valid(directory: Path) -> bool:
     if marker_path.read_text(encoding="utf-8").strip() != TEST_DATA_SHA256:
         return False
 
+    expected_files = {Path(TEST_DATA_FILENAME), Path(TEST_DATA_MARKER)}
+    expected_directories = {Path(".")}
     with tarfile.open(archive_path, "r:gz") as archive:
         for member in safe_members(archive, directory):
-            destination = directory / Path(*PurePosixPath(member.name).parts)
+            relative_path = Path(*PurePosixPath(member.name).parts)
+            expected_directories.update(relative_path.parents)
+            destination = directory / relative_path
             if member.isdir():
+                expected_directories.add(relative_path)
                 if not destination.is_dir():
                     return False
             elif member.isfile():
+                expected_files.add(relative_path)
                 if not destination.is_file() or destination.stat().st_size != member.size:
                     return False
                 source = archive.extractfile(member)
@@ -74,6 +82,19 @@ def extracted_data_is_valid(directory: Path) -> bool:
                             return False
                         if not expected:
                             break
+
+    for root, directories, files in os.walk(directory, followlinks=False):
+        relative_root = Path(root).relative_to(directory)
+        if relative_root not in expected_directories:
+            return False
+        for name in directories:
+            path = Path(root, name)
+            if path.is_symlink() or path.relative_to(directory) not in expected_directories:
+                return False
+        for name in files:
+            path = Path(root, name)
+            if path.is_symlink() or path.relative_to(directory) not in expected_files:
+                return False
     return True
 
 

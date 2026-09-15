@@ -28,6 +28,11 @@
 # limitations under the License.
 
 
+import gc
+import random
+from functools import partial
+from typing import Callable, Union
+
 import torch
 from torch.autograd import Function
 from torch.nn import Module
@@ -411,6 +416,13 @@ class RNNTLossNumba(Module):
         self.reduction = reduction
         self.loss = _RNNTNumba.apply
 
+    def warmup(self, device: Union[str, torch.device]) -> bool:
+        """Warm float32 contiguous CUDA RNNT kernels before allocating training activations.
+
+        Preserves random states and the configured loss; returns False on CPU.
+        """
+        return _warmup_numba_loss(device, partial(_warmup_rnnt_loss, self))
+
     def forward(self, acts, labels, act_lens, label_lens):
         """
         log_probs: Tensor of (batch x seqLength x labelLength x outputDim) containing output from network
@@ -552,6 +564,13 @@ class TDTLossNumba(Module):
         self.sigma = sigma
         self.omega = omega
 
+    def warmup(self, device: Union[str, torch.device]) -> bool:
+        """Warm both TDT and RNNT CUDA branches with float32 contiguous inputs before allocating training activations.
+
+        Preserves random states and the configured loss; returns False on CPU.
+        """
+        return _warmup_numba_loss(device, partial(_warmup_tdt_loss, self))
+
     def forward(self, acts, labels, act_lens, label_lens):
         """
         log_probs: Tensor of (batch x seqLength x labelLength x outputDim) containing output from network
@@ -633,3 +652,75 @@ def certify_inputs(log_probs, labels, lengths, label_lengths):
         raise ValueError(f"Input length mismatch! Given T: {T}, Expected max T from input lengths: {max_T}")
     if U != max_U + 1:
         raise ValueError(f"Output length mismatch! Given U: {U}, Expected max U from target lengths: {max_U} + 1")
+
+
+def _warmup_numba_loss(device: Union[str, torch.device], warmup: Callable[[torch.device], None]) -> bool:
+    device = torch.device(device)
+    if device.type != 'cuda':
+        return False
+    device_index = device.index if device.index is not None else torch.cuda.current_device()
+    python_rng = random.getstate()
+    try:
+        with (
+            torch.random.fork_rng(devices=[device_index]),
+            torch.inference_mode(False),
+            torch.enable_grad(),
+            torch.autocast('cuda', enabled=False),
+        ):
+            warmup(device)
+    finally:
+        random.setstate(python_rng)
+    # The helper must have returned so its tiny tensors can be collected with compiler cycles.
+    gc.collect()
+    torch.cuda.synchronize(device)
+    return True
+
+
+def _warmup_rnnt_loss(source: RNNTLossNumba, device: torch.device) -> None:
+    loss = RNNTLossNumba(
+        blank=source.blank,
+        reduction='mean',
+        fastemit_lambda=source.fastemit_lambda,
+        clamp=source.clamp,
+    )
+    # Non-singleton dimensions preserve the contiguous production array layout.
+    acts = torch.zeros((2, 8, 4, max(2, source.blank + 1)), device=device, dtype=torch.float32, requires_grad=True)
+    labels = torch.full((2, 3), 1 if source.blank == 0 else 0, device=device, dtype=torch.int64)
+    input_lengths = torch.full((2,), 8, device=device, dtype=torch.int64)
+    label_lengths = torch.full((2,), 3, device=device, dtype=torch.int64)
+    value = loss(acts, labels, input_lengths, label_lengths)
+    value.backward()
+    if not torch.isfinite(value).all() or not torch.isfinite(acts.grad).all():
+        raise RuntimeError('RNNT loss warmup produced non-finite loss or gradients')
+
+
+def _warmup_tdt_loss(source: TDTLossNumba, device: torch.device) -> None:
+    # Non-singleton dimensions preserve the contiguous production array layout.
+    labels_count = 3
+    frames = max(8, (labels_count + 1) * max(source.durations))
+    vocabulary_size = max(2, source.blank + 1)
+    label = 1 if source.blank == 0 else 0
+    for omega in (-1.0, 2.0):
+        # Force each branch even when random.uniform returns an endpoint.
+        loss = TDTLossNumba(
+            blank=source.blank,
+            durations=list(source.durations),
+            reduction='mean',
+            fastemit_lambda=source.fastemit_lambda,
+            clamp=source.clamp,
+            sigma=source.sigma,
+            omega=omega,
+        )
+        acts = torch.zeros(
+            (2, frames, labels_count + 1, vocabulary_size + len(source.durations)),
+            device=device,
+            dtype=torch.float32,
+            requires_grad=True,
+        )
+        labels = torch.full((2, labels_count), label, device=device, dtype=torch.int64)
+        input_lengths = torch.full((2,), frames, device=device, dtype=torch.int64)
+        label_lengths = torch.full((2,), labels_count, device=device, dtype=torch.int64)
+        value = loss(acts, labels, input_lengths, label_lengths)
+        value.backward()
+        if not torch.isfinite(value).all() or not torch.isfinite(acts.grad).all():
+            raise RuntimeError('TDT loss warmup produced non-finite loss or gradients')

@@ -31,7 +31,7 @@
 import inspect
 import operator
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set, Union
 
 import torch
 from omegaconf import DictConfig, OmegaConf
@@ -418,6 +418,15 @@ class RNNTLoss(Loss):
         self._loss = resolve_rnnt_loss(loss_name, blank_idx=self._blank, loss_kwargs=loss_kwargs)
         self._force_float32 = RNNT_LOSS_RESOLVER[loss_name].force_float32
         self._fp16_compat_checked = False
+
+    def warmup(self, device: Union[str, torch.device]) -> bool:
+        """Warm supported Numba RNNT/TDT kernels before allocating training activations.
+
+        Returns whether warmup ran; False for CPU devices or unsupported backends.
+        """
+        if NUMBA_RNNT_AVAILABLE and isinstance(self._loss, (RNNTLossNumba, TDTLossNumba)):
+            return self._loss.warmup(device)
+        return False
 
     def reduce(self, losses, target_lengths):
 

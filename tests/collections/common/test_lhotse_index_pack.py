@@ -16,20 +16,41 @@ import io
 import json
 import struct
 import tarfile
+from concurrent.futures import Future
+from pathlib import Path
 
 import pytest
 import yaml
 from click.testing import CliRunner
-from lhotse.index_pack import IndexPack, IndexPackCollectionSpec, index_pack_collection_key, write_index_pack
+from lhotse.audio.utils import AudioLoadingError
+from lhotse.index_pack import (
+    IndexPack,
+    IndexPackArraySpec,
+    IndexPackCollectionSpec,
+    index_pack_collection_key,
+    write_index_pack,
+)
 from lhotse.indexing import create_jsonl_index
+from lhotse.shar.lazy_pointer import decode_pointer, read_payload
 from omegaconf import OmegaConf
 from scripts.dataloading import convert_indexes_to_idxpack as converter
+from scripts.dataloading import validate_idxpack_records as record_validator
 from scripts.dataloading.convert_indexes_to_idxpack import main
+from scripts.dataloading.validate_idxpack_records import main as validate_records_main
 
-from nemo.collections.common.data.lhotse import nemo_adapters, text_adapters
+from nemo.collections.common.data.lhotse import indexed_adapters, nemo_adapters, nemo_tar_routing, text_adapters
 from nemo.collections.common.data.lhotse.cutset import read_nemo_manifest
+from nemo.collections.common.data.lhotse.indexed_adapters import PackedTarMemberReader
 from nemo.collections.common.data.lhotse.indexed_adapters import create_tar_index as create_nemo_tar_index
+from nemo.collections.common.data.lhotse.indexed_adapters import read_exact_range
 from nemo.collections.common.data.lhotse.nemo_adapters import LazyNeMoIterator, LazyNeMoTarredIterator
+from nemo.collections.common.data.lhotse.nemo_tar_routing import (
+    NEMO_TAR_ORDINAL_MAP_KIND,
+    NEMO_TAR_ORDINAL_MAP_ROLE,
+    NEMO_TAR_SKIP_ORDINAL,
+    nemo_tar_ordinal_map_collection_key,
+    nemo_tar_ordinal_map_source_spec,
+)
 
 
 def _make_native_tar_dataset(tmp_path):
@@ -59,6 +80,393 @@ def _make_native_tar_dataset(tmp_path):
     return tar_path, idx_path, input_cfg
 
 
+def _make_native_tar_routing_dataset(tmp_path, rows, members, *, tar_format=None):
+    manifest = tmp_path / "manifest.jsonl"
+    manifest.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    create_jsonl_index(manifest)
+
+    tar_path = tmp_path / "audio.tar"
+    open_kwargs = {} if tar_format is None else {"format": tar_format}
+    with tarfile.open(tar_path, "w", **open_kwargs) as archive:
+        for name, payload in members:
+            info = tarfile.TarInfo(name)
+            info.size = len(payload)
+            archive.addfile(info, io.BytesIO(payload))
+    create_nemo_tar_index(tar_path, str(tar_path) + ".idx")
+
+    input_cfg = tmp_path / "dataset.yaml"
+    input_cfg.write_text(
+        yaml.safe_dump(
+            {
+                "type": "nemo_tarred",
+                "manifest_filepath": str(manifest),
+                "tarred_audio_filepaths": str(tar_path),
+            }
+        )
+    )
+    return manifest, tar_path, input_cfg
+
+
+def _make_multi_shard_native_tar_routing_dataset(tmp_path, shard_rows_and_members):
+    manifest_paths = []
+    tar_paths = []
+    for shard_index, (rows, members) in enumerate(shard_rows_and_members):
+        shard_dir = tmp_path / f"shard-{shard_index}"
+        shard_dir.mkdir()
+        manifest, tar_path, _ = _make_native_tar_routing_dataset(shard_dir, rows, members)
+        manifest_paths.append(str(manifest))
+        tar_paths.append(str(tar_path))
+    input_cfg = tmp_path / "multi-shard.yaml"
+    input_cfg.write_text(
+        yaml.safe_dump(
+            {
+                "type": "nemo_tarred",
+                "manifest_filepath": manifest_paths,
+                "tarred_audio_filepaths": tar_paths,
+            }
+        )
+    )
+    return manifest_paths, tar_paths, input_cfg
+
+
+def _make_multi_map_native_tar_routing_dataset(tmp_path, shard_rows_and_members):
+    manifest_paths, tar_paths, _ = _make_multi_shard_native_tar_routing_dataset(tmp_path, shard_rows_and_members)
+    input_cfg = tmp_path / "multi-map.yaml"
+    input_cfg.write_text(
+        yaml.safe_dump(
+            [
+                {
+                    "type": "nemo_tarred",
+                    "manifest_filepath": manifest_path,
+                    "tarred_audio_filepaths": tar_path,
+                }
+                for manifest_path, tar_path in zip(manifest_paths, tar_paths)
+            ]
+        )
+    )
+    return manifest_paths, tar_paths, input_cfg
+
+
+def _write_manual_native_tar_route_pack(
+    tmp_path,
+    manifest,
+    tar_path,
+    route_values,
+    *,
+    route_source_spec=None,
+):
+    manifest_spec = IndexPackCollectionSpec(
+        role="manifest",
+        kind="jsonl",
+        source_spec=str(manifest),
+        paths=(str(manifest),),
+    )
+    tar_spec = IndexPackCollectionSpec(
+        role="tar",
+        kind="nemo_tar",
+        source_spec=str(tar_path),
+        paths=(str(tar_path),),
+    )
+    route_path = tmp_path / "route.u32"
+    route_path.write_bytes(struct.pack(f"<{len(route_values)}I", *route_values))
+    route_spec = IndexPackArraySpec(
+        role=NEMO_TAR_ORDINAL_MAP_ROLE,
+        kind=NEMO_TAR_ORDINAL_MAP_KIND,
+        source_spec=(
+            route_source_spec
+            if route_source_spec is not None
+            else nemo_tar_ordinal_map_source_spec(str(manifest), str(tar_path))
+        ),
+        shard_paths=(route_path,),
+    )
+    output = tmp_path / "manual.idxpack"
+    write_index_pack(output, [manifest_spec, tar_spec, route_spec])
+    return output
+
+
+def _make_malformed_jsonl_pack(tmp_path):
+    first = json.dumps({"id": "first"})
+    second = json.dumps({"id": "second"})
+    manifest = tmp_path / "malformed.jsonl"
+    manifest.write_text(first + "\n" + second + "\n")
+    create_jsonl_index(manifest)
+    idx_path = manifest.with_name(manifest.name + ".idx")
+    offsets = bytearray(idx_path.read_bytes())
+    struct.pack_into("<Q", offsets, 8, len(first) + 4)
+    idx_path.write_bytes(offsets)
+    spec = IndexPackCollectionSpec(
+        role="manifest",
+        kind="jsonl",
+        source_spec=str(manifest),
+        paths=(str(manifest),),
+    )
+    pack_path = tmp_path / "malformed.idxpack"
+    write_index_pack(pack_path, [spec])
+    return manifest, pack_path
+
+
+def test_idxpack_json_record_validator_reports_all_bad_offsets(tmp_path):
+    manifest, pack_path = _make_malformed_jsonl_pack(tmp_path)
+
+    result = CliRunner().invoke(
+        validate_records_main,
+        ["--max-reported-errors", "1", str(pack_path)],
+    )
+
+    assert result.exit_code != 0
+    assert result.output.count("INVALID_IDXPACK_JSON_RECORD") == 1
+    assert "collection_key=" in result.output
+    assert "shard_index=0" in result.output
+    assert f"source_path='{manifest}'" in result.output
+    assert "global_index=0" in result.output
+    assert "local_index=0" in result.output
+    assert "byte_range=[0," in result.output
+    assert "exception=JSONDecodeError:" in result.output
+    assert "errors=2" in result.output
+    assert "records_checked=2" in result.output
+    assert "errors_reported=1" in result.output
+
+
+def test_idxpack_json_record_validator_counts_preserved_skip_markers(tmp_path):
+
+    manifest = tmp_path / "skip-markers.jsonl"
+    rows = [
+        {"id": "valid"},
+        {"id": "top-level", "_skipme": True},
+        {"id": "custom", "custom": {"_skipme": 1}},
+        {"id": "falsey-top-level", "_skipme": ""},
+        {"id": "falsey-custom", "custom": {"_skipme": 0}},
+    ]
+    manifest.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    create_jsonl_index(manifest)
+    spec = IndexPackCollectionSpec(
+        role="manifest",
+        kind="jsonl",
+        source_spec=str(manifest),
+        paths=(str(manifest),),
+    )
+    pack_path = tmp_path / "skip-markers.idxpack"
+    write_index_pack(pack_path, [spec])
+
+    result = CliRunner().invoke(
+        validate_records_main,
+        ["--max-reported-errors", "0", str(pack_path)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "INVALID_IDXPACK_JSON_RECORD" not in result.output
+    assert "records_checked=5" in result.output
+    assert "skip_marker_records=2" in result.output
+    assert "top_level_skip_marker_records=1" in result.output
+    assert "custom_skip_marker_records=1" in result.output
+    with IndexPack(pack_path) as pack:
+        collection = pack.collection(spec.key)
+        assert len(collection) == len(rows)
+
+
+def test_idxpack_json_record_validator_rejects_non_object_rows(tmp_path):
+    manifest = tmp_path / "non-objects.jsonl"
+    manifest.write_text('null\n[]\n"text"\n1\n{}\n')
+    create_jsonl_index(manifest)
+    spec = IndexPackCollectionSpec(
+        role="manifest",
+        kind="jsonl",
+        source_spec=str(manifest),
+        paths=(str(manifest),),
+    )
+    pack_path = tmp_path / "non-objects.idxpack"
+    write_index_pack(pack_path, [spec])
+    messages = []
+
+    with pytest.raises(record_validator.IndexPackRecordValidationError) as exc_info:
+        record_validator.validate_idxpack_json_records(pack_path, report=messages.append)
+
+    assert exc_info.value.summary.records_checked == 5
+    assert exc_info.value.summary.errors == 4
+    assert len(messages) == 4
+    assert all("Expected a JSON object record" in message for message in messages)
+
+
+def test_idxpack_json_record_validator_parallel_matches_serial(tmp_path):
+    manifests = []
+    rows = [
+        {"id": "valid"},
+        {"id": "top-level", "_skipme": True},
+        {"id": "custom", "custom": {"_skipme": 1}},
+    ]
+    for shard_index in range(4):
+        manifest = tmp_path / f"part-{shard_index}.jsonl"
+        manifest.write_text("".join(json.dumps(row) + "\n" for row in rows))
+        create_jsonl_index(manifest)
+        manifests.append(str(manifest))
+    spec = IndexPackCollectionSpec(
+        role="manifest",
+        kind="jsonl",
+        source_spec=manifests,
+        paths=tuple(manifests),
+    )
+    pack_path = tmp_path / "parallel.idxpack"
+    write_index_pack(pack_path, [spec])
+
+    serial = record_validator.validate_idxpack_json_records(pack_path)
+    parallel = record_validator.validate_idxpack_json_records(
+        pack_path,
+        num_workers=2,
+    )
+
+    assert parallel == serial
+    assert parallel.records_checked == 12
+    assert parallel.jsonl_collections_checked == 1
+    assert parallel.skip_marker_records == 8
+
+
+def test_converter_preserves_skip_markers_and_idxpack_bytes(tmp_path):
+    manifest = tmp_path / "markers.jsonl"
+    rows = [
+        {"id": "drop-at-runtime", "_skipme": "low char. rate"},
+        {"id": "retain", "custom": {"_skipme": ""}},
+    ]
+    manifest.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    create_jsonl_index(manifest)
+    config = {"type": "nemo", "manifest_filepath": str(manifest)}
+    input_cfg = tmp_path / "dataset.yaml"
+    input_cfg.write_text(yaml.safe_dump(config))
+    direct = tmp_path / "direct.idxpack"
+    write_index_pack(direct, converter.discover_pack_collections(config))
+    converted = tmp_path / "converted.idxpack"
+    result = CliRunner().invoke(
+        main,
+        ["--output", str(converted), str(input_cfg)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "skip_marker_records=1" in result.output
+    assert converted.read_bytes() == direct.read_bytes()
+
+
+def test_idxpack_json_record_validator_uses_pack_cache_for_mirrored_s3(tmp_path, monkeypatch):
+    remote_manifest = "s3://bucket/nested/manifest.jsonl"
+    mirror_root = tmp_path / "mirror"
+    mirrored_manifest = mirror_root / "bucket" / "nested" / "manifest.jsonl"
+    mirrored_manifest.parent.mkdir(parents=True)
+    mirrored_manifest.write_text(
+        json.dumps({"id": "valid"}) + "\n" + json.dumps({"id": "skip", "custom": {"_skipme": True}}) + "\n"
+    )
+    mirrored_index = create_jsonl_index(mirrored_manifest)
+    spec = IndexPackCollectionSpec(
+        role="manifest",
+        kind="jsonl",
+        source_spec=remote_manifest,
+        paths=(remote_manifest,),
+    )
+    pack_path = tmp_path / "mirrored.idxpack"
+    write_index_pack(
+        pack_path,
+        [spec],
+        source_size_overrides={remote_manifest: mirrored_manifest.stat().st_size},
+        index_path_overrides={remote_manifest: mirrored_index},
+    )
+    monkeypatch.setenv("LHOTSE_S3_LOCAL_MIRROR_ROOTS", str(mirror_root))
+
+    cached_reads = []
+    original_read_packed_range = record_validator.read_packed_range
+
+    def read_cached(pack, path, start, end):
+        cached_reads.append((pack, path, start, end))
+        return original_read_packed_range(pack, path, start, end)
+
+    def fail_remote_read(*args, **kwargs):
+        raise AssertionError("mirrored S3 records must use the pack-shared local descriptor cache")
+
+    monkeypatch.setattr(record_validator, "read_packed_range", read_cached)
+    monkeypatch.setattr(record_validator, "read_exact_range", fail_remote_read)
+
+    result = CliRunner().invoke(validate_records_main, [str(pack_path)])
+
+    assert result.exit_code == 0, result.output
+    assert "skip_marker_records=1" in result.output
+    assert "custom_skip_marker_records=1" in result.output
+    assert "records_checked=2" in result.output
+    assert len(cached_reads) == 2
+    assert {path for _, path, _, _ in cached_reads} == {str(mirrored_manifest)}
+
+
+def test_idxpack_record_reader_preserves_true_remote_s3_path(monkeypatch):
+
+    pack = object()
+    remote_path = "s3://bucket/manifest.jsonl"
+    remote_reads = []
+
+    monkeypatch.setattr(
+        record_validator,
+        "resolve_s3_to_local_mirror",
+        lambda path: path,
+    )
+
+    def read_remote(path, start, end):
+        remote_reads.append((path, start, end))
+        return b"remote-record"
+
+    def fail_cached_read(*args, **kwargs):
+        raise AssertionError("true remote S3 records must retain remote range reads")
+
+    monkeypatch.setattr(record_validator, "read_exact_range", read_remote)
+    monkeypatch.setattr(record_validator, "read_packed_range", fail_cached_read)
+
+    assert record_validator._read_record(pack, remote_path, 3, 9) == b"remote-record"
+    assert remote_reads == [(remote_path, 3, 9)]
+
+
+def test_idxpack_json_record_validator_reuses_one_remote_reader_per_shard(tmp_path, monkeypatch):
+    remote_manifest = "s3://bucket/manifest.jsonl"
+    raw = b'{"id": "one"}\n{"id": "two"}\n'
+    local_manifest = tmp_path / "manifest.jsonl"
+    local_manifest.write_bytes(raw)
+    index_path = create_jsonl_index(local_manifest)
+    spec = IndexPackCollectionSpec(
+        role="manifest",
+        kind="jsonl",
+        source_spec=remote_manifest,
+        paths=(remote_manifest,),
+    )
+    pack_path = tmp_path / "remote.idxpack"
+    write_index_pack(
+        pack_path,
+        [spec],
+        source_size_overrides={remote_manifest: len(raw)},
+        index_path_overrides={remote_manifest: index_path},
+    )
+    opens = []
+
+    class FakeAISRangeReader(io.BytesIO):
+        def __init__(self, path):
+            opens.append(path)
+            super().__init__(raw)
+            self.size = len(raw)
+
+    monkeypatch.setattr(record_validator, "resolve_s3_to_local_mirror", lambda path: path)
+    monkeypatch.setattr("lhotse.ais.AISRangeReader", FakeAISRangeReader)
+
+    summary = record_validator.validate_idxpack_json_records(pack_path)
+
+    assert summary.records_checked == 2
+    assert opens == [remote_manifest]
+
+
+def test_converter_does_not_publish_pack_with_malformed_json_records(tmp_path):
+    manifest, _ = _make_malformed_jsonl_pack(tmp_path)
+    input_cfg = tmp_path / "dataset.yaml"
+    input_cfg.write_text(yaml.safe_dump({"type": "nemo", "manifest_filepath": str(manifest)}))
+    output = tmp_path / "canonical.idxpack"
+
+    result = CliRunner().invoke(main, ["--output", str(output), str(input_cfg)])
+
+    assert result.exit_code != 0
+    assert "errors=2" in result.output
+    assert not output.exists()
+    assert not list(tmp_path.glob(".canonical.idxpack.record-validation.*"))
+
+
 def test_converter_accepts_current_headerless_native_tar_sidecar(tmp_path):
     tar_path, idx_path, input_cfg = _make_native_tar_dataset(tmp_path)
 
@@ -71,6 +479,638 @@ def test_converter_accepts_current_headerless_native_tar_sidecar(tmp_path):
         key = index_pack_collection_key("tar", "nemo_tar", str(tar_path))
         collection = pack.collection(key)
         assert collection.locate(0).end == tar_path.stat().st_size
+
+
+def test_converter_embeds_native_tar_routing_for_filtered_reordered_and_sub_rows(tmp_path, monkeypatch):
+    rows = [
+        {
+            "audio_filepath": "beta.wav",
+            "duration": 1.0,
+            "sampling_rate": 16000,
+            "text": "beta",
+        },
+        {
+            "audio_filepath": "alpha-sub0.wav",
+            "duration": 0.5,
+            "offset": 0.0,
+            "sampling_rate": 16000,
+            "text": "alpha-0",
+        },
+        {"_skipme": "filtered before conversion"},
+        {
+            "audio_filepath": "alpha-sub1.wav",
+            "duration": 0.5,
+            "offset": 0.5,
+            "sampling_rate": 16000,
+            "text": "alpha-1",
+        },
+        {"audio_filepath": "absent.wav", "custom": {"_skipme": True}},
+        {
+            "audio_filepath": "gamma.wav",
+            "duration": 1.0,
+            "sampling_rate": 16000,
+            "text": "gamma",
+            "_skipme": "",
+            "custom": {"_skipme": 0},
+        },
+    ]
+    manifest, tar_path, input_cfg = _make_native_tar_routing_dataset(
+        tmp_path,
+        rows,
+        [
+            ("unused.wav", b"unused"),
+            ("alpha.wav", b"alpha"),
+            ("beta.wav", b"beta"),
+            ("gamma.wav", b"gamma"),
+        ],
+    )
+    output = tmp_path / "dataset.idxpack"
+
+    def fail_second_manifest_pass(*args, **kwargs):
+        raise AssertionError("route-covered native manifests must not be scanned a second time")
+
+    monkeypatch.setattr(record_validator, "_read_record", fail_second_manifest_pass)
+    result = CliRunner().invoke(main, ["--output", str(output), str(input_cfg)])
+
+    assert result.exit_code == 0, result.output
+    assert "json_records_validated=6" in result.output
+    assert "skip_marker_records=2" in result.output
+    assert not list(tmp_path.glob(".dataset.idxpack.native-tar-route.*"))
+    route_key = nemo_tar_ordinal_map_collection_key(str(manifest), str(tar_path))
+    with IndexPack(output) as pack:
+        assert pack.version == 3
+        route = pack.collection(route_key)
+        assert route.is_array
+        assert route.value_dtype == "uint32"
+        assert [route.value(i) for i in range(len(rows))] == [
+            2,
+            1,
+            NEMO_TAR_SKIP_ORDINAL,
+            1,
+            NEMO_TAR_SKIP_ORDINAL,
+            3,
+        ]
+        tar_collection = pack.collection(index_pack_collection_key("tar", "nemo_tar", str(tar_path)))
+        expected_ranges = [
+            (location.start, location.end)
+            for location in (
+                tar_collection.locate_in_shard(0, 2),
+                tar_collection.locate_in_shard(0, 1),
+                tar_collection.locate_in_shard(0, 1),
+                tar_collection.locate_in_shard(0, 3),
+            )
+        ]
+
+    iterator = LazyNeMoTarredIterator(
+        str(manifest),
+        str(tar_path),
+        indexed=True,
+        index_pack=output,
+    )
+    assert len(iterator) == len(rows)
+    with pytest.raises(IndexError, match="not decodable"):
+        iterator[2]
+
+    def fail_header_probe(*args, **kwargs):
+        raise AssertionError("candidate construction must not probe tar headers")
+
+    def fail_tar_scan(*args, **kwargs):
+        raise AssertionError("strict mapped pointers must never scan the tar member table")
+
+    import lhotse.shar.lazy_pointer as lazy_pointer
+
+    bounded_loads = []
+    original_read_first_regular_member = lazy_pointer._read_first_regular_member
+
+    def count_bounded_load(*args, **kwargs):
+        bounded_loads.append((args[1], args[2]))
+        return original_read_first_regular_member(*args, **kwargs)
+
+    monkeypatch.setattr(iterator._packed_tar_reader, "_member_header", fail_header_probe)
+    monkeypatch.setattr(lazy_pointer, "_build_member_index", fail_tar_scan)
+    monkeypatch.setattr(lazy_pointer, "_read_first_regular_member", count_bounded_load)
+    cuts = list(iterator)
+    assert [cut.supervisions[0].text for cut in cuts] == ["beta", "alpha-0", "alpha-1", "gamma"]
+    pointers = [cut.recording.sources[0].source for cut in cuts]
+    assert all("&s=1" in pointer for pointer in pointers)
+    assert [(decode_pointer(pointer)[1], decode_pointer(pointer)[2]) for pointer in pointers] == expected_ranges
+    assert [read_payload(pointer) for pointer in pointers] == [b"beta", b"alpha", b"alpha", b"gamma"]
+    assert bounded_loads == expected_ranges
+
+    checkpointed = LazyNeMoTarredIterator(
+        str(manifest),
+        str(tar_path),
+        indexed=True,
+        index_pack=output,
+    )
+    stream = iter(checkpointed)
+    assert next(stream).supervisions[0].text == "beta"
+    state = checkpointed.state_dict()
+    resumed = LazyNeMoTarredIterator(
+        str(manifest),
+        str(tar_path),
+        indexed=True,
+        index_pack=output,
+    )
+    resumed.load_state_dict(state)
+    assert [cut.supervisions[0].text for cut in resumed] == ["alpha-0", "alpha-1", "gamma"]
+
+
+def test_converter_embeds_full_native_tar_permutation(tmp_path):
+    manifest_order = ["C.wav", "A.wav", "D.wav", "B.wav"]
+    manifest, tar_path, input_cfg = _make_native_tar_routing_dataset(
+        tmp_path,
+        [
+            {
+                "audio_filepath": name,
+                "duration": 1.0,
+                "sampling_rate": 16000,
+                "text": name,
+            }
+            for name in manifest_order
+        ],
+        [(f"{name}.wav", name.encode()) for name in "ABCD"],
+    )
+    output = tmp_path / "dataset.idxpack"
+
+    result = CliRunner().invoke(main, ["--output", str(output), str(input_cfg)])
+
+    assert result.exit_code == 0, result.output
+    with IndexPack(output) as pack:
+        route = pack.collection(nemo_tar_ordinal_map_collection_key(str(manifest), str(tar_path)))
+        assert [route.value(index) for index in range(4)] == [2, 0, 3, 1]
+    iterator = LazyNeMoTarredIterator(str(manifest), str(tar_path), indexed=True, index_pack=output)
+    pointers = [cut.recording.sources[0].source for cut in iterator]
+    assert [read_payload(pointer) for pointer in pointers] == [b"C", b"A", b"D", b"B"]
+
+
+def test_native_tar_route_build_opens_each_source_once_per_shard(tmp_path, monkeypatch):
+    _, _, input_cfg = _make_native_tar_routing_dataset(
+        tmp_path,
+        [{"audio_filepath": f"{name}.wav"} for name in "CADB"],
+        [(f"{name}.wav", name.encode()) for name in "ABCD"],
+    )
+    original_open_data_path = indexed_adapters._open_data_path
+    opened_paths = []
+
+    def count_source_open(path):
+        opened_paths.append(str(path))
+        return original_open_data_path(path)
+
+    monkeypatch.setattr(indexed_adapters, "_open_data_path", count_source_open)
+    monkeypatch.setattr(nemo_tar_routing, "_open_data_path", count_source_open)
+
+    result = CliRunner().invoke(main, ["--output", str(tmp_path / "dataset.idxpack"), str(input_cfg)])
+
+    assert result.exit_code == 0, result.output
+    assert len(opened_paths) == 2
+    assert {Path(path).name for path in opened_paths} == {"manifest.jsonl", "audio.tar"}
+
+
+def test_parallel_native_tar_route_build_is_byte_deterministic(tmp_path):
+    manifests, tars, input_cfg = _make_multi_shard_native_tar_routing_dataset(
+        tmp_path,
+        [
+            (
+                [{"audio_filepath": f"{name}.wav"} for name in "CADB"],
+                [(f"{name}.wav", name.encode()) for name in "ABCD"],
+            ),
+            (
+                [{"audio_filepath": f"{name}.wav"} for name in "ZXWY"],
+                [(f"{name}.wav", name.encode()) for name in "WXYZ"],
+            ),
+        ],
+    )
+    sequential = tmp_path / "sequential.idxpack"
+    parallel = tmp_path / "parallel.idxpack"
+
+    sequential_result = CliRunner().invoke(
+        main,
+        ["--output", str(sequential), "--native-tar-route-workers", "1", str(input_cfg)],
+    )
+    parallel_result = CliRunner().invoke(
+        main,
+        ["--output", str(parallel), "--native-tar-route-workers", "2", str(input_cfg)],
+    )
+
+    assert sequential_result.exit_code == 0, sequential_result.output
+    assert parallel_result.exit_code == 0, parallel_result.output
+    assert sequential.read_bytes() == parallel.read_bytes()
+    with IndexPack(parallel) as pack:
+        route = pack.collection(nemo_tar_ordinal_map_collection_key(manifests, tars))
+        assert [route.value_in_shard(0, index) for index in range(4)] == [2, 0, 3, 1]
+        assert [route.value_in_shard(1, index) for index in range(4)] == [3, 1, 0, 2]
+
+
+def test_parallel_native_tar_route_build_covers_multiple_maps_deterministically(tmp_path):
+    manifests, tars, input_cfg = _make_multi_map_native_tar_routing_dataset(
+        tmp_path,
+        [
+            (
+                [{"audio_filepath": f"{name}.wav"} for name in "BA"],
+                [(f"{name}.wav", name.encode()) for name in "AB"],
+            ),
+            (
+                [{"audio_filepath": f"{name}.wav"} for name in "DC"],
+                [(f"{name}.wav", name.encode()) for name in "CD"],
+            ),
+        ],
+    )
+    sequential = tmp_path / "multi-map-sequential.idxpack"
+    parallel = tmp_path / "multi-map-parallel.idxpack"
+
+    sequential_result = CliRunner().invoke(
+        main,
+        ["--output", str(sequential), "--native-tar-route-workers", "1", str(input_cfg)],
+    )
+    parallel_result = CliRunner().invoke(
+        main,
+        ["--output", str(parallel), "--native-tar-route-workers", "2", str(input_cfg)],
+    )
+
+    assert sequential_result.exit_code == 0, sequential_result.output
+    assert parallel_result.exit_code == 0, parallel_result.output
+    assert sequential.read_bytes() == parallel.read_bytes()
+    with IndexPack(parallel) as pack:
+        first_route = pack.collection(nemo_tar_ordinal_map_collection_key(manifests[0], tars[0]))
+        second_route = pack.collection(nemo_tar_ordinal_map_collection_key(manifests[1], tars[1]))
+        assert [first_route.value(index) for index in range(2)] == [1, 0]
+        assert [second_route.value(index) for index in range(2)] == [1, 0]
+
+
+def test_parallel_native_tar_route_build_schedules_all_map_shards_globally(tmp_path, monkeypatch):
+    first_root = tmp_path / "first-map"
+    second_root = tmp_path / "second-map"
+    first_root.mkdir()
+    second_root.mkdir()
+    first_manifests, first_tars, _ = _make_multi_shard_native_tar_routing_dataset(
+        first_root,
+        [
+            ([{"audio_filepath": "A.wav"}], [("A.wav", b"A")]),
+            ([{"audio_filepath": "B.wav"}], [("B.wav", b"B")]),
+            ([{"audio_filepath": "C.wav"}], [("C.wav", b"C")]),
+        ],
+    )
+    second_manifest, second_tar, _ = _make_native_tar_routing_dataset(
+        second_root,
+        [{"audio_filepath": "D.wav"}],
+        [("D.wav", b"D")],
+    )
+    input_cfg = tmp_path / "unbalanced-maps.yaml"
+    input_cfg.write_text(
+        yaml.safe_dump(
+            [
+                {
+                    "type": "nemo_tarred",
+                    "manifest_filepath": first_manifests,
+                    "tarred_audio_filepaths": first_tars,
+                },
+                {
+                    "type": "nemo_tarred",
+                    "manifest_filepath": str(second_manifest),
+                    "tarred_audio_filepaths": str(second_tar),
+                },
+            ]
+        )
+    )
+    pool_calls = []
+
+    class RecordingPool:
+        def __init__(self, *, max_workers, mp_context):
+            pool_calls.append({"max_workers": max_workers, "mp_context": mp_context, "tasks": []})
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def submit(self, function, task):
+            pool_calls[-1]["tasks"].append(task[:2])
+            future = Future()
+            try:
+                future.set_result(function(task))
+            except BaseException as error:
+                future.set_exception(error)
+            return future
+
+    monkeypatch.setattr(converter, "ProcessPoolExecutor", RecordingPool)
+    output = tmp_path / "global-schedule.idxpack"
+
+    result = CliRunner().invoke(
+        main,
+        ["--output", str(output), "--native-tar-route-workers", "4", str(input_cfg)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(pool_calls) == 1
+    assert pool_calls[0]["max_workers"] == 4
+    assert pool_calls[0]["tasks"] == [(0, 0), (0, 1), (0, 2), (1, 0)]
+
+
+def test_parallel_native_tar_route_failure_does_not_publish_pack(tmp_path):
+    _, _, input_cfg = _make_multi_map_native_tar_routing_dataset(
+        tmp_path,
+        [
+            (
+                [{"audio_filepath": "A.wav"}],
+                [("A.wav", b"valid")],
+            ),
+            (
+                [{"audio_filepath": "missing.wav"}],
+                [("B.wav", b"unrelated")],
+            ),
+        ],
+    )
+    output = tmp_path / "failed.idxpack"
+
+    result = CliRunner().invoke(
+        main,
+        ["--output", str(output), "--native-tar-route-workers", "2", str(input_cfg)],
+    )
+
+    assert result.exit_code != 0
+    assert "references missing tar member 'missing.wav'" in result.output
+    assert not output.exists()
+    assert not list(tmp_path.glob(".failed.idxpack.native-tar-route.*"))
+    assert not list(tmp_path.glob(".failed.idxpack.record-validation.*"))
+
+
+def test_parallel_single_map_route_failure_does_not_publish_pack(tmp_path):
+    _, _, input_cfg = _make_multi_shard_native_tar_routing_dataset(
+        tmp_path,
+        [
+            ([{"audio_filepath": "A.wav"}], [("A.wav", b"valid")]),
+            ([{"audio_filepath": "missing.wav"}], [("B.wav", b"unrelated")]),
+        ],
+    )
+    output = tmp_path / "failed-single-map.idxpack"
+
+    result = CliRunner().invoke(
+        main,
+        ["--output", str(output), "--native-tar-route-workers", "2", str(input_cfg)],
+    )
+
+    assert result.exit_code != 0
+    assert "references missing tar member 'missing.wav'" in result.output
+    assert not output.exists()
+    assert not list(tmp_path.glob(".failed-single-map.idxpack.native-tar-route.*"))
+    assert not list(tmp_path.glob(".failed-single-map.idxpack.record-validation.*"))
+
+
+def test_native_tar_route_workers_must_be_positive(tmp_path):
+    _, _, input_cfg = _make_native_tar_routing_dataset(
+        tmp_path,
+        [{"audio_filepath": "A.wav"}],
+        [("A.wav", b"valid")],
+    )
+
+    result = CliRunner().invoke(
+        main,
+        ["--output", str(tmp_path / "unused.idxpack"), "--native-tar-route-workers", "0", str(input_cfg)],
+    )
+
+    assert result.exit_code != 0
+    assert "0 is not in the range x>=1" in result.output
+
+
+def test_native_tar_route_writer_rejects_nonpositive_worker_count():
+    with pytest.raises(ValueError, match="workers must be positive"):
+        nemo_tar_routing.write_nemo_tar_ordinal_map_shards(
+            (),
+            manifest_paths=(),
+            manifest_index_paths=(),
+            tar_paths=(),
+            tar_index_paths=(),
+            tar_sentinel_size_overrides=(),
+            num_workers=0,
+        )
+
+
+@pytest.mark.parametrize("tar_format", [tarfile.PAX_FORMAT, tarfile.GNU_FORMAT])
+def test_converter_routes_long_native_tar_names_across_metadata_formats(tmp_path, tar_format):
+    member_name = f"nested/{'long-' * 30}sample.wav"
+    manifest, tar_path, input_cfg = _make_native_tar_routing_dataset(
+        tmp_path,
+        [
+            {
+                "audio_filepath": member_name,
+                "duration": 1.0,
+                "sampling_rate": 16000,
+                "text": "long",
+            }
+        ],
+        [(member_name, b"long-name-payload")],
+        tar_format=tar_format,
+    )
+    output = tmp_path / "dataset.idxpack"
+
+    result = CliRunner().invoke(main, ["--output", str(output), str(input_cfg)])
+
+    assert result.exit_code == 0, result.output
+    with IndexPack(output) as pack:
+        route = pack.collection(nemo_tar_ordinal_map_collection_key(str(manifest), str(tar_path)))
+        assert route.value(0) == 0
+    pointer = (
+        LazyNeMoTarredIterator(str(manifest), str(tar_path), indexed=True, index_pack=output)[0]
+        .recording.sources[0]
+        .source
+    )
+    assert "&s=1" in pointer
+    assert read_payload(pointer) == b"long-name-payload"
+
+
+def test_converter_rejects_native_tar_route_sentinel_collision(tmp_path, monkeypatch):
+    _, _, input_cfg = _make_native_tar_routing_dataset(
+        tmp_path,
+        [{"audio_filepath": "sample.wav"}],
+        [("sample.wav", b"sample")],
+    )
+    monkeypatch.setattr(
+        "nemo.collections.common.data.lhotse.indexed_adapters.IndexedTarMemberReader.member_name_index",
+        lambda *_args, **_kwargs: {"sample.wav": NEMO_TAR_SKIP_ORDINAL},
+    )
+    output = tmp_path / "dataset.idxpack"
+
+    result = CliRunner().invoke(main, ["--output", str(output), str(input_cfg)])
+
+    assert result.exit_code != 0
+    assert "cannot be represented by the uint32 routing format" in result.output
+    assert not output.exists()
+
+
+def test_v3_native_tar_pack_requires_its_matching_route_key(tmp_path):
+    manifest, tar_path, _ = _make_native_tar_routing_dataset(
+        tmp_path,
+        [
+            {
+                "audio_filepath": "sample.wav",
+                "duration": 1.0,
+                "sampling_rate": 16000,
+                "text": "sample",
+            }
+        ],
+        [("sample.wav", b"sample")],
+    )
+    output = _write_manual_native_tar_route_pack(
+        tmp_path,
+        manifest,
+        tar_path,
+        [0],
+        route_source_spec={"unrelated": "array"},
+    )
+
+    with pytest.raises(ValueError, match="Version-3 native-tar index pack is missing its expected"):
+        LazyNeMoTarredIterator(str(manifest), str(tar_path), indexed=True, index_pack=output)
+
+
+def test_v3_native_tar_wrong_ordinal_fails_strictly_without_name_scan(tmp_path, monkeypatch):
+    manifest, tar_path, _ = _make_native_tar_routing_dataset(
+        tmp_path,
+        [
+            {
+                "audio_filepath": "target.wav",
+                "duration": 1.0,
+                "sampling_rate": 16000,
+                "text": "target",
+            }
+        ],
+        [("unused.wav", b"unused"), ("target.wav", b"target")],
+    )
+    output = _write_manual_native_tar_route_pack(tmp_path, manifest, tar_path, [0])
+    iterator = LazyNeMoTarredIterator(str(manifest), str(tar_path), indexed=True, index_pack=output)
+
+    monkeypatch.setattr(
+        "lhotse.shar.lazy_pointer._build_member_index",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("strict pointer must not scan")),
+    )
+    pointer = iterator[0].recording.sources[0].source
+
+    assert "&s=1" in pointer
+    with pytest.raises(AudioLoadingError, match="expected 'target.wav', found 'unused.wav'"):
+        read_payload(pointer)
+
+
+def test_v3_native_tar_route_shape_is_validated_at_open(tmp_path):
+    manifest, tar_path, _ = _make_native_tar_routing_dataset(
+        tmp_path,
+        [
+            {
+                "audio_filepath": "sample.wav",
+                "duration": 1.0,
+                "sampling_rate": 16000,
+                "text": "sample",
+            }
+        ],
+        [("sample.wav", b"sample")],
+    )
+    output = _write_manual_native_tar_route_pack(tmp_path, manifest, tar_path, [0, 0])
+
+    with pytest.raises(ValueError, match="ordinal-map row-count mismatch"):
+        LazyNeMoTarredIterator(str(manifest), str(tar_path), indexed=True, index_pack=output)
+
+
+@pytest.mark.parametrize(
+    ("rows", "members", "message"),
+    [
+        (
+            [{"audio_filepath": "missing.wav"}],
+            [("present.wav", b"present")],
+            "references missing tar member 'missing.wav'",
+        ),
+        (
+            [{"audio_filepath": "duplicate.wav"}],
+            [
+                ("duplicate.wav", b"first"),
+                ("other.wav", b"other"),
+                ("duplicate.wav", b"second"),
+            ],
+            "Duplicate tar member name 'duplicate.wav'",
+        ),
+        (
+            [[]],
+            [("present.wav", b"present")],
+            "must be a JSON object, got list",
+        ),
+    ],
+)
+def test_converter_rejects_ambiguous_native_tar_routing(tmp_path, rows, members, message):
+    _, _, input_cfg = _make_native_tar_routing_dataset(tmp_path, rows, members)
+    output = tmp_path / "dataset.idxpack"
+
+    result = CliRunner().invoke(main, ["--output", str(output), str(input_cfg)])
+
+    assert result.exit_code != 0
+    assert message in result.output
+    assert not output.exists()
+    assert not list(tmp_path.glob(".dataset.idxpack.native-tar-route.*"))
+
+
+def test_converter_rejects_source_mutation_during_native_tar_routing(tmp_path, monkeypatch):
+    _, _, input_cfg = _make_native_tar_routing_dataset(
+        tmp_path,
+        [{"audio_filepath": "sample.wav"}],
+        [("sample.wav", b"sample")],
+    )
+    original_source_identity = nemo_tar_routing._source_identity
+    identity_calls = 0
+
+    def mutate_after_shard_build(path):
+        nonlocal identity_calls
+        identity_calls += 1
+        identity = original_source_identity(path)
+        return identity if identity_calls <= 6 else ("changed", identity)
+
+    monkeypatch.setattr(nemo_tar_routing, "_source_identity", mutate_after_shard_build)
+    output = tmp_path / "dataset.idxpack"
+
+    result = CliRunner().invoke(main, ["--output", str(output), str(input_cfg)])
+
+    assert result.exit_code != 0
+    assert "source changed after native-tar route construction" in result.output
+    assert not output.exists()
+    assert not list(tmp_path.glob(".dataset.idxpack.native-tar-route.*"))
+
+
+def test_converter_rechecks_route_snapshot_immediately_before_publication(tmp_path, monkeypatch):
+    _, tar_paths, input_cfg = _make_multi_shard_native_tar_routing_dataset(
+        tmp_path,
+        [
+            ([{"audio_filepath": "first.wav"}], [("first.wav", b"first")]),
+            ([{"audio_filepath": "second.wav"}], [("second.wav", b"second")]),
+        ],
+    )
+    tar_path = Path(tar_paths[0])
+    original_validation = converter.validate_idxpack_json_records
+
+    def replace_tar_after_staged_validation(*args, **kwargs):
+        summary = original_validation(*args, **kwargs)
+        replacement = tar_path.with_suffix(".replacement")
+        replacement.write_bytes(tar_path.read_bytes())
+        replacement.replace(tar_path)
+        return summary
+
+    monkeypatch.setattr(converter, "validate_idxpack_json_records", replace_tar_after_staged_validation)
+    output = tmp_path / "dataset.idxpack"
+    output.write_bytes(b"existing-pack-must-survive")
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "--overwrite",
+            "--output",
+            str(output),
+            "--native-tar-route-workers",
+            "2",
+            str(input_cfg),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "source changed after native-tar route construction" in result.output
+    assert output.read_bytes() == b"existing-pack-must-survive"
+    assert not list(tmp_path.glob(".dataset.idxpack.native-tar-route.*"))
+    assert not list(tmp_path.glob(".dataset.idxpack.record-validation.*"))
 
 
 def test_converter_rejects_native_tar_sentinel_mismatch(tmp_path):
@@ -89,6 +1129,79 @@ def test_converter_rejects_native_tar_sentinel_mismatch(tmp_path):
     assert "build_indexes.py --force" in result.output
 
 
+def test_converter_repairs_stale_local_tar_in_private_overlay(tmp_path):
+    tar_path, idx_path, input_cfg = _make_native_tar_dataset(tmp_path)
+    with idx_path.open("r+b") as stream:
+        stream.seek(-8, io.SEEK_END)
+        stream.write(struct.pack("<Q", tar_path.stat().st_size + 512))
+    shared_sidecar_bytes = idx_path.read_bytes()
+
+    repair_root = tmp_path / "private-repairs"
+    output = tmp_path / "dataset.idxpack"
+    result = CliRunner().invoke(
+        main,
+        [
+            "--output",
+            str(output),
+            "--repair-stale-local-native-tar-sidecars-root",
+            str(repair_root),
+            str(input_cfg),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert idx_path.read_bytes() == shared_sidecar_bytes
+    repair_idx = converter._resolve_local_sidecar(str(tar_path), repair_root)
+    assert struct.unpack("<Q", repair_idx.read_bytes()[-8:])[0] == tar_path.stat().st_size
+    with IndexPack(output) as pack:
+        key = index_pack_collection_key("tar", "nemo_tar", str(tar_path))
+        assert pack.collection(key).locate(0).end == tar_path.stat().st_size
+
+
+def test_converter_accepts_verified_trailing_zero_tar_padding(tmp_path):
+    tar_path, idx_path, input_cfg = _make_native_tar_dataset(tmp_path)
+    original_sentinel = struct.unpack("<Q", idx_path.read_bytes()[-8:])[0]
+    with tar_path.open("ab") as stream:
+        stream.write(bytes(10240))
+
+    output = tmp_path / "dataset.idxpack"
+    result = CliRunner().invoke(
+        main,
+        [
+            "--output",
+            str(output),
+            "--accept-trailing-zero-tar-padding",
+            str(input_cfg),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert struct.unpack("<Q", idx_path.read_bytes()[-8:])[0] == original_sentinel
+    with IndexPack(output) as pack:
+        key = index_pack_collection_key("tar", "nemo_tar", str(tar_path))
+        collection = pack.collection(key)
+        assert collection.locate(0).end == tar_path.stat().st_size
+
+
+def test_converter_rejects_nonzero_trailing_tar_data(tmp_path):
+    tar_path, _, input_cfg = _make_native_tar_dataset(tmp_path)
+    with tar_path.open("ab") as stream:
+        stream.write(bytes(10239) + b"x")
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "--output",
+            str(tmp_path / "dataset.idxpack"),
+            "--accept-trailing-zero-tar-padding",
+            str(input_cfg),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "non-zero data" in result.output
+
+
 def test_converter_validates_remote_native_tar_sentinel(tmp_path, monkeypatch):
     tar_path, local_idx, _ = _make_native_tar_dataset(tmp_path)
     remote_path = "ais://bucket/audio.tar"
@@ -99,6 +1212,165 @@ def test_converter_validates_remote_native_tar_sentinel(tmp_path, monkeypatch):
 
     with pytest.raises(ValueError, match="sentinel"):
         converter._validate_native_tar_sidecar(remote_path, tmp_path)
+
+
+def test_converter_source_size_uses_lhotse_s3_local_mirror(tmp_path, monkeypatch):
+    mirror_root = tmp_path / "mirror"
+    mirrored_tar = mirror_root / "bucket" / "nested" / "audio.tar"
+    mirrored_tar.parent.mkdir(parents=True)
+    mirrored_tar.write_bytes(b"mirrored-tar")
+    monkeypatch.setenv("LHOTSE_S3_LOCAL_MIRROR_ROOTS", str(mirror_root))
+
+    def fail_ais(*args, **kwargs):
+        raise AssertionError("AIS must not be opened when Lhotse resolves a local S3 mirror")
+
+    monkeypatch.setattr("lhotse.ais.AISRangeReader", fail_ais)
+
+    assert converter._source_size("s3://bucket/nested/audio.tar") == mirrored_tar.stat().st_size
+
+
+def test_converter_source_size_falls_back_to_ais_without_local_mirror_match(tmp_path, monkeypatch):
+    monkeypatch.setenv("LHOTSE_S3_LOCAL_MIRROR_ROOTS", str(tmp_path / "empty-mirror"))
+    opened = []
+
+    class FakeAISRangeReader:
+        size = 12345
+
+        def __init__(self, path):
+            opened.append(path)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+    monkeypatch.setattr("lhotse.ais.AISRangeReader", FakeAISRangeReader)
+
+    remote_path = "s3://bucket/missing/audio.tar"
+    assert converter._source_size(remote_path) == FakeAISRangeReader.size
+    assert opened == [remote_path]
+
+
+def test_packed_range_read_falls_back_to_ais_without_local_mirror_match(tmp_path, monkeypatch):
+    monkeypatch.setenv("LHOTSE_S3_LOCAL_MIRROR_ROOTS", str(tmp_path / "empty-mirror"))
+    opened = []
+    payload = b"abcdef"
+
+    class FakeAISRangeReader:
+        size = len(payload)
+
+        def __init__(self, path):
+            opened.append(path)
+            self.position = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+        def seek(self, position):
+            self.position = position
+
+        def read(self, size):
+            data = payload[self.position : self.position + size]
+            self.position += len(data)
+            return data
+
+    monkeypatch.setattr("lhotse.ais.AISRangeReader", FakeAISRangeReader)
+
+    remote_path = "s3://bucket/missing/audio.tar"
+    assert read_exact_range(remote_path, 1, 4) == b"bcd"
+    assert opened == [remote_path]
+
+
+def test_converter_local_s3_mirror_preserves_remote_pack_identity(tmp_path, monkeypatch):
+    manifest = tmp_path / "manifest.jsonl"
+    manifest.write_text(
+        json.dumps(
+            {
+                "audio_filepath": "sample.wav",
+                "duration": 1.0,
+                "sampling_rate": 16000,
+                "text": "sample",
+            }
+        )
+        + "\n"
+    )
+    create_jsonl_index(manifest)
+
+    remote_tar = "s3://bucket/audio.tar"
+    mirror_root = tmp_path / "mirror"
+    mirrored_tar = mirror_root / "bucket" / "audio.tar"
+    mirrored_tar.parent.mkdir(parents=True)
+    with tarfile.open(mirrored_tar, "w") as archive:
+        payload = b"audio"
+        info = tarfile.TarInfo("sample.wav")
+        info.size = len(payload)
+        archive.addfile(info, io.BytesIO(payload))
+
+    indexes_root = tmp_path / "indexes"
+    manifest_idx = converter._resolve_local_sidecar(str(manifest), indexes_root)
+    manifest_idx.parent.mkdir(parents=True)
+    create_jsonl_index(manifest, output_path=manifest_idx)
+    remote_idx = converter._resolve_local_sidecar(remote_tar, indexes_root)
+    remote_idx.parent.mkdir(parents=True)
+    create_nemo_tar_index(mirrored_tar, remote_idx)
+    input_cfg = tmp_path / "remote-dataset.yaml"
+    input_cfg.write_text(
+        yaml.safe_dump(
+            {
+                "type": "nemo_tarred",
+                "manifest_filepath": str(manifest),
+                "tarred_audio_filepaths": remote_tar,
+            }
+        )
+    )
+    monkeypatch.setenv("LHOTSE_S3_LOCAL_MIRROR_ROOTS", str(mirror_root))
+
+    def fail_ais(*args, **kwargs):
+        raise AssertionError("AIS must not be opened when the tar exists in the local mirror")
+
+    monkeypatch.setattr("lhotse.ais.AISRangeReader", fail_ais)
+
+    output = tmp_path / "remote-dataset.idxpack"
+    result = CliRunner().invoke(
+        main,
+        [
+            "--output",
+            str(output),
+            "--indexes-root",
+            str(indexes_root),
+            str(input_cfg),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    with IndexPack(output) as pack:
+        key = index_pack_collection_key("tar", "nemo_tar", remote_tar)
+        collection = pack.collection(key)
+        assert collection.path_for_shard(0) == remote_tar
+        assert collection.source_size_for_shard(0) == mirrored_tar.stat().st_size
+        assert PackedTarMemberReader(collection)[0] == ("sample.wav", b"audio")
+
+    iterator = LazyNeMoTarredIterator(
+        str(manifest),
+        remote_tar,
+        indexed=True,
+        index_pack=output,
+    )
+    with monkeypatch.context() as no_tar_probes:
+        no_tar_probes.setattr(
+            "nemo.collections.common.data.lhotse.indexed_adapters._resolve_s3_to_local_mirror",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("indexed candidate construction must not resolve the tar path")
+            ),
+        )
+        source = iterator[0].recording.sources[0]
+    pointer_path, _, _ = decode_pointer(source.source)
+    assert pointer_path == remote_tar
+    assert read_payload(source.source) == b"audio"
 
 
 def test_converter_rejects_experimental_in_band_header(tmp_path):
@@ -162,6 +1434,7 @@ def test_flat_native_lists_use_aggregate_pack_and_preserve_positional_pairs(tmp_
                 {
                     "audio_filepath": member,
                     "duration": 1.0,
+                    "sampling_rate": 16000,
                     "text": text,
                     "lang": "en",
                 }
@@ -183,6 +1456,8 @@ def test_flat_native_lists_use_aggregate_pack_and_preserve_positional_pairs(tmp_
             }
         )
     )
+    remote_sizes = {path: 10_000 + index for index, path in enumerate(declared_tar_paths)}
+    monkeypatch.setattr(converter, "_source_size", remote_sizes.__getitem__)
     output = tmp_path / "flat-lists.idxpack"
     result = CliRunner().invoke(
         main,
@@ -196,11 +1471,17 @@ def test_flat_native_lists_use_aggregate_pack_and_preserve_positional_pairs(tmp_
     assert result.exit_code == 0, result.output
 
     with IndexPack(output) as pack:
+        assert pack.version == 2
         manifest_collection = pack.collection(index_pack_collection_key("manifest", "jsonl", manifests))
         tar_collection = pack.collection(index_pack_collection_key("tar", "nemo_tar", declared_tar_paths))
+        with pytest.raises(KeyError):
+            pack.collection(nemo_tar_ordinal_map_collection_key(manifests, declared_tar_paths))
         assert manifest_collection.sequence_count == 3
         assert tar_collection.sequence_count == 3
         assert [tar_collection.path_for_shard(idx) for idx in range(3)] == declared_tar_paths
+        assert [tar_collection.source_size_for_shard(idx) for idx in range(3)] == [
+            remote_sizes[path] for path in declared_tar_paths
+        ]
 
     monkeypatch.setenv("USE_AIS_GET_BATCH", "true")
     config = OmegaConf.create(
@@ -328,6 +1609,7 @@ def test_lazy_nemo_tarred_iterator_uses_pack_without_expanding_shards(tmp_path, 
                         {
                             "audio_filepath": member,
                             "duration": 1.0,
+                            "sampling_rate": 16000,
                             "text": text_value,
                             "lang": "en",
                         }
@@ -509,17 +1791,24 @@ def test_converter_rejects_misaligned_native_shards(tmp_path):
     assert "not positionally aligned" in str(result.exception)
 
 
-def test_local_packed_native_tar_validates_lengths_per_shard(tmp_path, monkeypatch):
+def test_local_packed_native_tar_supports_filtered_subsets(tmp_path, monkeypatch):
     manifest_paths = []
     tar_paths = []
-    for shard, (manifest_count, tar_count) in enumerate(((1, 2), (2, 1))):
+    long_prefix = "people-speech-" + "x" * 110
+    tar_names = [
+        [f"{long_prefix}-0.wav", f"{long_prefix}-1.wav"],
+        ["sample-1-0.wav", "sample-1-1.wav", "sample-1-2.wav"],
+    ]
+    manifest_names = [tar_names[0][1:], tar_names[1][1:]]
+    for shard, (manifest_count, tar_count) in enumerate(((1, 2), (2, 3))):
         manifest = tmp_path / f"manifest_{shard}.jsonl"
         manifest.write_text(
             "".join(
                 json.dumps(
                     {
-                        "audio_filepath": f"sample-{shard}-{idx}.wav",
+                        "audio_filepath": manifest_names[shard][idx],
                         "duration": 1.0,
+                        "sampling_rate": 16000,
                         "text": "text",
                     }
                 )
@@ -531,7 +1820,7 @@ def test_local_packed_native_tar_validates_lengths_per_shard(tmp_path, monkeypat
         with tarfile.open(tar_path, "w") as archive:
             for idx in range(tar_count):
                 payload = b"audio"
-                info = tarfile.TarInfo(f"sample-{shard}-{idx}.wav")
+                info = tarfile.TarInfo(tar_names[shard][idx])
                 info.size = len(payload)
                 archive.addfile(info, io.BytesIO(payload))
         create_jsonl_index(manifest)
@@ -561,13 +1850,48 @@ def test_local_packed_native_tar_validates_lengths_per_shard(tmp_path, monkeypat
     )
     monkeypatch.delenv("USE_AIS_GET_BATCH", raising=False)
 
-    with pytest.raises(ValueError, match="length mismatch in shard 0"):
-        LazyNeMoTarredIterator(
-            manifest_spec,
-            tar_spec,
-            indexed=True,
-            index_pack=pack_path,
+    iterator = LazyNeMoTarredIterator(
+        manifest_spec,
+        tar_spec,
+        indexed=True,
+        index_pack=pack_path,
+    )
+    with monkeypatch.context() as no_header_reads:
+        no_header_reads.setattr(
+            iterator._packed_tar_reader,
+            "_member_header",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("packed candidate construction must not read tar headers")
+            ),
         )
+        first_source = iterator[0].recording.sources[0]
+    first_pointer_path, _, _ = decode_pointer(first_source.source)
+    assert first_source.type == "shar_ptr"
+    assert "&n=" in first_source.source
+    assert "&s=1" not in first_source.source
+    assert first_pointer_path == tar_paths[0]
+    import lhotse.shar.lazy_pointer as lazy_pointer
+
+    name_index_builds = []
+    original_build_member_index = lazy_pointer._build_member_index
+
+    def count_name_index_build(handle, path):
+        name_index_builds.append(path)
+        return original_build_member_index(handle, path)
+
+    monkeypatch.setattr(lazy_pointer, "_build_member_index", count_name_index_build)
+    assert read_payload(first_source.source) == b"audio"
+    assert name_index_builds == [tar_paths[0]]
+    assert iterator._packed_tar_reader.get_shard(0, tar_names[0][1]) == (
+        tar_names[0][1],
+        b"audio",
+    )
+    assert iterator._packed_tar_reader.get_shard(1, "sample-1-2.wav") == (
+        "sample-1-2.wav",
+        b"audio",
+    )
+    with pytest.raises(KeyError, match="no member named"):
+        iterator._packed_tar_reader.get_shard(0, "missing.wav")
 
 
 def test_share_gpt_jsonl_uses_pack(tmp_path, monkeypatch):

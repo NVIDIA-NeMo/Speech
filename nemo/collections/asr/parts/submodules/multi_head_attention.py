@@ -1232,7 +1232,7 @@ class RotaryPositionalEncoding(torch.nn.Module):
         self.rope_base = rope_base
         self.max_len = max_len
 
-        inv_freq = 1.0 / (rope_base ** (torch.arange(0, d_k_rot, 2, dtype=torch.float32) / d_k_rot))
+        inv_freq = 1.0 / (rope_base ** (torch.arange(0, d_k_rot, 2, dtype=torch.float32, device="cpu") / d_k_rot))
         self.register_buffer('inv_freq', inv_freq, persistent=False)
 
     def _rotate_half(self, x):
@@ -1256,11 +1256,18 @@ class RotaryPositionalEncoding(torch.nn.Module):
         ``dtype`` for storage. The final cast to Q/K runtime dtype happens in
         ``forward``.
         """
-        freqs = torch.outer(positions, self.inv_freq.to(device=positions.device, dtype=torch.float32))
+        # Build this non-persistent cache with one device-independent fp32
+        # reference. CPU and CUDA transcendental kernels can round differently
+        # before the model-dtype cast, making identical weights produce different
+        # rotations solely because the model was constructed on another device.
+        target_device = positions.device
+        positions_cpu = positions.detach().to(device="cpu", dtype=torch.float32)
+        inv_freq_cpu = self.inv_freq.detach().to(device="cpu", dtype=torch.float32)
+        freqs = torch.outer(positions_cpu, inv_freq_cpu)
         # Duplicate to align with `_rotate_half`: tail half mirrors the head half.
         emb = torch.cat((freqs, freqs), dim=-1)
-        cos = emb.cos().to(dtype)
-        sin = emb.sin().to(dtype)
+        cos = emb.cos().to(device=target_device, dtype=dtype)
+        sin = emb.sin().to(device=target_device, dtype=dtype)
         if hasattr(self, 'cos'):
             self.cos = cos
             self.sin = sin

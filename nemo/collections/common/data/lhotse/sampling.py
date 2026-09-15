@@ -16,6 +16,7 @@
 import math
 from bisect import bisect_left
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from typing import Any, Sequence
 
 import numpy as np
@@ -24,7 +25,12 @@ from lhotse.dataset import SamplingConstraint, TokenConstraint
 from lhotse.dataset.sampling.dynamic_bucketing import FixedBucketBatchSizeConstraint
 from lhotse.utils import ifnone
 
-from nemo.collections.common.data.lhotse.text_adapters import Formattable, NeMoMultimodalConversation
+from nemo.collections.common.data.lhotse.audio_token_estimator import AudioTokenEstimator
+from nemo.collections.common.data.lhotse.text_adapters import (
+    Formattable,
+    NeMoMultimodalConversation,
+    measure_formattable_length,
+)
 
 
 @dataclass
@@ -38,6 +44,11 @@ class MultimodalSamplingConstraint(SamplingConstraint):
     # How many seconds of audio is a text token worth; balances audio to text ratio in a mini-batch.
     # Generally set this to frame_shift * total_subsampling_factor of your audio encoder.
     token_equivalent_duration: float | None = None
+
+    # Optional sample-exact description of the audio preprocessor, encoder
+    # subsampling, and SALM encoder chunking policy. This supersedes the
+    # duration-based approximation above when provided.
+    audio_token_estimator: AudioTokenEstimator | None = None
 
     # Defines maximum batch size (may be lower than that if batch_length is also specified).
     batch_size: int | None = None
@@ -53,22 +64,86 @@ class MultimodalSamplingConstraint(SamplingConstraint):
     # Tweaking this helps equalize the GPU memory usage for dynamic batch sizes when using bucketing.
     quadratic_factor: float | None = None
 
+    # Packed encoder batches allocate and compute by the sum of example lengths
+    # rather than batch_size * longest_length. Opt in to padding-free accounting
+    # so heterogeneous non-bucketing batches can fill batch_tokens.
+    use_packed_sequence_sampling: bool = False
+
     # When False (default), we only consider the input part of the example to determine its length,
     # e.g. for a Cut that means its audio duration converted to tokens, for text that means len(context_ids), etc.
     # When True, we consider the sum of input and output lengths together (useful mostly for decoder-only models).
     measure_total_length: bool = False
 
+    # Optional per-bucket example-count caps. With packed sampling these are
+    # enforced in addition to the exact aggregate token cap.
+    bucket_duration_bins: Sequence[float] | None = None
+    bucket_batch_size: Sequence[int] | None = None
+    _active_bucket: int | None = dataclass_field(init=False, default=None, repr=False)
+
     _internal = None
 
     def __post_init__(self):
-        self._internal = TokenConstraint(
-            max_tokens=self.batch_tokens,
-            max_examples=self.batch_size,
-            quadratic_length=self.quadratic_factor,
-        )
+        has_bucket_bins = self.bucket_duration_bins is not None
+        has_bucket_sizes = self.bucket_batch_size is not None
+        if has_bucket_bins != has_bucket_sizes:
+            raise ValueError("bucket_duration_bins and bucket_batch_size must be configured together")
+        if has_bucket_bins:
+            if not self.use_packed_sequence_sampling:
+                raise ValueError("Per-bucket caps on MultimodalSamplingConstraint require packed sampling")
+            if self.batch_tokens is None:
+                raise ValueError("Packed per-bucket caps require batch_tokens")
+            if any(isinstance(boundary, Sequence) for boundary in self.bucket_duration_bins):
+                raise ValueError(
+                    "Packed per-bucket caps require one-dimensional token bins; "
+                    "two-dimensional fixed buckets retain the regular padded sampler"
+                )
+            if list(self.bucket_duration_bins) != sorted(self.bucket_duration_bins):
+                raise ValueError("bucket_duration_bins must be sorted ascendingly")
+            if len(self.bucket_duration_bins) != len(self.bucket_batch_size):
+                raise ValueError("bucket_duration_bins and bucket_batch_size must have equal lengths")
+            if not self.bucket_batch_size or any(int(size) <= 0 for size in self.bucket_batch_size):
+                raise ValueError("bucket_batch_size values must be positive")
+        if self.use_packed_sequence_sampling:
+            self._internal = PackedTokenConstraint(
+                batch_tokens=self.batch_tokens,
+                max_examples=self.batch_size,
+                quadratic_length=self.quadratic_factor,
+            )
+        else:
+            self._internal = TokenConstraint(
+                max_tokens=self.batch_tokens,
+                max_examples=self.batch_size,
+                quadratic_length=self.quadratic_factor,
+            )
+
+    def max_examples_for_length(self, num_tokens: int) -> int | None:
+        """Return the combined global and per-bucket example cap."""
+        if self.bucket_duration_bins is None:
+            return self.batch_size
+        bucket_idx = self.select_bucket(self.bucket_duration_bins, example_len=num_tokens)
+        if bucket_idx >= len(self.bucket_duration_bins):
+            raise ValueError(
+                f"Example length {num_tokens} exceeds the highest bucket boundary " f"{self.bucket_duration_bins[-1]}"
+            )
+        bucket_limit = int(self.bucket_batch_size[bucket_idx])
+        return bucket_limit if self.batch_size is None else min(int(self.batch_size), bucket_limit)
+
+    def _activate_bucket(self, num_tokens: int) -> None:
+        if self.bucket_duration_bins is None:
+            return
+        bucket_idx = self.select_bucket(self.bucket_duration_bins, example_len=num_tokens)
+        if bucket_idx >= len(self.bucket_duration_bins):
+            raise ValueError(
+                f"Example length {num_tokens} exceeds the highest bucket boundary " f"{self.bucket_duration_bins[-1]}"
+            )
+        if self._active_bucket is not None and self._active_bucket != bucket_idx:
+            raise AssertionError("Packed per-bucket constraints cannot mix buckets in one batch")
+        self._active_bucket = bucket_idx
+        self._internal.max_examples = self.max_examples_for_length(num_tokens)
 
     def add(self, example: Any) -> None:
         num_tokens = self.measure_length(example)
+        self._activate_bucket(num_tokens)
         example.num_tokens = num_tokens
         self._internal.add(example)
 
@@ -78,12 +153,41 @@ class MultimodalSamplingConstraint(SamplingConstraint):
     def close_to_exceeding(self) -> bool:
         return self._internal.close_to_exceeding()
 
+    def would_exceed(self, example: Any) -> bool:
+        """Return whether adding ``example`` would exceed a packed batch limit."""
+        if not self.use_packed_sequence_sampling:
+            raise RuntimeError("would_exceed() is only valid for packed sequence sampling")
+        num_tokens = self.measure_length(example)
+        self._activate_bucket(num_tokens)
+        if self._internal.max_examples is not None and self._internal.num_examples + 1 > self._internal.max_examples:
+            return True
+        return (
+            self._internal.batch_tokens is not None
+            and self._internal.current + self._internal.budget_length(num_tokens) > self._internal.batch_tokens
+        )
+
+    def reached_limit(self) -> bool:
+        """Return whether the current packed batch exactly reached a limit."""
+        if not self.use_packed_sequence_sampling:
+            raise RuntimeError("reached_limit() is only valid for packed sequence sampling")
+        if self._internal.max_examples is not None and self._internal.num_examples >= self._internal.max_examples:
+            return True
+        return self._internal.batch_tokens is not None and self._internal.current >= self._internal.batch_tokens
+
+    def measure_packing_length(self, example: Any) -> int:
+        """Measure one example against the packed batch's effective token budget."""
+        if not self.use_packed_sequence_sampling:
+            raise RuntimeError("measure_packing_length() is only valid for packed sequence sampling")
+        return self._internal.budget_length(self.measure_length(example))
+
     def reset(self) -> None:
         self._internal.reset()
+        self._active_bucket = None
+        self._internal.max_examples = self.batch_size
 
     def measure_length(self, example: Any) -> float:
         if isinstance(example, Cut):
-            audio_len_in_tokens = math.ceil(example.duration / self.token_equivalent_duration)
+            audio_len_in_tokens = self._measure_audio(example)
             if self.measure_total_length:
                 # Total length of a Cut (audio+text example) is counted as the sum of:
                 # * num_tokens in each supervision segment ("utterance") in the Cut
@@ -97,13 +201,101 @@ class MultimodalSamplingConstraint(SamplingConstraint):
                 return audio_len_in_tokens
         elif isinstance(example, Formattable):
             try:
-                return example.total_length if self.measure_total_length else example.input_length
+                if (
+                    self.use_packed_sequence_sampling
+                    and isinstance(example, NeMoMultimodalConversation)
+                    and example.has_audio_turns
+                    and self.audio_token_estimator is None
+                ):
+                    raise ValueError(
+                        "Exact packed sequence sampling with audio requires audio_token_estimator metadata that "
+                        "matches the model's preprocessor, subsampling, and encoder chunking configuration. "
+                        "token_equivalent_duration is only an approximation and cannot enforce a hard model-token cap."
+                    )
+                mode = "total" if self.measure_total_length else "input"
+                return measure_formattable_length(
+                    example,
+                    mode,
+                    audio_token_estimator=self.audio_token_estimator,
+                )
             except (AttributeError, AssertionError) as e:
                 raise RuntimeError(
                     "Couldn't determine the length of a text example; "
                     "have you provided both prompt_format and tokenizer when instantiating the dataloader?"
                 ) from e
         raise RuntimeError(f"Unsupported example type: {type(example)}")
+
+    def _measure_audio(self, example: Cut) -> int:
+        if self.audio_token_estimator is not None:
+            return self.audio_token_estimator.estimate_cut(example)
+        if self.use_packed_sequence_sampling:
+            raise ValueError(
+                "Exact packed sequence sampling with audio requires audio_token_estimator metadata that matches "
+                "the model's preprocessor, subsampling, and encoder chunking configuration. "
+                "token_equivalent_duration is only an approximation and cannot enforce a hard model-token cap."
+            )
+        return math.ceil(example.duration / self.token_equivalent_duration)
+
+
+@dataclass
+class PackedTokenConstraint(SamplingConstraint):
+    """Token constraint for batches that remain packed through the model.
+
+    Generic TokenConstraint budgets padded work as num_examples times the
+    longest example. For THD/packed execution, useful work and activation
+    storage instead scale with the sum of per-example lengths. ``batch_tokens``
+    remains a hard raw-token cap, while the optional example-count and
+    quadratic-compute limits preserve the public ``batch_size`` and
+    ``quadratic_factor`` configuration semantics. Candidate-aware batching
+    enforces all configured limits; the current mean remains only as an
+    end-of-stream fullness heuristic for drop-last behavior.
+    """
+
+    batch_tokens: int | None = None
+    max_examples: int | None = None
+    current: int = 0
+    num_examples: int = 0
+    quadratic_length: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.batch_tokens is not None and self.batch_tokens <= 0:
+            raise ValueError(f"batch_tokens must be positive or null (got {self.batch_tokens})")
+        if self.max_examples is not None and self.max_examples <= 0:
+            raise ValueError(f"batch_size must be positive or null (got {self.max_examples})")
+        if self.quadratic_length is not None and self.quadratic_length <= 0:
+            raise ValueError(f"quadratic_factor must be positive or null (got {self.quadratic_length})")
+
+    def budget_length(self, size: float) -> int:
+        """Return the conservative integral cost used by exact subset packing."""
+        if self.quadratic_length is None:
+            return math.ceil(size)
+        return math.ceil(size + size**2 / self.quadratic_length)
+
+    def add(self, example: Any) -> None:
+        self.current += self.budget_length(self.measure_length(example))
+        self.num_examples += 1
+
+    def exceeded(self) -> bool:
+        if self.max_examples is not None and self.num_examples > self.max_examples:
+            return True
+        return self.batch_tokens is not None and self.current > self.batch_tokens
+
+    def close_to_exceeding(self) -> bool:
+        if self.max_examples is not None and self.num_examples >= self.max_examples:
+            return True
+        if self.batch_tokens is None:
+            return False
+        if self.num_examples == 0:
+            return False
+        mean_length = self.current / self.num_examples
+        return self.current + mean_length > self.batch_tokens
+
+    def reset(self) -> None:
+        self.current = 0
+        self.num_examples = 0
+
+    def measure_length(self, example: Any) -> float:
+        return example.num_tokens
 
 
 @dataclass
@@ -146,7 +338,10 @@ class FixedBucketBatchSizeConstraint2D(FixedBucketBatchSizeConstraint):
         if example_len is None:
             example_len = self.measure_length(example)
         return find_smallest_bucket(
-            self.max_seq_len_buckets, example_len, strict=self.strict_2d, max_ratio=self.max_ratio
+            self.max_seq_len_buckets,
+            example_len,
+            strict=self.strict_2d,
+            max_ratio=self.max_ratio,
         )
 
 
@@ -216,6 +411,10 @@ class MultimodalFixedBucketBatchSizeConstraint2D(FixedBucketBatchSizeConstraint2
     # Generally set this to frame_shift * total_subsampling_factor of your audio encoder.
     token_equivalent_duration: float | None = None
 
+    # Optional sample-exact audio length estimator. Bucketing remains backward
+    # compatible with token_equivalent_duration when this is unset.
+    audio_token_estimator: AudioTokenEstimator | None = None
+
     # When False (default), we only consider the input part of the example to determine its length,
     # e.g. for a Cut that means its audio duration converted to tokens, for text that means len(context_ids), etc.
     # When True, we consider the sum of input and output lengths together (useful mostly for decoder-only models).
@@ -226,7 +425,11 @@ class MultimodalFixedBucketBatchSizeConstraint2D(FixedBucketBatchSizeConstraint2
             # Total length of a Cut (audio+text example) is counted as the sum of:
             # * num_tokens in each supervision segment ("utterance") in the Cut
             # * num_frames of audio (frame=token) given a token-equivalent-duration (basically a frame shift)
-            audio_len_in_tokens = math.ceil(example.duration / self.token_equivalent_duration)
+            audio_len_in_tokens = (
+                self.audio_token_estimator.estimate_cut(example)
+                if self.audio_token_estimator is not None
+                else math.ceil(example.duration / self.token_equivalent_duration)
+            )
             text_tokens = _measure_tokens(example)
 
             if self.bucketing_2d_enabled:
@@ -240,9 +443,24 @@ class MultimodalFixedBucketBatchSizeConstraint2D(FixedBucketBatchSizeConstraint2
 
         elif isinstance(example, Formattable):
             if self.bucketing_2d_enabled:
-                return example.input_length, example.output_length
+                return (
+                    measure_formattable_length(
+                        example,
+                        "input",
+                        audio_token_estimator=self.audio_token_estimator,
+                    ),
+                    measure_formattable_length(
+                        example,
+                        "output",
+                        audio_token_estimator=self.audio_token_estimator,
+                    ),
+                )
             else:
-                return example.total_length if self.measure_total_length else example.input_length
+                return measure_formattable_length(
+                    example,
+                    "total" if self.measure_total_length else "input",
+                    audio_token_estimator=self.audio_token_estimator,
+                )
 
         raise RuntimeError(f"Unsupported example type: {type(example)}")
 
@@ -390,10 +608,17 @@ class TokenCountFilter:
     and enable ``TokenPerTokenFilter`` for additional filtering on the output sequence length.
     """
 
-    def __init__(self, t_min: float | None, t_max: float | None, measure_total_length: bool) -> None:
+    def __init__(
+        self,
+        t_min: float | None,
+        t_max: float | None,
+        measure_total_length: bool,
+        audio_token_estimator: AudioTokenEstimator | None = None,
+    ) -> None:
         self.t_min = ifnone(t_min, -1)
         self.t_max = ifnone(t_max, float("inf"))
         self.measure_total_length = measure_total_length
+        self.audio_token_estimator = audio_token_estimator
         self.enabled = self.t_min > 0 or self.t_max < float("inf")
 
     def __call__(self, example) -> bool:
@@ -405,7 +630,11 @@ class TokenCountFilter:
             f"allow us to select the right sequence length for filtering. We got: {example}"
         )
         try:
-            length = example.total_length if self.measure_total_length else example.input_length
+            length = measure_formattable_length(
+                example,
+                "total" if self.measure_total_length else "input",
+                audio_token_estimator=self.audio_token_estimator,
+            )
         except (AttributeError, AssertionError) as e:
             raise RuntimeError(
                 f"Cannot measure token count for example: {example} "
@@ -469,12 +698,18 @@ class BucketingFilter:
 
     def __init__(self, sampling_constraint: SamplingConstraint) -> None:
         self.constraint = sampling_constraint
-        self.enabled = isinstance(self.constraint, FixedBucketBatchSizeConstraint2D)
+        self.buckets = getattr(
+            self.constraint,
+            "max_seq_len_buckets",
+            getattr(self.constraint, "bucket_duration_bins", None),
+        )
+        self.enabled = isinstance(self.constraint, FixedBucketBatchSizeConstraint2D) or self.buckets is not None
 
     def __call__(self, example) -> bool:
         if not self.enabled:
             return True
-        return self.constraint.select_bucket(self.constraint.max_seq_len_buckets, example) is not None
+        bucket_idx = self.constraint.select_bucket(self.buckets, example)
+        return bucket_idx is not None and bucket_idx < len(self.buckets)
 
 
 def _measure_tokens(cut: Cut) -> int:

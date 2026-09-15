@@ -39,6 +39,7 @@ from nemo.collections.common.data.lhotse.text_adapters import AudioTurn, TextTur
 from nemo.collections.common.data.utils import move_data_to_device
 from nemo.collections.common.prompts import PromptFormatter
 from nemo.collections.speechlm2.data import SALMDataset
+from nemo.collections.speechlm2.data.salm_dataset import MultiSpeakerConfig, SALMMultiSpeakerProcessor
 from nemo.collections.speechlm2.models import SALMAutomodel
 
 # Reuse the toy PE encoder (and its dimensions) defined for the standalone
@@ -95,8 +96,29 @@ SOT_CFG = {
     "sample_rate": 16000,
     "window_stride": 0.01,
     "subsampling_factor": _SUBSAMPLING_FACTOR,
-    "no_rttm_to_ones": True,
 }
+
+
+@pytest.mark.unit
+def test_multispeaker_processor_preserves_missing_rttm_sentinel_after_variable_length_collation(monkeypatch):
+    processor = SALMMultiSpeakerProcessor(MultiSpeakerConfig(num_speakers=_N_SPK))
+    missing_rttm = torch.full((2, _N_SPK), -1.0)
+    explicit_rttm = torch.zeros((4, _N_SPK))
+    monkeypatch.setattr(processor, "_build_speaker_activities", lambda conversations: [missing_rttm, explicit_rttm])
+    batch = {
+        "conversations": object(),
+        "audios": torch.zeros(2, 640),
+        "audio_lens": torch.tensor([320, 640], dtype=torch.long),
+    }
+
+    processor(batch)
+
+    assert batch["spk_targets"].shape == (2, 4, _N_SPK)
+    assert torch.all(batch["spk_targets"][0] == -1.0)
+    assert torch.all(batch["spk_targets"][1] == 0.0)
+    assert torch.equal(batch["spk_target_length"], torch.tensor([2, 4]))
+    encoder = build_toy_pe_encoder().eval()
+    assert encoder._missing_target_rows(batch["spk_targets"]).tolist() == [True, False]
 
 
 def mount_dummy_pe_encoder(model: SALMAutomodel) -> ParallelExpertEncoder:
@@ -375,10 +397,22 @@ def test_pee_prepare_inputs_routes_spk_targets_as_spk_targets(dummy_pe_encoder):
 
 
 @pytest.mark.unit
-def test_pee_prepare_inputs_warns_for_experimental_inference_options(dummy_pe_encoder):
+@pytest.mark.parametrize(
+    ("packed_encoder_sequences", "expected_outer_chunk_size"),
+    [(False, 30.0), (True, None)],
+)
+def test_pee_prepare_inputs_routes_shared_chunk_size_at_the_correct_layer(
+    dummy_pe_encoder, monkeypatch, packed_encoder_sequences, expected_outer_chunk_size
+):
+    from nemo.collections.speechlm2.parts import cp_helpers
+
     model = _make_pee_routing_test_model(
         dummy_pe_encoder,
-        cfg={"pe_encoder_path": "/tmp/pee.nemo", "encoder_chunk_size_seconds": 30.0},
+        cfg={
+            "encoder_chunk_size_seconds": 30.0,
+            "encoder_chunk_batch_size": None,
+            "packed_encoder_sequences": packed_encoder_sequences,
+        },
     )
     batch = {
         "audios": torch.tensor([[1.0, 2.0, 3.0, 4.0, 5.0]]),
@@ -386,7 +420,28 @@ def test_pee_prepare_inputs_warns_for_experimental_inference_options(dummy_pe_en
         "input_ids": torch.tensor([[model.audio_locator_tag_id, 10]], dtype=torch.long),
         "loss_mask": torch.tensor([[False, True]], dtype=torch.bool),
     }
+    recorded = {}
+    original = cp_helpers.encode_audio_with_cp_distribution
 
-    with pytest.warns(UserWarning, match="ParallelExpertEncoder inference path.*encoder_chunk_size_seconds"):
-        model.prepare_inputs(batch)
-    assert model.perception.spk_targets_calls[-1] is None
+    def record_chunk_routing(*args, **kwargs):
+        recorded["chunk_size_seconds"] = kwargs["chunk_size_seconds"]
+        # This test isolates routing. Other tests exercise the native packed path.
+        kwargs["sequence_packed"] = False
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(cp_helpers, "encode_audio_with_cp_distribution", record_chunk_routing)
+
+    model.prepare_inputs(batch)
+
+    assert recorded["chunk_size_seconds"] == expected_outer_chunk_size
+
+
+@pytest.mark.unit
+def test_pee_generation_warns_that_outer_chunking_is_ignored(dummy_pe_encoder):
+    model = _make_pee_routing_test_model(
+        dummy_pe_encoder,
+        cfg={"pe_encoder_path": "/tmp/pee.nemo", "encoder_chunk_size_seconds": 30.0},
+    )
+
+    with pytest.warns(UserWarning, match="generate ignores encoder_chunk_size_seconds"):
+        model._warn_parallel_expert_encoder_inference_chunking()

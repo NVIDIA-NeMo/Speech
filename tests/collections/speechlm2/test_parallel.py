@@ -13,12 +13,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import gc
+import weakref
+from types import SimpleNamespace
+
 import pytest
+import torch.distributed.checkpoint as dcp
+import torch.distributed.checkpoint.state_dict as dcp_state_dict
+from lightning.pytorch.strategies import model_parallel as lightning_model_parallel
 from lightning.pytorch.strategies.model_parallel import ModelParallelStrategy
 from nemo_automodel.components.distributed.config import FSDP2Config, MoEParallelizerConfig
 from omegaconf import DictConfig
 
-from nemo.collections.speechlm2.parts.parallel import AutomodelParallelStrategy
+from nemo.collections.speechlm2.parts.parallel import AutomodelParallelStrategy, _validate_missing_optimizer_state
 from nemo.utils.trainer_utils import _resolve_automodel_configs, resolve_trainer_cfg
 
 # ---------------------------------------------------------------------------
@@ -41,8 +48,46 @@ class TestAutomodelParallelStrategy:
         assert strategy._distributed_config is None
         assert strategy._moe_config is None
         assert strategy._moe_mesh is None
+        assert strategy._checkpoint_keepalive is None
         assert strategy.activation_checkpointing_llm is False
         assert strategy.activation_checkpointing_perception is False
+
+    def test_sharded_checkpoint_metadata_is_retained_after_return(self, monkeypatch, tmp_path):
+        class CheckpointMetadata:
+            pass
+
+        class Model:
+            def load_state_dict(self, state_dict, strict):
+                assert state_dict == {}
+                assert strict is True
+
+        class Reader:
+            def __init__(self, path):
+                assert path == tmp_path
+
+            def read_metadata(self):
+                return object()
+
+        strategy = AutomodelParallelStrategy()
+        strategy._model = Model()
+        strategy._lightning_module = SimpleNamespace(strict_loading=True)
+        strategy._optimizers = []
+        strategy.broadcast = lambda path: path
+        monkeypatch.setattr(lightning_model_parallel, "_is_sharded_checkpoint", lambda path: path == tmp_path)
+        monkeypatch.setattr(dcp, "FileSystemReader", Reader)
+        monkeypatch.setattr(dcp, "load", lambda state, checkpoint_id: None)
+        monkeypatch.setattr(dcp_state_dict, "get_model_state_dict", lambda model: {})
+        monkeypatch.setattr("torch.load", lambda path: CheckpointMetadata())
+
+        checkpoint = strategy.load_checkpoint(tmp_path)
+        checkpoint_ref = weakref.ref(checkpoint)
+        del checkpoint
+        gc.collect()
+
+        assert checkpoint_ref() is strategy._checkpoint_keepalive
+        strategy._checkpoint_keepalive = None
+        gc.collect()
+        assert checkpoint_ref() is None
 
     def test_accepts_activation_checkpointing_flags(self):
         strategy = AutomodelParallelStrategy(
@@ -108,6 +153,42 @@ class TestAutomodelParallelStrategy:
         with pytest.raises(RuntimeError):
             _ = strategy.distributed_sampler_kwargs
 
+    def test_allows_wholly_absent_lazy_optimizer_parameter_state(self):
+        active = "optimizer_0.state.llm.model.layer.weight"
+        unused = "optimizer_0.state.llm.mtp.layer.weight"
+        fields = {"step", "exp_avg", "exp_avg_sq"}
+        target = {f"{prefix}.{field}" for prefix in (active, unused) for field in fields}
+        checkpoint = {f"{active}.{field}" for field in fields}
+        assert _validate_missing_optimizer_state(
+            target_keys=target,
+            checkpoint_keys=checkpoint,
+            parameter_names={"llm.model.layer.weight", "llm.mtp.layer.weight"},
+            optimizer_key="optimizer_0",
+        ) == ["llm.mtp.layer.weight"]
+
+    def test_rejects_partial_optimizer_parameter_state(self):
+        prefix = "optimizer_0.state.llm.mtp.layer.weight"
+        with pytest.raises(RuntimeError, match="partial optimizer state"):
+            _validate_missing_optimizer_state(
+                target_keys={
+                    f"{prefix}.step",
+                    f"{prefix}.exp_avg",
+                    f"{prefix}.exp_avg_sq",
+                },
+                checkpoint_keys={f"{prefix}.step"},
+                parameter_names={"llm.mtp.layer.weight"},
+                optimizer_key="optimizer_0",
+            )
+
+    def test_rejects_missing_optimizer_metadata(self):
+        with pytest.raises(RuntimeError, match="missing optimizer metadata"):
+            _validate_missing_optimizer_state(
+                target_keys={"optimizer_0.param_groups.0.lr"},
+                checkpoint_keys=set(),
+                parameter_names=set(),
+                optimizer_key="optimizer_0",
+            )
+
 
 # ---------------------------------------------------------------------------
 # _resolve_automodel_configs
@@ -119,7 +200,10 @@ class TestResolveAutomodelConfigs:
 
     def test_plain_dict_to_fsdp2_config(self):
         strategy = AutomodelParallelStrategy(
-            distributed_config={"defer_fsdp_grad_sync": False, "sequence_parallel": True},
+            distributed_config={
+                "defer_fsdp_grad_sync": False,
+                "sequence_parallel": True,
+            },
         )
         _resolve_automodel_configs(strategy)
         assert isinstance(strategy.distributed_config, FSDP2Config)

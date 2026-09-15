@@ -742,7 +742,7 @@ The loss config is based on a resolver pattern and can be used as follows:
 Numba Transducer Warmup
 ^^^^^^^^^^^^^^^^^^^^^^^
 
-RNNT models automatically warm up float32 Numba loss kernels on CUDA before training, including both TDT and RNNT branches for TDT models.
+RNNT models automatically warm up Numba loss kernels on CUDA before training, including supported FP16 RNNT kernels and both FP32 branches for TDT models.
 This reduces memory retained during compilation without changing random states.
 
 Custom training loops can call ``RNNTLoss.warmup(device)`` before allocating batch activations.

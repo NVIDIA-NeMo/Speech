@@ -31,7 +31,7 @@
 import gc
 import random
 from contextlib import contextmanager
-from typing import Iterator, Union
+from typing import Iterator, Sequence, Union
 
 import torch
 from torch.autograd import Function
@@ -416,8 +416,8 @@ class RNNTLossNumba(Module):
         self.reduction = reduction
         self.loss = _RNNTNumba.apply
 
-    def warmup(self, device: Union[str, torch.device]) -> bool:
-        """Warm float32 contiguous CUDA RNNT kernels before allocating training activations.
+    def warmup(self, device: Union[str, torch.device], dtypes: Sequence[torch.dtype] = (torch.float32,)) -> bool:
+        """Warm contiguous CUDA RNNT kernels for each dtype before allocating training activations.
 
         Preserves random states and the configured loss; returns False on CPU.
         """
@@ -425,11 +425,9 @@ class RNNTLossNumba(Module):
         if device.type != 'cuda':
             return False
 
-        def warmup():
+        def warmup(dtype):
             # Non-singleton dimensions preserve the contiguous production array layout.
-            acts = torch.zeros(
-                (2, 8, 4, max(2, self.blank + 1)), device=device, dtype=torch.float32, requires_grad=True
-            )
+            acts = torch.zeros((2, 8, 4, max(2, self.blank + 1)), device=device, dtype=dtype, requires_grad=True)
             labels = torch.full((2, 3), 1 if self.blank == 0 else 0, device=device, dtype=torch.int64)
             input_lengths = torch.full((2,), 8, device=device, dtype=torch.int64)
             label_lengths = torch.full((2,), 3, device=device, dtype=torch.int64)
@@ -440,7 +438,8 @@ class RNNTLossNumba(Module):
 
         # Return from the local function before collecting compiler cycles and temporary tensors.
         with _numba_loss_warmup(device):
-            warmup()
+            for dtype in dtypes:
+                warmup(dtype)
         return True
 
     def forward(self, acts, labels, act_lens, label_lens):

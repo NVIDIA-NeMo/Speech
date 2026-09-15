@@ -424,7 +424,14 @@ class RNNTLoss(Loss):
 
         Returns whether warmup ran; False for CPU devices or unsupported backends.
         """
-        if NUMBA_RNNT_AVAILABLE and isinstance(self._loss, (RNNTLossNumba, TDTLossNumba)):
+        if not NUMBA_RNNT_AVAILABLE:
+            return False
+        if isinstance(self._loss, RNNTLossNumba):
+            dtypes = [torch.float32]
+            if not self._force_float32 and numba_utils.is_numba_cuda_fp16_supported():
+                dtypes.append(torch.float16)
+            return self._loss.warmup(device, dtypes=dtypes)
+        if isinstance(self._loss, TDTLossNumba):
             return self._loss.warmup(device)
         return False
 

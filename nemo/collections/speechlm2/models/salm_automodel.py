@@ -718,6 +718,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                         scaling_factor=self._mtp_loss_scaling_factor,
                         num_label_tokens=num_frames_global,
                         grad_reduce_group=dp_group,
+                        lm_weight=shared_lm_weight,
                         cu_seqlens=mtp_cu_seqlens,
                         return_per_depth=True,
                     )

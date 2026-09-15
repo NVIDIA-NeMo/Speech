@@ -14,7 +14,11 @@
 # limitations under the License.
 from pathlib import Path
 
+import pytest
 from omegaconf import OmegaConf
+
+from nemo.collections.speechlm2.modules.perception import MultiLayerProjectionConnector, QformerConnector
+from nemo.core.classes.common import Serialization
 
 
 REPO_ROOT = Path(__file__).parents[3]
@@ -24,3 +28,19 @@ def test_salm_automodel_uses_portable_moe_dispatcher():
     cfg = OmegaConf.load(REPO_ROOT / "examples/speechlm2/conf/salm_automodel.yaml")
 
     assert cfg.model.automodel_backend.dispatcher == "torch"
+
+
+@pytest.mark.parametrize(
+    "config_name,expected_type",
+    [
+        ("salm_asr_decoder_qformer", QformerConnector),
+        ("salm_asr_decoder_multilayerproj", MultiLayerProjectionConnector),
+    ],
+)
+def test_salm_asr_decoder_modality_adapter_is_instantiable(config_name, expected_type):
+    """The shipped modality_adapter block must name a real class that accepts the arguments beside it."""
+    cfg = OmegaConf.load(REPO_ROOT / f"examples/speechlm2/conf/{config_name}.yaml")
+
+    adapter = Serialization.from_config_dict(cfg.model.perception.modality_adapter)
+
+    assert isinstance(adapter, expected_type)

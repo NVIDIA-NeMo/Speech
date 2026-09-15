@@ -819,6 +819,10 @@ def exp_manager(trainer: 'lightning.pytorch.Trainer', cfg: Optional[Union[DictCo
         # doing the initialization such as moving files
         time.sleep(cfg.seconds_to_sleep)
 
+    # Attach framework lifecycle callbacks for ModelPT and plain LightningModule workflows alike.
+    from nemo.lightning.callback_group import CallbackGroup
+
+    CallbackGroup.get_instance().attach_to_trainer(trainer)
     add_handlers_to_mcore_logger()
 
     return log_dir

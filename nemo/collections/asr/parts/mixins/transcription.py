@@ -27,11 +27,13 @@ from omegaconf import DictConfig
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
+from nemo.collections.asr.one_logger import ASRThroughputPolicy
 from nemo.collections.asr.parts.preprocessing.perturb import process_augmentations
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment, ChannelSelectorType
 from nemo.collections.asr.parts.utils import manifest_utils
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.common.data.utils import move_data_to_device
+from nemo.lightning.speech_throughput import register_throughput_policy
 from nemo.utils import logging, logging_mode
 
 TranscriptionReturnType = Union[List[str], List[Hypothesis], Tuple[List[str]], Tuple[List[Hypothesis]]]
@@ -701,6 +703,7 @@ class TranscriptionMixin(ABC):
         )
 
 
+@register_throughput_policy(ASRThroughputPolicy)
 class ASRTranscriptionMixin(TranscriptionMixin):
     """
     An abstract class for ASR models that can transcribe audio. This class is a subclass of `TranscriptionMixin` that

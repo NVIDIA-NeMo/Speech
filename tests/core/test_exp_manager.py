@@ -15,9 +15,12 @@
 import json
 import math
 import re
+import sys
+from contextlib import nullcontext
 from pathlib import Path
+from types import ModuleType
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import lightning.pytorch as pl
 import pytest
@@ -27,6 +30,7 @@ from lightning.pytorch.loops import _TrainingEpochLoop
 from omegaconf import OmegaConf
 from omegaconf.errors import OmegaConfBaseException
 
+from nemo.collections.common.callbacks import EMA
 from nemo.constants import NEMO_ENV_VARNAME_VERSION
 from nemo.core.classes import ModelPT
 from nemo.utils.app_state import AppState
@@ -35,6 +39,7 @@ from nemo.utils.exp_manager import (
     CheckpointMisconfigurationError,
     LoggerMisconfigurationError,
     NotFoundError,
+    check_resume,
     exp_manager,
 )
 
@@ -1219,3 +1224,183 @@ class TestExpManager:
                 "explicit_log_dir": str(test_dir),
             },
         )
+
+
+class TestCheckResumeObjectStoreRankGuard:
+    """`check_resume` must only query the object store from rank 0.
+
+    `nemo/utils/callbacks/nemo_model_checkpoint.py` broadcasts `trainer.ckpt_path` from rank 0
+    precisely because `check_resume` is supposed to resolve it on rank 0 alone.
+    """
+
+    @staticmethod
+    def _s3_utils_stub(calls):
+        class _S3Utils:
+            @staticmethod
+            def s3_path_exists(path, match_directory=False):
+                calls.append(("s3_path_exists", path))
+                return True
+
+            @staticmethod
+            def find_files_with_suffix(path, suffix=None, return_key_only=False):
+                calls.append(("find_files_with_suffix", path))
+                return [f"{path}/model--last.ckpt"]
+
+        module = ModuleType("nemo.utils.s3_utils")
+        module.S3Utils = _S3Utils
+        return module
+
+    def _run_check_resume(self, dirpath, log_dir, is_rank_zero, calls):
+        trainer = pl.Trainer(accelerator='cpu', logger=False, enable_checkpointing=False)
+        with patch.dict(sys.modules, {"nemo.utils.s3_utils": self._s3_utils_stub(calls)}):
+            with patch('nemo.utils.exp_manager.is_global_rank_zero', return_value=is_rank_zero):
+                check_resume(
+                    trainer=trainer,
+                    log_dir=str(log_dir),
+                    resume_if_exists=True,
+                    resume_ignore_no_checkpoint=True,
+                    dirpath=dirpath,
+                )
+        return trainer
+
+    @pytest.mark.unit
+    def test_s3_dirpath_is_not_queried_from_non_zero_rank(self, tmp_path):
+        """Regression: the guard used `and`, which is a tautology because a path cannot start with
+        both `s3://` and `msc://`, so every rank fanned out to S3."""
+        calls = []
+        trainer = self._run_check_resume("s3://bucket/exp/checkpoints", tmp_path, False, calls)
+        assert calls == []
+        assert trainer.ckpt_path is None
+
+    @pytest.mark.unit
+    def test_s3_dirpath_is_queried_from_rank_zero(self, tmp_path):
+        """Positive control: rank 0 must still do the work, otherwise nothing would resume."""
+        calls = []
+        trainer = self._run_check_resume("s3://bucket/exp/checkpoints", tmp_path, True, calls)
+        assert [name for name, _ in calls] == ["s3_path_exists", "find_files_with_suffix"]
+        assert trainer.ckpt_path == "s3://bucket/exp/checkpoints/model--last.ckpt"
+
+    @pytest.mark.unit
+    def test_msc_dirpath_is_not_queried_from_non_zero_rank(self, tmp_path):
+        """Counter-control: pins `or` rather than restoring the pre-MSC `not is_s3_url(dirpath)`,
+        which would still fan every rank out over `msc://` paths."""
+        globs = []
+
+        def _fake_glob(pattern):
+            globs.append(pattern)
+            return ["msc://profile/exp/checkpoints/model--last.ckpt"]
+
+        msc = ModuleType("multistorageclient")
+        msc.glob = _fake_glob
+        with patch('nemo.utils.exp_manager.import_multistorageclient', return_value=msc):
+            with patch(
+                'nemo.utils.exp_manager.is_multistorageclient_url', side_effect=lambda p: str(p).startswith("msc://")
+            ):
+                trainer = pl.Trainer(accelerator='cpu', logger=False, enable_checkpointing=False)
+                with patch('nemo.utils.exp_manager.is_global_rank_zero', return_value=False):
+                    check_resume(
+                        trainer=trainer,
+                        log_dir=str(tmp_path),
+                        resume_if_exists=True,
+                        resume_ignore_no_checkpoint=True,
+                        dirpath="msc://profile/exp/checkpoints",
+                    )
+                assert globs == []
+                assert trainer.ckpt_path is None
+
+                trainer = pl.Trainer(accelerator='cpu', logger=False, enable_checkpointing=False)
+                with patch('nemo.utils.exp_manager.is_global_rank_zero', return_value=True):
+                    check_resume(
+                        trainer=trainer,
+                        log_dir=str(tmp_path),
+                        resume_if_exists=True,
+                        resume_ignore_no_checkpoint=True,
+                        dirpath="msc://profile/exp/checkpoints",
+                    )
+                assert globs == ["msc://profile/exp/checkpoints**/*.ckpt"]
+
+    @pytest.mark.unit
+    def test_local_dirpath_is_still_resolved_on_every_rank(self, tmp_path):
+        """Counter-control: local checkpointing has no throttling problem, so the guard must not
+        degenerate into a plain `is_global_rank_zero()` check."""
+        checkpoint_dir = tmp_path / "checkpoints"
+        checkpoint_dir.mkdir()
+        (checkpoint_dir / "model--last.ckpt").touch()
+
+        trainer = pl.Trainer(accelerator='cpu', logger=False, enable_checkpointing=False)
+        with patch('nemo.utils.exp_manager.is_global_rank_zero', return_value=False):
+            check_resume(
+                trainer=trainer,
+                log_dir=str(tmp_path),
+                resume_if_exists=True,
+                dirpath=str(checkpoint_dir),
+            )
+        assert trainer.ckpt_path == str(checkpoint_dir / "model--last.ckpt")
+
+
+class TestNeMoModelCheckpointSaveWithEMA:
+    """`_save_checkpoint` must stay consistent between its EMA and non-EMA branches."""
+
+    @staticmethod
+    def _checkpoint_callback():
+        checkpoint_callback = NeMoModelCheckpoint.__new__(NeMoModelCheckpoint)
+        checkpoint_callback.save_last_n_optim_states = 1
+        checkpoint_callback.async_save = False
+        checkpoint_callback.save_weights_only = False
+        checkpoint_callback.verbose = False
+        return checkpoint_callback
+
+    def _save(self, with_ema, filepath):
+        checkpoint_callback = self._checkpoint_callback()
+        trainer = MagicMock()
+        saved = []
+        dropped = {}
+
+        ema_callback = None
+        if with_ema:
+            ema_callback = EMA.__new__(EMA)
+            ema_callback.save_original_optimizer_state = lambda _trainer: nullcontext()
+            ema_callback.save_ema_model = lambda _trainer: nullcontext()
+
+        def _drop(_trainer, path, storage_options):
+            dropped["filepath"] = path
+            dropped["storage_options"] = storage_options
+
+        with (
+            patch.object(NeMoModelCheckpoint, 'set_checkpoint_unfinished_marker'),
+            patch.object(NeMoModelCheckpoint, 'remove_checkpoint_unfinished_marker'),
+            patch.object(NeMoModelCheckpoint, '_ema_callback', return_value=ema_callback),
+            patch.object(NeMoModelCheckpoint, '_drop_optimizer_states', side_effect=_drop),
+            patch(
+                'lightning.pytorch.callbacks.ModelCheckpoint._save_checkpoint',
+                side_effect=lambda _trainer, path: saved.append(path),
+            ),
+        ):
+            checkpoint_callback._save_checkpoint(trainer, filepath)
+        return saved, dropped, trainer
+
+    @pytest.mark.unit
+    def test_drops_optimizer_states_when_ema_is_enabled(self):
+        """Regression: `storage_options` was only bound in the non-EMA branch, so this raised
+        `UnboundLocalError`."""
+        filepath = "/exp/checkpoints/model--step=100--last.ckpt"
+        saved, dropped, _ = self._save(with_ema=True, filepath=filepath)
+
+        # the EMA copy is still written next to the checkpoint
+        assert saved == [filepath, "/exp/checkpoints/model--step=100--last-EMA.ckpt"]
+        # counter-control: the rebound EMA path must not leak into _drop_optimizer_states, which
+        # reloads `filepath` into the running model
+        assert dropped["filepath"] == filepath
+        assert dropped["storage_options"] is None
+
+    @pytest.mark.unit
+    def test_drops_optimizer_states_without_ema(self):
+        """Positive control: the non-EMA branch was always correct and must stay unchanged."""
+        filepath = "/exp/checkpoints/model--step=100--last.ckpt"
+        saved, dropped, trainer = self._save(with_ema=False, filepath=filepath)
+
+        # the non-EMA branch saves through `trainer.save_checkpoint`, and no EMA copy is written
+        assert saved == []
+        assert trainer.save_checkpoint.call_args.args[0] == filepath
+        assert dropped["filepath"] == filepath
+        assert dropped["storage_options"] is None

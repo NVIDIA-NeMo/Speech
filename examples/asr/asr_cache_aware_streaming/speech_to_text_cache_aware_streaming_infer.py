@@ -430,14 +430,18 @@ def main(cfg: TranscriptionConfig):
     with torch.amp.autocast('cuda' if device.type == "cuda" else "cpu", dtype=amp_dtype, enabled=cfg.amp):
         if cfg.audio_file is not None:
             # stream a single audio file
-            _ = streaming_buffer.append_audio_file(cfg.audio_file, stream_id=-1)
-            perform_streaming(
+            start_time = time.time()
+            streaming_buffer.append_audio_file(cfg.audio_file, stream_id=-1)
+            streaming_tran, offline_tran = perform_streaming(
                 asr_model=asr_model,
                 streaming_buffer=streaming_buffer,
                 compute_dtype=compute_dtype,
                 compare_vs_offline=cfg.compare_vs_offline,
+                debug_mode=cfg.debug_mode,
                 pad_and_drop_preencoded=cfg.pad_and_drop_preencoded,
             )
+            logging.info(f"The whole streaming process took: {round(time.time() - start_time, 2)}s")
+            return streaming_tran, offline_tran
         else:
             # stream audio files in a manifest file in batched mode
             all_streaming_tran = []

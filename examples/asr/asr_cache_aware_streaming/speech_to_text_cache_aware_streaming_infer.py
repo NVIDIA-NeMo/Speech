@@ -380,8 +380,10 @@ def main(cfg: TranscriptionConfig):
         else:
             asr_model.change_decoding_strategy(cfg.ctc_decoding)
 
-    # Set language-ID prompt for prompt-conditioned models
-    if hasattr(asr_model, 'set_inference_prompt'):
+    # Set language-ID prompt for prompt-conditioned models. Gated on the capability flag rather than
+    # on `hasattr`, which any future prompt implementation would also satisfy without being trained
+    # for cache-aware streaming.
+    if getattr(asr_model, 'concat', False):
         lang = cfg.target_lang if cfg.target_lang is not None else "auto"
         asr_model.set_inference_prompt(lang)
         asr_model.decoding.set_strip_lang_tags(cfg.strip_lang_tags, lang_tag_pattern=cfg.lang_tag_pattern)

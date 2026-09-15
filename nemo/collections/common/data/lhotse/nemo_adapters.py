@@ -285,11 +285,13 @@ class LazyNeMoIterator(IteratorNode):
         sampling_rate = data.pop("sampling_rate", None)
         if sampling_rate is None:
             sampling_rate = data.pop("sample_rate", None)
+        num_channels = data.pop("num_channels", None)
         cut = self._create_cut(
             audio_path=audio_path,
             offset=offset,
             duration=duration,
             sampling_rate=sampling_rate,
+            num_channels=num_channels,
         )
         cut.supervisions.append(
             SupervisionSegment(
@@ -311,9 +313,12 @@ class LazyNeMoIterator(IteratorNode):
         offset: float,
         duration: float,
         sampling_rate: int | None = None,
+        num_channels: int | None = None,
     ) -> Cut:
+        if num_channels is None:
+            num_channels = 1  # default to single channel if not specified
         if not self.metadata_only:
-            recording = self._create_recording(audio_path, duration, sampling_rate)
+            recording = self._create_recording(audio_path, duration, sampling_rate, num_channels)
             cut = recording.to_cut()
             if offset is not None:
                 cut = cut.truncate(offset=offset, duration=duration, preserve_id=True)
@@ -333,7 +338,7 @@ class LazyNeMoIterator(IteratorNode):
                 supervisions=[],
                 recording=Recording(
                     id=audio_path,
-                    sources=[AudioSource(type="dummy", channels=[0], source="")],
+                    sources=[AudioSource(type="dummy", channels=list(range(num_channels)), source="")],
                     sampling_rate=sr,
                     duration=offset + duration,
                     num_samples=compute_num_samples(offset + duration, sr),
@@ -346,18 +351,17 @@ class LazyNeMoIterator(IteratorNode):
         audio_path: str,
         duration: float,
         sampling_rate: int | None = None,
+        num_channels: int = 1,
     ) -> Recording:
         if sampling_rate is not None:
-            # TODO(pzelasko): It will only work with single-channel audio in the current shape.
-
             source_type = "url" if is_datastore_path(audio_path) else "file"
             return Recording(
                 id=audio_path,
-                sources=[AudioSource(type=source_type, channels=[0], source=audio_path)],
+                sources=[AudioSource(type=source_type, channels=list(range(num_channels)), source=audio_path)],
                 sampling_rate=sampling_rate,
                 num_samples=compute_num_samples(duration, sampling_rate),
                 duration=duration,
-                channel_ids=[0],
+                channel_ids=list(range(num_channels)),
             )
         else:
             return Recording.from_file(audio_path)

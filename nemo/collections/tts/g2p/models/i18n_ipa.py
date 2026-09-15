@@ -16,6 +16,7 @@
 import pathlib
 import random
 import re
+import unicodedata
 from collections import defaultdict
 from typing import Callable, Dict, List, Optional, Set, Tuple, Union
 
@@ -35,6 +36,11 @@ from nemo.utils import logging
 # Compiled regex pattern for Indic scripts (used in dictionary parsing)
 _INDIC_PATTERN = re.compile(f'^[{INDIC_CHARS_ALL}]')
 _KOREAN_PATTERN = re.compile(f'^[{KOREAN_CHARS}]')
+
+# How many skipped dictionary entries to name in the warning emitted by `IpaG2p._parse_phoneme_dict`, and how many
+# characters of each to show (a malformed line can carry a very long first field).
+_MAX_SKIPPED_SHOWN = 5
+_MAX_SKIPPED_WORD_LEN = 30
 
 
 class IpaG2p(BaseG2p):
@@ -202,10 +208,11 @@ class IpaG2p(BaseG2p):
             # represents the pronunciation variant of that word.
             phoneme_dict_obj = defaultdict(list)
             _alt_re = re.compile(r"\([0-9]+\)")
+            skipped_entries = []
             with open(phoneme_dict, "r", encoding="utf-8") as fdict:
-                for line in fdict:
-                    # skip the empty lines
-                    if len(line) == 0:
+                for line_number, line in enumerate(fdict, start=1):
+                    # skip the blank lines and the ";;;"-prefixed comment header of CMUdict-format files
+                    if not line.strip() or line.startswith(";;;"):
                         continue
 
                     # Note that latin character pattern should be consistent with
@@ -228,6 +235,26 @@ class IpaG2p(BaseG2p):
                         word = re.sub(_alt_re, "", parts[0])
                         prons = re.sub(r"\s+", "", parts[1])
                         phoneme_dict_obj[word].append(list(prons))
+                    elif unicodedata.category(line[0]).startswith('L'):
+                        # Only entries starting with a letter are reported: the accepted first characters above cover
+                        # accented letters up to U+00FF only, so a word such as 'ŒUVRE' (U+0152) or Vietnamese
+                        # 'ĐƯỜNG' (U+0110) is lost here purely because of that bound. Entries starting with anything
+                        # else are rejected by design (CMUdict's '!EXCLAMATION-POINT' pseudo-entries, for instance).
+                        skipped_entries.append((line_number, line.strip().split(maxsplit=1)[0]))
+
+            if skipped_entries:
+                preview = ", ".join(
+                    f"line {number}: '{word[:_MAX_SKIPPED_WORD_LEN]}'"
+                    for number, word in skipped_entries[:_MAX_SKIPPED_SHOWN]
+                )
+                if len(skipped_entries) > _MAX_SKIPPED_SHOWN:
+                    preview += f", ... ({len(skipped_entries) - _MAX_SKIPPED_SHOWN} more)"
+                logging.warning(
+                    f"Skipped {len(skipped_entries)} entries of the phoneme dictionary '{phoneme_dict}' because they "
+                    f"start with a letter outside the supported alphabet (ASCII letters, accented latin letters up to "
+                    f"U+00FF, Indic letters and Korean letters). Those words are absent from the loaded dictionary "
+                    f"and will be handled as out-of-vocabulary. Skipped entries: {preview}."
+                )
         else:
             # Load phoneme_dict as dictionary object
             logging.info("Loading phoneme_dict as a Dict object, and validating its entry format.")

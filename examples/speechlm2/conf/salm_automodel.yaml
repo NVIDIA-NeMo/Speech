@@ -10,6 +10,9 @@ model:
   # FSDP2/TP training), HuggingFace directories (model.safetensors), and
   # single-file .ckpt checkpoints. Set to null to train from pretrained_llm/asr.
   init_from_checkpoint: null
+  # HF-directory loads into an already distributed DTensor model are strict by
+  # default. Set false only for an intentional partial initialization.
+  init_from_checkpoint_strict: true
 
   # Set to true to use SALMAutomodel (NeMo Automodel backend) instead of SALM (HF Transformers backend).
   use_nemo_automodel: true
@@ -45,10 +48,17 @@ model:
     lk_lambda: 0.5
     num_nextn_predict_layers: 1
     hybrid_override_pattern: "*"
+    # Optional routed-expert width for a replacement MoE MTP head. Setting this
+    # requires replace_existing_head=true and an "E" in hybrid_override_pattern.
+    moe_intermediate_size: null
     # Preserve a checkpoint-native MTP architecture by default. Set true to
     # construct a fresh recipe-defined head instead; all checkpoint MTP tensors
-    # are skipped so they cannot partially initialize the replacement head.
+    # are skipped by default so they cannot partially initialize the replacement head.
     replace_existing_head: false
+    # With a replacement head loaded through init_from_checkpoint, opt in to
+    # reusing only checkpoint MTP tensors whose names and complete shapes match.
+    # Replacement-head MTP tensors from pretrained_llm are always skipped.
+    reuse_compatible_weights: false
     loss_scaling_factor: 0.1
     use_repeated_layer: false
 

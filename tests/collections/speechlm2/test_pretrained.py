@@ -841,3 +841,61 @@ def test_dcp_init_reuses_shape_compatible_replacement_mtp_weights(tmp_path):
         replacement_model.mtp.experts.weight,
         torch.full_like(replacement_model.mtp.experts.weight, 13.0),
     )
+
+
+@pytest.mark.parametrize("checkpoint_format", ["ckpt", "hf"])
+@pytest.mark.parametrize("reuse_compatible_weights", [False, True])
+def test_regular_init_applies_replacement_mtp_policy(tmp_path, checkpoint_format, reuse_compatible_weights):
+    class TinyMTP(torch.nn.Module):
+        def __init__(self, expert_width):
+            super().__init__()
+            self.attention = torch.nn.Linear(2, 2, bias=False)
+            self.experts = torch.nn.Linear(2, expert_width, bias=False)
+
+    class TinyModel(torch.nn.Module):
+        def __init__(self, *, expert_width, reuse):
+            super().__init__()
+            self.base = torch.nn.Linear(2, 2, bias=False)
+            self.mtp = TinyMTP(expert_width)
+            self.cfg = DictConfig(
+                {
+                    "mtp": {
+                        "enabled": True,
+                        "replace_existing_head": True,
+                        "reuse_compatible_weights": reuse,
+                    }
+                }
+            )
+
+    source = TinyModel(expert_width=3, reuse=False)
+    with torch.no_grad():
+        source.base.weight.fill_(3.0)
+        source.mtp.attention.weight.fill_(7.0)
+        source.mtp.experts.weight.fill_(11.0)
+
+    if checkpoint_format == "ckpt":
+        checkpoint_path = tmp_path / "model.ckpt"
+        torch.save({"state_dict": source.state_dict()}, checkpoint_path)
+    else:
+        checkpoint_path = tmp_path / "hf_model"
+        checkpoint_path.mkdir()
+        save_file(source.state_dict(), checkpoint_path / "model.safetensors")
+
+    target = TinyModel(expert_width=2, reuse=reuse_compatible_weights)
+    with torch.no_grad():
+        target.base.weight.zero_()
+        target.mtp.attention.weight.fill_(5.0)
+        target.mtp.experts.weight.fill_(13.0)
+
+    pretrained.init_from_training_checkpoint(target, str(checkpoint_path))
+
+    torch.testing.assert_close(target.base.weight, torch.full_like(target.base.weight, 3.0))
+    expected_attention = 7.0 if reuse_compatible_weights else 5.0
+    torch.testing.assert_close(
+        target.mtp.attention.weight,
+        torch.full_like(target.mtp.attention.weight, expected_attention),
+    )
+    torch.testing.assert_close(
+        target.mtp.experts.weight,
+        torch.full_like(target.mtp.experts.weight, 13.0),
+    )

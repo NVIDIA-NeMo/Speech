@@ -191,7 +191,6 @@ class TestInitFromTrainingCheckpoint:
 
         distributed_load.assert_called_once_with(model, str(hf_dir), strict=False)
 
-
     def test_hf_directory_with_dtensors_selectively_reuses_replacement_mtp(self, tmp_path):
         hf_dir = tmp_path / "hf_model"
         hf_dir.mkdir()
@@ -219,7 +218,38 @@ class TestInitFromTrainingCheckpoint:
             model,
             str(hf_dir),
             strict=True,
+            preserve_replacement_mtp=True,
             reuse_compatible_mtp=True,
+        )
+
+    def test_hf_directory_with_dtensors_preserves_fresh_replacement_mtp(self, tmp_path):
+        hf_dir = tmp_path / "hf_model"
+        hf_dir.mkdir()
+        (hf_dir / "model.safetensors").touch()
+        model = ConfigurableModel(
+            {
+                "mtp": {
+                    "enabled": True,
+                    "replace_existing_head": True,
+                    "reuse_compatible_weights": False,
+                }
+            }
+        )
+
+        with (
+            patch(
+                "nemo.collections.speechlm2.parts.pretrained._model_has_dtensors",
+                return_value=True,
+            ),
+            patch("nemo.collections.speechlm2.parts.hf_hub._load_state_dict_with_dtensors") as distributed_load,
+        ):
+            init_from_training_checkpoint(model, str(hf_dir))
+
+        distributed_load.assert_called_once_with(
+            model,
+            str(hf_dir),
+            strict=True,
+            preserve_replacement_mtp=True,
         )
 
 
@@ -304,7 +334,12 @@ def test_distributed_hf_loader_reuses_only_shape_compatible_mtp_weights(tmp_path
         target.mtp.attention.weight.fill_(5.0)
         target.mtp.experts.weight.fill_(13.0)
 
-    _load_state_dict_with_dtensors(target, str(tmp_path), reuse_compatible_mtp=True)
+    _load_state_dict_with_dtensors(
+        target,
+        str(tmp_path),
+        preserve_replacement_mtp=True,
+        reuse_compatible_mtp=True,
+    )
 
     torch.testing.assert_close(target.base.weight, torch.full_like(target.base.weight, 3.0))
     torch.testing.assert_close(
@@ -315,6 +350,48 @@ def test_distributed_hf_loader_reuses_only_shape_compatible_mtp_weights(tmp_path
         target.mtp.experts.weight,
         torch.full_like(target.mtp.experts.weight, 13.0),
     )
+
+
+@pytest.mark.unit
+def test_distributed_hf_loader_preserves_fresh_replacement_mtp_weights(tmp_path):
+    class TinyMTP(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.attention = torch.nn.Linear(2, 2, bias=False)
+
+    class TinyModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.base = torch.nn.Linear(2, 2, bias=False)
+            self.mtp = TinyMTP()
+
+    source = TinyModel()
+    with torch.no_grad():
+        source.base.weight.fill_(3.0)
+        source.mtp.attention.weight.fill_(7.0)
+    save_file(source.state_dict(), str(tmp_path / "model.safetensors"))
+
+    target = TinyModel()
+    with torch.no_grad():
+        target.base.weight.zero_()
+        target.mtp.attention.weight.fill_(5.0)
+
+    _load_state_dict_with_dtensors(target, str(tmp_path), preserve_replacement_mtp=True)
+
+    torch.testing.assert_close(target.base.weight, torch.full_like(target.base.weight, 3.0))
+    torch.testing.assert_close(
+        target.mtp.attention.weight,
+        torch.full_like(target.mtp.attention.weight, 5.0),
+    )
+
+
+@pytest.mark.unit
+def test_distributed_hf_loader_strictly_rejects_missing_parameters(tmp_path):
+    model = SimpleModel()
+    save_file({"linear.weight": torch.ones_like(model.linear.weight)}, str(tmp_path / "model.safetensors"))
+
+    with pytest.raises(RuntimeError, match="model parameters are absent from the checkpoint"):
+        _load_state_dict_with_dtensors(model, str(tmp_path), strict=True)
 
 
 # ---------------------------------------------------------------------------

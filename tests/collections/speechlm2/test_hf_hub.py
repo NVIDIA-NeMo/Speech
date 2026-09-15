@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from types import SimpleNamespace
+
 import pytest
 from huggingface_hub import PyTorchModelHubMixin
 
@@ -85,6 +87,38 @@ def test_from_pretrained_remote_code_requires_explicit_opt_in(
     cfg = _capture_pretrained_config(tmp_path, monkeypatch, repo_trust_remote_code, **model_kwargs)
 
     assert cfg["trust_remote_code"] is expected
+
+
+@pytest.mark.parametrize("strict", [False, True])
+def test_distributed_from_pretrained_forwards_strict(tmp_path, monkeypatch, strict):
+    config_path = tmp_path / "config.json"
+    config_path.write_text("pretrained_llm: unused\npretrained_asr: unused\n")
+
+    monkeypatch.setattr(
+        hf_hub,
+        "cached_file",
+        lambda _model_id, filename, **_kwargs: str(config_path) if filename == hf_hub.CONFIG_NAME else None,
+    )
+    captured = {}
+    monkeypatch.setattr(
+        hf_hub,
+        "_distributed_from_pretrained",
+        lambda **kwargs: captured.update(kwargs) or object(),
+    )
+    distributed_setup = SimpleNamespace(mesh_context=SimpleNamespace(device_mesh=object()))
+
+    _DummyHubModel._from_pretrained(
+        model_id="local/model",
+        revision=None,
+        cache_dir=None,
+        force_download=False,
+        local_files_only=True,
+        token=None,
+        distributed_setup=distributed_setup,
+        strict=strict,
+    )
+
+    assert captured["strict"] is strict
 
 
 def test_save_pretrained_does_not_persist_remote_code_trust(tmp_path, monkeypatch):

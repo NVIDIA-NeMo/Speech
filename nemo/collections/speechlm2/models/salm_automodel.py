@@ -487,14 +487,13 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
         try:
             torch.cuda.synchronize(self.device)
-        except RuntimeError as error:
+        except (RuntimeError, ValueError) as error:
             raise RuntimeError(
                 f"CUDA failure surfaced after stage={stage} rank={rank} "
                 f"batch_idx={getattr(self, '_current_batch_idx', None)}"
             ) from error
         logging.info(
-            f"cuda_stage_sync stage={stage} rank={rank} "
-            f"batch_idx={getattr(self, '_current_batch_idx', None)}"
+            f"cuda_stage_sync stage={stage} rank={rank} " f"batch_idx={getattr(self, '_current_batch_idx', None)}"
         )
 
     def on_validation_start(self) -> None:
@@ -1497,6 +1496,11 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             )
         if mtp_loss_type == "lk" and mtp_training_mode != "head_only":
             raise ValueError("mtp.loss_type='lk' requires mtp.training_mode='head_only' so the teacher stays frozen")
+        if mtp_loss_type == "lk" and str(self.cfg.get("cross_entropy_backend", "eager")) == "fused_linear":
+            raise ValueError(
+                "mtp.loss_type='lk' requires model.cross_entropy_backend='eager' because LK distillation needs "
+                "the backbone teacher logits"
+            )
         mtp_lk_lambda = float(mtp_cfg.get("lk_lambda", 0.5)) if mtp_requested else 0.5
         if mtp_loss_type == "lk" and not 0.0 <= mtp_lk_lambda <= 1.0:
             raise ValueError(f"mtp.lk_lambda must be in [0, 1], got {mtp_lk_lambda}")
@@ -1545,6 +1549,11 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                     raise ValueError(
                         "mtp.moe_intermediate_size changes the checkpoint-native MTP tensor shapes and requires "
                         "mtp.replace_existing_head=true."
+                    )
+                if "E" not in mtp_pattern:
+                    raise ValueError(
+                        "mtp.moe_intermediate_size only sizes a routed-expert MTP sublayer and requires an 'E' "
+                        f"symbol in mtp.hybrid_override_pattern, got {mtp_pattern!r}."
                     )
                 automodel_kwargs["mtp_config_overrides"]["mtp_moe_intermediate_size"] = mtp_moe_intermediate_size
             automodel_kwargs["replace_mtp_config"] = replace_existing_head

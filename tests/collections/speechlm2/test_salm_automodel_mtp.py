@@ -296,6 +296,71 @@ def test_mtp_moe_intermediate_size_requires_replacement_head(monkeypatch):
         SALMAutomodel.configure_model(model)
 
 
+def test_mtp_moe_intermediate_size_requires_moe_pattern(monkeypatch):
+    model = _bare_model()
+    model.cfg = DictConfig(
+        {
+            "pretrained_llm": "unused",
+            "pretrained_asr": "unused",
+            "mtp": {
+                "enabled": True,
+                "replace_existing_head": True,
+                "hybrid_override_pattern": "*",
+                "moe_intermediate_size": 768,
+            },
+        }
+    )
+    model._trainer = None
+    model._use_fsdp = False
+    model._use_tp = False
+    monkeypatch.setattr(
+        salm_module,
+        "load_pretrained_automodel_llm",
+        lambda *_args, **_kwargs: pytest.fail("invalid MTP pattern must fail before loading"),
+    )
+
+    with pytest.raises(ValueError, match="requires an 'E' symbol"):
+        SALMAutomodel.configure_model(model)
+
+
+def test_debug_cuda_sync_is_environment_gated(monkeypatch):
+    model = _bare_model()
+    model.llm = torch.nn.Linear(2, 2)
+    synchronize_calls = []
+
+    monkeypatch.delenv("SPEECHLM_DEBUG_CUDA_STAGES", raising=False)
+    monkeypatch.setattr(
+        torch.cuda,
+        "is_available",
+        lambda: pytest.fail("the unset environment gate must short-circuit CUDA inspection"),
+    )
+    SALMAutomodel._debug_cuda_sync(model, "disabled")
+
+    monkeypatch.setenv("SPEECHLM_DEBUG_CUDA_STAGES", "1")
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda device: synchronize_calls.append(device))
+    SALMAutomodel._debug_cuda_sync(model, "enabled")
+
+    assert synchronize_calls == [model.device]
+
+
+@pytest.mark.parametrize("error_type", [RuntimeError, ValueError])
+def test_debug_cuda_sync_adds_stage_context(monkeypatch, error_type):
+    model = _bare_model()
+    model.llm = torch.nn.Linear(2, 2)
+    model._current_batch_idx = 17
+    monkeypatch.setenv("SPEECHLM_DEBUG_CUDA_STAGES", "1")
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+
+    def raise_sync_error(_device):
+        raise error_type("boom")
+
+    monkeypatch.setattr(torch.cuda, "synchronize", raise_sync_error)
+
+    with pytest.raises(RuntimeError, match="stage=backward.*batch_idx=17"):
+        SALMAutomodel._debug_cuda_sync(model, "backward")
+
+
 def test_invalid_mtp_training_mode_fails_before_loading(monkeypatch):
     from omegaconf import DictConfig
 
@@ -349,6 +414,31 @@ def test_invalid_mtp_lk_config_fails_before_loading(monkeypatch, mtp_overrides, 
     )
 
     with pytest.raises(ValueError, match=error_match):
+        SALMAutomodel.configure_model(model)
+
+
+def test_mtp_lk_rejects_fused_linear_ce_before_loading(monkeypatch):
+    from omegaconf import DictConfig
+
+    model = _bare_model()
+    model.cfg = DictConfig(
+        {
+            "pretrained_llm": "unused",
+            "pretrained_asr": "unused",
+            "cross_entropy_backend": "fused_linear",
+            "mtp": {"enabled": True, "training_mode": "head_only", "loss_type": "lk"},
+        }
+    )
+    model._trainer = None
+    model._use_fsdp = False
+    model._use_tp = False
+    monkeypatch.setattr(
+        salm_module,
+        "load_pretrained_automodel_llm",
+        lambda *_args, **_kwargs: pytest.fail("invalid LK config must fail before loading"),
+    )
+
+    with pytest.raises(ValueError, match="cross_entropy_backend='eager'"):
         SALMAutomodel.configure_model(model)
 
 

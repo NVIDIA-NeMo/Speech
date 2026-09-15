@@ -128,6 +128,7 @@ class HFHubMixin(
             torch_dtype=torch_dtype,
             distributed_setup=distributed_setup,
             cached_file_kwargs=_cached_file_kwargs,
+            strict=strict,
         )
 
     def save_pretrained(
@@ -190,6 +191,7 @@ def _distributed_from_pretrained(
     torch_dtype,
     distributed_setup,
     cached_file_kwargs,
+    strict,
 ):
     """Create a distributed model instance outside of a classmethod frame.
 
@@ -215,7 +217,7 @@ def _distributed_from_pretrained(
     weight_file = cached_file(model_id, SAFETENSORS_SINGLE_FILE, **cached_file_kwargs)
     if weight_file is None:
         raise RuntimeError(f"Missing {SAFETENSORS_SINGLE_FILE} file for {model_id=}")
-    _load_state_dict_with_dtensors(instance, str(Path(weight_file).parent))
+    _load_state_dict_with_dtensors(instance, str(Path(weight_file).parent), strict=strict)
 
     return instance
 
@@ -246,6 +248,7 @@ def _load_state_dict_with_dtensors(
     weight_dir,
     *,
     strict: bool = True,
+    preserve_replacement_mtp: bool = False,
     reuse_compatible_mtp: bool = False,
 ):
     """Load safetensors weights into a model with DTensor parameters using DCP.
@@ -259,8 +262,10 @@ def _load_state_dict_with_dtensors(
         weight_dir: Directory containing ``.safetensors`` file(s).
         strict: Require every named model parameter to exist in the checkpoint.
             Set this to ``False`` only for an intentional partial initialization.
+        preserve_replacement_mtp: Keep replacement-MTP tensors at their initialized
+            values instead of loading them from the checkpoint.
         reuse_compatible_mtp: Load replacement-MTP tensors only when their global
-            shapes match the checkpoint, retaining fresh initialization otherwise.
+            shapes match the checkpoint. Requires ``preserve_replacement_mtp=True``.
     """
     from itertools import chain
 
@@ -281,10 +286,16 @@ def _load_state_dict_with_dtensors(
     checkpoint_metadata = reader.read_metadata().state_dict_metadata
     checkpoint_keys = set(checkpoint_metadata)
 
+    if reuse_compatible_mtp and not preserve_replacement_mtp:
+        raise ValueError("reuse_compatible_mtp=True requires preserve_replacement_mtp=True")
+
     fresh_mtp_keys = []
-    if reuse_compatible_mtp:
+    if preserve_replacement_mtp:
         for key, value in all_tensors.items():
             if "mtp" not in key.split("."):
+                continue
+            if not reuse_compatible_mtp:
+                fresh_mtp_keys.append(key)
                 continue
             metadata = checkpoint_metadata.get(key)
             checkpoint_shape = getattr(metadata, "size", None)
@@ -303,9 +314,7 @@ def _load_state_dict_with_dtensors(
         )
 
     state_dict = {
-        key: value
-        for key, value in all_tensors.items()
-        if key in checkpoint_keys and key not in fresh_mtp_key_set
+        key: value for key, value in all_tensors.items() if key in checkpoint_keys and key not in fresh_mtp_key_set
     }
     missing_buffers = sorted(buffers.keys() - checkpoint_keys - fresh_mtp_key_set)
     unexpected_keys = sorted(checkpoint_keys - all_tensors.keys())
@@ -319,11 +328,11 @@ def _load_state_dict_with_dtensors(
         len(buffers),
         len(unexpected_keys),
     )
-    if fresh_mtp_keys:
+    if preserve_replacement_mtp:
         reused_mtp_count = sum("mtp" in key.split(".") for key in state_dict)
         logging.info(
-            "Selectively initializing replacement MTP from HF checkpoint: reusing %d compatible tensors and "
-            "keeping fresh initialization for %d missing or shape-incompatible tensors (examples=%s)",
+            "Initializing replacement MTP from HF checkpoint: reusing %d compatible tensors and keeping fresh "
+            "initialization for %d disabled, missing, or shape-incompatible tensors (examples=%s)",
             reused_mtp_count,
             len(fresh_mtp_keys),
             fresh_mtp_keys[:10],

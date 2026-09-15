@@ -164,8 +164,7 @@ def _resolve_speechlm_mtp_config(
         mtp_moe_intermediate_size = int(mtp_moe_intermediate_size)
         if mtp_moe_intermediate_size <= 0:
             raise ValueError(
-                "SpeechLM MTP moe_intermediate_size must be positive when set, "
-                f"got {mtp_moe_intermediate_size}."
+                "SpeechLM MTP moe_intermediate_size must be positive when set, " f"got {mtp_moe_intermediate_size}."
             )
         resolved["moe_intermediate_size"] = mtp_moe_intermediate_size
     return resolved

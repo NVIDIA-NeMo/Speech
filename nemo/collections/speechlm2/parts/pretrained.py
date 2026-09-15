@@ -708,12 +708,21 @@ def init_perception_from_checkpoint(model: torch.nn.Module, checkpoint_path: str
     model.perception.load_state_dict(checkpoint_state, strict=True)
 
 
-def init_model_from_checkpoint(model: torch.nn.Module, checkpoint_path: str):
+def init_model_from_checkpoint(
+    model: torch.nn.Module,
+    checkpoint_path: str,
+    *,
+    preserve_replacement_mtp: bool = False,
+    reuse_compatible_mtp: bool = False,
+):
     """Load full model state from a checkpoint.
 
     Args:
         model: The model to initialize
         checkpoint_path: Path to checkpoint file or HF directory
+        preserve_replacement_mtp: Keep replacement-MTP tensors at their initialized values.
+        reuse_compatible_mtp: Load only exact-shape replacement-MTP tensors from the checkpoint.
+            Requires ``preserve_replacement_mtp=True``.
     """
     if checkpoint_path is None:
         return
@@ -723,7 +732,41 @@ def init_model_from_checkpoint(model: torch.nn.Module, checkpoint_path: str):
     logging.info(f"Loading model from checkpoint: {checkpoint_path}")
     checkpoint_state = _load_checkpoint_state(checkpoint_path)
 
-    checkpoint_state = set_model_dict_for_partial_init(checkpoint_state, model.state_dict())
+    if reuse_compatible_mtp and not preserve_replacement_mtp:
+        raise ValueError("reuse_compatible_mtp=True requires preserve_replacement_mtp=True")
+
+    model_state_dict = model.state_dict()
+    if preserve_replacement_mtp:
+        filtered_state = {}
+        reused_mtp_keys = []
+        fresh_mtp_keys = []
+        for key, checkpoint_value in checkpoint_state.items():
+            if not _is_mtp_state_key(key):
+                filtered_state[key] = checkpoint_value
+                continue
+
+            model_value = model_state_dict.get(key)
+            if (
+                reuse_compatible_mtp
+                and model_value is not None
+                and hasattr(checkpoint_value, "shape")
+                and hasattr(model_value, "shape")
+                and tuple(checkpoint_value.shape) == tuple(model_value.shape)
+            ):
+                filtered_state[key] = checkpoint_value
+                reused_mtp_keys.append(key)
+            else:
+                fresh_mtp_keys.append(key)
+        checkpoint_state = filtered_state
+        logging.info(
+            "Initializing replacement MTP from checkpoint: reusing %d compatible tensors and keeping fresh "
+            "initialization for %d disabled, missing, or shape-incompatible tensors (examples=%s)",
+            len(reused_mtp_keys),
+            len(fresh_mtp_keys),
+            fresh_mtp_keys[:10],
+        )
+
+    checkpoint_state = set_model_dict_for_partial_init(checkpoint_state, model_state_dict)
     model.load_state_dict(checkpoint_state, strict=True)
 
 
@@ -833,6 +876,10 @@ def init_from_training_checkpoint(model: torch.nn.Module, checkpoint_path: str):
             )
 
     mtp_cfg = getattr(model, "cfg", {}).get("mtp", None)
+    preserve_replacement_mtp = bool(
+        mtp_cfg is not None and mtp_cfg.get("enabled", False) and mtp_cfg.get("replace_existing_head", False)
+    )
+    reuse_compatible_mtp = preserve_replacement_mtp and bool(mtp_cfg.get("reuse_compatible_weights", False))
 
     if _is_dcp_checkpoint(checkpoint_path):
         import torch.distributed.checkpoint as dcp
@@ -842,12 +889,9 @@ def init_from_training_checkpoint(model: torch.nn.Module, checkpoint_path: str):
         # Optimizer states and other trainer state are ignored automatically
         # because we only provide the model's state_dict.
         model_state_dict = model.state_dict()
-        preserve_replacement_mtp = bool(
-            mtp_cfg is not None and mtp_cfg.get("enabled", False) and mtp_cfg.get("replace_existing_head", False)
-        )
-        reuse_compatible_mtp = preserve_replacement_mtp and bool(mtp_cfg.get("reuse_compatible_weights", False))
         if reuse_compatible_mtp:
-            checkpoint_metadata = dcp.FileSystemReader(str(checkpoint_path)).read_metadata()
+            with python313_pathlib_pickle_compat():
+                checkpoint_metadata = dcp.FileSystemReader(str(checkpoint_path)).read_metadata()
             model_state_dict, reused_mtp_keys, fresh_mtp_keys = _select_shape_compatible_mtp_state(
                 model_state_dict,
                 checkpoint_metadata.state_dict_metadata,
@@ -874,13 +918,9 @@ def init_from_training_checkpoint(model: torch.nn.Module, checkpoint_path: str):
         from nemo.collections.speechlm2.parts.hf_hub import _load_state_dict_with_dtensors
 
         strict = bool(model.cfg.get("init_from_checkpoint_strict", True))
-        reuse_compatible_mtp = bool(
-            mtp_cfg is not None
-            and mtp_cfg.get("enabled", False)
-            and mtp_cfg.get("replace_existing_head", False)
-            and mtp_cfg.get("reuse_compatible_weights", False)
-        )
         load_kwargs = {"strict": strict}
+        if preserve_replacement_mtp:
+            load_kwargs["preserve_replacement_mtp"] = True
         if reuse_compatible_mtp:
             load_kwargs["reuse_compatible_mtp"] = True
         _load_state_dict_with_dtensors(model, checkpoint_path, **load_kwargs)
@@ -890,7 +930,12 @@ def init_from_training_checkpoint(model: torch.nn.Module, checkpoint_path: str):
             strict,
         )
     else:
-        init_model_from_checkpoint(model, checkpoint_path)
+        init_model_from_checkpoint(
+            model,
+            checkpoint_path,
+            preserve_replacement_mtp=preserve_replacement_mtp,
+            reuse_compatible_mtp=reuse_compatible_mtp,
+        )
 
 
 def maybe_load_pretrained_models(model: torch.nn.Module):

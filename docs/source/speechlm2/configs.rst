@@ -187,13 +187,18 @@ Automodel. All are optional — defaults preserve standard behavior.
         loss_scaling_factor: 0.1
         num_nextn_predict_layers: 2
         use_repeated_layer: true
-        replace_existing_head: false
+        hybrid_override_pattern: "*E"
+        moe_intermediate_size: 768
+        replace_existing_head: true
+        reuse_compatible_weights: false
 
 ``cross_entropy`` trains each MTP depth against its shifted dataset target and
 supports either joint training or head-only training. ``lk`` distills each MTP
 depth from the backbone's future-token distribution and requires
 ``training_mode: head_only``; this keeps the backbone frozen as the teacher.
-``lk_lambda`` must be between 0 and 1. Packed-sequence boundaries are respected,
+``lk_lambda`` must be between 0 and 1, and LK requires
+``model.cross_entropy_backend: eager`` because it consumes the backbone teacher
+logits. Packed-sequence boundaries are respected,
 and the teacher rows needed by each rank are exchanged when context parallelism
 is enabled.
 
@@ -202,7 +207,16 @@ with existing runs. The gradient-carrying objective also includes ``mtp_loss``;
 inspect that metric and ``mtp_lk_kl/head_N`` / ``mtp_lk_tv/head_N`` to monitor LK
 training. ``use_repeated_layer`` shares one physical MTP layer across the configured
 logical prediction depths. ``replace_existing_head: false`` preserves compatible
-MTP weights already present in a checkpoint.
+MTP architecture and weights already present in a checkpoint. Set
+``replace_existing_head: true`` to construct a recipe-defined head; checkpoint MTP
+tensors are then skipped by default. ``moe_intermediate_size`` sets the routed-expert
+width for a replacement MoE head and therefore requires
+``replace_existing_head: true`` plus an ``E`` symbol in
+``hybrid_override_pattern``. To initialize unchanged replacement-head tensors
+such as attention from ``model.init_from_checkpoint``, also set
+``reuse_compatible_weights: true``; only tensors with matching names and complete
+shapes are reused. This reuse option applies only to ``init_from_checkpoint``;
+replacement-head MTP tensors from ``pretrained_llm`` are always skipped.
 
 **Garbage collection:**
 
@@ -551,6 +565,7 @@ optimizer, LR scheduler, and step counter — set ``model.init_from_checkpoint``
 
     model:
       init_from_checkpoint: /path/to/checkpoints/step=6375.ckpt
+      init_from_checkpoint_strict: true
 
 Or pass it as a Hydra override:
 
@@ -577,7 +592,10 @@ Three checkpoint formats are supported:
   when the parallelism configuration differs between the source and target runs.
 
 * **HuggingFace model directories**: Directories containing ``model.safetensors``,
-  such as the output of ``to_hf.py``.
+  such as the output of ``to_hf.py``. Loading into an already distributed DTensor
+  model is strict by default: every model parameter must be present. Set
+  ``model.init_from_checkpoint_strict: false`` only when intentionally retaining
+  initialized values for parameters absent from the checkpoint.
 
 * **Single-file checkpoints**: Standard ``.ckpt`` or ``.pt`` files with a
   ``state_dict`` key.

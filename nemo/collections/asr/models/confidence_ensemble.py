@@ -87,11 +87,11 @@ def get_filtered_logprobs(hypothesis: Hypothesis, exclude_blank: bool) -> torch.
             filtered_logprobs.append(align_elem[0])
         filtered_logprobs = torch.stack(filtered_logprobs)
         if torch.cuda.is_available():  # by default logprobs are placed on cpu in nemo
-            filtered_logprobs = filtered_logprobs.cuda()
+            filtered_logprobs = filtered_logprobs.to(device=next(self.parameters()).device)
     else:  # CTC
         logprobs = hypothesis.y_sequence
         if torch.cuda.is_available():  # by default logprobs are placed on cpu in nemo
-            logprobs = logprobs.cuda()
+            logprobs = logprobs.to(device=next(self.parameters()).device)
         if exclude_blank:  # filtering blanks
             labels = logprobs.argmax(dim=-1)
             filtered_logprobs = logprobs[labels != logprobs.shape[1] - 1]

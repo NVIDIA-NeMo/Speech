@@ -60,7 +60,7 @@ def struct_copy_one(src):
     elif isinstance(src, dict):
         return {k: struct_copy_one(src[k]) for k in src}
     elif isinstance(src, torch.Tensor):
-        return src.clone().detach().cuda()
+        return src.clone().detach().to(src.device)
     else:
         return src
 

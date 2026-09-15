@@ -24,10 +24,7 @@ from pipecat.processors.frameworks.rtvi import (
     RTVIBotTTSTextMessage,
 )
 from pipecat.processors.frameworks.rtvi import RTVIObserver as _RTVIObserver
-from pipecat.processors.frameworks.rtvi import (
-    RTVIProcessor,
-    RTVITextMessageData,
-)
+from pipecat.processors.frameworks.rtvi import RTVIProcessor, RTVITextMessageData
 from pipecat.transports.base_output import BaseOutputTransport
 
 

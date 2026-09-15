@@ -39,6 +39,9 @@ For NVIDIA-published checkpoints, see :doc:`./asr_checkpoints` and the `NVIDIA H
    * - `cstr/canary-1b-v2-GGUF <https://huggingface.co/cstr/canary-1b-v2-GGUF>`__
      - Quantised Canary 1B (Q4_K ~673 MB). Multilingual ASR and speech translation.
      - GGUF (`CrispASR <https://github.com/CrispStrobe/CrispASR>`__)
+   * - `adalat-ai/koyal-indic-600m-1.0 <https://huggingface.co/adalat-ai/koyal-indic-600m-1.0>`__
+     - Rich-orthography ASR (punctuation, numerals) for Hindi, Kannada, Malayalam, Telugu. Cache-aware FastConformer + prompt-RNNT (600M), fine-tuned from `nemotron-3.5-asr-streaming-0.6b <https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b>`__; one checkpoint, streaming or offline.
+     - NeMo
 
 
 .. _submit-a-community-checkpoint:

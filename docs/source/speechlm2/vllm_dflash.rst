@@ -12,8 +12,29 @@ Requirements
 
 * A vLLM-ready NeMo SpeechLM checkpoint whose language backbone is compatible
   with the DFlash draft.
-* vLLM 0.27.1 or later for the published Nemotron 3.5 Lightning recipe.
+* vLLM 0.28.0, the version pinned by NeMo's ``speechlm2-vllm`` extra.
 * An attention backend that supports the draft model's non-causal attention.
+
+For a pip installation, install the compatible Automodel revision explicitly
+alongside the SpeechLM and vLLM extras. This keeps Automodel and vLLM on their
+shared ``quack-kernels==0.6.4`` dependency:
+
+.. code-block:: bash
+
+   pip install -U \
+     "nemo-automodel @ git+https://github.com/NVIDIA-NeMo/Automodel.git@eb812552a6cb4dd9f45496f13345fc1857156b6e" \
+     -e ".[speechlm2,speechlm2-vllm]"
+
+With uv, the repository pins the same Automodel revision, so no explicit VCS
+requirement is needed:
+
+.. code-block:: bash
+
+   uv sync --extra speechlm2 --extra speechlm2-vllm
+
+Do not combine ``speechlm2-vllm`` with the ``cu12``, ``cu13``, ``compiled``,
+or ``compiled-a100`` extras. vLLM owns the exact Torch and CUDA-kernel stack
+for this serving environment.
 
 The following example uses the published NVFP4 DFlash draft for the Nemotron
 3.5 Lightning 30B-A3B backbone and proposes six tokens per decoding step:
@@ -45,15 +66,11 @@ model. Its checkpoint must be trained or fine-tuned separately for the target
 language backbone; NeMo's vLLM inference plugin does not create or convert
 DFlash2 weights.
 
-At the time of writing, DFlash2 requires vLLM commit
-``3406ec1dae9916f920b90f0dbf90dcf54923d042`` from pull request 52816. The
-immutable commit pin keeps the DFlash2 runtime reproducible. DFlash2 uses the
-same ``method`` value as DFlash; vLLM selects it from the trained draft
+DFlash2 support is included in the pinned vLLM 0.28.0 release. DFlash2 uses
+the same ``method`` value as DFlash; vLLM selects it from the trained draft
 checkpoint's architecture:
 
 .. code-block:: bash
-
-   pip install -U "vllm @ git+https://github.com/vllm-project/vllm.git@3406ec1dae9916f920b90f0dbf90dcf54923d042"
 
    vllm serve /path/to/vllm-ready-speechlm-checkpoint \
      --trust-remote-code \

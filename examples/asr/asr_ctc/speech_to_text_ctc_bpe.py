@@ -83,8 +83,13 @@ def main(cfg):
     exp_manager(trainer, cfg.get("exp_manager", None))
     asr_model = EncDecCTCModelBPE(cfg=cfg.model, trainer=trainer)
 
-    # Initialize the weights of the model from another model, if provided via config
+    # Initialize the weights of the model from another model, if provided via config.
     asr_model.maybe_init_from_pretrained_checkpoint(cfg)
+
+    if cfg.model.get("freeze_encoder", False):
+        asr_model.encoder.freeze()
+        asr_model.encoder.eval()
+        logging.info("Froze encoder parameters and set the encoder to eval mode after checkpoint initialization.")
 
     trainer.fit(asr_model)
 

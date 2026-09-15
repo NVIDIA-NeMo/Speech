@@ -191,7 +191,7 @@ speechlm2-only = [
 
 # vLLM owns its exact Torch and CUDA-kernel stack.
 # Install this serving extra separately from the cu*/compiled* extras below.
-speechlm2-vllm = [
+vllm = [
     "peft>=0.18.1",
     "vllm==0.28.0; sys_platform == 'linux'",
 ]
@@ -439,24 +439,24 @@ conflicts = [
     [
         { extra = "cu12" },
         { extra = "cu13" },
-        { extra = "speechlm2-vllm" },
+        { extra = "vllm" },
     ],
     [
         { extra = "compiled" },
         { extra = "compiled-a100" },
-        { extra = "speechlm2-vllm" },
+        { extra = "vllm" },
     ],
     [
         { extra = "speechlm2-only" },
-        { extra = "speechlm2-vllm" },
+        { extra = "vllm" },
     ],
     [
         { extra = "speechlm2" },
-        { extra = "speechlm2-vllm" },
+        { extra = "vllm" },
     ],
     [
         { extra = "all" },
-        { extra = "speechlm2-vllm" },
+        { extra = "vllm" },
     ],
 ]
 override-dependencies = [

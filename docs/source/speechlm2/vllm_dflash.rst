@@ -12,7 +12,7 @@ Requirements
 
 * A vLLM-ready NeMo SpeechLM checkpoint whose language backbone is compatible
   with the DFlash draft.
-* vLLM 0.28.0, the version pinned by NeMo's ``speechlm2-vllm`` extra.
+* vLLM 0.28.0, the version pinned by NeMo's ``vllm`` extra.
 * An attention backend that supports the draft model's non-causal attention.
 
 Automodel is not required to serve an exported checkpoint. Install the ASR
@@ -20,15 +20,15 @@ runtime and pinned vLLM serving dependencies with:
 
 .. code-block:: bash
 
-   pip install -e ".[asr,speechlm2-vllm]"
+   pip install -e ".[asr,vllm]"
 
 The equivalent uv command is:
 
 .. code-block:: bash
 
-   uv sync --extra asr --extra speechlm2-vllm
+   uv sync --extra asr --extra vllm
 
-Do not combine ``speechlm2-vllm`` with the ``speechlm2``, ``speechlm2-only``,
+Do not combine ``vllm`` with the ``speechlm2``, ``speechlm2-only``,
 ``all``, ``cu12``, ``cu13``, ``compiled``, or ``compiled-a100`` extras. These
 include Automodel training dependencies; vLLM owns the exact Torch and
 CUDA-kernel stack for this serving environment.

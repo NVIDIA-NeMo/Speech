@@ -1548,12 +1548,18 @@ class StatelessTimer(Timer):
             self._offset = max(0.0, time.time() - self._slurm_job_start_time)
 
     @staticmethod
-    def _read_slurm_job_start_time() -> float:
-        """Read and validate the UNIX timestamp exported by SLURM."""
+    def _read_slurm_job_start_time() -> Optional[float]:
+        """Read SLURM's start time, falling back to training-loop timing outside SLURM."""
         value = os.getenv("SLURM_JOB_START_TIME")
+        if value is None:
+            logging.warning(
+                "max_time_per_run_from_slurm=True, but SLURM_JOB_START_TIME is not set; "
+                "falling back to measuring max_time_per_run from the training loop start."
+            )
+            return None
         try:
             start_time = int(value)
-        except (TypeError, ValueError):
+        except ValueError:
             raise ValueError(
                 "SLURM-based max_time_per_run requires SLURM_JOB_START_TIME to be a positive UNIX timestamp"
             ) from None

@@ -239,10 +239,11 @@ jobs:
         env:
           PERSISTENT_TEST_DATA: ${{ vars.DEFAULT_TEST_DATA_PATH || '/mnt/datadrive/TestData' }}
         run: |
-          python .github/scripts/prepare_test_data.py \
-            --output tests/.data \
-            --persistent-root "$PERSISTENT_TEST_DATA" \
-            --populate-persistent
+          args=(--output tests/.data --persistent-root "$PERSISTENT_TEST_DATA")
+          if [[ "$GITHUB_REF" == "refs/heads/main" ]]; then
+            args+=(--populate-persistent)
+          fi
+          python .github/scripts/prepare_test_data.py "${args[@]}"
 
   L0_Setup_Test_Data_And_Models:
     needs: [configure, cicd-test-container-build, cicd-wait-in-queue, pre-flight, prepare-test-data]

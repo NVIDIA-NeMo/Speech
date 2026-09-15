@@ -48,7 +48,7 @@ def safe_members(archive: tarfile.TarFile, output: Path) -> list[tarfile.TarInfo
     return members
 
 
-def extracted_data_is_valid(directory: Path) -> bool:
+def _extracted_data_is_valid(directory: Path) -> bool:
     archive_path = directory / TEST_DATA_FILENAME
     marker_path = directory / TEST_DATA_MARKER
     if not archive_is_valid(archive_path) or not marker_path.is_file():
@@ -98,6 +98,13 @@ def extracted_data_is_valid(directory: Path) -> bool:
     return True
 
 
+def extracted_data_is_valid(directory: Path) -> bool:
+    try:
+        return _extracted_data_is_valid(directory)
+    except (OSError, tarfile.TarError, ValueError):
+        return False
+
+
 def download_archive(destination: Path, url: str) -> None:
     request = urllib.request.Request(url, headers={"User-Agent": "Speech-CI-test-data-preparer"})
     for attempt in range(1, 6):
@@ -119,18 +126,35 @@ def stage_test_data(output: Path, persistent_root: Path | None, url: str) -> Pat
     archive_path = staging / TEST_DATA_FILENAME
 
     persistent_data = persistent_root / "speech-test-data" / TEST_DATA_KEY if persistent_root else None
-    if persistent_data and extracted_data_is_valid(persistent_data):
-        shutil.rmtree(staging)
-        shutil.copytree(persistent_data, staging)
-        return staging
+    if persistent_data:
+        try:
+            shutil.rmtree(staging)
+            shutil.copytree(persistent_data, staging, symlinks=True)
+        except OSError:
+            shutil.rmtree(staging, ignore_errors=True)
+        else:
+            if extracted_data_is_valid(staging):
+                return staging
+            shutil.rmtree(staging, ignore_errors=True)
+        staging = Path(tempfile.mkdtemp(prefix=f".{output.name}-", dir=staging_parent))
+        archive_path = staging / TEST_DATA_FILENAME
 
-    if archive_is_valid(output / TEST_DATA_FILENAME):
-        shutil.copy2(output / TEST_DATA_FILENAME, archive_path)
-    elif persistent_data and archive_is_valid(persistent_data / TEST_DATA_FILENAME):
-        shutil.copy2(persistent_data / TEST_DATA_FILENAME, archive_path)
-    else:
+    archive_ready = False
+    archive_sources = [output / TEST_DATA_FILENAME]
+    if persistent_data:
+        archive_sources.append(persistent_data / TEST_DATA_FILENAME)
+    for source in archive_sources:
+        try:
+            shutil.copy2(source, archive_path)
+        except OSError:
+            continue
+        if archive_is_valid(archive_path):
+            archive_ready = True
+            break
+        archive_path.unlink(missing_ok=True)
+
+    if not archive_ready:
         download_archive(archive_path, url)
-
     if not archive_is_valid(archive_path):
         raise ValueError(f"{TEST_DATA_FILENAME} does not match the pinned SHA-256")
     with tarfile.open(archive_path, "r:gz") as archive:
@@ -159,7 +183,10 @@ def prepare_test_data(output: Path, persistent_root: Path | None, url: str, popu
             persistent_data.parent.mkdir(parents=True, exist_ok=True)
             staging = Path(tempfile.mkdtemp(prefix=f".{TEST_DATA_KEY}-", dir=persistent_data.parent))
             shutil.rmtree(staging)
-            shutil.copytree(output, staging)
+            shutil.copytree(output, staging, symlinks=True)
+            if not extracted_data_is_valid(staging):
+                shutil.rmtree(staging, ignore_errors=True)
+                raise ValueError("Staged persistent test data failed validation")
             replace_directory(staging, persistent_data)
 
 

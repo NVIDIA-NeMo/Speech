@@ -30,8 +30,8 @@
 
 import gc
 import random
-from functools import partial
-from typing import Callable, Union
+from contextlib import contextmanager
+from typing import Iterator, Union
 
 import torch
 from torch.autograd import Function
@@ -421,7 +421,27 @@ class RNNTLossNumba(Module):
 
         Preserves random states and the configured loss; returns False on CPU.
         """
-        return _warmup_numba_loss(device, partial(_warmup_rnnt_loss, self))
+        device = torch.device(device)
+        if device.type != 'cuda':
+            return False
+
+        def warmup():
+            # Non-singleton dimensions preserve the contiguous production array layout.
+            acts = torch.zeros(
+                (2, 8, 4, max(2, self.blank + 1)), device=device, dtype=torch.float32, requires_grad=True
+            )
+            labels = torch.full((2, 3), 1 if self.blank == 0 else 0, device=device, dtype=torch.int64)
+            input_lengths = torch.full((2,), 8, device=device, dtype=torch.int64)
+            label_lengths = torch.full((2,), 3, device=device, dtype=torch.int64)
+            value = self(acts, labels, input_lengths, label_lengths)
+            value.sum().backward()
+            if not torch.isfinite(value).all() or not torch.isfinite(acts.grad).all():
+                raise RuntimeError('RNNT loss warmup produced non-finite loss or gradients')
+
+        # Return from the local function before collecting compiler cycles and temporary tensors.
+        with _numba_loss_warmup(device):
+            warmup()
+        return True
 
     def forward(self, acts, labels, act_lens, label_lens):
         """
@@ -569,7 +589,45 @@ class TDTLossNumba(Module):
 
         Preserves random states and the configured loss; returns False on CPU.
         """
-        return _warmup_numba_loss(device, partial(_warmup_tdt_loss, self))
+        device = torch.device(device)
+        if device.type != 'cuda':
+            return False
+
+        def warmup():
+            # Non-singleton dimensions preserve the contiguous production array layout.
+            labels_count = 3
+            frames = max(8, (labels_count + 1) * max(self.durations))
+            vocabulary_size = max(2, self.blank + 1)
+            label = 1 if self.blank == 0 else 0
+            for omega in (-1.0, 2.0):
+                # Force each branch even when random.uniform returns an endpoint.
+                loss = TDTLossNumba(
+                    blank=self.blank,
+                    durations=list(self.durations),
+                    reduction='mean',
+                    fastemit_lambda=self.fastemit_lambda,
+                    clamp=self.clamp,
+                    sigma=self.sigma,
+                    omega=omega,
+                )
+                acts = torch.zeros(
+                    (2, frames, labels_count + 1, vocabulary_size + len(self.durations)),
+                    device=device,
+                    dtype=torch.float32,
+                    requires_grad=True,
+                )
+                labels = torch.full((2, labels_count), label, device=device, dtype=torch.int64)
+                input_lengths = torch.full((2,), frames, device=device, dtype=torch.int64)
+                label_lengths = torch.full((2,), labels_count, device=device, dtype=torch.int64)
+                value = loss(acts, labels, input_lengths, label_lengths)
+                value.backward()
+                if not torch.isfinite(value).all() or not torch.isfinite(acts.grad).all():
+                    raise RuntimeError('TDT loss warmup produced non-finite loss or gradients')
+
+        # Return from the local function before collecting compiler cycles and temporary tensors.
+        with _numba_loss_warmup(device):
+            warmup()
+        return True
 
     def forward(self, acts, labels, act_lens, label_lens):
         """
@@ -654,10 +712,8 @@ def certify_inputs(log_probs, labels, lengths, label_lengths):
         raise ValueError(f"Output length mismatch! Given U: {U}, Expected max U from target lengths: {max_U} + 1")
 
 
-def _warmup_numba_loss(device: Union[str, torch.device], warmup: Callable[[torch.device], None]) -> bool:
-    device = torch.device(device)
-    if device.type != 'cuda':
-        return False
+@contextmanager
+def _numba_loss_warmup(device: torch.device) -> Iterator[None]:
     device_index = device.index if device.index is not None else torch.cuda.current_device()
     python_rng = random.getstate()
     try:
@@ -667,60 +723,8 @@ def _warmup_numba_loss(device: Union[str, torch.device], warmup: Callable[[torch
             torch.enable_grad(),
             torch.autocast('cuda', enabled=False),
         ):
-            warmup(device)
+            yield
     finally:
         random.setstate(python_rng)
-    # The helper must have returned so its tiny tensors can be collected with compiler cycles.
     gc.collect()
     torch.cuda.synchronize(device)
-    return True
-
-
-def _warmup_rnnt_loss(source: RNNTLossNumba, device: torch.device) -> None:
-    loss = RNNTLossNumba(
-        blank=source.blank,
-        reduction='mean',
-        fastemit_lambda=source.fastemit_lambda,
-        clamp=source.clamp,
-    )
-    # Non-singleton dimensions preserve the contiguous production array layout.
-    acts = torch.zeros((2, 8, 4, max(2, source.blank + 1)), device=device, dtype=torch.float32, requires_grad=True)
-    labels = torch.full((2, 3), 1 if source.blank == 0 else 0, device=device, dtype=torch.int64)
-    input_lengths = torch.full((2,), 8, device=device, dtype=torch.int64)
-    label_lengths = torch.full((2,), 3, device=device, dtype=torch.int64)
-    value = loss(acts, labels, input_lengths, label_lengths)
-    value.backward()
-    if not torch.isfinite(value).all() or not torch.isfinite(acts.grad).all():
-        raise RuntimeError('RNNT loss warmup produced non-finite loss or gradients')
-
-
-def _warmup_tdt_loss(source: TDTLossNumba, device: torch.device) -> None:
-    # Non-singleton dimensions preserve the contiguous production array layout.
-    labels_count = 3
-    frames = max(8, (labels_count + 1) * max(source.durations))
-    vocabulary_size = max(2, source.blank + 1)
-    label = 1 if source.blank == 0 else 0
-    for omega in (-1.0, 2.0):
-        # Force each branch even when random.uniform returns an endpoint.
-        loss = TDTLossNumba(
-            blank=source.blank,
-            durations=list(source.durations),
-            reduction='mean',
-            fastemit_lambda=source.fastemit_lambda,
-            clamp=source.clamp,
-            sigma=source.sigma,
-            omega=omega,
-        )
-        acts = torch.zeros(
-            (2, frames, labels_count + 1, vocabulary_size + len(source.durations)),
-            device=device,
-            dtype=torch.float32,
-            requires_grad=True,
-        )
-        labels = torch.full((2, labels_count), label, device=device, dtype=torch.int64)
-        input_lengths = torch.full((2,), frames, device=device, dtype=torch.int64)
-        label_lengths = torch.full((2,), labels_count, device=device, dtype=torch.int64)
-        value = loss(acts, labels, input_lengths, label_lengths)
-        value.backward()
-        if not torch.isfinite(value).all() or not torch.isfinite(acts.grad).all():
-            raise RuntimeError('TDT loss warmup produced non-finite loss or gradients')

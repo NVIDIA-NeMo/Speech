@@ -69,5 +69,5 @@ class WordTokenizer(CharTokenizer):
         return tokens
 
     def ids_to_text(self, ids):
-        ids_ = [id_ for id_ in ids if id_ not in self.special_tokens]
+        ids_ = [id_ for id_ in ids if id_ not in self.special_token_ids_to_remove_while_decoding]
         return " ".join(self.ids_to_tokens(ids_))

@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,7 +17,8 @@ from unittest.mock import patch
 
 import pytest
 import torch
-from lhotse import CutSet, SupervisionSegment
+from lhotse import AudioSource, CutSet, SupervisionSegment
+from lhotse.audio import AudioLoadingError
 from lhotse.dataset import AudioSamples
 from lhotse.testing.dummies import DummyManifest
 
@@ -100,6 +102,22 @@ def test_lhotse_asr_dataset_metadata(tokenizer):
 
     assert cuts_metadata[1].supervisions[0].duration == 1
     assert cuts_metadata[1].supervisions[0].start == 0.0
+
+
+def test_lhotse_asr_dataset_audio_failure_policy_is_configurable(tokenizer, tmp_path):
+    cuts = DummyManifest(CutSet, begin_id=0, end_id=2, with_data=True)
+    cuts[1].recording.sources = [AudioSource(type="file", channels=[0], source=str(tmp_path / "missing.wav"))]
+    dataset = LhotseSpeechToTextBpeDataset(tokenizer=tokenizer)
+
+    tolerant = dataset.with_fault_tolerant_audio_loading(True)
+    batch = tolerant[cuts]
+    assert batch[0].shape[0] == 1
+    assert tolerant.load_audio.fault_tolerant is True
+
+    strict = dataset.with_fault_tolerant_audio_loading(False)
+    assert strict.load_audio.fault_tolerant is False
+    with pytest.raises(AudioLoadingError):
+        strict[cuts]
 
 
 def test_lhotse_asr_dataset_ais_batch_loading_enabled(tokenizer, monkeypatch):

@@ -1,4 +1,5 @@
-# Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -23,10 +24,13 @@ import torch
 from easymagpie_vllm_omni.scheduler import (
     EasyMagpieARAsyncScheduler,
     EasyMagpieCodecScheduler,
+    _codec_segment_resets_state,
     _poll_native_codec_chunk,
+    _set_segment_finished,
 )
 from vllm.v1.request import RequestStatus
 from vllm_omni.core.sched.omni_ar_scheduler import OmniARAsyncScheduler
+from vllm_omni.core.sched.omni_generation_scheduler import OmniGenerationScheduler
 from vllm_omni.distributed.omni_connectors.transfer_adapter.chunk_transfer_adapter import OmniChunkTransferAdapter
 
 
@@ -115,6 +119,33 @@ def test_segment_stop_discards_and_rolls_back_exact_inflight_count(monkeypatch, 
     assert request.num_computed_tokens == 20 - remaining_placeholders
 
 
+def test_terminal_streaming_output_clears_segment_marker(monkeypatch):
+    scheduler = object.__new__(EasyMagpieARAsyncScheduler)
+    request = SimpleNamespace(
+        request_id="request",
+        resumable=False,
+        async_tokens_to_discard=0,
+        num_computed_tokens=20,
+        num_output_placeholders=1,
+    )
+    output = SimpleNamespace(request_id="request", is_segment_finished=True)
+
+    def fake_update_request_with_output(self, req, new_token_ids):
+        req.num_output_placeholders = 0
+        return new_token_ids, True
+
+    def fake_update_from_output(self, scheduler_output, model_runner_output):
+        self._update_request_with_output(request, [7])
+        return {0: SimpleNamespace(outputs=[output])}
+
+    monkeypatch.setattr(OmniARAsyncScheduler, "_update_request_with_output", fake_update_request_with_output)
+    monkeypatch.setattr(OmniARAsyncScheduler, "update_from_output", fake_update_from_output)
+
+    scheduler.update_from_output(None, None)
+
+    assert output.is_segment_finished is False
+
+
 def test_final_streaming_sentinel_marks_session_non_resumable(monkeypatch):
     scheduler = object.__new__(EasyMagpieARAsyncScheduler)
     request = SimpleNamespace(resumable=True, streaming_queue=deque([None]))
@@ -136,6 +167,40 @@ def test_empty_streaming_queue_remains_resumable_while_waiting(monkeypatch):
 
     assert scheduler._handle_stopped_request(request) is False
     assert request.resumable is True
+
+
+def test_final_streaming_update_sends_terminal_codec_payload_for_waiting_session(monkeypatch):
+    class _Session(SimpleNamespace):
+        def is_finished(self):
+            return RequestStatus.is_finished(self.status)
+
+    session = _Session(
+        request_id="request",
+        external_req_id="request",
+        status=RequestStatus.WAITING_FOR_STREAMING_REQ,
+        resumable=True,
+        additional_information={"reset_codec_on_segment": True},
+    )
+    terminal_payloads = []
+    scheduler = object.__new__(EasyMagpieARAsyncScheduler)
+    scheduler.requests = {session.request_id: session}
+    scheduler.chunk_transfer_adapter = SimpleNamespace(save_async=lambda **kwargs: terminal_payloads.append(kwargs))
+    final_update = SimpleNamespace(request_id="request", resumable=False)
+    base_updates = []
+    monkeypatch.setattr(OmniARAsyncScheduler, "add_request", lambda self, request: base_updates.append(request))
+
+    scheduler.add_request(final_update)
+
+    assert base_updates == [final_update]
+    assert len(terminal_payloads) == 1
+    terminal_request = terminal_payloads[0]["request"]
+    assert terminal_request is not session
+    assert terminal_request.is_finished()
+    assert terminal_request.resumable is False
+    assert terminal_payloads[0]["multimodal_output"] is None
+    assert terminal_payloads[0]["is_segment_finished"] is False
+    assert session.status == RequestStatus.WAITING_FOR_STREAMING_REQ
+    assert session.resumable is True
 
 
 def test_resume_uses_exact_discard_count_and_forwards_chunk_metadata(monkeypatch):
@@ -164,6 +229,17 @@ def test_resume_uses_exact_discard_count_and_forwards_chunk_metadata(monkeypatch
     assert session.num_computed_tokens == 18
     assert session.max_tokens == 5
     assert session.additional_information == {"text_token": [2, 3]}
+
+
+def test_scheduler_output_marks_only_the_matching_segment():
+    matching = SimpleNamespace(request_id="matching", is_segment_finished=False)
+    other = SimpleNamespace(request_id="other", is_segment_finished=False)
+    outputs = {0: SimpleNamespace(outputs=[matching, other])}
+
+    _set_segment_finished(outputs, "matching", True)
+
+    assert matching.is_segment_finished is True
+    assert other.is_segment_finished is False
 
 
 def test_native_codec_chunk_appends_prompt_without_resetting_state(monkeypatch):
@@ -212,10 +288,12 @@ def test_native_codec_chunk_appends_prompt_without_resetting_state(monkeypatch):
     assert prewarm_request.num_computed_tokens == 0
 
 
-def test_native_codec_empty_segment_marker_does_not_reset_state(monkeypatch):
+def test_native_codec_empty_segment_marker_wakes_scheduler_without_resetting_state(monkeypatch):
     adapter = object.__new__(OmniChunkTransferAdapter)
     adapter._easymagpie_num_quantizers = 2
     adapter._easymagpie_chunk_lock = threading.Lock()
+    adapter.segment_finished_requests = set()
+    adapter._finished_load_reqs = set()
     request = SimpleNamespace(
         prompt_token_ids=[0, 0, 0],
         request_id="request",
@@ -234,15 +312,101 @@ def test_native_codec_empty_segment_marker_does_not_reset_state(monkeypatch):
         req.num_prompt_tokens = 0
         req.num_computed_tokens = 0
         req.additional_information = {"meta": {"is_segment_finished": True}}
+        self.segment_finished_requests.add(req.request_id)
         return False
 
     monkeypatch.setattr(OmniChunkTransferAdapter, "_poll_single_request", fake_poll)
 
-    assert _poll_native_codec_chunk(adapter, request) is False
+    assert _poll_native_codec_chunk(adapter, request) is True
     assert request.prompt_token_ids == [0, 0, 0]
     assert request._all_token_ids == [0, 0, 0]
     assert request.num_prompt_tokens == 3
     assert request.num_computed_tokens == 3
+    assert adapter._finished_load_reqs == {"request"}
+
+
+def test_codec_segment_stop_consumes_late_boundary_readiness(monkeypatch):
+    scheduler = object.__new__(EasyMagpieCodecScheduler)
+    scheduler.chunk_transfer_adapter = SimpleNamespace(
+        segment_finished_requests={"request"},
+        _finished_load_reqs={"request"},
+        requests_with_ready_chunks={"request"},
+    )
+    scheduler._easymagpie_reset_on_update = set()
+    scheduler._easymagpie_segment_requests = set()
+    scheduler._easymagpie_stopped_sessions = []
+    request = SimpleNamespace(
+        request_id="request",
+        additional_information={"meta": {"codec_streaming": False}},
+    )
+    monkeypatch.setattr(OmniGenerationScheduler, "_handle_stopped_request", lambda self, request: False)
+
+    assert scheduler._handle_stopped_request(request) is False
+
+    assert scheduler.chunk_transfer_adapter.segment_finished_requests == set()
+    assert scheduler.chunk_transfer_adapter._finished_load_reqs == set()
+    assert scheduler.chunk_transfer_adapter.requests_with_ready_chunks == set()
+
+
+def test_dialogue_boundary_resets_codec_before_consuming_queued_update(monkeypatch):
+    scheduler = object.__new__(EasyMagpieCodecScheduler)
+    scheduler.chunk_transfer_adapter = SimpleNamespace(
+        segment_finished_requests={"request"},
+        _finished_load_reqs={"request"},
+        requests_with_ready_chunks={"request"},
+    )
+    scheduler._easymagpie_reset_on_update = set()
+    scheduler._easymagpie_stopped_sessions = []
+    scheduler._easymagpie_segment_requests = set()
+    request = SimpleNamespace(
+        request_id="request",
+        additional_information={"meta": {"codec_streaming": torch.tensor(False)}},
+    )
+    update = SimpleNamespace()
+    base_updates = []
+
+    def fake_base_update(self, session, streaming_update):
+        base_updates.append((session, streaming_update))
+
+    def fake_base_stop(self, session):
+        # OmniGenerationScheduler consumes an already queued update synchronously.
+        self._update_request_as_session(session, update)
+        return False
+
+    monkeypatch.setattr(OmniGenerationScheduler, "_update_request_as_session", fake_base_update)
+    monkeypatch.setattr(OmniGenerationScheduler, "_handle_stopped_request", fake_base_stop)
+
+    assert _codec_segment_resets_state(request) is True
+    assert scheduler._handle_stopped_request(request) is False
+    assert base_updates == [(request, update)]
+    assert scheduler._easymagpie_reset_on_update == set()
+    assert scheduler._easymagpie_stopped_sessions == []
+    assert scheduler._easymagpie_segment_requests == {"request"}
+    assert scheduler.chunk_transfer_adapter.segment_finished_requests == set()
+
+
+def test_native_codec_update_marks_resumable_segment_output(monkeypatch):
+    scheduler = object.__new__(EasyMagpieCodecScheduler)
+    scheduler.chunk_transfer_adapter = SimpleNamespace(segment_finished_requests=set())
+    scheduler._easymagpie_reset_on_update = set()
+    output = SimpleNamespace(request_id="request", is_segment_finished=False)
+    request = SimpleNamespace(request_id="request", additional_information={})
+
+    def fake_base_stop(self, session):
+        return False
+
+    def fake_base_update(self, scheduler_output, model_runner_output):
+        self._handle_stopped_request(request)
+        return {0: SimpleNamespace(outputs=[output])}
+
+    monkeypatch.setattr(OmniGenerationScheduler, "_handle_stopped_request", fake_base_stop)
+    monkeypatch.setattr(OmniGenerationScheduler, "update_from_output", fake_base_update)
+    monkeypatch.setattr(EasyMagpieCodecScheduler, "_resume_codec_after_segment", lambda self, session: None)
+
+    scheduler.update_from_output(None, None)
+
+    assert output.is_segment_finished is True
+    assert scheduler._easymagpie_segment_requests is None
 
 
 def test_native_codec_streaming_update_preserves_state_and_resumes_polling():

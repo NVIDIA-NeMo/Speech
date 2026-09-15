@@ -1,4 +1,5 @@
-# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -80,11 +81,11 @@ elif te_version() >= (1, 0):
         param: torch.nn.Parameter,
     ) -> None:
         cast_to_fp8(
-            src.view(1, -1),
+            input_.view(1, -1),
             param._fp8_meta["scaling_fwd"],
             param._fp8_meta_index,
             param._fp8_dtype,
-            out=dst.view(1, -1),
+            out=out.view(1, -1),
         )
 
     def _get_fp8_scale_and_amax_impl(tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -728,7 +729,6 @@ class MegatronDistributedFusedAdam(DistributedFusedAdam):
             return
 
         # Cast local data to FP8
-        fp8_params_shards = dict()
         for bucket_id, param_bucket in params_buckets.items():
             state_bucket = self.state["buckets"][bucket_id]
             if state_bucket.param_sync_dtype != torch.uint8:

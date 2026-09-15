@@ -1,4 +1,5 @@
-# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,6 +12,18 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+# Portions adapted from the VoxCeleb trainer:
+# Copyright (c) 2020-present NAVER Corp. Licensed under the MIT License.
+# Source: https://github.com/clovaai/voxceleb_trainer
+#
+# ResNet portions adapted through the VoxCeleb trainer from torchvision:
+# Copyright (c) 2016 Soumith Chintala. Licensed under the BSD-3-Clause License.
+# Source: https://github.com/pytorch/vision
+#
+# Wav2Vec2 and EnCodec helpers adapted from Hugging Face Transformers:
+# Copyright 2022 The HuggingFace Inc. team. Licensed under the Apache License, Version 2.0.
+# Source: https://github.com/huggingface/transformers
 
 import math
 from abc import ABC, abstractmethod

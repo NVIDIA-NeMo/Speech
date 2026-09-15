@@ -1,4 +1,5 @@
-# Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -114,6 +115,34 @@ def test_resumable_segment_stop_does_not_flush_partial_codec_chunk():
     full = talker2code2wav_async_chunk(manager, _output(4), request)
     assert full is not None
     torch.testing.assert_close(full.codes.audio, torch.tensor([[1, 101], [2, 102], [3, 103], [4, 104]]))
+
+
+def test_dialogue_turn_boundary_flushes_and_resets_codec_state():
+    manager = _manager()
+    manager.config.hf_config.streaming_speech_delay = 0
+    manager.connector.config["extra"]["codec_chunk_frames"] = 4
+    request = _Request()
+    request.additional_information = {"reset_codec_on_segment": True}
+
+    assert talker2code2wav_async_chunk(manager, _output(1), request) is None
+    request.finished = True
+    turn = talker2code2wav_async_chunk(manager, _output(2), request, is_finished=True)
+
+    torch.testing.assert_close(turn.codes.audio, torch.tensor([[1, 101], [2, 102]]))
+    assert turn.meta.codec_streaming is False
+    assert request.external_req_id not in manager._emp_seen_frames
+    assert request.external_req_id not in manager._emp_request_speech_delay
+    assert request.external_req_id not in manager._emp_emitted_frames
+    assert request.external_req_id not in manager._emp_emitted_chunks
+    assert request.external_req_id not in manager._emp_frame_buffer_base
+    assert request.external_req_id not in manager._emp_frame_buffer
+
+    # A second response starts with fresh delay and chunk accounting even
+    # though vLLM keeps the same resumable request ID for the dialogue.
+    request.finished = False
+    request.additional_information = {"reset_codec_on_segment": True}
+    assert talker2code2wav_async_chunk(manager, _output(3), request) is None
+    assert manager._emp_seen_frames[request.external_req_id] == 1
 
 
 def test_async_codec_drops_only_warmup_not_moved_into_prefill():

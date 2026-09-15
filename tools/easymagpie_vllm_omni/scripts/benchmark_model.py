@@ -1,4 +1,5 @@
-# Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -158,8 +159,7 @@ def _write_temp_deploy_config(cfg: dict) -> str:
 @dataclass
 class ModelMeta:
     tokenizer: Any
-    speaker_embedding: Any  # torch.Tensor (T_audio, embedding_dim); None in speaker_id mode
-    speaker_id: Optional[str]  # known-speaker id (None => pass raw speaker_embedding)
+    speaker_id: str
     prompt_len: int
     audio_eos_id: int
     speech_delay: int
@@ -171,11 +171,8 @@ class ModelMeta:
 
 def _load_model_meta(
     model_dir: str,
-    lim_prefill: Optional[int] = None,
     speaker_id: str = SPEAKER,
-    use_spkr_emb: bool = False,
 ) -> ModelMeta:
-    import torch
     from easymagpie_vllm_omni.config import EasyMagpieOmniArch
     from easymagpie_vllm_omni.easymagpie import EasyMagpieTTSForConditionalGeneration
     from easymagpie_vllm_omni.tokenizer import EasyMagpieTextTokenizer
@@ -184,40 +181,20 @@ def _load_model_meta(
     config = json.loads((model_path / "config.json").read_text())
     arch = EasyMagpieOmniArch.from_hf_config(type("Cfg", (), config))
 
-    use_id = not (use_spkr_emb or lim_prefill is not None)
     tokenizer = EasyMagpieTextTokenizer.from_pretrained(model_dir)
 
-    if use_id:
-        speaker_embedding = None
-        prompt_len = EasyMagpieTTSForConditionalGeneration.get_prompt_len(
-            speaker_id,
-            model_dir,
-            tokenize=tokenizer.encode_context,
-        )
-    else:
-        emb_path = model_path / "speaker_embeddings" / f"{speaker_id}.pt"
-        if not emb_path.exists():
-            raise FileNotFoundError(f"Speaker embedding not found: {emb_path}")
-        loaded = torch.load(emb_path, map_location="cpu")
-        speaker_embedding = (loaded["speaker_encoding"] if isinstance(loaded, dict) else loaded).to(torch.float32)
-        if lim_prefill is not None:
-            orig_frames = int(speaker_embedding.shape[0])
-            speaker_embedding = speaker_embedding[: max(1, int(lim_prefill))].contiguous()
-            logger.info("Limiting speaker-embedding prefill: %d -> %d frames", orig_frames, speaker_embedding.shape[0])
-        prompt_len = EasyMagpieTTSForConditionalGeneration.estimate_prompt_len(
-            speaker_embedding,
-            tokenize=tokenizer.encode_context,
-            context_text=CONTEXT_TEXT,
-            has_task_embedding=arch.num_task_embeddings > 0,
-        )
+    prompt_len = EasyMagpieTTSForConditionalGeneration.get_prompt_len(
+        speaker_id,
+        model_dir,
+        tokenize=tokenizer.encode_context,
+    )
 
     text_prefill_num = arch.text_prefill_num
     prompt_len += text_prefill_num
 
     return ModelMeta(
         tokenizer=tokenizer,
-        speaker_embedding=speaker_embedding,
-        speaker_id=speaker_id if use_id else None,
+        speaker_id=speaker_id,
         prompt_len=int(prompt_len),
         audio_eos_id=int(arch.audio_eos_id),
         speech_delay=int(getattr(arch, "streaming_speech_delay", 0) or 0),
@@ -244,9 +221,7 @@ def build_prompt(text: str, meta: ModelMeta) -> dict:
 
 
 def _speaker_info(meta: ModelMeta) -> dict:
-    if meta.speaker_id is not None:
-        return {"speaker_id": meta.speaker_id}
-    return {"speaker_embedding": meta.speaker_embedding}
+    return {"speaker_id": meta.speaker_id}
 
 
 # ---------------------------------------------------------------------------
@@ -723,13 +698,8 @@ async def main(args):
         return
     logger.info("Loaded %d texts", len(texts))
 
-    meta = _load_model_meta(
-        args.model, lim_prefill=args.lim_prefill, speaker_id=args.speaker_id, use_spkr_emb=args.use_spkr_emb
-    )
-    logger.info(
-        "Speaker mode: %s",
-        f"known speaker_id={meta.speaker_id!r}" if meta.speaker_id else "raw speaker_embedding tensor per request",
-    )
+    meta = _load_model_meta(args.model, speaker_id=args.speaker_id)
+    logger.info("Speaker mode: known speaker_id=%r", meta.speaker_id)
     logger.info(
         "prompt_len=%d  audio_eos_id=%d  speech_delay=%d  text_prefill=%d  frame_stacking=%d",
         meta.prompt_len,
@@ -894,24 +864,11 @@ def parse_args():
     parser.add_argument("--no-warmup", action="store_true", help="Skip warmup")
     parser.add_argument("--max-new-tokens", type=int, default=2048, help="Max decode frames per request")
     parser.add_argument(
-        "--lim-prefill",
-        type=int,
-        default=None,
-        help="Cap the speaker-embedding prefill to the first N frames (default: no limit). "
-        "Use e.g. --lim-prefill 1 to mimic a single-token custom-voice prefill.",
-    )
-    parser.add_argument(
         "--speaker-id",
         type=str,
         default=SPEAKER,
         help="Known speaker id (string) passed in the prompt; the model holds its embedding as "
         "precomputed state (default: %(default)s).",
-    )
-    parser.add_argument(
-        "--use-spkr-emb",
-        action="store_true",
-        help="Ship the raw speaker_embedding tensor per request instead of the known speaker_id "
-        "(exercises the custom-voice path).",
     )
     parser.add_argument("--max-model-len", type=int, default=4096)
     parser.add_argument("--max-num-batched-tokens", type=int, default=4096)

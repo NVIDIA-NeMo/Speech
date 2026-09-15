@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,7 +17,6 @@ import os
 import re
 import time
 from io import BytesIO
-from pathlib import Path
 from typing import List, Optional, Tuple
 
 import boto3
@@ -30,10 +30,10 @@ from nemo.utils.s3_dirpath_utils import build_s3_url, is_s3_url
 
 try:
     import awscrt
-    import s3transfer.crt
+    import s3transfer.crt  # noqa: F401  # pylint: disable=unused-import
 
     crt_available = True
-except ImportError as e:
+except ImportError:
     crt_available = False
 
 MB = 1024**2
@@ -60,7 +60,8 @@ class S3Utils:
     def s3_path_exists(s3_path: str, match_directory: bool = False) -> bool:
         """
         :s3_path: the path
-        :match_directory: if the content is known to be a directory then set it to `True`. Since s3 isn't a file system, paths are funky and the concept of folders doesn't really exist.
+        :match_directory: Set to `True` if the content is known to be a directory. S3 is not a file system, so the
+            concept of folders does not really exist.
         """
         bucket_name, prefix = S3Utils.parse_s3_url(s3_path)
         if not prefix:
@@ -90,6 +91,7 @@ class S3Utils:
     def download_s3_file_to_stream(
         s3_path: str, chunk_size_MB: int = DEFAULT_CHUNK_SIZE_MB, max_concurrency: int = DEFAULT_MAX_READ_CONCURRENCY
     ) -> BytesIO:
+        """Download an S3 object into an in-memory byte stream."""
         bytes_buffer = BytesIO()
 
         s3_client = S3Utils._get_s3_resource(get_client=True)
@@ -114,6 +116,7 @@ class S3Utils:
         chunk_size_MB: int = DEFAULT_CHUNK_SIZE_MB,
         max_concurrency: int = DEFAULT_MAX_READ_CONCURRENCY,
     ) -> None:
+        """Download an S3 object to a local path."""
         s3_client = S3Utils._get_s3_resource(get_client=True)
         bucket, key = S3Utils.parse_s3_url(s3_path)
         chunk_size = chunk_size_MB * MB
@@ -136,6 +139,7 @@ class S3Utils:
         chunk_size_MB: int = DEFAULT_CHUNK_SIZE_MB,
         max_concurrency: int = DEFAULT_MAX_WRITE_CONCURRENCY,
     ) -> None:
+        """Upload an in-memory byte stream to S3."""
         s3_client = S3Utils._get_s3_resource(get_client=True)
         bucket, key = S3Utils.parse_s3_url(s3_path)
         chunk_size = chunk_size_MB * MB
@@ -157,6 +161,7 @@ class S3Utils:
         max_concurrency=DEFAULT_MAX_WRITE_CONCURRENCY,
         remove_file=False,
     ):
+        """Upload a local file to S3 and optionally remove it afterward."""
         total_size = os.path.getsize(file_path)
         assert total_size > 0, f"file size is zero, {file_path}"
 
@@ -173,7 +178,8 @@ class S3Utils:
         if remove_file and os.path.exists(file_path):
             os.remove(file_path)
         logging.info(
-            f'Time elapsed uploading file {file_path} of size {(total_size/GB):.1f}GB to {s3_path} with chunk_size={chunk_size_MB}MB '
+            f'Time elapsed uploading file {file_path} of size {(total_size/GB):.1f}GB to {s3_path} '
+            f'with chunk_size={chunk_size_MB}MB '
             f'and max_concurrency={max_concurrency}: {(time.perf_counter() - start_time):.2f} seconds'
         )
 
@@ -198,7 +204,8 @@ class S3Utils:
         bucket = s3.Bucket(bucket_name)
         objects_list = _scan_objects_with_retry(s3_bucket=bucket, s3_prefix=prefix)
         logging.info(
-            f'Time elapsed reading all objects under path {base_path}: {(time.perf_counter() - start_time):.2f} seconds'
+            f'Time elapsed reading all objects under path {base_path}: '
+            f'{(time.perf_counter() - start_time):.2f} seconds'
         )
 
         if suffix:
@@ -262,9 +269,7 @@ class S3Utils:
     @staticmethod
     def parse_prefix_with_step(path: str) -> str:
         """
-        Use regex to find the pattern up to "-step=900-"
-        s3://path/to/checkpoints/tp_rank_00_pp_rank_000/megatron_gpt--step=900-validation_loss=6.47-consumed_samples=35960.0-last.ckpt
-        should return s3://path/to/checkpoints/tp_rank_00_pp_rank_000/megatron_gpt--step=900-
+        Use regex to return the checkpoint path prefix ending at a pattern such as "-step=900-".
         """
         match = re.search(r'(.*step=\d+-)', path)
 
@@ -276,7 +281,7 @@ class S3Utils:
 
 def _scan_objects_with_retry(s3_bucket, s3_prefix):
     # this returns a collection https://boto3.amazonaws.com/v1/documentation/api/latest/guide/collections.html
-    # This collection acts as an iterable that automatically makes additional requests to retrieve more objects from S3 as needed
+    # This iterable automatically makes additional requests to retrieve more objects from S3 as needed.
     objects = s3_bucket.objects.filter(Prefix=s3_prefix)
     return list(objects)
 
@@ -291,8 +296,7 @@ def is_slow_down_error(exception):
     full_class_name = f"{module_name}.{class_name}"
     logging.error(f'Caught exception of type {full_class_name}: {exception}')
 
-    # 2023-12-07T05:59:25.913721576Z stdout F 2023-12-07 05:59:25,913 [ERROR] - s3_utils.py:354 - Caught exception:
-    # AWS_ERROR_S3_INVALID_RESPONSE_STATUS: Invalid response status from request. Body from error request is: b'<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>RequestTimeout</Code><Message>Your socket connection to the server was not read from or written to within the timeout period. Idle connections will be closed.</Message><RequestId>XPHS9896G3RJE364</RequestId><HostId>ZAiF3HPpUD5IgSr/mfkP2QPs7ttuvY+uTRG9MET/jZZ45MJ6bVbnvSBQLggICvPCROPP/1k85p4=</HostId></Error>'
+    # Example: AWS_ERROR_S3_INVALID_RESPONSE_STATUS with an XML body containing <Code>RequestTimeout</Code>.
     message = str(exception)
     if (
         "<Code>SlowDown</Code>" in message

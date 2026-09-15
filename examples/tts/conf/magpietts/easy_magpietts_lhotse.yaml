@@ -117,6 +117,7 @@ model:
   train_ds:
     use_lhotse: ${model.use_lhotse}
     volume_norm: true
+    load_normalized_text_percent: 1.0  # Probability of loading the normalized transcript when available.
 
     dataset:
       min_duration: 0.2

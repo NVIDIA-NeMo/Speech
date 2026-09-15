@@ -1,4 +1,5 @@
-# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -102,7 +103,7 @@ class EnglishG2p(BaseG2p):
                 torch.distributed.barrier(group=group)
             elif is_global_rank_zero():
                 logging.error(
-                    f"Torch distributed needs to be initialized before you initialized EnglishG2p. This class is prone to "
+                    "Torch distributed needs to be initialized before you initialized EnglishG2p. This class is prone to "
                     "data access race conditions. Now downloading corpora from global rank 0. If other ranks pass this "
                     "before rank 0, errors might result."
                 )
@@ -112,14 +113,14 @@ class EnglishG2p(BaseG2p):
                     nltk.download('cmudict', quiet=True)
             else:
                 logging.error(
-                    f"Torch distributed needs to be initialized before you initialized EnglishG2p. This class is prone to "
+                    "Torch distributed needs to be initialized before you initialized EnglishG2p. This class is prone to "
                     "data access race conditions. This process is not rank 0, and now going to sleep for 1 min. If this "
                     "rank wakes from sleep prior to rank 0 finishing downloading, errors might result."
                 )
                 time.sleep(60)
 
             logging.warning(
-                f"English g2p_dict will be used from nltk.corpus.cmudict.dict(), because phoneme_dict_path=None. "
+                "English g2p_dict will be used from nltk.corpus.cmudict.dict(), because phoneme_dict_path=None. "
                 "Note that nltk.corpus.cmudict.dict() has old version (0.6) of CMUDict. "
                 "You can use the latest official version of CMUDict (0.7b) with additional changes from NVIDIA directly from NeMo "
                 "using the path scripts/tts_dataset_files/cmudict-0.7b_nv22.10."
@@ -146,7 +147,7 @@ class EnglishG2p(BaseG2p):
     @staticmethod
     def _parse_file_by_lines(p, encoding):
         with open(p, encoding=encoding) as f:
-            return [l.rstrip() for l in f.readlines()]
+            return [line.rstrip() for line in f]
 
     def is_unique_in_phoneme_dict(self, word):
         return len(self.phoneme_dict[word]) == 1

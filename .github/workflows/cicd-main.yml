@@ -217,8 +217,36 @@ jobs:
             python tests/core_ptl/check_imports.py --domain tts
           '
 
+  prepare-test-data:
+    needs: [configure, cicd-wait-in-queue, pre-flight]
+    runs-on: ${{ startsWith(needs.pre-flight.outputs.runner_prefix, 'ephe-v2-') && format('{0}-a{1}', needs.pre-flight.outputs.runner_prefix, github.run_attempt) || needs.pre-flight.outputs.runner_prefix }}
+    if: |
+      needs.configure.outputs.test_to_run != '[]'
+      && needs.configure.outputs.components_to_run != '[]'
+      && (
+        success()
+        || (
+          needs.cicd-wait-in-queue.result == 'skipped'
+          && needs.pre-flight.outputs.is_ci_workload == 'true'
+        )
+      )
+      && !cancelled()
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Validate or prepare test data
+        env:
+          PERSISTENT_TEST_DATA: ${{ vars.DEFAULT_TEST_DATA_PATH || '/mnt/datadrive/TestData' }}
+        run: |
+          args=(--output tests/.data --persistent-root "$PERSISTENT_TEST_DATA")
+          if [[ "$GITHUB_REF" == "refs/heads/main" ]]; then
+            args+=(--populate-persistent)
+          fi
+          python .github/scripts/prepare_test_data.py "${args[@]}"
+
   L0_Setup_Test_Data_And_Models:
-    needs: [configure, cicd-test-container-build, cicd-wait-in-queue, pre-flight]
+    needs: [configure, cicd-test-container-build, cicd-wait-in-queue, pre-flight, prepare-test-data]
     runs-on: ${{ startsWith(needs.pre-flight.outputs.runner_prefix, 'ephe-v2-') && format('{0}-a{1}', needs.pre-flight.outputs.runner_prefix, github.run_attempt) || needs.pre-flight.outputs.runner_prefix }}
     if: |
       needs.configure.outputs.test_to_run != '[]'
@@ -249,7 +277,7 @@ jobs:
           test-data-path: ${{ vars.DEFAULT_TEST_DATA_PATH || '/mnt/datadrive/TestData' }}
 
   cicd-main-unit-tests:
-    needs: [pre-flight, configure, cicd-test-container-build]
+    needs: [pre-flight, configure, cicd-test-container-build, prepare-test-data]
     uses: ./.github/workflows/cicd-main-unit-tests.yml
     if: |
       needs.configure.outputs.test_to_run != '[]'
@@ -295,6 +323,7 @@ jobs:
       - configure
       - cicd-test-container-build
       - cicd-import-tests
+      - prepare-test-data
       - L0_Setup_Test_Data_And_Models
       - cicd-main-unit-tests
       - cicd-main-speech

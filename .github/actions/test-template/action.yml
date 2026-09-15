@@ -109,6 +109,15 @@ runs:
         path: >-
           ${{ github.run_id }}/${{ steps.uuid.outputs.id }}/NeMo/${{ inputs.download-artifact-path }}
 
+    - name: Restore validated test data
+      shell: bash
+      env:
+        CHECKOUT: ${{ github.run_id }}/${{ steps.uuid.outputs.id }}/NeMo
+      run: |
+        python "$CHECKOUT/.github/scripts/prepare_test_data.py" \
+          --output "$CHECKOUT/tests/.data" \
+          --persistent-root "${{ inputs.test-data-path }}"
+
     - name: Start container
       shell: bash
       env:

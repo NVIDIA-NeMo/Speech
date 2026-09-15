@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import hashlib
 import logging
 import os
 import os.path
@@ -20,7 +21,7 @@ import tarfile
 import tempfile
 import urllib.request
 from os import mkdir
-from os.path import dirname, exists, getsize, join
+from os.path import dirname, exists, join
 from pathlib import Path
 from shutil import rmtree
 from typing import Tuple
@@ -34,6 +35,33 @@ from nemo.utils.tar_utils import safe_extract
 __TEST_DATA_FILENAME = "test_data.tar.gz"
 __TEST_DATA_URL = "https://github.com/NVIDIA-NeMo/Speech/releases/download/v1.0.0rc1/"
 __TEST_DATA_SUBDIR = ".data"
+__TEST_DATA_SHA256 = "bcaf346953ddb7dbd73c67925230886546cfea7120fdab8b199f938ed5960c5d"
+__TEST_DATA_MARKER = ".test_data_sha256"
+
+
+def _get_sha256(filepath):
+    sha256 = hashlib.sha256()
+    with open(filepath, "rb") as input_file:
+        for chunk in iter(lambda: input_file.read(1024 * 1024), b""):
+            sha256.update(chunk)
+    return sha256.hexdigest()
+
+
+def _is_test_data_ready(test_dir, test_data_archive):
+    marker_path = join(test_dir, __TEST_DATA_MARKER)
+    try:
+        if _get_sha256(test_data_archive) != __TEST_DATA_SHA256:
+            return False
+        with open(marker_path, encoding="utf-8") as marker_file:
+            return marker_file.read().strip() == __TEST_DATA_SHA256
+    except OSError:
+        return False
+
+
+def _mark_test_data_ready(test_dir):
+    marker_path = join(test_dir, __TEST_DATA_MARKER)
+    with open(marker_path, "w", encoding="utf-8") as marker_file:
+        marker_file.write(f"{__TEST_DATA_SHA256}\n")
 
 
 def pytest_addoption(parser):
@@ -150,32 +178,25 @@ def test_data_dir():
 
 
 def extract_data_from_tar(test_dir, test_data_archive, url=None, local_data=False):
-    # Remove .data folder.
-    if exists(test_dir):
-        if not local_data:
-            rmtree(test_dir)
+    with tempfile.TemporaryDirectory() as temp_dir:
+        staged_archive = join(temp_dir, __TEST_DATA_FILENAME)
+        if url is not None and not local_data:
+            urllib.request.urlretrieve(url, staged_archive)
         else:
-            with tempfile.TemporaryDirectory() as temp_dir:
-                print("Copying local tarfile to temporary storage..")
-                shutil.copy2(test_data_archive, temp_dir)
-                print("Deleting test dir to cleanup old data")
-                rmtree(test_dir)
-                mkdir(test_dir)
-                print("Restoring local tarfile to test dir")
-                shutil.copy2(os.path.join(temp_dir, os.path.basename(test_data_archive)), test_data_archive)
+            shutil.copy2(test_data_archive, staged_archive)
 
-    # Create one .data folder.
-    if not exists(test_dir):
+        if _get_sha256(staged_archive) != __TEST_DATA_SHA256:
+            raise ValueError("Test data does not match the pinned SHA-256 checksum")
+
+        if exists(test_dir):
+            rmtree(test_dir)
         mkdir(test_dir)
+        shutil.copy2(staged_archive, test_data_archive)
 
-    # Download (if required)
-    if url is not None and not local_data:
-        urllib.request.urlretrieve(url, test_data_archive)
-
-    # Extract tar
     print("Extracting the `{}` test archive, please wait...".format(test_data_archive))
     with tarfile.open(test_data_archive) as tar:
         safe_extract(tar, test_dir)
+    _mark_test_data_ready(test_dir)
 
 
 @pytest.fixture(scope="session")
@@ -209,9 +230,8 @@ def k2_cuda_is_enabled(k2_is_appropriate) -> Tuple[bool, str]:
 def pytest_configure(config):
     """
     Initial configuration of conftest.
-    The function checks if test_data.tar.gz is present in tests/.data.
-    If so, compares its size with github's test_data.tar.gz.
-    If file absent or sizes not equal, function downloads the archive from github and unpacks it.
+    The function accepts checksum-validated, extracted test data in tests/.data.
+    Otherwise, it downloads, validates, and extracts the pinned archive from GitHub.
     """
     config.addinivalue_line(
         "markers",
@@ -229,68 +249,19 @@ def pytest_configure(config):
     test_dir = join(dirname(__file__), __TEST_DATA_SUBDIR)
     test_data_archive = join(dirname(__file__), __TEST_DATA_SUBDIR, __TEST_DATA_FILENAME)
 
-    # Get size of local test_data archive.
-    try:
-        test_data_local_size = getsize(test_data_archive)
-    except:
-        # File does not exist.
-        test_data_local_size = -1
+    if _is_test_data_ready(test_dir, test_data_archive):
+        print("Using checksum-validated test data found in the `{}` folder.".format(test_dir))
+        return
+
+    if exists(test_data_archive) and _get_sha256(test_data_archive) == __TEST_DATA_SHA256:
+        extract_data_from_tar(test_dir, test_data_archive, local_data=True)
+        return
 
     if config.option.use_local_test_data:
-        if test_data_local_size == -1:
-            pytest.exit("Test data `{}` is not present in the system".format(test_data_archive))
-        else:
-            print(
-                "Using the local `{}` test archive ({}B) found in the `{}` folder.".format(
-                    __TEST_DATA_FILENAME, test_data_local_size, test_dir
-                )
-            )
+        pytest.exit("Test data not present or invalid in the `{}` folder".format(test_dir))
 
-    # Get size of remote test_data archive.
-    url = None
-    if not config.option.use_local_test_data:
-        try:
-            url = __TEST_DATA_URL + __TEST_DATA_FILENAME
-            u = urllib.request.urlopen(url)
-        except:
-            # Couldn't access remote archive.
-            if test_data_local_size == -1:
-                pytest.exit("Test data not present in the system and cannot access the '{}' URL".format(url))
-            else:
-                print(
-                    "Cannot access the '{}' URL, using the test data ({}B) found in the `{}` folder.".format(
-                        url, test_data_local_size, test_dir
-                    )
-                )
-                return
-
-        # Get metadata.
-        meta = u.info()
-        test_data_remote_size = int(meta["Content-Length"])
-
-        # Compare sizes.
-        if test_data_local_size != test_data_remote_size:
-            print(
-                "Downloading the `{}` test archive from `{}`, please wait...".format(
-                    __TEST_DATA_FILENAME, __TEST_DATA_URL
-                )
-            )
-
-            extract_data_from_tar(test_dir, test_data_archive, url=url, local_data=config.option.use_local_test_data)
-
-        else:
-            print(
-                "A valid `{}` test archive ({}B) found in the `{}` folder.".format(
-                    __TEST_DATA_FILENAME, test_data_local_size, test_dir
-                )
-            )
-
-    else:
-        # untar local test data
-        extract_data_from_tar(test_dir, test_data_archive, local_data=config.option.use_local_test_data)
-
-    if config.option.relax_numba_compat is not None:
-        from nemo.core.utils import numba_utils
-
-        print("Setting numba compat :", config.option.relax_numba_compat)
-        numba_utils.set_numba_compat_strictness(strict=config.option.relax_numba_compat)
+    url = __TEST_DATA_URL + __TEST_DATA_FILENAME
+    try:
+        extract_data_from_tar(test_dir, test_data_archive, url=url)
+    except (OSError, ValueError, tarfile.TarError):
+        pytest.exit("Test data is unavailable or invalid at '{}'".format(url))

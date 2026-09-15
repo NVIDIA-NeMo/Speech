@@ -49,14 +49,6 @@ except (ImportError, ModuleNotFoundError):
     Normalizer = None
     PYNINI_AVAILABLE = False
 
-try:
-    from nemo.collections.tts.modules.utmosv2 import UTMOSv2Calculator
-
-    HAVE_UTMOSV2 = True
-except (ImportError, ModuleNotFoundError):
-    HAVE_UTMOSV2 = False
-
-
 class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
     """
     EasyMagpie-TTS online preference optimization model (GRPO / DR-GRPO).
@@ -122,13 +114,7 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
 
         self.use_utmos = self.cfg.get('use_utmos', False)
         if self.use_utmos:
-            assert HAVE_UTMOSV2, (
-                "UTMOSv2 is required for the UTMOS reward but is not installed. "
-                "Install it with: pip install git+https://github.com/sarulab-speech/UTMOSv2.git@v1.2.1"
-            )
-            # Initialize on CPU; we score from saved wav files so no GPU needed.
-            self._utmos_calculator = UTMOSv2Calculator(device='cpu')
-            logging.info("UTMOSv2 calculator initialized for naturalness reward")
+            logging.info(f"UTMOSv2 naturalness reward will run on {self.utmos_device}")
 
         self.loss_type = self.cfg.get('loss_type', 'grpo')
         if self.loss_type not in ['grpo', 'dr_grpo']:
@@ -749,6 +735,8 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
             return []
         utmos_batch_size = max(int(self.cfg.get('utmos_batch_size', len(predicted_audio_paths))), 1)
         utmos_num_workers = max(int(self.cfg.get('utmos_num_workers', 0)), 0)
+        target_device = self.device if self.utmos_device == 'cuda' else self.utmos_device
+        self._utmos_calculator.to(target_device)
         audio_dir = self._get_audio_dir()
         val_list = [os.path.basename(p) for p in predicted_audio_paths]
         batch_results = self._utmos_calculator.process_directory(

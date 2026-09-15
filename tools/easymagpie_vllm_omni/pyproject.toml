@@ -13,6 +13,12 @@ dependencies = [
     # vllm_omni_env"; do not install into NeMo's nemo_virtual_environment.
 ]
 
+[project.optional-dependencies]
+perth = [
+    "resemble-perth==1.0.1",
+    "torchaudio",
+]
+
 [project.entry-points."vllm.general_plugins"]
 easymagpie_omni = "vllm_plugin_easymagpie_omni:register"
 

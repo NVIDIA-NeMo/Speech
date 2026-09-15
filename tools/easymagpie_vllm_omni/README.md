@@ -50,7 +50,7 @@ cd tools/easymagpie_vllm_omni
 conda create -n easymagpie-vllm python=3.12 -y
 conda activate easymagpie-vllm
 pip install -r requirements.txt
-pip install -e .
+pip install -e ".[perth]"
 # optionally for notebook
 pip install ipykernel
 python -m ipykernel install --user \
@@ -58,9 +58,27 @@ python -m ipykernel install --user \
   --display-name "Python (easymagpie-vllm)"
 ```
 
+The `perth` extra is required for default watermarking. `pip install -r requirements-perth.txt`
+is equivalent if you install the package without extras.
+
 Mamba's selective-state-update kernel requires shape- and GPU-specific tuning, so an untuned cache can give
 suboptimal performance. Reuse the same Triton/vLLM cache directories across launches so repeated runs accumulate
 better kernels; for an explicit sweep, run `python scripts/tune_mamba_ssu.py --model converted_model` and restart.
+
+### Perth watermarking
+
+EasyMagpie audio is watermarked after native codec decoding and before float
+PCM leaves the vLLM-Omni codec stage. Equal-length outputs are processed as a
+GPU batch, including outputs produced by incremental streaming requests. The
+watermarker resamples codec audio to Perth's model rate and back while
+preserving each output's original sample count.
+
+Watermarking is enabled by default after installing the `perth` extra, and
+engine startup fails if Perth or its bundled checkpoint cannot be loaded.
+`resemble-perth==1.0.1` does not declare its own dependencies, so the extra
+also installs `torchaudio` unpinned. The serving loader uses `PerthNet`
+directly and does not import `librosa`/`soxr`. For unmarked quality
+comparisons only, set `NEMOTRON_TTS_PERTH_WATERMARK=0` to disable it.
 
 ### Quick start — offline synthesis
 

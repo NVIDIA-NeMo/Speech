@@ -58,7 +58,8 @@ class _FakeCodec(torch.nn.Module):
         ([1025, 3, 1025, 103], 6),
     ],
 )
-def test_forward_trims_terminal_control_subframes(terminal_row, expected_samples):
+def test_forward_trims_terminal_control_subframes(terminal_row, expected_samples, monkeypatch):
+    monkeypatch.setenv("NEMOTRON_TTS_PERTH_WATERMARK", "0")
     model = EasyMagpieCodecForConditionalGeneration.__new__(EasyMagpieCodecForConditionalGeneration)
     torch.nn.Module.__init__(model)
     model.config = SimpleNamespace(

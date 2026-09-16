@@ -1693,7 +1693,6 @@ nvvm = [
     { name = "nvidia-nvvm", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (sys_platform == 'linux' and extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100') or (sys_platform == 'win32' and extra == 'extra-12-nemo-toolkit-compiled' and extra == 'extra-12-nemo-toolkit-compiled-a100')" },
 ]
 
-
 [[package]]
 name = "cycler"
 version = "0.12.1"
@@ -4181,7 +4180,7 @@ wheels = [
 [[package]]
 name = "nemo-automodel"
 version = "0.5.0+cb03cf61"
-source = { git = "https://github.com/Slyne/Automodel.git?rev=ee03a5364fff5e5e0367b1abce4273b9211f00c7#ee03a5364fff5e5e0367b1abce4273b9211f00c7" }
+source = { git = "https://github.com/Slyne/Automodel.git?rev=47a0a0897690670a90051d29805c6d550a01572d#47a0a0897690670a90051d29805c6d550a01572d" }
 dependencies = [
     { name = "datasets" },
     { name = "flashoptim" },
@@ -4634,9 +4633,9 @@ requires-dist = [
     { name = "matplotlib", marker = "extra == 'audio'" },
     { name = "matplotlib", marker = "extra == 'speechlm2'" },
     { name = "matplotlib", marker = "extra == 'tts'" },
-    { name = "nemo-automodel", marker = "extra == 'all'", git = "https://github.com/Slyne/Automodel.git?rev=ee03a5364fff5e5e0367b1abce4273b9211f00c7" },
-    { name = "nemo-automodel", marker = "extra == 'speechlm2'", git = "https://github.com/Slyne/Automodel.git?rev=ee03a5364fff5e5e0367b1abce4273b9211f00c7" },
-    { name = "nemo-automodel", marker = "extra == 'speechlm2-only'", git = "https://github.com/Slyne/Automodel.git?rev=ee03a5364fff5e5e0367b1abce4273b9211f00c7" },
+    { name = "nemo-automodel", marker = "extra == 'all'", git = "https://github.com/Slyne/Automodel.git?rev=47a0a0897690670a90051d29805c6d550a01572d" },
+    { name = "nemo-automodel", marker = "extra == 'speechlm2'", git = "https://github.com/Slyne/Automodel.git?rev=47a0a0897690670a90051d29805c6d550a01572d" },
+    { name = "nemo-automodel", marker = "extra == 'speechlm2-only'", git = "https://github.com/Slyne/Automodel.git?rev=47a0a0897690670a90051d29805c6d550a01572d" },
     { name = "nemo-text-processing", marker = "'aarch' not in platform_machine and 'arm' not in platform_machine and sys_platform != 'darwin' and extra == 'all'" },
     { name = "nemo-text-processing", marker = "'aarch' not in platform_machine and 'arm' not in platform_machine and sys_platform != 'darwin' and extra == 'speechlm2'" },
     { name = "nemo-text-processing", marker = "'aarch' not in platform_machine and 'arm' not in platform_machine and sys_platform != 'darwin' and extra == 'tts'" },

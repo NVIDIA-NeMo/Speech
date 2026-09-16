@@ -218,7 +218,7 @@ jobs:
           '
 
   prepare-test-data:
-    needs: [configure, cicd-wait-in-queue, pre-flight]
+    needs: [configure, cicd-test-container-build, cicd-wait-in-queue, pre-flight]
     runs-on: ${{ startsWith(needs.pre-flight.outputs.runner_prefix, 'ephe-v2-') && format('{0}-a{1}', needs.pre-flight.outputs.runner_prefix, github.run_attempt) || needs.pre-flight.outputs.runner_prefix }}
     if: |
       needs.configure.outputs.test_to_run != '[]'
@@ -239,11 +239,16 @@ jobs:
         env:
           PERSISTENT_TEST_DATA: ${{ vars.DEFAULT_TEST_DATA_PATH || '/mnt/datadrive/TestData' }}
         run: |
-          args=(--output tests/.data --persistent-root "$PERSISTENT_TEST_DATA")
+          args=(--output /workspace/tests/.data --persistent-root /home/TestData)
           if [[ "$GITHUB_REF" == "refs/heads/main" ]]; then
             args+=(--populate-persistent)
           fi
-          python .github/scripts/prepare_test_data.py "${args[@]}"
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE:/workspace" \
+            --volume "$PERSISTENT_TEST_DATA:/home/TestData" \
+            --workdir /workspace \
+            ${{ needs.cicd-test-container-build.outputs.image }} \
+            python .github/scripts/prepare_test_data.py "${args[@]}"
 
   L0_Setup_Test_Data_And_Models:
     needs: [configure, cicd-test-container-build, cicd-wait-in-queue, pre-flight, prepare-test-data]

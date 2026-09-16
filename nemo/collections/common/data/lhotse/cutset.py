@@ -1050,6 +1050,19 @@ def sample_preference_to_conversation(
     )
 
 
+def _has_valid_preference_target(conversation: NeMoMultimodalConversation) -> bool:
+    assistant_targets = [
+        turn.value for turn in conversation.turns if isinstance(turn, TextTurn) and turn.role == "assistant"
+    ]
+    if assistant_targets and all(isinstance(target, str) and target.strip() for target in assistant_targets):
+        return True
+    logging.warning(
+        "Skipping preference-sampled conversation with invalid assistant target: conversation_id=%s",
+        conversation.id,
+    )
+    return False
+
+
 @data_type_parser(["s2s_duplex_overlap_as_s2s_duplex"])
 def read_s2s_duplex_overlap_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
     """
@@ -1457,6 +1470,8 @@ def read_lhotse_as_conversation(config) -> tuple[CutSet, bool]:
                 fallback_text_field=pref_cfg.get("fallback_text_field", "pnc_text"),
             )
         )
+        if pref_cfg.get("skip_invalid_target", False):
+            cuts = cuts.filter(_has_valid_preference_target)
     else:
         cuts = cuts.map(
             partial(

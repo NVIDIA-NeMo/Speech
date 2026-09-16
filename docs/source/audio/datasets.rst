@@ -1,97 +1,165 @@
 Datasets
 ========
 
-The `audio` collection expect the training, validation and tests datasets in either NeMo format or Lhotse format.
+Use this page to prepare training or evaluation data and to choose between the NeMo and Lhotse loaders. The Audio
+collection accepts NeMo JSON manifests, Lhotse CutSet manifests, and Lhotse Shar datasets. Training, validation, and
+test data are configured under ``model.train_ds``, ``model.validation_ds``, and ``model.test_ds``. The examples below
+show how the two loaders represent the same paired data.
 
-.. seealso::
+Signal Roles
+------------
 
-   For the Lhotse dataloader's full surface — supported ``input_cfg``
-   types, bucketing, indexed manifests + resumable dataloading, and the
-   ``LhotseDataLoadingConfig`` field reference — see :doc:`/dataloaders`.
+The signal names describe their role in a training example:
 
-NeMo Format
------------
+* The **input** is the observed signal presented to the model, such as noisy, reverberant, or mixed audio.
+* The **target** is the desired model output used to compute the training loss. Depending on the task, it can be clean
+  speech, an anechoic signal, or the source to extract.
+* A **reference** is an additional observation that helps identify or estimate the target. Examples include a target
+  speaker enrollment utterance, a playback signal for echo cancellation, or a correlated signal from another sensor.
+  It is not another name for the degraded input.
+* An **embedding** is a precomputed conditioning vector used in place of reference audio.
 
-Each dataset consists of a set of utterances in individual audio files plus a manifest that describes the dataset, with information about one utterance per line (``.json``).
-There should be one manifest file per dataset that will be passed in, therefore, if the user wants separate training and validation datasets, they should also have separate manifests. Otherwise, they will be loading validation data with their training data and vice versa.
+Configurations for paired data consume input and target signals; the self-supervised pretraining configuration consumes
+input only. Use the reference and embedding dataset classes when a custom model needs one of those additional inputs.
 
+Choose a Data Loader
+--------------------
 
-In most applications, such as speech restoration or enhancement, the model aims to transform the input audio signal into the target audio signal. In this case, each line of the manifest should have the following structure:
+The NeMo and Lhotse loaders represent the same paired example differently. With a NeMo JSON manifest, the dataset
+configuration maps manifest keys to the input and target roles:
+
+.. code-block:: yaml
+
+   model:
+     train_ds:
+       manifest_filepath: /path/to/train.json
+       input_key: input_filepath
+       target_key: target_filepath
+
+With a Lhotse CutSet, the cut's main recording is always the input and its ``target_recording`` custom field is the
+target. The configuration selects the CutSet rather than naming JSON fields:
+
+.. code-block:: yaml
+
+   model:
+     train_ds:
+       use_lhotse: true
+       cuts_path: /path/to/train_cuts.jsonl
+
+A Lhotse Shar dataset uses the same signal roles but is selected with ``shar_path``:
+
+.. code-block:: yaml
+
+   model:
+     train_ds:
+       use_lhotse: true
+       shar_path: /path/to/train_shar
+
+For the paired CutSet and Lhotse Shar datasets used by Audio configurations, store the target in
+``target_recording`` instead of setting ``input_key`` and ``target_key``. The snippets show only how each source is
+selected and how Audio signal roles are assigned. See :doc:`Lhotse Dataloading </dataloaders>` for batching,
+truncation, sharding, and other shared loader settings. Configure validation and test data with fields for the same
+loader.
+
+NeMo JSON Manifests
+-------------------
+
+A NeMo manifest is a JSON Lines file with one utterance per line. Paths may be absolute or relative to the manifest.
+The key names are configurable, so ``noisy_filepath`` and ``clean_filepath`` can be used in place of the generic
+``input_filepath`` and ``target_filepath`` names below.
+
+Input and Target Audio
+~~~~~~~~~~~~~~~~~~~~~~
+
+Most enhancement and restoration tasks use paired input and target recordings:
 
 .. code-block:: json
 
-  {"input_filepath": "/path/to/input_audio.wav", "target_filepath": "/path/to/target_audio.wav", "duration": 3.147}
+   {"input_filepath": "audio/noisy.wav", "target_filepath": "audio/clean.wav", "duration": 3.147}
 
-The :code:`input_filepath` field should provide either an absolute path to the audio file corresponding to the utterance, or a relative path with respect to the directory containing the manifest.
-The :code:`target_filepath` field should provide either an absolute path to the audio file corresponding to the utterance, or a relative path with respect to the directory containing the manifest.
-Note that keys for input and target audio can be custom, and can be configured in the model configuration file, as described in :ref:`Configs <audio-configs-nemo-dataset-configuration>`.
+Use :class:`~nemo.collections.audio.data.audio_to_audio.AudioToTargetDataset` for this layout. A value may also be a
+list of synchronized mono files; the files are combined as channels of one recording. The optional ``offset`` field
+defaults to zero. It is the fixed start time when ``random_offset`` is false and the earliest possible start time when
+``random_offset`` is true. The loader uses it for synchronized signals and for a reference loaded independently.
 
-Each entry in the manifest (describing one audio file) should be bordered by ``"{"`` and ``"}"`` and must be placed on one line. The ``"key": value`` pairs should be separated by a commas as shown above. NeMo enforces no blank lines in the manifest so that the total number of lines indicates the total number of audio files in the dataset.
+Input and target recordings must be time-aligned and provide the same usable duration. Training uses the input length
+when encoding the target and computing the loss.
 
-Once there is a manifest that describes each audio file in the dataset, assign the ``JSON`` manifest file path in the experiment config file, for example, ``training_ds.manifest_filepath=<path/to/manifest.json>``.
+Reference Audio
+~~~~~~~~~~~~~~~
 
-For more information about the individual tarred datasets and the parameters available, including shuffling options, see the corresponding class APIs in the `Datasets <./api.html#datasets>`_ section.
+Models for extraction, echo cancellation, or sensor fusion can use an additional reference recording:
 
+.. code-block:: json
 
-Lhotse Format
--------------
+   {"input_filepath": "audio/mixture.wav", "target_filepath": "audio/target.wav", "reference_filepath": "audio/enrollment.wav", "duration": 3.147}
 
-NeMo supports using `Lhotse`_, a speech data handling library, as a dataloading option.
-Lhotse can be easily enabled using `use_lhotse=True` in the dataset configuration file, as described in :ref:`Lhotse dataset configuration <audio-configs-lhotse-dataset-configuration>`.
+Use :class:`~nemo.collections.audio.data.audio_to_audio.AudioToTargetWithReferenceDataset`. Set
+``reference_is_synchronized: false`` for an independently sampled reference, such as an enrollment utterance, and use
+``reference_duration`` when a fixed reference segment is required.
 
-Lhotse dataloading supports the following types of inputs:
+Embedding Vectors
+~~~~~~~~~~~~~~~~~
 
-* Lhotse CutSet manifests
-    Regular Lhotse CutSet manifests (typically gzipped JSONL).
-    See `Lhotse Cuts documentation`_ to learn more about Lhotse data formats.
-* Lhotse Shar data
-    Lhotse Shar is a data format that also uses tar files for sequential data loading,
-    but is designed to be modular (i.e., easily extensible with new data sources and with new feature fields).
-    More details can be found in the tutorial notebook: |tutorial_shar|.
+A model can use a precomputed conditioning vector in place of reference audio:
 
+.. code-block:: json
 
-.. _Lhotse: https://github.com/lhotse-speech/lhotse
-.. _Lhotse Cuts documentation: https://lhotse.readthedocs.io/en/latest/cuts.html
-.. |tutorial_shar| image:: https://colab.research.google.com/assets/colab-badge.svg
-    :target: https://colab.research.google.com/github/lhotse-speech/lhotse/blob/master/examples/04-lhotse-shar.ipynb
+   {"input_filepath": "audio/mixture.wav", "target_filepath": "audio/target.wav", "embedding_filepath": "embeddings/target.npy", "duration": 3.147}
 
+Use :class:`~nemo.collections.audio.data.audio_to_audio.AudioToTargetWithEmbeddingDataset`. Embeddings must be stored
+as NumPy ``.npy`` arrays.
 
+Duration, Channels, and Normalization
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Converting NeMo manifest to Lhotse
-----------------------------------
+``audio_duration`` requests synchronized input and target segments of a fixed length. If a synchronized recording is
+shorter, the loader shortens the example to the shortest recording. Set ``min_duration`` to at least
+``audio_duration`` and ensure the target files are not shorter when fixed-length batches are required. With
+``random_offset: true``, the segment start is randomized whenever the dataset is sampled. ``min_duration`` and
+``max_duration`` filter complete utterances, while ``max_utts`` limits the number loaded.
 
-A dataset with a manifest in NeMo format can be converted to Lhotse format using the provided `conversion script <https://github.com/NVIDIA-NeMo/Speech/blob/main/scripts/audio_to_audio/convert_nemo_to_lhotse.py>`_.
+The ``input_channel_selector``, ``target_channel_selector``, and ``reference_channel_selector`` fields select channels
+from multichannel files. A selector may be a channel index, a list of indices, or ``average``. When no selector is
+provided, all channels are loaded.
 
-.. code:: shell
+``normalization_signal`` can be ``input_signal``, ``target_signal``, or ``reference_signal`` for datasets that provide
+that signal. The selected signal determines a scale that is applied consistently to every loaded signal in the
+example, including a non-synchronized reference signal.
 
-    CONVERT_SCRIPT=scripts/audio_to_audio/convert_nemo_to_lhotse.py
-    INPUT_MANIFEST=/path/to/data/nemo_manifest.json
-    OUTPUT_MANIFEST=/path/to/data/lhotse_manifest.jsonl
+Representing Audio Examples with Lhotse
+----------------------------------------
 
-    python ${CONVERT_SCRIPT} ${INPUT_MANIFEST} ${OUTPUT_MANIFEST} -i input_filepath -t target_filepath
+Set ``use_lhotse: true`` to use :class:`~nemo.collections.audio.data.audio_to_audio_lhotse.LhotseAudioToTargetDataset`.
+The input signal is the cut's recording. Optional custom fields provide the remaining inputs:
 
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
 
-Creating Lhotse shar dataset
-----------------------------
+   * - Custom field
+     - Meaning
+   * - ``target_recording``
+     - Target audio synchronized with the input cut.
+   * - ``reference_recording``
+     - Optional reference audio synchronized with the input cut.
+   * - ``embedding_vector``
+     - Optional conditioning array.
 
-First, convert the NeMo manifest to Lhotse format with absolute paths.
+CutSet and Shar storage, ``input_cfg``, sampling, weighting, and augmentation are shared with other NeMo collections.
+See :doc:`Lhotse Dataloading </dataloaders>` for those options and the complete ``LhotseDataLoadingConfig`` reference.
 
-.. code:: shell
+Convert a NeMo manifest to a Lhotse CutSet with:
 
-    CONVERT_SCRIPT=scripts/audio_to_audio/convert_nemo_to_lhotse.py
-    INPUT_MANIFEST=/path/to/data/nemo_manifest.json
-    OUTPUT_MANIFEST=/path/to/data/lhotse_manifest_absolute_paths.jsonl
+.. code-block:: bash
 
-    # convert
-    python ${CONVERT_SCRIPT} ${INPUT_MANIFEST} ${OUTPUT_MANIFEST} -i input_filepath -t target_filepath --force_absolute_paths
+   python scripts/audio_to_audio/convert_nemo_to_lhotse.py \
+       /path/to/nemo_manifest.json \
+       /path/to/lhotse_manifest.jsonl \
+       --input_key input_filepath \
+       --target_key target_filepath
 
-
-Then, create the Lhotse shar dataset.
-
-.. code:: shell
-
-    LHOTSE_MANIFEST=/path/to/data/lhotse_manifest_absolute_paths.jsonl
-    OUTPUT_DIR=/path/to/data/shar
-
-    # create shars, each with 2084 examples, flac audio format
-    lhotse shar export --num-jobs 16 --verbose --shard-size 2084 --audio flac ${LHOTSE_MANIFEST} ${OUTPUT_DIR}
+If the source manifest uses relative paths, write the CutSet in a directory where those paths still resolve. Use
+``--force_absolute_paths`` before exporting the CutSet to a Lhotse Shar dataset. The Audio
+``save_augmented.py`` workflow instead requires relative recording paths. Run ``--help`` to see the available
+conversion options.

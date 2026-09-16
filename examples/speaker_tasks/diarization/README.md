@@ -90,14 +90,19 @@ For live mono waveforms, create a session with a fixed number of streams and pus
 sample rate together with its valid sample lengths. Each row owns independent preprocessing buffers and asynchronous
 Sortformer cache state. A step can return no frames for a row until its configured chunk and right context are
 available. Use a per-row ``is_final`` mask to flush streams independently; finalized rows remain in the batch with a
-zero input length while other rows continue. Call ``reset()`` before reusing the session. The session disables dither
-and feature padding while extracting each chunk, then applies the checkpoint's feature normalization over each
-complete model input window.
+zero input length while other rows continue. Call ``reset()`` before reusing the session. The model must be in
+evaluation mode with ``async_streaming=True`` and unnormalized features (``normalize="NA"``, ``None``, or ``False``),
+as used by the streaming Sortformer checkpoints. Whole-recording feature normalization requires future audio and
+is not supported by the live session. Evaluation mode already disables dither. Checkpoint feature padding is
+preserved; only valid feature windows are passed to the model.
 
 ```python
 import torch
+from nemo.collections.asr.parts.utils.sortformer_utils import SortformerStreamingSession
 
-session = diar_model.create_streaming_session(batch_size=2)
+diar_model.eval()
+diar_model.async_streaming = True
+session = SortformerStreamingSession(diar_model, batch_size=2)
 for audio_batch, audio_lengths, final_mask in audio_stream:
     probabilities, probability_lengths = session.diarize_step(
         audio_batch,

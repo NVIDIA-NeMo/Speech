@@ -20,13 +20,15 @@ dataset-level ``.idxpack``.
 
 The input YAML may contain nested groups and transform wrappers. This initial
 integration packs the formats consumed by the indexed runtime: native NeMo
-manifests/tars, Nemotron text JSONL/tars, and ShareGPT JSONL manifests. No
-source manifest or tar is rescanned: the command consumes existing ``.idx``
-files, normally from ``--indexes-root``. Native tar sidecars keep their
-headerless uint64 layout. The converter determines compatibility from
-the data itself: a sidecar is current exactly when its sentinel equals the
-physical local or remote source size. Stale sidecars fail before packing;
-rebuild them with build_indexes.py ``--force``.
+manifests/tars, Nemotron text JSONL/tars, and ShareGPT/multimodal-conversation
+JSONL manifests. Native NeMo conversion reads indexed manifest rows and tar
+headers once to embed an exact row-to-member ordinal map; it never reads audio
+payloads. Other collections are copied directly from existing ``.idx`` files,
+normally from ``--indexes-root``. Native tar sidecars keep their headerless
+uint64 layout. The converter determines compatibility from the data itself: a
+sidecar is current exactly when its sentinel equals the physical local or
+remote source size. Stale sidecars fail before packing; rebuild them with
+build_indexes.py ``--force``.
 
 Example::
 
@@ -38,29 +40,131 @@ Example::
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 import logging
 import os
 import re
 import struct
-from dataclasses import replace
+import tempfile
+import uuid
+from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from dataclasses import dataclass, replace
+from itertools import zip_longest
+from multiprocessing import get_context
 from pathlib import Path
 from typing import Optional
 
 import click
-from lhotse.index_pack import IndexPack, IndexPackCollectionSpec, write_index_pack
+from lhotse.index_pack import IndexPack, IndexPackArraySpec, IndexPackCollectionSpec, write_index_pack
 from lhotse.indexing import index_file_path
-from omegaconf import DictConfig, ListConfig, OmegaConf
-
+from lhotse.serialization import decode_json_line
+from omegaconf import DictConfig, ListConfig
+from scripts.dataloading._sharegpt_route_cli import ensure_sharegpt_route
+from scripts.dataloading._sharegpt_route_config import discover_sharegpt_route_specs
 from scripts.dataloading.build_indexes import (
     _NO_INDEX_TYPES,
     _TRANSFORM_TYPES,
     JSONL,
     NEMO_TAR,
+    WDS_TAR_V2,
+    _discover_share_gpt_webdataset,
     _expand_jsonl,
     _expand_tars,
     _flatten_path_spec,
+    _load_input_cfg,
     _resolve_input_cfg,
 )
+from scripts.dataloading.validate_idxpack_records import (
+    IndexPackRecordValidationSummary,
+    validate_idxpack_json_records,
+)
+
+from nemo.collections.common.data.lhotse.indexed_adapters import (
+    _open_data_path,
+    validate_wds_v2_tar_index,
+    wds_v2_index_path,
+)
+from nemo.collections.common.data.lhotse.nemo_tar_routing import (
+    NEMO_TAR_ORDINAL_MAP_KIND,
+    NEMO_TAR_ORDINAL_MAP_ROLE,
+    NEMO_TAR_SHARD_MAP_KIND,
+    NEMO_TAR_SHARD_MAP_ROLE,
+    NativeTarOrdinalMapBuildSummary,
+    NativeTarOrdinalMapInputSnapshot,
+    NativeTarShardMapInputSnapshot,
+    _iter_indexed_manifest_rows,
+    _source_identity,
+    manifest_entry_is_explicitly_skipped,
+    nemo_tar_audio_member_name,
+    nemo_tar_ordinal_map_collection_key,
+    nemo_tar_ordinal_map_source_spec,
+    nemo_tar_shard_map_collection_key,
+    nemo_tar_shard_map_source_spec,
+    write_nemo_tar_aggregate_ordinal_maps,
+    write_nemo_tar_aggregate_shard_map,
+    write_nemo_tar_ordinal_map_shard,
+)
+
+_MANIFEST_REUSE_BATCH_BYTES = 64 << 20
+
+
+@dataclass(frozen=True)
+class NativeTarOrdinalMapSpec:
+    manifest_source_spec: object
+    tar_source_spec: object
+    manifest_paths: tuple[str, ...]
+    tar_paths: tuple[str, ...]
+
+    @property
+    def role(self) -> str:
+        return NEMO_TAR_ORDINAL_MAP_ROLE
+
+    @property
+    def kind(self) -> str:
+        return NEMO_TAR_ORDINAL_MAP_KIND
+
+    @property
+    def source_spec(self) -> dict:
+        return nemo_tar_ordinal_map_source_spec(self.manifest_source_spec, self.tar_source_spec)
+
+    @property
+    def sequence_count(self) -> int:
+        return len(self.manifest_paths)
+
+    @property
+    def key(self) -> bytes:
+        return nemo_tar_ordinal_map_collection_key(self.manifest_source_spec, self.tar_source_spec)
+
+    @property
+    def aggregate_manifest(self) -> bool:
+        return len(self.manifest_paths) == 1 and len(self.tar_paths) > 1
+
+    @property
+    def array_identities(self) -> tuple[tuple[str, str, object, bytes], ...]:
+        return _native_tar_array_identities(self)
+
+
+def _native_tar_array_identities(
+    spec: NativeTarOrdinalMapSpec,
+    *,
+    include_member_ordinals: bool = True,
+) -> tuple[tuple[str, str, object, bytes], ...]:
+    identities = []
+    if spec.aggregate_manifest:
+        identities.append(
+            (
+                NEMO_TAR_SHARD_MAP_ROLE,
+                NEMO_TAR_SHARD_MAP_KIND,
+                nemo_tar_shard_map_source_spec(spec.manifest_source_spec, spec.tar_source_spec),
+                nemo_tar_shard_map_collection_key(spec.manifest_source_spec, spec.tar_source_spec),
+            )
+        )
+    if include_member_ordinals:
+        identities.append((spec.role, spec.kind, spec.source_spec, spec.key))
+    return tuple(identities)
 
 
 def _add_collection(
@@ -91,12 +195,39 @@ def _add_collection(
     collections.append(candidate)
 
 
+def _add_native_tar_ordinal_map(
+    maps: list[NativeTarOrdinalMapSpec],
+    *,
+    manifest_source_spec,
+    tar_source_spec,
+    manifest_paths,
+    tar_paths,
+) -> None:
+    candidate = NativeTarOrdinalMapSpec(
+        manifest_source_spec=manifest_source_spec,
+        tar_source_spec=tar_source_spec,
+        manifest_paths=tuple(map(str, manifest_paths)),
+        tar_paths=tuple(map(str, tar_paths)),
+    )
+    for existing in maps:
+        if existing.key != candidate.key:
+            continue
+        if existing.manifest_paths != candidate.manifest_paths or existing.tar_paths != candidate.tar_paths:
+            raise ValueError(
+                "Native-tar ordinal-map key collision for "
+                f"manifest={manifest_source_spec!r}, tar={tar_source_spec!r}"
+            )
+        return
+    maps.append(candidate)
+
+
 _REBUILD_TAR_INDEXES_HINT = (
     "Rebuild native tar indexes with: python scripts/dataloading/build_indexes.py "
     "--force [--indexes-root INDEXES_ROOT] INPUT_CFG."
 )
 _URL_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.\-]*://")
 _IN_BAND_NEMO_TAR_INDEX_MAGIC = b"NEMOTAR\0"
+_MAX_VERIFIED_ZERO_PADDING_GROWTH = 64 * 1024 * 1024
 
 # The source .idx format stays intentionally unversioned. Sentinel/source-size
 # equality is the semantic compatibility check; the output .idxpack already
@@ -122,6 +253,16 @@ def _source_size(path: str) -> int:
             return Path(path).stat().st_size
         except FileNotFoundError as ex:
             raise FileNotFoundError(f"Indexed source not found: {path}") from ex
+
+    if str(path).startswith("s3://"):
+        from lhotse.audio.source import resolve_s3_to_local_mirror
+
+        mirrored_path = resolve_s3_to_local_mirror(str(path))
+        if mirrored_path != str(path):
+            try:
+                return Path(mirrored_path).stat().st_size
+            except FileNotFoundError:
+                pass
 
     try:
         from lhotse.ais import AISRangeReader
@@ -162,28 +303,191 @@ def _read_raw_tar_sentinel(idx_path: Path) -> tuple[int, os.stat_result]:
     return sentinel, index_stat
 
 
-def _validate_native_tar_sidecar(path: str, indexes_root) -> Path:
-    idx_path = _resolve_local_sidecar(path, indexes_root)
-    sentinel, index_stat = _read_raw_tar_sentinel(idx_path)
+def _repair_local_native_tar_sidecar(path: str, repair_root) -> Path:
+    if _is_remote_path(path):
+        raise ValueError(f"Refusing to repair non-local native tar source: {path}")
+    from nemo.collections.common.data.lhotse.indexed_adapters import create_tar_index as create_nemo_tar_index
 
-    source_size = _source_size(path)
+    repair_idx = _resolve_local_sidecar(path, repair_root)
+    repair_idx.parent.mkdir(parents=True, exist_ok=True)
+    source_size = Path(path).stat().st_size
+    create_nemo_tar_index(path, repair_idx)
+    sentinel, index_stat = _read_raw_tar_sentinel(repair_idx)
     if sentinel != source_size:
         raise ValueError(
-            f"Native tar index {idx_path} has sentinel {sentinel}, but source "
-            f"{path} is {source_size} bytes. {_REBUILD_TAR_INDEXES_HINT}"
+            f"Private native-tar repair {repair_idx} has sentinel {sentinel}, "
+            f"but source {path} is {source_size} bytes."
         )
+    if Path(path).stat().st_mtime_ns > index_stat.st_mtime_ns:
+        raise ValueError(f"Source {path} changed while rebuilding private sidecar {repair_idx}.")
+    logging.info(
+        "Rebuilt stale local native-tar sidecar privately: source=%s bytes=%d sidecar=%s",
+        path,
+        source_size,
+        repair_idx,
+    )
+    return repair_idx
 
-    if not _is_remote_path(path):
-        source_stat = Path(path).stat()
-        if source_stat.st_mtime_ns > index_stat.st_mtime_ns:
-            raise ValueError(
-                f"Source {path} is newer than native tar index {idx_path}. " f"{_REBUILD_TAR_INDEXES_HINT}"
+
+def _verify_trailing_zero_padding(path: str, start: int, source_size: int) -> None:
+    growth = source_size - start
+    if growth <= 0 or growth > _MAX_VERIFIED_ZERO_PADDING_GROWTH:
+        raise ValueError(
+            f"Cannot accept native tar growth for {path}: {growth} bytes is outside "
+            f"the verified zero-padding bound (1..{_MAX_VERIFIED_ZERO_PADDING_GROWTH})."
+        )
+    if _is_remote_path(path):
+        from lhotse.ais import AISRangeReader
+
+        stream = AISRangeReader(path)
+    else:
+        stream = Path(path).open("rb")
+    try:
+        stream.seek(start)
+        remaining = growth
+        while remaining:
+            chunk = stream.read(min(1024 * 1024, remaining))
+            if not chunk:
+                raise ValueError(
+                    f"Short read while verifying trailing padding for {path}: " f"{remaining} bytes remain"
+                )
+            if any(chunk):
+                raise ValueError(
+                    f"Native tar {path} contains non-zero data after stale sentinel "
+                    f"{start}; rebuild its index. {_REBUILD_TAR_INDEXES_HINT}"
+                )
+            remaining -= len(chunk)
+    finally:
+        stream.close()
+
+
+def _select_native_tar_sidecar(
+    path: str,
+    indexes_root,
+    *,
+    fallback_indexes_root=None,
+    repair_stale_local_sidecars_root=None,
+) -> Path:
+    """Choose the preferred existing sidecar across primary, fallback, and repair roots."""
+    shared_idx_path = _resolve_local_sidecar(path, indexes_root)
+    if not shared_idx_path.exists() and fallback_indexes_root is not None:
+        fallback_idx_path = _resolve_local_sidecar(path, fallback_indexes_root)
+        if fallback_idx_path.exists():
+            shared_idx_path = fallback_idx_path
+    repair_idx_path = (
+        _resolve_local_sidecar(path, repair_stale_local_sidecars_root)
+        if repair_stale_local_sidecars_root is not None and not _is_remote_path(path)
+        else None
+    )
+    return repair_idx_path if repair_idx_path is not None and repair_idx_path.exists() else shared_idx_path
+
+
+def _validate_native_tar_sentinel(
+    path: str,
+    idx_path: Path,
+    *,
+    accept_trailing_zero_padding: bool,
+    repair_stale_local_sidecars_root,
+) -> tuple[Path, os.stat_result, int | None]:
+    """Validate source size against the sidecar sentinel, repairing when allowed.
+
+    Returns the usable sidecar, its stat snapshot, and an optional accepted
+    source-size override for verified trailing zero padding.
+    """
+    sentinel, index_stat = _read_raw_tar_sentinel(idx_path)
+    source_size = _source_size(path)
+    if sentinel == source_size:
+        return idx_path, index_stat, None
+
+    if accept_trailing_zero_padding and sentinel < source_size:
+        try:
+            _verify_trailing_zero_padding(path, sentinel, source_size)
+        except ValueError:
+            if _is_remote_path(path) or repair_stale_local_sidecars_root is None:
+                raise
+        else:
+            logging.info(
+                "Accepted verified trailing zero padding for %s: sentinel=%d source_size=%d growth=%d",
+                path,
+                sentinel,
+                source_size,
+                source_size - sentinel,
             )
-    return idx_path
+            return idx_path, index_stat, source_size
+
+    if not _is_remote_path(path) and repair_stale_local_sidecars_root is not None:
+        repaired_path = _repair_local_native_tar_sidecar(path, repair_stale_local_sidecars_root)
+        _sentinel, repaired_stat = _read_raw_tar_sentinel(repaired_path)
+        return repaired_path, repaired_stat, None
+
+    raise ValueError(
+        f"Native tar index {idx_path} has sentinel {sentinel}, but source "
+        f"{path} is {source_size} bytes. {_REBUILD_TAR_INDEXES_HINT}"
+    )
 
 
-def _preflight_native_tar_sidecars(collections, indexes_root) -> None:
+def _validate_local_tar_index_freshness(
+    path: str,
+    idx_path: Path,
+    index_stat: os.stat_result,
+    source_size_override: int | None,
+    *,
+    repair_stale_local_sidecars_root=None,
+) -> Path:
+    """Ensure a local tar is not newer than its sidecar, repairing when allowed."""
+    if _is_remote_path(path) or source_size_override is not None:
+        return idx_path
+
+    source_stat = Path(path).stat()
+    if source_stat.st_mtime_ns <= index_stat.st_mtime_ns:
+        return idx_path
+    if repair_stale_local_sidecars_root is not None:
+        return _repair_local_native_tar_sidecar(path, repair_stale_local_sidecars_root)
+    raise ValueError(f"Source {path} is newer than native tar index {idx_path}. " f"{_REBUILD_TAR_INDEXES_HINT}")
+
+
+def _validate_native_tar_sidecar(
+    path: str,
+    indexes_root,
+    *,
+    fallback_indexes_root=None,
+    accept_trailing_zero_padding: bool = False,
+    repair_stale_local_sidecars_root=None,
+) -> tuple[Path, int | None]:
+    """Select and fully validate the sidecar used to pack one native tar."""
+    idx_path = _select_native_tar_sidecar(
+        path,
+        indexes_root,
+        fallback_indexes_root=fallback_indexes_root,
+        repair_stale_local_sidecars_root=repair_stale_local_sidecars_root,
+    )
+    idx_path, index_stat, source_size_override = _validate_native_tar_sentinel(
+        path,
+        idx_path,
+        accept_trailing_zero_padding=accept_trailing_zero_padding,
+        repair_stale_local_sidecars_root=repair_stale_local_sidecars_root,
+    )
+    idx_path = _validate_local_tar_index_freshness(
+        path,
+        idx_path,
+        index_stat,
+        source_size_override,
+        repair_stale_local_sidecars_root=repair_stale_local_sidecars_root,
+    )
+    return idx_path, source_size_override
+
+
+def _preflight_native_tar_sidecars(
+    collections,
+    indexes_root,
+    *,
+    fallback_indexes_root=None,
+    accept_trailing_zero_padding: bool = False,
+    repair_stale_local_sidecars_root=None,
+) -> tuple[dict[str, int], dict[str, Path]]:
     validated = set()
+    source_size_overrides = {}
+    index_path_overrides = {}
     for collection in collections:
         if collection.kind != NEMO_TAR or not collection.offsets_required:
             continue
@@ -191,8 +495,862 @@ def _preflight_native_tar_sidecars(collections, indexes_root) -> None:
             path = str(path)
             if path in validated:
                 continue
-            _validate_native_tar_sidecar(path, indexes_root)
+            _idx_path, override = _validate_native_tar_sidecar(
+                path,
+                indexes_root,
+                fallback_indexes_root=fallback_indexes_root,
+                accept_trailing_zero_padding=accept_trailing_zero_padding,
+                repair_stale_local_sidecars_root=repair_stale_local_sidecars_root,
+            )
+            if override is not None:
+                source_size_overrides[path] = override
+            shared_idx_path = _resolve_local_sidecar(path, indexes_root)
+            if _idx_path != shared_idx_path:
+                index_path_overrides[path] = _idx_path
             validated.add(path)
+    return source_size_overrides, index_path_overrides
+
+
+def _preflight_wds_v2_sidecars(collections, indexes_root) -> dict[str, Path]:
+    index_path_overrides = {}
+    validated = set()
+    for collection in collections:
+        if collection.kind != WDS_TAR_V2 or not collection.offsets_required:
+            continue
+        for path in collection.paths:
+            path = str(path)
+            if path in validated:
+                continue
+            idx_path = wds_v2_index_path(path, indexes_root)
+            validate_wds_v2_tar_index(path, idx_path=idx_path)
+            index_path_overrides[path] = idx_path
+            validated.add(path)
+    return index_path_overrides
+
+
+def _path_only_source_sizes(collections) -> dict[str, int]:
+    """Capture live sizes so path-only pack segments remain reusable safely."""
+    return {
+        str(path): _source_size(str(path))
+        for collection in collections
+        if not collection.offsets_required
+        for path in collection.paths
+    }
+
+
+@dataclass(frozen=True)
+class _NativeTarRouteReuseSnapshot:
+    source_pack_path: Path
+    source_pack_identity: tuple[int, int, int, int]
+    source_manifest_paths: tuple[str, ...]
+    source_manifest_identities: tuple[object, ...]
+    target_snapshot: NativeTarOrdinalMapInputSnapshot
+
+    @classmethod
+    def capture(
+        cls,
+        source_pack_path: str | Path,
+        source_manifest_paths: tuple[str, ...],
+        target_snapshot: NativeTarOrdinalMapInputSnapshot,
+    ) -> _NativeTarRouteReuseSnapshot:
+        source_pack_path = Path(source_pack_path)
+        return cls(
+            source_pack_path=source_pack_path,
+            source_pack_identity=_local_file_identity(source_pack_path),
+            source_manifest_paths=source_manifest_paths,
+            source_manifest_identities=tuple(_source_identity(path) for path in source_manifest_paths),
+            target_snapshot=target_snapshot,
+        )
+
+    def validate(self) -> None:
+        if _local_file_identity(self.source_pack_path) != self.source_pack_identity:
+            raise ValueError(f"Native-tar route source pack changed during conversion: {self.source_pack_path}")
+        current_source_identities = tuple(_source_identity(path) for path in self.source_manifest_paths)
+        if current_source_identities != self.source_manifest_identities:
+            raise ValueError("A source manifest changed during native-tar route reuse")
+        self.target_snapshot.validate()
+
+
+def _local_file_identity(path: str | Path) -> tuple[int, int, int, int]:
+    stat = Path(path).stat()
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns
+
+
+def _sha256_file(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _validate_source_pack_digest(source_pack: IndexPack, expected_sha256: str) -> None:
+    """Authenticate the route source pack against the required SHA-256 digest."""
+    expected_sha256 = expected_sha256.strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+        raise ValueError("Native-tar route source-pack SHA-256 must contain exactly 64 hexadecimal characters")
+    actual_sha256 = _sha256_file(source_pack.path)
+    if not hmac.compare_digest(actual_sha256, expected_sha256):
+        raise ValueError(
+            f"Native-tar route source-pack SHA-256 mismatch: expected={expected_sha256}, actual={actual_sha256}"
+        )
+
+
+def _expected_source_pack_keys(
+    source_collections: Sequence[IndexPackCollectionSpec],
+    source_routes: Sequence[NativeTarOrdinalMapSpec],
+) -> list[bytes]:
+    """Return the exact, duplicate-free collection keys expected in a source pack."""
+    keys = [spec.key for spec in source_collections]
+    keys.extend(
+        key for route in source_routes for _role, _kind, _source_spec, key in _native_tar_array_identities(route)
+    )
+    if len(set(keys)) != len(keys):
+        raise ValueError("Native-tar route source configuration contains duplicate collection keys")
+    return keys
+
+
+def _validate_source_pack_collection(source_pack: IndexPack, spec: IndexPackCollectionSpec) -> None:
+    """Verify one source-pack collection matches its configured mode and path order."""
+    collection = source_pack.collection(spec.key)
+    if collection.is_array or collection.kind != spec.kind or collection.offsets_required != spec.offsets_required:
+        raise ValueError(f"Source-pack collection mode disagrees with source configuration: key={spec.key.hex()}")
+    if collection.sequence_count != len(spec.paths):
+        raise ValueError(f"Source-pack shard count disagrees with source configuration: key={spec.key.hex()}")
+    for shard_index, expected_path in enumerate(spec.paths):
+        if collection.path_for_shard(shard_index) != expected_path:
+            raise ValueError(
+                f"Source-pack ordered path disagrees with source configuration: "
+                f"key={spec.key.hex()} shard={shard_index}"
+            )
+
+
+def _validate_source_pack_routes(source_pack: IndexPack, spec: NativeTarOrdinalMapSpec) -> None:
+    """Verify route arrays have the expected type and align with manifest rows."""
+    manifest_key = IndexPackCollectionSpec(
+        role="manifest",
+        kind=JSONL,
+        source_spec=spec.manifest_source_spec,
+        paths=spec.manifest_paths,
+    ).key
+    manifest = source_pack.collection(manifest_key)
+    for _role, kind, _source_spec, key in _native_tar_array_identities(spec):
+        route = source_pack.collection(key)
+        if not route.is_array or route.value_dtype != "uint32" or route.kind != kind:
+            raise ValueError(f"Source-pack native-tar route has an invalid collection mode: key={key.hex()}")
+        if route.sequence_count != spec.sequence_count:
+            raise ValueError(f"Source-pack native-tar route shard count changed: key={key.hex()}")
+        for shard_index in range(route.sequence_count):
+            if route.shard_length(shard_index) != manifest.shard_length(shard_index):
+                raise ValueError(
+                    f"Source-pack native-tar route row count disagrees with its manifest: "
+                    f"key={key.hex()} shard={shard_index}"
+                )
+
+
+def _authenticate_native_tar_route_source_pack(
+    source_pack: IndexPack,
+    source_collections: Sequence[IndexPackCollectionSpec],
+    source_routes: Sequence[NativeTarOrdinalMapSpec],
+    expected_sha256: str,
+) -> None:
+    """Authenticate a v3 source pack and validate its complete collection schema."""
+    _validate_source_pack_digest(source_pack, expected_sha256)
+    expected_keys = _expected_source_pack_keys(source_collections, source_routes)
+    actual_keys = set(source_pack._collections)
+    if actual_keys != set(expected_keys):
+        raise ValueError(
+            "Native-tar route source pack does not exactly match its source configuration: "
+            f"expected_collections={len(expected_keys)}, actual_collections={len(actual_keys)}, "
+            f"missing={len(set(expected_keys) - actual_keys)}, unexpected={len(actual_keys - set(expected_keys))}"
+        )
+    if source_pack.version != 3:
+        raise ValueError(f"Native-tar route reuse requires a version-3 source pack, got version {source_pack.version}")
+    for spec in source_collections:
+        _validate_source_pack_collection(source_pack, spec)
+    for spec in source_routes:
+        _validate_source_pack_routes(source_pack, spec)
+
+
+def _native_tar_routing_signature(data: Mapping, *, path: str, row_index: int) -> tuple:
+    if not isinstance(data, Mapping):
+        raise ValueError(
+            f"Native-tar manifest row {row_index} in {path!r} must be a JSON object, " f"got {type(data).__name__}"
+        )
+    top_level_marker = bool(data.get("_skipme", False))
+    custom = data.get("custom")
+    custom_marker = isinstance(custom, Mapping) and bool(custom.get("_skipme", False))
+    if manifest_entry_is_explicitly_skipped(data):
+        return "skip", top_level_marker, custom_marker
+    try:
+        audio_filepath = data["audio_filepath"]
+    except KeyError as error:
+        raise ValueError(f"Native-tar manifest row {row_index} in {path!r} is missing audio_filepath") from error
+    return "audio", nemo_tar_audio_member_name(audio_filepath)
+
+
+def _iter_packed_manifest_shard_rows(collection, shard_index: int):
+    path = collection.path_for_shard(shard_index)
+    row_count = collection.shard_length(shard_index)
+    row_index = 0
+    with _open_data_path(path) as source:
+        while row_index < row_count:
+            first = collection.locate_in_shard(shard_index, row_index)
+            batch_start = first.start
+            batch_end_index = row_index + 1
+            batch_end = first.end
+            while batch_end_index < row_count:
+                candidate = collection.locate_in_shard(shard_index, batch_end_index)
+                if candidate.path != path:
+                    raise ValueError("Packed manifest shard changed paths within one shard")
+                if candidate.end - batch_start > _MANIFEST_REUSE_BATCH_BYTES:
+                    break
+                batch_end_index += 1
+                batch_end = candidate.end
+            source.seek(batch_start)
+            raw = source.read(batch_end - batch_start)
+            if len(raw) != batch_end - batch_start:
+                raise EOFError(
+                    f"Short packed manifest read from {path!r}: requested "
+                    f"[{batch_start}, {batch_end}), received {len(raw)} bytes"
+                )
+            while row_index < batch_end_index:
+                location = collection.locate_in_shard(shard_index, row_index)
+                try:
+                    data = decode_json_line(
+                        raw[location.start - batch_start : location.end - batch_start].decode("utf-8")
+                    )
+                except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                    raise ValueError(f"Malformed JSON at packed row {row_index} in {path!r}: {error}") from error
+                yield data
+                row_index += 1
+
+
+def _compare_native_tar_route_signatures(
+    source_manifest_collection,
+    source_route_collection,
+    source_spec: NativeTarOrdinalMapSpec,
+    target_spec: NativeTarOrdinalMapSpec,
+    *,
+    indexes_root,
+) -> IndexPackRecordValidationSummary:
+    if source_spec.tar_paths != target_spec.tar_paths:
+        raise ValueError("Native-tar route reuse requires exact ordered tar paths")
+    if len(source_spec.manifest_paths) != len(target_spec.manifest_paths):
+        raise ValueError(
+            "Native-tar route reuse manifest shard count changed: "
+            f"source={len(source_spec.manifest_paths)}, target={len(target_spec.manifest_paths)}"
+        )
+
+    records_checked = 0
+    skip_marker_records = 0
+    top_level_skip_marker_records = 0
+    custom_skip_marker_records = 0
+    missing = object()
+    for shard_index, (source_manifest_path, target_manifest_path) in enumerate(
+        zip(source_spec.manifest_paths, target_spec.manifest_paths, strict=True)
+    ):
+        source_size = source_manifest_collection.source_size_for_shard(shard_index)
+        current_source_size = int(_source_identity(source_manifest_path)["size_bytes"])
+        if source_size != current_source_size:
+            raise ValueError(
+                f"Authenticated source manifest size changed at shard {shard_index}: "
+                f"packed={source_size}, current={current_source_size}, path={source_manifest_path!r}"
+            )
+        target_index_path = _resolve_local_sidecar(target_manifest_path, indexes_root)
+        source_rows = _iter_packed_manifest_shard_rows(source_manifest_collection, shard_index)
+        target_rows = _iter_indexed_manifest_rows(target_manifest_path, target_index_path)
+        route_rows = source_route_collection.shard_length(shard_index)
+        shard_records_checked = 0
+        for row_index, (source_data, target_data) in enumerate(
+            zip_longest(source_rows, target_rows, fillvalue=missing)
+        ):
+            if source_data is missing or target_data is missing:
+                raise ValueError(
+                    f"Native-tar route reuse row count changed at shard {shard_index}: "
+                    f"source_route_rows={route_rows}, mismatch_at={row_index}"
+                )
+            source_signature = _native_tar_routing_signature(
+                source_data, path=source_manifest_path, row_index=row_index
+            )
+            target_signature = _native_tar_routing_signature(
+                target_data, path=target_manifest_path, row_index=row_index
+            )
+            if source_signature != target_signature:
+                raise ValueError(
+                    f"Native-tar routing signature changed at shard={shard_index} row={row_index}: "
+                    f"source={source_signature!r}, target={target_signature!r}, "
+                    f"source_manifest={source_manifest_path!r}, target_manifest={target_manifest_path!r}"
+                )
+            top_level_marker = bool(target_data.get("_skipme", False))
+            custom = target_data.get("custom")
+            custom_marker = isinstance(custom, Mapping) and bool(custom.get("_skipme", False))
+            skip_marker_records += int(top_level_marker or custom_marker)
+            top_level_skip_marker_records += int(top_level_marker)
+            custom_skip_marker_records += int(custom_marker)
+            records_checked += 1
+            shard_records_checked += 1
+        if shard_records_checked != route_rows:
+            raise ValueError(
+                f"Native-tar route reuse did not validate every source route row at shard {shard_index}: "
+                f"checked={shard_records_checked}, route_rows={route_rows}"
+            )
+
+    return IndexPackRecordValidationSummary(
+        records_checked=records_checked,
+        jsonl_collections_checked=1,
+        skip_marker_records=skip_marker_records,
+        top_level_skip_marker_records=top_level_skip_marker_records,
+        custom_skip_marker_records=custom_skip_marker_records,
+        errors=0,
+        errors_reported=0,
+    )
+
+
+def _copy_packed_array_shards(collection, output_paths: tuple[Path, ...]) -> None:
+    if not collection.is_array or collection.value_dtype != "uint32":
+        raise ValueError("Only packed uint32 array collections can be reused")
+    if collection.sequence_count != len(output_paths):
+        raise ValueError(
+            f"Packed array shard count changed during reuse: {collection.sequence_count} != {len(output_paths)}"
+        )
+    pack = collection.pack
+    pack._ensure_open()
+    with pack.path.open("rb") as source:
+        for shard_index, output_path in enumerate(output_paths):
+            segment_id, _ = pack._sequence(collection.sequence_start + shard_index)
+            segment = pack._segment(segment_id)
+            expected_size = collection.shard_length(shard_index) * 4
+            if segment[6] != expected_size:
+                raise ValueError(
+                    f"Packed route payload size mismatch at shard {shard_index}: {segment[6]} != {expected_size}"
+                )
+            pack.verify_segment(segment_id)
+            source.seek(segment[1])
+            remaining = expected_size
+            with output_path.open("xb") as output:
+                while remaining:
+                    chunk = source.read(min(8 * 1024 * 1024, remaining))
+                    if not chunk:
+                        raise EOFError(
+                            f"Short source-pack route read at shard {shard_index}: {remaining} bytes remain"
+                        )
+                    output.write(chunk)
+                    remaining -= len(chunk)
+
+
+def _sum_validation_summaries(
+    *summaries: IndexPackRecordValidationSummary,
+) -> IndexPackRecordValidationSummary:
+    return IndexPackRecordValidationSummary(
+        records_checked=sum(summary.records_checked for summary in summaries),
+        jsonl_collections_checked=sum(summary.jsonl_collections_checked for summary in summaries),
+        skip_marker_records=sum(summary.skip_marker_records for summary in summaries),
+        top_level_skip_marker_records=sum(summary.top_level_skip_marker_records for summary in summaries),
+        custom_skip_marker_records=sum(summary.custom_skip_marker_records for summary in summaries),
+        errors=sum(summary.errors for summary in summaries),
+        errors_reported=sum(summary.errors_reported for summary in summaries),
+    )
+
+
+def _empty_validation_summary() -> IndexPackRecordValidationSummary:
+    """Create the neutral validation summary used before any routes are processed."""
+    return IndexPackRecordValidationSummary(
+        records_checked=0,
+        jsonl_collections_checked=0,
+        skip_marker_records=0,
+        top_level_skip_marker_records=0,
+        custom_skip_marker_records=0,
+        errors=0,
+        errors_reported=0,
+    )
+
+
+_NATIVE_TAR_ROUTE_REUSE_WORKER_PACK: IndexPack | None = None
+
+
+@dataclass(frozen=True)
+class _NativeTarRouteReuseTask:
+    map_index: int
+    source_map: NativeTarOrdinalMapSpec
+    target_map: NativeTarOrdinalMapSpec
+    indexes_root: object
+    output_paths: tuple[Path, ...]
+
+
+def _initialize_native_tar_route_reuse_worker(source_pack_path: str) -> None:
+    global _NATIVE_TAR_ROUTE_REUSE_WORKER_PACK
+    _NATIVE_TAR_ROUTE_REUSE_WORKER_PACK = IndexPack(source_pack_path)
+    _NATIVE_TAR_ROUTE_REUSE_WORKER_PACK._ensure_open()
+
+
+def _reuse_native_tar_ordinal_map_with_pack(
+    source_pack: IndexPack,
+    task: _NativeTarRouteReuseTask,
+) -> tuple[int, IndexPackRecordValidationSummary]:
+    source_manifest_key = IndexPackCollectionSpec(
+        role="manifest",
+        kind=JSONL,
+        source_spec=task.source_map.manifest_source_spec,
+        paths=task.source_map.manifest_paths,
+    ).key
+    source_manifest = source_pack.collection(source_manifest_key)
+    source_route = source_pack.collection(task.source_map.key)
+    summary = _compare_native_tar_route_signatures(
+        source_manifest,
+        source_route,
+        task.source_map,
+        task.target_map,
+        indexes_root=task.indexes_root,
+    )
+    _copy_packed_array_shards(source_route, task.output_paths)
+    return task.map_index, summary
+
+
+def _reuse_native_tar_ordinal_map_worker(
+    task: _NativeTarRouteReuseTask,
+) -> tuple[int, IndexPackRecordValidationSummary]:
+    if _NATIVE_TAR_ROUTE_REUSE_WORKER_PACK is None:
+        raise RuntimeError("Native-tar route reuse worker was not initialized")
+    return _reuse_native_tar_ordinal_map_with_pack(_NATIVE_TAR_ROUTE_REUSE_WORKER_PACK, task)
+
+
+def _iter_native_tar_route_reuse_results(
+    source_pack: IndexPack,
+    tasks: list[_NativeTarRouteReuseTask],
+    *,
+    workers: int,
+):
+    """Yield route-reuse results serially or from a bounded process pool."""
+    if workers == 1 or len(tasks) <= 1:
+        for task in tasks:
+            yield _reuse_native_tar_ordinal_map_with_pack(source_pack, task)
+        return
+
+    with ProcessPoolExecutor(
+        max_workers=min(workers, len(tasks)),
+        mp_context=get_context("spawn"),
+        initializer=_initialize_native_tar_route_reuse_worker,
+        initargs=(str(source_pack.path),),
+    ) as executor:
+        futures = [executor.submit(_reuse_native_tar_ordinal_map_worker, task) for task in tasks]
+        try:
+            for future in as_completed(futures):
+                yield future.result()
+        except BaseException:
+            for future in futures:
+                future.cancel()
+            raise
+
+
+def _reuse_native_tar_ordinal_array_specs(
+    target_maps: list[NativeTarOrdinalMapSpec],
+    temporary_directory: str | Path,
+    *,
+    source_input_cfg: str,
+    source_pack_path: str,
+    source_pack_sha256: str,
+    data_blend_dir: str | Path | None,
+    indexes_root,
+    index_path_overrides: dict[str, Path],
+    native_tar_route_workers: int,
+) -> tuple[
+    dict[bytes, IndexPackArraySpec],
+    list[NativeTarOrdinalMapSpec],
+    IndexPackRecordValidationSummary,
+    set[bytes],
+    list[Callable[[], None]],
+]:
+    source_config = _load_input_cfg(source_input_cfg, data_blend_dir)
+    source_maps: list[NativeTarOrdinalMapSpec] = []
+    source_collections = discover_pack_collections(
+        source_config,
+        data_blend_dir=data_blend_dir,
+        native_tar_ordinal_maps=source_maps,
+    )
+    source_by_tar_paths: dict[tuple[str, ...], NativeTarOrdinalMapSpec] = {}
+    for source_map in source_maps:
+        prior = source_by_tar_paths.get(source_map.tar_paths)
+        if prior is not None:
+            raise ValueError(
+                "Native-tar route source configuration is ambiguous for exact tar paths: " f"{source_map.tar_paths!r}"
+            )
+        source_by_tar_paths[source_map.tar_paths] = source_map
+
+    temporary_directory = Path(temporary_directory)
+    reused: dict[bytes, IndexPackArraySpec] = {}
+    unmatched = []
+    summaries = []
+    validated_manifest_keys: set[bytes] = set()
+    validators: list[Callable[[], None]] = []
+    tasks: list[_NativeTarRouteReuseTask] = []
+    task_metadata = {}
+    with IndexPack(source_pack_path) as source_pack:
+        _authenticate_native_tar_route_source_pack(
+            source_pack,
+            source_collections,
+            source_maps,
+            source_pack_sha256,
+        )
+        for map_index, target_map in enumerate(target_maps):
+            source_map = source_by_tar_paths.get(target_map.tar_paths)
+            if source_map is None:
+                unmatched.append(target_map)
+                continue
+            if source_map.aggregate_manifest or target_map.aggregate_manifest:
+                # Aggregate maps contain a second row-to-tar-shard route. Rebuild
+                # both routes together instead of partially reusing only the member map.
+                unmatched.append(target_map)
+                continue
+
+            target_manifest_index_paths = tuple(
+                _resolve_local_sidecar(path, indexes_root) for path in target_map.manifest_paths
+            )
+            target_tar_index_paths = tuple(
+                index_path_overrides.get(path, _resolve_local_sidecar(path, indexes_root))
+                for path in target_map.tar_paths
+            )
+            target_snapshot = NativeTarOrdinalMapInputSnapshot.capture(
+                target_map.manifest_paths,
+                target_map.tar_paths,
+                target_manifest_index_paths,
+                target_tar_index_paths,
+            )
+            snapshot = _NativeTarRouteReuseSnapshot.capture(
+                source_pack.path,
+                source_map.manifest_paths,
+                target_snapshot,
+            )
+            target_manifest_key = IndexPackCollectionSpec(
+                role="manifest",
+                kind=JSONL,
+                source_spec=target_map.manifest_source_spec,
+                paths=target_map.manifest_paths,
+            ).key
+            output_paths = tuple(
+                temporary_directory / f"reused-native-tar-route-{map_index:06d}-{shard_index:06d}.u32"
+                for shard_index in range(target_map.sequence_count)
+            )
+            reused[target_map.key] = IndexPackArraySpec(
+                role=target_map.role,
+                kind=target_map.kind,
+                source_spec=target_map.source_spec,
+                shard_paths=output_paths,
+                dtype="uint32",
+            )
+            tasks.append(
+                _NativeTarRouteReuseTask(
+                    map_index=map_index,
+                    source_map=source_map,
+                    target_map=target_map,
+                    indexes_root=indexes_root,
+                    output_paths=output_paths,
+                )
+            )
+            task_metadata[map_index] = (
+                target_map,
+                source_map,
+                target_manifest_key,
+                snapshot,
+            )
+
+        results = _iter_native_tar_route_reuse_results(source_pack, tasks, workers=native_tar_route_workers)
+        for map_index, summary in results:
+            target_map, source_map, target_manifest_key, snapshot = task_metadata[map_index]
+            if target_manifest_key not in validated_manifest_keys:
+                validated_manifest_keys.add(target_manifest_key)
+                summaries.append(summary)
+            snapshot.validate()
+            validators.append(snapshot.validate)
+            logging.info(
+                "Reused authenticated native-tar ordinal map: target_key=%s source_key=%s shards=%d rows=%d",
+                target_map.key.hex(),
+                source_map.key.hex(),
+                target_map.sequence_count,
+                summary.records_checked,
+            )
+
+    return (
+        reused,
+        unmatched,
+        (_sum_validation_summaries(*summaries) if summaries else _empty_validation_summary()),
+        validated_manifest_keys,
+        validators,
+    )
+
+
+def _build_aggregate_native_tar_array_specs(
+    spec: NativeTarOrdinalMapSpec,
+    map_index: int,
+    temporary_directory: Path,
+    manifest_index_path: Path,
+    *,
+    indexes_root,
+    index_path_overrides: dict[str, Path],
+    source_size_overrides: dict[str, int],
+    include_member_ordinals: bool,
+) -> tuple[
+    list[IndexPackArraySpec],
+    NativeTarOrdinalMapInputSnapshot | NativeTarShardMapInputSnapshot,
+    NativeTarOrdinalMapBuildSummary,
+]:
+    """Build the shard route and, when requested, the member-ordinal route."""
+    shard_output_path = temporary_directory / f"native-tar-shard-route-{map_index:06d}-000000.u32"
+    arrays = [
+        IndexPackArraySpec(
+            role=NEMO_TAR_SHARD_MAP_ROLE,
+            kind=NEMO_TAR_SHARD_MAP_KIND,
+            source_spec=nemo_tar_shard_map_source_spec(
+                spec.manifest_source_spec,
+                spec.tar_source_spec,
+            ),
+            shard_paths=(shard_output_path,),
+            dtype="uint32",
+        )
+    ]
+    if not include_member_ordinals:
+        summary = write_nemo_tar_aggregate_shard_map(
+            shard_output_path,
+            manifest_path=spec.manifest_paths[0],
+            manifest_index_path=manifest_index_path,
+            tar_paths=spec.tar_paths,
+        )
+        assert isinstance(summary.input_snapshot, NativeTarShardMapInputSnapshot)
+        return arrays, summary.input_snapshot, summary
+
+    tar_index_paths = tuple(
+        (
+            index_path_overrides[tar_path]
+            if tar_path in index_path_overrides
+            else _resolve_local_sidecar(tar_path, indexes_root)
+        )
+        for tar_path in spec.tar_paths
+    )
+    ordinal_output_path = temporary_directory / f"native-tar-route-{map_index:06d}-000000.u32"
+    summary = write_nemo_tar_aggregate_ordinal_maps(
+        ordinal_output_path,
+        shard_output_path,
+        manifest_path=spec.manifest_paths[0],
+        manifest_index_path=manifest_index_path,
+        tar_paths=spec.tar_paths,
+        tar_index_paths=tar_index_paths,
+        tar_sentinel_size_overrides=tuple(source_size_overrides.get(tar_path) for tar_path in spec.tar_paths),
+    )
+    arrays.append(
+        IndexPackArraySpec(
+            role=NEMO_TAR_ORDINAL_MAP_ROLE,
+            kind=NEMO_TAR_ORDINAL_MAP_KIND,
+            source_spec=nemo_tar_ordinal_map_source_spec(
+                spec.manifest_source_spec,
+                spec.tar_source_spec,
+            ),
+            shard_paths=(ordinal_output_path,),
+            dtype="uint32",
+        )
+    )
+    assert isinstance(summary.input_snapshot, NativeTarOrdinalMapInputSnapshot)
+    return arrays, summary.input_snapshot, summary
+
+
+def _build_native_tar_ordinal_array_specs(
+    maps: list[NativeTarOrdinalMapSpec],
+    temporary_directory: str | Path,
+    *,
+    indexes_root,
+    index_path_overrides: dict[str, Path],
+    source_size_overrides: dict[str, int],
+    native_tar_route_workers: int,
+    include_member_ordinals: bool = True,
+) -> tuple[
+    list[IndexPackArraySpec],
+    IndexPackRecordValidationSummary,
+    set[bytes],
+    list[Callable[[], None]],
+]:
+    """Build temporary fixed arrays with one global worker pool across all map shards."""
+    temporary_directory = Path(temporary_directory)
+    arrays = []
+    map_snapshots: list[NativeTarOrdinalMapInputSnapshot | NativeTarShardMapInputSnapshot] = []
+    map_summaries: list[list[NativeTarOrdinalMapBuildSummary | None]] = []
+    tasks = []
+    manifest_keys = []
+    for map_index, spec in enumerate(maps):
+        manifest_index_paths = tuple(
+            _resolve_local_sidecar(manifest_path, indexes_root) for manifest_path in spec.manifest_paths
+        )
+        if spec.aggregate_manifest:
+            aggregate_arrays, snapshot, summary = _build_aggregate_native_tar_array_specs(
+                spec,
+                map_index,
+                temporary_directory,
+                manifest_index_paths[0],
+                indexes_root=indexes_root,
+                index_path_overrides=index_path_overrides,
+                source_size_overrides=source_size_overrides,
+                include_member_ordinals=include_member_ordinals,
+            )
+            arrays.extend(aggregate_arrays)
+            map_snapshots.append(snapshot)
+            map_summaries.append([summary])
+        else:
+            assert include_member_ordinals
+            tar_index_paths = tuple(
+                (
+                    index_path_overrides[tar_path]
+                    if tar_path in index_path_overrides
+                    else _resolve_local_sidecar(tar_path, indexes_root)
+                )
+                for tar_path in spec.tar_paths
+            )
+            output_paths = tuple(
+                temporary_directory / f"native-tar-route-{map_index:06d}-{shard_index:06d}.u32"
+                for shard_index in range(len(spec.manifest_paths))
+            )
+            map_snapshots.append(
+                NativeTarOrdinalMapInputSnapshot.capture(
+                    spec.manifest_paths,
+                    spec.tar_paths,
+                    manifest_index_paths,
+                    tar_index_paths,
+                )
+            )
+            map_summaries.append([None] * len(output_paths))
+            tasks.extend(
+                (
+                    map_index,
+                    shard_index,
+                    output_path,
+                    manifest_path,
+                    manifest_index_path,
+                    tar_path,
+                    tar_index_path,
+                    source_size_overrides.get(tar_path),
+                )
+                for shard_index, (
+                    output_path,
+                    manifest_path,
+                    manifest_index_path,
+                    tar_path,
+                    tar_index_path,
+                ) in enumerate(
+                    zip(
+                        output_paths,
+                        spec.manifest_paths,
+                        manifest_index_paths,
+                        spec.tar_paths,
+                        tar_index_paths,
+                    )
+                )
+            )
+            arrays.append(
+                IndexPackArraySpec(
+                    role=NEMO_TAR_ORDINAL_MAP_ROLE,
+                    kind=NEMO_TAR_ORDINAL_MAP_KIND,
+                    source_spec=nemo_tar_ordinal_map_source_spec(
+                        spec.manifest_source_spec,
+                        spec.tar_source_spec,
+                    ),
+                    shard_paths=output_paths,
+                    dtype="uint32",
+                )
+            )
+        manifest_keys.append(
+            IndexPackCollectionSpec(
+                role="manifest",
+                kind=JSONL,
+                source_spec=spec.manifest_source_spec,
+                paths=spec.manifest_paths,
+            ).key
+        )
+
+    if native_tar_route_workers == 1 or len(tasks) <= 1:
+        results = map(_write_native_tar_ordinal_map_shard_task, tasks)
+        for map_index, shard_index, summary in results:
+            map_summaries[map_index][shard_index] = summary
+    else:
+        with ProcessPoolExecutor(
+            max_workers=min(native_tar_route_workers, len(tasks)),
+            mp_context=get_context("spawn"),
+        ) as executor:
+            futures = [executor.submit(_write_native_tar_ordinal_map_shard_task, task) for task in tasks]
+            try:
+                for future in as_completed(futures):
+                    map_index, shard_index, summary = future.result()
+                    map_summaries[map_index][shard_index] = summary
+            except BaseException:
+                for future in futures:
+                    future.cancel()
+                raise
+
+    validated_manifest_keys = set()
+    records_checked = 0
+    skip_marker_records = 0
+    top_level_skip_marker_records = 0
+    custom_skip_marker_records = 0
+    for map_index, (spec, manifest_key, input_snapshot) in enumerate(zip(maps, manifest_keys, map_snapshots)):
+        input_snapshot.validate()
+        pending_summaries = map_summaries[map_index]
+        assert all(summary is not None for summary in pending_summaries)
+        shard_summaries = tuple(summary for summary in pending_summaries if summary is not None)
+        build_summary = NativeTarOrdinalMapBuildSummary(
+            shard_rows=tuple(summary.records_checked for summary in shard_summaries),
+            records_checked=sum(summary.records_checked for summary in shard_summaries),
+            skip_marker_records=sum(summary.skip_marker_records for summary in shard_summaries),
+            top_level_skip_marker_records=sum(summary.top_level_skip_marker_records for summary in shard_summaries),
+            custom_skip_marker_records=sum(summary.custom_skip_marker_records for summary in shard_summaries),
+            input_snapshot=input_snapshot,
+        )
+        if manifest_key not in validated_manifest_keys:
+            validated_manifest_keys.add(manifest_key)
+            records_checked += build_summary.records_checked
+            skip_marker_records += build_summary.skip_marker_records
+            top_level_skip_marker_records += build_summary.top_level_skip_marker_records
+            custom_skip_marker_records += build_summary.custom_skip_marker_records
+        logging.info(
+            "Built native-tar ordinal map: key=%s shards=%d rows=%d",
+            spec.key.hex(),
+            len(build_summary.shard_rows),
+            build_summary.records_checked,
+        )
+    return (
+        arrays,
+        IndexPackRecordValidationSummary(
+            records_checked=records_checked,
+            jsonl_collections_checked=len(validated_manifest_keys),
+            skip_marker_records=skip_marker_records,
+            top_level_skip_marker_records=top_level_skip_marker_records,
+            custom_skip_marker_records=custom_skip_marker_records,
+            errors=0,
+            errors_reported=0,
+        ),
+        validated_manifest_keys,
+        [snapshot.validate for snapshot in map_snapshots],
+    )
+
+
+def _write_native_tar_ordinal_map_shard_task(
+    task: tuple[int, int, str | Path, str, str | Path, str, str | Path, int | None],
+) -> tuple[int, int, NativeTarOrdinalMapBuildSummary]:
+    """Process-pool entry point for one globally scheduled native-tar shard."""
+    (
+        map_index,
+        shard_index,
+        output_path,
+        manifest_path,
+        manifest_index_path,
+        tar_path,
+        tar_index_path,
+        sentinel_override,
+    ) = task
+    summary = write_nemo_tar_ordinal_map_shard(
+        output_path,
+        manifest_path=manifest_path,
+        manifest_index_path=manifest_index_path,
+        tar_path=tar_path,
+        tar_index_path=tar_index_path,
+        tar_sentinel_size_override=sentinel_override,
+    )
+    return map_index, shard_index, summary
 
 
 def _discover_paths_collections(
@@ -256,9 +1414,12 @@ def _shard_number(path: str) -> int | None:
 
 
 def _validate_native_pair(manifests: list[str], tars: list[str]) -> None:
+    if len(manifests) == 1 and len(tars) >= 1:
+        return
     if len(manifests) != len(tars):
         raise ValueError(
-            "Packed native NeMo data requires one manifest per tar shard: "
+            "Packed native NeMo data requires either one aggregate manifest with row-level shard_id "
+            "routing or one manifest per tar shard: "
             f"manifests={len(manifests)}, tars={len(tars)}"
         )
     if len(manifests) < 2:
@@ -302,13 +1463,21 @@ def _expand_flat_native_pairs(manifest_specs, tar_specs) -> tuple[list[str], lis
 def discover_pack_collections(
     entry,
     collections: Optional[list[IndexPackCollectionSpec]] = None,
+    *,
+    data_blend_dir: str | Path | None = None,
+    native_tar_ordinal_maps: Optional[list[NativeTarOrdinalMapSpec]] = None,
 ) -> list[IndexPackCollectionSpec]:
     """Discover ordered, runtime-addressable collections in one input_cfg."""
     if collections is None:
         collections = []
     if isinstance(entry, (list, ListConfig)):
         for item in entry:
-            discover_pack_collections(item, collections)
+            discover_pack_collections(
+                item,
+                collections,
+                data_blend_dir=data_blend_dir,
+                native_tar_ordinal_maps=native_tar_ordinal_maps,
+            )
         return collections
     if not isinstance(entry, (dict, DictConfig)):
         return collections
@@ -319,19 +1488,34 @@ def discover_pack_collections(
 
     if typ is None:
         for value in entry.values():
-            discover_pack_collections(value, collections)
+            discover_pack_collections(
+                value,
+                collections,
+                data_blend_dir=data_blend_dir,
+                native_tar_ordinal_maps=native_tar_ordinal_maps,
+            )
         return collections
 
     if typ == "group":
-        sub = _resolve_input_cfg(entry.get("input_cfg"))
+        sub = _resolve_input_cfg(entry.get("input_cfg"), data_blend_dir)
         if sub is not None:
-            discover_pack_collections(sub, collections)
+            discover_pack_collections(
+                sub,
+                collections,
+                data_blend_dir=data_blend_dir,
+                native_tar_ordinal_maps=native_tar_ordinal_maps,
+            )
         return collections
 
     if typ in _TRANSFORM_TYPES:
-        sub = _resolve_input_cfg(entry.get("input_cfg"))
+        sub = _resolve_input_cfg(entry.get("input_cfg"), data_blend_dir)
         if sub is not None:
-            discover_pack_collections(sub, collections)
+            discover_pack_collections(
+                sub,
+                collections,
+                data_blend_dir=data_blend_dir,
+                native_tar_ordinal_maps=native_tar_ordinal_maps,
+            )
             return collections
         if entry.get("manifest_filepath") is None:
             return collections
@@ -339,16 +1523,86 @@ def discover_pack_collections(
     supported = {
         "nemo",
         "nemo_tarred",
+        "multimodal_conversation",
         "nemotron_text_converation",
+        "materialized_sft_messages",
         "share_gpt",
+        "share_gpt_webdataset",
         *_TRANSFORM_TYPES,
     }
     if typ not in supported:
         raise NotImplementedError(f"idxpack conversion does not support dataset type {typ!r}.")
 
-    if typ in {"nemo", "nemo_tarred", "share_gpt", *_TRANSFORM_TYPES} and entry.get("manifest_filepath") is not None:
+    if typ == "share_gpt_webdataset":
+        version = int(entry.get("wds_sample_index_version", 1))
+        if version != 2:
+            raise NotImplementedError(
+                "Packed share_gpt_webdataset requires wds_sample_index_version: 2; " f"got {version}."
+            )
+        jobs = []
+        data_dir = entry.get("data_dir")
+        if data_dir is None:
+            raise ValueError("Packed WDS v2 requires share_gpt_webdataset.data_dir")
+        _discover_share_gpt_webdataset(
+            data_dir,
+            jobs,
+            None,
+            index_version=version,
+        )
+        _add_collection(
+            collections,
+            role="wds_tar",
+            kind=WDS_TAR_V2,
+            source_spec=data_dir,
+            paths=[job.path for job in jobs if job.kind == WDS_TAR_V2],
+        )
+        return collections
+    if (
+        typ
+        in {
+            "nemo",
+            "nemo_tarred",
+            "multimodal_conversation",
+            "share_gpt",
+            *_TRANSFORM_TYPES,
+        }
+        and entry.get("manifest_filepath") is not None
+    ):
         raw = entry.get("manifest_filepath")
-        if typ == "share_gpt":
+        collection_mode = typ == "share_gpt" and entry.get("tar_lookup_mode") == "collection"
+        if collection_mode:
+            route = entry.get("tar_routing_filepath")
+            legacy_route = entry.get("tar_routing_index")
+            if route and legacy_route and str(route) != str(legacy_route):
+                raise ValueError("tar_routing_filepath and tar_routing_index disagree")
+            route = route or legacy_route
+            if not isinstance(route, (str, Path)) or not str(route).endswith(".sgroute"):
+                raise ValueError(
+                    "Packed ShareGPT collection mode requires tar_routing_filepath " "with the .sgroute suffix."
+                )
+            _require_scalar_or_flat_path_list(raw, "manifest_filepath")
+            raw_tars = entry.get("tarred_audio_filepaths")
+            if raw_tars is None:
+                raise ValueError("Packed ShareGPT collection mode requires tarred_audio_filepaths.")
+            _require_scalar_or_flat_path_list(raw_tars, "tarred_audio_filepaths")
+            manifests = _expand_jsonl(raw)
+            tars = _expand_tars(raw_tars)
+            _add_collection(
+                collections,
+                role="manifest",
+                kind=JSONL,
+                source_spec=raw,
+                paths=manifests,
+            )
+            _add_collection(
+                collections,
+                role="tar_collection",
+                kind=NEMO_TAR,
+                source_spec=raw_tars,
+                paths=tars,
+            )
+            return collections
+        if typ in {"multimodal_conversation", "share_gpt"}:
             _require_scalar_spec(raw, "manifest_filepath")
         else:
             _require_scalar_or_flat_path_list(raw, "manifest_filepath")
@@ -361,6 +1615,11 @@ def discover_pack_collections(
                 raise NotImplementedError(
                     "Packed ShareGPT supports JSONL manifests with direct/remote "
                     "audio paths, not paired audio tar files."
+                )
+            if typ == "multimodal_conversation":
+                raise NotImplementedError(
+                    "Packed multimodal_conversation supports JSONL manifests with "
+                    "direct/remote audio paths, not paired audio tar files."
                 )
             _require_scalar_or_flat_path_list(raw_tars, "tarred_audio_filepaths")
             manifest_is_flat_list = _is_nonempty_flat_path_list(raw)
@@ -391,11 +1650,195 @@ def discover_pack_collections(
                 source_spec=raw_tars,
                 paths=tars,
             )
+            if native_tar_ordinal_maps is not None:
+                _add_native_tar_ordinal_map(
+                    native_tar_ordinal_maps,
+                    manifest_source_spec=raw,
+                    tar_source_spec=raw_tars,
+                    manifest_paths=manifests,
+                    tar_paths=tars,
+                )
 
-    if typ == "nemotron_text_converation":
+    if typ in {"nemotron_text_converation", "materialized_sft_messages"}:
         _discover_paths_collections(entry.get("paths"), collections)
 
     return collections
+
+
+def _fsync_directory(path: Path) -> None:
+    directory_fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def _write_validated_index_pack(
+    output,
+    collections,
+    *,
+    indexes_root,
+    overwrite: bool,
+    source_size_overrides,
+    index_path_overrides,
+    record_validation_workers: int,
+    prevalidated_summary: IndexPackRecordValidationSummary | None = None,
+    prevalidated_collection_keys: set[bytes] | None = None,
+    pre_publish_validators: Sequence[Callable[[], None]] = (),
+):
+    """Build privately, validate every JSON record, then publish atomically."""
+    output = Path(output)
+    if output.exists() and not overwrite:
+        raise FileExistsError(f"Index pack already exists: {output}")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    staged = output.with_name(f".{output.name}.record-validation.{os.getpid()}.{uuid.uuid4().hex}")
+    try:
+        write_index_pack(
+            staged,
+            collections,
+            indexes_root=indexes_root,
+            source_size_overrides=source_size_overrides,
+            index_path_overrides=index_path_overrides,
+        )
+        validation_specs = [spec for spec in collections if spec.key not in (prevalidated_collection_keys or ())]
+        scanned_summary = validate_idxpack_json_records(
+            staged,
+            validation_specs,
+            report=logging.error,
+            num_workers=record_validation_workers,
+        )
+        prevalidated_summary = prevalidated_summary or _empty_validation_summary()
+        summary = IndexPackRecordValidationSummary(
+            records_checked=prevalidated_summary.records_checked + scanned_summary.records_checked,
+            jsonl_collections_checked=(
+                prevalidated_summary.jsonl_collections_checked + scanned_summary.jsonl_collections_checked
+            ),
+            skip_marker_records=(prevalidated_summary.skip_marker_records + scanned_summary.skip_marker_records),
+            top_level_skip_marker_records=(
+                prevalidated_summary.top_level_skip_marker_records + scanned_summary.top_level_skip_marker_records
+            ),
+            custom_skip_marker_records=(
+                prevalidated_summary.custom_skip_marker_records + scanned_summary.custom_skip_marker_records
+            ),
+            errors=prevalidated_summary.errors + scanned_summary.errors,
+            errors_reported=prevalidated_summary.errors_reported + scanned_summary.errors_reported,
+        )
+        for validate_snapshot in pre_publish_validators:
+            validate_snapshot()
+        if overwrite:
+            os.replace(staged, output)
+        else:
+            try:
+                os.link(staged, output)
+            except FileExistsError as ex:
+                raise FileExistsError(f"Index pack already exists: {output}") from ex
+            staged.unlink()
+        _fsync_directory(output.parent)
+        return summary
+    finally:
+        if staged.exists():
+            staged.unlink()
+
+
+def _validate_native_tar_reuse_options(
+    source_input_cfg: str | None,
+    source_pack: str | None,
+    source_pack_sha256: str | None,
+    *,
+    native_tar_paths_only: bool,
+) -> None:
+    """Validate the all-or-none route-reuse CLI options and incompatible modes."""
+    reuse_options = (source_input_cfg, source_pack, source_pack_sha256)
+    if any(option is not None for option in reuse_options) and not all(option is not None for option in reuse_options):
+        raise click.ClickException(
+            "Native-tar route reuse requires all of "
+            "--reuse-native-tar-routes-source-input-cfg, "
+            "--reuse-native-tar-routes-source-pack, and "
+            "--reuse-native-tar-routes-source-pack-sha256"
+        )
+    if native_tar_paths_only and source_pack is not None:
+        raise click.ClickException("Native-tar route reuse is incompatible with --native-tar-paths-only")
+
+
+def _configure_native_tar_path_only_collections(collections, *, enabled: bool):
+    """Disable native-tar offsets for path-only mode after checking compatibility."""
+    if not enabled:
+        return collections
+    if any(collection.role == "tar_collection" for collection in collections):
+        raise click.ClickException(
+            "ShareGPT collection mode requires offset-bearing tar_collection indexes; "
+            "--native-tar-paths-only is not allowed."
+        )
+    return [
+        (
+            replace(collection, offsets_required=False)
+            if collection.kind == NEMO_TAR and collection.role == "tar"
+            else collection
+        )
+        for collection in collections
+    ]
+
+
+def _print_discovered_collections(
+    collections,
+    native_tar_maps: list[NativeTarOrdinalMapSpec],
+    *,
+    include_member_ordinals: bool = True,
+) -> None:
+    """Print the concrete and derived collections selected by a dry run."""
+    for collection in collections:
+        click.echo(
+            f"  role={collection.role} kind={collection.kind} "
+            f"paths={len(collection.paths)} offsets={collection.offsets_required} key={collection.key.hex()}"
+        )
+    for spec in native_tar_maps:
+        for role, kind, _source_spec, key in _native_tar_array_identities(
+            spec, include_member_ordinals=include_member_ordinals
+        ):
+            click.echo(
+                f"  role={role} kind={kind} paths={spec.sequence_count} "
+                f"dtype=uint32 key={key.hex()} (derived, embedded)"
+            )
+
+
+def _ensure_sharegpt_routes(route_specs, *, output: str, indexes_root) -> None:
+    """Materialize any missing ShareGPT route files beside the output pack."""
+    for route_spec in route_specs:
+        route_path = Path(route_spec.route_path)
+        if not route_path.is_absolute():
+            route_path = Path(output).parent / route_path
+        ensure_sharegpt_route(
+            route_path,
+            manifest_paths=route_spec.manifest_paths,
+            tar_paths=route_spec.tar_paths,
+            manifest_specs=route_spec.manifest_specs,
+            indexes_root=indexes_root,
+            audio_prefix_map=route_spec.audio_prefix_map,
+            audio_placeholders=route_spec.audio_placeholders,
+            build_if_missing=True,
+        )
+
+
+def _merge_native_tar_route_arrays(
+    native_tar_maps: list[NativeTarOrdinalMapSpec],
+    built_arrays: list[IndexPackArraySpec],
+    reused_arrays: dict[bytes, IndexPackArraySpec],
+    *,
+    include_member_ordinals: bool = True,
+) -> list[IndexPackArraySpec]:
+    """Merge rebuilt and reused routes in the deterministic configured order."""
+    arrays_by_key = {array.key: array for array in built_arrays}
+    overlap = arrays_by_key.keys() & reused_arrays.keys()
+    if overlap:
+        raise ValueError(f"Native-tar route was both reused and rebuilt: {next(iter(overlap)).hex()}")
+    arrays_by_key.update(reused_arrays)
+    return [
+        arrays_by_key[key]
+        for spec in native_tar_maps
+        for _role, _kind, _source_spec, key in _native_tar_array_identities(
+            spec, include_member_ordinals=include_member_ordinals
+        )
+    ]
 
 
 @click.command(context_settings={"show_default": True})
@@ -410,22 +1853,98 @@ def discover_pack_collections(
         "build_indexes.py --force before conversion."
     ),
 )
+@click.option(
+    "--data-blend-dir",
+    type=click.Path(file_okay=False),
+    default=None,
+    help="Resolve ${data_blend_dir} in nested input_cfg references.",
+)
 @click.option("--overwrite", is_flag=True, help="Atomically replace an existing output pack.")
 @click.option(
     "--native-tar-paths-only",
     is_flag=True,
     help=(
         "Store native NeMo tar shard names without copying tar-member offsets. "
-        "Use for AIS URL-backed audio; manifest offsets remain fully packed."
+        "Use for AIS URL-backed audio; manifest offsets remain fully packed, "
+        "and no native row-to-member route is embedded."
     ),
+)
+@click.option(
+    "--accept-trailing-zero-tar-padding",
+    is_flag=True,
+    help=(
+        "Accept a stale native-tar sentinel only when the source grew by at most "
+        "64 MiB and every appended byte is zero; rewrite only the packed sentinel."
+    ),
+)
+@click.option(
+    "--repair-stale-local-native-tar-sidecars-root",
+    type=click.Path(file_okay=False),
+    default=None,
+    help=(
+        "Privately rebuild only stale local native-tar sidecars under this "
+        "mirror root instead of mutating --indexes-root. Remote sources are "
+        "never repaired by this option."
+    ),
+)
+@click.option(
+    "--fallback-native-tar-indexes-root",
+    type=click.Path(file_okay=False),
+    default=None,
+    help=(
+        "Read-only fallback mirror for native-tar .idx sidecars missing from "
+        "--indexes-root. Primary sidecars always win; stale fallback sidecars fail "
+        "validation and are never repaired in place."
+    ),
+)
+@click.option(
+    "--record-validation-workers",
+    type=click.IntRange(min=1),
+    default=1,
+    help="Process workers for disjoint exhaustive JSONL record validation.",
+)
+@click.option(
+    "--native-tar-route-workers",
+    type=click.IntRange(min=1),
+    default=1,
+    help="Process workers for independent native NeMo manifest/tar routing shards.",
+)
+@click.option(
+    "--reuse-native-tar-routes-source-input-cfg",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help=(
+        "Old immutable input_cfg whose native-tar routes may be reused when exact "
+        "tar paths and every ordered manifest routing signature match."
+    ),
+)
+@click.option(
+    "--reuse-native-tar-routes-source-pack",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="Authenticated version-3 idxpack built from the route-reuse source input_cfg.",
+)
+@click.option(
+    "--reuse-native-tar-routes-source-pack-sha256",
+    default=None,
+    help="Required expected SHA-256 of --reuse-native-tar-routes-source-pack.",
 )
 @click.option("--dry-run", is_flag=True, help="Print discovered collections without writing.")
 def main(
     input_cfg: str,
     output: str,
     indexes_root: Optional[str],
+    data_blend_dir: Optional[str],
     overwrite: bool,
     native_tar_paths_only: bool,
+    accept_trailing_zero_tar_padding: bool,
+    repair_stale_local_native_tar_sidecars_root: Optional[str],
+    fallback_native_tar_indexes_root: Optional[str],
+    record_validation_workers: int,
+    native_tar_route_workers: int,
+    reuse_native_tar_routes_source_input_cfg: Optional[str],
+    reuse_native_tar_routes_source_pack: Optional[str],
+    reuse_native_tar_routes_source_pack_sha256: Optional[str],
     dry_run: bool,
 ) -> None:
     """Convert one INPUT_CFG dataset and its existing sidecars to one idxpack.
@@ -434,40 +1953,124 @@ def main(
     A stale sentinel must be rebuilt with build_indexes.py --force.
     """
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    config = OmegaConf.load(input_cfg)
-    collections = discover_pack_collections(config)
-    if native_tar_paths_only:
-        collections = [
-            (
-                replace(collection, offsets_required=False)
-                if collection.kind == NEMO_TAR and collection.role == "tar"
-                else collection
-            )
-            for collection in collections
-        ]
+    _validate_native_tar_reuse_options(
+        reuse_native_tar_routes_source_input_cfg,
+        reuse_native_tar_routes_source_pack,
+        reuse_native_tar_routes_source_pack_sha256,
+        native_tar_paths_only=native_tar_paths_only,
+    )
+    config = _load_input_cfg(input_cfg, data_blend_dir)
+    native_tar_ordinal_maps = []
+    collections = discover_pack_collections(
+        config,
+        data_blend_dir=data_blend_dir,
+        native_tar_ordinal_maps=native_tar_ordinal_maps,
+    )
+    route_specs = discover_sharegpt_route_specs(config, data_blend_dir=data_blend_dir)
+    collections = _configure_native_tar_path_only_collections(collections, enabled=native_tar_paths_only)
     num_paths = sum(len(collection.paths) for collection in collections)
     click.echo(f"Discovered {len(collections)} collections with {num_paths} ordered paths.")
     if dry_run:
-        for collection in collections:
-            click.echo(
-                f"  role={collection.role} kind={collection.kind} "
-                f"paths={len(collection.paths)} offsets={collection.offsets_required} key={collection.key.hex()}"
-            )
+        _print_discovered_collections(
+            collections,
+            native_tar_ordinal_maps,
+            include_member_ordinals=not native_tar_paths_only,
+        )
         return
     try:
-        _preflight_native_tar_sidecars(collections, indexes_root)
-        write_index_pack(
-            output,
+        source_size_overrides, index_path_overrides = _preflight_native_tar_sidecars(
             collections,
-            indexes_root=indexes_root,
-            overwrite=overwrite,
+            indexes_root,
+            fallback_indexes_root=fallback_native_tar_indexes_root,
+            accept_trailing_zero_padding=accept_trailing_zero_tar_padding,
+            repair_stale_local_sidecars_root=repair_stale_local_native_tar_sidecars_root,
         )
-    except (FileNotFoundError, ValueError) as ex:
+        source_size_overrides.update(_path_only_source_sizes(collections))
+        wds_index_paths = _preflight_wds_v2_sidecars(collections, indexes_root)
+        index_path_overrides.update(wds_index_paths)
+        _ensure_sharegpt_routes(route_specs, output=output, indexes_root=indexes_root)
+        output_path = Path(output)
+        if output_path.exists() and not overwrite:
+            raise FileExistsError(f"Index pack already exists: {output_path}")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(
+            prefix=f".{output_path.name}.native-tar-route.", dir=output_path.parent
+        ) as temporary_directory:
+            reused_arrays: dict[bytes, IndexPackArraySpec] = {}
+            maps_to_build = (
+                native_tar_ordinal_maps
+                if not native_tar_paths_only
+                else [spec for spec in native_tar_ordinal_maps if spec.aggregate_manifest]
+            )
+            reused_summary = _empty_validation_summary()
+            reused_manifest_keys: set[bytes] = set()
+            reused_snapshot_validators: list[Callable[[], None]] = []
+            if reuse_native_tar_routes_source_pack is not None:
+                (
+                    reused_arrays,
+                    maps_to_build,
+                    reused_summary,
+                    reused_manifest_keys,
+                    reused_snapshot_validators,
+                ) = _reuse_native_tar_ordinal_array_specs(
+                    native_tar_ordinal_maps,
+                    temporary_directory,
+                    source_input_cfg=reuse_native_tar_routes_source_input_cfg,
+                    source_pack_path=reuse_native_tar_routes_source_pack,
+                    source_pack_sha256=reuse_native_tar_routes_source_pack_sha256,
+                    data_blend_dir=data_blend_dir,
+                    indexes_root=indexes_root,
+                    index_path_overrides=index_path_overrides,
+                    native_tar_route_workers=native_tar_route_workers,
+                )
+            (
+                built_arrays,
+                built_summary,
+                built_manifest_keys,
+                built_snapshot_validators,
+            ) = _build_native_tar_ordinal_array_specs(
+                maps_to_build,
+                temporary_directory,
+                indexes_root=indexes_root,
+                index_path_overrides=index_path_overrides,
+                source_size_overrides=source_size_overrides,
+                native_tar_route_workers=native_tar_route_workers,
+                include_member_ordinals=not native_tar_paths_only,
+            )
+            ordinal_arrays = _merge_native_tar_route_arrays(
+                native_tar_ordinal_maps,
+                built_arrays,
+                reused_arrays,
+                include_member_ordinals=not native_tar_paths_only,
+            )
+            route_validation_summary = _sum_validation_summaries(reused_summary, built_summary)
+            route_manifest_keys = reused_manifest_keys | built_manifest_keys
+            route_snapshot_validators = [
+                *reused_snapshot_validators,
+                *built_snapshot_validators,
+            ]
+            summary = _write_validated_index_pack(
+                output,
+                [*collections, *ordinal_arrays],
+                indexes_root=indexes_root,
+                overwrite=overwrite,
+                source_size_overrides=source_size_overrides,
+                index_path_overrides=index_path_overrides,
+                record_validation_workers=record_validation_workers,
+                prevalidated_summary=route_validation_summary,
+                prevalidated_collection_keys=route_manifest_keys,
+                pre_publish_validators=route_snapshot_validators,
+            )
+    except (OSError, ValueError) as ex:
         raise click.ClickException(str(ex)) from ex
     with IndexPack(output) as pack:
         click.echo(
             f"Wrote {output}: collections={pack.num_collections} "
-            f"segments={pack.num_segments} layout={pack.layout_hash.hex()}"
+            f"segments={pack.num_segments} layout={pack.layout_hash.hex()} "
+            f"json_records_validated={summary.records_checked} "
+            f"skip_marker_records={summary.skip_marker_records} "
+            f"native_tar_routes_reused={len(reused_arrays)} "
+            f"native_tar_routes_built={len(maps_to_build)}"
         )
 
 

@@ -227,6 +227,18 @@ class TestRotaryPositionalEncoding:
         assert torch.allclose(q_rot_nc, q_rot_c, atol=1e-6)
         assert torch.allclose(k_rot_nc, k_rot_c, atol=1e-6)
 
+    @pytest.mark.run_only_on('GPU')
+    @pytest.mark.unit
+    def test_cache_is_identical_across_construction_devices(self):
+        cpu = RotaryPositionalEncoding(d_k=64, max_len=8192)
+        cpu.extend_pe(8192, device=torch.device('cpu'), dtype=torch.bfloat16)
+
+        cuda = RotaryPositionalEncoding(d_k=64, max_len=8192).to('cuda')
+        cuda.extend_pe(8192, device=torch.device('cuda'), dtype=torch.bfloat16)
+
+        assert torch.equal(cuda.cos.cpu(), cpu.cos)
+        assert torch.equal(cuda.sin.cpu(), cpu.sin)
+
 
 class TestRoPEMultiHeadAttention:
     @pytest.mark.unit

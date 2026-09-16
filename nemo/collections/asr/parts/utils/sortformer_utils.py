@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import copy
 import logging
 import math
 import os
@@ -25,8 +24,6 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Union
 
 import torch
 from omegaconf import open_dict
-
-from nemo.collections.asr.parts.preprocessing.features import normalize_batch
 
 if TYPE_CHECKING:
     from nemo.collections.asr.models import SortformerEncLabelModel
@@ -40,29 +37,34 @@ class SortformerStreamingSession:
     active, and finalized rows can coexist in one batch.
 
     Args:
-        model: Streaming ``SortformerEncLabelModel`` in evaluation mode.
+        model: Streaming ``SortformerEncLabelModel`` in evaluation mode with ``async_streaming=True`` and
+            unnormalized features (``normalize="NA"``, ``None``, or ``False``).
         batch_size: Fixed number of independent audio streams owned by the session.
     """
 
-    def __init__(self, model: "SortformerEncLabelModel", batch_size: int = 1):
+    def __init__(self, model: "SortformerEncLabelModel", batch_size: int = 1) -> None:
         if not model.streaming_mode:
             raise ValueError("SortformerStreamingSession requires a model with streaming_mode=True")
+        if not model.async_streaming:
+            raise ValueError("SortformerStreamingSession requires a model with async_streaming=True")
         if model.training:
             raise ValueError("SortformerStreamingSession requires an evaluation model; call model.eval() first")
+        if model.preprocessor.featurizer.normalize not in ("NA", None, False):
+            raise ValueError(
+                "SortformerStreamingSession requires unnormalized features (normalize='NA', None, or False)"
+            )
         if not isinstance(batch_size, int) or isinstance(batch_size, bool) or batch_size < 1:
             raise ValueError(f"batch_size must be a positive integer, got {batch_size}")
 
         self.model = model
         self.batch_size = batch_size
         self.device = model.device
-        self._normalization = model.preprocessor.featurizer.normalize
-        self._preprocessor = copy.deepcopy(model.preprocessor).to(self.device).eval()
-        self._preprocessor.featurizer.normalize = None
-        self._preprocessor.featurizer.dither = 0.0
-        self._preprocessor.featurizer.pad_to = 0
+        self._preprocessor = model.preprocessor
 
         self._hop_length = self._preprocessor.hop_length
         self._n_fft = self._preprocessor.featurizer.n_fft
+        stft_padding = self._preprocessor.featurizer.stft_pad_amount
+        self._stft_right_samples = self._n_fft // 2 if stft_padding is None else self._n_fft - stft_padding
         self._stft_margin_frames = math.ceil((self._n_fft // 2 + 1) / self._hop_length) + 1
         self._chunk_frames = model.sortformer_modules.chunk_len * model.encoder.subsampling_factor
         self._left_context_frames = model.sortformer_modules.chunk_left_context * model.encoder.subsampling_factor
@@ -101,6 +103,7 @@ class SortformerStreamingSession:
                 raise RuntimeError(
                     f"Cannot supply audio to finalized stream {stream_index}; call reset() before reusing the session"
                 )
+        for stream_index, chunk_length in enumerate(input_lengths):
             if chunk_length > 0:
                 chunk = audio_chunks[stream_index, :chunk_length]
                 self._audio_buffers[stream_index] = torch.cat([self._audio_buffers[stream_index], chunk])
@@ -112,20 +115,13 @@ class SortformerStreamingSession:
             if not ready_groups:
                 break
 
-            for (left_offset, right_offset), requests in ready_groups.items():
+            for (left_offset, right_offset, _), requests in ready_groups.items():
                 processed_signal, processed_signal_length = self._extract_feature_batch(requests)
-                empty_preds = processed_signal.new_zeros((self.batch_size, 0, self.model.sortformer_modules.n_spk))
-                self.streaming_state, chunk_preds = self.model.forward_streaming_step(
-                    processed_signal=processed_signal,
-                    processed_signal_length=processed_signal_length,
-                    streaming_state=self.streaming_state,
-                    total_preds=empty_preds,
-                    left_offset=left_offset,
-                    right_offset=right_offset,
-                    async_streaming=True,
+                chunk_preds = self._forward_active_streams(
+                    requests, processed_signal, processed_signal_length, left_offset, right_offset
                 )
 
-                for stream_index, _, _, central_end in requests:
+                for request_index, (stream_index, _, _, central_end) in enumerate(requests):
                     committed_feature_frames = central_end - self._next_feature_frames[stream_index]
                     output_length = math.ceil(committed_feature_frames / self.model.output_subsampling_factor)
                     if output_length > chunk_preds.shape[1]:
@@ -133,7 +129,7 @@ class SortformerStreamingSession:
                             "Streaming model returned fewer prediction frames than required: "
                             f"needed {output_length}, got {chunk_preds.shape[1]}"
                         )
-                    emitted[stream_index].append(chunk_preds[stream_index, :output_length])
+                    emitted[stream_index].append(chunk_preds[request_index, :output_length])
                     self._next_feature_frames[stream_index] = central_end
 
         self._compact_audio_buffers()
@@ -166,13 +162,17 @@ class SortformerStreamingSession:
             if next_frame >= available_frames:
                 continue
 
-            central_end = min(next_frame + self._chunk_frames, available_frames)
-            if not final_flags[stream_index] and central_end + self._right_context_frames > available_frames:
+            if (
+                not final_flags[stream_index]
+                and next_frame + self._chunk_frames + self._right_context_frames > available_frames
+            ):
                 continue
+            central_end = min(next_frame + self._chunk_frames, available_frames)
 
             feature_start = max(0, next_frame - self._left_context_frames)
             feature_end = min(central_end + self._right_context_frames, available_frames)
-            offsets = (next_frame - feature_start, feature_end - central_end)
+            # Equal central lengths prevent output pooling from including another row's final-chunk padding.
+            offsets = (next_frame - feature_start, feature_end - central_end, central_end - next_frame)
             ready_groups.setdefault(offsets, []).append((stream_index, feature_start, feature_end, central_end))
         return ready_groups
 
@@ -183,7 +183,7 @@ class SortformerStreamingSession:
         if is_final:
             return max(0, offline_frames)
 
-        stable_samples = received_samples - self._n_fft // 2
+        stable_samples = received_samples - self._stft_right_samples
         if stable_samples < 0:
             return 0
         stable_frames = stable_samples // self._hop_length + 1
@@ -236,21 +236,43 @@ class SortformerStreamingSession:
             feature_windows.append(window)
             window_lengths.append(window.shape[0])
 
-        active_features = torch.nn.utils.rnn.pad_sequence(feature_windows, batch_first=True).transpose(1, 2)
+        active_features = torch.nn.utils.rnn.pad_sequence(feature_windows, batch_first=True)
         active_lengths = torch.tensor(window_lengths, dtype=torch.long, device=self.device)
-        if self._normalization:
-            active_features, _, _ = normalize_batch(active_features, active_lengths, self._normalization)
-        active_features = active_features.transpose(1, 2)
+        return active_features, active_lengths
 
-        batch_features = active_features.new_zeros(
-            (self.batch_size, active_features.shape[1], active_features.shape[2])
+    def _forward_active_streams(self, requests, features, lengths, left_offset, right_offset):
+        # Zero-length model inputs finalize FIFO state, so temporarily idle rows must stay outside this update.
+        active_rows = torch.tensor([request[0] for request in requests], dtype=torch.long, device=self.device)
+        active_state = self.streaming_state
+        if len(requests) < self.batch_size:
+            active_state = type(self.streaming_state)()
+            for name, value in vars(self.streaming_state).items():
+                setattr(
+                    active_state,
+                    name,
+                    value.index_select(0, active_rows) if isinstance(value, torch.Tensor) else value,
+                )
+
+        empty_preds = features.new_zeros((len(requests), 0, self.model.sortformer_modules.n_spk))
+        active_state, predictions = self.model.forward_streaming_step(
+            processed_signal=features,
+            processed_signal_length=lengths,
+            streaming_state=active_state,
+            total_preds=empty_preds,
+            left_offset=left_offset,
+            right_offset=right_offset,
         )
-        batch_lengths = torch.zeros(self.batch_size, dtype=torch.long, device=self.device)
-        for request_index, (stream_index, _, _, _) in enumerate(requests):
-            feature_length = window_lengths[request_index]
-            batch_features[stream_index, :feature_length] = active_features[request_index, :feature_length]
-            batch_lengths[stream_index] = feature_length
-        return batch_features, batch_lengths
+        if len(requests) < self.batch_size:
+            for name, value in vars(active_state).items():
+                if isinstance(value, torch.Tensor):
+                    batch_value = getattr(self.streaming_state, name)
+                    if batch_value is None:
+                        batch_value = value.new_zeros((self.batch_size, *value.shape[1:]))
+                        setattr(self.streaming_state, name, batch_value)
+                    batch_value.index_copy_(0, active_rows, value)
+        else:
+            self.streaming_state = active_state
+        return predictions
 
     def _pad_emitted_outputs(self, emitted):
         num_speakers = self.model.sortformer_modules.n_spk
@@ -563,16 +585,29 @@ def get_prediction_cache_metadata(cfg, diar_model, infer_audio_rttm_dict) -> Dic
     Returns:
         metadata (Dict): Cache schema, input identities, and inference settings.
     """
-    model_path = Path(cfg.model_path).expanduser().resolve()
+    configured_model_path = getattr(cfg, "model_path", None)
+    pretrained_name = getattr(cfg, "pretrained_name", None)
+    if configured_model_path is not None:
+        model_path = Path(configured_model_path).expanduser().resolve()
+        model_identity = str(model_path)
+        model_stat = model_path.stat()
+        model_size = model_stat.st_size
+        model_mtime_ns = model_stat.st_mtime_ns
+    elif pretrained_name is not None:
+        model_identity = pretrained_name
+        model_size = None
+        model_mtime_ns = None
+    else:
+        raise ValueError("Either model_path or pretrained_name must be specified.")
+
     manifest_path = Path(cfg.dataset_manifest).expanduser().resolve()
-    model_stat = model_path.stat()
     manifest_stat = manifest_path.stat()
     modules = diar_model.sortformer_modules
     return {
         "version": 1,
-        "model_path": str(model_path),
-        "model_size": model_stat.st_size,
-        "model_mtime_ns": model_stat.st_mtime_ns,
+        "model_path": model_identity,
+        "model_size": model_size,
+        "model_mtime_ns": model_mtime_ns,
         "manifest_path": str(manifest_path),
         "manifest_size": manifest_stat.st_size,
         "manifest_mtime_ns": manifest_stat.st_mtime_ns,

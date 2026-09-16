@@ -1,5 +1,5 @@
-# Optional codec-output watermarking. resemble-perth 1.0.1 does not declare
-# Requires-Dist. The serving loader uses PerthNet + torchaudio only; it does
-# not import librosa/soxr (LGPLv2.1+).
-resemble-perth==1.0.1
+# Optional codec-output watermarking. Pin is yhayarannvidia/Perth at a SHA
+# whose perth.perth_net package does not import librosa/soxr.
+# Serving uses PerthNet + torchaudio only.
+resemble-perth @ git+https://github.com/yhayarannvidia/Perth.git@9bd18489a5863f8cfc7b8906f7480d78898d1e64
 torchaudio

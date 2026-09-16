@@ -14,8 +14,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Resemble Perth from yhayarannvidia/Perth: perth.perth_net does not import
+# librosa/soxr. Serving uses PerthNet + torchaudio STFT only.
 perth = [
-    "resemble-perth==1.0.1",
+    "resemble-perth @ git+https://github.com/yhayarannvidia/Perth.git@9bd18489a5863f8cfc7b8906f7480d78898d1e64",
     "torchaudio",
 ]
 

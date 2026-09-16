@@ -1,16 +1,21 @@
 # Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""GPU-batched Perth watermarking for EasyMagpie codec waveforms."""
+"""Codec-owned watermarking for EasyMagpie waveforms.
+
+The codec holds one ``AudioWatermarker``. Today's implementation watermarks each
+chunk independently and tapers Perth's delta at the edges. ``AudioChunk`` carries
+``request_id`` / ``is_final`` so a later overlap-save watermarker can keep left
+context per request without changing the codec call site.
+"""
 
 from __future__ import annotations
 
 import logging
 import os
-import sys
-import types
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import torch
 import torch.nn.functional as F
@@ -18,16 +23,33 @@ import torch.nn.functional as F
 logger = logging.getLogger(__name__)
 
 _DISABLED_VALUES = {"0", "false", "no", "off"}
-_WATERMARKER: Any | None = None
-_INITIALIZED_DEVICE: str | None = None
-_SHORT_AUDIO_WARNING_EMITTED = False
 
 
-def _normalized_device(device: str | torch.device) -> str:
-    parsed = torch.device(device)
-    if parsed.type == "cuda" and parsed.index is None and torch.cuda.is_available():
-        parsed = torch.device("cuda", torch.cuda.current_device())
-    return str(parsed)
+@dataclass
+class AudioChunk:
+    """One codec emission that a watermarker may process independently or with context."""
+
+    request_id: str
+    is_final: bool
+    audio: torch.Tensor
+
+
+class AudioWatermarker(Protocol):
+    """Watermark a batch of codec chunks.
+
+    Implementations may ignore ``request_id`` / ``is_final`` (tapered Perth) or
+    accumulate left context keyed by ``request_id`` and flush on ``is_final``.
+    """
+
+    def apply(self, chunks: list[AudioChunk]) -> list[torch.Tensor]:
+        """Return one waveform per input chunk, same sample count as ``chunk.audio``."""
+
+
+class DisabledAudioWatermarker:
+    """Pass-through used when ``NEMOTRON_TTS_PERTH_WATERMARK`` disables watermarking."""
+
+    def apply(self, chunks: list[AudioChunk]) -> list[torch.Tensor]:
+        return [chunk.audio for chunk in chunks]
 
 
 def watermarking_enabled() -> bool:
@@ -36,96 +58,37 @@ def watermarking_enabled() -> bool:
     return value.strip().lower() not in _DISABLED_VALUES
 
 
+def normalized_device(device: str | torch.device) -> str:
+    parsed = torch.device(device)
+    if parsed.type == "cuda" and parsed.index is None and torch.cuda.is_available():
+        parsed = torch.device("cuda", torch.cuda.current_device())
+    return str(parsed)
+
+
+def create_audio_watermarker(
+    device: str | torch.device,
+    *,
+    sample_rate: int,
+) -> AudioWatermarker:
+    """Build a watermarker owned by the codec (or a no-op when disabled)."""
+    if not watermarking_enabled():
+        logger.warning("Perth watermarking is explicitly disabled by NEMOTRON_TTS_PERTH_WATERMARK")
+        return DisabledAudioWatermarker()
+    return TaperedPerthWatermarker(device, sample_rate=sample_rate)
+
+
 def _perth_pretrained_dir() -> Path:
     import perth
 
     return Path(perth.__file__).resolve().parent / "perth_net" / "pretrained"
 
 
-def _ensure_perth_net_namespace() -> Path:
-    """Register ``perth.perth_net`` without running its package ``__init__``.
-
-    ``perth.perth_net`` and ``PerthImplicitWatermarker`` import
-    ``librosa.resample``, which eagerly imports ``soxr`` (LGPLv2.1+). This
-    serving path only needs ``PerthNet`` plus torchaudio resampling.
-    """
-    import perth
-
-    pretrained_dir = _perth_pretrained_dir()
-    package_name = "perth.perth_net"
-    package_path = str(Path(perth.__file__).resolve().parent / "perth_net")
-    current = sys.modules.get(package_name)
-    if current is not None and getattr(current, "__path__", None):
-        return pretrained_dir
-
-    module = types.ModuleType(package_name)
-    module.__path__ = [package_path]
-    module.__file__ = str(Path(package_path) / "__init__.py")
-    module.__package__ = package_name
-    module.PREPACKAGED_MODELS_DIR = str(pretrained_dir)
-    sys.modules[package_name] = module
-    return pretrained_dir
-
-
 def _load_perth_net(device: str) -> Any:
-    pretrained_dir = _ensure_perth_net_namespace()
     from perth.perth_net.perth_net_implicit.model.perth_net import PerthNet
 
+    pretrained_dir = _perth_pretrained_dir()
     perth_net = PerthNet.load("implicit", models_dir=str(pretrained_dir))
     return perth_net.to(device).eval()
-
-
-def initialize_watermarker(device: str | torch.device) -> Any | None:
-    """Load Perth on ``device`` or fail startup when watermarking is enabled."""
-    global _INITIALIZED_DEVICE, _WATERMARKER
-
-    if not watermarking_enabled():
-        logger.warning("Perth watermarking is explicitly disabled by NEMOTRON_TTS_PERTH_WATERMARK")
-        return None
-
-    requested_device = _normalized_device(device)
-    if _WATERMARKER is not None:
-        if requested_device != _INITIALIZED_DEVICE:
-            raise RuntimeError(
-                "Perth was initialized on "
-                f"{_INITIALIZED_DEVICE}, not requested device {requested_device}"
-            )
-        return _WATERMARKER
-
-    try:
-        perth_net = _load_perth_net(requested_device)
-        _WATERMARKER = types.SimpleNamespace(perth_net=perth_net)
-        if torch.device(requested_device).type == "cuda":
-            perth_net.encoder = torch.compile(
-                perth_net.encoder, mode="default", dynamic=True
-            )
-            if torch.cuda.is_available():
-                _warmup_compiled_encoder(_WATERMARKER)
-    except Exception as error:
-        _WATERMARKER = None
-        raise RuntimeError(
-            "Perth watermarking is enabled but its model could not be initialized"
-        ) from error
-
-    _INITIALIZED_DEVICE = requested_device
-    logger.info(
-        "Perth watermarking enabled on device=%s (model sample rate=%d)",
-        requested_device,
-        int(_WATERMARKER.perth_net.hp.sample_rate),
-    )
-    return _WATERMARKER
-
-
-def _warmup_compiled_encoder(watermarker: Any) -> None:
-    """Trace the compiled encoder on startup and 8-frame-scale spectrograms."""
-    perth_net = watermarker.perth_net
-    window = max(int(perth_net.hp.n_fft), 1)
-    dummy_lengths = (window * 4, window * 8)
-    with torch.inference_mode():
-        for length in dummy_lengths:
-            dummy = torch.zeros(length, device=perth_net.device)
-            magnitudes, _ = perth_net.ap.signal_to_magphase(dummy.unsqueeze(0))
-            perth_net.encoder(magnitudes)
 
 
 def _restore_length(watermarked: torch.Tensor, original: torch.Tensor) -> torch.Tensor:
@@ -138,7 +101,7 @@ def _restore_length(watermarked: torch.Tensor, original: torch.Tensor) -> torch.
     return watermarked
 
 
-def _taper_watermark_delta(
+def taper_watermark_delta(
     marked: torch.Tensor,
     original: torch.Tensor,
     *,
@@ -165,81 +128,116 @@ def _taper_watermark_delta(
     return original + (marked - original) * envelope
 
 
-def watermark_waveforms(
-    waveforms: list[torch.Tensor],
-    *,
-    sample_rate: int,
-    device: str | torch.device,
-) -> list[torch.Tensor]:
-    """Watermark non-empty waveforms, batching tensors with equal lengths."""
-    global _SHORT_AUDIO_WARNING_EMITTED
+class TaperedPerthWatermarker:
+    """Independent-chunk Perth with an edge taper on the watermark delta.
 
-    if not waveforms or not watermarking_enabled():
+    Does not yet use ``request_id`` / ``is_final``. Those fields are the hook
+    for overlap-save (~150 ms history and delay) without changing ``apply``.
+    """
+
+    def __init__(
+        self,
+        device: str | torch.device,
+        *,
+        sample_rate: int,
+        perth_net: Any | None = None,
+    ) -> None:
+        requested_device = normalized_device(device)
+        self.sample_rate = int(sample_rate)
+        try:
+            self.perth_net = perth_net if perth_net is not None else _load_perth_net(requested_device)
+            if torch.device(requested_device).type == "cuda":
+                self.perth_net.encoder = torch.compile(
+                    self.perth_net.encoder, mode="default", dynamic=True
+                )
+                if torch.cuda.is_available() and perth_net is None:
+                    self._warmup_compiled_encoder()
+        except Exception as error:
+            raise RuntimeError(
+                "Perth watermarking is enabled but its model could not be initialized"
+            ) from error
+        self._short_audio_warning_emitted = False
+        logger.info(
+            "Perth watermarking enabled on device=%s (model sample rate=%d)",
+            requested_device,
+            int(self.perth_net.hp.sample_rate),
+        )
+
+    def _warmup_compiled_encoder(self) -> None:
+        perth_net = self.perth_net
+        window = max(int(perth_net.hp.n_fft), 1)
+        dummy_lengths = (window * 4, window * 8)
+        with torch.inference_mode():
+            for length in dummy_lengths:
+                dummy = torch.zeros(length, device=perth_net.device)
+                magnitudes, _ = perth_net.ap.signal_to_magphase(dummy.unsqueeze(0))
+                perth_net.encoder(magnitudes)
+
+    def apply(self, chunks: list[AudioChunk]) -> list[torch.Tensor]:
+        if not chunks:
+            return []
+
+        perth_net = self.perth_net
+        perth_device = perth_net.device
+        perth_rate = int(perth_net.hp.sample_rate)
+        sample_rate = self.sample_rate
+        waveforms = [chunk.audio for chunk in chunks]
+        minimum_samples = int(perth_net.hp.n_fft // 2 + 1)
+        # Perth reconstructs each chunk independently with an STFT. Tapering its
+        # perturbation across one half-window preserves the codec waveform at both
+        # edges and prevents audible seams when streaming chunks are concatenated.
+        edge_samples = max(
+            (int(perth_net.hp.n_fft) // 2 * sample_rate + perth_rate - 1) // perth_rate,
+            1,
+        )
+
+        resample = None
+        if sample_rate != perth_rate:
+            from torchaudio.functional import resample
+
+        length_groups: dict[int, list[int]] = {}
+        for index, waveform in enumerate(waveforms):
+            samples = int(waveform.numel())
+            if samples:
+                length_groups.setdefault(samples, []).append(index)
+
+        with torch.inference_mode():
+            for indices in length_groups.values():
+                originals = torch.stack(
+                    [
+                        waveforms[index].detach().float().reshape(-1).to(perth_device)
+                        for index in indices
+                    ]
+                )
+                signals = originals
+                if sample_rate != perth_rate:
+                    assert resample is not None
+                    signals = resample(signals, sample_rate, perth_rate)
+
+                if signals.shape[-1] < minimum_samples:
+                    if not self._short_audio_warning_emitted:
+                        logger.warning(
+                            "Skipping Perth for audio shorter than %d samples at %d Hz",
+                            minimum_samples,
+                            perth_rate,
+                        )
+                        self._short_audio_warning_emitted = True
+                    continue
+
+                magnitudes, phases = perth_net.ap.signal_to_magphase(signals)
+                marked_magnitudes, _ = perth_net.encoder(magnitudes)
+                marked = perth_net.ap.magphase_to_signal(marked_magnitudes, phases)
+                if sample_rate != perth_rate:
+                    assert resample is not None
+                    marked = resample(marked, perth_rate, sample_rate)
+                marked = _restore_length(marked, originals)
+                marked = taper_watermark_delta(
+                    marked,
+                    originals,
+                    edge_samples=edge_samples,
+                ).clamp_(-1.0, 1.0)
+
+                for batch_index, waveform_index in enumerate(indices):
+                    waveforms[waveform_index] = marked[batch_index].reshape(-1)
+
         return waveforms
-
-    watermarker = initialize_watermarker(device)
-    if watermarker is None:
-        return waveforms
-
-    perth_net = watermarker.perth_net
-    perth_device = perth_net.device
-    perth_rate = int(perth_net.hp.sample_rate)
-    minimum_samples = int(perth_net.hp.n_fft // 2 + 1)
-    # Perth reconstructs each chunk independently with an STFT. Tapering its
-    # perturbation across one half-window preserves the codec waveform at both
-    # edges and prevents audible seams when streaming chunks are concatenated.
-    edge_samples = max(
-        (int(perth_net.hp.n_fft) // 2 * sample_rate + perth_rate - 1) // perth_rate,
-        1,
-    )
-
-    resample = None
-    if sample_rate != perth_rate:
-        from torchaudio.functional import resample
-
-    length_groups: dict[int, list[int]] = {}
-    for index, waveform in enumerate(waveforms):
-        samples = int(waveform.numel())
-        if samples:
-            length_groups.setdefault(samples, []).append(index)
-
-    with torch.inference_mode():
-        for indices in length_groups.values():
-            originals = torch.stack(
-                [
-                    waveforms[index].detach().float().reshape(-1).to(perth_device)
-                    for index in indices
-                ]
-            )
-            signals = originals
-            if sample_rate != perth_rate:
-                assert resample is not None
-                signals = resample(signals, sample_rate, perth_rate)
-
-            if signals.shape[-1] < minimum_samples:
-                if not _SHORT_AUDIO_WARNING_EMITTED:
-                    logger.warning(
-                        "Skipping Perth for audio shorter than %d samples at %d Hz",
-                        minimum_samples,
-                        perth_rate,
-                    )
-                    _SHORT_AUDIO_WARNING_EMITTED = True
-                continue
-
-            magnitudes, phases = perth_net.ap.signal_to_magphase(signals)
-            marked_magnitudes, _ = perth_net.encoder(magnitudes)
-            marked = perth_net.ap.magphase_to_signal(marked_magnitudes, phases)
-            if sample_rate != perth_rate:
-                assert resample is not None
-                marked = resample(marked, perth_rate, sample_rate)
-            marked = _restore_length(marked, originals)
-            marked = _taper_watermark_delta(
-                marked,
-                originals,
-                edge_samples=edge_samples,
-            ).clamp_(-1.0, 1.0)
-
-            for batch_index, waveform_index in enumerate(indices):
-                waveforms[waveform_index] = marked[batch_index].reshape(-1)
-
-    return waveforms

@@ -3,13 +3,18 @@
 
 from __future__ import annotations
 
-import sys
+import inspect
 import types
 from unittest import mock
 
 import pytest
 import torch
 from easymagpie_vllm_omni import watermark
+from easymagpie_vllm_omni.watermark import (
+    AudioChunk,
+    DisabledAudioWatermarker,
+    TaperedPerthWatermarker,
+)
 
 
 class _FakeAudioProcessor:
@@ -37,10 +42,11 @@ class _FakePerthNet:
         self.encoder = _FakeEncoder()
 
 
-def setup_function() -> None:
-    watermark._WATERMARKER = None
-    watermark._INITIALIZED_DEVICE = None
-    watermark._SHORT_AUDIO_WARNING_EMITTED = False
+def _chunks(*waveforms: torch.Tensor) -> list[AudioChunk]:
+    return [
+        AudioChunk(request_id=f"req-{index}", is_final=False, audio=waveform)
+        for index, waveform in enumerate(waveforms)
+    ]
 
 
 def test_unindexed_cuda_device_is_normalized() -> None:
@@ -48,20 +54,13 @@ def test_unindexed_cuda_device_is_normalized() -> None:
         mock.patch.object(torch.cuda, "is_available", return_value=True),
         mock.patch.object(torch.cuda, "current_device", return_value=2),
     ):
-        assert watermark._normalized_device("cuda") == "cuda:2"
+        assert watermark.normalized_device("cuda") == "cuda:2"
 
 
 def test_equal_length_waveforms_are_batched_and_length_is_preserved() -> None:
     perth_net = _FakePerthNet()
-    watermarker = types.SimpleNamespace(perth_net=perth_net)
-    waveforms = [torch.zeros(16), torch.full((16,), 0.5), torch.zeros(12)]
-
-    with mock.patch.object(watermark, "initialize_watermarker", return_value=watermarker):
-        result = watermark.watermark_waveforms(
-            waveforms,
-            sample_rate=22_050,
-            device="cpu",
-        )
+    watermarker = TaperedPerthWatermarker("cpu", sample_rate=22_050, perth_net=perth_net)
+    result = watermarker.apply(_chunks(torch.zeros(16), torch.full((16,), 0.5), torch.zeros(12)))
 
     assert perth_net.encoder.batch_sizes == [2, 1]
     assert [tensor.numel() for tensor in result] == [16, 16, 12]
@@ -77,7 +76,7 @@ def test_watermark_delta_taper_preserves_chunk_edge_samples() -> None:
     original = torch.linspace(-0.5, 0.5, 16).repeat(2, 1)
     marked = original + 0.125
 
-    result = watermark._taper_watermark_delta(marked, original, edge_samples=4)
+    result = watermark.taper_watermark_delta(marked, original, edge_samples=4)
 
     torch.testing.assert_close(result[:, 0], original[:, 0])
     torch.testing.assert_close(result[:, -1], original[:, -1])
@@ -86,45 +85,41 @@ def test_watermark_delta_taper_preserves_chunk_edge_samples() -> None:
 
 def test_short_waveform_is_left_unchanged() -> None:
     perth_net = _FakePerthNet()
-    watermarker = types.SimpleNamespace(perth_net=perth_net)
+    watermarker = TaperedPerthWatermarker("cpu", sample_rate=22_050, perth_net=perth_net)
     original = torch.tensor([0.1, -0.2, 0.3, -0.4])
 
-    with mock.patch.object(watermark, "initialize_watermarker", return_value=watermarker):
-        result = watermark.watermark_waveforms(
-            [original.clone()],
-            sample_rate=22_050,
-            device="cpu",
-        )
+    result = watermarker.apply(_chunks(original.clone()))
 
     assert perth_net.encoder.batch_sizes == []
     torch.testing.assert_close(result[0], original)
 
 
-def test_explicit_disable_bypasses_initialization() -> None:
-    waveforms = [torch.zeros(16)]
+def test_disabled_watermarker_is_identity() -> None:
+    waveforms = [torch.zeros(16), torch.ones(8)]
+    chunks = _chunks(*waveforms)
+    result = DisabledAudioWatermarker().apply(chunks)
+    assert result[0] is waveforms[0]
+    assert result[1] is waveforms[1]
+
+
+def test_explicit_disable_bypasses_perth_load() -> None:
     with (
         mock.patch.dict("os.environ", {"NEMOTRON_TTS_PERTH_WATERMARK": "off"}),
-        mock.patch.object(watermark, "initialize_watermarker") as initialize,
+        mock.patch.object(watermark, "_load_perth_net") as load_perth,
     ):
-        result = watermark.watermark_waveforms(
-            waveforms,
-            sample_rate=22_050,
-            device="cpu",
-        )
+        created = watermark.create_audio_watermarker("cpu", sample_rate=22_050)
 
-    initialize.assert_not_called()
-    assert result is waveforms
+    load_perth.assert_not_called()
+    assert isinstance(created, DisabledAudioWatermarker)
 
 
 def test_enabled_initialization_failure_is_fatal() -> None:
     with (
         mock.patch.dict("os.environ", {"NEMOTRON_TTS_PERTH_WATERMARK": "1"}),
-        mock.patch.object(
-            watermark, "_load_perth_net", side_effect=ValueError("bad checkpoint")
-        ),
+        mock.patch.object(watermark, "_load_perth_net", side_effect=ValueError("bad checkpoint")),
         pytest.raises(RuntimeError, match="could not be initialized"),
     ):
-        watermark.initialize_watermarker("cpu")
+        TaperedPerthWatermarker("cpu", sample_rate=22_050)
 
 
 def test_encoder_is_compiled_on_cuda() -> None:
@@ -139,12 +134,11 @@ def test_encoder_is_compiled_on_cuda() -> None:
 
     with (
         mock.patch.dict("os.environ", {"NEMOTRON_TTS_PERTH_WATERMARK": "1"}),
-        mock.patch.object(watermark, "_load_perth_net", return_value=perth_net),
-        mock.patch.object(watermark, "_normalized_device", return_value="cuda:0"),
+        mock.patch.object(watermark, "normalized_device", return_value="cuda:0"),
         mock.patch.object(torch, "compile", return_value=compiled) as compile_fn,
         mock.patch.object(torch.cuda, "is_available", return_value=False),
     ):
-        result = watermark.initialize_watermarker("cuda:0")
+        result = TaperedPerthWatermarker("cuda:0", sample_rate=22_050, perth_net=perth_net)
 
     compile_fn.assert_called_once_with(encoder, mode="default", dynamic=True)
     assert result.perth_net.encoder is compiled
@@ -159,31 +153,16 @@ def test_encoder_is_not_compiled_on_cpu() -> None:
     )
     with (
         mock.patch.dict("os.environ", {"NEMOTRON_TTS_PERTH_WATERMARK": "1"}),
-        mock.patch.object(watermark, "_load_perth_net", return_value=perth_net),
         mock.patch.object(torch, "compile") as compile_fn,
     ):
-        result = watermark.initialize_watermarker("cpu")
+        result = TaperedPerthWatermarker("cpu", sample_rate=22_050, perth_net=perth_net)
 
     compile_fn.assert_not_called()
     assert result.perth_net.encoder is encoder
 
 
-def test_perth_net_namespace_does_not_execute_librosa_soxr_init(
-    tmp_path,
-) -> None:
-    perth_root = tmp_path / "perth"
-    perth_net = perth_root / "perth_net" / "pretrained"
-    perth_net.mkdir(parents=True)
-    (perth_root / "__init__.py").write_text("")
-    (perth_root / "perth_net" / "__init__.py").write_text("import soxr\n")
-    fake_perth = types.ModuleType("perth")
-    fake_perth.__file__ = str(perth_root / "__init__.py")
-
-    with mock.patch.dict(sys.modules, {"perth": fake_perth}):
-        sys.modules.pop("perth.perth_net", None)
-        sys.modules.pop("soxr", None)
-        watermark._ensure_perth_net_namespace()
-        assert "soxr" not in sys.modules
-        assert sys.modules["perth.perth_net"].__path__ == [
-            str(perth_root / "perth_net")
-        ]
+def test_load_perth_net_imports_perthnet_without_sys_modules_shim() -> None:
+    source = inspect.getsource(watermark._load_perth_net)
+    assert "_install_perth_net_namespace" not in source
+    assert "sys.modules" not in source
+    assert "perth.perth_net.perth_net_implicit.model.perth_net" in source

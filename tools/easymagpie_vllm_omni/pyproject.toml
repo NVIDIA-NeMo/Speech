@@ -17,7 +17,7 @@ dependencies = [
 # Resemble Perth from yhayarannvidia/Perth: perth.perth_net does not import
 # librosa/soxr, and librosa is not a core pip dependency.
 perth = [
-    "resemble-perth @ git+https://github.com/yhayarannvidia/Perth.git@86082e35ca106271e0304a33380d0ce2b2306df9",
+    "resemble-perth @ git+https://github.com/yhayarannvidia/Perth.git@c12bf20dbf37965f869207efc135547cea52c34d",
     "torchaudio",
 ]
 

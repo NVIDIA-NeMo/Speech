@@ -104,7 +104,7 @@ _PHONEME_TEXT_TOKENIZER_FILE = "phoneme_text_tokenizer/tokenizer.json"
 _PERTH_WATERMARK_RELATIVE = "watermark/perth"
 _PERTH_WATERMARK_RUN = "implicit"
 _PERTH_WATERMARK_FILES = ("hparams.yaml", "id.txt", "perth_net_250000.pth.tar")
-_PERTH_WATERMARK_REVISION = "86082e35ca106271e0304a33380d0ce2b2306df9"
+_PERTH_WATERMARK_REVISION = "c12bf20dbf37965f869207efc135547cea52c34d"
 _PERTH_WATERMARK_REPO = "yhayarannvidia/Perth"
 
 # Nemotron-H backbone config fields forwarded into the flat vLLM ``config.json``.

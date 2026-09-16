@@ -13,11 +13,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import importlib.util
 import urllib.error
+from pathlib import Path
 from unittest.mock import Mock, call, patch
 
-import conftest
 import pytest
+
+ROOT_CONFTEST_PATH = Path(__file__).with_name("conftest.py")
+ROOT_CONFTEST_SPEC = importlib.util.spec_from_file_location("root_conftest", ROOT_CONFTEST_PATH)
+assert ROOT_CONFTEST_SPEC is not None
+assert ROOT_CONFTEST_SPEC.loader is not None
+root_conftest = importlib.util.module_from_spec(ROOT_CONFTEST_SPEC)
+ROOT_CONFTEST_SPEC.loader.exec_module(root_conftest)
 
 
 class TestRetryUrlOperation:
@@ -26,8 +34,8 @@ class TestRetryUrlOperation:
         result = object()
         operation = Mock(side_effect=[urllib.error.URLError("transient"), OSError("transient"), result])
 
-        with patch.object(conftest.time, "sleep") as sleep:
-            assert conftest._retry_url_operation(operation) is result
+        with patch.object(root_conftest.time, "sleep") as sleep:
+            assert root_conftest._retry_url_operation(operation) is result
 
         assert operation.call_count == 3
         assert sleep.call_args_list == [call(2), call(4)]
@@ -36,8 +44,8 @@ class TestRetryUrlOperation:
     def test_raises_after_five_attempts(self):
         operation = Mock(side_effect=urllib.error.URLError("unavailable"))
 
-        with patch.object(conftest.time, "sleep") as sleep, pytest.raises(urllib.error.URLError):
-            conftest._retry_url_operation(operation)
+        with patch.object(root_conftest.time, "sleep") as sleep, pytest.raises(urllib.error.URLError):
+            root_conftest._retry_url_operation(operation)
 
         assert operation.call_count == 5
         assert sleep.call_args_list == [call(2), call(4), call(8), call(16)]

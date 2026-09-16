@@ -188,6 +188,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
         self.return_tail_result = cfg.return_tail_result
 
         self.request_type = RequestType.from_str(cfg.streaming.request_type)
+        self.flush_size_in_secs = cfg.streaming.get("flush_size_in_secs", 0.0)  # 0.0 disables
 
     def init_greedy_rnnt_decoder(self) -> None:
         """Initialize the RNNT decoder."""
@@ -617,6 +618,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
             buffer_size_in_secs=self.buffer_size_in_secs,
             device=self.device,
             pad_last_frame=True,
+            flush_size_in_secs=self.flush_size_in_secs,
         )
         return request_generator
 

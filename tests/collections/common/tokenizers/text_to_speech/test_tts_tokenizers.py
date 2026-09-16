@@ -20,9 +20,11 @@ from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import (
     EnglishCharsTokenizer,
     FrenchCharsTokenizer,
     GermanCharsTokenizer,
+    GermanPhonemesTokenizer,
     HindiCharsTokenizer,
     IPATokenizer,
     ItalianCharsTokenizer,
+    ItalianPhonemesTokenizer,
     JapanesePhonemeTokenizer,
     SpanishCharsTokenizer,
     VietnameseCharsTokenizer,
@@ -544,3 +546,34 @@ class TestTTSTokenizers:
         tok_v2 = ArabicCharsTokenizer(charset_version=2)
 
         assert tok_v1.tokens != tok_v2.tokens
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "tokenizer_type",
+        [GermanPhonemesTokenizer, ItalianPhonemesTokenizer],
+        ids=["german_phonemes", "italian_phonemes"],
+    )
+    @pytest.mark.parametrize(
+        "input_text",
+        ["", " ", "   ", "🙂"],
+        ids=["empty", "single_space", "spaces", "unknown_chars_only"],
+    )
+    def test_phonemes_tokenizer_text_without_known_symbols(self, tokenizer_type, input_text):
+        """Text that leaves no in-vocabulary symbol encodes to an empty sequence instead of raising IndexError."""
+        tokenizer = tokenizer_type()
+
+        assert tokenizer.encode(input_text) == []
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "tokenizer_type",
+        [GermanPhonemesTokenizer, ItalianPhonemesTokenizer],
+        ids=["german_phonemes", "italian_phonemes"],
+    )
+    def test_phonemes_tokenizer_empty_text_pad_with_space(self, tokenizer_type):
+        """With pad_with_space=True empty text yields the two padding spaces, matching BaseCharsTokenizer."""
+        tokenizer = tokenizer_type(pad_with_space=True)
+
+        assert tokenizer.encode("") == [tokenizer._token2id[tokenizer.tokens[tokenizer.space]]] * 2

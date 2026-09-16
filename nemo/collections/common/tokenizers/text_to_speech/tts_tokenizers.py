@@ -774,7 +774,7 @@ class GermanPhonemesTokenizer(BaseCharsTokenizer):
                 logging.warning(f"Text: [{text}] contains unknown char: [{c}]. Symbol will be skipped.")
 
         # Remove trailing spaces
-        while cs[-1] == space:
+        while cs and cs[-1] == space:
             cs.pop()
 
         if self.pad_with_space:
@@ -849,7 +849,7 @@ class ItalianPhonemesTokenizer(BaseCharsTokenizer):
                 logging.warning(f"Text: [{text}] contains unknown char: [{c}]. Symbol will be skipped.")
 
         # Remove trailing spaces
-        while cs[-1] == space:
+        while cs and cs[-1] == space:
             cs.pop()
 
         if self.pad_with_space:

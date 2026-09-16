@@ -401,6 +401,36 @@ class TestTransformerEncoder:
         assert len(model.layers) == 2
 
     @pytest.mark.unit
+    def test_positional_sync_max_audio_length_remains_compatible(self):
+        model = TransformerEncoder(
+            64,
+            64,
+            4,
+            1,
+            -1,
+            "feature_stacking",
+            4,
+            0.1,
+            None,
+            0.0,
+            False,
+            False,
+            4.0,
+            True,
+            "no_pos",
+            10000.0,
+            1.0,
+            5000,
+            False,
+            "full",
+            False,
+        )
+
+        assert model.sync_max_audio_length is False
+        assert model.causal_tail_len == 0
+        assert model.causal_tail_block_size == 1
+
+    @pytest.mark.unit
     def test_model_creation_with_qk_norm(self):
         model = TransformerEncoder(feat_in=128, d_model=64, n_heads=4, n_layers=2, qk_norm=True)
         attn = model.layers[0].attn
@@ -418,6 +448,158 @@ class TestTransformerEncoder:
     def test_invalid_attn_mode(self):
         with pytest.raises(ValueError, match="not yet supported"):
             TransformerEncoder(feat_in=80, d_model=64, n_heads=4, n_layers=2, attn_mode="sliding_window")
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        (
+            "causal_tail_len",
+            "causal_tail_block_size",
+            "lengths",
+            "batch_idx",
+            "query_idx",
+            "key_idx",
+            "expected",
+        ),
+        [
+            (0, 4, (8,), 0, 2, 6, True),  # Zero retains full attention; block size is irrelevant.
+            (3, 2, (8,), 0, 1, 4, True),  # Prefix attention remains bidirectional.
+            (3, 2, (8,), 0, 4, 5, False),  # Prefix queries cannot see tail keys.
+            (3, 2, (8,), 0, 7, 2, True),  # Every tail block can see the prefix.
+            (3, 1, (8,), 0, 6, 5, True),  # Block size 1 permits previous frames.
+            (3, 1, (8,), 0, 5, 6, False),  # Block size 1 masks future frames.
+            (6, 2, (10,), 0, 4, 5, True),  # Attention is bidirectional within a block.
+            (6, 2, (10,), 0, 6, 5, True),  # Tail queries can see previous blocks.
+            (6, 2, (10,), 0, 5, 6, False),  # Tail queries cannot see future blocks.
+            (5, 3, (10,), 0, 8, 9, True),  # A final partial block is bidirectional.
+            (3, 3, (8,), 0, 5, 7, True),  # A block covering the tail makes it bidirectional.
+            (3, 2, (8,), 0, 7, 8, False),  # Padding keys remain masked.
+            (3, 2, (8, 7), 0, 5, 6, True),  # Batch item 0 anchors its first block at position 5.
+            (3, 2, (8, 7), 1, 5, 6, False),  # Batch item 1 anchors its next block at position 4.
+        ],
+    )
+    def test_causal_tail_mask(
+        self,
+        causal_tail_len,
+        causal_tail_block_size,
+        lengths,
+        batch_idx,
+        query_idx,
+        key_idx,
+        expected,
+    ):
+        model = TransformerEncoder(
+            feat_in=64,
+            d_model=64,
+            n_heads=4,
+            n_layers=1,
+            attn_mode="full",
+            causal_tail_len=causal_tail_len,
+            causal_tail_block_size=causal_tail_block_size,
+        )
+        mask_mod = model._build_mask_mod(torch.tensor(lengths, dtype=torch.int64))
+
+        actual = mask_mod(
+            torch.tensor(batch_idx),
+            torch.tensor(0),
+            torch.tensor(query_idx),
+            torch.tensor(key_idx),
+        )
+
+        assert bool(actual) is expected
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        ("causal_tail_len", "attn_mode", "exception_type", "error_match"),
+        [
+            (-1, "full", ValueError, "causal_tail_len must be non-negative"),
+            (1.5, "full", TypeError, "causal_tail_len must be a non-negative integer"),
+            ("1", "full", TypeError, "causal_tail_len must be a non-negative integer"),
+            (True, "full", TypeError, "causal_tail_len must be a non-negative integer"),
+            (1, "causal", ValueError, "only compatible with attn_mode='full'"),
+        ],
+    )
+    def test_invalid_causal_tail_configuration(self, causal_tail_len, attn_mode, exception_type, error_match):
+        with pytest.raises(exception_type, match=error_match):
+            TransformerEncoder(
+                feat_in=64,
+                d_model=64,
+                n_heads=4,
+                n_layers=1,
+                attn_mode=attn_mode,
+                causal_tail_len=causal_tail_len,
+            )
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        ("causal_tail_block_size", "exception_type", "error_match"),
+        [
+            (0, ValueError, "causal_tail_block_size must be at least 1"),
+            (-1, ValueError, "causal_tail_block_size must be at least 1"),
+            (1.5, TypeError, "causal_tail_block_size must be a positive integer"),
+            ("1", TypeError, "causal_tail_block_size must be a positive integer"),
+            (True, TypeError, "causal_tail_block_size must be a positive integer"),
+        ],
+    )
+    def test_invalid_causal_tail_block_size(self, causal_tail_block_size, exception_type, error_match):
+        with pytest.raises(exception_type, match=error_match):
+            TransformerEncoder(
+                feat_in=64,
+                d_model=64,
+                n_heads=4,
+                n_layers=1,
+                causal_tail_block_size=causal_tail_block_size,
+            )
+
+    @pytest.mark.unit
+    def test_runtime_invalid_causal_tail_block_size_is_rejected(self):
+        model = TransformerEncoder(
+            feat_in=64,
+            d_model=64,
+            n_heads=4,
+            n_layers=1,
+            causal_tail_len=2,
+        )
+        model.causal_tail_block_size = 0
+
+        with pytest.raises(ValueError, match="causal_tail_block_size must be at least 1"):
+            model._build_mask_mod(torch.tensor([4]))
+
+    @pytest.mark.unit
+    def test_runtime_causal_tail_rejects_non_full_attention(self):
+        model = TransformerEncoder(feat_in=64, d_model=64, n_heads=4, n_layers=1, attn_mode="causal")
+        model.causal_tail_len = 1
+
+        with pytest.raises(ValueError, match="causal_tail_len must be zero"):
+            model._build_mask_mod(torch.tensor([4]))
+
+    @pytest.mark.unit
+    def test_zero_causal_tail_matches_full_attention_and_legacy_state_dict(self):
+        model_args = {
+            "feat_in": 64,
+            "d_model": 64,
+            "n_heads": 4,
+            "n_layers": 1,
+            "drop_rate": 0.0,
+            "self_attention_model": "no_pos",
+        }
+        full_model = TransformerEncoder(**model_args).eval()
+        zero_tail_model = TransformerEncoder(**model_args, causal_tail_len=0).eval()
+        legacy_state = full_model.state_dict()
+
+        incompatible_keys = zero_tail_model.load_state_dict(legacy_state, strict=True)
+
+        assert incompatible_keys.missing_keys == []
+        assert incompatible_keys.unexpected_keys == []
+        assert all("causal_tail_len" not in key and "causal_tail_block_size" not in key for key in legacy_state)
+
+        inputs = torch.randn(2, 8, 64)
+        lengths = torch.tensor([8, 6])
+        with torch.no_grad():
+            full_output, full_lengths = full_model(inputs, lengths, bypass_pre_encode=True)
+            zero_tail_output, zero_tail_lengths = zero_tail_model(inputs, lengths, bypass_pre_encode=True)
+
+        torch.testing.assert_close(zero_tail_output, full_output)
+        torch.testing.assert_close(zero_tail_lengths, full_lengths)
 
     @pytest.mark.unit
     def test_head_dim_below_16_raises(self):
@@ -963,6 +1145,24 @@ class TestStreamingTransformerEncoder:
             assert callable(getattr(enc, method))
 
     @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "causal_tail_settings",
+        [
+            {"causal_tail_len": 1},
+            {"causal_tail_block_size": 2},
+        ],
+    )
+    def test_rejects_non_default_causal_tail_settings(self, causal_tail_settings):
+        with pytest.raises(ValueError, match="does not support non-default causal-tail settings"):
+            StreamingTransformerEncoder(
+                feat_in=80,
+                d_model=64,
+                n_heads=4,
+                n_layers=1,
+                **causal_tail_settings,
+            )
+
+    @pytest.mark.unit
     def test_streaming_cfg_tracks_att_context(self):
         """``streaming_cfg`` is (re)built from ``att_context_size`` — the left context sizes the
         rolling cache; FeatureStacking needs no pre-encode overlap."""
@@ -1340,7 +1540,9 @@ class TestStreamingTransformerEncoder:
             outs = []
             for c in range(n_chunks):
                 step = chunk * sub
-                chunk_lens = torch.tensor([max(0, min(step, int(l) - c * step)) for l in lengths], dtype=torch.int64)
+                chunk_lens = torch.tensor(
+                    [max(0, min(step, int(length) - c * step)) for length in lengths], dtype=torch.int64
+                )
                 out, _, clc, clt, clcl = enc.cache_aware_stream_step(
                     processed_signal=x[:, :, c * step : (c + 1) * step],
                     processed_signal_length=chunk_lens,

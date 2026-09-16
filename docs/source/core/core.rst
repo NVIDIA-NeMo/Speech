@@ -49,7 +49,7 @@ For detailed information on the available pretrained models, refer to the collec
 Training
 --------
 
-NeMo leverages `PyTorch Lightning <https://www.pytorchlightning.ai/>`__ for model training. PyTorch Lightning lets NeMo decouple the
+NeMo uses `PyTorch Lightning <https://lightning.ai/docs/pytorch/stable/>`__ for model training. PyTorch Lightning lets NeMo decouple the
 conversational AI code from the PyTorch training code. This means that NeMo users can focus on their domain (ASR, NLP, TTS) and 
 build complex AI applications without having to rewrite boilerplate code for PyTorch training.
 
@@ -62,8 +62,8 @@ When using PyTorch Lightning, NeMo users can automatically train with:
 - early stopping
 - and more
 
-The two main aspects of the Lightning API are the `LightningModule <https://pytorch-lightning.readthedocs.io/en/stable/common/lightning_module.html#>`_ 
-and the `Trainer <https://pytorch-lightning.readthedocs.io/en/stable/common/trainer.html>`_.
+The two main aspects of the Lightning API are the `LightningModule <https://lightning.ai/docs/pytorch/stable/common/lightning_module>`_
+and the `Trainer <https://lightning.ai/docs/pytorch/stable/common/trainer>`_.
 
 PyTorch Lightning ``LightningModule``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -168,9 +168,10 @@ While validation logic can be found in ``validation_step``:
         return {'val_loss': val_loss, 'tp': tp, 'fn': fn, 'fp': fp}
 
 PyTorch Lightning then handles all of the boilerplate code needed for training. Virtually any aspect of training can be customized
-via PyTorch Lightning `hooks <https://pytorch-lightning.readthedocs.io/en/stable/common/lightning_module.html#hooks>`_, 
-`Plugins <https://pytorch-lightning.readthedocs.io/en/stable/extensions/plugins.html>`_, 
-`callbacks <https://pytorch-lightning.readthedocs.io/en/stable/extensions/callbacks.html>`_, or by overriding `methods <https://pytorch-lightning.readthedocs.io/en/stable/common/lightning_module.html#methods>`_. 
+via PyTorch Lightning `hooks <https://lightning.ai/docs/pytorch/stable/common/hooks>`_,
+`strategies <https://lightning.ai/docs/pytorch/stable/extensions/strategy>`_,
+`callbacks <https://lightning.ai/docs/pytorch/stable/extensions/callbacks>`_, or by overriding
+`LightningModule methods <https://lightning.ai/docs/pytorch/stable/common/lightning_module>`_.
 
 For more domain-specific information, see:
 
@@ -200,7 +201,7 @@ First, instantiate the model and trainer, then call ``.fit``:
     # Or we can run the test loop on test data by calling
     trainer.test(model=model)
 
-All `trainer flags <https://pytorch-lightning.readthedocs.io/en/stable/common/trainer.html#trainer-flags>`_ can be set from from the NeMo configuration. 
+All `Trainer arguments <https://lightning.ai/docs/pytorch/stable/common/trainer>`_ can be set in the NeMo configuration.
     
 
 Configuration

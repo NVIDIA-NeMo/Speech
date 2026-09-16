@@ -187,8 +187,8 @@ class CombinedLoss(Loss, Typing):
         if input_length is None:
             input_length = torch.full((estimate.shape[0],), estimate.shape[1]).to(device)
         source_lengths_l = torch.where(input_length > min_len, min_len, input_length)
-        primary_audio = estimate[..., :min_len]
-        predicted_audio = target[..., :min_len]
+        primary_audio = target[..., :min_len]
+        predicted_audio = estimate[..., :min_len]
 
         loss_total = torch.tensor([0.0]).to(device)
 

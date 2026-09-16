@@ -31,6 +31,7 @@ from lhotse.testing.dummies import dummy_recording
 from lhotse.testing.random import deterministic_rng
 from omegaconf import OmegaConf
 
+from nemo.collections.common.data.lhotse import cutset as cutset_module
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
 from nemo.collections.common.data.lhotse.text_adapters import SourceTargetTextExample, TextExample
 from nemo.collections.common.tokenizers.sentencepiece_tokenizer import SentencePieceTokenizer, create_spt_model
@@ -244,6 +245,34 @@ class UnsupervisedAudioDataset(torch.utils.data.Dataset):
     def __getitem__(self, cuts: lhotse.CutSet) -> Dict[str, torch.Tensor]:
         audio, audio_lens = lhotse.dataset.collation.collate_audio(cuts)
         return {"audio": audio, "audio_lens": audio_lens, "ids": [c.id for c in cuts]}
+
+
+class PolicyAwareDataset(UnsupervisedAudioDataset):
+    def __init__(self):
+        self.fault_tolerant_audio_loading = None
+
+    def with_fault_tolerant_audio_loading(self, enabled: bool):
+        dataset = type(self)()
+        dataset.fault_tolerant_audio_loading = enabled
+        return dataset
+
+
+def test_dataloader_propagates_audio_failure_policy_to_dataset(cutset_path: Path):
+    dataset = PolicyAwareDataset()
+    dl = get_lhotse_dataloader_from_config(
+        config={
+            "cuts_path": cutset_path,
+            "sample_rate": 16000,
+            "batch_size": 2,
+            "fault_tolerant_audio_loading": False,
+        },
+        global_rank=0,
+        world_size=1,
+        dataset=dataset,
+    )
+
+    assert dataset.fault_tolerant_audio_loading is None
+    assert dl.dataset.fault_tolerant_audio_loading is False
 
 
 def test_dataloader_from_lhotse_cuts(cutset_path: Path):
@@ -1325,6 +1354,105 @@ def test_extended_data_input_cfg_yaml_path(tmp_path, cutset_shar_path, nemo_tarr
     assert isinstance(batch, lhotse.CutSet)
     for cut in batch:
         assert cut.dataset_name in ("D1", "D2")
+
+
+def test_nested_input_cfg_yaml_paths_resolve_relative_to_containing_file(tmp_path, cutset_shar_path):
+    nested_dir = tmp_path / "nested"
+    nested_dir.mkdir()
+    inner_yaml = nested_dir / "inner.yaml"
+    lhotse.serialization.save_to_yaml(
+        [
+            {
+                "type": "lhotse_shar",
+                "shar_path": str(cutset_shar_path),
+                "weight": 1.0,
+            }
+        ],
+        inner_yaml,
+    )
+    outer_yaml = tmp_path / "outer.yaml"
+    lhotse.serialization.save_to_yaml(
+        [
+            {
+                "type": "group",
+                "input_cfg": "nested/inner.yaml",
+                "weight": 1.0,
+            }
+        ],
+        outer_yaml,
+    )
+    config = OmegaConf.create(
+        {
+            "input_cfg": str(outer_yaml),
+            "sample_rate": 16000,
+            "shuffle": False,
+            "num_workers": 0,
+            "batch_size": 32,
+            "seed": 0,
+            "shard_seed": 0,
+        }
+    )
+
+    dl = get_lhotse_dataloader_from_config(config=config, global_rank=0, world_size=1, dataset=Identity())
+
+    batch = next(iter(dl))
+    assert isinstance(batch, lhotse.CutSet)
+    assert len(batch) > 0
+
+
+def test_three_level_relative_input_cfg_counts_all_temperature_levels(tmp_path, cutset_shar_path):
+    deepest_dir = tmp_path / "nested" / "deepest"
+    deepest_dir.mkdir(parents=True)
+    leaf_yaml = deepest_dir / "leaf.yaml"
+    lhotse.serialization.save_to_yaml(
+        [
+            {
+                "type": "lhotse_shar",
+                "shar_path": str(cutset_shar_path),
+                "weight": 1.0,
+            }
+        ],
+        leaf_yaml,
+    )
+    middle_yaml = tmp_path / "nested" / "middle.yaml"
+    lhotse.serialization.save_to_yaml(
+        [{"type": "group", "input_cfg": "deepest/leaf.yaml", "weight": 1.0}],
+        middle_yaml,
+    )
+    outer_yaml = tmp_path / "outer.yaml"
+    lhotse.serialization.save_to_yaml(
+        [{"type": "group", "input_cfg": "nested/middle.yaml", "weight": 1.0}],
+        outer_yaml,
+    )
+    config = OmegaConf.create(
+        {
+            "input_cfg": str(outer_yaml),
+            "reweight_temperature": [1.0, 1.0, 1.0],
+            "sample_rate": 16000,
+            "shuffle": False,
+            "num_workers": 0,
+            "batch_size": 32,
+            "seed": 0,
+            "shard_seed": 0,
+        }
+    )
+
+    dl = get_lhotse_dataloader_from_config(config=config, global_rank=0, world_size=1, dataset=Identity())
+
+    assert len(next(iter(dl))) > 0
+
+
+def test_count_input_cfg_levels_preserves_remote_url(monkeypatch):
+    seen = []
+
+    def fake_load_yaml(path):
+        seen.append(path)
+        return [{"type": "nemo"}]
+
+    monkeypatch.setattr(cutset_module, "load_yaml", fake_load_yaml)
+
+    assert cutset_module.count_input_cfg_levels({"input_cfg": "s3://bucket/blends/train.yaml"}) == 1
+    assert seen == ["s3://bucket/blends/train.yaml"]
 
 
 @pytest.fixture(scope="session")

@@ -104,8 +104,8 @@ def numba_cpu_is_supported(min_version: str) -> bool:
     # If numba is not installed
     if module_available is None:
         return False
-    else:
-        return True
+
+    return module_available is True
 
 
 def numba_cuda_is_supported(min_version: str) -> bool:

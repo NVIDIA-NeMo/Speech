@@ -22,6 +22,7 @@ from lightning.pytorch.utilities import CombinedLoader
 from omegaconf import DictConfig
 
 import nemo.collections.speechlm2.data.datamodule as datamodule_module
+from nemo.collections.common.data.fallback import FallbackDataset
 from nemo.collections.common.data.lhotse.broadcasting import BroadcastingDataLoader
 from nemo.collections.common.tokenizers.sentencepiece_tokenizer import SentencePieceTokenizer, create_spt_model
 from nemo.collections.speechlm2.data import DataModule
@@ -92,6 +93,19 @@ class Identity(torch.utils.data.Dataset):
         return item
 
 
+class PolicyAwareDataset(torch.utils.data.Dataset):
+    def __init__(self, calls, fault_tolerant_audio_loading=None):
+        self.calls = calls
+        self.fault_tolerant_audio_loading = fault_tolerant_audio_loading
+
+    def __getitem__(self, item):
+        return item
+
+    def with_fault_tolerant_audio_loading(self, enabled):
+        self.calls.append(enabled)
+        return PolicyAwareDataset(self.calls, fault_tolerant_audio_loading=enabled)
+
+
 def test_datamodule_train_dataloader(data_config, tokenizer):
     data = DataModule(data_config, tokenizer=tokenizer, dataset=Identity())
     dl = data.train_dataloader()
@@ -102,6 +116,41 @@ def test_datamodule_train_dataloader(data_config, tokenizer):
     assert isinstance(batch, CutSet)
     assert len(batch) == 2
     assert all(c.tag == "train" for c in batch)
+
+
+@pytest.mark.parametrize("skip_missing_manifest_entries", [False, True])
+@pytest.mark.parametrize("fault_tolerant_audio_loading", [False, True])
+def test_datamodule_audio_loading_policy_is_independent_of_missing_manifest_policy(
+    skip_missing_manifest_entries, fault_tolerant_audio_loading
+):
+    calls = []
+    dataset = PolicyAwareDataset(calls)
+    cfg = DictConfig(
+        {
+            "train_ds": {
+                "skip_missing_manifest_entries": skip_missing_manifest_entries,
+                "fault_tolerant_audio_loading": fault_tolerant_audio_loading,
+            }
+        }
+    )
+    datamodule = DataModule(cfg, tokenizer=None, dataset=dataset)
+    training = datamodule._dataset_for_config(cfg.train_ds, training=True)
+    configured = training.dataset if isinstance(training, FallbackDataset) else training
+    assert isinstance(training, FallbackDataset) is fault_tolerant_audio_loading
+    assert configured.fault_tolerant_audio_loading is fault_tolerant_audio_loading
+
+    validation = datamodule._dataset_for_config(cfg.train_ds, training=False)
+    assert isinstance(validation, PolicyAwareDataset)
+    assert validation.fault_tolerant_audio_loading is fault_tolerant_audio_loading
+    assert calls == [fault_tolerant_audio_loading, fault_tolerant_audio_loading]
+
+
+def test_datamodule_fault_tolerant_audio_loading_defaults_true():
+    dataset = PolicyAwareDataset([])
+    cfg = DictConfig({"train_ds": {}})
+    configured = DataModule(cfg, tokenizer=None, dataset=dataset)._dataset_for_config(cfg.train_ds, training=True)
+    assert isinstance(configured, FallbackDataset)
+    assert configured.dataset.fault_tolerant_audio_loading is True
 
 
 def test_datamodule_train_dataloader_caches_broadcast_wrapper_and_passes_dp_group(data_config, tokenizer, monkeypatch):

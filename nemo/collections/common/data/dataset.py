@@ -107,6 +107,7 @@ class ConcatDataset(IterableDataset):
             logging.info(f'applying {sampling_scale} sampling scale, concat ds len: {self.length}')
 
     def get_iterable(self, dataset):
+        """Returns an iterator over the dataset, shuffling the indices first for map-style datasets when enabled."""
         if isinstance(dataset, IterableDataset):
             return dataset.__iter__()
         else:
@@ -127,20 +128,23 @@ class ConcatDataset(IterableDataset):
             max_elements = len(range(wid, self.length, wnum))
 
         if self.kind == 'map':
+            datasets = []
             for idx in range(len(self.datasets)):
                 start_idx = (len(self.datasets[idx]) // self.world_size) * self.global_rank
                 end_idx = start_idx + (len(self.datasets[idx]) // self.world_size)
                 if self.global_rank == self.world_size - 1:
                     end_idx = len(self.datasets[idx])
                 indices = range(start_idx + wid, end_idx, wnum)
-                self.datasets[idx] = pt_data.Subset(self.datasets[idx], indices)
+                datasets.append(pt_data.Subset(self.datasets[idx], indices))
+        else:
+            datasets = self.datasets
 
-        for idx, dataset in enumerate(self.datasets):
+        for idx, dataset in enumerate(datasets):
             iterable = self.get_iterable(dataset)
             self.iterables[idx] = iterable
 
         n = 0
-        ind_gen = self.index_generator(self.datasets, **self.sampling_kwargs)
+        ind_gen = self.index_generator(datasets, **self.sampling_kwargs)
         while n < max_elements:
             n += 1
             try:
@@ -150,10 +154,10 @@ class ConcatDataset(IterableDataset):
             try:
                 val = next(self.iterables[ind])
                 if self.kind == 'map':
-                    val = self.datasets[ind][val]
+                    val = datasets[ind][val]
                 yield val
             except StopIteration:
-                self.iterables[ind] = self.get_iterable(self.datasets[ind])
+                self.iterables[ind] = self.get_iterable(datasets[ind])
                 n -= 1
 
     def __len__(self):
@@ -183,6 +187,7 @@ class ConcatDataset(IterableDataset):
 
     @staticmethod
     def round_robin_generator(datasets, **kwargs):
+        """Yields dataset indices by cycling through the datasets in order."""
         num = len(datasets)
         while True:
             for i in range(num):
@@ -445,9 +450,8 @@ class CodeSwitchedDataset(IterableDataset):
         else:
             raise RuntimeError("CodeSwitchedDataset could not locate a valid dataset collate_fn to bind to")
 
-    # this method returns an iterator object for a given language ID
-    # it correctly handles whether the underlying dataset is IterableDataset or mappable
     def get_iterable_by_lang(self, lang):
+        """Returns an iterator for the given language ID, handling both IterableDataset and map-style datasets."""
         dataset = self.datasets[lang]
 
         if isinstance(dataset, IterableDataset):
@@ -458,9 +462,6 @@ class CodeSwitchedDataset(IterableDataset):
                 np.random.shuffle(indices)
             return iter(indices)
 
-    # this method is the main function which builds and returns a composite, synthetic code-switched
-    # utterance on the fly. It automatically works with all of the class-based variables stored to create
-    # the synthetic utterance
     def build_single_CS_sample(self):
         """Build one code-switched sample from the configured datasets."""
         # get_sample_from_language returns a LongTensor for the transcripts so we create a LongTensor to hold
@@ -617,8 +618,6 @@ class CodeSwitchedDataset(IterableDataset):
             torch.tensor(len(comp_text), device=labels_len.device).long(),
         )
 
-    # this is a helper method which prepares all of the iterator objects for all languages
-    # based on whether that language's underlying dataset is a map or an IterableDataset
     def prep_underlying_datasets(self):
         """Prepare the datasets and sampling metadata used by this dataset."""
         worker_info = pt_data.get_worker_info()
@@ -644,11 +643,8 @@ class CodeSwitchedDataset(IterableDataset):
 
         return max_elements
 
-    # returns a sample (audio and transcript) from any underlying language stored by the class on instantiation
-    # the sample returned is a tensor for the audio and a tensor of ints for the transcript
-    # this method automatically handles StopIteration errors for the underyling language and rebuilds
-    # the iterator if necessary
     def get_sample_from_language(self, lang):
+        """Returns a sample (audio and transcript) from the given language, rebuilding its iterator on exhaustion."""
         while True:
             try:
                 val = next(self.lang_iterables[lang])

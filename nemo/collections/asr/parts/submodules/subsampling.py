@@ -19,6 +19,7 @@ import torch
 import torch.nn as nn
 from torch.nn import LayerNorm
 
+from nemo.collections.asr.parts.packed_sequence import PackedEncoderActivations, _new_packed_encoder_activations
 from nemo.collections.asr.parts.submodules.causal_convs import CausalConv1D, CausalConv2D
 from nemo.core.utils.optional_libs import TRITON_AVAILABLE, triton_required
 from nemo.utils import logging
@@ -58,7 +59,7 @@ class FeatureStacking(nn.Module):
         non-overlapping, so a chunk aligned to ``subsampling_factor`` needs none."""
         return 0
 
-    def forward(self, x, lengths):
+    def forward(self, x, lengths=None):
         """
         Args:
             x: (B, C, T) input features.
@@ -67,6 +68,12 @@ class FeatureStacking(nn.Module):
             x: (B, T', feat_out) stacked and projected features.
             lengths: (B,) updated lengths after subsampling.
         """
+        if isinstance(x, PackedEncoderActivations):
+            if lengths is not None:
+                raise ValueError("lengths must be omitted when x is PackedEncoderActivations.")
+            return self.forward_packed(x)
+        if lengths is None:
+            raise ValueError("lengths are required for padded FeatureStacking input.")
         x = x.transpose(1, 2)  # (B, C, T) -> (B, T, C)
         b, t, c = x.size()
         pad_size = (self.subsampling_factor - (t % self.subsampling_factor)) % self.subsampling_factor
@@ -77,6 +84,44 @@ class FeatureStacking(nn.Module):
         x = self.proj(x)
         lengths = self.compute_num_out_frames(lengths)
         return x, lengths
+
+    def forward_packed(self, packed: PackedEncoderActivations) -> PackedEncoderActivations:
+        """Stack and project token-flat feature sequences without batch padding."""
+        stacked = self.stack_packed(packed)
+        return stacked.with_data(self.proj(stacked.data))
+
+    def stack_packed(self, packed: PackedEncoderActivations) -> PackedEncoderActivations:
+        """Stack token-flat frames, retaining packed metadata for grouped projection."""
+        if packed.data.shape[1] * self.subsampling_factor != self.proj.in_features:
+            raise ValueError(
+                f"Expected packed feature width {self.proj.in_features // self.subsampling_factor}, "
+                f"got {packed.data.shape[1]}."
+            )
+        output_lengths = self.compute_num_out_frames(packed.lengths)
+        output_cu_seqlens = torch.cat(
+            [output_lengths.new_zeros(1, dtype=torch.int32), output_lengths.cumsum(0, dtype=torch.int32)]
+        )
+        slot_count = int(output_cu_seqlens[-1].item()) * self.subsampling_factor
+        slot_indices = torch.arange(slot_count, device=packed.data.device)
+        slot_boundaries = output_cu_seqlens[1:].to(torch.int64) * self.subsampling_factor
+        slot_sequence_ids = torch.bucketize(slot_indices, slot_boundaries, right=True)
+        if isinstance(packed.padding_value, torch.Tensor):
+            slots = packed.padding_value.to(packed.data)[slot_sequence_ids].clone()
+        else:
+            slots = packed.data.new_full((slot_count, packed.data.shape[1]), packed.padding_value)
+        if packed.padded_length is not None and slot_count:
+            slot_starts = output_cu_seqlens[slot_sequence_ids].to(torch.int64) * self.subsampling_factor
+            local_slots = slot_indices - slot_starts
+            slots.masked_fill_(local_slots.unsqueeze(1) >= packed.padded_length, 0.0)
+        if packed.total_tokens:
+            token_indices = torch.arange(packed.total_tokens, device=packed.data.device)
+            sequence_ids = torch.bucketize(token_indices, packed.cu_seqlens[1:], right=True)
+            local_positions = token_indices - packed.cu_seqlens[sequence_ids]
+            slot_positions = output_cu_seqlens[sequence_ids].to(torch.int64) * self.subsampling_factor
+            slots[slot_positions + local_positions] = packed.data
+        stacked = slots.reshape(-1, self.proj.in_features)
+        max_seqlen = self.compute_num_out_frames(packed.max_seqlen)
+        return _new_packed_encoder_activations(stacked, output_lengths, output_cu_seqlens, max_seqlen)
 
 
 class StackingSubsampling(torch.nn.Module):

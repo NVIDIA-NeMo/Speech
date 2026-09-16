@@ -203,8 +203,8 @@ def _raw_audio_cutset(target_audio_duration, text="hello"):
     # load_cached_codes_if_available.
     cut = dummy_cut(
         2,
-        duration=0.5,
-        recording=dummy_recording(2, duration=0.5, with_data=True, sampling_rate=SAMPLE_RATE),
+        duration=target_audio_duration,
+        recording=dummy_recording(2, duration=target_audio_duration, with_data=True, sampling_rate=SAMPLE_RATE),
     )
     cut.target_audio = dummy_recording(20, duration=target_audio_duration, with_data=True, sampling_rate=SAMPLE_RATE)
     cut.supervisions = [

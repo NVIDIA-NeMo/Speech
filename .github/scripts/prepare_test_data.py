@@ -17,7 +17,6 @@ TEST_DATA_FILENAME = "test_data.tar.gz"
 TEST_DATA_SHA256 = "bcaf346953ddb7dbd73c67925230886546cfea7120fdab8b199f938ed5960c5d"
 TEST_DATA_URL = f"https://github.com/NVIDIA-NeMo/Speech/releases/download/{TEST_DATA_VERSION}/{TEST_DATA_FILENAME}"
 TEST_DATA_MARKER = ".test_data_sha256"
-TEST_DATA_KEY = f"{TEST_DATA_VERSION}-{TEST_DATA_SHA256}"
 
 
 def get_sha256(path: Path) -> str:
@@ -131,17 +130,16 @@ def download_archive(destination: Path, url: str) -> None:
             time.sleep(2**attempt)
 
 
-def stage_test_data(output: Path, persistent_root: Path | None, url: str) -> Path:
+def stage_test_data(output: Path, source: Path | None, url: str) -> Path:
     staging_parent = output.parent
     staging_parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f".{output.name}-", dir=staging_parent))
     archive_path = staging / TEST_DATA_FILENAME
 
-    persistent_data = persistent_root / "speech-test-data" / TEST_DATA_KEY if persistent_root else None
-    if persistent_data:
+    if source:
         try:
             shutil.rmtree(staging)
-            shutil.copytree(persistent_data, staging, symlinks=True)
+            shutil.copytree(source, staging, symlinks=True)
         except OSError:
             shutil.rmtree(staging, ignore_errors=True)
         else:
@@ -153,11 +151,11 @@ def stage_test_data(output: Path, persistent_root: Path | None, url: str) -> Pat
 
     archive_ready = False
     archive_sources = [output / TEST_DATA_FILENAME]
-    if persistent_data:
-        archive_sources.append(persistent_data / TEST_DATA_FILENAME)
-    for source in archive_sources:
+    if source:
+        archive_sources.append(source / TEST_DATA_FILENAME)
+    for archive_source in archive_sources:
         try:
-            shutil.copy2(source, archive_path)
+            shutil.copy2(archive_source, archive_path)
         except OSError:
             continue
         if archive_is_valid(archive_path):
@@ -183,32 +181,19 @@ def replace_directory(source: Path, destination: Path) -> None:
     os.replace(source, destination)
 
 
-def prepare_test_data(output: Path, persistent_root: Path | None, url: str, populate_persistent: bool) -> None:
+def prepare_test_data(output: Path, source: Path | None, url: str) -> None:
     if not extracted_data_is_valid(output):
-        staging = stage_test_data(output, persistent_root, url)
+        staging = stage_test_data(output, source, url)
         replace_directory(staging, output)
-
-    if populate_persistent and persistent_root:
-        persistent_data = persistent_root / "speech-test-data" / TEST_DATA_KEY
-        if not extracted_data_is_valid(persistent_data):
-            persistent_data.parent.mkdir(parents=True, exist_ok=True)
-            staging = Path(tempfile.mkdtemp(prefix=f".{TEST_DATA_KEY}-", dir=persistent_data.parent))
-            shutil.rmtree(staging)
-            shutil.copytree(output, staging, symlinks=True)
-            if not extracted_data_is_valid(staging):
-                shutil.rmtree(staging, ignore_errors=True)
-                raise ValueError("Staged persistent test data failed validation")
-            replace_directory(staging, persistent_data)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Prepare immutable Speech test data")
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--persistent-root", type=Path)
+    parser.add_argument("--source", type=Path)
     parser.add_argument("--url", default=TEST_DATA_URL)
-    parser.add_argument("--populate-persistent", action="store_true")
     args = parser.parse_args()
-    prepare_test_data(args.output, args.persistent_root, args.url, args.populate_persistent)
+    prepare_test_data(args.output, args.source, args.url)
 
 
 if __name__ == "__main__":

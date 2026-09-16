@@ -109,6 +109,25 @@ runs:
         path: >-
           ${{ github.run_id }}/${{ steps.uuid.outputs.id }}/NeMo/${{ inputs.download-artifact-path }}
 
+    - name: Restore test data
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: .cache/speech-test-data
+        key: speech-test-data-v1.0.0rc1-bcaf346953ddb7dbd73c67925230886546cfea7120fdab8b199f938ed5960c5d
+
+    - name: Validate and copy test data
+      shell: bash
+      run: |
+        docker run --rm \
+          --volume "$GITHUB_WORKSPACE/.cache/speech-test-data:/cache/test-data:ro" \
+          --volume "$GITHUB_WORKSPACE/${{ github.run_id }}/${{ steps.uuid.outputs.id }}/NeMo:/workspace" \
+          --env HF_HUB_OFFLINE=1 \
+          --workdir /workspace \
+          ${{ inputs.image }} \
+          python .github/scripts/prepare_test_data.py \
+            --output /workspace/tests/.data \
+            --source /cache/test-data
+
     - name: Start container
       shell: bash
       env:
@@ -146,10 +165,7 @@ runs:
           --env RUN_ID=${{ github.run_id }} \
           --volume $(pwd)/${{ github.run_id }}/${{steps.uuid.outputs.id }}/NeMo:/workspace \
           --volume ${{ inputs.test-data-path }}:/home/TestData ${{ inputs.image }} \
-          bash -c "python /workspace/.github/scripts/prepare_test_data.py \
-            --output /workspace/tests/.data \
-            --persistent-root /home/TestData && \
-            sleep $(( ${{ inputs.timeout }} * 60 + 60 ))"
+          bash -c "sleep $(( ${{ inputs.timeout }} * 60 + 60 ))"
         RUN_TEST_EOF
         )
 

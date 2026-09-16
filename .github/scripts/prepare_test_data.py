@@ -32,6 +32,18 @@ def archive_is_valid(path: Path) -> bool:
     return path.is_file() and get_sha256(path) == TEST_DATA_SHA256
 
 
+def safe_extract(archive: tarfile.TarFile, output: Path, members: list[tarfile.TarInfo]) -> None:
+    for member in members:
+        source = archive.extractfile(member) if member.isfile() else None
+        destination = output / Path(*PurePosixPath(member.name).parts)
+        if member.isdir():
+            destination.mkdir(parents=True, exist_ok=True)
+        elif source is not None:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with source, destination.open("wb") as output_file:
+                shutil.copyfileobj(source, output_file)
+
+
 def safe_members(archive: tarfile.TarFile, output: Path) -> list[tarfile.TarInfo]:
     output = output.resolve()
     members = []
@@ -158,8 +170,7 @@ def stage_test_data(output: Path, persistent_root: Path | None, url: str) -> Pat
     if not archive_is_valid(archive_path):
         raise ValueError(f"{TEST_DATA_FILENAME} does not match the pinned SHA-256")
     with tarfile.open(archive_path, "r:gz") as archive:
-        for member in safe_members(archive, staging):
-            archive.extract(member, staging, filter="data")
+        safe_extract(archive, staging, safe_members(archive, staging))
     (staging / TEST_DATA_MARKER).write_text(f"{TEST_DATA_SHA256}\n", encoding="utf-8")
     if not extracted_data_is_valid(staging):
         raise ValueError("Prepared test-data directory failed validation")

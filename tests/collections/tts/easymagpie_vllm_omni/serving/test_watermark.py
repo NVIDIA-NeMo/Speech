@@ -10,11 +10,7 @@ from unittest import mock
 import pytest
 import torch
 from easymagpie_vllm_omni import watermark
-from easymagpie_vllm_omni.watermark import (
-    AudioChunk,
-    DisabledAudioWatermarker,
-    TaperedPerthWatermarker,
-)
+from easymagpie_vllm_omni.watermark import AudioChunk, DisabledAudioWatermarker, TaperedPerthWatermarker
 
 
 class _FakeAudioProcessor:

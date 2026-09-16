@@ -157,15 +157,11 @@ class TaperedPerthWatermarker:
                 perth_net if perth_net is not None else _load_perth_net(requested_device, models_dir=models_dir)
             )
             if torch.device(requested_device).type == "cuda":
-                self.perth_net.encoder = torch.compile(
-                    self.perth_net.encoder, mode="default", dynamic=True
-                )
+                self.perth_net.encoder = torch.compile(self.perth_net.encoder, mode="default", dynamic=True)
                 if torch.cuda.is_available() and perth_net is None:
                     self._warmup_compiled_encoder()
         except Exception as error:
-            raise RuntimeError(
-                "Perth watermarking is enabled but its model could not be initialized"
-            ) from error
+            raise RuntimeError("Perth watermarking is enabled but its model could not be initialized") from error
         self._short_audio_warning_emitted = False
         logger.info(
             "Perth watermarking enabled on device=%s (model sample rate=%d)",
@@ -214,10 +210,7 @@ class TaperedPerthWatermarker:
         with torch.inference_mode():
             for indices in length_groups.values():
                 originals = torch.stack(
-                    [
-                        waveforms[index].detach().float().reshape(-1).to(perth_device)
-                        for index in indices
-                    ]
+                    [waveforms[index].detach().float().reshape(-1).to(perth_device) for index in indices]
                 )
                 signals = originals
                 if sample_rate != perth_rate:

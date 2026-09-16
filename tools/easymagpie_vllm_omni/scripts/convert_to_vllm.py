@@ -634,9 +634,7 @@ def bundle_perth_watermark_checkpoint(
                 raise OSError(f"downloaded empty file from {urls[name]}")
         except (urllib.error.URLError, OSError) as error:
             if packaged is None:
-                raise RuntimeError(
-                    f"Could not download Perth watermark file {name!r} from {urls[name]}"
-                ) from error
+                raise RuntimeError(f"Could not download Perth watermark file {name!r} from {urls[name]}") from error
             logging.warning("Download of %s failed (%s); copying packaged Perth weights", name, error)
             shutil.copy2(os.path.join(packaged, name), destination)
 

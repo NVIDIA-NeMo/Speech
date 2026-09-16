@@ -13,8 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from types import SimpleNamespace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -45,9 +45,9 @@ def test_codec_watermark_models_dir_is_relative_to_codec_model_path():
     config = SimpleNamespace(watermark_checkpoint="watermark/perth")
     vllm_config = SimpleNamespace(model_config=SimpleNamespace(model="/converted/codec_native"))
 
-    assert EasyMagpieCodecForConditionalGeneration._watermark_models_dir(
-        config, vllm_config
-    ) == Path("/converted/codec_native/watermark/perth")
+    assert EasyMagpieCodecForConditionalGeneration._watermark_models_dir(config, vllm_config) == Path(
+        "/converted/codec_native/watermark/perth"
+    )
 
 
 def test_payload_codes_rejects_scheduled_frame_mismatch():

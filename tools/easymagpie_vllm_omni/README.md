@@ -67,26 +67,8 @@ better kernels; for an explicit sweep, run `python scripts/tune_mamba_ssu.py --m
 
 ### Perth watermarking
 
-EasyMagpie audio is watermarked after native codec decoding and before float
-PCM leaves the vLLM-Omni codec stage. The codec owns the watermarker instance
-so Perth weights are released with the model. Equal-length outputs are
-processed as a GPU batch, including outputs produced by incremental streaming
-requests. The watermarker resamples codec audio to Perth's model rate and back
-while preserving each output's original sample count.
-
-The call site is `AudioWatermarker.apply(list[AudioChunk])`. Chunks carry
-`request_id` and `is_final` so a later overlap-save implementation can keep
-left context per request. The current `TaperedPerthWatermarker` still
-watermarks chunks independently and tapers the watermark delta at edges.
-
-Watermarking is enabled by default after installing the `perth` extra, and
-engine startup fails if Perth or the codec ``watermark_checkpoint`` cannot be
-loaded. Conversion downloads Perth into ``codec_native/watermark/perth`` and
-sets that field on the codec config so serving does not read weights from
-``site-packages``. The extra pins Resemble Perth from `yhayarannvidia/Perth`
-at a SHA whose `perth.perth_net` package does not import `librosa`/`soxr`.
-Serving also installs `torchaudio` unpinned. For unmarked quality
-comparisons only, set `NEMOTRON_TTS_PERTH_WATERMARK=0` to disable it.
+EasyMagpie audio is watermarked with [Perth](https://github.com/resemble-ai/perth) after native codec decoding and before float
+PCM leaves the vLLM-Omni codec stage. Pass `NEMOTRON_TTS_PERTH_WATERMARK=0` to disable it.
 
 ### Quick start — offline synthesis
 

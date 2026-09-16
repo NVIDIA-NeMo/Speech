@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -182,7 +183,9 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         """Load language model for RVQ-EAR-TTS."""
         if cfg.pretrained_lm_name:
             language_model = load_pretrained_hf(
-                self.cfg.pretrained_lm_name, pretrained_weights=True, trust_remote_code=True
+                self.cfg.pretrained_lm_name,
+                pretrained_weights=True,
+                trust_remote_code=self.cfg.get("trust_remote_code", False),
             ).eval()
         else:
             language_model = None

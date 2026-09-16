@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -401,7 +402,8 @@ class NeMoTurnTakingService(FrameProcessor):
                 await self.push_frame(StartInterruptionFrame(), direction=FrameDirection.DOWNSTREAM)
             else:
                 logger.debug(
-                    "Skipping UserStartedSpeakingFrame and StartInterruptionFrame because can_create_user_frames is False"
+                    "Skipping UserStartedSpeakingFrame and StartInterruptionFrame because "
+                    "can_create_user_frames is False"
                 )
             # Record cutoff time for agent audio when TTS is interrupted
             if self._audio_logger and self._bot_speaking:

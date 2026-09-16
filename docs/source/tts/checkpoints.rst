@@ -110,10 +110,10 @@ NeMo TTS supports both cascaded and end-to-end models to synthesize audios. Most
 Fine-Tuning on Different Datasets
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-There are multiple TTS tutorials provided in the directory of `tutorials/tts/ <https://github.com/NVIDIA/NeMo/tree/stable/tutorials/tts>`_. Most of these tutorials demonstrate how to instantiate a pre-trained model, and prepare the model for fine-tuning on datasets with the same language or different languages, the same speaker or different speakers.
+There are multiple TTS tutorials provided in the directory of `tutorials/tts/ <https://github.com/NVIDIA-NeMo/Speech/tree/stable/tutorials/tts>`_. Most of these tutorials demonstrate how to instantiate a pre-trained model, and prepare the model for fine-tuning on datasets with the same language or different languages, the same speaker or different speakers.
 
-* **cross-lingual fine-tuning**: https://github.com/NVIDIA/NeMo/tree/stable/tutorials/tts/FastPitch_GermanTTS_Training.ipynb
-* **cross-speaker fine-tuning**: https://github.com/NVIDIA/NeMo/tree/stable/tutorials/tts/FastPitch_Finetuning.ipynb
+* **cross-lingual fine-tuning**: https://github.com/NVIDIA-NeMo/Speech/tree/stable/tutorials/tts/FastPitch_GermanTTS_Training.ipynb
+* **cross-speaker fine-tuning**: https://github.com/NVIDIA-NeMo/Speech/tree/stable/tutorials/tts/FastPitch_Finetuning.ipynb
 
 
 .. _NGC TTS Models:
@@ -127,14 +127,6 @@ This section summarizes a full list of available NeMo TTS models that have been 
 * :code:`curl -LO '<CHECKPOINT_URL_IN_THE_TABLE>'`
 
 
-Speech/Text Aligners
-^^^^^^^^^^^^^^^^^^^^
-
-.. csv-table::
-   :file: data/ngc_models_aligner.csv
-   :align: left
-   :header-rows: 1
-
 Mel-Spectrogram Generators
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 .. csv-table::
@@ -146,13 +138,6 @@ Vocoders
 ^^^^^^^^
 .. csv-table::
    :file: data/ngc_models_vocoder.csv
-   :align: left
-   :header-rows: 1
-
-End2End models
-^^^^^^^^^^^^^^
-.. csv-table::
-   :file: data/ngc_models_e2e.csv
    :align: left
    :header-rows: 1
 

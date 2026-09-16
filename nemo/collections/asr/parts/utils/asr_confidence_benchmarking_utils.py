@@ -1,4 +1,5 @@
-# Copyright (c) 2023, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -22,7 +23,7 @@ import torch
 from kaldialign import align
 from omegaconf import open_dict
 
-from nemo.collections.asr.models import ASRModel, EncDecRNNTModel
+from nemo.collections.asr.models import ASRModel
 from nemo.collections.asr.parts.utils.confidence_metrics import (
     auc_nt,
     auc_pr,

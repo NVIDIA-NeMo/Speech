@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -181,11 +182,16 @@ class ASRModel(ModelPT, WithOptionalCudaGraphs, ABC):
         # check that self.decoding.decoding exists and is instance of WithOptionalCudaGraphs
         if isinstance(getattr(getattr(self, "decoding", None), "decoding", None), WithOptionalCudaGraphs):
             state_changed |= self.decoding.decoding.maybe_enable_cuda_graphs()
-        if state_changed:
-            logging.info(
-                f"CUDA graphs enabled for {type(self).__name__}::{type(self.decoding).__name__}::"
-                f"{type(self.decoding.decoding).__name__}"
-            )
+            if state_changed:
+                logging.info(
+                    f"CUDA graphs enabled for {type(self).__name__}::{type(self.decoding).__name__}::"
+                    f"{type(self.decoding.decoding).__name__}"
+                )
+        # streaming-encoder CUDA graphs (attached via encoder.set_streaming_cuda_graphs)
+        encoder_graphs = getattr(getattr(self, "encoder", None), "_stream_step_cuda_graphs", None)
+        if isinstance(encoder_graphs, WithOptionalCudaGraphs) and encoder_graphs.maybe_enable_cuda_graphs():
+            logging.info(f"CUDA graphs enabled for {type(self).__name__}::encoder streaming step")
+            state_changed = True
         return state_changed
 
     def disable_cuda_graphs(self) -> bool:
@@ -194,11 +200,16 @@ class ASRModel(ModelPT, WithOptionalCudaGraphs, ABC):
         # check that self.decoding.decoding exists and is instance of WithOptionalCudaGraphs
         if isinstance(getattr(getattr(self, "decoding", None), "decoding", None), WithOptionalCudaGraphs):
             state_changed = self.decoding.decoding.disable_cuda_graphs()
-        if state_changed:
-            logging.info(
-                f"CUDA graphs disabled for {type(self).__name__}::{type(self.decoding).__name__}::"
-                f"{type(self.decoding.decoding).__name__}"
-            )
+            if state_changed:
+                logging.info(
+                    f"CUDA graphs disabled for {type(self).__name__}::{type(self.decoding).__name__}::"
+                    f"{type(self.decoding.decoding).__name__}"
+                )
+        # streaming-encoder CUDA graphs (attached via encoder.set_streaming_cuda_graphs)
+        encoder_graphs = getattr(getattr(self, "encoder", None), "_stream_step_cuda_graphs", None)
+        if isinstance(encoder_graphs, WithOptionalCudaGraphs) and encoder_graphs.disable_cuda_graphs():
+            logging.info(f"CUDA graphs disabled for {type(self).__name__}::encoder streaming step")
+            state_changed = True
         return state_changed
 
     def on_train_epoch_start(self) -> None:

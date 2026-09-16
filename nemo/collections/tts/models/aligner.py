@@ -1,4 +1,5 @@
-# Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -179,7 +180,7 @@ class AlignerModel(NeedsNormalizer, ModelPT):
                         plot_alignment_to_numpy(
                             np.fliplr(np.rot90(attn_soft[i, 0, : spec_len[i], : text_len[i]].data.cpu().numpy()))
                         ),
-                        caption=f"attn soft",
+                        caption="attn soft",
                     ),
                 )
 
@@ -188,7 +189,7 @@ class AlignerModel(NeedsNormalizer, ModelPT):
                         plot_alignment_to_numpy(
                             np.fliplr(np.rot90(attn_hard[i, 0, : spec_len[i], : text_len[i]].data.cpu().numpy()))
                         ),
-                        caption=f"attn hard",
+                        caption="attn hard",
                     )
                 )
 

@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -91,7 +92,8 @@ def evaluate_eou(
     Args:
         predictions (List[dict]): List of dictionaries containing predictions.
         references (List[dict]): List of dictionaries containing reference labels.
-        threshold (float): Threshold for considering a prediction as EOU.
+        threshold (float): Threshold on "eou_prob" for considering a prediction as EOU. If it is None or
+            non-positive, the boolean "eou_pred" field is used instead when every prediction provides it.
         collar (float): Collar time in seconds for matching predictions to references.
         do_sorting (bool): Whether to sort the predictions and references by start time.
     Returns:
@@ -110,7 +112,7 @@ def evaluate_eou(
     predicted_eou = prediction
     if threshold is not None and threshold > 0:
         predicted_eou = [p for p in prediction if p["eou_prob"] > threshold]
-    elif all([hasattr(p, "eou_pred") for p in prediction]):
+    elif all(["eou_pred" in p for p in prediction]):
         # If eou_pred is available, use it
         predicted_eou = [p for p in prediction if p["eou_pred"]]
 
@@ -188,6 +190,8 @@ def evaluate_eou(
 def get_SegLST_from_frame_labels(frame_labels: List[int], frame_len_in_secs: float = 0.08) -> List[dict]:
     """
     Convert frame labels to SegLST format.
+    Each positively labeled frame marks the end of an utterance, so a segment spans from the end of the
+    previous utterance to the absolute time of the current EOU frame.
     Args:
         frame_labels (List[int]): List of frame labels.
         frame_len_in_secs (float): Length of each frame in seconds.
@@ -198,7 +202,7 @@ def get_SegLST_from_frame_labels(frame_labels: List[int], frame_len_in_secs: flo
     start_time = 0.0
     for i, label in enumerate(frame_labels):
         if label > 0:
-            end_time = start_time + frame_len_in_secs * i
+            end_time = frame_len_in_secs * i
             seg_lst.append({"start_time": start_time, "end_time": end_time, "eou_prob": label})
             start_time = end_time
     return seg_lst

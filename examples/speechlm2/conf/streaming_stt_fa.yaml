@@ -126,6 +126,10 @@ exp_manager:
   create_checkpoint_callback: true
   use_datetime_version: true
   max_time_per_run: "00:03:50:00"
+  # Measure the budget from SLURM_JOB_START_TIME rather than from the training-loop
+  # start, so setup (backbone load, index build) is charged against it and the graceful
+  # *-last.ckpt is written before SLURM's hard kill. Set false to time the loop only.
+  max_time_per_run_from_slurm: true
 
   resume_from_checkpoint: null
   resume_if_exists: true

@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,6 +16,7 @@
 from nemo.collections.tts.models.aligner import AlignerModel
 from nemo.collections.tts.models.audio_codec import AudioCodecModel
 from nemo.collections.tts.models.easy_magpietts import EasyMagpieTTSModel
+from nemo.collections.tts.models.easy_magpietts_cfg_distillation import EasyMagpieCFGDistillation
 from nemo.collections.tts.models.easy_magpietts_inference import EasyMagpieTTSInferenceModel
 from nemo.collections.tts.models.easy_magpietts_preference_optimization import EasyMagpieTTSModelOnlinePO
 from nemo.collections.tts.models.fastpitch import FastPitchModel
@@ -45,4 +47,5 @@ __all__ = [
     "MagpieTTSModelOfflinePODataGen",
     "MagpieTTSModelOfflinePO",
     "MagpieTTSModelOnlinePO",
+    "EasyMagpieCFGDistillation",
 ]

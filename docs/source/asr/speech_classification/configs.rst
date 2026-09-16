@@ -111,5 +111,5 @@ When preparing your own training or fine-tuning scripts, please follow the execu
 
 Depending on the type of model, there may be extra steps that must be performed -
 
-* Speech Classification models - `Examples directory for Classification Models <https://github.com/NVIDIA/NeMo/blob/stable/examples/asr/speech_classification/README.md>`_
+* Speech Classification models - `Examples directory for Classification Models <https://github.com/NVIDIA-NeMo/Speech/blob/stable/examples/asr/speech_classification/README.md>`_
 

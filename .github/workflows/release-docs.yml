@@ -1,4 +1,5 @@
-# Copyright (c) 2026, NVIDIA CORPORATION.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -78,7 +79,7 @@ on:
 
 jobs:
   build-docs:
-    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_build_docs.yml@v0.83.0
+    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_build_docs.yml@ccb88af2bcd7109ec01a9ddacd371bedf0780b8b # v0.83.0
     with:
       ref: ${{ inputs.github-ref }}
       docs-directory: docs/source
@@ -89,7 +90,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [build-docs]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: NVIDIA-NeMo/FW-CI-templates
           ref: v0.74.0

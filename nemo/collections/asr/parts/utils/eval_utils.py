@@ -1,4 +1,5 @@
-# Copyright (c) 2023, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -233,7 +234,7 @@ def cal_write_wer(
 
     with open(output_manifest_w_wer, 'w') as fout:
         for sample in samples:
-            json.dump(sample, fout)
+            json.dump(sample, fout, ensure_ascii=False)
             fout.write('\n')
             fout.flush()
 
@@ -319,7 +320,7 @@ def cal_write_text_metric(
 
     with open(output_manifest_w_wer, 'w') as fout:
         for sample in samples:
-            json.dump(sample, fout)
+            json.dump(sample, fout, ensure_ascii=False)
             fout.write('\n')
             fout.flush()
 

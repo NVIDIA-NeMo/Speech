@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,7 +15,7 @@
 # NOTE: This file will be deprecated in the future, as the new inference pipeline will replace it.
 
 from dataclasses import dataclass
-from typing import Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 import torch
@@ -35,15 +36,20 @@ class DiarizationConfig:
 
     log: bool = False  # If True, log will be printed
     max_num_speakers: int = 4
-    spkcache_len: int = 188
-    spkcache_refresh_rate: int = 144
+    spkcache_len: Optional[int] = None
+    spkcache_update_period: int = 144
     fifo_len: int = 188
     chunk_len: int = 6
-    chunk_left_context: int = 1
+    chunk_left_context: Optional[int] = None
     chunk_right_context: int = 7
 
 
 class NeMoStreamingDiarService:
+    """Provide stateful streaming Sortformer diarization for Pipecat audio frames.
+
+    Buffers incoming features and maintains Sortformer streaming state across calls.
+    """
+
     def __init__(
         self,
         cfg: DiarizationConfig,
@@ -84,6 +90,14 @@ class NeMoStreamingDiarService:
         print(f"NeMoStreamingDiarService initialized with model `{model}` on device `{self.device}`")
 
     def build_diarizer(self):
+        """Load and configure the Sortformer diarization model.
+
+        Loads a local ``.nemo`` checkpoint or a pretrained model, applies configured streaming overrides, validates
+        the resulting streaming parameters, and switches the model to evaluation mode.
+
+        Returns:
+            SortformerEncLabelModel: The configured Sortformer diarization model.
+        """
         if self.cfg.model_path.endswith(".nemo"):
             diar_model = SortformerEncLabelModel.restore_from(self.cfg.model_path, map_location=self.cfg.device)
         else:
@@ -91,25 +105,41 @@ class NeMoStreamingDiarService:
 
         # Steaming mode setup
         diar_model.sortformer_modules.chunk_len = self.cfg.chunk_len
-        diar_model.sortformer_modules.spkcache_len = self.cfg.spkcache_len
-        diar_model.sortformer_modules.chunk_left_context = self.cfg.chunk_left_context
+        if self.cfg.spkcache_len is not None:
+            diar_model.sortformer_modules.spkcache_len = self.cfg.spkcache_len
+        if self.cfg.chunk_left_context is not None:
+            diar_model.sortformer_modules.chunk_left_context = self.cfg.chunk_left_context
         diar_model.sortformer_modules.chunk_right_context = self.cfg.chunk_right_context
         diar_model.sortformer_modules.fifo_len = self.cfg.fifo_len
         diar_model.sortformer_modules.log = self.cfg.log
-        diar_model.sortformer_modules.spkcache_refresh_rate = self.cfg.spkcache_refresh_rate
+        diar_model.sortformer_modules.spkcache_update_period = self.cfg.spkcache_update_period
+        diar_model._check_streaming_parameters()
         diar_model.eval()
 
         return diar_model
 
     def print_diar_result(self, diar_result: np.ndarray):
+        """Print one row of frame-level speaker probabilities per frame.
+
+        Args:
+            diar_result: NumPy array with shape ``(frames, speakers)`` containing frame-level speaker probabilities.
+        """
         for t in range(diar_result.shape[0]):
             spk_probs = ""
             for s in range(diar_result.shape[1]):
                 spk_probs += f"{diar_result[t, s]:.2f} "
             print(f"Time {t}: {spk_probs}")
 
-    def diarize(self, audio: bytes, stream_id: str = "default") -> str:
+    def diarize(self, audio: bytes, stream_id: str = "default") -> np.ndarray:
+        """Diarize the latest chunk of streaming audio.
 
+        Args:
+            audio: Mono signed 16-bit PCM audio bytes.
+            stream_id: Identifier retained by the service interface.
+
+        Returns:
+            np.ndarray: Frame-level speaker probabilities for the latest chunk, with shape ``(frames, speakers)``.
+        """
         audio_array = np.frombuffer(audio, dtype=np.int16).astype(np.float32) / 32768.0
 
         self.feature_bufferer.update(audio_array)
@@ -131,6 +161,11 @@ class NeMoStreamingDiarService:
         return diar_result[0]  # tensor of shape [6, 4]
 
     def reset_state(self, stream_id: str = "default"):
+        """Reset the feature buffer, Sortformer streaming state, and accumulated predictions.
+
+        Args:
+            stream_id: Identifier retained by the service interface.
+        """
         self.feature_bufferer.reset()
         self.streaming_state = self.init_streaming_state(batch_size=1)
         self.total_preds = torch.zeros((1, 0, self.max_num_speakers), device=self.diarizer.device)

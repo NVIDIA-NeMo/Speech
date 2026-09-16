@@ -16,6 +16,7 @@ import logging
 import math
 import random
 import re
+import warnings
 from dataclasses import dataclass
 from typing import Iterable, List, Optional, Union
 
@@ -123,6 +124,32 @@ class StreamingSTTDataConfig:
     # May also be a list of positive ints (e.g. ``[1, 3, 7]``) for multi
     # chunk-step training; one K is drawn per batch and recorded on the batch.
     chunk_step: Union[int, List[int]] = 1
+    # Rung 1: drop the blank token and its turn scaffolding from the LLM context on
+    # silent chunks. The blank is still SUPERVISED — it stays the target at the gate
+    # position — it just never becomes an input token, so later chunks do not attend
+    # to it. Requires a non-empty ``blank_token``; forced off with a warning otherwise
+    # (there is no blank to drop, and the gate target would be undefined).
+    drop_blank_from_context: bool = False
+    # Rung 2: additionally drop the per-chunk gate anchor, so a silent chunk
+    # contributes ONLY its audio frames and consecutive silent chunks become one
+    # contiguous acoustic run. The gate moves to the last audio frame of each chunk
+    # and becomes a binary blank / write choice, so ``prepend_write_token`` is
+    # required. Implies ``drop_blank_from_context``.
+    collapse_silent_audio: bool = False
+    # Flush token: an explicit end-of-audio signal, fed by the harness after the last
+    # audio frame, whose position supervises everything still pending.
+    #
+    # Without it the last chunk is special in training (``is_last_chunk`` force-emits a
+    # sub-``words_per_group`` buffer, and residual words that the delay pushed past the
+    # final boundary are folded back into the last assistant turn) but the model cannot
+    # observe WHICH chunk is last at inference -- audio simply stops. Turning this on
+    # removes both special cases: every chunk boundary obeys the same alignment/delay
+    # rule, and everything left over is emitted after the flush token, which IS an
+    # observable input. Must match the model flag of the same name.
+    use_flush_token: bool = False
+    # The flush marker itself. Registered as a new special token and learned from
+    # scratch (no pretrained meaning to warm-start from), like ``write_token``.
+    flush_token: str = "<|flush|>"
 
 
 def decode_with_blank(
@@ -280,6 +307,8 @@ def get_llm_messages_for_sample(
     chunk_step: int = 1,
     prepend_write_token: bool = False,
     write_token: str = "",
+    use_flush_token: bool = False,
+    flush_token: str = "",
 ) -> List[dict]:
     """
     Get the LLM messages for a sample, using the alignments to determine the turns for the audio and text.
@@ -428,8 +457,13 @@ def get_llm_messages_for_sample(
                 else:
                     break
 
-            # Emit words when buffer reaches words_per_group, or at the last chunk
-            is_last_chunk = chunk_i == num_chunks - 1
+            # Emit words when buffer reaches words_per_group, or at the last chunk.
+            # The last-chunk exception is conditioned on `is_last_chunk`, which the
+            # model CANNOT observe at inference (audio just stops). With
+            # use_flush_token the exception is dropped so every boundary obeys one
+            # rule, and whatever stays pending is emitted after the flush token --
+            # an observable input. See StreamingSTTDataConfig.use_flush_token.
+            is_last_chunk = (chunk_i == num_chunks - 1) and not use_flush_token
             if word_buffer and (len(word_buffer) >= words_per_group or is_last_chunk):
                 if word_spans and transcript:
                     first_span = word_spans[word_buffer[0]]
@@ -447,6 +481,24 @@ def get_llm_messages_for_sample(
             else:
                 # Empty chunk: blank_token alone, NOT prefixed with write_token.
                 messages.append({"role": "assistant", "content": blank_token})
+
+        if use_flush_token:
+            # Everything the per-chunk rule left pending: words still buffered below
+            # words_per_group, plus words the delay pushed past the final boundary.
+            # Both index ranges are contiguous and adjacent, so one slice covers them.
+            start = word_buffer[0] if word_buffer else word_idx
+            residual_indices = list(range(start, len(alignments)))
+            messages.append({"role": "user", "content": flush_token})
+            if residual_indices:
+                content = _content_for_words(residual_indices, alignments, word_spans, transcript)
+                if prepend_write_token and write_token:
+                    content = write_token + content
+                messages.append({"role": "assistant", "content": content})
+            else:
+                # Nothing pending. Still supervised -- the model must learn that
+                # flush can legitimately mean "I have nothing left".
+                messages.append({"role": "assistant", "content": blank_token})
+            return messages
 
         # Append any residual words that weren't emitted (e.g., due to delay pushing
         # them past the last chunk boundary, or alignment end_time > audio_duration).
@@ -492,6 +544,8 @@ def get_llm_messages_for_batch(
     chunk_step: int = 1,
     prepend_write_token: bool = False,
     write_token: str = "",
+    use_flush_token: bool = False,
+    flush_token: str = "",
 ) -> List[List[dict]]:
     """
     Get the LLM messages for a batch of samples.
@@ -536,100 +590,186 @@ def get_llm_messages_for_batch(
                 chunk_step=chunk_step,
                 prepend_write_token=prepend_write_token,
                 write_token=write_token,
+                use_flush_token=use_flush_token,
+                flush_token=flush_token,
             )
         )
     return batch_messages
 
 
-def parse_chat_template_ids(hf_tok, last_turn: bool = False) -> tuple[list[int], list[int], list[int]]:
-    """Discover turn-structure token IDs from a HuggingFace chat template.
+def resolve_pad_id(tokenizer: AutoTokenizer) -> int:
+    """Padding token ID for a tokenizer that may not define one.
 
-    Extracts the structural token IDs that surround user and assistant content
-    in the chat template.  Uses a 2-message sentinel conversation (1 user +
-    1 assistant) to get the ``user_header``, ``asst_footer``, and the full
-    ``user_footer_and_asst_header`` (which may include Qwen3-style
-    ``<think>...</think>`` suppression tags).
+    Falls back to ``<unk>`` and finally to id 0. Some LLM tokenizers ship without
+    a pad token (e.g. NVIDIA-Nemotron-3-Nano, where ``pad_id`` is ``None`` and
+    ``unk_id`` is 0) — passing that ``None`` into ``pad_sequence`` raises
+    ``TypeError: argument 'padding_value' must be float, not NoneType``.
 
-    When ``last_turn=False``, a second 4-message sentinel is used to obtain
-    the assistant header *without* thinking tags — Qwen3 only injects them on
-    the last assistant turn, and in streaming each chunk is a non-final turn.
+    The dataset and :attr:`StreamingSTTModel.text_pad_id` MUST agree on this
+    value: the model derives its attention mask as ``input_tokens != pad_id``, so
+    a mismatch would either unmask padding or mask real tokens. Both call here.
+    """
+    pad_id = tokenizer.pad_id
+    if pad_id is None:
+        pad_id = getattr(tokenizer, "unk_id", None)
+    if pad_id is None:
+        warnings.warn(
+            "The text tokenizer has no <pad> or <unk> token; using id 0 for padding "
+            "(this may lead to silent bugs).",
+            stacklevel=2,
+        )
+        pad_id = 0
+    return int(pad_id)
 
-    When ``last_turn=True``, the 2-message result is returned as-is, since the
-    assistant turn IS the last turn and must include thinking suppression tags
-    to match training.
+
+def apply_chat_template_ids(hf_tok, messages: List[dict], **kwargs) -> list[int]:
+    """``apply_chat_template(..., tokenize=True)`` normalized to a flat list of token IDs.
+
+    transformers 4.x returns a plain ``list[int]`` from a tokenizing call, while
+    transformers 5.x always returns a ``BatchEncoding`` (``return_dict`` became
+    the default). Callers here only ever want the IDs, so unwrap the mapping —
+    and a batched ``[[ids]]`` layout too, in case a future version wraps single
+    conversations.
 
     Args:
         hf_tok: A HuggingFace tokenizer (``tokenizer.tokenizer``).
-        last_turn: When True, the extracted assistant header corresponds to the
-            last turn in the conversation, which may include thinking
-            suppression tags (e.g. for single-turn offline inference).
+        messages: ``[{"role": ..., "content": ...}, ...]``.
+        kwargs: Forwarded to ``apply_chat_template`` (e.g. ``add_generation_prompt``,
+            ``enable_thinking``). Do not pass ``tokenize`` or ``return_dict``.
 
     Returns:
-        ``(user_header_ids, user_footer_and_asst_header_ids, asst_footer_ids)``
-
-        - *user_header_ids*: tokens before user content, BOS stripped
-          (e.g. ``[<|im_start|>, user, \\n]``).
-        - *user_footer_and_asst_header_ids*: tokens between user content and
-          assistant content.
-        - *asst_footer_ids*: tokens after assistant content
-          (e.g. ``[<|im_end|>, \\n]``).
+        The conversation's token IDs as a flat ``list[int]``.
     """
+    out = hf_tok.apply_chat_template(messages, tokenize=True, **kwargs)
+    if hasattr(out, "keys"):  # BatchEncoding / dict — transformers >= 5
+        out = out["input_ids"]
+    if hasattr(out, "tolist"):  # torch tensor (only when return_tensors was requested)
+        out = out.tolist()
+    if len(out) > 0 and isinstance(out[0], (list, tuple)):  # batched [[ids]]
+        out = out[0]
+    return list(out)
+
+
+def parse_chat_template_ids(
+    hf_tok,
+    last_turn: bool = False,
+    probe_content: str = "<audio>",
+) -> tuple[list[int], list[int], list[int], list[int]]:
+    """Discover turn-structure token IDs from a HuggingFace chat template.
+
+    Returns the four structural spans that surround user and assistant content in
+    a *mid-conversation* turn, so that streaming inference can reproduce, token
+    for token, what ``apply_chat_template`` emits for that turn during training.
+
+    The spans are located by **index in the token-id sequence**, by diffing
+    renders that differ only in message content — never by splitting the rendered
+    template string and re-encoding fragments. Re-encoding a fragment can tokenize
+    differently than the same text does in context (BPE merges at the artificial
+    boundary, SentencePiece word-start markers), and the failure is silent.
+
+    Both probe renders are anchored to a **system message**. This matters:
+    templates that emit a system block unconditionally (several Nemotron
+    variants) would otherwise fold an empty system block into ``user_header``,
+    which streaming inference then re-feeds once per chunk while training emits
+    it only once, at the front of the conversation.
+
+    ``last_turn`` selects which assistant header is returned. Qwen3 injects
+    ``<think>``/``</think>`` suppression tags only on the *final* assistant turn,
+    so a mid-stream chunk needs the non-final variant; a single-turn offline
+    prompt needs the final one. (Nemotron emits thinking tags on every assistant
+    turn, so the distinction is a no-op there.)
+
+    Args:
+        hf_tok: A HuggingFace tokenizer (``tokenizer.tokenizer``).
+        last_turn: When True, return the assistant header as it renders on the
+            last turn of a conversation (may include thinking-suppression tags).
+        probe_content: User-turn content used to locate the audio span. Any
+            non-empty string works; the audio tag is the natural choice because
+            it is what really occupies that position.
+
+    Returns:
+        ``(user_header_ids, user_footer_ids, asst_header_ids, asst_footer_ids)``
+
+        - *user_header_ids*: tokens between the system block and user content
+          (e.g. ``[<|im_start|>, user, \n]``).
+        - *user_footer_ids*: tokens after user content, up to the assistant
+          header (e.g. ``[<|im_end|>, \n]``).
+        - *asst_header_ids*: tokens before assistant content
+          (e.g. ``[<|im_start|>, assistant, \n]``).
+        - *asst_footer_ids*: tokens after assistant content
+          (e.g. ``[<|im_end|>, \n]``). Empty when the template's footer is
+          whitespace-only — see the guard at the end of this function.
+    """
+    # The derived spans must be invariant to this string's content: it is excluded
+    # by the ``A[:len(S)] == S`` prefix. Deliberately distinctive so that the
+    # post-condition below can detect a template folding it into the user turn.
+    _SYS = "ZZPROBESYSZZ"
     _SENTINEL = "XSENTINELX"
 
-    # --- 2-message template: correct footer, full assistant header ---
-    convo_2msg = hf_tok.apply_chat_template(
-        [
-            {"role": "user", "content": _SENTINEL},
-            {"role": "assistant", "content": _SENTINEL},
-        ],
-        tokenize=False,
-        add_generation_prompt=False,
-        enable_thinking=False,
-    )
-    parts = convo_2msg.split(_SENTINEL)
-    assert len(parts) >= 3, f"Expected >=3 parts after splitting on sentinel, got {len(parts)}: {parts}"
-
-    user_header_ids = hf_tok.encode(parts[0], add_special_tokens=False)
-    asst_footer_ids = hf_tok.encode(parts[2], add_special_tokens=False) if parts[2].strip() else []
-
-    # Strip leading BOS from user header — it is already in the KV cache
-    # from the system prompt during inference.
-    bos_id = getattr(hf_tok, "bos_token_id", None)
-    if user_header_ids and bos_id is not None and user_header_ids[0] == bos_id:
-        user_header_ids = user_header_ids[1:]
-
-    if last_turn:
-        # Last turn: use the 2-msg assistant header (includes thinking tags).
-        user_footer_and_asst_header_ids = hf_tok.encode(parts[1], add_special_tokens=False)
-    else:
-        # Non-last turn: use the 4-msg assistant header (no thinking tags).
-        # The 4-msg trick places the sentinel on the first assistant turn,
-        # which is NOT the last turn → Qwen3 omits thinking tags.
-        convo_4msg = hf_tok.apply_chat_template(
-            [
-                {"role": "user", "content": _SENTINEL},
-                {"role": "assistant", "content": _SENTINEL},
-                {"role": "user", "content": "x"},
-                {"role": "assistant", "content": "x"},
-            ],
-            tokenize=False,
+    def render(messages: List[dict]) -> list[int]:
+        return apply_chat_template_ids(
+            hf_tok,
+            messages,
             add_generation_prompt=False,
             enable_thinking=False,
         )
-        parts_4msg = convo_4msg.split(_SENTINEL)
-        assert len(parts_4msg) >= 3
-        user_footer_and_asst_header_ids = hf_tok.encode(parts_4msg[1], add_special_tokens=False)
 
-    return user_header_ids, user_footer_and_asst_header_ids, asst_footer_ids
+    sys_msg = {"role": "system", "content": _SYS}
+    user_msg = {"role": "user", "content": probe_content}
+
+    # --- user spans: diff a rendered user turn against the same turn emptied ---
+    s_ids = render([sys_msg])
+    a_ids = render([sys_msg, user_msg])
+    a_empty = render([sys_msg, {"role": "user", "content": ""}])
+
+    _assert_prefix(a_ids, s_ids, hf_tok, "system-only render is not a prefix of the user render")
+
+    head = len(s_ids) + _common_prefix_len(a_ids[len(s_ids) :], a_empty[len(s_ids) :])
+    tail = _common_suffix_len(a_ids, a_empty)
+    user_header_ids = a_ids[len(s_ids) : head]
+    user_footer_ids = a_ids[len(a_ids) - tail :]
+    _assert_partitions(a_ids, len(s_ids), head, tail, hf_tok, _SYS, user_header_ids)
+
+    # --- assistant spans: append an assistant turn and diff again ---
+    b2 = render([sys_msg, user_msg, {"role": "assistant", "content": _SENTINEL}])
+    b2_empty = render([sys_msg, user_msg, {"role": "assistant", "content": ""}])
+    _assert_prefix(b2, a_ids, hf_tok, "user render is not a prefix of the user+assistant render")
+
+    asst_footer_ids = b2[len(b2) - _common_suffix_len(b2, b2_empty) :]
+
+    if last_turn:
+        asst_header_ids = b2[len(a_ids) : len(a_ids) + _common_prefix_len(b2[len(a_ids) :], b2_empty[len(a_ids) :])]
+    else:
+        # Place the probed assistant turn in the middle of the conversation so
+        # last-turn-only template behaviour (Qwen3 thinking tags) is excluded.
+        trailing = [{"role": "user", "content": "x"}, {"role": "assistant", "content": "x"}]
+        b4 = render([sys_msg, user_msg, {"role": "assistant", "content": _SENTINEL}] + trailing)
+        b4_empty = render([sys_msg, user_msg, {"role": "assistant", "content": ""}] + trailing)
+        _assert_prefix(b4, a_ids, hf_tok, "user render is not a prefix of the 4-message render")
+        asst_header_ids = b4[len(a_ids) : len(a_ids) + _common_prefix_len(b4[len(a_ids) :], b4_empty[len(a_ids) :])]
+
+    # A whitespace-only assistant footer is treated as absent, matching the
+    # historical behaviour. This is not cosmetic: ``_autoregressive_decode``
+    # stops a stream whenever its tail matches ``asst_footer_ids``, so a footer
+    # of a bare newline byte (Nemotron-Mini) would truncate any hypothesis at
+    # its first newline.
+    if asst_footer_ids and not hf_tok.decode(asst_footer_ids).strip():
+        asst_footer_ids = []
+
+    return user_header_ids, user_footer_ids, asst_header_ids, asst_footer_ids
 
 
-def build_compact_turn_markers(hf_tok, end_of_audio_token: str) -> tuple[list[int], list[int], list[int]]:
+def build_compact_turn_markers(hf_tok, end_of_audio_token: str) -> tuple[list[int], list[int], list[int], list[int]]:
     """Return the compact-format analogue of ``parse_chat_template_ids``.
 
     Compact format drops the user/assistant role delimiters: turns look like
     ``<audio>*N <end_of_audio_token> TEXT <eos>`` with no header before audio and
     only the ``end_of_audio_token`` marking the audio→text transition.  The
     turn-end is the tokenizer's native EOS.
+
+    The end-of-audio anchor is returned as the **user footer** (with an empty
+    assistant header), not the other way round: it plays the role of the
+    audio→text boundary, which is what ``_user_footer_first_id`` must point at.
 
     ``end_of_audio_token`` should be an existing vocab token the LLM saw
     pretraining as a turn-boundary marker (e.g. ``"<|im_start|>"`` for Qwen3,
@@ -644,7 +784,7 @@ def build_compact_turn_markers(hf_tok, end_of_audio_token: str) -> tuple[list[in
     eos_id = getattr(hf_tok, "eos_token_id", None)
     if eos_id is None:
         raise ValueError("tokenizer.eos_token_id is required for compact_template=True")
-    return [], [eoa_ids[0]], [eos_id]
+    return [], [eoa_ids[0]], [], [eos_id]
 
 
 def _tokenize_compact_with_assistant_mask(
@@ -652,6 +792,10 @@ def _tokenize_compact_with_assistant_mask(
     tokenizer: AutoTokenizer,
     end_of_audio_id: int,
     eos_id: int,
+    drop_blank_from_context: bool = False,
+    blank_token: str = "",
+    collapse_silent_audio: bool = False,
+    flush_id: Optional[int] = None,
 ) -> tuple[list[int], list[int]]:
     """Tokenize chat messages in compact format and return (input_ids, assistant_mask).
 
@@ -679,13 +823,13 @@ def _tokenize_compact_with_assistant_mask(
     # --- System section: keep Qwen3-style wrapping ---
     system_msgs = [m for m in messages if m["role"] == "system"]
     if system_msgs:
-        system_ids = hf_tok.apply_chat_template(
+        system_ids = apply_chat_template_ids(
+            hf_tok,
             system_msgs,
-            tokenize=True,
             add_generation_prompt=False,
             enable_thinking=False,
         )
-        input_ids.extend(list(system_ids))
+        input_ids.extend(system_ids)
         assistant_mask.extend([0] * len(system_ids))
 
     # --- Per-turn compact encoding ---
@@ -696,12 +840,58 @@ def _tokenize_compact_with_assistant_mask(
         msg = turn_msgs[i]
         if msg["role"] == "user":
             user_ids = hf_tok.encode(msg["content"], add_special_tokens=False) if msg["content"] else []
+            is_flush = flush_id is not None and user_ids == [flush_id]
             input_ids.extend(user_ids)
             assistant_mask.extend([0] * len(user_ids))
             i += 1
             # Pair with following assistant turn if present.
             if i < len(turn_msgs) and turn_msgs[i]["role"] == "assistant":
                 asst = turn_msgs[i]
+                is_silent = bool(blank_token) and asst["content"] == blank_token
+                if is_flush and collapse_silent_audio:
+                    # Rung 2 keeps no anchor, so the flush marker IS this turn's gate:
+                    # a speaking turn runs straight from it into the write token, and a
+                    # silent one contributes nothing at all -- exactly what rung 2 does
+                    # at every other boundary. The "nothing left" case is supervised as
+                    # a blank TARGET on the marker (see get_batch_data), never as a
+                    # blank input, which is the whole point of the rung.
+                    if is_silent:
+                        i += 1
+                        continue
+                    asst_ids = hf_tok.encode(asst["content"], add_special_tokens=False)
+                    input_ids.extend(asst_ids)
+                    assistant_mask.extend([1] * len(asst_ids))
+                    input_ids.append(eos_id)
+                    assistant_mask.append(1)
+                    i += 1
+                    continue
+                # Rungs 0 and 1 fall through to the normal turn handling below, so the
+                # flush turn keeps the <eoa> anchor. Emission then triggers off the same
+                # position it does at every other chunk boundary; flush only modifies
+                # THAT boundary rather than introducing a second, rarely-seen trigger.
+                if collapse_silent_audio:
+                    # Rung 2: no anchor at all. A silent chunk contributes nothing
+                    # beyond its audio; a speaking chunk goes straight from the last
+                    # audio frame into the write token and its text.
+                    if is_silent:
+                        i += 1
+                        continue
+                    asst_ids = hf_tok.encode(asst["content"], add_special_tokens=False)
+                    input_ids.extend(asst_ids)
+                    assistant_mask.extend([1] * len(asst_ids))
+                    input_ids.append(eos_id)
+                    assistant_mask.append(1)
+                    i += 1
+                    continue
+                if drop_blank_from_context and blank_token and is_silent:
+                    # Silent chunk under rung 1: emit the gate anchor and nothing else.
+                    # The blank stays supervised via a target override in
+                    # ``get_batch_data`` -- it is simply never an input token, so
+                    # subsequent chunks do not attend to it.
+                    input_ids.append(end_of_audio_id)
+                    assistant_mask.append(0)
+                    i += 1
+                    continue
                 asst_ids = hf_tok.encode(asst["content"], add_special_tokens=False) if asst["content"] else []
                 # <eoa> anchor: force-fed scaffold, not LM-supervised (mask=0).
                 input_ids.append(end_of_audio_id)
@@ -777,14 +967,7 @@ def _tokenize_with_assistant_mask(
     assistant_mask = [0] * len(input_ids)
 
     msgs_sentinel = [{**m, "content": _SENTINEL_CHAR} if m["role"] == "assistant" else m for m in messages]
-    ids_sentinel_result = hf_tok.apply_chat_template(
-        msgs_sentinel,
-        tokenize=True,
-        enable_thinking=False,
-    )
-    ids_sentinel = list(
-        ids_sentinel_result["input_ids"] if hasattr(ids_sentinel_result, "keys") else ids_sentinel_result
-    )
+    ids_sentinel = apply_chat_template_ids(hf_tok, msgs_sentinel, enable_thinking=False)
 
     eos_id = getattr(hf_tok, 'eos_token_id', None)
     i, j = 0, 0  # pointers into input_ids and ids_sentinel
@@ -918,10 +1101,26 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
             positive_sizes = [cs]
         else:
             positive_sizes = []
-        self._audio_chunk_ids_by_size: dict[int, list[int]] = {
-            size: self.tokenizer.tokenizer.encode(self.cfg.audio_tag * size, add_special_tokens=False)
-            for size in positive_sizes
-        }
+        # When the audio tag is a single vocab id (``model.register_audio_token``),
+        # every frame is exactly one token and the whole-chunk matcher is unnecessary:
+        # the replacement becomes a per-token map that cannot mis-fire. Otherwise fall
+        # back to matching ``audio_tag * chunk_size`` as a unit, which is what keeps a
+        # multi-token tag safe against BPE merging across adjacent tags.
+        audio_tag_ids = self.tokenizer.tokenizer.encode(self.cfg.audio_tag, add_special_tokens=False)
+        self._audio_token_id: Optional[int] = audio_tag_ids[0] if len(audio_tag_ids) == 1 else None
+        if self._audio_token_id is not None:
+            logging.info(
+                f"audio_tag {self.cfg.audio_tag!r} is a single token (id={self._audio_token_id}); "
+                "using the per-token audio mapping."
+            )
+        self._audio_chunk_ids_by_size: dict[int, list[int]] = (
+            {}
+            if self._audio_token_id is not None
+            else {
+                size: self.tokenizer.tokenizer.encode(self.cfg.audio_tag * size, add_special_tokens=False)
+                for size in positive_sizes
+            }
+        )
 
         # blank_token is part of the LLM output vocabulary — it must be a single
         # special token, otherwise loss is dominated by multi-token blanks and
@@ -948,12 +1147,69 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
                 )
             self.blank_id = blank_ids[0]
 
+        # Rung 1 flag, resolved once. Requires a real blank token: with
+        # ``blank_token: ""`` a silent chunk is already just ``[audio][eoa][eos]``,
+        # there is no blank to drop, and the gate target would be undefined.
+        self._drop_blank = bool(getattr(self.cfg, "drop_blank_from_context", False))
+        if self._drop_blank and self.cfg.blank_token == "":
+            warnings.warn(
+                "drop_blank_from_context=True requires a non-empty blank_token; disabling it. "
+                "There is no blank token to drop and the gate target would be undefined.",
+                stacklevel=2,
+            )
+            self._drop_blank = False
+        self._collapse_audio = bool(getattr(self.cfg, "collapse_silent_audio", False))
+        if self._collapse_audio:
+            self._drop_blank = True  # rung 2 implies rung 1
+            if self.cfg.blank_token == "":
+                raise ValueError(
+                    "collapse_silent_audio=True requires a non-empty blank_token: the gate at the "
+                    "last audio frame distinguishes 'silent' from 'text starts here' by predicting "
+                    "blank, so there must be a blank to predict."
+                )
+            logging.info("collapse_silent_audio enabled: silent chunks contribute audio frames only")
+
+        # Flush token, resolved once. Fixed chunking only: in dynamic chunking (K=0)
+        # segments are already sized to word boundaries, so there is no
+        # ``is_last_chunk`` special case to remove and nothing pending at audio end.
+        self._use_flush = bool(getattr(self.cfg, "use_flush_token", False))
+        self._flush_id = None
+        if self._use_flush:
+            cs = self.cfg.chunk_size
+            sizes = cs if isinstance(cs, (list, tuple)) else [cs]
+            if any(int(s) <= 0 for s in sizes):
+                raise ValueError(
+                    "use_flush_token=True requires fixed chunking (all chunk_size > 0); got "
+                    f"chunk_size={cs!r}. Dynamic/offline modes have no last-chunk special case "
+                    "to remove."
+                )
+            flush_ids = self.tokenizer.tokenizer.encode(self.cfg.flush_token, add_special_tokens=False)
+            if len(flush_ids) != 1:
+                raise ValueError(
+                    f"flush_token {self.cfg.flush_token!r} must encode to exactly 1 token, got "
+                    f"{flush_ids}. Register it on the tokenizer first (the model does this when "
+                    "StreamingSTTModelConfig.use_flush_token is set)."
+                )
+            self._flush_id = flush_ids[0]
+            logging.info(
+                f"use_flush_token enabled: flush_token={self.cfg.flush_token!r} (id={self._flush_id}); "
+                "the last-chunk emit exception is disabled and residual words move to the flush turn"
+            )
+
+        if self._drop_blank and not self.cfg.compact_template:
+            raise NotImplementedError(
+                "drop_blank_from_context is only implemented for compact_template=True so far "
+                "(the non-compact two-stage turn feed is a later milestone)."
+            )
+        if self._drop_blank:
+            logging.info("drop_blank_from_context enabled: silent chunks contribute [audio, anchor] only")
+
         # Compact template: cache the end-of-audio anchor id and eos_id. Skip the
         # parse_chat_template_ids call since we derive the markers directly from config.
         if self.cfg.compact_template:
             hf_tok = self.tokenizer.tokenizer
-            _, ufah_ids, af_ids = build_compact_turn_markers(hf_tok, self.cfg.end_of_audio_token)
-            self._eoa_id = ufah_ids[0]
+            _, uf_ids, _, af_ids = build_compact_turn_markers(hf_tok, self.cfg.end_of_audio_token)
+            self._eoa_id = uf_ids[0]
             self._compact_eos_id = af_ids[0]
             logging.info(
                 f"compact_template enabled: end_of_audio_token={self.cfg.end_of_audio_token!r} "
@@ -974,8 +1230,18 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
                 self._user_footer_first_id = self._eoa_id
             else:
                 hf_tok = self.tokenizer.tokenizer
-                _, user_footer_and_asst_header_ids, _ = parse_chat_template_ids(hf_tok)
-                self._user_footer_first_id = user_footer_and_asst_header_ids[0]
+                _, user_footer_ids, asst_header_ids, _ = parse_chat_template_ids(
+                    hf_tok, probe_content=self.cfg.audio_tag
+                )
+                # Must stay character-for-character identical to the model-side
+                # derivation in ``_ensure_inference_cache``: this id is the
+                # supervised target at the last audio frame of every dynamic
+                # chunk, and the model tests generated tokens against its own
+                # copy. A divergence raises nothing — the emit gate simply
+                # never fires.
+                self._user_footer_first_id = (
+                    user_footer_ids[0] if user_footer_ids else (asst_header_ids[0] if asst_header_ids else None)
+                )
         else:
             self._user_footer_first_id = None
 
@@ -1060,6 +1326,8 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
             chunk_step=K,
             prepend_write_token=self.cfg.prepend_write_token,
             write_token=self.cfg.write_token,
+            use_flush_token=self._use_flush,
+            flush_token=self.cfg.flush_token,
         )
 
         # Pre-computed audio chunk token IDs for this batch's fixed-chunk size
@@ -1073,7 +1341,14 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
             # Tokenize and compute assistant content mask.
             if self.cfg.compact_template:
                 input_ids, assistant_mask = _tokenize_compact_with_assistant_mask(
-                    messages, self.tokenizer, self._eoa_id, self._compact_eos_id
+                    messages,
+                    self.tokenizer,
+                    self._eoa_id,
+                    self._compact_eos_id,
+                    drop_blank_from_context=self._drop_blank,
+                    blank_token=self.cfg.blank_token,
+                    collapse_silent_audio=self._collapse_audio,
+                    flush_id=self._flush_id,
                 )
             else:
                 input_ids, assistant_mask = _tokenize_with_assistant_mask(messages, self.tokenizer)
@@ -1081,7 +1356,11 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
             # Replace each audio chunk token sequence with chunk_size AUDIO_TOKEN_IDX markers.
             # We match the full chunk (audio_tag * chunk_size) as a unit because BPE
             # may merge tokens across adjacent audio tags.
-            if audio_chunk_ids is not None:
+            if self._audio_token_id is not None:
+                # Single-token audio tag: one id per frame, so a plain map suffices and
+                # works identically for fixed, dynamic and offline chunking.
+                input_ids = [AUDIO_TOKEN_IDX if t == self._audio_token_id else t for t in input_ids]
+            elif audio_chunk_ids is not None:
                 # Fixed chunking: single pre-computed pattern
                 input_ids, assistant_mask = _replace_audio_chunks(
                     input_ids, audio_chunk_ids, chunk_size, mask=assistant_mask
@@ -1108,6 +1387,63 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
             target_mask = assistant_mask[1:] + [0]
             target_ids = [tid if m else IGNORE_INDEX for tid, m in zip(target_ids, target_mask)]
 
+            # Rung 2: with the anchors gone there is no boundary marker left in the token
+            # stream, so the gate is located by counting audio frames — every chunk
+            # contributes exactly ``chunk_size`` of them, so every C-th audio token is a
+            # gate. Its target is ``write`` when the chunk speaks (the write token
+            # follows it directly) and ``blank`` when it does not (the next token is more
+            # audio, or the sequence ends).
+            if self._collapse_audio and chunk_size > 0:
+                n_ids = len(input_ids)
+                audio_seen = 0
+                for i, tid in enumerate(input_ids):
+                    if tid != AUDIO_TOKEN_IDX:
+                        continue
+                    audio_seen += 1
+                    if audio_seen % chunk_size:
+                        continue
+                    nxt = input_ids[i + 1] if i + 1 < n_ids else None
+                    # Silent when nothing follows but more audio (or the sequence ends);
+                    # otherwise whatever token actually starts the emission is the target.
+                    # With ``prepend_write_token`` that is the write token, giving a binary
+                    # gate; without it, it is the first text token. Both are "not blank",
+                    # which is all the inference-side gate tests.
+                    #
+                    # The flush token is force-fed scaffold, never predicted: a boundary
+                    # followed by flush emitted nothing, so its target is blank. Making
+                    # flush the target would train the model to announce end-of-audio,
+                    # which is precisely the unobservable this knob exists to remove.
+                    if nxt is None or nxt == AUDIO_TOKEN_IDX or (self._flush_id is not None and nxt == self._flush_id):
+                        target_ids[i] = self.blank_id
+                    else:
+                        target_ids[i] = nxt
+
+            # Rung 2 + flush: the marker has no audio frame of its own, so it is its own
+            # gate -- blank when the turn emitted nothing, otherwise whatever token
+            # starts the emission. Identical rule to the audio-frame gate above.
+            if self._collapse_audio and self._flush_id is not None and chunk_size > 0:
+                n_ids = len(input_ids)
+                for i, tid in enumerate(input_ids):
+                    if tid != self._flush_id:
+                        continue
+                    nxt = input_ids[i + 1] if i + 1 < n_ids else None
+                    target_ids[i] = self.blank_id if (nxt is None or nxt == AUDIO_TOKEN_IDX) else nxt
+
+            # Rung 1: the blank is gone from the input, so re-attach it as the target at
+            # the gate. A gate anchor that ends a SILENT chunk is followed by audio (the
+            # next chunk) or by nothing (end of sequence); a speaking chunk's anchor is
+            # followed by the write token or text, so the two cannot be confused.
+            if self._drop_blank and not self._collapse_audio and chunk_size > 0:
+                n_ids = len(input_ids)
+                for i, tid in enumerate(input_ids):
+                    if tid != self._eoa_id:
+                        continue
+                    nxt = input_ids[i + 1] if i + 1 < n_ids else None
+                    # Flush is force-fed scaffold (see the rung-2 branch above): an
+                    # anchor followed by flush emitted nothing, so its target is blank.
+                    if nxt is None or nxt == AUDIO_TOKEN_IDX or (self._flush_id is not None and nxt == self._flush_id):
+                        target_ids[i] = self.blank_id
+
             # Dynamic chunking: train the model to predict at audio positions.
             # Non-final audio frames → target = blank_id ("need more audio")
             # Final audio frame (before user footer) → target = user_footer first token ("ready")
@@ -1122,13 +1458,14 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
             all_input_ids.append(torch.tensor(input_ids, dtype=torch.long))
             all_target_ids.append(torch.tensor(target_ids, dtype=torch.long))
 
+        pad_id = resolve_pad_id(self.tokenizer)
         if chunk_size >= 0:  # fixed chunking or dynamic chunking: right-pad
-            input_tokens = right_collate_vectors(all_input_ids, padding_value=self.tokenizer.pad_id)
+            input_tokens = right_collate_vectors(all_input_ids, padding_value=pad_id)
             target_tokens = right_collate_vectors(all_target_ids, padding_value=IGNORE_INDEX)
             input_token_lens = torch.tensor([len(ids) for ids in all_input_ids], dtype=torch.long)
             target_token_lens = torch.tensor([len(ids) for ids in all_target_ids], dtype=torch.long)
         else:  # offline mode: left-pad
-            input_tokens = left_collate_vectors(all_input_ids, padding_value=self.tokenizer.pad_id)
+            input_tokens = left_collate_vectors(all_input_ids, padding_value=pad_id)
             target_tokens = left_collate_vectors(all_target_ids, padding_value=IGNORE_INDEX)
             # length is the same size as input_tokens.shape[1] since they're left-padded
             input_token_lens = torch.tensor(
@@ -1149,3 +1486,107 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
             chunk_size=chunk_size,
             chunk_step=K,
         )
+
+
+def _common_prefix_len(a: list[int], b: list[int]) -> int:
+    """Length of the longest common prefix of two token-ID sequences."""
+    n = 0
+    for x, y in zip(a, b):
+        if x != y:
+            break
+        n += 1
+    return n
+
+
+def _common_suffix_len(a: list[int], b: list[int]) -> int:
+    """Length of the longest common suffix of two token-ID sequences."""
+    n = 0
+    for x, y in zip(reversed(a), reversed(b)):
+        if x != y:
+            break
+        n += 1
+    return n
+
+
+def _assert_partitions(
+    a_ids: list[int],
+    sys_len: int,
+    head: int,
+    tail: int,
+    hf_tok,
+    sys_probe: str,
+    user_header_ids: list[int],
+) -> None:
+    """Fail loudly when the prefix/suffix diff did not isolate the user content.
+
+    The longest common prefix/suffix against the emptied-content render is only
+    the right answer if the two renders differ *exactly* in the content. Three
+    ways that can break, all of which would otherwise yield silently truncated or
+    overlapping spans rather than an error:
+
+    - the two renders are identical (empty or stripped-away content), so the
+      prefix runs to the end and the suffix to the start;
+    - the header and footer spans overlap;
+    - the template folds the system message into the first user turn, so the
+      system-only render carries no tokens to exclude and the probe system prompt
+      itself lands inside ``user_header``. (No backbone in use does this, but the
+      ``A[:len(S)] == S`` guard passes vacuously when it happens, so it needs its
+      own check.)
+    """
+    name = getattr(hf_tok, "name_or_path", type(hf_tok).__name__)
+    content_start, content_end = head, len(a_ids) - tail
+    if content_start >= content_end:
+        raise ValueError(
+            f"Chat template for {name!r}: probe content did not survive rendering "
+            f"(user span is empty or the header and footer overlap). Pick a probe_content that the "
+            f"template preserves verbatim."
+        )
+    if content_start < sys_len:
+        raise ValueError(
+            f"Chat template for {name!r}: the user turn overlaps the system block; cannot derive " f"per-turn spans."
+        )
+    if sys_probe in hf_tok.decode(user_header_ids):
+        raise ValueError(
+            f"Chat template for {name!r} folds the system message into the first user turn, so the "
+            f"derived user_header would carry the probe system prompt. parse_chat_template_ids "
+            f"cannot derive per-turn spans for this template."
+        )
+
+
+def _assert_prefix(longer: list[int], shorter: list[int], hf_tok, what: str) -> None:
+    """Fail loudly when a chat template breaks the append-only prefix relation.
+
+    ``parse_chat_template_ids`` derives turn spans by appending messages and
+    diffing renders, which is only valid if appending a message never rewrites
+    the tokens already emitted for earlier ones.  Every template in use satisfies
+    this (their cross-turn state keys off the last *user* index, which appending
+    an assistant turn does not move), but a template that emitted a trailing
+    element only when the conversation ends on a user turn would not — and would
+    otherwise yield silently wrong spans rather than an error.
+    """
+    if longer[: len(shorter)] != shorter:
+        name = getattr(hf_tok, "name_or_path", type(hf_tok).__name__)
+        raise ValueError(
+            f"Chat template for {name!r} is not append-only: {what}. "
+            f"parse_chat_template_ids cannot derive turn spans for this template."
+        )
+
+
+def _content_for_words(
+    indices: list[int],
+    alignments: List[WordAlignment],
+    word_spans: Optional[list],
+    transcript: Optional[str],
+) -> str:
+    """Render a contiguous run of aligned words as assistant content.
+
+    Prefers slicing the original transcript by character span, which preserves the
+    source punctuation and spacing exactly; falls back to joining the alignment
+    texts when spans are unavailable.
+    """
+    if word_spans and transcript:
+        first_span = word_spans[indices[0]]
+        last_span = word_spans[indices[-1]]
+        if first_span is not None and last_span is not None:
+            return transcript[first_span[0] : last_span[1]]
+    return " ".join(alignments[i].text for i in indices)

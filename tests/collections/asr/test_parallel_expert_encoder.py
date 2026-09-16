@@ -1,4 +1,5 @@
-# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -195,6 +196,8 @@ def online_stub(d_model, n_spk, sf, win, lc, rc):
     enc.right_ctx_feat_len = rc * sf
     enc.freeze_asr = True
     enc.freeze_diar = False  # The stub has no `diarization_model`, so `freeze_diar` must be False to keep
+    enc.speaker_feature_mode = "continuous"
+    enc.speaker_activity_threshold = None
     enc.asr_norm = nn.LayerNorm(d_model)
     enc.diar_norm = nn.LayerNorm(n_spk)
     enc.register_buffer("diar_kernel", torch.randn(n_spk, d_model))
@@ -460,6 +463,45 @@ def test_pe_encoder_builds_and_wires_both_real_encoders():
     # freeze_diar defaults to True -> diar params are frozen, ASR params remain trainable.
     assert all(not p.requires_grad for p in enc.diarization_model.parameters())
     assert any(p.requires_grad for p in enc.asr_encoder.parameters())
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "high_resolution, requested_diar_subsampling_factor, expected_asr_aligned_factor",
+    [(True, 1, _SUBSAMPLING_FACTOR)],
+)
+def test_pe_encoder_matches_diar_output_resolution_to_asr_encoder(
+    high_resolution, requested_diar_subsampling_factor, expected_asr_aligned_factor
+):
+    diar_cfg = toy_diarization_model_cfg()
+    diar_cfg.high_resolution = high_resolution
+    diar_cfg.output_subsampling_factor = requested_diar_subsampling_factor
+
+    enc = build_toy_pe_encoder(diarization_model_cfg=diar_cfg)
+
+    assert (
+        enc.diarization_model.output_subsampling_factor
+        == enc.asr_encoder.subsampling_factor
+        == expected_asr_aligned_factor
+    )
+    assert (
+        enc.diarization_model._cfg.output_subsampling_factor
+        == enc.asr_encoder.subsampling_factor
+        == expected_asr_aligned_factor
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "asr_subsampling_factor, error_match",
+    [(4, "requires the diarization output subsampling factor")],
+)
+def test_pe_encoder_rejects_incompatible_diar_output_resolution(asr_subsampling_factor, error_match):
+    asr_cfg = toy_asr_encoder_cfg()
+    asr_cfg.subsampling_factor = asr_subsampling_factor
+
+    with pytest.raises(ValueError, match=error_match):
+        build_toy_pe_encoder(asr_encoder_cfg=asr_cfg)
 
 
 @pytest.mark.unit

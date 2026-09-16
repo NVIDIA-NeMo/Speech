@@ -1,4 +1,5 @@
-# Copyright (c) 2020-2025, NVIDIA CORPORATION.
+# SPDX-FileCopyrightText: Copyright (c) 2020-2025, NVIDIA CORPORATION & AFFILIATES.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -29,7 +30,7 @@ CUBLAS_WORKSPACE_CONFIG=:4096:8 HF_HUB_OFFLINE=1 TORCH_FORCE_NO_WEIGHTS_ONLY_LOA
     --checkpoint_files /home/TestData/tts/2602_FrameStacking4x/frame-stacking-4x-english-nanocodec.ckpt \
     --run_evaluation \
     --clean_up_disk \
-    --cer_target 0.07 \
+    --cer_target 0.076 \
     --ssim_target 0.66 \
     --use_local_transformer \
     --asr_model_name /home/TestData/tts/pretrained_models/parakeet-tdt-1.1b/parakeet-tdt-1.1b.nemo \

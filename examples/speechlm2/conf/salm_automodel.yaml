@@ -3,7 +3,7 @@ model:
   pretrained_llm: nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
   pretrained_asr: nvidia/canary-1b-v2
 
-  pretrained_weights: True  # When False, we use pretrained_name to load the architecture, but with random init
+  pretrained_weights: True  # When False, load the pretrained_llm/asr architectures with random init
 
   # Fine-tune from a previous training checkpoint (model weights only — optimizer,
   # scheduler, and step counter start fresh). Supports DCP directories (from
@@ -13,6 +13,11 @@ model:
 
   # Set to true to use SALMAutomodel (NeMo Automodel backend) instead of SALM (HF Transformers backend).
   use_nemo_automodel: true
+
+  # Optional: disable asynchronous full-heap Python GC and run deterministic
+  # generation-1 collections every N optimizer steps. null preserves Python's
+  # default automatic GC behavior.
+  gc_every_steps: null
 
   # Regexp (re.compile) patterns matching parameters to be frozen.
   freeze_params:
@@ -25,12 +30,37 @@ model:
     - "^perception\\.encoder(_multilayer\\.encoder)?\\..+$"
   prevent_freeze_params: []  # Use to make specific submodules trainable; overrides freeze_params
 
+  # Multi-Token Prediction is opt-in. Some LLM checkpoints include native MTP
+  # weights; they are restored when enabled and skipped entirely when disabled.
+  # For a base checkpoint without MTP weights, enabling this block initializes a
+  # fresh head before Automodel parallelizes and loads the backbone weights. Add
+  # "^llm\\.mtp\\..+$" to
+  # prevent_freeze_params when the broad LLM freeze pattern above is active.
+  mtp:
+    enabled: false
+    training_mode: joint  # joint preserves the recipe freeze policy; head_only trains only llm.mtp
+    num_nextn_predict_layers: 1
+    hybrid_override_pattern: "*"
+    # Preserve a checkpoint-native MTP architecture by default. Set true to
+    # construct a fresh recipe-defined head instead; all checkpoint MTP tensors
+    # are skipped so they cannot partially initialize the replacement head.
+    replace_existing_head: false
+    loss_scaling_factor: 0.1
+    use_repeated_layer: false
+
   prompt_format: nemotron-nano-v3
   audio_locator_tag: "<|audio|>"  # placeholder token for audio turn is expected
   # Split audios longer than this before the speech encoder forward, then concatenate
   # the encoded chunks back into one sequence before passing them to the LLM.
   # Set to null to disable encoder chunking and encode each audio row directly.
   encoder_chunk_size_seconds: 30.0
+
+  # Opt in to native token-major (THD) Transformer/MoE activations during training/validation.
+  # The training dataset also keeps raw waveforms packed through preprocessing when enabled.
+  # Existing checkpoints and generation behavior stay unchanged; unsupported adapters fail early.
+  packed_encoder_sequences: false
+  # Separately opt in to the flattened differentiable CP gather.
+  packed_encoder_cp: false
 
   # Uncomment the block below to enable LoRA on the LLM via Automodel.
   # LoRA parameters are kept trainable even when the LLM is frozen.
@@ -71,26 +101,35 @@ model:
   #   fullgraph: false       # Compile the full computation graph
   #   dynamic: true          # Enable dynamic shapes (recommended for variable-length audio)
   #   backend: null           # Compilation backend (null = inductor)
+  #   options: null           # Optional torch.compile backend options dictionary
   #   dynamo_cache_size_limit: 256  # Triton compilation cache limit
 
   # Automodel backend dispatch. Selects the kernel/backend for each major module
-  # in the LLM (attention, linear, rms_norm, MoE experts/dispatcher). Defaults
-  # come from Automodel's BackendConfig and auto-select TE/DeepEP when available;
-  # override here to pin a specific backend (e.g. attn=sdpa to bypass TE).
-  # automodel_backend:
-  #   attn: te                  # "te" | "sdpa" | "flex"
-  #   linear: te                # "torch" | "te"
-  #   rms_norm: torch_fp32      # "torch" | "torch_fp32" | "te"
-  #   rope_fusion: true         # Fused RoPE (requires TE)
-  #   experts: torch_mm         # MoE expert GEMM: "torch" | "te" | "gmm" | "torch_mm"
-  #   dispatcher: deepep        # MoE token dispatcher: "torch" | "deepep" | "hybridep" | "uccl_ep"
-  #   dispatcher_num_sms: 20    # SM count for DeepEP/UCCL-EP kernels
+  # in the LLM (attention, linear, rms_norm, MoE experts/dispatcher). BackendConfig
+  # selects installed kernels by default; pin dispatcher=torch for a portable setup.
+  # TODO (Dongji): This is a temporary release unblock. Remove the override once
+  # BackendConfig checks NVLINK/NVSHMEM topology before selecting DeepEP.
+  automodel_backend:
+    dispatcher: torch           # Set to "deepep" only if your GPUs have NVLINK/NVSHMEM
+  # Optional overrides for other backends (e.g. attn=sdpa to bypass TE):
+  #   attn: te                  # "te" | "sdpa" | "flex" | "eager" | "tilelang"
+  #   linear: te                # "torch" | "te" | "quack"
+  #   rms_norm: torch_fp32      # "torch" | "torch_fp32" | "te" | "quack"
+  #   rope: torch               # "torch" | "quack"
+  #   rope_fusion: false        # Fused RoPE (currently force-disabled in Automodel)
+  #   experts: torch_mm         # "torch" | "te" | "gmm" | "torch_mm" | "torch_mm_mxfp8"
+  #   dispatcher_num_sms: 32    # SM count for DeepEP/UCCL-EP kernels
+  #   dispatcher_share_token_dispatcher: true  # Share one flex dispatcher across MoE layers
+  #   dispatcher_async_dispatch: false         # Return DeepEP/UCCL-EP dispatch asynchronously
   #   fake_balanced_gate: false # Replace learned Gate with balanced fake gate (debug/bench)
   #   fake_gate_noise: 0.0      # [0, 1] — noise for FakeBalancedGate routing
   #   enable_hf_state_dict_adapter: true
   #   enable_fsdp_optimizations: false
   #   gate_precision: null      # e.g. "float32" to force fp32 gate compute
-  #   te_fp8: null              # {recipe: "current"} or {recipe: "block"} to enable TE FP8
+  #   compile_attn: false       # Compile attention; requires sdpa/torch/torch and no fused RoPE
+  #   cuda_graph:               # Scoped partial CUDA graphs; empty modules disable them
+  #     modules: []             # attn | te_dpa | moe_router | moe_preprocess
+  #   te_fp8: null              # {recipe: "current" | "block" | "mxfp8"} enables TE FP8
   #                             # (requires linear=te or experts=te)
 
   # Pin the SDPA kernel list used when automodel_backend.attn=sdpa. Accepts
@@ -150,10 +189,10 @@ trainer:
   gradient_clip_val: 1.0
   accumulate_grad_batches: 1
   strategy:
-    # AutomodelParallelStrategy delegates device mesh creation to nemo_automodel and supports
-    # FSDP2, TP, PP, CP, EP (MoE), and HSDP. The model's configure_model() receives the
-    # device_mesh and passes it to automodel's from_pretrained for memory-efficient loading
-    # (each GPU only loads its own shard).
+    # AutomodelParallelStrategy delegates topology resolution to nemo_automodel and supports
+    # FSDP2, TP, PP, CP, EP (MoE), and HSDP. configure_model() receives the resolved
+    # distributed_setup and passes it to Automodel's from_pretrained. SALMAutomodel currently
+    # requires pp_size=1.
     _target_: nemo.collections.speechlm2.parts.parallel.AutomodelParallelStrategy
 
     # --- Parallelism dimensions ---
@@ -176,22 +215,50 @@ trainer:
 
     # --- FSDP2 distributed config (plain dict, resolved to FSDP2Config automatically) ---
     # distributed_config:
-    #   sequence_parallel: false    # Enable sequence parallelism (requires tp_size > 1)
+    #   sequence_parallel: false       # Enable sequence parallelism (requires tp_size > 1)
+    #   tp_plan: null                  # Optional custom Transformers TP plan
+    #   patch_is_packed_sequence: false # True is safe only for non-packed training
+    #   mp_policy: null                # null uses Automodel's bf16-compute/fp32-reduce policy
+    #   autocast_dtype: null           # e.g. bfloat16; null disables explicit autocast
+    #   activation_checkpointing_scope: all # all | language | vision | audio | multimodal
+    #   defer_fsdp_grad_sync: true      # Sync gradients only on the final microbatch
+    #   reshard_after_forward: null     # null keeps Automodel's FSDP2 heuristic
+    #   enable_async_tensor_parallel: false
+    #   enable_compile: false           # Per-transformer-layer torch.compile
+    #   enable_fsdp2_prefetch: false
+    #   fsdp2_backward_prefetch_depth: 2
+    #   fsdp2_forward_prefetch_depth: 1
     #   # offload_policy:           # Uncomment to enable CPU offloading
     #   #   _target_: torch.distributed.fsdp.CPUOffloadPolicy
 
     # --- MoE config (plain dict, resolved to MoEParallelizerConfig automatically) ---
     # moe_config:
-    #   ignore_router_for_ac: false       # Selective AC: save router outputs, recompute the rest
+    #   ignore_router_for_ac: true        # Default; save router outputs during AC recomputation
     #   reshard_after_forward: false       # Reshard params after forward (saves memory, more comms)
     #   lm_head_precision: null            # Override LM head precision (e.g., "float32" for stability)
     #   wrap_outer_model: true             # Apply FSDP to the outer model wrapper
+    #   mp_policy: null                     # Optional MixedPrecisionPolicy override
 
 data:
   train_ds:
     sample_rate: 16000
     prompt_format: ${model.prompt_format}
     token_equivalent_duration: 0.08
+    # Sample-exact Canary-v2 audio frame count, including per-chunk rounding.
+    # Required when use_packed_sequence_sampling enforces a hard model-token cap.
+    audio_token_estimator: &canary_v2_audio_token_estimator
+      preprocessor:
+        n_fft: 512
+        hop_length: 160
+        stft_pad_amount: 256
+      subsampling:
+        type: conv
+        kernel_size: 3
+        stride: 2
+        padding: 1
+        repeat: 3
+        ceil_mode: false
+      chunk_size_seconds: ${model.encoder_chunk_size_seconds}
     input_cfg:
       - type: lhotse_as_conversation
         cuts_path: ???  # needs to be set
@@ -209,10 +276,13 @@ data:
     # batch_size: null
     # use_bucketing: true
     # use_multimodal_sampling: true
+    # use_packed_sequence_sampling: false  # Sum lengths; requires a padding-free model path
+    # packing_buffer_size: 128  # Packed best-fit lookahead, with or without bucketing
+    # shuffle_buffer_size: 10000  # Reservoir size for ordinary non-packed samplers; legacy packed configs are aliased
     # measure_total_length: true
     # Note: `batch_tokens`, `bucket_duration_bins`, and `max_tokens` all represent tokens as
-    #  the sum of input audio frames and output text tokens. Number of audio frames is
-    #  calculated using `token_equivalent_duration`.
+    #  the sum of input audio frames and output text tokens. `audio_token_estimator` gives
+    #  exact frame counts; `token_equivalent_duration` remains the legacy fallback.
     # batch_tokens: 4000
     # max_tokens: 2048
     # bucket_duration_bins: [64, 128, 256, 384, 512, 768, 1024, 1280, 1536, 2048]
@@ -225,6 +295,7 @@ data:
     # They inherit all settings from validation_ds, but can individually override them.
     prompt_format: ${model.prompt_format}
     token_equivalent_duration: 0.08
+    audio_token_estimator: *canary_v2_audio_token_estimator
     datasets:
       val_set_0:  # rename to your dataset name, add more as needed
         input_cfg:

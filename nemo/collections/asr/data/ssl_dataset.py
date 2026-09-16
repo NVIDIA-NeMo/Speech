@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,7 +17,7 @@ import copy
 import io
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from math import isclose
 from typing import Any, Dict, List, Optional, Union
 
@@ -31,6 +32,7 @@ from nemo.collections.asr.parts.preprocessing.perturb import WhiteNoisePerturbat
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
 from nemo.collections.common.data.dataset import ConcatDataset
+from nemo.collections.common.data.lhotse.audio_loading import LhotseAudioLoadingDatasetMixin
 from nemo.collections.common.parts.preprocessing.manifest import get_full_path
 from nemo.core.classes import Serialization
 from nemo.utils import logging
@@ -56,6 +58,15 @@ class AudioNoiseBatch:
     noise_len: Union[Tensor, None] = None
     noisy_audio: Union[Tensor, None] = None
     noisy_audio_len: Union[Tensor, None] = None
+
+    def pin_memory(self):
+        # Enables `pin_memory=True` for custom return types; otherwise large audio tensors
+        # use slower pageable H2D copies.
+        for field in fields(self):
+            value = getattr(self, field.name)
+            if isinstance(value, Tensor):
+                setattr(self, field.name, value.pin_memory())
+        return self
 
 
 def _parse_manifest_item(line: str, manifest_file: str) -> Dict[str, Any]:
@@ -428,7 +439,7 @@ class TarredAudioNoiseDataset(audio_to_text.TarredAudioToCharDataset):
         return _audio_noise_collate_fn(batch, self.batch_augmentor)
 
 
-class LhotseAudioNoiseDataset(torch.utils.data.Dataset):
+class LhotseAudioNoiseDataset(LhotseAudioLoadingDatasetMixin, torch.utils.data.Dataset):
     def __init__(self, noise_manifest: str | None = None, batch_augmentor_cfg: DictConfig = None):
         super().__init__()
 
@@ -443,7 +454,7 @@ class LhotseAudioNoiseDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, cuts):
 
-        audios, audio_lens, cuts = self.load_audio(cuts)
+        audios, audio_lens, cuts = self.load_audio_with_cuts(cuts)
         if len(self.noise_data) > 0:
             sampled_noises = [sample_noise(self.noise_data, cut.sampling_rate, cut.num_samples) for cut in cuts]
             sampled_noises, sampled_noises_lens = zip(*sampled_noises)

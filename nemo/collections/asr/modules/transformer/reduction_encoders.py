@@ -1,4 +1,5 @@
-# Copyright (c) 2021, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2021, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -52,7 +53,7 @@ class PoolingEncoder(torch.nn.Module):
         self._pooling_type = pooling_type
 
         if self._hidden_steps < 2:
-            raise ValueError("Expected hidden_steps >= 2 but received hidden_steps = {self._hidden_steps}")
+            raise ValueError(f"Expected hidden_steps >= 2 but received hidden_steps = {self._hidden_steps}")
 
         if self.hidden_init_method not in self.supported_init_methods:
             raise ValueError(

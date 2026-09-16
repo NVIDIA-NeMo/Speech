@@ -149,11 +149,11 @@ To enable Long-form speech generation (beta) set ``--longform_mode`` to ``auto o
 Resources
 #########
 
-To get started with Magpie-TTS, you can download the pretrained multilingual checkpoint from `Hugging Face <https://huggingface.co/nvidia/magpie_tts_multilingual_357m>`__ and try it out in the interactive `demo space <https://huggingface.co/spaces/nvidia/magpie_tts_multilingual_demo>`__. For deeper technical details, refer to [1]_, [2]_, [3]_, and [4]_. The complete source code is available in the `NeMo GitHub repository <https://github.com/NVIDIA/NeMo/tree/main/nemo/collections/tts/models/magpietts.py>`__.
+To get started with Magpie-TTS, you can download the pretrained multilingual checkpoint from `Hugging Face <https://huggingface.co/nvidia/magpie_tts_multilingual_357m>`__ and try it out in the interactive `demo space <https://huggingface.co/spaces/nvidia/magpie_tts_multilingual_demo>`__. For deeper technical details, refer to [1]_, [2]_, [3]_, and [4]_. The complete source code is available in the `NeMo GitHub repository <https://github.com/NVIDIA-NeMo/Speech/tree/main/nemo/collections/tts/models/magpietts.py>`__.
 
 Additional documentation on advanced features can be found in the repository:
 
-- `Frame Stacking Guide <https://github.com/NVIDIA-NeMo/NeMo/blob/main/examples/tts/README_frame_stacking.md>`__: Detailed explanation of the two-stage decoding architecture
+- `Frame Stacking Guide <https://github.com/NVIDIA-NeMo/Speech/blob/main/examples/tts/README_frame_stacking.md>`__: Detailed explanation of the two-stage decoding architecture
 
 References
 ##########

@@ -1,4 +1,5 @@
-# Copyright (c) 2021, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2021, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,13 +13,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import gc
 import random
+import weakref
 
 import numpy as np
 import pytest
 import torch
 
-from nemo.collections.asr.losses.rnnt import MultiblankRNNTLossPytorch, RNNTLossPytorch, TDTLossPytorch
+from nemo.collections.asr.losses.rnnt import MultiblankRNNTLossPytorch, RNNTLoss, RNNTLossPytorch, TDTLossPytorch
 from nemo.collections.asr.parts.numba.rnnt_loss.rnnt_numpy import RNNTLoss as RNNTLoss_Numpy
 from nemo.collections.asr.parts.numba.rnnt_loss.rnnt_pytorch import (
     MultiblankRNNTLossNumba,
@@ -75,7 +78,110 @@ def wrap_and_call(fn, acts, labels, device):
     return costs.data.cpu().numpy(), grad
 
 
+@pytest.fixture
+def mock_cuda(monkeypatch):
+    original_fork_rng = torch.random.fork_rng
+    monkeypatch.setattr(torch.random, 'fork_rng', lambda devices: original_fork_rng(devices=[]))
+    monkeypatch.setattr(torch.cuda, 'synchronize', lambda device: None)
+    original_zeros = torch.zeros
+    original_full = torch.full
+
+    def zeros(*args, **kwargs):
+        kwargs['device'] = 'cpu'
+        return original_zeros(*args, **kwargs)
+
+    def full(*args, **kwargs):
+        kwargs['device'] = 'cpu'
+        return original_full(*args, **kwargs)
+
+    monkeypatch.setattr(torch, 'zeros', zeros)
+    monkeypatch.setattr(torch, 'full', full)
+
+
 class TestRNNTLossPytorch:
+
+    @pytest.mark.unit
+    def test_warmup_cpu_is_noop(self):
+        assert RNNTLossNumba(blank=3).warmup('cpu') is False
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('blank', [0, 3])
+    @pytest.mark.parametrize('reduction', ['none', 'sum', 'mean'])
+    @pytest.mark.parametrize('dtypes', [(torch.float32,), (torch.float32, torch.float16)])
+    @pytest.mark.usefixtures('mock_cuda')
+    def test_warmup_forward_backward(self, monkeypatch, blank, reduction, dtypes):
+        source = RNNTLossNumba(blank=blank, reduction=reduction, fastemit_lambda=0.1, clamp=1.0)
+        backwards = []
+        forwards = []
+
+        def forward(loss, acts, labels, input_lengths, label_lengths):
+            assert loss is source
+            assert loss.blank == source.blank
+            assert loss.fastemit_lambda == source.fastemit_lambda
+            assert loss.clamp == source.clamp
+            assert loss.reduction == reduction
+            assert torch.all(labels != blank)
+            assert labels.max() < acts.shape[-1]
+            assert acts.is_contiguous()
+            forwards.append(acts.dtype)
+            assert acts.shape[1] == input_lengths.max()
+            assert acts.shape[2] == label_lengths.max() + 1
+            acts.register_hook(lambda grad: backwards.append(torch.isfinite(grad).all().item()))
+            values = acts.sum(dim=(1, 2, 3))
+            if reduction == 'sum':
+                return values.sum()
+            if reduction == 'mean':
+                return values.mean()
+            return values
+
+        monkeypatch.setattr(RNNTLossNumba, 'forward', forward)
+        assert source.warmup('cuda:0', dtypes=dtypes)
+        assert forwards == list(dtypes)
+        assert backwards == [True] * len(dtypes)
+        assert source.reduction == reduction
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('blank', [0, 3])
+    @pytest.mark.parametrize('dtypes', [(torch.float32,), (torch.float32, torch.float16)])
+    def test_warmup_cuda(self, blank, dtypes):
+        numba_utils.skip_numba_cuda_test_if_unsupported(__NUMBA_MINIMUM_VERSION__)
+        if not torch.cuda.is_available():
+            pytest.skip('CUDA is required')
+        if torch.float16 in dtypes and not numba_utils.is_numba_cuda_fp16_supported():
+            pytest.skip('Numba FP16 support is required')
+        device = torch.device('cuda', torch.cuda.current_device())
+        source = RNNTLossNumba(blank=blank, reduction='sum', fastemit_lambda=0.1, clamp=1.0)
+        python_rng = random.getstate()
+        cpu_rng = torch.get_rng_state().clone()
+        cuda_rng = torch.cuda.get_rng_state(device).clone()
+        assert source.warmup(device, dtypes=dtypes)
+        assert random.getstate() == python_rng
+        assert torch.equal(torch.get_rng_state(), cpu_rng)
+        assert torch.equal(torch.cuda.get_rng_state(device), cuda_rng)
+        assert source.reduction == 'sum'
+        assert source.fastemit_lambda == 0.1
+        assert source.clamp == 1.0
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('force_float32', [False, True])
+    @pytest.mark.parametrize('fp16_supported', [False, True])
+    def test_warmup_public_dtypes(self, monkeypatch, force_float32, fp16_supported):
+        source = RNNTLoss(num_classes=3, loss_name='warprnnt_numba')
+        source._force_float32 = force_float32
+        monkeypatch.setattr(numba_utils, 'is_numba_cuda_fp16_supported', lambda: fp16_supported)
+        calls = []
+
+        def warmup(loss, device, dtypes=(torch.float32,)):
+            calls.append((device, list(dtypes)))
+            return True
+
+        monkeypatch.setattr(RNNTLossNumba, 'warmup', warmup)
+        expected = [torch.float32]
+        if not force_float32 and fp16_supported:
+            expected.append(torch.float16)
+        assert source.warmup('cuda:0')
+        assert calls == [('cuda:0', expected)]
+
     @pytest.mark.unit
     @pytest.mark.parametrize('device', DEVICES)
     @pytest.mark.parametrize('dtype', DTYPES)
@@ -542,6 +648,57 @@ class TestMultiblankRNNTLoss:
 
 
 class TestTDTLoss:
+
+    @pytest.mark.unit
+    def test_warmup_cpu_is_noop(self):
+        loss = TDTLossNumba(blank=3, durations=[0, 1, 2])
+        assert loss.warmup('cpu') is False
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('blank', [0, 3])
+    @pytest.mark.usefixtures('mock_cuda')
+    def test_warmup_exercises_both_branches(self, monkeypatch, blank):
+        source = TDTLossNumba(blank=blank, durations=[0, 1, 2], reduction='sum', omega=0.1, sigma=0.05)
+        branches = []
+        backwards = []
+
+        def forward(loss, acts, labels, input_lengths, label_lengths):
+            branches.append(loss.omega)
+            assert loss is not source
+            assert loss.blank == source.blank
+            assert loss.durations == source.durations
+            assert loss.sigma == source.sigma
+            assert torch.all(labels != blank)
+            assert labels.max() < acts.shape[-1] - len(source.durations)
+            assert acts.is_contiguous() and acts.dtype == torch.float32
+            acts.register_hook(lambda grad: backwards.append(torch.isfinite(grad).all().item()))
+            return acts.sum()
+
+        monkeypatch.setattr(TDTLossNumba, 'forward', forward)
+        assert source.warmup('cuda:0')
+        assert branches == [-1.0, 2.0]
+        assert backwards == [True, True]
+        assert source.omega == 0.1
+        assert source.reduction == 'sum'
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('blank', [0, 3])
+    def test_warmup_cuda(self, blank):
+        numba_utils.skip_numba_cuda_test_if_unsupported(__NUMBA_MINIMUM_VERSION__)
+        if not torch.cuda.is_available():
+            pytest.skip('CUDA is required')
+        device = torch.device('cuda', torch.cuda.current_device())
+        source = TDTLossNumba(blank=blank, durations=[0, 1, 2], reduction='sum', omega=0.1)
+        python_rng = random.getstate()
+        cpu_rng = torch.get_rng_state().clone()
+        cuda_rng = torch.cuda.get_rng_state(device).clone()
+        assert source.warmup(device)
+        assert random.getstate() == python_rng
+        assert torch.equal(torch.get_rng_state(), cpu_rng)
+        assert torch.equal(torch.cuda.get_rng_state(device), cuda_rng)
+        assert source.omega == 0.1
+        assert source.reduction == 'sum'
+
     @pytest.mark.unit
     @pytest.mark.parametrize('device', CUDA_ONLY_DEVICE)
     def test_case_randomized_act_label(self, device):
@@ -623,6 +780,76 @@ class TestTDTLoss:
 
         assert np.allclose(pt_cost, expected_cost, rtol=1e-6), "tdt costs mismatch."
         assert np.allclose(pt_grads, expected_grads, rtol=1e-2), "td gradient mismatch."
+
+
+@pytest.mark.usefixtures('mock_cuda')
+class TestNumbaLossWarmup:
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('backend', ['tdt', 'rnnt'])
+    def test_warmup_restores_rng_and_collects_cycles(self, monkeypatch, backend):
+        references = []
+        synchronized = []
+
+        def forward(loss, acts, labels, input_lengths, label_lengths):
+            assert torch.is_grad_enabled()
+            assert not torch.is_inference_mode_enabled()
+            random.random()
+            torch.rand(2)
+            references.append(weakref.ref(acts))
+            # Model a caught compilation error retaining its frame and the caller's tensors.
+            failures = []
+            try:
+                raise RuntimeError('candidate signature failed')
+            except RuntimeError as exc:
+                failures.append(exc)
+            return acts.sum()
+
+        def synchronize(device):
+            assert references
+            assert all(reference() is None for reference in references)
+            synchronized.append(device)
+
+        monkeypatch.setattr(torch.cuda, 'synchronize', synchronize)
+        loss_type = TDTLossNumba if backend == 'tdt' else RNNTLossNumba
+        monkeypatch.setattr(loss_type, 'forward', forward)
+        source = TDTLossNumba(blank=3, durations=[0, 1, 2]) if backend == 'tdt' else RNNTLossNumba(blank=3)
+        python_rng = random.getstate()
+        torch_rng = torch.get_rng_state().clone()
+        gc_enabled = gc.isenabled()
+        gc.disable()
+        try:
+            with torch.inference_mode():
+                if backend == 'rnnt':
+                    assert source.warmup('cuda:0', dtypes=(torch.float32, torch.float16))
+                else:
+                    assert source.warmup('cuda:0')
+                assert torch.is_inference_mode_enabled()
+            assert len(references) == 2
+            assert synchronized == [torch.device('cuda:0')]
+            assert random.getstate() == python_rng
+            assert torch.equal(torch.get_rng_state(), torch_rng)
+        finally:
+            if gc_enabled:
+                gc.enable()
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('backend', ['tdt', 'rnnt'])
+    def test_warmup_failure_restores_rng(self, monkeypatch, backend):
+        def fail(loss, acts, labels, input_lengths, label_lengths):
+            random.random()
+            torch.rand(2)
+            raise RuntimeError('compilation failed')
+
+        loss_type = TDTLossNumba if backend == 'tdt' else RNNTLossNumba
+        monkeypatch.setattr(loss_type, 'forward', fail)
+        source = TDTLossNumba(blank=3, durations=[0, 1, 2]) if backend == 'tdt' else RNNTLossNumba(blank=3)
+        python_rng = random.getstate()
+        torch_rng = torch.get_rng_state().clone()
+        with pytest.raises(RuntimeError, match='compilation failed'):
+            source.warmup('cuda:0')
+        assert random.getstate() == python_rng
+        assert torch.equal(torch.get_rng_state(), torch_rng)
 
 
 if __name__ == "__main__":

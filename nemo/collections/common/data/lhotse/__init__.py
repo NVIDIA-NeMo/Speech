@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# flake8: noqa
+
 import inspect
 
 from lhotse.dataset.sampling.base import Sampler
@@ -24,6 +27,7 @@ from nemo.collections.common.data.lhotse.dataloader import (
 )
 from nemo.collections.common.data.lhotse.nemo_adapters import LazyNeMoIterator, LazyNeMoTarredIterator
 from nemo.collections.common.data.lhotse.text_adapters import (
+    MaterializedSFTMessagesExample,
     NeMoMultimodalConversation,
     NeMoSFTExample,
     SourceTargetTextExample,

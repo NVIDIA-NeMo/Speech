@@ -1,4 +1,5 @@
-# Copyright (c) 2020-2025, NVIDIA CORPORATION.
+# SPDX-FileCopyrightText: Copyright (c) 2020-2025, NVIDIA CORPORATION & AFFILIATES.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -42,6 +43,7 @@ coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     asr_output_granularity=segment
 
 # Cache-Aware RNN-T model
+# case-sensitive, WER 3.88%
 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     examples/asr/asr_streaming_inference/asr_streaming_infer.py \
     --config-path="../conf/asr_streaming_inference/" \
@@ -49,6 +51,25 @@ coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
     audio_file="/home/TestData/asr/canary/dev-other-wav-10-boost-gt.json" \
     output_filename="/tmp/stt_inference_boost_gt_res_ca_rnnt.json" \
     asr.model_name="nvidia/nemotron-speech-streaming-en-0.6b" \
+    asr.per_stream_biasing_defaults.boosting_model_cfg.bpe_mode="default" \
+    asr.per_stream_biasing_defaults.boosting_model_alpha=2.0 \
+    streaming.batch_size=5 \
+    lang=en \
+    enable_itn=False \
+    enable_nmt=False \
+    asr_output_granularity=segment
+
+# Cache-Aware RNN-T model
+# case-insensitive, WER 1.55%
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo \
+    examples/asr/asr_streaming_inference/asr_streaming_infer.py \
+    --config-path="../conf/asr_streaming_inference/" \
+    --config-name=cache_aware_rnnt.yaml \
+    audio_file="/home/TestData/asr/canary/dev-other-wav-10-boost-gt.json" \
+    output_filename="/tmp/stt_inference_boost_gt_res_ca_rnnt.json" \
+    asr.model_name="nvidia/nemotron-speech-streaming-en-0.6b" \
+    asr.per_stream_biasing_defaults.boosting_model_cfg.bpe_mode="case_insensitive" \
+    asr.per_stream_biasing_defaults.boosting_model_alpha=2.0 \
     streaming.batch_size=5 \
     lang=en \
     enable_itn=False \

@@ -454,8 +454,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         return ans
 
     def on_fit_start(self) -> None:
-        """Configure the MoE aux-loss backward scaler to cancel FSDP's gradient
-        averaging (see ``_configure_moe_aux_loss_scaler``)."""
+        """Configure the DP-independent MoE auxiliary-loss backward scale."""
         self._validate_parallelism_compatibility()
         self._configure_moe_aux_loss_scaler()
         self._garbage_collection.on_fit_start()
@@ -695,7 +694,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         self.log_dict({k: v for k, v in ans.items() if k != "loss"}, on_step=True, batch_size=B)
         if (packing_efficiency := batch.get("packing_efficiency")) is not None:
             self.log("packing_efficiency", packing_efficiency, on_step=True, batch_size=B)
-        self.maybe_log_moe_metrics(batch_idx)
+        self.maybe_log_moe_metrics()
         return ans
 
     def _build_empty_training_batch(self) -> dict:
@@ -1192,18 +1191,22 @@ class SALMAutomodel(LightningModule, HFHubMixin):
 
             enable_load_balance_tracking(self.llm)
 
-    def maybe_log_moe_metrics(self, step: int):
+    def maybe_log_moe_metrics(self):
         """Collect and log MoE load balance metrics.
 
         All ranks must call this method (the all-reduce inside
         ``collect_expert_loads`` is collective).  Metrics are logged via
         Lightning's ``self.log_dict`` which respects ``log_every_n_steps``.
-
-        Args:
-            step: Current ``batch_idx``, used to decide brief vs detailed mode.
         """
         moe_metrics_cfg = self.cfg.get("moe_metrics", None)
         if moe_metrics_cfg is None or not moe_metrics_cfg.get("enabled", False):
+            return
+
+        interval = int(moe_metrics_cfg.get("every_steps", 100))
+        if interval < 1:
+            raise ValueError("moe_metrics.every_steps must be positive")
+        step = int(self.global_step)
+        if step % interval:
             return
 
         from nemo_automodel.components.moe.load_balance_metrics import (
@@ -1264,15 +1267,13 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             return None
 
     def _configure_moe_aux_loss_scaler(self) -> None:
-        """Cancel FSDP's gradient averaging on MoE aux-loss grads.
+        """Use Automodel's DP-independent MoE aux-loss backward scale.
 
         ``MoEAuxLossAutoScaler`` multiplies aux-loss-derived gradients by
-        ``main_loss_backward_scale`` during backward. FSDP's all-reduce then
-        divides every gradient by ``dp_group_size``. Setting the scaler to
-        ``dp_group_size`` (non-PP case) cancels that division out, matching the
-        intent in ``nemo_automodel/recipes/llm/train_ft.py`` — otherwise the
-        aux-loss contribution to the gradient would be under-scaled by a factor
-        of ``dp_group_size``.
+        ``main_loss_backward_scale`` during backward. Automodel normalizes this
+        scale over model microbatches and no longer compensates for DP size; for
+        SALM's one-forward, non-PP training step the correct scale is therefore
+        one. Multiplying by DP size over-weights the router loss.
 
         No-op when ``nemo_automodel`` isn't available (non-MoE builds).
         """
@@ -1280,9 +1281,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             from nemo_automodel.components.moe.megatron.moe_utils import MoEAuxLossAutoScaler
         except ImportError:
             return
-        dp_group = self._get_moe_dp_group()
-        dp_size = dp_group.size() if dp_group is not None else 1
-        MoEAuxLossAutoScaler.main_loss_backward_scale = torch.tensor(float(dp_size))
+        MoEAuxLossAutoScaler.main_loss_backward_scale = torch.tensor(1.0)
 
     def configure_optimizers(self):
         return configure_optimizers(self)
@@ -1342,6 +1341,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         self,
         distributed_setup=None,
         activation_checkpointing_perception: bool | None = None,
+        perception_fsdp_wrap_asr_layers: bool | None = None,
     ) -> None:
         if distributed_setup is None and self._trainer is not None:
             distributed_setup = getattr(self._trainer.strategy, "distributed_setup", None)
@@ -1375,6 +1375,10 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             )
         if activation_checkpointing_perception is None:
             activation_checkpointing_perception = False
+        if perception_fsdp_wrap_asr_layers is None and self._trainer is not None:
+            perception_fsdp_wrap_asr_layers = getattr(self._trainer.strategy, "perception_fsdp_wrap_asr_layers", None)
+        if perception_fsdp_wrap_asr_layers is None:
+            perception_fsdp_wrap_asr_layers = False
         if distributed_setup is not None and distributed_setup.mesh_context.pp_size > 1:
             raise NotImplementedError("SALMAutomodel does not support pipeline parallelism yet.")
 
@@ -1533,7 +1537,11 @@ class SALMAutomodel(LightningModule, HFHubMixin):
 
         if fsdp_mesh.size() > 1:
             self._use_fsdp = True
-            self.perception = _fully_shard_perception(self.perception, fsdp_mesh)
+            self.perception = _fully_shard_perception(
+                self.perception,
+                fsdp_mesh,
+                wrap_asr_layers=perception_fsdp_wrap_asr_layers,
+            )
 
         # Enable MoE FSDP gradient accumulation optimization.
         # The MoEFSDPSyncMixin on the LLM defers gradient sync/resharding on
@@ -1577,8 +1585,52 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         }
 
 
-def _fully_shard_perception(perception, mesh):
-    """FSDP2-shard perception and register its packed custom root forward."""
+def _fully_shard_perception(perception, mesh, *, wrap_asr_layers: bool = False):
+    """FSDP2-shard perception and register its packed custom root forward.
+
+    When ``wrap_asr_layers`` is enabled, each layer in the selected ASR
+    encoder is wrapped first. The subsequent perception-root wrap owns only
+    parameters outside those nested units, so feature extraction does not
+    begin under one monolithic ASR-encoder all-gather. FSDP2 preserves fully
+    qualified parameter names, keeping DCP model/optimizer restore compatible.
+    """
+    if not isinstance(wrap_asr_layers, bool):
+        raise TypeError(f"wrap_asr_layers must be a bool, got {type(wrap_asr_layers).__name__}.")
+    if wrap_asr_layers:
+        mounted_encoder = getattr(perception, "encoder", None)
+        asr_encoder = getattr(mounted_encoder, "asr_encoder", mounted_encoder)
+        layers = getattr(asr_encoder, "layers", None)
+        if layers is None or not isinstance(layers, torch.nn.ModuleList) or not layers:
+            raise ValueError(
+                "perception_fsdp_wrap_asr_layers=true requires perception.encoder.layers "
+                "or perception.encoder.asr_encoder.layers to be a non-empty torch.nn.ModuleList."
+            )
+        logging.info(
+            "FSDP2-sharding %d perception ASR encoder layers before the perception root.",
+            len(layers),
+        )
+        layer_forward_methods = []
+        for layer in layers:
+            checkpoint_wrapped = getattr(layer, "_checkpoint_wrapped_module", None)
+            if checkpoint_wrapped is None:
+                method_name = "_forward_sequence_packed"
+                packed_forward = getattr(layer, method_name, None)
+            else:
+                method_name = "checkpoint_fn"
+                packed_forward = getattr(checkpoint_wrapped, "_forward_sequence_packed", None)
+            if not callable(packed_forward) or not callable(getattr(layer, method_name, None)):
+                raise ValueError(
+                    "A perception ASR encoder FSDP layer cannot execute its packed forward "
+                    f"through {method_name!r}: {type(layer).__name__}."
+                )
+            layer_forward_methods.append(method_name)
+        for layer, method_name in zip(layers, layer_forward_methods):
+            fully_shard(layer, mesh=mesh)
+            # Packed encoder execution deliberately bypasses ``layer.forward``.
+            # Register the actual entry point so FSDP unshards parameters before
+            # LayerNorm. With activation checkpointing, the entry point invoked
+            # by ``_forward_sequence_packed_layer`` is ``checkpoint_fn``.
+            register_fsdp_forward_method(layer, method_name)
     perception = fully_shard(perception, mesh=mesh)
     register_fsdp_forward_method(perception, "forward_sequence_packed")
     return perception

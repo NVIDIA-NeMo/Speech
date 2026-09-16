@@ -217,48 +217,8 @@ jobs:
             python tests/core_ptl/check_imports.py --domain tts
           '
 
-  prepare-test-data:
-    needs: [configure, cicd-test-container-build, cicd-wait-in-queue, pre-flight]
-    runs-on: ${{ startsWith(needs.pre-flight.outputs.runner_prefix, 'ephe-v2-') && format('{0}-a{1}', needs.pre-flight.outputs.runner_prefix, github.run_attempt) || needs.pre-flight.outputs.runner_prefix }}
-    if: |
-      needs.configure.outputs.test_to_run != '[]'
-      && needs.configure.outputs.components_to_run != '[]'
-      && (
-        success()
-        || (
-          needs.cicd-wait-in-queue.result == 'skipped'
-          && needs.pre-flight.outputs.is_ci_workload == 'true'
-        )
-      )
-      && !cancelled()
-    steps:
-      - name: Checkout
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-
-      - name: Restore test data
-        id: restore-test-data
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: .cache/speech-test-data
-          key: speech-test-data-v1.0.0rc1-bcaf346953ddb7dbd73c67925230886546cfea7120fdab8b199f938ed5960c5d
-
-      - name: Validate or prepare test data
-        run: |
-          docker run --rm \
-            --volume "$GITHUB_WORKSPACE:/workspace" \
-            --workdir /workspace \
-            ${{ needs.cicd-test-container-build.outputs.image }} \
-            python .github/scripts/prepare_test_data.py --output /workspace/.cache/speech-test-data
-
-      - name: Save test data
-        if: steps.restore-test-data.outputs.cache-hit != 'true'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: .cache/speech-test-data
-          key: speech-test-data-v1.0.0rc1-bcaf346953ddb7dbd73c67925230886546cfea7120fdab8b199f938ed5960c5d
-
   L0_Setup_Test_Data_And_Models:
-    needs: [configure, cicd-test-container-build, cicd-wait-in-queue, pre-flight, prepare-test-data]
+    needs: [configure, cicd-test-container-build, cicd-wait-in-queue, pre-flight]
     runs-on: ${{ startsWith(needs.pre-flight.outputs.runner_prefix, 'ephe-v2-') && format('{0}-a{1}', needs.pre-flight.outputs.runner_prefix, github.run_attempt) || needs.pre-flight.outputs.runner_prefix }}
     if: |
       needs.configure.outputs.test_to_run != '[]'
@@ -289,7 +249,7 @@ jobs:
           test-data-path: ${{ vars.DEFAULT_TEST_DATA_PATH || '/mnt/datadrive/TestData' }}
 
   cicd-main-unit-tests:
-    needs: [pre-flight, configure, cicd-test-container-build, prepare-test-data]
+    needs: [pre-flight, configure, cicd-test-container-build]
     uses: ./.github/workflows/cicd-main-unit-tests.yml
     if: |
       needs.configure.outputs.test_to_run != '[]'
@@ -335,7 +295,6 @@ jobs:
       - configure
       - cicd-test-container-build
       - cicd-import-tests
-      - prepare-test-data
       - L0_Setup_Test_Data_And_Models
       - cicd-main-unit-tests
       - cicd-main-speech

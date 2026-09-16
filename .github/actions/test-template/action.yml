@@ -109,23 +109,6 @@ runs:
         path: >-
           ${{ github.run_id }}/${{ steps.uuid.outputs.id }}/NeMo/${{ inputs.download-artifact-path }}
 
-    - name: Restore test data
-      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-      with:
-        path: .cache/speech-test-data
-        key: speech-test-data-v1.0.0rc1-bcaf346953ddb7dbd73c67925230886546cfea7120fdab8b199f938ed5960c5d
-
-    - name: Copy validated test data
-      shell: bash
-      run: |
-        test_data="$GITHUB_WORKSPACE/.cache/speech-test-data"
-        checkout="$GITHUB_WORKSPACE/${{ github.run_id }}/${{ steps.uuid.outputs.id }}/NeMo"
-        echo "bcaf346953ddb7dbd73c67925230886546cfea7120fdab8b199f938ed5960c5d  $test_data/test_data.tar.gz" | sha256sum --check -
-        test "$(cat "$test_data/.test_data_sha256")" = "bcaf346953ddb7dbd73c67925230886546cfea7120fdab8b199f938ed5960c5d"
-        rm -rf "$checkout/tests/.data"
-        mkdir -p "$checkout/tests/.data"
-        cp -a "$test_data/." "$checkout/tests/.data/"
-
     - name: Start container
       shell: bash
       env:

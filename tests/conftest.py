@@ -37,16 +37,20 @@ __TEST_DATA_FILENAME = "test_data.tar.gz"
 __TEST_DATA_URL = "https://github.com/NVIDIA-NeMo/Speech/releases/download/v1.0.0rc1/"
 __TEST_DATA_SUBDIR = ".data"
 __TEST_DATA_DOWNLOAD_ATTEMPTS = 5
+__TEST_DATA_DOWNLOAD_BACKOFF_SECONDS = 2
 
 
 def _retry_url_operation(operation):
+    """Retry a URL operation with exponential backoff."""
     for attempt in range(1, __TEST_DATA_DOWNLOAD_ATTEMPTS + 1):
         try:
             return operation()
         except (OSError, urllib.error.URLError):
             if attempt == __TEST_DATA_DOWNLOAD_ATTEMPTS:
                 raise
-            time.sleep(2**attempt)
+            time.sleep(__TEST_DATA_DOWNLOAD_BACKOFF_SECONDS * 2 ** (attempt - 1))
+
+    raise RuntimeError("URL retry loop completed without returning or raising")
 
 
 def pytest_addoption(parser):

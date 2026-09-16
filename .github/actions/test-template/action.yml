@@ -146,7 +146,10 @@ runs:
           --env RUN_ID=${{ github.run_id }} \
           --volume $(pwd)/${{ github.run_id }}/${{steps.uuid.outputs.id }}/NeMo:/workspace \
           --volume ${{ inputs.test-data-path }}:/home/TestData ${{ inputs.image }} \
-          bash -c "sleep $(( ${{ inputs.timeout }} * 60 + 60 ))"
+          bash -c "python /workspace/.github/scripts/prepare_test_data.py \
+            --output /workspace/tests/.data \
+            --persistent-root /home/TestData && \
+            sleep $(( ${{ inputs.timeout }} * 60 + 60 ))"
         RUN_TEST_EOF
         )
 

@@ -80,11 +80,13 @@ left context per request. The current `TaperedPerthWatermarker` still
 watermarks chunks independently and tapers the watermark delta at edges.
 
 Watermarking is enabled by default after installing the `perth` extra, and
-engine startup fails if Perth or its bundled checkpoint cannot be loaded.
-The extra pins Resemble Perth from `yhayarannvidia/Perth` at a SHA whose
-`perth.perth_net` package does not import `librosa`/`soxr`. Serving also
-installs `torchaudio` unpinned. For unmarked quality comparisons only, set
-`NEMOTRON_TTS_PERTH_WATERMARK=0` to disable it.
+engine startup fails if Perth or the codec ``watermark_checkpoint`` cannot be
+loaded. Conversion downloads Perth into ``codec_native/watermark/perth`` and
+sets that field on the codec config so serving does not read weights from
+``site-packages``. The extra pins Resemble Perth from `yhayarannvidia/Perth`
+at a SHA whose `perth.perth_net` package does not import `librosa`/`soxr`.
+Serving also installs `torchaudio` unpinned. For unmarked quality
+comparisons only, set `NEMOTRON_TTS_PERTH_WATERMARK=0` to disable it.
 
 ### Quick start — offline synthesis
 

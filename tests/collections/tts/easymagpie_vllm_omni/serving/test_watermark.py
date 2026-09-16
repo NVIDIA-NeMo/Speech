@@ -166,3 +166,18 @@ def test_load_perth_net_imports_perthnet_without_sys_modules_shim() -> None:
     assert "_install_perth_net_namespace" not in source
     assert "sys.modules" not in source
     assert "perth.perth_net.perth_net_implicit.model.perth_net" in source
+
+
+def test_create_audio_watermarker_forwards_models_dir() -> None:
+    with (
+        mock.patch.dict("os.environ", {"NEMOTRON_TTS_PERTH_WATERMARK": "1"}),
+        mock.patch.object(watermark, "_load_perth_net") as load_perth,
+    ):
+        fake = mock.MagicMock()
+        fake.hp.sample_rate = 32_000
+        fake.device = "cpu"
+        fake.encoder = object()
+        load_perth.return_value = fake
+        watermark.create_audio_watermarker("cpu", sample_rate=22_050, models_dir="/ckpt/watermark/perth")
+
+    load_perth.assert_called_once_with("cpu", models_dir="/ckpt/watermark/perth")

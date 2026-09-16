@@ -69,12 +69,13 @@ def create_audio_watermarker(
     device: str | torch.device,
     *,
     sample_rate: int,
+    models_dir: str | Path | None = None,
 ) -> AudioWatermarker:
     """Build a watermarker owned by the codec (or a no-op when disabled)."""
     if not watermarking_enabled():
         logger.warning("Perth watermarking is explicitly disabled by NEMOTRON_TTS_PERTH_WATERMARK")
         return DisabledAudioWatermarker()
-    return TaperedPerthWatermarker(device, sample_rate=sample_rate)
+    return TaperedPerthWatermarker(device, sample_rate=sample_rate, models_dir=models_dir)
 
 
 def _perth_pretrained_dir() -> Path:
@@ -83,10 +84,16 @@ def _perth_pretrained_dir() -> Path:
     return Path(perth.__file__).resolve().parent / "perth_net" / "pretrained"
 
 
-def _load_perth_net(device: str) -> Any:
+def _load_perth_net(device: str, models_dir: str | Path | None = None) -> Any:
     from perth.perth_net.perth_net_implicit.model.perth_net import PerthNet
 
-    pretrained_dir = _perth_pretrained_dir()
+    pretrained_dir = Path(models_dir) if models_dir is not None else _perth_pretrained_dir()
+    checkpoint_dir = pretrained_dir / "implicit"
+    if not (checkpoint_dir / "hparams.yaml").is_file():
+        raise FileNotFoundError(
+            f"Perth watermark checkpoint not found at {checkpoint_dir}. "
+            "Re-run convert_to_vllm.py so codec_native/watermark/perth is bundled."
+        )
     perth_net = PerthNet.load("implicit", models_dir=str(pretrained_dir))
     return perth_net.to(device).eval()
 
@@ -141,11 +148,14 @@ class TaperedPerthWatermarker:
         *,
         sample_rate: int,
         perth_net: Any | None = None,
+        models_dir: str | Path | None = None,
     ) -> None:
         requested_device = normalized_device(device)
         self.sample_rate = int(sample_rate)
         try:
-            self.perth_net = perth_net if perth_net is not None else _load_perth_net(requested_device)
+            self.perth_net = (
+                perth_net if perth_net is not None else _load_perth_net(requested_device, models_dir=models_dir)
+            )
             if torch.device(requested_device).type == "cuda":
                 self.perth_net.encoder = torch.compile(
                     self.perth_net.encoder, mode="default", dynamic=True

@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -87,7 +88,21 @@ class EasyMagpieCodecForConditionalGeneration(nn.Module):
         self.watermarker = create_audio_watermarker(
             vllm_config.device_config.device,
             sample_rate=self.config.output_sample_rate,
+            models_dir=self._watermark_models_dir(self.config, vllm_config),
         )
+
+    @staticmethod
+    def _watermark_models_dir(config: Any, vllm_config: VllmConfig) -> Path | None:
+        relative = getattr(config, "watermark_checkpoint", None)
+        if not relative:
+            return None
+        path = Path(str(relative))
+        if path.is_absolute():
+            return path
+        model = getattr(getattr(vllm_config, "model_config", None), "model", None)
+        if model:
+            return Path(str(model)) / path
+        return path
 
     def embed_input_ids(self, input_ids: torch.Tensor, **_: Any) -> torch.Tensor:
         return torch.zeros((input_ids.shape[0], 1), dtype=torch.float32, device=input_ids.device)

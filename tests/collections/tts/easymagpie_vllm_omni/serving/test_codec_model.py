@@ -14,6 +14,7 @@
 # limitations under the License.
 
 from types import SimpleNamespace
+from pathlib import Path
 
 import pytest
 import torch
@@ -38,6 +39,15 @@ def test_payload_codes_skips_active_but_unscheduled_requests():
     assert request_ids == ["codec-0", "codec-2"]
     assert torch.equal(codes[:2], infos[0]["codes"]["audio"])
     assert torch.equal(codes[2:], infos[2]["codes"]["audio"])
+
+
+def test_codec_watermark_models_dir_is_relative_to_codec_model_path():
+    config = SimpleNamespace(watermark_checkpoint="watermark/perth")
+    vllm_config = SimpleNamespace(model_config=SimpleNamespace(model="/converted/codec_native"))
+
+    assert EasyMagpieCodecForConditionalGeneration._watermark_models_dir(
+        config, vllm_config
+    ) == Path("/converted/codec_native/watermark/perth")
 
 
 def test_payload_codes_rejects_scheduled_frame_mismatch():

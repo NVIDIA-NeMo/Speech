@@ -32,7 +32,9 @@ It contains:
   outputs for one or more reference audio files, selected by ``speaker_id`` at
   inference time.
 * ``codec_native/`` — the causal audio codec decoder converted to a stateful
-  vLLM model for the in-engine second stage.
+  vLLM model for the in-engine second stage. Conversion also downloads the
+  Perth watermark checkpoint into ``codec_native/watermark/perth`` and records
+  ``watermark_checkpoint`` on the codec ``config.json``.
 * ``codec_encoder.safetensors`` + ``codec_encoder.json`` (only with
   ``--bundle-audio-encoders``) — the codec encoder and reference-speaker
   Transformer used for zero-shot voice cloning and multi-turn user history.
@@ -58,8 +60,11 @@ import argparse
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from math import prod
 
 import torch
@@ -92,6 +97,15 @@ _TTS_PREFIXES = (
 # logits tensor (device-side "scatter gather index out of bounds" assert).
 _BACKBONE_VOCAB_SIZE = 2
 _PHONEME_TEXT_TOKENIZER_FILE = "phoneme_text_tokenizer/tokenizer.json"
+
+# Perth implicit checkpoint shipped next to the codec so serving does not load
+# weights from site-packages. PerthNet.load(run_name, models_dir) reads
+# ``{models_dir}/{run_name}/``.
+_PERTH_WATERMARK_RELATIVE = "watermark/perth"
+_PERTH_WATERMARK_RUN = "implicit"
+_PERTH_WATERMARK_FILES = ("hparams.yaml", "id.txt", "perth_net_250000.pth.tar")
+_PERTH_WATERMARK_REVISION = "86082e35ca106271e0304a33380d0ce2b2306df9"
+_PERTH_WATERMARK_REPO = "yhayarannvidia/Perth"
 
 # Nemotron-H backbone config fields forwarded into the flat vLLM ``config.json``.
 # Names match the HF/vLLM Nemotron-H config (and the NeMo ``NemotronHConfig``).
@@ -574,6 +588,69 @@ def convert_codec_artifacts(
     return encoder_output
 
 
+def perth_watermark_file_urls(revision: str = _PERTH_WATERMARK_REVISION) -> dict[str, str]:
+    base = (
+        f"https://raw.githubusercontent.com/{_PERTH_WATERMARK_REPO}/{revision}/"
+        f"src/perth/perth_net/pretrained/{_PERTH_WATERMARK_RUN}"
+    )
+    return {name: f"{base}/{name}" for name in _PERTH_WATERMARK_FILES}
+
+
+def _packaged_perth_implicit_dir() -> str | None:
+    try:
+        import perth
+    except ImportError:
+        return None
+    path = os.path.join(os.path.dirname(perth.__file__), "perth_net", "pretrained", _PERTH_WATERMARK_RUN)
+    if all(os.path.isfile(os.path.join(path, name)) for name in _PERTH_WATERMARK_FILES):
+        return path
+    return None
+
+
+def _download_file(url: str, destination: str) -> None:
+    logging.info("Downloading %s -> %s", url, destination)
+    with urllib.request.urlopen(url) as response, open(destination, "wb") as output:
+        shutil.copyfileobj(response, output)
+
+
+def bundle_perth_watermark_checkpoint(
+    codec_dir: str,
+    *,
+    revision: str = _PERTH_WATERMARK_REVISION,
+) -> str:
+    """Download Perth weights into ``codec_native/watermark/perth`` and point codec config at them."""
+    models_dir = os.path.join(codec_dir, _PERTH_WATERMARK_RELATIVE)
+    run_dir = os.path.join(models_dir, _PERTH_WATERMARK_RUN)
+    os.makedirs(run_dir, exist_ok=True)
+    urls = perth_watermark_file_urls(revision)
+    packaged = _packaged_perth_implicit_dir()
+    for name in _PERTH_WATERMARK_FILES:
+        destination = os.path.join(run_dir, name)
+        if os.path.isfile(destination) and os.path.getsize(destination) > 0:
+            continue
+        try:
+            _download_file(urls[name], destination)
+            if os.path.getsize(destination) == 0:
+                raise OSError(f"downloaded empty file from {urls[name]}")
+        except (urllib.error.URLError, OSError) as error:
+            if packaged is None:
+                raise RuntimeError(
+                    f"Could not download Perth watermark file {name!r} from {urls[name]}"
+                ) from error
+            logging.warning("Download of %s failed (%s); copying packaged Perth weights", name, error)
+            shutil.copy2(os.path.join(packaged, name), destination)
+
+    config_path = os.path.join(codec_dir, "config.json")
+    with open(config_path) as source:
+        codec_config = json.load(source)
+    codec_config["watermark_checkpoint"] = _PERTH_WATERMARK_RELATIVE
+    with open(config_path, "w") as output:
+        json.dump(codec_config, output, indent=2)
+        output.write("\n")
+    logging.info("Bundled Perth watermark checkpoint at %s", run_dir)
+    return models_dir
+
+
 def configure_codec_reference_speaker_encoder(outdir: str, config: dict) -> None:
     """Add checkpoint speaker-transformer metadata to ``codec_encoder.json``."""
     path = os.path.join(outdir, "codec_encoder.json")
@@ -692,6 +769,7 @@ def convert(args) -> None:
         num_levels_per_group=num_levels_per_group,
         bundle_audio_encoders=args.bundle_audio_encoders,
     )
+    bundle_perth_watermark_checkpoint(os.path.join(args.outdir, "codec_native"))
     if encoder_path is not None:
         configure_codec_reference_speaker_encoder(args.outdir, config)
     with open(os.path.join(args.outdir, "config.json"), "w") as f:

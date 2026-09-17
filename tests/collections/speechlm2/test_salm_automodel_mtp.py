@@ -658,7 +658,7 @@ def test_training_step_forwards_packed_cu_seqlens_to_mtp_loss(monkeypatch):
     model._get_moe_dp_group = lambda: None
     model.log = lambda *_args, **_kwargs: None
     model.log_dict = lambda *_args, **_kwargs: None
-    model.maybe_log_moe_metrics = lambda _batch_idx: None
+    model.maybe_log_moe_metrics = lambda: None
 
     cu_seqlens = torch.tensor([0, 3, 5], dtype=torch.int32)
     inputs = {
@@ -742,7 +742,7 @@ def test_training_step_shares_one_materialized_lm_weight_with_main_and_mtp_losse
     model._get_moe_dp_group = lambda: None
     model.log = lambda *_args, **_kwargs: None
     model.log_dict = lambda *_args, **_kwargs: None
-    model.maybe_log_moe_metrics = lambda _batch_idx: None
+    model.maybe_log_moe_metrics = lambda: None
 
     inputs = {
         "input_embeds": torch.zeros(5, 4),

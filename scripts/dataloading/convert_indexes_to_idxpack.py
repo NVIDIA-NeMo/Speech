@@ -111,6 +111,10 @@ from nemo.collections.common.data.lhotse.nemo_tar_routing import (
 _MANIFEST_REUSE_BATCH_BYTES = 64 << 20
 
 
+class NativeTarRouteSignatureMismatch(ValueError):
+    """The authenticated source route does not describe the target manifest rows."""
+
+
 @dataclass(frozen=True)
 class NativeTarOrdinalMapSpec:
     manifest_source_spec: object
@@ -777,7 +781,7 @@ def _compare_native_tar_route_signatures(
                 target_data, path=target_manifest_path, row_index=row_index
             )
             if source_signature != target_signature:
-                raise ValueError(
+                raise NativeTarRouteSignatureMismatch(
                     f"Native-tar routing signature changed at shard={shard_index} row={row_index}: "
                     f"source={source_signature!r}, target={target_signature!r}, "
                     f"source_manifest={source_manifest_path!r}, target_manifest={target_manifest_path!r}"
@@ -887,7 +891,7 @@ def _initialize_native_tar_route_reuse_worker(source_pack_path: str) -> None:
 def _reuse_native_tar_ordinal_map_with_pack(
     source_pack: IndexPack,
     task: _NativeTarRouteReuseTask,
-) -> tuple[int, IndexPackRecordValidationSummary]:
+) -> tuple[int, IndexPackRecordValidationSummary | None, str | None]:
     source_manifest_key = IndexPackCollectionSpec(
         role="manifest",
         kind=JSONL,
@@ -896,20 +900,28 @@ def _reuse_native_tar_ordinal_map_with_pack(
     ).key
     source_manifest = source_pack.collection(source_manifest_key)
     source_route = source_pack.collection(task.source_map.key)
-    summary = _compare_native_tar_route_signatures(
-        source_manifest,
-        source_route,
-        task.source_map,
-        task.target_map,
-        indexes_root=task.indexes_root,
-    )
+    try:
+        summary = _compare_native_tar_route_signatures(
+            source_manifest,
+            source_route,
+            task.source_map,
+            task.target_map,
+            indexes_root=task.indexes_root,
+        )
+    except NativeTarRouteSignatureMismatch as error:
+        # Signature comparison completes before any route payload is copied, so
+        # this target can safely fall back to a fresh build without retaining a
+        # partial reused array. All other exceptions remain fatal.
+        if any(path.exists() for path in task.output_paths):
+            raise RuntimeError("Native-tar route mismatch left a partial reused array") from error
+        return task.map_index, None, str(error)
     _copy_packed_array_shards(source_route, task.output_paths)
-    return task.map_index, summary
+    return task.map_index, summary, None
 
 
 def _reuse_native_tar_ordinal_map_worker(
     task: _NativeTarRouteReuseTask,
-) -> tuple[int, IndexPackRecordValidationSummary]:
+) -> tuple[int, IndexPackRecordValidationSummary | None, str | None]:
     if _NATIVE_TAR_ROUTE_REUSE_WORKER_PACK is None:
         raise RuntimeError("Native-tar route reuse worker was not initialized")
     return _reuse_native_tar_ordinal_map_with_pack(_NATIVE_TAR_ROUTE_REUSE_WORKER_PACK, task)
@@ -979,12 +991,12 @@ def _reuse_native_tar_ordinal_array_specs(
 
     temporary_directory = Path(temporary_directory)
     reused: dict[bytes, IndexPackArraySpec] = {}
-    unmatched = []
     summaries = []
     validated_manifest_keys: set[bytes] = set()
     validators: list[Callable[[], None]] = []
     tasks: list[_NativeTarRouteReuseTask] = []
     task_metadata = {}
+    successful_map_indices: set[int] = set()
     with IndexPack(source_pack_path) as source_pack:
         _authenticate_native_tar_route_source_pack(
             source_pack,
@@ -995,12 +1007,10 @@ def _reuse_native_tar_ordinal_array_specs(
         for map_index, target_map in enumerate(target_maps):
             source_map = source_by_tar_paths.get(target_map.tar_paths)
             if source_map is None:
-                unmatched.append(target_map)
                 continue
             if source_map.aggregate_manifest or target_map.aggregate_manifest:
                 # Aggregate maps contain a second row-to-tar-shard route. Rebuild
                 # both routes together instead of partially reusing only the member map.
-                unmatched.append(target_map)
                 continue
 
             target_manifest_index_paths = tuple(
@@ -1031,7 +1041,7 @@ def _reuse_native_tar_ordinal_array_specs(
                 temporary_directory / f"reused-native-tar-route-{map_index:06d}-{shard_index:06d}.u32"
                 for shard_index in range(target_map.sequence_count)
             )
-            reused[target_map.key] = IndexPackArraySpec(
+            reused_spec = IndexPackArraySpec(
                 role=target_map.role,
                 kind=target_map.kind,
                 source_spec=target_map.source_spec,
@@ -1052,16 +1062,30 @@ def _reuse_native_tar_ordinal_array_specs(
                 source_map,
                 target_manifest_key,
                 snapshot,
+                reused_spec,
             )
 
         results = _iter_native_tar_route_reuse_results(source_pack, tasks, workers=native_tar_route_workers)
-        for map_index, summary in results:
-            target_map, source_map, target_manifest_key, snapshot = task_metadata[map_index]
+        for map_index, summary, mismatch_reason in results:
+            target_map, source_map, target_manifest_key, snapshot, reused_spec = task_metadata[map_index]
+            if mismatch_reason is not None:
+                assert summary is None
+                logging.info(
+                    "Rebuilding native-tar ordinal map after authenticated route mismatch: "
+                    "target_key=%s source_key=%s reason=%s",
+                    target_map.key.hex(),
+                    source_map.key.hex(),
+                    mismatch_reason,
+                )
+                continue
+            assert summary is not None
             if target_manifest_key not in validated_manifest_keys:
                 validated_manifest_keys.add(target_manifest_key)
                 summaries.append(summary)
             snapshot.validate()
             validators.append(snapshot.validate)
+            reused[target_map.key] = reused_spec
+            successful_map_indices.add(map_index)
             logging.info(
                 "Reused authenticated native-tar ordinal map: target_key=%s source_key=%s shards=%d rows=%d",
                 target_map.key.hex(),
@@ -1070,9 +1094,13 @@ def _reuse_native_tar_ordinal_array_specs(
                 summary.records_checked,
             )
 
+    maps_to_build = [
+        target_map for map_index, target_map in enumerate(target_maps) if map_index not in successful_map_indices
+    ]
+
     return (
         reused,
-        unmatched,
+        maps_to_build,
         (_sum_validation_summaries(*summaries) if summaries else _empty_validation_summary()),
         validated_manifest_keys,
         validators,

@@ -1220,6 +1220,23 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         if not layer_loads:
             return
 
+        # Routing counts are tiny, but the metric helpers perform reductions
+        # and dtype conversions on the tensors' current device. At the end of
+        # a packed training step the CUDA allocator can have effectively no
+        # headroom, so even ``load.mean()`` may fail. The distributed
+        # all-reduce above must happen on CUDA; after it completes, move the
+        # detached metric payload to CPU before doing any reporting math.
+        # Copy to CPU before converting dtype so ``.float()`` in the helper
+        # cannot allocate a temporary CUDA tensor.
+        layer_loads = {
+            name: {
+                **data,
+                "expert_load": data["expert_load"].detach().to(device="cpu"),
+                "aux_loss": (data["aux_loss"].detach().to(device="cpu") if data.get("aux_loss") is not None else None),
+            }
+            for name, data in layer_loads.items()
+        }
+
         mode = moe_metrics_cfg.get("mode", "brief")
         top_k = moe_metrics_cfg.get("top_k_experts", 5)
 
@@ -1231,6 +1248,11 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 metrics = compute_detailed_metrics(layer_loads, top_k=top_k)
         else:
             metrics = compute_brief_metrics(layer_loads, top_k=top_k)
+
+        # Lightning converts Python numbers to tensors on ``self.device``.
+        # Keep the reporting path CPU-only after the all-reduce by supplying
+        # explicit CPU scalar tensors to ``log_dict``.
+        metrics = {name: torch.as_tensor(value, device="cpu", dtype=torch.float32) for name, value in metrics.items()}
 
         # ``batch_size=1`` is required when training_step uses the
         # ``dataloader_iter`` flavor: Lightning cannot infer the batch size

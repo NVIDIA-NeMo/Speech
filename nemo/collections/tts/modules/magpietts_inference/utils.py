@@ -1365,6 +1365,12 @@ def _add_easy_magpie_args(parser: argparse.ArgumentParser) -> None:
         action='store_true',
         help='Skip CAS embeddings for context text when loading legacy EasyMagpieTTS models',
     )
+    group.add_argument(
+        '--precomputed_context_audio_embeddings_path',
+        type=str,
+        default=None,
+        help='Path to a torch-saved context audio embedding table used by configured evaluation datasets',
+    )
 
 
 def _build_inference_params_from_args(param_cls: type, args):
@@ -1409,6 +1415,7 @@ def _build_easy_magpie_config(args) -> EasyMagpieInferenceConfig:
         phoneme_input_type=args.phoneme_input_type,
         phoneme_sampling_method=args.phoneme_sampling_method,
         dropout_text_input=args.dropout_text_input,
+        precomputed_context_audio_embeddings_path=args.precomputed_context_audio_embeddings_path,
         default_tokenizer_name=args.tokenizer_name,
     )
     if cfg_cls is EasyMagpieMultiturnUserAudioInferenceConfig:

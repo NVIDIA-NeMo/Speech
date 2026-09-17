@@ -208,6 +208,10 @@ def run_inference_and_evaluation(
             "tokenizer_names": tokenizer_names,
             "ignore_manifest_language": ignore_manifest_language,
         }
+        if "precomputed_context_audio_embedding_key" in meta:
+            dataset_meta_for_dl["precomputed_context_audio_embedding_key"] = meta[
+                "precomputed_context_audio_embedding_key"
+            ]
 
         # Setup output directories
         eval_dir = os.path.join(out_dir, f"{full_checkpoint_name}_{language}_{dataset}")

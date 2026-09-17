@@ -1,5 +1,5 @@
 ---
-name: pr-review
+name: nemo-speech-pr-review
 description: Prompt asset for the Claude Code Review GitHub Action. It is read as a file by .github/workflows/claude-review.yml and is not an interactive skill — do not load it to answer questions or to review code outside that workflow.
 license: Apache-2.0
 disable-model-invocation: true
@@ -12,7 +12,7 @@ This is the review prompt behind `.github/workflows/claude-review.yml`. The
 `/claude review` comment trigger tells the reviewer to read this file and
 follow it exactly.
 
-It lives in `.claude/skills/pr-review/`, where Speech keeps its Claude Code
+It lives in `.claude/skills/nemo-speech-pr-review/`, where Speech keeps its Claude Code
 skills, so the rubric can be diffed, reviewed and evolved like code instead of
 being buried in YAML, but it is deliberately inert: the frontmatter carries
 `disable-model-invocation: true`, so Claude Code drops it from the advertised

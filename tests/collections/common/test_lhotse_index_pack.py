@@ -901,6 +901,65 @@ def test_converter_route_reuse_rebuilds_changed_ordered_routing_signature_withou
         assert [route.value(index) for index in range(2)] == [0, 1]
 
 
+@pytest.mark.parametrize(
+    ("target_audio_paths", "expected_route"),
+    [
+        (("A.wav",), [0]),
+        (("A.wav", "B.wav", "C.wav"), [0, 1, 2]),
+    ],
+)
+def test_converter_route_reuse_rebuilds_changed_row_count_without_copy(
+    tmp_path, monkeypatch, target_audio_paths, expected_route
+):
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    _, tar_path, source_cfg = _make_native_tar_routing_dataset(
+        source_root,
+        [{"audio_filepath": name} for name in ("B.wav", "A.wav")],
+        [("A.wav", b"A"), ("B.wav", b"B"), ("C.wav", b"C")],
+    )
+    source_pack = tmp_path / "source.idxpack"
+    source_result = CliRunner().invoke(main, ["--output", str(source_pack), str(source_cfg)])
+    assert source_result.exit_code == 0, source_result.output
+
+    target_manifest = tmp_path / "target-manifest.jsonl"
+    target_manifest.write_text("".join(json.dumps({"audio_filepath": name}) + "\n" for name in target_audio_paths))
+    create_jsonl_index(target_manifest)
+    target_cfg = tmp_path / "target.yaml"
+    target_cfg.write_text(
+        yaml.safe_dump(
+            {
+                "type": "nemo_tarred",
+                "manifest_filepath": str(target_manifest),
+                "tarred_audio_filepaths": str(tar_path),
+            }
+        )
+    )
+    monkeypatch.setattr(
+        converter,
+        "_copy_packed_array_shards",
+        lambda *_args, **_kwargs: pytest.fail("mismatched route payload must not be copied"),
+    )
+    output = tmp_path / "target.idxpack"
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "--output",
+            str(output),
+            *_native_tar_route_reuse_args(source_cfg, source_pack),
+            str(target_cfg),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "native_tar_routes_reused=0" in result.output
+    assert "native_tar_routes_built=1" in result.output
+    with IndexPack(output) as pack:
+        route = pack.collection(nemo_tar_ordinal_map_collection_key(str(target_manifest), str(tar_path)))
+        assert [route.value(index) for index in range(len(expected_route))] == expected_route
+
+
 def test_converter_route_reuse_unrelated_copy_error_remains_fatal(tmp_path, monkeypatch):
     _, _, source_cfg = _make_native_tar_routing_dataset(
         tmp_path,

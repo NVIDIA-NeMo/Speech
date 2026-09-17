@@ -770,7 +770,7 @@ def _compare_native_tar_route_signatures(
             zip_longest(source_rows, target_rows, fillvalue=missing)
         ):
             if source_data is missing or target_data is missing:
-                raise ValueError(
+                raise NativeTarRouteSignatureMismatch(
                     f"Native-tar route reuse row count changed at shard {shard_index}: "
                     f"source_route_rows={route_rows}, mismatch_at={row_index}"
                 )

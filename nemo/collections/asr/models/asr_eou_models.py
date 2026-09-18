@@ -399,15 +399,6 @@ class EncDecRNNTBPEEOUModel(EncDecRNNTBPEModel, ASREOUModelMixin):
         if self.joint.fuse_loss_wer:
             self.joint.set_loss(self.loss)
             self.joint.set_wer(self.wer)
-    
-    @classmethod
-    def list_available_models(cls):
-        """
-        This method returns a list of pre-trained model which can be instantiated directly from NVIDIA's NGC cloud.
-        Returns:
-            List of available pre-trained models.
-        """
-        return []
 
     def _setup_dataloader_from_config(self, config: Optional[Dict]):
         cfg = OmegaConf.create(config) if not isinstance(config, DictConfig) else config

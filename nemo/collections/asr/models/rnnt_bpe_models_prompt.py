@@ -267,7 +267,12 @@ class EncDecRNNTBPEModelWithPrompt(PromptStreamingMixin, EncDecRNNTBPEModel, ASR
         self._update_dataset_config(dataset_name='train', config=train_data_config)
         self._train_dl = self._setup_dataloader_from_config(config=train_data_config)
 
-        if 'is_tarred' in train_data_config and train_data_config['is_tarred']:
+        if (
+            self._train_dl is not None
+            and hasattr(self._train_dl, 'dataset')
+            and isinstance(self._train_dl.dataset, torch.utils.data.IterableDataset)
+            and hasattr(self._train_dl.dataset, '__len__')  # unsized (e.g. Lhotse) would crash the len() below
+        ):
             if self._trainer is not None and isinstance(self._trainer.limit_train_batches, float):
                 self._trainer.limit_train_batches = int(
                     self._trainer.limit_train_batches

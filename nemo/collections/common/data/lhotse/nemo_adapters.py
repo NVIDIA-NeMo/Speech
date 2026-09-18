@@ -14,6 +14,7 @@
 # limitations under the License.
 
 """Lhotse adapters for NeMo datasets including Parquet support."""
+
 import bisect
 import os
 import random
@@ -54,6 +55,7 @@ from nemo.collections.common.data.lhotse.nemo_tar_routing import (
     manifest_entry_is_explicitly_skipped,
     nemo_tar_audio_member_name,
     nemo_tar_ordinal_map_collection_key,
+    nemo_tar_shard_map_collection_key,
 )
 from nemo.collections.common.parts.preprocessing.manifest import get_full_path
 from nemo.utils import logging
@@ -548,10 +550,8 @@ class LazyNeMoTarredIterator(IteratorNode):
     def has_constant_time_access(self) -> bool:
         return self.indexed
 
-    def _init_indexed_pack(self, manifest_path, tar_paths, *, max_open_files: int) -> None:
-        from lhotse.index_pack import index_pack_collection_key, open_index_pack
-        from lhotse.packed_lazy import LazyPackedManifestIterator
-
+    def _validate_indexed_pack_options(self) -> None:
+        """Reject iterator options that cannot be reproduced by random access."""
         if self.extra_fields:
             raise ValueError(
                 "LazyNeMoTarredIterator(indexed=True) does not support 'extra_fields' "
@@ -559,6 +559,11 @@ class LazyNeMoTarredIterator(IteratorNode):
             )
         if self.slice_length is not None:
             raise ValueError("LazyNeMoTarredIterator(indexed=True) does not support 'slice_length'.")
+
+    def _open_indexed_pack_collections(self, manifest_path, tar_paths, *, max_open_files: int) -> None:
+        """Open the pack and cache the manifest and native-tar collections."""
+        from lhotse.index_pack import index_pack_collection_key, open_index_pack
+        from lhotse.packed_lazy import LazyPackedManifestIterator
 
         self._index_pack = open_index_pack(self.index_pack)
         manifest_key = index_pack_collection_key("manifest", "jsonl", manifest_path)
@@ -573,54 +578,103 @@ class LazyNeMoTarredIterator(IteratorNode):
         )
         self._packed_manifest_collection = self._index_pack.collection(manifest_key)
         self._packed_tar_collection = self._index_pack.collection(tar_key)
-        if self._packed_manifest_collection.sequence_count != self._packed_tar_collection.sequence_count:
-            raise ValueError(
-                "Packed manifest/tar shard-count mismatch: "
-                f"{self._packed_manifest_collection.sequence_count} manifests vs "
-                f"{self._packed_tar_collection.sequence_count} tars"
-            )
-        self._total_len = len(self._packed_manifest_collection)
-        self._packed_tar_ordinal_map = None
-        if not self.use_ais_get_batch:
-            ordinal_map_key = nemo_tar_ordinal_map_collection_key(manifest_path, tar_paths)
-            try:
-                ordinal_map = self._index_pack.collection(ordinal_map_key)
-            except KeyError as ex:
-                # Compatibility with v2 packs. Their pointers retain lazy
-                # load-time recovery when manifest and tar orders differ.
-                if self._index_pack.version != 2:
-                    raise ValueError(
-                        "Version-3 native-tar index pack is missing its expected "
-                        f"{ordinal_map_key.hex()} route collection"
-                    ) from ex
-            else:
-                if not ordinal_map.is_array or ordinal_map.value_dtype != "uint32":
-                    raise ValueError("Packed native-tar ordinal map must be a uint32 array collection")
-                if ordinal_map.sequence_count != self._packed_manifest_collection.sequence_count:
-                    raise ValueError(
-                        "Packed native-tar ordinal-map shard-count mismatch: "
-                        f"{ordinal_map.sequence_count} maps vs "
-                        f"{self._packed_manifest_collection.sequence_count} manifests"
-                    )
-                for shard_index in range(ordinal_map.sequence_count):
-                    map_length = ordinal_map.shard_length(shard_index)
-                    manifest_length = self._packed_manifest_collection.shard_length(shard_index)
-                    if map_length != manifest_length:
-                        raise ValueError(
-                            "Packed native-tar ordinal-map row-count mismatch at shard "
-                            f"{shard_index}: {map_length} map values vs {manifest_length} manifest rows"
-                        )
-                self._packed_tar_ordinal_map = ordinal_map
-        if not self.use_ais_get_batch:
-            from nemo.collections.common.data.lhotse.indexed_adapters import PackedTarMemberReader
 
-            if not self._packed_tar_collection.offsets_required:
+    def _load_packed_tar_shard_map(self, manifest_path, tar_paths):
+        """Load and validate the row-to-tar map required by aggregate manifests.
+
+        A map is unnecessary when manifest and tar shard counts already match.
+        """
+        manifest_sequences = self._packed_manifest_collection.sequence_count
+        tar_sequences = self._packed_tar_collection.sequence_count
+        if manifest_sequences == tar_sequences:
+            return None
+        if manifest_sequences != 1 or tar_sequences < 1:
+            raise ValueError(
+                "Packed manifest/tar shard-count mismatch: " f"{manifest_sequences} manifests vs {tar_sequences} tars"
+            )
+
+        shard_map_key = nemo_tar_shard_map_collection_key(manifest_path, tar_paths)
+        try:
+            shard_map = self._index_pack.collection(shard_map_key)
+        except KeyError as ex:
+            raise ValueError(
+                "Packed aggregate native-tar manifest is missing its expected "
+                f"{shard_map_key.hex()} tar-shard route collection"
+            ) from ex
+        if not shard_map.is_array or shard_map.value_dtype != "uint32":
+            raise ValueError("Packed native-tar shard map must be a uint32 array collection")
+        if shard_map.sequence_count != manifest_sequences:
+            raise ValueError(
+                "Packed native-tar shard-map sequence-count mismatch: "
+                f"{shard_map.sequence_count} maps vs {manifest_sequences} manifests"
+            )
+        shard_map_rows = shard_map.shard_length(0)
+        manifest_rows = self._packed_manifest_collection.shard_length(0)
+        if shard_map_rows != manifest_rows:
+            raise ValueError(
+                "Packed native-tar shard-map row-count mismatch: "
+                f"{shard_map_rows} map values vs {manifest_rows} manifest rows"
+            )
+        return shard_map
+
+    def _load_packed_tar_ordinal_map(self, manifest_path, tar_paths):
+        """Load and validate the row-to-member map for local v3 tar access.
+
+        AIS batch reads do not need member ordinals, while v2 packs may omit
+        them and recover the member lazily by name for compatibility.
+        """
+        if self.use_ais_get_batch:
+            return None
+        ordinal_map_key = nemo_tar_ordinal_map_collection_key(manifest_path, tar_paths)
+        try:
+            ordinal_map = self._index_pack.collection(ordinal_map_key)
+        except KeyError as ex:
+            # Compatibility with v2 packs. Their pointers retain lazy load-time
+            # recovery when manifest and tar orders differ.
+            if self._index_pack.version == 2:
+                return None
+            raise ValueError(
+                "Version-3 native-tar index pack is missing its expected " f"{ordinal_map_key.hex()} route collection"
+            ) from ex
+
+        if not ordinal_map.is_array or ordinal_map.value_dtype != "uint32":
+            raise ValueError("Packed native-tar ordinal map must be a uint32 array collection")
+        manifest_sequences = self._packed_manifest_collection.sequence_count
+        if ordinal_map.sequence_count != manifest_sequences:
+            raise ValueError(
+                "Packed native-tar ordinal-map shard-count mismatch: "
+                f"{ordinal_map.sequence_count} maps vs {manifest_sequences} manifests"
+            )
+        for shard_index in range(ordinal_map.sequence_count):
+            map_length = ordinal_map.shard_length(shard_index)
+            manifest_length = self._packed_manifest_collection.shard_length(shard_index)
+            if map_length != manifest_length:
                 raise ValueError(
-                    "Packed local tar access requires tar-member offsets; "
-                    "rebuild without --native-tar-paths-only or enable "
-                    "USE_AIS_GET_BATCH."
+                    "Packed native-tar ordinal-map row-count mismatch at shard "
+                    f"{shard_index}: {map_length} map values vs {manifest_length} manifest rows"
                 )
-            self._packed_tar_reader = PackedTarMemberReader(self._packed_tar_collection, max_open_files=max_open_files)
+        return ordinal_map
+
+    def _open_packed_tar_reader(self, *, max_open_files: int) -> None:
+        """Create the bounded local tar reader after verifying offsets exist."""
+        from nemo.collections.common.data.lhotse.indexed_adapters import PackedTarMemberReader
+
+        if not self._packed_tar_collection.offsets_required:
+            raise ValueError(
+                "Packed local tar access requires tar-member offsets; "
+                "rebuild without --native-tar-paths-only or enable USE_AIS_GET_BATCH."
+            )
+        self._packed_tar_reader = PackedTarMemberReader(self._packed_tar_collection, max_open_files=max_open_files)
+
+    def _init_indexed_pack(self, manifest_path, tar_paths, *, max_open_files: int) -> None:
+        """Initialize constant-time native-tar access from a single index pack."""
+        self._validate_indexed_pack_options()
+        self._open_indexed_pack_collections(manifest_path, tar_paths, max_open_files=max_open_files)
+        self._packed_tar_shard_map = self._load_packed_tar_shard_map(manifest_path, tar_paths)
+        self._total_len = len(self._packed_manifest_collection)
+        self._packed_tar_ordinal_map = self._load_packed_tar_ordinal_map(manifest_path, tar_paths)
+        if not self.use_ais_get_batch:
+            self._open_packed_tar_reader(max_open_files=max_open_files)
         self._iter_state = PartitionedIndexedIterator()
         self._packed_indexed = True
 
@@ -952,34 +1006,70 @@ class LazyNeMoTarredIterator(IteratorNode):
             cut.id = f"{cut.id}-{round(offset * 1e2):06d}-{round(duration * 1e2):06d}"
         return self._attach_supervision_and_metadata(cut, data, manifest_path, tar_path)
 
-    def _decode_packed_cut_at(self, idx: int) -> Cut | None:
-        data, location = self._packed_manifest_source.read_with_location(idx)
-        manifest_path = location.path
-        tar_path = self._packed_tar_path(location.shard_index)
+    def _resolve_packed_tar_shard(self, data: dict, location) -> int:
+        """Resolve and validate the tar shard selected for one manifest row."""
+        tar_shard_index = location.shard_index
+        if self._packed_tar_shard_map is None:
+            return tar_shard_index
+
+        tar_shard_index = self._packed_tar_shard_map.value_in_shard(location.shard_index, location.local_index)
+        if tar_shard_index == NEMO_TAR_SKIP_ORDINAL:
+            if manifest_entry_is_explicitly_skipped(data):
+                return tar_shard_index
+            raise ValueError(
+                "Packed native-tar shard map unexpectedly skips active aggregate-manifest row "
+                f"{location.local_index}"
+            )
+        if tar_shard_index >= self._packed_tar_collection.sequence_count:
+            raise ValueError(
+                f"Packed native-tar shard map selects out-of-range tar shard {tar_shard_index} "
+                f"for aggregate-manifest row {location.local_index}"
+            )
+        return tar_shard_index
+
+    def _resolve_packed_member_ordinal(
+        self, data: dict, location, manifest_path: str, tar_path: str
+    ) -> tuple[bool, int | None]:
+        """Resolve a row's tar-member ordinal and whether it is explicitly skipped."""
         explicitly_skipped = self._indexed_entry_is_explicitly_skipped(data, manifest_path, tar_path)
-        if self._packed_tar_ordinal_map is not None:
-            member_ordinal = self._packed_tar_ordinal_map.value_in_shard(location.shard_index, location.local_index)
-            if explicitly_skipped:
-                if member_ordinal != NEMO_TAR_SKIP_ORDINAL:
-                    raise ValueError(
-                        "Packed native-tar ordinal map does not mark explicitly skipped manifest row "
-                        f"{location.local_index} in shard {location.shard_index}"
-                    )
-                return None
-            if member_ordinal == NEMO_TAR_SKIP_ORDINAL:
+        if self._packed_tar_ordinal_map is None:
+            return explicitly_skipped, None
+
+        member_ordinal = self._packed_tar_ordinal_map.value_in_shard(location.shard_index, location.local_index)
+        if explicitly_skipped:
+            if member_ordinal != NEMO_TAR_SKIP_ORDINAL:
                 raise ValueError(
-                    "Packed native-tar ordinal map unexpectedly skips active manifest row "
+                    "Packed native-tar ordinal map does not mark explicitly skipped manifest row "
                     f"{location.local_index} in shard {location.shard_index}"
                 )
-        elif explicitly_skipped:
+            return True, member_ordinal
+        if member_ordinal == NEMO_TAR_SKIP_ORDINAL:
+            raise ValueError(
+                "Packed native-tar ordinal map unexpectedly skips active manifest row "
+                f"{location.local_index} in shard {location.shard_index}"
+            )
+        return False, member_ordinal
+
+    def _decode_packed_cut_at(self, idx: int) -> Cut | None:
+        """Decode one packed manifest row into a deferred-audio cut, or skip it."""
+        data, location = self._packed_manifest_source.read_with_location(idx)
+        manifest_path = location.path
+        tar_shard_index = self._resolve_packed_tar_shard(data, location)
+        if tar_shard_index == NEMO_TAR_SKIP_ORDINAL:
+            return None
+        tar_path = self._packed_tar_path(tar_shard_index)
+        explicitly_skipped, member_ordinal = self._resolve_packed_member_ordinal(
+            data, location, manifest_path, tar_path
+        )
+        if explicitly_skipped:
             return None
         if self.use_ais_get_batch:
             return self._build_indexed_deferred_cut(data, manifest_path, tar_path)
         expected_name = self._audio_member_name_from_entry(data)
-        local_index = location.local_index if self._packed_tar_ordinal_map is None else member_ordinal
+        local_index = location.local_index if member_ordinal is None else member_ordinal
         try:
             pointer = self._packed_tar_reader.resolve_shard_member_pointer(
-                location.shard_index,
+                tar_shard_index,
                 local_index,
                 expected_name,
                 strict=self._packed_tar_ordinal_map is not None,
@@ -1111,7 +1201,13 @@ class LazyNeMoTarredIterator(IteratorNode):
                         raise RuntimeError(message) from ex
                     recording = Recording(
                         id=tar_info.path,
-                        sources=[AudioSource(type="memory", channels=list(range(meta.channels)), source=raw_audio)],
+                        sources=[
+                            AudioSource(
+                                type="memory",
+                                channels=list(range(meta.channels)),
+                                source=raw_audio,
+                            )
+                        ],
                         sampling_rate=int(meta.samplerate),
                         num_samples=meta.frames,
                         duration=meta.duration,
@@ -1122,7 +1218,9 @@ class LazyNeMoTarredIterator(IteratorNode):
                             continue
                         # Cut the recording into corresponding segment and discard audio data outside the segment.
                         cut = make_cut_with_subset_inmemory_recording(
-                            recording, offset=data.get("offset", 0.0), duration=data.get("duration")
+                            recording,
+                            offset=data.get("offset", 0.0),
+                            duration=data.get("duration"),
                         )
                         cut.supervisions.append(
                             SupervisionSegment(
@@ -1216,7 +1314,7 @@ class ExtraField:
     @staticmethod
     def from_dict(data: dict) -> "ExtraField":
         assert data["type"] in ExtraField.SUPPORTED_TYPES, f"Unknown transform type: {data['type']}"
-        return ExtraField.SUPPORTED_TYPES[data["type"]](**{k: v for k, v in data.items() if k != 'type'})
+        return ExtraField.SUPPORTED_TYPES[data["type"]](**{k: v for k, v in data.items() if k != "type"})
 
     @classmethod
     def is_supported(cls, field_type: str) -> bool:
@@ -1407,8 +1505,8 @@ class LazyParquetIterator(IteratorNode):
 
     def _build_cut_from_row(self, row: dict, fallback_idx: int) -> Cut | None:
         audio_data = row.get(self.audio_field)
-        if isinstance(audio_data, dict) and 'bytes' in audio_data:
-            audio_bytes = audio_data['bytes']
+        if isinstance(audio_data, dict) and "bytes" in audio_data:
+            audio_bytes = audio_data["bytes"]
         elif isinstance(audio_data, bytes):
             audio_bytes = audio_data
         else:
@@ -1417,7 +1515,7 @@ class LazyParquetIterator(IteratorNode):
 
         text = row.get(self.text_field, "")
         language = row.get(self.lang_field, None)
-        row_id = str(row.get('id', f"{Path(self.path).stem}_{fallback_idx}"))
+        row_id = str(row.get("id", f"{Path(self.path).stem}_{fallback_idx}"))
         try:
             recording = Recording.from_bytes(data=audio_bytes, recording_id=row_id)
         except (RuntimeError, ValueError, TypeError) as e:

@@ -127,6 +127,23 @@ SALMDataset Structure
 ^^^^^^^^^^^^^^^^^^^^^
 
 Data used for SALM can be either regular speech-to-text data (in any NeMo or Lhotse format), or a dataset of multi-turn conversions.
+
+With ``prompt_format: nemotron-nano-v3`` or ``prompt_format: nemotron3p5``,
+a training conversation ending in an assistant turn applies loss to **every
+assistant turn**, including its rendered role header and end-of-turn marker.
+System, user, and tool turns do not contribute loss. Earlier assistant answers
+remain in the causal history, and the existing history-thinking normalization
+still removes earlier reasoning text. The formatter's ``context_ids`` and
+``answer_ids`` continue to split at the final assistant turn for generation and
+reference handling; the full-sequence ``mask`` determines training supervision.
+Conversations ending in a non-assistant turn are inference inputs and return no
+training mask.
+
+When continuing training from a version that supervised only the final assistant
+turn, recompute loss-bearing token-mass mixture weights: multi-turn sources now
+contribute more supervised tokens per example. This change does not require
+reinitializing model weights or optimizer state.
+
 For the most part, please refer to :doc:`the ASR datasets documentation <../asr/datasets>` for details on data formats and multimodal dataloading.
 
 When using speech-to-text data, you'll need read it with a special ``lhotse_as_conversation`` data reader

@@ -58,6 +58,12 @@ class NemotronNanoV3PromptFormatter(PromptFormatter):
     def encode_dialog(self, turns: list[dict], enable_thinking: bool = True) -> dict[str, torch.Tensor]:
         """Encode a dialog for Nemotron Nano v3 with <think> reasoning support.
 
+        Training dialogs supervise every assistant turn, including the rendered role
+        header and end-of-turn marker. System, user, and tool turns are masked out.
+        ``context_ids`` and ``answer_ids`` still split at the final assistant turn;
+        inference dialogs return no loss mask. History thinking normalization is
+        unchanged, so removed reasoning text is not supervised.
+
         Args:
             turns: List of turns with "role" and "slots"/"content" keys.
             enable_thinking: If True, inference prefix ends with ``<think>\\n``;
@@ -124,7 +130,7 @@ class NemotronNanoV3PromptFormatter(PromptFormatter):
             turn_mask_values.append(False)
 
         is_inference = turns[-1]["role"] != self.OUTPUT_ROLE
-        for idx, turn in enumerate(turns):
+        for turn in turns:
             role = turn["role"]
             expected_slots = self.get_slots(role)
             slot_values = turn.get("slots", {})
@@ -134,8 +140,8 @@ class NemotronNanoV3PromptFormatter(PromptFormatter):
             tokens = self.encode_turn(template, expected_slots, slot_values)
             turn_tokens.extend(tokens)
             turn_token_counts.append(len(tokens))
-            # Loss mask only on the last assistant turn.
-            turn_mask_values.append(role == self.OUTPUT_ROLE and idx == len(turns) - 1)
+            # Supervise every assistant turn, matching the base formatter contract.
+            turn_mask_values.append(role == self.OUTPUT_ROLE)
 
         # 7) Append inference prefix with thinking toggle.
         if is_inference and self.INFERENCE_PREFIX is not None:

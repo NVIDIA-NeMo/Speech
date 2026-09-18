@@ -66,6 +66,9 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
     5. Add auxiliary phoneme loss from the same forward pass with GT phoneme tokens.
     """
 
+    def _uses_validation_models_during_training(self) -> bool:
+        return True
+
     def __init__(self, cfg: DictConfig, trainer: 'Trainer' = None):
         """Initialize the online PO model, including the frozen reference model, reward ASR/speaker
         verification models, optional UTMOSv2 scorer, and all PO hyper-parameters from ``cfg``.

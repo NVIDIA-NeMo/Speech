@@ -124,6 +124,13 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
         self.phoneme_po_loss_weight = self.cfg.get('phoneme_po_loss_weight', 0.0)
         if self.phoneme_po_loss_weight < 0.0:
             raise ValueError(f"phoneme_po_loss_weight must be non-negative, got {self.phoneme_po_loss_weight}.")
+        train_dataset_cfg = self.cfg.get("train_ds", {}).get("dataset", {})
+        challenging_text_replacement_prob = float(train_dataset_cfg.get("challenging_text_replacement_prob", 0.0))
+        if challenging_text_replacement_prob > 0.0 and float(self.cfg.get("gt_phoneme_input_prob", 0.0)) > 0.0:
+            raise ValueError(
+                "Challenging text replacement changes text without updating IPA. "
+                "Set gt_phoneme_input_prob=0 to use predicted phonemes."
+            )
         self.audio_sampling_temperature = float(self.cfg.get('inference_temperature', 0.7))
         self.audio_sampling_topk = int(self.cfg.get('inference_topk', 80))
         if self.audio_sampling_topk <= 0:

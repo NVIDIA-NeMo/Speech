@@ -2019,6 +2019,13 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 phoneme_turn_dropout_batch_prob=self.cfg.get("phoneme_turn_dropout_batch_prob", 0.0),
                 phoneme_turn_dropout_turn_prob=self.cfg.get("phoneme_turn_dropout_turn_prob", 0.0),
                 phoneme_turn_max_words_to_drop=self.cfg.get("phoneme_turn_max_words_to_drop", 2),
+                challenging_texts_path=dataset_cfg.dataset.get("challenging_texts_path"),
+                challenging_text_replacement_prob=dataset_cfg.dataset.get(
+                    "challenging_text_replacement_prob", 0.0
+                ),
+                context_audio_shuffle_batch_prob=dataset_cfg.dataset.get(
+                    "context_audio_shuffle_batch_prob", 0.0
+                ),
             )
             dataset = FallbackDataset(dataset)
         else:

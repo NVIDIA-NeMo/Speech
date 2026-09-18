@@ -1,0 +1,1259 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
+
+import pytest
+import torch
+from omegaconf import OmegaConf
+from torch import nn
+from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
+
+pytest.importorskip("nemo_automodel")
+pytestmark = pytest.mark.unit
+
+from nemo_automodel.components.loss.dllm_loss import DFlashDecayLoss  # noqa: E402
+from nemo_automodel.components.speculative.dflash.draft_qwen3 import Qwen3DFlashDraftModel  # noqa: E402
+from nemo_automodel.components.speculative.dflash.draft_qwen3_dflash2 import Qwen3DFlash2DraftModel  # noqa: E402
+
+from nemo.collections.speechlm2.parts import dflash as salm_dflash  # noqa: E402
+from nemo.collections.speechlm2.parts import packed_sequences  # noqa: E402
+
+REPO_ROOT = Path(__file__).parents[3]
+
+
+@pytest.mark.parametrize(
+    "loss_mask,block_size",
+    [
+        (torch.tensor([[1.0] * 8]), 8),
+        (torch.tensor([[1.0] * 4]), 8),
+        (torch.tensor([[0.0] * 8 + [1.0] * 8]), 8),
+        (torch.tensor([[0.0] * 9 + [1.0] * 7]), 8),
+        (torch.tensor([[0.0] * 16, [0.0] * 8 + [1.0] * 8]), 8),
+    ],
+)
+def test_anchor_precheck_matches_automodel_unpacked_sampler(loss_mask, block_size):
+    """The synchronized precheck must exactly predict Automodel's early raise."""
+    trainer = SimpleNamespace(block_size=block_size, num_anchors=512, max_total_anchors=None)
+    try:
+        salm_dflash.DFlashTrainerModule._sample_anchor_positions(
+            trainer,
+            seq_len=loss_mask.shape[1],
+            loss_mask=loss_mask,
+            device=loss_mask.device,
+        )
+    except salm_dflash.NoValidAnchorsError:
+        automodel_has_valid = False
+    else:
+        automodel_has_valid = True
+
+    assert salm_dflash._has_valid_dflash_anchors(loss_mask, block_size) is automodel_has_valid
+
+
+class _FakeMoEMesh:
+    mesh_dim_names = ("ep_shard", "ep")
+
+    def __init__(self, ep_mesh):
+        self.ep_mesh = ep_mesh
+
+    def __getitem__(self, name):
+        assert name == "ep"
+        return self.ep_mesh
+
+
+def test_synchronize_ep_group_uses_ep_process_group(monkeypatch):
+    group = object()
+    ep_mesh = SimpleNamespace(size=lambda: 8, get_group=lambda: group)
+    calls = []
+    monkeypatch.setattr(salm_dflash.torch.distributed, "is_available", lambda: True)
+    monkeypatch.setattr(salm_dflash.torch.distributed, "is_initialized", lambda: True)
+    monkeypatch.setattr(salm_dflash.torch.distributed, "barrier", lambda *, group: calls.append(group))
+
+    salm_dflash._synchronize_ep_group_before_target_forward(_FakeMoEMesh(ep_mesh))
+
+    assert calls == [group]
+
+
+def test_synchronize_ep_group_is_noop_without_distributed_ep(monkeypatch):
+    calls = []
+    monkeypatch.setattr(salm_dflash.torch.distributed, "is_available", lambda: True)
+    monkeypatch.setattr(salm_dflash.torch.distributed, "is_initialized", lambda: True)
+    monkeypatch.setattr(salm_dflash.torch.distributed, "barrier", lambda **kwargs: calls.append(kwargs))
+
+    salm_dflash._synchronize_ep_group_before_target_forward(None)
+    salm_dflash._synchronize_ep_group_before_target_forward(
+        _FakeMoEMesh(SimpleNamespace(size=lambda: 1, get_group=lambda: object()))
+    )
+
+    assert calls == []
+
+
+@pytest.mark.parametrize("axis", ["tp_size", "cp_size"])
+def test_validate_dflash_parallelism_rejects_sequence_sharding(axis):
+    sizes = {"tp_size": 1, "pp_size": 1, "cp_size": 1}
+    sizes[axis] = 2
+    mesh_context = SimpleNamespace(**sizes)
+
+    with pytest.raises(NotImplementedError, match=rf"{axis}=2"):
+        salm_dflash._validate_dflash_parallelism(mesh_context)
+
+
+def test_expand_ids_with_audio_preserves_internal_pad_valued_tokens():
+    input_ids = torch.tensor([[0, 0, 11, 99, 0, 12]])
+    audio_embeddings = [torch.randn(3, 4)]
+
+    expanded = salm_dflash._expand_ids_with_audio(
+        input_ids,
+        audio_embeddings,
+        padding_id=0,
+        placeholder_id=99,
+        mask_token_id=18,
+    )
+
+    assert expanded.tolist() == [[11, 18, 18, 18, 0, 12]]
+
+
+def test_expand_ids_with_audio_left_pads_rows_to_common_length():
+    input_ids = torch.tensor([[0, 10, 99, 12], [20, 21, 22, 23]])
+    audio_embeddings = [torch.randn(2, 4)]
+
+    expanded = salm_dflash._expand_ids_with_audio(
+        input_ids,
+        audio_embeddings,
+        padding_id=0,
+        placeholder_id=99,
+        mask_token_id=18,
+    )
+
+    assert expanded.tolist() == [[10, 18, 18, 12], [20, 21, 22, 23]]
+
+
+def test_expand_ids_with_audio_requires_every_replacement_to_be_used():
+    with pytest.raises(ValueError, match="Used 0 of 1"):
+        salm_dflash._expand_ids_with_audio(
+            torch.tensor([[1, 2, 3]]),
+            [torch.randn(2, 4)],
+            padding_id=0,
+            placeholder_id=99,
+            mask_token_id=18,
+        )
+
+
+def test_expand_ids_with_audio_matches_unpad_behavior_for_all_padding_row():
+    expanded = salm_dflash._expand_ids_with_audio(
+        torch.tensor([[0, 0, 0], [0, 11, 12]]),
+        [],
+        padding_id=0,
+        placeholder_id=99,
+        mask_token_id=18,
+    )
+
+    assert expanded.tolist() == [[0, 0], [11, 12]]
+
+
+def test_device_falls_back_before_draft_configuration():
+    module = salm_dflash.SALMDFlashModule(nn.Linear(1, 1), {"dflash": {"mask_token_id": 18}})
+
+    assert module.draft_model is None
+    assert module.device == torch.device("cpu")
+
+
+class _BatchTarget(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(1))
+        self.cfg = {}
+        self.text_pad_id = 0
+        self.audio_locator_tag_id = 99
+
+    def _embed_tokens(self, input_ids):
+        return input_ids.to(torch.float32).unsqueeze(-1).expand(-1, -1, 4).clone()
+
+
+class _AudioTarget(_BatchTarget):
+    def __init__(self):
+        super().__init__()
+        self.cfg = {"encoder_chunk_size_seconds": 30.0, "encoder_chunk_batch_size": 8}
+        self.perception = nn.Linear(1, 1)
+        self.sampling_rate = 16000
+        self._device_mesh = None
+
+    def _uses_parallel_expert_encoder(self):
+        return False
+
+
+def test_audio_embeddings_forwards_bounded_chunking_and_speaker_lengths(monkeypatch):
+    target = _AudioTarget()
+    module = salm_dflash.SALMDFlashModule(target, {"dflash": {"mask_token_id": 18}})
+    expected = [torch.randn(2, 3)]
+    encode = Mock(return_value=expected)
+    monkeypatch.setattr(salm_dflash, "encode_audio_with_cp_distribution", encode)
+    speaker_targets = torch.randn(1, 5, 8)
+    speaker_lengths = torch.tensor([5])
+    batch = {
+        "audios": torch.randn(1, 32000),
+        "audio_lens": torch.tensor([32000]),
+        "spk_targets": speaker_targets,
+        "spk_target_length": speaker_lengths,
+    }
+
+    assert module._audio_embeddings(batch) is expected
+    assert encode.call_args.kwargs["chunk_size_seconds"] == 30.0
+    assert encode.call_args.kwargs["chunk_batch_size"] == 8
+    assert encode.call_args.kwargs["spk_targets"] is speaker_targets
+    assert encode.call_args.kwargs["spk_target_lengths"] is speaker_lengths
+
+
+class _CaptureDFlashTrainer(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.kwargs = None
+
+    def forward(self, **kwargs):
+        self.kwargs = kwargs
+        return "dflash-result"
+
+
+def test_prepare_batch_keeps_full_unshifted_ids_and_token_aligned_loss_mask(
+    monkeypatch,
+):
+    module = salm_dflash.SALMDFlashModule(_BatchTarget(), {"dflash": {"mask_token_id": 990, "block_size": 2}})
+    audio_embeddings = [
+        torch.tensor(
+            [
+                [100.0, 100.0, 100.0, 100.0],
+                [101.0, 101.0, 101.0, 101.0],
+            ]
+        )
+    ]
+    monkeypatch.setattr(module, "_audio_embeddings", Mock(return_value=audio_embeddings))
+    batch = {
+        "input_ids": torch.tensor([[0, 10, 99, 20, 21, 22]]),
+        "loss_mask": torch.tensor([[False, False, False, False, True, True]]),
+    }
+
+    prepared = module._prepare_batch(batch)
+
+    assert prepared["input_ids"].tolist() == [[10, 990, 990, 20, 21, 22]]
+    assert prepared["loss_mask"].tolist() == [[False, False, False, False, True, True]]
+    assert prepared["attention_mask"].tolist() == [[True, True, True, True, True, True]]
+    assert prepared["input_embeddings"].shape == (1, 6, 4)
+    assert prepared["input_embeddings"][0].tolist() == [
+        [10.0, 10.0, 10.0, 10.0],
+        [100.0, 100.0, 100.0, 100.0],
+        [101.0, 101.0, 101.0, 101.0],
+        [20.0, 20.0, 20.0, 20.0],
+        [21.0, 21.0, 21.0, 21.0],
+        [22.0, 22.0, 22.0, 22.0],
+    ]
+
+    captured_hidden = torch.randn(1, 6, 8)
+    target_hidden_states = Mock(return_value=captured_hidden)
+    monkeypatch.setattr(module, "_target_hidden_states", target_hidden_states)
+    module.trainer_module = _CaptureDFlashTrainer()
+    module._trainer = SimpleNamespace(strategy=SimpleNamespace(moe_mesh=None))
+
+    result = module._run_batch(batch)
+
+    assert result == "dflash-result"
+    target_inputs = target_hidden_states.call_args.args[0]
+    assert target_inputs["input_ids"].tolist() == [[10, 990, 990, 20, 21, 22]]
+    assert target_inputs["loss_mask"].tolist() == [[False, False, False, False, True, True]]
+    assert module.trainer_module.kwargs["input_ids"].tolist() == [[10, 990, 990, 20, 21, 22]]
+    assert module.trainer_module.kwargs["loss_mask"].tolist() == [[False, False, False, False, True, True]]
+    assert module.trainer_module.kwargs["hidden_states"] is captured_hidden
+
+
+def test_pack_audio_for_dflash_builds_unshifted_boundary_metadata():
+    input_ids = torch.tensor([[0, 10, 99, 20, 21], [30, 31, 99, 0, 32]])
+    embeds = input_ids.to(torch.float32).unsqueeze(-1).expand(-1, -1, 2).clone()
+    loss_mask = torch.tensor(
+        [[False, False, False, True, True], [False, True, False, True, True]],
+        dtype=torch.bool,
+    )
+    replacements = [
+        torch.tensor([[100.0, 101.0], [102.0, 103.0]]),
+        torch.tensor([[200.0, 201.0]]),
+    ]
+
+    packed = packed_sequences.pack_audio_for_dflash(
+        input_ids=input_ids,
+        embeds=embeds,
+        loss_mask=loss_mask,
+        replacements=replacements,
+        padding_id=0,
+        placeholder_id=99,
+        mask_token_id=990,
+    )
+
+    assert packed["input_ids"].tolist() == [[10, 990, 990, 20, 21, 30, 31, 990, 0, 32]]
+    assert packed["loss_mask"].tolist() == [[False, False, False, True, True, False, True, False, False, True]]
+    assert packed["position_ids"].tolist() == [[0, 1, 2, 3, 4, 0, 1, 2, 3, 4]]
+    assert packed["seq_lens"].tolist() == [[5, 5]]
+    assert packed["doc_remaining"].tolist() == [[4, 3, 2, 1, 0, 4, 3, 2, 1, 0]]
+    assert packed["cu_seqlens"].dtype == torch.int32
+    assert packed["cu_seqlens"].tolist() == [0, 5, 10]
+    assert packed["max_seqlen"].item() == 5
+    assert packed["qkv_format"] == "thd"
+    assert packed["input_embeddings"].shape == (10, 2)
+    assert packed["input_embeddings"][1:3].tolist() == replacements[0].tolist()
+    assert packed["input_embeddings"][7:8].tolist() == replacements[1].tolist()
+
+
+def test_validate_packed_dflash_rejects_non_int32_cu_seqlens():
+    packed = {
+        "input_ids": torch.tensor([[10, 11, 20, 21]]),
+        "input_embeddings": torch.randn(4, 2),
+        "loss_mask": torch.ones(1, 4, dtype=torch.bool),
+        "position_ids": torch.tensor([[0, 1, 0, 1]]),
+        "seq_lens": torch.tensor([[2, 2]]),
+        "doc_remaining": torch.tensor([[1, 0, 1, 0]]),
+        "cu_seqlens": torch.tensor([0, 2, 4], dtype=torch.int64),
+        "max_seqlen": torch.tensor(2, dtype=torch.int32),
+        "qkv_format": "thd",
+    }
+
+    with pytest.raises(ValueError, match="cu_seqlens must have dtype torch.int32"):
+        packed_sequences._validate_packed_dflash_inputs(packed)
+
+
+def test_pack_audio_for_dflash_one_document_matches_unpacked_preparation(monkeypatch):
+    target = _BatchTarget()
+    module = salm_dflash.SALMDFlashModule(target, {"dflash": {"mask_token_id": 990, "block_size": 2}})
+    audio_embeddings = [torch.tensor([[100.0] * 4, [101.0] * 4])]
+    monkeypatch.setattr(module, "_audio_embeddings", Mock(return_value=audio_embeddings))
+    batch = {
+        "input_ids": torch.tensor([[0, 10, 99, 20, 21, 22]]),
+        "loss_mask": torch.tensor([[False, False, False, False, True, True]]),
+    }
+    unpacked = module._prepare_batch(batch)
+
+    target.cfg["packed_sequences"] = True
+    packed = module._prepare_batch(batch)
+
+    assert packed["input_ids"].tolist() == unpacked["input_ids"].tolist()
+    assert packed["loss_mask"].tolist() == unpacked["loss_mask"].tolist()
+    torch.testing.assert_close(packed["input_embeddings"].unsqueeze(0), unpacked["input_embeddings"])
+    assert packed["seq_lens"].tolist() == [[6]]
+    assert packed["doc_remaining"].tolist() == [[5, 4, 3, 2, 1, 0]]
+
+
+def test_pack_audio_for_dflash_rejects_malformed_inputs():
+    with pytest.raises(ValueError, match=r"same \[B, S\] shape"):
+        packed_sequences.pack_audio_for_dflash(
+            input_ids=torch.ones(1, 3, dtype=torch.long),
+            embeds=torch.ones(1, 3, 2),
+            loss_mask=torch.ones(1, 2, dtype=torch.bool),
+            replacements=[],
+            padding_id=0,
+            placeholder_id=99,
+            mask_token_id=990,
+        )
+
+
+@pytest.mark.parametrize("variant", ["dflash", "dflash2"])
+def test_run_batch_forwards_all_packing_metadata(monkeypatch, variant):
+    module = salm_dflash.SALMDFlashModule(
+        _BatchTarget(),
+        {"dflash": {"variant": variant, "mask_token_id": 990, "block_size": 2}},
+    )
+    packed = {
+        "input_ids": torch.tensor([[10, 11, 20, 21]]),
+        "input_embeddings": torch.randn(4, 4),
+        "attention_mask": None,
+        "loss_mask": torch.tensor([[True, True, True, True]]),
+        "position_ids": torch.tensor([[0, 1, 0, 1]]),
+        "seq_lens": torch.tensor([[2, 2]]),
+        "doc_remaining": torch.tensor([[1, 0, 1, 0]]),
+        "cu_seqlens": torch.tensor([0, 2, 4], dtype=torch.int32),
+        "max_seqlen": torch.tensor(2, dtype=torch.int32),
+        "qkv_format": "thd",
+    }
+    monkeypatch.setattr(module, "_prepare_batch", Mock(return_value=packed))
+    monkeypatch.setattr(module, "_target_hidden_states", Mock(return_value=torch.randn(1, 4, 8)))
+    monkeypatch.setattr(salm_dflash, "_has_valid_dflash_anchors", lambda *args, **kwargs: True)
+    module.trainer_module = _CaptureDFlashTrainer()
+    module._trainer = SimpleNamespace(strategy=SimpleNamespace(moe_mesh=None))
+
+    module._run_batch({})
+
+    assert module.trainer_module.kwargs["position_ids"] is packed["position_ids"]
+    assert module.trainer_module.kwargs["seq_lens"] is packed["seq_lens"]
+    assert module.trainer_module.kwargs["doc_remaining"] is packed["doc_remaining"]
+    assert module._last_input_token_count.item() == 4
+
+
+def test_packed_anchor_precheck_requires_complete_block_in_document():
+    loss_mask = torch.tensor([[False, True, True, True, True, True]])
+    doc_remaining = torch.tensor([[2, 1, 0, 2, 1, 0]])
+
+    assert not salm_dflash._has_valid_dflash_anchors(loss_mask, block_size=4, doc_remaining=doc_remaining)
+    assert salm_dflash._has_valid_dflash_anchors(loss_mask, block_size=3, doc_remaining=doc_remaining)
+
+
+def test_build_draft_config_applies_explicit_architecture_and_layer_taps():
+    target_config = Qwen3Config(
+        hidden_size=64,
+        intermediate_size=128,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        num_hidden_layers=8,
+        head_dim=16,
+        vocab_size=128,
+    )
+
+    draft_config, layer_ids = salm_dflash._build_draft_config(
+        target_config,
+        {
+            "draft_num_hidden_layers": 2,
+            "target_layer_ids": [1, 6],
+            "draft_model_config": {"intermediate_size": 96},
+        },
+        block_size=8,
+        mask_token_id=18,
+    )
+
+    assert layer_ids == [1, 6]
+    assert draft_config.num_hidden_layers == 2
+    assert draft_config.intermediate_size == 96
+    assert draft_config.dflash_config == {
+        "block_size": 8,
+        "mask_token_id": 18,
+        "target_layer_ids": [1, 6],
+    }
+    assert draft_config.architectures == ["Qwen3DFlashDraftModel"]
+    assert draft_config.is_causal is False
+
+
+def test_build_dflash2_config_matches_automodel_recipe_fields():
+    target_config = Qwen3Config(
+        hidden_size=64,
+        intermediate_size=128,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        num_hidden_layers=8,
+        head_dim=16,
+        vocab_size=128,
+    )
+
+    draft_config, layer_ids = salm_dflash._build_draft_config(
+        target_config,
+        {
+            "variant": "dflash2",
+            "draft_num_hidden_layers": 2,
+            "target_layer_ids": [1, 6],
+            "conv_kernel_size": 2,
+            "conv_group_size": 16,
+            "selector_rank": 32,
+            "selector_top_k": 8,
+            "draft_sliding_window": 32,
+        },
+        block_size=8,
+        mask_token_id=18,
+    )
+
+    assert layer_ids == [1, 6]
+    assert draft_config.architectures == ["Qwen3DFlash2DraftModel"]
+    assert draft_config.layer_types == ["sliding_attention", "sliding_attention"]
+    assert draft_config.sliding_window == 32
+    assert draft_config.use_sliding_window is True
+    assert draft_config.dflash_config == {
+        "block_size": 8,
+        "mask_token_id": 18,
+        "target_layer_ids": [1, 6],
+        "conv_kernel_size": 2,
+        "conv_group_size": 16,
+        "selector_rank": 32,
+        "selector_top_k": 8,
+    }
+    draft = Qwen3DFlash2DraftModel(draft_config)
+    assert draft.candidate_selector.top_k == 8
+
+
+def test_dflash2_rejects_fused_linear_ce():
+    with pytest.raises(ValueError, match="use_fused_linear_ce"):
+        salm_dflash.SALMDFlashModule(
+            nn.Linear(1, 1),
+            {
+                "dflash": {
+                    "variant": "dflash2",
+                    "mask_token_id": 18,
+                    "use_fused_linear_ce": True,
+                }
+            },
+        )
+
+
+class _TrainerTargetLLM(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.config = Qwen3Config(
+            hidden_size=32,
+            intermediate_size=64,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            num_hidden_layers=6,
+            head_dim=8,
+            vocab_size=64,
+        )
+        self.embed_tokens = nn.Embedding(64, 32)
+        self.lm_head = nn.Linear(32, 64, bias=False)
+
+    def get_input_embeddings(self):
+        return self.embed_tokens
+
+    def get_output_embeddings(self):
+        return self.lm_head
+
+
+class _TrainerTarget(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.llm = _TrainerTargetLLM()
+
+
+@pytest.mark.parametrize(
+    "variant,trainer_name",
+    [("dflash", "DFlashTrainerModule"), ("dflash2", "DFlash2TrainerModule")],
+)
+def test_create_trainer_module_selects_configured_variant(monkeypatch, variant, trainer_name):
+    base_factory = Mock(return_value=object())
+    dflash2_factory = Mock(return_value=object())
+    monkeypatch.setattr(salm_dflash, "DFlashTrainerModule", base_factory)
+    monkeypatch.setattr(salm_dflash, "DFlash2TrainerModule", dflash2_factory)
+    module = salm_dflash.SALMDFlashModule(
+        _TrainerTarget(),
+        {
+            "dflash": {
+                "variant": variant,
+                "mask_token_id": 18,
+                "max_total_anchors": 64,
+                "selector_loss_weight": 0.25,
+                "use_fused_linear_ce": False,
+            }
+        },
+    )
+    module.draft_model = nn.Linear(32, 32)
+
+    result = module._create_trainer_module()
+
+    selected = dflash2_factory if trainer_name == "DFlash2TrainerModule" else base_factory
+    unselected = base_factory if trainer_name == "DFlash2TrainerModule" else dflash2_factory
+    assert result is selected.return_value
+    expected_draft_cls = Qwen3DFlash2DraftModel if variant == "dflash2" else Qwen3DFlashDraftModel
+    assert module._draft_model_class() is expected_draft_cls
+    unselected.assert_not_called()
+    kwargs = selected.call_args.kwargs
+    assert kwargs["draft_model"] is module.draft_model
+    assert kwargs["max_total_anchors"] == 64
+    if variant == "dflash2":
+        assert kwargs["selector_loss_weight"] == pytest.approx(0.25)
+        assert "use_fused_linear_ce" not in kwargs
+    else:
+        assert kwargs["use_fused_linear_ce"] is False
+
+
+def test_dflash2_salm_components_run_forward_and_train_selector():
+    torch.manual_seed(7)
+    target = _TrainerTarget()
+    dflash_config = {
+        "variant": "dflash2",
+        "mask_token_id": 63,
+        "block_size": 4,
+        "draft_num_hidden_layers": 2,
+        "target_layer_ids": [1, 4],
+        "conv_group_size": 8,
+        "selector_rank": 16,
+        "selector_top_k": 64,
+        "num_anchors": 2,
+        "max_total_anchors": 2,
+        "attention_backend": "sdpa",
+        "activation_checkpointing": False,
+    }
+    module = salm_dflash.SALMDFlashModule(target, {"dflash": dflash_config})
+    draft_config, module.target_layer_ids = salm_dflash._build_draft_config(
+        target.llm.config,
+        dflash_config,
+        block_size=4,
+        mask_token_id=63,
+    )
+    draft_config._attn_implementation = "sdpa"
+    module.draft_model = module._draft_model_class()(draft_config)
+    module.trainer_module = module._create_trainer_module()
+    input_ids = torch.randint(0, 63, (1, 8))
+    hidden_states = torch.randn(1, 8, 64)
+
+    metrics = module.trainer_module(input_ids=input_ids, hidden_states=hidden_states, loss_mask=torch.ones(1, 8))
+    metrics.loss.backward()
+
+    assert torch.isfinite(metrics.loss)
+    assert metrics.selector_loss.item() > 0
+    assert module.draft_model.candidate_selector.successor_codebook.grad.abs().sum() > 0
+
+
+def test_build_draft_config_rejects_managed_overrides():
+    target_config = Qwen3Config(hidden_size=64, num_attention_heads=4, num_hidden_layers=8, vocab_size=128)
+
+    with pytest.raises(ValueError, match="cannot override managed keys: block_size"):
+        salm_dflash._build_draft_config(
+            target_config,
+            {"draft_model_config": {"block_size": 32}},
+            block_size=8,
+            mask_token_id=18,
+        )
+
+
+def test_salm_automodel_dflash2_defaults_match_nemotron_3_5_lightning():
+    cfg = OmegaConf.load(REPO_ROOT / "examples/speechlm2/conf/salm_automodel.yaml")
+    dflash_cfg = OmegaConf.to_container(cfg.dflash, resolve=True)
+    target_config = Qwen3Config(
+        hidden_size=2688,
+        intermediate_size=1856,
+        num_attention_heads=32,
+        num_key_value_heads=2,
+        num_hidden_layers=52,
+        head_dim=128,
+        vocab_size=131072,
+    )
+
+    draft_config, target_layer_ids = salm_dflash._build_draft_config(
+        target_config,
+        dflash_cfg,
+        block_size=dflash_cfg["block_size"],
+        mask_token_id=dflash_cfg["mask_token_id"],
+    )
+
+    assert dflash_cfg["enabled"] is False
+    assert dflash_cfg["variant"] == "dflash2"
+    assert dflash_cfg["block_size"] == 8
+    assert dflash_cfg["num_anchors"] == 512
+    assert dflash_cfg["max_total_anchors"] == 512
+    assert dflash_cfg["loss_decay_gamma"] == pytest.approx(4.0)
+    assert dflash_cfg["attention_backend"] == "flex_attention"
+    assert dflash_cfg["activation_checkpointing"] is True
+    assert dflash_cfg["use_fused_linear_ce"] is False
+    assert dflash_cfg["linear_ce_chunk_size"] == 256
+    assert draft_config.num_hidden_layers == 6
+    assert draft_config.hidden_size == 2688
+    assert draft_config.intermediate_size == 6144
+    assert draft_config.num_attention_heads == 32
+    assert draft_config.num_key_value_heads == 2
+    assert draft_config.head_dim == 128
+    assert draft_config.rms_norm_eps == pytest.approx(1.0e-6)
+    assert draft_config.max_position_embeddings == 1048576
+    assert draft_config.rope_parameters == {
+        "factor": 128.0,
+        "original_max_position_embeddings": 8192,
+        "rope_theta": 10000,
+        "rope_type": "yarn",
+    }
+    assert target_layer_ids == [1, 5, 19, 29, 41, 51]
+    assert draft_config.dflash_config == {
+        "block_size": 8,
+        "mask_token_id": 990,
+        "target_layer_ids": [1, 5, 19, 29, 41, 51],
+        "conv_kernel_size": 2,
+        "conv_group_size": 16,
+        "selector_rank": 256,
+        "selector_top_k": 16,
+    }
+    assert draft_config.block_size == 8
+    assert draft_config.architectures == ["Qwen3DFlash2DraftModel"]
+
+
+class _TargetLLM(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(1))
+        self.layers = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
+        self.norm = _AddConstant(10.0)
+        self.calls = []
+
+    def forward(
+        self,
+        *,
+        inputs_embeds,
+        attention_mask,
+        output_hidden_states,
+        use_cache,
+        return_dict,
+        compute_logits=True,
+    ):
+        self.calls.append(
+            {
+                "attention_mask": attention_mask,
+                "output_hidden_states": output_hidden_states,
+                "use_cache": use_cache,
+                "return_dict": return_dict,
+                "compute_logits": compute_logits,
+            }
+        )
+        hidden = inputs_embeds
+        for index, layer in enumerate(self.layers, start=1):
+            hidden = layer(hidden + index)
+        hidden = self.norm(hidden)
+        return SimpleNamespace(hidden_states=(hidden,))
+
+
+class _TargetModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.llm = _TargetLLM()
+
+
+class _AddConstant(nn.Module):
+    def __init__(self, value: float):
+        super().__init__()
+        self.value = value
+
+    def forward(self, inputs):
+        return inputs + self.value
+
+
+class _MinimalTargetLLM(nn.Module):
+    """Target whose explicit forward rejects every optional HF-style kwarg."""
+
+    def __init__(self):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(1))
+        self.layers = nn.ModuleList([nn.Identity(), nn.Identity()])
+        self.norm = nn.Identity()
+        self.calls = []
+
+    def forward(self, *, inputs_embeds, attention_mask):
+        self.calls.append({"attention_mask": attention_mask})
+        hidden = inputs_embeds
+        for index, layer in enumerate(self.layers, start=1):
+            hidden = layer(hidden + index)
+        return self.norm(hidden)
+
+
+def test_target_hidden_states_uses_pre_final_norm_block_outputs_and_skips_logits():
+    module = salm_dflash.SALMDFlashModule(_TargetModel(), {"dflash": {"mask_token_id": 18}})
+    module.target_layer_ids = [0, 2]
+    inputs = {
+        "input_embeddings": torch.randn(2, 5, 4),
+        "attention_mask": torch.ones(2, 5, dtype=torch.bool),
+    }
+
+    hidden = module._target_hidden_states(inputs)
+
+    assert hidden.shape == (2, 5, 8)
+    assert torch.allclose(hidden[..., :4], inputs["input_embeddings"] + 1)
+    # Block 2 contributes +3 after blocks 0 and 1 contributed +1 and +2.
+    # The separate final norm contributes +10 to the model output, but it must
+    # not alter DFlash's captured decoder-block feature.
+    assert torch.allclose(hidden[..., 4:], inputs["input_embeddings"] + 6)
+    assert module.target.llm.calls == [
+        {
+            "attention_mask": inputs["attention_mask"],
+            "output_hidden_states": False,
+            "use_cache": False,
+            "return_dict": True,
+            "compute_logits": False,
+        }
+    ]
+
+
+def test_target_hidden_states_filters_unsupported_optional_forward_kwargs():
+    target = _TargetModel()
+    target.llm = _MinimalTargetLLM()
+    module = salm_dflash.SALMDFlashModule(target, {"dflash": {"mask_token_id": 18}})
+    module.target_layer_ids = [0, 1]
+    inputs = {
+        "input_embeddings": torch.randn(1, 4, 3),
+        "attention_mask": torch.ones(1, 4, dtype=torch.bool),
+    }
+
+    hidden = module._target_hidden_states(inputs)
+
+    assert hidden.shape == (1, 4, 6)
+    assert target.llm.calls == [{"attention_mask": inputs["attention_mask"]}]
+
+
+class _PackedTargetLLM(nn.Module):
+    """Small target that mixes causally inside, but never across, THD documents."""
+
+    def __init__(self):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(1))
+        self.layers = nn.ModuleList([nn.Identity()])
+        self.calls = []
+
+    def forward(
+        self,
+        *,
+        inputs_embeds,
+        attention_mask=None,
+        qkv_format=None,
+        cu_seqlens=None,
+        position_ids=None,
+        max_seqlen=None,
+        output_hidden_states=False,
+        use_cache=False,
+        return_dict=True,
+        compute_logits=False,
+    ):
+        self.calls.append(
+            {
+                "qkv_format": qkv_format,
+                "cu_seqlens": cu_seqlens,
+                "position_ids": position_ids,
+                "max_seqlen": max_seqlen,
+                "compute_logits": compute_logits,
+            }
+        )
+        if qkv_format == "thd":
+            boundaries = cu_seqlens.tolist()
+            mixed = torch.cat(
+                [inputs_embeds[start:end].cumsum(dim=0) for start, end in zip(boundaries, boundaries[1:])],
+                dim=0,
+            )
+        else:
+            mixed = inputs_embeds.cumsum(dim=1)
+        hidden = self.layers[0](mixed)
+        return SimpleNamespace(hidden_states=(hidden,))
+
+
+class _PackedTargetModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.llm = _PackedTargetLLM()
+
+
+def _packed_target_inputs(embeddings, seq_lens):
+    lengths = torch.tensor([seq_lens], dtype=torch.long)
+    positions = torch.cat([torch.arange(length) for length in seq_lens]).unsqueeze(0)
+    remaining = torch.cat([torch.arange(length - 1, -1, -1) for length in seq_lens]).unsqueeze(0)
+    cu_seqlens = torch.tensor([0, *torch.tensor(seq_lens).cumsum(0).tolist()], dtype=torch.int32)
+    token_count = embeddings.shape[0]
+    return {
+        "input_ids": torch.arange(token_count).unsqueeze(0),
+        "input_embeddings": embeddings,
+        "attention_mask": None,
+        "loss_mask": torch.ones(1, token_count, dtype=torch.bool),
+        "position_ids": positions,
+        "seq_lens": lengths,
+        "doc_remaining": remaining,
+        "cu_seqlens": cu_seqlens,
+        "max_seqlen": torch.tensor(max(seq_lens), dtype=torch.int32),
+        "qkv_format": "thd",
+    }
+
+
+def test_target_hidden_states_one_document_packed_matches_unpacked():
+    target = _PackedTargetModel()
+    module = salm_dflash.SALMDFlashModule(target, {"dflash": {"mask_token_id": 18}})
+    module.target_layer_ids = [0]
+    embeddings = torch.randn(5, 4)
+
+    unpacked = module._target_hidden_states(
+        {
+            "input_embeddings": embeddings.unsqueeze(0),
+            "attention_mask": torch.ones(1, 5, dtype=torch.bool),
+        }
+    )
+    packed = module._target_hidden_states(_packed_target_inputs(embeddings, [5]))
+
+    torch.testing.assert_close(packed, unpacked)
+    assert packed.shape == (1, 5, 4)
+
+
+def test_target_hidden_states_packed_isolates_documents_and_uses_thd_metadata():
+    target = _PackedTargetModel()
+    module = salm_dflash.SALMDFlashModule(target, {"dflash": {"mask_token_id": 18}})
+    module.target_layer_ids = [0]
+    embeddings = torch.randn(6, 4)
+    inputs = _packed_target_inputs(embeddings, [3, 3])
+
+    reference = module._target_hidden_states(inputs)
+    independent = torch.cat(
+        [
+            module._target_hidden_states(
+                {
+                    "input_embeddings": embeddings[start:end].unsqueeze(0),
+                    "attention_mask": torch.ones(1, end - start, dtype=torch.bool),
+                }
+            )
+            for start, end in ((0, 3), (3, 6))
+        ],
+        dim=1,
+    )
+    torch.testing.assert_close(reference, independent)
+
+    perturbed_inputs = _packed_target_inputs(embeddings.clone(), [3, 3])
+    perturbed_inputs["input_embeddings"][3:] += 100
+    perturbed = module._target_hidden_states(perturbed_inputs)
+    torch.testing.assert_close(reference[:, :3], perturbed[:, :3])
+    assert not torch.allclose(reference[:, 3:], perturbed[:, 3:])
+
+    reverse_perturbed_inputs = _packed_target_inputs(embeddings.clone(), [3, 3])
+    reverse_perturbed_inputs["input_embeddings"][:3] += 100
+    reverse_perturbed = module._target_hidden_states(reverse_perturbed_inputs)
+    assert not torch.allclose(reference[:, :3], reverse_perturbed[:, :3])
+    torch.testing.assert_close(reference[:, 3:], reverse_perturbed[:, 3:])
+
+    assert target.llm.calls[-1]["qkv_format"] == "thd"
+    assert target.llm.calls[-1]["cu_seqlens"].tolist() == [0, 3, 6]
+    assert target.llm.calls[-1]["position_ids"].tolist() == [[0, 1, 2, 0, 1, 2]]
+    assert target.llm.calls[-1]["compute_logits"] is False
+
+
+def test_target_hidden_states_rejects_partial_packing_metadata():
+    module = salm_dflash.SALMDFlashModule(_PackedTargetModel(), {"dflash": {"mask_token_id": 18}})
+    module.target_layer_ids = [0]
+
+    with pytest.raises(ValueError, match="missing required fields"):
+        module._target_hidden_states(
+            {
+                "input_embeddings": torch.randn(4, 3),
+                "attention_mask": None,
+                "qkv_format": "thd",
+                "cu_seqlens": torch.tensor([0, 4], dtype=torch.int32),
+            }
+        )
+
+
+def test_get_consolidated_state_dict_uses_plain_state_dict_without_distributed(
+    monkeypatch,
+):
+    expected = {"weight": torch.tensor([1.0])}
+    model = SimpleNamespace(state_dict=Mock(return_value=expected))
+    monkeypatch.setattr(salm_dflash.torch.distributed, "is_available", lambda: True)
+    monkeypatch.setattr(salm_dflash.torch.distributed, "is_initialized", lambda: False)
+
+    result = salm_dflash._get_consolidated_model_state_dict(model)
+
+    assert result is expected
+    model.state_dict.assert_called_once_with()
+
+
+def test_train_keeps_frozen_target_in_eval_mode_and_draft_in_requested_mode():
+    target = nn.Sequential(nn.Dropout(p=0.5))
+    module = salm_dflash.SALMDFlashModule(target, {"dflash": {"mask_token_id": 18}})
+    module.draft_model = nn.Sequential(nn.Dropout(p=0.5))
+
+    module.train()
+
+    assert module.training
+    assert module.draft_model.training
+    assert not module.target.training
+    assert not module.target[0].training
+
+
+def test_globally_normalized_loss_uses_draft_dp_weight(monkeypatch):
+    module = salm_dflash.SALMDFlashModule(nn.Linear(1, 1), {"dflash": {"mask_token_id": 18}})
+    module._draft_dp_size = 2
+    module._draft_dp_group = object()
+    monkeypatch.setattr(salm_dflash.torch.distributed, "is_available", lambda: True)
+    monkeypatch.setattr(salm_dflash.torch.distributed, "is_initialized", lambda: True)
+
+    def fake_all_reduce(value, *, op, group):
+        assert op == salm_dflash.torch.distributed.ReduceOp.SUM
+        assert group is module._draft_dp_group
+        value.fill_(10.0)
+
+    monkeypatch.setattr(salm_dflash.torch.distributed, "all_reduce", fake_all_reduce)
+    local_loss = torch.tensor(2.0, requires_grad=True)
+    metrics = SimpleNamespace(loss=local_loss, loss_weight=torch.tensor(3.0))
+
+    loss = module._globally_normalized_loss(metrics)
+    loss.backward()
+
+    assert loss.item() == pytest.approx(1.2)
+    assert local_loss.grad.item() == pytest.approx(0.6)
+
+
+def test_dflash2_globally_normalizes_base_and_selector_terms_separately(monkeypatch):
+    module = salm_dflash.SALMDFlashModule(
+        nn.Linear(1, 1),
+        {
+            "dflash": {
+                "variant": "dflash2",
+                "mask_token_id": 18,
+                "selector_loss_weight": 0.5,
+            }
+        },
+    )
+    module._draft_dp_size = 2
+    module._draft_dp_group = object()
+    monkeypatch.setattr(salm_dflash.torch.distributed, "is_available", lambda: True)
+    monkeypatch.setattr(salm_dflash.torch.distributed, "is_initialized", lambda: True)
+    global_weights = iter((10.0, 8.0))
+
+    def fake_all_reduce(value, *, op, group):
+        assert op == salm_dflash.torch.distributed.ReduceOp.SUM
+        assert group is module._draft_dp_group
+        value.fill_(next(global_weights))
+
+    monkeypatch.setattr(salm_dflash.torch.distributed, "all_reduce", fake_all_reduce)
+    base_loss = torch.tensor(2.0, requires_grad=True)
+    selector_loss = torch.tensor(4.0, requires_grad=True)
+    metrics = SimpleNamespace(
+        loss=base_loss + 0.5 * selector_loss,
+        loss_weight=torch.tensor(3.0),
+        base_loss=base_loss,
+        selector_loss=selector_loss,
+        selector_loss_denominator=torch.tensor(2.0),
+    )
+
+    loss = module._globally_normalized_loss(metrics)
+    loss.backward()
+
+    assert loss.item() == pytest.approx(2.2)
+    assert base_loss.grad.item() == pytest.approx(0.6)
+    assert selector_loss.grad.item() == pytest.approx(0.25)
+
+
+def test_dflash_loss_times_weight_recovers_decay_weighted_numerator():
+    torch.manual_seed(7)
+    block_size = 4
+    logits = torch.randn(1, 6, 11)
+    targets = torch.randint(0, 11, (1, 6))
+    block_mask = torch.tensor([[1.0, 1.0, 0.0, 1.0, 1.0, 1.0]])
+    loss_fn = DFlashDecayLoss(loss_gamma=4.0, normalize="mean")
+
+    result = loss_fn(logits, targets, block_mask, block_size=block_size)
+
+    nll = torch.nn.functional.cross_entropy(logits.view(-1, 11), targets.view(-1), reduction="none").view(1, 6)
+    depth_weights = torch.exp(-torch.arange(block_size - 1, dtype=logits.dtype) / 4.0).repeat(2)
+    effective_weights = block_mask * depth_weights.unsqueeze(0)
+    expected_numerator = (nll * effective_weights).sum()
+    torch.testing.assert_close(result.total_loss * effective_weights.sum(), expected_numerator)
+
+
+def test_training_step_synchronizes_multi_dataset_skips(monkeypatch):
+    module = salm_dflash.SALMDFlashModule(nn.Linear(1, 1), {"dflash": {"mask_token_id": 18}})
+    module.draft_model = nn.Linear(1, 1)
+    module._draft_dp_size = 1
+    module._draft_dp_group = None
+    log = Mock()
+    monkeypatch.setattr(module, "log", log)
+    monkeypatch.setattr(salm_dflash, "_max_rank_value", lambda _value, _device: 3)
+    availability = []
+
+    def agree(local_condition, _device):
+        availability.append(local_condition)
+        return local_condition
+
+    monkeypatch.setattr(salm_dflash, "_all_ranks_agree", agree)
+    monkeypatch.setattr(salm_dflash, "_all_ranks_report_same_value", lambda _value, _device: True)
+    metrics = SimpleNamespace(
+        loss=torch.tensor(2.0, requires_grad=True),
+        loss_weight=torch.tensor(3.0),
+        accuracy=torch.tensor(0.5),
+        accept_len=torch.tensor(1.5),
+        valid_tokens=torch.tensor(12),
+        valid_blocks=torch.tensor(4),
+    )
+    module._last_input_token_count = torch.tensor(21)
+    run_batch = Mock(side_effect=[salm_dflash.NoValidAnchorsError("skip"), metrics])
+    monkeypatch.setattr(module, "_run_batch", run_batch)
+    batch = {
+        "dataset_a": {"input_ids": torch.ones(1, 2, dtype=torch.long)},
+        "dataset_b": {"input_ids": torch.ones(1, 2, dtype=torch.long)},
+    }
+
+    loss = module.training_step(batch, batch_idx=0)
+
+    torch.testing.assert_close(loss, metrics.loss)
+    assert availability == [True, True, False]
+    assert run_batch.call_count == 2
+    log.assert_any_call("train/dflash_input_tokens", torch.tensor(21.0, dtype=torch.float64), on_step=True)
+    log.assert_any_call("train/dflash_valid_tokens", torch.tensor(12.0, dtype=torch.float64), on_step=True)
+    log.assert_any_call("train/dflash_valid_blocks", torch.tensor(4.0, dtype=torch.float64), on_step=True)
+    log.assert_any_call("train/dflash_loss_weight", torch.tensor(3.0, dtype=torch.float64), on_step=True)
+
+
+def test_training_telemetry_sums_over_draft_dp_group(monkeypatch):
+    module = salm_dflash.SALMDFlashModule(nn.Linear(1, 1), {"dflash": {"mask_token_id": 18}})
+    module.draft_model = nn.Linear(1, 1)
+    module._draft_dp_size = 2
+    module._draft_dp_group = object()
+    module._last_input_token_count = torch.tensor(21)
+    log = Mock()
+    monkeypatch.setattr(module, "log", log)
+    monkeypatch.setattr(salm_dflash, "_max_rank_value", lambda value, _device: value)
+    monkeypatch.setattr(salm_dflash, "_all_ranks_agree", lambda condition, _device: condition)
+    monkeypatch.setattr(salm_dflash, "_all_ranks_report_same_value", lambda _value, _device: True)
+    metrics = SimpleNamespace(
+        loss=torch.tensor(2.0, requires_grad=True),
+        loss_weight=torch.tensor(3.0),
+        accuracy=torch.tensor(0.5),
+        accept_len=torch.tensor(1.5),
+        valid_tokens=torch.tensor(12),
+        valid_blocks=torch.tensor(4),
+    )
+    monkeypatch.setattr(module, "_run_batch", Mock(return_value=metrics))
+    monkeypatch.setattr(module, "_globally_normalized_loss", lambda result: result.loss)
+
+    module.training_step({"input_ids": torch.ones(1, 2, dtype=torch.long)}, batch_idx=0)
+
+    log.assert_any_call(
+        "train/dflash_input_tokens",
+        torch.tensor(21.0, dtype=torch.float64),
+        on_step=True,
+        sync_dist=True,
+        sync_dist_group=module._draft_dp_group,
+        reduce_fx="sum",
+    )
+
+
+def test_training_peak_memory_telemetry_uses_max_rank_value(monkeypatch):
+    module = salm_dflash.SALMDFlashModule(nn.Linear(1, 1), {"dflash": {"mask_token_id": 18}})
+    log = Mock()
+    monkeypatch.setattr(module, "log", log)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "max_memory_allocated", lambda: 123)
+    monkeypatch.setattr(torch.cuda, "max_memory_reserved", lambda: 456)
+    monkeypatch.setattr(torch.distributed, "is_available", lambda: True)
+    monkeypatch.setattr(torch.distributed, "is_initialized", lambda: True)
+
+    module.on_train_batch_end(outputs=None, batch=None, batch_idx=0)
+
+    log.assert_any_call(
+        "train/dflash_peak_memory_allocated_bytes",
+        torch.tensor(123.0, dtype=torch.float64),
+        on_step=True,
+        sync_dist=True,
+        reduce_fx="max",
+    )
+    log.assert_any_call(
+        "train/dflash_peak_memory_reserved_bytes",
+        torch.tensor(456.0, dtype=torch.float64),
+        on_step=True,
+        sync_dist=True,
+        reduce_fx="max",
+    )
+
+
+@pytest.mark.parametrize("configured", [Path("outputs/draft"), Path("/durable/draft")])
+def test_train_end_resolves_relative_export_under_log_dir(monkeypatch, tmp_path, configured):
+    module = salm_dflash.SALMDFlashModule(
+        nn.Linear(1, 1),
+        {"dflash": {"mask_token_id": 18, "output_dir": str(configured)}},
+    )
+    module.draft_model = Mock()
+    module._trainer = SimpleNamespace(is_global_zero=True, log_dir=str(tmp_path / "experiment"))
+    state_dict = {"weight": torch.tensor([1.0])}
+    monkeypatch.setattr(salm_dflash, "_get_consolidated_model_state_dict", lambda _model: state_dict)
+
+    module.on_train_end()
+
+    expected = configured if configured.is_absolute() else tmp_path / "experiment" / configured
+    module.draft_model.save_pretrained.assert_called_once_with(expected, state_dict=state_dict)
+
+
+def test_training_step_returns_differentiable_zero_when_every_dataset_is_skipped(
+    monkeypatch,
+):
+    module = salm_dflash.SALMDFlashModule(nn.Linear(1, 1), {"dflash": {"mask_token_id": 18}})
+    module.draft_model = nn.Linear(1, 1)
+    log = Mock()
+    monkeypatch.setattr(module, "log", log)
+    monkeypatch.setattr(salm_dflash, "_max_rank_value", lambda value, _device: value)
+    monkeypatch.setattr(salm_dflash, "_all_ranks_agree", lambda condition, _device: condition)
+    monkeypatch.setattr(salm_dflash, "_all_ranks_report_same_value", lambda _value, _device: True)
+    monkeypatch.setattr(
+        module,
+        "_run_batch",
+        Mock(side_effect=salm_dflash.NoValidAnchorsError("skip")),
+    )
+
+    loss = module.training_step({"input_ids": torch.ones(1, 2, dtype=torch.long)}, batch_idx=0)
+
+    assert loss.item() == 0.0
+    assert loss.requires_grad
+    loss.backward()
+    assert all(parameter.grad is None for parameter in module.draft_model.parameters())
+    log.assert_any_call("train/dflash_skipped_step", 1.0, on_step=True)
+    log.assert_any_call("train/dflash_skip/no_valid_anchors", 1.0, on_step=True)
+
+
+def test_validation_step_accumulates_additive_metrics_in_float64(monkeypatch):
+    module = salm_dflash.SALMDFlashModule(nn.Linear(1, 1), {"dflash": {"mask_token_id": 18}})
+    module.draft_model = nn.Linear(1, 1)
+    metrics = SimpleNamespace(
+        loss=torch.tensor(2.0, dtype=torch.bfloat16),
+        loss_weight=torch.tensor(3.0),
+        correct_tokens=torch.tensor(2**24 + 1),
+        valid_tokens=torch.tensor(2**24 + 3),
+        accept_len_sum=torch.tensor(7.0),
+        valid_blocks=torch.tensor(4),
+    )
+    monkeypatch.setattr(salm_dflash, "_max_rank_value", lambda value, _device: value)
+    monkeypatch.setattr(salm_dflash, "_all_ranks_agree", lambda condition, _device: condition)
+    monkeypatch.setattr(salm_dflash, "_all_ranks_report_same_value", lambda _value, _device: True)
+    monkeypatch.setattr(module, "_run_batch", Mock(return_value=metrics))
+
+    module.validation_step({"input_ids": torch.ones(1, 2, dtype=torch.long)}, batch_idx=0)
+
+    stored = module._partial_val_metrics["validation"][0]
+    assert stored.dtype == torch.float64
+    assert stored[2].item() == 2**24 + 1
+    assert stored[3].item() == 2**24 + 3
+
+
+def test_aggregate_validation_accuracy_preserves_default_checkpoint_monitor(
+    monkeypatch,
+):
+    module = salm_dflash.SALMDFlashModule(nn.Linear(1, 1), {"dflash": {"mask_token_id": 18}})
+    log = Mock()
+    monkeypatch.setattr(module, "log", log)
+
+    module._log_validation_metrics(torch.tensor([8.0, 4.0, 3.0, 6.0, 5.0, 2.0]))
+
+    log.assert_any_call("val/dflash_accuracy", torch.tensor(0.5), on_epoch=True)
+    log.assert_any_call("val_acc", torch.tensor(0.5), on_epoch=True)
+
+
+def test_dflash2_validation_uses_separate_loss_denominators_and_selector_metrics(
+    monkeypatch,
+):
+    module = salm_dflash.SALMDFlashModule(
+        nn.Linear(1, 1),
+        {
+            "dflash": {
+                "variant": "dflash2",
+                "mask_token_id": 18,
+                "selector_loss_weight": 0.5,
+            }
+        },
+    )
+    log = Mock()
+    monkeypatch.setattr(module, "log", log)
+
+    module._log_validation_metrics(torch.tensor([8.0, 4.0, 6.0, 3.0, 3.0, 6.0, 5.0, 2.0, 2.0, 4.0, 5.0]))
+
+    log.assert_any_call("val/dflash_loss", torch.tensor(3.0), on_epoch=True)
+    log.assert_any_call("val/dflash_selector_loss", torch.tensor(2.0), on_epoch=True)
+    log.assert_any_call("val/dflash_accuracy", torch.tensor(0.5), on_epoch=True)
+    log.assert_any_call("val/dflash_base_accept_len", torch.tensor(2.0), on_epoch=True)
+    log.assert_any_call("val/dflash_candidate_recall", torch.tensor(5.0 / 6.0), on_epoch=True)
+    log.assert_any_call("val_acc", torch.tensor(0.5), on_epoch=True)
+
+
+def test_state_dict_hook_keeps_only_draft_parameters():
+    module = SimpleNamespace(_CHECKPOINT_STATE_PREFIX="draft_model.")
+    state_dict = {
+        "wrapper.draft_model.layer.weight": torch.ones(1),
+        "wrapper.target.layer.weight": torch.ones(1),
+        "wrapper.trainer_module.loss.weight": torch.ones(1),
+    }
+
+    salm_dflash.SALMDFlashModule._keep_draft_checkpoint_state(module, state_dict, "wrapper.", {})
+
+    assert list(state_dict) == ["wrapper.draft_model.layer.weight"]

@@ -18,6 +18,7 @@ Unit tests use simple nn.Module subclasses (no HF downloads, no CUDA).
 Integration tests use real SALM / SALMAutomodel (require HF config download;
 SALMAutomodel tests also require CUDA).
 """
+
 import os
 from unittest.mock import Mock, patch
 
@@ -27,6 +28,11 @@ import torch.distributed.checkpoint as dcp
 from omegaconf import DictConfig
 from safetensors.torch import save_file
 
+from nemo.collections.speechlm2.parts.hf_hub import (
+    _canonical_dtensor_checkpoint_key,
+    _canonicalize_named_tensors,
+    _load_state_dict_with_dtensors,
+)
 from nemo.collections.speechlm2.parts.pretrained import (
     _is_dcp_checkpoint,
     init_from_training_checkpoint,
@@ -149,6 +155,96 @@ class TestInitFromTrainingCheckpoint:
         init_from_training_checkpoint(target, str(hf_dir))
         _assert_state_dicts_equal(target.state_dict(), source.state_dict())
 
+    def test_hf_directory_with_dtensors_uses_distributed_loader(self, tmp_path):
+        hf_dir = tmp_path / "hf_model"
+        hf_dir.mkdir()
+        (hf_dir / "model.safetensors").touch()
+        model = ConfigurableModel({})
+
+        with (
+            patch(
+                "nemo.collections.speechlm2.parts.pretrained._model_has_dtensors",
+                return_value=True,
+            ),
+            patch("nemo.collections.speechlm2.parts.hf_hub._load_state_dict_with_dtensors") as distributed_load,
+            patch("nemo.collections.speechlm2.parts.pretrained.init_model_from_checkpoint") as regular_load,
+        ):
+            init_from_training_checkpoint(model, str(hf_dir))
+
+        distributed_load.assert_called_once_with(model, str(hf_dir), strict=True)
+        regular_load.assert_not_called()
+
+    def test_hf_directory_with_dtensors_can_disable_strict_loading(self, tmp_path):
+        hf_dir = tmp_path / "hf_model"
+        hf_dir.mkdir()
+        (hf_dir / "model.safetensors").touch()
+        model = ConfigurableModel({"init_from_checkpoint_strict": False})
+
+        with (
+            patch(
+                "nemo.collections.speechlm2.parts.pretrained._model_has_dtensors",
+                return_value=True,
+            ),
+            patch("nemo.collections.speechlm2.parts.hf_hub._load_state_dict_with_dtensors") as distributed_load,
+        ):
+            init_from_training_checkpoint(model, str(hf_dir))
+
+        distributed_load.assert_called_once_with(model, str(hf_dir), strict=False)
+
+
+# ---------------------------------------------------------------------------
+# Distributed HF checkpoint namespace canonicalization
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_checkpoint_wrapper_runtime_name_maps_to_hf_export_name():
+    assert (
+        _canonical_dtensor_checkpoint_key("llm.model.layers.0._checkpoint_wrapped_module.self_attn.q_proj.weight")
+        == "llm.model.layers.0.self_attn.q_proj.weight"
+    )
+
+
+@pytest.mark.unit
+def test_checkpoint_wrapper_name_mapping_preserves_destination_tensor():
+    tensor = torch.ones(2)
+    result = _canonicalize_named_tensors([("model._checkpoint_wrapped_module.proj.weight", tensor)], "parameter")
+
+    assert result == {"model.proj.weight": tensor}
+
+
+@pytest.mark.unit
+def test_checkpoint_wrapper_name_collision_fails_closed():
+    with pytest.raises(RuntimeError, match="Multiple runtime parameter names"):
+        _canonicalize_named_tensors(
+            [
+                ("model.proj.weight", torch.ones(1)),
+                ("model._checkpoint_wrapped_module.proj.weight", torch.zeros(1)),
+            ],
+            "parameter",
+        )
+
+
+@pytest.mark.unit
+def test_wrapper_aware_distributed_hf_loader_copies_checkpoint_value(tmp_path):
+    class WrappedLinear(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self._checkpoint_wrapped_module = torch.nn.Linear(3, 2, bias=False)
+
+    class WrappedModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.model = WrappedLinear()
+
+    model = WrappedModel()
+    expected = torch.arange(6, dtype=torch.float32).reshape(2, 3)
+    save_file({"model.weight": expected}, str(tmp_path / "model.safetensors"))
+
+    _load_state_dict_with_dtensors(model, str(tmp_path))
+
+    torch.testing.assert_close(model.model._checkpoint_wrapped_module.weight, expected)
+
 
 # ---------------------------------------------------------------------------
 # init_from_training_checkpoint — DCP path (mocked)
@@ -224,7 +320,10 @@ def test_load_local_nemo_resolves_concrete_target(tmp_path):
     with (
         patch.object(BaseModel, "restore_from", base_restore, create=True),
         patch.object(ConcreteModel, "restore_from", concrete_restore, create=True),
-        patch("nemo.core.classes.common._get_allowed_target_class", return_value=ConcreteModel) as resolve_target,
+        patch(
+            "nemo.core.classes.common._get_allowed_target_class",
+            return_value=ConcreteModel,
+        ) as resolve_target,
     ):
         result = load_pretrained_nemo(BaseModel, str(model_path))
 
@@ -262,7 +361,10 @@ def test_load_local_nemo_rejects_unrelated_target(tmp_path):
 
     with (
         patch.object(BaseModel, "restore_from", base_restore, create=True),
-        patch("nemo.core.classes.common._get_allowed_target_class", return_value=UnrelatedModel),
+        patch(
+            "nemo.core.classes.common._get_allowed_target_class",
+            return_value=UnrelatedModel,
+        ),
         pytest.raises(TypeError, match="not a subclass"),
     ):
         load_pretrained_nemo(BaseModel, str(model_path))
@@ -287,7 +389,10 @@ def test_load_local_nemo_accepts_wrapped_subclass(tmp_path):
     with (
         patch.object(BaseModel, "restore_from", base_restore, create=True),
         patch.object(WrappedModel, "restore_from", wrapped_restore, create=True),
-        patch("nemo.core.classes.common._get_allowed_target_class", return_value=WrappedModel),
+        patch(
+            "nemo.core.classes.common._get_allowed_target_class",
+            return_value=WrappedModel,
+        ),
     ):
         result = load_pretrained_nemo(BaseModel, str(model_path))
 

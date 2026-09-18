@@ -25,8 +25,10 @@ from torch import nn
 from nemo.collections.asr.models import SortformerEncLabelModel
 from nemo.collections.asr.modules.conformer_encoder import ConformerEncoder
 from nemo.collections.asr.modules.parallel_expert_encoder import (
+    MultiSpeakerSOTWordTimestampAligner,
     ParallelExpertEncoder,
     ParallelExpertEncoderPT,
+    TransformerCTCDecoder,
     _clone_config,
     _default_dtype,
     _disable_dist_feature_sync,
@@ -49,6 +51,54 @@ def test_clone_config_is_deep_and_handles_none():
     clone.a.b = 2
     assert cfg.a.b == 1  # original untouched
     assert _clone_config(None) is None
+
+
+@pytest.mark.unit
+def test_ctc_timestamp_capture_loads_then_aligns_cached_outputs(monkeypatch):
+    encoder = _PEE.__new__(_PEE)
+    nn.Module.__init__(encoder)
+    encoder.ctc_timestamp_model_path = "/tmp/adapter.nemo"
+    captured = {}
+
+    class _Extractor:
+        ctc_decoder = nn.Identity()
+
+        def extract_from_outputs_batch(self, **kwargs):
+            captured["extract_kwargs"] = kwargs
+            return [{"timestamps": []}]
+
+    def get_extractor(actual_encoder, model_path, device):
+        captured["loader_args"] = (actual_encoder, model_path, device)
+        return _Extractor()
+
+    monkeypatch.setattr(
+        "nemo.collections.asr.modules.parallel_expert_encoder._get_ctc_timestamp_extractor", get_extractor
+    )
+    ctc_log_probs = torch.zeros(1, 4, 3)
+    ctc_lengths = torch.tensor([4])
+    speaker_probs = torch.zeros(1, 4, 2)
+    with encoder.capture_ctc_timestamps(torch.device("cpu")):
+        encoder._store_ctc_timestamp_outputs(ctc_log_probs, ctc_lengths, speaker_probs, ctc_lengths)
+        result = encoder.generate_ctc_timestamps(
+            sot_transcripts=["<spk:0> hello"],
+            audio_durations=[1.0],
+        )
+
+    assert result == [{"timestamps": []}]
+    assert captured["loader_args"] == (encoder, "/tmp/adapter.nemo", torch.device("cpu"))
+    assert captured["extract_kwargs"]["sot_transcripts"] == ["<spk:0> hello"]
+    assert captured["extract_kwargs"]["audio_durations"] == [1.0]
+    assert torch.equal(captured["extract_kwargs"]["ctc_log_probs"], ctc_log_probs)
+    assert "_ctc_timestamp_capture_state" not in encoder.__dict__
+
+
+@pytest.mark.unit
+def test_generate_ctc_timestamps_requires_current_capture():
+    encoder = _PEE.__new__(_PEE)
+    nn.Module.__init__(encoder)
+
+    with pytest.raises(RuntimeError, match="No CTC outputs were captured"):
+        encoder.generate_ctc_timestamps(sot_transcripts=["hello"], audio_durations=[1.0])
 
 
 @pytest.mark.unit
@@ -77,6 +127,261 @@ def test_disable_dist_feature_sync_noop_when_uninitialized():
     with _disable_dist_feature_sync():
         pass
     assert dist.is_initialized is orig  # nothing patched when dist is down
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("use_transformer", [True, False])
+def test_transformer_ctc_decoder_modes(use_transformer):
+    torch.manual_seed(7)
+    decoder = TransformerCTCDecoder(
+        feat_in=32,
+        num_classes=5,
+        use_transformer=use_transformer,
+        n_heads=2,
+        n_layers=1,
+        drop_rate=0.0,
+        ff_expansion=0.5,
+        self_attention_model="rope",
+    ).eval()
+    lengths = torch.tensor([7, 4])
+    states = torch.randn(2, 32, 7)
+
+    with torch.no_grad():
+        log_probs = decoder(encoder_output=states, encoded_lengths=lengths if use_transformer else None)
+
+    assert log_probs.shape == (2, 7, 6)
+    assert torch.allclose(log_probs.exp().sum(dim=-1), torch.ones(2, 7), atol=1e-5)
+    assert decoder.requires_encoded_lengths is use_transformer
+    assert (decoder.transformer is not None) is use_transformer
+    assert isinstance(decoder.decoder_layers[0], nn.Conv1d)
+
+    if use_transformer:
+        changed_padded_states = states.clone()
+        changed_padded_states[1, :, 4:] = torch.randn_like(changed_padded_states[1, :, 4:]) * 100
+        with torch.no_grad():
+            reference = decoder(encoder_output=states, encoded_lengths=lengths)
+            actual = decoder(encoder_output=changed_padded_states, encoded_lengths=lengths)
+        assert torch.allclose(reference[1, :4], actual[1, :4], atol=1e-6)
+
+        with pytest.raises(ValueError, match="requires encoded_lengths"):
+            decoder(encoder_output=states, encoded_lengths=None)
+
+
+@pytest.mark.unit
+def test_parse_sot_words_retains_turns_and_assigns_untagged_single_speaker():
+    words = MultiSpeakerSOTWordTimestampAligner.parse_sot_words("<spk:0> hello <spk:1> yes <spk:0> again")
+    assert [(word['speaker_tag'], word['turn_index']) for word in words] == [(0, 0), (1, 1), (0, 2)]
+
+    untagged = MultiSpeakerSOTWordTimestampAligner.parse_sot_words("hello world")
+    assert [word['speaker_tag'] for word in untagged] == [0, 0]
+
+
+@pytest.mark.unit
+def test_timestamp_extractor_batches_all_speakers_in_parallel(monkeypatch):
+    blank_id = 2
+    token_ids = {'a': 0, 'b': 1}
+
+    def tokenize_words(words, blank):
+        assert blank == blank_id
+        return [dict(word, token_ids=[token_ids[word['word']]]) for word in words]
+
+    labels = [blank_id, 0, blank_id, 1, blank_id]
+    logits = torch.full((len(labels), blank_id + 1), -12.0)
+    for frame, label in enumerate(labels):
+        logits[frame, label] = 12.0
+
+    extractor = MultiSpeakerSOTWordTimestampAligner(blank_id=blank_id)
+    monkeypatch.setattr(extractor, '_tokenize_words', tokenize_words)
+    calls = []
+    original = extractor._ctc_forced_align_batched
+
+    def record_batch(*args, **kwargs):
+        call_labels = args[1] if args else kwargs['labels']
+        calls.append(call_labels.shape[0])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(extractor, '_ctc_forced_align_batched', record_batch)
+    result = extractor.extract_from_outputs_batch(
+        ctc_log_probs=torch.log_softmax(logits, dim=-1).unsqueeze(0),
+        sortformer_sigmoids=None,
+        sot_transcripts=['<spk:0> a <spk:1> b'],
+    )[0]
+
+    # Preliminary CTC-only and final alignments each contain both speakers.
+    assert calls == [2, 2]
+    assert result['alignment_mode'] == 'parallel'
+    assert set(result['speaker_word_timestamps']) == {0, 1}
+
+
+@pytest.mark.unit
+def test_timestamp_extractor_runs_untagged_single_speaker_in_parallel(monkeypatch):
+    blank_id = 1
+
+    def tokenize_words(words, blank):
+        assert blank == blank_id
+        return [dict(word, token_ids=[0]) for word in words]
+
+    logits = torch.full((5, 2), -12.0)
+    for frame, label in enumerate([blank_id, 0, blank_id, 0, blank_id]):
+        logits[frame, label] = 12.0
+    extractor = MultiSpeakerSOTWordTimestampAligner(blank_id=blank_id)
+    monkeypatch.setattr(extractor, '_tokenize_words', tokenize_words)
+    calls = []
+    original = extractor._ctc_forced_align_batched
+
+    def record_batch(*args, **kwargs):
+        call_labels = args[1] if args else kwargs['labels']
+        calls.append(call_labels.shape[0])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(extractor, '_ctc_forced_align_batched', record_batch)
+
+    result = extractor.extract_from_outputs_batch(
+        ctc_log_probs=torch.log_softmax(logits, dim=-1).unsqueeze(0),
+        sortformer_sigmoids=None,
+        sot_transcripts=['hello world'],
+    )[0]
+
+    assert result['alignment_mode'] == 'parallel'
+    assert calls == [1, 1]
+    assert [row['word'] for row in result['speaker_word_timestamps'][0]] == ['hello', 'world']
+
+
+@pytest.mark.unit
+def test_dense_batched_ctc_alignment_handles_repeated_tokens():
+    blank_id = 1
+    target = torch.tensor([[blank_id, 0, blank_id, 0, blank_id]])
+    frame_labels = [blank_id, 0, blank_id, 0, blank_id]
+    logits = torch.full((len(frame_labels), 2), -12.0)
+    for frame, label in enumerate(frame_labels):
+        logits[frame, label] = 12.0
+
+    paths, scores = MultiSpeakerSOTWordTimestampAligner()._ctc_forced_align_batched(
+        torch.log_softmax(logits, dim=-1),
+        target,
+        torch.tensor([target.shape[1]]),
+        blank_id,
+        torch.full_like(target, -1),
+        None,
+        0.0,
+    )
+
+    assert target[0, paths[0]].tolist() == frame_labels
+    assert len(scores) == 1
+
+
+@pytest.mark.unit
+def test_timestamp_extractor_maps_speakers_from_preliminary_ctc_paths(monkeypatch):
+    blank_id = 2
+    token_ids = {'a': 0, 'b': 1}
+
+    def tokenize_words(words, blank):
+        assert blank == blank_id
+        return [dict(word, token_ids=[token_ids[word['word']]]) for word in words]
+
+    frame_labels = [blank_id, 0, 0, blank_id, 1, 1, blank_id]
+    logits = torch.full((len(frame_labels), blank_id + 1), -12.0)
+    for frame, label in enumerate(frame_labels):
+        logits[frame, label] = 12.0
+    speaker_probs = torch.tensor(
+        [
+            [0.1, 0.9],
+            [0.1, 0.9],
+            [0.1, 0.9],
+            [0.5, 0.5],
+            [0.9, 0.1],
+            [0.9, 0.1],
+            [0.9, 0.1],
+        ]
+    )
+    extractor = MultiSpeakerSOTWordTimestampAligner(blank_id=blank_id, speaker_logprob_weight=0.0)
+    monkeypatch.setattr(extractor, '_tokenize_words', tokenize_words)
+
+    result = extractor.extract_from_outputs_batch(
+        ctc_log_probs=torch.log_softmax(logits, dim=-1).unsqueeze(0),
+        sortformer_sigmoids=speaker_probs.unsqueeze(0),
+        sot_transcripts=['<spk:0> a <spk:1> b'],
+    )[0]
+
+    assert result['speaker_tag_to_sortformer_column'] == {0: 1, 1: 0}
+    assert result['alignment_mode'] == 'parallel'
+
+
+@pytest.mark.unit
+def test_timestamp_extractor_keeps_parallel_mode_when_speakers_exceed_columns(monkeypatch):
+    blank_id = 2
+    token_ids = {'a': 0, 'b': 1}
+
+    def tokenize_words(words, blank):
+        return [dict(word, token_ids=[token_ids[word['word']]]) for word in words]
+
+    frame_labels = [blank_id, 0, blank_id, 1, blank_id]
+    logits = torch.full((len(frame_labels), blank_id + 1), -12.0)
+    for frame, label in enumerate(frame_labels):
+        logits[frame, label] = 12.0
+    extractor = MultiSpeakerSOTWordTimestampAligner(blank_id=blank_id)
+    monkeypatch.setattr(extractor, '_tokenize_words', tokenize_words)
+
+    result = extractor.extract_from_outputs_batch(
+        ctc_log_probs=torch.log_softmax(logits, dim=-1).unsqueeze(0),
+        sortformer_sigmoids=torch.ones(1, len(frame_labels), 1),
+        sot_transcripts=['<spk:0> a <spk:1> b'],
+    )[0]
+
+    assert result['alignment_mode'] == 'parallel'
+    assert result['speaker_tag_to_sortformer_column'] == {0: None, 1: None}
+
+
+@pytest.mark.unit
+def test_timestamp_extractor_batch_honors_record_lengths(monkeypatch):
+    blank_id = 2
+    token_ids = {'a': 0, 'b': 1}
+
+    def tokenize_words(words, blank):
+        return [dict(word, token_ids=[token_ids[word['word']]]) for word in words]
+
+    def log_probs(frame_labels, padded_frames=7):
+        logits = torch.full((padded_frames, blank_id + 1), -12.0)
+        for frame, label in enumerate(frame_labels):
+            logits[frame, label] = 12.0
+        return torch.log_softmax(logits, dim=-1)
+
+    extractor = MultiSpeakerSOTWordTimestampAligner(blank_id=blank_id)
+    monkeypatch.setattr(extractor, '_tokenize_words', tokenize_words)
+    results = extractor.extract_from_outputs_batch(
+        ctc_log_probs=torch.stack(
+            [
+                log_probs([blank_id, 0, 0, blank_id]),
+                log_probs([blank_id, 1, 1, blank_id, blank_id]),
+            ]
+        ),
+        sortformer_sigmoids=None,
+        sot_transcripts=['<spk:0> a', '<spk:1> b'],
+        ctc_lengths=torch.tensor([4, 5]),
+    )
+
+    assert [result['num_ctc_frames'] for result in results] == [4, 5]
+    assert [result['alignment_mode'] for result in results] == ['parallel', 'parallel']
+
+
+@pytest.mark.unit
+def test_timestamp_extractor_rejects_mismatched_batch_metadata():
+    extractor = MultiSpeakerSOTWordTimestampAligner(blank_id=2)
+    with pytest.raises(ValueError, match='one string per batch item'):
+        extractor.extract_from_outputs_batch(
+            ctc_log_probs=torch.zeros(2, 4, 3),
+            sortformer_sigmoids=None,
+            sot_transcripts=['only one'],
+        )
+
+
+@pytest.mark.unit
+def test_transformer_ctc_decoder_rejects_unsupported_modes():
+    with pytest.raises(ValueError, match="residual connections require use_transformer=True"):
+        TransformerCTCDecoder(feat_in=32, num_classes=5, use_transformer=False, residual=True)
+
+    with pytest.raises(ValueError, match="d_model to equal feat_in"):
+        TransformerCTCDecoder(feat_in=32, num_classes=5, d_model=16)
 
 
 # ----------------------------------------------------------------------------- #
@@ -183,6 +488,17 @@ class _FakeASR(nn.Module):
         return out, length // self.subsampling_factor
 
 
+class _FakeCTCDecoder(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.calls = []
+
+    def forward(self, encoder_output, encoded_lengths):
+        self.calls.append(encoded_lengths.clone())
+        batch_size, _, num_frames = encoder_output.shape
+        return torch.full((batch_size, num_frames, 3), float(len(self.calls)), device=encoder_output.device)
+
+
 def online_stub(d_model, n_spk, sf, win, lc, rc):
     enc = _PEE.__new__(_PEE)
     nn.Module.__init__(enc)
@@ -229,6 +545,72 @@ def test_forward_online_output_length_telescopes(sf, win, lc, rc, n_frames):
     expected_t = round(n_frames / sf)
     assert outputs.shape == (b, d_model, expected_t)
     assert encoded_len.tolist() == [expected_t] * b
+
+
+@pytest.mark.unit
+def test_forward_online_skips_ctc_head_when_capture_is_disabled():
+    enc = online_stub(d_model=16, n_spk=4, sf=8, win=10, lc=2, rc=2)
+    decoder = _FakeCTCDecoder()
+    extractor = type("Extractor", (), {"ctc_decoder": decoder})()
+    enc.__dict__["_ctc_timestamp_extractor_cache"] = ("/tmp/adapter.nemo", extractor)
+
+    enc._forward_online(
+        audio_signal=torch.randn(1, 80, 200),
+        length=torch.tensor([200]),
+        spk_targets=torch.rand(1, 25, 4),
+    )
+
+    assert decoder.calls == []
+
+
+@pytest.mark.unit
+def test_forward_online_captures_ctc_chunks_on_matching_core_boundaries():
+    enc = online_stub(d_model=16, n_spk=4, sf=8, win=10, lc=2, rc=2)
+    decoder = _FakeCTCDecoder()
+    extractor = type("Extractor", (), {"ctc_decoder": decoder})()
+    capture_state = {"extractor": extractor, "outputs": None}
+    enc.__dict__["_ctc_timestamp_capture_state"] = capture_state
+
+    _, encoded_len = enc._forward_online(
+        audio_signal=torch.randn(2, 80, 200),
+        length=torch.tensor([200, 160]),
+        spk_targets=torch.rand(2, 25, 4),
+    )
+
+    captured = capture_state["outputs"]
+    assert len(decoder.calls) == 3
+    assert captured["ctc_log_probs"].shape == (2, 25, 3)
+    assert captured["ctc_lengths"].tolist() == encoded_len.tolist() == [25, 20]
+    assert captured["sortformer_sigmoids"].shape == (2, 25, 4)
+    assert captured["sortformer_lengths"].tolist() == [25, 20]
+    assert captured["ctc_log_probs"][0, :, 0].tolist() == [1.0] * 10 + [2.0] * 10 + [3.0] * 5
+
+
+@pytest.mark.unit
+def test_forward_offline_captures_ctc_without_second_asr_pass():
+    enc = online_stub(d_model=16, n_spk=4, sf=8, win=10, lc=2, rc=2)
+    decoder = _FakeCTCDecoder()
+    extractor = type("Extractor", (), {"ctc_decoder": decoder})()
+    capture_state = {"extractor": extractor, "outputs": None}
+    enc.__dict__["_ctc_timestamp_capture_state"] = capture_state
+    asr_calls = 0
+    original_asr_forward = enc.asr_encoder.forward
+
+    def count_asr_calls(*args, **kwargs):
+        nonlocal asr_calls
+        asr_calls += 1
+        return original_asr_forward(*args, **kwargs)
+
+    enc.asr_encoder.forward = count_asr_calls
+    enc._forward(
+        audio_signal=torch.randn(1, 80, 64),
+        length=torch.tensor([64]),
+        spk_targets=torch.rand(1, 8, 4),
+    )
+
+    assert asr_calls == 1
+    assert len(decoder.calls) == 1
+    assert capture_state["outputs"]["ctc_lengths"].tolist() == [8]
 
 
 # ----------------------------------------------------------------------------- #

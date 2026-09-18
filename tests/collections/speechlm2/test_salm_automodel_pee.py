@@ -25,6 +25,7 @@ and exercises the SALM training / validation / generation path end to end, plus 
 """
 import importlib.util
 import os
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -321,10 +322,15 @@ class _PEETestTokenizer:
 
     def __init__(self, audio_locator_tag):
         self._audio_locator_tag = audio_locator_tag
+        self.tokenizer = SimpleNamespace(all_special_tokens=["<s>", "</s>", "<spk:0>"])
 
     def token_to_id(self, token):
         assert token == self._audio_locator_tag
         return 99
+
+    def ids_to_text(self, ids, remove_special_tokens=True):
+        assert not remove_special_tokens
+        return "<s><spk:0> generated transcript</s>"
 
 
 class _PEETestLLM(torch.nn.Module):
@@ -334,6 +340,10 @@ class _PEETestLLM(torch.nn.Module):
         self.model.embed_tokens = torch.nn.Embedding(128, 1)
         with torch.no_grad():
             self.model.embed_tokens.weight.zero_()
+
+    def generate(self, **kwargs):
+        device = kwargs["inputs_embeds"].device
+        return torch.tensor([[11, 12]], dtype=torch.long, device=device)
 
 
 class _PEETestPerception(torch.nn.Module):
@@ -445,3 +455,57 @@ def test_pee_generation_warns_that_outer_chunking_is_ignored(dummy_pe_encoder):
 
     with pytest.warns(UserWarning, match="generate ignores encoder_chunk_size_seconds"):
         model._warn_parallel_expert_encoder_inference_chunking()
+
+
+@pytest.mark.unit
+def test_pee_generation_without_timestamps_preserves_tensor_return(dummy_pe_encoder):
+    model = _make_pee_routing_test_model(dummy_pe_encoder)
+
+    result = model.generate(
+        prompts=torch.tensor([[model.audio_locator_tag_id, 10]], dtype=torch.long),
+        audios=torch.tensor([[1.0, 2.0, 3.0]]),
+        audio_lens=torch.tensor([3], dtype=torch.long),
+    )
+
+    assert torch.equal(result, torch.tensor([[11, 12]]))
+
+
+@pytest.mark.unit
+def test_pee_generation_with_timestamps_aligns_generated_text(dummy_pe_encoder, monkeypatch):
+    model = _make_pee_routing_test_model(dummy_pe_encoder)
+    dummy_pe_encoder.ctc_timestamp_model_path = "/tmp/adapter.nemo"
+    expected = {"speaker_word_timestamps": {0: [{"word": "generated", "start": 0.1, "end": 0.2}]}}
+    calls = []
+    capture_active = False
+
+    @contextmanager
+    def capture_ctc_timestamps(device):
+        nonlocal capture_active
+        calls.append({"capture_device": device})
+        capture_active = True
+        try:
+            yield
+        finally:
+            capture_active = False
+
+    def generate_ctc_timestamps(**kwargs):
+        assert capture_active
+        calls.append(kwargs)
+        return [expected]
+
+    monkeypatch.setattr(dummy_pe_encoder, "capture_ctc_timestamps", capture_ctc_timestamps)
+    monkeypatch.setattr(dummy_pe_encoder, "generate_ctc_timestamps", generate_ctc_timestamps)
+    result = model.generate(
+        prompts=torch.tensor([[model.audio_locator_tag_id, 10]], dtype=torch.long),
+        audios=torch.tensor([[1.0, 2.0, 3.0]]),
+        audio_lens=torch.tensor([3], dtype=torch.long),
+        generate_timestamps=True,
+    )
+
+    assert torch.equal(result["answer_ids"], torch.tensor([[11, 12]]))
+    assert result["timestamps"] == [expected]
+    assert calls[0]["capture_device"] == torch.device("cpu")
+    assert calls[1]["sot_transcripts"] == ["<spk:0> generated transcript"]
+    assert calls[1]["audio_durations"] == [3 / 16000]
+    assert "ctc_timestamp_model_path" not in calls[1]
+    assert not capture_active

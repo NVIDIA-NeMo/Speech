@@ -19,8 +19,7 @@ Runs a Sortformer speaker-diarization branch and either an ASR FastConformer or
 native Transformer encoder on the same mel input, then fuses their outputs with
 a sinusoidal speaker kernel. The encoder expects unnormalized mels; the ASR and
 Sortformer branches independently reapply ``normalize_batch`` internally. I/O
-matches :class:`ConformerEncoder`, including a compatibility fallback for
-packed SALM execution.
+matches :class:`ConformerEncoder`.
 
 Only self-contained bundles with inline ``asr_encoder_cfg`` and
 ``diarization_model_cfg`` sections are supported.
@@ -32,9 +31,10 @@ import contextlib
 import io
 import math
 import os
+import re
 import tarfile
 from collections.abc import Mapping
-from typing import Any, List, Optional, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import torch
 import torch.distributed as dist
@@ -44,13 +44,9 @@ from torch import nn
 from tqdm import tqdm
 
 from nemo.collections.asr.modules.conformer_encoder import ConformerEncoder
+from nemo.collections.asr.modules.conv_asr import ConvASRDecoder
 from nemo.collections.asr.modules.transformer_encoder import TransformerEncoder
-from nemo.collections.asr.parts.packed_sequence import (
-    PackedEncoderActivations,
-    pack_encoder_output,
-    unpack_encoder_output,
-)
-from nemo.collections.asr.parts.preprocessing.features import normalize_batch, normalize_packed_batch
+from nemo.collections.asr.parts.preprocessing.features import normalize_batch
 from nemo.core.classes import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo, Serialization
 from nemo.core.classes.module import freeze, unfreeze
@@ -60,6 +56,8 @@ from nemo.utils.decorators import experimental
 __all__ = [
     "ParallelExpertEncoder",
     "ParallelExpertEncoderPT",
+    "TransformerCTCDecoder",
+    "MultiSpeakerSOTWordTimestampAligner",
 ]
 
 _ASR_ENCODER_TYPES = {
@@ -74,6 +72,7 @@ _BUNDLE_CONFIG_OVERRIDE_KEYS = frozenset(
     {
         "asr_normalize_type",
         "chunk_size_seconds",
+        "ctc_timestamp_model_path",
         "diar_normalize_type",
         "frame_shift_seconds",
         "missing_rttm_target",
@@ -252,7 +251,23 @@ def _read_bundle_members(nemo_path: str) -> tuple[DictConfig, dict[str, torch.Te
 class ParallelExpertEncoderPT(ModelPT):
     """ModelPT shell for saving and restoring a PE ``.nemo`` archive."""
 
+    @classmethod
+    def list_available_models(cls) -> List[PretrainedModelInfo]:
+        return []
+
+    def setup_training_data(self, train_data_config: Union[DictConfig, dict]):
+        pass
+
+    def setup_validation_data(self, val_data_config: Union[DictConfig, dict]):
+        pass
+
     def __init__(self, cfg: DictConfig, trainer: Optional[Trainer] = None):
+        """Initialize a serializable Parallel Expert Encoder wrapper.
+
+        Args:
+            cfg (DictConfig): Parallel Expert Encoder bundle configuration.
+            trainer (Optional[Trainer]): Lightning trainer associated with the model.
+        """
         self._validate_bundle_schema(cfg)
         super().__init__(cfg=cfg, trainer=trainer)
         speaker_feature_mode, speaker_activity_threshold = _resolve_speaker_feature_contract(self._cfg)
@@ -277,15 +292,19 @@ class ParallelExpertEncoderPT(ModelPT):
             frame_shift_seconds=self._cfg.get("frame_shift_seconds", 0.01),
             chunk_size_seconds=self._cfg.get("chunk_size_seconds", None),
             sync_max_audio_length=self._cfg.get("sync_max_audio_length", False),
+            ctc_timestamp_model_path=self._cfg.get("ctc_timestamp_model_path", None),
         )
-        # Preserve the architecture-only bundle configuration for consolidated
-        # SpeechLM checkpoint export and serving reconstruction.
+        # Keep the architecture-only bundle config beside the inner module.
+        # SpeechLM HF export embeds this small config in config.json so the
+        # consolidated checkpoint can reconstruct phPEE without carrying a
+        # second, multi-GB copy of its initialization bundle.
         self.encoder._bundle_config = _clone_config(self._cfg)
         self.encoder._bundle_config.diar_normalize_type = self.encoder.diar_normalize_type
         self.encoder._bundle_config.speaker_feature_config_version = _SPEAKER_FEATURE_CONFIG_VERSION
         self.encoder._bundle_config.speaker_feature_mode = self.encoder.speaker_feature_mode
         self.encoder._bundle_config.speaker_activity_threshold = self.encoder.speaker_activity_threshold
         self.encoder._bundle_config.sync_max_audio_length = self.encoder.sync_max_audio_length
+        self.encoder._bundle_config.ctc_timestamp_model_path = self.encoder.ctc_timestamp_model_path
 
     @staticmethod
     def _validate_bundle_schema(cfg: DictConfig) -> None:
@@ -294,16 +313,6 @@ class ParallelExpertEncoderPT(ModelPT):
         if missing:
             raise ValueError(f"ParallelExpertEncoder bundle is missing required config sections {missing}.")
         _normalize_asr_encoder_type(cfg.get("asr_encoder_type", "fastconformer"))
-
-    @classmethod
-    def list_available_models(cls) -> List[PretrainedModelInfo]:
-        return []
-
-    def setup_training_data(self, train_data_config: Union[DictConfig, dict]):
-        pass
-
-    def setup_validation_data(self, val_data_config: Union[DictConfig, dict]):
-        pass
 
     @classmethod
     def is_pe_nemo(cls, nemo_path: str) -> bool:
@@ -322,7 +331,7 @@ class ParallelExpertEncoderPT(ModelPT):
                     if not str(cfg.get("target", "")).endswith("ParallelExpertEncoderPT"):
                         return False
                     # Keep the released public probe target-based. Runtime loading
-                    # validates the canonical bundle schema and remains strict.
+                    # uses the schema resolver and remains strict.
                     return True
         except (tarfile.TarError, OSError) as error:
             logging.warning("[ParallelExpertEncoder] Could not inspect %s: %s", nemo_path, error)
@@ -390,10 +399,10 @@ class ParallelExpertEncoderPT(ModelPT):
         *,
         map_location: Union[str, torch.device] = "cpu",
     ) -> ParallelExpertEncoder:
-        """Construct the encoder architecture without loading standalone weights.
+        """Construct phPEE architecture without loading standalone weights.
 
-        Consolidated SpeechLM checkpoints supply the encoder tensors from their
-        root state dictionary after constructing it from this embedded config.
+        This is intended for consolidated SpeechLM checkpoints, whose root
+        state dict supplies every phPEE tensor after construction.
         """
         shell = cls(cfg=OmegaConf.create(cfg), trainer=None)
         return shell.encoder.to(map_location)
@@ -452,8 +461,10 @@ class ParallelExpertEncoderPT(ModelPT):
         template_cfg.speaker_feature_config_version = _SPEAKER_FEATURE_CONFIG_VERSION
         template_cfg.speaker_feature_mode = encoder.speaker_feature_mode
         template_cfg.speaker_activity_threshold = encoder.speaker_activity_threshold
+        template_cfg.frame_shift_seconds = encoder.frame_shift_seconds
         template_cfg.chunk_size_seconds = encoder.chunk_size_seconds
         template_cfg.sync_max_audio_length = encoder.sync_max_audio_length
+        template_cfg.ctc_timestamp_model_path = encoder.ctc_timestamp_model_path
         shell._cfg = template_cfg
         shell.save_to(output_nemo_path)
 
@@ -469,7 +480,6 @@ class ParallelExpertEncoder(nn.Module):
     """
 
     supports_external_speaker_targets = True
-    supports_sequence_packed_output = True
 
     def __init__(
         self,
@@ -493,7 +503,33 @@ class ParallelExpertEncoder(nn.Module):
         frame_shift_seconds: float = 0.01,
         chunk_size_seconds: Optional[float] = None,
         sync_max_audio_length: bool = False,
+        ctc_timestamp_model_path: Optional[str] = None,
     ):
+        """Initialize the ASR and diarization experts and their fusion layers.
+
+        Args:
+            asr_encoder_cfg (DictConfig): Configuration used to construct the ASR encoder.
+            diarization_model_cfg (DictConfig): Configuration used to construct the Sortformer model.
+            asr_normalize_type (Optional[str]): Feature normalization applied before ASR inference.
+            diar_normalize_type (Optional[str]): Feature normalization applied before diarization.
+            freeze_diar (bool): Whether to freeze the diarization expert.
+            freeze_asr (bool): Whether to freeze the ASR expert.
+            online_inference_length (int): Core window length in encoded frames for online inference.
+            chunk_left_context (int): Number of encoded left-context frames per window.
+            chunk_right_context (int): Number of encoded right-context frames per window.
+            diar_fifo_len (int): Sortformer streaming FIFO length.
+            diar_spkcache_update_period (int): Sortformer speaker-cache update period.
+            diar_spkcache_len (int): Sortformer speaker-cache length.
+            asr_encoder_type (str): ASR encoder architecture name.
+            missing_rttm_target (float): Sentinel identifying rows without external speaker targets.
+            speaker_feature_mode (Optional[str]): Continuous or thresholded speaker-feature mode.
+            speaker_activity_threshold (Optional[float]): Activity threshold for thresholded fusion.
+            spk_kernel_scale (float): Scale applied to the sinusoidal speaker infusion.
+            frame_shift_seconds (float): Duration represented by one input feature frame.
+            chunk_size_seconds (Optional[float]): Optional independent-branch chunk duration.
+            sync_max_audio_length (bool): Whether child encoders synchronize maximum sequence lengths.
+            ctc_timestamp_model_path (Optional[str]): Local CTC timestamp adapter path.
+        """
         super().__init__()
 
         # Lazy import: SortformerEncLabelModel imports from asr.modules.
@@ -538,7 +574,7 @@ class ParallelExpertEncoder(nn.Module):
             )
 
         # The ASR and diarization experts are called from data-dependent paths
-        # in both packed training and replicated inference. Their positional
+        # in both training and replicated inference. Their positional
         # buffers are local state, so synchronizing the longest feature length
         # on the default process group is unnecessary and can deadlock when
         # ranks process different request shapes.
@@ -552,7 +588,6 @@ class ParallelExpertEncoder(nn.Module):
         if self.frame_shift_seconds <= 0:
             raise ValueError(f"frame_shift_seconds must be positive, got {frame_shift_seconds}.")
         self.chunk_size_seconds = self._validate_chunk_size("chunk_size_seconds", chunk_size_seconds)
-
         self.online_inference_length = int(online_inference_length)
         self.online_inference_enabled: Optional[bool] = None
         self.chunk_left_context = max(0, int(chunk_left_context))
@@ -569,6 +604,7 @@ class ParallelExpertEncoder(nn.Module):
             speaker_feature_mode, speaker_activity_threshold
         )
         self.spk_kernel_scale = float(spk_kernel_scale)
+        self.ctc_timestamp_model_path = ctc_timestamp_model_path
         self.n_spk = int(self.diarization_model.sortformer_modules.n_spk)
         self.asr_d_model = int(self.asr_encoder.d_model)
 
@@ -582,6 +618,7 @@ class ParallelExpertEncoder(nn.Module):
         self._apply_freezing()
 
     def _apply_freezing(self) -> None:
+        """Apply the configured trainability and evaluation modes to both experts."""
         if self.freeze_diar:
             self.diarization_model.requires_grad_(False)
             self.diarization_model.eval()
@@ -614,8 +651,8 @@ class ParallelExpertEncoder(nn.Module):
         """Wrap trainable ASR stages before FSDP2 sharding.
 
         The frozen Sortformer branch is deliberately excluded. Per-layer wrappers
-        preserve FSDP2 boundaries and native packed-layer dispatch, unlike a
-        checkpoint around the entire encoder call.
+        preserve FSDP2 boundaries, unlike a checkpoint around the entire encoder
+        call.
         """
         if not enabled or self.freeze_asr:
             return
@@ -644,82 +681,6 @@ class ParallelExpertEncoder(nn.Module):
             raise ValueError(f"{name} must be positive or None, got {value}.")
         return value
 
-    def _chunk_size_tokens(self, chunk_size_seconds: Optional[float]) -> Optional[int]:
-        if chunk_size_seconds is None:
-            return None
-        token_seconds = self.frame_shift_seconds * self.subsampling_factor
-        return max(1, round(chunk_size_seconds / token_seconds))
-
-    @staticmethod
-    def _chunk_metadata(packed: PackedEncoderActivations, max_tokens: int) -> PackedEncoderActivations:
-        chunk_lengths = []
-        for sequence_length in packed.lengths.detach().cpu().tolist():
-            chunk_lengths.extend([max_tokens] * (sequence_length // max_tokens))
-            if sequence_length % max_tokens:
-                chunk_lengths.append(sequence_length % max_tokens)
-        lengths = torch.as_tensor(chunk_lengths, dtype=torch.int64, device=packed.data.device)
-        cu_seqlens = torch.cat(
-            [
-                torch.zeros(1, dtype=torch.int32, device=packed.data.device),
-                lengths.cumsum(0, dtype=torch.int32),
-            ]
-        ).contiguous()
-        return PackedEncoderActivations(
-            data=packed.data,
-            lengths=lengths,
-            cu_seqlens=cu_seqlens,
-            max_seqlen=min(max_tokens, packed.max_seqlen),
-            padding_value=packed.padding_value,
-            padded_length=None,
-        )
-
-    @staticmethod
-    def _match_packed_module_io(packed: PackedEncoderActivations, module: nn.Module) -> PackedEncoderActivations:
-        parameter = next(module.parameters(), None)
-        if parameter is None:
-            return packed
-        if packed.data.device != parameter.device:
-            raise ValueError(
-                f"Packed input is on {packed.data.device}, but {type(module).__name__} is on {parameter.device}."
-            )
-        if packed.data.dtype == parameter.dtype:
-            return packed
-        return packed.with_data(packed.data.to(dtype=parameter.dtype))
-
-    def _forward_packed_branch(
-        self,
-        encoder: nn.Module,
-        features: PackedEncoderActivations,
-        chunk_size_seconds: Optional[float],
-    ) -> PackedEncoderActivations:
-        """Run an encoder token-flat, optionally splitting after feature stacking."""
-        max_tokens = self._chunk_size_tokens(chunk_size_seconds)
-        packed_forward = getattr(encoder, "forward_sequence_packed", None)
-        if not callable(packed_forward):
-            if max_tokens is not None and features.max_seqlen > max_tokens:
-                raise TypeError(f"{type(encoder).__name__} does not support packed independent chunking.")
-            padded = unpack_encoder_output(features, total_length=features.padded_length).transpose(1, 2)
-            encoded, encoded_lengths = encoder(audio_signal=padded, length=features.lengths)
-            return pack_encoder_output(encoded.transpose(1, 2), encoded_lengths)
-        if max_tokens is None or features.max_seqlen <= max_tokens:
-            return packed_forward(features, features.lengths)
-
-        pre_encode = getattr(encoder, "pre_encode", None)
-        unwrapped_pre_encode = getattr(pre_encode, "_checkpoint_wrapped_module", pre_encode)
-        if type(unwrapped_pre_encode).__name__ != "FeatureStacking":
-            raise TypeError(
-                "Independent post-stacking chunking requires subsampling='feature_stacking'; "
-                f"got {type(unwrapped_pre_encode).__name__} for {type(encoder).__name__}."
-            )
-        pre_encoded = pre_encode(features)
-        chunked = self._chunk_metadata(pre_encoded, max_tokens)
-        encoded_chunks = packed_forward(
-            chunked,
-            chunked.lengths,
-            bypass_pre_encode=True,
-        )
-        return pre_encoded.with_data(encoded_chunks.data)
-
     def _asr_output_frame_boundary(self, input_frame_boundary: int) -> int:
         """Map an input-frame boundary to the selected ASR encoder's output grid."""
         if getattr(self, "asr_encoder_type", "fastconformer") == "transformer":
@@ -734,6 +695,15 @@ class ParallelExpertEncoder(nn.Module):
 
     @staticmethod
     def _build_sinusoid_position_encoding(max_position: int, embedding_dim: int) -> torch.Tensor:
+        """Build sinusoidal speaker embeddings.
+
+        Args:
+            max_position (int): Number of speaker positions.
+            embedding_dim (int): Embedding width.
+
+        Returns:
+            torch.Tensor: Sinusoidal embeddings shaped ``(max_position, embedding_dim)``.
+        """
         position = torch.arange(max_position, dtype=torch.float32).unsqueeze(1)
         div_term = torch.exp(
             torch.arange(0, embedding_dim, 2, dtype=torch.float32) * -(math.log(10000.0) / embedding_dim)
@@ -745,6 +715,15 @@ class ParallelExpertEncoder(nn.Module):
 
     @staticmethod
     def _align_diar_frames(spk_targets: torch.Tensor, target_len: int) -> torch.Tensor:
+        """Pad or truncate speaker activity to a target frame count.
+
+        Args:
+            spk_targets (torch.Tensor): Speaker activity shaped ``(B, T, S)``.
+            target_len (int): Required number of time frames.
+
+        Returns:
+            torch.Tensor: Speaker activity shaped ``(B, target_len, S)``.
+        """
         if spk_targets.ndim != 3:
             raise ValueError(f"spk_targets must have shape (B, T, n_spk), got {tuple(spk_targets.shape)}.")
         current_len = spk_targets.shape[1]
@@ -759,12 +738,27 @@ class ParallelExpertEncoder(nn.Module):
 
     @staticmethod
     def _match_module_io(tensor: torch.Tensor, module: nn.Module) -> torch.Tensor:
+        """Move a tensor to the device and dtype of a module.
+
+        Args:
+            tensor (torch.Tensor): Tensor to move.
+            module (nn.Module): Module defining the destination device and dtype.
+
+        Returns:
+            torch.Tensor: Converted tensor, or the original tensor for a parameterless module.
+        """
         parameter = next(module.parameters(), None)
         if parameter is None:
             return tensor
         return tensor.to(device=parameter.device, dtype=parameter.dtype)
 
     def _check_spk_targets(self, spk_targets: Optional[torch.Tensor], batch_size: int) -> None:
+        """Validate optional external speaker-activity targets.
+
+        Args:
+            spk_targets (Optional[torch.Tensor]): Speaker targets shaped ``(B, T, S)``.
+            batch_size (int): Expected batch size.
+        """
         if spk_targets is None:
             return
         n_spk = int(getattr(self, "n_spk", self.diar_kernel.shape[0]))
@@ -778,6 +772,14 @@ class ParallelExpertEncoder(nn.Module):
             )
 
     def _missing_target_rows(self, spk_targets: torch.Tensor) -> torch.Tensor:
+        """Identify rows containing only the missing-target sentinel.
+
+        Args:
+            spk_targets (torch.Tensor): Speaker targets shaped ``(B, T, S)``.
+
+        Returns:
+            torch.Tensor: Boolean mask shaped ``(B,)``.
+        """
         missing_rttm_target = getattr(self, "missing_rttm_target", None)
         if missing_rttm_target is None:
             return torch.zeros(spk_targets.shape[0], dtype=torch.bool, device=spk_targets.device)
@@ -856,6 +858,33 @@ class ParallelExpertEncoder(nn.Module):
         finally:
             self.online_inference_enabled = previous
 
+    @contextlib.contextmanager
+    def capture_ctc_timestamps(self, device: torch.device):
+        """Capture chunk-synchronous CTC and speaker outputs for one generation call."""
+        if self.__dict__.get("_ctc_timestamp_capture_state") is not None:
+            raise RuntimeError("CTC timestamp capture does not support nested generation calls.")
+        extractor = _get_ctc_timestamp_extractor(self, self.ctc_timestamp_model_path, device)
+        self.__dict__["_ctc_timestamp_capture_state"] = {"extractor": extractor, "outputs": None}
+        try:
+            yield
+        finally:
+            self.__dict__.pop("_ctc_timestamp_capture_state", None)
+
+    def generate_ctc_timestamps(
+        self,
+        sot_transcripts: Sequence[str],
+        audio_durations: Sequence[float],
+    ) -> List[Dict[str, Any]]:
+        """Align generated ASR text with outputs captured during the PEE generation pass."""
+        state = self.__dict__.get("_ctc_timestamp_capture_state")
+        if state is None or state["outputs"] is None:
+            raise RuntimeError("No CTC outputs were captured during the current generation call.")
+        return state["extractor"].extract_from_outputs_batch(
+            sot_transcripts=sot_transcripts,
+            audio_durations=audio_durations,
+            **state["outputs"],
+        )
+
     def forward(self, audio_signal, length, spk_targets=None):
         """Encode mels and fuse RTTM or Sortformer speaker activity."""
         if spk_targets is not None:
@@ -868,38 +897,6 @@ class ParallelExpertEncoder(nn.Module):
             use_online = False
         runner = self._forward_online if use_online else self._forward
         return runner(audio_signal=audio_signal, length=length, spk_targets=spk_targets)
-
-    def forward_sequence_packed(self, audio_signal, length=None, spk_targets=None) -> PackedEncoderActivations:
-        """Run Sortformer first and ASR second while keeping encoder states token-flat."""
-        if bool(getattr(self, "online_inference_enabled", False)):
-            raise RuntimeError("forward_sequence_packed is an offline API and cannot run inside online_inference().")
-        if isinstance(audio_signal, PackedEncoderActivations):
-            if length is not None and not torch.equal(length.to(audio_signal.lengths), audio_signal.lengths):
-                raise ValueError("length must match audio_signal.lengths for packed input.")
-            features = audio_signal
-        else:
-            if length is None:
-                raise ValueError("length is required for padded input.")
-            features = pack_encoder_output(audio_signal.transpose(1, 2), length)
-
-        self._check_spk_targets(spk_targets, features.batch_size)
-        needs_diarization = self._should_run_diarization(spk_targets)
-        diarization_preds = self._run_diarization_packed(features) if needs_diarization else None
-        asr_encoded = self._run_asr_packed(features)
-        if diarization_preds is not None and not (
-            torch.equal(diarization_preds.lengths, asr_encoded.lengths)
-            and torch.equal(diarization_preds.cu_seqlens, asr_encoded.cu_seqlens)
-        ):
-            raise RuntimeError(
-                "Sortformer and ASR output metadata diverged: "
-                f"diar={diarization_preds.lengths.detach().cpu().tolist()} "
-                f"asr={asr_encoded.lengths.detach().cpu().tolist()}."
-            )
-        return self._fuse_diar_and_asr_packed(
-            asr_encoded,
-            spk_targets if spk_targets is not None else diarization_preds,
-            diarization_preds=diarization_preds,
-        )
 
     def _align_diarization_output_resolution(
         self, predictions: torch.Tensor, embedding_lengths: torch.Tensor
@@ -932,82 +929,16 @@ class ParallelExpertEncoder(nn.Module):
             )
         return predictions
 
-    def _run_diarization_packed(self, features: PackedEncoderActivations) -> PackedEncoderActivations:
-        """Normalize each utterance, then run the frozen streaming-trained Sortformer."""
-        if self.diar_normalize_type:
-            features = normalize_packed_batch(features, self.diar_normalize_type)
-        features = self._match_packed_module_io(features, self.diarization_model.encoder)
-        with torch.set_grad_enabled(torch.is_grad_enabled() and not self.freeze_diar):
-            embeddings = self._forward_packed_branch(
-                self.diarization_model.encoder,
-                features,
-                self.chunk_size_seconds,
-            )
-            modules = self.diarization_model.sortformer_modules
-            projected = embeddings.data
-            if modules.encoder_proj is not None:
-                projected = modules.encoder_proj(projected)
-
-            post_encoder = self.diarization_model.transformer_encoder
-            has_post_layers = post_encoder is not None and len(post_encoder.layers) > 0
-            if has_post_layers or self.diarization_model.high_resolution:
-                padded = unpack_encoder_output(embeddings)
-                if modules.encoder_proj is not None:
-                    padded = modules.encoder_proj(padded)
-                predictions = self.diarization_model.forward_infer(padded, embeddings.lengths)
-                predictions = self._align_diarization_output_resolution(predictions, embeddings.lengths)
-                return pack_encoder_output(predictions, embeddings.lengths)
-            if post_encoder is not None and post_encoder.final_layer_norm is not None:
-                projected = post_encoder.final_layer_norm(projected)
-            predictions = modules.forward_speaker_sigmoids(projected)
-            return embeddings.with_data(predictions)
-
-    def _run_asr_packed(self, features: PackedEncoderActivations) -> PackedEncoderActivations:
-        """Normalize once per utterance, then run the trainable ASR packed path."""
-        if self.asr_normalize_type:
-            features = normalize_packed_batch(features, self.asr_normalize_type)
-        features = self._match_packed_module_io(features, self.asr_encoder)
-        with torch.set_grad_enabled(torch.is_grad_enabled() and not self.freeze_asr):
-            return self._forward_packed_branch(
-                self.asr_encoder,
-                features,
-                self.chunk_size_seconds,
-            )
-
-    def _fuse_diar_and_asr_packed(
-        self,
-        asr_encoded: PackedEncoderActivations,
-        spk_targets: Union[torch.Tensor, PackedEncoderActivations],
-        *,
-        diarization_preds: Optional[PackedEncoderActivations] = None,
-    ) -> PackedEncoderActivations:
-        if isinstance(spk_targets, PackedEncoderActivations):
-            packed_targets = spk_targets
-        else:
-            use_diarization = self._missing_target_rows(spk_targets)
-            targets = self._align_diar_frames(spk_targets, asr_encoded.max_seqlen).to(
-                device=asr_encoded.data.device, dtype=asr_encoded.data.dtype
-            )
-            if bool(use_diarization.any().item()):
-                if diarization_preds is None:
-                    raise ValueError("diarization_preds are required for missing speaker-target rows.")
-                padded_preds = unpack_encoder_output(diarization_preds)
-                targets = torch.where(
-                    use_diarization.to(device=targets.device, dtype=torch.bool).view(-1, 1, 1),
-                    padded_preds.to(device=targets.device, dtype=targets.dtype),
-                    targets,
-                )
-            packed_targets = pack_encoder_output(targets, asr_encoded.lengths)
-
-        if not torch.equal(packed_targets.lengths, asr_encoded.lengths):
-            raise RuntimeError("Packed speaker attributions must match ASR output lengths.")
-        speaker_features = self._speaker_features(packed_targets.data, asr_encoded.data.dtype)
-        normalized_states = self.asr_norm(asr_encoded.data)
-        normalized_targets = self.diar_norm(speaker_features)
-        infusion = torch.matmul(normalized_targets, self.diar_kernel.to(normalized_targets.dtype))
-        return asr_encoded.with_data(normalized_states + getattr(self, "spk_kernel_scale", 1.0) * infusion)
-
     def _run_diarization(self, audio_signal: torch.Tensor, length: torch.Tensor) -> torch.Tensor:
+        """Run the diarization expert on a mel-spectrogram batch.
+
+        Args:
+            audio_signal (torch.Tensor): Mel features shaped ``(B, D, T)``.
+            length (torch.Tensor): Valid input frame counts shaped ``(B,)``.
+
+        Returns:
+            torch.Tensor: Speaker probabilities shaped ``(B, T_out, S)``.
+        """
         if self.diar_normalize_type:
             audio_signal, _, _ = normalize_batch(audio_signal, length, normalize_type=self.diar_normalize_type)
         diar_signal = self._match_module_io(audio_signal, self.diarization_model)
@@ -1025,6 +956,15 @@ class ParallelExpertEncoder(nn.Module):
             return self._align_diarization_output_resolution(predictions, embedding_lengths)
 
     def _run_asr(self, audio_signal: torch.Tensor, length: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Run the ASR expert on a mel-spectrogram batch.
+
+        Args:
+            audio_signal (torch.Tensor): Mel features shaped ``(B, D, T)``.
+            length (torch.Tensor): Valid input frame counts shaped ``(B,)``.
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: Encoded states and their valid lengths.
+        """
         if self.asr_normalize_type:
             audio_signal, _, _ = normalize_batch(audio_signal, length, normalize_type=self.asr_normalize_type)
         audio_signal = self._match_module_io(audio_signal, self.asr_encoder)
@@ -1032,6 +972,70 @@ class ParallelExpertEncoder(nn.Module):
 
         with torch.set_grad_enabled(torch.is_grad_enabled() and not self.freeze_asr):
             return self.asr_encoder(audio_signal=audio_signal, length=length)
+
+    def _ctc_timestamp_decoder(self) -> Optional[nn.Module]:
+        """Return the active timestamp decoder during capture.
+
+        Returns:
+            Optional[nn.Module]: CTC decoder, or ``None`` when capture is inactive.
+        """
+        state = self.__dict__.get("_ctc_timestamp_capture_state")
+        return None if state is None else state["extractor"].ctc_decoder
+
+    def _timestamp_speaker_probs(
+        self,
+        spk_targets: torch.Tensor,
+        diarization_preds: Optional[torch.Tensor],
+        use_diarization: Optional[torch.Tensor],
+        target_len: int,
+    ) -> torch.Tensor:
+        """Select and align speaker probabilities for timestamp extraction.
+
+        Args:
+            spk_targets (torch.Tensor): External or predicted speaker activity.
+            diarization_preds (Optional[torch.Tensor]): Predicted activity for missing-target rows.
+            use_diarization (Optional[torch.Tensor]): Rows that should use diarization predictions.
+            target_len (int): Required CTC frame count.
+
+        Returns:
+            torch.Tensor: Speaker probabilities aligned to the CTC frame grid.
+        """
+        speaker_probs = self._downsample_high_resolution_diarization_for_fusion(spk_targets, target_len)
+        speaker_probs = self._align_diar_frames(speaker_probs, target_len)
+        if use_diarization is not None:
+            diarization_preds = self._downsample_high_resolution_diarization_for_fusion(diarization_preds, target_len)
+            diarization_preds = self._align_diar_frames(diarization_preds, target_len)
+            speaker_probs = torch.where(
+                use_diarization.to(device=speaker_probs.device, dtype=torch.bool).view(-1, 1, 1),
+                diarization_preds.to(speaker_probs.device),
+                speaker_probs,
+            )
+        return speaker_probs
+
+    def _store_ctc_timestamp_outputs(
+        self,
+        ctc_log_probs: torch.Tensor,
+        ctc_lengths: torch.Tensor,
+        speaker_probs: torch.Tensor,
+        speaker_lengths: torch.Tensor,
+    ) -> None:
+        """Store detached timestamp inputs in the active capture state.
+
+        Args:
+            ctc_log_probs (torch.Tensor): CTC log probabilities shaped ``(B, T, V)``.
+            ctc_lengths (torch.Tensor): Valid CTC frame counts shaped ``(B,)``.
+            speaker_probs (torch.Tensor): Speaker probabilities shaped ``(B, T, S)``.
+            speaker_lengths (torch.Tensor): Valid speaker frame counts shaped ``(B,)``.
+        """
+        state = self.__dict__.get("_ctc_timestamp_capture_state")
+        if state is None:
+            return
+        state["outputs"] = {
+            "ctc_log_probs": ctc_log_probs.detach().cpu(),
+            "ctc_lengths": ctc_lengths.detach().cpu(),
+            "sortformer_sigmoids": speaker_probs.detach().cpu(),
+            "sortformer_lengths": speaker_lengths.detach().cpu(),
+        }
 
     def _forward(self, audio_signal, length, spk_targets=None):
         """Single-pass forward used by training and validation."""
@@ -1045,6 +1049,18 @@ class ParallelExpertEncoder(nn.Module):
             spk_targets = diarization_preds
         elif not needs_diarization:
             use_diarization = None
+        ctc_decoder = self._ctc_timestamp_decoder()
+        if ctc_decoder is not None:
+            ctc_log_probs = ctc_decoder(asr_encoded, encoded_lengths=asr_encoded_len)
+            speaker_probs = self._timestamp_speaker_probs(
+                spk_targets, diarization_preds, use_diarization, ctc_log_probs.shape[1]
+            )
+            self._store_ctc_timestamp_outputs(
+                ctc_log_probs,
+                asr_encoded_len.clamp(max=ctc_log_probs.shape[1]),
+                speaker_probs,
+                asr_encoded_len.clamp(max=speaker_probs.shape[1]),
+            )
         output = self._fuse_diar_and_asr(
             asr_encoded,
             spk_targets,
@@ -1088,7 +1104,9 @@ class ParallelExpertEncoder(nn.Module):
                 dtype=stream_dtype,
             )
 
+        ctc_decoder = self._ctc_timestamp_decoder()
         asr_chunks: List[torch.Tensor] = []
+        ctc_chunks: List[torch.Tensor] = []
         diar_chunks: List[torch.Tensor] = []
         # The window loop uses the longest row to keep every batch tensor
         # rectangular. Report each row's actual output length independently;
@@ -1116,11 +1134,14 @@ class ParallelExpertEncoder(nn.Module):
             asr_chunk = asr_signal[:, :, context_start:context_end]
             chunk_length = (asr_length - context_start).clamp(min=0, max=context_end - context_start)
             with torch.set_grad_enabled(torch.is_grad_enabled() and not self.freeze_asr):
-                encoded_context, _ = self.asr_encoder(audio_signal=asr_chunk, length=chunk_length)
+                encoded_context, encoded_context_len = self.asr_encoder(audio_signal=asr_chunk, length=chunk_length)
             left_drop = left_offset // self.subsampling_factor
             core_len = self._asr_output_frame_boundary(end) - self._asr_output_frame_boundary(start)
             core_len = max(0, min(core_len, encoded_context.shape[-1] - left_drop))
             asr_chunks.append(encoded_context[:, :, left_drop : left_drop + core_len])
+            if ctc_decoder is not None:
+                ctc_context = ctc_decoder(encoded_context, encoded_lengths=encoded_context_len)
+                ctc_chunks.append(ctc_context[:, left_drop : left_drop + core_len].detach().cpu())
 
             if run_streaming_diar:
                 previous_len = total_preds.shape[1]
@@ -1149,6 +1170,17 @@ class ParallelExpertEncoder(nn.Module):
         if spk_targets is None:
             spk_targets = diarization_preds
             use_diarization = None
+        if ctc_decoder is not None:
+            ctc_log_probs = torch.cat(ctc_chunks, dim=1)
+            speaker_probs = self._timestamp_speaker_probs(
+                spk_targets, diarization_preds, use_diarization, ctc_log_probs.shape[1]
+            )
+            self._store_ctc_timestamp_outputs(
+                ctc_log_probs,
+                encoded_len.clamp(max=ctc_log_probs.shape[1]),
+                speaker_probs,
+                encoded_len.clamp(max=speaker_probs.shape[1]),
+            )
         output = self._fuse_diar_and_asr(
             asr_encoded,
             spk_targets,
@@ -1158,6 +1190,16 @@ class ParallelExpertEncoder(nn.Module):
         return output, encoded_len
 
     def _init_streaming_diar(self, audio_signal: torch.Tensor, length: torch.Tensor, batch_size: int):
+        """Initialize Sortformer state for windowed inference.
+
+        Args:
+            audio_signal (torch.Tensor): Input mel features.
+            length (torch.Tensor): Valid input frame counts.
+            batch_size (int): Number of input recordings.
+
+        Returns:
+            tuple: Streaming state, computation dtype, converted features, and converted lengths.
+        """
         modules = self.diarization_model.sortformer_modules
         modules.chunk_len = self.online_inference_length
         modules.fifo_len = self.diar_fifo_len
@@ -1190,3 +1232,1024 @@ class ParallelExpertEncoder(nn.Module):
                 device=device,
             )
         return state, stream_dtype, diar_signal, diar_length
+
+
+class TransformerCTCDecoder(ConvASRDecoder):
+    """CTC decoder with an optional Transformer bridge before the CTC convolution.
+
+    The inherited ConvASRDecoder supplies the final 1x1 convolution and CTC
+    log-softmax. Enabling use_transformer inserts a length-aware dense
+    TransformerEncoder between encoder states and that convolution. Disabling it
+    produces the equivalent Conv-only CTC head, which makes the two alternatives
+    directly comparable.
+
+    d_model is intentionally constrained to feat_in. This keeps the head strictly
+    Transformer+Conv (or Conv-only), without a separate Linear projection layer.
+    """
+
+    requires_encoded_lengths = False
+
+    def __init__(
+        self,
+        feat_in: int,
+        num_classes: int,
+        init_mode: str = "xavier_uniform",
+        vocabulary: Optional[List[str]] = None,
+        add_blank: bool = True,
+        use_transformer: bool = True,
+        d_model: Optional[int] = None,
+        n_heads: int = 8,
+        n_layers: int = 2,
+        drop_rate: float = 0.1,
+        dropout_pre_encoder: Optional[float] = None,
+        dropout_emb: float = 0.0,
+        qkv_bias: bool = False,
+        qk_norm: bool = False,
+        ff_expansion: float = 4.0,
+        pre_block_norm: bool = True,
+        self_attention_model: Optional[str] = "rope",
+        rope_base: float = 10000.0,
+        rotary_fraction: float = 1.0,
+        pos_emb_max_len: int = 5000,
+        xscaling: bool = False,
+        attn_mode: str = "full",
+        sync_max_audio_length: bool = True,
+        residual: bool = False,
+        residual_scale: float = 1.0,
+        learnable_residual_scale: bool = False,
+    ):
+        """Initialize the optional Transformer bridge and CTC projection.
+
+        Args:
+            feat_in (int): Number of input encoder features.
+            num_classes (int): Number of non-blank CTC classes.
+            init_mode (str): Convolution weight initialization mode.
+            vocabulary (Optional[List[str]]): CTC output vocabulary.
+            add_blank (bool): Whether to append a CTC blank class.
+            use_transformer (bool): Whether to enable the Transformer bridge.
+            d_model (Optional[int]): Transformer hidden dimension; must equal ``feat_in``.
+            n_heads (int): Number of Transformer attention heads.
+            n_layers (int): Number of Transformer layers.
+            drop_rate (float): Transformer dropout rate.
+            dropout_pre_encoder (Optional[float]): Pre-encoder dropout rate.
+            dropout_emb (float): Embedding dropout rate.
+            qkv_bias (bool): Whether attention projections use bias.
+            qk_norm (bool): Whether to normalize query and key vectors.
+            ff_expansion (float): Feed-forward expansion factor.
+            pre_block_norm (bool): Whether to apply normalization before each block.
+            self_attention_model (Optional[str]): Self-attention implementation.
+            rope_base (float): Rotary-position-embedding base.
+            rotary_fraction (float): Fraction of dimensions using rotary embeddings.
+            pos_emb_max_len (int): Maximum positional-embedding length.
+            xscaling (bool): Whether to apply attention input scaling.
+            attn_mode (str): Attention masking mode.
+            sync_max_audio_length (bool): Whether to synchronize maximum sequence lengths.
+            residual (bool): Whether to add the bridge input to its output.
+            residual_scale (float): Initial residual branch scale.
+            learnable_residual_scale (bool): Whether the residual scale is trainable.
+        """
+        if residual and not use_transformer:
+            raise ValueError("TransformerCTCDecoder residual connections require use_transformer=True.")
+
+        super().__init__(
+            feat_in=feat_in,
+            num_classes=num_classes,
+            init_mode=init_mode,
+            vocabulary=vocabulary,
+            add_blank=add_blank,
+        )
+
+        self.use_transformer = use_transformer
+        self.requires_encoded_lengths = use_transformer
+        self.transformer = None
+        self.residual = residual
+
+        if self.use_transformer:
+            transformer_d_model = feat_in if d_model is None else int(d_model)
+            if transformer_d_model != feat_in:
+                raise ValueError(
+                    "TransformerCTCDecoder requires d_model to equal feat_in so the head remains "
+                    "Transformer+Conv without a Linear projection. "
+                    f"Received d_model={transformer_d_model} and feat_in={feat_in}."
+                )
+
+            self.transformer = TransformerEncoder(
+                feat_in=feat_in,
+                d_model=feat_in,
+                n_heads=n_heads,
+                n_layers=n_layers,
+                subsampling=None,
+                subsampling_factor=1,
+                drop_rate=drop_rate,
+                dropout_pre_encoder=dropout_pre_encoder,
+                dropout_emb=dropout_emb,
+                qkv_bias=qkv_bias,
+                qk_norm=qk_norm,
+                ff_expansion=ff_expansion,
+                pre_block_norm=pre_block_norm,
+                self_attention_model=self_attention_model,
+                rope_base=rope_base,
+                rotary_fraction=rotary_fraction,
+                pos_emb_max_len=pos_emb_max_len,
+                xscaling=xscaling,
+                attn_mode=attn_mode,
+                sync_max_audio_length=sync_max_audio_length,
+            )
+            # The bridge consumes already encoded frame states through
+            # TransformerEncoder's bypass_pre_encode path, so it has no
+            # pre-encoder to train or checkpoint.
+            self.transformer.pre_encode = nn.Identity()
+
+            if residual:
+                if learnable_residual_scale:
+                    self.residual_scale = nn.Parameter(torch.tensor(float(residual_scale)))
+                else:
+                    self.register_buffer("residual_scale", torch.tensor(float(residual_scale)), persistent=True)
+
+    def forward(self, encoder_output: torch.Tensor, encoded_lengths: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """Return CTC log probabilities from channels-first encoder states.
+
+        Args:
+            encoder_output: Acoustic states shaped (B, D, T).
+            encoded_lengths: Valid frame counts shaped (B,). Required when
+                use_transformer=True so padded frames cannot affect the Transformer bridge.
+
+        Returns:
+            Log probabilities shaped (B, T, num_classes_with_blank).
+        """
+        if encoder_output.ndim != 3:
+            raise ValueError(
+                "TransformerCTCDecoder expects encoder_output with shape (B, D, T), "
+                f"but got {tuple(encoder_output.shape)}."
+            )
+        if encoder_output.shape[1] != self._feat_in:
+            raise ValueError(
+                f"TransformerCTCDecoder expected {self._feat_in} encoder features, "
+                f"but got {encoder_output.shape[1]}."
+            )
+
+        encoded = encoder_output
+        if self.use_transformer:
+            if encoded_lengths is None:
+                raise ValueError("TransformerCTCDecoder requires encoded_lengths when use_transformer=True.")
+
+            residual_input = encoded
+            encoded, _ = self.transformer(
+                audio_signal=encoded.transpose(1, 2),
+                length=encoded_lengths,
+                bypass_pre_encode=True,
+            )
+
+            if self.residual:
+                encoded = residual_input + self.residual_scale.to(dtype=encoded.dtype) * encoded
+
+        return super().forward(encoder_output=encoded)
+
+
+class MultiSpeakerSOTWordTimestampAligner:
+    """Align all speaker streams together with dense max-sum CTC DP and a soft Sortformer prior."""
+
+    _SPEAKER_TAG_RE = re.compile(r"<spk:(\d+)>", flags=re.IGNORECASE)
+
+    def __init__(
+        self,
+        encoder: Optional[nn.Module] = None,
+        ctc_decoder: Optional[TransformerCTCDecoder] = None,
+        tokenizer: Optional[Any] = None,
+        *,
+        blank_id: Optional[int] = None,
+        input_frame_seconds: float = 0.01,
+        ctc_frame_seconds: Optional[float] = None,
+        sortformer_frame_seconds: Optional[float] = None,
+        speaker_activity_threshold: float = 0.5,
+        speaker_logprob_weight: float = 0.25,
+        maximum_token_len: float = 1.0,
+        epsilon: float = 1.0e-6,
+    ) -> None:
+        """Initialize multi-speaker SOT word timestamp alignment.
+
+        Args:
+            encoder (Optional[nn.Module]): Parallel Expert Encoder or its wrapper.
+            ctc_decoder (Optional[TransformerCTCDecoder]): CTC timestamp decoder.
+            tokenizer (Optional[Any]): Tokenizer matching the CTC decoder vocabulary.
+            blank_id (Optional[int]): Explicit CTC blank class index.
+            input_frame_seconds (float): Duration represented by one input feature frame.
+            ctc_frame_seconds (Optional[float]): Explicit duration of one CTC frame.
+            sortformer_frame_seconds (Optional[float]): Explicit duration of one Sortformer frame.
+            speaker_activity_threshold (float): Threshold for speaker activity metadata.
+            speaker_logprob_weight (float): Weight of the Sortformer prior in CTC alignment.
+            maximum_token_len (float): Maximum emitted word duration in seconds.
+            epsilon (float): Numerical floor for logarithms.
+        """
+        if speaker_logprob_weight < 0:
+            raise ValueError("speaker_logprob_weight must be non-negative.")
+        if not 0 <= speaker_activity_threshold <= 1:
+            raise ValueError("speaker_activity_threshold must be between zero and one.")
+        if maximum_token_len <= 0:
+            raise ValueError("maximum_token_len must be positive.")
+        self.encoder = encoder
+        self.ctc_decoder = ctc_decoder
+        self.tokenizer = tokenizer
+        self.blank_id = blank_id
+        self.input_frame_seconds = float(input_frame_seconds)
+        self.ctc_frame_seconds = ctc_frame_seconds
+        self.sortformer_frame_seconds = sortformer_frame_seconds
+        self.speaker_activity_threshold = float(speaker_activity_threshold)
+        self.speaker_logprob_weight = float(speaker_logprob_weight)
+        self.maximum_token_len = float(maximum_token_len)
+        self.epsilon = float(epsilon)
+
+    @classmethod
+    def parse_sot_words(cls, transcript: str) -> List[Dict[str, Any]]:
+        """Split a t-SOT transcript into words while retaining speaker turns."""
+        words: List[Dict[str, Any]] = []
+        parts = cls._SPEAKER_TAG_RE.split(transcript)
+        speaker_tag: Optional[int] = 0 if len(parts) == 1 else None
+        turn_index: Optional[int] = None
+        for index, part in enumerate(parts):
+            if index % 2:
+                speaker_tag, turn_index = int(part), index // 2
+                continue
+            for word in part.split():
+                words.append(dict(word=word, speaker_tag=speaker_tag, turn_index=turn_index, word_index=len(words)))
+        return words
+
+    def extract_ctc_and_sortformer_batch(
+        self,
+        processed_signal: torch.Tensor,
+        processed_signal_length: torch.Tensor,
+    ) -> Dict[str, torch.Tensor]:
+        """Run the raw PEE ASR/diarization branches and the CTC adapter."""
+        pee = getattr(self.encoder, 'encoder', self.encoder)
+        if pee is None or self.ctc_decoder is None:
+            raise ValueError("encoder and ctc_decoder are required for audio inference.")
+
+        modules = (pee, self.ctc_decoder)
+        previous_modes = [module.training for module in modules]
+        try:
+            for module in modules:
+                module.eval()
+            with torch.inference_mode():
+                speech_states, speech_lengths = pee._run_asr(processed_signal, processed_signal_length)
+                diar_signal = processed_signal
+                if pee.diar_normalize_type:
+                    diar_signal, _, _ = normalize_batch(
+                        diar_signal,
+                        processed_signal_length,
+                        normalize_type=pee.diar_normalize_type,
+                    )
+                diar_signal = pee._match_module_io(diar_signal, pee.diarization_model)
+                embeddings, embedding_lengths = pee.diarization_model.frontend_encoder(
+                    processed_signal=diar_signal,
+                    processed_signal_length=processed_signal_length.to(diar_signal.device),
+                    bypass_pre_encode=False,
+                )
+                native_predictions = pee.diarization_model.forward_infer(
+                    emb_seq=embeddings,
+                    emb_seq_length=embedding_lengths,
+                )
+                speaker_probs = pee._align_diarization_output_resolution(native_predictions, embedding_lengths)
+                ctc_log_probs = self.ctc_decoder(speech_states, encoded_lengths=speech_lengths)
+        finally:
+            for module, was_training in zip(modules, previous_modes):
+                module.train(was_training)
+
+        diar_model = pee.diarization_model
+        native_factor = 1 if diar_model.high_resolution else int(diar_model.encoder.subsampling_factor)
+        downsample_factor = int(diar_model.output_subsampling_factor) // native_factor
+        if downsample_factor <= 1:
+            speaker_lengths = embedding_lengths
+        else:
+            native_lengths = embedding_lengths * (int(diar_model.encoder.subsampling_factor) // native_factor)
+            speaker_lengths = torch.div(
+                native_lengths + downsample_factor - 1,
+                downsample_factor,
+                rounding_mode='floor',
+            )
+        return {
+            'ctc_log_probs': ctc_log_probs,
+            'ctc_lengths': speech_lengths.clamp(max=ctc_log_probs.shape[1]),
+            'sortformer_sigmoids': speaker_probs,
+            'sortformer_lengths': speaker_lengths.clamp(min=1, max=speaker_probs.shape[1]),
+        }
+
+    def extract_from_audio(
+        self,
+        input_signal: torch.Tensor,
+        input_signal_length: torch.Tensor,
+        preprocessor: nn.Module,
+        sot_transcript: str,
+        *,
+        audio_duration: Optional[float] = None,
+        time_offset: float = 0.0,
+    ) -> Dict[str, Any]:
+        """Thin one-record wrapper around :meth:`extract_from_audio_batch`."""
+        return self.extract_from_audio_batch(
+            input_signal,
+            input_signal_length,
+            preprocessor,
+            [sot_transcript],
+            audio_durations=None if audio_duration is None else [audio_duration],
+            time_offsets=[time_offset],
+        )[0]
+
+    def extract_from_audio_batch(
+        self,
+        input_signal: torch.Tensor,
+        input_signal_length: torch.Tensor,
+        preprocessor: nn.Module,
+        sot_transcripts: Sequence[str],
+        *,
+        audio_durations: Optional[Sequence[Optional[float]]] = None,
+        time_offsets: Optional[Sequence[float]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Preprocess a waveform batch once, then align every record in parallel mode."""
+        batch_size = input_signal.shape[0]
+        if input_signal_length.shape != (batch_size,) or len(sot_transcripts) != batch_size:
+            raise ValueError("audio lengths and transcripts must match the waveform batch.")
+        with torch.inference_mode():
+            processed_signal, processed_signal_length = preprocessor(
+                input_signal=input_signal,
+                length=input_signal_length,
+            )
+        outputs = self.extract_ctc_and_sortformer_batch(processed_signal, processed_signal_length)
+        if audio_durations is None:
+            sample_rate = getattr(preprocessor, '_sample_rate', getattr(preprocessor, 'sample_rate', None))
+            if sample_rate is not None:
+                audio_durations = [float(length) / float(sample_rate) for length in input_signal_length.cpu()]
+        return self.extract_from_outputs_batch(
+            sot_transcripts=sot_transcripts,
+            audio_durations=audio_durations,
+            time_offsets=time_offsets,
+            **outputs,
+        )
+
+    def extract_from_outputs_batch(
+        self,
+        ctc_log_probs: torch.Tensor,
+        sortformer_sigmoids: Optional[torch.Tensor],
+        sot_transcripts: Sequence[str],
+        *,
+        ctc_lengths: Optional[torch.Tensor] = None,
+        sortformer_lengths: Optional[torch.Tensor] = None,
+        audio_durations: Optional[Sequence[Optional[float]]] = None,
+        time_offsets: Optional[Sequence[float]] = None,
+        speaker_logprob_weight: Optional[float] = None,
+    ) -> List[Dict[str, Any]]:
+        """Align a padded output batch, always using independent speaker streams."""
+        if ctc_log_probs.ndim != 3:
+            raise ValueError("ctc_log_probs must have shape (batch, frames, classes).")
+        batch_size, max_ctc_frames, vocab_size = ctc_log_probs.shape
+        if len(sot_transcripts) != batch_size:
+            raise ValueError("sot_transcripts must contain one string per batch item.")
+        ctc_lengths_list = self._lengths(ctc_lengths, batch_size, max_ctc_frames)
+        durations = list(audio_durations) if audio_durations is not None else [None] * batch_size
+        offsets = list(time_offsets) if time_offsets is not None else [0.0] * batch_size
+        if len(durations) != batch_size or len(offsets) != batch_size:
+            raise ValueError("audio_durations and time_offsets must match the batch size.")
+
+        speaker_lengths_list: List[Optional[int]] = [None] * batch_size
+        if sortformer_sigmoids is not None:
+            if sortformer_sigmoids.ndim != 3 or sortformer_sigmoids.shape[0] != batch_size:
+                raise ValueError("sortformer_sigmoids must have shape (batch, frames, speakers).")
+            speaker_lengths_list = self._lengths(
+                sortformer_lengths,
+                batch_size,
+                sortformer_sigmoids.shape[1],
+            )
+
+        blank_id = self._resolve_blank_id(vocab_size)
+        ctc_cpu = ctc_log_probs.detach().float().cpu()
+        speaker_cpu = None if sortformer_sigmoids is None else sortformer_sigmoids.detach().float().cpu()
+        weight = self.speaker_logprob_weight if speaker_logprob_weight is None else float(speaker_logprob_weight)
+        if weight < 0:
+            raise ValueError("speaker_logprob_weight must be non-negative.")
+
+        results = []
+        for index, transcript in enumerate(sot_transcripts):
+            ctc = ctc_cpu[index, : ctc_lengths_list[index]]
+            speaker_probs = None
+            speaker_length = speaker_lengths_list[index]
+            if speaker_cpu is not None and speaker_length is not None:
+                speaker_probs = self._resample_speaker_probs(
+                    speaker_cpu[index, :speaker_length].clamp(0, 1),
+                    ctc.shape[0],
+                )
+            results.append(
+                self._align_record(
+                    ctc=ctc,
+                    speaker_probs=speaker_probs,
+                    transcript=transcript,
+                    blank_id=blank_id,
+                    audio_duration=durations[index],
+                    time_offset=float(offsets[index]),
+                    speaker_logprob_weight=weight,
+                    sortformer_length=speaker_length,
+                )
+            )
+        return results
+
+    def _align_record(
+        self,
+        *,
+        ctc: torch.Tensor,
+        speaker_probs: Optional[torch.Tensor],
+        transcript: str,
+        blank_id: int,
+        audio_duration: Optional[float],
+        time_offset: float,
+        speaker_logprob_weight: float,
+        sortformer_length: Optional[int],
+    ) -> Dict[str, Any]:
+        """Align one t-SOT transcript against precomputed model outputs.
+
+        Args:
+            ctc (torch.Tensor): CTC log probabilities shaped ``(T, V)``.
+            speaker_probs (Optional[torch.Tensor]): Speaker probabilities shaped ``(T, S)``.
+            transcript (str): Multi-speaker t-SOT transcript.
+            blank_id (int): CTC blank class index.
+            audio_duration (Optional[float]): Recording duration in seconds.
+            time_offset (float): Offset added to returned timestamps.
+            speaker_logprob_weight (float): Weight of the speaker activity prior.
+            sortformer_length (Optional[int]): Number of valid Sortformer frames.
+
+        Returns:
+            Dict[str, Any]: Word timestamps, speaker mapping, and alignment metadata.
+        """
+        words = self._tokenize_words(self.parse_sot_words(transcript), blank_id)
+        pee = getattr(self.encoder, 'encoder', self.encoder)
+        ctc_step = self._frame_seconds(
+            ctc.shape[0],
+            audio_duration,
+            self.ctc_frame_seconds,
+            self.input_frame_seconds * float(getattr(pee, 'subsampling_factor', 1)),
+        )
+        sortformer_step = (
+            None
+            if sortformer_length is None
+            else self._frame_seconds(
+                sortformer_length, audio_duration, self.sortformer_frame_seconds or None, ctc_step
+            )
+        )
+        rows, mapping, preliminary_scores, final_scores, assignment_scores = [], {}, {}, {}, {}
+        if words:
+            preliminary_rows, preliminary_scores = self._align_streams(
+                words,
+                ctc,
+                blank_id,
+                speaker_probs=None,
+                speaker_mapping={},
+                ctc_step=ctc_step,
+                time_offset=time_offset,
+                speaker_logprob_weight=0.0,
+            )
+            speaker_tags = list(
+                dict.fromkeys(word['speaker_tag'] for word in words if word['speaker_tag'] is not None)
+            )
+            mapping, assignment_scores = self._resolve_speaker_mapping(speaker_tags, preliminary_rows, speaker_probs)
+            rows, final_scores = self._align_streams(
+                words,
+                ctc,
+                blank_id,
+                speaker_probs=speaker_probs,
+                speaker_mapping=mapping,
+                ctc_step=ctc_step,
+                time_offset=time_offset,
+                speaker_logprob_weight=speaker_logprob_weight,
+            )
+        return self._result(
+            rows=rows,
+            mapping=mapping,
+            ctc_step=ctc_step,
+            sortformer_step=sortformer_step,
+            time_offset=time_offset,
+            ctc_frames=ctc.shape[0],
+            sortformer_frames=sortformer_length,
+            preliminary_scores=preliminary_scores,
+            final_scores=final_scores,
+            assignment_scores=assignment_scores,
+        )
+
+    @staticmethod
+    def _result(
+        *,
+        rows: Sequence[Dict[str, Any]],
+        mapping: Dict[int, Optional[int]],
+        ctc_step: float,
+        sortformer_step: Optional[float],
+        time_offset: float,
+        ctc_frames: int,
+        sortformer_frames: Optional[int],
+        preliminary_scores: Dict[Optional[int], float],
+        final_scores: Dict[Optional[int], float],
+        assignment_scores: Dict[int, List[float]],
+    ) -> Dict[str, Any]:
+        """Format one timestamp-alignment result.
+
+        Args:
+            rows (Sequence[Dict[str, Any]]): Aligned word records.
+            mapping (Dict[int, Optional[int]]): t-SOT tag to Sortformer-column mapping.
+            ctc_step (float): Duration of one CTC frame in seconds.
+            sortformer_step (Optional[float]): Duration of one Sortformer frame.
+            time_offset (float): Offset applied to returned timestamps.
+            ctc_frames (int): Number of valid CTC frames.
+            sortformer_frames (Optional[int]): Number of valid Sortformer frames.
+            preliminary_scores (Dict[Optional[int], float]): CTC-only stream scores.
+            final_scores (Dict[Optional[int], float]): Speaker-aware stream scores.
+            assignment_scores (Dict[int, List[float]]): Speaker-column assignment scores.
+
+        Returns:
+            Dict[str, Any]: Public timestamp result and alignment diagnostics.
+        """
+        return {
+            'speaker_word_timestamps': MultiSpeakerSOTWordTimestampAligner._group_words_by_speaker(rows),
+            'speaker_tag_to_sortformer_column': mapping,
+            'alignment_mode': 'parallel',
+            'requested_alignment_mode': 'parallel',
+            'speaker_assignment_mode': 'optimal',
+            'ctc_frame_seconds': ctc_step,
+            'sortformer_frame_seconds': sortformer_step,
+            'time_offset': time_offset,
+            'num_ctc_frames': ctc_frames,
+            'num_sortformer_frames': sortformer_frames,
+            'alignment_diagnostics': {
+                'preliminary_ctc_path_scores': preliminary_scores,
+                'final_path_scores': final_scores,
+                'speaker_assignment_scores': assignment_scores,
+            },
+        }
+
+    def _align_streams(
+        self,
+        words: Sequence[Dict[str, Any]],
+        ctc: torch.Tensor,
+        blank_id: int,
+        *,
+        speaker_probs: Optional[torch.Tensor],
+        speaker_mapping: Dict[int, Optional[int]],
+        ctc_step: float,
+        time_offset: float,
+        speaker_logprob_weight: float,
+    ) -> Tuple[List[Dict[str, Any]], Dict[Optional[int], float]]:
+        """Align independently grouped speaker streams in one padded DP batch.
+
+        Args:
+            words (Sequence[Dict[str, Any]]): Tokenized t-SOT word records.
+            ctc (torch.Tensor): CTC log probabilities shaped ``(T, V)``.
+            blank_id (int): CTC blank class index.
+            speaker_probs (Optional[torch.Tensor]): Speaker probabilities shaped ``(T, S)``.
+            speaker_mapping (Dict[int, Optional[int]]): t-SOT tag to speaker-column mapping.
+            ctc_step (float): Duration of one CTC frame in seconds.
+            time_offset (float): Offset added to returned timestamps.
+            speaker_logprob_weight (float): Weight of the speaker activity prior.
+
+        Returns:
+            Tuple[List[Dict[str, Any]], Dict[Optional[int], float]]: Word rows and scores by speaker.
+        """
+        grouped = self._group_words_by_speaker(words)
+        streams = []
+        for speaker_tag, speaker_words in grouped.items():
+            labels, state_to_word = self._build_ctc_target(speaker_words, blank_id)
+            tokens = labels[1::2]
+            if len(tokens) + sum(left == right for left, right in zip(tokens, tokens[1:])) > ctc.shape[0]:
+                raise ValueError(f"Speaker {speaker_tag!r} transcript is too long for the CTC timeline.")
+            column = speaker_mapping.get(speaker_tag)
+            columns = [None if word_index is None else column for word_index in state_to_word]
+            streams.append((speaker_tag, speaker_words, labels, state_to_word, columns))
+
+        max_states = max(len(stream[2]) for stream in streams)
+        labels_batch = torch.full((len(streams), max_states), blank_id, dtype=torch.long)
+        columns_batch = torch.full_like(labels_batch, -1)
+        state_lengths = torch.tensor([len(stream[2]) for stream in streams], dtype=torch.long)
+        for index, (_, _, labels, _, columns) in enumerate(streams):
+            labels_batch[index, : len(labels)] = torch.tensor(labels)
+            columns_batch[index, : len(columns)] = torch.tensor(
+                [-1 if column is None else column for column in columns]
+            )
+
+        paths, scores = self._ctc_forced_align_batched(
+            ctc,
+            labels_batch,
+            state_lengths,
+            blank_id,
+            columns_batch,
+            speaker_probs,
+            speaker_logprob_weight,
+        )
+        rows = [
+            row
+            for (_, speaker_words, labels, state_to_word, _), path in zip(streams, paths)
+            for row in self._word_rows_from_path(
+                speaker_words,
+                labels,
+                state_to_word,
+                path,
+                ctc,
+                speaker_probs,
+                speaker_mapping,
+                ctc_step,
+                time_offset,
+            )
+        ]
+        scores_by_speaker = {stream[0]: score for stream, score in zip(streams, scores)}
+        return rows, scores_by_speaker
+
+    @staticmethod
+    def _group_words_by_speaker(
+        words: Sequence[Dict[str, Any]],
+    ) -> Dict[Optional[int], List[Dict[str, Any]]]:
+        """Group word records by their t-SOT speaker tag.
+
+        Args:
+            words (Sequence[Dict[str, Any]]): Word records in transcript order.
+
+        Returns:
+            Dict[Optional[int], List[Dict[str, Any]]]: Words grouped by speaker tag.
+        """
+        grouped: Dict[Optional[int], List[Dict[str, Any]]] = {}
+        for word in words:
+            grouped.setdefault(word['speaker_tag'], []).append(word)
+        return grouped
+
+    def _tokenize_words(
+        self,
+        words: Sequence[Dict[str, Any]],
+        blank_id: int,
+    ) -> List[Dict[str, Any]]:
+        """Attach CTC token IDs to parsed t-SOT words.
+
+        Args:
+            words (Sequence[Dict[str, Any]]): Parsed t-SOT word records.
+            blank_id (int): CTC blank class index.
+
+        Returns:
+            List[Dict[str, Any]]: Word records containing ``token_ids``.
+        """
+        tokenized = {}
+        for stream_words in self._group_words_by_speaker(words).values():
+            for word, token_ids in zip(stream_words, self._tokenize_word_stream(stream_words, blank_id)):
+                tokenized[word['word_index']] = {**word, 'token_ids': token_ids}
+        return [tokenized[word['word_index']] for word in words]
+
+    def _tokenize_word_stream(
+        self,
+        words: Sequence[Dict[str, Any]],
+        blank_id: int,
+    ) -> List[List[int]]:
+        """Tokenize one speaker stream while preserving word ownership.
+
+        Args:
+            words (Sequence[Dict[str, Any]]): Words belonging to one speaker stream.
+            blank_id (int): CTC blank class index.
+
+        Returns:
+            List[List[int]]: CTC token IDs grouped by word.
+        """
+        text = ' '.join(word['word'] for word in words)
+        token_ids = [int(token_id) for token_id in self.tokenizer.text_to_ids(text)]
+        if not token_ids or min(token_ids) < 0 or max(token_ids) >= blank_id:
+            raise ValueError("Tokenizer produced IDs outside the non-blank CTC vocabulary.")
+        ids_by_word = [[int(token_id) for token_id in self.tokenizer.text_to_ids(word['word'])] for word in words]
+        if any(not token_ids for token_ids in ids_by_word):
+            raise ValueError("SentencePiece produced an empty word tokenization.")
+        if [token_id for word_ids in ids_by_word for token_id in word_ids] != token_ids:
+            raise ValueError("Per-word and full-stream SentencePiece tokenization disagree.")
+        return ids_by_word
+
+    @staticmethod
+    def _build_ctc_target(
+        words: Sequence[Dict[str, Any]],
+        blank_id: int,
+    ) -> Tuple[List[int], List[Optional[int]]]:
+        """Build a blank-expanded CTC target and word-ownership mapping.
+
+        Args:
+            words (Sequence[Dict[str, Any]]): Tokenized word records.
+            blank_id (int): CTC blank class index.
+
+        Returns:
+            Tuple[List[int], List[Optional[int]]]: Expanded labels and state-to-word indices.
+        """
+        labels = [blank_id]
+        state_to_word: List[Optional[int]] = [None]
+        for word_index, word in enumerate(words):
+            for token_id in word['token_ids']:
+                labels.extend((token_id, blank_id))
+                state_to_word.extend((word_index, None))
+        return labels, state_to_word
+
+    def _ctc_forced_align_batched(
+        self,
+        log_probs: torch.Tensor,
+        labels: torch.Tensor,
+        state_lengths: torch.Tensor,
+        blank_id: int,
+        state_speaker_columns: torch.Tensor,
+        speaker_probs: Optional[torch.Tensor],
+        speaker_logprob_weight: float,
+    ) -> Tuple[List[torch.Tensor], List[float]]:
+        """Run dense max-sum CTC DP for every padded speaker stream together."""
+        num_streams, max_states = labels.shape
+        num_frames = log_probs.shape[0]
+        state_mask = torch.arange(max_states).unsqueeze(0) < state_lengths.unsqueeze(1)
+        emissions = log_probs[:, labels].permute(1, 0, 2).contiguous()
+        emissions.masked_fill_(~state_mask.unsqueeze(1), -float('inf'))
+
+        token_states = state_mask & (state_speaker_columns >= 0)
+        if speaker_probs is not None and speaker_logprob_weight > 0 and token_states.any():
+            columns = state_speaker_columns.clamp_min(0)
+            activity = speaker_probs[:, columns].permute(1, 0, 2)
+            emissions += torch.where(
+                token_states.unsqueeze(1),
+                speaker_logprob_weight * torch.log(activity.clamp_min(self.epsilon)),
+                torch.zeros_like(activity),
+            )
+
+        previous = torch.full((num_streams, max_states), -float('inf'))
+        previous[:, 0] = emissions[:, 0, 0]
+        previous[:, 1] = emissions[:, 0, 1]
+        backpointers = torch.full((num_frames, num_streams, max_states), -1, dtype=torch.long)
+        states = torch.arange(max_states).unsqueeze(0).expand(num_streams, -1)
+
+        for frame in range(1, num_frames):
+            best = previous
+            previous_states = states
+            advance = torch.full_like(previous, -float('inf'))
+            advance[:, 1:] = previous[:, :-1]
+            take = advance > best
+            best = torch.where(take, advance, best)
+            previous_states = torch.where(take, states - 1, previous_states)
+            if max_states > 2:
+                skip = torch.full_like(previous, -float('inf'))
+                can_skip = state_mask[:, 2:] & (labels[:, 2:] != blank_id) & (labels[:, 2:] != labels[:, :-2])
+                skip[:, 2:] = torch.where(can_skip, previous[:, :-2], skip[:, 2:])
+                take = skip > best
+                best = torch.where(take, skip, best)
+                previous_states = torch.where(take, states - 2, previous_states)
+            previous = best + emissions[:, frame]
+            previous.masked_fill_(~state_mask, -float('inf'))
+            backpointers[frame] = previous_states
+
+        last_blank = state_lengths - 1
+        last_token = state_lengths - 2
+        blank_scores = previous.gather(1, last_blank[:, None]).squeeze(1)
+        token_scores = previous.gather(1, last_token[:, None]).squeeze(1)
+        final_states = torch.where(token_scores > blank_scores, last_token, last_blank)
+        final_scores = torch.maximum(token_scores, blank_scores)
+        if not torch.isfinite(final_scores).all():
+            failed = torch.nonzero(~torch.isfinite(final_scores)).flatten().tolist()
+            raise ValueError(f"No valid CTC forced-alignment path for speaker stream(s) {failed}.")
+
+        paths = torch.empty((num_streams, num_frames), dtype=torch.long)
+        current = final_states
+        stream_indices = torch.arange(num_streams)
+        for frame in range(num_frames - 1, -1, -1):
+            paths[:, frame] = current
+            if frame:
+                current = backpointers[frame, stream_indices, current]
+        return list(paths), [float(score) for score in final_scores]
+
+    def _word_rows_from_path(
+        self,
+        words: Sequence[Dict[str, Any]],
+        labels: Sequence[int],
+        state_to_word: Sequence[Optional[int]],
+        path: torch.Tensor,
+        ctc: torch.Tensor,
+        speaker_probs: Optional[torch.Tensor],
+        speaker_mapping: Dict[int, Optional[int]],
+        ctc_step: float,
+        time_offset: float,
+    ) -> List[Dict[str, Any]]:
+        """Convert CTC state paths into timestamped word records.
+
+        Args:
+            words (Sequence[Dict[str, Any]]): Tokenized words for one speaker stream.
+            labels (Sequence[int]): Blank-expanded CTC target labels.
+            state_to_word (Sequence[Optional[int]]): Target-state to word-index mapping.
+            path (torch.Tensor): Best CTC target state at every frame.
+            ctc (torch.Tensor): CTC log probabilities shaped ``(T, V)``.
+            speaker_probs (Optional[torch.Tensor]): Speaker probabilities shaped ``(T, S)``.
+            speaker_mapping (Dict[int, Optional[int]]): t-SOT tag to speaker-column mapping.
+            ctc_step (float): Duration of one CTC frame in seconds.
+            time_offset (float): Offset added to returned timestamps.
+
+        Returns:
+            List[Dict[str, Any]]: Timestamp and confidence metadata for each word.
+        """
+        frames_by_word: List[List[Tuple[int, int]]] = [[] for _ in words]
+        for frame, state in enumerate(path.tolist()):
+            word_index = state_to_word[state]
+            if word_index is not None:
+                frames_by_word[word_index].append((frame, state))
+
+        rows = []
+        for word, word_frames in zip(words, frames_by_word):
+            if not word_frames:
+                raise ValueError(f"CTC path did not visit word {word['word']!r}.")
+            frames = [frame for frame, _ in word_frames]
+            start = time_offset + frames[0] * ctc_step
+            end = min(time_offset + (frames[-1] + 1) * ctc_step, start + self.maximum_token_len)
+            end_frame = min(frames[-1], max(frames[0], math.ceil((end - time_offset) / ctc_step) - 1))
+            selected = torch.stack([ctc[frame, labels[state]] for frame, state in word_frames])
+            column = speaker_mapping.get(word['speaker_tag'])
+            speaker_confidence = None
+            activity_start = activity_end = None
+            if speaker_probs is not None and column is not None:
+                activity = speaker_probs[frames, column]
+                speaker_confidence = float(activity.mean())
+                active = torch.nonzero(activity >= self.speaker_activity_threshold).flatten()
+                if active.numel():
+                    first, last = frames[int(active[0])], frames[int(active[-1])]
+                    activity_start = time_offset + first * ctc_step
+                    activity_end = time_offset + (last + 1) * ctc_step
+            rows.append(
+                {
+                    **word,
+                    'start': start,
+                    'end': end,
+                    'start_frame': frames[0],
+                    'end_frame': end_frame,
+                    'ctc_confidence': float(torch.exp(selected.mean())),
+                    'sortformer_column': column,
+                    'speaker_confidence': speaker_confidence,
+                    'speaker_activity_start': activity_start,
+                    'speaker_activity_end': activity_end,
+                }
+            )
+        return rows
+
+    def _resolve_speaker_mapping(
+        self,
+        speaker_tags: Sequence[int],
+        preliminary_rows: Sequence[Dict[str, Any]],
+        speaker_probs: Optional[torch.Tensor],
+    ) -> Tuple[Dict[int, Optional[int]], Dict[int, List[float]]]:
+        """Map t-SOT speaker tags to Sortformer output columns.
+
+        Args:
+            speaker_tags (Sequence[int]): Distinct t-SOT speaker tags.
+            preliminary_rows (Sequence[Dict[str, Any]]): CTC-only aligned word records.
+            speaker_probs (Optional[torch.Tensor]): Speaker probabilities shaped ``(T, S)``.
+
+        Returns:
+            Tuple[Dict[int, Optional[int]], Dict[int, List[float]]]: Mapping and assignment scores.
+        """
+        mapping = {tag: None for tag in speaker_tags}
+        if speaker_probs is None or len(speaker_tags) > speaker_probs.shape[1]:
+            return mapping, {}
+        rows_by_tag = self._group_words_by_speaker(preliminary_rows)
+        scores = []
+        diagnostics = {}
+        for tag in speaker_tags:
+            column_scores = []
+            for column in range(speaker_probs.shape[1]):
+                values = [
+                    torch.log(speaker_probs[row['start_frame'] : row['end_frame'] + 1, column].clamp_min(self.epsilon))
+                    for row in rows_by_tag[tag]
+                ]
+                column_scores.append(float(torch.cat(values).mean()))
+            diagnostics[tag] = column_scores
+            scores.append(column_scores)
+        for tag, column in zip(speaker_tags, self._maximum_weight_assignment(scores)):
+            mapping[tag] = column
+        return mapping, diagnostics
+
+    @staticmethod
+    def _maximum_weight_assignment(scores: Sequence[Sequence[float]]) -> List[int]:
+        """Find the maximum-weight one-to-one speaker assignment.
+
+        Args:
+            scores (Sequence[Sequence[float]]): Score matrix indexed by tag and speaker column.
+
+        Returns:
+            List[int]: Selected column index for each score row.
+        """
+        states: Dict[int, Tuple[float, List[int]]] = {0: (0.0, [])}
+        for row in scores:
+            next_states = {}
+            for used, (total, columns) in states.items():
+                for column, score in enumerate(row):
+                    if used & (1 << column):
+                        continue
+                    mask = used | (1 << column)
+                    candidate = (total + score, columns + [column])
+                    if mask not in next_states or candidate[0] > next_states[mask][0]:
+                        next_states[mask] = candidate
+            states = next_states
+        return max(states.values(), key=lambda item: item[0])[1] if states else []
+
+    @staticmethod
+    def _resample_speaker_probs(speaker_probs: torch.Tensor, target_frames: int) -> torch.Tensor:
+        """Linearly resample speaker probabilities onto the CTC frame grid.
+
+        Args:
+            speaker_probs (torch.Tensor): Speaker probabilities shaped ``(T, S)``.
+            target_frames (int): Required number of output frames.
+
+        Returns:
+            torch.Tensor: Resampled probabilities shaped ``(target_frames, S)``.
+        """
+        if speaker_probs.shape[0] == target_frames:
+            return speaker_probs
+        if speaker_probs.shape[0] == 1:
+            return speaker_probs.expand(target_frames, -1)
+        positions = torch.linspace(0, speaker_probs.shape[0] - 1, target_frames)
+        lower = positions.floor().long()
+        upper = positions.ceil().long()
+        fraction = (positions - lower).unsqueeze(1)
+        return speaker_probs[lower] * (1 - fraction) + speaker_probs[upper] * fraction
+
+    @staticmethod
+    def _lengths(values: Optional[torch.Tensor], batch_size: int, maximum: int) -> List[int]:
+        """Normalize optional padded-sequence lengths.
+
+        Args:
+            values (Optional[torch.Tensor]): Explicit valid lengths.
+            batch_size (int): Expected number of lengths.
+            maximum (int): Maximum allowed sequence length.
+
+        Returns:
+            List[int]: Validated lengths for every batch row.
+        """
+        if values is None:
+            return [maximum] * batch_size
+        lengths = [int(value) for value in torch.as_tensor(values).reshape(-1).cpu()]
+        if len(lengths) != batch_size or any(length <= 0 or length > maximum for length in lengths):
+            raise ValueError("Padded sequence lengths must match the batch and time dimension.")
+        return lengths
+
+    def _resolve_blank_id(self, vocab_size: int) -> int:
+        """Resolve and validate the CTC blank class index.
+
+        Args:
+            vocab_size (int): Number of CTC output classes including blank.
+
+        Returns:
+            int: CTC blank class index.
+        """
+        if self.blank_id is not None:
+            blank_id = int(self.blank_id)
+        elif self.ctc_decoder is not None:
+            blank_id = int(self.ctc_decoder.num_classes_with_blank) - 1
+        else:
+            blank_id = vocab_size - 1
+        if not 0 <= blank_id < vocab_size:
+            raise ValueError(f"blank_id={blank_id} is outside the CTC vocabulary.")
+        return blank_id
+
+    @staticmethod
+    def _frame_seconds(
+        length: int,
+        audio_duration: Optional[float],
+        configured: Optional[float],
+        default: float,
+    ) -> float:
+        """Resolve the duration represented by one model frame.
+
+        Args:
+            length (int): Number of valid model frames.
+            audio_duration (Optional[float]): Recording duration in seconds.
+            configured (Optional[float]): Explicit frame duration.
+            default (float): Fallback frame duration.
+
+        Returns:
+            float: Duration of one frame in seconds.
+        """
+        if audio_duration is not None:
+            return float(audio_duration) / length
+        return float(configured) if configured is not None else default
+
+
+def _get_ctc_timestamp_extractor(
+    encoder: ParallelExpertEncoder,
+    model_path: Optional[str],
+    device: torch.device,
+) -> MultiSpeakerSOTWordTimestampAligner:
+    """Load and cache only the CTC adapter components needed for alignment."""
+    if not isinstance(model_path, str) or not model_path:
+        raise ValueError("ctc_timestamp_model_path must be a non-empty local .nemo path.")
+    resolved_path = os.path.realpath(os.path.expanduser(model_path))
+    if not os.path.isfile(resolved_path):
+        raise FileNotFoundError(f"CTC timestamp model does not exist: {resolved_path}")
+
+    cached = encoder.__dict__.get("_ctc_timestamp_extractor_cache")
+    if cached is None or cached[0] != resolved_path:
+        from nemo.collections.asr.models.ctc_bpe_models import EncDecCTCModelBPE
+
+        adapter = EncDecCTCModelBPE.restore_from(resolved_path, map_location="cpu")
+        extractor = MultiSpeakerSOTWordTimestampAligner(
+            encoder=encoder,
+            ctc_decoder=adapter.decoder,
+            tokenizer=adapter.tokenizer,
+        )
+        # This is an inference-only cache. Keep it out of nn.Module registration so
+        # loading an adapter does not mutate the SALM checkpoint state dictionary.
+        encoder.__dict__["_ctc_timestamp_extractor_cache"] = (resolved_path, extractor)
+        cached = (resolved_path, extractor)
+
+    extractor = cached[1]
+    parameter = next(encoder.parameters(), None)
+    dtype = parameter.dtype if parameter is not None and device.type != "cpu" else torch.float32
+    extractor.ctc_decoder.to(device=device, dtype=dtype).eval()
+    return extractor

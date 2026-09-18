@@ -58,14 +58,7 @@ class NemotronNanoV3PromptFormatter(PromptFormatter):
     def encode_dialog(self, turns: list[dict], enable_thinking: bool = True) -> dict[str, torch.Tensor]:
         """Encode a dialog for Nemotron Nano v3 with <think> reasoning support.
 
-        Training dialogs supervise every assistant response and end-of-turn marker.
-        Role headers, prefilled thinking tags, formatting after the end marker, and
-        system/user/tool turns are masked out. Retained reasoning and its generated
-        closing tag remain supervised. Thinking prefills are inferred per response;
-        ``enable_thinking`` only controls the inference prefix.
-        ``context_ids`` and ``answer_ids`` still split at the final assistant turn;
-        inference dialogs return no loss mask. History thinking normalization is
-        unchanged, so removed reasoning text is not supervised.
+        Training loss is computed over responses from all assistant turns.
 
         Args:
             turns: List of turns with "role" and "slots"/"content" keys.

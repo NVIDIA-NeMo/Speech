@@ -129,26 +129,7 @@ SALMDataset Structure
 Data used for SALM can be either regular speech-to-text data (in any NeMo or Lhotse format), or a dataset of multi-turn conversions.
 
 With ``prompt_format: nemotron-nano-v3`` or ``prompt_format: nemotron3p5``,
-a training conversation ending in an assistant turn applies loss to **every
-assistant response and end-of-turn marker**. Assistant role headers and leading
-thinking prefills (``<think></think>`` for non-thinking responses, or ``<think>``
-with an optional following newline for reasoning responses) do not contribute
-loss. Retained reasoning and its generated closing ``</think>`` remain supervised.
-The prefill is inferred from each normalized response; ``enable_thinking`` only
-controls inference. System, user, tool, and post-end-marker formatting tokens are
-masked out. Tokens that straddle a supervision boundary remain supervised to
-avoid losing response or termination targets. Earlier assistant answers
-remain in the causal history, and the existing history-thinking normalization
-still removes earlier reasoning text. The formatter's ``context_ids`` and
-``answer_ids`` continue to split at the final assistant turn for generation and
-reference handling; the full-sequence ``mask`` determines training supervision.
-Conversations ending in a non-assistant turn are inference inputs and return no
-training mask.
-
-When continuing training from a version that supervised only the final assistant
-turn, recompute loss-bearing token-mass mixture weights: multi-turn sources now
-contribute more supervised tokens per example. This change does not require
-reinitializing model weights or optimizer state.
+training loss is computed over responses from all assistant turns.
 
 For the most part, please refer to :doc:`the ASR datasets documentation <../asr/datasets>` for details on data formats and multimodal dataloading.
 

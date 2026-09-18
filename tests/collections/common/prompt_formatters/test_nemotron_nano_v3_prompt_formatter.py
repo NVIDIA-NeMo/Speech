@@ -158,7 +158,12 @@ def test_nemotron_training_supervises_all_assistant_turns(
     expected_mask = [False] if insert_bos else []
     for chunk, supervised in zip(chunks, [False, False, True, False, False, True]):
         expected_ids.extend(chunk)
-        expected_mask.extend([supervised] * len(chunk))
+        if supervised:
+            # This fixture has atomic tags/newlines: only response text + EOT carry loss.
+            prefix_len = len(tokenizer.text_to_ids("<|im_start|>assistant\n<think></think>"))
+            expected_mask.extend([False] * prefix_len + [True] * (len(chunk) - prefix_len - 1) + [False])
+        else:
+            expected_mask.extend([False] * len(chunk))
     if insert_eos:
         expected_ids.append(tokenizer.eos)
         expected_mask.append(True)
@@ -169,6 +174,66 @@ def test_nemotron_training_supervises_all_assistant_turns(
     final_answer = chunks[-1] + ([tokenizer.eos] if insert_eos else [])
     assert ans["answer_ids"].tolist() == final_answer
     assert ans["context_ids"].tolist() == expected_ids[: -len(final_answer)]
+
+
+@pytest.mark.parametrize("formatter_cls", [NemotronNanoV3PromptFormatter, Nemotron3p5PromptFormatter])
+@pytest.mark.parametrize(
+    "message,supervised_text",
+    [
+        ("TEST", "TEST<|im_end|>"),
+        ("", "<|im_end|>"),
+        ("<think></think>TEST", "TEST<|im_end|>"),
+        ("<think>\nSYSTEM</think>TEST", "SYSTEM</think>TEST<|im_end|>"),
+        ("<think>SYSTEM</think>TEST", "SYSTEM</think>TEST<|im_end|>"),
+        ("<think>\n</think>TEST", "</think>TEST<|im_end|>"),
+        ("<think>TEST", "TEST<|im_end|>"),
+    ],
+)
+def test_nemotron_masks_prefill_but_supervises_generated_content(
+    bpe_tokenizer_with_think, formatter_cls, message, supervised_text
+):
+    formatter = formatter_cls(bpe_tokenizer_with_think)
+    ans = formatter.encode_dialog([{"role": "assistant", "content": message}])
+    supervised_ids = ans["input_ids"][ans["mask"]].tolist()
+    assert bpe_tokenizer_with_think.ids_to_text(supervised_ids) == supervised_text
+    assert not ans["mask"][: len(ans["context_ids"])].any()
+
+
+@pytest.mark.parametrize("formatter_cls", [NemotronNanoV3PromptFormatter, Nemotron3p5PromptFormatter])
+@pytest.mark.parametrize(
+    "message,supervised_text",
+    [("TEST", "TEST"), ("", ""), ("<think>\nSYSTEM</think>TEST", "SYSTEM</think>TEST")],
+)
+def test_nemotron_supervises_assistant_before_tool(bpe_tokenizer_with_think, formatter_cls, message, supervised_text):
+    formatter = formatter_cls(bpe_tokenizer_with_think)
+    ans = formatter.encode_dialog(
+        [
+            {"role": "user", "content": "TEST"},
+            {"role": "assistant", "content": message},
+            {"role": "tool", "content": "SYSTEM"},
+            {"role": "assistant", "content": "TEST"},
+        ]
+    )
+    assert bpe_tokenizer_with_think.ids_to_text(ans["input_ids"][ans["mask"]].tolist()) == (
+        supervised_text + "<|im_end|>TEST<|im_end|>"
+    )
+
+
+@pytest.mark.parametrize("formatter_cls", [NemotronNanoV3PromptFormatter, Nemotron3p5PromptFormatter])
+def test_nemotron_mask_keeps_tokens_straddling_prefill_boundary(bpe_tokenizer_with_think, formatter_cls, monkeypatch):
+    formatter = formatter_cls(bpe_tokenizer_with_think)
+    # A token may merge the final prefill character with the first answer character.
+    # Likewise, a token may merge the end marker with the formatting newline.
+    encodings = {
+        "<|im_start|>system\n<|im_end|>\n": [1, 2],
+        "<|im_start|>assistant\n<think></think>": [3, 4, 5],
+        "<|im_start|>assistant\n<think></think>TEST<|im_end|>": [3, 4, 6, 7],
+        "<|im_start|>assistant\n<think></think>TEST<|im_end|>\n": [3, 4, 6, 8],
+    }
+    monkeypatch.setattr(formatter, "_apply_tokenizer", lambda text, **kwargs: encodings[text])
+    ans = formatter.encode_dialog([{"role": "assistant", "content": "TEST"}])
+    assert ans["input_ids"].tolist() == [1, 2, 3, 4, 6, 8]
+    assert ans["mask"].tolist() == [False, False, False, False, True, True]
 
 
 @pytest.mark.parametrize("formatter_cls", [NemotronNanoV3PromptFormatter, Nemotron3p5PromptFormatter])

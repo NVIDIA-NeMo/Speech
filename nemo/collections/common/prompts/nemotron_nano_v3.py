@@ -58,8 +58,11 @@ class NemotronNanoV3PromptFormatter(PromptFormatter):
     def encode_dialog(self, turns: list[dict], enable_thinking: bool = True) -> dict[str, torch.Tensor]:
         """Encode a dialog for Nemotron Nano v3 with <think> reasoning support.
 
-        Training dialogs supervise every assistant turn, including the rendered role
-        header and end-of-turn marker. System, user, and tool turns are masked out.
+        Training dialogs supervise every assistant response and end-of-turn marker.
+        Role headers, prefilled thinking tags, formatting after the end marker, and
+        system/user/tool turns are masked out. Retained reasoning and its generated
+        closing tag remain supervised. Thinking prefills are inferred per response;
+        ``enable_thinking`` only controls the inference prefix.
         ``context_ids`` and ``answer_ids`` still split at the final assistant turn;
         inference dialogs return no loss mask. History thinking normalization is
         unchanged, so removed reasoning text is not supervised.
@@ -122,12 +125,12 @@ class NemotronNanoV3PromptFormatter(PromptFormatter):
         # 6) Tokenize all turns.
         turn_tokens = []
         turn_token_counts = []
-        turn_mask_values = []
+        loss_mask = []
 
         if self.INSERT_BOS:
             turn_tokens.append(self.tokenizer.bos)
             turn_token_counts.append(1)
-            turn_mask_values.append(False)
+            loss_mask.append(False)
 
         is_inference = turns[-1]["role"] != self.OUTPUT_ROLE
         for turn in turns:
@@ -140,8 +143,10 @@ class NemotronNanoV3PromptFormatter(PromptFormatter):
             tokens = self.encode_turn(template, expected_slots, slot_values)
             turn_tokens.extend(tokens)
             turn_token_counts.append(len(tokens))
-            # Supervise every assistant turn, matching the base formatter contract.
-            turn_mask_values.append(role == self.OUTPUT_ROLE)
+            if not is_inference and role == self.OUTPUT_ROLE:
+                loss_mask.extend(self._assistant_loss_mask(tokens, template, expected_slots, slot_values))
+            else:
+                loss_mask.extend([False] * len(tokens))
 
         # 7) Append inference prefix with thinking toggle.
         if is_inference and self.INFERENCE_PREFIX is not None:
@@ -152,30 +157,48 @@ class NemotronNanoV3PromptFormatter(PromptFormatter):
             inference_tokens = self._apply_tokenizer(inference_prefix)
             turn_tokens.extend(inference_tokens)
             turn_token_counts.append(len(inference_tokens))
-            turn_mask_values.append(False)
+            loss_mask.extend([False] * len(inference_tokens))
 
         # Insert EOS only when the last turn comes from the OUTPUT_ROLE.
         if self.INSERT_EOS and not is_inference:
             turn_tokens.append(self.tokenizer.eos)
             turn_token_counts[-1] += 1
-            turn_mask_values.append(True)
+            loss_mask.append(True)
 
         ans = {"input_ids": torch.tensor(turn_tokens, dtype=torch.long)}
-        if turn_mask_values[-1]:
+        if not is_inference:
             ans["context_ids"] = ans["input_ids"][: -turn_token_counts[-1]]
             ans["answer_ids"] = ans["input_ids"][-turn_token_counts[-1] :]
-            ans["mask"] = torch.tensor(
-                [
-                    turn_mask_values[turn_idx]
-                    for turn_idx, turn_len in enumerate(turn_token_counts)
-                    for _ in range(turn_len)
-                ],
-                dtype=torch.bool,
-            )
+            ans["mask"] = torch.tensor(loss_mask, dtype=torch.bool)
         else:
             ans["context_ids"] = ans["input_ids"]
 
         return ans
+
+    def _assistant_loss_mask(
+        self, tokens: list[int], template: str, expected_slots: dict, slot_values: dict
+    ) -> list[bool]:
+        # The caller provides the assistant header at generation time. Match only
+        # leading thinking prefills present in this response; never mask reasoning
+        # or a closing </think> that the model must generate after reasoning.
+        message = slot_values["message"]
+        prefix = template.split("|message|", 1)[0]
+        for thinking_prefix in ("<think></think>", "<think>\n", "<think>"):
+            if message.startswith(thinking_prefix):
+                prefix += thinking_prefix
+                break
+        prefix_tokens = self._apply_tokenizer(prefix, lang=slot_values.get(self.PROMPT_LANGUAGE_SLOT))
+        start = _common_prefix_length(tokens, prefix_tokens)
+
+        # Keep the EOT target but exclude formatting after it. Tokenize complete
+        # turns as before: concatenating independently encoded prefix/body pieces
+        # would change BPE segmentation. If a boundary merges tokens, supervise
+        # the ambiguous token(s) rather than dropping any response/EOT targets.
+        through_eot = self.encode_turn(template.removesuffix("\n"), expected_slots, slot_values)
+        end = _common_prefix_length(tokens, through_eot)
+        if end < len(through_eot):
+            end = len(tokens)
+        return [False] * start + [True] * (end - start) + [False] * (len(tokens) - end)
 
 
 @registered_prompt_format_fn(Cut, NemotronNanoV3PromptFormatter)
@@ -200,3 +223,10 @@ def nemotron_nano_v3(cut: Cut, prompt: NemotronNanoV3PromptFormatter):
         turns.append({"role": "assistant", "content": answer})
 
     return prompt.encode_dialog(turns)
+
+
+def _common_prefix_length(tokens: list[int], prefix: list[int]) -> int:
+    for i, (token, prefix_token) in enumerate(zip(tokens, prefix)):
+        if token != prefix_token:
+            return i
+    return min(len(tokens), len(prefix))

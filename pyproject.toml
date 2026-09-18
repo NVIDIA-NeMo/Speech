@@ -435,6 +435,7 @@ markers = [
 version = { attr = "nemo.package_info.__version__" }
 
 [tool.uv]
+managed = true
 conflicts = [
     [
         { extra = "cu12" },

@@ -80,6 +80,10 @@ class BaseCallback(PTLCallback):
         """Called when checkpoint saving succeeds."""
         pass
 
+    def on_save_checkpoint_failure(self, *args, **kwargs) -> None:
+        """Called when checkpoint saving fails."""
+        pass
+
     # Configuration update
     def update_config(self, *args, **kwargs) -> None:
         """Update callback-specific configuration after initialization."""

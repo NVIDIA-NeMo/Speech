@@ -41,6 +41,7 @@ from nemo.collections.asr.models.sortformer_diar_models import _OversamplingDist
 from nemo.collections.asr.parts.submodules.subsampling import FeatureStacking
 from nemo.collections.asr.parts.utils.sortformer_utils import (
     InferenceProfiler,
+    SortformerStreamingSession,
     configure_output_subsampling_factor,
     get_prediction_cache_metadata,
 )
@@ -77,6 +78,10 @@ def _create_sortformer_model(
     phantom_weight=0.0,
     phantom_target="both",
     include_auxiliary_weights=True,
+    normalize="per_feature",
+    pad_to=16,
+    exact_pad=False,
+    window_size=0.025,
 ):
     if output_subsampling_factor is None:
         output_subsampling_factor = 1 if high_resolution else 8
@@ -105,8 +110,10 @@ def _create_sortformer_model(
     }
     preprocessor = {
         '_target_': 'nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor',
-        'normalize': 'per_feature',
-        'window_size': 0.025,
+        'normalize': normalize,
+        'pad_to': pad_to,
+        'exact_pad': exact_pad,
+        'window_size': window_size,
         'sample_rate': 16000,
         'window_stride': 0.01,
         'window': 'hann',
@@ -1110,6 +1117,248 @@ class TestSortformerEncLabelModelStreaming:
         confdict = sortformer_diar_model.to_config_dict()
         instance2 = SortformerEncLabelModel.from_config_dict(confdict)
         assert isinstance(instance2, SortformerEncLabelModel)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("high_resolution", [False, True])
+    @pytest.mark.parametrize("pad_to", [0, 16])
+    @pytest.mark.parametrize("right_context", [0, 1])
+    def test_raw_audio_streaming_session_matches_full_waveform_streaming(self, high_resolution, pad_to, right_context):
+        model = _create_sortformer_model(high_resolution=high_resolution, normalize="NA", pad_to=pad_to).eval()
+        model.streaming_mode = True
+        model.async_streaming = True
+        model.sortformer_modules.chunk_len = 2
+        model.sortformer_modules.chunk_left_context = 1
+        model.sortformer_modules.chunk_right_context = right_context
+        model._check_streaming_parameters()
+        audio = [torch.randn(8193), torch.randn(5001)]
+
+        # Independent reference: preprocess each complete waveform, then use the existing streaming model path.
+        # Trim dense feature padding so the reference chunk boundaries follow the actual feature length.
+        reference_preds = []
+        with torch.no_grad():
+            for signal in audio:
+                features, feature_lengths = model.process_signal(signal.unsqueeze(0), torch.tensor([signal.numel()]))
+                features = features[:, :, : feature_lengths[0]]
+                reference_preds.append(model.forward_streaming(features, feature_lengths)[0])
+
+        session = SortformerStreamingSession(model, batch_size=2)
+        assert session._preprocessor is model.preprocessor
+        assert model.preprocessor.featurizer.pad_to == pad_to
+        assert model.preprocessor.featurizer.normalize == "NA"
+        assert model.preprocessor.featurizer.dither > 0
+        emitted = [[], []]
+        offsets = [0, 0]
+        step_sizes = [(17, 503), (1600, 81), (2999, 4417), (3577, 0)]
+        for step_index, sizes in enumerate(step_sizes):
+            chunks = []
+            lengths = []
+            final = []
+            for stream_index, size in enumerate(sizes):
+                end = min(offsets[stream_index] + size, audio[stream_index].numel())
+                chunks.append(audio[stream_index][offsets[stream_index] : end])
+                offsets[stream_index] = end
+                lengths.append(chunks[-1].numel())
+                final.append(end == audio[stream_index].numel())
+            # Nonzero values outside each valid length must never enter that row's waveform buffer.
+            padded_audio = torch.full((2, max(lengths)), 123.0)
+            for stream_index, chunk in enumerate(chunks):
+                padded_audio[stream_index, : lengths[stream_index]] = chunk
+            preds, pred_lengths = session.diarize_step(
+                padded_audio,
+                audio_chunk_lengths=torch.tensor(lengths),
+                is_final=torch.tensor(final),
+            )
+            for stream_index in range(2):
+                emitted[stream_index].append(preds[stream_index, : pred_lengths[stream_index]])
+
+            if step_index == 2:
+                assert final == [False, True]
+            if step_index == 3:
+                assert pred_lengths[1] == 0
+
+        for stream_index in range(2):
+            batched_preds = torch.cat(emitted[stream_index])
+            torch.testing.assert_close(batched_preds, reference_preds[stream_index])
+            assert session._received_samples[stream_index] == audio[stream_index].numel()
+            assert (
+                session._audio_buffers[stream_index].untyped_storage().nbytes()
+                < audio[stream_index].untyped_storage().nbytes()
+            )
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("high_resolution, output_subsampling_factor", [(False, 16), (True, 2)])
+    def test_raw_audio_streaming_session_downsamples_heterogeneous_final_rows(
+        self, high_resolution, output_subsampling_factor
+    ):
+        model = _create_sortformer_model(
+            high_resolution=high_resolution,
+            output_subsampling_factor=output_subsampling_factor,
+            normalize="NA",
+        ).eval()
+        model.streaming_mode = True
+        model.async_streaming = True
+        model.sortformer_modules.chunk_len = 2
+        model.sortformer_modules.chunk_left_context = 0
+        model.sortformer_modules.chunk_right_context = 0
+        model._check_streaming_parameters()
+        audio = [torch.randn(819), torch.randn(2401)]
+
+        reference_preds = []
+        with torch.no_grad():
+            for signal in audio:
+                features, feature_lengths = model.process_signal(signal.unsqueeze(0), torch.tensor([signal.numel()]))
+                features = features[:, :, : feature_lengths[0]]
+                reference_preds.append(model.forward_streaming(features, feature_lengths)[0])
+
+        session = SortformerStreamingSession(model, batch_size=2)
+        preds, pred_lengths = session.diarize_step(
+            torch.nn.utils.rnn.pad_sequence(audio, batch_first=True),
+            audio_chunk_lengths=torch.tensor([signal.numel() for signal in audio]),
+            is_final=True,
+        )
+        for stream_index, reference in enumerate(reference_preds):
+            torch.testing.assert_close(preds[stream_index, : pred_lengths[stream_index]], reference)
+
+    @pytest.mark.unit
+    def test_raw_audio_streaming_session_preserves_paused_row_fifo(self):
+        model = _create_sortformer_model(normalize="NA").eval()
+        model.streaming_mode = True
+        model.async_streaming = True
+        model.sortformer_modules.chunk_len = 2
+        model.sortformer_modules.chunk_left_context = 1
+        model.sortformer_modules.chunk_right_context = 0
+        model.sortformer_modules.fifo_len = 4
+        model.sortformer_modules.spkcache_len = 16
+        model.sortformer_modules.spkcache_update_period = 2
+        model._check_streaming_parameters()
+        audio = [torch.randn(8193), torch.randn(9001)]
+
+        reference_preds = []
+        with torch.no_grad():
+            for signal in audio:
+                features, feature_lengths = model.process_signal(signal.unsqueeze(0), torch.tensor([signal.numel()]))
+                features = features[:, :, : feature_lengths[0]]
+                reference_preds.append(model.forward_streaming(features, feature_lengths)[0])
+
+        session = SortformerStreamingSession(model, batch_size=2)
+        emitted = [[], []]
+        offsets = [0, 0]
+        paused_state = {}
+        for step_index, sizes in enumerate([(3000, 3000), (0, 3000), (5193, 3001)]):
+            chunks = []
+            for stream_index, size in enumerate(sizes):
+                chunks.append(audio[stream_index][offsets[stream_index] : offsets[stream_index] + size])
+                offsets[stream_index] += size
+            preds, pred_lengths = session.diarize_step(
+                torch.nn.utils.rnn.pad_sequence(chunks, batch_first=True),
+                audio_chunk_lengths=torch.tensor(sizes),
+                is_final=step_index == 2,
+            )
+            for stream_index in range(2):
+                emitted[stream_index].append(preds[stream_index, : pred_lengths[stream_index]])
+            if step_index == 0:
+                assert session.streaming_state.fifo_lengths[0] > 0
+                paused_state = {
+                    name: value[0].clone()
+                    for name, value in vars(session.streaming_state).items()
+                    if isinstance(value, torch.Tensor)
+                }
+            elif step_index == 1:
+                assert pred_lengths[0] == 0
+                assert pred_lengths[1] > 0
+                for name, expected in paused_state.items():
+                    torch.testing.assert_close(getattr(session.streaming_state, name)[0], expected, rtol=0, atol=0)
+
+        for stream_index, reference in enumerate(reference_preds):
+            torch.testing.assert_close(torch.cat(emitted[stream_index]), reference)
+
+    @pytest.mark.unit
+    def test_raw_audio_streaming_session_rejects_finalized_row_atomically(self):
+        model = _create_sortformer_model(normalize="NA").eval()
+        model.streaming_mode = True
+        model.async_streaming = True
+        session = SortformerStreamingSession(model, batch_size=2)
+        session.diarize_step(
+            torch.randn(2, 1001),
+            audio_chunk_lengths=torch.tensor([0, 1001]),
+            is_final=torch.tensor([False, True]),
+        )
+        received_samples = list(session._received_samples)
+        audio_buffers = [buffer.clone() for buffer in session._audio_buffers]
+
+        with pytest.raises(RuntimeError, match="finalized stream 1"):
+            session.diarize_step(torch.randn(2, 17), audio_chunk_lengths=torch.tensor([17, 1]))
+
+        assert session._received_samples == received_samples
+        for buffer, expected in zip(session._audio_buffers, audio_buffers):
+            torch.testing.assert_close(buffer, expected, rtol=0, atol=0)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("right_context, first_chunk_samples", [(0, 2720), (1, 4000)])
+    def test_raw_audio_streaming_session_matches_exact_padding(self, right_context, first_chunk_samples):
+        model = _create_sortformer_model(normalize="NA", exact_pad=True, window_size=0.032).eval()
+        model.streaming_mode = True
+        model.async_streaming = True
+        model.sortformer_modules.chunk_len = 2
+        model.sortformer_modules.chunk_left_context = 1
+        model.sortformer_modules.chunk_right_context = right_context
+        model._check_streaming_parameters()
+        audio = torch.randn(8193)
+
+        with torch.no_grad():
+            features, feature_lengths = model.process_signal(audio.unsqueeze(0), torch.tensor([audio.numel()]))
+            reference = model.forward_streaming(features[:, :, : feature_lengths[0]], feature_lengths)[0]
+
+        session = SortformerStreamingSession(model)
+        first_preds, first_lengths = session.diarize_step(audio[:first_chunk_samples])
+        final_preds, final_lengths = session.diarize_step(audio[first_chunk_samples:], is_final=True)
+        completed_preds = torch.cat([first_preds[0, : first_lengths[0]], final_preds[0, : final_lengths[0]]])
+        torch.testing.assert_close(completed_preds, reference)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("normalize", ["NA", None, False])
+    def test_raw_audio_streaming_session_reset_and_validation(self, normalize):
+        offline_model = _create_sortformer_model(normalize=normalize).eval()
+        with pytest.raises(ValueError, match="streaming_mode=True"):
+            SortformerStreamingSession(offline_model)
+
+        model = _create_sortformer_model(normalize=normalize).eval()
+        model.streaming_mode = True
+        with pytest.raises(ValueError, match="async_streaming=True"):
+            SortformerStreamingSession(model)
+        model.async_streaming = True
+        model.sortformer_modules.chunk_len = 2
+        model.sortformer_modules.chunk_left_context = 1
+        model.sortformer_modules.chunk_right_context = 1
+        model._check_streaming_parameters()
+        audio = torch.randn(4097)
+        session = SortformerStreamingSession(model, batch_size=1)
+
+        first_preds, first_lengths = session.diarize_step(audio, is_final=True)
+        with pytest.raises(RuntimeError, match="finalized stream 0"):
+            session.diarize_step(torch.ones(1))
+        session.reset()
+        second_preds, second_lengths = session.diarize_step(audio.unsqueeze(0), is_final=torch.tensor([True]))
+
+        assert torch.equal(second_lengths, first_lengths)
+        torch.testing.assert_close(second_preds, first_preds)
+        with pytest.raises(ValueError, match="batch dimension"):
+            session.reset()
+            session.diarize_step(torch.randn(2, 100))
+        with pytest.raises(ValueError, match="positive integer"):
+            SortformerStreamingSession(model, batch_size=0)
+        model.train()
+        with pytest.raises(ValueError, match="evaluation model"):
+            SortformerStreamingSession(model)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("normalize", ["per_feature", "all_features"])
+    def test_raw_audio_streaming_session_rejects_utterance_normalization(self, normalize):
+        model = _create_sortformer_model(normalize=normalize).eval()
+        model.streaming_mode = True
+        model.async_streaming = True
+        with pytest.raises(ValueError, match="unnormalized features"):
+            SortformerStreamingSession(model)
 
     @pytest.mark.unit
     @pytest.mark.parametrize("async_streaming", [False, True])

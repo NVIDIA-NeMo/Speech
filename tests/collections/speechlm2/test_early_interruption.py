@@ -336,5 +336,49 @@ def test_early_interruption_frames_to_remove_calculation(dataset_with_early_inte
     assert num_pad_tokens >= 9, "Should have increased padding after truncation"
 
 
+def test_early_interruption_eos_near_sequence_end_survives(dataset_with_early_interruption):
+    """Test that the newly-placed EOS survives when the original EOS sits close enough to the
+    end of the sequence that no tail remains to shift (tail_length <= 0 inside the
+    implementation). This previously let the final pad-fill overwrite the just-written EOS,
+    leaving the turn with no EOS token at all.
+    """
+    batch_size = 1
+    seq_len = 25
+
+    target_tokens = torch.full((batch_size, seq_len), 0, dtype=torch.long)
+    target_tokens[0, 0] = 1  # BOS
+    target_tokens[0, 1:13] = torch.arange(10, 22)  # 12 content tokens (positions 1-12)
+    # Positions 13-23 are PAD (0)
+    target_tokens[0, 24] = 2  # Original EOS at the very last position
+
+    source_tokens = torch.full((batch_size, seq_len), 0, dtype=torch.long)
+    target_audio = torch.zeros((batch_size, 20000), dtype=torch.float32)
+    source_audio = torch.zeros((batch_size, 16000), dtype=torch.float32)
+    source_audio_lens = torch.tensor([16000], dtype=torch.long)
+
+    dataset_with_early_interruption._apply_early_interruption_augmentation(
+        target_tokens=target_tokens,
+        source_tokens=source_tokens,
+        source_audio=source_audio,
+        source_audio_lens=source_audio_lens,
+        batch_idx=0,
+    )
+
+    # CRITICAL: the turn must still have an EOS token after the augmentation. With the
+    # original EOS at the last index (24) and overlap_tokens=5, every valid cutoff position
+    # (1-12) makes cont_start_pos = 24 + 5 = 29 >= seq_len, so no tail-shift runs and the
+    # bug would have the final pad-fill range start at or before the new EOS position.
+    eos_positions = (target_tokens[0] == 2).nonzero(as_tuple=True)[0]
+    assert len(eos_positions) > 0, "EOS should still exist after early interruption"
+
+    new_eos_pos = eos_positions[0].item()
+    overlap_tokens = 5  # from fixture cfg
+    # cutoff_pos must satisfy (24 - pos) > 5, i.e. pos < 19; valid cutoffs are 1-12
+    assert 6 <= new_eos_pos <= 17, (
+        f"New EOS at {new_eos_pos} should be within cutoff + overlap range (6-17), "
+        f"meaning agent continues for {overlap_tokens} tokens after user interruption"
+    )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

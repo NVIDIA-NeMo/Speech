@@ -61,7 +61,7 @@ Get started (install the PyTorch build for your platform first):
 
 .. code-block:: bash
 
-   uv pip install 'nemo-toolkit[asr,tts]'
+   uv pip install 'nemo-toolkit[asr,tts,audio]'
 
 .. code-block:: python
 

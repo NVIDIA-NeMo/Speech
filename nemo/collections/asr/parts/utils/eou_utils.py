@@ -173,8 +173,12 @@ def evaluate_eou(
         false_negatives += len(reference) - r_idx
         missing += len(reference) - r_idx
 
-    missing -= len(earlycut_ids)  # Remove the references that were missed due to early cutoff
-    false_negatives -= len(earlycut_ids)  # Remove the references that were missed due to early cutoff
+    # Only references counted by the block above can be discounted here. An early cutoff
+    # that r_idx already advanced past was never added, so subtracting it drives both
+    # counts negative.
+    counted_earlycut = sum(1 for idx in earlycut_ids if idx >= r_idx)
+    missing -= counted_earlycut  # Remove the references that were missed due to early cutoff
+    false_negatives -= counted_earlycut  # Remove the references that were missed due to early cutoff
     return EOUResult(
         latency=latency,
         early_cutoff=early_cutoff,

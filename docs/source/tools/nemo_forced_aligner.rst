@@ -20,7 +20,7 @@ Quickstart
 ----------
 
 1. Install NeMo with the ASR collection. See :ref:`installation`.
-2. Prepare a NeMo-style manifest containing the paths of audio files you would like to proces, and (optionally) their text.
+2. Prepare a NeMo-style manifest containing the paths of audio files you would like to process, and (optionally) their text.
 3. Run NFA's ``align.py`` script with the desired config, e.g.:
 
 .. code-block::
@@ -140,7 +140,7 @@ The ``ASSFileConfig`` (which is passed into the main NFA config) has the followi
 * ``fontsize``: int (default value ``20``) which will be the fontsize of the text
 * ``vertical_alignment``: string (default value ``center``) to specify the vertical alignment of the text. Can be one of ``center``, ``top``, ``bottom``.
 * ``resegment_text_to_fill_space``: bool (default value ``False``). If ``True``, the text will be resegmented such that each segment will not take up more than (approximately) ``max_lines_per_segment`` when the ASS file is applied to a video.
-* ``max_lines_per_segment``: int (defaulst value ``2``) which specifies the number of lines per segment to display. This parameter is only used if ``resegment_text_to_fill_space`` is ``True``.
+* ``max_lines_per_segment``: int (default value ``2``) which specifies the number of lines per segment to display. This parameter is only used if ``resegment_text_to_fill_space`` is ``True``.
 * ``text_already_spoken_rgb``: List of 3 ints (default value is [49, 46, 61], which makes a dark gray). The RGB values of the color that will be used to highlight text that has already been spoken.
 * ``text_being_spoken_rgb``: List of 3 ints (default value is [57, 171, 9] which makes a dark green). The RGB values of the color that will be used to highlight text that is being spoken.
 * ``text_not_yet_spoken_rgb``: List of 3 ints (default value is [194, 193, 199] which makes a dark green). The RGB values of the color that will be used to highlight text that has not yet been spoken.

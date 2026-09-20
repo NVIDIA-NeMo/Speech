@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -413,6 +414,48 @@ class TestExpManager:
             },
         )
         assert Path(test_trainer.ckpt_path).resolve() == dirpath_checkpoint.resolve()
+
+    @pytest.mark.unit
+    def test_resume_select_latest_last_checkpoint(self, tmp_path):
+        log_dir = tmp_path / "latest_last"
+        checkpoint_dir = log_dir / "checkpoints"
+        older = checkpoint_dir / "step=3759-last.ckpt"
+        latest = checkpoint_dir / "step=4759-last.ckpt"
+        older.mkdir(parents=True)
+        latest.mkdir()
+
+        default_trainer = pl.Trainer(accelerator='cpu', enable_checkpointing=False, logger=False)
+        with pytest.raises(ValueError, match="resume_select_latest_last_checkpoint=True"):
+            exp_manager(default_trainer, {"resume_if_exists": True, "explicit_log_dir": str(log_dir)})
+
+        latest_trainer = pl.Trainer(accelerator='cpu', enable_checkpointing=False, logger=False)
+        exp_manager(
+            latest_trainer,
+            {
+                "resume_if_exists": True,
+                "resume_select_latest_last_checkpoint": True,
+                "explicit_log_dir": str(log_dir),
+            },
+        )
+        assert Path(latest_trainer.ckpt_path).resolve() == latest.resolve()
+
+    @pytest.mark.unit
+    def test_resume_select_latest_last_checkpoint_rejects_ambiguous_names(self, tmp_path):
+        log_dir = tmp_path / "ambiguous_latest_last"
+        checkpoint_dir = log_dir / "checkpoints"
+        (checkpoint_dir / "step=10-last.ckpt").mkdir(parents=True)
+        (checkpoint_dir / "unknown-last.ckpt").mkdir()
+
+        trainer = pl.Trainer(accelerator='cpu', enable_checkpointing=False, logger=False)
+        with pytest.raises(ValueError, match="every candidate"):
+            exp_manager(
+                trainer,
+                {
+                    "resume_if_exists": True,
+                    "resume_select_latest_last_checkpoint": True,
+                    "explicit_log_dir": str(log_dir),
+                },
+            )
 
     @pytest.mark.unit
     def test_nemo_checkpoint_save_best_model_1(self, tmp_path):

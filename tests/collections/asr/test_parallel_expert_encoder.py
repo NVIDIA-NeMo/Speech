@@ -1,4 +1,5 @@
-# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -23,7 +24,6 @@ from torch import nn
 
 from nemo.collections.asr.models import SortformerEncLabelModel
 from nemo.collections.asr.modules.conformer_encoder import ConformerEncoder
-from nemo.collections.asr.modules.transformer_encoder import StreamingTransformerEncoder
 from nemo.collections.asr.modules.parallel_expert_encoder import (
     ParallelExpertEncoder,
     ParallelExpertEncoderPT,
@@ -31,6 +31,7 @@ from nemo.collections.asr.modules.parallel_expert_encoder import (
     _default_dtype,
     _disable_dist_feature_sync,
 )
+from nemo.collections.asr.modules.transformer_encoder import StreamingTransformerEncoder
 
 # ``@experimental`` wraps the class in a wrapt proxy, so ``__new__`` (used to build
 # bare instances that skip the heavy real ``__init__``) must target the underlying
@@ -211,6 +212,8 @@ def online_stub(d_model, n_spk, sf, win, lc, rc):
     enc.right_ctx_feat_len = rc * sf
     enc.freeze_asr = True
     enc.freeze_diar = False  # The stub has no `diarization_model`, so `freeze_diar` must be False to keep
+    enc.speaker_feature_mode = "continuous"
+    enc.speaker_activity_threshold = None
     enc.asr_norm = nn.LayerNorm(d_model)
     enc.diar_norm = nn.LayerNorm(n_spk)
     enc.register_buffer("diar_kernel", torch.randn(n_spk, d_model))

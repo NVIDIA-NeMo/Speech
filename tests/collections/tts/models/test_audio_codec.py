@@ -1,4 +1,5 @@
-# Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -201,3 +202,55 @@ class TestAudioCodecModel:
             dropout_start_i = i * codec_model.vector_quantizer.codebook_dim
             dropped_codes = encoded[:, dropout_start_i:, :]
             torch.testing.assert_close(actual=dropped_codes, expected=torch.zeros_like(dropped_codes))
+
+    @pytest.mark.unit
+    def test_process_batch_gates_mmd_gradients_with_codebook_dropout(self, codec_model, monkeypatch):
+        batch_size = 2
+        num_frames = 2
+        audio = torch.zeros(batch_size, 960)
+        audio_len = torch.full((batch_size,), 960, dtype=torch.long)
+        encoded_len = torch.full((batch_size,), num_frames, dtype=torch.long)
+        encoder_output = torch.zeros(batch_size, 40, num_frames)
+        full_codes = torch.ones_like(encoder_output, requires_grad=True)
+        keep_mask = torch.ones_like(full_codes)
+        keep_mask[:, full_codes.shape[1] // 2 :] = 0
+        dropped_codes = full_codes * keep_mask
+
+        # Stub each codec stage so full MMD values can be distinguished from dropped decoder inputs.
+        monkeypatch.setattr(codec_model, 'encode_audio', Mock(return_value=(encoder_output, encoded_len)))
+        monkeypatch.setattr(
+            codec_model.vector_quantizer,
+            'forward',
+            Mock(return_value=(full_codes, torch.zeros(codec_model.num_codebooks, batch_size, num_frames))),
+        )
+        dropout_codebooks = Mock(return_value=dropped_codes)
+        monkeypatch.setattr(codec_model, '_dropout_random_codebooks', dropout_codebooks)
+        decoder_forward = Mock(return_value=(torch.zeros_like(audio), audio_len))
+        monkeypatch.setattr(codec_model.audio_decoder, 'forward', decoder_forward)
+
+        codec_model.codebook_dropout_rate = 1.0
+        codec_model.train()
+        batch = {'audio': audio, 'audio_lens': audio_len}
+
+        _, _, _, _, mmd_inputs, _, _ = codec_model._process_batch(batch)
+
+        # MMD observes the complete representation, but its gradients follow the codebook dropout mask.
+        torch.testing.assert_close(mmd_inputs, full_codes)
+        torch.testing.assert_close(decoder_forward.call_args.kwargs['inputs'], dropped_codes)
+        dropout_codebooks.assert_called_once()
+        mmd_inputs.sum().backward()
+        torch.testing.assert_close(full_codes.grad, keep_mask)
+
+        decoder_forward.reset_mock()
+        dropout_codebooks.reset_mock()
+        full_codes.grad = None
+        codec_model.eval()
+
+        _, _, _, _, mmd_inputs, _, _ = codec_model._process_batch(batch)
+
+        # Without training-time dropout, MMD retains the ordinary identity gradient.
+        torch.testing.assert_close(mmd_inputs, full_codes)
+        torch.testing.assert_close(decoder_forward.call_args.kwargs['inputs'], full_codes)
+        dropout_codebooks.assert_not_called()
+        mmd_inputs.sum().backward()
+        torch.testing.assert_close(full_codes.grad, torch.ones_like(full_codes))

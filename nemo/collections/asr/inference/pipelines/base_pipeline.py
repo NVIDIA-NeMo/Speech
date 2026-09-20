@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -211,6 +212,8 @@ class BasePipeline(PipelineInterface):
             final = step_output.final_transcript
             partial = step_output.partial_transcript
             if not (final.strip() or partial.strip()):
+                # No new transcript to translate this step: keep the previous partial translation
+                step_output.partial_translation = state.previous_translation_info[0]
                 continue
 
             transcript = final or partial

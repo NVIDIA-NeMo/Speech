@@ -1,4 +1,5 @@
-# Copyright (c) 2021, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2021, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -47,10 +48,10 @@ def get_nemo_transformer(
         encoder (bool, optional): True will use EncoderTransformerNM, False will use DecoderTransformerNM. Defaults to True.
     """
     if model_name is not None:
-        raise ValueError(f'NeMo transformers cannot be loaded from NGC yet. model_name should be None')
+        raise ValueError('NeMo transformers cannot be loaded from NGC yet. model_name should be None')
 
     if pretrained:
-        raise ValueError(f'NeMo transformers cannot be loaded from NGC yet. pretrained should be False')
+        raise ValueError('NeMo transformers cannot be loaded from NGC yet. pretrained should be False')
 
     cfg = None
 

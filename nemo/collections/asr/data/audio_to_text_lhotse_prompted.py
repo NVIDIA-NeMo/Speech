@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -22,6 +23,7 @@ from lhotse.dataset.collation import collate_vectors
 
 from nemo.collections.asr.data.audio_to_text_lhotse import _make_audio_samples
 from nemo.collections.common.data import apply_prompt_format_fn
+from nemo.collections.common.data.lhotse.audio_loading import LhotseAudioLoadingDatasetMixin
 from nemo.collections.common.prompts import PromptFormatter
 from nemo.collections.common.tokenizers import TokenizerSpec
 
@@ -47,7 +49,7 @@ class PromptedAudioToTextMiniBatch:
         return self.prompted_transcript[:, :-1], self.prompted_transcript[:, 1:]
 
 
-class PromptedAudioToTextLhotseDataset(torch.utils.data.Dataset):
+class PromptedAudioToTextLhotseDataset(LhotseAudioLoadingDatasetMixin, torch.utils.data.Dataset):
     """
     This dataset is based on :class:`~nemo.collections.asr.data.audio_to_text_lhotse.LhotseSpeechToTextBpeDataset`.
     It is a Lhotse-style dataset that converts a mini-batch of Cuts into tensors.
@@ -96,7 +98,7 @@ class PromptedAudioToTextLhotseDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, cuts: CutSet) -> PromptedAudioToTextMiniBatch:
         # Load the audio's from AIS and add them to the CutSet
-        audio, audio_lens, cuts = self.load_audio(cuts)
+        audio, audio_lens, cuts = self.load_audio_with_cuts(cuts)
 
         # Will work if batch_size is set to 1.
         if self.enable_chunking:

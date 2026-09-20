@@ -1,4 +1,5 @@
-# Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -48,5 +49,30 @@ def convert_decoder_state_dict(state: Mapping[str, torch.Tensor]) -> dict[str, t
         renamed = name.replace(".activation.activation.snake_act.alpha", ".activation.alpha")
         renamed = renamed.replace(".output_activation.activation.snake_act.alpha", ".output_activation.alpha")
         converted[renamed] = value.contiguous()
+
+    return converted
+
+
+def convert_encoder_state_dict(state: Mapping[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    """Extract the codec encoder and materialize all weight-normalized convolutions."""
+    prefix = "audio_encoder."
+    encoder = {name: tensor for name, tensor in state.items() if name.startswith(prefix)}
+    if not encoder:
+        raise KeyError(f"checkpoint does not contain any {prefix} weights")
+
+    converted: dict[str, torch.Tensor] = {}
+    suffix_v = ".parametrizations.weight.original1"
+    suffix_g = ".parametrizations.weight.original0"
+    for name, value in encoder.items():
+        if name.endswith(suffix_g):
+            continue
+        if name.endswith(suffix_v):
+            base = name[: -len(suffix_v)]
+            g_name = base + suffix_g
+            if g_name not in encoder:
+                raise KeyError(f"missing weight-norm magnitude {g_name}")
+            converted[base + ".weight"] = fold_weight_norm(encoder[g_name], value).contiguous()
+            continue
+        converted[name] = value.contiguous()
 
     return converted

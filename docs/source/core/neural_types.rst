@@ -6,7 +6,7 @@ Motivation
 ----------
 
 Neural Types describe the semantics, axis order, and dimensions of a tensor. The purpose of this type system is to catch semantic and
-dimensionality errors during model creation and facilitate module re-use.
+dimensionality errors during model creation and facilitate module reuse.
 
 .. image:: whyntypes.gif
   :width: 900

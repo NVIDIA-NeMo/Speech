@@ -49,7 +49,7 @@ def hf_tok():
 
 def _make_mock_self(hf_tok, chunk_size=CHUNK_SIZE, blank_token=BLANK_TOKEN):
     """Build a minimal namespace that satisfies ``_ensure_inference_cache``."""
-    return SimpleNamespace(
+    mock = SimpleNamespace(
         tokenizer=SimpleNamespace(tokenizer=hf_tok),
         core_cfg=SimpleNamespace(
             chunk_size=chunk_size,
@@ -62,6 +62,11 @@ def _make_mock_self(hf_tok, chunk_size=CHUNK_SIZE, blank_token=BLANK_TOKEN):
         # cache's logging line reads.
         blank_token_id=hf_tok.convert_tokens_to_ids(blank_token),
     )
+    # ``_ensure_inference_cache`` builds the turn template through this method so
+    # that it and ``_generate_chunked_streaming`` cannot drift apart. Delegate to
+    # the real implementation rather than reimplementing it here.
+    mock._build_turn_template_ids = lambda cs: StreamingSTTModel._build_turn_template_ids(mock, cs)
+    return mock
 
 
 def _run_ensure_cache(hf_tok, chunk_size=CHUNK_SIZE):
@@ -424,3 +429,77 @@ class TestStreamingBufferFrameArithmetic:
         assert capacity_samples == want_frames * round(self.WS * self.SR)
         chunk_samples = chunk_size * StreamingSTTModel._samples_per_encoder_frame(mock)
         assert chunk_samples <= capacity_samples
+
+
+class TestContextFlagGuards:
+    """M6: the context knobs must never apply silently or half-apply.
+
+    Both failure modes are invisible at runtime. A model/dataset mismatch trains the
+    emit gate at one position and reads it at another, so the model just stops
+    emitting; and the fast inference path would feed the unmodified context while
+    reporting numbers that look valid.
+    """
+
+    @staticmethod
+    def _mock(drop=False, collapse=False, blank="<blank>", compact=True, chunk_size=2):
+        return SimpleNamespace(
+            core_cfg=SimpleNamespace(
+                drop_blank_from_context=drop,
+                collapse_silent_audio=collapse,
+                compact_template=compact,
+                chunk_size=chunk_size,
+            ),
+            blank_token=blank,
+            # ``has_blank`` is a property on the real class, derived from blank_token;
+            # mirror that derivation rather than pinning it independently.
+            has_blank=blank != "",
+        )
+
+    def test_flags_resolve_when_preconditions_hold(self):
+        m = self._mock(drop=True)
+        assert StreamingSTTModel._resolve_context_flags(m, 2) == (True, False)
+
+    def test_collapse_implies_drop(self):
+        m = self._mock(collapse=True)
+        assert StreamingSTTModel._resolve_context_flags(m, 2) == (True, True)
+
+    def test_off_resolves_to_off_without_warning(self):
+        """R2: with the flags off nothing may change, including no spurious warnings."""
+        import warnings as _w
+
+        m = self._mock()
+        with _w.catch_warnings():
+            _w.simplefilter("error")
+            assert StreamingSTTModel._resolve_context_flags(m, 2) == (False, False)
+
+    @pytest.mark.parametrize(
+        "kwargs,chunk_size,reason",
+        [
+            ({"drop": True}, 0, "not fixed chunking"),
+            ({"drop": True, "blank": ""}, 2, "blank_token is empty"),
+            ({"drop": True, "compact": False}, 2, "compact_template=False"),
+        ],
+    )
+    def test_downgrade_is_loud(self, kwargs, chunk_size, reason):
+        """A silent downgrade would run the unmodified format while the config says otherwise."""
+        m = self._mock(**kwargs)
+        with pytest.warns(UserWarning, match="cannot apply"):
+            assert StreamingSTTModel._resolve_context_flags(m, chunk_size) == (False, False)
+
+    @pytest.mark.parametrize("flag", ["drop_blank_from_context", "collapse_silent_audio"])
+    def test_model_dataset_mismatch_raises(self, flag):
+        m = SimpleNamespace(core_cfg=SimpleNamespace(drop_blank_from_context=False, collapse_silent_audio=False))
+        setattr(m.core_cfg, flag, True)
+        with pytest.raises(ValueError, match="must match"):
+            StreamingSTTModel._assert_context_flags_match_data(m, {flag: False})
+
+    def test_matching_flags_are_accepted(self):
+        m = SimpleNamespace(core_cfg=SimpleNamespace(drop_blank_from_context=True, collapse_silent_audio=False))
+        StreamingSTTModel._assert_context_flags_match_data(
+            m, {"drop_blank_from_context": True, "collapse_silent_audio": False}
+        )
+
+    def test_no_data_cfg_is_not_an_error(self):
+        """Inference-only construction passes no dataset config."""
+        m = SimpleNamespace(core_cfg=SimpleNamespace(drop_blank_from_context=True, collapse_silent_audio=False))
+        StreamingSTTModel._assert_context_flags_match_data(m, None)

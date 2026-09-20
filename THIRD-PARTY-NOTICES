@@ -1,0 +1,320 @@
+NeMo Speech Third-Party Notices
+================================
+
+NeMo Speech includes or adapts the third-party materials listed below. The
+listed paths identify the material in this source distribution. Copyright and
+license notices retained in those files remain authoritative. SPDX identifiers
+are used for license names where possible.
+
+This inventory covers material distributed in the repository. Dependencies
+obtained separately when building or running NeMo Speech are governed by the
+licenses included with those dependencies.
+
+Component: Daily / Pipecat client and transport code
+Paths: examples/voice_agent/client/src/app.ts; nemo/agents/voice_agent/pipecat/
+Copyright: Copyright (c) 2024–2025, Daily
+License: BSD-2-Clause
+Source: https://github.com/pipecat-ai/pipecat
+
+Component: Triton lazy-initialization patch
+Path: external/patches/triton-lang_triton_6570_lazy_init.patch
+Copyright: Copyright (c) 2018-2022 Philippe Tillet, OpenAI
+License: MIT
+Source: https://github.com/triton-lang/triton/pull/6570
+
+Component: dscore md-eval
+Path: nemo/collections/asr/metrics/md_eval.py
+Copyright: Copyright (c) 2017, Neville Ryant
+License: BSD-2-Clause
+Source: https://github.com/nryant/dscore
+
+Component: warp-transducer RNN-T loss
+Paths: nemo/collections/asr/losses/rnnt.py; nemo/collections/asr/parts/numba/rnnt_loss/
+Copyright: Copyright 2018-2019, Mingkun Huang
+License: Apache-2.0
+Source: https://github.com/HawkAaron/warp-transducer
+
+Component: ESPnet transducer and attention code
+Paths: nemo/collections/asr/modules/hybrid_autoregressive_transducer.py;
+  nemo/collections/asr/modules/rnnt.py; nemo/collections/asr/parts/submodules/multi_head_attention.py;
+  nemo/collections/asr/parts/submodules/rnnt_beam_decoding.py;
+  nemo/collections/asr/parts/submodules/rnnt_greedy_decoding.py;
+  nemo/collections/asr/parts/submodules/tdt_beam_decoding.py; nemo/collections/asr/parts/utils/rnnt_utils.py;
+  scripts/checkpoint_averaging/average_model_checkpoints.py
+Copyright: Copyright 2017 Johns Hopkins University (Shinji Watanabe)
+License: Apache-2.0
+Source: https://github.com/espnet/espnet
+
+Component: BERT / Transformers code
+Path: nemo/collections/asr/modules/transformer/transformer_modules.py
+Copyright: Copyright 2018 The Google AI Language Team Authors and The HuggingFace Inc. team
+License: Apache-2.0
+Source: https://github.com/huggingface/transformers
+
+Component: fairseq wav2vec and Adafactor code
+Paths: nemo/collections/asr/modules/wav2vec_modules.py; nemo/collections/asr/parts/submodules/ssl_quantizers.py;
+  nemo/core/optim/adafactor.py
+Copyright: Copyright (c) Facebook, Inc. and its affiliates
+License: MIT
+Source: https://github.com/facebookresearch/fairseq
+
+Component: fairseq tokenizer from NVIDIA Deep Learning Examples
+Path: nemo/collections/common/tokenizers/fairseq_tokenizer.py
+Copyright: Copyright (c) 2017-present, Facebook, Inc.; Copyright (c) 2019-present, NVIDIA CORPORATION
+License: BSD-3-Clause
+Source: https://github.com/NVIDIA/DeepLearningExamples/tree/master/PyTorch/Translation/Transformer
+
+Component: Icefall context graphs
+Paths: nemo/collections/asr/parts/context_biasing/context_graph_ctc.py;
+  nemo/collections/asr/parts/context_biasing/context_graph_universal.py
+Copyright: Copyright 2023 Xiaomi Corp. (author: Wei Kang)
+License: Apache-2.0
+Source: https://github.com/k2-fsa/icefall
+
+Component: Patter speech preprocessing
+Paths: nemo/collections/asr/parts/features.py; nemo/collections/asr/parts/preprocessing/features.py;
+  nemo/collections/asr/parts/preprocessing/perturb.py; nemo/collections/asr/parts/preprocessing/segment.py;
+  scripts/dataset_processing/process_fisher_data.py; scripts/dataset_processing/process_hub5_data.py
+Copyright: Copyright (c) 2018 Ryan Leary
+License: MIT
+Source: https://github.com/ryanleary/patter
+
+Component: scikit-learn clustering code
+Paths: nemo/collections/asr/parts/utils/offline_clustering.py;
+  nemo/collections/asr/parts/utils/online_clustering.py
+Copyright: Copyright (c) 2007-2020 The scikit-learn developers
+License: BSD-3-Clause
+Source: https://github.com/scikit-learn/scikit-learn
+
+Component: SciPy linear-sum-assignment implementation
+Path: nemo/collections/asr/parts/utils/optimization_utils.py
+Copyright: Copyright (c) 2008 Brian M. Clapper <bmc@clapper.org>, Gael Varoquaux
+License: BSD-3-Clause
+Source: https://github.com/scipy/scipy
+
+Component: Conv-TasNet SI-SNR loss
+Path: nemo/collections/audio/losses/maxine/sisnr_loss.py
+Copyright: Copyright (c) 2018 Kaituo XU
+License: MIT
+Source: https://github.com/kaituoxu/Conv-TasNet
+
+Component: denoising-diffusion-pytorch Transformer U-Net code
+Path: nemo/collections/audio/parts/submodules/transformerunet.py
+Copyright: Copyright (c) 2023 Phil Wang
+License: MIT
+Source: https://github.com/lucidrains/denoising-diffusion-pytorch
+
+Component: torchaudio transforms
+Paths: nemo/collections/audio/parts/utils/transforms.py;
+  nemo/collections/asr/parts/submodules/spectr_augment.py
+Copyright: Copyright (c) 2017 Facebook Inc. (Soumith Chintala)
+License: BSD-2-Clause
+Source: https://github.com/pytorch/audio
+
+Component: AWS Labs masked-language-model scorer
+Path: nemo/collections/common/parts/mlm_scorer.py
+Copyright: Copyright 2020 AWSLABS, AMAZON
+License: Apache-2.0
+
+Component: Myrtle Software RNN code
+Path: nemo/collections/common/parts/rnn.py
+Copyright: Copyright (c) 2019, Myrtle Software Limited. All rights reserved
+License: Apache-2.0
+
+Component: nlputils Chinese detokenizer
+Path: nemo/collections/common/tokenizers/chinese_tokenizers.py
+Copyright: Copyright (c) 2016 The-Orizon
+License: MIT
+Source: https://github.com/The-Orizon/nlputils
+
+Component: Hugging Face Transformers utilities
+Paths: nemo/collections/common/tokenizers/megatron_utils.py;
+  nemo/collections/tts/modules/audio_codec_modules.py
+Copyright: Copyright 2018-present The Hugging Face team
+License: Apache-2.0
+Source: https://github.com/huggingface/transformers
+
+Component: Google Research sequence metrics
+Paths: nemo/collections/tts/metrics/__init__.py; nemo/collections/tts/metrics/score_metrics.py
+Copyright: Copyright 2019 The Google Research Authors
+License: Apache-2.0
+Source: https://github.com/google-research/google-research
+
+Component: EnCodec
+Path: nemo/collections/tts/modules/encodec_modules.py
+Copyright: Copyright (c) Meta Platforms, Inc. and affiliates
+License: MIT
+Source: https://github.com/facebookresearch/encodec
+
+Component: Meta distributed helpers
+Path: nemo/collections/tts/parts/utils/distributed.py
+Copyright: Copyright (c) Meta Platforms, Inc. and affiliates
+License: MIT
+
+Component: HiFi-GAN
+Paths: nemo/collections/tts/losses/hifigan_losses.py; nemo/collections/tts/modules/hifigan_modules.py
+Copyright: Copyright (c) 2020 Jungil Kong
+License: MIT
+Source: https://github.com/jik876/hifi-gan
+
+Component: ParallelWaveGAN STFT losses
+Path: nemo/collections/tts/losses/stftlosses.py
+Copyright: Copyright (c) 2019 Tomoki Hayashi
+License: MIT
+Source: https://github.com/kan-bayashi/ParallelWaveGAN
+
+Component: FastPitch utilities
+Paths: nemo/collections/tts/losses/fastpitchloss.py; nemo/collections/tts/modules/fastpitch.py;
+  nemo/collections/tts/parts/utils/helpers.py; nemo/collections/tts/parts/utils/tts_dataset_utils.py
+Copyright: Copyright (c) 2021, NVIDIA Corporation
+License: BSD-3-Clause
+Source: https://github.com/NVIDIA/DeepLearningExamples/tree/master/PyTorch/SpeechSynthesis/FastPitch
+
+Component: Google model save/restore connector code
+Paths: nemo/core/connectors/__init__.py; nemo/core/connectors/save_restore_connector.py
+Copyright: Copyright 2015 and onwards Google, Inc
+License: Apache-2.0
+
+Component: Adan optimizer
+Path: nemo/core/optim/adan.py
+Copyright: Copyright 2022 Garena Online Private Limited
+License: Apache-2.0
+Source: https://github.com/sail-sg/Adan
+
+Component: RAdam optimizer
+Path: nemo/core/optim/radam.py
+Copyright: Copyright 2019 Liyuan Liu
+License: Apache-2.0
+Source: https://github.com/LiyuanLucasLiu/RAdam
+
+Component: python-env-utils
+Path: nemo/utils/env_var_parsing.py
+Copyright: Copyright (c) 2016 YunoJuno Ltd
+License: MIT
+Source: https://github.com/yunojuno/python-env-utils
+
+Component: colorama ANSI helpers
+Path: nemo/utils/formatters/colors.py
+Copyright: Copyright Jonathan Hartley 2013
+License: BSD-3-Clause
+Source: https://github.com/tartley/colorama
+
+Component: cuML safe-import utilities
+Path: nemo/utils/import_utils.py
+Copyright: Copyright (c) 2019-2025, NVIDIA CORPORATION & AFFILIATES
+License: Apache-2.0
+Source: https://github.com/rapidsai/cuml
+
+Component: Kaldi phone-language-model script
+Path: scripts/asr_language_modeling/ngram_lm/make_phone_lm.py
+Copyright: Copyright (c) 2016, Johns Hopkins University (author: Daniel Povey)
+License: Apache-2.0
+Source: https://github.com/kaldi-asr/kaldi
+
+Component: syllabify
+Path: scripts/dataset_processing/g2p/syllabify.py
+Copyright: Copyright (c) 2012-2013 Kyle Gorman <gormanky@ohsu.edu>
+License: MIT
+Source: https://github.com/kylebgorman/syllabify
+
+Component: Common Voice data preparation script
+Path: scripts/dataset_processing/get_commonvoice_data.py
+Copyright: Copyright (c) 2020, SeanNaren. All rights reserved
+License: Apache-2.0
+
+Component: CMU Pronouncing Dictionary
+Paths: scripts/tts_dataset_files/cmudict-0.7b_nv22.10;
+  scripts/tts_dataset_files/ipa_cmudict-0.7b_nv26.07.txt
+Copyright: Copyright (c) 1993-2015 Carnegie Mellon University. All rights reserved
+License: BSD-2-Clause
+Source: https://github.com/cmusphinx/cmudict
+
+Component: Wikipedia Homograph Data entries
+Path: scripts/tts_dataset_files/ipa_cmudict-0.7b_nv26.07.txt
+Copyright: No separate copyright notice is stated upstream; authors are Kyle Gorman, Vitaly Nikolaev, and
+  Gleb Mazovetskiy, with contributions from the dataset annotators
+License: Apache-2.0
+Source: https://github.com/google-research-datasets/WikipediaHomographData
+
+Component: PyTorch Lightning test utilities
+Paths: tests/collections/common/loss_inputs.py; tests/collections/common/perplexity_inputs.py;
+  tests/collections/common/pl_utils.py
+Copyright: Copyright 2018-2020 William Falcon
+License: Apache-2.0
+Source: https://github.com/Lightning-AI/pytorch-lightning
+
+Component: minGPT notebook material
+Path: tutorials/01_NeMo_Models.ipynb
+Copyright: Copyright (c) 2020 Andrej Karpathy
+License: MIT
+Source: https://github.com/karpathy/minGPT
+
+Component: torch-rnn tiny-shakespeare material
+Path: tutorials/01_NeMo_Models.ipynb
+Copyright: Copyright (c) 2016 Justin Johnson
+License: MIT
+Source: https://github.com/jcjohnson/torch-rnn
+
+Component: CTC segmentation utilities
+Path: tools/ctc_segmentation/scripts/utils.py
+Copyright: Copyright 2020, Technische Universität München; Dominik Winkelbauer; Ludwig Kürzinger
+License: Apache-2.0
+Source: https://github.com/lumaku/ctc-segmentation
+
+Component: VoxCeleb trainer speaker encoder
+Path: nemo/collections/tts/modules/audio_codec_modules.py
+Copyright: Copyright (c) 2020-present NAVER Corp
+License: MIT
+Source: https://github.com/clovaai/voxceleb_trainer
+
+Component: torchvision code used by VoxCeleb trainer
+Path: nemo/collections/tts/modules/audio_codec_modules.py
+Copyright: Copyright (c) 2016 Soumith Chintala. All rights reserved
+License: BSD-3-Clause
+Source: https://github.com/pytorch/vision
+
+Component: OpenAI guided-diffusion utilities
+Path: nemo/collections/speechlm2/modules/ear_tts_vae_codec.py
+Copyright: Copyright (c) 2021 OpenAI
+License: MIT
+Source: https://github.com/openai/guided-diffusion
+
+Component: Vocos ConvNeXt code
+Path: nemo/collections/speechlm2/modules/ear_tts_vae_codec.py
+Copyright: Copyright (c) 2023 Charactr Inc
+License: MIT
+Source: https://github.com/charactr-platform/vocos
+
+Component: VoiceBench MCQ evaluator
+Path: nemo/collections/speechlm2/parts/metrics/mcq_evaluator.py
+Copyright: No separate copyright notice is stated upstream; authors are Yiming Chen, Xianghu Yue, Chen Zhang,
+  Xiaoxue Gao, Robby T. Tan, and Haizhou Li
+License: Apache-2.0
+Source: https://github.com/MatthewCYM/VoiceBench
+
+Component: Direct Preference Optimization trainer logic
+Path: nemo/collections/tts/models/magpietts_preference_optimization.py
+Copyright: No separate copyright notice is stated upstream; authors are Rafael Rafailov, Archit Sharma,
+  Eric Mitchell, Christopher D. Manning, Stefano Ermon, and Chelsea Finn
+License: Apache-2.0
+Source: https://github.com/eric-mitchell/direct-preference-optimization
+
+Component: TRL GRPO trainer logic
+Path: nemo/collections/tts/models/magpietts_preference_optimization.py
+Copyright: Copyright 2020-2026 The HuggingFace Team
+License: Apache-2.0
+Source: https://github.com/huggingface/trl
+
+Public-domain material
+----------------------
+
+The Apollo 11 media and transcript referenced by
+tutorials/tools/NeMo_Forced_Aligner_Tutorial.ipynb are identified in that
+notebook as United States government works for which no copyright is asserted.
+
+License texts
+-------------
+
+The full Apache License 2.0 text is provided in LICENSE. Full MIT,
+BSD-2-Clause, and BSD-3-Clause notices are retained alongside the corresponding
+material in the source files identified above or in the linked upstream source.

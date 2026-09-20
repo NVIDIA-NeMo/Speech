@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,12 +21,13 @@ import torch.utils.data
 from lhotse.dataset import AudioSamples
 from lhotse.dataset.collation import collate_vectors
 
+from nemo.collections.common.data.lhotse.audio_loading import LhotseAudioLoadingDatasetMixin
 from nemo.collections.common.tokenizers.aggregate_tokenizer import TokenizerWrapper
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, NeuralType
 
 
-class LhotseSpeechToTextBpeDataset(torch.utils.data.Dataset):
+class LhotseSpeechToTextBpeDataset(LhotseAudioLoadingDatasetMixin, torch.utils.data.Dataset):
     """
     This dataset is based on BPE datasets from audio_to_text.py.
     Unlike native NeMo datasets, Lhotse dataset defines only the mapping from
@@ -64,7 +66,7 @@ class LhotseSpeechToTextBpeDataset(torch.utils.data.Dataset):
         self.return_cuts = return_cuts
 
     def __getitem__(self, cuts) -> Tuple[torch.Tensor, ...]:
-        audio, audio_lens, cuts = self.load_audio(cuts)
+        audio, audio_lens, cuts = self.load_audio_with_cuts(cuts)
         tokens = [
             torch.cat(
                 [

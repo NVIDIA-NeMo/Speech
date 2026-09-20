@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -199,6 +200,9 @@ linkcheck_ignore = [
     ".*github\\.com.*",
     ".*githubusercontent\\.com.*",
 ]
+# Lightning documentation pages are rendered by JavaScript. Their static HTML does not contain the API anchors
+# referenced by the intersphinx inventory, so linkcheck must validate only the page URL.
+linkcheck_anchors_ignore_for_url = [r"https://lightning\.ai/docs/pytorch/.*"]
 linkcheck_retries = 10
 linkcheck_rate_limit_timeout = 600
 

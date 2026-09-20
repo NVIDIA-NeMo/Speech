@@ -29,11 +29,31 @@ BASE = {
 }
 
 
+def _config_defaults() -> dict:
+    """Every default from the real config dataclass.
+
+    ``BASE`` only names the handful of fields these tests care about. Building the stub from that
+    alone means any NEW config field added elsewhere makes `_register_special_tokens` raise
+    ``AttributeError`` here, in a test that has nothing to do with it -- which is how a merge that
+    added ``register_audio_token`` broke this file. Starting from the dataclass keeps the stub
+    honest without listing fields by hand.
+    """
+    from dataclasses import MISSING, fields
+
+    defaults = {}
+    for field in fields(M.StreamingSTTModelConfig):
+        if field.default is not MISSING:
+            defaults[field.name] = field.default
+        elif field.default_factory is not MISSING:  # type: ignore[misc]
+            defaults[field.name] = field.default_factory()  # type: ignore[misc]
+    return defaults
+
+
 class _Stub:
     """Exercises `_register_special_tokens` without building a 1.7B LLM."""
 
     def __init__(self, cfg):
-        self.core_cfg = type("C", (), cfg)()
+        self.core_cfg = type("C", (), {**_config_defaults(), **cfg})()
         self.tokenizer = AutoTokenizer("Qwen/Qwen3-1.7B", use_fast=True)
         self.resized = 0
 

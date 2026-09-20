@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -125,6 +126,11 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         self.local_transformer_loss_scale = cfg.get('local_transformer_loss_scale', 1.0)
 
         self.cross_entropy_loss = nn.CrossEntropyLoss(reduction='none')
+
+        if 'feature_masking' in cfg:
+            self.feature_masking = safe_instantiate(cfg.feature_masking)
+        else:
+            self.feature_masking = None
 
         # Validation inference with metrics (optional)
         self.run_val_inference = cfg.get('run_val_inference', False)
@@ -623,6 +629,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         delay: torch.Tensor,
         speech_eos_mask: Optional[torch.Tensor] = None,
         agent_mask: Optional[torch.Tensor] = None,
+        dropout_audio_conditioning: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         """Prepare the delayed autoregressive audio channel and its targets.
 
@@ -645,6 +652,8 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 aligned to the autoregressive target timeline and may be used both
                 for loss masking and for replacing user regions with dedicated
                 user-speech tokens.
+            dropout_audio_conditioning: Whether dropout should be applied to input audio embeddings.
+                Should only be done during training when text is not masked for CFG.
 
         Returns:
             A tuple containing:
@@ -825,6 +834,11 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             embeddings=[zero_delay_tensor, audio_embedded],
             lengths=[delay, audio_codes_lens_target],
         )
+
+        if dropout_audio_conditioning:
+            audio_channel_embedding = self.feature_masking.apply_dropout(
+                inputs=audio_channel_embedding, input_len=audio_channel_lens
+            )
 
         return (
             audio_channel_embedding,
@@ -1024,6 +1038,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             )
 
         # 5. Prepare audio channel embeddings
+        dropout_audio_conditioning = (self.feature_masking is not None) and (not dropout_conditional_input)
         (
             audio_channel_embedding,
             audio_channel_lens,
@@ -1036,6 +1051,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             delay=audio_delay,
             speech_eos_mask=speech_eos_mask,
             agent_mask=agent_mask,
+            dropout_audio_conditioning=dropout_audio_conditioning,
         )
 
         # 6. Sum the channel embeddings element-wise
@@ -1211,8 +1227,14 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         local_transformer_logits = None
         if self.local_transformer_type != LocalTransformerType.NO_LT:
             assert self.local_transformer_type == LocalTransformerType.AR, "Unexpected local transformer type"
+
+            if dropout_audio_conditioning:
+                lt_masking = self.feature_masking
+            else:
+                lt_masking = None
+
             local_transformer_logits = self._lt_helper.compute_logits(
-                pred_embeddings, audio_codes_target, targets_offset_by_one=False
+                pred_embeddings, audio_codes_target, targets_offset_by_one=False, feature_masking=lt_masking
             )
             local_transformer_loss, _ = self.compute_loss(
                 local_transformer_logits,
@@ -1955,6 +1977,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
     def get_lhotse_dataloader(self, dataset_cfg, mode='train') -> torch.utils.data.DataLoader:
         # TODO @xueyang: better to distinguish cfg. self.cfg is the model cfg, while cfg here is train_ds cfg. Also
         #   cfg is a classifier-free guidance.
+        load_normalized_text_percent = dataset_cfg.get("load_normalized_text_percent", 1.0)
         if self.cfg.get("use_multiturn_dataset", False):
             dataset = MagpieTTSLhotseMultiturnDataset(
                 sample_rate=self.sample_rate,
@@ -1967,6 +1990,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 load_cached_codes_if_available=self.cfg.load_cached_codes_if_available,
                 dataset_type=mode,  # train or test used for setting phone prob to 1.0 in test dataset (worker_init_fn)
                 load_16khz_audio=False,
+                load_normalized_text_percent=load_normalized_text_percent,
                 pad_context_text_to_max_duration=self.pad_context_text_to_max_duration,
                 context_duration_min=self.cfg.context_duration_min,
                 context_duration_max=self.cfg.context_duration_max,
@@ -2002,6 +2026,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 load_cached_codes_if_available=self.cfg.load_cached_codes_if_available,
                 dataset_type=mode,  # train or test used for setting phone prob to 1.0 in test dataset (worker_init_fn)
                 load_16khz_audio=False,
+                load_normalized_text_percent=load_normalized_text_percent,
                 pad_context_text_to_max_duration=self.pad_context_text_to_max_duration,
                 context_duration_min=self.cfg.context_duration_min,
                 context_duration_max=self.cfg.context_duration_max,

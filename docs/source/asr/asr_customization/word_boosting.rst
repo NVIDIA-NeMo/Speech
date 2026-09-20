@@ -44,6 +44,26 @@ List of the most important parameters:
 * ``bpe_mode`` - ``default`` (case-sensitive), ``case_insensitive``, and 2 experimental modes - ``bpe_dropout`` and ``var_bpe``. ``case_insensitive`` allows to provide phrases in arbitrary case with models that produce output with capitalization. The boosted phrases automatically will include all potential spellings (in different cases). E.g., to boost both "Hello" and "hello" you need to provide any spelling (e.g., "Hello", "hello" or "HELLO" - the case does not matter).
 * ``var_bpe_scoring_temp`` - works with ``case_insensitive`` and ``var_bpe`` modes; default value of 10.0 is conservatively safe, but values ``0.1 ... 2.0`` can provide better results with beam search and small lists or words.
 
+Per-phrase boosting parameters
+------------------------------
+
+``context_score`` is a global parameter shared by all phrases. To boost individual phrases by different amounts,
+use ``boosting_tree.key_phrase_items_list``, where each item can carry a per-phrase ``alpha``:
+
+.. code-block::
+
+    boosting_tree.key_phrase_items_list='[{phrase:"nvlink",alpha:2.0},{phrase:"omniverse cloud",alpha:1.5},{phrase:"gtc"}]'
+
+*  ``alpha`` (per phrase) - A relative boosting weight multiplier for this phrase, baked into the tree weights at build
+   time. It scales the phrase's whole contribution (arcs, backoff, and EOS) proportionally, mirroring the runtime
+   ``boosting_tree_alpha`` at per-phrase granularity. The effective boost for a phrase is
+   ``boosting_tree_alpha (decoding config) * alpha (per phrase)``; the decode-time ``boosting_tree_alpha=0.0`` disables
+   all boosting regardless of per-phrase values.
+*  ``lang`` (per phrase) - Language for the aggregate tokenizer; falls back to ``source_lang`` if omitted.
+
+Omitted fields fall back to the global values, and per-phrase ``alpha`` works in all ``bpe_mode`` variants (including
+``case_insensitive`` / ``var_bpe``) and with ``build_gpu_boosting_tree.py`` (baked into the saved boosting tree).
+
 **0.0. [Optional] Build the boosting tree for a specific ASR model:**
 
 .. code-block::

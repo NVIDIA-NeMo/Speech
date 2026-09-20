@@ -1,5 +1,6 @@
 # ! /usr/bin/python
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -30,7 +31,7 @@
 import inspect
 import operator
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set, Union
 
 import torch
 from omegaconf import DictConfig, OmegaConf
@@ -417,6 +418,22 @@ class RNNTLoss(Loss):
         self._loss = resolve_rnnt_loss(loss_name, blank_idx=self._blank, loss_kwargs=loss_kwargs)
         self._force_float32 = RNNT_LOSS_RESOLVER[loss_name].force_float32
         self._fp16_compat_checked = False
+
+    def warmup(self, device: Union[str, torch.device]) -> bool:
+        """Warm supported Numba RNNT/TDT kernels before allocating training activations.
+
+        Returns whether warmup ran; False for CPU devices or unsupported backends.
+        """
+        if not NUMBA_RNNT_AVAILABLE:
+            return False
+        if isinstance(self._loss, RNNTLossNumba):
+            dtypes = [torch.float32]
+            if not self._force_float32 and numba_utils.is_numba_cuda_fp16_supported():
+                dtypes.append(torch.float16)
+            return self._loss.warmup(device, dtypes=dtypes)
+        if isinstance(self._loss, TDTLossNumba):
+            return self._loss.warmup(device)
+        return False
 
     def reduce(self, losses, target_lengths):
 

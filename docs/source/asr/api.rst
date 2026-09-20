@@ -78,6 +78,20 @@ Modules
     :members:
 
 
+.. _transformer-encoder-api:
+
+.. autoclass:: nemo.collections.asr.modules.TransformerEncoder
+    :show-inheritance:
+    :members:
+
+
+.. _streaming-transformer-encoder-api:
+
+.. autoclass:: nemo.collections.asr.modules.StreamingTransformerEncoder
+    :show-inheritance:
+    :members:
+
+
 .. _rnn-encoder-api:
 
 .. autoclass:: nemo.collections.asr.modules.RNNEncoder

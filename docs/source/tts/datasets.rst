@@ -116,7 +116,7 @@ LibriTTS
         sup_data_path=<your_path_to_where_to_save_supplementary_data>
 
 .. note::
-    LibriTTS original sampling rate is **24000 Hz**, we re-use LJSpeech's config to down-sample it to **22050 Hz**.
+    LibriTTS original sampling rate is **24000 Hz**, we reuse LJSpeech's config to down-sample it to **22050 Hz**.
 
 
 HiFiTTS

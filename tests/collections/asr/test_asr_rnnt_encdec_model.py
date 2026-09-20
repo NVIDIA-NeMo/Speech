@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,6 +14,7 @@
 # limitations under the License.
 import copy
 from typing import Any, Dict, List, Optional, Tuple
+from unittest.mock import Mock
 
 import pytest
 import torch
@@ -252,6 +254,15 @@ def asr_model():
 
 
 class TestEncDecRNNTModel:
+
+    @pytest.mark.unit
+    def test_loss_startup_warmup(self, asr_model, monkeypatch):
+        warmup = Mock()
+        monkeypatch.setattr(asr_model.loss, 'warmup', warmup)
+        asr_model.on_train_start()
+        assert hasattr(asr_model, '_freeze_cfg')
+        warmup.assert_called_once_with(asr_model.device)
+
     @pytest.mark.skipif(
         not NUMBA_RNNT_LOSS_AVAILABLE,
         reason='RNNTLoss has not been compiled with appropriate numba version.',

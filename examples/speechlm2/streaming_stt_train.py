@@ -13,6 +13,7 @@
 # limitations under the License.
 import os
 from copy import deepcopy
+from datetime import timedelta
 
 import torch
 from lightning.pytorch import Trainer
@@ -28,10 +29,33 @@ from nemo.utils.trainer_utils import resolve_trainer_cfg
 torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
 
 
+def _process_group_timeout(cfg):
+    """Resolve the NCCL collective timeout from Hydra, then the cluster environment.
+
+    The strategy applies ``timeout_minutes`` only to the sub-groups it creates. The
+    default process group is initialized below, before the Trainer exists, so
+    without this it keeps the c10d 10-minute default and a slow cold start aborts
+    the run on a watchdog timeout no config value can raise.
+    """
+    timeout_minutes = OmegaConf.select(cfg, "nccl_timeout_minutes", default=None)
+    if timeout_minutes is not None:
+        return timedelta(minutes=float(timeout_minutes))
+
+    timeout_seconds = os.environ.get("TORCH_NCCL_TIMEOUT_S") or os.environ.get("TORCH_NCCL_TIMEOUT_SEC")
+    if timeout_seconds is not None:
+        return timedelta(seconds=float(timeout_seconds))
+
+    return None
+
+
 @hydra_runner(config_path="conf", config_name="streaming_stt")
 def train(cfg):
     OmegaConf.resolve(cfg)
-    torch.distributed.init_process_group(backend="nccl")
+    if torch.cuda.is_available():
+        init_kwargs = {}
+        if timeout := _process_group_timeout(cfg):
+            init_kwargs["timeout"] = timeout
+        torch.distributed.init_process_group(backend="nccl", **init_kwargs)
     torch.set_float32_matmul_precision("medium")
     trainer = Trainer(**resolve_trainer_cfg(cfg.trainer))
     log_dir = exp_manager(trainer, cfg.get("exp_manager", None))

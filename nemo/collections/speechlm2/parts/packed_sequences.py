@@ -38,6 +38,231 @@ from torch import Tensor
 from nemo.collections.speechlm2.parts.input_utils import _unpad_inputs
 
 
+def _validate_packed_dflash_inputs(packed: dict[str, Any]) -> None:
+    """Validate the token-aligned THD and DFlash document-boundary contract."""
+    required = {
+        "input_ids",
+        "input_embeddings",
+        "loss_mask",
+        "position_ids",
+        "seq_lens",
+        "doc_remaining",
+        "cu_seqlens",
+        "max_seqlen",
+        "qkv_format",
+    }
+    missing = sorted(required.difference(packed))
+    if missing:
+        raise ValueError(f"Packed DFlash inputs are missing required fields: {', '.join(missing)}")
+    if packed["qkv_format"] != "thd":
+        raise ValueError(f"Packed DFlash requires qkv_format='thd', got {packed['qkv_format']!r}")
+
+    input_ids = packed["input_ids"]
+    input_embeddings = packed["input_embeddings"]
+    loss_mask = packed["loss_mask"]
+    position_ids = packed["position_ids"]
+    seq_lens = packed["seq_lens"]
+    doc_remaining = packed["doc_remaining"]
+    cu_seqlens = packed["cu_seqlens"]
+    max_seqlen = packed["max_seqlen"]
+
+    if input_ids.ndim != 2 or input_ids.shape[0] != 1:
+        raise ValueError(f"Packed DFlash input_ids must have shape [1, T], got {tuple(input_ids.shape)}")
+    token_count = input_ids.shape[1]
+    if input_embeddings.ndim != 2 or input_embeddings.shape[0] != token_count:
+        raise ValueError(
+            "Packed DFlash input_embeddings must have shape [T, H] aligned with input_ids; "
+            f"got {tuple(input_embeddings.shape)} for T={token_count}"
+        )
+    for name, tensor in {
+        "loss_mask": loss_mask,
+        "position_ids": position_ids,
+        "doc_remaining": doc_remaining,
+    }.items():
+        if tensor.shape != input_ids.shape:
+            raise ValueError(
+                f"Packed DFlash {name} must have shape {tuple(input_ids.shape)}, got {tuple(tensor.shape)}"
+            )
+    if seq_lens.ndim != 2 or seq_lens.shape[0] != 1 or seq_lens.shape[1] == 0:
+        raise ValueError(f"Packed DFlash seq_lens must have shape [1, documents], got {tuple(seq_lens.shape)}")
+    if bool((seq_lens <= 0).any().item()) or int(seq_lens.sum().item()) != token_count:
+        raise ValueError(
+            "Packed DFlash document lengths must be positive and sum to the token count; "
+            f"got lengths={seq_lens.tolist()}, T={token_count}"
+        )
+
+    lengths = seq_lens.flatten().to(device=input_ids.device, dtype=torch.long)
+    expected_cu = torch.cat(
+        [
+            torch.zeros(1, dtype=torch.int32, device=input_ids.device),
+            lengths.cumsum(0, dtype=torch.int32),
+        ]
+    )
+    if not isinstance(cu_seqlens, Tensor) or cu_seqlens.dtype != torch.int32:
+        raise ValueError(
+            "Packed DFlash cu_seqlens must have dtype torch.int32, "
+            f"got {getattr(cu_seqlens, 'dtype', type(cu_seqlens).__name__)}"
+        )
+    if cu_seqlens.ndim != 1 or not torch.equal(cu_seqlens, expected_cu):
+        raise ValueError(
+            f"Packed DFlash cu_seqlens must equal cumulative seq_lens {expected_cu.tolist()}, "
+            f"got {cu_seqlens.tolist()}"
+        )
+    expected_max = int(lengths.max().item())
+    if not isinstance(max_seqlen, Tensor) or max_seqlen.numel() != 1 or int(max_seqlen.item()) != expected_max:
+        raise ValueError(f"Packed DFlash max_seqlen must be {expected_max}, got {max_seqlen}")
+
+    expected_positions = torch.cat(
+        [torch.arange(int(length), device=input_ids.device, dtype=torch.long) for length in lengths.tolist()]
+    ).unsqueeze(0)
+    expected_remaining = torch.cat(
+        [torch.arange(int(length) - 1, -1, -1, device=input_ids.device) for length in lengths.tolist()]
+    ).unsqueeze(0)
+    if not torch.equal(position_ids.to(expected_positions), expected_positions):
+        raise ValueError("Packed DFlash position_ids must reset to zero and increase within each document")
+    if not torch.equal(doc_remaining.to(expected_remaining), expected_remaining):
+        raise ValueError("Packed DFlash doc_remaining must count real tokens left within each document")
+
+
+def pack_audio_for_dflash(
+    input_ids: Tensor,
+    embeds: Tensor,
+    loss_mask: Tensor,
+    replacements: list[Tensor],
+    padding_id: int,
+    placeholder_id: int,
+    mask_token_id: int,
+) -> dict[str, Any]:
+    """Splice audio frames and concatenate utterances for packed SALM DFlash.
+
+    Unlike ordinary causal-LM packing, DFlash consumes the full unshifted token
+    stream. Each audio placeholder becomes one ``mask_token_id`` per encoder
+    frame and every inserted frame is excluded from supervision. The returned
+    target embeddings are flat THD ``[T, H]`` while all draft tensors retain a
+    synthetic packed batch row ``[1, T]``.
+    """
+    if input_ids.ndim != 2:
+        raise ValueError(f"Packed DFlash input_ids must have shape [B, S], got {tuple(input_ids.shape)}")
+    if embeds.ndim != 3 or embeds.shape[:2] != input_ids.shape:
+        raise ValueError(
+            "Packed DFlash embeds must have shape [B, S, H] matching input_ids; "
+            f"got {tuple(embeds.shape)} and {tuple(input_ids.shape)}"
+        )
+    if loss_mask.shape != input_ids.shape:
+        raise ValueError(
+            "Packed DFlash input_ids and loss_mask must have the same [B, S] shape; "
+            f"got {tuple(input_ids.shape)} and {tuple(loss_mask.shape)}"
+        )
+    if input_ids.shape[0] == 0:
+        raise ValueError("Packed DFlash requires at least one document")
+
+    hidden_size = embeds.shape[-1]
+    replacement_idx = 0
+    document_embeddings: list[Tensor] = []
+    document_ids: list[Tensor] = []
+    document_loss_masks: list[Tensor] = []
+    document_lengths: list[int] = []
+
+    for row_idx in range(input_ids.shape[0]):
+        row_ids = input_ids[row_idx]
+        non_padding = (row_ids != padding_id).nonzero(as_tuple=False)
+        if non_padding.numel() == 0:
+            raise ValueError(f"Packed DFlash document {row_idx} contains only padding")
+        start = int(non_padding[0].item())
+        row_ids = row_ids[start:]
+        row_embeddings = embeds[row_idx, start:]
+        row_loss_mask = loss_mask[row_idx, start:].bool()
+
+        embedding_segments: list[Tensor] = []
+        id_segments: list[Tensor] = []
+        loss_segments: list[Tensor] = []
+        previous = 0
+        for placeholder_pos in (row_ids == placeholder_id).nonzero(as_tuple=True)[0].tolist():
+            if placeholder_pos > previous:
+                ids_segment = row_ids[previous:placeholder_pos]
+                embedding_segments.append(row_embeddings[previous:placeholder_pos])
+                id_segments.append(ids_segment)
+                loss_segments.append(row_loss_mask[previous:placeholder_pos] & ids_segment.ne(padding_id))
+            if replacement_idx >= len(replacements):
+                raise ValueError("Packed DFlash has more audio placeholders than replacement tensors")
+            replacement = replacements[replacement_idx]
+            replacement_idx += 1
+            if replacement.ndim != 2 or replacement.shape[1] != hidden_size:
+                raise ValueError(
+                    "Packed DFlash audio replacements must have shape [frames, H] matching text embeddings; "
+                    f"got {tuple(replacement.shape)} for H={hidden_size}"
+                )
+            if replacement.shape[0] == 0:
+                raise ValueError("Packed DFlash audio replacements must contain at least one frame")
+            embedding_segments.append(replacement)
+            id_segments.append(
+                torch.full(
+                    (replacement.shape[0],),
+                    mask_token_id,
+                    dtype=input_ids.dtype,
+                    device=input_ids.device,
+                )
+            )
+            loss_segments.append(torch.zeros(replacement.shape[0], dtype=torch.bool, device=input_ids.device))
+            previous = placeholder_pos + 1
+
+        if previous < row_ids.numel():
+            ids_segment = row_ids[previous:]
+            embedding_segments.append(row_embeddings[previous:])
+            id_segments.append(ids_segment)
+            loss_segments.append(row_loss_mask[previous:] & ids_segment.ne(padding_id))
+        if not embedding_segments:
+            raise ValueError(f"Packed DFlash document {row_idx} has no real tokens after unpadding")
+
+        document_embedding = torch.cat(embedding_segments, dim=0)
+        document_id = torch.cat(id_segments, dim=0)
+        document_loss_mask = torch.cat(loss_segments, dim=0)
+        length = document_id.numel()
+        if document_embedding.shape[0] != length or document_loss_mask.numel() != length:
+            raise ValueError(f"Packed DFlash document {row_idx} is not token aligned after audio expansion")
+        document_embeddings.append(document_embedding)
+        document_ids.append(document_id)
+        document_loss_masks.append(document_loss_mask)
+        document_lengths.append(length)
+
+    if replacement_idx != len(replacements):
+        raise ValueError(
+            f"Packed DFlash used {replacement_idx} of {len(replacements)} audio replacements; "
+            "placeholder occurrences and replacements must match"
+        )
+
+    device = input_ids.device
+    flat_ids = torch.cat(document_ids).unsqueeze(0)
+    flat_loss_mask = torch.cat(document_loss_masks).unsqueeze(0)
+    seq_lens = torch.tensor(document_lengths, dtype=torch.long, device=device).unsqueeze(0)
+    position_ids = torch.cat(
+        [torch.arange(length, dtype=torch.long, device=device) for length in document_lengths]
+    ).unsqueeze(0)
+    doc_remaining = torch.cat(
+        [torch.arange(length - 1, -1, -1, dtype=torch.long, device=device) for length in document_lengths]
+    ).unsqueeze(0)
+    cu_seqlens = torch.cat(
+        [
+            torch.zeros(1, dtype=torch.int32, device=device),
+            seq_lens.flatten().cumsum(0, dtype=torch.int32),
+        ]
+    )
+    packed = {
+        "input_ids": flat_ids,
+        "input_embeddings": torch.cat(document_embeddings, dim=0),
+        "attention_mask": None,
+        "loss_mask": flat_loss_mask,
+        "position_ids": position_ids,
+        "seq_lens": seq_lens,
+        "doc_remaining": doc_remaining,
+        "cu_seqlens": cu_seqlens,
+        "max_seqlen": torch.tensor(max(document_lengths), dtype=torch.int32, device=device),
+        "qkv_format": "thd",
+    }
+    _validate_packed_dflash_inputs(packed)
+    return packed
+
+
 def pack_audio_into_text_embeds(
     input_ids: Tensor,
     embeds: Tensor,

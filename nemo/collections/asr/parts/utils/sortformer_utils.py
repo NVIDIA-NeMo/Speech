@@ -101,7 +101,8 @@ class SortformerStreamingSession:
         for stream_index, chunk_length in enumerate(input_lengths):
             if self._finalized[stream_index] and chunk_length > 0:
                 raise RuntimeError(
-                    f"Cannot supply audio to finalized stream {stream_index}; call reset() before reusing the session"
+                    f"Cannot supply audio to finalized stream {stream_index}; call reset_streams(reset_mask) to "
+                    "reuse the stream or reset() to restart the complete session"
                 )
         for stream_index, chunk_length in enumerate(input_lengths):
             if chunk_length > 0:
@@ -138,6 +139,50 @@ class SortformerStreamingSession:
                 self._finalized[stream_index] = True
 
         return self._pad_emitted_outputs(emitted)
+
+    @torch.inference_mode()
+    def reset_streams(self, reset_mask: torch.Tensor) -> None:
+        """Reset selected finalized streams for reuse while preserving every unselected stream.
+
+        Args:
+            reset_mask: Boolean tensor with shape ``(batch_size,)`` selecting streams to reset. Every selected stream
+                must already be finalized. An all-false mask is a no-op.
+
+        Raises:
+            TypeError: If ``reset_mask`` is not a tensor.
+            ValueError: If ``reset_mask`` is not boolean with shape ``(batch_size,)``.
+            RuntimeError: If any selected stream has not been finalized.
+        """
+        if not isinstance(reset_mask, torch.Tensor):
+            raise TypeError(f"reset_mask must be a torch.Tensor, got {type(reset_mask).__name__}")
+        if reset_mask.dtype != torch.bool or reset_mask.shape != (self.batch_size,):
+            raise ValueError(
+                f"reset_mask must be boolean with shape ({self.batch_size},), got {tuple(reset_mask.shape)}"
+            )
+
+        reset_indices = [
+            stream_index for stream_index, reset in enumerate(reset_mask.detach().cpu().tolist()) if reset
+        ]
+        non_finalized = [stream_index for stream_index in reset_indices if not self._finalized[stream_index]]
+        if non_finalized:
+            streams = ", ".join(str(stream_index) for stream_index in non_finalized)
+            raise RuntimeError(f"Cannot reset non-finalized stream {streams}")
+        if not reset_indices:
+            return
+
+        state_tensors = [value for value in vars(self.streaming_state).values() if isinstance(value, torch.Tensor)]
+        if any(value.ndim == 0 or value.shape[0] != self.batch_size for value in state_tensors):
+            raise RuntimeError("Streaming state tensors must use the session batch dimension")
+
+        for value in state_tensors:
+            indices = torch.tensor(reset_indices, dtype=torch.long, device=value.device)
+            value.index_fill_(0, indices, 0)
+        for stream_index in reset_indices:
+            self._audio_buffers[stream_index] = self._audio_buffers[stream_index].new_empty(0)
+            self._audio_buffer_starts[stream_index] = 0
+            self._received_samples[stream_index] = 0
+            self._next_feature_frames[stream_index] = 0
+            self._finalized[stream_index] = False
 
     def reset(self) -> None:
         """Clear every stream's buffered audio and initialize a fresh batched asynchronous model state."""

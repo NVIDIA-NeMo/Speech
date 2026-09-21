@@ -90,11 +90,13 @@ For live mono waveforms, create a session with a fixed number of streams and pus
 sample rate together with its valid sample lengths. Each row owns independent preprocessing buffers and asynchronous
 Sortformer cache state. A step can return no frames for a row until its configured chunk and right context are
 available. Use a per-row ``is_final`` mask to flush streams independently; finalized rows remain in the batch with a
-zero input length while other rows continue. Call ``reset()`` before reusing the session. The model must be in
-evaluation mode with ``async_streaming=True`` and unnormalized features (``normalize="NA"``, ``None``, or ``False``),
-as used by the streaming Sortformer checkpoints. Whole-recording feature normalization requires future audio and
-is not supported by the live session. Evaluation mode already disables dither. Checkpoint feature padding is
-preserved; only valid feature windows are passed to the model.
+zero input length while other rows continue. After collecting a row's final output, call ``reset_streams(reset_mask)``
+to reuse selected finalized rows while preserving every unselected row. The mask is validated atomically and cannot
+select a non-finalized row. Use ``reset()`` to restart the complete batch. The model must be in evaluation mode with
+``async_streaming=True`` and unnormalized features (``normalize="NA"``, ``None``, or ``False``), as used by the
+streaming Sortformer checkpoints. Whole-recording feature normalization requires future audio and is not supported
+by the live session. Evaluation mode already disables dither. Checkpoint feature padding is preserved; only valid
+feature windows are passed to the model.
 
 ```python
 import torch
@@ -110,7 +112,9 @@ for audio_batch, audio_lengths, final_mask in audio_stream:
         is_final=final_mask,
     )
     stream_0_probabilities = probabilities[0, : probability_lengths[0]]
-session.reset()
+# After stream 0 is finalized and its final output has been consumed:
+session.reset_streams(torch.tensor([True, False]))
+# Stream 0 can receive a replacement recording on the next step while stream 1 remains active.
 ```
 
 Diarization Error Rate (DER) with post-processing — all evaluations include overlapping speech:

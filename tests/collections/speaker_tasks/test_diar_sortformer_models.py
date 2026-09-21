@@ -1294,6 +1294,149 @@ class TestSortformerEncLabelModelStreaming:
             torch.testing.assert_close(buffer, expected, rtol=0, atol=0)
 
     @pytest.mark.unit
+    def test_raw_audio_streaming_session_reuses_finalized_row_without_changing_active_peer(self):
+        model = _create_sortformer_model(normalize="NA").eval()
+        model.streaming_mode = True
+        model.async_streaming = True
+        model.sortformer_modules.chunk_len = 2
+        model.sortformer_modules.chunk_left_context = 1
+        model.sortformer_modules.chunk_right_context = 0
+        model.sortformer_modules.fifo_len = 4
+        model.sortformer_modules.spkcache_len = 16
+        model.sortformer_modules.spkcache_update_period = 2
+        model.sortformer_modules.sil_threshold = 5.0
+        model._check_streaming_parameters()
+        completed_audio = torch.randn(9001)
+        continuing_audio = torch.randn(9001)
+        replacement_audio = torch.randn(6001)
+
+        session = SortformerStreamingSession(model, batch_size=2)
+        first_chunks = torch.nn.utils.rnn.pad_sequence([completed_audio, continuing_audio[:3000]], batch_first=True)
+        first_preds, first_lengths = session.diarize_step(
+            first_chunks,
+            audio_chunk_lengths=torch.tensor([completed_audio.numel(), 3000]),
+            is_final=torch.tensor([True, False]),
+        )
+        assert first_lengths[0] > 0
+        assert first_lengths[1] > 0
+        assert session._finalized == [True, False]
+        assert session.streaming_state.spkcache_lengths[0] > 0
+        assert session.streaming_state.n_sil_frames[0] > 0
+        assert torch.count_nonzero(session.streaming_state.spkcache_preds[0]) > 0
+        continuing_emitted = [first_preds[1, : first_lengths[1]]]
+        continuing_state = {
+            name: value[1].clone()
+            for name, value in vars(session.streaming_state).items()
+            if isinstance(value, torch.Tensor)
+        }
+        continuing_buffer = session._audio_buffers[1].clone()
+        continuing_progress = (
+            session._audio_buffer_starts[1],
+            session._received_samples[1],
+            session._next_feature_frames[1],
+            session._finalized[1],
+        )
+
+        session.reset_streams(torch.tensor([True, False]))
+
+        for name, expected in continuing_state.items():
+            torch.testing.assert_close(getattr(session.streaming_state, name)[1], expected, rtol=0, atol=0)
+        torch.testing.assert_close(session._audio_buffers[1], continuing_buffer, rtol=0, atol=0)
+        assert (
+            session._audio_buffer_starts[1],
+            session._received_samples[1],
+            session._next_feature_frames[1],
+            session._finalized[1],
+        ) == continuing_progress
+        assert session._audio_buffers[0].numel() == 0
+        assert session._audio_buffer_starts[0] == 0
+        assert session._received_samples[0] == 0
+        assert session._next_feature_frames[0] == 0
+        assert not session._finalized[0]
+        for value in vars(session.streaming_state).values():
+            if isinstance(value, torch.Tensor):
+                assert torch.count_nonzero(value[0]) == 0
+
+        replacement_emitted = []
+        for replacement_chunk, continuing_chunk, final in [
+            (replacement_audio[:2500], continuing_audio[3000:6000], False),
+            (replacement_audio[2500:], continuing_audio[6000:], True),
+        ]:
+            chunks = torch.nn.utils.rnn.pad_sequence([replacement_chunk, continuing_chunk], batch_first=True)
+            preds, pred_lengths = session.diarize_step(
+                chunks,
+                audio_chunk_lengths=torch.tensor([replacement_chunk.numel(), continuing_chunk.numel()]),
+                is_final=final,
+            )
+            replacement_emitted.append(preds[0, : pred_lengths[0]])
+            continuing_emitted.append(preds[1, : pred_lengths[1]])
+
+        def run_independent(signal, chunk_sizes):
+            independent_session = SortformerStreamingSession(model)
+            emitted = []
+            offset = 0
+            for chunk_index, chunk_size in enumerate(chunk_sizes):
+                chunk = signal[offset : offset + chunk_size]
+                offset += chunk_size
+                preds, pred_lengths = independent_session.diarize_step(
+                    chunk, is_final=chunk_index == len(chunk_sizes) - 1
+                )
+                emitted.append(preds[0, : pred_lengths[0]])
+            return torch.cat(emitted)
+
+        replacement_reference = run_independent(replacement_audio, [2500, 3501])
+        continuing_reference = run_independent(continuing_audio, [3000, 3000, 3001])
+        torch.testing.assert_close(torch.cat(replacement_emitted), replacement_reference)
+        torch.testing.assert_close(torch.cat(continuing_emitted), continuing_reference)
+
+    @pytest.mark.unit
+    def test_raw_audio_streaming_session_reset_streams_is_atomic(self):
+        model = _create_sortformer_model(normalize="NA").eval()
+        model.streaming_mode = True
+        model.async_streaming = True
+        model.sortformer_modules.chunk_len = 2
+        model.sortformer_modules.chunk_left_context = 1
+        model.sortformer_modules.chunk_right_context = 0
+        model._check_streaming_parameters()
+        session = SortformerStreamingSession(model, batch_size=2)
+        audio = torch.randn(2, 5001)
+        session.diarize_step(
+            audio,
+            audio_chunk_lengths=torch.tensor([5001, 3000]),
+            is_final=torch.tensor([True, False]),
+        )
+        streaming_state = {
+            name: value.clone() if isinstance(value, torch.Tensor) else value
+            for name, value in vars(session.streaming_state).items()
+        }
+        audio_buffers = [buffer.clone() for buffer in session._audio_buffers]
+        session_progress = (
+            list(session._audio_buffer_starts),
+            list(session._received_samples),
+            list(session._next_feature_frames),
+            list(session._finalized),
+        )
+
+        with pytest.raises(RuntimeError, match="non-finalized stream 1"):
+            session.reset_streams(torch.tensor([True, True]))
+
+        assert vars(session.streaming_state).keys() == streaming_state.keys()
+        for name, expected in streaming_state.items():
+            actual = getattr(session.streaming_state, name)
+            if isinstance(expected, torch.Tensor):
+                torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+            else:
+                assert actual == expected
+        for buffer, expected in zip(session._audio_buffers, audio_buffers):
+            torch.testing.assert_close(buffer, expected, rtol=0, atol=0)
+        assert (
+            session._audio_buffer_starts,
+            session._received_samples,
+            session._next_feature_frames,
+            session._finalized,
+        ) == session_progress
+
+    @pytest.mark.unit
     @pytest.mark.parametrize("right_context, first_chunk_samples", [(0, 2720), (1, 4000)])
     def test_raw_audio_streaming_session_matches_exact_padding(self, right_context, first_chunk_samples):
         model = _create_sortformer_model(normalize="NA", exact_pad=True, window_size=0.032).eval()

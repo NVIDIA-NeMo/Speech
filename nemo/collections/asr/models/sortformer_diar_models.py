@@ -1288,6 +1288,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
         return_logits: bool = False,
         total_logits: Optional[torch.Tensor] = None,
         total_activity_logits: Optional[torch.Tensor] = None,
+        return_native_resolution: bool = False,
     ) -> Union[
         Tuple[Any, torch.Tensor],
         Tuple[Any, torch.Tensor, torch.Tensor, Optional[torch.Tensor]],
@@ -1326,6 +1327,9 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
             total_activity_logits (Optional[torch.Tensor]): Cumulative raw three-class activity logits. Used only
                 when ``return_logits=True`` and the activity head is enabled.
                 Shape: (batch_size, cumulative pred length, 3)
+            return_native_resolution (bool): Return speaker probabilities on the model's native frame grid instead
+                of applying ``output_subsampling_factor``. This is used to retain 10 ms diarization output from a
+                high-resolution model while the normal PEE fusion path continues to use downsampled predictions.
 
         Returns:
             streaming_state (SortformerStreamingState):
@@ -1532,7 +1536,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
                     chunk_activity_logits = spkcache_fifo_chunk_activity_logits[:, start : start + chunk_len]
         native_output_factor = 1 if self.high_resolution else self.encoder.subsampling_factor
         downsample_factor = self.output_subsampling_factor // native_output_factor
-        if downsample_factor > 1:
+        if downsample_factor > 1 and not return_native_resolution:
             chunk_preds = self.sortformer_modules.downsample_preds(chunk_preds, downsample_factor)
         total_preds = torch.cat([total_preds, chunk_preds], dim=1)
 

@@ -126,6 +126,19 @@ class TestEncDecCTCModel:
         assert isinstance(instance2, EncDecCTCModel)
 
     @pytest.mark.unit
+    def test_frozen_encoder_stays_in_eval_when_parent_trains(self, asr_model):
+        asr_model.freeze_encoder()
+        asr_model.train()
+
+        assert asr_model.training
+        assert not asr_model.encoder.training
+        assert all(not parameter.requires_grad for parameter in asr_model.encoder.parameters())
+
+        asr_model.unfreeze_encoder()
+        assert asr_model.encoder.training
+        assert all(parameter.requires_grad for parameter in asr_model.encoder.parameters())
+
+    @pytest.mark.unit
     def test_forward(self, asr_model):
         asr_model = asr_model.eval()
 

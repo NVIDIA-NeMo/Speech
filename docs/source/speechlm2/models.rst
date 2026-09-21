@@ -85,6 +85,72 @@ Key differences from SALM:
   ``SALM`` via ``model.encoder_chunk_size_seconds`` in ``salm.yaml`` (defaults to
   ``null`` there to preserve existing behavior).
 
+CTC word timestamps
+~~~~~~~~~~~~~~~~~~~
+
+``SALMAutomodel.generate()`` can return speaker-attributed word timestamps when
+its perception encoder is a ``ParallelExpertEncoder`` with a compatible CTC
+timestamp artifact. The runtime artifact contains only the CTC decoder config,
+decoder weights, and matching SentencePiece model; it does not restore or retain
+an ``EncDecCTCModelBPE`` encoder. Set ``ctc_timestamp_model_path`` on
+``model.perception.encoder`` after loading the model and pass
+``generate_timestamps=True``. The return value is then a dictionary containing
+``answer_ids`` and one timestamp result per input in ``timestamps``.
+
+Each timestamp result contains two independent timing products:
+
+* ``speaker_word_timestamps`` contains CTC-aligned word boundaries. These are
+  intended for transcription display and word-level scoring, not DER. Each
+  word contains only ``word``, ``speaker``, ``start``, and ``end``.
+* ``diarization_timestamps`` contains contiguous speaker-activity segments from
+  the native 10 ms Sortformer output and is the appropriate output for DER
+  evaluation. Each segment contains ``speaker``, ``start``, and ``end``.
+  ``diarization_frame_seconds``, ``diarization_max_speaker_count``, and
+  ``diarization_activity_threshold`` record the conversion contract.
+
+The PEE stores the high-resolution activity as a boolean tensor shaped
+``(batch, max_speaker_count, frames)``; ``max_speaker_count`` defaults to 8.
+Word alignment does not derive diarization segments from CTC word boundaries.
+
+Only when timestamps are requested, the PEE retains detached ASR encoder states
+in BF16 or FP16 while the LLM generates text. After generation, the CTC head
+converts those states to log probabilities. The CTC head processes the recording
+batch together; exact max-sum dynamic programming and backtracing flatten every
+recording and speaker stream into shared padded batches. Alignment keeps rolling
+score rows, bounded emission blocks, and packed two-bit backpointers instead of
+dense frames-by-states emissions and int64 backpointers. The CTC artifact is not
+loaded or run when timestamps are disabled, which is the default.
+
+Convert the training-time CTC model once. This is deliberately separate from
+serving so a training encoder and a machine-local adapter path are not serialized
+with the PEE or loaded by each inference worker.
+
+.. code-block:: python
+
+    from nemo.collections.speechlm2.parts.ctc_timestamp_utils import export_ctc_timestamp_artifact
+
+    export_ctc_timestamp_artifact(
+        "/path/to/Nemotron3-CTC-Timestamp-Adapter.nemo",
+        "/path/to/nemotron3_ctc_timestamp_artifact.pt",
+    )
+
+.. code-block:: python
+
+    model.perception.encoder.ctc_timestamp_model_path = "/path/to/nemotron3_ctc_timestamp_artifact.pt"
+    result = model.generate(
+        prompts=prompts,
+        audios=audios,
+        audio_lens=audio_lens,
+        generate_timestamps=True,
+        max_new_tokens=1024,
+    )
+    answer_ids = result["answer_ids"]
+    timestamps = result["timestamps"]
+
+The focused runtime components are public from ``nemo.collections.speechlm2.parts.ctc_timestamp_utils``:
+``TransformerCTCDecoder``, ``MultiSpeakerSOTWordTimestampAligner``, and
+``load_ctc_timestamp_artifact``.
+
 SALMAutomodel is particularly useful for:
 
 * Efficient training of Speech LLMs with MoE backbones (e.g., Nemotron Nano V3)

@@ -20,7 +20,9 @@ from nemo.collections.asr.modules.audio_preprocessing import (  # noqa: F401
     MaskedPatchAugmentation,
     SpectrogramAugmentation,
 )
-from nemo.collections.asr.modules.beam_search_decoder import BeamSearchDecoderWithLM  # noqa: F401
+from nemo.collections.asr.modules.beam_search_decoder import (  # noqa: F401
+    BeamSearchDecoderWithLM,
+)
 from nemo.collections.asr.modules.conformer_encoder import (  # noqa: F401
     ConformerEncoder,
     ConformerEncoderAdapter,
@@ -36,12 +38,13 @@ from nemo.collections.asr.modules.conv_asr import (  # noqa: F401
     ParallelConvASREncoder,
     SpeakerDecoder,
 )
-from nemo.collections.asr.modules.hybrid_autoregressive_transducer import HATJoint  # noqa: F401
+from nemo.collections.asr.modules.hybrid_autoregressive_transducer import (  # noqa: F401
+    HATJoint,
+)
 from nemo.collections.asr.modules.lstm_decoder import LSTMDecoder  # noqa: F401
 from nemo.collections.asr.modules.parallel_expert_encoder import (  # noqa: F401
-    MultiSpeakerSOTWordTimestampAligner,
+    CTCTimestampInputs,
     ParallelExpertEncoder,
-    TransformerCTCDecoder,
 )
 from nemo.collections.asr.modules.rnn_encoder import RNNEncoder  # noqa: F401
 from nemo.collections.asr.modules.rnnt import (  # noqa: F401
@@ -64,38 +67,37 @@ from nemo.collections.asr.modules.transformer_encoder import (  # noqa: F401
 )
 
 __all__ = [
-    'AudioToMelSpectrogramPreprocessor',
-    'AudioToMFCCPreprocessor',
-    'CropOrPadSpectrogramAugmentation',
-    'MaskedPatchAugmentation',
-    'SpectrogramAugmentation',
-    'BeamSearchDecoderWithLM',
-    'ConformerEncoder',
-    'ConformerEncoderAdapter',
-    'ConformerMultiLayerFeatureExtractor',
-    'MultiSpeakerSOTWordTimestampAligner',
-    'ParallelExpertEncoder',
-    'TransformerCTCDecoder',
-    'ConvASRDecoder',
-    'ConvASRDecoderClassification',
-    'ConvASRDecoderReconstruction',
-    'ConvASREncoder',
-    'ConvASREncoderAdapter',
-    'ECAPAEncoder',
-    'ParallelConvASREncoder',
-    'SpeakerDecoder',
-    'HATJoint',
-    'LSTMDecoder',
-    'RNNTDecoder',
-    'RNNTDecoderJointSSL',
-    'RNNTJoint',
-    'SampledRNNTJoint',
-    'StatelessTransducerDecoder',
-    'ConformerMultiLayerFeaturePreprocessor',
-    'ConvFeatureMaksingWrapper',
-    'MultiSoftmaxDecoder',
-    'RandomBlockMasking',
-    'RandomProjectionVectorQuantizer',
-    'StreamingTransformerEncoder',
-    'TransformerEncoder',
+    "AudioToMelSpectrogramPreprocessor",
+    "AudioToMFCCPreprocessor",
+    "CropOrPadSpectrogramAugmentation",
+    "MaskedPatchAugmentation",
+    "SpectrogramAugmentation",
+    "BeamSearchDecoderWithLM",
+    "ConformerEncoder",
+    "ConformerEncoderAdapter",
+    "ConformerMultiLayerFeatureExtractor",
+    "CTCTimestampInputs",
+    "ParallelExpertEncoder",
+    "ConvASRDecoder",
+    "ConvASRDecoderClassification",
+    "ConvASRDecoderReconstruction",
+    "ConvASREncoder",
+    "ConvASREncoderAdapter",
+    "ECAPAEncoder",
+    "ParallelConvASREncoder",
+    "SpeakerDecoder",
+    "HATJoint",
+    "LSTMDecoder",
+    "RNNTDecoder",
+    "RNNTDecoderJointSSL",
+    "RNNTJoint",
+    "SampledRNNTJoint",
+    "StatelessTransducerDecoder",
+    "ConformerMultiLayerFeaturePreprocessor",
+    "ConvFeatureMaksingWrapper",
+    "MultiSoftmaxDecoder",
+    "RandomBlockMasking",
+    "RandomProjectionVectorQuantizer",
+    "StreamingTransformerEncoder",
+    "TransformerEncoder",
 ]

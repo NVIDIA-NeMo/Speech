@@ -87,9 +87,8 @@ def main(cfg):
     asr_model.maybe_init_from_pretrained_checkpoint(cfg)
 
     if cfg.model.get("freeze_encoder", False):
-        asr_model.encoder.freeze()
-        asr_model.encoder.eval()
-        logging.info("Froze encoder parameters and set the encoder to eval mode after checkpoint initialization.")
+        asr_model.freeze_encoder()
+        logging.info("Froze encoder parameters and will keep the encoder in eval mode during training.")
 
     trainer.fit(asr_model)
 

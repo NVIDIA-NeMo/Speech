@@ -305,21 +305,8 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         with self.perception.encoder.online_inference():
             yield
 
-    @contextmanager
-    def _perception_ctc_timestamp_capture(self, enabled: bool, audios: torch.Tensor | None):
-        """Capture CTC outputs during the same perception pass used for generation."""
-        if not enabled:
-            yield
-            return
-        if not self._uses_parallel_expert_encoder():
-            raise RuntimeError("CTC timestamp generation requires a ParallelExpertEncoder perception encoder.")
-        if audios is None:
-            raise ValueError("CTC timestamp generation requires audio input.")
-        with self.perception.encoder.capture_ctc_timestamps(audios.device):
-            yield
-
     def _warn_parallel_expert_encoder_inference_chunking(self) -> None:
-        if not self.cfg.get("pe_encoder_path", None):
+        if not self._uses_parallel_expert_encoder():
             return
         if self.cfg.get("encoder_chunk_size_seconds", None) is not None:
             warnings.warn(
@@ -1023,6 +1010,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         answer_tokens: torch.Tensor,
         audios: torch.Tensor,
         audio_lens: torch.Tensor,
+        timestamp_inputs: Any,
     ) -> list[dict[str, Any]]:
         """Generate CTC word timestamps for a generated audio batch.
 
@@ -1030,6 +1018,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             answer_tokens (torch.Tensor): Generated token IDs shaped ``(B, T_text)``.
             audios (torch.Tensor): Time-domain audio signals shaped ``(B, T_audio)``.
             audio_lens (torch.Tensor): Valid audio sample counts shaped ``(B,)``.
+            timestamp_inputs (Any): Detached request-owned PEE encoder states and speaker probabilities.
 
         Returns:
             list[dict[str, Any]]: Timestamp alignment results for each batch item.
@@ -1044,6 +1033,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         transcripts = [_decode_timestamp_transcript(self.tokenizer, tokens) for tokens in answer_tokens]
         audio_durations = [float(length) / self.sampling_rate for length in audio_lens.detach().cpu()]
         return self.perception.encoder.generate_ctc_timestamps(
+            timestamp_inputs=timestamp_inputs,
             sot_transcripts=transcripts,
             audio_durations=audio_durations,
         )
@@ -1122,7 +1112,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             audio_lens: Optional. Length of each audio example.
             spk_targets: Optional ``(B, T, n_spk)`` speaker-activity tensor (e.g. oracle / RTTM-derived
                 diarization) injected into the perception encoder. Only effective when the mounted
-                encoder is a ``ParallelExpertEncoder`` (i.e. ``model.pe_encoder_path`` was set); rows
+                encoder is a ``ParallelExpertEncoder``; rows
                 supplied here override its Sortformer prediction. When ``None`` (default), or for a
                 row of ``-1``, the encoder predicts speaker activity itself.
             generation_config: Optional HuggingFace GenerationConfig object.
@@ -1156,64 +1146,77 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 eos_token_id=self.text_eos_id,
                 pad_token_id=self.text_pad_id,
             )
-        with self._perception_ctc_timestamp_capture(generate_timestamps, audios):
-            if audios is not None:
-                # Audio + text input for generation.
-                # Prepare token embeddings and audio embeddings.
-                tokens_to_embed = tokens.where(tokens != self.audio_locator_tag_id, 0)
-                token_embeds = self._embed_tokens(tokens_to_embed)
-                with self._perception_online_inference():
-                    if self._uses_parallel_expert_encoder():
-                        # The PE encoder walks long-form audio window by window itself, so hand it
-                        # the whole sequence: chunking here would nest a second windowing inside
-                        # every chunk. Rows without RTTM get a streaming Sortformer prediction.
-                        self._warn_parallel_expert_encoder_inference_chunking()
-                        audio_embeds, audio_embed_lens = self.perception(
-                            input_signal=audios, input_signal_length=audio_lens, spk_targets=spk_targets
-                        )
-                        audio_embeds = [emb[:emblen] for emb, emblen in zip(audio_embeds, audio_embed_lens)]
+        if generate_timestamps and not self._uses_parallel_expert_encoder():
+            raise RuntimeError("CTC timestamp generation requires a ParallelExpertEncoder perception encoder.")
+        if generate_timestamps and audios is None:
+            raise ValueError("CTC timestamp generation requires audio input.")
+
+        timestamp_inputs = None
+        if audios is not None:
+            # Audio + text input for generation.
+            # Prepare token embeddings and audio embeddings.
+            tokens_to_embed = tokens.where(tokens != self.audio_locator_tag_id, 0)
+            token_embeds = self._embed_tokens(tokens_to_embed)
+            with self._perception_online_inference():
+                if self._uses_parallel_expert_encoder():
+                    # The PE encoder walks long-form audio window by window itself, so hand it
+                    # the whole sequence: chunking here would nest a second windowing inside
+                    # every chunk. Rows without RTTM get a streaming Sortformer prediction.
+                    self._warn_parallel_expert_encoder_inference_chunking()
+                    perception_outputs = self.perception(
+                        input_signal=audios,
+                        input_signal_length=audio_lens,
+                        spk_targets=spk_targets,
+                        return_ctc_timestamp_inputs=generate_timestamps,
+                    )
+                    if generate_timestamps:
+                        audio_embeds, audio_embed_lens, timestamp_inputs = perception_outputs
                     else:
-                        audio_embeds = encode_audio_with_optional_chunking(
-                            self.perception,
-                            audios,
-                            audio_lens,
-                            chunk_size_seconds=self.cfg.get("encoder_chunk_size_seconds", None),
-                            sampling_rate=self.sampling_rate,
-                        )
-                # Insert audio embeddings into relevant positions in text embeddings.
-                input_embeds, _, attention_mask = replace_placeholders_and_build_targets(
-                    input_ids=tokens,
-                    embeds=token_embeds,
-                    padding_id=self.text_pad_id,
-                    placeholder_id=self.audio_locator_tag_id,
-                    replacements=audio_embeds,
-                    target_ids=None,
-                )
-                answer_tokens = self.llm.generate(
-                    inputs_embeds=input_embeds,
-                    attention_mask=attention_mask,
-                    **generation_kwargs,
-                    generation_config=generation_config,
-                )
-            else:
-                # Text-only generation — embed_tokens stays in LLM, HF generate uses it natively.
-                attention_mask = tokens != self.text_pad_id
-                answer_tokens = self.llm.generate(
-                    input_ids=tokens,
-                    attention_mask=attention_mask,
-                    **generation_kwargs,
-                    generation_config=generation_config,
-                )
-            if not generate_timestamps:
-                return answer_tokens
-            return {
-                "answer_ids": answer_tokens,
-                "timestamps": self.generate_ctc_timestamps(
-                    answer_tokens,
-                    audios,
-                    audio_lens,
-                ),
-            }
+                        audio_embeds, audio_embed_lens = perception_outputs
+                    audio_embeds = [emb[:emblen] for emb, emblen in zip(audio_embeds, audio_embed_lens)]
+                else:
+                    audio_embeds = encode_audio_with_optional_chunking(
+                        self.perception,
+                        audios,
+                        audio_lens,
+                        chunk_size_seconds=self.cfg.get("encoder_chunk_size_seconds", None),
+                        sampling_rate=self.sampling_rate,
+                    )
+            # Insert audio embeddings into relevant positions in text embeddings.
+            input_embeds, _, attention_mask = replace_placeholders_and_build_targets(
+                input_ids=tokens,
+                embeds=token_embeds,
+                padding_id=self.text_pad_id,
+                placeholder_id=self.audio_locator_tag_id,
+                replacements=audio_embeds,
+                target_ids=None,
+            )
+            answer_tokens = self.llm.generate(
+                inputs_embeds=input_embeds,
+                attention_mask=attention_mask,
+                **generation_kwargs,
+                generation_config=generation_config,
+            )
+        else:
+            # Text-only generation — embed_tokens stays in LLM, HF generate uses it natively.
+            attention_mask = tokens != self.text_pad_id
+            answer_tokens = self.llm.generate(
+                input_ids=tokens,
+                attention_mask=attention_mask,
+                **generation_kwargs,
+                generation_config=generation_config,
+            )
+        if not generate_timestamps:
+            return answer_tokens
+        return {
+            "answer_ids": answer_tokens,
+            "timestamps": self.generate_ctc_timestamps(
+                answer_tokens,
+                audios,
+                audio_lens,
+                timestamp_inputs,
+            ),
+        }
 
     def setup_moe_options(self):
         """Apply MoE config overrides and enable load balance tracking.

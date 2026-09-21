@@ -118,6 +118,23 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
         # Adapter modules setup (from ASRAdapterModelMixin)
         self.setup_adapters()
 
+    def freeze_encoder(self) -> None:
+        """Freeze the encoder and keep it in evaluation mode while the CTC model trains."""
+        self.encoder.freeze()
+        self._keep_encoder_in_eval = True
+
+    def unfreeze_encoder(self, partial: bool = False) -> None:
+        """Undo :meth:`freeze_encoder` and restore normal training-mode propagation."""
+        self._keep_encoder_in_eval = False
+        self.encoder.unfreeze(partial=partial)
+
+    def train(self, mode: bool = True):
+        """Set module mode without re-enabling training behavior in a frozen encoder."""
+        super().train(mode)
+        if mode and getattr(self, '_keep_encoder_in_eval', False):
+            self.encoder.eval()
+        return self
+
     def transcribe(
         self,
         audio: Union[str, List[str], torch.Tensor, np.ndarray, DataLoader],

@@ -343,7 +343,7 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
                 # Pad audio to be multiple of downsample factor
                 audio = torch.nn.functional.pad(
                     audio,
-                    (0, self.codec_model_samples_per_frame - (audio.shape[0] % self.codec_model_samples_per_frame)),
+                    (0, -audio.shape[0] % self.codec_model_samples_per_frame),
                     value=0,
                 )
                 audio_len = audio.shape[0]

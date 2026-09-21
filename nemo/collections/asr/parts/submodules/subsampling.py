@@ -710,7 +710,6 @@ class SubsamplingReductionModule(nn.Module):
 
         self.reduction = reduction
         self.d_model = d_model
-        self._sampling_num = int(math.log(reduction_factor, 2))
 
         if reduction == 'pooling':
             self.reduction_enc = nn.MaxPool1d(kernel_size=reduction_factor)
@@ -744,7 +743,7 @@ class SubsamplingReductionModule(nn.Module):
                 kernel_size=self.kernel_size,
                 stride=self.stride,
                 ceil_mode=False,
-                repeat_num=self._sampling_num,
+                repeat_num=1,  # a single MaxPool1d(kernel_size=reduction_factor) is applied below
             )
             x = self.reduction_enc(x)
             x = torch.transpose(x, 1, 2)  # [B, T, C]

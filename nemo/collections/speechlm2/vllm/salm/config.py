@@ -289,7 +289,7 @@ class NeMoSpeechLMConfig(PretrainedConfig):
         self.encoder_chunk_size_seconds = encoder_chunk_size_seconds
 
         if llm_config is None:
-            self.text_config = AutoConfig.from_pretrained(pretrained_llm, trust_remote_code=True)
+            self.text_config = self._load_backbone_config(pretrained_llm)
         else:
             if not isinstance(llm_config, dict):
                 raise ValueError(f"NeMo SpeechLM llm_config must be a dict, got {type(llm_config).__name__}.")
@@ -353,6 +353,21 @@ class NeMoSpeechLMConfig(PretrainedConfig):
                 f"boundary {self.image_token_index}. Remove this legacy serialized field; SpeechLM derives "
                 f"the vLLM compatibility value at runtime."
             )
+
+    @staticmethod
+    def _load_backbone_config(source: str) -> PretrainedConfig:
+        """Use vLLM's own config class for model_types it privately re-implements (e.g. nemotron),
+        since e.g. NemotronForCausalLM asserts isinstance(config, vllm's NemotronConfig)."""
+        config = AutoConfig.from_pretrained(source, trust_remote_code=True)
+        try:
+            from vllm.transformers_utils.config import _CONFIG_REGISTRY
+        except ImportError:
+            return config
+        model_type = getattr(config, "model_type", None)
+        vllm_class = _CONFIG_REGISTRY[model_type] if model_type in _CONFIG_REGISTRY else None
+        if vllm_class is not None and not isinstance(config, vllm_class):
+            config = vllm_class.from_pretrained(source, trust_remote_code=True)
+        return config
 
     @property
     def llm_architectures(self) -> list[str]:

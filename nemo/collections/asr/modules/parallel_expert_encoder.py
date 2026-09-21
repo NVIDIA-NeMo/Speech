@@ -992,6 +992,37 @@ class ParallelExpertEncoder(nn.Module):
             raise RuntimeError("Thresholded speaker features require speaker_activity_threshold.")
         return (targets > threshold).to(dtype)
 
+    def _should_run_diarization(
+        self,
+        spk_targets: Optional[torch.Tensor],
+        use_diarization: Optional[torch.Tensor] = None,
+    ) -> bool:
+        """Whether to run the diarizer for this batch. Uniform in training and under DDP/FSDP.
+
+        The obvious rule -- run it only when some row carries the missing-RTTM sentinel -- makes
+        the decision depend on the DATA each rank happened to receive. Mix a corpus that has RTTMs
+        with one that does not and ranks disagree: a rank whose batch is entirely RTTM-backed skips
+        the diarizer's forward while another rank runs it. The two then disagree about executing a
+        module, which desynchronises collectives and hangs the job rather than failing.
+
+        So the skip is only ever a single-process inference optimisation. Training and any
+        world_size > 1 take the uniform path, whatever the batch happens to hold.
+
+        Args:
+            spk_targets: ``(B, T, n_spk)`` oracle targets, or ``None`` when there are none.
+            use_diarization: precomputed per-row mask; recomputed from the sentinel when omitted.
+
+        Returns:
+            bool: whether to run the diarizer branch.
+        """
+        if spk_targets is None or self.training:
+            return True
+        if dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1:
+            return True
+        if use_diarization is None:
+            use_diarization = self.missing_rttm_rows(spk_targets)
+        return bool(use_diarization.any())
+
     def _fuse_diar_and_asr(self, asr_encoded: torch.Tensor, spk_targets: torch.Tensor) -> torch.Tensor:
         """Fuse ASR states with speaker-activity preds (LayerNorm + sinusoidal kernel + ADD).
 
@@ -1081,7 +1112,7 @@ class ParallelExpertEncoder(nn.Module):
         # batch as a whole supplied `spk_targets`. Run the diarizer if ANY row needs it, then
         # splice per row below.
         missing_rows = self.missing_rttm_rows(spk_targets)
-        needs_diar = spk_targets is None or bool(missing_rows.any())
+        needs_diar = self._should_run_diarization(spk_targets, missing_rows)
         if needs_diar:
             # Cast fp32 mels to the diarizer's device/dtype before its conv subsampling.
             diar_signal = self._match_module_io(audio_signal, self.diarization_model)

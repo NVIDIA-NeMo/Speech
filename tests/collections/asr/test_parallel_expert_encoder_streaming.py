@@ -306,3 +306,62 @@ def test_an_empty_diarizer_step_is_named_not_left_to_the_fusion():
             cache_last_channel_len=cache_last_channel_len,
             keep_all_outputs=False,
         )
+
+
+class TestDiarizationGating:
+    """The diarizer's run/skip decision must not depend on what data a rank received.
+
+    Skipping when no row carries the missing-RTTM sentinel is a sound optimisation for one
+    process. Under DDP/FSDP it is a hang: mix an RTTM-backed corpus with one that has none, and a
+    rank whose batch happens to be entirely RTTM-backed skips a module forward that its peers run.
+    Collectives then desynchronise, and the job stalls instead of failing.
+    """
+
+    @staticmethod
+    def _encoder():
+        return build_toy_streaming_pe_encoder().eval()
+
+    @staticmethod
+    def _targets(n_missing, batch=3, frames=6, n_spk=_N_SPK):
+        targets = torch.zeros(batch, frames, n_spk)
+        targets[:n_missing] = -1.0  # the missing-RTTM sentinel
+        return targets
+
+    @pytest.mark.unit
+    def test_skips_when_every_row_has_real_targets(self):
+        """The fast path this optimisation exists for: single process, nothing to infer."""
+        assert self._encoder()._should_run_diarization(self._targets(n_missing=0)) is False
+
+    @pytest.mark.unit
+    def test_runs_when_any_row_carries_the_sentinel(self):
+        assert self._encoder()._should_run_diarization(self._targets(n_missing=1)) is True
+
+    @pytest.mark.unit
+    def test_runs_when_there_are_no_targets_at_all(self):
+        assert self._encoder()._should_run_diarization(None) is True
+
+    @pytest.mark.unit
+    def test_training_always_runs_it(self):
+        """Otherwise one rank's batch composition decides, and ranks diverge."""
+        enc = self._encoder().train()
+        assert enc._should_run_diarization(self._targets(n_missing=0)) is True
+
+    @pytest.mark.unit
+    def test_distributed_always_runs_it(self, monkeypatch):
+        """Even in eval: inference with world_size > 1 collects across ranks too."""
+        import torch.distributed as dist
+
+        monkeypatch.setattr(dist, "is_available", lambda: True)
+        monkeypatch.setattr(dist, "is_initialized", lambda: True)
+        monkeypatch.setattr(dist, "get_world_size", lambda: 2)
+        assert self._encoder()._should_run_diarization(self._targets(n_missing=0)) is True
+
+    @pytest.mark.unit
+    def test_single_rank_distributed_keeps_the_fast_path(self, monkeypatch):
+        """world_size == 1 has no peer to desynchronise from."""
+        import torch.distributed as dist
+
+        monkeypatch.setattr(dist, "is_available", lambda: True)
+        monkeypatch.setattr(dist, "is_initialized", lambda: True)
+        monkeypatch.setattr(dist, "get_world_size", lambda: 1)
+        assert self._encoder()._should_run_diarization(self._targets(n_missing=0)) is False

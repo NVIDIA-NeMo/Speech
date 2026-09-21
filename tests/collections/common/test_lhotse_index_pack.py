@@ -825,25 +825,33 @@ def test_converter_parallel_reuses_authenticated_routes(tmp_path):
         + "\n"
     )
     create_jsonl_index(changed_manifest)
-    failed_output = tmp_path / "parallel-failure.idxpack"
-    failed_result = CliRunner().invoke(
+    fallback_output = tmp_path / "parallel-fallback.idxpack"
+    fallback_result = CliRunner().invoke(
         main,
         [
             "--output",
-            str(failed_output),
+            str(fallback_output),
             "--native-tar-route-workers",
             "2",
             *_native_tar_route_reuse_args(source_cfg, source_pack),
             str(target_cfg),
         ],
     )
-    assert failed_result.exit_code != 0
-    assert "Native-tar routing signature changed" in failed_result.output
-    assert not failed_output.exists()
-    assert not list(tmp_path.glob(".parallel-failure.idxpack.native-tar-route.*"))
+    assert fallback_result.exit_code == 0, fallback_result.output
+    assert "native_tar_routes_reused=1" in fallback_result.output
+    assert "native_tar_routes_built=1" in fallback_result.output
+    with IndexPack(fallback_output) as pack:
+        first_route = pack.collection(
+            nemo_tar_ordinal_map_collection_key(str(expected_routes[0][0]), str(expected_routes[0][1]))
+        )
+        rebuilt_route = pack.collection(
+            nemo_tar_ordinal_map_collection_key(str(changed_manifest), str(expected_routes[1][1]))
+        )
+        assert [first_route.value(index) for index in range(2)] == [1, 0]
+        assert [rebuilt_route.value(index) for index in range(2)] == [0, 1]
 
 
-def test_converter_route_reuse_rejects_changed_ordered_routing_signature(tmp_path):
+def test_converter_route_reuse_rebuilds_changed_ordered_routing_signature_without_copy(tmp_path, monkeypatch):
     source_root = tmp_path / "source"
     source_root.mkdir()
     _, tar_path, source_cfg = _make_native_tar_routing_dataset(
@@ -869,6 +877,11 @@ def test_converter_route_reuse_rejects_changed_ordered_routing_signature(tmp_pat
         )
     )
     output = tmp_path / "target.idxpack"
+    monkeypatch.setattr(
+        converter,
+        "_copy_packed_array_shards",
+        lambda *_args, **_kwargs: pytest.fail("mismatched route payload must not be copied"),
+    )
 
     result = CliRunner().invoke(
         main,
@@ -880,11 +893,104 @@ def test_converter_route_reuse_rejects_changed_ordered_routing_signature(tmp_pat
         ],
     )
 
+    assert result.exit_code == 0, result.output
+    assert "native_tar_routes_reused=0" in result.output
+    assert "native_tar_routes_built=1" in result.output
+    with IndexPack(output) as pack:
+        route = pack.collection(nemo_tar_ordinal_map_collection_key(str(target_manifest), str(tar_path)))
+        assert [route.value(index) for index in range(2)] == [0, 1]
+
+
+@pytest.mark.parametrize(
+    ("target_audio_paths", "expected_route"),
+    [
+        (("A.wav",), [0]),
+        (("A.wav", "B.wav", "C.wav"), [0, 1, 2]),
+    ],
+)
+def test_converter_route_reuse_rebuilds_changed_row_count_without_copy(
+    tmp_path, monkeypatch, target_audio_paths, expected_route
+):
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    _, tar_path, source_cfg = _make_native_tar_routing_dataset(
+        source_root,
+        [{"audio_filepath": name} for name in ("B.wav", "A.wav")],
+        [("A.wav", b"A"), ("B.wav", b"B"), ("C.wav", b"C")],
+    )
+    source_pack = tmp_path / "source.idxpack"
+    source_result = CliRunner().invoke(main, ["--output", str(source_pack), str(source_cfg)])
+    assert source_result.exit_code == 0, source_result.output
+
+    target_manifest = tmp_path / "target-manifest.jsonl"
+    target_manifest.write_text("".join(json.dumps({"audio_filepath": name}) + "\n" for name in target_audio_paths))
+    create_jsonl_index(target_manifest)
+    target_cfg = tmp_path / "target.yaml"
+    target_cfg.write_text(
+        yaml.safe_dump(
+            {
+                "type": "nemo_tarred",
+                "manifest_filepath": str(target_manifest),
+                "tarred_audio_filepaths": str(tar_path),
+            }
+        )
+    )
+    monkeypatch.setattr(
+        converter,
+        "_copy_packed_array_shards",
+        lambda *_args, **_kwargs: pytest.fail("mismatched route payload must not be copied"),
+    )
+    output = tmp_path / "target.idxpack"
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "--output",
+            str(output),
+            *_native_tar_route_reuse_args(source_cfg, source_pack),
+            str(target_cfg),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "native_tar_routes_reused=0" in result.output
+    assert "native_tar_routes_built=1" in result.output
+    with IndexPack(output) as pack:
+        route = pack.collection(nemo_tar_ordinal_map_collection_key(str(target_manifest), str(tar_path)))
+        assert [route.value(index) for index in range(len(expected_route))] == expected_route
+
+
+def test_converter_route_reuse_unrelated_copy_error_remains_fatal(tmp_path, monkeypatch):
+    _, _, source_cfg = _make_native_tar_routing_dataset(
+        tmp_path,
+        [{"audio_filepath": "B.wav"}, {"audio_filepath": "A.wav"}],
+        [("A.wav", b"A"), ("B.wav", b"B")],
+    )
+    source_pack = tmp_path / "source.idxpack"
+    source_result = CliRunner().invoke(main, ["--output", str(source_pack), str(source_cfg)])
+    assert source_result.exit_code == 0, source_result.output
+
+    def fail_after_partial_copy(_collection, output_paths):
+        output_paths[0].write_bytes(b"partial")
+        raise RuntimeError("unrelated route-copy failure")
+
+    monkeypatch.setattr(converter, "_copy_packed_array_shards", fail_after_partial_copy)
+    output = tmp_path / "target.idxpack"
+    result = CliRunner().invoke(
+        main,
+        [
+            "--output",
+            str(output),
+            *_native_tar_route_reuse_args(source_cfg, source_pack),
+            str(source_cfg),
+        ],
+    )
+
     assert result.exit_code != 0
-    assert "Native-tar routing signature changed at shard=0 row=0" in result.output
+    assert isinstance(result.exception, RuntimeError)
+    assert "unrelated route-copy failure" in str(result.exception)
     assert not output.exists()
     assert not list(tmp_path.glob(".target.idxpack.native-tar-route.*"))
-    assert not list(tmp_path.glob(".target.idxpack.record-validation.*"))
 
 
 def test_converter_route_reuse_builds_only_unmatched_tar_paths(tmp_path, monkeypatch):

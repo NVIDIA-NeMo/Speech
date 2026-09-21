@@ -63,7 +63,17 @@ def test_moe_metrics_skip_collective_between_intervals(monkeypatch):
 def test_moe_metrics_use_global_step_for_collection_and_detail_cadence(monkeypatch, global_step, expected_metric):
     import nemo_automodel.components.moe.load_balance_metrics as metrics
 
-    collect = MagicMock(return_value={"layer": torch.tensor([1.0])})
+    expert_load = torch.tensor([1, 2], dtype=torch.int64, requires_grad=False)
+    aux_loss = torch.tensor(0.25, requires_grad=True)
+    collect = MagicMock(
+        return_value={
+            "layer": {
+                "expert_load": expert_load,
+                "aux_loss": aux_loss,
+                "n_experts": 2,
+            }
+        }
+    )
     brief = MagicMock(return_value={"moe/mode": 0.0})
     detailed = MagicMock(return_value={"moe/mode": 1.0})
     monkeypatch.setattr(metrics, "collect_expert_loads", collect)
@@ -77,10 +87,23 @@ def test_moe_metrics_use_global_step_for_collection_and_detail_cadence(monkeypat
     if expected_metric == "brief":
         brief.assert_called_once()
         detailed.assert_not_called()
+        payload = brief.call_args.args[0]
     else:
         detailed.assert_called_once()
         brief.assert_not_called()
+        payload = detailed.call_args.args[0]
+    assert payload["layer"]["expert_load"].device.type == "cpu"
+    assert payload["layer"]["expert_load"].dtype == torch.int64
+    assert not payload["layer"]["expert_load"].requires_grad
+    assert payload["layer"]["aux_loss"].device.type == "cpu"
+    assert not payload["layer"]["aux_loss"].requires_grad
+    assert payload["layer"]["n_experts"] == 2
     model.log_dict.assert_called_once()
+    logged = model.log_dict.call_args.args[0]
+    assert logged
+    assert all(isinstance(value, torch.Tensor) for value in logged.values())
+    assert all(value.device.type == "cpu" for value in logged.values())
+    assert all(value.dtype == torch.float32 for value in logged.values())
 
 
 def test_moe_metrics_reject_nonpositive_interval():

@@ -901,6 +901,22 @@ def test_adapt_strategy_collapses_incompatible_hsdp_replicate_axis() -> None:
     assert original["dp_replicate_size"] == 16
 
 
+def test_adapt_strategy_remaps_explicit_training_dp_size() -> None:
+    original = {
+        "dp_size": 256,
+        "dp_replicate_size": 2,
+        "tp_size": 1,
+        "pp_size": 1,
+        "cp_size": 1,
+        "ep_size": 8,
+    }
+    adapted = to_hf._adapt_strategy_for_conversion_world(original, world_size=8)
+    assert adapted["dp_size"] == 8
+    assert adapted["dp_replicate_size"] == 2
+    assert adapted["ep_size"] == 8
+    assert original["dp_size"] == 256
+
+
 def test_adapt_strategy_preserves_compatible_hsdp_replicate_axis() -> None:
     original = {
         "dp_size": None,

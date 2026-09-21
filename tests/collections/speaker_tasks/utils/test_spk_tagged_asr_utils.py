@@ -17,12 +17,14 @@ import json
 import math
 from contextlib import nullcontext
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 import torch
 from examples.asr.asr_cache_aware_streaming import speech_to_text_multitalker_streaming_infer as streaming_infer
 from examples.asr.asr_cache_aware_streaming.speech_to_text_multitalker_streaming_infer import (
     MultitalkerTranscriptionConfig,
+    configure_asr_for_multitalker_streaming,
 )
 from omegaconf import OmegaConf
 
@@ -75,6 +77,92 @@ def run_parallel_hypothesis_updates(updates, sent_break_sec):
         state.previous_hypothesis = [make_character_hypothesis(text, timestamps)]
         state.update_sessionwise_seglsts_for_parallel(offset=offset)
     return state
+
+
+class TestConfigureASRForMultitalkerStreaming:
+    @pytest.mark.unit
+    def test_configures_prompt_conditioned_model(self):
+        prompt_calls = []
+        strip_calls = []
+        model = SimpleNamespace(
+            set_inference_prompt=prompt_calls.append,
+            decoding=SimpleNamespace(
+                set_strip_lang_tags=lambda strip, lang_tag_pattern=None: strip_calls.append((strip, lang_tag_pattern))
+            ),
+        )
+        cfg = OmegaConf.structured(
+            MultitalkerTranscriptionConfig(
+                masked_asr=True,
+                target_lang="de-DE",
+                strip_lang_tags=True,
+                lang_tag_pattern=r"\s*<[a-z]{2}-[A-Z]{2}>",
+            )
+        )
+
+        configure_asr_for_multitalker_streaming(cfg, model)
+
+        assert prompt_calls == ["de-DE"]
+        assert strip_calls == [(True, r"\s*<[a-z]{2}-[A-Z]{2}>")]
+
+    @pytest.mark.unit
+    def test_prompt_model_defaults_to_auto(self):
+        prompt_calls = []
+        model = SimpleNamespace(
+            set_inference_prompt=prompt_calls.append,
+            decoding=SimpleNamespace(set_strip_lang_tags=lambda *args, **kwargs: None),
+        )
+        cfg = OmegaConf.structured(MultitalkerTranscriptionConfig(masked_asr=True))
+
+        configure_asr_for_multitalker_streaming(cfg, model)
+
+        assert prompt_calls == ["auto"]
+
+    @pytest.mark.unit
+    def test_unmasked_parallel_mode_requires_speaker_target_model(self):
+        cfg = OmegaConf.structured(MultitalkerTranscriptionConfig(masked_asr=False))
+
+        with pytest.raises(ValueError, match="set_speaker_targets"):
+            configure_asr_for_multitalker_streaming(cfg, SimpleNamespace())
+
+    @pytest.mark.unit
+    def test_unmasked_parallel_mode_accepts_multitalker_model(self):
+        cfg = OmegaConf.structured(MultitalkerTranscriptionConfig(masked_asr=False))
+        model = SimpleNamespace(set_speaker_targets=lambda *args: None)
+
+        configure_asr_for_multitalker_streaming(cfg, model)
+
+
+class TestLoadDiarModel:
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "model_name_or_path,expected_loader_name,expected_path_arg",
+        [
+            ("model.ckpt", "load_from_checkpoint", "checkpoint_path"),
+            ("model.nemo", "restore_from", "restore_path"),
+            (
+                "nvidia/diar_streaming_sortformer_4spk-v2.1",
+                "from_pretrained",
+                "model_name",
+            ),
+        ],
+    )
+    def test_selects_expected_loader(self, monkeypatch, model_name_or_path, expected_loader_name, expected_path_arg):
+        map_location = torch.device("cpu")
+        loader_names = ("load_from_checkpoint", "restore_from", "from_pretrained")
+        sentinels = {name: object() for name in loader_names}
+        loaders = {name: Mock(return_value=sentinels[name]) for name in loader_names}
+        for loader_name, loader in loaders.items():
+            monkeypatch.setattr(streaming_infer.SortformerEncLabelModel, loader_name, loader)
+
+        result = streaming_infer.load_diar_model(model_name_or_path, map_location)
+
+        expected_kwargs = {expected_path_arg: model_name_or_path, "map_location": map_location}
+        if expected_loader_name == "load_from_checkpoint":
+            expected_kwargs["strict"] = False
+        loaders[expected_loader_name].assert_called_once_with(**expected_kwargs)
+        assert result is sentinels[expected_loader_name]
+        for loader_name in set(loader_names) - {expected_loader_name}:
+            loaders[loader_name].assert_not_called()
 
 
 @pytest.fixture()

@@ -107,14 +107,19 @@ class TestMultiSpeakerConfigDataclass:
         from nemo.collections.speechlm2.parts.multispeaker import MultiSpeakerConfig
 
         cfg = MultiSpeakerConfig()
-        assert (cfg.num_speakers, cfg.no_rttm_to_ones) == (4, True)
+        # `no_rttm_to_ones` was retired: an unlabelled cut now gets the missing-RTTM
+        # sentinel unconditionally, matching SALM.
+        assert cfg.num_speakers == 4
+        assert not hasattr(cfg, 'no_rttm_to_ones')
         assert (cfg.num_sample_per_mel_frame, cfg.num_mel_frame_per_target_frame) == (160, 8)
 
     @pytest.mark.unit
     def test_from_dict_collapses_yaml_knobs_into_frame_rates(self):
         from nemo.collections.speechlm2.parts.multispeaker import MultiSpeakerConfig
 
-        cfg = MultiSpeakerConfig.from_dict({"window_stride": 0.01, "sample_rate": 16000, "subsampling_factor": 8})
+        cfg = MultiSpeakerConfig.from_dict(
+            {"num_speakers": 4, "window_stride": 0.01, "sample_rate": 16000, "subsampling_factor": 8}
+        )
         assert cfg.num_sample_per_mel_frame == 160
         assert cfg.num_mel_frame_per_target_frame == 8
 

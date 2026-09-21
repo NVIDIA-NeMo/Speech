@@ -29,7 +29,8 @@ import io
 import math
 import os
 import tarfile
-from typing import List, Optional, Union
+from collections.abc import Mapping
+from typing import Any, List, Optional, Union
 
 import torch
 import torch.distributed as dist
@@ -115,6 +116,137 @@ _NORMALIZE_UNSET = object()
 _DIAR_UNSET = object()
 
 
+# --- Speaker-feature fusion contract -------------------------------------------------------
+# Ported from the SALM-side encoder so a bundle states, rather than implies, how its speaker
+# activity is consumed. Historical canonical bundles were used with BOTH continuous and
+# thresholded activity, so an unversioned bundle carrying neither a mode nor a threshold is
+# ambiguous and is rejected instead of guessed at.
+_SPEAKER_FEATURE_CONFIG_VERSION = 1
+_SPEAKER_FEATURE_MODE_CONTINUOUS = "continuous"
+_SPEAKER_FEATURE_MODE_THRESHOLD = "thresholded"
+_SPEAKER_FEATURE_MODES = frozenset({_SPEAKER_FEATURE_MODE_CONTINUOUS, _SPEAKER_FEATURE_MODE_THRESHOLD})
+_BUNDLE_CONFIG_OVERRIDE_KEYS = frozenset(
+    {
+        "asr_normalize_type",
+        "chunk_size_seconds",
+        "diar_normalize_type",
+        "frame_shift_seconds",
+        "missing_rttm_target",
+        "speaker_activity_threshold",
+        "speaker_feature_config_version",
+        "speaker_feature_mode",
+        "spk_kernel_scale",
+        "sync_max_audio_length",
+    }
+)
+
+
+def _normalize_speaker_feature_contract(
+    speaker_feature_mode: Optional[str],
+    speaker_activity_threshold: Optional[float],
+) -> tuple[str, Optional[float]]:
+    """Validate one explicit speaker-feature fusion contract.
+
+    ``None`` for ``speaker_feature_mode`` is supported only by the inner-module
+    constructor, where it derives the mode from the threshold for API
+    compatibility. Bundle configs are resolved separately and always become
+    explicit before the inner module is constructed.
+    """
+    if speaker_feature_mode is None:
+        speaker_feature_mode = (
+            _SPEAKER_FEATURE_MODE_CONTINUOUS if speaker_activity_threshold is None else _SPEAKER_FEATURE_MODE_THRESHOLD
+        )
+    normalized_mode = str(speaker_feature_mode).lower()
+    if normalized_mode not in _SPEAKER_FEATURE_MODES:
+        supported = ", ".join(sorted(_SPEAKER_FEATURE_MODES))
+        raise ValueError(f"speaker_feature_mode must be one of {{{supported}}}, got {speaker_feature_mode!r}.")
+    if normalized_mode == _SPEAKER_FEATURE_MODE_CONTINUOUS:
+        if speaker_activity_threshold is not None:
+            raise ValueError("speaker_feature_mode='continuous' requires speaker_activity_threshold=None.")
+        return normalized_mode, None
+
+    if speaker_activity_threshold is None:
+        raise ValueError("speaker_feature_mode='thresholded' requires a non-null speaker_activity_threshold.")
+    threshold = float(speaker_activity_threshold)
+    if not 0.0 <= threshold <= 1.0:
+        raise ValueError(f"speaker_activity_threshold must be in [0, 1], got {speaker_activity_threshold!r}.")
+    return normalized_mode, threshold
+
+
+def _resolve_speaker_feature_contract(cfg: DictConfig) -> tuple[str, Optional[float]]:
+    """Resolve the versioned speaker-feature contract and fail closed when ambiguous."""
+    config_version = cfg.get("speaker_feature_config_version", None)
+    speaker_feature_mode = cfg.get("speaker_feature_mode", None)
+    has_threshold = "speaker_activity_threshold" in cfg
+    speaker_activity_threshold = cfg.get("speaker_activity_threshold", None)
+
+    if config_version is not None and int(config_version) != _SPEAKER_FEATURE_CONFIG_VERSION:
+        raise ValueError(
+            "Unsupported speaker_feature_config_version="
+            f"{config_version!r}; expected {_SPEAKER_FEATURE_CONFIG_VERSION}."
+        )
+    if speaker_feature_mode is not None:
+        return _normalize_speaker_feature_contract(speaker_feature_mode, speaker_activity_threshold)
+    if config_version is not None:
+        raise ValueError("speaker_feature_config_version requires an explicit speaker_feature_mode.")
+    if has_threshold:
+        return _normalize_speaker_feature_contract(None, speaker_activity_threshold)
+
+    raise ValueError(
+        "Unversioned canonical ParallelExpertEncoder bundle has no speaker-feature contract. "
+        "Historical canonical bundles were used with both continuous and thresholded activity, "
+        "so this cannot be inferred safely. Supply explicit config_overrides with "
+        "speaker_feature_config_version=1, speaker_feature_mode, and speaker_activity_threshold."
+    )
+
+
+def _merge_bundle_config_overrides(cfg: DictConfig, config_overrides: Optional[Mapping[str, Any]]) -> DictConfig:
+    """Merge the small, runtime-semantic PEE override surface into a bundle config."""
+    merged = _clone_config(cfg)
+    if config_overrides in (None, {}):
+        return merged
+    if not isinstance(config_overrides, Mapping):
+        raise TypeError(
+            f"ParallelExpertEncoder config_overrides must be a mapping, got {type(config_overrides).__name__}."
+        )
+    unknown = sorted(set(config_overrides) - _BUNDLE_CONFIG_OVERRIDE_KEYS)
+    if unknown:
+        supported = ", ".join(sorted(_BUNDLE_CONFIG_OVERRIDE_KEYS))
+        raise ValueError(
+            f"Unsupported ParallelExpertEncoder config_overrides keys {unknown}; supported keys: {supported}."
+        )
+    return OmegaConf.merge(merged, OmegaConf.create(dict(config_overrides)))
+
+
+def _read_bundle_members(nemo_path: str) -> tuple[DictConfig, dict[str, torch.Tensor]]:
+    """Read a local PE bundle's config and state dictionary."""
+    config_bytes = None
+    weights_bytes = None
+    try:
+        with tarfile.open(nemo_path, mode="r") as archive:
+            for member in archive.getmembers():
+                basename = os.path.basename(member.name)
+                if basename not in {"model_config.yaml", "model_weights.ckpt"}:
+                    continue
+                stream = archive.extractfile(member)
+                if stream is None:
+                    continue
+                if basename == "model_config.yaml":
+                    config_bytes = stream.read()
+                else:
+                    weights_bytes = stream.read()
+    except (tarfile.TarError, OSError) as error:
+        raise RuntimeError(f"Could not read ParallelExpertEncoder bundle {nemo_path!r}: {error}") from error
+
+    if config_bytes is None:
+        raise RuntimeError(f"{nemo_path!r} is missing model_config.yaml.")
+    if weights_bytes is None:
+        raise RuntimeError(f"{nemo_path!r} is missing model_weights.ckpt.")
+    config = OmegaConf.create(config_bytes.decode("utf-8"))
+    state = torch.load(io.BytesIO(weights_bytes), map_location="cpu", weights_only=True)
+    return config, state
+
+
 @experimental
 class ParallelExpertEncoderPT(ModelPT):
     """ModelPT shell so a :class:`ParallelExpertEncoder` can be saved/restored as a
@@ -128,6 +260,22 @@ class ParallelExpertEncoderPT(ModelPT):
     def __init__(self, cfg: DictConfig, trainer: Optional[Trainer] = None):
         super().__init__(cfg=cfg, trainer=trainer)
         encoder_cls = type(self)._ENCODER_CLS or ParallelExpertEncoder
+        try:
+            speaker_feature_mode, speaker_activity_threshold = _resolve_speaker_feature_contract(self._cfg)
+        except ValueError as error:
+            # Upstream fails closed here. This fork keeps loading such a bundle at its historical
+            # default, because bundles predating the contract were all written by this branch with
+            # thresholding at 0.5 -- refusing them outright would strand working checkpoints. The
+            # warning is the point: the bundle is ambiguous and should be re-exported with an
+            # explicit contract.
+            if "no speaker-feature contract" not in str(error):
+                raise
+            logging.warning(
+                "[ParallelExpertEncoder] %s Falling back to speaker_feature_mode='thresholded' with "
+                "speaker_activity_threshold=0.5, this branch's historical default.",
+                error,
+            )
+            speaker_feature_mode, speaker_activity_threshold = _SPEAKER_FEATURE_MODE_THRESHOLD, 0.5
         self.encoder = encoder_cls(
             asr_encoder_cfg=self._cfg.get('asr_encoder_cfg', None),
             diarization_model_cfg=self._cfg.get('diarization_model_cfg', None),
@@ -141,12 +289,29 @@ class ParallelExpertEncoderPT(ModelPT):
             diar_spkcache_update_period=self._cfg.get('diar_spkcache_update_period', _DIAR_UNSET),
             diar_spkcache_len=self._cfg.get('diar_spkcache_len', _DIAR_UNSET),
             diar_chunk_len=self._cfg.get('diar_chunk_len', _DIAR_UNSET),
-            speaker_activity_threshold=self._cfg.get('speaker_activity_threshold', 0.5),
+            speaker_activity_threshold=speaker_activity_threshold,
+            speaker_feature_mode=speaker_feature_mode,
+            chunk_size_seconds=self._cfg.get('chunk_size_seconds', None),
             spk_kernel_scale=self._cfg.get('spk_kernel_scale', 1.0),
             spk_kernel_row_stride=self._cfg.get('spk_kernel_row_stride', 1),
             spk_kernel_calibrate=self._cfg.get('spk_kernel_calibrate', False),
             speaker_row_offset=self._cfg.get('speaker_row_offset', 0),
         )
+        # Architecture-only snapshot, so an exported SpeechLM checkpoint can rebuild this encoder
+        # without the original bundle. Stamped with the RESOLVED contract, not the raw config, so a
+        # re-export is never ambiguous even when the source bundle was.
+        self.encoder._bundle_config = _clone_config(self._cfg)
+        self.encoder._bundle_config.speaker_feature_config_version = _SPEAKER_FEATURE_CONFIG_VERSION
+        self.encoder._bundle_config.speaker_feature_mode = self.encoder.speaker_feature_mode
+        self.encoder._bundle_config.speaker_activity_threshold = self.encoder.speaker_activity_threshold
+        self.encoder._bundle_config.chunk_size_seconds = self.encoder.chunk_size_seconds
+
+    @staticmethod
+    def _validate_bundle_schema(cfg: DictConfig) -> None:
+        """Require the self-contained ParallelExpertEncoder bundle schema."""
+        missing = [key for key in ("asr_encoder_cfg", "diarization_model_cfg") if cfg.get(key, None) in (None, {}, "")]
+        if missing:
+            raise ValueError(f"ParallelExpertEncoder bundle is missing required config sections {missing}.")
 
     @classmethod
     def list_available_models(cls) -> List[PretrainedModelInfo]:
@@ -193,6 +358,7 @@ class ParallelExpertEncoderPT(ModelPT):
         *,
         map_location: Union[str, torch.device] = 'cpu',
         strict: bool = True,
+        config_overrides: Optional[Mapping[str, Any]] = None,
     ) -> ParallelExpertEncoder:
         """Load a self-contained PE bundle and return its inner encoder.
 
@@ -213,6 +379,10 @@ class ParallelExpertEncoderPT(ModelPT):
             model_path_or_name (str): Local ``.nemo`` path or pretrained model id.
             map_location (str | torch.device): Device to map weights onto.
             strict (bool): Enforce exact state-dict match.
+            config_overrides (Mapping, optional): Runtime-semantic bundle fields to override --
+                deliberately a small allow-list (see ``_BUNDLE_CONFIG_OVERRIDE_KEYS``) so a recipe
+                can resolve a legacy bundle's speaker-feature ambiguity without silently swapping
+                the saved architecture. Local ``.nemo`` paths only.
 
         Returns:
             The restored :class:`ParallelExpertEncoder`.
@@ -222,17 +392,42 @@ class ParallelExpertEncoderPT(ModelPT):
             and model_path_or_name.endswith('.nemo')
             and os.path.isfile(model_path_or_name)
         ):
-            bundle = cls.restore_from(
-                restore_path=model_path_or_name,
-                map_location=map_location,
-                strict=strict,
+            # Read and merge before constructing: `restore_from` builds the shell from the archive's
+            # own config, which leaves no seam to apply overrides through.
+            cfg, state = _read_bundle_members(model_path_or_name)
+            if not str(cfg.get('target', '')).endswith('ParallelExpertEncoderPT'):
+                raise ValueError(f"{model_path_or_name!r} is not a ParallelExpertEncoderPT .nemo bundle.")
+            cfg = _merge_bundle_config_overrides(cfg, config_overrides)
+            cls._validate_bundle_schema(cfg)
+            shell = cls(cfg=cfg, trainer=None)
+            prefix = 'encoder.'
+            encoder_state = {key[len(prefix) :]: value for key, value in state.items() if key.startswith(prefix)}
+            if not encoder_state:
+                raise RuntimeError(
+                    f"No '{prefix}*' tensors found in {model_path_or_name!r}; the archive is not a saved PE bundle."
+                )
+            incompatible = shell.encoder.load_state_dict(encoder_state, strict=strict)
+            if incompatible.missing_keys or incompatible.unexpected_keys:
+                logging.warning(
+                    "[ParallelExpertEncoder] load_from_nemo(%s): %d missing / %d unexpected keys.",
+                    model_path_or_name,
+                    len(incompatible.missing_keys),
+                    len(incompatible.unexpected_keys),
+                )
+            return shell.encoder.to(map_location)
+
+        # A pretrained id resolves through the HF/NGC cache, where there is no local archive to
+        # rewrite. Refuse rather than accept overrides and quietly drop them.
+        if config_overrides not in (None, {}):
+            raise ValueError(
+                "ParallelExpertEncoder config_overrides currently require a local .nemo bundle path; "
+                f"got pretrained model identifier {model_path_or_name!r}."
             )
-        else:
-            bundle = cls.from_pretrained(
-                model_name=model_path_or_name,
-                map_location=map_location,
-                strict=strict,
-            )
+        bundle = cls.from_pretrained(
+            model_name=model_path_or_name,
+            map_location=map_location,
+            strict=strict,
+        )
         return bundle.encoder
 
     @classmethod
@@ -356,6 +551,8 @@ class ParallelExpertEncoder(nn.Module):
         diar_spkcache_len: Optional[int] = _DIAR_UNSET,
         diar_chunk_len: Optional[int] = _DIAR_UNSET,
         speaker_activity_threshold: Optional[float] = 0.5,
+        speaker_feature_mode: Optional[str] = None,
+        chunk_size_seconds: Optional[float] = None,
         spk_kernel_scale: float = 1.0,
         spk_kernel_row_stride: int = 1,
         spk_kernel_calibrate: bool = False,
@@ -398,6 +595,8 @@ class ParallelExpertEncoder(nn.Module):
 
         # Long-form / online inference configuration.
         self.online_inference_length = int(online_inference_length)
+        # None = fall back to the length/training heuristic in `forward`.
+        self.online_inference_enabled: Optional[bool] = None
         # Overlap-and-trim context (output frames) shared by both branches.
         self.chunk_left_context = max(0, int(chunk_left_context))
         self.chunk_right_context = max(0, int(chunk_right_context))
@@ -420,9 +619,15 @@ class ParallelExpertEncoder(nn.Module):
         # RTTM (already {0,1}, so a no-op) and Sortformer sigmoids reach the kernel as the same
         # distribution, so training on oracle and inferring on predictions do not diverge.
         # `None` opts into the soft-target experiment.
-        self.speaker_activity_threshold = (
-            None if speaker_activity_threshold is None else float(speaker_activity_threshold)
+        # Name the contract that was previously implicit: a threshold means "thresholded", its
+        # absence means "continuous". Same behaviour, but a bundle now STATES which it wants
+        # rather than leaving a reader to infer it from whether a field happens to be set.
+        self.speaker_feature_mode, self.speaker_activity_threshold = _normalize_speaker_feature_contract(
+            speaker_feature_mode, speaker_activity_threshold
         )
+        # Consumed by the packed-sequence branches only, which this fork does not carry yet; stored
+        # and validated so a bundle round-trips it and the SALM-side contract is honoured.
+        self.chunk_size_seconds = self._validate_chunk_size("chunk_size_seconds", chunk_size_seconds)
         self.spk_kernel_scale = float(spk_kernel_scale)
 
         self.n_spk = int(self.diarization_model.sortformer_modules.n_spk)
@@ -756,6 +961,37 @@ class ParallelExpertEncoder(nn.Module):
             return None
         return (spk_targets <= self.missing_rttm_target).flatten(start_dim=1).all(dim=1)
 
+    def _missing_target_rows(self, spk_targets: torch.Tensor) -> torch.Tensor:
+        """Upstream's name for :meth:`missing_rttm_rows`, kept so SALM code calls one API.
+
+        Delegates rather than duplicating: upstream compares ``== missing_rttm_target`` while this
+        uses ``<=``, which is the same set for the -1.0 sentinel but survives a target that has
+        been through a float cast or a collation pad. Non-optional argument to match the caller.
+        """
+        return self.missing_rttm_rows(spk_targets)
+
+    @staticmethod
+    def _validate_chunk_size(name: str, value: Optional[float]) -> Optional[float]:
+        """Positive-or-None, rejected at construction rather than at the first forward."""
+        if value is None:
+            return None
+        value = float(value)
+        if value <= 0:
+            raise ValueError(f"{name} must be positive or None, got {value}.")
+        return value
+
+    def _speaker_features(self, targets: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
+        """Apply the bundle's explicit speaker-feature fusion contract."""
+        mode = getattr(self, "speaker_feature_mode", None)
+        if mode == _SPEAKER_FEATURE_MODE_CONTINUOUS:
+            return targets.to(dtype)
+        if mode != _SPEAKER_FEATURE_MODE_THRESHOLD:
+            raise RuntimeError(f"Invalid speaker_feature_mode at runtime: {mode!r}.")
+        threshold = getattr(self, "speaker_activity_threshold", None)
+        if threshold is None:
+            raise RuntimeError("Thresholded speaker features require speaker_activity_threshold.")
+        return (targets > threshold).to(dtype)
+
     def _fuse_diar_and_asr(self, asr_encoded: torch.Tensor, spk_targets: torch.Tensor) -> torch.Tensor:
         """Fuse ASR states with speaker-activity preds (LayerNorm + sinusoidal kernel + ADD).
 
@@ -769,8 +1005,7 @@ class ParallelExpertEncoder(nn.Module):
         asr_enc_states = asr_encoded.transpose(1, 2)  # (B, T, D)
         spk_targets = self._align_diar_frames(spk_targets, asr_enc_states.shape[1]).to(asr_enc_states.dtype)
 
-        if self.speaker_activity_threshold is not None:
-            spk_targets = (spk_targets > self.speaker_activity_threshold).to(asr_enc_states.dtype)
+        spk_targets = self._speaker_features(spk_targets, asr_enc_states.dtype)
         asr_enc_states = self.asr_norm(asr_enc_states)
         spk_targets = self.diar_norm(spk_targets)
         speaker_infusion = torch.matmul(spk_targets, self.diar_kernel.to(spk_targets.dtype))
@@ -779,6 +1014,20 @@ class ParallelExpertEncoder(nn.Module):
         return fused.transpose(1, 2)  # (B, D, T)
 
     # Forward — identical signature to ConformerEncoder.forward
+    @contextlib.contextmanager
+    def online_inference(self, enabled: bool = True):
+        """Route ``forward`` through the windowed generation path inside this scope.
+
+        Restores the previous value on exit, so nesting and early exceptions cannot leave the
+        encoder stuck in generation mode for a subsequent training step.
+        """
+        previous = getattr(self, "online_inference_enabled", None)
+        self.online_inference_enabled = bool(enabled)
+        try:
+            yield
+        finally:
+            self.online_inference_enabled = previous
+
     def forward(
         self,
         audio_signal,
@@ -801,6 +1050,11 @@ class ParallelExpertEncoder(nn.Module):
         """
         if spk_targets is not None:
             use_online = False
+        elif getattr(self, "online_inference_enabled", None) is not None:
+            # An explicit `online_inference()` scope wins over the length heuristic below, and
+            # deliberately does NOT re-check the audio against `chunk_feat_len`: a caller that
+            # opened the scope is generating, and knows it wants the windowed path.
+            use_online = bool(self.online_inference_enabled) and self.online_inference_length > 0
         elif self.online_inference_length > 0 and not self.training:
             # Even if spk_targets is None, use offline if audio is short enough
             use_online = audio_signal.shape[-1] > self.chunk_feat_len

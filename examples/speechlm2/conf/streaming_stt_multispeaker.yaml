@@ -93,7 +93,6 @@ data:
       sample_rate: ${model.sample_rate}
       window_stride: 0.01          # preprocessor hop; with subsampling_factor -> the 80 ms grid
       subsampling_factor: 8
-      no_rttm_to_ones: true
       # Bounds the brute-force permutation search in fix_speaker_activity. Uncapped, an
       # 8-active-speaker cut enumerates 8! = 40320 permutations: measured 48.7 s PER CUT in a
       # dataloader worker. 720 = 6!.
@@ -102,8 +101,10 @@ data:
   # --- Lhotse dataloader config ---
   train_ds:
     sample_rate: ${data.dataset.sample_rate}
-    # The manifests store `rttm_filepath` RELATIVE to their own directory; without this the
-    # RTTM read fails and every cut silently falls back to an all-zero speaker target.
+    # The manifests store `rttm_filepath` RELATIVE to their own directory. Without this the RTTM
+    # read fails for every cut, each one gets the missing-RTTM sentinel, and the encoder quietly
+    # answers with its own diarizer -- so the run trains with NO oracle speaker supervision while
+    # looking entirely healthy. The sentinel is a legitimate value, so nothing downstream flags it.
     resolve_path_fields: [rttm_filepath]
     input_cfg: null
     manifest_filepath: /media/data3/datasets/multi_speaker_asr/debug_data/mtasr_debug_manifest-cleaned-train-aligned.json
@@ -127,8 +128,10 @@ data:
         manifest_filepath: /media/data3/datasets/multi_speaker_asr/debug_data/mtasr_debug_manifest-cleaned-val-aligned.json
     sample_rate: ${data.dataset.sample_rate}
     batch_size: 4
-    # The manifests store `rttm_filepath` RELATIVE to their own directory; without this the
-    # RTTM read fails and every cut silently falls back to an all-zero speaker target.
+    # The manifests store `rttm_filepath` RELATIVE to their own directory. Without this the RTTM
+    # read fails for every cut, each one gets the missing-RTTM sentinel, and the encoder quietly
+    # answers with its own diarizer -- so the run trains with NO oracle speaker supervision while
+    # looking entirely healthy. The sentinel is a legitimate value, so nothing downstream flags it.
     resolve_path_fields: [rttm_filepath]
     num_workers: 4
     seed: 42

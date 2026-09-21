@@ -33,7 +33,6 @@ from types import SimpleNamespace
 
 import pytest
 import torch
-
 from omegaconf import OmegaConf
 
 from nemo.collections.speechlm2.data.streaming_stt_dataset import (
@@ -3326,3 +3325,212 @@ class TestFlushToken:
                 }
             )
             StreamingSTTDataset(cfg=cfg, tokenizer=tok)
+
+
+class TestStrictAudioLoading:
+    """`collate_audio(fault_tolerant=True)` returns the SURVIVORS of a batch.
+
+    A cut whose audio fails to load is dropped and training continues on fewer samples than the
+    config asked for, with a warning nobody reads. `strict_audio_loading` turns that into a crash.
+    Mirrors `SALMDataset.strict_audio_loading`.
+    """
+
+    @staticmethod
+    def _mock_self(strict):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(cfg=SimpleNamespace(strict_audio_loading=strict))
+
+    @staticmethod
+    def _cuts(*ids):
+        from types import SimpleNamespace
+
+        return [SimpleNamespace(id=i) for i in ids]
+
+    def _patch_collate(self, monkeypatch, survivors):
+        import nemo.collections.speechlm2.data.streaming_stt_dataset as mod
+
+        monkeypatch.setattr(
+            mod, "collate_audio", lambda cuts, fault_tolerant=True: (None, [0] * len(survivors), survivors)
+        )
+
+    @pytest.mark.unit
+    def test_a_dropped_cut_raises_and_names_it(self, monkeypatch):
+        import nemo.collections.speechlm2.data.streaming_stt_dataset as mod
+
+        self._patch_collate(monkeypatch, self._cuts("a", "c"))
+        with pytest.raises(RuntimeError, match=r"dropped or reordered cuts.*dropped \['b'\]"):
+            mod.StreamingSTTDataset.__getitem__(self._mock_self(True), self._cuts("a", "b", "c"))
+
+    @pytest.mark.unit
+    def test_reordering_raises_even_when_nothing_is_lost(self, monkeypatch):
+        """Same cuts, different order: targets and audio would be paired with the wrong samples."""
+        import nemo.collections.speechlm2.data.streaming_stt_dataset as mod
+
+        self._patch_collate(monkeypatch, self._cuts("b", "a"))
+        with pytest.raises(RuntimeError, match="same ids, different order"):
+            mod.StreamingSTTDataset.__getitem__(self._mock_self(True), self._cuts("a", "b"))
+
+    @pytest.mark.unit
+    def test_an_empty_batch_raises_rather_than_returning_none(self, monkeypatch):
+        import nemo.collections.speechlm2.data.streaming_stt_dataset as mod
+
+        self._patch_collate(monkeypatch, [])
+        with pytest.raises(RuntimeError, match="dropped or reordered cuts"):
+            mod.StreamingSTTDataset.__getitem__(self._mock_self(True), self._cuts("a"))
+
+    @pytest.mark.unit
+    def test_default_is_off_so_existing_runs_are_unchanged(self, monkeypatch):
+        """Without the flag a drop still yields a short batch -- the historical behaviour."""
+        import nemo.collections.speechlm2.data.streaming_stt_dataset as mod
+
+        self._patch_collate(monkeypatch, self._cuts("a"))
+        # Reaches the code past collation, so no RuntimeError was raised for the dropped cut.
+        with pytest.raises(AttributeError):  # the mock self lacks the rest of the pipeline
+            mod.StreamingSTTDataset.__getitem__(self._mock_self(False), self._cuts("a", "b"))
+
+    @pytest.mark.unit
+    def test_the_config_field_defaults_to_false(self):
+        from dataclasses import fields
+
+        from nemo.collections.speechlm2.data.streaming_stt_dataset import StreamingSTTDataConfig
+
+        field = {f.name: f for f in fields(StreamingSTTDataConfig)}["strict_audio_loading"]
+        assert field.default is False
+
+
+class TestMissingRttmSentinel:
+    """An unlabelled cut must abstain, not assert.
+
+    `speaker_activity_from_cut` answers a cut with no RTTM by synthesising a full-duration
+    single-speaker segment -- "one person spoke throughout", asserted about audio nobody labelled.
+    The sentinel tells the encoder to fall back to its own diarizer for that row instead.
+    Mirrors `SALMMultiSpeakerProcessor`.
+    """
+
+    @staticmethod
+    def _ms():
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            num_speakers=4,
+            missing_rttm_target=-1.0,
+            num_sample_per_mel_frame=160,
+            num_mel_frame_per_target_frame=8,
+            max_alignment_permutations=720,
+        )
+
+    @staticmethod
+    def _cut(rttm=None, supervisions=(), tracks=None):
+        from types import SimpleNamespace
+
+        cut = SimpleNamespace(
+            id="c0", num_samples=16000, custom={"rttm_filepath": rttm} if rttm else {}, supervisions=list(supervisions)
+        )
+        if tracks is not None:
+            cut.tracks = [SimpleNamespace(cut=t) for t in tracks]
+        return cut
+
+    def _build(self, cut):
+        from types import SimpleNamespace
+
+        from nemo.collections.speechlm2.data.streaming_stt_dataset import StreamingSTTDataset
+
+        stub = SimpleNamespace(_multispeaker_enabled=True, _ms=self._ms())
+        stub._has_rttm_filepath = StreamingSTTDataset._has_rttm_filepath
+        stub._missing_rttm_activity = lambda c: StreamingSTTDataset._missing_rttm_activity(stub, c)
+        return StreamingSTTDataset._build_speaker_activities(stub, [cut], ["<spk:0> hello"])
+
+    @pytest.mark.unit
+    def test_unlabelled_cut_yields_the_sentinel(self):
+        (activity,) = self._build(self._cut())
+        assert bool((activity == -1.0).all()), "expected an all-sentinel activity for a cut with no RTTM"
+        assert activity.shape[1] == 4
+
+    @pytest.mark.unit
+    def test_supervisions_alone_do_not_count_as_speaker_labels(self):
+        """Supervisions are ASR segments: what was said and when, not who said it.
+
+        Treating them as speaker activity asserts an attribution nobody labelled -- the exact
+        thing the sentinel exists to avoid. This is the SALM semantics.
+        """
+        (activity,) = self._build(self._cut(supervisions=[object()]))
+        assert bool((activity == -1.0).all())
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "cut_kwargs,expected",
+        [
+            ({}, False),
+            ({"supervisions": [object()]}, False),
+            ({"rttm": "/tmp/x.rttm"}, True),
+            ({"tracks": []}, False),
+        ],
+        ids=["bare", "supervisions_only", "has_rttm_path", "mixture_without_tracks"],
+    )
+    def test_rttm_detection(self, cut_kwargs, expected):
+        from nemo.collections.speechlm2.data.streaming_stt_dataset import StreamingSTTDataset
+
+        assert StreamingSTTDataset._has_rttm_filepath(self._cut(**cut_kwargs)) is expected
+
+    @pytest.mark.unit
+    def test_a_mixture_inherits_its_tracks_rttm(self):
+        """A MixedCut's labels live on its tracks; without recursion it would be sentinelled."""
+        from nemo.collections.speechlm2.data.streaming_stt_dataset import StreamingSTTDataset
+
+        mixture = self._cut(tracks=[self._cut(), self._cut(rttm="/tmp/t.rttm")])
+        assert StreamingSTTDataset._has_rttm_filepath(mixture) is True
+
+    @pytest.mark.unit
+    def test_alignment_is_skipped_for_an_unlabelled_cut(self, monkeypatch):
+        """No column permutation on the sentinel branch -- it would imply an attribution."""
+        import nemo.collections.speechlm2.data.streaming_stt_dataset as mod
+
+        monkeypatch.setattr(mod, "fix_speaker_activity", lambda *a, **k: pytest.fail("aligned a sentinel"))
+        monkeypatch.setattr(mod, "speaker_activity_from_cut", lambda *a, **k: pytest.fail("built from no RTTM"))
+        self._build(self._cut())
+
+    @pytest.mark.unit
+    def test_resolved_permutations_skip_the_factorial_search(self, monkeypatch):
+        """`speaker_activity_from_cut` reports when columns already match, so DTW is skipped."""
+        import torch
+
+        import nemo.collections.speechlm2.data.streaming_stt_dataset as mod
+
+        monkeypatch.setattr(mod, "speaker_activity_from_cut", lambda *a, **k: (torch.zeros(4, 4), True))
+        monkeypatch.setattr(mod, "fix_speaker_activity", lambda *a, **k: pytest.fail("ran DTW when resolved"))
+        (activity,) = self._build(self._cut(rttm="/tmp/x.rttm"))
+        assert activity.shape == (4, 4)
+
+    @pytest.mark.unit
+    def test_unresolved_permutations_still_align(self, monkeypatch):
+        import torch
+
+        import nemo.collections.speechlm2.data.streaming_stt_dataset as mod
+
+        called = {}
+        monkeypatch.setattr(mod, "speaker_activity_from_cut", lambda *a, **k: (torch.zeros(4, 4), False))
+
+        def _record(*args, **kwargs):
+            called["budget"] = kwargs.get("max_alignment_permutations")
+            return torch.ones(4, 4)
+
+        monkeypatch.setattr(mod, "fix_speaker_activity", _record)
+        (activity,) = self._build(self._cut(rttm="/tmp/x.rttm"))
+        assert bool((activity == 1.0).all())
+        assert called["budget"] == 720, "the permutation BUDGET is passed, not the derived speaker cap"
+
+    @pytest.mark.unit
+    def test_sentinel_survives_collation_padding(self):
+        """A short sentinel row padded with zeros would read as a real all-silent target."""
+        from types import SimpleNamespace
+
+        import torch
+
+        from nemo.collections.speechlm2.data.streaming_stt_dataset import StreamingSTTDataset
+
+        stub = SimpleNamespace(_ms=self._ms())
+        targets, _ = StreamingSTTDataset._collate_speaker_activities(
+            stub, [torch.full((5, 4), -1.0), torch.zeros((20, 4))], torch.tensor([5 * 1280, 20 * 1280]), torch.float32
+        )
+        assert bool((targets[0] == -1.0).all()), "padding broke the sentinel row"

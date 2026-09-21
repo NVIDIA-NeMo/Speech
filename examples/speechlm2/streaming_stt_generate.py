@@ -320,8 +320,9 @@ def main(cfg: StreamingSTTEvalConfig):
         torch.use_deterministic_algorithms(True)
     else:
         # Not a warning: greedy decoding on a fixed machine at fixed settings is already bit-exact,
-        # pinned by tests. `seed` additionally forces deterministic algorithms, which matters for
-        # sampling (`do_sample`) and for reproducing across hardware -- and costs throughput.
+        # pinned by tests. `seed` is for reproducing across MACHINES -- and note it does not
+        # reproduce an unseeded run on this one: it enables deterministic algorithms, which
+        # disables the fused subsampling kernel, which rounds differently. It also costs throughput.
         logging.info("Random seed not set; runs are still reproducible at identical settings.")
 
     model = StreamingSTTModel.from_pretrained(cfg.pretrained_name)

@@ -181,6 +181,12 @@ class StreamingSTTDataConfig:
     # scratch (no pretrained meaning to warm-start from), like ``write_token``.
     flush_token: str = "<|flush|>"
 
+    # Raise instead of silently shrinking a batch. `collate_audio(fault_tolerant=True)` drops a cut
+    # whose audio fails to load and returns the survivors, so training proceeds on fewer samples
+    # than the config asks for, with only a warning. Off by default so existing runs are unchanged;
+    # turn it on when a silently short batch would be worse than a crash. Mirrors SALMDataset.
+    strict_audio_loading: bool = False
+
 
 def decode_with_blank(
     ids: list[int],
@@ -1398,43 +1404,80 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
         else:
             self._user_footer_first_id = None
 
+    @staticmethod
+    def _has_rttm_filepath(cut) -> bool:
+        """Whether a cut, or any track of a mixture, carries an explicit RTTM.
+
+        Deliberately does NOT accept the cut's ``supervisions`` as a substitute. Supervisions are
+        ASR segments; they say what was said and when, not who was speaking. Building speaker
+        activity from them asserts an attribution nobody labelled, which is the thing the sentinel
+        exists to avoid. Mirrors ``SALMMultiSpeakerProcessor._has_rttm_filepath``.
+        """
+        custom = getattr(cut, "custom", None) or {}
+        if custom.get("rttm_filepath", None):
+            return True
+        tracks = getattr(cut, "tracks", None)
+        if tracks:  # MixedCut: a mixture's labels live on its constituent tracks
+            return any(StreamingSTTDataset._has_rttm_filepath(track.cut) for track in tracks)
+        return False
+
+    def _missing_rttm_activity(self, cut) -> "torch.Tensor":
+        """Full-length ``missing_rttm_target`` activity for one cut.
+
+        Sentinel, not zeros and not ones: the encoder reads it as "no RTTM here, use your own
+        diarizer". Zeros would mean "nobody is speaking" and ones "everybody is" -- both are
+        assertions about the audio that we cannot make.
+        """
+        n_frames = get_hidden_length_from_sample_length(
+            cut.num_samples, self._ms.num_sample_per_mel_frame, self._ms.num_mel_frame_per_target_frame
+        )
+        return torch.full((n_frames, self._ms.num_speakers), self._ms.missing_rttm_target)
+
     def _build_speaker_activities(self, cuts: CutSet, text: List[str]) -> Optional[List["torch.Tensor"]]:
         """Per-cut ``(T_frames, n_spk)`` RTTM speaker activity, column-aligned to the SOT tags.
 
-        Returns ``None`` when multispeaker is disabled. A cut whose RTTM cannot be read yields an
-        all-zero target and a warning rather than killing the batch.
+        Returns ``None`` when multispeaker is disabled.
 
-        .. warning::
-           ``no_rttm_to_ones`` (default ``True``, inherited from the SALM reference) is the
-           genuinely dangerous knob: a cut with *no* RTTM at all gets an all-ones single-speaker
-           target, which trains the speaker kernel to treat unlabelled audio as confidently
-           single-speaker instead of masking it out. Prefer RTTM-complete manifests; a
-           ``missing_rttm_target`` sentinel is still TODO.
+        A cut with no explicit RTTM yields the ``missing_rttm_target`` sentinel, which the encoder
+        reads as "no labels here, use your own diarizer" and substitutes per row. So does a cut
+        whose RTTM cannot be read -- one bad file must not kill the batch.
+
+        Mirrors ``SALMMultiSpeakerProcessor`` so the two paths supervise identically.
         """
         if not self._multispeaker_enabled:
             return None
 
         activities = []
         for cut, cut_text in zip(cuts, text):
+            # Checked here rather than left to `speaker_activity_from_cut`, whose no-RTTM answer is
+            # a synthetic full-duration single-speaker segment -- "one person spoke throughout",
+            # asserted about audio nobody labelled. The sentinel abstains instead. No SOT column
+            # alignment on this branch: the sentinel replaces the whole target, so permuting its
+            # columns would be wasted work and would imply an attribution that is not there.
+            if not self._has_rttm_filepath(cut):
+                activities.append(self._missing_rttm_activity(cut))
+                continue
             try:
-                activity = speaker_activity_from_cut(
+                normalized_text, _, _ = ensure_single_speaker_sot(cut_text)
+                activity, is_permutation_resolved = speaker_activity_from_cut(
                     cut,
                     num_speakers=self._ms.num_speakers,
                     num_sample_per_mel_frame=self._ms.num_sample_per_mel_frame,
                     num_mel_frame_per_target_frame=self._ms.num_mel_frame_per_target_frame,
-                    no_rttm_to_ones=self._ms.no_rttm_to_ones,
+                    text=normalized_text,
+                    return_permutation_resolved=True,
                     boundary_segments=True,
                 )
                 # `speaker_to_target` orders columns by RTTM arrival time, which usually matches the
-                # `<spk:N>` index -- but not always. `fix_speaker_activity` permutes them onto the
-                # tag order via DTW; skipping it measurably degrades the alignment.
-                normalized_text, _, _ = ensure_single_speaker_sot(cut_text)
-                activity = fix_speaker_activity(
-                    normalized_text,
-                    activity,
-                    self._ms.num_speakers,
-                    max_permutable=self._ms.max_permutable,
-                )
+                # `<spk:N>` index. When it already does, it says so, and the factorial DTW search is
+                # skipped entirely -- it would permute the columns onto the order they are in.
+                if not is_permutation_resolved:
+                    activity = fix_speaker_activity(
+                        normalized_text,
+                        activity,
+                        self._ms.num_speakers,
+                        max_alignment_permutations=self._ms.max_alignment_permutations,
+                    )
             except Exception as e:  # noqa: BLE001 - one unreadable RTTM must not kill the batch
                 logging.warning(
                     "Cut %s: speaker activity failed (%s: %s); emitting the missing-RTTM sentinel.",
@@ -1442,13 +1485,7 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
                     type(e).__name__,
                     e,
                 )
-                n_frames = get_hidden_length_from_sample_length(
-                    cut.num_samples, self._ms.num_sample_per_mel_frame, self._ms.num_mel_frame_per_target_frame
-                )
-                # Sentinel, not zeros and not ones: the encoder reads it as "no RTTM here, use your
-                # own diarizer". Zeros would mean "nobody is speaking" and ones "everybody is" --
-                # both are assertions about the audio that we cannot make.
-                activity = torch.full((n_frames, self._ms.num_speakers), self._ms.missing_rttm_target)
+                activity = self._missing_rttm_activity(cut)
             activities.append(activity)
         return activities
 
@@ -1474,12 +1511,33 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
         return targets, lengths
 
     def __getitem__(self, cuts: CutSet) -> StreamingSTTBatch | None:
+        # Snapshot before collation: the fault-tolerant collator returns only the survivors, so
+        # afterwards there is nothing left to compare against.
+        strict = self.cfg.strict_audio_loading
+        requested_ids = tuple(cut.id for cut in cuts) if strict else ()
+
         try:
             audios, audio_lens, cuts = collate_audio(cuts, fault_tolerant=True)
         except Exception as e:
+            if strict:
+                raise
             logging.warning(f"Error collating audio from cuts: {e}")
             return None
+
+        if strict:
+            materialized_ids = tuple(cut.id for cut in cuts)
+            if materialized_ids != requested_ids:
+                dropped = [cut_id for cut_id in requested_ids if cut_id not in set(materialized_ids)]
+                raise RuntimeError(
+                    "strict_audio_loading: audio collation dropped or reordered cuts "
+                    f"(requested {len(requested_ids)}, got {len(materialized_ids)}"
+                    + (f"; dropped {dropped[:5]}" if dropped else "; same ids, different order")
+                    + ")."
+                )
+
         if len(cuts) == 0:
+            if strict:
+                raise RuntimeError("strict_audio_loading: audio collation produced an empty batch.")
             logging.warning("No cuts found in the batch")
             return None
 

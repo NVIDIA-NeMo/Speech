@@ -32,17 +32,16 @@ class MultiSpeakerConfig:
     """
 
     num_speakers: int = 4
-    no_rttm_to_ones: bool = True
     num_sample_per_mel_frame: int = 160
     num_mel_frame_per_target_frame: int = 8
     # Bound on the brute-force permutation search in `fix_speaker_activity`. Uncapped, an
     # 8-active-speaker cut enumerates 8! = 40320 permutations and materialises a
     # (P, n_tokens, n_frames) array -- measured at 48.7 s per cut in a dataloader worker.
     max_alignment_permutations: Optional[int] = 720
-    # Value written for a cut with no resolvable RTTM. ParallelExpertEncoder detects rows that are
-    # entirely <= this and substitutes its embedded diarizer for them. Leaving `no_rttm_to_ones`
-    # output as literal ones instead would train the speaker kernel on "every speaker active at
-    # every frame" -- confidently wrong supervision rather than an abstention.
+    # Value written for a cut with no explicit RTTM. ParallelExpertEncoder detects rows that are
+    # entirely <= this and substitutes its embedded diarizer for them. The alternative it replaced
+    # -- synthesising a full-duration single-speaker segment -- trained the speaker kernel on
+    # "one person spoke throughout", confidently wrong supervision rather than an abstention.
     missing_rttm_target: float = -1.0
     # --- streaming SpeechLM only (ignored by SALM) ---
     enable: bool = True
@@ -68,9 +67,29 @@ class MultiSpeakerConfig:
         """Build a config from a raw settings dict, or ``None`` when no SOT settings are given."""
         if cfg is None:
             return None
+        # Required when parsing a config, even though the dataclass field defaults to 4 for direct
+        # construction. A YAML that omits it on an 8-speaker corpus would silently cap targets at
+        # 4 and train against truncated supervision -- a wrong number rather than an error. Adopted
+        # from the SALM-side encoder work.
+        # Retired, not renamed. A config still carrying it expects unlabelled audio to become a
+        # synthetic single-speaker target; it now becomes the missing-RTTM sentinel instead. That
+        # is a change in supervision, so say so rather than ignoring an unknown key.
+        if 'no_rttm_to_ones' in cfg:
+            raise ValueError(
+                "multispeaker_cfg.no_rttm_to_ones was removed. A cut with no explicit RTTM now "
+                "gets the `missing_rttm_target` sentinel, which the encoder answers with its own "
+                "diarizer, instead of a synthetic full-duration single-speaker target. Delete the "
+                "key to accept the new behaviour."
+            )
+        if 'num_speakers' not in cfg:
+            raise ValueError(
+                "multispeaker_cfg.num_speakers must be set explicitly; there is no implicit 4-speaker cap."
+            )
+        num_speakers = int(cfg['num_speakers'])
+        if num_speakers <= 0:
+            raise ValueError(f"multispeaker_cfg.num_speakers must be positive, got {num_speakers}.")
         return MultiSpeakerConfig(
-            num_speakers=int(cfg.get('num_speakers', 4)),
-            no_rttm_to_ones=cfg.get('no_rttm_to_ones', True),
+            num_speakers=num_speakers,
             num_sample_per_mel_frame=int(cfg.get('window_stride', 0.01) * cfg.get('sample_rate', 16000)),
             num_mel_frame_per_target_frame=int(cfg.get('subsampling_factor', 8)),
             missing_rttm_target=float(cfg.get('missing_rttm_target', -1.0)),

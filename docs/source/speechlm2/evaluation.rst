@@ -35,10 +35,33 @@ is cheap and CPU-only, inference is neither.
 
 Re-running inference *is* reproducible. ``streaming_stt_generate.py`` sets no seed by default, but
 two runs of one checkpoint on one machine at identical settings produce byte-identical manifests.
-What changes a hypothesis is changing a **setting**, and ``batch_size`` counts: the chunked decoder
-pads every stream's response to the length of the slowest stream in its batch, so batch composition
-reaches the KV cache and moves the text. Compare runs only at equal settings, and prefer re-scoring
-an archived manifest, which is exact by construction.
+What changes a hypothesis is changing a **setting**. Two settings matter more than they look:
+
+``batch_size``
+   The chunked decoder pads every stream's response to the length of the slowest stream in its
+   batch, so batch composition reaches the KV cache and moves the text.
+
+``seed``
+   Counter-intuitively, setting a seed **changes** results rather than pinning them. ``seed``
+   enables ``torch.use_deterministic_algorithms``, and the fused Triton depthwise-striding
+   subsampler is gated on that being *off* -- so a seeded run silently takes the PyTorch
+   subsampling path while an unseeded run takes the fused one. The two round differently (see the
+   warning below), and on a 4-utterance sample two of four transcripts differed. Use ``seed`` to
+   make a run reproducible across *machines*, not to reproduce an unseeded run on this one.
+
+Compare runs only at equal settings, and prefer re-scoring an archived manifest, which is exact by
+construction.
+
+.. warning::
+
+   Encoder arithmetic is not stable across versions. The fused subsampler carries
+   convolution → ReLU → depthwise in fp32 registers and rounds to bf16 **once** at the end, where
+   the unfused path materialises each layer and so rounds the intermediate before the depthwise
+   reads it. The fused result is the more accurate of the two, but different, and in bf16
+   (8-bit mantissa) the difference propagates through every encoder layer. Measured on a
+   2912-session corpus when the fused kernel landed: 973 of 2912 hypotheses changed, WER improved
+   0.14 pp, and cpWER micro moved +0.03 pp. Numbers recorded before such a change are not directly
+   comparable to numbers recorded after it.
 
 .. note::
 

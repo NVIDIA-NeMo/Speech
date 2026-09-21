@@ -389,15 +389,15 @@ def setup_independent_speaker_encoder(model: torch.nn.Module):
 
 
 def setup_parallel_expert_encoder(model: torch.nn.Module):
-    """Mount a ParallelExpertEncoder bundle from ``model.pe_encoder_path``.
+    """Mount the external perception encoder from ``model.pe_encoder_path``.
 
     This is an encoder replacement, not a training-checkpoint restore. It keeps
     the existing SALM perception path intact:
 
-        preprocessor -> ParallelExpertEncoder -> modality_adapter -> proj
+        preprocessor -> encoder -> modality_adapter -> proj
 
-    The PE encoder expects un-normalised mels for its Sortformer branch and
-    replays ASR normalisation internally, so the outer perception preprocessor
+    The replacement expects un-normalised mels and applies ASR normalisation
+    internally, so the outer perception preprocessor
     normalisation is disabled when the bundle is mounted.
     """
     pe_encoder_path = model.cfg.get("pe_encoder_path", None)
@@ -421,21 +421,125 @@ def setup_parallel_expert_encoder(model: torch.nn.Module):
             "feature extractors) need a separate implementation."
         )
 
-    # Fail fast when a local .nemo is given but isn't a PE bundle. HuggingFace Hub /
-    # NGC ids are resolved + validated by ParallelExpertEncoderPT.load_from_nemo
-    # (from_pretrained -> restore_from, which checks the bundle target class).
-    if pe_encoder_path.endswith(".nemo") and Path(pe_encoder_path).is_file():
-        if not ParallelExpertEncoderPT.is_pe_nemo(pe_encoder_path):
-            raise ValueError(
-                f"model.pe_encoder_path={pe_encoder_path!r} is not a ParallelExpertEncoderPT .nemo bundle."
-            )
-
     pe_encoder = ParallelExpertEncoderPT.load_from_nemo(
         pe_encoder_path,
         map_location="cpu",
         strict=True,
+        config_overrides=model.cfg.get("pe_encoder_overrides", None),
     )
-    mount_parallel_expert_encoder(model, pe_encoder, source=pe_encoder_path)
+    obsolete_chunk_keys = [
+        key
+        for key in ("pe_asr_chunk_size_seconds", "pe_diar_chunk_size_seconds")
+        if model.cfg.get(key, None) is not None
+    ]
+    if obsolete_chunk_keys:
+        raise ValueError(
+            f"{', '.join(f'model.{key}' for key in obsolete_chunk_keys)} are no longer supported; "
+            "use model.encoder_chunk_size_seconds to chunk both ParallelExpertEncoder branches."
+        )
+
+    chunk_size = model.cfg.get("encoder_chunk_size_seconds", None)
+    if chunk_size is not None:
+        chunk_size = float(chunk_size)
+        if chunk_size <= 0:
+            raise ValueError(f"model.encoder_chunk_size_seconds must be positive or null, got {chunk_size}.")
+    if (
+        model.cfg.get("packed_encoder_sequences", False)
+        and model.cfg.get("encoder_chunk_batch_size", None) is not None
+    ):
+        raise ValueError(
+            "model.encoder_chunk_batch_size is not supported for packed ParallelExpertEncoder internal chunking; "
+            "set it to null or disable model.packed_encoder_sequences to use outer waveform chunk batching."
+        )
+    if not hasattr(pe_encoder, "chunk_size_seconds"):
+        raise TypeError(
+            f"{type(pe_encoder).__name__} does not support model.encoder_chunk_size_seconds; "
+            "missing runtime attribute 'chunk_size_seconds'."
+        )
+    pe_encoder.chunk_size_seconds = chunk_size
+    if hasattr(pe_encoder, "_bundle_config"):
+        pe_encoder._bundle_config.chunk_size_seconds = chunk_size
+    logging.info("Set ParallelExpertEncoder chunk_size_seconds=%s", chunk_size)
+
+    if (spk_kernel_scale := model.cfg.get("spk_kernel_scale", None)) is not None:
+        pe_encoder.spk_kernel_scale = float(spk_kernel_scale)
+
+    # The outgoing width is unconstrained because that encoder is discarded.
+    # The unchanged mel frontend and downstream adapter/projection must still match.
+    existing_d_model = int(getattr(model.perception.encoder, "d_model", -1))
+    if existing_d_model > 0 and int(pe_encoder.d_model) != existing_d_model:
+        logging.info(
+            "ParallelExpertEncoder d_model=%d replaces a perception encoder of d_model=%d; "
+            "the pretrained %s encoder weights just loaded into it are discarded.",
+            int(pe_encoder.d_model),
+            existing_d_model,
+            model.cfg.get("pretrained_asr", "ASR"),
+        )
+
+    # The preprocessor is NOT replaced, so its mel count must match what the speech expert
+    # was trained on. Nothing downstream would catch a mismatch: it surfaces as a shape
+    # error inside the expert's first convolution, far from the cause.
+    pe_feat_in = int(getattr(pe_encoder, "_feat_in", -1) or -1)
+    mel_bins = model.cfg.get("perception", {}).get("preprocessor", {}).get("features", None)
+    if pe_feat_in > 0 and mel_bins is not None and int(mel_bins) != pe_feat_in:
+        raise ValueError(
+            f"ParallelExpertEncoder expects {pe_feat_in} mel bins but the perception "
+            f"preprocessor produces {int(mel_bins)} (from pretrained_asr="
+            f"{model.cfg.get('pretrained_asr')!r}). The preprocessor is not replaced by "
+            "the mount, so these must agree."
+        )
+
+    adapter_cfg = model.cfg.get("perception", {}).get("modality_adapter", {})
+    adapter_d_model = adapter_cfg.get("d_model", None)
+    if adapter_d_model is not None and int(adapter_d_model) != int(pe_encoder.d_model):
+        raise ValueError(
+            f"ParallelExpertEncoder d_model={pe_encoder.d_model} does not match "
+            f"model.perception.modality_adapter.d_model={adapter_d_model}."
+        )
+
+    proj = getattr(model.perception, "proj", None)
+    if isinstance(proj, torch.nn.Linear) and int(proj.in_features) != int(pe_encoder.d_model):
+        raise ValueError(
+            f"ParallelExpertEncoder d_model={pe_encoder.d_model} does not match "
+            f"model.perception.proj.in_features={proj.in_features}."
+        )
+
+    prev_normalize = None
+    try:
+        prev_normalize = model.perception.preprocessor.featurizer.normalize
+        model.perception.preprocessor.featurizer.normalize = None
+    except AttributeError:
+        logging.warning(
+            "Could not disable perception preprocessor featurizer.normalize while mounting "
+            "ParallelExpertEncoder from %s.",
+            pe_encoder_path,
+        )
+    try:
+        with open_dict(model.cfg):
+            if "perception" in model.cfg and "preprocessor" in model.cfg.perception:
+                model.cfg.perception.preprocessor.normalize = None
+    except (AttributeError, TypeError):
+        # cfg may lack this nested key or be a non-editable structure; the runtime
+        # featurizer.normalize disabling above is the functional change that matters.
+        pass
+
+    model.perception.encoder = pe_encoder
+    # Disable historical automatic eval-time streaming while mounted in SALM;
+    # generation re-enables it through the explicit context manager.
+    if getattr(pe_encoder, "online_inference_enabled", None) is None:
+        pe_encoder.online_inference_enabled = False
+    logging.info(
+        "Mounted ParallelExpertEncoder from %s "
+        "(d_model=%d, n_spk=%d, frozen: asr=%s diar=%s, spk_kernel_scale=%g); "
+        "perception preprocessor normalization disabled (was %r).",
+        pe_encoder_path,
+        int(pe_encoder.d_model),
+        int(pe_encoder.n_spk),
+        bool(pe_encoder.freeze_asr),
+        bool(pe_encoder.freeze_diar),
+        float(getattr(pe_encoder, "spk_kernel_scale", 1.0)),
+        prev_normalize,
+    )
 
 
 def setup_parallel_expert_encoder_from_checkpoints(model: torch.nn.Module):

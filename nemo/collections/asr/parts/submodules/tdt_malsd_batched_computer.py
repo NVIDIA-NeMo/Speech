@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,6 +18,7 @@ from typing import Any, List, Optional, Union
 import numpy as np
 import torch
 import torch.nn.functional as F
+from omegaconf import DictConfig
 
 from nemo.collections.asr.parts.context_biasing.biasing_multi_model import (
     GPUBiasingMultiModel,
@@ -123,6 +125,7 @@ class MALSDState:
         device: torch.device,
         float_dtype: torch.dtype,
         blank_index: int,
+        with_step_confidence: bool = False,
     ):
         """
         Args:
@@ -201,6 +204,7 @@ class MALSDState:
             device=device,
             float_dtype=float_dtype,
             model_type='tdt',
+            with_step_confidence=with_step_confidence,
         )
 
     def need_reinit(self, encoder_output_projected: torch.Tensor) -> bool:
@@ -259,6 +263,9 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
         pruning_mode: Optional[str | PruningMode] = None,
         allow_cuda_graphs: bool = False,
         enable_per_stream_biasing: bool = False,
+        preserve_step_confidence: bool = False,
+        include_duration_confidence: bool = False,
+        confidence_method_cfg: Optional[DictConfig] = None,
     ):
         """
         Init method.
@@ -275,6 +282,9 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
             pruning_mode: mode for pruning hypotheses with fusion models
             allow_cuda_graphs: whether to allow CUDA graphs
             enable_per_stream_biasing: whether to enable per-stream biasing via multi-boosting tree
+            preserve_step_confidence: if step confidence should be preserved in beam hypotheses
+            include_duration_confidence: if duration confidence is requested (not supported; logged and skipped)
+            confidence_method_cfg: config for the confidence estimation method
         """
 
         super().__init__()
@@ -285,6 +295,19 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
         self.beam_size = beam_size
         self.max_symbols = max_symbols_per_step
         self.preserve_alignments = preserve_alignments
+        self.preserve_step_confidence = preserve_step_confidence
+        if include_duration_confidence:
+            logging.warning(
+                "Duration confidence is not supported for malsd_batch TDT decoding. Skipping duration confidence."
+            )
+        if self.preserve_step_confidence:
+            self._init_confidence_method(confidence_method_cfg=confidence_method_cfg)
+            logging.info(
+                "Batched beam search stores per-step confidences for all decode steps (including blanks) "
+                "internally. Exported hypotheses expose non-blank token scores via "
+                "`non_blank_step_confidence_precomputed` only; `Hypothesis.frame_confidence` is not populated. "
+                "Run `compute_confidence()` for token- and word-level scores."
+            )
         self._SOS = self._blank_index
         self.durations = durations
         self.allow_cuda_graphs = allow_cuda_graphs
@@ -322,6 +345,12 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
             )
         else:
             self.blank_lm_score_mode = None
+
+    def _get_step_confidence(self, token_log_probs: torch.Tensor) -> Optional[torch.Tensor]:
+        """Compute per-beam step confidence from token log-probabilities (excluding durations)."""
+        if not self.preserve_step_confidence:
+            return None
+        return self._get_confidence_tensor(token_log_probs).to(dtype=token_log_probs.dtype)
 
     @property
     def per_stream_biasing_enabled(self) -> bool:
@@ -467,6 +496,7 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
             device=device,
             float_dtype=float_dtype,
             model_type='tdt',
+            with_step_confidence=self.preserve_step_confidence,
         )
         batch_beam_indices = (
             torch.arange(batch_size, dtype=torch.long, device=device)[:, None]
@@ -639,11 +669,28 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
                 durations_top_k.reshape(batch_size, -1), dim=-1, index=hyps_candidates_indices
             )  # durations for extended hypotheses
 
+            next_step_confidence = None
+            if self.preserve_step_confidence:
+                step_confidence = self._get_step_confidence(log_probs)
+                next_step_confidence = torch.gather(step_confidence, dim=-1, index=hyps_indices)
+
             # step 3: store results
             if self.max_symbols is None:
-                batched_hyps.add_results_(hyps_indices, next_labels, next_hyps_prob, next_label_durations)
+                batched_hyps.add_results_(
+                    hyps_indices,
+                    next_labels,
+                    next_hyps_prob,
+                    next_label_durations,
+                    next_step_confidence=next_step_confidence,
+                )
             else:
-                batched_hyps.add_results_no_checks_(hyps_indices, next_labels, next_hyps_prob, next_label_durations)
+                batched_hyps.add_results_no_checks_(
+                    hyps_indices,
+                    next_labels,
+                    next_hyps_prob,
+                    next_label_durations,
+                    next_step_confidence=next_step_confidence,
+                )
 
             # step 4: recombine hypotheses: sum probabilities of identical hypotheses.
             batched_hyps.recombine_hyps_()
@@ -999,6 +1046,7 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
             device=encoder_output_projected.device,
             float_dtype=encoder_output_projected.dtype,
             blank_index=self._blank_index,
+            with_step_confidence=self.preserve_step_confidence,
         )
 
         self.state.decoder_state = self.decoder.initialize_state(
@@ -1334,14 +1382,27 @@ class ModifiedALSDBatchedTDTComputer(WithOptionalCudaGraphs, ConfidenceMethodMix
         )  # labels for extended hypotheses
         self.state.next_scores.copy_(next_hyps_prob)
 
+        next_step_confidence = None
+        if self.preserve_step_confidence:
+            step_confidence = self._get_step_confidence(log_probs)
+            next_step_confidence = torch.gather(step_confidence, dim=-1, index=self.state.next_idx)
+
         # step 3: store results
         if self.max_symbols is None:
             self.state.batched_hyps.add_results_(
-                self.state.next_idx, self.state.next_labels, self.state.next_scores, self.state.next_label_durations
+                self.state.next_idx,
+                self.state.next_labels,
+                self.state.next_scores,
+                self.state.next_label_durations,
+                next_step_confidence=next_step_confidence,
             )
         else:
             self.state.batched_hyps.add_results_no_checks_(
-                self.state.next_idx, self.state.next_labels, self.state.next_scores, self.state.next_label_durations
+                self.state.next_idx,
+                self.state.next_labels,
+                self.state.next_scores,
+                self.state.next_label_durations,
+                next_step_confidence=next_step_confidence,
             )
 
         # step 4: recombine hypotheses: sum probabilities of identical hypotheses.

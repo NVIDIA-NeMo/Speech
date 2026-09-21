@@ -1,4 +1,5 @@
-# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -216,6 +217,21 @@ class TransformerBackend(_BaseBackend):
 # ── Hybrid backend (NemotronH / Mamba+MoE) ──────────────────────────
 
 
+_FP32_PARAM_HOLDER_RENAMES = {
+    ".mixer._fp32_params.A_log": ".mixer.A",
+    ".mixer._fp32_params.dt_bias": ".mixer.dt_bias",
+    ".mixer._fp32_params.D": ".mixer.D",
+}
+
+
+def _canonicalize_fp32_param_holder_name(name: str) -> str:
+    """Map Automodel's Mamba/GDN FP32 holder names to vLLM parameter names."""
+    for holder_suffix, vllm_suffix in _FP32_PARAM_HOLDER_RENAMES.items():
+        if name.endswith(holder_suffix):
+            return name[: -len(holder_suffix)] + vllm_suffix
+    return name
+
+
 class HybridBackend(_BaseBackend):
     """Hybrid Mamba+MoE backbones (e.g. NemotronH).
 
@@ -240,13 +256,16 @@ class HybridBackend(_BaseBackend):
         """NeMo -> HuggingFace NemotronH weight name mapping.
 
         Handles the MoE expert weight layout (NeMo packs experts into a single
-        tensor; HF expects per-expert ``experts.{i}.{up,down}_proj.weight``)
-        and the ``backbone.norm`` -> ``backbone.norm_f`` rename.
+        tensor; HF expects per-expert ``experts.{i}.{up,down}_proj.weight``),
+        Automodel's Mamba/GDN FP32 parameter holders, and the
+        ``backbone.norm`` -> ``backbone.norm_f`` rename. Only names are changed
+        for FP32 holders; vLLM's weight loaders own any numerical transforms.
         """
         target_vocab = getattr(self.config.text_config, "vocab_size", None)
         for name, tensor in weights:
             hf_name = name.replace("llm.model.", "backbone.")
             hf_name = hf_name.replace("llm.lm_head", "lm_head")
+            hf_name = _canonicalize_fp32_param_holder_name(hf_name)
             if hf_name == "backbone.norm.weight":
                 hf_name = "backbone.norm_f.weight"
 

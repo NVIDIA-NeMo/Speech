@@ -211,14 +211,15 @@ Configuration Dataclasses
 #########################
 
 
-``ChunkedInferenceConfig``
---------------------------
+``ModelInferenceParameters``
+----------------------------
 
-Immutable tuning parameters (set in model):
+Model inference parameters, including long-form and chunked-inference tuning values. These can be set in the model's
+``inference_parameters`` configuration:
 
 .. literalinclude:: ../../../nemo/collections/tts/models/magpietts.py
    :language: python
-   :pyobject: ChunkedInferenceConfig
+   :pyobject: ModelInferenceParameters
 
 
 ``ChunkState``
@@ -255,4 +256,3 @@ See Also
 
 - :doc:`magpietts`: Main Magpie-TTS documentation
 - :doc:`magpietts-po`: Preference Optimization Guide
-

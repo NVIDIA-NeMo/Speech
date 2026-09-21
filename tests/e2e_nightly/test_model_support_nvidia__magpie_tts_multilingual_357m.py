@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,13 +15,17 @@
 
 """Functional tests for nvidia/magpie_tts_multilingual_357m."""
 
+import gc
 import os
 
 import pytest
 import torch
+from huggingface_hub import hf_hub_download
 
 MODEL_NAME = "nvidia/magpie_tts_multilingual_357m"
 NEMO_FILE = "nvidia__magpie_tts_multilingual_357m.nemo"
+HF_NEMO_FILE = "magpie_tts_multilingual_357m.nemo"
+MODEL_RELEASES = ("v2512", "v2602", "v2607")
 
 MODEL_DIR = os.environ.get(
     "NEMO_MODEL_SUPPORT_DIR",
@@ -39,6 +44,45 @@ def _load_model():
     filepath = os.path.join(MODEL_DIR, NEMO_FILE)
     _model = MagpieTTSModel.restore_from(filepath, map_location="cpu").to(_DEVICE)
     return _model
+
+
+@pytest.mark.with_downloads
+@pytest.mark.parametrize("revision", MODEL_RELEASES)
+def test_model_release_restore(revision):
+    """Ensure every published MagpieTTS release remains loadable by current NeMo code.
+
+    The three releases cover each way the versioned tokenizer fields can present themselves:
+
+    - v2512 (stamped nemo_version 2.6.0rc0) has no version-sensitive tokenizer at all.
+    - v2602 (2.6.0rc0) carries a ``HindiCharsTokenizer`` naming neither ``charset_version`` nor
+      ``punct_version``, so both must be dated back to v1 from the stamp. This is the restore that
+      broke and prompted the fix.
+    - v2607 (2.8.0rc0) pins ``locale_specific_punct=false`` (pt-BR) and ``charset_version=1`` (Arabic)
+      explicitly, so the stamp must not override them.
+
+    A vocabulary rebuilt from anything but the values a release was trained with shifts every token ID,
+    which surfaces during ``restore_from`` as a text embedding size mismatch.
+    """
+    from nemo.collections.tts.models import MagpieTTSModel
+
+    filepath = hf_hub_download(repo_id=MODEL_NAME, filename=HF_NEMO_FILE, revision=revision)
+    model = MagpieTTSModel.restore_from(filepath, map_location="cpu")
+
+    assert model is not None
+    # Independent restatement of the sizing in MagpieTTSModel.__init__, so this still catches drift if
+    # the check inside load_state_dict is ever removed. All three releases set
+    # legacy_text_conditioning=false; legacy models exclude the context-text tokens from this table.
+    expected_tokens = len(model.tokenizer.tokens)
+    if model.legacy_text_conditioning:
+        expected_tokens -= model.tokenizer.num_tokens_per_tokenizer[model.text_conditioning_tokenizer_name]
+    assert model.text_embedding.num_embeddings == expected_tokens + 2, (
+        f"{revision}: text embedding has {model.text_embedding.num_embeddings} rows but the tokenizer "
+        f"built {expected_tokens} usable tokens (+2 for BOS/EOS) -- the restored tokenizer config does "
+        f"not match the one this release was trained with."
+    )
+
+    del model
+    gc.collect()
 
 
 def test_model_init():
@@ -68,11 +112,9 @@ def test_model_training_step():
     model.train()
     d = _DEVICE
 
-    # Derive safe upper bounds for token IDs from the model's embedding tables.
-    # text_embedding vocab = num_tokens_tokenizer + 2 (BOS/EOS).
-    text_vocab_size = model.text_embedding.num_embeddings
     # audio_codes must be strictly less than codebook_size (special tokens are
     # appended *after* codebook_size inside process_batch / add_special_tokens).
+    # Text IDs need no such bound here: the batch below uses the fixed safe ID 1.
     audio_token_max = model.codebook_size - 1
 
     B = 1

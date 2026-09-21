@@ -1,4 +1,5 @@
-# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,21 +20,71 @@ import numpy as np
 import pytest
 import torch
 
+import nemo.collections.tts.parts.utils.tts_dataset_utils as tts_dataset_utils
+from nemo.collections.tts.modules.magpietts_modules import build_vocabs
 from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     LanguageThresholds,
     _get_sentence_separators_for_language,
+    _sample_probability_range,
+    _select_text_for_tts_input,
     chunk_and_tokenize_text_by_sentence,
+    chunk_text_for_inference,
     filter_dataset_by_duration,
     get_abs_rel_paths,
     get_audio_filepaths,
+    get_tokenizer_for_language,
     load_audio,
     normalize_volume,
+    partially_phonemize_text,
     split_by_sentence,
     stack_tensors,
+    tokenize_text_with_phoneme_spans,
 )
 
 
+class _FakeTextTokenizer:
+    def encode(self, text: str, tokenizer_name: str):
+        return [ord(char) for char in text]
+
+
+class _FakePhonemeTokenizer:
+    vocab_size = 4
+
+    def __init__(self):
+        self.seen_text = []
+
+    def encode(self, text: str):
+        self.seen_text.append(text)
+        vocab = {"a": 1, "b": 2, "c": 3}
+        return [vocab[char] for char in text if char in vocab]
+
+
 class TestTTSDatasetUtils:
+    @pytest.mark.parametrize(
+        "load_normalized_text_percent,random_value,expected_text",
+        [(0.0, None, "raw"), (1.0, None, "normalized"), (0.5, 0.25, "normalized"), (0.5, 0.75, "raw")],
+    )
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_select_text_for_tts_input(self, monkeypatch, load_normalized_text_percent, random_value, expected_text):
+        if random_value is None:
+            monkeypatch.setattr(
+                tts_dataset_utils.random,
+                "random",
+                lambda: pytest.fail("Endpoint probabilities should not sample the random number generator"),
+            )
+        else:
+            monkeypatch.setattr(tts_dataset_utils.random, "random", lambda: random_value)
+
+        text = _select_text_for_tts_input("raw", "normalized", load_normalized_text_percent)
+
+        assert text == expected_text
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_select_text_for_tts_input_falls_back_when_normalized_text_is_missing(self):
+        assert _select_text_for_tts_input("raw", None, 1.0) == "raw"
+
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
     def test_get_abs_rel_paths_input_abs(self):
@@ -398,6 +449,222 @@ class TestChunkTextForInference:
         # Empty text should still return something valid
         assert len(tokens) == 1
         assert tokens[0][-1].item() == eos_id
+
+
+class TestPhonemeTextInput:
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_disabled_mixed_tokenization_uses_text_tokenizer_only(self):
+        text_tokenizer = _FakeTextTokenizer()
+        phoneme_tokenizer = _FakePhonemeTokenizer()
+        text = "Hi <bop>ab<eop>."
+
+        tokens = tokenize_text_with_phoneme_spans(
+            text_tokenizer=text_tokenizer,
+            text_str=text,
+            tokenizer_name="english_phoneme",
+            enable_phoneme_text_input=False,
+            phoneme_tokenizer=phoneme_tokenizer,
+            text_phoneme_token_offset=100,
+        )
+
+        assert tokens == [ord(char) for char in text]
+        assert phoneme_tokenizer.seen_text == []
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_mixed_tokenization_interleaves_text_and_offset_phoneme_ids(self):
+        phoneme_tokenizer = _FakePhonemeTokenizer()
+
+        tokens = tokenize_text_with_phoneme_spans(
+            text_tokenizer=_FakeTextTokenizer(),
+            text_str="Hi <bop>ab<eop>!",
+            tokenizer_name="english_phoneme",
+            enable_phoneme_text_input=True,
+            phoneme_tokenizer=phoneme_tokenizer,
+            text_phoneme_token_offset=100,
+        )
+
+        assert tokens == [ord("H"), ord("i"), ord(" "), 101, 102, ord("!")]
+        assert phoneme_tokenizer.seen_text == ["ab"]
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_phoneme_span_body_uses_offset_ids(self):
+        tokens = tokenize_text_with_phoneme_spans(
+            text_tokenizer=_FakeTextTokenizer(),
+            text_str="<bop>ab<eop>",
+            tokenizer_name="english_phoneme",
+            enable_phoneme_text_input=True,
+            phoneme_tokenizer=_FakePhonemeTokenizer(),
+            text_phoneme_token_offset=100,
+        )
+
+        assert tokens == [101, 102]
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_unmatched_phoneme_span_raises(self):
+        with pytest.raises(ValueError, match="without a matching"):
+            tokenize_text_with_phoneme_spans(
+                text_tokenizer=_FakeTextTokenizer(),
+                text_str="Hi <bop>ab",
+                tokenizer_name="english_phoneme",
+                enable_phoneme_text_input=True,
+                phoneme_tokenizer=_FakePhonemeTokenizer(),
+                text_phoneme_token_offset=100,
+            )
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_partially_phonemize_text_uses_full_ipa_for_full_portion(self):
+        text = partially_phonemize_text(
+            text="hi how",
+            ipa_alignment=[[0, 2, "hi", "ab"], [3, 6, "how", "c"]],
+            partial_phoneme_portion=1.0,
+            full_ipa_text="ab c",
+        )
+
+        assert text == "<bop>ab c<eop>"
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_partially_phonemize_text_samples_exact_portion(self, monkeypatch):
+        monkeypatch.setattr(tts_dataset_utils.random, "sample", lambda population, count: [0, 2])
+
+        text = partially_phonemize_text(
+            text="one two three four",
+            ipa_alignment=[
+                [0, 3, "one", "a"],
+                [4, 7, "two", "b"],
+                [8, 13, "three", "c"],
+                [14, 18, "four", "d"],
+            ],
+            partial_phoneme_portion=0.5,
+            full_ipa_text="a b c d",
+        )
+
+        assert text == "<bop>a<eop> two <bop>c<eop> four"
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_partially_phonemize_text_merges_adjacent_words(self, monkeypatch):
+        monkeypatch.setattr(tts_dataset_utils.random, "sample", lambda population, count: [1, 2])
+
+        text = partially_phonemize_text(
+            text="one two three four",
+            ipa_alignment=[
+                [0, 3, "one", "a"],
+                [4, 7, "two", "b"],
+                [8, 13, "three", "c"],
+                [14, 18, "four", "d"],
+            ],
+            partial_phoneme_portion=0.5,
+            full_ipa_text="a b c d",
+        )
+
+        assert text == "one <bop>b c<eop> four"
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_partially_phonemize_text_skips_unmatched_full_ipa(self):
+        text = "one two three"
+
+        phonemized_text = partially_phonemize_text(
+            text=text,
+            ipa_alignment=[[0, 3, "one", "a"], [4, 7, "two", "b"], [8, 13, "three", "c"]],
+            partial_phoneme_portion=0.5,
+            full_ipa_text="unmatched",
+        )
+
+        assert phonemized_text == text
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_partially_phonemize_text_without_alignment_is_noop(self):
+        assert partially_phonemize_text("hello", None, 1.0) == "hello"
+        assert partially_phonemize_text("hello", [], 1.0) == "hello"
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_full_ipa_span_tokens_match_phoneme_channel_tokens(self):
+        text = partially_phonemize_text(
+            text="hello world",
+            ipa_alignment=[[0, 5, "hello", "ab"], [6, 11, "world", "c"]],
+            partial_phoneme_portion=1.0,
+            full_ipa_text="ab c",
+        )
+        phoneme_tokenizer = _FakePhonemeTokenizer()
+        tokens = tokenize_text_with_phoneme_spans(
+            text_tokenizer=_FakeTextTokenizer(),
+            text_str=text,
+            tokenizer_name="english_phoneme",
+            enable_phoneme_text_input=True,
+            phoneme_tokenizer=phoneme_tokenizer,
+            text_phoneme_token_offset=100,
+        )
+
+        assert tokens == [100 + token_id for token_id in phoneme_tokenizer.encode("ab c")]
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_samples_phoneme_portion_range(self, monkeypatch):
+        sampled_ranges = []
+
+        def fake_uniform(min_value, max_value):
+            sampled_ranges.append((min_value, max_value))
+            return 0.5
+
+        monkeypatch.setattr(tts_dataset_utils.random, "uniform", fake_uniform)
+
+        probability = _sample_probability_range("partial_phoneme_portion", 0.25, 0.75)
+
+        assert sampled_ranges == [(0.25, 0.75)]
+        assert probability == 0.5
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_cas_vocab_accepts_expanded_mixed_text_ids(self):
+        subword_id_to_char_ids, char_vocab = build_vocabs(
+            subword_vocab={"a": 0, "b": 1},
+            subword_padding_idx=7,
+            special_vocab={
+                "<BOS>": 2,
+                "<EOS>": 3,
+                "<CFG_UNK>": 4,
+                "<TEXT_PHONEME_0>": 5,
+                "<TEXT_PHONEME_1>": 6,
+            },
+        )
+
+        assert subword_id_to_char_ids[5] == (char_vocab["<TEXT_PHONEME_0>"],)
+        assert subword_id_to_char_ids[6] == (char_vocab["<TEXT_PHONEME_1>"],)
+        assert max(subword_id_to_char_ids) == 7
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_chunk_text_for_inference_does_not_split_mixed_span(self):
+        text = "one two three <bop>ab<eop>. four five."
+        eos_id = 999
+
+        tokens, lens, texts = chunk_text_for_inference(
+            text=text,
+            language="en",
+            tokenizer_name="english_phoneme",
+            text_tokenizer=_FakeTextTokenizer(),
+            eos_token_id=eos_id,
+            language_thresholds=LanguageThresholds(thresholds={"en": 1}),
+            enable_phoneme_text_input=True,
+            phoneme_tokenizer=_FakePhonemeTokenizer(),
+            text_phoneme_token_offset=100,
+        )
+
+        assert len(tokens) == 1
+        assert lens == [tokens[0].shape[0]]
+        assert texts == [text]
+        assert tokens[0][-1].item() == eos_id
+        assert 101 in tokens[0].tolist()
+        assert 102 in tokens[0].tolist()
 
 
 class TestSentenceSplitting:
@@ -817,3 +1084,34 @@ class TestGetWordCount:
         """Test unknown language falls back to whitespace splitting."""
         text = "word1 word2 word3"
         assert self.thresholds.get_word_count(text, "unknown") == 3
+
+
+class TestGetTokenizerForLanguage:
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_custom_mapping_uses_first_available_candidate(self):
+        mapping = {"hi": ["hindi_phoneme", "hindi_chartokenizer"]}
+
+        result = get_tokenizer_for_language(
+            "hi", ["english_phoneme", "hindi_chartokenizer"], language_tokenizer_map=mapping
+        )
+
+        assert result == "hindi_chartokenizer"
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_custom_mapping_accepts_single_tokenizer(self):
+        result = get_tokenizer_for_language(
+            "hi", ["english_phoneme", "hindi_phoneme"], language_tokenizer_map={"hi": "hindi_phoneme"}
+        )
+
+        assert result == "hindi_phoneme"
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_custom_mapping_preserves_default_fallback(self):
+        result = get_tokenizer_for_language(
+            "hi", ["english_phoneme"], language_tokenizer_map={"hi": ["hindi_phoneme"]}
+        )
+
+        assert result == "english_phoneme"

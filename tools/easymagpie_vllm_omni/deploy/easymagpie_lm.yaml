@@ -1,0 +1,35 @@
+# EasyMagpie LM deploy: acoustic-token prediction without SpectralCodec-BWE-22kHz.
+#
+# Use this topology to benchmark and develop EasyMagpie_LM (the autoregressive
+# backbone + local transformer) in isolation from the two-stage codec path:
+#   pipeline: easymagpie_lm
+#
+# scripts/benchmark_model.py uses this deploy config by default.
+pipeline: easymagpie_lm
+
+# Required for streaming-text input (whole-text mode ignores this).
+async_chunk: true
+
+trust_remote_code: true
+dtype: float16
+
+stages:
+  - stage_id: 0
+    max_num_seqs: 32
+    gpu_memory_utilization: 0.5
+    enforce_eager: false
+    async_scheduling: true
+    enable_prefix_caching: false
+    enable_chunked_prefill: true
+    max_num_batched_tokens: 4096
+    max_model_len: 4096
+    devices: "0"
+    mamba_ssm_cache_dtype: float32
+    # vLLM multimodal profiling uses the tokenizer to locate expanded audio placeholders.
+    skip_tokenizer_init: false
+    engine_extras:
+      worker_cls: easymagpie_vllm_omni.runner.EasyMagpieGPUARWorker
+    default_sampling_params:
+      temperature: 0.0
+      detokenize: false
+      max_tokens: 2048

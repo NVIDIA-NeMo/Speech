@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -528,6 +529,7 @@ class EncDecRNNTBPEModel(EncDecRNNTModel, ASRBPEMixin):
             manifest_filepath = os.path.join(config['temp_dir'], 'manifest.json')
             batch_size = min(config['batch_size'], len(config['paths2audio_files']))
 
+        validation_ds = self.cfg.get('validation_ds') or {}
         dl_config = {
             'use_lhotse': config.get('use_lhotse', True),
             'manifest_filepath': manifest_filepath,
@@ -537,7 +539,7 @@ class EncDecRNNTBPEModel(EncDecRNNTModel, ASRBPEMixin):
             'num_workers': config.get('num_workers', min(batch_size, os.cpu_count() - 1)),
             'pin_memory': True,
             'channel_selector': config.get('channel_selector', None),
-            'use_start_end_token': self.cfg.validation_ds.get('use_start_end_token', False),
+            'use_start_end_token': validation_ds.get('use_start_end_token', False),
         }
 
         if config.get("augmentor"):

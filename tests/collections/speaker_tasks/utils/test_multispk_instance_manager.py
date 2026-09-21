@@ -1,4 +1,5 @@
-# Copyright (c) 2023, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -243,6 +244,42 @@ class TestMultiTalkerInstanceManagerMethods:
         assert active_chunk_lengths.shape[0] == 3
         assert active_speaker_targets.shape[0] == 3
         assert inactive_speaker_targets.shape[0] == 3
+
+    @pytest.mark.unit
+    def test_get_active_speakers_info_uses_actual_ids_for_background_targets(self, asr_model, diar_model):
+        instance_manager = MultiTalkerInstanceManager(
+            asr_model=asr_model,
+            diar_model=diar_model,
+            batch_size=1,
+            max_num_of_spks=6,
+            sent_break_sec=5.0,
+        )
+        instance_manager.reset()
+
+        previous_chunk_preds = torch.zeros(1, 4, 6)
+        previous_chunk_preds[0, :, 0] = 1.0
+        previous_chunk_preds[0, :, 1] = 1.0
+        previous_chunk_preds[0, :, 2] = torch.tensor([0.9, 0.1, 0.8, 0.2])
+        previous_chunk_preds[0, :, 5] = torch.tensor([0.1, 0.7, 0.2, 0.9])
+        instance_manager.diar_states.previous_chunk_preds = previous_chunk_preds
+        chunk_audio = torch.randn(1, 1600)
+        chunk_lengths = torch.tensor([1600])
+
+        _, _, active_targets, background_targets = instance_manager.get_active_speakers_info(
+            [[2, 5]], chunk_audio, chunk_lengths
+        )
+
+        assert torch.equal(active_targets[0], previous_chunk_preds[0, :, 2])
+        assert torch.equal(background_targets[0], previous_chunk_preds[0, :, 5] > 0.5)
+        assert torch.equal(active_targets[1], previous_chunk_preds[0, :, 5])
+        assert torch.equal(background_targets[1], previous_chunk_preds[0, :, 2] > 0.5)
+
+        _, _, active_targets, background_targets = instance_manager.get_active_speakers_info(
+            [[5]], chunk_audio, chunk_lengths
+        )
+
+        assert torch.equal(active_targets[0], previous_chunk_preds[0, :, 5])
+        assert not background_targets[0].any()
 
     @pytest.mark.unit
     def test_update_seglsts(self, asr_model, diar_model):

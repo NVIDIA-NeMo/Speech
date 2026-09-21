@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -124,6 +125,7 @@ class BufferedRNNTPipeline(BasePipeline):
             self.buffer_size_in_secs = self.chunk_size + self.left_padding_size + self.right_padding_size
 
         self.request_type = RequestType.from_str(cfg.streaming.request_type)
+        self.flush_size_in_secs = cfg.streaming.get("flush_size_in_secs", 0.0)  # 0.0 disables
         self.padding_mode = FeatureBufferPaddingMode.from_str(cfg.streaming.padding_mode)
         self.right_padding = self.padding_mode is FeatureBufferPaddingMode.RIGHT
         self.stop_history_eou_in_milliseconds = cfg.endpointing.stop_history_eou
@@ -354,7 +356,7 @@ class BufferedRNNTPipeline(BasePipeline):
                     lpad = int(lpad / self.sample_rate / self.model_stride_in_secs)
                     encoded[i] = encoded[i].roll(lpad, dims=1)
                     encoded[i][:, :lpad] = self.zero_encoded[:, :lpad]
-                    encoded_len[i] = encoded_len[i] + lpad
+                    encoded_len[i] = torch.clamp(encoded_len[i] + lpad, max=encoded.shape[-1])
 
         return encoded, encoded_len
 
@@ -400,7 +402,7 @@ class BufferedRNNTPipeline(BasePipeline):
                 if lpad > 0:
                     encoded[i] = encoded[i].roll(lpad, dims=1)
                     encoded[i][:, :lpad] = self.zero_encoded[:, :lpad]
-                    encoded_len[i] = encoded_len[i] + lpad
+                    encoded_len[i] = torch.clamp(encoded_len[i] + lpad, max=encoded.shape[-1])
         return encoded, encoded_len
 
     def encode_frames(self, frames: list[Frame]) -> tuple[Tensor, Tensor]:
@@ -655,7 +657,7 @@ class BufferedRNNTPipeline(BasePipeline):
                 tokens, timestamp, self.tokens_to_move, self.underscore_id
             )
             # Per-token non-blank confidence precomputed during RNN-T decoding (aligned with `tokens`).
-            # Populated only when `asr.decoding.greedy.preserve_frame_confidence=true`; otherwise None.
+            # Populated when greedy or batched-beam preserve_frame_confidence is enabled; otherwise None.
             confidences = hyp.non_blank_step_confidence_precomputed
             if confidences is not None:
                 confidences = torch.tensor(confidences, dtype=torch.float32, device=tokens.device)
@@ -813,6 +815,7 @@ class BufferedRNNTPipeline(BasePipeline):
             buffer_size_in_secs=self.buffer_size_in_secs,
             device=self.device,
             pad_last_frame=True,
+            flush_size_in_secs=self.flush_size_in_secs,
             right_pad_features=self.right_padding,
         )
         return request_generator

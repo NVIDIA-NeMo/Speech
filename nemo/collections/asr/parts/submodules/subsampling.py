@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,8 +19,14 @@ import torch
 import torch.nn as nn
 from torch.nn import LayerNorm
 
+from nemo.collections.asr.parts.packed_sequence import PackedEncoderActivations, _new_packed_encoder_activations
 from nemo.collections.asr.parts.submodules.causal_convs import CausalConv1D, CausalConv2D
+from nemo.core.utils.optional_libs import TRITON_AVAILABLE, triton_required
 from nemo.utils import logging
+
+if TRITON_AVAILABLE:
+    from nemo.collections.asr.parts.triton.depthwise_conv import dw_conv2d
+    from nemo.collections.asr.parts.triton.subsampling import fused_conv_relu_dw
 
 
 class FeatureStacking(nn.Module):
@@ -43,7 +50,16 @@ class FeatureStacking(nn.Module):
     def compute_num_out_frames(self, in_frames):
         return (in_frames + self.subsampling_factor - 1) // self.subsampling_factor
 
-    def forward(self, x, lengths):
+    def get_sampling_frames(self):
+        """Input frames consumed per output frame — probed by the cache-aware streaming utils."""
+        return self.subsampling_factor
+
+    def get_streaming_cache_size(self):
+        """Input-frame look-back needed to reproduce the offline output. Stacking is
+        non-overlapping, so a chunk aligned to ``subsampling_factor`` needs none."""
+        return 0
+
+    def forward(self, x, lengths=None):
         """
         Args:
             x: (B, C, T) input features.
@@ -52,6 +68,12 @@ class FeatureStacking(nn.Module):
             x: (B, T', feat_out) stacked and projected features.
             lengths: (B,) updated lengths after subsampling.
         """
+        if isinstance(x, PackedEncoderActivations):
+            if lengths is not None:
+                raise ValueError("lengths must be omitted when x is PackedEncoderActivations.")
+            return self.forward_packed(x)
+        if lengths is None:
+            raise ValueError("lengths are required for padded FeatureStacking input.")
         x = x.transpose(1, 2)  # (B, C, T) -> (B, T, C)
         b, t, c = x.size()
         pad_size = (self.subsampling_factor - (t % self.subsampling_factor)) % self.subsampling_factor
@@ -62,6 +84,44 @@ class FeatureStacking(nn.Module):
         x = self.proj(x)
         lengths = self.compute_num_out_frames(lengths)
         return x, lengths
+
+    def forward_packed(self, packed: PackedEncoderActivations) -> PackedEncoderActivations:
+        """Stack and project token-flat feature sequences without batch padding."""
+        stacked = self.stack_packed(packed)
+        return stacked.with_data(self.proj(stacked.data))
+
+    def stack_packed(self, packed: PackedEncoderActivations) -> PackedEncoderActivations:
+        """Stack token-flat frames, retaining packed metadata for grouped projection."""
+        if packed.data.shape[1] * self.subsampling_factor != self.proj.in_features:
+            raise ValueError(
+                f"Expected packed feature width {self.proj.in_features // self.subsampling_factor}, "
+                f"got {packed.data.shape[1]}."
+            )
+        output_lengths = self.compute_num_out_frames(packed.lengths)
+        output_cu_seqlens = torch.cat(
+            [output_lengths.new_zeros(1, dtype=torch.int32), output_lengths.cumsum(0, dtype=torch.int32)]
+        )
+        slot_count = int(output_cu_seqlens[-1].item()) * self.subsampling_factor
+        slot_indices = torch.arange(slot_count, device=packed.data.device)
+        slot_boundaries = output_cu_seqlens[1:].to(torch.int64) * self.subsampling_factor
+        slot_sequence_ids = torch.bucketize(slot_indices, slot_boundaries, right=True)
+        if isinstance(packed.padding_value, torch.Tensor):
+            slots = packed.padding_value.to(packed.data)[slot_sequence_ids].clone()
+        else:
+            slots = packed.data.new_full((slot_count, packed.data.shape[1]), packed.padding_value)
+        if packed.padded_length is not None and slot_count:
+            slot_starts = output_cu_seqlens[slot_sequence_ids].to(torch.int64) * self.subsampling_factor
+            local_slots = slot_indices - slot_starts
+            slots.masked_fill_(local_slots.unsqueeze(1) >= packed.padded_length, 0.0)
+        if packed.total_tokens:
+            token_indices = torch.arange(packed.total_tokens, device=packed.data.device)
+            sequence_ids = torch.bucketize(token_indices, packed.cu_seqlens[1:], right=True)
+            local_positions = token_indices - packed.cu_seqlens[sequence_ids]
+            slot_positions = output_cu_seqlens[sequence_ids].to(torch.int64) * self.subsampling_factor
+            slots[slot_positions + local_positions] = packed.data
+        stacked = slots.reshape(-1, self.proj.in_features)
+        max_seqlen = self.compute_num_out_frames(packed.max_seqlen)
+        return _new_packed_encoder_activations(stacked, output_lengths, output_cu_seqlens, max_seqlen)
 
 
 class StackingSubsampling(torch.nn.Module):
@@ -133,6 +193,7 @@ class ConvSubsampling(torch.nn.Module):
         subsampling_conv_chunking_factor=1,
         activation=nn.ReLU(),
         is_causal=False,
+        use_triton: bool | None = None,
     ):
         super(ConvSubsampling, self).__init__()
         self._subsampling = subsampling
@@ -425,6 +486,17 @@ class ConvSubsampling(torch.nn.Module):
 
         self.conv = MaskedConvSequential(*layers)
 
+        # The kernels implement `dw_striding`'s layout, [conv, act] + (sampling_num - 1) x
+        # [dw, pw, act], with ReLU baked in; a factor of 2 stops after [conv, act], leaving no
+        # depthwise to fuse.
+        supported = subsampling == 'dw_striding' and self._sampling_num >= 2 and isinstance(activation, nn.ReLU)
+        if use_triton and not supported:
+            logging.warning(
+                "use_triton=True was requested, but the fused kernels only cover dw_striding with "
+                "subsampling_factor >= 4 and a ReLU activation, falling back to PyTorch instead."
+            )
+        self.conv.fuse_triton = supported and (TRITON_AVAILABLE if use_triton is None else use_triton)
+
     def get_sampling_frames(self):
         return [1, self.subsampling_factor]
 
@@ -668,7 +740,6 @@ class SubsamplingReductionModule(nn.Module):
 
         self.reduction = reduction
         self.d_model = d_model
-        self._sampling_num = int(math.log(reduction_factor, 2))
 
         if reduction == 'pooling':
             self.reduction_enc = nn.MaxPool1d(kernel_size=reduction_factor)
@@ -702,7 +773,7 @@ class SubsamplingReductionModule(nn.Module):
                 kernel_size=self.kernel_size,
                 stride=self.stride,
                 ceil_mode=False,
-                repeat_num=self._sampling_num,
+                repeat_num=1,  # a single MaxPool1d(kernel_size=reduction_factor) is applied below
             )
             x = self.reduction_enc(x)
             x = torch.transpose(x, 1, 2)  # [B, T, C]
@@ -725,10 +796,33 @@ def calculate_conv_output_size(input_size: torch.Tensor, kernel_size: int, strid
 
 
 class MaskedConvSequential(nn.Sequential):
+    # Set by ConvSubsampling; off by default, so every other subsampling type stays on PyTorch.
+    fuse_triton = False
+
     def forward(self, x, lengths):
         # Convert input (batch, time, features) to conv format
         x = x.unsqueeze(1)  # (batch, 1, time, features)
-        current_lengths = lengths.clone().float()
+        current_lengths = lengths
+
+        # Tracing and export cannot capture a Triton launch, the fused kernel returns no input
+        # gradient, and its weight gradients accumulate through atomics, so their summation order
+        # varies between runs.
+        if (
+            self.fuse_triton
+            and x.is_cuda
+            and not x.requires_grad
+            and not torch.are_deterministic_algorithms_enabled()
+            and not (torch.jit.is_tracing() or torch.compiler.is_exporting())
+        ):
+            x, current_lengths, mask = self._forward_fused(x, current_lengths)
+        else:
+            x, current_lengths, mask = self._forward_torch(x, current_lengths)
+
+        # Final masking
+        x = apply_channel_mask(x, mask)
+        return x, current_lengths.long()
+
+    def _forward_torch(self, x, current_lengths):
         mask = self._create_mask(x, current_lengths.long())
 
         # Process through each layer with mask propagation
@@ -741,21 +835,100 @@ class MaskedConvSequential(nn.Sequential):
 
             # Update lengths for stride operations with proper padding
             if hasattr(layer, 'stride') and layer.stride != (1, 1):
-                if hasattr(layer, "_left_padding"):
-                    padding = (layer._left_padding, layer._right_padding)  # CausalConv2D
-                else:
-                    padding = layer.padding
                 current_lengths = calculate_conv_output_size(
-                    current_lengths, layer.kernel_size[0], layer.stride[0], padding
+                    current_lengths, layer.kernel_size[0], layer.stride[0], _layer_padding(layer)
                 )
                 mask = self._create_mask(x, current_lengths.long())
 
-        # Final masking
-        x = apply_channel_mask(x, mask)
-        return x, current_lengths.long()
+        return x, current_lengths, mask
+
+    @triton_required
+    def _forward_fused(self, x, current_lengths):
+        """The `dw_striding` stack, with conv0 and the depthwise layers as Triton kernels.
+
+        The stack is `[conv, act] + (sampling_num - 1) x [dw, pw, act]`. One kernel covers the
+        leading `conv, act, dw`; the loop over `self[3:]` runs each depthwise as a kernel, each
+        pointwise as a linear, and every other layer as itself. Lengths change only at the
+        depthwise layers.
+
+        Tensors are channels-last throughout, `(batch, time, freq, channels)`, and one permute at
+        the end returns the `(batch, channels, time, freq)` the caller expects.
+
+        The kernels read zeros beyond their input lengths and write zeros beyond their output
+        lengths. Only the trailing pointwise and activation touch the padded tail, which
+        `apply_channel_mask` clears at the end of `forward`.
+        """
+        conv0, _, first_depthwise, first_pointwise, activation = self[:5]
+        # conv -> ReLU -> depthwise in one kernel; the intermediate never reaches memory.
+        x, current_lengths = fused_conv_relu_dw(
+            x,
+            conv0.weight,
+            conv0.bias,
+            first_depthwise.weight,
+            first_depthwise.bias,
+            *_layer_padding(conv0),
+            current_lengths,
+        )
+        x = _pointwise_block(x, first_pointwise, activation)
+
+        body = self[5:]
+        for i in range(0, len(body), 3):
+            depthwise, pointwise, activation = body[i : i + 3]
+            # The kernel masks its own output, so it needs the post-stride lengths.
+            next_lengths = calculate_conv_output_size(
+                current_lengths, depthwise.kernel_size[0], depthwise.stride[0], _layer_padding(depthwise)
+            )
+            x = dw_conv2d(
+                x,
+                depthwise.weight,
+                depthwise.bias,
+                depthwise.stride,
+                *_layer_padding(depthwise),
+                current_lengths,
+                next_lengths,
+            )
+            current_lengths = next_lengths
+            x = _pointwise_block(x, pointwise, activation)
+
+        x = x.permute(0, 3, 1, 2)
+        return x, current_lengths, self._create_mask(x, current_lengths.long())
 
     def _create_mask(self, tensor, lengths):
         """Create mask matching tensor dimensions."""
         batch_size, channels, time, features = tensor.shape
         time_mask = torch.arange(time, device=tensor.device).expand(batch_size, time) < lengths.unsqueeze(1)
         return time_mask.unsqueeze(-1).expand(batch_size, time, features).to(tensor.dtype)
+
+
+def _layer_padding(layer):
+    """The (start, end) padding of a convolution.
+
+    nn.Conv2d's `.padding` is (pad_h, pad_w), one value per axis and symmetric within it, so the
+    height value is both edges. CausalConv2D keeps its two edges on private attributes.
+    """
+    if hasattr(layer, "_left_padding"):
+        return layer._left_padding, layer._right_padding
+    return layer.padding[0], layer.padding[0]
+
+
+def _is_depthwise(layer):
+    """A depthwise convolution: one group per channel."""
+    return isinstance(layer, nn.Conv2d) and layer.groups > 1
+
+
+def _is_pointwise(layer):
+    """A 1x1 convolution over all channels, which is a contraction over the channel axis alone."""
+    return isinstance(layer, nn.Conv2d) and layer.groups == 1 and layer.kernel_size == (1, 1)
+
+
+def _pointwise_block(x, conv, activation):
+    # kernel_size=1 convs are pointwise, i.e. linear, but nn.Conv2d dispatches to much slower
+    # cuBLAS kernels. flatten(1) on the weight is a free view, so checkpoints are unchanged.
+    # F.linear on an N-D input returns a view of its 2D result. An in-place activation on a
+    # view copies the whole tensor in backward, so x is flattened and the activation runs on
+    # the 2D result itself.
+    # TODO: remove the shape manipulation once https://github.com/pytorch/pytorch/pull/194077
+    # is in the minimum required PyTorch version.
+    b, t, f, c = x.shape
+    x = nn.functional.linear(x.view(-1, c), conv.weight.flatten(1), conv.bias)
+    return activation(x).view(b, t, f, -1)

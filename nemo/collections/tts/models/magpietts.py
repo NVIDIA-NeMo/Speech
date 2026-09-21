@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -33,7 +34,11 @@ from lightning.pytorch.loggers import TensorBoardLogger, WandbLogger
 from omegaconf import DictConfig, ListConfig, OmegaConf, open_dict
 from torch import nn
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
-from nemo.collections.tts.data.text_to_speech_dataset_lhotse import MagpieTTSLhotseDataset, setup_tokenizers
+from nemo.collections.tts.data.text_to_speech_dataset_lhotse import (
+    MagpieTTSLhotseDataset,
+    check_text_embedding_matches_tokenizer,
+    setup_tokenizers,
+)
 from nemo.collections.tts.losses.aligner_loss import ForwardSumLoss
 from nemo.collections.tts.losses.moe_loss import MoEAuxiliaryLoss, compute_expert_usage
 from nemo.collections.tts.models import AudioCodecModel
@@ -182,41 +187,6 @@ class ChunkedDecoderState:
 
 
 @dataclass
-class ChunkedInferenceConfig:
-    """Immutable configuration for chunked inference tuning parameters.
-
-    These parameters control the behavior of chunked (single- or multi-chunk) speech generation.
-    Initialized once in MagpieTTSModel.__init__ and accessed via self.chunked_inference_config.
-
-    Attributes:
-        history_len_heuristic: Maximum history tokens to retain across chunks.
-        prior_weights_init: Attention prior weights for chunk initialization.
-        prior_weights: Attention prior weights during generation (history, current, +1, +2, +3, +4).
-        finished_limit_with_eot: Steps after text end before allowing EOS (multi-chunk).
-        finished_limit_without_eot: Steps after chunk end before allowing EOS (multi-chunk).
-        finished_limit_first_chunk: Steps near text end before forcing EOS for first/single chunk.
-            Matches the threshold used in infer_batch() for consistent single-chunk behavior.
-        forceful_chunk_end_threshold: Threshold for forceful chunk termination.
-        argmax_temperature: Temperature for argmax sampling in EOS detection.
-        short_sentence_threshold: Sentences shorter than this skip attention prior.
-        attention_sink_threshold: Times attended before position is considered a sink.
-        near_end_threshold: Positions from text end to consider "near end".
-    """
-
-    history_len_heuristic: int = 20
-    prior_weights_init: Tuple[float, ...] = (0.5, 1.0, 0.8, 0.2, 0.2)
-    prior_weights: Tuple[float, ...] = (0.2, 1.0, 0.6, 0.4, 0.2, 0.2)
-    finished_limit_with_eot: int = 5
-    finished_limit_without_eot: int = 1
-    finished_limit_first_chunk: int = 20
-    forceful_chunk_end_threshold: int = 3
-    argmax_temperature: float = 0.01
-    short_sentence_threshold: int = 35
-    attention_sink_threshold: int = 10
-    near_end_threshold: int = 3
-
-
-@dataclass
 class ChunkState:
     """Mutable state persisting across chunks during chunked generation.
 
@@ -276,6 +246,18 @@ class ModelInferenceParameters:
         eos_detection_method (str): EOS detection method. See the EOSDetectionMethod class.
         min_generated_frames (int): Setting this greater than 0 prevents rare cases of first-frame termination. Any
             number greater between 1 and 4 should work, but 4 lines up with the codec's minimum frame requirement.
+        attention_sink_threshold (int): Times a position may be attended before standard inference advances past it.
+        history_len_heuristic (int): Maximum history tokens retained across text chunks.
+        prior_weights_init (Tuple[float, ...]): Attention prior weights used when initializing a new chunk.
+        prior_weights (Tuple[float, ...]): Attention prior weights used during chunked generation.
+        finished_limit_with_eot (int): Near-end steps before allowing EOS in the final chunk.
+        finished_limit_without_eot (int): Near-end steps before allowing EOS in a non-final chunk.
+        finished_limit_first_chunk (int): Near-end steps before allowing EOS in the first chunk.
+        forceful_chunk_end_threshold (int): Near-end steps before forcibly ending a non-final chunk.
+        argmax_temperature (float): Temperature used for the argmax EOS-detection sample.
+        short_sentence_threshold (int): Texts at or below this length use a uniform chunked attention prior.
+        chunked_attention_sink_threshold (int): Times a position may be attended before the chunked prior penalizes it.
+        near_end_threshold (int): Positions from the text end that are treated as near the end.
     """
 
     max_decoder_steps: int = 500
@@ -292,6 +274,18 @@ class ModelInferenceParameters:
     ignore_finished_sentence_tracking: bool = True
     eos_detection_method: str = "argmax_or_multinomial_any"
     min_generated_frames: int = 4
+    attention_sink_threshold: int = 8
+    history_len_heuristic: int = 20
+    prior_weights_init: Tuple[float, ...] = (0.5, 1.0, 0.8, 0.2, 0.2)
+    prior_weights: Tuple[float, ...] = (0.2, 1.0, 0.6, 0.4, 0.2, 0.2)
+    finished_limit_with_eot: int = 5
+    finished_limit_without_eot: int = 1
+    finished_limit_first_chunk: int = 20
+    forceful_chunk_end_threshold: int = 3
+    argmax_temperature: float = 0.01
+    short_sentence_threshold: int = 35
+    chunked_attention_sink_threshold: int = 10
+    near_end_threshold: int = 3
 
     @classmethod
     def from_dict(cls, data: dict) -> 'ModelInferenceParameters':
@@ -307,6 +301,9 @@ class ModelInferenceParameters:
             filtered_data['attention_prior_epsilon'] = data['prior_epsilon']
         if 'lookahead_window_size' in data:
             filtered_data['attention_prior_lookahead_window'] = data['lookahead_window_size']
+        for field_name in ('prior_weights_init', 'prior_weights'):
+            if field_name in filtered_data:
+                filtered_data[field_name] = tuple(filtered_data[field_name])
         return cls(**filtered_data)
 
 
@@ -442,6 +439,8 @@ class MagpieTTSModel(ModelPT):
         self.tokenizer = setup_tokenizers(
             all_tokenizers_config=cfg.text_tokenizers,
             mode='train',
+            # Read before super().__init__, which stamps the *current* version into configs that lack one.
+            cfg_nemo_version=cfg.get('nemo_version', None),
         )
 
         num_tokens_tokenizer = len(self.tokenizer.tokens)
@@ -721,9 +720,6 @@ class MagpieTTSModel(ModelPT):
         # Class-level cache for text normalizers. Used during inference.
         self._text_normalizers: Dict[str, Any] = {}
 
-        # Chunked inference configuration (immutable tuning parameters)
-        self.chunked_inference_config = ChunkedInferenceConfig()
-
     def _register_tokenizer_artifacts(self, cfg: DictConfig) -> None:
         """
         Register tokenizer file artifacts (phoneme_dict, heteronyms, etc.) for .nemo packaging.
@@ -759,7 +755,34 @@ class MagpieTTSModel(ModelPT):
                     if hasattr(g2p_cfg, 'get')
                     else getattr(g2p_cfg, 'phoneme_dict', None)
                 )
-                if phoneme_dict_path and isinstance(phoneme_dict_path, str) and phoneme_dict_path.strip():
+                if phoneme_dict_path and isinstance(phoneme_dict_path, (list, ListConfig)):
+                    # Handle list of phoneme dicts (e.g. Hindi code-switching: hi_prondict + ipa_cmudict)
+                    registered = []
+                    for i, path_item in enumerate(phoneme_dict_path):
+                        if isinstance(path_item, str) and path_item.strip():
+                            try:
+                                # Use a list-index path (phoneme_dict.{i}, dot) so the connector's
+                                # OmegaConf.update writes the element back into the list. With an
+                                # underscore (phoneme_dict_{i}) the saved config gets sibling keys
+                                # phoneme_dict_0/_1 (and phoneme_dict null), which IpaG2p rejects on
+                                # restore ("unexpected keyword argument 'phoneme_dict_0'").
+                                artifact_path = self.register_artifact(
+                                    f'text_tokenizers.{tokenizer_name}.g2p.phoneme_dict.{i}',
+                                    path_item,
+                                    verify_src_exists=True,
+                                )
+                                registered.append(artifact_path if artifact_path else path_item)
+                            except FileNotFoundError:
+                                logging.warning(
+                                    f"phoneme_dict[{i}] file not found for tokenizer '{tokenizer_name}': "
+                                    f"{path_item}. Artifact will not be packaged in .nemo file."
+                                )
+                                registered.append(path_item)
+                        else:
+                            registered.append(path_item)
+                    with open_dict(cfg):
+                        cfg.text_tokenizers[tokenizer_name].g2p.phoneme_dict = registered
+                elif phoneme_dict_path and isinstance(phoneme_dict_path, str) and phoneme_dict_path.strip():
                     try:
                         # register_artifact handles both:
                         # - Local paths: registers for .nemo packaging, returns absolute path
@@ -1055,6 +1078,13 @@ class MagpieTTSModel(ModelPT):
         (N, T*D) and reconstructed to (N, T, D) at inference time using stored T and D dimensions.
         """
         state_dict = self.update_ckpt(state_dict)
+        # `text_embedding` is absent on the CAS-encoder variant, which has no such table to compare.
+        check_text_embedding_matches_tokenizer(
+            state_dict,
+            text_embedding=getattr(self, 'text_embedding', None),
+            tokenizer=self.tokenizer,
+            model_cfg=self.cfg,
+        )
 
         # Check if checkpoint has baked context embedding (nn.Embedding format)
         has_baked_embedding_in_ckpt = 'baked_context_embedding.weight' in state_dict
@@ -2641,7 +2671,7 @@ class MagpieTTSModel(ModelPT):
         lookahead_window_size,
         attended_timestep_counter,
         batch_size,
-        left_offset=[],
+        left_offset=None,
     ):
         """
         Returns the most attended timestep for each batch item
@@ -2658,7 +2688,7 @@ class MagpieTTSModel(ModelPT):
             text_lens (torch.Tensor): Length of text sequence for each batch item. Shape: (batch_size,).
             lookahead_window_size (int): Size of the forward-looking window to search for the next attended
                 timestep. Determines how far ahead from the last attended timestep to look.
-            attended_timestep_counter (list): List of dictionaries (one per batch item) tracking how many
+            attended_timestep_counter (Optional[list]): List of dictionaries (one per batch item) tracking how many
                 times each timestep has been attended. Used to detect attention sinks.
             batch_size (int): Number of items in the batch.
             left_offset (list, optional): List of offsets to adjust timestep indices for each batch item,
@@ -2672,14 +2702,18 @@ class MagpieTTSModel(ModelPT):
                 - attended_timestep_counter (list): Updated counter tracking attendance frequency for each
                   timestep across all batch items.
         """
-        if len(left_offset) == 0:
-            left_offset = [0 for _ in range(batch_size)]
+        if left_offset is None:
+            left_offset = [0] * batch_size
         text_time_step_attended = []
         for bidx in range(batch_size):
             last_attended_timestep = last_attended_timesteps[-1][bidx]
-            if attended_timestep_counter[bidx].get(last_attended_timestep, 0) >= 8:
+            if (
+                attended_timestep_counter[bidx].get(last_attended_timestep, 0)
+                >= self.inference_parameters.attention_sink_threshold
+            ):
                 # This is probably an attention sink! Move to the next timestep
                 last_attended_timestep += 1
+            last_attended_timestep = max(last_attended_timestep, left_offset[bidx])
             last_attended_timestep_in_this_window = last_attended_timestep - left_offset[bidx]
             window_size = lookahead_window_size
             window_end = min(
@@ -2729,10 +2763,12 @@ class MagpieTTSModel(ModelPT):
                     for ind in range(1, lookahead_window_size + 1):
                         _attn_prior[bidx, 0, min(text_time_step_attended[bidx] + ind, _text_len - 1)] = 1.0
 
-                # Penalize timesteps that have been attended to more than 10 times
+                # Penalize positions that have become attention sinks.
                 for _timestep in attended_timestep_counter[bidx]:
-                    if attended_timestep_counter[bidx][_timestep] >= 10:
-                        # This means the timestep has been attended to more than 10 times (To avoid getting stuck)
+                    if (
+                        attended_timestep_counter[bidx][_timestep]
+                        >= self.inference_parameters.attention_sink_threshold
+                    ):
                         _attn_prior[bidx, 0, : _timestep + 1] = prior_epsilon
 
                 unfinished_texts[bidx] = False
@@ -3584,6 +3620,7 @@ class MagpieTTSModel(ModelPT):
             load_cached_codes_if_available=self.cfg.load_cached_codes_if_available,
             dataset_type=mode,  # train or test used for setting phone prob to 1.0 in test dataset (worker_init_fn)
             load_16khz_audio=False,
+            load_normalized_text_percent=dataset_cfg.get("load_normalized_text_percent", 1.0),
             pad_context_text_to_max_duration=self.pad_context_text_to_max_duration,
             context_duration_min=self.cfg.context_duration_min,
             context_duration_max=self.cfg.context_duration_max,
@@ -3775,7 +3812,10 @@ class MagpieTTSModel(ModelPT):
 
         # Determine tokenizer name based on language using centralized mapping
         available_tokenizers = list(self.tokenizer.tokenizers.keys())
-        tokenizer_name = get_tokenizer_for_language(language, available_tokenizers)
+        available_mapping = self.cfg.get("language_to_tokenizer_mapping", None)
+        tokenizer_name = get_tokenizer_for_language(
+            language, available_tokenizers, language_tokenizer_map=available_mapping
+        )
         logging.info(f"Using tokenizer '{tokenizer_name}' for language '{language}'")
 
         # Unified inference path: chunk_text_for_inference automatically decides
@@ -3880,7 +3920,7 @@ class MagpieTTSModel(ModelPT):
             text_len: Length of text for this batch item.
             eps_sq: Squared epsilon for strong suppression.
         """
-        prior_weights = self.chunked_inference_config.prior_weights
+        prior_weights = self.inference_parameters.prior_weights
 
         # Suppress history (before attended - 1)
         history_end = max(1, attended_pos - 1)
@@ -3922,7 +3962,7 @@ class MagpieTTSModel(ModelPT):
             left_offset: Chunk offset for this batch item.
             eps_sq: Squared epsilon for strong suppression.
         """
-        threshold = self.chunked_inference_config.attention_sink_threshold
+        threshold = self.inference_parameters.chunked_attention_sink_threshold
 
         for timestep, count in attended_timestep_counter.items():
             if timestep > left_offset and count >= threshold:
@@ -3953,7 +3993,7 @@ class MagpieTTSModel(ModelPT):
             unfinished_texts: Dict to update in-place.
             finished_texts_counter: Dict to update in-place.
         """
-        is_near_end = attended_pos >= text_len - self.chunked_inference_config.near_end_threshold
+        is_near_end = attended_pos >= text_len - self.inference_parameters.near_end_threshold
 
         # Text is unfinished if not near end AND not already marked finished
         unfinished_texts[batch_idx] = not is_near_end and not is_finished
@@ -4018,7 +4058,7 @@ class MagpieTTSModel(ModelPT):
             is_finished = bidx in end_indices or bidx in chunk_end_dict
 
             # Short sentences: uniform prior (no guidance needed)
-            if text_len <= self.chunked_inference_config.short_sentence_threshold:
+            if text_len <= self.inference_parameters.short_sentence_threshold:
                 attn_prior[bidx, 0, :] = 1.0
             else:
                 # Set attention weights around attended position
@@ -4097,8 +4137,7 @@ class MagpieTTSModel(ModelPT):
                     logging.info(f"Chunk end detected for item {item_idx} at local timestep {current_step}")
             elif (
                 not end_of_text[item_idx]
-                and finished_texts_counter.get(item_idx, -1)
-                >= self.chunked_inference_config.forceful_chunk_end_threshold
+                and finished_texts_counter.get(item_idx, -1) >= self.inference_parameters.forceful_chunk_end_threshold
             ):
                 chunk_end_dict[item_idx] = current_step
                 chunk_end_frame_lens[item_idx] = (current_step + 1) * self.frame_stacking_factor
@@ -4265,9 +4304,9 @@ class MagpieTTSModel(ModelPT):
 
             # Set prior weights for new chunk
             current_starting_point = batch_text_lens[_idx] - current_chunk_len[_idx]
-            prior_weights = self.chunked_inference_config.prior_weights_init
+            prior_weights = self.inference_parameters.prior_weights_init
             _attn_prior[_idx, :, :current_starting_point] = prior_epsilon * prior_epsilon
-            for offset, weight in enumerate(prior_weights[:5]):
+            for offset, weight in enumerate(prior_weights):
                 current_offset_idx = current_starting_point + offset
                 if current_offset_idx < max_text_len:
                     _attn_prior[_idx, :, current_offset_idx] = weight
@@ -4305,11 +4344,12 @@ class MagpieTTSModel(ModelPT):
                 continue
             if not beginning_of_text:
                 pad_len_idx = max_text_len - batch_text_lens[_idx]
-                context_tensors.cond[_idx, : -current_chunk_len[_idx] - pad_len_idx] = (
-                    chunk_state.history_context_tensor[
-                        _idx, -(context_tensors.cond[_idx].shape[0] - current_chunk_len[_idx] - pad_len_idx) :
-                    ]
+                history_context_len = self._to_int(
+                    context_tensors.cond[_idx].shape[0] - current_chunk_len[_idx] - pad_len_idx
                 )
+                context_tensors.cond[_idx, :history_context_len] = chunk_state.history_context_tensor[
+                    _idx, -history_context_len - 1 : -1
+                ]
         chunk_state.history_context_tensor = context_tensors.cond
 
     def _prepare_chunked_text_tensors(
@@ -4348,9 +4388,10 @@ class MagpieTTSModel(ModelPT):
 
             # Combine history with current chunk
             if chunk_state.history_text is not None:
+                history_text_len = self._to_int(chunk_state.history_text_lens[_idx]) - 1
                 current_text = torch.cat(
                     [
-                        chunk_state.history_text[_idx][: chunk_state.history_text_lens[_idx]],
+                        chunk_state.history_text[_idx][:history_text_len],
                         batch["text"][_idx][: current_chunk_len[_idx]],
                     ]
                 )
@@ -4358,7 +4399,7 @@ class MagpieTTSModel(ModelPT):
                 current_text = batch["text"][_idx][: current_chunk_len[_idx]]
 
             # Apply sliding window
-            history_len = min(current_chunk_len[_idx], self.chunked_inference_config.history_len_heuristic)
+            history_len = min(current_chunk_len[_idx], self.inference_parameters.history_len_heuristic)
             true_window_size = current_chunk_len[_idx] + history_len
             if not beginning_of_text:
                 current_text = current_text[max(0, current_text.shape[0] - true_window_size) :]
@@ -4549,7 +4590,7 @@ class MagpieTTSModel(ModelPT):
                     dummy_additional_decoder_input=dummy_additional_decoder_input,
                     dummy_addition_dec_mask=dummy_addition_dec_mask,
                     batch_size=batch_size,
-                )
+                )  # (B, T, num_codebooks * num_tokens_per_codebook), (B, T, d_model)
 
                 if self.inference_parameters.apply_attention_prior:
                     # Get cross-attention scores (optionally from specific layers for alignment)
@@ -4615,9 +4656,9 @@ class MagpieTTSModel(ModelPT):
                     for key in state.finished_texts_counter:
                         state.finished_texts_counter[key] += 1
                         limit = (
-                            self.chunked_inference_config.finished_limit_with_eot
+                            self.inference_parameters.finished_limit_with_eot
                             if end_of_text[key]
-                            else self.chunked_inference_config.finished_limit_without_eot
+                            else self.inference_parameters.finished_limit_without_eot
                         )
                         if state.finished_texts_counter[key] > limit:
                             state.unfinished_texts[key] = False
@@ -4627,9 +4668,9 @@ class MagpieTTSModel(ModelPT):
                     unfinished_items = {}
                 else:
                     finished_threshold = (
-                        self.chunked_inference_config.finished_limit_first_chunk
+                        self.inference_parameters.finished_limit_first_chunk
                         if beginning_of_text
-                        else self.chunked_inference_config.finished_limit_with_eot
+                        else self.inference_parameters.finished_limit_with_eot
                     )
                     finished_items = {k: v for k, v in state.finished_texts_counter.items() if v >= finished_threshold}
                     unfinished_items = {k: v for k, v in state.unfinished_texts.items() if v}
@@ -4678,15 +4719,15 @@ class MagpieTTSModel(ModelPT):
                         unfinished_items=unfinished_items,
                         finished_items=finished_items,
                         forbid_audio_eos=forbid_audio_eos,
-                    )  # (B, num_codebooks)
+                    )  # (B, num_codebooks, frame_stacking_factor)
                 all_codes_next_argmax = self.sample_codes_from_logits(
                     all_code_logits_t,
-                    temperature=self.chunked_inference_config.argmax_temperature,
+                    temperature=self.inference_parameters.argmax_temperature,
                     topk=1,
                     unfinished_items=unfinished_items,
                     finished_items=finished_items,
                     forbid_audio_eos=forbid_audio_eos,
-                )  # (B, num_codebooks)
+                )  # (B, num_codebooks, frame_stacking_factor)
 
                 # Check for EOS and update state
                 self._check_eos_and_update_state(

@@ -1,3 +1,5 @@
 ctc_segmentation==1.7.4
 num2words
 numpy<2.0.0
+plotly
+wget

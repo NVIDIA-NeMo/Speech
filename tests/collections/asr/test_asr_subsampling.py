@@ -1,4 +1,5 @@
-# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,7 +17,7 @@ import torch
 
 from nemo.collections.asr.models import ASRModel
 from nemo.collections.asr.parts.submodules import subsampling as subsampling_module
-from nemo.collections.asr.parts.submodules.subsampling import ConvSubsampling
+from nemo.collections.asr.parts.submodules.subsampling import ConvSubsampling, SubsamplingReductionModule
 
 
 class TestASRSubsamplingConvChunking:
@@ -167,3 +168,23 @@ class TestConvSubsampling32BitIndexing:
         assert len(chunk_batches) > 1, "expected the input to be split into multiple chunks"
         for chunk_batch in chunk_batches:
             assert sub._first_conv_output_numel(x[:chunk_batch]) < limit
+
+
+class TestSubsamplingReductionModulePooling:
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    @pytest.mark.parametrize("reduction_factor", [2, 4, 8])
+    def test_pooling_lengths_match_output(self, reduction_factor):
+        """Pool-based reduction applies a single MaxPool1d(kernel_size=reduction_factor),
+        so the returned lengths must match that one pooling step."""
+        module = SubsamplingReductionModule(reduction='pooling', d_model=8, reduction_factor=reduction_factor)
+
+        x = torch.randn(2, 100, 8)
+        lengths = torch.tensor([100, 90])
+
+        out, out_lengths = module(x, lengths)
+
+        assert out.shape == (2, out.shape[1], 8)
+        assert out_lengths[0].item() == out.shape[1]
+        expected = torch.div(lengths - reduction_factor, reduction_factor, rounding_mode='floor') + 1
+        assert out_lengths.tolist() == expected.tolist()

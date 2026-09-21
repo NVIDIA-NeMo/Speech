@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,6 +19,7 @@ import argparse
 import json
 import os
 import pprint
+import re
 import tempfile
 import time
 from collections import Counter
@@ -29,13 +31,20 @@ import librosa
 import numpy as np
 import soundfile as sf
 import torch
-from transformers import Wav2Vec2FeatureExtractor, WavLMForXVector, WhisperForConditionalGeneration, WhisperProcessor
+from transformers import Wav2Vec2FeatureExtractor, WavLMForXVector
 
 import nemo.collections.asr as nemo_asr
 from nemo.collections.asr.metrics.wer import word_error_rate_detail
 from nemo.collections.tts.metrics.eou_classifier import EoUClassification, EoUClassifier, EoUType
 from nemo.collections.tts.metrics.frechet_codec_distance import FrechetCodecDistance
-from nemo.collections.tts.parts.utils.tts_dataset_utils import get_text_processor
+from nemo.collections.tts.metrics.prosody import compute_prosody_distances
+from nemo.collections.tts.parts.utils.tts_dataset_utils import (
+    JapaneseTextProcessor,
+    NemoTranscriber,
+    NemoTranscriberWithPrompt,
+    WhisperTranscriber,
+    get_text_processor,
+)
 from nemo.utils import logging
 
 # Optional import for UTMOSv2 (audio quality metric)
@@ -52,12 +61,84 @@ except (ImportError, ModuleNotFoundError) as e:
     )
 
 
+KATAKANA_METRICS_TO_SAVE = [
+    'katakana_cer',
+    'gt_katakana',
+    'pred_katakana',
+]
+
+PROSODY_DISTANCE_KEYS = [
+    'pitch_distance',
+    'intensity_distance',
+    'speech_rate_distance',
+]
+
+# Regexes mirrored from the IPA preprocessing script that creates
+# custom["text_without_annotation"]. This is used only for text inputs
+# during metric computation when requested.
+_WS_RE = re.compile(r"\s+")
+_SPACE_BEFORE_PUNCT_RE = re.compile(r"\s+([,.;:!?؟،؛])")
+_TATWEEL_RE = re.compile("\u0640+")
+_ANNOTATION_OR_MARKER_RE = re.compile(
+    r"""
+      \[[^\[\]\n]{1,512}\]          # square annotation: [breath], [نقر]
+    | </?[^<>\n]{1,512}>            # XML/style/language tags
+    | \{/?[^{}\n]{1,512}\}          # curly control/pronunciation tags
+    | [-–—]{2,}                     # multi-dash cutoff: --, ---, ——
+    | (?<=\S)[-–—](?=\s|$)          # trailing single dash after a token: word-
+    | (?:^|(?<=\s))[-–—](?=\s|$)    # standalone dash
+    | \.{3,}                        # ASCII ellipsis
+    | …+                            # Unicode ellipsis
+    | \*+                            # emphasis marker: *word*
+    """,
+    re.VERBOSE,
+)
+
+
+def strip_text_annotations_from_text(text: str) -> str:
+    """Return orthographic text with annotation/control tokens removed."""
+    text = _ANNOTATION_OR_MARKER_RE.sub(" ", str(text))
+    text = _TATWEEL_RE.sub("", text)
+    text = _WS_RE.sub(" ", text).strip()
+    text = _SPACE_BEFORE_PUNCT_RE.sub(r"\1", text)
+    return text.strip()
+
+
+def _get_record_texts(record: dict) -> tuple[str, Optional[str], str]:
+    """Return raw model-input text, dataloader-normalized text, and metric-reference text."""
+    if "text" in record:
+        tts_text_input = record["text"]
+    elif "original_text" in record:
+        tts_text_input = record["original_text"]
+    else:
+        raise KeyError("Evaluation manifest entry must contain text or original_text.")
+
+    dataloader_normalized_text = record.get("normalized_text")
+    if dataloader_normalized_text is not None:
+        metric_reference_text = dataloader_normalized_text
+    else:
+        metric_reference_text = record.get("original_text", tts_text_input)
+
+    return tts_text_input, dataloader_normalized_text, metric_reference_text
+
+
 FILEWISE_METRICS_TO_SAVE = [
     'cer',
+    'cer_pred_gt_audio',
     'wer',
+    'wer_pred_gt_audio',
     'pred_context_ssim',
+    'pred_gt_esim',
+    'pred_gt_ems',
+    *PROSODY_DISTANCE_KEYS,
     'pred_text',
+    'gt_audio_text',
+    'tts_text_input',
+    'dataloader_normalized_text',
     'gt_text',
+    'predicted_phoneme_text',
+    'predicted_phoneme_tokens',
+    'predicted_phoneme_token_labels',
     'gt_audio_filepath',
     'pred_audio_filepath',
     'context_audio_filepath',
@@ -82,6 +163,13 @@ def load_evalset_config(config_path: Optional[str] = None, dataset_base_path: Op
         manifest_path = Path(info["manifest_path"])
         audio_dir = Path(info["audio_dir"])
 
+        asr_model_path = None
+        asr_model = info.get("asr_model")
+        if asr_model:
+            asr_model_name = asr_model["name"]
+            if asr_model_name.endswith(".nemo"):
+                asr_model_path = Path(asr_model_name)
+
         if dataset_base_path:
             # Replace relative paths with absolute paths where appropriate
             if not manifest_path.is_absolute():
@@ -92,11 +180,18 @@ def load_evalset_config(config_path: Optional[str] = None, dataset_base_path: Op
                 audio_dir = dataset_base_path / audio_dir
                 info["audio_dir"] = str(audio_dir)
 
+            if asr_model_path and not asr_model_path.is_absolute():
+                asr_model_path = dataset_base_path / asr_model_path
+                info["asr_model"]["name"] = str(asr_model_path)
+
         if not manifest_path.exists():
             raise ValueError(f"Manifest does not exist for dataset {dataset_name}: {manifest_path}")
 
         if not audio_dir.exists():
             raise ValueError(f"Audio directory does not exist for dataset {dataset_name}: {audio_dir}")
+
+        if asr_model_path and not asr_model_path.exists():
+            raise ValueError(f"ASR model file does not exist for dataset {dataset_name}: {asr_model_path}")
 
     return dataset_meta_info
 
@@ -150,48 +245,6 @@ def read_manifest(manifest_path):
     return records
 
 
-def transcribe_with_nemo_asr_batched(asr_model, audio_paths, batch_size=8, label=""):
-    """Transcribe multiple audio files with a NeMo ASR model in batches. Returns list of transcriptions (one per path)."""
-    all_transcriptions = []
-    for start in range(0, len(audio_paths), batch_size):
-        batch_paths = audio_paths[start : start + batch_size]
-        try:
-            with torch.inference_mode():
-                batch_results = asr_model.transcribe(batch_paths, batch_size=len(batch_paths), use_lhotse=False)
-            for r in batch_results:
-                all_transcriptions.append(r.text)
-        except Exception as e:
-            logging.info("Error during batched ASR ({} audio): {}".format(label, e))
-            all_transcriptions.extend([""] * len(batch_paths))
-    return all_transcriptions
-
-
-def transcribe_with_whisper_batched(
-    whisper_model, whisper_processor, audio_paths, language, device, batch_size=8, label=""
-):
-    """Transcribe multiple audio files with Whisper in batches. Returns list of transcriptions (one per path)."""
-    forced_decoder_ids = (
-        whisper_processor.get_decoder_prompt_ids(language=language, task="transcribe") if language else None
-    )
-    all_transcriptions = []
-    for start in range(0, len(audio_paths), batch_size):
-        batch_paths = audio_paths[start : start + batch_size]
-        try:
-            speech_arrays = [librosa.load(p, sr=16000)[0] for p in batch_paths]
-            inputs = whisper_processor(
-                speech_arrays, sampling_rate=16000, return_tensors="pt", padding=True
-            ).input_features
-            inputs = inputs.to(device)
-            with torch.inference_mode():
-                predicted_ids = whisper_model.generate(inputs, forced_decoder_ids=forced_decoder_ids)
-            transcriptions = whisper_processor.batch_decode(predicted_ids, skip_special_tokens=True)
-            all_transcriptions.extend(transcriptions)
-        except Exception as e:
-            logging.info("Error during batched Whisper ASR ({} audio): {}".format(label, e))
-            all_transcriptions.extend([""] * len(batch_paths))
-    return all_transcriptions
-
-
 def pad_audio_to_min_length(audio_np: np.ndarray, sampling_rate: int, min_seconds: float) -> np.ndarray:
     """
     Pad audio to make it at least `min_seconds` long by adding silence at the end if needed.
@@ -243,61 +296,61 @@ def compute_utmosv2_scores(audio_dir, device):
     return utmosv2_scores_dict
 
 
-def transcribed_batched(
-    audio_paths,
-    language,
-    asr_model,
-    whisper_model,
-    whisper_processor,
-    device,
-    asr_batch_size,
-    label="",
-):
-    """Transcribe a list of audio files using NeMo ASR (English) or Whisper (other languages)."""
-    if language == "en":
-        texts = transcribe_with_nemo_asr_batched(asr_model, audio_paths, batch_size=asr_batch_size, label=label)
-    else:
-        texts = transcribe_with_whisper_batched(
-            whisper_model, whisper_processor, audio_paths, language, device, batch_size=asr_batch_size, label=label
-        )
-
-    return texts
-
-
 def load_evaluation_models(
-    language="en", sv_model_type="titanet", asr_model_name="stt_en_conformer_transducer_large", device="cuda"
+    sv_model_type="titanet",
+    asr_model_name="stt_en_conformer_transducer_large",
+    asr_model_type="nemo",
+    device="cuda",
+    with_prosody_metrics=False,
+    prosody_model_size="small",
 ):
-    """Load ASR and speaker verification models used for evaluation.
+    """Load the ASR and speaker-verification models used for evaluation.
 
     Args:
-        language: Language code. "en" uses a NeMo ASR model; other languages use Whisper.
-        sv_model_type: Speaker verification model type ("wavlm" or "titanet").
-        asr_model_name: Name of the NeMo ASR model (used only when language is "en").
-        device: Device to place models on.
+        sv_model_type: Speaker-verification model type. Supported values are
+            ``"wavlm"`` and ``"titanet"``.
+        asr_model_name: Name or path of the ASR model to load.
+        asr_model_type: ASR model implementation. Supported values are
+            ``"nemo"``, ``"nemo_with_prompt"``, and ``"whisper"``.
+        device: Device on which the evaluation models are loaded.
+        with_prosody_metrics: Whether to compute ESIM/EMS plus pitch,
+            intensity, and speech-rate distance metrics.
+        prosody_model_size: Size of the emotion encoder. Supported values are ``"small"`` or ``"large"``.
 
     Returns:
-        Dict with keys: asr_model, whisper_model, whisper_processor, feature_extractor,
-        sv_model, sv_model_alternate.
+        Dictionary containing:
+
+            - ``asr_model``: Loaded ASR transcriber.
+            - ``whisper_model``: Reserved Whisper model entry, currently ``None``.
+            - ``whisper_processor``: Reserved Whisper processor entry, currently
+            ``None``.
+            - ``feature_extractor``: WavLM feature extractor when
+            ``sv_model_type="wavlm"``; otherwise ``None``.
+            - ``sv_model``: Primary speaker-verification model.
+            - ``sv_model_alternate``: Alternate ``titanet_small``
+            speaker-verification model.
+            - ``emotion_model``: Emotion encoder when ``with_prosody_metrics=True``;
+            otherwise ``None``. It is also ``None`` if loading fails.
+
+    Raises:
+        ValueError: If ``asr_model_type`` is unsupported.
     """
     models = {
         'asr_model': None,
         'whisper_model': None,
         'whisper_processor': None,
         'feature_extractor': None,
+        'emotion_model': None,
     }
 
-    if language == "en":
-        if os.path.isfile(asr_model_name) and asr_model_name.endswith('.nemo'):
-            models['asr_model'] = nemo_asr.models.ASRModel.restore_from(restore_path=asr_model_name).to(device).eval()
-        elif asr_model_name.startswith("nvidia/") or asr_model_name in ["stt_en_conformer_transducer_large"]:
-            models['asr_model'] = nemo_asr.models.ASRModel.from_pretrained(model_name=asr_model_name).to(device).eval()
-        else:
-            raise ValueError(f"ASR model {asr_model_name} not supported")
+    if asr_model_type == "nemo":
+        models['asr_model'] = NemoTranscriber(model_name=asr_model_name, device=device)
+    elif asr_model_type == "nemo_with_prompt":
+        models['asr_model'] = NemoTranscriberWithPrompt(model_name=asr_model_name, device=device)
+    elif asr_model_type == "whisper":
+        models['asr_model'] = WhisperTranscriber(model_name=asr_model_name, device=device)
     else:
-        models['whisper_processor'] = WhisperProcessor.from_pretrained("openai/whisper-large-v3")
-        models['whisper_model'] = (
-            WhisperForConditionalGeneration.from_pretrained("openai/whisper-large-v3").to(device).eval()
-        )
+        raise ValueError(f"Unknown ASR model type {asr_model_name}")
 
     if sv_model_type == "wavlm":
         models['feature_extractor'] = Wav2Vec2FeatureExtractor.from_pretrained('microsoft/wavlm-base-plus-sv')
@@ -314,7 +367,64 @@ def load_evaluation_models(
         )
     models['sv_model_alternate'] = models['sv_model_alternate'].to(device).eval()
 
+    if with_prosody_metrics:
+        logging.info("Loading emotion encoder for ESIM/EMS prosody metrics...")
+        try:
+            from nemo.collections.tts.metrics.emotion_encoder import EmpathicInsightVoice
+
+            models['emotion_model'] = EmpathicInsightVoice.from_pretrained(
+                size=prosody_model_size,
+                device=device,
+                mlp_device=device,
+                cache_classifiers=True,
+                load_all_classifiers=False,
+                top_k_emotions=1,
+            ).eval()
+        except Exception as e:
+            logging.warning(f"Emotion encoder could not be loaded: {e}. ESIM/EMS metrics will be set to NaN.")
+
     return models
+
+
+def compute_emotion_pair_metrics(emotion_model, gt_audio_path, pred_audio_path):
+    """Compute ground-truth to predicted emotion similarity and top-emotion match."""
+    if emotion_model is None or gt_audio_path is None or pred_audio_path is None:
+        return float('NaN'), float('NaN')
+
+    try:
+        result = emotion_model.compare_emotion_pair(
+            audio_path_a=gt_audio_path,
+            audio_path_b=pred_audio_path,
+        )
+        return float(result["emotion_similarity"]), float(result["top_emotion_match"])
+    except Exception as e:
+        logging.warning(f"Could not compute ESIM/EMS for {gt_audio_path} and {pred_audio_path}: {e}")
+        return float('NaN'), float('NaN')
+
+
+def _empty_prosody_distance_metrics():
+    return {key: float('NaN') for key in PROSODY_DISTANCE_KEYS}
+
+
+def compute_acoustic_prosody_metrics(
+    gt_audio_path,
+    pred_audio_path,
+    text,
+):
+    """Compute reference-based pitch, intensity, and speech-rate distances."""
+    if gt_audio_path is None or pred_audio_path is None:
+        return _empty_prosody_distance_metrics()
+
+    try:
+        metrics = compute_prosody_distances(
+            gt_audio_path=gt_audio_path,
+            pred_audio_path=pred_audio_path,
+            text=text,
+        ).to_dict()
+        return {key: metrics[key] for key in PROSODY_DISTANCE_KEYS}
+    except Exception as e:
+        logging.warning(f"Could not compute acoustic prosody distances for {gt_audio_path} and {pred_audio_path}: {e}")
+        return _empty_prosody_distance_metrics()
 
 
 def classify_eou_batched(
@@ -344,7 +454,11 @@ def evaluate_dir(
     language="en",
     sv_model_type="titanet",
     asr_model_name="stt_en_conformer_transducer_large",
+    asr_model_type="nemo",
     with_utmosv2=True,
+    strip_text_annotations_for_metrics=False,
+    with_prosody_metrics=False,
+    prosody_model_size="small",
     asr_batch_size=32,
     eou_batch_size=32,
     device="cuda",
@@ -377,14 +491,20 @@ def evaluate_dir(
     context_audio_paths = [_resolve_path(audio_dir, r.get('context_audio_filepath')) for r in records]
 
     # 2. Load models
-    models = load_evaluation_models(language, sv_model_type, asr_model_name, device)
+    models = load_evaluation_models(
+        sv_model_type=sv_model_type,
+        asr_model_name=asr_model_name,
+        asr_model_type=asr_model_type,
+        device=device,
+        with_prosody_metrics=with_prosody_metrics,
+        prosody_model_size=prosody_model_size,
+    )
 
     asr_model = models['asr_model']
-    whisper_model = models['whisper_model']
-    whisper_processor = models['whisper_processor']
     feature_extractor = models['feature_extractor']
     speaker_verification_model = models['sv_model']
     speaker_verification_model_alternate = models['sv_model_alternate']
+    emotion_model = models['emotion_model']
 
     # 3. EoU classifier (support for English only)
     if language == "en":
@@ -410,43 +530,28 @@ def evaluate_dir(
 
     # Transcribe predicted audios
     text_processor = get_text_processor(language)
-    pred_texts = transcribed_batched(
-        audio_file_lists,
-        language,
-        asr_model,
-        whisper_model,
-        whisper_processor,
-        device,
-        asr_batch_size,
-        label="predicted",
-    )
+    pred_texts = asr_model.transcribe(audio_paths=audio_file_lists, language=language, batch_size=asr_batch_size)
+    if strip_text_annotations_for_metrics:
+        pred_texts = [strip_text_annotations_from_text(text) for text in pred_texts]
     pred_texts = [text_processor.process_text_for_wer(text) for text in pred_texts]
     # Transcribe ground truth audios
     if len(gt_audio_paths) > 0:
-        gt_audio_texts = transcribed_batched(
-            gt_audio_paths,
-            language,
-            asr_model,
-            whisper_model,
-            whisper_processor,
-            device,
-            asr_batch_size,
-            label="ground truth",
-        )
+        gt_audio_texts = asr_model.transcribe(audio_paths=gt_audio_paths, language=language, batch_size=asr_batch_size)
+        if strip_text_annotations_for_metrics:
+            gt_audio_texts = [strip_text_annotations_from_text(text) for text in gt_audio_texts]
         gt_audio_texts = [text_processor.process_text_for_wer(text) for text in gt_audio_texts]
     else:
         gt_audio_texts = [None] * len(records)
 
     # 6. Pre-compute ground-truth texts for all records
+    record_texts = []
     gt_texts_processed = []
     for record in records:
-        if "original_text" in record:
-            text_field = 'original_text'
-        elif 'normalized_text' in record:
-            text_field = 'normalized_text'
-        else:
-            text_field = 'text'
-        processed_text = text_processor.process_text_for_wer(record[text_field])
+        tts_text_input, dataloader_normalized_text, metric_reference_text = _get_record_texts(record)
+        record_texts.append((tts_text_input, dataloader_normalized_text))
+        if strip_text_annotations_for_metrics:
+            metric_reference_text = strip_text_annotations_from_text(metric_reference_text)
+        processed_text = text_processor.process_text_for_wer(metric_reference_text)
         gt_texts_processed.append(processed_text)
 
     # 7. Batched EoU classification
@@ -472,10 +577,46 @@ def evaluate_dir(
             utmosv2_score = float('nan')
 
         gt_text = gt_texts_processed[ridx]
+        tts_text_input, dataloader_normalized_text = record_texts[ridx]
 
         detailed_cer = word_error_rate_detail(hypotheses=[pred_text], references=[gt_text], use_cer=True)
         detailed_wer = word_error_rate_detail(hypotheses=[pred_text], references=[gt_text], use_cer=False)
+        cer_pred_gt_audio = (
+            word_error_rate_detail(hypotheses=[pred_text], references=[gt_audio_text], use_cer=True)[0]
+            if gt_audio_text is not None
+            else float('NaN')
+        )
+        wer_pred_gt_audio = (
+            word_error_rate_detail(hypotheses=[pred_text], references=[gt_audio_text], use_cer=False)[0]
+            if gt_audio_text is not None
+            else float('NaN')
+        )
 
+        # Japanese: additional reading-based CER on Katakana (pyopenjtalk g2p), robust to
+        # kanji/kana spelling differences between reference and ASR hypothesis.
+        gt_katakana = pred_katakana = None
+        katakana_cer = None
+        if isinstance(text_processor, JapaneseTextProcessor):
+            gt_katakana = text_processor.text_to_katakana(gt_text)
+            pred_katakana = text_processor.text_to_katakana(pred_text)
+            katakana_cer = word_error_rate_detail(hypotheses=[pred_katakana], references=[gt_katakana], use_cer=True)[
+                0
+            ]
+
+        pred_gt_esim = float('NaN')
+        pred_gt_ems = float('NaN')
+        prosody_distance_metrics = _empty_prosody_distance_metrics()
+        if with_prosody_metrics:
+            pred_gt_esim, pred_gt_ems = compute_emotion_pair_metrics(
+                emotion_model,
+                gt_audio_filepath,
+                pred_audio_filepath,
+            )
+            prosody_distance_metrics = compute_acoustic_prosody_metrics(
+                gt_audio_path=gt_audio_filepath,
+                pred_audio_path=pred_audio_filepath,
+                text=gt_text,
+            )
         logging.info(f"{ridx} GT Text: {gt_text}")
         logging.info(f"{ridx} Pr Text: {pred_text}")
         # Format cer and wer to 2 decimal places
@@ -494,7 +635,7 @@ def evaluate_dir(
                 model=speaker_verification_model_alternate,
                 extractor=feature_extractor,
                 device=device,
-                sv_model_type=sv_model_type,
+                sv_model_type="titanet",  # alternate is always titanet
             )
 
             # Initialize SSIMs with a default since the context or ground truth audio
@@ -561,32 +702,45 @@ def evaluate_dir(
             eou_trailing = float('nan')
             eou_rms_ratio = float('nan')
 
-        filewise_metrics.append(
-            {
-                'gt_text': gt_text,
-                'pred_text': pred_text,
-                'gt_audio_text': gt_audio_text,
-                'detailed_cer': detailed_cer,
-                'detailed_wer': detailed_wer,
-                'cer': detailed_cer[0],
-                'wer': detailed_wer[0],
-                'pred_gt_ssim': pred_gt_ssim,
-                'pred_context_ssim': pred_context_ssim,
-                'gt_context_ssim': gt_context_ssim,
-                'pred_gt_ssim_alternate': pred_gt_ssim_alternate,
-                'pred_context_ssim_alternate': pred_context_ssim_alternate,
-                'gt_context_ssim_alternate': gt_context_ssim_alternate,
-                'gt_audio_filepath': gt_audio_filepath,
-                'pred_audio_filepath': pred_audio_filepath,
-                'context_audio_filepath': context_audio_filepath,
-                'utmosv2': utmosv2_score,
-                'eou_type': eou_type,
-                'eou_trailing_duration': eou_trailing,
-                'eou_trail_rms_ratio': eou_rms_ratio,
-                'total_gen_audio_seconds': file_duration,
-                'predicted_codes_path': codes_file_lists[ridx] if has_codes else None,
-            }
-        )
+        metric_row = {
+            'gt_text': gt_text,
+            'pred_text': pred_text,
+            'gt_audio_text': gt_audio_text,
+            'tts_text_input': tts_text_input,
+            'dataloader_normalized_text': dataloader_normalized_text,
+            'predicted_phoneme_text': record.get('predicted_phoneme_text', ''),
+            'predicted_phoneme_tokens': record.get('predicted_phoneme_tokens', []),
+            'predicted_phoneme_token_labels': record.get('predicted_phoneme_token_labels', []),
+            'detailed_cer': detailed_cer,
+            'detailed_wer': detailed_wer,
+            'cer': detailed_cer[0],
+            'cer_pred_gt_audio': cer_pred_gt_audio,
+            'wer': detailed_wer[0],
+            'wer_pred_gt_audio': wer_pred_gt_audio,
+            'katakana_cer': katakana_cer,
+            'gt_katakana': gt_katakana,
+            'pred_katakana': pred_katakana,
+            'pred_gt_ssim': pred_gt_ssim,
+            'pred_context_ssim': pred_context_ssim,
+            'gt_context_ssim': gt_context_ssim,
+            'pred_gt_ssim_alternate': pred_gt_ssim_alternate,
+            'pred_context_ssim_alternate': pred_context_ssim_alternate,
+            'gt_context_ssim_alternate': gt_context_ssim_alternate,
+            'gt_audio_filepath': gt_audio_filepath,
+            'pred_audio_filepath': pred_audio_filepath,
+            'context_audio_filepath': context_audio_filepath,
+            'utmosv2': utmosv2_score,
+            'eou_type': eou_type,
+            'eou_trailing_duration': eou_trailing,
+            'eou_trail_rms_ratio': eou_rms_ratio,
+            'total_gen_audio_seconds': file_duration,
+            'predicted_codes_path': codes_file_lists[ridx] if has_codes else None,
+        }
+        if with_prosody_metrics:
+            metric_row['pred_gt_esim'] = pred_gt_esim
+            metric_row['pred_gt_ems'] = pred_gt_ems
+            metric_row.update(prosody_distance_metrics)
+        filewise_metrics.append(metric_row)
 
     return filewise_metrics
 
@@ -598,9 +752,13 @@ def evaluate(
     language="en",
     sv_model_type="titanet",
     asr_model_name="stt_en_conformer_transducer_large",
+    asr_model_type="nemo",
     with_utmosv2=True,
+    strip_text_annotations_for_metrics=False,
     with_fcd=True,
     codec_model_path=None,
+    with_prosody_metrics=False,
+    prosody_model_size="small",
     asr_batch_size=32,
     eou_batch_size=32,
     device="cuda",
@@ -635,7 +793,11 @@ def evaluate(
         language=language,
         sv_model_type=sv_model_type,
         asr_model_name=asr_model_name,
+        asr_model_type=asr_model_type,
         with_utmosv2=with_utmosv2,
+        strip_text_annotations_for_metrics=strip_text_annotations_for_metrics,
+        with_prosody_metrics=with_prosody_metrics,
+        prosody_model_size=prosody_model_size,
         asr_batch_size=asr_batch_size,
         eou_batch_size=eou_batch_size,
         device=device,
@@ -659,7 +821,11 @@ def evaluate(
     elapsed = time.time() - start_time
     logging.info(f"evaluate() completed in {elapsed:.1f}s ({elapsed / 60:.1f} min)")
 
-    filtered_filewise = [{k: m[k] for k in FILEWISE_METRICS_TO_SAVE if k in m} for m in filewise_metrics]
+    filewise_metrics_to_save = list(FILEWISE_METRICS_TO_SAVE)
+    if (language or "").replace("_", "-").lower().split("-")[0] == "ja":
+        filewise_metrics_to_save[2:2] = KATAKANA_METRICS_TO_SAVE
+
+    filtered_filewise = [{k: m[k] for k in filewise_metrics_to_save if k in m} for m in filewise_metrics]
     return avg_metrics, filtered_filewise
 
 
@@ -684,6 +850,18 @@ def compute_fcd(gt_audio_paths, predicted_codes_paths, codec_model_path, device=
     fcd = fcd_metric.compute().cpu().item()
     fcd_metric.reset()
     return fcd
+
+
+def _mean_finite_metric(filewise_metrics, key: str) -> float:
+    values = []
+    for metrics in filewise_metrics:
+        try:
+            value = float(metrics[key])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if np.isfinite(value):
+            values.append(value)
+    return float('nan') if not values else float(np.mean(values))
 
 
 def compute_global_metrics(
@@ -717,6 +895,15 @@ def compute_global_metrics(
     avg_metrics['wer_cumulative'] = word_error_rate_detail(hypotheses=pred_texts, references=gt_texts, use_cer=False)[
         0
     ]
+    # Japanese reading-based CER (Katakana via pyopenjtalk); only present for ja datasets.
+    kata = [m for m in filewise_metrics if m.get('katakana_cer') is not None]
+    if kata:
+        avg_metrics['katakana_cer_filewise_avg'] = sum(m['katakana_cer'] for m in kata) / len(kata)
+        avg_metrics['katakana_cer_cumulative'] = word_error_rate_detail(
+            hypotheses=[m['pred_katakana'] for m in kata],
+            references=[m['gt_katakana'] for m in kata],
+            use_cer=True,
+        )[0]
     avg_metrics['ssim_pred_gt_avg'] = sum(m['pred_gt_ssim'] for m in filewise_metrics) / n
     avg_metrics['ssim_pred_context_avg'] = sum(m['pred_context_ssim'] for m in filewise_metrics) / n
     avg_metrics['ssim_gt_context_avg'] = sum(m['gt_context_ssim'] for m in filewise_metrics) / n
@@ -725,10 +912,25 @@ def compute_global_metrics(
         sum(m['pred_context_ssim_alternate'] for m in filewise_metrics) / n
     )
     avg_metrics['ssim_gt_context_avg_alternate'] = sum(m['gt_context_ssim_alternate'] for m in filewise_metrics) / n
+    if 'pred_gt_esim' in filewise_metrics[0]:
+        avg_metrics['esim_pred_gt_avg'] = sum(m['pred_gt_esim'] for m in filewise_metrics) / n
+        avg_metrics['ems_pred_gt_avg'] = sum(m['pred_gt_ems'] for m in filewise_metrics) / n
+    if 'pitch_distance' in filewise_metrics[0]:
+        avg_metrics['pitch_distance_avg'] = _mean_finite_metric(filewise_metrics, 'pitch_distance')
+        avg_metrics['intensity_distance_avg'] = _mean_finite_metric(filewise_metrics, 'intensity_distance')
+        avg_metrics['speech_rate_distance_avg'] = _mean_finite_metric(filewise_metrics, 'speech_rate_distance')
 
     # Cumulative WER/CER on ground-truth audio transcriptions (if available)
     gt_audio_texts = [m['gt_audio_text'] for m in filewise_metrics]
+    avg_metrics['cer_pred_gt_audio_filewise_avg'] = _mean_finite_metric(filewise_metrics, 'cer_pred_gt_audio')
+    avg_metrics['wer_pred_gt_audio_filewise_avg'] = _mean_finite_metric(filewise_metrics, 'wer_pred_gt_audio')
     if None not in gt_audio_texts:
+        avg_metrics['cer_pred_gt_audio_cumulative'] = word_error_rate_detail(
+            hypotheses=pred_texts, references=gt_audio_texts, use_cer=True
+        )[0]
+        avg_metrics['wer_pred_gt_audio_cumulative'] = word_error_rate_detail(
+            hypotheses=pred_texts, references=gt_audio_texts, use_cer=False
+        )[0]
         avg_metrics['cer_gt_audio_cumulative'] = word_error_rate_detail(
             hypotheses=gt_audio_texts, references=gt_texts, use_cer=True
         )[0]
@@ -736,6 +938,8 @@ def compute_global_metrics(
             hypotheses=gt_audio_texts, references=gt_texts, use_cer=False
         )[0]
     else:
+        avg_metrics['cer_pred_gt_audio_cumulative'] = float('NaN')
+        avg_metrics['wer_pred_gt_audio_cumulative'] = float('NaN')
         avg_metrics['cer_gt_audio_cumulative'] = float('NaN')
         avg_metrics['wer_gt_audio_cumulative'] = float('NaN')
         logging.warning(
@@ -776,8 +980,19 @@ def main():
     parser.add_argument('--manifest_path', type=str, default=None)
     parser.add_argument('--audio_dir', type=str, default=None)
     parser.add_argument('--generated_audio_dir', type=str, default=None)
-    parser.add_argument('--whisper_language', type=str, default="en")
+    parser.add_argument('--language', type=str, default="en")
     parser.add_argument('--evalset', type=str, default=None)
+    parser.add_argument(
+        '--with_prosody_metrics',
+        action='store_true',
+        help='Compute ESIM/EMS and pitch, intensity, and speech-rate distance metrics.',
+    )
+    parser.add_argument('--prosody_model_size', type=str, default="small", choices=["small", "large"])
+    parser.add_argument(
+        '--strip_text_annotations_for_metrics',
+        action='store_true',
+        help='Strip bracket/tag/control annotations from reference and ASR hypothesis text while computing text metrics.',
+    )
     args = parser.parse_args()
 
     if args.evalset is not None:
@@ -790,9 +1005,12 @@ def main():
         args.manifest_path,
         args.audio_dir,
         args.generated_audio_dir,
-        args.whisper_language,
+        args.language,
         sv_model_type="wavlm",
         asr_model_name="nvidia/parakeet-ctc-0.6b",
+        with_prosody_metrics=args.with_prosody_metrics,
+        strip_text_annotations_for_metrics=args.strip_text_annotations_for_metrics,
+        prosody_model_size=args.prosody_model_size,
     )
 
 

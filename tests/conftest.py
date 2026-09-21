@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,6 +18,8 @@ import os.path
 import shutil
 import tarfile
 import tempfile
+import time
+import urllib.error
 import urllib.request
 from os import mkdir
 from os.path import dirname, exists, getsize, join
@@ -31,8 +34,23 @@ from nemo.utils.tar_utils import safe_extract
 
 # Those variables probably should go to main NeMo configuration file (config.yaml).
 __TEST_DATA_FILENAME = "test_data.tar.gz"
-__TEST_DATA_URL = "https://github.com/NVIDIA/NeMo/releases/download/v1.0.0rc1/"
+__TEST_DATA_URL = "https://github.com/NVIDIA-NeMo/Speech/releases/download/v1.0.0rc1/"
 __TEST_DATA_SUBDIR = ".data"
+__TEST_DATA_DOWNLOAD_ATTEMPTS = 5
+__TEST_DATA_DOWNLOAD_BACKOFF_SECONDS = 2
+
+
+def _retry_url_operation(operation):
+    """Retry a URL operation with exponential backoff."""
+    for attempt in range(1, __TEST_DATA_DOWNLOAD_ATTEMPTS + 1):
+        try:
+            return operation()
+        except (OSError, urllib.error.URLError):
+            if attempt == __TEST_DATA_DOWNLOAD_ATTEMPTS:
+                raise
+            time.sleep(__TEST_DATA_DOWNLOAD_BACKOFF_SECONDS * 2 ** (attempt - 1))
+
+    raise RuntimeError("URL retry loop completed without returning or raising")
 
 
 def pytest_addoption(parser):
@@ -169,7 +187,7 @@ def extract_data_from_tar(test_dir, test_data_archive, url=None, local_data=Fals
 
     # Download (if required)
     if url is not None and not local_data:
-        urllib.request.urlretrieve(url, test_data_archive)
+        _retry_url_operation(lambda: urllib.request.urlretrieve(url, test_data_archive))
 
     # Extract tar
     print("Extracting the `{}` test archive, please wait...".format(test_data_archive))
@@ -250,7 +268,7 @@ def pytest_configure(config):
     if not config.option.use_local_test_data:
         try:
             url = __TEST_DATA_URL + __TEST_DATA_FILENAME
-            u = urllib.request.urlopen(url)
+            u = _retry_url_operation(lambda: urllib.request.urlopen(url, timeout=300))
         except:
             # Couldn't access remote archive.
             if test_data_local_size == -1:

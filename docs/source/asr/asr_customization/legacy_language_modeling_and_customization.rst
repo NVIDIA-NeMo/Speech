@@ -9,9 +9,9 @@ best candidates. The beam search decoders in NeMo support language models traine
 `https://github.com/kpu/kenlm <https://github.com/kpu/kenlm>`__).
 The beam search decoders and KenLM library are not installed by default in NeMo. 
 You need to install them to be able to use beam search decoding and N-gram LM.
-Please refer to `scripts/asr_language_modeling/ngram_lm/install_beamsearch_decoders.sh <https://github.com/NVIDIA/NeMo/blob/stable/scripts/asr_language_modeling/ngram_lm/install_beamsearch_decoders.sh>`__
+Please refer to `scripts/asr_language_modeling/ngram_lm/install_beamsearch_decoders.sh <https://github.com/NVIDIA-NeMo/Speech/blob/stable/scripts/asr_language_modeling/ngram_lm/install_beamsearch_decoders.sh>`__
 on how to install them. Alternatively, you can build Docker image
-`scripts/installers/Dockerfile.ngramtools <https://github.com/NVIDIA/NeMo/blob/stable/scripts/installers/Dockerfile.ngramtools>`__ with all the necessary dependencies.
+`scripts/installers/Dockerfile.ngramtools <https://github.com/NVIDIA-NeMo/Speech/blob/stable/scripts/installers/Dockerfile.ngramtools>`__ with all the necessary dependencies.
 
 Please, refer to :ref:`train-ngram-lm` for more details on how to train an N-gram LM using KenLM library.
 
@@ -31,7 +31,7 @@ Evaluate by Beam Search Decoding and N-gram LM
 
 NeMo's beam search decoders are capable of using the KenLM's N-gram models to find the best candidates.
 The script to evaluate an ASR model with beam search decoding and N-gram models can be found at
-`scripts/asr_language_modeling/ngram_lm/eval_beamsearch_ngram_ctc.py <https://github.com/NVIDIA/NeMo/blob/stable/scripts/asr_language_modeling/ngram_lm/eval_beamsearch_ngram_ctc.py>`__.
+`scripts/asr_language_modeling/ngram_lm/eval_beamsearch_ngram_ctc.py <https://github.com/NVIDIA-NeMo/Speech/blob/stable/scripts/asr_language_modeling/ngram_lm/eval_beamsearch_ngram_ctc.py>`__.
 
 This script has a large number of possible argument overrides; therefore, it is recommended that you use ``python eval_beamsearch_ngram_ctc.py --help`` to see the full list of arguments.
 
@@ -119,7 +119,7 @@ The width of the beam search (``--beam_width``) specifies the number of top cand
     and ``pyctcdecode`` via the ``decoding`` subconfig.
 
 To learn more about evaluating the ASR models with N-gram LM, refer to the tutorial here: Offline ASR Inference with Beam Search and External Language Model Rescoring
-`Offline ASR Inference with Beam Search and External Language Model Rescoring <https://colab.research.google.com/github/NVIDIA/NeMo/blob/main/tutorials/asr/Offline_ASR.ipynb>`_
+`Offline ASR Inference with Beam Search and External Language Model Rescoring <https://colab.research.google.com/github/NVIDIA-NeMo/Speech/blob/main/tutorials/asr/Offline_ASR.ipynb>`_
 
 Beam Search Engines
 -------------------
@@ -215,7 +215,7 @@ Beam Search ngram Decoding for Transducer Models (RNNT and HAT)
 ===============================================================
 
 You can also find a similar script to evaluate an RNNT/HAT model with beam search decoding and N-gram models at:
-`scripts/asr_language_modeling/ngram_lm/eval_beamsearch_ngram_transducer.py <https://github.com/NVIDIA/NeMo/blob/stable/scripts/asr_language_modeling/ngram_lm/eval_beamsearch_ngram_transducer.py>`_
+`scripts/asr_language_modeling/ngram_lm/eval_beamsearch_ngram_transducer.py <https://github.com/NVIDIA-NeMo/Speech/blob/stable/scripts/asr_language_modeling/ngram_lm/eval_beamsearch_ngram_transducer.py>`_
 
 .. code-block::
 
@@ -251,7 +251,7 @@ To run WFST decoding in NeMo, one needs to provide a NeMo ASR model and either a
 
 The script to evaluate an ASR model with WFST decoding and N-gram models can be found at
 `scripts/asr_language_modeling/ngram_lm/eval_wfst_decoding_ctc.py
-<https://github.com/NVIDIA/NeMo/blob/main/scripts/asr_language_modeling/ngram_lm/eval_wfst_decoding_ctc.py>`__.
+<https://github.com/NVIDIA-NeMo/Speech/blob/main/scripts/asr_language_modeling/ngram_lm/eval_wfst_decoding_ctc.py>`__.
 
 This script has a large number of possible argument overrides, therefore it is advised to use ``python eval_wfst_decoding_ctc.py --help`` to see the full list of arguments.
 

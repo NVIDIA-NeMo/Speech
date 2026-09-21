@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -107,7 +108,7 @@ def _resolve_automodel_configs(strategy) -> None:
         strategy._distributed_config = FSDP2Config(**resolved)
 
     if isinstance(getattr(strategy, '_moe_config', None), Mapping):
-        from nemo_automodel.components.moe.config import MoEParallelizerConfig
+        from nemo_automodel.components.distributed.config import MoEParallelizerConfig
 
         strategy._moe_config = MoEParallelizerConfig(**strategy._moe_config)
 

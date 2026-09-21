@@ -162,13 +162,33 @@ Note the differences from the SALM configuration:
 * ``encoder_chunk_size_seconds`` controls long-audio chunking for the speech encoder.
   Audio rows longer than this value are split on the time axis, encoded as a chunk
   batch, and concatenated back into one embedding sequence before the LLM forward.
-  Set it to ``null`` to disable chunking.
+  Set it to ``null`` to disable chunking. With a ``ParallelExpertEncoder`` and
+  ``packed_encoder_sequences: true``, this same value instead chunks both the ASR
+  and diarization branches after feature stacking; set the data audio-token
+  estimator's ``chunk_size_seconds`` to ``null`` because this does not change the
+  total encoder-token count.
 
 SALMAutomodel-Specific Options
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The SALMAutomodel config exposes a few extra knobs that pass through to NeMo
 Automodel. All are optional — defaults preserve standard behavior.
+
+**Garbage collection:**
+
+.. code-block:: yaml
+
+    model:
+      # Optional positive optimizer-step interval; null keeps automatic GC.
+      gc_every_steps: null
+
+Setting ``gc_every_steps`` to a positive integer disables Python's automatic
+garbage collector at fit start and uses NeMo Automodel's generation-1 collector
+at that optimizer-step cadence. This avoids an occasional generation-2 scan on
+one distributed rank delaying all peers at the next collective. The cadence is
+counted in optimizer steps, so gradient accumulation does not increase the
+collection frequency. Leave it ``null`` unless profiling shows GC-related rank
+stragglers.
 
 **MoE training:**
 
@@ -216,7 +236,7 @@ net aux-loss gradient scale stays at 1.
         attn: te                  # "te" | "sdpa" | "flex"
         linear: te                # "torch" | "te"
         rms_norm: torch_fp32      # "torch" | "torch_fp32" | "te"
-        rope_fusion: true
+        rope_fusion: false          # Current Automodel main force-disables fused RoPE
         experts: torch_mm         # "torch" | "te" | "gmm" | "torch_mm"
         dispatcher: deepep        # "torch" | "deepep" | "hybridep" | "uccl_ep"
         dispatcher_num_sms: 20
@@ -225,9 +245,10 @@ net aux-loss gradient scale stays at 1.
       # E.g. ["flash_attention"] forces FA2 and errors if unavailable.
       sdpa_method: null
 
-Defaults come from Automodel's ``BackendConfig`` and auto-select TransformerEngine /
-DeepEP when available; override here to pin a specific backend (for example,
-``attn: sdpa`` to bypass TE).
+Defaults come from Automodel's ``BackendConfig`` and select available kernels and
+dispatchers; override here to pin a specific backend (for example, ``attn: sdpa``
+to bypass TE). ``enable_deepep`` is no longer supported; set ``dispatcher`` and
+``experts`` explicitly.
 
 **Packed sequences (THD):**
 

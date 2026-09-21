@@ -66,8 +66,8 @@ Key differences from SALM:
 * **Native LoRA**: Uses NeMo Automodel's built-in LoRA instead of HuggingFace PEFT.
   LoRA is applied before FSDP2 sharding for correct meta-device handling.
 * **AutomodelParallelStrategy**: Integrates with a custom Lightning strategy that
-  delegates device mesh creation to NeMo Automodel, supporting FSDP2, TP, PP, CP,
-  EP (MoE), and HSDP.
+  delegates topology resolution to NeMo Automodel, supporting FSDP2, TP, PP, CP,
+  EP (MoE), and HSDP. ``SALMAutomodel`` currently uses all except PP.
 * **MoE optimizations**: NeMo Automodel provides first-class support for
   Mixture-of-Experts architectures with **Grouped GEMM** (fused expert computation
   for higher throughput) and **DeepEP** (Deep Expert Parallelism for efficient
@@ -313,6 +313,21 @@ All models in the speechlm2 collection can be instantiated from pretrained check
 
     # Load NemotronVoiceChat (Inference Only)
     voicechat_model = slm.models.NemotronVoiceChat.from_pretrained("path/to/checkpoint")
+
+Remote HuggingFace code is disabled by default. If a trusted checkpoint requires
+custom code, opt in at runtime and pin the repository to a reviewed revision:
+
+.. code-block:: python
+
+    model = slm.models.SALM.from_pretrained(
+        "trusted/model",
+        revision="reviewed-commit-sha",
+        trust_remote_code=True,
+    )
+
+The ``trust_remote_code`` setting stored in a checkpoint configuration is ignored.
+This prevents a model repository from opting itself into executing downloaded
+Python code.
 
 Fine-Tuning from a Checkpoint
 ------------------------------

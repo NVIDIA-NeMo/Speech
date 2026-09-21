@@ -127,7 +127,7 @@ python scripts/tts_comparison_report/generate_report.py \
   --s3_region us-west-2 \
   --task_id NEMOTTS-2007 \
   --audio_report \
-  --audio_report_benchmarks libritts_test_clean,riva_hard_digits \
+  --audio_report_benchmarks libritts,riva_en \
   --samples_per_benchmark 20
 ```
 
@@ -145,7 +145,7 @@ python scripts/tts_comparison_report/generate_report.py \
   --s3_region us-west-2 \
   --task_id NEMOTTS-2007 \
   --audio_report \
-  --audio_report_benchmarks libritts_test_clean,riva_hard_digits \
+  --audio_report_benchmarks libritts,riva_en \
   --samples_per_benchmark 20 \
   --remote_hostname your_remote_host \
   --remote_username your_user
@@ -160,13 +160,13 @@ python scripts/tts_comparison_report/generate_report.py \
   --baseline_path /workspace/NeMo/exp/buckets/baseline \
   --candidate_name "Model B" \
   --candidate_path /workspace/NeMo/exp/buckets/candidate \
-  --benchmarks libritts_test_clean,riva_hard_digits,riva_hard_letters \
+  --benchmarks libritts,riva_en,riva_en_hard_sentences \
   --s3_endpoint https://your-s3-endpoint \
   --s3_bucket your_bucket_name \
   --s3_region us-west-2 \
   --task_id NEMOTTS-2007 \
   --audio_report \
-  --audio_report_benchmarks libritts_test_clean,riva_hard_digits \
+  --audio_report_benchmarks libritts,riva_en \
   --samples_per_benchmark 20
 ```
 

@@ -1,4 +1,5 @@
-# Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -22,6 +23,7 @@ from scripts.tts_comparison_report.reporting.components import (
     prepare_eval_artifacts,
 )
 from scripts.tts_comparison_report.reporting.constants import (
+    BENCHMARK_META,
     S3_AUDIO_DIR,
     S3_IMAGES_DIR,
     S3_LINK_EXPIRES_IN,
@@ -268,7 +270,9 @@ class Orchestrator:
                 pair_blocks=pair_blocks,
             )
             benchmark_blocks.append(block)
-            benchmark_section_info.append((benchmark_name, benchmark_name))
+            benchmark_language = BENCHMARK_META[benchmark_name]
+            name_info = f"{benchmark_name} ({benchmark_language})"
+            benchmark_section_info.append((benchmark_name, name_info))
 
         report = self.renderer.render(
             name=TemplateName.audio_report,
@@ -370,7 +374,9 @@ class Orchestrator:
                 image_block=image_block,
             )
             benchmark_blocks.append(block)
-            benchmark_section_info.append((benchmark_name, benchmark_name))
+            benchmark_language = BENCHMARK_META[benchmark_name]
+            name_info = f"{benchmark_name} ({benchmark_language})"
+            benchmark_section_info.append((benchmark_name, name_info))
 
         report = self.renderer.render(
             name=TemplateName.eval_report,

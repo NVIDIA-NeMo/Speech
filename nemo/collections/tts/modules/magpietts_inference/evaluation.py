@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -43,17 +44,27 @@ class EvaluationConfig:
         with_utmosv2: Whether to compute UTMOSv2 (Mean Opinion Score) metrics.
         with_fcd: Whether to compute Frechet Codec Distance metric.
         codec_model_path: Path to the audio codec model. If None, will skip computing Frechet Codec Distance metric.
+        with_prosody_metrics: Whether to compute ESIM/EMS plus pitch,
+            intensity, and speech-rate distance metrics.
+        prosody_model_size: Emotion encoder size ("small" or "large").
+        strip_text_annotations_for_metrics: Whether to strip annotation/control markers from reference and ASR hypothesis text before text metrics.
         device: Device to use for running models used during evaluation.
     """
 
     sv_model: str = "titanet"
     asr_model_name: str = "nvidia/parakeet-tdt-1.1b"
+    asr_model_type: str = "nemo"
     eou_model_name: str = "facebook/wav2vec2-base-960h"
     language: str = "en"
     with_utmosv2: bool = True
     with_fcd: bool = True
     codec_model_path: str = None
+    with_prosody_metrics: bool = False
+    prosody_model_size: str = "small"
+    strip_text_annotations_for_metrics: bool = False
     device: str = "cuda"
+    asr_batch_size: int = 32
+    eou_batch_size: int = 32
 
 
 def evaluate_generated_audio_dir(
@@ -90,11 +101,17 @@ def evaluate_generated_audio_dir(
         language=config.language,
         sv_model_type=config.sv_model,
         asr_model_name=config.asr_model_name,
+        asr_model_type=config.asr_model_type,
         with_utmosv2=config.with_utmosv2,
         with_fcd=config.with_fcd,
         codec_model_path=config.codec_model_path,
+        with_prosody_metrics=config.with_prosody_metrics,
+        prosody_model_size=config.prosody_model_size,
+        strip_text_annotations_for_metrics=config.strip_text_annotations_for_metrics,
         device=config.device,
         eou_model_name=config.eou_model_name,
+        asr_batch_size=config.asr_batch_size,
+        eou_batch_size=config.eou_batch_size,
     )
 
     return avg_metrics, filewise_metrics

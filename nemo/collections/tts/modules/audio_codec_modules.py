@@ -1,4 +1,5 @@
-# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,9 +13,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Portions adapted from the VoxCeleb trainer:
+# Copyright (c) 2020-present NAVER Corp. Licensed under the MIT License.
+# Source: https://github.com/clovaai/voxceleb_trainer
+#
+# ResNet portions adapted through the VoxCeleb trainer from torchvision:
+# Copyright (c) 2016 Soumith Chintala. Licensed under the BSD-3-Clause License.
+# Source: https://github.com/pytorch/vision
+#
+# Wav2Vec2 and EnCodec helpers adapted from Hugging Face Transformers:
+# Copyright 2022 The HuggingFace Inc. team. Licensed under the Apache License, Version 2.0.
+# Source: https://github.com/huggingface/transformers
+
 import math
-import os
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from typing import Iterable, List, Optional, Tuple
 
 import numpy as np
@@ -29,6 +42,7 @@ from nemo.collections.audio.parts.utils.transforms import MelSpectrogram, Resamp
 from nemo.collections.common.parts.utils import ClampActivation, HalfSnake, Snake, mask_sequence_tensor
 from nemo.core.classes.common import typecheck
 from nemo.core.classes.module import NeuralModule
+from nemo.core.neural_types import IntType
 from nemo.core.neural_types.elements import (
     AudioSignal,
     EncodedRepresentation,
@@ -39,16 +53,6 @@ from nemo.core.neural_types.elements import (
 )
 from nemo.core.neural_types.neural_type import NeuralType
 from nemo.utils import logging
-
-try:
-    import fsspec
-
-    HAVE_FSSPEC = True
-except ModuleNotFoundError:
-    HAVE_FSSPEC = False
-
-
-from contextlib import contextmanager
 
 
 @contextmanager
@@ -232,11 +236,11 @@ class SLMEncoder(NeuralModule):
         if self.resample is not None:
             audio = self.resample(audio)
 
-        audio = torch.nn.functional.pad(audio, (0, self.padding))
+        audio = torch.nn.functional.pad(audio, (0, self.padding)).float()
         feats = self.feature_extractor(audio.cpu(), sampling_rate=self.slm_sr, return_tensors="pt").data[
             'input_features'
         ]
-        feats = feats.to(audio.device)
+        feats = feats.to(device=audio.device, dtype=audio.dtype)
 
         with torch.no_grad():
             out = self.semantic_model(feats)
@@ -337,33 +341,6 @@ def zero_mean_unit_var_norm(input_values):
         input_values.var(dim=1).unsqueeze(-1) + 1e-7
     )
     return normed_input_values
-
-
-##############
-# Speaker encoder #
-##############
-def load_fsspec(path: str, map_location: str = None, **kwargs):
-    """Like torch.load but can load from other locations (e.g. s3:// , gs://).
-
-    Args:
-        path: Any path or url supported by fsspec.
-        map_location: torch.device or str.
-        cache: If True, cache a remote file locally for subsequent calls. It is cached under `get_user_data_dir()/tts_cache`. Defaults to True.
-        **kwargs: Keyword arguments forwarded to torch.load.
-
-    Returns:
-        Object stored in path.
-    """
-    is_local = os.path.isdir(path) or os.path.isfile(path)
-    if is_local:
-        return torch.load(path, map_location=map_location, **kwargs)
-    else:
-        if HAVE_FSSPEC:
-            with fsspec.open(path, "rb") as f:
-                return torch.load(f, map_location=map_location, **kwargs)
-        else:
-            logging.error('Could not import fsspec. Loading a checkpoint link is not supported!')
-            raise ModuleNotFoundError("fsspec is not installed but is necessary to download remote checkpoints !!")
 
 
 class PreEmphasis(NeuralModule):
@@ -608,7 +585,7 @@ class ResNetSpeakerEncoder(NeuralModule):
         )
 
     def load_checkpoint(self, checkpoint_path: str, strict=True):
-        state = load_fsspec(checkpoint_path, map_location=torch.device("cpu"))
+        state = torch.load(checkpoint_path, map_location=torch.device("cpu"))
         self.load_state_dict(state["model"], strict=strict)
 
 
@@ -1343,6 +1320,27 @@ class VectorQuantizerBase(NeuralModule, ABC):
     def decode(self, indices: torch.Tensor, input_len: torch.Tensor) -> torch.Tensor:
         pass
 
+    @typecheck(
+        input_types={
+            "encoded": NeuralType(('B', 'D', 'T'), EncodedRepresentation()),
+            "num_codebooks": NeuralType(tuple('B'), IntType(), optional=True),
+        },
+        output_types={
+            "outputs": NeuralType(('B', 'D', 'T'), EncodedRepresentation()),
+        },
+    )
+    def dropout_codebooks(self, encoded: torch.Tensor, num_codebooks: Optional[int]) -> torch.Tensor:
+        """Dropout encoder output so that only 'num_codebooks' are left as decoder_input.
+
+        Args:
+            encoded: encoder output (B, D, T)
+            num_codebooks: number of codebooks to keep (B)
+
+        Returns:
+            Encoder output with all codebooks above index 'num_codebooks' dropped out
+        """
+        raise NotImplementedError(f"Codebook dropout not implemented for {self.__class__.__name__}")
+
 
 class FiniteScalarQuantizer(VectorQuantizerBase):
     """This quantizer is based on the Finite Scalar Quantization (FSQ) method.
@@ -1684,6 +1682,39 @@ class GroupFiniteScalarQuantizer(VectorQuantizerBase):
         indices = torch.stack(indices, dim=1)
 
         return indices
+
+    @typecheck(
+        input_types={
+            "encoded": NeuralType(('B', 'D', 'T'), EncodedRepresentation()),
+            "num_codebooks": NeuralType(tuple('B'), IntType(), optional=True),
+        },
+        output_types={
+            "outputs": NeuralType(('B', 'D', 'T'), EncodedRepresentation()),
+        },
+    )
+    def dropout_codebooks(self, encoded: torch.Tensor, num_codebooks: torch.Tensor) -> torch.Tensor:
+        """Sets all embedding values in dimensions above (num_codebooks * codebook_dim) to 0.
+
+        Args:
+            encoded: encoder output (B, D, T)
+            num_codebooks: number of codebooks to keep (B)
+
+        Returns:
+            Encoder output with all codebooks above index 'num_codebooks' masked out
+        """
+        batch_size, embed_dim, num_frames = encoded.shape
+        # [B, D, T]
+        embed_indices = (
+            torch.arange(start=0, end=embed_dim, device=encoded.device)
+            .unsqueeze(0)
+            .unsqueeze(2)
+            .repeat(batch_size, 1, num_frames)
+        )
+        emb_unmask_dim = self.codebook_dim_per_group * num_codebooks
+        emb_unmask_dim = rearrange(emb_unmask_dim, 'B -> B 1 1')
+        codebook_mask = embed_indices < emb_unmask_dim
+        out = encoded * codebook_mask
+        return out
 
 
 class ResidualBlock(NeuralModule):

@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -76,13 +77,16 @@ class BaseBuilder:
     def _apply_confidence_cfg(cfg: DictConfig, decoding_cfg: RNNTDecodingConfig) -> None:
         """
         Wire the separately-stored `confidence` block into the RNNT decoding confidence config so the
-        greedy decoder computes per-token confidence with the configured method. The streaming pipelines
-        only support non-blank confidence (`confidence.exclude_blank=true`).
+        greedy or batched-beam decoder computes per-token confidence with the configured method. The streaming
+        pipelines only support non-blank confidence (`confidence.exclude_blank=true`).
         Args:
             cfg: (DictConfig) Full pipeline config (provides the top-level `confidence` block).
             decoding_cfg: (RNNTDecodingConfig) Decoding config to update in place.
         """
-        if not decoding_cfg.greedy.get("preserve_frame_confidence", False):
+        preserve_frame_confidence = decoding_cfg.greedy.get(
+            "preserve_frame_confidence", False
+        ) or decoding_cfg.beam.get("preserve_frame_confidence", False)
+        if not preserve_frame_confidence:
             return
         confidence_cfg = cfg.get("confidence", None)
         if confidence_cfg is None:
@@ -92,6 +96,8 @@ class BaseBuilder:
                 "Streaming confidence supports only non-blank confidence (`confidence.exclude_blank=true`)."
             )
         decoding_cfg.confidence_cfg.preserve_frame_confidence = True
+        decoding_cfg.confidence_cfg.preserve_token_confidence = True
+        decoding_cfg.confidence_cfg.preserve_word_confidence = True
         decoding_cfg.confidence_cfg.exclude_blank = True
         decoding_cfg.confidence_cfg.aggregation = confidence_cfg.get("aggregation", "mean")
         decoding_cfg.confidence_cfg.method_cfg = OmegaConf.merge(

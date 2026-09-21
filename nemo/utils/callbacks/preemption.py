@@ -1,4 +1,5 @@
-# Copyright (c) 2023, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,7 +14,6 @@
 # limitations under the License.
 
 import signal
-import sys
 
 import torch
 from lightning.pytorch.callbacks import Callback
@@ -66,6 +66,7 @@ class PreemptionCallback(Callback):
 
             # Master handler on rank 0 only upon preemption signal to avoid deadlock conditions
             def master_handler(signum, frame):
+                logging.info("Received preemption signal on rank 0; checkpoint save will run after current batch")
                 self.release()
                 self._interrupted = True
 
@@ -76,6 +77,7 @@ class PreemptionCallback(Callback):
             self.private_rank = torch.distributed.get_rank()
             if self.private_rank == 0:
                 signal.signal(self.sig, master_handler)
+                logging.info(f"PreemptionCallback enabled on rank 0 for signal {getattr(self.sig, 'name', self.sig)}")
             else:
                 signal.signal(self.sig, ignoring_handler)
 
@@ -96,17 +98,12 @@ class PreemptionCallback(Callback):
             # a regular local variable
             interrupted = self.interrupted
             if interrupted:
-                logging.info("Received SIGTERM, saving checkpoint and exiting")
-                # Same off-by-one as in StatelessTimer: on_train_batch_end fires before
-                # batch_progress.increment_completed(), but the batch's optim step has
-                # already advanced global_step. Flush the in-flight batch so resume
-                # doesn't replay it and double-count the optim step.
-                from nemo.utils.exp_manager import _flush_in_flight_batch_progress
+                from nemo.utils.exp_manager import _save_last_checkpoint_and_exit
 
-                _flush_in_flight_batch_progress(trainer)
-                monitor_candidates = self.checkpoint_callback._monitor_candidates(trainer)
-                self.checkpoint_callback._save_last_checkpoint(trainer, monitor_candidates)
-                sys.exit(0)
+                _save_last_checkpoint_and_exit(
+                    trainer,
+                    "PreemptionCallback observed SIGTERM at train batch end",
+                )
 
     def release(self):
         """Restore the original signal handler; returns False if already released, True otherwise."""

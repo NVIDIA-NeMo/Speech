@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,6 +16,7 @@ import os
 
 import pytest
 
+from nemo.collections.common.prompts.nemotron3p5 import Nemotron3p5PromptFormatter
 from nemo.collections.common.prompts.nemotron_nano_v3 import NemotronNanoV3PromptFormatter
 
 # ──────────────────────────────────────────────────────────────────────
@@ -121,6 +123,136 @@ def test_nemotron_nano_v3_training_multiturn_past_asst_no_think(bpe_tokenizer_wi
     assert bpe_tokenizer_with_think.ids_to_text(ans["input_ids"].tolist()) == '<|im_start|>system\n<|im_end|>\n <|im_start|>user\nTEST<|im_end|>\n <|im_start|>assistant\n<think></think>TEST<|im_end|>\n <|im_start|>user\nTEST<|im_end|>\n <|im_start|>assistant\n<think></think>TEST<|im_end|>\n'
     assert ans["mask"].shape[0] == ans["input_ids"].shape[0]
     # fmt: on
+
+
+@pytest.mark.parametrize("formatter_cls", [NemotronNanoV3PromptFormatter, Nemotron3p5PromptFormatter])
+@pytest.mark.parametrize("insert_bos,insert_eos", [(False, False), (True, False), (False, True), (True, True)])
+@pytest.mark.parametrize("historical_answer", ["TEST", ""])
+def test_nemotron_training_supervises_all_assistant_turns(
+    bpe_tokenizer_with_think, formatter_cls, insert_bos, insert_eos, historical_answer
+):
+    tokenizer = bpe_tokenizer_with_think
+    formatter = formatter_cls(tokenizer)
+    formatter.INSERT_BOS = insert_bos
+    formatter.INSERT_EOS = insert_eos
+    ans = formatter.encode_dialog(
+        [
+            {"role": "user", "content": "TEST"},
+            {"role": "assistant", "content": f"<think>SYSTEM</think>{historical_answer}"},
+            {"role": "tool", "content": "TEST"},
+            {"role": "user", "content": "SYSTEM"},
+            {"role": "assistant", "content": "TEST"},
+        ]
+    )
+    # Tokenize each rendered turn independently, including the normalized history.
+    rendered_turns = [
+        "<|im_start|>system\n<|im_end|>\n",
+        "<|im_start|>user\nTEST<|im_end|>\n",
+        f"<|im_start|>assistant\n<think></think>{historical_answer}<|im_end|>\n",
+        "<|im_start|>tool\nTEST<|im_end|>\n",
+        "<|im_start|>user\nSYSTEM<|im_end|>\n",
+        "<|im_start|>assistant\n<think></think>TEST<|im_end|>\n",
+    ]
+    chunks = [tokenizer.text_to_ids(turn) for turn in rendered_turns]
+    expected_ids = [tokenizer.bos] if insert_bos else []
+    expected_mask = [False] if insert_bos else []
+    for chunk, supervised in zip(chunks, [False, False, True, False, False, True]):
+        expected_ids.extend(chunk)
+        if supervised:
+            # This fixture has atomic tags/newlines: only response text + EOT carry loss.
+            prefix_len = len(tokenizer.text_to_ids("<|im_start|>assistant\n<think></think>"))
+            expected_mask.extend([False] * prefix_len + [True] * (len(chunk) - prefix_len - 1) + [False])
+        else:
+            expected_mask.extend([False] * len(chunk))
+    if insert_eos:
+        expected_ids.append(tokenizer.eos)
+        expected_mask.append(True)
+
+    assert ans["input_ids"].tolist() == expected_ids
+    assert ans["mask"].tolist() == expected_mask
+    # Generation references still describe the final turn, not all supervised turns.
+    final_answer = chunks[-1] + ([tokenizer.eos] if insert_eos else [])
+    assert ans["answer_ids"].tolist() == final_answer
+    assert ans["context_ids"].tolist() == expected_ids[: -len(final_answer)]
+
+
+@pytest.mark.parametrize("formatter_cls", [NemotronNanoV3PromptFormatter, Nemotron3p5PromptFormatter])
+@pytest.mark.parametrize(
+    "message,supervised_text",
+    [
+        ("TEST", "TEST<|im_end|>"),
+        ("", "<|im_end|>"),
+        ("<think></think>TEST", "TEST<|im_end|>"),
+        ("<think>\nSYSTEM</think>TEST", "SYSTEM</think>TEST<|im_end|>"),
+        ("<think>SYSTEM</think>TEST", "SYSTEM</think>TEST<|im_end|>"),
+        ("<think>\n</think>TEST", "</think>TEST<|im_end|>"),
+        ("<think>TEST", "TEST<|im_end|>"),
+    ],
+)
+def test_nemotron_masks_prefill_but_supervises_generated_content(
+    bpe_tokenizer_with_think, formatter_cls, message, supervised_text
+):
+    formatter = formatter_cls(bpe_tokenizer_with_think)
+    ans = formatter.encode_dialog([{"role": "assistant", "content": message}])
+    supervised_ids = ans["input_ids"][ans["mask"]].tolist()
+    assert bpe_tokenizer_with_think.ids_to_text(supervised_ids) == supervised_text
+    assert not ans["mask"][: len(ans["context_ids"])].any()
+
+
+@pytest.mark.parametrize("formatter_cls", [NemotronNanoV3PromptFormatter, Nemotron3p5PromptFormatter])
+@pytest.mark.parametrize(
+    "message,supervised_text",
+    [("TEST", "TEST"), ("", ""), ("<think>\nSYSTEM</think>TEST", "SYSTEM</think>TEST")],
+)
+def test_nemotron_supervises_assistant_before_tool(bpe_tokenizer_with_think, formatter_cls, message, supervised_text):
+    formatter = formatter_cls(bpe_tokenizer_with_think)
+    ans = formatter.encode_dialog(
+        [
+            {"role": "user", "content": "TEST"},
+            {"role": "assistant", "content": message},
+            {"role": "tool", "content": "SYSTEM"},
+            {"role": "assistant", "content": "TEST"},
+        ]
+    )
+    assert bpe_tokenizer_with_think.ids_to_text(ans["input_ids"][ans["mask"]].tolist()) == (
+        supervised_text + "<|im_end|>TEST<|im_end|>"
+    )
+
+
+@pytest.mark.parametrize("formatter_cls", [NemotronNanoV3PromptFormatter, Nemotron3p5PromptFormatter])
+def test_nemotron_mask_keeps_tokens_straddling_prefill_boundary(bpe_tokenizer_with_think, formatter_cls, monkeypatch):
+    formatter = formatter_cls(bpe_tokenizer_with_think)
+    # A token may merge the final prefill character with the first answer character.
+    # Likewise, a token may merge the end marker with the formatting newline.
+    encodings = {
+        "<|im_start|>system\n<|im_end|>\n": [1, 2],
+        "<|im_start|>assistant\n<think></think>": [3, 4, 5],
+        "<|im_start|>assistant\n<think></think>TEST<|im_end|>": [3, 4, 6, 7],
+        "<|im_start|>assistant\n<think></think>TEST<|im_end|>\n": [3, 4, 6, 8],
+    }
+    monkeypatch.setattr(formatter, "_apply_tokenizer", lambda text, **kwargs: encodings[text])
+    ans = formatter.encode_dialog([{"role": "assistant", "content": "TEST"}])
+    assert ans["input_ids"].tolist() == [1, 2, 3, 4, 6, 8]
+    assert ans["mask"].tolist() == [False, False, False, False, True, True]
+
+
+@pytest.mark.parametrize("formatter_cls", [NemotronNanoV3PromptFormatter, Nemotron3p5PromptFormatter])
+@pytest.mark.parametrize("enable_thinking", [False, True])
+def test_nemotron_multiturn_inference_has_no_training_mask(bpe_tokenizer_with_think, formatter_cls, enable_thinking):
+    formatter = formatter_cls(bpe_tokenizer_with_think)
+    ans = formatter.encode_dialog(
+        [
+            {"role": "user", "content": "TEST"},
+            {"role": "assistant", "content": "TEST"},
+            {"role": "user", "content": "TEST"},
+        ],
+        enable_thinking=enable_thinking,
+    )
+    assert set(ans) == {"input_ids", "context_ids"}
+    assert ans["context_ids"].tolist() == ans["input_ids"].tolist()
+    suffix = "<think>\n" if enable_thinking else "<think></think>"
+    prefix_ids = bpe_tokenizer_with_think.text_to_ids(f"<|im_start|>assistant\n{suffix}")
+    assert ans["input_ids"][-len(prefix_ids) :].tolist() == prefix_ids
 
 
 def test_nemotron_nano_v3_history_thinking_truncation(bpe_tokenizer_with_think):

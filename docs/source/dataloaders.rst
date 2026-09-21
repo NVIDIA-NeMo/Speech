@@ -24,32 +24,275 @@ NeMo supports using `Lhotse`_, a speech data handling library, as a dataloading 
     constant in time (i.e., stationary); in fact, each mini-batch will have roughly the same ratio of data coming from each source.
     Since the multiplexing is done dynamically, it is very easy to tune the sampling weights.
 
-Lhotse dataloading supports the following types of inputs:
-
-* NeMo manifests
-    Regular NeMo JSON manifests.
-* NeMo tarred data
-    Tarred NeMo JSON manifests + audio tar files; we also support combination of multiple NeMo
-    tarred data sources (e.g., multiple buckets of NeMo data or multiple datasets) via dynamic multiplexing.
-
-    We support using a subset of Tarred NeMo JSON manifests along with audio tar files without disrupting the alignment between the tarred files and their corresponding manifests.
-    This feature is essential because large datasets often consist of numerous tar files and multiple versions of Tarred NeMo JSON manifest subsets, which may contain only a portion of the audio files due to filtering for various reasons.
-    To skip specific entries in the manifests without repeatedly copying and retarring audio files, the entries must include a ``_skipme`` key. This key should be set to ``True``, ``1``, or a reason for skipping (e.g., ``low character-rate``).
-
-* Lhotse CutSet manifests
-    Regular Lhotse CutSet manifests (typically gzipped JSONL).
-    See `Lhotse Cuts documentation`_ to learn more about Lhotse data formats.
-* Lhotse Shar data
-    Lhotse Shar is a data format that also uses tar files for sequential data loading,
-    but is designed to be modular (i.e., easily extensible with new data sources and with new feature fields).
-    More details can be found here: |tutorial_shar|
-
 .. caution:: As of now, Lhotse is mainly supported in most ASR model configurations. We aim to gradually extend this support to other speech tasks.
 
 .. _Lhotse: https://github.com/lhotse-speech/lhotse
 .. _Lhotse Cuts documentation: https://lhotse.readthedocs.io/en/latest/cuts.html
 .. |tutorial_shar| image:: https://colab.research.google.com/assets/colab-badge.svg
     :target: https://colab.research.google.com/github/lhotse-speech/lhotse/blob/master/examples/04-lhotse-shar.ipynb
+
+Architecture overview
+---------------------
+
+The Lhotse dataloader is a pipeline of small components. Each YAML option you
+set lands in exactly one of them, so it pays to know which is which::
+
+    input_cfg entry  ──►  parser_fn  ──►  Adapter (IteratorNode)
+                          (registered                 │
+                           via @data_type_parser)     ▼
+                                            CutSet (lazy iterator graph)
+                                                      │
+                              SamplingConstraint  ──► CutSampler
+                                                      │
+                                                      ▼
+                                          IterableDatasetWrapper
+                                                      │
+                                                      ▼
+                                            user-defined Dataset
+                                                      │
+                                                      ▼
+                                                 DataLoader
+                                                 (or StatefulDataLoader)
+
+Components, top to bottom:
+
+* **input_cfg entry** — one YAML dict identified by ``type:`` (e.g.
+  ``type: nemo_tarred``). Listed below in :ref:`lhotse-format-reference`.
+* **parser_fn** — registered with the ``@data_type_parser`` decorator in
+  ``nemo/collections/common/data/lhotse/cutset.py``. Reads the entry and
+  returns ``(CutSet, is_tarred)``. Users can add their own (see
+  :ref:`lhotse-extension-hooks`).
+* **Adapter** — a class that knows how to iterate one specific on-disk
+  format (e.g. ``LazyNeMoTarredIterator``, ``LazyParquetIterator``,
+  ``NeMoMultimodalConversationJsonlAdapter``). All recent adapters are
+  Lhotse :class:`~lhotse.lazy.IteratorNode` subclasses and support
+  ``indexed=True`` for O(1) random access — see
+  :ref:`indexed-resumable-dataloading`.
+* **CutSet** — Lhotse's lazy manifest wrapper. Composing multiple sources
+  produces a graph of iterator nodes (mux, mix, map, filter, …) underneath.
+* **SamplingConstraint** — defines what "length" means for batch packing:
+  :class:`~lhotse.dataset.sampling.base.TimeConstraint` (audio duration,
+  default), :class:`~lhotse.dataset.sampling.base.TokenConstraint` (token
+  count, multimodal), ``MultimodalSamplingConstraint`` /
+  ``FixedBucketBatchSizeConstraint2D`` (NeMo extensions; see
+  :ref:`lhotse-sampling-constraints`).
+* **CutSampler** — :class:`~lhotse.dataset.sampling.DynamicCutSampler` or
+  :class:`~lhotse.dataset.sampling.DynamicBucketingSampler`, picked
+  automatically based on ``use_bucketing``.
+* **IterableDatasetWrapper** — Lhotse helper that turns the sampler-produced
+  ``CutSet`` mini-batches into a stream the PyTorch ``DataLoader`` can
+  consume.
+* **Dataset class** — supplied by the model code; converts a ``CutSet``
+  mini-batch into a ``dict[str, Tensor]``. The same dataset class can serve
+  multiple model architectures because all batching is upstream.
+
+.. _lhotse-format-reference:
+
+Supported input formats
+-----------------------
+
+Every entry in ``input_cfg`` is identified by ``type:``. The table below is
+the canonical list of every type the dataloader understands today, what it
+returns, and the on-disk shape it expects.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 18 32 14 8 8 10 10
+
+   * - ``type:``
+     - Purpose
+     - Yields
+     - Audio
+     - Tarred
+     - Indexable
+     - Adapter / parser
+   * - ``nemo``
+     - NeMo non-tarred JSON manifest (per-file audio)
+     - ``Cut``
+     - yes
+     - no
+     - yes
+     - ``LazyNeMoIterator``
+   * - ``nemo_tarred``
+     - NeMo tarred manifest + audio tar shards
+     - ``Cut``
+     - yes
+     - yes
+     - yes
+     - ``LazyNeMoTarredIterator``
+   * - ``lhotse``
+     - Plain Lhotse cuts JSONL
+     - ``Cut``
+     - yes
+     - no
+     - yes
+     - lhotse ``LazyJsonlIterator`` / ``LazyIndexedManifestIterator``
+   * - ``lhotse_shar``
+     - Lhotse Shar (sharded archive directory)
+     - ``Cut``
+     - yes
+     - yes
+     - yes
+     - lhotse ``LazySharIterator``
+   * - ``parquet``
+     - Parquet file with audio bytes column
+     - ``Cut``
+     - yes
+     - no
+     - yes (row groups)
+     - ``LazyParquetIterator``
+   * - ``txt``
+     - One example per line, raw text
+     - ``TextExample``
+     - no
+     - n/a
+     - no
+     - ``LhotseTextAdapter``
+   * - ``txt_jsonl``
+     - One JSON object per line; configurable text field
+     - ``TextExample``
+     - no
+     - n/a
+     - yes
+     - ``LhotseTextJsonlAdapter``
+   * - ``txt_pair``
+     - Source + target text files for translation
+     - ``SourceTargetTextExample``
+     - no
+     - n/a
+     - no
+     - ``LhotseTextPairAdapter``
+   * - ``multimodal_conversation``
+     - Multi-turn chat with mixed text/audio turns (JSONL)
+     - ``NeMoMultimodalConversation``
+     - optional
+     - optional
+     - yes
+     - ``NeMoMultimodalConversationJsonlAdapter``
+   * - ``share_gpt``
+     - ShareGPT-format JSONL → conversation
+     - ``NeMoMultimodalConversation``
+     - optional
+     - optional
+     - yes
+     - ``NeMoMultimodalConversationShareGPTJsonlAdapter``
+   * - ``share_gpt_webdataset``
+     - ShareGPT in WebDataset tar shards
+     - ``NeMoMultimodalConversation``
+     - optional
+     - yes
+     - yes
+     - ``NeMoMultimodalConversationShareGPTWebdatasetAdapter``
+   * - ``lhotse_as_conversation``
+     - Read ASR data and emit it as ASR conversation
+     - ``NeMoMultimodalConversation``
+     - yes
+     - inherits
+     - inherits
+     - transform on ``read_cutset_from_config``
+   * - ``sqa_as_conversation``
+     - Spoken-QA → 3-turn conversation (question / audio / answer)
+     - ``NeMoMultimodalConversation``
+     - yes
+     - inherits
+     - inherits
+     - transform
+   * - ``s2s_as_conversation``
+     - Duplex S2S → conversation
+     - ``NeMoMultimodalConversation``
+     - yes
+     - inherits
+     - inherits
+     - transform
+   * - ``s2s_duplex_overlap_as_s2s_duplex``
+     - Overlapping agent/user segments → unified S2S timeline
+     - ``Cut``
+     - yes
+     - inherits
+     - inherits
+     - transform
+   * - ``s2s_duplex_reverse_role``
+     - Swap user and agent in a duplex cut
+     - ``Cut``
+     - yes
+     - inherits
+     - inherits
+     - transform
+   * - ``lhotse_magpietts_data_as_continuation``
+     - MagpieTTS dataset → S2S duplex continuation
+     - ``Cut``
+     - yes
+     - inherits
+     - inherits
+     - transform
+   * - ``nemo_tarred_to_duplex``
+     - Single-supervision NeMo → duplex (user speech + agent silence)
+     - ``Cut``
+     - yes
+     - yes
+     - inherits
+     - transform
+   * - ``multi_speaker_simulator``
+     - Synthetic multi-speaker mixtures from a manifest
+     - ``Cut``
+     - yes
+     - n/a
+     - no
+     - ``MultiSpeakerMixtureGenerator``
+   * - ``group``
+     - Wrap a list of entries with a shared ``weight`` and ``tags``
+     - (nested)
+     - n/a
+     - n/a
+     - n/a
+     - n/a
+
+Notes:
+
+* "Inherits" means the type is a transform that wraps another underlying
+  source via ``read_cutset_from_config(config)``. Such entries accept the
+  underlying source's keys (e.g. ``cuts_path`` and ``manifest_filepath``)
+  *in addition to* their own.
+* Tarred NeMo manifests support a ``_skipme`` key to omit specific manifest
+  rows without repacking tars (set to ``True``, ``1``, or a reason string).
+* Lhotse Shar is documented in the upstream tutorial: |tutorial_shar|.
+
+Conversation / multimodal types — when to use which
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Six types yield ``NeMoMultimodalConversation`` from very different sources.
+Pick by the shape of your input data:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 35 25 40
+
+   * - Your data
+     - ``type:``
+     - Notes
+   * - JSONL of multi-turn chats with mixed text/audio turns
+     - ``multimodal_conversation``
+     - Native chat schema; audio turns reference paths or tar members
+   * - JSONL in ShareGPT chat schema
+     - ``share_gpt``
+     - Adds ShareGPT-specific role/value parsing
+   * - ShareGPT data packed in WebDataset tar shards
+     - ``share_gpt_webdataset``
+     - Same parsing as ``share_gpt``, reads tarred shards
+   * - ASR data in NeMo or Lhotse format
+     - ``lhotse_as_conversation``
+     - Builds a 2-turn (instruction+audio / transcript) conversation per cut
+   * - Spoken-QA data with ``question`` / ``answer`` fields
+     - ``sqa_as_conversation``
+     - Builds a 3-turn (question / audio / answer) conversation per cut
+   * - Duplex S2S data with user/agent supervisions
+     - ``s2s_as_conversation``
+     - Maps duplex roles onto chat turns
+
+The last three (``*_as_conversation``) are *transforms*: they delegate to
+``read_cutset_from_config(config)`` for the underlying audio source, so the
+nested keys like ``manifest_filepath``, ``cuts_path``, or ``shar_path``
+belong on the same entry.
 
 Enabling Lhotse via configuration
 ----------------------------------
@@ -92,7 +335,12 @@ Let's briefly go over each of the Lhotse dataloading arguments:
 * ``num_buckets`` is the number of buckets in the bucketing sampler. Bigger value means less padding but also less randomization.
 * ``num_cuts_for_bins_estimate`` is the number of utterance we will sample before the start of the training to estimate the duration bins for buckets. Larger number results in a more accurate estimatation but also a bigger lag before starting the training.
 * ``bucket_buffer_size`` is the number of utterances (data and metadata) we will hold in memory to be distributed between buckets. With bigger ``batch_duration``, this number may need to be increased for dynamic bucketing sampler to work properly (typically it will emit a warning if this is too low).
-* ``shuffle_buffer_size`` is an extra number of utterances we will hold in memory to perform approximate shuffling (via reservoir-like sampling). Bigger number means more memory usage but also better randomness.
+* ``shuffle_buffer_size`` is an extra number of utterances we will hold in
+  memory to perform approximate shuffling (via reservoir-like sampling).
+  Bigger values mean more memory usage but also better randomness. When
+  ``use_packed_sequence_sampling: true``, this option is repurposed as the
+  size of the single post-filter best-fit packing pool; the sampler disables
+  its reservoir because indexed sources are already Feistel-shuffled.
 
 The PyTorch Lightning ``trainer`` related arguments:
 
@@ -128,6 +376,16 @@ Some other Lhotse related arguments we support:
     When ``batch_duration`` is not set, it acts as a static batch size.
 * ``seed`` sets a random seed for the shuffle buffer.
 
+* ``indexed`` (default ``False``) opts the dataloader into Lhotse's indexed-manifest
+  path, giving every adapter O(1) random access and graph-token-based exact restore.
+  Requires ``.idx`` sidecars next to every JSONL/tar file. See
+  :ref:`indexed-resumable-dataloading` below.
+
+* ``use_stateful_dataloader`` (default ``False``) swaps PyTorch's
+  ``DataLoader`` for ``torchdata.stateful_dataloader.StatefulDataLoader`` so
+  that per-worker iterator state is captured in checkpoints and restored
+  exactly on resume. Pair with ``indexed: true`` for full O(1) restore.
+
 The full and always up-to-date list of supported options can be found in ``LhotseDataLoadingConfig`` class.
 
 .. _asr-dataset-config-format:
@@ -146,6 +404,29 @@ is very useful when combining multiple datasets with different properties.
 The dataset class which converts these examples to tensors can partition the mini-batch and apply
 different processing to each group.
 For example, you may want to construct different prompts for the model using metadata in ``tags``.
+
+How ``tags`` is applied
+^^^^^^^^^^^^^^^^^^^^^^^
+
+Every key/value pair in ``tags`` becomes an attribute on every cut produced
+by that entry. The dataloader walks the cuts via ``cuts.map(...)`` and runs::
+
+    for key, val in tags.items():
+        setattr(cut, key, val)
+
+So in your dataset class you read them back as ordinary attributes::
+
+    def __getitem__(self, cuts):
+        for cut in cuts:
+            lang   = cut.lang
+            task   = cut.task
+            ctx    = cut.context
+            ...
+
+Tags set on a ``group`` apply to every nested entry; tags set on an inner
+entry override the outer ones for that source. Conflicts with built-in cut
+fields (``id``, ``duration``, ``supervisions``, …) silently overwrite the
+built-in — pick tag names that don't collide.
 
 .. note:: When fine-tuning a model that was trained with ``input_cfg`` option, typically you'd only need
     to override the following options: ``input_cfg=null`` and ``manifest_filepath=path/to/manifest.json``.
@@ -346,6 +627,14 @@ Dataloading configuration example::
       - type: multimodal_conversation
         manifest_filepath: /path/to/chat_{0..N}.jsonl
         audio_locator_tag: [audio]
+        tags:
+          system_prompt: You are a helpful assistant.
+          override_system_prompt: true
+
+``system_prompt`` is inserted when the source conversation has no system turn.
+By default, a system prompt already present in the data takes precedence. Set
+``override_system_prompt: true`` to remove data-provided system turns and use
+the configured prompt instead.
 
 Python object example::
 
@@ -384,6 +673,12 @@ Python dataloader instantiation example::
         tokenizer=my_tokenizer,
     )
 
+**Indexed mode for text/multimodal sources.** All of the parsers above
+(``txt_jsonl``, ``nemo_sft_jsonl``, ``multimodal_conversation``, ``share_gpt``,
+``share_gpt_webdataset``) accept ``indexed: true`` and integrate with
+``StatefulDataLoader``-based exact resume. ``txt`` and ``txt_pair`` are
+intentionally streaming-only. See :ref:`indexed-resumable-dataloading`.
+
 **Dataloading and bucketing of text and multimodal data.** When dataloading text or multimodal data, pay attention to the following config options (we provide example values for convenience):
 
 * ``use_multimodal_sampling: true`` tells Lhotse to switch from measuring audio duration to measuring token counts; required for text.
@@ -397,6 +692,15 @@ Python dataloader instantiation example::
 * ``min_tpt: 0.1``/``max_tpt: 10`` filter examples based on their output-token-per-input-token-ratio. For example, a ``max_tpt: 10`` means we'll filter every example that has more than 10 output tokens per 1 input token. Very useful for removing sequence length outliers that lead to OOM. Use ``estimate_token_bins.py`` to view token count distributions for calbirating this value.
 
 * (multimodal-only) ``token_equivalent_duration: 0.08`` is used to be able to measure audio examples in the number of "tokens". For example, if we're using fbank with 0.01s frame shift and an acoustic model that has a subsampling factor of 0.08, then a reasonable setting for this could be 0.08 (which means every subsampled frame counts as one token). Calibrate this value to fit your needs.
+
+* (multimodal-only) ``audio_token_estimator`` replaces the duration approximation
+  with sample-exact integer length arithmetic for the audio preprocessor,
+  encoder subsampling, and optional encoder chunking. Both repeated
+  convolution/pooling stages (``type: conv``) and feature stacking
+  (``type: feature_stacking``) are supported. Use it
+  whenever ``batch_tokens`` must be a hard limit on the sequence actually passed
+  to the model. ``chunk_size_seconds`` must match the model's encoder chunking
+  option; rounding is applied independently to every chunk.
 
 **Text/multimodal bucketing and OOMptimizer.** Analogous to bucketing for audio data, we provide two scripts to support efficient bucketing:
 
@@ -412,12 +716,45 @@ To enable bucketing, set ``batch_size: null`` and use the following options:
 
 * (oomptimizer-only) ``bucket_batch_size`` - the output of OOMptimizer.
 
-* (non-oomptimizer-only) ``batch_tokens`` is the maximum number of tokens we want to find inside a mini-batch. Similarly to ``batch_duration``, this number does consider padding tokens too, therefore enabling bucketing is recommended to maximize the ratio of real vs padding tokens. Note that it's just a heuristic for determining the optimal batch sizes for different buckets, and may be less efficient than using OOMptimizer.
+* (non-oomptimizer-only) ``batch_tokens`` is the maximum number of tokens we want to find inside a mini-batch. By default, similarly to ``batch_duration``, this number considers padding tokens too, therefore enabling bucketing is recommended to maximize the ratio of real vs padding tokens. Note that it's just a heuristic for determining the optimal batch sizes for different buckets, and may be less efficient than using OOMptimizer.
+
+* ``use_packed_sequence_sampling: true`` changes ``batch_tokens`` accounting
+  from ``batch_size * longest_sequence`` to the sum of the measured sequence
+  lengths. For heterogeneous, non-bucketed batches, NeMo fills a bounded
+  post-filter pool of ``shuffle_buffer_size`` candidates and chooses the exact
+  best-fit subset without exceeding the budget. The oldest candidate is always
+  included, which bounds displacement and prevents starvation. ``batch_tokens``
+  is therefore a hard upper bound. The sampler passes ``shuffle=False`` to its
+  ``DynamicCutSampler`` parent so that this packing pool is the only buffer;
+  with indexed input and ``shuffle: true``, the lazy data source supplies the
+  random Feistel permutation. Set ``max_tokens`` less than or equal to
+  ``batch_tokens`` so an individual over-budget example is filtered before
+  batching. Use this option only when the dataset and model preserve a
+  padding-free representation through the expensive model path.
 
 * (non-oomptimizer-only) ``quadratic_factor`` is a quadratic penalty to equalize the GPU memory usage between buckets of short and long sequence lengths for models with quadratic memory usage. It is only a heuristic and may not be as efficient as using OOMptimizer.
 
 **Joint dataloading of text/audio/multimodal data.** The key strength of this approach is that we can easily combine audio datasets and text datasets,
 and benefit from every other technique we described in this doc, such as: dynamic data mixing, data weighting, dynamic bucketing, and so on.
+
+Single-config vs. ``multi_config: true``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+By default the dataloader builds **one** ``CutSet`` and **one** sampler from
+the top-level config. Setting ``multi_config: true`` switches to a
+**multi-modality** layout where each named sub-block (typically ``audio:``
+and ``text:``) is parsed as its own dataloader config, with its own
+sampling/bucketing options, and the per-modality samplers are fused at the
+batch level.
+
+When ``multi_config: true`` is set:
+
+* Top-level keys (``num_workers``, ``shuffle``, ``seed``, ``sample_rate``,
+  …) apply globally and are inherited by every sub-block.
+* Per-modality overrides — including the ``input_cfg`` itself — go inside
+  the named sub-block (``audio: ...`` / ``text: ...``).
+* The per-modality samplers are combined into one stream by
+  ``sampler_fusion``.
 
 This approach is described in the `EMMeTT`_ paper. There's also a notebook tutorial called Multimodal Lhotse Dataloading. We construct a separate sampler (with its own batching settings) for each modality,
 and specify how the samplers should be fused together via the option ``sampler_fusion``:
@@ -480,6 +817,434 @@ Example. Combine an ASR (audio-text) dataset with an MT (text-only) dataset so t
                 question: "Translate the following to Polish"
 
 .. caution:: We strongly recommend to use multiple shards for text files as well so that different nodes and dataloading workers are able to randomize the order of text iteration. Otherwise, multi-GPU training has a high risk of duplication of text examples.
+
+.. _lhotse-sampling-constraints:
+
+Sampling constraints
+--------------------
+
+A :class:`~lhotse.dataset.sampling.base.SamplingConstraint` decides what
+"length" means when the sampler packs a mini-batch. NeMo uses four:
+
+* :class:`~lhotse.dataset.sampling.base.TimeConstraint` — default.
+  Length = audio duration in seconds. Enforces ``max_duration`` /
+  ``batch_duration`` / ``quadratic_duration``.
+* :class:`~lhotse.dataset.sampling.base.TokenConstraint` — activated by
+  ``use_multimodal_sampling: true`` for text-only flows. Length = token
+  count after applying the tokenizer (and optionally the prompt format).
+  Enforces ``max_tokens`` / ``batch_tokens`` / ``quadratic_factor``.
+* ``MultimodalSamplingConstraint`` — Lhotse-style mixed-modality
+  packing. Activated by setting both ``use_multimodal_sampling: true``
+  and a ``token_equivalent_duration`` so audio cuts are measured in
+  equivalent-token units alongside text. Enforces all of the above plus
+  ``min_tpt``/``max_tpt`` (token-per-token ratio filtering).
+  With ``use_packed_sequence_sampling: true``, it wraps a packed token
+  constraint that budgets the sum of per-example lengths. The non-bucketing
+  sampler performs deterministic best-fit selection from the bounded
+  ``shuffle_buffer_size`` packing pool while requiring its oldest candidate.
+  For indexed sources, buffered candidates are saved as immutable graph-origin
+  tokens and reconstructed by random access for exact O(1) resume.
+  Audio examples additionally require ``audio_token_estimator`` in this mode;
+  ``token_equivalent_duration`` cannot guarantee a hard cap because frame and
+  subsampling rounding (especially at encoder chunk boundaries) is discrete.
+  One-dimensional ``bucket_duration_bins`` and ``bucket_batch_size`` may be
+  combined with ``batch_tokens`` to impose a per-bucket example-count cap in
+  addition to the exact aggregate token budget. Two-dimensional fixed buckets
+  retain the regular padded sampler and their existing strict/lenient and
+  token-ratio semantics.
+* ``FixedBucketBatchSizeConstraint2D`` — activated automatically when
+  ``bucket_duration_bins`` is given as a list of ``[duration, tokens]``
+  pairs **and** ``bucket_batch_size`` is set. Each bucket gets its own
+  fixed batch size; this is the layout produced by
+  ``estimate_duration_bins_2d.py`` and the OOMptimizer.
+
+You usually don't pick a constraint by name — it's inferred from the
+combination of YAML options. The names matter when you read NeMo's source,
+extend the system with a custom constraint, or interpret error messages.
+
+Packed sequence sampling contract
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``use_packed_sequence_sampling`` changes sampling accounting only; it does
+not pack tensors or alter a model's attention behavior. The complete contract
+has three parts:
+
+* **Examples visible to the sampler.** Each example must be either a Lhotse
+  ``Cut`` or NeMo ``Formattable``. A ``Cut`` normally uses
+  ``token_equivalent_duration`` to convert audio duration to tokens;
+  with ``measure_total_length: true``, tokenized supervision text is added.
+  A ``Formattable`` must have been prompt-formatted/tokenized so its
+  ``input_length`` and ``total_length`` are available. The multimodal
+  constraint records the resulting scalar as ``example.num_tokens`` for the
+  downstream dataset. For exact packed audio sampling,
+  ``audio_token_estimator`` is mandatory and supersedes the duration estimate
+  in both token filters and sampling constraints. Its ``preprocessor`` mapping
+  specifies ``n_fft``, ``hop_length``, and per-side ``stft_pad_amount``;
+  ``subsampling`` is one mapping (or a list of mappings). A ``type: conv`` stage
+  specifies ``kernel_size``, ``stride``, per-side ``padding``, ``repeat``, and
+  ``ceil_mode``. A ``type: feature_stacking`` stage specifies ``factor`` and
+  applies ceiling division, matching PEE's feature-stacking encoder. Omitting
+  ``type`` retains backward compatibility by selecting ``conv``. This metadata
+  must describe every temporal reduction before audio embeddings replace the
+  locator token. ``chunk_size_seconds`` must equal the model's encoder chunk
+  size (or be ``null`` when chunking is disabled). NeMo fails clearly on the
+  first audio example if packed sampling is requested without this metadata.
+
+* **Dataset/collator output.** The Dataset class must accept the sampler's
+  ``CutSet`` mini-batch and retain the individual sequence boundaries while
+  constructing a contiguous representation. For SALM encoder packing,
+  ``SALMDataset(pack_audio=True)`` returns ``packed_audio_samples``,
+  ``audio_cu_seqlens``, and ``audio_lens``. When ``batch_tokens`` is also
+  supplied, it emits ``packing_efficiency = sum(example.num_tokens) /
+  batch_tokens`` after fault-tolerant collation; SALMAutomodel logs this scalar
+  on training steps. Under exact packed sampling the metric is at most ``1.0``;
+  lower values represent unused token budget. The metric is omitted if exact
+  sampler measurements are unavailable.
+
+* **Model forward signature.** The forward path must consume both the packed
+  values and explicit boundaries (for example cumulative sequence lengths and
+  the maximum sequence length), and its attention kernels must honor those
+  boundaries so examples cannot attend to one another. A model that only
+  accepts padded ``[B, T, ...]`` tensors, or ignores the boundary metadata,
+  does not satisfy this contract. SALM's packed encoder consumes the waveform
+  keys above, while its packed LLM path uses flattened THD activations plus
+  cumulative sequence-length metadata.
+
+For SALMAutomodel, a typical training configuration ties sampler accounting to
+the actual encoder execution mode::
+
+    use_multimodal_sampling: true
+    measure_total_length: true
+    batch_tokens: 16384
+    max_tokens: 16384
+    audio_token_estimator:
+      preprocessor:
+        n_fft: 512
+        hop_length: 160
+        stft_pad_amount: 256
+      subsampling:
+        type: conv
+        kernel_size: 3
+        stride: 2
+        padding: 1
+        repeat: 3
+        ceil_mode: false
+      chunk_size_seconds: ${model.encoder_chunk_size_seconds}
+    use_packed_sequence_sampling: ${model.packed_encoder_sequences}
+    shuffle: true
+    shuffle_buffer_size: 128
+
+Do not enable the option merely because the LLM is packed if the dominant
+encoder path still pads to the longest example.
+
+.. _indexed-resumable-dataloading:
+
+Resumable / indexed dataloading
+-------------------------------
+
+Setting ``indexed: true`` (per-source or top-level) plus
+``use_stateful_dataloader: true`` (top-level) opts NeMo's Lhotse dataloader
+into Lhotse's indexed iterator graph and torchdata's
+``StatefulDataLoader``. The combination gives you:
+
+* O(1) checkpoint/restore of the *whole* dataloading pipeline — sampler RNG,
+  bucketer state, multiplexer choice RNG, per-source iterator cursors, and
+  per-worker prefetch queues — without any replay from the start of the epoch.
+* Random access (``__getitem__``) over every supported adapter.
+
+When set at the top level, ``indexed: true`` is propagated by
+``read_dataset_config`` through the ``propagate_attrs`` cascade, so a single
+top-level flag covers every nested ``input_cfg`` group. You can still override
+it per-source if needed.
+
+Per-adapter support
+^^^^^^^^^^^^^^^^^^^
+
+The following ``input_cfg`` types accept ``indexed: true`` today and require an
+``.idx`` sidecar next to each data file:
+
+* ``nemo`` / ``nemo_tarred`` — JSONL manifest gets ``manifest.json.idx``;
+  every audio tar in ``tarred_audio_filepaths`` gets ``shard.tar.idx``.
+* ``lhotse`` (plain) — ``cuts.jsonl`` gets ``cuts.jsonl.idx``.
+* ``lhotse_shar`` — every uncompressed ``cuts.<NNNNNN>.jsonl`` and field tar
+  inside the Shar dir.
+* ``parquet`` — no sidecar required, but the file must expose row-group
+  statistics (the default for files written by pyarrow / pandas).
+* ``txt_jsonl`` — every file in ``paths``.
+* ``multimodal_conversation`` and ``share_gpt`` — JSONL manifest plus optional
+  audio tars in ``tarred_audio_filepaths``.
+* ``share_gpt_webdataset`` — every ``shard-*.tar`` inside ``data_dir``.
+
+``txt`` and ``txt_pair`` remain streaming-only (no random-access support).
+
+Two caveats to be aware of:
+
+* ``indexed: true`` is incompatible with ``extra_fields`` and ``slice_length``
+  on ``nemo``/``nemo_tarred``: those features mutate or expand cuts in a way
+  that has no stable index. Pre-process the manifest offline if you need them
+  in an indexed pipeline.
+* Only **uncompressed** files can be indexed (no ``.jsonl.gz``,
+  ``.tar.gz``, etc.) and only files on a backend that supports indexed reads
+  (local FS, S3-compatible object stores, AIStore).
+
+Lazy URL-backed ``nemo_tarred`` rows (indexed loading and AIS GetBatch) must
+also provide trusted source sampling-rate metadata.  Put ``sampling_rate`` (or
+the legacy ``sample_rate`` spelling) on each JSONL row.  If every source in a
+dataset has the same rate, set ``input_sampling_rate`` on that dataset instead.
+This source-rate setting is deliberately separate from top-level
+``sample_rate``, which remains the model target rate used for resampling.  NeMo
+never opens an audio member or probes its header while iterating or looking up
+the indexed JSONL; missing source-rate metadata therefore raises an actionable
+error before audio loading.
+
+Building ``.idx`` sidecars
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Two equivalent ways:
+
+1. Lhotse's CLI per file::
+
+       lhotse index jsonl path/to/cuts.jsonl
+       lhotse index tar  path/to/shard.tar
+       lhotse index shar path/to/shar_dir/
+
+2. NeMo's batch helper that takes a config and indexes everything it
+   references in one shot::
+
+       python scripts/dataloading/build_indexes.py path/to/input_cfg.yaml
+
+   The script walks ``input_cfg`` (including nested ``group`` entries and
+   per-entry YAML references), dispatches the right tar layout for each
+   adapter (NeMo one-member-per-sample vs. WebDataset/Shar pair format), and
+   skips files that already have an up-to-date ``.idx``. Use ``--force`` to
+   rebuild, ``--workers N`` for parallelism, ``--dry-run`` to preview.
+
+   Pass ``--indexes-root /path/to/mirror`` to write the sidecars to a
+   separate directory tree that mirrors the data files' layout instead of
+   placing them next to the data — see :ref:`lhotse-indexes-root` below.
+
+Packing sidecars into dataset-level ``.idxpack`` files
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+For a heavily sharded dataset, reading loose ``.idx`` sidecars can still make
+startup metadata-bound: the runtime has to discover every shard, open every
+sidecar, and construct one reader and offset view per source. An ``.idxpack``
+combines the existing sidecar payloads and ordered shard catalog for one
+dataset into one immutable file. Lhotse opens the pack through a single
+read-only memory map and faults in offset pages on demand; it does not preload
+the offset payload into Python or NumPy memory.
+
+Build loose sidecars first, then convert each independently configured dataset
+to its own pack. Most sidecars are copied directly. For paired native NeMo
+manifests and tars, conversion reads each indexed manifest row and each tar
+member header once (but never reads audio payloads) to embed the exact routing
+between them:
+
+.. code-block:: bash
+
+   python scripts/dataloading/build_indexes.py \
+       --indexes-root /data/indexes \
+       /data/configs/books.yaml /data/configs/speech.yaml
+
+   python scripts/dataloading/convert_indexes_to_idxpack.py \
+       --indexes-root /data/indexes \
+       --output /data/index-packs/books.idxpack \
+       /data/configs/books.yaml
+
+   python scripts/dataloading/convert_indexes_to_idxpack.py \
+       --indexes-root /data/indexes \
+       --output /data/index-packs/speech.idxpack \
+       /data/configs/speech.yaml
+
+The converter walks nested ``group`` entries and transform wrappers. It
+currently packs native ``nemo``/``nemo_tarred`` manifests and tar shards,
+``nemotron_text_converation`` JSONL or tar paths, and ``share_gpt`` JSONL
+manifests. Unsupported data-bearing types raise instead of being silently
+omitted; types that need no sidecar (such as ``parquet``) are ignored. Other
+indexed adapters can continue to use loose sidecars.
+
+Native tar ``.idx`` files remain the headerless sequence of
+little-endian uint64 offsets; no format marker or companion sidecar is
+required. The converter stores the native manifest-row-to-tar-member mapping
+as a fixed uint32 collection inside the single ``.idxpack`` output. Reordered
+or filtered manifests, repeated ``-subN`` rows, and explicit ``_skipme`` rows
+therefore retain constant-time lookup without an extra runtime header probe or
+tar scan. The selected member name is validated from the same byte range when
+the audio payload is eventually loaded; a mismatch fails instead of scanning
+the tar.
+
+Use ``--native-tar-route-workers N`` to build independent native manifest/tar
+shards concurrently. Work is scheduled across all routing maps and shards, and
+the generated pack remains byte-identical to a single-worker build. Each active
+worker opens one manifest and one tar shard, so choose the worker count with the
+available file-descriptor and storage limits in mind.
+
+Before packing member offsets, the converter compares the final size sentinel
+with current local or remote object metadata. A matching index is accepted
+unchanged. A mismatch is rejected because it cannot safely describe the
+current source; rebuild it explicitly with
+``python scripts/dataloading/build_indexes.py --force`` (and the same
+``--indexes-root`` used for conversion, when applicable).
+
+Version-2 packs without the embedded mapping remain readable for compatibility.
+When their manifest and tar orders differ, the first mismatched audio load may
+scan the complete tar to build an in-process member-name index. Reconvert the dataset to a
+version-3 pack to remove that fallback cost. ``--native-tar-paths-only`` keeps
+the existing AIS URL/path-only behavior and intentionally does not embed the
+mapping.
+
+``rebind_idxpack_collections.py`` preserves and rekeys embedded native route
+arrays during rebinding or relocation; version-2 source packs remain route-free.
+
+At runtime, set a shared ``index_pack_root`` and declare the pack explicitly on
+each owning outer ``input_cfg`` entry:
+
+.. code-block:: yaml
+
+   data:
+     train_ds:
+       indexed: true
+       use_stateful_dataloader: true
+       force_map_dataset: false
+       seed: 42
+       shard_seed: 42
+       index_pack_root: /data/index-packs
+       index_pack_max_open_files: 32
+
+       input_cfg:
+         - type: group
+           input_cfg: /data/configs/books.yaml
+           index_pack: books.idxpack
+           weight: 0.25
+         - type: group
+           input_cfg: /data/configs/speech.yaml
+           index_pack: speech.idxpack
+           weight: 0.75
+
+The outer entry propagates its pack only to that dataset's nested leaves, so a
+composition can use one pack per dataset. Relative ``index_pack`` values are
+resolved under ``index_pack_root``; absolute paths are also accepted.
+Declaration is strict: ``index_pack`` requires ``indexed: true``, and a missing
+pack raises immediately. Omitting ``index_pack`` preserves the existing loose
+sidecar behavior. Keep ``indexes_root`` configured as well if the overall
+pipeline contains indexed adapters that are not pack-backed.
+
+Rebuild a pack whenever the source declaration, expanded shard order, source
+contents, or sidecars change. Packs are local, seekable runtime artifacts even
+when an application uses them to catalog remote payload paths.
+
+.. _lhotse-indexes-root:
+
+Storing ``.idx`` sidecars in a separate directory (``indexes_root``)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+By default, every ``.idx`` lives next to its data file
+(``cuts.jsonl`` ↔ ``cuts.jsonl.idx``). If your data sits on shared, slow,
+or read-only storage (NFS, S3, AIStore), you may want to keep the indexes
+on a fast local disk instead. Set ``indexes_root`` at the top of the
+dataloader config:
+
+.. code-block:: yaml
+
+    data:
+      train_ds:
+        indexed: true
+        use_stateful_dataloader: true
+        indexes_root: /scratch/idx     # mirror lives here
+        input_cfg:
+          - type: nemo_tarred
+            manifest_filepath: /shared/data/asr/manifest__OP_0..127_CL_.jsonl
+            tarred_audio_filepaths: ais://bucket/asr/audio__OP_0..127_CL_.tar
+
+Index lookups for each data file ``D`` resolve to
+``<indexes_root>/<D-with-scheme-stripped>.idx``. Examples::
+
+    /shared/data/asr/manifest_0.jsonl    -> /scratch/idx/shared/data/asr/manifest_0.jsonl.idx
+    ais://bucket/asr/audio_0.tar        -> /scratch/idx/bucket/asr/audio_0.tar.idx
+
+The setting cascades through ``read_dataset_config`` to every nested
+``input_cfg`` entry, so a single top-level value covers the whole pipeline.
+You can override it per-source on any entry that needs a different mirror.
+
+Two ways to populate the mirror:
+
+1. **Build the indexes there to begin with**::
+
+       python scripts/dataloading/build_indexes.py \
+           --indexes-root /scratch/idx path/to/input_cfg.yaml
+
+   The script reads each data file in place, computes the offsets, and
+   writes the ``.idx`` directly to the mirrored target.
+
+2. **Prefetch existing remote indexes** when sidecars already live next to
+   the data on shared/object storage and you just want a local copy::
+
+       python scripts/dataloading/prefetch_indexes.py \
+           --indexes-root /scratch/idx path/to/input_cfg.yaml
+
+   ``prefetch_indexes.py`` walks the same ``input_cfg``, locates every
+   sidecar at its natural location (via lhotse's ``open_best``, so
+   ``ais://`` / ``s3://`` / ``http://`` are all supported as sources),
+   and copies it into the local mirror. Use ``--source-indexes-root``
+   when the source sidecars themselves live under another mirror.
+
+Both scripts accept ``--force``, ``--workers N``, and ``--dry-run``.
+
+End-to-end YAML example
+^^^^^^^^^^^^^^^^^^^^^^^
+
+.. code-block:: yaml
+
+    model:
+      train_ds:
+        # Top-level switches enable indexed restore for every source below.
+        indexed: true
+        use_stateful_dataloader: true
+        force_finite: false
+        force_map_dataset: false
+
+        sample_rate: 16000
+        num_workers: 4
+        seed: 42
+        shard_seed: 42
+
+        # Bucketing and the rest of the dataloader knobs work exactly as before.
+        use_bucketing: true
+        num_buckets: 30
+        batch_duration: 1100
+        quadratic_duration: 30
+
+        input_cfg:
+          - type: nemo_tarred
+            manifest_filepath: /data/asr/manifest__OP_0..127_CL_.jsonl
+            tarred_audio_filepaths: /data/asr/audio__OP_0..127_CL_.tar
+            # Use only when these source manifests omit per-row sampling_rate.
+            input_sampling_rate: 16000
+            weight: 0.7
+          - type: lhotse
+            cuts_path: /data/extra/cuts.jsonl
+            weight: 0.3
+
+Resume contract
+^^^^^^^^^^^^^^^
+
+When ``use_stateful_dataloader: true`` is set, Lightning's checkpoint will
+contain the full lhotse iterator graph state under the dataloader key. On
+resume:
+
+* iterator positions advance to where they were at save time (no replay from
+  position 0);
+* ``set_epoch`` is a no-op while restored state is pending, so the resumed run
+  continues the same epoch instead of starting a new one;
+* ``num_workers`` and ``world_size`` must match between save and restore (a
+  hard requirement of ``StatefulDataLoader``).
+
+Non-indexed pipelines fall back to Lhotse's ``_fast_forward()`` replay (O(N)
+in batches consumed before the checkpoint) and require ``num_workers`` only to
+be consistent for replay-based restore — not exact restore.
+
+For the iterator graph contract itself, see Lhotse's
+`indexed manifests guide <https://lhotse.readthedocs.io/en/latest/indexed-manifests.html>`_.
 
 Pre-computing bucket duration bins
 ------------------------------------
@@ -594,7 +1359,7 @@ For Canary-1B, we'll also provide the special tokens tokenizer. Example:
         input_cfg.yaml
 
 Pushing GPU utilization to the limits with bucketing and OOMptimizer
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The default approach of specifying a ``batch_duration``, ``bucket_duration_bins`` and ``quadratic_duration``
 is quite flexible, but is not maximally efficient. We observed that in practice it often leads to under-utilization
@@ -743,3 +1508,323 @@ implements those methods.
 The wrapper is a no-op when ``device_mesh`` is ``None`` or every named
 axis present in the mesh has size 1, so the same call site works for
 single-GPU, DDP-only, and CP/TP runs without a separate code path.
+
+Train vs. validation / test configs
+-----------------------------------
+
+The training and validation/test sections of a NeMo recipe use the same
+underlying dataloader builder but have a different shape and a different
+default behavior.
+
+**Training (``train_ds``).** A single config that produces one infinite
+``CutSet``. The dataloader is wrapped to never run out of data, so
+``trainer.max_steps`` (and ``limit_train_batches`` for tarred sources)
+controls the run length:
+
+.. code-block:: yaml
+
+    model:
+      train_ds:
+        sample_rate: 16000
+        num_workers: 4
+        shuffle: true
+        use_bucketing: true
+        num_buckets: 30
+        batch_duration: 1100
+        input_cfg:
+          - type: nemo_tarred
+            manifest_filepath: /data/asr/manifest__OP_0..127_CL_.json
+            tarred_audio_filepaths: /data/asr/audio__OP_0..127_CL_.tar
+
+**Validation / test (``validation_ds`` / ``test_ds``).** A *named* dict of
+configs — one per evaluation set — that produces finite iteration:
+
+.. code-block:: yaml
+
+    model:
+      validation_ds:
+        sample_rate: 16000
+        batch_size: 16
+        # Per-set entries; keys become the metric prefixes in logging.
+        datasets:
+          dev_clean:
+            cuts_path: /data/dev-clean/cuts.jsonl
+          dev_other:
+            cuts_path: /data/dev-other/cuts.jsonl
+
+The most common eval-side overrides:
+
+* ``shuffle: false`` — deterministic order.
+* ``force_finite: true`` — break out of the infinite-mux that's safe for
+  training but would loop forever in eval.
+* ``use_bucketing: false`` — bucketing trades padding for randomness; on a
+  small eval set the savings are negligible and a fixed batch size makes
+  results easier to interpret.
+* ``num_workers: 0`` (or a small number) — eval is short, the worker
+  startup cost matters more.
+
+When the model code expects a single eval set, use the plain ``cuts_path`` /
+``manifest_filepath`` form at the same level as ``train_ds`` instead of the
+``datasets:`` dict.
+
+Preparing your data
+-------------------
+
+Three minimal recipes covering the main on-disk formats.
+
+**NeMo manifest** — one JSON object per line, fields read by ``LazyNeMoIterator``::
+
+    {"audio_filepath": "/data/utt_0001.wav", "duration": 3.42, "text": "hello world", "lang": "en"}
+    {"audio_filepath": "/data/utt_0002.wav", "duration": 5.10, "text": "another example", "lang": "en"}
+
+For tarred NeMo manifests, see
+``scripts/speech_recognition/convert_to_tarred_audio_dataset.py`` in the NeMo
+repo.
+
+**Lhotse cuts JSONL** — build a ``CutSet`` from raw recordings + supervisions:
+
+.. code-block:: python
+
+    from lhotse import CutSet, Recording, SupervisionSegment
+
+    cuts = []
+    for path, transcript in pairs:
+        rec = Recording.from_file(path)
+        sup = SupervisionSegment(
+            id=rec.id, recording_id=rec.id,
+            start=0.0, duration=rec.duration,
+            text=transcript, language="en",
+        )
+        cut = rec.to_cut()
+        cut.supervisions = [sup]
+        cuts.append(cut)
+
+    CutSet.from_cuts(cuts).to_file("cuts.jsonl")  # uncompressed!
+
+For Lhotse Shar (sharded archive), see the upstream tutorial: |tutorial_shar|.
+
+**Parquet** — write a ``pyarrow`` table with the column names the
+``LazyParquetIterator`` reads (``audio``, ``text``, ``duration``,
+optional ``lang``):
+
+.. code-block:: python
+
+    import pyarrow as pa, pyarrow.parquet as pq
+
+    table = pa.table({
+        "audio":    [open(p, "rb").read() for p in paths],
+        "text":     transcripts,
+        "duration": durations,
+        "lang":     ["en"] * len(paths),
+    })
+    pq.write_table(table, "shard_000.parquet")  # row-group stats kept by default
+
+Once your manifests are written, build the indexed sidecars in one shot::
+
+    python scripts/dataloading/build_indexes.py path/to/input_cfg.yaml
+
+See :ref:`indexed-resumable-dataloading` for the resumable side.
+
+.. _lhotse-storage-backends:
+
+Storage backends: local, object store, AIStore
+----------------------------------------------
+
+Every input path the dataloader reads goes through Lhotse's ``open_best``,
+which routes file paths and URIs to the right backend automatically:
+
+* **Local files** — paths like ``/data/...`` work out of the box, no
+  configuration needed.
+* **Generic object stores via ``smart_open``** — ``s3://``, ``gs://``,
+  ``http://``, ``https://`` URIs work after ``pip install smart_open``.
+  Authentication uses the underlying SDK's defaults (e.g. AWS env vars).
+* **AIStore** — ``ais://bucket/key`` URIs work after ``pip install aistore``
+  and ``export AIS_ENDPOINT=http://...``. Optional tuning env vars
+  ``AIS_CONNECT_TIMEOUT`` and ``AIS_READ_TIMEOUT`` are honored by the SDK.
+
+The same routing applies to ``.idx`` sidecars: they are read and written
+next to the data file, so the backend must accept writes at that location
+or the indexes need to be pre-built locally and uploaded.
+
+AIStore GetBatch (separate optimization)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+For tarred multimodal-conversation manifests, NeMo also supports AIStore's
+batched object-fetch API (``GetBatch``) via ``USE_AIS_GET_BATCH=true``,
+which issues one batched fetch per minibatch instead of per-cut tar reads.
+This is independent of using AIStore as a generic backend — see
+:doc:`speechlm2/datasets` for the speech-LM-specific details, including
+how it composes with ``indexed: true``.
+
+.. _lhotse-extension-hooks:
+
+Registering a custom format
+---------------------------
+
+Adding a new ``type:`` to the ``input_cfg`` registry is one decorator and
+one function:
+
+.. code-block:: python
+
+    from nemo.collections.common.data.lhotse.cutset import data_type_parser
+    from lhotse import CutSet
+
+    @data_type_parser("my_format")
+    def read_my_format(config) -> tuple[CutSet, bool]:
+        cuts = CutSet(MyAdapter(path=config.path, ...))
+        is_tarred = True  # True ⇒ IterableDataset path; False ⇒ map-style
+        return cuts, is_tarred
+
+The parser must accept arbitrary keys: ``read_dataset_config`` cascades
+options like ``indexed``, ``shard_seed``, ``metadata_only``,
+``force_finite``, ``audio_locator_tag`` from the top of the YAML down into
+every entry via ``propagate_attrs``. Missing keys should fall back to
+sensible defaults via ``config.get(...)``.
+
+To make ``MyAdapter`` participate in the indexed/resumable path
+(:ref:`indexed-resumable-dataloading`), implement Lhotse's
+:class:`~lhotse.lazy.IteratorNode` contract — see
+`indexed manifests guide <https://lhotse.readthedocs.io/en/latest/indexed-manifests.html>`_
+for the requirements.
+
+Common pitfalls
+---------------
+
+The most common foot-guns when standing up a NeMo Lhotse recipe:
+
+1. **Forgetting** ``trainer.use_distributed_sampler=false``. NeMo's Lhotse
+   integration handles distributed sampling itself; leaving Lightning's
+   default on causes silent batch duplication across DP ranks.
+
+2. **No** ``max_steps`` **with tarred / Shar data.** Tarred sources are
+   infinite by design, so without ``trainer.max_steps`` (and
+   ``limit_train_batches`` for the periodic validation cadence) training
+   never completes the first "epoch". Always set both.
+
+3. **Compressed inputs cannot be indexed.** ``.jsonl.gz`` and ``.tar.gz``
+   work for streaming, but ``indexed: true`` requires uncompressed,
+   seekable files. Re-extract or re-write before building ``.idx``.
+
+4. **Mismatched** ``num_workers`` / ``world_size`` **on resume.** Exact
+   per-worker resume with ``StatefulDataLoader`` requires both to match
+   between save and restore. Replay-based restore with the regular
+   ``DataLoader`` is more lenient.
+
+5. ``indexed: true`` **is incompatible with** ``extra_fields`` **and**
+   ``slice_length`` on ``nemo`` / ``nemo_tarred``. Both expand or rewrite
+   cuts in a way that has no stable index. Pre-process the manifest
+   offline if you need them in an indexed pipeline.
+
+6. ``shard_seed: "trng"`` **deadlocks under TP/PP.** Tensor- and pipeline-
+   parallel ranks must see the same shard order, but ``"trng"`` draws an
+   independent seed per worker. Use ``shard_seed: "randomized"`` whenever
+   you have model parallelism on top of DDP.
+
+7. **Missing** ``force_finite: true`` **on validation.** Validation configs
+   that reuse training infrastructure inherit the infinite-mux behavior;
+   without ``force_finite: true`` the validation loop never terminates.
+
+.. _lhotse-config-reference:
+
+``LhotseDataLoadingConfig`` field reference
+-------------------------------------------
+
+The complete option schema lives in ``LhotseDataLoadingConfig``
+(``nemo/collections/common/data/lhotse/dataloader.py``). It carries ~80
+fields; the categorization below mirrors the source order and groups
+options by what they control.
+
+**Inputs.** ``input_cfg``, ``manifest_filepath``,
+``tarred_audio_filepaths``, ``cuts_path``, ``shar_path``,
+``skip_missing_manifest_entries``, ``fault_tolerant_audio_loading``.
+
+The two failure policies are independent and loader-wide:
+
+* ``skip_missing_manifest_entries`` defaults to ``false``. Set it to ``true``
+  only for sequential paired-tar inputs where the tar may contain audio members
+  that have no corresponding JSONL row. It does not suppress malformed JSON,
+  missing required manifest fields, or audio I/O and decoder errors.
+* ``fault_tolerant_audio_loading`` defaults to ``true`` and drops examples whose
+  audio cannot be read, fetched, or decoded so training can continue past a
+  small number of corrupt files. Set it to ``false`` for fail-fast diagnostics.
+
+For example, strict manifest/tar alignment with fault-tolerant audio loading is
+the default. To tolerate filtered JSONL manifests while still failing on a bad
+audio payload, configure:
+
+.. code-block:: yaml
+
+   skip_missing_manifest_entries: true
+   fault_tolerant_audio_loading: false
+
+**Sampling — basic.** ``batch_size``, ``batch_duration``,
+``quadratic_duration``, ``min_duration``, ``max_duration``, ``min_tps``,
+``max_tps``.
+
+**Sampling — bucketing.** ``use_bucketing``, ``num_buckets``,
+``bucket_duration_bins``, ``bucket_batch_size``, ``bucket_buffer_size``,
+``num_cuts_for_bins_estimate``, ``concurrent_bucketing``.
+
+**Sampling — multimodal.** ``use_multimodal_sampling``, ``prompt_format``,
+``pretokenize``, ``audio_locator_tag``, ``token_equivalent_duration``,
+``audio_token_estimator``, ``batch_tokens``, ``use_packed_sequence_sampling``, ``quadratic_factor``,
+``min_tokens``, ``max_tokens``,
+``min_tpt``, ``max_tpt``, ``measure_total_length``.
+
+**Sampling — fusion (multi-config).** ``multi_config``, ``sampler_fusion``,
+``sampler_weights``.
+
+**Indexed / resumable.** ``indexed``, ``use_stateful_dataloader``,
+``indexes_root``, ``index_pack_root``, ``index_pack``,
+``index_pack_max_open_files``. See :ref:`indexed-resumable-dataloading` and
+:ref:`lhotse-indexes-root`.
+
+**Mixing & weighting.** ``reweight_temperature``, ``max_open_streams``.
+
+**I/O & distributed.** ``num_workers``, ``pin_memory``, ``shard_seed``,
+``seed``, ``shuffle``, ``shuffle_buffer_size``, ``drop_last``,
+``force_finite``, ``force_map_dataset``, ``force_iterable_dataset``,
+``metadata_only``, ``cuda_expandable_segments``.
+
+**On-the-fly augmentation.**
+
+* Speed/RIR — ``perturb_speed``, ``rir_enabled``, ``rir_path``, ``rir_prob``.
+* Noise — ``noise_path``, ``noise_snr``, ``noise_mix_prob``.
+* Lowpass — ``lowpass_enabled``, ``lowpass_frequencies_interval``,
+  ``lowpass_prob``.
+* Compression — ``compression_enabled``, ``compression_prob``,
+  ``compression_level_interval``, ``compression_codecs``,
+  ``compression_codec_weights``, ``compression_enable_for_custom_fields``.
+* Clipping — ``clipping_enabled``, ``clipping_gain_db``,
+  ``clipping_normalize``, ``clipping_oversampling``, ``clipping_prob``,
+  ``clipping_prob_hard``.
+* Concatenation — ``concatenate_samples``, ``concatenate_gap_seconds``,
+  ``concatenate_duration_factor``, ``concatenate_merge_supervisions``,
+  ``db_norm``.
+
+**Cut transforms.** ``truncate_duration``, ``truncate_offset_type``,
+``cut_into_windows_duration``, ``cut_into_windows_hop``,
+``pad_min_duration``, ``pad_direction``, ``cut_text_into_windows_tokens``,
+``keep_excessive_supervisions``.
+
+**Field-name overrides.** ``text_field``, ``lang_field``,
+``channel_selector``, ``sample_rate``.
+
+**Filtering.** ``max_cer``, ``min_context_speaker_similarity``, ``keep``.
+
+For exact types and defaults, see the dataclass definition in the source
+file — it is the single source of truth.
+
+See also
+--------
+
+* :doc:`speechlm2/datasets` — speech-LM-specific data classes, AIStore
+  GetBatch with indexed mode, and the SpeechLM ``DataModule`` resume
+  contract.
+* :doc:`asr/datasets` — ASR-specific data preparation conventions.
+* :doc:`audio/datasets` — audio (codec, enhancement) data flows.
+* `Lhotse PyTorch Datasets <https://lhotse.readthedocs.io/en/latest/datasets.html>`_
+  — upstream sampler API, ``StatefulDataLoader`` integration, custom RNG
+  state in batch transforms.
+* `Lhotse indexed manifests <https://lhotse.readthedocs.io/en/latest/indexed-manifests.html>`_
+  — the iterator-graph contract that makes O(1) restore work.

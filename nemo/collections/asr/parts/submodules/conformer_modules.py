@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,6 +25,7 @@ from nemo.collections.asr.parts.submodules.multi_head_attention import (
     MultiHeadAttention,
     RelPositionMultiHeadAttention,
     RelPositionMultiHeadAttentionLongformer,
+    RoPEMultiHeadAttention,
 )
 from nemo.collections.asr.parts.utils.activations import Swish
 from nemo.collections.common.parts.utils import activation_registry
@@ -43,6 +45,7 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
             'rel_pos_local_attn': relative positional embedding and Transformer-XL with local attention using
                 overlapping chunks. Attention context is determined by att_context_size parameter.
             'abs_pos': absolute positional embedding and Transformer
+            'rope': rotary position embedding
             Default is rel_pos.
         global_tokens (int): number of tokens to be used for global attention.
             Only relevant if self_attention_model is 'rel_pos_local_attn'.
@@ -79,6 +82,7 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
         use_bias=True,
         use_pytorch_sdpa=False,
         use_pytorch_sdpa_backends=None,
+        pos_enc=None,
     ):
         super(ConformerLayer, self).__init__()
 
@@ -144,10 +148,23 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
                 use_pytorch_sdpa=self.use_pytorch_sdpa,
                 use_pytorch_sdpa_backends=self.use_pytorch_sdpa_backends,
             )
+        elif self_attention_model == 'rope':
+            if pos_enc is None:
+                raise ValueError("'rope' attention requires a RotaryPositionalEncoding via pos_enc.")
+            self.self_attn = RoPEMultiHeadAttention(
+                n_head=n_heads,
+                n_feat=d_model,
+                dropout_rate=dropout_att,
+                pos_enc=pos_enc,
+                max_cache_len=MHA_max_cache_len,
+                use_bias=use_bias,
+                use_pytorch_sdpa=self.use_pytorch_sdpa,
+                use_pytorch_sdpa_backends=self.use_pytorch_sdpa_backends,
+            )
         else:
             raise ValueError(
                 f"'{self_attention_model}' is not not a valid value for 'self_attention_model', "
-                f"valid values can be from ['rel_pos', 'rel_pos_local_attn', 'abs_pos']"
+                f"valid values can be from ['rel_pos', 'rel_pos_local_attn', 'abs_pos', 'rope']"
             )
 
         # second feed forward module
@@ -181,7 +198,9 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
             x = self.self_attn(query=x, key=x, value=x, mask=att_mask, pos_emb=pos_emb, cache=cache_last_channel)
         elif self.self_attention_model == 'rel_pos_local_attn':
             x = self.self_attn(query=x, key=x, value=x, pad_mask=pad_mask, pos_emb=pos_emb, cache=cache_last_channel)
-        elif self.self_attention_model == 'abs_pos':
+        elif self.self_attention_model in ('abs_pos', 'rope'):
+            # 'rope' rotates Q/K inside MultiHeadAttention via the attached pos_enc,
+            # so the call site is identical to 'abs_pos' (no additive pos_emb).
             x = self.self_attn(query=x, key=x, value=x, mask=att_mask, cache=cache_last_channel)
         else:
             x = None
@@ -317,16 +336,24 @@ class ConformerConvolution(nn.Module):
             bias=self.use_bias,
         )
 
+    @staticmethod
+    def _apply_pointwise(x, conv):
+        # kernel_size=1 convs are pointwise, i.e. linear, but nn.Conv1d dispatches to much slower
+        # cuBLAS kernels. squeeze(-1) on the (O, I, 1) weight is a free view, so
+        # the module stays an nn.Conv1d and checkpoints are unchanged.
+        return nn.functional.linear(x, conv.weight.squeeze(-1), conv.bias)
+
     def forward(self, x, pad_mask=None, cache=None):
-        x = x.transpose(1, 2)
-        x = self.pointwise_conv1(x)
+        x = self._apply_pointwise(x, self.pointwise_conv1)
 
         # Compute the activation function or use GLU for original Conformer
         if self.pointwise_activation == 'glu_':
-            x = nn.functional.glu(x, dim=1)
+            x = nn.functional.glu(x, dim=-1)
         else:
             x = self.pointwise_activation(x)
 
+        # the depthwise conv and its streaming cache are channel-first
+        x = x.transpose(1, 2)
         if pad_mask is not None:
             x = x.masked_fill(pad_mask.unsqueeze(1), 0.0)
 
@@ -337,13 +364,12 @@ class ConformerConvolution(nn.Module):
         if self.norm_type == "layer_norm":
             x = x.transpose(1, 2)
             x = self.batch_norm(x)
-            x = x.transpose(1, 2)
         else:
             x = self.batch_norm(x)
+            x = x.transpose(1, 2)
 
         x = self.activation(x)
-        x = self.pointwise_conv2(x)
-        x = x.transpose(1, 2)
+        x = self._apply_pointwise(x, self.pointwise_conv2)
         if cache is None:
             return x
         else:

@@ -1,4 +1,5 @@
-# Copyright (c) 2023, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -35,6 +36,8 @@ from torch.optim.optimizer import Optimizer
 
 
 class MultiTensorApply(object):
+    """Apply a fused operation to lists of tensors."""
+
     available = False
     warned = False
 
@@ -120,6 +123,7 @@ class Adan(Optimizer):
 
     @torch.no_grad()
     def restart_opt(self):
+        """Reset optimizer state for a fresh optimization phase."""
         for group in self.param_groups:
             group['step'] = 0
             for p in group['params']:

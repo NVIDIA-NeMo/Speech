@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,7 +19,7 @@ ARG BASE_IMAGE=pytorch/pytorch:2.9.0-cuda12.8-cudnn9-runtime
 
 FROM ${BASE_IMAGE}
 
-ARG GIT_URL="https://github.com/NVIDIA-NeMo/NeMo.git"
+ARG GIT_URL="https://github.com/NVIDIA-NeMo/Speech.git"
 ARG CHECKOUT="main"
 
 ENV DEBIAN_FRONTEND=noninteractive

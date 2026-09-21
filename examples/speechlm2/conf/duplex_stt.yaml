@@ -1,8 +1,10 @@
 model:
   # Every name/path here starting with 'pretrained' is used to initialize the model weights.
-  pretrained_llm: TinyLlama/TinyLlama_v1.1
-  pretrained_asr: stt_en_fastconformer_hybrid_large_streaming_80ms
+  pretrained_llm: TinyLlama/TinyLlama-1.1B-Chat-v1.0
+  pretrained_asr: nvidia/stt_en_fastconformer_hybrid_large_streaming_multi
   scoring_asr: stt_en_fastconformer_transducer_large  # used only in validation/evaluation
+  source_sample_rate: 16000
+  validation_save_path: duplex_stt_results/
 
   pretrained_weights: True  # When False, we use pretrained_name to load the architecture, but with random init
   trust_remote_code: false
@@ -15,7 +17,7 @@ model:
      target:  nemo.collections.speechlm2.modules.perception.AudioPerceptionModule
      modality_adapter:
        _target_: nemo.collections.speechlm2.modules.perception.IdentityConnector
-       d_model: 1024
+       d_model: 512
 
   optimizer:
     _target_: torch.optim.AdamW
@@ -57,7 +59,7 @@ trainer:
 
 data:
   frame_length: 0.08
-  source_sample_rate: 16000
+  source_sample_rate: ${model.source_sample_rate}
   input_roles: ["user", "User"]
   output_roles: ["agent", "Assistant"]
 
@@ -92,7 +94,7 @@ data:
 
 exp_manager:
    exp_dir: null
-   explicit_log_dir: duplex_stt_results/
+   explicit_log_dir: ${model.validation_save_path}
    name: speechlm2
    create_tensorboard_logger: false
    create_checkpoint_callback: true
@@ -113,7 +115,7 @@ exp_manager:
 
    checkpoint_callback_params:
      filename: "{step}"
-     monitor: val_bleu
+     monitor: val_txt_bleu
      mode: max
      every_n_train_steps: null
      every_n_epochs: 1

@@ -3,6 +3,12 @@ Datasets
 
 NeMo ASR models expect data as a set of audio files plus a manifest file describing each utterance.
 
+.. seealso::
+
+   For Lhotse-based dataloading (the recommended path for new ASR
+   recipes — dynamic bucketing, multi-source mixing, indexed/resumable
+   dataloading), see :doc:`/dataloaders`.
+
 .. _section-with-manifest-format-explanation:
 
 Manifest Format

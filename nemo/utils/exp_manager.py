@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,12 +15,14 @@
 
 import glob
 import os
+import re
 import signal
 import subprocess
 import sys
 import time
 import warnings
 from collections import defaultdict
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
@@ -242,6 +245,7 @@ class ExpManagerConfig:
     resume_past_end: Optional[bool] = False
     resume_ignore_no_checkpoint: Optional[bool] = False
     resume_from_checkpoint: Optional[str] = None
+    resume_select_latest_last_checkpoint: Optional[bool] = False
     # Logging parameters
     create_tensorboard_logger: Optional[bool] = True
     summary_writer_kwargs: Optional[Dict[Any, Any]] = None
@@ -279,6 +283,8 @@ class ExpManagerConfig:
     ema: Optional[EMAParams] = field(default_factory=lambda: EMAParams())
     # Wall clock time limit
     max_time_per_run: Optional[str] = None
+    # Count from the SLURM allocation start instead of the training loop start.
+    max_time_per_run_from_slurm: Optional[bool] = True
     # time to sleep non 0 ranks during initialization
     seconds_to_sleep: float = 5
     # Straggler detection
@@ -522,6 +528,9 @@ def exp_manager(trainer: 'lightning.pytorch.Trainer', cfg: Optional[Union[DictCo
             - resume_from_checkpoint (str): Can be used to specify a path to a specific checkpoint
                 file to load from. This will override any checkpoint found when resume_if_exists
                 is True. Defaults to None.
+            - resume_select_latest_last_checkpoint (bool): When multiple ``*last.ckpt`` checkpoints
+                exist, select the unique checkpoint with the greatest integer ``step=...`` in its
+                basename. Defaults to False, preserving the fail-closed ambiguity check.
             - create_tensorboard_logger (bool): Whether to create a tensorboard logger and attach it
                 to the pytorch lightning trainer. Defaults to True.
             - summary_writer_kwargs (dict): A dictionary of kwargs that can be passed to lightning's
@@ -614,6 +623,7 @@ def exp_manager(trainer: 'lightning.pytorch.Trainer', cfg: Optional[Union[DictCo
         cfg.resume_ignore_no_checkpoint,
         cfg.checkpoint_callback_params.dirpath,
         cfg.resume_from_checkpoint,
+        cfg.resume_select_latest_last_checkpoint,
     )
 
     checkpoint_name = name
@@ -737,13 +747,17 @@ def exp_manager(trainer: 'lightning.pytorch.Trainer', cfg: Optional[Union[DictCo
                     'Found a PTL Timer callback, replacing with a StatelessTimer callback. '
                     'This will happen if you set trainer.max_time as well as exp_manager.max_time_per_run.'
                 )
-                trainer.callbacks[idx] = StatelessTimer(cfg.max_time_per_run)
+                trainer.callbacks[idx] = StatelessTimer(
+                    cfg.max_time_per_run, max_time_from_slurm=cfg.max_time_per_run_from_slurm
+                )
                 found_ptl_timer = True
                 break
 
         if not found_ptl_timer:
             trainer.max_time = cfg.max_time_per_run
-            trainer.callbacks.append(StatelessTimer(cfg.max_time_per_run))
+            trainer.callbacks.append(
+                StatelessTimer(cfg.max_time_per_run, max_time_from_slurm=cfg.max_time_per_run_from_slurm)
+            )
 
     if cfg.create_straggler_detection_callback:
         if HAVE_STRAGGLER_DET:
@@ -876,6 +890,7 @@ def check_resume(
     resume_ignore_no_checkpoint: bool = False,
     dirpath: str = None,
     resume_from_checkpoint: str = None,
+    resume_select_latest_last_checkpoint: bool = False,
 ):
     """Checks that resume=True was used correctly with the arguments pass to exp_manager. Sets
     trainer._checkpoint_connector._ckpt_path as necessary.
@@ -1017,8 +1032,33 @@ def check_resume(
                 if any([s for s in ['mp_rank', 'tp_rank', 'fsdp_shard'] if s in str(last_checkpoints[0])]):
                     checkpoint = last_checkpoints[0]
                     checkpoint = uninject_model_parallel_rank(checkpoint)
+                elif resume_select_latest_last_checkpoint:
+                    checkpoints_by_step = {}
+                    for candidate in last_checkpoints:
+                        matches = re.findall(r'(?:^|[-_])step=(\d+)(?:[-_.]|$)', Path(str(candidate)).name)
+                        if len(matches) != 1:
+                            raise ValueError(
+                                "Cannot select the latest *last.ckpt because every candidate must have "
+                                f"exactly one step=<integer> in its basename: {last_checkpoints}"
+                            )
+                        step = int(matches[0])
+                        if step in checkpoints_by_step:
+                            raise ValueError(
+                                f"Cannot select a unique latest *last.ckpt: step={step} appears in both "
+                                f"{checkpoints_by_step[step]} and {candidate}."
+                            )
+                        checkpoints_by_step[step] = candidate
+                    checkpoint = checkpoints_by_step[max(checkpoints_by_step)]
+                    logging.warning(
+                        "Multiple *last.ckpt checkpoints found; selected the unique greatest step: %s",
+                        checkpoint,
+                    )
                 else:
-                    raise ValueError(f"Multiple checkpoints {last_checkpoints} that matches *last.ckpt.")
+                    raise ValueError(
+                        f"Multiple checkpoints {last_checkpoints} match *last.ckpt. "
+                        "Set resume_select_latest_last_checkpoint=True to select the unique checkpoint "
+                        "with the greatest step=<integer> in its basename."
+                    )
             else:
                 checkpoint = last_checkpoints[0]
 
@@ -1428,15 +1468,18 @@ class StatelessTimer(Timer):
         duration: timedelta = None,
         interval: str = Interval.step,
         verbose: bool = True,
+        max_time_from_slurm: bool = False,
     ) -> None:
-        """stateless timer
+        """Create a timer whose elapsed state is reset for every training run.
 
         Args:
-            duration (timedelta, optional): _description_. Defaults to None.
-            interval (str, optional): _description_. Defaults to Interval.step.
-            verbose (bool, optional): _description_. Defaults to True.
+            duration: Maximum elapsed time for this run.
+            interval: Check the time limit after each step or epoch.
+            verbose: Log when the time limit is reached.
+            max_time_from_slurm: Include time elapsed since ``SLURM_JOB_START_TIME``.
         """
         super().__init__(duration, interval, verbose)
+        self._slurm_job_start_time = self._read_slurm_job_start_time() if max_time_from_slurm else None
 
     # Override PTL Timer's state dict to not store elapsed time information so that we can
     # restore and continue training.
@@ -1448,10 +1491,27 @@ class StatelessTimer(Timer):
         """load_state_dict"""
         return
 
+    def on_fit_start(self, trainer: lightning.pytorch.Trainer, *args: Any, **kwargs: Any) -> None:
+        """Refresh the SLURM offset before the initial deadline check."""
+        self._update_slurm_time_offset()
+        super().on_fit_start(trainer, *args, **kwargs)
+
+    def on_train_start(self, trainer: lightning.pytorch.Trainer, pl_module: lightning.pytorch.LightningModule) -> None:
+        """Refresh the SLURM offset when the monotonic training clock starts."""
+        self._update_slurm_time_offset()
+        super().on_train_start(trainer, pl_module)
+
     def _check_time_remaining(self, trainer: lightning.pytorch.Trainer) -> None:
         """_check_time_remaining"""
         super()._check_time_remaining(trainer)
         if trainer.should_stop:
+            before_flush = _describe_batch_progress(trainer)
+            logging.info(
+                "StatelessTimer deadline reached; saving last checkpoint "
+                f"global_step={getattr(trainer, 'global_step', None)} "
+                f"current_epoch={getattr(trainer, 'current_epoch', None)} "
+                f"batch_progress_before_flush={before_flush}"
+            )
             # PTL's TrainingEpochLoop.advance() calls the on_train_batch_end hooks (which is where
             # Timer._check_time_remaining fires) BEFORE batch_progress.increment_completed(). The
             # current batch's optim step has already advanced global_step, so saving here would
@@ -1461,14 +1521,71 @@ class StatelessTimer(Timer):
             # global_step per wall-time resume. Flush the in-flight batch first to keep the
             # saved state self-consistent.
             _flush_in_flight_batch_progress(trainer)
+            after_flush = _describe_batch_progress(trainer)
             checkpoint_callback: Optional[NeMoModelCheckpoint] = trainer.checkpoint_callback
             if checkpoint_callback:
+                save_started = time.monotonic()
                 monitor_candidates = checkpoint_callback._monitor_candidates(trainer)
                 checkpoint_callback._save_last_checkpoint(trainer, monitor_candidates)
+                logging.info(
+                    "StatelessTimer last checkpoint save finished "
+                    f"global_step={getattr(trainer, 'global_step', None)} "
+                    f"current_epoch={getattr(trainer, 'current_epoch', None)} "
+                    f"batch_progress_after_flush={after_flush} "
+                    f"last_model_path={getattr(checkpoint_callback, 'last_model_path', None)} "
+                    f"save_duration_sec={time.monotonic() - save_started:.3f}"
+                )
+            else:
+                logging.warning("StatelessTimer deadline reached but trainer.checkpoint_callback is not configured")
             # Throw this exception to signal to Lightning to terminate gracefully.
             from lightning.pytorch.utilities.exceptions import _TunerExitException
 
             raise _TunerExitException()
+
+    def _update_slurm_time_offset(self) -> None:
+        """Set the elapsed-time offset to the time used by the current SLURM job."""
+        if self._slurm_job_start_time is not None:
+            self._offset = max(0.0, time.time() - self._slurm_job_start_time)
+
+    @staticmethod
+    def _read_slurm_job_start_time() -> Optional[float]:
+        """Read SLURM's start time, falling back to training-loop timing outside SLURM."""
+        value = os.getenv("SLURM_JOB_START_TIME")
+        if value is None:
+            logging.warning(
+                "max_time_per_run_from_slurm=True, but SLURM_JOB_START_TIME is not set; "
+                "falling back to measuring max_time_per_run from the training loop start."
+            )
+            return None
+        try:
+            start_time = int(value)
+        except ValueError:
+            raise ValueError(
+                "SLURM-based max_time_per_run requires SLURM_JOB_START_TIME to be a positive UNIX timestamp"
+            ) from None
+        if start_time <= 0:
+            raise ValueError(
+                "SLURM-based max_time_per_run requires SLURM_JOB_START_TIME to be a positive UNIX timestamp"
+            )
+        return float(start_time)
+
+
+def _describe_batch_progress(trainer: lightning.pytorch.Trainer) -> Dict[str, Any]:
+    """Return a compact, log-friendly snapshot of Lightning's train batch progress."""
+    try:
+        batch_progress = trainer.fit_loop.epoch_loop.batch_progress
+    except AttributeError:
+        return {}
+
+    return {
+        "current_ready": getattr(batch_progress.current, "ready", None),
+        "current_processed": getattr(batch_progress.current, "processed", None),
+        "current_completed": getattr(batch_progress.current, "completed", None),
+        "total_ready": getattr(batch_progress.total, "ready", None),
+        "total_processed": getattr(batch_progress.total, "processed", None),
+        "total_completed": getattr(batch_progress.total, "completed", None),
+        "is_last_batch": getattr(batch_progress, "is_last_batch", None),
+    }
 
 
 def _flush_in_flight_batch_progress(trainer: lightning.pytorch.Trainer) -> None:
@@ -1487,11 +1604,63 @@ def _flush_in_flight_batch_progress(trainer: lightning.pytorch.Trainer) -> None:
         batch_progress.increment_completed()
 
 
+def _save_last_checkpoint_and_exit(trainer: lightning.pytorch.Trainer, reason: str) -> None:
+    """Save the last checkpoint for graceful shutdown and exit Lightning.
+
+    ``reason`` should describe the caller-visible shutdown trigger. The
+    checkpoint policy itself is unchanged: this only asks the configured
+    ``NeMoModelCheckpoint`` to update its existing ``*-last.ckpt`` target.
+    """
+    before_flush = _describe_batch_progress(trainer)
+    logging.info(
+        f"{reason}; saving last checkpoint "
+        f"global_step={getattr(trainer, 'global_step', None)} "
+        f"current_epoch={getattr(trainer, 'current_epoch', None)} "
+        f"batch_progress_before_flush={before_flush}"
+    )
+    _flush_in_flight_batch_progress(trainer)
+    after_flush = _describe_batch_progress(trainer)
+
+    checkpoint_callback: Optional[NeMoModelCheckpoint] = getattr(trainer, "checkpoint_callback", None)
+    if checkpoint_callback:
+        save_started = time.monotonic()
+        monitor_candidates = checkpoint_callback._monitor_candidates(trainer)
+        checkpoint_callback._save_last_checkpoint(trainer, monitor_candidates)
+        logging.info(
+            "Graceful shutdown last checkpoint save finished "
+            f"global_step={getattr(trainer, 'global_step', None)} "
+            f"current_epoch={getattr(trainer, 'current_epoch', None)} "
+            f"batch_progress_after_flush={after_flush} "
+            f"last_model_path={getattr(checkpoint_callback, 'last_model_path', None)} "
+            f"save_duration_sec={time.monotonic() - save_started:.3f}"
+        )
+    else:
+        logging.warning(f"{reason}; trainer.checkpoint_callback is not configured")
+
+    from lightning.pytorch.utilities.exceptions import _TunerExitException
+
+    raise _TunerExitException()
+
+
 def configure_no_restart_validation_training_loop(trainer: lightning.pytorch.Trainer) -> None:
     """configure_no_restart_validation_training_loop"""
-    if type(trainer.fit_loop.epoch_loop) != _TrainingEpochLoop:
+    if type(trainer.fit_loop.epoch_loop) is not _TrainingEpochLoop:
         warnings.warn("Detected custom epoch loop. Skipping no validation on restart support.", UserWarning)
         return
+
+    fit_loop = trainer.fit_loop
+    if not getattr(fit_loop, "_nemo_restart_loader_state_cache_installed", False):
+        original_load_combined_loader_states = fit_loop._load_combined_loader_states
+
+        def _load_combined_loader_states_with_cache() -> None:
+            states = getattr(fit_loop, "_combined_loader_states_to_load", None)
+            if getattr(fit_loop, "restarting", False) and states:
+                fit_loop._nemo_restart_combined_loader_states = deepcopy(states)
+            original_load_combined_loader_states()
+
+        fit_loop._load_combined_loader_states = _load_combined_loader_states_with_cache
+        fit_loop._nemo_restart_loader_state_cache_installed = True
+
     # Pass trainer object to avoid trainer getting overwritten as None
     loop = SkipResumeTrainingValidationLoop(trainer, trainer.min_steps, trainer.max_steps)
     trainer.fit_loop.epoch_loop = loop
@@ -1504,8 +1673,43 @@ class SkipResumeTrainingValidationLoop(_TrainingEpochLoop):
     the training state before validation has run.
     """
 
+    def __init__(self, *args, **kwargs) -> None:
+        """Initialize skip-validation bookkeeping."""
+        super().__init__(*args, **kwargs)
+        self._skip_resume_validation_once = False
+
+    def advance(self, data_fetcher) -> None:
+        """Skip restart validation without replaying an already-completed train batch."""
+        if self.restarting and super()._should_check_val_fx(data_fetcher):
+            logging.info("Skipping restart validation without replaying a completed training batch")
+            self._reload_unconsumed_restart_dataloader_state()
+            self._skip_resume_validation_once = True
+            self.restarting = False
+            return
+        super().advance(data_fetcher)
+
+    def _reload_unconsumed_restart_dataloader_state(self) -> None:
+        """Reapply the checkpoint dataloader cursor after skipping restart validation."""
+        fit_loop = self.trainer.fit_loop
+        states = getattr(fit_loop, "_nemo_restart_combined_loader_states", None)
+        combined_loader = getattr(fit_loop, "_combined_loader", None)
+        if not states or combined_loader is None or not hasattr(combined_loader, "_load_state_dicts"):
+            return
+
+        combined_loader._load_state_dicts(deepcopy(states))
+        fit_loop._nemo_restart_combined_loader_states = None
+
+    def on_advance_end(self, data_fetcher) -> None:
+        """Clear the one-shot restart-validation skip after normal epoch-loop bookkeeping."""
+        try:
+            return super().on_advance_end(data_fetcher)
+        finally:
+            self._skip_resume_validation_once = False
+
     def _should_check_val_fx(self, data_fetcher) -> bool:
         """_should_check_val_fx"""
+        if self._skip_resume_validation_once:
+            return False
         if self.restarting:
             return False
         return super()._should_check_val_fx(data_fetcher)

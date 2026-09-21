@@ -138,13 +138,13 @@ In some cases the audio is too long for standard inference, especially if you're
 There are two main ways of performing inference on long audio files in NeMo:
 
 The first way is to use buffered inference, where the audio is divided into chunks to run on, and the output is merged afterwards.
-The relevant scripts for this are contained in `this folder <https://github.com/NVIDIA/NeMo/blob/stable/examples/asr/asr_chunked_inference>`_.
+The relevant scripts for this are contained in `this folder <https://github.com/NVIDIA-NeMo/Speech/blob/stable/examples/asr/asr_chunked_inference>`_.
 
 The second way, specifically for models with the Conformer/Fast Conformer encoder, is to use local attention, which changes the costs to be linear.
 You can train Fast Conformer models with Longformer-style (https://arxiv.org/abs/2004.05150) local+global attention using one of the following configs: CTC config at
 ``<NeMo_git_root>/examples/asr/conf/fastconformer/fast-conformer-long_ctc_bpe.yaml`` and transducer config at ``<NeMo_git_root>/examples/asr/conf/fastconformer/fast-conformer-long_transducer_bpe.yaml``.
 You can also convert any model trained with full context attention to local, though this may result in lower WER in some cases. You can switch to local attention when running the
-`transcribe <https://github.com/NVIDIA/NeMo/blob/stable/examples/asr/transcribe_speech.py>`_ or `evaluation <https://github.com/NVIDIA/NeMo/blob/stable/examples/asr/transcribe_speech.py>`_
+`transcribe <https://github.com/NVIDIA-NeMo/Speech/blob/stable/examples/asr/transcribe_speech.py>`_ or `evaluation <https://github.com/NVIDIA-NeMo/Speech/blob/stable/examples/asr/transcribe_speech.py>`_
 scripts in the following way:
 
 .. code-block:: python
@@ -232,7 +232,7 @@ Note that using manifest allows to specify the task configuration for each audio
 Inference on Apple M-Series GPU
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-To perform inference on Apple Mac M-Series GPU (``mps`` PyTorch device), use PyTorch 2.0 or higher (see the `mac-installation <https://github.com/NVIDIA/NeMo/blob/stable/README.rst#mac-computers-with-apple-silicon>` section). Environment variable ``PYTORCH_ENABLE_MPS_FALLBACK=1`` should be set, since not all operations in PyTorch are currently implemented on ``mps`` device.
+To perform inference on Apple Mac M-Series GPU (``mps`` PyTorch device), use PyTorch 2.0 or higher (see the `mac-installation <https://github.com/NVIDIA-NeMo/Speech/blob/stable/README.rst#mac-computers-with-apple-silicon>` section). Environment variable ``PYTORCH_ENABLE_MPS_FALLBACK=1`` should be set, since not all operations in PyTorch are currently implemented on ``mps`` device.
 
 If ``allow_mps=true`` flag is passed to ``speech_to_text_eval.py``, the ``mps`` device will be selected automatically.
 
@@ -251,7 +251,7 @@ There are multiple ASR tutorials provided in the Tutorials section. Most of thes
 Inference Execution Flow Diagram
 --------------------------------
 
-When preparing your own inference scripts, please follow the execution flow diagram order for correct inference, found at the `examples directory for ASR collection <https://github.com/NVIDIA/NeMo/blob/stable/examples/asr/README.md>`_.
+When preparing your own inference scripts, please follow the execution flow diagram order for correct inference, found at the `examples directory for ASR collection <https://github.com/NVIDIA-NeMo/Speech/blob/stable/examples/asr/README.md>`_.
 
 
 Automatic Speech Recognition Models

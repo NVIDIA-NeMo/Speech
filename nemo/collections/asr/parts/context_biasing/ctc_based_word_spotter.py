@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -127,8 +128,8 @@ def find_best_hyps(spotted_words: List[WSHyp], intersection_threshold: int = 10)
         # check hyp intersection with all the elements in hyp_intervals_dict
         for h_interval_key in hyp_intervals_dict:
             # get left and right interval values
-            l, r = int(h_interval_key.split("_")[0]), int(h_interval_key.split("_")[1])
-            current_dict_interval = set(range(l, r + 1))
+            left, right = int(h_interval_key.split("_")[0]), int(h_interval_key.split("_")[1])
+            current_dict_interval = set(range(left, right + 1))
             intersection_part = 100 / len(current_dict_interval) * len(hyp_interval & current_dict_interval)
             # in case of intersection:
             if intersection_part >= intersection_threshold:
@@ -183,29 +184,29 @@ def get_ctc_word_alignment(
     begin_of_word = "▁"
     word_alignment = []
     word = ""
-    l, r, score = None, None, None
+    left, right, score = None, None, None
     for item in token_alignment:
         if not word:
             if word.startswith(begin_of_word):
                 word = item[0][1:]
             else:
                 word = item[0][:]
-            l = item[1]
-            r = item[1]
+            left = item[1]
+            right = item[1]
             score = item[2] + token_weight
         else:
             if item[0].startswith(begin_of_word):
-                word_alignment.append((word, l, r, score))
+                word_alignment.append((word, left, right, score))
                 word = item[0][1:]
-                l = item[1]
-                r = item[1]
+                left = item[1]
+                right = item[1]
                 score = item[2] + token_weight
             else:
                 word += item[0]
-                r = item[1]
+                right = item[1]
                 score += item[2] + token_weight
     if word:
-        word_alignment.append((word, l, r, score))
+        word_alignment.append((word, left, right, score))
 
     if len(word_alignment) == 1 and not word_alignment[0][0]:
         word_alignment = []

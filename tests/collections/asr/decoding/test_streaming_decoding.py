@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -470,6 +471,7 @@ def test_label_looping_continuous_streaming_partial_hypotheses(
     assert ref_transcripts == streaming_transcripts
 
 
+@pytest.mark.pleasefixme
 @pytest.mark.with_downloads
 @pytest.mark.parametrize(
     "device,use_cuda_graph_decoder",

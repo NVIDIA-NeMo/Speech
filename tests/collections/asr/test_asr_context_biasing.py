@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -150,6 +151,20 @@ class TestContextBiasingUtils:
     def test_compute_fscore(self):
         recog_manifest = """{"audio_filepath": "test.wav", "duration": 1.0, "text": "a new gpu for nvidia", "pred_text": "a new gpu for invidia"}\n"""
         context_words = ["gpu", "cpu", "nvidia"]
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8') as f:
+            f.write(recog_manifest)
+            f.seek(0)
+            fscore_stats = context_biasing.compute_fscore(f.name, context_words)
+            assert (round(fscore_stats[0], 4), round(fscore_stats[1], 4), round(fscore_stats[2], 4)) == (
+                1.0,
+                0.5,
+                0.6667,
+            )
+
+    @pytest.mark.unit
+    def test_compute_fscore_case_insensitive(self):
+        recog_manifest = """{"audio_filepath": "test.wav", "duration": 1.0, "text": "a new gpu for nvidia.", "pred_text": "a new GPU, for invidia"}\n"""
+        context_words = ["gpu", "cpu", "NVIDIA"]
         with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8') as f:
             f.write(recog_manifest)
             f.seek(0)

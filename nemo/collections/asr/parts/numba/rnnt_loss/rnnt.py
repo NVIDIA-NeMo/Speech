@@ -1,4 +1,5 @@
-# Copyright (c) 2021, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2021, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -86,7 +87,7 @@ def rnnt_loss_cpu(
 
     cpu_workspace = torch.zeros(gpu_size, device=log_probs.device, dtype=log_probs.dtype, requires_grad=False)
 
-    ### VIEW TENSORS AS VECTORS FOR POINTER INDEXING ###
+    # VIEW TENSORS AS VECTORS FOR POINTER INDEXING ###
     log_probs, acts_shape = rnnt_helper.flatten_tensor(log_probs)
     flat_labels, labels_shape = rnnt_helper.flatten_tensor(flat_labels)
 
@@ -116,7 +117,7 @@ def rnnt_loss_cpu(
             raise RuntimeError("Could not calculate forward scores")
 
     else:
-        ### FLATTEN GRAD TENSOR ###
+        # FLATTEN GRAD TENSOR ###
         grads, grads_shape = rnnt_helper.flatten_tensor(grads)
 
         status = wrapper.cost_and_grad(
@@ -188,7 +189,7 @@ def rnnt_loss_gpu(
     cuda.select_device(acts.device.index)
     gpu_workspace = torch.zeros(gpu_size, device=acts.device, dtype=torch.float32, requires_grad=False)
 
-    ### VIEW TENSORS AS VECTORS FOR POINTER INDEXING ###
+    # VIEW TENSORS AS VECTORS FOR POINTER INDEXING ###
     acts, acts_shape = rnnt_helper.flatten_tensor(acts)
 
     wrapper = gpu_rnnt.GPURNNT(
@@ -217,7 +218,7 @@ def rnnt_loss_gpu(
             raise RuntimeError("Could not calculate forward scores")
 
     else:
-        ### FLATTEN GRAD TENSOR ###
+        # FLATTEN GRAD TENSOR ###
         grads, grads_shape = rnnt_helper.flatten_tensor(grads)
 
         status = wrapper.cost_and_grad(
@@ -306,7 +307,7 @@ def tdt_loss_gpu(
     for i in range(0, len(durations)):
         tdt_workspace[i] = durations[i]
 
-    ### VIEW TENSORS AS VECTORS FOR POINTER INDEXING ###
+    # VIEW TENSORS AS VECTORS FOR POINTER INDEXING ###
     label_acts, label_acts_shape = rnnt_helper.flatten_tensor(label_acts)
     duration_acts, duration_acts_shape = rnnt_helper.flatten_tensor(duration_acts)
 
@@ -341,7 +342,7 @@ def tdt_loss_gpu(
             raise RuntimeError("Could not calculate forward scores")
 
     else:
-        ### FLATTEN GRAD TENSOR ###
+        # FLATTEN GRAD TENSOR ###
         label_grads, label_grads_shape = rnnt_helper.flatten_tensor(label_grads)
         duration_grads, duration_grads_shape = rnnt_helper.flatten_tensor(duration_grads)
 
@@ -432,7 +433,7 @@ def multiblank_rnnt_loss_gpu(
     for i in range(0, len(big_blank_durations)):
         big_blank_workspace[i] = big_blank_durations[i]
 
-    ### VIEW TENSORS AS VECTORS FOR POINTER INDEXING ###
+    # VIEW TENSORS AS VECTORS FOR POINTER INDEXING ###
     acts, acts_shape = rnnt_helper.flatten_tensor(acts)
 
     wrapper = gpu_rnnt.MultiblankGPURNNT(
@@ -464,7 +465,7 @@ def multiblank_rnnt_loss_gpu(
             raise RuntimeError("Could not calculate forward scores")
 
     else:
-        ### FLATTEN GRAD TENSOR ###
+        # FLATTEN GRAD TENSOR ###
         grads, grads_shape = rnnt_helper.flatten_tensor(grads)
 
         status = wrapper.cost_and_grad(

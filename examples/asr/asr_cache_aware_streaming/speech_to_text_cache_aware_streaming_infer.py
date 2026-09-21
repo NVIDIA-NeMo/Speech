@@ -1,4 +1,5 @@
-# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -171,6 +172,12 @@ class TranscriptionConfig:
         "float32"  # "float32" (default), "bfloat16" or "float16"; if None: bfloat16 if available else float32
     )
     matmul_precision: str = "high"  # Literal["highest", "high", "medium"]
+
+    # Capture the steady-state encoder streaming step into a CUDA graph and replay it with a
+    # single kernel launch per chunk (removes the per-step host launch overhead). For the covered
+    # non-autocast configs the graph path preserves eager semantics; requires CUDA and non-uniform
+    # steps fall back to eager.
+    use_cuda_graphs: bool = False
 
     # Decoding strategy for CTC models
     ctc_decoding: CTCDecodingConfig = field(default_factory=CTCDecodingConfig)
@@ -391,6 +398,14 @@ def main(cfg: TranscriptionConfig):
         asr_model.encoder.setup_streaming_params(
             chunk_size=cfg.chunk_size, left_chunks=cfg.left_chunks, shift_size=shift_size
         )
+
+    # Enable CUDA-graph replay for the encoder streaming step (single launch per steady-state chunk)
+    if cfg.use_cuda_graphs:
+        if device.type != "cuda":
+            raise ValueError("use_cuda_graphs=true requires a CUDA device")
+        if not hasattr(asr_model.encoder, "set_streaming_cuda_graphs"):
+            raise ValueError("Model encoder does not support CUDA graphs for the streaming step.")
+        asr_model.encoder.set_streaming_cuda_graphs(enabled=True)
 
     # In streaming, offline normalization is not feasible as we don't have access to the whole audio at the beginning
     # When online_normalization is enabled, the normalization of the input features (mel-spectrograms) are done per step

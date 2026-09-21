@@ -1,4 +1,5 @@
-# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,8 +12,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Two-GPU smoke coverage for SALMAutomodel compiled Automodel dependencies."""
+"""Multi-GPU smoke coverage for SALMAutomodel compiled Automodel dependencies."""
 
+import importlib.metadata
 import importlib.util
 import os
 import subprocess
@@ -27,26 +29,30 @@ from transformers import PretrainedConfig
 from nemo.collections.speechlm2.models import SALMAutomodel
 from nemo.collections.speechlm2.parts.parallel import AutomodelParallelStrategy
 
-
 pytestmark = pytest.mark.integration
 
+EXPECTED_DEEP_EP_VERSION = "1.2.1+7febc6e"
 
-def _require_two_gpu_torchrun() -> tuple[int, int, torch.device]:
+
+def _require_multi_gpu_torchrun() -> tuple[int, int, torch.device]:
     if not torch.cuda.is_available():
         pytest.skip("SALMAutomodel compiled dependency smoke requires CUDA")
-    if torch.cuda.device_count() < 2:
+    visible_devices = torch.cuda.device_count()
+    if visible_devices < 2:
         pytest.skip("SALMAutomodel compiled dependency smoke requires at least 2 visible GPUs")
 
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
-    if world_size != 2:
-        pytest.skip("Run with `torchrun --nproc-per-node 2` to exercise DeepEP")
+    if world_size < 2:
+        pytest.skip("Run with `torchrun --nproc-per-node 2` or larger to exercise DeepEP")
+    if visible_devices < world_size:
+        pytest.skip(f"torchrun requested {world_size} ranks but only {visible_devices} GPUs are visible")
 
     local_rank = int(os.environ["LOCAL_RANK"])
     torch.cuda.set_device(local_rank)
     return local_rank, world_size, torch.device(f"cuda:{local_rank}")
 
 
-def _require_nvlink_topology() -> None:
+def _require_nvlink_topology(*, world_size: int) -> None:
     try:
         topo = subprocess.run(
             ["nvidia-smi", "topo", "-m"],
@@ -58,12 +64,46 @@ def _require_nvlink_topology() -> None:
     except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         pytest.skip("DeepEP topology check requires `nvidia-smi topo -m`")
 
-    for line in topo.splitlines():
-        columns = line.split()
-        if columns[:1] == ["GPU0"] and len(columns) > 2 and columns[2].startswith("NV"):
-            return
+    rows = [line.split() for line in topo.splitlines()]
+    header = next(
+        (
+            columns
+            for columns in rows
+            if len(columns) > 1
+            and columns[0].startswith("GPU")
+            and columns[0][3:].isdigit()
+            and columns[1].startswith("GPU")
+            and columns[1][3:].isdigit()
+        ),
+        None,
+    )
+    if header is None:
+        pytest.skip("DeepEP topology check could not parse GPU columns from `nvidia-smi topo -m`")
 
-    pytest.skip("DeepEP intranode dispatch requires NVLink between the two visible GPUs")
+    gpu_names = []
+    for column in header:
+        if column.startswith("GPU") and column[3:].isdigit():
+            gpu_names.append(column)
+        else:
+            break
+
+    if len(gpu_names) < world_size:
+        pytest.skip(f"DeepEP topology check found fewer than {world_size} GPU columns")
+
+    topology_rows = {
+        columns[0]: columns[1 : 1 + len(gpu_names)] for columns in rows if columns and columns[0] in gpu_names
+    }
+    participating_gpus = gpu_names[:world_size]
+    if any(gpu not in topology_rows or len(topology_rows[gpu]) < world_size for gpu in participating_gpus):
+        pytest.skip("DeepEP topology check could not find every participating GPU row")
+
+    for source_index, source_gpu in enumerate(participating_gpus):
+        for target_index, target_gpu in enumerate(participating_gpus):
+            if source_index == target_index:
+                continue
+            link = topology_rows[source_gpu][target_index]
+            if not link.startswith("NV"):
+                pytest.skip(f"DeepEP intranode dispatch requires NVLink between {source_gpu} and {target_gpu}")
 
 
 def _require_compiled_dependencies() -> None:
@@ -74,6 +114,14 @@ def _require_compiled_dependencies() -> None:
     ]
     if missing:
         pytest.skip(f"Missing compiled Automodel dependencies: {', '.join(missing)}")
+
+    assert importlib.metadata.version("deep-ep") == EXPECTED_DEEP_EP_VERSION
+    assert importlib.metadata.version("pynvml")
+    assert importlib.metadata.version("nvidia-ml-py")
+
+    import pynvml
+
+    assert pynvml.__file__
 
 
 def _local_tensor(tensor: torch.Tensor) -> torch.Tensor:
@@ -101,8 +149,7 @@ def _init_distributed(device: torch.device) -> None:
 
 
 def _make_strategy(*, world_size: int, ep_size: int) -> AutomodelParallelStrategy:
-    from nemo_automodel.components.distributed.config import FSDP2Config
-    from nemo_automodel.components.moe.config import MoEParallelizerConfig
+    from nemo_automodel.components.distributed.config import FSDP2Config, MoEParallelizerConfig
 
     strategy = AutomodelParallelStrategy(
         dp_size=world_size // ep_size,
@@ -196,16 +243,18 @@ def _make_tiny_nemotron_llm(
     if parallelize_moe:
         from nemo_automodel.components.moe.parallelizer import parallelize_model
 
+        distributed_setup = strategy.distributed_setup
+        assert distributed_setup is not None
         parallelize_model(
             llm,
-            world_mesh=strategy.device_mesh,
-            moe_mesh=strategy.moe_mesh,
+            world_mesh=distributed_setup.mesh_context.device_mesh,
+            moe_mesh=distributed_setup.mesh_context.moe_mesh,
             dp_axis_names=("dp",),
             cp_axis_name="cp",
             tp_axis_name="tp",
             ep_axis_name="ep",
             ep_shard_axis_names=None,
-            **strategy.moe_config.to_dict(),
+            **distributed_setup.moe_parallel_config.to_dict(),
         )
 
     return llm
@@ -222,9 +271,15 @@ def _make_salm_automodel_smoke_model(*, llm: torch.nn.Module) -> SALMAutomodel:
     return model
 
 
-def _run_salm_automodel_nemotron3_forward_backward(*, dispatcher: str, expect_deepep: bool, ep_size: int) -> None:
+def _run_salm_automodel_nemotron3_forward_backward(
+    *, dispatcher: str, expect_deepep: bool, ep_size: int | None
+) -> None:
+    local_rank, world_size, device = _require_multi_gpu_torchrun()
+    if expect_deepep:
+        _require_nvlink_topology(world_size=world_size)
     _require_compiled_dependencies()
-    local_rank, world_size, device = _require_two_gpu_torchrun()
+    if ep_size is None:
+        ep_size = world_size
     dtype = torch.bfloat16
     torch.manual_seed(1234 + local_rank)
 
@@ -238,21 +293,24 @@ def _run_salm_automodel_nemotron3_forward_backward(*, dispatcher: str, expect_de
     )
     model = _make_salm_automodel_smoke_model(llm=llm)
 
-    input_embeds = torch.randn(2, 8, 64, device=device, dtype=dtype, requires_grad=True)
-    outputs = model(input_embeds, attention_mask=torch.ones(2, 8, dtype=torch.bool, device=device))
-    logits = outputs["logits"]
-    assert logits.shape == (2, 8, 96)
-    assert torch.isfinite(logits).all()
+    for _ in range(3):
+        model.zero_grad(set_to_none=True)
+        input_embeds = torch.randn(2, 8, 64, device=device, dtype=dtype, requires_grad=True)
+        outputs = model(input_embeds, attention_mask=torch.ones(2, 8, dtype=torch.bool, device=device))
+        logits = outputs["logits"]
+        assert logits.shape == (2, 8, 96)
+        assert torch.isfinite(logits).all()
 
-    loss = logits.float().square().mean()
-    loss.backward()
+        loss = logits.float().square().mean()
+        loss.backward()
 
-    assert input_embeds.grad is not None
-    assert torch.isfinite(input_embeds.grad).all()
-    _assert_finite_nonzero_grad(model.llm.model.layers.named_parameters(), "Nemotron3 backbone")
-    _assert_finite_nonzero_grad(model.llm.lm_head.named_parameters(), "Nemotron3 LM head")
+        assert input_embeds.grad is not None
+        assert torch.isfinite(input_embeds.grad).all()
+        _assert_finite_nonzero_grad(model.llm.model.layers.named_parameters(), "Nemotron3 backbone")
+        _assert_finite_nonzero_grad(model.llm.lm_head.named_parameters(), "Nemotron3 LM head")
 
-    dist.all_reduce(loss.detach())
+        dist.all_reduce(loss.detach())
+        torch.cuda.synchronize(device)
 
 
 def test_salm_automodel_nemotron3_transformer_engine_grouped_gemm_forward_backward():
@@ -263,9 +321,8 @@ def test_salm_automodel_nemotron3_transformer_engine_grouped_gemm_forward_backwa
 def test_salm_automodel_nemotron3_deepep_grouped_gemm_forward_backward():
     """Run a tiny real Nemotron3 SALMAutomodel forward/backward through DeepEP-dispatched grouped-gemm.
 
-    This is intentionally launched with two CUDA ranks. DeepEP falls back or is
-    inactive in a single-process run. It also requires NVLink for intranode
-    dispatch; PCIe-only machines skip this test to avoid a known DeepEP hang.
+    This is launched with the configured number of CUDA ranks. DeepEP is inactive
+    in a single-process run. It also requires NVLink between all participating
+    GPUs; PCIe-only machines skip this test to avoid a known DeepEP hang.
     """
-    _require_nvlink_topology()
-    _run_salm_automodel_nemotron3_forward_backward(dispatcher="deepep", expect_deepep=True, ep_size=2)
+    _run_salm_automodel_nemotron3_forward_backward(dispatcher="deepep", expect_deepep=True, ep_size=None)

@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -97,6 +98,7 @@ from nemo.collections.asr.parts.utils.transcribe_utils import (
     get_inference_device,
     get_inference_dtype,
     setup_model,
+    wire_confidence_cfg,
     write_transcription,
 )
 from nemo.core.config import hydra_runner
@@ -159,6 +161,7 @@ class TranscriptionConfig:
     decoding: RNNTDecodingConfig = field(default_factory=RNNTDecodingConfig)
     # Per-utterance biasing with biasing config in the manifest
     use_per_stream_biasing: bool = False
+    per_stream_biasing_defaults: BiasingRequestItemConfig = field(default_factory=BiasingRequestItemConfig)
     # simulated decoding (False by default) for faster experiments
     # + experiments with different decoding algorithms not yet implemented in streaming
     # encoder is evaluated on chunks, output is concatenated and decoded at one step
@@ -247,6 +250,10 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
         with open_dict(cfg.decoding):
             cfg.decoding.greedy.enable_per_stream_biasing = use_per_stream_biasing
             cfg.decoding.beam.enable_per_stream_biasing = use_per_stream_biasing
+
+    if cfg.confidence:
+        wire_confidence_cfg(cfg.decoding, enabled=True)
+
     if use_simulated_decoding:
         # simulated decoding: any config allowed, do not change config
         with open_dict(cfg.decoding):
@@ -266,10 +273,6 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
             cfg.decoding.greedy.preserve_alignments = False
             cfg.decoding.fused_batch_size = -1  # temporarily stop fused batch during inference.
             cfg.decoding.beam.return_best_hypothesis = True  # return and write the best hypothsis only
-            if cfg.confidence:
-                cfg.decoding.greedy.preserve_frame_confidence = True
-                cfg.decoding.confidence_cfg.preserve_frame_confidence = True
-                cfg.decoding.confidence_cfg.preserve_word_confidence = True
 
     # Setup decoding strategy
     if hasattr(asr_model, 'change_decoding_strategy'):
@@ -362,12 +365,11 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
 
     biasing_requests: list[BiasingRequestItemConfig | None] | None
     if use_per_stream_biasing:
+        default_biasing_request_cfg = OmegaConf.structured(cfg.per_stream_biasing_defaults)
         biasing_requests = [
             (
                 BiasingRequestItemConfig(
-                    **OmegaConf.to_container(
-                        OmegaConf.merge(OmegaConf.structured(BiasingRequestItemConfig), record["biasing_request"])
-                    )
+                    **OmegaConf.to_container(OmegaConf.merge(default_biasing_request_cfg, record["biasing_request"]))
                 )
                 if "biasing_request" in record
                 else None

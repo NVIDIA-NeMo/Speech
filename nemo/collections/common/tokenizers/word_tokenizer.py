@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -68,5 +69,5 @@ class WordTokenizer(CharTokenizer):
         return tokens
 
     def ids_to_text(self, ids):
-        ids_ = [id_ for id_ in ids if id_ not in self.special_tokens]
+        ids_ = [id_ for id_ in ids if id_ not in self.special_token_ids_to_remove_while_decoding]
         return " ".join(self.ids_to_tokens(ids_))

@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,7 +14,7 @@
 # limitations under the License.
 import io
 import os
-from typing import Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Dict, List, Optional, Union
 
 import torch
 
@@ -26,6 +27,9 @@ from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, NeuralT
 from nemo.utils import logging
 from nemo.utils import webdataset as wds
 from nemo.utils.distributed import webdataset_split_by_workers
+
+if TYPE_CHECKING:
+    from nemo.collections.asr.parts.preprocessing.perturb import AudioAugmentor
 
 # List of valid file formats (prioritized by order of importance)
 VALID_FILE_FORMATS = ';'.join(['wav', 'mp3', 'flac', 'opus'] + [fmt.lower() for fmt in valid_sf_formats.keys()])
@@ -962,7 +966,7 @@ class AudioToMultiLabelDataset(Dataset):
         sample_rate: int,
         labels: Optional[List[str]] = None,
         int_values: bool = False,
-        augmentor: 'nemo.collections.asr.parts.perturb.AudioAugmentor' = None,
+        augmentor: 'AudioAugmentor' = None,
         min_duration: Optional[float] = 0.1,
         max_duration: Optional[float] = None,
         trim_silence: bool = False,
@@ -1144,7 +1148,7 @@ class TarredAudioToMultiLabelDataset(IterableDataset):
         labels: Optional[List[str]] = None,
         shuffle_n: int = 0,
         int_values: bool = False,
-        augmentor: 'nemo.collections.asr.parts.perturb.AudioAugmentor' = None,
+        augmentor: 'AudioAugmentor' = None,
         min_duration: Optional[float] = 0.1,
         max_duration: Optional[float] = None,
         trim_silence: bool = False,

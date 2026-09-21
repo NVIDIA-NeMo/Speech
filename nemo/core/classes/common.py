@@ -1,4 +1,5 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -233,6 +234,22 @@ def _is_target_allowed(target: str) -> bool:
                 from nemo.collections.tts.g2p.models.base import BaseG2p
 
                 return issubclass(obj, BaseG2p)
+            except (ImportError, TypeError):
+                return False
+
+        if target.startswith("nemo.collections.tts.parts.preprocessing."):
+            try:
+                from nemo.collections.tts.parts.preprocessing.audio_trimming import AudioTrimmer
+
+                return issubclass(obj, AudioTrimmer)
+            except (ImportError, TypeError):
+                return False
+
+        if target.startswith("nemo.collections.tts.parts.utils.callbacks"):
+            try:
+                from nemo.collections.tts.parts.utils.callbacks import ArtifactGenerator
+
+                return issubclass(obj, ArtifactGenerator)
             except (ImportError, TypeError):
                 return False
 

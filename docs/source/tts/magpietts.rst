@@ -133,8 +133,10 @@ Several parameters control the generation behavior. The temperature setting affe
     python examples/tts/magpietts_inference.py \
         --nemo_files /path/to/magpietts_model.nemo \
         --codecmodel_path /path/to/audio_codec.nemo \
+        --datasets_json_path /path/to/evalset_config.json \
         --datasets your_evaluation_set \
         --out_dir /path/to/output \
+        --run_evaluation \
         --temperature 0.6 \
         --topk 80 \
         --use_cfg \
@@ -145,6 +147,32 @@ For production deployments, enabling the attention prior during inference adds a
 When using models trained with frame stacking, you can enable the Local Transformer during inference with ``--use_local_transformer``. The MaskGit decoding mode can be activated for faster inference at a slight quality trade-off, with ``--maskgit_n_steps`` controlling the number of refinement iterations.
 
 To enable Long-form speech generation (beta) set ``--longform_mode`` to ``auto or always``; this will either automatically detect the long form text or always use the long form inference pipeline. For comprehensive documentation on longform inference, see the :doc:`Longform Inference Guide <magpietts-longform>`.
+
+Evaluation set configuration
+----------------------------
+
+``--datasets_json_path`` points to a JSON file that maps each dataset name to its manifest, its audio directory, and optional per-dataset evaluation overrides. Relative paths are resolved against ``--datasets_base_path``. ``--datasets`` selects a subset of the entries.
+
+.. code-block:: json
+
+    {
+        "riva_en": {
+            "manifest_path": "en_US/riva/eval_manifest.json",
+            "audio_dir": "en_US/riva/audio",
+            "language": "en",
+            "asr_model": {"name": "nvidia/parakeet-tdt-1.1b", "type": "nemo"}
+        }
+    }
+
+The optional keys are:
+
+- ``language``: overrides ``--language`` for this dataset.
+- ``asr_model``: ``{"name": ..., "type": ...}`` overrides ``--asr_model_name`` and ``--asr_model_type``.
+- ``tokenizer_names``: list of text tokenizer names to use for this dataset (``magpietts_inference.py`` only).
+
+Malformed values of ``language`` and ``asr_model`` (for example a JSON ``null`` or an ``asr_model`` without a supported ``type``) are rejected when the config is loaded; remove a key to inherit the command-line value. Keys that are not recognized are reported with a warning so that a misspelled override does not silently fall back to the command-line value.
+
+The same per-dataset keys are honoured by the standalone ``evaluate_generated_audio.py --evalset <name> --datasets_json_path <config> --generated_audio_dir <dir>`` entry point, which computes the same metrics as the inference script except the Frechet Codec Distance. The CER/WER reference (``gt_text``) is taken from ``normalized_text`` when present, otherwise from ``original_text``, otherwise from ``text``. ``normalized_text`` and ``text`` are the same strings the dataloaders feed the model; ``original_text`` is the orthography kept in legacy phonemized manifests and is used only as the metric reference there, so ``gt_text`` and ``tts_text_input`` differ for such manifests.
 
 Resources
 #########

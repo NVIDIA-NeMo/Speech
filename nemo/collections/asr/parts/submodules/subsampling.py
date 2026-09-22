@@ -619,8 +619,15 @@ class ConvSubsampling(torch.nn.Module):
             logging.debug(f'using auto set chunking factor: {cf}')
 
         new_batch_size = b // cf
-        if new_batch_size == 0:  # input is too big
-            return x, lengths, False
+        if new_batch_size == 0:
+            # Power-of-two rounding can push cf past b (e.g. b=3 -> cf=4), or the batch is
+            # smaller than a manually set factor. If a single sample still fits under the
+            # limit, split into batches of one rather than giving up; only fall back to
+            # channel splitting when one sample alone exceeds the limit, since
+            # conv_split_by_channel runs the full first conv on the whole input up front.
+            if self._first_conv_output_numel(x[:1]) >= _MAX_CONV_NUMEL_32BIT:
+                return x, lengths, False
+            new_batch_size = 1
 
         logging.debug(f'conv subsampling: using split batch size {new_batch_size}')
 

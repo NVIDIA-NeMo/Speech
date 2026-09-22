@@ -169,6 +169,53 @@ class TestConvSubsampling32BitIndexing:
         for chunk_batch in chunk_batches:
             assert sub._first_conv_output_numel(x[:chunk_batch]) < limit
 
+    @pytest.mark.unit
+    def test_split_by_batch_uses_size_one_when_factor_exceeds_batch(self, monkeypatch):
+        # With batch size 3 the power-of-two chunking factor rounds up to 4, so b // cf == 0.
+        # Rather than giving up - which falls back to conv_split_by_channel and runs the full
+        # first conv on the whole batch, the very op that overflows - the split must use a
+        # batch size of one, as long as a single sample fits under the limit.
+        sub = _build_conv_subsampling()
+        x = torch.randn(3, 50, 16)
+        lengths = torch.full((3,), 50, dtype=torch.long)
+
+        # Reference with the real (large) limit: no splitting happens.
+        ref, ref_len = sub(x.clone(), lengths.clone())
+
+        # A limit above one sample's first-conv output but below the whole batch's, so the auto
+        # factor rounds up past the batch size (cf == 4 > b == 3) yet a single sample still fits.
+        limit = sub._first_conv_output_numel(x) // 2
+        assert sub._first_conv_output_numel(x[:1]) < limit
+        monkeypatch.setattr(subsampling_module, "_MAX_CONV_NUMEL_32BIT", limit)
+
+        # The channel fallback must not be used.
+        channel_calls = []
+        original_channel = sub.conv_split_by_channel
+
+        def spy_channel(inp):
+            channel_calls.append(int(inp.shape[0]))
+            return original_channel(inp)
+
+        monkeypatch.setattr(sub, "conv_split_by_channel", spy_channel)
+
+        # Record the batch size of each chunk actually fed to the conv stack.
+        chunk_batches = []
+        original_forward = sub.conv.forward
+
+        def recording_forward(inp, lens):
+            chunk_batches.append(int(inp.shape[0]))
+            return original_forward(inp, lens)
+
+        monkeypatch.setattr(sub.conv, "forward", recording_forward)
+
+        out, out_len = sub(x.clone(), lengths.clone())
+
+        assert not channel_calls, "should split by batch (size 1), not fall back to channel splitting"
+        assert chunk_batches == [1, 1, 1], f"expected three single-sample chunks, got {chunk_batches}"
+        # Splitting into single-sample chunks must not change the result.
+        assert torch.allclose(out, ref, atol=1e-5)
+        assert torch.equal(out_len, ref_len)
+
 
 class TestSubsamplingReductionModulePooling:
     @pytest.mark.run_only_on('CPU')

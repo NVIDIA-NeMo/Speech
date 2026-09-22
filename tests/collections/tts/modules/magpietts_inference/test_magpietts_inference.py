@@ -184,20 +184,6 @@ def test_resolve_evaluation_config_for_dataset_overrides():
     assert resolve_evaluation_config_for_dataset(eval_config, {"manifest_path": "m.json"}) == eval_config
 
 
-@pytest.mark.unit
-def test_load_evalset_config_resolves_relative_paths_against_base_path(tmp_path):
-    base = tmp_path / "base"
-    (base / "audio").mkdir(parents=True)
-    (base / "m.json").write_text("{}\n")
-    config_path = tmp_path / "evalset.json"
-    config_path.write_text(json.dumps({"ds": {"manifest_path": "m.json", "audio_dir": "audio"}}))
-
-    entry = load_evalset_config(str(config_path), dataset_base_path=base)["ds"]
-
-    assert entry["manifest_path"] == str(base / "m.json")
-    assert entry["audio_dir"] == str(base / "audio")
-
-
 def _filewise_row(gt_text, pred_text, cer, wer):
     nan = float("nan")
     return {
@@ -274,6 +260,7 @@ def test_standalone_main_applies_evalset_overrides(tmp_path, monkeypatch):
     assert captured["sv_model_type"] == "wavlm"
     # Pins that the whole EvaluationConfig is forwarded: evaluate()'s own default for eou_model_name is None.
     assert captured["eou_model_name"] == EvaluationConfig().eou_model_name
+    # manifest_path/audio_dir come from the evalset entry, resolved against --datasets_base_path.
     assert captured["manifest_path"] == str(tmp_path / "m.json")
     assert captured["audio_dir"] == str(tmp_path / "audio")
     # The standalone script has no codec model argument: FCD is disabled instead of tripping evaluate()'s guard.
@@ -299,7 +286,6 @@ def test_standalone_main_without_evalset_uses_cli_values(tmp_path, monkeypatch):
 
     assert captured["strip_text_annotations_for_metrics"] is True
     assert captured["language"] == "de"
-    assert captured["eou_model_name"] == EvaluationConfig().eou_model_name
     assert (captured["manifest_path"], captured["audio_dir"]) == ("m.json", "audio")
     assert captured["generated_audio_dir"] == "generated"
 

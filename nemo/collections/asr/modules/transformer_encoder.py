@@ -72,8 +72,8 @@ class TransformerEncoderConfig:
         pre_block_norm: If True, apply ``LayerNorm`` to embeddings before the first Transformer block
             (BERT/ViT-style). Set False to match pre-norm Transformers such as Whisper or GPT-2.
         subsampling_factor: Frame-level subsampling factor performed by the pre-encoder.
-        attn_mode: Attention pattern. Currently only ``"full"`` (bidirectional) is supported.
-            Future modes: ``"causal"``, ``"lookahead"``, ``"local"``, ``"sliding_window"``.
+        attn_mode: Attention pattern: ``"full"`` (bidirectional) or ``"causal"``.
+            Future modes: ``"lookahead"``, ``"local"``, ``"sliding_window"``.
         self_attention_model: Positional encoding / attention scoring scheme.
 
             - ``"rel_pos"`` (default): Transformer-XL relative positional encoding
@@ -129,6 +129,38 @@ def _make_causal_mod():
         return q_idx >= kv_idx
 
     return causal
+
+
+def _make_block_causal_tail_mod(tail_start, block_size):
+    """Build a FlexAttention mask for a bidirectional prefix and block-causal tail.
+
+    For each sample ``b``, positions before ``tail_start[b]`` form a bidirectional
+    prefix visible to every query. The remaining positions are split into consecutive
+    ``block_size`` chunks anchored at that sample's tail boundary. A tail query may
+    attend to its complete block and all previous blocks, but not to later blocks.
+    Prefix queries cannot attend to tail keys. Padding is handled separately by the
+    caller.
+
+    Args:
+        tail_start (torch.Tensor): Per-sample tail boundaries in encoder frames, with
+            shape ``(B,)``.
+        block_size (int): Positive number of encoder frames in each tail block.
+
+    Returns:
+        mask_mod (Callable): FlexAttention mask function with signature
+            ``(b, h, q_idx, kv_idx) -> bool``.
+    """
+
+    def block_causal_tail(b, h, q_idx, kv_idx):
+        sample_tail_start = tail_start[b]
+        key_in_prefix = kv_idx < sample_tail_start
+        query_in_tail = q_idx >= sample_tail_start
+        key_in_tail = kv_idx >= sample_tail_start
+        query_block = (q_idx - sample_tail_start) // block_size
+        key_block = (kv_idx - sample_tail_start) // block_size
+        return key_in_prefix | (query_in_tail & key_in_tail & (key_block <= query_block))
+
+    return block_causal_tail
 
 
 def _make_sliding_window_mod(left, right):
@@ -798,8 +830,14 @@ class TransformerEncoder(nn.Module):
             pre-encoders and the LayerNorm directly after the positional sum, this scaling is
             largely a no-op for activation magnitudes. Only meaningful when ``pre_block_norm=False``
             or when matching pretrained checkpoints that expect this scaling.
-        attn_mode: Attention pattern — currently only "full" (bidirectional) is supported.
+        attn_mode: Attention pattern — ``"full"`` (bidirectional) or ``"causal"``.
         sync_max_audio_length: When true, sync positional encoding allocation length across distributed ranks.
+        causal_tail_len: Length of the transient causal tail in encoder frames after subsampling.
+            With ``attn_mode="full"``, zero preserves full bidirectional attention. A positive value
+            leaves a bidirectional prefix and makes the final frames block-causal.
+        causal_tail_block_size: Size of each causal-tail block in encoder frames after subsampling.
+            Attention is bidirectional within a block, while future blocks remain hidden. This value
+            is ignored when ``causal_tail_len == 0``.
     """
 
     supports_sequence_packed_output = True
@@ -828,6 +866,8 @@ class TransformerEncoder(nn.Module):
         xscaling: bool = False,
         attn_mode: str = "full",
         sync_max_audio_length: bool = True,
+        causal_tail_len: int = 0,
+        causal_tail_block_size: int = 1,
     ):
         super().__init__()
         if d_model % n_heads != 0:
@@ -836,6 +876,18 @@ class TransformerEncoder(nn.Module):
             raise ValueError(
                 f"attn_mode='{attn_mode}' is not yet supported. Supported modes: {_SUPPORTED_ATTENTION_MODES}."
             )
+        if not isinstance(causal_tail_len, int) or isinstance(causal_tail_len, bool):
+            raise TypeError(f"causal_tail_len must be a non-negative integer, got {type(causal_tail_len).__name__}.")
+        if causal_tail_len < 0:
+            raise ValueError(f"causal_tail_len must be non-negative, got {causal_tail_len}.")
+        if causal_tail_len > 0 and attn_mode != "full":
+            raise ValueError("A positive causal_tail_len is only compatible with attn_mode='full'.")
+        if not isinstance(causal_tail_block_size, int) or isinstance(causal_tail_block_size, bool):
+            raise TypeError(
+                f"causal_tail_block_size must be a positive integer, got {type(causal_tail_block_size).__name__}."
+            )
+        if causal_tail_block_size < 1:
+            raise ValueError(f"causal_tail_block_size must be at least 1, got {causal_tail_block_size}.")
         # ``None`` is accepted as a YAML-friendly alias for ``"no_pos"`` (an unset field in a
         # config simply maps to None) — normalize here so the rest of the module only deals with
         # the string form.
@@ -874,6 +926,8 @@ class TransformerEncoder(nn.Module):
         self.sync_max_audio_length = sync_max_audio_length
         self.self_attention_model = self_attention_model
         self.attn_mode = attn_mode
+        self.causal_tail_len = causal_tail_len
+        self.causal_tail_block_size = causal_tail_block_size
 
         if subsampling == 'feature_stacking':
             self.pre_encode = FeatureStacking(subsampling_factor, feat_in, d_model)
@@ -1033,10 +1087,11 @@ class TransformerEncoder(nn.Module):
 
         Returns a callable ``(b, h, q_idx, kv_idx) -> bool`` that selects which keys each
         query may attend to. The base encoder supports padding-only masking (``attn_mode
-        == "full"``) and additionally causal masking (``attn_mode == "causal"``). Subclasses
-        (e.g. :class:`StreamingTransformerEncoder`) override this to inject other attention
-        patterns such as a sliding window; the single overridable hook keeps
-        ``forward_internal`` agnostic to the masking scheme.
+        == "full"``), fully causal masking (``attn_mode == "causal"``), and a transient
+        block-causal refinement of full attention controlled by ``causal_tail_len`` and
+        ``causal_tail_block_size``. Subclasses (e.g. :class:`StreamingTransformerEncoder`)
+        override this to inject other attention patterns such as a sliding window; the single
+        overridable hook keeps ``forward_internal`` agnostic to the masking scheme.
 
         Args:
             length (torch.Tensor): Valid sequence length for each batch element.
@@ -1045,8 +1100,25 @@ class TransformerEncoder(nn.Module):
             mask_mod (Callable): FlexAttention mask function combining attention and padding constraints.
         """
         pad_mod = _make_padding_mod(length)
+        if not isinstance(self.causal_tail_block_size, int) or isinstance(self.causal_tail_block_size, bool):
+            raise TypeError(
+                "causal_tail_block_size must be a positive integer, "
+                f"got {type(self.causal_tail_block_size).__name__}."
+            )
+        if self.causal_tail_block_size < 1:
+            raise ValueError(f"causal_tail_block_size must be at least 1, got {self.causal_tail_block_size}.")
         if self.attn_mode == "causal":
+            if self.causal_tail_len != 0:
+                raise ValueError("causal_tail_len must be zero when attn_mode='causal'.")
             return and_masks(_make_causal_mod(), pad_mod)
+        if self.causal_tail_len > 0:
+            if self.attn_mode != "full":
+                raise ValueError("A positive causal_tail_len is only compatible with attn_mode='full'.")
+            tail_start = (length - self.causal_tail_len).clamp_min(0)
+            return and_masks(
+                _make_block_causal_tail_mod(tail_start, self.causal_tail_block_size),
+                pad_mod,
+            )
         return pad_mod
 
     def update_max_seq_length(self, seq_length: int, device):
@@ -1343,6 +1415,11 @@ class StreamingTransformerEncoder(TransformerEncoder, StreamingEncoder):
         # fails) the base's supported-mode validation, then run the base with a valid placeholder.
         kwargs.pop("attn_mode", None)
         super().__init__(*args, attn_mode="full", **kwargs)
+        if self.causal_tail_len > 0 or self.causal_tail_block_size != 1:
+            raise ValueError(
+                "StreamingTransformerEncoder does not support non-default causal-tail settings; "
+                "use att_context_size and att_context_style instead."
+            )
         if att_context_style not in _SUPPORTED_ATT_CONTEXT_STYLES:
             raise ValueError(
                 f"att_context_style='{att_context_style}' is not supported. "

@@ -7,6 +7,7 @@
 name: "StreamingSortformerDiarizer"
 num_workers: 18
 batch_size: 4
+seed: 42 # Random seed for reproducible model initialization and training.
 
 model: 
   sample_rate: 16000

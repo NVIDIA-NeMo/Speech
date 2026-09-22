@@ -185,3 +185,32 @@ class TestEOUMetrics:
         assert eou_metrics.missing == 0
         assert eou_metrics.early_cutoff == []
         assert np.allclose(eou_metrics.latency, [delay] * len(ref_eou_times))
+
+
+class TestEvaluateEOUCounts:
+    def test_counts_stay_non_negative_when_early_cutoff_is_skipped(self):
+        """An early cutoff that r_idx advances past is never counted, so it must not be subtracted."""
+        reference = [
+            {"start_time": 0.0, "end_time": 2.0},
+            {"start_time": 5.0, "end_time": 7.0},
+        ]
+        prediction = [
+            {"start_time": 0.0, "end_time": 1.0, "eou_prob": 0.9},
+            {"start_time": 5.5, "end_time": 7.0, "eou_prob": 0.9},
+        ]
+
+        result = evaluate_eou(prediction=prediction, reference=reference, threshold=None, collar=0.1)
+
+        assert result.false_negatives == 0
+        assert result.missing == 0
+
+    def test_trailing_early_cutoff_is_still_discounted(self):
+        """A trailing early cutoff is counted by the tail, so the discount must still apply."""
+        reference = [{"start_time": 0.0, "end_time": 2.0}]
+        prediction = [{"start_time": 0.0, "end_time": 1.0, "eou_prob": 0.9}]
+
+        result = evaluate_eou(prediction=prediction, reference=reference, threshold=None, collar=0.1)
+
+        assert result.false_negatives == 0
+        assert result.missing == 0
+        assert len(result.early_cutoff) == 1

@@ -117,7 +117,8 @@ def _get_record_texts(record: dict) -> tuple[str, Optional[str], str]:
     if dataloader_normalized_text is not None:
         metric_reference_text = dataloader_normalized_text
     else:
-        metric_reference_text = record.get("original_text", tts_text_input)
+        original_text = record.get("original_text")  # JSON null counts as absent
+        metric_reference_text = original_text if original_text is not None else tts_text_input
 
     return tts_text_input, dataloader_normalized_text, metric_reference_text
 
@@ -149,8 +150,72 @@ FILEWISE_METRICS_TO_SAVE = [
 ]
 
 
+# Supported ASR backends: the values of --asr_model_type and of the "type" field of an evalset "asr_model" entry.
+ASR_MODEL_TYPES = ("nemo", "nemo_with_prompt", "whisper")
+# Keys of an evalset config entry that the inference/evaluation scripts read, plus "feature_dir", which shipped configs
+# carry over from the training DatasetMeta schema and which is accepted but unused here. Other keys are ignored with a
+# warning so that a misspelled override (e.g. "langauge") does not silently leave the CLI-level value in force.
+EVALSET_ENTRY_KEYS = frozenset(
+    {
+        "manifest_path",
+        "audio_dir",
+        "feature_dir",  # accepted for compatibility with existing configs; not read by these scripts
+        "tokenizer_names",
+        "language",
+        "asr_model",
+    }
+)
+
+
+def validate_evalset_entry(info: dict, dataset_name: Optional[str] = None) -> None:
+    """Validate the optional per-dataset evaluation overrides of one evalset config entry.
+
+    Recognized optional keys and their required types:
+
+    - ``language``: non-empty string without surrounding whitespace (remove the key to use the CLI-level language).
+    - ``asr_model``: ``{"name": <model name or .nemo path>, "type": <one of ASR_MODEL_TYPES>}``.
+
+    Absent keys are fine. A JSON ``null`` is rejected like any other wrong type, so that a broken override cannot
+    silently fall back to the CLI-level value. Used by ``load_evalset_config`` and by
+    ``resolve_evaluation_config_for_dataset`` in ``evaluation.py``.
+
+    Args:
+        info: One entry of the evalset config.
+        dataset_name: Dataset name used to prefix error messages, if known.
+
+    Raises:
+        ValueError: If a recognized key has a malformed value.
+    """
+    prefix = f"Dataset {dataset_name}: " if dataset_name is not None else "Evalset entry: "
+    if "language" in info:
+        value = info["language"]
+        if not isinstance(value, str) or not value or value != value.strip():
+            raise ValueError(
+                f"{prefix}'language' must be a non-empty string without surrounding whitespace, such as \"en\" "
+                f"(remove the key to use the CLI-level language), got {value!r}."
+            )
+    if "asr_model" in info:
+        value = info["asr_model"]
+        if (
+            not isinstance(value, dict)
+            or not isinstance(value.get("name"), str)
+            or not value["name"].strip()
+            or value.get("type") not in ASR_MODEL_TYPES
+        ):
+            types = ", ".join(ASR_MODEL_TYPES)
+            raise ValueError(
+                f"{prefix}'asr_model' must be an object "
+                f"{{\"name\": <model name or .nemo path>, \"type\": <{types}>}}, got {value!r}."
+            )
+
+
 def load_evalset_config(config_path: Optional[str] = None, dataset_base_path: Optional[Path] = None) -> dict:
-    """Load dataset meta info from JSON config file."""
+    """Load dataset meta info from JSON config file.
+
+    Relative ``manifest_path``, ``audio_dir`` and ``asr_model.name`` (``.nemo``) paths are resolved against
+    ``dataset_base_path``. Every entry is checked with ``validate_evalset_entry``; keys outside ``EVALSET_ENTRY_KEYS``
+    are ignored with a warning.
+    """
     if config_path is None or not os.path.exists(config_path):
         raise ValueError("No dataset_json_path provided, please provide a valid path to the evalset config file.")
 
@@ -158,8 +223,16 @@ def load_evalset_config(config_path: Optional[str] = None, dataset_base_path: Op
     with open(config_path, 'r') as f:
         dataset_meta_info = json.load(f)
 
-    # Validate that all evaluation datasets exist
+    # Validate that all evaluation datasets exist and that the optional per-dataset overrides are well-formed
+    # (see validate_evalset_entry and resolve_evaluation_config_for_dataset in evaluation.py).
     for dataset_name, info in dataset_meta_info.items():
+        validate_evalset_entry(info, dataset_name=dataset_name)
+        unrecognized_keys = sorted(set(info) - EVALSET_ENTRY_KEYS)
+        if unrecognized_keys:
+            logging.warning(
+                f"Dataset {dataset_name}: ignoring unrecognized evalset keys {unrecognized_keys}; "
+                f"recognized keys are {sorted(EVALSET_ENTRY_KEYS)}."
+            )
         manifest_path = Path(info["manifest_path"])
         audio_dir = Path(info["audio_dir"])
 
@@ -350,7 +423,10 @@ def load_evaluation_models(
     elif asr_model_type == "whisper":
         models['asr_model'] = WhisperTranscriber(model_name=asr_model_name, device=device)
     else:
-        raise ValueError(f"Unknown ASR model type {asr_model_name}")
+        raise ValueError(
+            f"Unknown ASR model type {asr_model_type!r} for ASR model {asr_model_name!r}; "
+            f"expected one of {', '.join(ASR_MODEL_TYPES)}."
+        )
 
     if sv_model_type == "wavlm":
         models['feature_extractor'] = Wav2Vec2FeatureExtractor.from_pretrained('microsoft/wavlm-base-plus-sv')
@@ -975,13 +1051,28 @@ def compute_global_metrics(
 
 
 def main():
-    # audio_dir="/datap/misc/Datasets/riva" \
     parser = argparse.ArgumentParser(description='Evaluate Generated Audio')
-    parser.add_argument('--manifest_path', type=str, default=None)
-    parser.add_argument('--audio_dir', type=str, default=None)
-    parser.add_argument('--generated_audio_dir', type=str, default=None)
-    parser.add_argument('--language', type=str, default="en")
-    parser.add_argument('--evalset', type=str, default=None)
+    parser.add_argument(
+        '--manifest_path', type=str, default=None, help='Evaluation manifest; required unless --evalset is given.'
+    )
+    parser.add_argument(
+        '--audio_dir',
+        type=str,
+        default=None,
+        help='Directory that relative audio paths in the manifest are resolved against.',
+    )
+    parser.add_argument(
+        '--generated_audio_dir', type=str, required=True, help='Directory with the generated audio to evaluate.'
+    )
+    parser.add_argument(
+        '--language', type=str, default="en", help='Language to use, when not provided in the evalset config.'
+    )
+    parser.add_argument(
+        '--evalset',
+        type=str,
+        default=None,
+        help='Dataset name in --datasets_json_path; provides manifest_path, audio_dir and per-dataset overrides.',
+    )
     parser.add_argument(
         '--with_prosody_metrics',
         action='store_true',
@@ -993,24 +1084,63 @@ def main():
         action='store_true',
         help='Strip bracket/tag/control annotations from reference and ASR hypothesis text while computing text metrics.',
     )
+    parser.add_argument(
+        '--datasets_json_path', type=str, default=None, help='Evalset config JSON; required with --evalset.'
+    )
+    parser.add_argument(
+        '--datasets_base_path', type=Path, default=None, help='Base path for relative paths in the evalset config.'
+    )
     args = parser.parse_args()
 
     if args.evalset is not None:
-        dataset_meta_info = load_evalset_config()
-        assert args.evalset in dataset_meta_info, f"Dataset '{args.evalset}' not found in evalset_config.json"
-        args.manifest_path = dataset_meta_info[args.evalset]['manifest_path']
-        args.audio_dir = dataset_meta_info[args.evalset]['audio_dir']
+        if args.datasets_json_path is None:
+            parser.error("--evalset requires --datasets_json_path")
+        if args.manifest_path is not None or args.audio_dir is not None:
+            parser.error("--manifest_path and --audio_dir come from the evalset entry when --evalset is given")
+    else:
+        if args.datasets_json_path is not None or args.datasets_base_path is not None:
+            parser.error("--datasets_json_path and --datasets_base_path require --evalset")
+        if args.manifest_path is None:
+            parser.error("--manifest_path is required unless --evalset is given")
 
-    evaluate(
-        args.manifest_path,
-        args.audio_dir,
-        args.generated_audio_dir,
-        args.language,
-        sv_model_type="wavlm",
+    # Imported here because evaluation.py imports this module at import time.
+    from nemo.collections.tts.modules.magpietts_inference.evaluation import (
+        EvaluationConfig,
+        evaluate_generated_audio_dir,
+        resolve_evaluation_config_for_dataset,
+    )
+
+    # The standalone script has no codec model argument, so the Frechet Codec Distance is not computed here; use
+    # examples/tts/magpietts_inference.py --run_evaluation for FCD.
+    eval_config = EvaluationConfig(
+        sv_model="wavlm",
         asr_model_name="nvidia/parakeet-ctc-0.6b",
+        asr_model_type="nemo",
+        language=args.language,
+        with_fcd=False,
         with_prosody_metrics=args.with_prosody_metrics,
-        strip_text_annotations_for_metrics=args.strip_text_annotations_for_metrics,
         prosody_model_size=args.prosody_model_size,
+        strip_text_annotations_for_metrics=args.strip_text_annotations_for_metrics,
+    )
+    if args.evalset is not None:
+        dataset_meta_info = load_evalset_config(
+            config_path=args.datasets_json_path, dataset_base_path=args.datasets_base_path
+        )
+        if args.evalset not in dataset_meta_info:
+            parser.error(f"Dataset '{args.evalset}' not found in {args.datasets_json_path}")
+        meta = dataset_meta_info[args.evalset]
+        args.manifest_path = meta['manifest_path']
+        args.audio_dir = meta['audio_dir']
+        # Same per-dataset overrides (asr_model, language) as examples/tts/magpietts_inference.py.
+        eval_config = resolve_evaluation_config_for_dataset(eval_config, meta)
+
+    # Forward the whole config through the same wrapper as examples/tts/magpietts_inference.py rather than a
+    # hand-picked subset of keyword arguments, so every EvaluationConfig field takes effect.
+    evaluate_generated_audio_dir(
+        manifest_path=args.manifest_path,
+        audio_dir=args.audio_dir,
+        generated_audio_dir=args.generated_audio_dir,
+        config=eval_config,
     )
 
 

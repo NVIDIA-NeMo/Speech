@@ -71,9 +71,11 @@ from nemo.collections.tts.modules.magpietts_inference.evaluation import (
     EvaluationConfig,
     compute_mean_with_confidence_interval,
     evaluate_generated_audio_dir,
+    resolve_evaluation_config_for_dataset,
 )
 from nemo.collections.tts.modules.magpietts_inference.inference import BaseInferenceConfig, BaseInferenceRunner
 from nemo.collections.tts.modules.magpietts_inference.utils import (
+    EXPERIMENT_METRICS_CSV_HEADER,
     ModelLoadConfig,
     _add_common_args,
     _add_easy_magpie_args,
@@ -165,20 +167,8 @@ def run_inference_and_evaluation(
     cer_per_dataset = []
     all_datasets_filewise_metrics = {}
 
-    # CSV headers
-    csv_header = (
-        "checkpoint_name,dataset,cer_filewise_avg,wer_filewise_avg,cer_cumulative,"
-        "wer_cumulative,cer_pred_gt_audio_filewise_avg,cer_pred_gt_audio_cumulative,"
-        "wer_pred_gt_audio_filewise_avg,wer_pred_gt_audio_cumulative,"
-        "ssim_pred_gt_avg,ssim_pred_context_avg,ssim_gt_context_avg,"
-        "ssim_pred_gt_avg_alternate,ssim_pred_context_avg_alternate,"
-        "ssim_gt_context_avg_alternate,esim_pred_gt_avg,ems_pred_gt_avg,"
-        "pitch_distance_avg,intensity_distance_avg,speech_rate_distance_avg,"
-        "cer_gt_audio_cumulative,wer_gt_audio_cumulative,"
-        "utmosv2_avg,total_gen_audio_seconds,frechet_codec_distance,"
-        "eou_cutoff_rate,eou_silence_rate,eou_noise_rate,eou_error_rate,"
-        "katakana_cer_filewise_avg,katakana_cer_cumulative"
-    )
+    # CSV header; the columns are shared with append_metrics_to_csv so header and rows cannot drift apart.
+    csv_header = EXPERIMENT_METRICS_CSV_HEADER
 
     for dataset in datasets:
         logging.info(f"Processing dataset: {dataset}")
@@ -186,17 +176,15 @@ def run_inference_and_evaluation(
         meta = dataset_meta_info[dataset]
         manifest_records = read_manifest(meta['manifest_path'])
 
-        if 'asr_model' in meta:
-            asr_model_name = meta['asr_model']['name']
-            asr_model_type = meta['asr_model']['type']
-        else:
-            asr_model_name = eval_config.asr_model_name
-            asr_model_type = eval_config.asr_model_type
-
-        if 'language' in meta:
-            language = meta.get('language')
-        else:
-            language = eval_config.language
+        # Per-dataset overrides (asr_model, language) come from the evalset entry; everything else is inherited from
+        # the CLI-level eval_config.
+        eval_config_for_dataset = resolve_evaluation_config_for_dataset(eval_config, meta)
+        language = eval_config_for_dataset.language
+        if not skip_evaluation:
+            logging.info(
+                f"Dataset {dataset}: language={language}, "
+                f"asr_model={eval_config_for_dataset.asr_model_name} ({eval_config_for_dataset.asr_model_type})"
+            )
 
         tokenizer_names = meta.get('tokenizer_names', None)
 
@@ -298,23 +286,6 @@ def run_inference_and_evaluation(
                     default_manifest=meta['manifest_path'],
                     default_audio_dir=meta['audio_dir'],
                 )
-
-            eval_config_for_dataset = EvaluationConfig(
-                sv_model=eval_config.sv_model,
-                asr_model_name=asr_model_name,
-                asr_model_type=asr_model_type,
-                eou_model_name=eval_config.eou_model_name,
-                language=language,
-                with_utmosv2=eval_config.with_utmosv2,
-                with_fcd=eval_config.with_fcd,
-                codec_model_path=eval_config.codec_model_path,
-                with_prosody_metrics=eval_config.with_prosody_metrics,
-                prosody_model_size=eval_config.prosody_model_size,
-                strip_text_annotations_for_metrics=eval_config.strip_text_annotations_for_metrics,
-                device=eval_config.device,
-                asr_batch_size=eval_config.asr_batch_size,
-                eou_batch_size=eval_config.eou_batch_size,
-            )
 
             metrics, filewise_metrics = evaluate_generated_audio_dir(
                 manifest_path=eval_manifest_path,

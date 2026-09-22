@@ -21,16 +21,17 @@ import csv
 import json
 import os
 
-import examples.tts.magpietts_inference as magpietts_inference_module
 import pytest
 from examples.tts.magpietts_inference import main as magpietts_inference_main
+from examples.tts.magpietts_inference import run_inference_and_evaluation
 
-import nemo.collections.tts.modules.magpietts_inference.evaluate_generated_audio as evaluate_generated_audio
-import nemo.collections.tts.modules.magpietts_inference.utils as magpietts_utils
 from nemo.collections.tts.modules.magpietts_inference.evaluate_generated_audio import (
     FILEWISE_METRICS_TO_SAVE,
     _get_record_texts,
     load_evalset_config,
+)
+from nemo.collections.tts.modules.magpietts_inference.evaluate_generated_audio import (
+    main as evaluate_generated_audio_main,
 )
 from nemo.collections.tts.modules.magpietts_inference.evaluation import (
     EvaluationConfig,
@@ -43,6 +44,10 @@ from nemo.collections.tts.modules.magpietts_inference.utils import (
     append_metrics_to_csv,
     write_csv_header_if_needed,
 )
+from nemo.utils import logging as nemo_logging
+
+EVALUATE_MODULE = "nemo.collections.tts.modules.magpietts_inference.evaluate_generated_audio"
+EXAMPLE_MODULE = "examples.tts.magpietts_inference"
 
 
 class TestMagpieTTSInferenceCLI:
@@ -234,8 +239,8 @@ def _patch_below_evaluate(monkeypatch, captured):
         captured["global_kwargs"] = kwargs
         return {}
 
-    monkeypatch.setattr(evaluate_generated_audio, "evaluate_dir", fake_evaluate_dir)
-    monkeypatch.setattr(evaluate_generated_audio, "compute_global_metrics", fake_compute_global_metrics)
+    monkeypatch.setattr(f"{EVALUATE_MODULE}.evaluate_dir", fake_evaluate_dir)
+    monkeypatch.setattr(f"{EVALUATE_MODULE}.compute_global_metrics", fake_compute_global_metrics)
 
 
 @pytest.mark.unit
@@ -260,7 +265,7 @@ def test_standalone_main_applies_evalset_overrides(tmp_path, monkeypatch):
     ]  # fmt: skip
     monkeypatch.setattr("sys.argv", argv)
 
-    evaluate_generated_audio.main()
+    evaluate_generated_audio_main()
 
     assert captured["with_prosody_metrics"] is True
     assert captured["strip_text_annotations_for_metrics"] is True
@@ -290,7 +295,7 @@ def test_standalone_main_without_evalset_uses_cli_values(tmp_path, monkeypatch):
     ]  # fmt: skip
     monkeypatch.setattr("sys.argv", argv)
 
-    evaluate_generated_audio.main()
+    evaluate_generated_audio_main()
 
     assert captured["strip_text_annotations_for_metrics"] is True
     assert captured["language"] == "de"
@@ -323,7 +328,7 @@ def test_standalone_main_without_evalset_uses_cli_values(tmp_path, monkeypatch):
 def test_standalone_main_rejects_inconsistent_arguments(monkeypatch, argv):
     monkeypatch.setattr("sys.argv", ["evaluate_generated_audio.py", *argv])
     with pytest.raises(SystemExit):
-        evaluate_generated_audio.main()
+        evaluate_generated_audio_main()
 
 
 @pytest.mark.unit
@@ -338,7 +343,7 @@ def test_standalone_main_rejects_unknown_evalset(tmp_path, monkeypatch):
     ]  # fmt: skip
     monkeypatch.setattr("sys.argv", argv)
     with pytest.raises(SystemExit):
-        evaluate_generated_audio.main()
+        evaluate_generated_audio_main()
 
 
 @pytest.mark.unit
@@ -367,9 +372,7 @@ def test_malformed_evalset_overrides_are_rejected(tmp_path, entry_overrides, mat
 @pytest.mark.unit
 def test_load_evalset_config_warns_on_unrecognized_keys(tmp_path, monkeypatch):
     warnings_seen = []
-    monkeypatch.setattr(
-        evaluate_generated_audio.logging, "warning", lambda msg, *args, **kwargs: warnings_seen.append(msg)
-    )
+    monkeypatch.setattr(nemo_logging, "warning", lambda msg, *args, **kwargs: warnings_seen.append(msg))
 
     # Keys consumed by the inference/evaluation scripts (e.g. the shipped examples/tts/evalset_config.json) are fine.
     config_path = _write_evalset_config(tmp_path, {"feature_dir": None, "tokenizer_names": ["english_phoneme"]})
@@ -405,7 +408,7 @@ def test_experiment_metrics_csv_header_matches_appended_rows(tmp_path):
 @pytest.mark.unit
 def test_write_csv_header_if_needed_warns_on_changed_layout(tmp_path, monkeypatch):
     warnings_seen = []
-    monkeypatch.setattr(magpietts_utils.logging, "warning", lambda msg, *args, **kwargs: warnings_seen.append(msg))
+    monkeypatch.setattr(nemo_logging, "warning", lambda msg, *args, **kwargs: warnings_seen.append(msg))
     csv_path = tmp_path / "all_experiment_metrics_with_ci.csv"
 
     write_csv_header_if_needed(str(csv_path), EXPERIMENT_METRICS_CSV_HEADER)
@@ -448,9 +451,9 @@ def test_run_inference_and_evaluation_applies_evalset_override(tmp_path, monkeyp
         captured["config"] = config
         return {"cer_cumulative": 0.0, "ssim_pred_context_avg": 1.0}, [{"cer": 0.0}]
 
-    monkeypatch.setattr(magpietts_inference_module, "evaluate_generated_audio_dir", fake_evaluate_generated_audio_dir)
+    monkeypatch.setattr(f"{EXAMPLE_MODULE}.evaluate_generated_audio_dir", fake_evaluate_generated_audio_dir)
     for name in ("create_violin_plot", "append_metrics_to_csv", "write_csv_header_if_needed"):
-        monkeypatch.setattr(magpietts_inference_module, name, lambda *args, **kwargs: None)
+        monkeypatch.setattr(f"{EXAMPLE_MODULE}.{name}", lambda *args, **kwargs: None)
 
     eval_config = EvaluationConfig(language="en", with_fcd=False, with_utmosv2=False)
     dataset_meta_info = {
@@ -462,7 +465,7 @@ def test_run_inference_and_evaluation_applies_evalset_override(tmp_path, monkeyp
         }
     }
 
-    cer, ssim = magpietts_inference_module.run_inference_and_evaluation(
+    cer, ssim = run_inference_and_evaluation(
         runner=_FakeRunner(),
         checkpoint_name="ckpt",
         inference_config=_FakeInferenceConfig(),

@@ -20,7 +20,6 @@ wrapping the existing `examples.tts.magpietts.evaluate_generated_audio` module.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
 from typing import Dict, List, Tuple
 
 import numpy as np
@@ -28,81 +27,19 @@ import scipy.stats as stats
 
 # Import the existing evaluation module
 import nemo.collections.tts.modules.magpietts_inference.evaluate_generated_audio as evaluate_generated_audio
+from nemo.collections.tts.modules.magpietts_inference.evaluation_config import (
+    EvaluationConfig,
+    resolve_evaluation_config_for_dataset,
+)
 from nemo.utils import logging
 
-
-@dataclass
-class EvaluationConfig:
-    """Configuration for audio quality evaluation.
-
-    Attributes:
-        sv_model: Speaker verification model type ("titanet" or "wavlm").
-        asr_model_name: ASR model for transcription (e.g., "nvidia/parakeet-tdt-1.1b").
-        asr_model_type: ASR backend for ``asr_model_name``; one of ``ASR_MODEL_TYPES`` in
-            ``evaluate_generated_audio.py`` ("nemo", "nemo_with_prompt" or "whisper").
-        eou_model_name: Hugging Face model id or local path to the EoU model.
-        language: Language code for transcription (e.g., "en").
-        with_utmosv2: Whether to compute UTMOSv2 (Mean Opinion Score) metrics.
-        with_fcd: Whether to compute Frechet Codec Distance metric.
-        codec_model_path: Path to the audio codec model. Required when ``with_fcd`` is True
-            (``evaluate_generated_audio_dir`` raises otherwise); set ``with_fcd=False`` to skip the Frechet Codec
-            Distance metric.
-        with_prosody_metrics: Whether to compute ESIM/EMS plus pitch,
-            intensity, and speech-rate distance metrics.
-        prosody_model_size: Emotion encoder size ("small" or "large").
-        strip_text_annotations_for_metrics: Whether to strip annotation/control markers from reference and ASR hypothesis text before text metrics.
-        device: Device to use for running models used during evaluation.
-        asr_batch_size: Batch size for ASR transcription.
-        eou_batch_size: Batch size for EoU classification.
-    """
-
-    sv_model: str = "titanet"
-    asr_model_name: str = "nvidia/parakeet-tdt-1.1b"
-    asr_model_type: str = "nemo"
-    eou_model_name: str = "facebook/wav2vec2-base-960h"
-    language: str = "en"
-    with_utmosv2: bool = True
-    with_fcd: bool = True
-    codec_model_path: str = None
-    with_prosody_metrics: bool = False
-    prosody_model_size: str = "small"
-    strip_text_annotations_for_metrics: bool = False
-    device: str = "cuda"
-    asr_batch_size: int = 32
-    eou_batch_size: int = 32
-
-
-def resolve_evaluation_config_for_dataset(eval_config: EvaluationConfig, dataset_meta: dict) -> EvaluationConfig:
-    """Return a copy of ``eval_config`` with the per-dataset overrides of one evalset config entry applied.
-
-    Recognized optional keys of an evalset config entry:
-
-    - ``asr_model``: ``{"name": ..., "type": ...}`` overriding ``asr_model_name`` and ``asr_model_type``.
-    - ``language``: overrides ``language``.
-
-    Keys that are absent keep the value from ``eval_config``. ``eval_config`` itself is not mutated.
-
-    Args:
-        eval_config: CLI-level evaluation configuration.
-        dataset_meta: One entry of the evalset config (see ``load_evalset_config``).
-
-    Returns:
-        A new ``EvaluationConfig`` with the overrides applied.
-
-    Raises:
-        ValueError: If a recognized key is malformed (see ``validate_evalset_entry`` in
-            ``evaluate_generated_audio.py``): ``language`` is not a non-empty string or ``asr_model`` lacks a valid
-            ``name``/``type``. JSON ``null`` counts as malformed, so a broken override never silently falls back to
-            the CLI-level value.
-    """
-    evaluate_generated_audio.validate_evalset_entry(dataset_meta)
-    overrides = {}
-    if "asr_model" in dataset_meta:
-        overrides["asr_model_name"] = dataset_meta["asr_model"]["name"]
-        overrides["asr_model_type"] = dataset_meta["asr_model"]["type"]
-    if "language" in dataset_meta:
-        overrides["language"] = dataset_meta["language"]
-    return replace(eval_config, **overrides)
+__all__ = [
+    "DEFAULT_VIOLIN_METRICS",
+    "EvaluationConfig",
+    "compute_mean_with_confidence_interval",
+    "evaluate_generated_audio_dir",
+    "resolve_evaluation_config_for_dataset",
+]
 
 
 def evaluate_generated_audio_dir(
@@ -132,27 +69,12 @@ def evaluate_generated_audio_dir(
     """
     logging.info(f"Evaluating generated audio from {generated_audio_dir} " f"against manifest {manifest_path}")
 
-    avg_metrics, filewise_metrics = evaluate_generated_audio.evaluate(
+    return evaluate_generated_audio.evaluate_with_config(
         manifest_path=manifest_path,
         audio_dir=audio_dir,
         generated_audio_dir=generated_audio_dir,
-        language=config.language,
-        sv_model_type=config.sv_model,
-        asr_model_name=config.asr_model_name,
-        asr_model_type=config.asr_model_type,
-        with_utmosv2=config.with_utmosv2,
-        with_fcd=config.with_fcd,
-        codec_model_path=config.codec_model_path,
-        with_prosody_metrics=config.with_prosody_metrics,
-        prosody_model_size=config.prosody_model_size,
-        strip_text_annotations_for_metrics=config.strip_text_annotations_for_metrics,
-        device=config.device,
-        eou_model_name=config.eou_model_name,
-        asr_batch_size=config.asr_batch_size,
-        eou_batch_size=config.eou_batch_size,
+        config=config,
     )
-
-    return avg_metrics, filewise_metrics
 
 
 def compute_mean_with_confidence_interval(

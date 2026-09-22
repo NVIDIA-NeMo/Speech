@@ -38,6 +38,13 @@ from nemo.collections.asr.metrics.wer import word_error_rate_detail
 from nemo.collections.tts.metrics.eou_classifier import EoUClassification, EoUClassifier, EoUType
 from nemo.collections.tts.metrics.frechet_codec_distance import FrechetCodecDistance
 from nemo.collections.tts.metrics.prosody import compute_prosody_distances
+from nemo.collections.tts.modules.magpietts_inference.evaluation_config import (
+    ASR_MODEL_TYPES,
+    EVALSET_ENTRY_KEYS,
+    EvaluationConfig,
+    resolve_evaluation_config_for_dataset,
+    validate_evalset_entry,
+)
 from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     JapaneseTextProcessor,
     NemoTranscriber,
@@ -150,65 +157,6 @@ FILEWISE_METRICS_TO_SAVE = [
 ]
 
 
-# Supported ASR backends: the values of --asr_model_type and of the "type" field of an evalset "asr_model" entry.
-ASR_MODEL_TYPES = ("nemo", "nemo_with_prompt", "whisper")
-# Keys of an evalset config entry that the inference/evaluation scripts read, plus "feature_dir", which shipped configs
-# carry over from the training DatasetMeta schema and which is accepted but unused here. Other keys are ignored with a
-# warning so that a misspelled override (e.g. "langauge") does not silently leave the CLI-level value in force.
-EVALSET_ENTRY_KEYS = frozenset(
-    {
-        "manifest_path",
-        "audio_dir",
-        "feature_dir",  # accepted for compatibility with existing configs; not read by these scripts
-        "tokenizer_names",
-        "language",
-        "asr_model",
-    }
-)
-
-
-def validate_evalset_entry(info: dict, dataset_name: Optional[str] = None) -> None:
-    """Validate the optional per-dataset evaluation overrides of one evalset config entry.
-
-    Recognized optional keys and their required types:
-
-    - ``language``: non-empty string without surrounding whitespace (remove the key to use the CLI-level language).
-    - ``asr_model``: ``{"name": <model name or .nemo path>, "type": <one of ASR_MODEL_TYPES>}``.
-
-    Absent keys are fine. A JSON ``null`` is rejected like any other wrong type, so that a broken override cannot
-    silently fall back to the CLI-level value. Used by ``load_evalset_config`` and by
-    ``resolve_evaluation_config_for_dataset`` in ``evaluation.py``.
-
-    Args:
-        info: One entry of the evalset config.
-        dataset_name: Dataset name used to prefix error messages, if known.
-
-    Raises:
-        ValueError: If a recognized key has a malformed value.
-    """
-    prefix = f"Dataset {dataset_name}: " if dataset_name is not None else "Evalset entry: "
-    if "language" in info:
-        value = info["language"]
-        if not isinstance(value, str) or not value or value != value.strip():
-            raise ValueError(
-                f"{prefix}'language' must be a non-empty string without surrounding whitespace, such as \"en\" "
-                f"(remove the key to use the CLI-level language), got {value!r}."
-            )
-    if "asr_model" in info:
-        value = info["asr_model"]
-        if (
-            not isinstance(value, dict)
-            or not isinstance(value.get("name"), str)
-            or not value["name"].strip()
-            or value.get("type") not in ASR_MODEL_TYPES
-        ):
-            types = ", ".join(ASR_MODEL_TYPES)
-            raise ValueError(
-                f"{prefix}'asr_model' must be an object "
-                f"{{\"name\": <model name or .nemo path>, \"type\": <{types}>}}, got {value!r}."
-            )
-
-
 def load_evalset_config(config_path: Optional[str] = None, dataset_base_path: Optional[Path] = None) -> dict:
     """Load dataset meta info from JSON config file.
 
@@ -224,7 +172,7 @@ def load_evalset_config(config_path: Optional[str] = None, dataset_base_path: Op
         dataset_meta_info = json.load(f)
 
     # Validate that all evaluation datasets exist and that the optional per-dataset overrides are well-formed
-    # (see validate_evalset_entry and resolve_evaluation_config_for_dataset in evaluation.py).
+    # (see validate_evalset_entry and resolve_evaluation_config_for_dataset in evaluation_config.py).
     for dataset_name, info in dataset_meta_info.items():
         validate_evalset_entry(info, dataset_name=dataset_name)
         unrecognized_keys = sorted(set(info) - EVALSET_ENTRY_KEYS)
@@ -905,6 +853,36 @@ def evaluate(
     return avg_metrics, filtered_filewise
 
 
+def evaluate_with_config(manifest_path, audio_dir, generated_audio_dir, config: EvaluationConfig):
+    """Run ``evaluate`` with every field of ``config`` forwarded.
+
+    Single place that maps ``EvaluationConfig`` fields to ``evaluate`` keyword arguments; used by the standalone
+    ``main`` and by ``evaluation.evaluate_generated_audio_dir``.
+
+    Returns:
+        Tuple of (avg_metrics dict, filewise_metrics list), see ``evaluate``.
+    """
+    return evaluate(
+        manifest_path=manifest_path,
+        audio_dir=audio_dir,
+        generated_audio_dir=generated_audio_dir,
+        language=config.language,
+        sv_model_type=config.sv_model,
+        asr_model_name=config.asr_model_name,
+        asr_model_type=config.asr_model_type,
+        with_utmosv2=config.with_utmosv2,
+        with_fcd=config.with_fcd,
+        codec_model_path=config.codec_model_path,
+        with_prosody_metrics=config.with_prosody_metrics,
+        prosody_model_size=config.prosody_model_size,
+        strip_text_annotations_for_metrics=config.strip_text_annotations_for_metrics,
+        device=config.device,
+        eou_model_name=config.eou_model_name,
+        asr_batch_size=config.asr_batch_size,
+        eou_batch_size=config.eou_batch_size,
+    )
+
+
 def compute_fcd(gt_audio_paths, predicted_codes_paths, codec_model_path, device="cuda"):
     """Compute Frechet Codec Distance from ground-truth audio paths and predicted codec codes paths.
 
@@ -1103,13 +1081,6 @@ def main():
         if args.manifest_path is None:
             parser.error("--manifest_path is required unless --evalset is given")
 
-    # Imported here because evaluation.py imports this module at import time.
-    from nemo.collections.tts.modules.magpietts_inference.evaluation import (
-        EvaluationConfig,
-        evaluate_generated_audio_dir,
-        resolve_evaluation_config_for_dataset,
-    )
-
     # The standalone script has no codec model argument, so the Frechet Codec Distance is not computed here; use
     # examples/tts/magpietts_inference.py --run_evaluation for FCD.
     eval_config = EvaluationConfig(
@@ -1134,9 +1105,9 @@ def main():
         # Same per-dataset overrides (asr_model, language) as examples/tts/magpietts_inference.py.
         eval_config = resolve_evaluation_config_for_dataset(eval_config, meta)
 
-    # Forward the whole config through the same wrapper as examples/tts/magpietts_inference.py rather than a
-    # hand-picked subset of keyword arguments, so every EvaluationConfig field takes effect.
-    evaluate_generated_audio_dir(
+    # Forward the whole config (the same field mapping examples/tts/magpietts_inference.py uses through
+    # evaluation.evaluate_generated_audio_dir) rather than a hand-picked subset of keyword arguments.
+    evaluate_with_config(
         manifest_path=args.manifest_path,
         audio_dir=args.audio_dir,
         generated_audio_dir=args.generated_audio_dir,

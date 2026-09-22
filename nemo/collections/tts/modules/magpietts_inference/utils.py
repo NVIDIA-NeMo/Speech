@@ -40,7 +40,7 @@ from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
 from nemo.collections.tts.models import EasyMagpieTTSInferenceModel, MagpieTTSModel
 from nemo.collections.tts.models.easy_magpietts_inference import EasyModelInferenceParameters
 from nemo.collections.tts.models.magpietts import ModelInferenceParameters
-from nemo.collections.tts.modules.magpietts_inference.evaluate_generated_audio import ASR_MODEL_TYPES
+from nemo.collections.tts.modules.magpietts_inference.evaluation_config import ASR_MODEL_TYPES
 from nemo.collections.tts.modules.magpietts_inference.inference import (
     BaseInferenceRunner,
     EasyMagpieInferenceConfig,

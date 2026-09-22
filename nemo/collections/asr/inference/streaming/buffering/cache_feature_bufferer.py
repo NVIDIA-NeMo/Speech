@@ -96,6 +96,7 @@ class BatchedCacheFeatureBufferer:
 
         self.preprocessor = ASRModel.from_config_dict(preprocessor_cfg)
         self.preprocessor.to(self.device)
+        self.preprocessor.eval()  # disable ditcher in inference
 
         self.streamidx2slotidx, self.slotidx2streamidx = {}, {}
         self.available_slots = Queue(self.num_slots)

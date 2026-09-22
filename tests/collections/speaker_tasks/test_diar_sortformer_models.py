@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import inspect
 import math
 from collections import Counter
 from pathlib import Path
@@ -253,6 +254,14 @@ def _create_sortformer_model(
 @pytest.fixture()
 def sortformer_model():
     return _create_sortformer_model()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('method_name', ['forward', 'forward_infer', 'forward_streaming'])
+def test_forward_docstring_returns_are_flat(method_name):
+    docstring = inspect.cleandoc(getattr(SortformerEncLabelModel, method_name).__doc__)
+    return_section = docstring.split('Returns:', maxsplit=1)[1]
+    assert not any(line.startswith('        ') for line in return_section.splitlines() if line.strip())
 
 
 class TestSortformerEncLabelModelOffline:

@@ -509,7 +509,7 @@ def main():
     parser.add_argument(
         "--segment-pad",
         type=float,
-        default=0.3,
+        default=0.2,
         help="Seconds to widen each RTTM segment by in per-speaker mode, so masking does not clip word edges.",
     )
     parser.add_argument(

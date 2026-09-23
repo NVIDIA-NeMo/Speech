@@ -90,32 +90,24 @@ def _install_split_spy(monkeypatch, sub):
 
 
 class TestConvSubsampling32BitIndexing:
-    """Unit tests for the exact 32-bit element-limit guard and auto chunking factor.
-
-    These run on small synthetic inputs with the limit lowered via monkeypatch, so they
-    exercise the splitting logic without allocating multi-GB tensors.
-    """
+    """Guard and auto-chunking tests, run on small inputs with the limit lowered via monkeypatch."""
 
     @pytest.mark.unit
     @pytest.mark.parametrize("shape", [(1, 7, 16), (3, 50, 16), (5, 123, 16)])
     def test_first_conv_output_numel_matches_real_conv(self, shape):
-        # The estimate must equal the actual element count of the first conv's output,
-        # which is the largest activation the 32-bit limit is checked against.
         sub = _build_conv_subsampling()
         x = torch.randn(*shape)
-        real_numel = sub.conv[0](x.unsqueeze(1)).numel()  # run only the first Conv2d
+        real_numel = sub.conv[0](x.unsqueeze(1)).numel()  # only the first Conv2d
         assert sub._first_conv_output_numel(x) == real_numel
 
     @pytest.mark.unit
     @pytest.mark.parametrize("batch_size", [1, 4])
     def test_guard_splits_at_exact_limit(self, monkeypatch, batch_size):
-        # At output == limit the split must trigger. The previous '>' guard let a tensor of
-        # exactly INT_MAX elements (the value that trips canUse32BitIndexMath) through unsplit.
+        # '>=' must split at output == limit; the old '>' let an INT_MAX tensor through.
         sub = _build_conv_subsampling()
         x = torch.randn(batch_size, 50, 16)
         lengths = torch.full((batch_size,), 50, dtype=torch.long)
 
-        # Reference with the real (large) limit: no splitting happens.
         ref, ref_len = sub(x.clone(), lengths.clone())
 
         split_calls = _install_split_spy(monkeypatch, sub)
@@ -123,14 +115,13 @@ class TestConvSubsampling32BitIndexing:
 
         out, out_len = sub(x.clone(), lengths.clone())
 
-        assert split_calls, "the guard did not split when the first-conv output equals the 32-bit limit"
-        # Splitting (by batch, or by channel when batch_size == 1) must not change the result.
+        assert split_calls, "the guard did not split when the first-conv output equals the limit"
         assert torch.allclose(out, ref, atol=1e-5)
         assert torch.equal(out_len, ref_len)
 
     @pytest.mark.unit
     def test_guard_does_not_split_below_limit(self, monkeypatch):
-        # One element below the limit must not split: no needless chunking.
+        # One element below the limit must not split.
         sub = _build_conv_subsampling()
         x = torch.randn(4, 50, 16)
         lengths = torch.full((4,), 50, dtype=torch.long)
@@ -144,16 +135,13 @@ class TestConvSubsampling32BitIndexing:
     @pytest.mark.unit
     @pytest.mark.parametrize("batch_size", [4, 8, 16])
     def test_auto_chunking_keeps_each_chunk_below_limit(self, monkeypatch, batch_size):
-        # The auto chunking factor must split into chunks whose first-conv output is strictly
-        # below the limit (the previous float formula could pick a fractional factor or leave a
-        # chunk sitting exactly at the limit).
+        # Each chunk's first-conv output must end up strictly below the limit.
         sub = _build_conv_subsampling()
         x = torch.randn(batch_size, 40, 16)
         lengths = torch.full((batch_size,), 40, dtype=torch.long)
         limit = sub._first_conv_output_numel(x) // 3 + 1  # forces a multi-way split
         monkeypatch.setattr(subsampling_module, "_MAX_CONV_NUMEL_32BIT", limit)
 
-        # Record the batch size of each chunk actually fed to the conv stack.
         chunk_batches = []
         original_forward = sub.conv.forward
 
@@ -171,24 +159,19 @@ class TestConvSubsampling32BitIndexing:
 
     @pytest.mark.unit
     def test_split_by_batch_uses_size_one_when_factor_exceeds_batch(self, monkeypatch):
-        # With batch size 3 the power-of-two chunking factor rounds up to 4, so b // cf == 0.
-        # Rather than giving up - which falls back to conv_split_by_channel and runs the full
-        # first conv on the whole batch, the very op that overflows - the split must use a
-        # batch size of one, as long as a single sample fits under the limit.
+        # b=3 makes cf round up to 4, so b // cf == 0; must use single-sample batches instead
+        # of the channel fallback (which misreads the batch as channels and errors out).
         sub = _build_conv_subsampling()
         x = torch.randn(3, 50, 16)
         lengths = torch.full((3,), 50, dtype=torch.long)
 
-        # Reference with the real (large) limit: no splitting happens.
         ref, ref_len = sub(x.clone(), lengths.clone())
 
-        # A limit above one sample's first-conv output but below the whole batch's, so the auto
-        # factor rounds up past the batch size (cf == 4 > b == 3) yet a single sample still fits.
+        # Limit above one sample but below the whole batch, so cf == 4 > b == 3 yet a sample fits.
         limit = sub._first_conv_output_numel(x) // 2
         assert sub._first_conv_output_numel(x[:1]) < limit
         monkeypatch.setattr(subsampling_module, "_MAX_CONV_NUMEL_32BIT", limit)
 
-        # The channel fallback must not be used.
         channel_calls = []
         original_channel = sub.conv_split_by_channel
 
@@ -198,7 +181,6 @@ class TestConvSubsampling32BitIndexing:
 
         monkeypatch.setattr(sub, "conv_split_by_channel", spy_channel)
 
-        # Record the batch size of each chunk actually fed to the conv stack.
         chunk_batches = []
         original_forward = sub.conv.forward
 
@@ -212,7 +194,6 @@ class TestConvSubsampling32BitIndexing:
 
         assert not channel_calls, "should split by batch (size 1), not fall back to channel splitting"
         assert chunk_batches == [1, 1, 1], f"expected three single-sample chunks, got {chunk_batches}"
-        # Splitting into single-sample chunks must not change the result.
         assert torch.allclose(out, ref, atol=1e-5)
         assert torch.equal(out_len, ref_len)
 

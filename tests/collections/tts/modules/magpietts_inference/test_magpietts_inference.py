@@ -22,17 +22,24 @@ import json
 import os
 
 import pytest
+import torch
 from examples.tts.magpietts_inference import main as magpietts_inference_main
 from examples.tts.magpietts_inference import run_inference_and_evaluation
 
+from nemo.collections.asr.metrics.wer import word_error_rate_detail
 from nemo.collections.tts.modules.magpietts_inference.evaluate_generated_audio import (
     FILEWISE_METRICS_TO_SAVE,
     _get_record_texts,
+    _warn_if_stripped_spans_were_spoken,
+    build_metric_reference_texts,
+    compute_global_metrics,
+    evaluate_dir,
     load_evalset_config,
 )
 from nemo.collections.tts.modules.magpietts_inference.evaluate_generated_audio import (
     main as evaluate_generated_audio_main,
 )
+from nemo.collections.tts.modules.magpietts_inference.evaluate_generated_audio import strip_text_annotations_from_text
 from nemo.collections.tts.modules.magpietts_inference.evaluation import (
     EvaluationConfig,
     resolve_evaluation_config_for_dataset,
@@ -44,10 +51,22 @@ from nemo.collections.tts.modules.magpietts_inference.utils import (
     append_metrics_to_csv,
     write_csv_header_if_needed,
 )
+from nemo.collections.tts.parts.utils.tts_dataset_utils import DefaultTextProcessor
 from nemo.utils import logging as nemo_logging
 
 EVALUATE_MODULE = "nemo.collections.tts.modules.magpietts_inference.evaluate_generated_audio"
 EXAMPLE_MODULE = "examples.tts.magpietts_inference"
+
+
+# Evaluation manifests of emphasis benchmarks mark emphasized *spoken* words with square brackets.
+EMPHASIS_TEXT = (
+    "[You] want to go to the beach, again? I [want] to ski this winter. How about a [compromise?] "
+    "What about traveling to the Alps in Europe next [april]? We can find a ski resort on a [lake]."
+)
+EMPHASIS_REFERENCE = (
+    "you want to go to the beach again i want to ski this winter how about a compromise "
+    "what about traveling to the alps in europe next april we can find a ski resort on a lake"
+)
 
 
 class TestMagpieTTSInferenceCLI:
@@ -132,6 +151,7 @@ def test_evaluation_uses_normalized_text_for_metrics():
     assert metric_reference_text == "july fifteenth"
     assert "tts_text_input" in FILEWISE_METRICS_TO_SAVE
     assert "dataloader_normalized_text" in FILEWISE_METRICS_TO_SAVE
+    assert "strip_text_annotations_for_metrics" in FILEWISE_METRICS_TO_SAVE  # the effective per-row setting
     # Legacy phonemized manifests keep the orthography in original_text; a JSON null counts as absent.
     assert _get_record_texts({"text": "dʒʊˈlaɪ", "original_text": "July"})[2] == "July"
     assert _get_record_texts({"text": "July 15th", "original_text": None})[2] == "July 15th"
@@ -148,12 +168,14 @@ def test_grouped_multiturn_exports_input_and_normalized_text(tmp_path):
                 "dataloader_normalized_text": "july fifteenth",
                 "gt_text": "july fifteenth",
                 "pred_text": "july fifteenth",
+                "strip_text_annotations_for_metrics": True,
             }
         ]
     )
 
     assert grouped_rows[0]["tts_text_input"] == ["July 15th"]
     assert grouped_rows[0]["dataloader_normalized_text"] == ["july fifteenth"]
+    assert grouped_rows[0]["strip_text_annotations_for_metrics"] is True
 
     csv_path = tmp_path / "metrics.csv"
     _write_grouped_multiturn_filewise_metrics_csv(str(csv_path), grouped_rows)
@@ -162,24 +184,101 @@ def test_grouped_multiturn_exports_input_and_normalized_text(tmp_path):
 
     assert json.loads(csv_row["tts_text_input"]) == ["July 15th"]
     assert json.loads(csv_row["dataloader_normalized_text"]) == ["july fifteenth"]
+    assert csv_row["strip_text_annotations_for_metrics"] == "True"
+
+
+@pytest.mark.unit
+def test_strip_text_annotations_pins_bracket_semantics():
+    # Non-verbal tags and control markers are removed.
+    assert strip_text_annotations_from_text("Hello [breath] there -- friend... <laugh> {sigh}") == "Hello there friend"
+    # '*word*' emphasis keeps the word, but '[word]' is treated as a non-verbal tag and deleted with its content.
+    # This is why the flag must be disabled per dataset for bracket-emphasis evaluation sets.
+    assert strip_text_annotations_from_text("I *want* to ski") == "I want to ski"
+    assert strip_text_annotations_from_text("I [want] to ski") == "I to ski"
+
+
+@pytest.mark.unit
+def test_build_metric_reference_texts_bracket_emphasis():
+    processor = DefaultTextProcessor()
+    records = [{"text": EMPHASIS_TEXT, "normalized_text": EMPHASIS_TEXT}]
+    # A perfect rendition of the text, as ASR transcribes it (no brackets).
+    hypothesis = processor.process_text_for_wer(EMPHASIS_TEXT.replace("[", "").replace("]", ""))
+
+    # Default path: brackets are dropped as punctuation, every emphasized word is kept, and the perfect hypothesis
+    # scores zero.
+    record_texts, kept, spans = build_metric_reference_texts(
+        records, processor, strip_text_annotations_for_metrics=False
+    )
+    assert record_texts == [(EMPHASIS_TEXT, EMPHASIS_TEXT)]
+    assert kept == [EMPHASIS_REFERENCE] and spans == [[]]
+    assert word_error_rate_detail([hypothesis], kept, use_cer=False)[0] == 0.0
+    assert word_error_rate_detail([hypothesis], kept, use_cer=True)[0] == 0.0
+
+    # Stripping deletes each whole [span]: the words are gone from the reference and reported as removed spans, and
+    # the perfect hypothesis is charged an insertion for every emphasized word.
+    _, stripped, spans = build_metric_reference_texts(records, processor, strip_text_annotations_for_metrics=True)
+    assert stripped == [
+        "want to go to the beach again i to ski this winter how about a "
+        "what about traveling to the alps in europe next we can find a ski resort on a"
+    ]
+    assert spans == [["you", "want", "compromise", "april", "lake"]]
+    wer, _, insertions, deletions, substitutions = word_error_rate_detail([hypothesis], stripped, use_cer=False)
+    assert wer > 0.0 and insertions > 0.0 and deletions == 0.0 and substitutions == 0.0
+
+
+@pytest.mark.unit
+def test_warns_when_stripped_bracket_spans_were_spoken(monkeypatch):
+    warnings_seen = []
+    monkeypatch.setattr(nemo_logging, "warning", lambda msg, *args, **kwargs: warnings_seen.append(msg))
+
+    _warn_if_stripped_spans_were_spoken([["you", "compromise"], ["breath"]], ["you want a compromise", "well okay"])
+    assert len(warnings_seen) == 1
+    assert "2 square-bracket span(s)" in warnings_seen[0]
+    assert "[you]" in warnings_seen[0]
+    assert "manifest:" not in warnings_seen[0]
+
+    warnings_seen.clear()
+    _warn_if_stripped_spans_were_spoken([["you"]], ["you want"], manifest_path="/data/emma/manifest.json")
+    assert "manifest: /data/emma/manifest.json" in warnings_seen[0]
+
+    # Languages written with spaces: the span must appear as complete words, also when the hypothesis is one word.
+    warnings_seen.clear()
+    _warn_if_stripped_spans_were_spoken([["breath"]], ["well okay"])
+    _warn_if_stripped_spans_were_spoken([["breath"]], ["breathing"])
+    _warn_if_stripped_spans_were_spoken([["you"]], ["your car"])
+    assert warnings_seen == []
+    _warn_if_stripped_spans_were_spoken([["breath"]], ["breath"])
+    _warn_if_stripped_spans_were_spoken([["want to"]], ["i want to ski"])
+    assert len(warnings_seen) == 2
+
+    # zh and ja have no spaces left after normalization: the span only needs to appear somewhere inside the
+    # hypothesis, but only when the caller says so.
+    warnings_seen.clear()
+    _warn_if_stripped_spans_were_spoken([["你好"]], ["我说你好吗"])
+    assert warnings_seen == []
+    _warn_if_stripped_spans_were_spoken([["你好"]], ["我说你好吗"], no_space=True)
+    assert len(warnings_seen) == 1 and "[你好]" in warnings_seen[0]
 
 
 @pytest.mark.unit
 def test_resolve_evaluation_config_for_dataset_overrides():
-    eval_config = EvaluationConfig(language="en", eou_batch_size=7)
+    eval_config = EvaluationConfig(strip_text_annotations_for_metrics=True, language="en", eou_batch_size=7)
     meta = {
         "manifest_path": "m.json",
         "audio_dir": "a",
         "language": "de",
         "asr_model": {"name": "some/asr", "type": "whisper"},
+        "strip_text_annotations_for_metrics": False,
     }
 
     resolved = resolve_evaluation_config_for_dataset(eval_config, meta)
 
+    assert resolved.strip_text_annotations_for_metrics is False
     assert resolved.language == "de"
     assert (resolved.asr_model_name, resolved.asr_model_type) == ("some/asr", "whisper")
     assert resolved.eou_batch_size == 7  # fields without an override are inherited
     assert eval_config.language == "en"  # the input is not mutated
+    assert eval_config.strip_text_annotations_for_metrics is True
     # Absent keys keep the CLI-level values.
     assert resolve_evaluation_config_for_dataset(eval_config, {"manifest_path": "m.json"}) == eval_config
 
@@ -203,6 +302,18 @@ def _filewise_row(gt_text, pred_text, cer, wer):
         "utmosv2": 3.0,
         "total_gen_audio_seconds": 1.0,
     }
+
+
+@pytest.mark.unit
+def test_compute_global_metrics_counts_empty_reference_texts():
+    rows = [_filewise_row("you want", "you want", 0.0, 0.0), _filewise_row("", "laugh", 0.2, 0.5)]
+
+    metrics = compute_global_metrics(rows)
+
+    assert metrics["num_empty_reference_texts"] == 1
+    assert metrics["cer_filewise_avg"] == pytest.approx(0.1)  # unchanged plain mean over all rows
+    assert metrics["wer_filewise_avg"] == pytest.approx(0.25)
+    assert compute_global_metrics(rows[:1])["num_empty_reference_texts"] == 0
 
 
 def _write_evalset_config(tmp_path, entry_overrides):
@@ -236,6 +347,7 @@ def test_standalone_main_applies_evalset_overrides(tmp_path, monkeypatch):
         {
             "language": "de",
             "asr_model": {"name": "some/asr", "type": "whisper"},
+            "strip_text_annotations_for_metrics": True,
         },
     )
     captured = {}
@@ -247,14 +359,13 @@ def test_standalone_main_applies_evalset_overrides(tmp_path, monkeypatch):
         "--datasets_base_path", str(tmp_path),
         "--generated_audio_dir", str(tmp_path),
         "--with_prosody_metrics",  # CLI-level settings without an evalset override are inherited
-        "--strip_text_annotations_for_metrics",
     ]  # fmt: skip
     monkeypatch.setattr("sys.argv", argv)
 
     evaluate_generated_audio_main()
 
     assert captured["with_prosody_metrics"] is True
-    assert captured["strip_text_annotations_for_metrics"] is True
+    assert captured["strip_text_annotations_for_metrics"] is True  # enabled by the evalset entry only
     assert captured["language"] == "de"
     assert (captured["asr_model_name"], captured["asr_model_type"]) == ("some/asr", "whisper")
     assert captured["sv_model_type"] == "wavlm"
@@ -309,6 +420,16 @@ def test_standalone_main_without_evalset_uses_cli_values(tmp_path, monkeypatch):
         ["--datasets_base_path", "{base}", "--manifest_path", "m.json", "--generated_audio_dir", "g"],
         ["--manifest_path", "m.json", "--audio_dir", "a"],  # missing --generated_audio_dir
         ["--audio_dir", "a", "--generated_audio_dir", "g"],  # neither --evalset nor --manifest_path
+        # stripping is set per dataset in the evalset entry; the flag only applies to --manifest_path mode
+        [
+            "--evalset",
+            "ds",
+            "--datasets_json_path",
+            "{cfg}",
+            "--generated_audio_dir",
+            "g",
+            "--strip_text_annotations_for_metrics",
+        ],
         [
             "--evalset",
             "missing",
@@ -334,6 +455,8 @@ def test_standalone_main_rejects_inconsistent_arguments(tmp_path, monkeypatch, a
 @pytest.mark.parametrize(
     "entry_overrides, match",
     [
+        ({"strip_text_annotations_for_metrics": "false"}, "JSON boolean"),
+        ({"strip_text_annotations_for_metrics": None}, "JSON boolean"),
         ({"language": None}, "'language' must be a non-empty string"),
         ({"language": ""}, "'language' must be a non-empty string"),
         ({"language": " en"}, "'language' must be a non-empty string"),
@@ -369,12 +492,17 @@ def test_load_evalset_config_warns_on_unrecognized_keys(tmp_path, monkeypatch):
     assert len(warnings_seen) == 1
     assert "Dataset ds" in warnings_seen[0] and "langauge" in warnings_seen[0]
 
+    # Same for a misspelled strip_text_annotations_for_metrics, which would otherwise leave the CLI flag in force.
+    config_path = _write_evalset_config(tmp_path, {"strip_text_annotation_for_metrics": False})
+    load_evalset_config(str(config_path), dataset_base_path=tmp_path)
+    assert len(warnings_seen) == 2 and "strip_text_annotation_for_metrics" in warnings_seen[1]
+
 
 @pytest.mark.unit
 def test_experiment_metrics_csv_header_matches_appended_rows(tmp_path):
     csv_path = tmp_path / "all_experiment_metrics.csv"
     write_csv_header_if_needed(str(csv_path), EXPERIMENT_METRICS_CSV_HEADER)
-    metrics = {"cer_filewise_avg": 0.1, "katakana_cer_cumulative": 0.2}
+    metrics = {"cer_filewise_avg": 0.1, "katakana_cer_cumulative": 0.2, "num_empty_reference_texts": 2}
     append_metrics_to_csv(str(csv_path), "ckpt", "ds", metrics)
 
     with open(csv_path) as f:
@@ -384,6 +512,7 @@ def test_experiment_metrics_csv_header_matches_appended_rows(tmp_path):
     assert (rows[0]["checkpoint_name"], rows[0]["dataset"]) == ("ckpt", "ds")
     assert rows[0]["cer_filewise_avg"] == "0.1"
     assert rows[0]["katakana_cer_cumulative"] == "0.2"
+    assert rows[0]["num_empty_reference_texts"] == "2"
     assert rows[0]["wer_filewise_avg"] == ""  # absent metrics leave an empty cell
     assert None not in rows[0]  # every value has a header column
     assert len(rows[0]) == len(EXPERIMENT_METRICS_CSV_HEADER.split(","))
@@ -407,6 +536,85 @@ def test_write_csv_header_if_needed_warns_on_changed_layout(tmp_path, monkeypatc
     assert csv_path.read_text() == old_header + "\n"
 
 
+def _run_evaluate_dir_with_fakes(tmp_path, monkeypatch, records, transcripts, language, strip_annotations):
+    """Run evaluate_dir on CPU with fake models: ASR returns ``transcripts[basename]``, embeddings are constant."""
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text("".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records))
+    warnings_seen = []
+    monkeypatch.setattr(nemo_logging, "warning", lambda msg, *args, **kwargs: warnings_seen.append(msg))
+
+    class _FakeASR:
+        def transcribe(self, audio_paths, language, batch_size):
+            return [transcripts[os.path.basename(path)] for path in audio_paths]
+
+    fake_models = {
+        "asr_model": _FakeASR(),
+        "feature_extractor": None,
+        "sv_model": None,
+        "sv_model_alternate": None,
+        "emotion_model": None,
+    }
+    monkeypatch.setattr(f"{EVALUATE_MODULE}.load_evaluation_models", lambda **kwargs: fake_models)
+    monkeypatch.setattr(
+        f"{EVALUATE_MODULE}.find_generated_audio_files",
+        lambda audio_dir: [os.path.join(audio_dir, f"pred_{i}.wav") for i in range(len(records))],
+    )
+    monkeypatch.setattr(f"{EVALUATE_MODULE}.find_generated_codec_files", lambda audio_dir: [])
+    monkeypatch.setattr(f"{EVALUATE_MODULE}.extract_embedding", lambda **kwargs: torch.ones(4))
+    monkeypatch.setattr(f"{EVALUATE_MODULE}.get_wav_file_duration", lambda audio_path: 1.0)
+
+    rows = evaluate_dir(
+        manifest_path=str(manifest),
+        audio_dir=str(tmp_path),
+        generated_audio_dir=str(tmp_path),
+        language=language,
+        with_utmosv2=False,
+        strip_text_annotations_for_metrics=strip_annotations,
+        device="cpu",
+    )
+    return rows, warnings_seen
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "language, text, transcript, strip_annotations, expected_gt_text, spoken_span",
+    [
+        # Bracket-marked emphasis: the word is deleted from the reference, scored as an insertion, and reported.
+        ("de", "[You] want to ski", "you want to ski", True, "want to ski", "[you]"),
+        ("zh", "[你好]世界", "你好世界", True, "世界", "[你好]"),  # no spaces: the span only needs to appear inside
+        # Non-verbal tag: "breath" is not a complete word of the one-word hypothesis "breathing", so no warning.
+        ("de", "[breath] Breathing.", "breathing", True, "breathing", None),
+        # Without stripping the brackets are dropped as punctuation and the word is kept; nothing to warn about.
+        ("de", "[breath] Breathing.", "breathing", False, "breath breathing", None),
+    ],
+)
+def test_evaluate_dir_records_strip_setting_and_warns_when_spans_were_spoken(
+    tmp_path, monkeypatch, language, text, transcript, strip_annotations, expected_gt_text, spoken_span
+):
+    records = [{"audio_filepath": "gt_0.wav", "text": text}]
+    transcripts = {"gt_0.wav": transcript, "pred_0.wav": transcript}
+
+    rows, warnings_seen = _run_evaluate_dir_with_fakes(
+        tmp_path, monkeypatch, records, transcripts, language, strip_annotations
+    )
+
+    assert rows[0]["strip_text_annotations_for_metrics"] is strip_annotations
+    assert rows[0]["gt_text"] == expected_gt_text
+    if spoken_span is None:
+        assert warnings_seen == []
+    else:
+        assert rows[0]["cer"] > 0.0  # the deleted word is scored as an insertion
+        assert len(warnings_seen) == 1 and spoken_span in warnings_seen[0]
+        assert str(tmp_path / "manifest.json") in warnings_seen[0]
+
+
+@pytest.mark.unit
+def test_example_script_rejects_removed_strip_flag(capsys):
+    with pytest.raises(SystemExit):
+        magpietts_inference_main(["--strip_text_annotations_for_metrics"])
+    assert '"strip_text_annotations_for_metrics": true or false' in capsys.readouterr().err
+
+
 class _FakeRunner:
     def create_dataset(self, dataset_meta):
         return [0]
@@ -427,12 +635,14 @@ class _FakeInferenceConfig:
 def test_run_inference_and_evaluation_applies_evalset_override(tmp_path, monkeypatch):
     # The example script used to rebuild EvaluationConfig by hand from the evalset entry; it now goes through
     # resolve_evaluation_config_for_dataset, so overrides and inherited CLI-level fields are handled in one place.
+    # Regression: before this change the evalset schema had no strip_text_annotations_for_metrics key and a run-level
+    # flag applied to every dataset; stripping is now enabled per dataset only.
     manifest = tmp_path / "m.json"
     manifest.write_text(json.dumps({"audio_filepath": "a.wav", "text": "Hello there."}) + "\n")
-    captured = {}
+    configs = []
 
     def fake_evaluate_generated_audio_dir(manifest_path, audio_dir, generated_audio_dir, config):
-        captured["config"] = config
+        configs.append(config)
         return {"cer_cumulative": 0.0, "ssim_pred_context_avg": 1.0}, [{"cer": 0.0}]
 
     monkeypatch.setattr(f"{EXAMPLE_MODULE}.evaluate_generated_audio_dir", fake_evaluate_generated_audio_dir)
@@ -441,12 +651,19 @@ def test_run_inference_and_evaluation_applies_evalset_override(tmp_path, monkeyp
 
     eval_config = EvaluationConfig(language="en", with_fcd=False, with_utmosv2=False)
     dataset_meta_info = {
-        "ds": {
+        # Brackets mark emphasized spoken words: no strip key, so the reference keeps every word.
+        "emphasis": {
             "manifest_path": str(manifest),
             "audio_dir": str(tmp_path),
             "language": "de",
             "asr_model": {"name": "some/asr", "type": "whisper"},
-        }
+        },
+        # Brackets are non-verbal tags: stripping is enabled by this entry alone.
+        "tags": {
+            "manifest_path": str(manifest),
+            "audio_dir": str(tmp_path),
+            "strip_text_annotations_for_metrics": True,
+        },
     }
 
     cer, ssim = run_inference_and_evaluation(
@@ -455,13 +672,16 @@ def test_run_inference_and_evaluation_applies_evalset_override(tmp_path, monkeyp
         inference_config=_FakeInferenceConfig(),
         eval_config=eval_config,
         dataset_meta_info=dataset_meta_info,
-        datasets=["ds"],
+        datasets=["emphasis", "tags"],
         out_dir=str(tmp_path / "out"),
         flops_per_component={},
         moe_info="",
     )
 
-    assert captured["config"].language == "de"
-    assert (captured["config"].asr_model_name, captured["config"].asr_model_type) == ("some/asr", "whisper")
-    assert captured["config"].with_utmosv2 is False  # CLI-level settings without an override are inherited
+    emphasis, tags = configs
+    assert emphasis.language == "de"
+    assert (emphasis.asr_model_name, emphasis.asr_model_type) == ("some/asr", "whisper")
+    assert emphasis.strip_text_annotations_for_metrics is False  # no run-level flag: entries without the key are kept
+    assert tags.strip_text_annotations_for_metrics is True
+    assert tags.language == "en" and tags.with_utmosv2 is False  # CLI-level settings without an override are inherited
     assert (cer, ssim) == (0.0, 1.0)

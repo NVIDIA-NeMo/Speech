@@ -655,6 +655,7 @@ EXPERIMENT_METRICS_CSV_COLUMNS = (
     "eou_error_rate",
     "katakana_cer_filewise_avg",
     "katakana_cer_cumulative",
+    "num_empty_reference_texts",
 )
 EXPERIMENT_METRICS_CSV_HEADER = ",".join(("checkpoint_name", "dataset") + EXPERIMENT_METRICS_CSV_COLUMNS)
 
@@ -843,6 +844,7 @@ def _group_multiturn_filewise_metrics_by_sample(filewise_metrics: list) -> list:
                 "tts_text_input": [r.get("tts_text_input", "") for r in turns],
                 "dataloader_normalized_text": [r.get("dataloader_normalized_text") for r in turns],
                 "reference_text": [r.get("gt_text", "") for r in turns],
+                "strip_text_annotations_for_metrics": turns[0].get("strip_text_annotations_for_metrics"),
                 "asr_hyp": [r.get("pred_text", "") for r in turns],
                 "pred_audio_paths": [r.get("pred_audio_filepath", "") for r in turns],
                 "target_audio_path": group["target_audio_path"],
@@ -905,6 +907,7 @@ def _write_grouped_multiturn_filewise_metrics_csv(csv_path: str, grouped_rows: l
         "tts_text_input",
         "dataloader_normalized_text",
         "reference_text",
+        "strip_text_annotations_for_metrics",
         "asr_hyp",
         "predicted_phoneme_text_turns",
         "predicted_phoneme_tokens_turns",
@@ -1155,6 +1158,21 @@ def _add_inference_param_fields(
         group.add_argument(f"--{f.name}", **extra_args)
 
 
+class _RemovedStripFlagAction(argparse.Action):
+    """Reject the retired run-level --strip_text_annotations_for_metrics flag and point at the evalset key."""
+
+    def __init__(self, option_strings, dest, **kwargs):
+        kwargs.pop("nargs", None)
+        super().__init__(option_strings, dest, nargs=0, **kwargs)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        parser.error(
+            f"{option_string} was removed: whether [..], <..> and {{..}} markers are stripped from the CER/WER "
+            'reference is a property of each dataset. Set "strip_text_annotations_for_metrics": true or false in the '
+            "dataset's evalset config entry instead (default: not stripped)."
+        )
+
+
 def _add_common_args(parser: argparse.ArgumentParser) -> None:
     """Add arguments shared by all model types."""
 
@@ -1295,8 +1313,11 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     eval_group.add_argument('--prosody_model_size', type=str, default="small", choices=["small", "large"])
     eval_group.add_argument(
         '--strip_text_annotations_for_metrics',
-        action='store_true',
-        help='Strip bracket/tag/control annotations from reference and ASR hypothesis text while computing text metrics.',
+        action=_RemovedStripFlagAction,
+        help=(
+            'Removed. Stripping of annotation markers from the CER/WER reference is set per dataset with '
+            '"strip_text_annotations_for_metrics": true|false in the evalset config; passing this flag is an error.'
+        ),
     )
     eval_group.add_argument(
         '--violin_plot_metrics',

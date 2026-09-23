@@ -215,7 +215,15 @@ class TaperedPerthWatermarker:
                 signals = originals
                 if sample_rate != perth_rate:
                     assert resample is not None
-                    signals = resample(signals, sample_rate, perth_rate)
+                    # Wider Kaiser than torchaudio defaults so codec highs survive 22.05 <-> 32 kHz.
+                    signals = resample(
+                        signals,
+                        sample_rate,
+                        perth_rate,
+                        resampling_method="sinc_interp_kaiser",
+                        lowpass_filter_width=64,
+                        rolloff=0.999,
+                    )
 
                 if signals.shape[-1] < minimum_samples:
                     if not self._short_audio_warning_emitted:
@@ -232,7 +240,14 @@ class TaperedPerthWatermarker:
                 marked = perth_net.ap.magphase_to_signal(marked_magnitudes, phases)
                 if sample_rate != perth_rate:
                     assert resample is not None
-                    marked = resample(marked, perth_rate, sample_rate)
+                    marked = resample(
+                        marked,
+                        perth_rate,
+                        sample_rate,
+                        resampling_method="sinc_interp_kaiser",
+                        lowpass_filter_width=64,
+                        rolloff=0.999,
+                    )
                 marked = _restore_length(marked, originals)
                 marked = taper_watermark_delta(
                     marked,

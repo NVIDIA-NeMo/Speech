@@ -68,6 +68,20 @@ def test_equal_length_waveforms_are_batched_and_length_is_preserved() -> None:
     torch.testing.assert_close(result[1], 0.5 + 0.125 * envelope)
 
 
+def test_perth_resample_uses_wideband_kaiser() -> None:
+    perth_net = _FakePerthNet()
+    perth_net.hp.sample_rate = 32_000
+    fake = mock.Mock(side_effect=lambda waveform, *_args, **_kwargs: waveform)
+    with mock.patch("torchaudio.functional.resample", fake):
+        TaperedPerthWatermarker("cpu", sample_rate=22_050, perth_net=perth_net).apply(_chunks(torch.zeros(16)))
+
+    assert fake.call_count == 2
+    for call in fake.call_args_list:
+        assert call.kwargs["resampling_method"] == "sinc_interp_kaiser"
+        assert call.kwargs["lowpass_filter_width"] == 64
+        assert call.kwargs["rolloff"] == 0.999
+
+
 def test_watermark_delta_taper_preserves_chunk_edge_samples() -> None:
     original = torch.linspace(-0.5, 0.5, 16).repeat(2, 1)
     marked = original + 0.125

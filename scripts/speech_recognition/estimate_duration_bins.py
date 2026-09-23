@@ -81,7 +81,7 @@ def main():
     else:
         inp_arg = f"manifest_filepath={args.input}"
     config = OmegaConf.merge(
-        OmegaConf.structured(LhotseDataLoadingConfig),
+        OmegaConf.structured(LhotseDataLoadingConfig(force_iterable_dataset=True)),
         OmegaConf.from_dotlist([inp_arg, "metadata_only=true"]),
     )
     cuts, _ = read_cutset_from_config(config)

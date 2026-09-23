@@ -37,6 +37,7 @@ EVALSET_ENTRY_KEYS = frozenset(
         "tokenizer_names",
         "language",
         "asr_model",
+        "strip_text_annotations_for_metrics",
     }
 )
 
@@ -60,8 +61,11 @@ class EvaluationConfig:
         with_prosody_metrics: Whether to compute ESIM/EMS plus pitch,
             intensity, and speech-rate distance metrics.
         prosody_model_size: Emotion encoder size ("small" or "large").
-        strip_text_annotations_for_metrics: Whether to strip annotation/control markers from reference and ASR
-            hypothesis text before text metrics.
+        strip_text_annotations_for_metrics: Whether to strip annotation/control markers (``<tag>``, ``{tag}``,
+            ``[tag]``, ``--``, ``...``, ``*``) from reference and ASR hypothesis text before text metrics.
+            Square-bracket spans are removed WITH their content, so datasets that mark emphasized spoken words
+            as ``[word]`` must disable this per dataset via ``"strip_text_annotations_for_metrics": false`` in
+            their evalset config entry (see ``resolve_evaluation_config_for_dataset``).
         device: Device to use for running models used during evaluation.
         asr_batch_size: Batch size for ASR transcription.
         eou_batch_size: Batch size for EoU classification.
@@ -90,6 +94,7 @@ def validate_evalset_entry(info: dict, dataset_name: Optional[str] = None) -> No
 
     - ``language``: non-empty string without surrounding whitespace (remove the key to use the CLI-level language).
     - ``asr_model``: ``{"name": <model name or .nemo path>, "type": <one of ASR_MODEL_TYPES>}``.
+    - ``strip_text_annotations_for_metrics``: JSON boolean.
 
     Absent keys are fine. A JSON ``null`` is rejected like any other wrong type, so that a broken override cannot
     silently fall back to the CLI-level value. Used by ``load_evalset_config`` (``evaluate_generated_audio.py``) and
@@ -103,6 +108,12 @@ def validate_evalset_entry(info: dict, dataset_name: Optional[str] = None) -> No
         ValueError: If a recognized key has a malformed value.
     """
     prefix = f"Dataset {dataset_name}: " if dataset_name is not None else "Evalset entry: "
+    if "strip_text_annotations_for_metrics" in info:
+        value = info["strip_text_annotations_for_metrics"]
+        if not isinstance(value, bool):
+            raise ValueError(
+                f"{prefix}'strip_text_annotations_for_metrics' must be a JSON boolean (true/false), got {value!r}."
+            )
     if "language" in info:
         value = info["language"]
         if not isinstance(value, str) or not value or value != value.strip():
@@ -132,6 +143,10 @@ def resolve_evaluation_config_for_dataset(eval_config: EvaluationConfig, dataset
 
     - ``asr_model``: ``{"name": ..., "type": ...}`` overriding ``asr_model_name`` and ``asr_model_type``.
     - ``language``: overrides ``language``.
+    - ``strip_text_annotations_for_metrics``: JSON boolean overriding the CLI-level flag. Set it to ``false`` for
+      datasets whose square brackets mark emphasized *spoken* words (e.g. ``"[You] want to ski"``), so those words
+      are not deleted from the CER/WER reference, and to ``true`` for datasets whose brackets are non-verbal tags
+      such as ``[breath]``.
 
     Keys that are absent keep the value from ``eval_config``. ``eval_config`` itself is not mutated.
 
@@ -144,9 +159,9 @@ def resolve_evaluation_config_for_dataset(eval_config: EvaluationConfig, dataset
 
     Raises:
         ValueError: If a recognized key is malformed (see ``validate_evalset_entry``):
-            ``language`` is not a non-empty string or ``asr_model`` lacks a valid
-            ``name``/``type``. JSON ``null`` counts as malformed, so a broken override never silently falls back to
-            the CLI-level value.
+            ``language`` is not a non-empty string, ``asr_model`` lacks a valid
+            ``name``/``type``, or ``strip_text_annotations_for_metrics`` is not a boolean. JSON ``null`` counts as
+            malformed, so a broken override never silently falls back to the CLI-level value.
     """
     validate_evalset_entry(dataset_meta)
     overrides = {}
@@ -155,4 +170,6 @@ def resolve_evaluation_config_for_dataset(eval_config: EvaluationConfig, dataset
         overrides["asr_model_type"] = dataset_meta["asr_model"]["type"]
     if "language" in dataset_meta:
         overrides["language"] = dataset_meta["language"]
+    if "strip_text_annotations_for_metrics" in dataset_meta:
+        overrides["strip_text_annotations_for_metrics"] = dataset_meta["strip_text_annotations_for_metrics"]
     return replace(eval_config, **overrides)

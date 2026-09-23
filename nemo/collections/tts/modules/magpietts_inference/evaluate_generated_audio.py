@@ -49,6 +49,8 @@ from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     JapaneseTextProcessor,
     NemoTranscriber,
     NemoTranscriberWithPrompt,
+    NoSpaceTextProcessor,
+    TextProcessor,
     WhisperTranscriber,
     get_text_processor,
 )
@@ -100,6 +102,8 @@ _ANNOTATION_OR_MARKER_RE = re.compile(
     """,
     re.VERBOSE,
 )
+# Content of one square-bracket span. Used to report spans that strip_text_annotations_from_text removed.
+_SQUARE_SPAN_RE = re.compile(r"\[([^\[\]\n]{1,512})\]")
 
 
 def strip_text_annotations_from_text(text: str) -> str:
@@ -130,6 +134,43 @@ def _get_record_texts(record: dict) -> tuple[str, Optional[str], str]:
     return tts_text_input, dataloader_normalized_text, metric_reference_text
 
 
+def build_metric_reference_texts(
+    records: list[dict], text_processor: TextProcessor, strip_text_annotations_for_metrics: bool = False
+) -> tuple[list[tuple[str, Optional[str]]], list[str], list[list[str]]]:
+    """Build the CER/WER reference text (filewise ``gt_text``) for each manifest record.
+
+    Args:
+        records: Evaluation manifest records.
+        text_processor: ``TextProcessor`` whose ``process_text_for_wer`` normalizes the reference.
+        strip_text_annotations_for_metrics: Apply ``strip_text_annotations_from_text`` before normalization. Note
+            that this deletes square-bracket spans WITH their content; for datasets that mark emphasized spoken
+            words as ``[word]`` this removes real words from the reference and inflates CER/WER.
+
+    Returns:
+        Tuple of:
+            - record_texts: ``(tts_text_input, dataloader_normalized_text)`` per record.
+            - gt_texts_processed: the normalized reference per record.
+            - stripped_spans: per record, the normalized contents of the square-bracket spans that were removed
+              (empty lists when stripping is disabled).
+    """
+    record_texts, gt_texts_processed, stripped_spans = [], [], []
+    normalized_span_cache: dict[str, str] = {}  # process_text_for_wer can be slow (pynini); spans repeat a lot
+    for record in records:
+        tts_text_input, dataloader_normalized_text, metric_reference_text = _get_record_texts(record)
+        record_texts.append((tts_text_input, dataloader_normalized_text))
+        spans = []
+        if strip_text_annotations_for_metrics:
+            for match in _SQUARE_SPAN_RE.finditer(str(metric_reference_text)):
+                content = match.group(1)
+                if content not in normalized_span_cache:
+                    normalized_span_cache[content] = text_processor.process_text_for_wer(content)
+                spans.append(normalized_span_cache[content])
+            metric_reference_text = strip_text_annotations_from_text(metric_reference_text)
+        gt_texts_processed.append(text_processor.process_text_for_wer(metric_reference_text))
+        stripped_spans.append([span for span in spans if span])
+    return record_texts, gt_texts_processed, stripped_spans
+
+
 FILEWISE_METRICS_TO_SAVE = [
     'cer',
     'cer_pred_gt_audio',
@@ -144,6 +185,7 @@ FILEWISE_METRICS_TO_SAVE = [
     'tts_text_input',
     'dataloader_normalized_text',
     'gt_text',
+    'strip_text_annotations_for_metrics',
     'predicted_phoneme_text',
     'predicted_phoneme_tokens',
     'predicted_phoneme_token_labels',
@@ -568,15 +610,15 @@ def evaluate_dir(
         gt_audio_texts = [None] * len(records)
 
     # 6. Pre-compute ground-truth texts for all records
-    record_texts = []
-    gt_texts_processed = []
-    for record in records:
-        tts_text_input, dataloader_normalized_text, metric_reference_text = _get_record_texts(record)
-        record_texts.append((tts_text_input, dataloader_normalized_text))
-        if strip_text_annotations_for_metrics:
-            metric_reference_text = strip_text_annotations_from_text(metric_reference_text)
-        processed_text = text_processor.process_text_for_wer(metric_reference_text)
-        gt_texts_processed.append(processed_text)
+    record_texts, gt_texts_processed, stripped_spans = build_metric_reference_texts(
+        records=records,
+        text_processor=text_processor,
+        strip_text_annotations_for_metrics=strip_text_annotations_for_metrics,
+    )
+    if strip_text_annotations_for_metrics:
+        _warn_if_stripped_spans_were_spoken(
+            stripped_spans, pred_texts, manifest_path, no_space=isinstance(text_processor, NoSpaceTextProcessor)
+        )
 
     # 7. Batched EoU classification
     eou_results = None
@@ -732,6 +774,7 @@ def evaluate_dir(
             'gt_audio_text': gt_audio_text,
             'tts_text_input': tts_text_input,
             'dataloader_normalized_text': dataloader_normalized_text,
+            'strip_text_annotations_for_metrics': strip_text_annotations_for_metrics,
             'predicted_phoneme_text': record.get('predicted_phoneme_text', ''),
             'predicted_phoneme_tokens': record.get('predicted_phoneme_tokens', []),
             'predicted_phoneme_token_labels': record.get('predicted_phoneme_token_labels', []),
@@ -945,6 +988,9 @@ def compute_global_metrics(
     avg_metrics = {}
     avg_metrics['cer_filewise_avg'] = sum(m['cer'] for m in filewise_metrics) / n
     avg_metrics['wer_filewise_avg'] = sum(m['wer'] for m in filewise_metrics) / n
+    # An empty reference (e.g. a fully bracketed utterance under strip_text_annotations_for_metrics) makes the
+    # per-file CER/WER inf; report how many references were empty so that inf averages can be traced back.
+    avg_metrics['num_empty_reference_texts'] = sum(1 for text in gt_texts if not str(text).strip())
     avg_metrics['cer_cumulative'] = word_error_rate_detail(hypotheses=pred_texts, references=gt_texts, use_cer=True)[0]
     avg_metrics['wer_cumulative'] = word_error_rate_detail(hypotheses=pred_texts, references=gt_texts, use_cer=False)[
         0
@@ -1028,6 +1074,61 @@ def compute_global_metrics(
     return avg_metrics
 
 
+def _span_was_spoken(span: str, pred_text: str, no_space: bool = False) -> bool:
+    """Return True if a normalized bracket span occurs in the normalized ASR hypothesis.
+
+    For languages written with spaces, the span must appear as complete words in the hypothesis: ``breath`` matches
+    ``take a breath`` but not ``breathing``. For zh and ja (``no_space=True``; their ``NoSpaceTextProcessor`` removes
+    all spaces, so no word boundaries are left) the span only needs to appear somewhere inside the hypothesis. Other
+    languages written without spaces are normalized by ``DefaultTextProcessor`` and follow the complete-words rule,
+    which can miss spoken spans there.
+    """
+    if not span:
+        return False
+    if no_space:
+        return span in pred_text
+    return f" {span} " in f" {pred_text} "
+
+
+def _warn_if_stripped_spans_were_spoken(
+    stripped_spans: list[list[str]],
+    pred_texts: list[str],
+    manifest_path: Optional[str] = None,
+    no_space: bool = False,
+) -> None:
+    """Warn when square-bracket spans deleted from the reference show up verbatim in the ASR hypothesis.
+
+    That is the signature of a dataset that uses ``[word]`` to mark emphasized *spoken* words rather than non-verbal
+    tags: the words are spoken and transcribed, then counted as insertions against the truncated reference. This is a
+    heuristic and only logs.
+
+    Args:
+        stripped_spans: Per record, the normalized bracket spans removed from the reference
+            (see ``build_metric_reference_texts``).
+        pred_texts: Normalized ASR hypotheses, aligned with ``stripped_spans``.
+        manifest_path: Included in the warning when given.
+        no_space: True for zh and ja, whose normalized texts contain no spaces; the span then only needs to appear
+            somewhere inside the hypothesis instead of as complete words.
+    """
+    spoken_spans = [
+        span
+        for spans, pred_text in zip(stripped_spans, pred_texts)
+        for span in spans
+        if _span_was_spoken(span, pred_text, no_space=no_space)
+    ]
+    if not spoken_spans:
+        return
+    examples = ", ".join(f"[{span}]" for span in spoken_spans[:5])
+    source = f" (manifest: {manifest_path})" if manifest_path else ""
+    logging.warning(
+        f"Heuristic check{source}: strip_text_annotations_for_metrics removed {len(spoken_spans)} square-bracket "
+        f"span(s) that appear in the ASR transcript of the generated audio (e.g. {examples}). They are scored as "
+        "insertions and inflate CER/WER. Inspect the examples: if this dataset marks emphasized spoken words as "
+        '[word], set "strip_text_annotations_for_metrics": false for it in the evalset config; if the brackets are '
+        "non-verbal tags, the model is reading them aloud."
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description='Evaluate Generated Audio')
     parser.add_argument(
@@ -1060,7 +1161,13 @@ def main():
     parser.add_argument(
         '--strip_text_annotations_for_metrics',
         action='store_true',
-        help='Strip bracket/tag/control annotations from reference and ASR hypothesis text while computing text metrics.',
+        help=(
+            'Strip annotation/control markers (<tag>, {tag}, [tag], --, ..., *) from reference and ASR hypothesis '
+            'text before computing text metrics. Square-bracket spans are deleted WITH their content, so do not use '
+            'this for datasets that mark emphasized spoken words as [word]; set '
+            '"strip_text_annotations_for_metrics": false for such datasets in the evalset config instead. '
+            'With --evalset, the evalset config value takes precedence over this flag.'
+        ),
     )
     parser.add_argument(
         '--datasets_json_path', type=str, default=None, help='Evalset config JSON; required with --evalset.'
@@ -1102,7 +1209,8 @@ def main():
         meta = dataset_meta_info[args.evalset]
         args.manifest_path = meta['manifest_path']
         args.audio_dir = meta['audio_dir']
-        # Same per-dataset overrides (asr_model, language) as examples/tts/magpietts_inference.py.
+        # Same per-dataset overrides (asr_model, language, strip_text_annotations_for_metrics) as
+        # examples/tts/magpietts_inference.py.
         eval_config = resolve_evaluation_config_for_dataset(eval_config, meta)
 
     # Forward the whole config (the same field mapping examples/tts/magpietts_inference.py uses through

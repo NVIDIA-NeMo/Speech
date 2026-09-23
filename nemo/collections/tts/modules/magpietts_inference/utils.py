@@ -655,6 +655,7 @@ EXPERIMENT_METRICS_CSV_COLUMNS = (
     "eou_error_rate",
     "katakana_cer_filewise_avg",
     "katakana_cer_cumulative",
+    "num_empty_reference_texts",
 )
 EXPERIMENT_METRICS_CSV_HEADER = ",".join(("checkpoint_name", "dataset") + EXPERIMENT_METRICS_CSV_COLUMNS)
 
@@ -843,6 +844,7 @@ def _group_multiturn_filewise_metrics_by_sample(filewise_metrics: list) -> list:
                 "tts_text_input": [r.get("tts_text_input", "") for r in turns],
                 "dataloader_normalized_text": [r.get("dataloader_normalized_text") for r in turns],
                 "reference_text": [r.get("gt_text", "") for r in turns],
+                "strip_text_annotations_for_metrics": turns[0].get("strip_text_annotations_for_metrics"),
                 "asr_hyp": [r.get("pred_text", "") for r in turns],
                 "pred_audio_paths": [r.get("pred_audio_filepath", "") for r in turns],
                 "target_audio_path": group["target_audio_path"],
@@ -905,6 +907,7 @@ def _write_grouped_multiturn_filewise_metrics_csv(csv_path: str, grouped_rows: l
         "tts_text_input",
         "dataloader_normalized_text",
         "reference_text",
+        "strip_text_annotations_for_metrics",
         "asr_hyp",
         "predicted_phoneme_text_turns",
         "predicted_phoneme_tokens_turns",
@@ -1296,7 +1299,13 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     eval_group.add_argument(
         '--strip_text_annotations_for_metrics',
         action='store_true',
-        help='Strip bracket/tag/control annotations from reference and ASR hypothesis text while computing text metrics.',
+        help=(
+            'Strip annotation/control markers (<tag>, {tag}, [tag], --, ..., *) from reference and ASR hypothesis '
+            'text before computing text metrics. Square-bracket spans are deleted WITH their content, so do not use '
+            'this for datasets that mark emphasized spoken words as [word]; set '
+            '"strip_text_annotations_for_metrics": false for such datasets in the evalset config instead. '
+            'The evalset config value takes precedence over this flag for each dataset.'
+        ),
     )
     eval_group.add_argument(
         '--violin_plot_metrics',

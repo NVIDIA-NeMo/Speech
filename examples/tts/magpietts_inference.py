@@ -176,14 +176,15 @@ def run_inference_and_evaluation(
         meta = dataset_meta_info[dataset]
         manifest_records = read_manifest(meta['manifest_path'])
 
-        # Per-dataset overrides (asr_model, language) come from the evalset entry; everything else is inherited from
-        # the CLI-level eval_config.
+        # Per-dataset overrides (asr_model, language, strip_text_annotations_for_metrics) come from the evalset
+        # entry; everything else is inherited from the CLI-level eval_config.
         eval_config_for_dataset = resolve_evaluation_config_for_dataset(eval_config, meta)
         language = eval_config_for_dataset.language
         if not skip_evaluation:
             logging.info(
                 f"Dataset {dataset}: language={language}, "
-                f"asr_model={eval_config_for_dataset.asr_model_name} ({eval_config_for_dataset.asr_model_type})"
+                f"asr_model={eval_config_for_dataset.asr_model_name} ({eval_config_for_dataset.asr_model_type}), "
+                f"strip_text_annotations_for_metrics={eval_config_for_dataset.strip_text_annotations_for_metrics}"
             )
 
         tokenizer_names = meta.get('tokenizer_names', None)

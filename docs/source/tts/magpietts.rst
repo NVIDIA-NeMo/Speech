@@ -160,7 +160,8 @@ Evaluation set configuration
             "manifest_path": "en_US/riva/eval_manifest.json",
             "audio_dir": "en_US/riva/audio",
             "language": "en",
-            "asr_model": {"name": "nvidia/parakeet-tdt-1.1b", "type": "nemo"}
+            "asr_model": {"name": "nvidia/parakeet-tdt-1.1b", "type": "nemo"},
+            "strip_text_annotations_for_metrics": false
         }
     }
 
@@ -169,10 +170,11 @@ The optional keys are:
 - ``language``: overrides ``--language`` for this dataset.
 - ``asr_model``: ``{"name": ..., "type": ...}`` overrides ``--asr_model_name`` and ``--asr_model_type``.
 - ``tokenizer_names``: list of text tokenizer names to use for this dataset (``magpietts_inference.py`` only).
+- ``strip_text_annotations_for_metrics``: JSON boolean that overrides ``--strip_text_annotations_for_metrics`` for this dataset. When enabled, annotation and control markers such as ``<tag>``, ``{tag}``, ``[tag]``, ``--``, ``...`` and ``*`` are removed from the reference and from the ASR hypothesis before CER/WER are computed. Square-bracket spans are removed together with their content, which is correct for non-verbal tags like ``[breath]`` but deletes the spoken word for datasets that mark emphasis as ``[word]``. Set it to ``false`` for such datasets; otherwise every emphasized word is scored as an insertion and CER/WER are inflated.
 
-Malformed values of ``language`` and ``asr_model`` (for example a JSON ``null`` or an ``asr_model`` without a supported ``type``) are rejected when the config is loaded; remove a key to inherit the command-line value. Keys that are not recognized are reported with a warning so that a misspelled override does not silently fall back to the command-line value.
+Malformed values of ``language``, ``asr_model`` and ``strip_text_annotations_for_metrics`` (for example a JSON ``null``, the string ``"false"``, or an ``asr_model`` without a supported ``type``) are rejected when the config is loaded; remove a key to inherit the command-line value. Keys that are not recognized are reported with a warning so that a misspelled override does not silently fall back to the command-line value.
 
-The same per-dataset keys are honoured by the standalone ``evaluate_generated_audio.py --evalset <name> --datasets_json_path <config> --generated_audio_dir <dir>`` entry point, which computes the same metrics as the inference script except the Frechet Codec Distance. The CER/WER reference (``gt_text``) is taken from ``normalized_text`` when present, otherwise from ``original_text``, otherwise from ``text``. ``normalized_text`` and ``text`` are the same strings the dataloaders feed the model; ``original_text`` is the orthography kept in legacy phonemized manifests and is used only as the metric reference there, so ``gt_text`` and ``tts_text_input`` differ for such manifests.
+Each row of the filewise metrics JSON records the effective ``strip_text_annotations_for_metrics`` value, the aggregated metrics include ``num_empty_reference_texts`` (references that became empty after normalization), and the evaluator logs a warning when removed bracket spans show up in the ASR transcript of the generated audio. The same per-dataset keys are honoured by the standalone ``evaluate_generated_audio.py --evalset <name> --datasets_json_path <config> --generated_audio_dir <dir>`` entry point, which computes the same metrics as the inference script except the Frechet Codec Distance. The CER/WER reference (``gt_text``) is taken from ``normalized_text`` when present, otherwise from ``original_text``, otherwise from ``text``. ``normalized_text`` and ``text`` are the same strings the dataloaders feed the model; ``original_text`` is the orthography kept in legacy phonemized manifests and is used only as the metric reference there, so ``gt_text`` and ``tts_text_input`` differ for such manifests.
 
 Resources
 #########

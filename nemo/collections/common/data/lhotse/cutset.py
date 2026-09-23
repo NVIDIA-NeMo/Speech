@@ -14,7 +14,9 @@
 # limitations under the License.
 """Lhotse CutSet utilities and Parquet manifest support for NeMo."""
 
+import gzip
 import io
+import json
 import logging
 import random
 import re
@@ -1939,6 +1941,33 @@ def mux(
     return cuts
 
 
+def _looks_like_nemo_manifest(path: str) -> bool:
+    """Whether a JSON-lines file holds NeMo manifest entries rather than serialized Lhotse cuts.
+
+    ``audio_filepath`` is mandatory in a NeMo manifest and never appears at the top level of a
+    Lhotse cut, so the first record settles it.
+
+    Args:
+        path: Path to a ``.jsonl`` / ``.jsonl.gz`` file.
+
+    Returns:
+        bool: True when the first non-empty record looks like a NeMo entry. False on an empty,
+        unreadable or malformed file, so the caller keeps its extension-based default and any
+        real error surfaces from the reader rather than from this probe.
+    """
+    opener = gzip.open if path.endswith(".gz") else open
+    try:
+        with opener(path, "rt") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                record = json.loads(line)
+                return isinstance(record, dict) and "audio_filepath" in record
+    except Exception:
+        return False
+    return False
+
+
 def guess_parse_cutset(inp: Union[str, dict, omegaconf.DictConfig]) -> CutSet:
     """
     Utility function that supports opening a CutSet from:
@@ -1966,8 +1995,15 @@ def guess_parse_cutset(inp: Union[str, dict, omegaconf.DictConfig]) -> CutSet:
             # Path to YAML file with the input configuration
             config = make_structured_with_schema_warnings(OmegaConf.from_dotlist([f"input_cfg={inp}"]))
         elif inp.endswith(".jsonl") or inp.endswith(".jsonl.gz"):
-            # Path to a Lhotse non-tarred manifest
-            config = make_structured_with_schema_warnings(OmegaConf.from_dotlist([f"cuts_path={inp}"]))
+            # ".jsonl" USUALLY means a Lhotse manifest, but NeMo manifests are commonly written
+            # with that suffix too, so look at a record instead of trusting the name. Guessing
+            # wrong is expensive to diagnose: the Lhotse deserializer fails deep inside with
+            # `SupervisionSegment.__init__() got an unexpected keyword argument 'audio_filepath'`,
+            # which names neither the file nor the real problem.
+            if _looks_like_nemo_manifest(inp):
+                config = make_structured_with_schema_warnings(OmegaConf.from_dotlist([f"manifest_filepath={inp}"]))
+            else:
+                config = make_structured_with_schema_warnings(OmegaConf.from_dotlist([f"cuts_path={inp}"]))
         else:
             # Assume anything else is a NeMo non-tarred manifest
             config = make_structured_with_schema_warnings(OmegaConf.from_dotlist([f"manifest_filepath={inp}"]))

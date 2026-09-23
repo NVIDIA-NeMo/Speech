@@ -3367,3 +3367,80 @@ def test_dataloader_reweight_temperature_mixed_leaf_and_group(
     nested_total = dataset_counts["N1"] + dataset_counts["N2"]
     assert dataset_counts["N1"] / nested_total == pytest.approx(0.5, abs=0.15)
     assert dataset_counts["N2"] / nested_total == pytest.approx(0.5, abs=0.15)
+
+
+class TestGuessParseCutsetFormatDetection:
+    """`.jsonl` does not imply Lhotse: NeMo manifests are commonly written with that suffix.
+
+    Dispatching on the extension alone sent a NeMo manifest to Lhotse's deserializer, which fails
+    with `SupervisionSegment.__init__() got an unexpected keyword argument 'audio_filepath'` --
+    an error naming neither the file nor the real problem. The format is now read from a record.
+    """
+
+    NEMO = {"audio_filepath": "audio/a.wav", "duration": 1.0, "text": "hello"}
+    LHOTSE = {
+        "id": "cut-1",
+        "start": 0.0,
+        "duration": 1.0,
+        "channel": 0,
+        "recording": {"id": "cut-1", "sources": [], "sampling_rate": 16000, "num_samples": 16000, "duration": 1.0},
+        "supervisions": [],
+    }
+
+    @staticmethod
+    def _write(tmp_path, rows, name="m.jsonl", gzipped=False):
+        import gzip as _gzip
+        import json as _json
+
+        path = tmp_path / name
+        opener = _gzip.open if gzipped else open
+        with opener(path, "wt") as fh:
+            for row in rows:
+                fh.write(_json.dumps(row) + "\n")
+        return str(path)
+
+    @pytest.mark.unit
+    def test_nemo_manifest_named_jsonl_is_detected(self, tmp_path):
+        from nemo.collections.common.data.lhotse.cutset import _looks_like_nemo_manifest
+
+        assert _looks_like_nemo_manifest(self._write(tmp_path, [self.NEMO])) is True
+
+    @pytest.mark.unit
+    def test_lhotse_cuts_are_not_mistaken_for_nemo(self, tmp_path):
+        from nemo.collections.common.data.lhotse.cutset import _looks_like_nemo_manifest
+
+        assert _looks_like_nemo_manifest(self._write(tmp_path, [self.LHOTSE])) is False
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("rows,expected", [([NEMO], True), ([LHOTSE], False)])
+    def test_gzipped_manifests_are_read_too(self, tmp_path, rows, expected):
+        from nemo.collections.common.data.lhotse.cutset import _looks_like_nemo_manifest
+
+        path = self._write(tmp_path, rows, name="m.jsonl.gz", gzipped=True)
+        assert _looks_like_nemo_manifest(path) is expected
+
+    @pytest.mark.unit
+    def test_leading_blank_lines_are_skipped(self, tmp_path):
+        import json as _json
+
+        from nemo.collections.common.data.lhotse.cutset import _looks_like_nemo_manifest
+
+        path = tmp_path / "m.jsonl"
+        path.write_text("\n\n" + _json.dumps(self.NEMO) + "\n")
+        assert _looks_like_nemo_manifest(str(path)) is True
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("content", ["", "{not json\n"], ids=["empty", "malformed"])
+    def test_unreadable_input_falls_back_rather_than_raising(self, tmp_path, content):
+        """The probe must never be the thing that fails: the reader should report the real error."""
+        from nemo.collections.common.data.lhotse.cutset import _looks_like_nemo_manifest
+
+        path = tmp_path / "m.jsonl"
+        path.write_text(content)
+        assert _looks_like_nemo_manifest(str(path)) is False
+
+    @pytest.mark.unit
+    def test_missing_file_falls_back(self, tmp_path):
+        from nemo.collections.common.data.lhotse.cutset import _looks_like_nemo_manifest
+
+        assert _looks_like_nemo_manifest(str(tmp_path / "nope.jsonl")) is False

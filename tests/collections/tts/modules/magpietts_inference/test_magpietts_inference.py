@@ -299,35 +299,33 @@ def test_standalone_main_without_evalset_uses_cli_values(tmp_path, monkeypatch):
             "--evalset",
             "ds",
             "--datasets_json_path",
-            "cfg.json",
+            "{cfg}",
             "--manifest_path",
             "m.json",
             "--generated_audio_dir",
             "g",
         ],
-        ["--datasets_json_path", "cfg.json", "--manifest_path", "m.json", "--generated_audio_dir", "g"],
-        ["--datasets_base_path", "base", "--manifest_path", "m.json", "--generated_audio_dir", "g"],
+        ["--datasets_json_path", "{cfg}", "--manifest_path", "m.json", "--generated_audio_dir", "g"],
+        ["--datasets_base_path", "{base}", "--manifest_path", "m.json", "--generated_audio_dir", "g"],
         ["--manifest_path", "m.json", "--audio_dir", "a"],  # missing --generated_audio_dir
         ["--audio_dir", "a", "--generated_audio_dir", "g"],  # neither --evalset nor --manifest_path
+        [
+            "--evalset",
+            "missing",
+            "--datasets_json_path",
+            "{cfg}",
+            "--datasets_base_path",
+            "{base}",
+            "--generated_audio_dir",
+            "g",
+        ],
     ],
 )
-def test_standalone_main_rejects_inconsistent_arguments(monkeypatch, argv):
-    monkeypatch.setattr("sys.argv", ["evaluate_generated_audio.py", *argv])
-    with pytest.raises(SystemExit):
-        evaluate_generated_audio_main()
-
-
-@pytest.mark.unit
-def test_standalone_main_rejects_unknown_evalset(tmp_path, monkeypatch):
+def test_standalone_main_rejects_inconsistent_arguments(tmp_path, monkeypatch, argv):
+    # {cfg} and {base} stand for a valid evalset config that defines the single dataset "ds", and its base path.
     config_path = _write_evalset_config(tmp_path, {})
-    argv = [
-        "evaluate_generated_audio.py",
-        "--evalset", "missing",
-        "--datasets_json_path", str(config_path),
-        "--datasets_base_path", str(tmp_path),
-        "--generated_audio_dir", str(tmp_path),
-    ]  # fmt: skip
-    monkeypatch.setattr("sys.argv", argv)
+    argv = [arg.format(cfg=config_path, base=tmp_path) for arg in argv]
+    monkeypatch.setattr("sys.argv", ["evaluate_generated_audio.py", *argv])
     with pytest.raises(SystemExit):
         evaluate_generated_audio_main()
 

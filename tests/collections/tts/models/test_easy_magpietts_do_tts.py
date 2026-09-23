@@ -87,3 +87,41 @@ class TestEasyDoTtsLocalTransformerSelection:
         EasyMagpieTTSInferenceModel.do_tts(model, "hello world", use_local_transformer=use_local_transformer)
 
         assert _local_transformer_flag_passed_to_infer_batch(model) is expected_use_lt
+
+
+class TestEasyDoTtsPrecomputedContext:
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_passes_precomputed_context_to_infer_batch(self):
+        model = _make_easy_mock_model(LocalTransformerType.AR)
+        context_embedding = torch.randn(7, 1536)
+
+        EasyMagpieTTSInferenceModel.do_tts(
+            model,
+            "hello world",
+            context_text="Speaker: Example",
+            precomputed_context_audio_embedding=context_embedding,
+        )
+
+        _args, kwargs = model.infer_batch.call_args
+        batch = kwargs["batch"]
+        assert batch["precomputed_context_audio_embedding"].shape == (1, 7, 1536)
+        assert batch["precomputed_context_audio_embedding_lens"].tolist() == [7]
+        assert "context_audio_codes" not in batch
+        assert batch["context_text_tokens"].tolist() == [[1, 2, 3]]
+        model.tokenizer.encode.assert_any_call(
+            "Speaker: Example", tokenizer_name=model.text_conditioning_tokenizer_name
+        )
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_rejects_raw_and_precomputed_context(self):
+        model = _make_easy_mock_model(LocalTransformerType.AR)
+
+        with pytest.raises(ValueError, match="context_audio_file_path"):
+            EasyMagpieTTSInferenceModel.do_tts(
+                model,
+                "hello world",
+                context_audio_file_path="context.wav",
+                precomputed_context_audio_embedding=torch.randn(7, 1536),
+            )

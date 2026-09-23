@@ -652,11 +652,10 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
             return_logits (bool): Whether to return aligned raw speaker logits with the probabilities.
 
         Returns:
-            preds (torch.Tensor): Sorted tensor containing Sigmoid values for predicted speaker labels.
-                Shape: (batch_size, diar_frame_count, num_speakers)
-            logits (torch.Tensor): Raw speaker logits, returned with ``preds`` only when requested.
-            activity_logits (Optional[torch.Tensor]): Raw three-class activity logits, returned when speaker logits
-                are requested. ``None`` when the auxiliary head is disabled.
+            Sorted speaker probabilities with shape ``(batch_size, diar_frame_count, num_speakers)``. When
+            ``return_logits`` is ``True``, returns ``(preds, logits, activity_logits)`` with raw speaker logits and
+            optional raw three-class activity logits. ``activity_logits`` is ``None`` when the auxiliary head is
+            disabled.
         """
         encoder_mask = self.sortformer_modules.length_to_mask(emb_seq_length, emb_seq.shape[1])
         trans_emb_seq = (
@@ -902,11 +901,10 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
             return_logits (bool): Whether to return aligned raw speaker logits with the probabilities.
 
         Returns:
-            preds (torch.Tensor): Sorted tensor containing predicted speaker labels
-                Shape: (batch_size, max. diar frame count, num_speakers)
-            logits (torch.Tensor): Raw speaker logits, returned with ``preds`` only when requested.
-            activity_logits (Optional[torch.Tensor]): Raw three-class activity logits, returned when speaker logits
-                are requested. ``None`` when the auxiliary head is disabled.
+            Sorted speaker probabilities with shape ``(batch_size, max. diar frame count, num_speakers)``. When
+            ``return_logits`` is ``True``, returns ``(preds, logits, activity_logits)`` with raw speaker logits and
+            optional raw three-class activity logits. ``activity_logits`` is ``None`` when the auxiliary head is
+            disabled.
         """
         processed_signal, processed_signal_length = self.process_signal(
             audio_signal=audio_signal, audio_signal_length=audio_signal_length
@@ -1095,12 +1093,11 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
             return_logits (bool): Whether to return aligned raw speaker logits with the probabilities.
 
         Returns:
-            total_preds (torch.Tensor): Tensor containing predicted speaker labels for the current chunk
-                and all previous chunks
-                Shape: (batch_size, pred_len, num_speakers)
-            total_logits (torch.Tensor): Raw speaker logits, returned with ``total_preds`` only when requested.
-            total_activity_logits (Optional[torch.Tensor]): Cumulative raw three-class activity logits, or ``None``
-                when the auxiliary head is disabled.
+            Speaker probabilities for the current and all previous chunks with shape
+            ``(batch_size, pred_len, num_speakers)``. When ``return_logits`` is ``True``, returns
+            ``(total_preds, total_logits, total_activity_logits)`` with cumulative raw speaker logits and optional
+            cumulative raw three-class activity logits. ``total_activity_logits`` is ``None`` when the auxiliary
+            head is disabled.
         """
         native_output_factor = 1 if self.high_resolution else self.encoder.subsampling_factor
         if return_logits and self.output_subsampling_factor // native_output_factor > 1:

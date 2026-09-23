@@ -228,6 +228,32 @@ def _raw_audio_cutset(target_audio_duration, text="hello"):
     return CutSet.from_cuts([cut])
 
 
+def _multiturn_fallback_cut(with_target_codes: bool):
+    cut = dummy_cut(
+        2,
+        duration=0.8,
+        recording=dummy_recording(2, duration=0.8, with_data=True, sampling_rate=SAMPLE_RATE),
+    )
+    cut.target_audio = dummy_recording(12, duration=0.8, with_data=True, sampling_rate=SAMPLE_RATE)
+    cut.supervisions = [
+        SupervisionSegment(
+            id="fallback-agent-turn",
+            recording_id=cut.recording_id,
+            start=0.2,
+            duration=0.3,
+            text="fallback context",
+            language="en",
+            speaker="assistant",
+        )
+    ]
+    if with_target_codes:
+        cut.custom = {
+            **(cut.custom or {}),
+            "target_codes": _memory_temporal_array(_cached_codes(num_frames=40)),
+        }
+    return cut
+
+
 def _dataset_kwargs():
     return {
         "sample_rate": SAMPLE_RATE,
@@ -288,6 +314,17 @@ class TestMagpieTTSDataset:
                 num_audio_codebooks=8,
                 load_normalized_text_percent=load_normalized_text_percent,
             )
+
+
+def _multiturn_dataset_kwargs():
+    kwargs = _dataset_kwargs()
+    kwargs.update(
+        {
+            "codec_model_input_sample_rate": CODEC_MODEL_INPUT_SAMPLE_RATE,
+            "frame_stacking_factor": FRAME_STACKING_FACTOR,
+        }
+    )
+    return kwargs
 
 
 class TestMagpieTTSLhotseDatasets:
@@ -491,3 +528,29 @@ class TestMagpieTTSLhotseDatasets:
 
         with pytest.raises(ValueError, match="load_normalized_text_percent"):
             dataset_class(**kwargs)
+
+
+    def test_multiturn_fallback_uses_cached_target_turn_codes_when_available(self):
+        dataset = MagpieTTSLhotseMultiturnDataset(**_multiturn_dataset_kwargs())
+        cut = _multiturn_fallback_cut(with_target_codes=True)
+
+        context_audio, context_audio_codes = dataset._load_fallback_context(cut, context_text=None)
+
+        assert context_audio is None
+        expected = torch.from_numpy(_cached_codes(num_frames=40))[:, 10:25].T
+        torch.testing.assert_close(context_audio_codes, expected)
+
+    def test_multiturn_fallback_uses_target_turn_audio_when_cached_codes_are_unavailable(self):
+        dataset = MagpieTTSLhotseMultiturnDataset(**_multiturn_dataset_kwargs())
+        cut = _multiturn_fallback_cut(with_target_codes=False)
+
+        context_audio, context_audio_codes = dataset._load_fallback_context(cut, context_text=None)
+
+        expected = (
+            cut.resample(SAMPLE_RATE, recording_field="target_audio")
+            .truncate(offset=0.2, duration=0.3)
+            .load_custom("target_audio")
+            .squeeze(0)
+        )
+        assert context_audio_codes is None
+        torch.testing.assert_close(context_audio, torch.from_numpy(expected))

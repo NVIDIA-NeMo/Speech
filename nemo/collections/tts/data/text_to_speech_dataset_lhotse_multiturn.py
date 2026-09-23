@@ -534,8 +534,8 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
     ) -> tuple[Union[torch.Tensor, None], Union[torch.Tensor, None]]:
         matching_supervisions = [s for s in cut.supervisions if s.speaker in self.output_roles]
 
-        if self.load_cached_codes_if_available:
-            if context_text is None and len(matching_supervisions) > 0 and cut.has_custom("target_codes"):
+        if self.load_cached_codes_if_available and cut.has_custom("target_codes"):
+            if context_text is None and len(matching_supervisions) > 0:
                 sup = random.choice(matching_supervisions)
                 codes_array = cut.target_codes.load().astype(np.int32)
                 start_frame = int(max(0, sup.start) * self.sample_rate / self.codec_model_samples_per_frame)

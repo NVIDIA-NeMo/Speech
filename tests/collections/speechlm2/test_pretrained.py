@@ -116,6 +116,62 @@ def test_setup_parallel_expert_encoder_maps_shared_chunk_size(chunk_size_seconds
     assert model.cfg.perception.preprocessor.normalize is None
 
 
+def test_setup_parallel_expert_encoder_constructs_inline_export_architecture():
+    inline_config = {"target": "ParallelExpertEncoderPT", "asr_encoder_cfg": {}, "diarization_model_cfg": {}}
+    pe_encoder = SimpleNamespace(
+        d_model=4,
+        n_spk=8,
+        _feat_in=80,
+        freeze_asr=False,
+        freeze_diar=True,
+        spk_kernel_scale=1.0,
+        chunk_size_seconds=45.0,
+        _bundle_config=DictConfig({"chunk_size_seconds": 45.0}),
+        online_inference_enabled=False,
+    )
+    model = SimpleNamespace(
+        cfg=DictConfig(
+            {
+                "pe_encoder_path": None,
+                "pe_encoder_config": inline_config,
+                "encoder_chunk_size_seconds": 30.0,
+                "perception": {
+                    "preprocessor": {"features": 80, "normalize": "per_feature"},
+                    "modality_adapter": {"d_model": 4},
+                },
+            }
+        ),
+        perception=SimpleNamespace(
+            encoder=SimpleNamespace(d_model=4),
+            modality_adapter=object(),
+            proj=torch.nn.Linear(4, 8),
+            preprocessor=SimpleNamespace(featurizer=SimpleNamespace(normalize="per_feature")),
+        ),
+    )
+
+    with patch.object(pretrained.ParallelExpertEncoderPT, "from_inline_config", return_value=pe_encoder) as build:
+        pretrained.setup_parallel_expert_encoder(model)
+
+    build.assert_called_once_with(model.cfg.pe_encoder_config, map_location="cpu")
+    assert model.perception.encoder is pe_encoder
+    assert pe_encoder.chunk_size_seconds == 30.0
+    assert model.perception.preprocessor.featurizer.normalize is None
+
+
+def test_setup_parallel_expert_encoder_rejects_path_and_inline_config_together():
+    model = SimpleNamespace(
+        cfg=DictConfig(
+            {
+                "pe_encoder_path": "/tmp/encoder.nemo",
+                "pe_encoder_config": {"target": "ParallelExpertEncoderPT"},
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        pretrained.setup_parallel_expert_encoder(model)
+
+
 @pytest.mark.parametrize(
     ("cfg_update", "match"),
     [

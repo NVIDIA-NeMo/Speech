@@ -306,7 +306,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             yield
 
     def _warn_parallel_expert_encoder_inference_chunking(self) -> None:
-        if not self.cfg.get("pe_encoder_path", None):
+        if not self._uses_parallel_expert_encoder():
             return
         if self.cfg.get("encoder_chunk_size_seconds", None) is not None:
             warnings.warn(
@@ -1005,6 +1005,40 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             _clip_grad_norm_impl(params, max_norm=gradient_clip_val)
 
     @torch.no_grad()
+    def generate_ctc_timestamps(
+        self,
+        answer_tokens: torch.Tensor,
+        audios: torch.Tensor,
+        audio_lens: torch.Tensor,
+        timestamp_inputs: Any,
+    ) -> list[dict[str, Any]]:
+        """Generate CTC word timestamps for a generated audio batch.
+
+        Args:
+            answer_tokens (torch.Tensor): Generated token IDs shaped ``(B, T_text)``.
+            audios (torch.Tensor): Time-domain audio signals shaped ``(B, T_audio)``.
+            audio_lens (torch.Tensor): Valid audio sample counts shaped ``(B,)``.
+            timestamp_inputs (Any): Detached request-owned PEE encoder states and speaker probabilities.
+
+        Returns:
+            list[dict[str, Any]]: Timestamp alignment results for each batch item.
+        """
+        if not self._uses_parallel_expert_encoder():
+            raise RuntimeError("CTC timestamp generation requires a ParallelExpertEncoder perception encoder.")
+        if audios is None or audio_lens is None:
+            raise ValueError("CTC timestamp generation requires audios and audio_lens.")
+        if audios.shape[0] != answer_tokens.shape[0] or audio_lens.shape[0] != answer_tokens.shape[0]:
+            raise ValueError("audios, audio_lens, and answer_tokens must have the same batch size.")
+
+        transcripts = [_decode_timestamp_transcript(self.tokenizer, tokens) for tokens in answer_tokens]
+        audio_durations = [float(length) / self.sampling_rate for length in audio_lens.detach().cpu()]
+        return self.perception.encoder.generate_ctc_timestamps(
+            timestamp_inputs=timestamp_inputs,
+            sot_transcripts=transcripts,
+            audio_durations=audio_durations,
+        )
+
+    @torch.no_grad()
     def generate(
         self,
         prompts: list[list[dict[str]]] | torch.Tensor,
@@ -1013,8 +1047,9 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         spk_targets: torch.Tensor = None,
         generation_config: GenerationConfig = None,
         enable_thinking: bool | None = None,
+        generate_timestamps: bool = False,
         **generation_kwargs,
-    ) -> torch.Tensor:
+    ) -> torch.Tensor | dict[str, Any]:
         """
         Generate LLM answers given text or mixed text+audio prompts.
 
@@ -1077,12 +1112,13 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             audio_lens: Optional. Length of each audio example.
             spk_targets: Optional ``(B, T, n_spk)`` speaker-activity tensor (e.g. oracle / RTTM-derived
                 diarization) injected into the perception encoder. Only effective when the mounted
-                encoder is a ``ParallelExpertEncoder`` (i.e. ``model.pe_encoder_path`` was set); rows
+                encoder is a ``ParallelExpertEncoder``; rows
                 supplied here override its Sortformer prediction. When ``None`` (default), or for a
                 row of ``-1``, the encoder predicts speaker activity itself.
             generation_config: Optional HuggingFace GenerationConfig object.
             enable_thinking: Optional prompt-formatter hint forwarded to ``encode_dialog``.
                 Relevant for prompt formats that support thinking/reasoning mode.
+            generate_timestamps: Return CTC timestamps together with answer IDs when true.
             generation_kwargs: Keyword arguments passed directly to the underlying LLM's ``generate`` method.
         """
         # Encode prompt dicts into int token ids.
@@ -1110,6 +1146,12 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 eos_token_id=self.text_eos_id,
                 pad_token_id=self.text_pad_id,
             )
+        if generate_timestamps and not self._uses_parallel_expert_encoder():
+            raise RuntimeError("CTC timestamp generation requires a ParallelExpertEncoder perception encoder.")
+        if generate_timestamps and audios is None:
+            raise ValueError("CTC timestamp generation requires audio input.")
+
+        timestamp_inputs = None
         if audios is not None:
             # Audio + text input for generation.
             # Prepare token embeddings and audio embeddings.
@@ -1121,9 +1163,16 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                     # the whole sequence: chunking here would nest a second windowing inside
                     # every chunk. Rows without RTTM get a streaming Sortformer prediction.
                     self._warn_parallel_expert_encoder_inference_chunking()
-                    audio_embeds, audio_embed_lens = self.perception(
-                        input_signal=audios, input_signal_length=audio_lens, spk_targets=spk_targets
+                    perception_outputs = self.perception(
+                        input_signal=audios,
+                        input_signal_length=audio_lens,
+                        spk_targets=spk_targets,
+                        return_ctc_timestamp_inputs=generate_timestamps,
                     )
+                    if generate_timestamps:
+                        audio_embeds, audio_embed_lens, timestamp_inputs = perception_outputs
+                    else:
+                        audio_embeds, audio_embed_lens = perception_outputs
                     audio_embeds = [emb[:emblen] for emb, emblen in zip(audio_embeds, audio_embed_lens)]
                 else:
                     audio_embeds = encode_audio_with_optional_chunking(
@@ -1157,7 +1206,17 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 **generation_kwargs,
                 generation_config=generation_config,
             )
-        return answer_tokens
+        if not generate_timestamps:
+            return answer_tokens
+        return {
+            "answer_ids": answer_tokens,
+            "timestamps": self.generate_ctc_timestamps(
+                answer_tokens,
+                audios,
+                audio_lens,
+                timestamp_inputs,
+            ),
+        }
 
     def setup_moe_options(self):
         """Apply MoE config overrides and enable load balance tracking.
@@ -1605,6 +1664,19 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 {"name": "loss_mask", "type": NeuralType(("B", "T"), MaskType()), "seq_length": "output"},
             ],
         }
+
+
+def _decode_timestamp_transcript(tokenizer: Any, answer_tokens: torch.Tensor) -> str:
+    token_ids = answer_tokens.detach().cpu().tolist()
+    text = tokenizer.ids_to_text(token_ids, remove_special_tokens=False)
+    hf_tokenizer = getattr(tokenizer, "tokenizer", None)
+    for token in getattr(hf_tokenizer, "all_special_tokens", ()):
+        if re.fullmatch(r"<spk:\d+>", token, flags=re.IGNORECASE) is None:
+            text = text.replace(token, " ")
+    text = " ".join(text.split())
+    if not text:
+        raise ValueError("The generated ASR answer is empty after removing non-speaker special tokens.")
+    return text
 
 
 def _fully_shard_perception(perception, mesh, *, wrap_asr_layers: bool = False):

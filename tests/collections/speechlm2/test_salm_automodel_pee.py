@@ -41,6 +41,7 @@ from nemo.collections.common.prompts import PromptFormatter
 from nemo.collections.speechlm2.data import SALMDataset
 from nemo.collections.speechlm2.data.salm_dataset import MultiSpeakerConfig, SALMMultiSpeakerProcessor
 from nemo.collections.speechlm2.models import SALMAutomodel
+from nemo.collections.speechlm2.modules.perception import AudioPerceptionModule, IdentityConnector
 
 # Reuse the toy PE encoder (and its dimensions) defined for the standalone
 # ParallelExpertEncoder tests, so both suites share one dummy bundle definition.
@@ -321,10 +322,58 @@ class _PEETestTokenizer:
 
     def __init__(self, audio_locator_tag):
         self._audio_locator_tag = audio_locator_tag
+        self.tokenizer = SimpleNamespace(all_special_tokens=["<s>", "</s>", "<spk:0>"])
 
     def token_to_id(self, token):
         assert token == self._audio_locator_tag
         return 99
+
+    def ids_to_text(self, ids, remove_special_tokens=True):
+        assert not remove_special_tokens
+        return "<s><spk:0> generated transcript</s>"
+
+
+class _TimestampInputEncoder(torch.nn.Module):
+    supports_ctc_timestamp_inputs = True
+
+    def __init__(self):
+        super().__init__()
+        self.timestamp_inputs = object()
+
+    def forward(self, audio_signal, length, return_ctc_timestamp_inputs=False):
+        result = (audio_signal, length)
+        if return_ctc_timestamp_inputs:
+            result += (self.timestamp_inputs,)
+        return result
+
+
+class _FeaturePassthrough(torch.nn.Module):
+    def forward(self, input_signal, length):
+        return input_signal, length
+
+
+@pytest.mark.unit
+def test_perception_returns_request_owned_ctc_timestamp_inputs():
+    perception = AudioPerceptionModule.__new__(AudioPerceptionModule)
+    torch.nn.Module.__init__(perception)
+    perception.preprocessor = _FeaturePassthrough()
+    perception._modules["encoder"] = _TimestampInputEncoder()
+    perception.modality_adapter = IdentityConnector()
+    perception.proj = torch.nn.Identity()
+    perception.spec_augmentation = None
+    perception.rote = None
+    features = torch.randn(1, 4, 6)
+    lengths = torch.tensor([6])
+
+    encoded, encoded_lengths, timestamp_inputs = perception(
+        input_signal=features,
+        input_signal_length=lengths,
+        return_ctc_timestamp_inputs=True,
+    )
+
+    assert encoded.shape == (1, 6, 4)
+    assert torch.equal(encoded_lengths, lengths)
+    assert timestamp_inputs is perception.encoder.timestamp_inputs
 
 
 class _PEETestLLM(torch.nn.Module):
@@ -335,6 +384,10 @@ class _PEETestLLM(torch.nn.Module):
         with torch.no_grad():
             self.model.embed_tokens.weight.zero_()
 
+    def generate(self, **kwargs):
+        device = kwargs["inputs_embeds"].device
+        return torch.tensor([[11, 12]], dtype=torch.long, device=device)
+
 
 class _PEETestPerception(torch.nn.Module):
     """Stub perception that exposes a real PE encoder and records the spk_targets it receives."""
@@ -344,11 +397,22 @@ class _PEETestPerception(torch.nn.Module):
         self.encoder = pe_encoder  # real ParallelExpertEncoder -> drives the PEE branch
         self.preprocessor = SimpleNamespace(featurizer=SimpleNamespace(sample_rate=16000, hop_length=160))
         self.spk_targets_calls = []
+        self.timestamp_request_calls = []
 
-    def forward(self, input_signal=None, input_signal_length=None, spk_targets=None):
+    def forward(
+        self,
+        input_signal=None,
+        input_signal_length=None,
+        spk_targets=None,
+        return_ctc_timestamp_inputs=False,
+    ):
         self.spk_targets_calls.append(spk_targets)
+        self.timestamp_request_calls.append(return_ctc_timestamp_inputs)
         max_len = int(input_signal_length.max().item())
-        return input_signal[:, :max_len].unsqueeze(-1), input_signal_length.clone()
+        result = (input_signal[:, :max_len].unsqueeze(-1), input_signal_length.clone())
+        if return_ctc_timestamp_inputs:
+            result += (self.timestamp_inputs,)
+        return result
 
 
 def _make_pee_routing_test_model(pe_encoder, cfg=None):
@@ -359,6 +423,7 @@ def _make_pee_routing_test_model(pe_encoder, cfg=None):
     model.tokenizer = _PEETestTokenizer(AUDIO_LOCATOR_TAG)
     model.llm = _PEETestLLM()
     model.perception = _PEETestPerception(pe_encoder)
+    model.perception.timestamp_inputs = object()
     model._use_tp = False
     return model
 
@@ -445,3 +510,53 @@ def test_pee_generation_warns_that_outer_chunking_is_ignored(dummy_pe_encoder):
 
     with pytest.warns(UserWarning, match="generate ignores encoder_chunk_size_seconds"):
         model._warn_parallel_expert_encoder_inference_chunking()
+
+
+@pytest.mark.unit
+def test_pee_generation_without_timestamps_preserves_tensor_return(dummy_pe_encoder):
+    model = _make_pee_routing_test_model(dummy_pe_encoder)
+
+    result = model.generate(
+        prompts=torch.tensor([[model.audio_locator_tag_id, 10]], dtype=torch.long),
+        audios=torch.tensor([[1.0, 2.0, 3.0]]),
+        audio_lens=torch.tensor([3], dtype=torch.long),
+    )
+
+    assert torch.equal(result, torch.tensor([[11, 12]]))
+    assert model.perception.timestamp_request_calls == [False]
+
+
+@pytest.mark.unit
+def test_pee_generation_with_timestamps_aligns_generated_text(dummy_pe_encoder, monkeypatch):
+    model = _make_pee_routing_test_model(dummy_pe_encoder)
+    dummy_pe_encoder.ctc_timestamp_model_path = "/tmp/adapter.nemo"
+    expected = {"speaker_word_timestamps": {0: [{"word": "generated", "start": 0.1, "end": 0.2}]}}
+    calls = []
+    original_generate = model.llm.generate
+
+    def generate_text(**kwargs):
+        calls.append("llm")
+        return original_generate(**kwargs)
+
+    def generate_ctc_timestamps(**kwargs):
+        calls.append("ctc")
+        calls.append(kwargs)
+        return [expected]
+
+    monkeypatch.setattr(model.llm, "generate", generate_text)
+    monkeypatch.setattr(dummy_pe_encoder, "generate_ctc_timestamps", generate_ctc_timestamps)
+    result = model.generate(
+        prompts=torch.tensor([[model.audio_locator_tag_id, 10]], dtype=torch.long),
+        audios=torch.tensor([[1.0, 2.0, 3.0]]),
+        audio_lens=torch.tensor([3], dtype=torch.long),
+        generate_timestamps=True,
+    )
+
+    assert torch.equal(result["answer_ids"], torch.tensor([[11, 12]]))
+    assert result["timestamps"] == [expected]
+    assert model.perception.timestamp_request_calls == [True]
+    assert calls[:2] == ["llm", "ctc"]
+    assert calls[2]["timestamp_inputs"] is model.perception.timestamp_inputs
+    assert calls[2]["sot_transcripts"] == ["<spk:0> generated transcript"]
+    assert calls[2]["audio_durations"] == [3 / 16000]
+    assert "ctc_timestamp_model_path" not in calls[2]

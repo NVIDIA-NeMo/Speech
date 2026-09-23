@@ -613,7 +613,7 @@ class ConvSubsampling(torch.nn.Module):
         if new_batch_size == 0:
             # If cf > b and one sample fits, use single-sample batches rather than the channel
             # fallback (which runs the full first conv up front).
-            if self._first_conv_output_numel(x[:1]) >= _MAX_CONV_NUMEL_32BIT:
+            if max(self._first_conv_output_numel(x[:1]), torch.numel(x[:1])) >= _MAX_CONV_NUMEL_32BIT:
                 return x, lengths, False
             new_batch_size = 1
 

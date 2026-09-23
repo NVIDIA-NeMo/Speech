@@ -176,8 +176,8 @@ def run_inference_and_evaluation(
         meta = dataset_meta_info[dataset]
         manifest_records = read_manifest(meta['manifest_path'])
 
-        # Per-dataset overrides (asr_model, language, strip_text_annotations_for_metrics) come from the evalset
-        # entry; everything else is inherited from the CLI-level eval_config.
+        # asr_model and language in the evalset entry override the CLI-level eval_config; stripping of annotation
+        # markers for CER/WER is set per dataset only (strip_text_annotations_for_metrics key, default off).
         eval_config_for_dataset = resolve_evaluation_config_for_dataset(eval_config, meta)
         language = eval_config_for_dataset.language
         if not skip_evaluation:
@@ -437,7 +437,6 @@ def main(argv=None):
         codec_model_path=args.codecmodel_path if not args.disable_fcd else None,
         with_prosody_metrics=args.with_prosody_metrics,
         prosody_model_size=args.prosody_model_size,
-        strip_text_annotations_for_metrics=args.strip_text_annotations_for_metrics,
         asr_batch_size=args.asr_batch_size,
         eou_batch_size=args.eou_batch_size,
     )

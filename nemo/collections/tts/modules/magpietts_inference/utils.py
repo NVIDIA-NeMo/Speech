@@ -1158,6 +1158,21 @@ def _add_inference_param_fields(
         group.add_argument(f"--{f.name}", **extra_args)
 
 
+class _RemovedStripFlagAction(argparse.Action):
+    """Reject the retired run-level --strip_text_annotations_for_metrics flag and point at the evalset key."""
+
+    def __init__(self, option_strings, dest, **kwargs):
+        kwargs.pop("nargs", None)
+        super().__init__(option_strings, dest, nargs=0, **kwargs)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        parser.error(
+            f"{option_string} was removed: whether [..], <..> and {{..}} markers are stripped from the CER/WER "
+            'reference is a property of each dataset. Set "strip_text_annotations_for_metrics": true or false in the '
+            "dataset's evalset config entry instead (default: not stripped)."
+        )
+
+
 def _add_common_args(parser: argparse.ArgumentParser) -> None:
     """Add arguments shared by all model types."""
 
@@ -1298,13 +1313,10 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     eval_group.add_argument('--prosody_model_size', type=str, default="small", choices=["small", "large"])
     eval_group.add_argument(
         '--strip_text_annotations_for_metrics',
-        action='store_true',
+        action=_RemovedStripFlagAction,
         help=(
-            'Strip annotation/control markers (<tag>, {tag}, [tag], --, ..., *) from reference and ASR hypothesis '
-            'text before computing text metrics. Square-bracket spans are deleted WITH their content, so do not use '
-            'this for datasets that mark emphasized spoken words as [word]; set '
-            '"strip_text_annotations_for_metrics": false for such datasets in the evalset config instead. '
-            'The evalset config value takes precedence over this flag for each dataset.'
+            'Removed. Stripping of annotation markers from the CER/WER reference is set per dataset with '
+            '"strip_text_annotations_for_metrics": true|false in the evalset config; passing this flag is an error.'
         ),
     )
     eval_group.add_argument(

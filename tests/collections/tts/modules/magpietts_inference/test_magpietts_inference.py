@@ -347,7 +347,7 @@ def test_standalone_main_applies_evalset_overrides(tmp_path, monkeypatch):
         {
             "language": "de",
             "asr_model": {"name": "some/asr", "type": "whisper"},
-            "strip_text_annotations_for_metrics": False,
+            "strip_text_annotations_for_metrics": True,
         },
     )
     captured = {}
@@ -359,14 +359,13 @@ def test_standalone_main_applies_evalset_overrides(tmp_path, monkeypatch):
         "--datasets_base_path", str(tmp_path),
         "--generated_audio_dir", str(tmp_path),
         "--with_prosody_metrics",  # CLI-level settings without an evalset override are inherited
-        "--strip_text_annotations_for_metrics",  # the evalset entry wins over the CLI flag
     ]  # fmt: skip
     monkeypatch.setattr("sys.argv", argv)
 
     evaluate_generated_audio_main()
 
     assert captured["with_prosody_metrics"] is True
-    assert captured["strip_text_annotations_for_metrics"] is False
+    assert captured["strip_text_annotations_for_metrics"] is True  # enabled by the evalset entry only
     assert captured["language"] == "de"
     assert (captured["asr_model_name"], captured["asr_model_type"]) == ("some/asr", "whisper")
     assert captured["sv_model_type"] == "wavlm"
@@ -421,6 +420,16 @@ def test_standalone_main_without_evalset_uses_cli_values(tmp_path, monkeypatch):
         ["--datasets_base_path", "{base}", "--manifest_path", "m.json", "--generated_audio_dir", "g"],
         ["--manifest_path", "m.json", "--audio_dir", "a"],  # missing --generated_audio_dir
         ["--audio_dir", "a", "--generated_audio_dir", "g"],  # neither --evalset nor --manifest_path
+        # stripping is set per dataset in the evalset entry; the flag only applies to --manifest_path mode
+        [
+            "--evalset",
+            "ds",
+            "--datasets_json_path",
+            "{cfg}",
+            "--generated_audio_dir",
+            "g",
+            "--strip_text_annotations_for_metrics",
+        ],
         [
             "--evalset",
             "missing",
@@ -599,6 +608,13 @@ def test_evaluate_dir_records_strip_setting_and_warns_when_spans_were_spoken(
         assert str(tmp_path / "manifest.json") in warnings_seen[0]
 
 
+@pytest.mark.unit
+def test_example_script_rejects_removed_strip_flag(capsys):
+    with pytest.raises(SystemExit):
+        magpietts_inference_main(["--strip_text_annotations_for_metrics"])
+    assert '"strip_text_annotations_for_metrics": true or false' in capsys.readouterr().err
+
+
 class _FakeRunner:
     def create_dataset(self, dataset_meta):
         return [0]
@@ -619,31 +635,35 @@ class _FakeInferenceConfig:
 def test_run_inference_and_evaluation_applies_evalset_override(tmp_path, monkeypatch):
     # The example script used to rebuild EvaluationConfig by hand from the evalset entry; it now goes through
     # resolve_evaluation_config_for_dataset, so overrides and inherited CLI-level fields are handled in one place.
-    # Regression: before this change the evalset schema had no strip_text_annotations_for_metrics key, so the
-    # CLI-level flag was always inherited; the per-dataset value must win.
+    # Regression: before this change the evalset schema had no strip_text_annotations_for_metrics key and a run-level
+    # flag applied to every dataset; stripping is now enabled per dataset only.
     manifest = tmp_path / "m.json"
     manifest.write_text(json.dumps({"audio_filepath": "a.wav", "text": "Hello there."}) + "\n")
-    captured = {}
+    configs = []
 
     def fake_evaluate_generated_audio_dir(manifest_path, audio_dir, generated_audio_dir, config):
-        captured["config"] = config
+        configs.append(config)
         return {"cer_cumulative": 0.0, "ssim_pred_context_avg": 1.0}, [{"cer": 0.0}]
 
     monkeypatch.setattr(f"{EXAMPLE_MODULE}.evaluate_generated_audio_dir", fake_evaluate_generated_audio_dir)
     for name in ("create_violin_plot", "append_metrics_to_csv", "write_csv_header_if_needed"):
         monkeypatch.setattr(f"{EXAMPLE_MODULE}.{name}", lambda *args, **kwargs: None)
 
-    eval_config = EvaluationConfig(
-        strip_text_annotations_for_metrics=True, language="en", with_fcd=False, with_utmosv2=False
-    )
+    eval_config = EvaluationConfig(language="en", with_fcd=False, with_utmosv2=False)
     dataset_meta_info = {
-        "ds": {
+        # Brackets mark emphasized spoken words: no strip key, so the reference keeps every word.
+        "emphasis": {
             "manifest_path": str(manifest),
             "audio_dir": str(tmp_path),
             "language": "de",
             "asr_model": {"name": "some/asr", "type": "whisper"},
-            "strip_text_annotations_for_metrics": False,
-        }
+        },
+        # Brackets are non-verbal tags: stripping is enabled by this entry alone.
+        "tags": {
+            "manifest_path": str(manifest),
+            "audio_dir": str(tmp_path),
+            "strip_text_annotations_for_metrics": True,
+        },
     }
 
     cer, ssim = run_inference_and_evaluation(
@@ -652,14 +672,16 @@ def test_run_inference_and_evaluation_applies_evalset_override(tmp_path, monkeyp
         inference_config=_FakeInferenceConfig(),
         eval_config=eval_config,
         dataset_meta_info=dataset_meta_info,
-        datasets=["ds"],
+        datasets=["emphasis", "tags"],
         out_dir=str(tmp_path / "out"),
         flops_per_component={},
         moe_info="",
     )
 
-    assert captured["config"].language == "de"
-    assert (captured["config"].asr_model_name, captured["config"].asr_model_type) == ("some/asr", "whisper")
-    assert captured["config"].strip_text_annotations_for_metrics is False  # the evalset entry wins over the CLI flag
-    assert captured["config"].with_utmosv2 is False  # CLI-level settings without an override are inherited
+    emphasis, tags = configs
+    assert emphasis.language == "de"
+    assert (emphasis.asr_model_name, emphasis.asr_model_type) == ("some/asr", "whisper")
+    assert emphasis.strip_text_annotations_for_metrics is False  # no run-level flag: entries without the key are kept
+    assert tags.strip_text_annotations_for_metrics is True
+    assert tags.language == "en" and tags.with_utmosv2 is False  # CLI-level settings without an override are inherited
     assert (cer, ssim) == (0.0, 1.0)

@@ -28,7 +28,7 @@ from typing import Optional
 ASR_MODEL_TYPES = ("nemo", "nemo_with_prompt", "whisper")
 # Keys of an evalset config entry that the inference/evaluation scripts read, plus "feature_dir", which shipped configs
 # carry over from the training DatasetMeta schema and which is accepted but unused here. Other keys are ignored with a
-# warning so that a misspelled override (e.g. "langauge") does not silently leave the CLI-level value in force.
+# warning so that a misspelled override (e.g. "langauge") does not silently leave the default or CLI-level value in force.
 EVALSET_ENTRY_KEYS = frozenset(
     {
         "manifest_path",
@@ -63,9 +63,10 @@ class EvaluationConfig:
         prosody_model_size: Emotion encoder size ("small" or "large").
         strip_text_annotations_for_metrics: Whether to strip annotation/control markers (``<tag>``, ``{tag}``,
             ``[tag]``, ``--``, ``...``, ``*``) from reference and ASR hypothesis text before text metrics.
-            Square-bracket spans are removed WITH their content, so datasets that mark emphasized spoken words
-            as ``[word]`` must disable this per dataset via ``"strip_text_annotations_for_metrics": false`` in
-            their evalset config entry (see ``resolve_evaluation_config_for_dataset``).
+            Square-bracket spans are removed WITH their content, so enable this only for datasets whose brackets
+            are non-verbal tags such as ``[breath]`` (``"strip_text_annotations_for_metrics": true`` in the evalset
+            entry, see ``resolve_evaluation_config_for_dataset``); datasets that mark emphasized spoken words as
+            ``[word]`` must leave it off.
         device: Device to use for running models used during evaluation.
         asr_batch_size: Batch size for ASR transcription.
         eou_batch_size: Batch size for EoU classification.
@@ -143,10 +144,11 @@ def resolve_evaluation_config_for_dataset(eval_config: EvaluationConfig, dataset
 
     - ``asr_model``: ``{"name": ..., "type": ...}`` overriding ``asr_model_name`` and ``asr_model_type``.
     - ``language``: overrides ``language``.
-    - ``strip_text_annotations_for_metrics``: JSON boolean overriding the CLI-level flag. Set it to ``false`` for
-      datasets whose square brackets mark emphasized *spoken* words (e.g. ``"[You] want to ski"``), so those words
-      are not deleted from the CER/WER reference, and to ``true`` for datasets whose brackets are non-verbal tags
-      such as ``[breath]``.
+    - ``strip_text_annotations_for_metrics``: JSON boolean; the per-dataset switch for stripping annotation markers
+      from the CER/WER reference (``examples/tts/magpietts_inference.py`` has no run-level flag, so entries without
+      the key are not stripped). Set it to ``true`` for datasets whose brackets are non-verbal tags such as
+      ``[breath]``; leave it off for datasets whose square brackets mark emphasized *spoken* words (e.g.
+      ``"[You] want to ski"``), so those words stay in the reference.
 
     Keys that are absent keep the value from ``eval_config``. ``eval_config`` itself is not mutated.
 
@@ -161,7 +163,7 @@ def resolve_evaluation_config_for_dataset(eval_config: EvaluationConfig, dataset
         ValueError: If a recognized key is malformed (see ``validate_evalset_entry``):
             ``language`` is not a non-empty string, ``asr_model`` lacks a valid
             ``name``/``type``, or ``strip_text_annotations_for_metrics`` is not a boolean. JSON ``null`` counts as
-            malformed, so a broken override never silently falls back to the CLI-level value.
+            malformed, so a broken value never silently falls back to the default.
     """
     validate_evalset_entry(dataset_meta)
     overrides = {}

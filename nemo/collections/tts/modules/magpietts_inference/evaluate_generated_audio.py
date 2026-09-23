@@ -1124,7 +1124,7 @@ def _warn_if_stripped_spans_were_spoken(
         f"Heuristic check{source}: strip_text_annotations_for_metrics removed {len(spoken_spans)} square-bracket "
         f"span(s) that appear in the ASR transcript of the generated audio (e.g. {examples}). They are scored as "
         "insertions and inflate CER/WER. Inspect the examples: if this dataset marks emphasized spoken words as "
-        '[word], set "strip_text_annotations_for_metrics": false for it in the evalset config; if the brackets are '
+        '[word], remove "strip_text_annotations_for_metrics": true from its evalset entry; if the brackets are '
         "non-verbal tags, the model is reading them aloud."
     )
 
@@ -1163,10 +1163,9 @@ def main():
         action='store_true',
         help=(
             'Strip annotation/control markers (<tag>, {tag}, [tag], --, ..., *) from reference and ASR hypothesis '
-            'text before computing text metrics. Square-bracket spans are deleted WITH their content, so do not use '
-            'this for datasets that mark emphasized spoken words as [word]; set '
-            '"strip_text_annotations_for_metrics": false for such datasets in the evalset config instead. '
-            'With --evalset, the evalset config value takes precedence over this flag.'
+            'text before computing text metrics (--manifest_path mode only; with --evalset the setting comes from '
+            'the dataset\'s "strip_text_annotations_for_metrics" evalset key). Square-bracket spans are deleted '
+            'WITH their content, so do not use this for datasets that mark emphasized spoken words as [word].'
         ),
     )
     parser.add_argument(
@@ -1182,6 +1181,11 @@ def main():
             parser.error("--evalset requires --datasets_json_path")
         if args.manifest_path is not None or args.audio_dir is not None:
             parser.error("--manifest_path and --audio_dir come from the evalset entry when --evalset is given")
+        if args.strip_text_annotations_for_metrics:
+            parser.error(
+                "--strip_text_annotations_for_metrics is set per dataset in the evalset config "
+                '("strip_text_annotations_for_metrics": true|false); remove the flag'
+            )
     else:
         if args.datasets_json_path is not None or args.datasets_base_path is not None:
             parser.error("--datasets_json_path and --datasets_base_path require --evalset")

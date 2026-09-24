@@ -20,9 +20,11 @@ from lightning import LightningModule
 
 from nemo.core.classes.common import safe_instantiate
 from nemo.core.optim import patch_flashoptim_uneven_shard_support
+from nemo.lightning.callback_group import with_callback_context
 from nemo.utils import logging
 
 
+@with_callback_context('on_optimizer_init_start', 'on_optimizer_init_end')
 def configure_optimizers(model: LightningModule):
     """
     Re-usable optimizer configuration function for top-level PyTorch Lightning modules in this collection.
@@ -67,6 +69,7 @@ def configure_optimizers(model: LightningModule):
     return ans
 
 
+@with_callback_context('on_optimizer_init_start', 'on_optimizer_init_end')
 def configure_optimizers_exclude_norm_from_wd(model: LightningModule):
     """
     Advanced optimizer configuration function for top-level PyTorch Lightning modules.

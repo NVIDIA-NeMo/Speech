@@ -189,6 +189,12 @@ class TranscriptionConfig:
     # att_context_size can be set for cache-aware streaming models with multiple look-aheads
     att_context_size: Optional[list] = None
 
+    # Language-ID prompt for prompt-conditioned ASR RNNT models (e.g. "en", "de-DE"): the language
+    # spoken in the audio, given as a key of the model's `prompt_dictionary`. Applied run-wide to
+    # every utterance. When unset, the model's own default language is used. Ignored by models
+    # without prompt conditioning.
+    target_lang: Optional[str] = None
+
     # Use this for model-specific changes before transcription
     model_change: ModelChangeConfig = field(default_factory=ModelChangeConfig)
 
@@ -420,6 +426,9 @@ def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List[Hypothesis
             override_cfg.timestamps = cfg.timestamps
             if hasattr(override_cfg, "prompt"):
                 override_cfg.prompt = parse_multitask_prompt(OmegaConf.to_container(cfg.prompt))
+            # Prompt-conditioned RNNT models: forward the language-ID prompt.
+            if hasattr(override_cfg, "target_lang") and cfg.get("target_lang", None) is not None:
+                override_cfg.target_lang = cfg.target_lang
 
             device = next(asr_model.parameters()).device
             for run_step in range(cfg.warmup_steps + cfg.run_steps):

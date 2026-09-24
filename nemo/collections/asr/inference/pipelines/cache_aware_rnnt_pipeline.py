@@ -122,6 +122,12 @@ class CacheAwareRNNTPipeline(BasePipeline):
         self.strip_lang_tags = cfg.asr.get("strip_lang_tags", True)
         if self.prompt_enabled:
             self.default_language_code = cfg.get("lang", None) or self._resolve_default_language_code()
+            if self.default_language_code is None:
+                raise ValueError(
+                    "This model conditions on a language prompt but advertises no default language, "
+                    "so the language to use cannot be inferred. Set `lang` to one of the model's "
+                    "prompt dictionary keys."
+                )
             logging.info(f"Multilingual ASR model: conditioning on language '{self.default_language_code}'.")
         else:
             self.default_language_code = None

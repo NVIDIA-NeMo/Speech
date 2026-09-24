@@ -23,7 +23,11 @@ vs standard transformer backends are auto-detected from the backbone's
 own ``architectures`` field.
 """
 
+from pathlib import Path
+
 from transformers import AutoConfig, PretrainedConfig
+
+from nemo.collections.speechlm2.parts.hf_hub import LLM_BACKBONE_DIR
 
 _HYBRID_ARCHITECTURES = frozenset(
     {
@@ -289,7 +293,7 @@ class NeMoSpeechLMConfig(PretrainedConfig):
         self.encoder_chunk_size_seconds = encoder_chunk_size_seconds
 
         if llm_config is None:
-            self.text_config = AutoConfig.from_pretrained(pretrained_llm, trust_remote_code=True)
+            self.text_config = self._load_backbone_config(self._resolve_llm_source(pretrained_llm))
         else:
             if not isinstance(llm_config, dict):
                 raise ValueError(f"NeMo SpeechLM llm_config must be a dict, got {type(llm_config).__name__}.")
@@ -353,6 +357,36 @@ class NeMoSpeechLMConfig(PretrainedConfig):
                 f"boundary {self.image_token_index}. Remove this legacy serialized field; SpeechLM derives "
                 f"the vLLM compatibility value at runtime."
             )
+
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, **kwargs):
+        """vLLM doesn't set name_or_path itself; forward it so _resolve_llm_source can find llm_backbone/."""
+        kwargs.setdefault("name_or_path", str(pretrained_model_name_or_path))
+        return super().from_pretrained(pretrained_model_name_or_path, **kwargs)
+
+    def _resolve_llm_source(self, pretrained_llm: str) -> str:
+        """Prefer the checkpoint's own llm_backbone/ config over re-fetching pretrained_llm from the Hub."""
+        root = getattr(self, "_name_or_path", "")
+        if root:
+            local = Path(root) / LLM_BACKBONE_DIR
+            if (local / "config.json").is_file():
+                return str(local)
+        return pretrained_llm
+
+    @staticmethod
+    def _load_backbone_config(source: str) -> PretrainedConfig:
+        """Use vLLM's own config class for model_types it privately re-implements (e.g. nemotron),
+        since e.g. NemotronForCausalLM asserts isinstance(config, vllm's NemotronConfig)."""
+        config = AutoConfig.from_pretrained(source, trust_remote_code=True)
+        try:
+            from vllm.transformers_utils.config import _CONFIG_REGISTRY
+        except ImportError:
+            return config
+        model_type = getattr(config, "model_type", None)
+        vllm_class = _CONFIG_REGISTRY[model_type] if model_type in _CONFIG_REGISTRY else None
+        if vllm_class is not None and not isinstance(config, vllm_class):
+            config = vllm_class.from_pretrained(source, trust_remote_code=True)
+        return config
 
     @property
     def llm_architectures(self) -> list[str]:

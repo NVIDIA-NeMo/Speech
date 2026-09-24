@@ -986,7 +986,7 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
                         # If blank was predicted even once, now or in the past,
                         # Force the current predicted label to also be blank
                         # This ensures that blanks propogate across all timesteps
-                        # once they have occured (normally stopping condition of sample level loop).
+                        # once they have occurred (normally stopping condition of sample level loop).
                         for kidx, ki in enumerate(k):
                             if blank_mask[kidx] == 0:
                                 hypotheses[kidx].y_sequence.append(ki)
@@ -1195,7 +1195,7 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
                         # If blank was predicted even once, now or in the past,
                         # Force the current predicted label to also be blank
                         # This ensures that blanks propogate across all timesteps
-                        # once they have occured (normally stopping condition of sample level loop).
+                        # once they have occurred (normally stopping condition of sample level loop).
                         for kidx, ki in enumerate(k):
                             if blank_mask[kidx] == 0:
                                 hypotheses[kidx].y_sequence.append(ki)
@@ -1412,7 +1412,7 @@ class ExportedModelGreedyBatchedRNNTInfer:
                     # If blank was predicted even once, now or in the past,
                     # Force the current predicted label to also be blank
                     # This ensures that blanks propogate across all timesteps
-                    # once they have occured (normally stopping condition of sample level loop).
+                    # once they have occurred (normally stopping condition of sample level loop).
                     for kidx, ki in enumerate(k):
                         if blank_mask[kidx] == 0:
                             label[kidx].append(ki)
@@ -2172,7 +2172,7 @@ class GreedyBatchedMultiblankRNNTInfer(GreedyBatchedRNNTInfer):
                         # If blank was predicted even once, now or in the past,
                         # Force the current predicted label to also be blank
                         # This ensures that blanks propogate across all timesteps
-                        # once they have occured (normally stopping condition of sample level loop).
+                        # once they have occurred (normally stopping condition of sample level loop).
                         for kidx, ki in enumerate(k):
                             if blank_mask[kidx] == 0:
                                 hypotheses[kidx].y_sequence.append(ki)
@@ -2390,7 +2390,7 @@ class GreedyBatchedMultiblankRNNTInfer(GreedyBatchedRNNTInfer):
                         # If blank was predicted even once, now or in the past,
                         # Force the current predicted label to also be blank
                         # This ensures that blanks propogate across all timesteps
-                        # once they have occured (normally stopping condition of sample level loop).
+                        # once they have occurred (normally stopping condition of sample level loop).
                         for kidx, ki in enumerate(k):
                             if blank_mask[kidx] == 0:
                                 hypotheses[kidx].y_sequence.append(ki)

@@ -17,8 +17,9 @@
 import math
 from dataclasses import dataclass
 from numbers import Number
-from typing import Literal
+from typing import Any, Literal
 
+import torch
 from lhotse import compute_num_samples
 from omegaconf import OmegaConf
 
@@ -31,6 +32,62 @@ def is_2d_bucketing(buckets) -> bool:
         isinstance(item, (list, tuple)) and len(item) == 2 and all(isinstance(v, Number) for v in item)
         for item in buckets
     )
+
+
+def audio_placeholder_frames(stride_samples: int | None, audio_samples: int) -> int:
+    """Number of LLM positions a waveform of ``audio_samples`` occupies once interleaved.
+
+    ``stride_samples`` is the waveform samples consumed per encoder frame, i.e. one position in
+    the language model's sequence. Returns 0 when the schema declares no stride, which is how
+    models that do not interleave audio into the text sequence opt out.
+
+    Deliberately floor-based and clamped to at least one frame for non-empty audio: the model
+    zero-pads when there are more audio positions than encoder frames, so under-counting is
+    benign while over-counting would inflate every profiled sequence.
+    """
+    if not stride_samples or int(stride_samples) <= 0 or audio_samples <= 0:
+        return 0
+    return max(1, int(audio_samples) // int(stride_samples))
+
+
+def schema_audio_frame_stride(schema: dict | None) -> int:
+    """Read ``audio_frame_stride_samples`` out of an OOMptimizer schema, or 0 if absent.
+
+    Single source of truth for the batch generator and :class:`SequenceLengthResolver`: they must
+    agree on how many positions the audio takes, or the generator plants placeholders in a
+    sequence that was never lengthened to hold them.
+    """
+    if not schema:
+        return 0
+    for item in schema.get("inputs", ()):
+        if isinstance(item, dict) and item.get("audio_frame_stride_samples"):
+            return int(item["audio_frame_stride_samples"])
+    return 0
+
+
+def fill_audio_placeholders(tensor: "torch.Tensor", item: dict[str, Any], input_seq_length: int) -> int:
+    """Overwrite the leading audio positions of a synthetic label tensor, in place.
+
+    A model that interleaves audio into the LLM sequence locates the audio by scanning its input
+    ids for a sentinel. Those sentinels are negative, so the ``torch.randint(0, vocab_size)`` that
+    fills a ``LabelsType`` tensor can never produce one: without this, the model sees a batch with
+    no audio at all, drops the encoder output, and OOMptimizer profiles a graph that excludes the
+    encoder's activations, gradients and optimizer state -- reporting a batch size far larger than
+    training survives.
+
+    No-op (returning 0) unless the schema item declares both ``audio_placeholder_id`` and
+    ``audio_frame_stride_samples``, so existing schemas are unaffected.
+
+    Returns the number of positions written.
+    """
+    placeholder_id = item.get("audio_placeholder_id")
+    if placeholder_id is None:
+        return 0
+    n_audio = audio_placeholder_frames(item.get("audio_frame_stride_samples"), input_seq_length)
+    n_audio = min(n_audio, tensor.shape[-1])
+    if n_audio > 0:
+        tensor[..., :n_audio] = int(placeholder_id)
+    return n_audio
 
 
 @dataclass
@@ -70,7 +127,12 @@ class SequenceLengthResolver:
                     compute_num_samples(output_len, sampling_rate=sampling_rate),
                 )
             case ("audio", "text"):
-                return compute_num_samples(input_len, sampling_rate=sampling_rate), output_len
+                # `output_len` counts TEXT tokens only. A model that interleaves audio into the
+                # LLM sequence needs room for the audio positions on top, or planting the
+                # placeholders merely relabels text positions and the profiled sequence stays
+                # about half its real length. Schemas that declare no stride add 0 here.
+                audio_samples = compute_num_samples(input_len, sampling_rate=sampling_rate)
+                return audio_samples, output_len + self._audio_placeholder_len(audio_samples)
             case ("text", "audio"):
                 return int(input_len), compute_num_samples(output_len, sampling_rate=sampling_rate)
             case ("text", "text"):
@@ -110,6 +172,9 @@ class SequenceLengthResolver:
 
     def _sampling_rate(self) -> int:
         return int(getattr(self.model, "sample_rate", 16000))
+
+    def _audio_placeholder_len(self, audio_samples: int) -> int:
+        return audio_placeholder_frames(schema_audio_frame_stride(self.schema), audio_samples)
 
     def _audio_locator_lens(self, bucket) -> tuple[int, int]:
         sampling_rate = OmegaConf.select(self.cfg, "data.train_ds.sample_rate", default=16000)

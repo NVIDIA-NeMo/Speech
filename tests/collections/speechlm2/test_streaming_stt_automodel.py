@@ -21,6 +21,8 @@ training step — is exercised for real.
 """
 
 import os
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -31,6 +33,7 @@ from transformers import AutoConfig, AutoModelForCausalLM
 from nemo.collections.speechlm2.data.streaming_stt_dataset import AUDIO_TOKEN_IDX, IGNORE_INDEX, StreamingSTTBatch
 from nemo.collections.speechlm2.models import StreamingSTTModelAutomodel
 from nemo.collections.speechlm2.models.streaming_stt_model import StreamingSTTModel
+from nemo.utils.oomptimizer import SequenceLengthResolver
 
 BLANK_TOKEN = "<blank>"
 CHUNK_SIZE = 2
@@ -503,6 +506,69 @@ def test_oomptimizer_schema(model):
     assert schema["cls"] is StreamingSTTBatch
     names = {entry["name"] for entry in schema["inputs"]}
     assert {"input_tokens", "target_tokens", "audios", "audio_lens"} <= names
+
+
+def _schema_entry(schema, name):
+    return next(entry for entry in schema["inputs"] if entry.get("name") == name)
+
+
+def test_oomptimizer_schema_declares_audio_placeholders(model):
+    """Without these keys OOMptimizer builds a pure-text batch; see the schema docstring."""
+    schema = model.oomptimizer_schema
+    stride = int(round(0.08 * 16000))
+    for name, sentinel in (("input_tokens", AUDIO_TOKEN_IDX), ("target_tokens", IGNORE_INDEX)):
+        entry = _schema_entry(schema, name)
+        assert entry["audio_placeholder_id"] == sentinel
+        assert entry["audio_frame_stride_samples"] == stride
+
+
+def test_oomptimizer_schema_pins_the_chunk_size(model):
+    """Left unset, _set_encoder_att_context() returns immediately and the look-ahead is stale."""
+    entry = _schema_entry(model.oomptimizer_schema, "chunk_size")
+    assert entry["type"] == "scalar"
+    assert entry["value"] == CHUNK_SIZE
+
+
+def make_oomptimizer_batch(model, bucket_seconds: float = 1.0, batch_size: int = 2) -> StreamingSTTBatch:
+    """Build a batch exactly the way scripts/speechlm2/oomptimizer.py does."""
+    generator_cls = _load_oomptimizer().ProfilingBatchGenerator
+    schema = model.oomptimizer_schema
+    resolver = SequenceLengthResolver(cfg=None, ratio=12, salm_audio_token_ratio=0.75, model=model, schema=schema)
+    gen = generator_cls(schema=schema, start_batch_size=batch_size, device="cpu")
+    return gen(*resolver.resolve_one(bucket_seconds))
+
+
+def _load_oomptimizer():
+    import importlib.util
+
+    path = Path(__file__).parents[3] / "scripts" / "speechlm2" / "oomptimizer.py"
+    spec = importlib.util.spec_from_file_location("oomptimizer_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_oomptimizer_batch_contains_audio_positions(model):
+    batch = make_oomptimizer_batch(model)
+    assert (batch.input_tokens == AUDIO_TOKEN_IDX).any()
+    assert batch.chunk_size == CHUNK_SIZE
+
+
+def test_oomptimizer_batch_gives_the_audio_encoder_gradients(model):
+    """The regression this schema exists for.
+
+    With a pure-text batch ``interleave_embeddings`` drops the encoder output, so the encoder
+    contributes nothing to backward and OOMptimizer never sees its activations, gradients or
+    optimizer state — it then reports a batch size training cannot survive.
+    """
+    batch = make_oomptimizer_batch(model)
+    out = model.training_step(batch, batch_idx=0)
+    assert torch.isfinite(out["loss"])
+    out["loss"].backward()
+    trainable = [p for p in model.perception.encoder.parameters() if p.requires_grad]
+    assert trainable, "the tiny test encoder is frozen; this test would pass vacuously"
+    assert all(p.grad is not None for p in trainable)
 
 
 def test_hyperparameters_are_serializable(model):

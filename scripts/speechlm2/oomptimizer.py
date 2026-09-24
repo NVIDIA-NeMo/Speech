@@ -26,7 +26,7 @@ from torch.utils.data import DataLoader, IterableDataset
 
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, MaskType, NeuralType
 from nemo.utils import logging
-from nemo.utils.oomptimizer import SequenceLengthResolver
+from nemo.utils.oomptimizer import SequenceLengthResolver, fill_audio_placeholders
 from nemo.utils.oomptimizer import is_2d_bucketing as _is_2d_bucketing
 from nemo.utils.trainer_utils import resolve_trainer_cfg
 
@@ -128,7 +128,12 @@ class ProfilingBatchGenerator:
         names = []
         for item in self.schema["inputs"]:
             nt = item["type"]
-            if isinstance(nt, str) and nt == "constant":
+            if isinstance(nt, str) and nt == "scalar":
+                # Non-tensor batch field, passed through verbatim (e.g. the per-batch chunk size
+                # a dataset would set). "constant" wraps its value in a 1-element tensor, which
+                # models that treat the field as a plain Python int cannot use.
+                tnsr = item["value"]
+            elif isinstance(nt, str) and nt == "constant":
                 if isinstance(val := item["value"], str) and val == "batch":
                     tnsr = torch.tensor([B], dtype=torch.long, device=self.device)
                 else:
@@ -156,6 +161,11 @@ class ProfilingBatchGenerator:
                         position += seq_length
                     if 0 <= position < seq_length:
                         tnsr[:, position] = token_id
+                # Must come last: the audio run is contiguous and positional, so anything
+                # writing by value (excluded_token_ids) would otherwise be able to punch holes
+                # in it. forced_token_ids cannot express this -- it is a static position->id map
+                # read once, while the audio run length varies per bucket.
+                fill_audio_placeholders(tnsr, item, select_seq_length["input"])
             else:
                 raise RuntimeError("Unexpected item in oomptimizer schema: {item}")
             batch.append(tnsr)
@@ -522,10 +532,14 @@ def oomptimizer(
                 continue
             final_profile.append([bucket, bs])
 
+    # Report what was actually measured, not what was requested. Both of these used to overstate
+    # the profile: --ddp allocates nothing (it is read only here), and the search loop runs under
+    # `autocast(enabled=False)`, so the dtype comes from the trainer's precision plugin rather
+    # than from AMP. Overstating coverage here reads as "this batch size is already conservative".
     click.secho(f"The profile was created with the following settings:")
     click.secho(f"* using {memory_fraction:.1%} of available GPU RAM.")
-    click.secho(f"* {'' if ddp else 'not '}simulating DDP memory overhead.")
-    click.secho(f"* using AMP with dtype={dtype}.")
+    click.secho("* NOT simulating DDP memory overhead (--ddp is currently a no-op).")
+    click.secho(f"* parameters in dtype={dtype}; autocast is disabled during the search.")
     click.secho("The final profile is:", bold=True)
     click.secho("\tbucket_duration_bins=[" + ",".join(str(seqlen) for seqlen, bs in final_profile) + "]", bold=True)
     click.secho("\tbucket_batch_size=[" + ",".join(str(bs) for seqlen, bs in final_profile) + "]", bold=True)

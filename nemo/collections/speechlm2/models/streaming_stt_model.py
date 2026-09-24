@@ -1593,8 +1593,27 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
 
     @property
     def oomptimizer_schema(self) -> dict:
+        """Synthetic-batch recipe for OOMptimizer.
+
+        ``audio_placeholder_id`` / ``audio_frame_stride_samples`` are what make the synthetic
+        batch resemble a real one: they tell the generator to plant a leading run of
+        ``AUDIO_TOKEN_IDX`` (and matching ``IGNORE_INDEX`` targets), and tell
+        ``SequenceLengthResolver`` to lengthen the sequence to hold it. Without them the batch is
+        pure text, ``_build_input_embeds`` sees an all-False audio mask, ``interleave_embeddings``
+        discards the encoder output, and the encoder never enters the backward graph -- so the
+        profile omits its activations, gradients and optimizer state and suggests a batch size
+        that OOMs in training.
+
+        Known remaining under-estimates, all in the unsafe direction, so treat the result as an
+        upper bound: per-chunk compact-template scaffolding, ``<spk:N>`` tags and the
+        read/write/flush markers are not modelled (only ``--ratio`` text tokens are);
+        ``spk_targets`` is left None, so a ParallelExpertEncoder profiles its own diarizer rather
+        than the oracle-target path; and ``--ddp`` does not actually allocate the DDP replica.
+        """
         from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, NeuralType
 
+        # Waveform samples per interleaved LLM position.
+        frame_stride_samples = int(round(self.core_cfg.frame_length_in_secs * self.core_cfg.sample_rate))
         return {
             "cls": StreamingSTTBatch,
             "inputs": [
@@ -1603,6 +1622,8 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                     "type": NeuralType(("B", "T"), LabelsType()),
                     "seq_length": "output",
                     "vocab_size": int(self.text_vocab_size),
+                    "audio_placeholder_id": AUDIO_TOKEN_IDX,
+                    "audio_frame_stride_samples": frame_stride_samples,
                 },
                 {"name": "input_token_lens", "type": NeuralType(("B",), LengthsType()), "seq_length": "output"},
                 {
@@ -1610,10 +1631,22 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                     "type": NeuralType(("B", "T"), LabelsType()),
                     "seq_length": "output",
                     "vocab_size": int(self.text_vocab_size),
+                    # Audio positions are unsupervised in the common case. collapse_silent_audio
+                    # does supervise the gate frame, so this slightly under-counts the loss
+                    # denominator -- it does not change the shapes memory depends on.
+                    "audio_placeholder_id": IGNORE_INDEX,
+                    "audio_frame_stride_samples": frame_stride_samples,
                 },
                 {"name": "target_token_lens", "type": NeuralType(("B",), LengthsType()), "seq_length": "output"},
                 {"name": "audios", "type": NeuralType(("B", "T"), AudioSignal()), "seq_length": "input"},
                 {"name": "audio_lens", "type": NeuralType(("B",), LengthsType()), "seq_length": "input"},
+                # The dataset sets this per batch; left None, _set_encoder_att_context() returns
+                # immediately and the encoder profiles at its init-time look-ahead. The longest
+                # configured chunk gives the widest right context, hence the most encoder memory.
+                # The opposite end matters too -- the shortest chunk produces the most scaffolding
+                # tokens -- but that cost is not modelled here, so profile it separately if the
+                # chunk list is wide.
+                {"name": "chunk_size", "type": "scalar", "value": int(self._chunk_size_repr)},
             ],
         }
 

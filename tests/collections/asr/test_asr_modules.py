@@ -766,6 +766,92 @@ class TestASRModulesBasicTests:
         assert jointnet.num_classes_with_blank == vocab_size + 1
 
     @pytest.mark.unit
+    @pytest.mark.parametrize(('batch_size', 'expected_updates'), [(16, 8), (4, 2)])
+    @pytest.mark.parametrize(('training', 'expected_synced_compute_calls'), [(False, 1), (True, 0)])
+    def test_RNNTJoint_fused_wer_computes_once(
+        self, batch_size, expected_updates, training, expected_synced_compute_calls
+    ):
+        class AccumulatingWER:
+            def __init__(self):
+                self._to_sync = True
+                self.compute_calls = 0
+                self.synced_compute_calls = 0
+                self.reset_calls = 0
+                self.scores = 0
+                self.words = 0
+                self.hypotheses = []
+                self.num_updates = 0
+                self.num_hypotheses = 0
+
+            def update(self, predictions, predictions_lengths, targets, targets_lengths):
+                sub_batch_size = predictions.shape[0]
+                self.num_updates += 1
+                self.scores += sub_batch_size
+                self.words += 2 * sub_batch_size
+                self.hypotheses = list(range(self.num_hypotheses, self.num_hypotheses + sub_batch_size))
+                self.num_hypotheses += sub_batch_size
+
+            def get_hypotheses(self):
+                return self.hypotheses
+
+            def compute(self):
+                self.compute_calls += 1
+                self.synced_compute_calls += int(self._to_sync)
+                return (
+                    torch.tensor(self.scores / self.words),
+                    torch.tensor(self.scores),
+                    torch.tensor(self.words),
+                )
+
+            def reset(self):
+                self.reset_calls += 1
+                self.scores = 0
+                self.words = 0
+                self.hypotheses = []
+
+        jointnet = modules.RNNTJoint(
+            jointnet={
+                'encoder_hidden': 4,
+                'pred_hidden': 2,
+                'joint_hidden': 2,
+                'activation': 'relu',
+            },
+            num_classes=2,
+            vocabulary=['a', 'b'],
+            fuse_loss_wer=True,
+            fused_batch_size=2,
+        )
+        wer = AccumulatingWER()
+        jointnet.set_loss(object())
+        jointnet.set_wer(wer)
+        jointnet.train(training)
+
+        encoder_outputs = torch.zeros(batch_size, 4, 1)
+        lengths = torch.ones(batch_size, dtype=torch.long)
+        transcripts = torch.zeros(batch_size, 1, dtype=torch.long)
+
+        loss, wer_value, wer_num, wer_denom = jointnet(
+            encoder_outputs=encoder_outputs,
+            decoder_outputs=None,
+            encoder_lengths=lengths,
+            transcripts=transcripts,
+            transcript_lengths=lengths,
+            compute_wer=True,
+            keep_hypotheses=True,
+        )
+
+        assert loss is None
+        assert wer.num_updates == expected_updates
+        assert wer.compute_calls == 1
+        assert wer.synced_compute_calls == expected_synced_compute_calls
+        assert wer.reset_calls == 1
+        assert wer._to_sync
+        assert wer_value.item() == 0.5
+        assert wer_num.item() == batch_size
+        assert wer_denom.item() == 2 * batch_size
+        assert jointnet.get_hypotheses() == list(range(batch_size))
+
+    @pytest.mark.unit
     def test_HATJoint(self):
         vocab = list(range(10))
         vocab = [str(x) for x in vocab]

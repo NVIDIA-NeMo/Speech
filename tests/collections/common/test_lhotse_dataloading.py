@@ -12,6 +12,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import gzip
+import json
 from collections import Counter
 from io import BytesIO
 from itertools import islice
@@ -33,6 +35,11 @@ from omegaconf import OmegaConf
 
 from nemo.collections.common.data.lhotse import cutset as cutset_module
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
+from nemo.collections.common.data.lhotse.cutset import (
+    _MANIFEST_SNIFF_BYTES,
+    _sniff_manifest_format,
+    guess_parse_cutset,
+)
 from nemo.collections.common.data.lhotse.text_adapters import SourceTargetTextExample, TextExample
 from nemo.collections.common.tokenizers.sentencepiece_tokenizer import SentencePieceTokenizer, create_spt_model
 from nemo.utils.dependency import is_module_available
@@ -3367,3 +3374,66 @@ def test_dataloader_reweight_temperature_mixed_leaf_and_group(
     nested_total = dataset_counts["N1"] + dataset_counts["N2"]
     assert dataset_counts["N1"] / nested_total == pytest.approx(0.5, abs=0.15)
     assert dataset_counts["N2"] / nested_total == pytest.approx(0.5, abs=0.15)
+
+
+class TestGuessParseCutsetManifestFormat:
+    """
+    ``guess_parse_cutset`` routes string inputs by extension: '.json' means a NeMo manifest and
+    '.jsonl' / '.jsonl.gz' mean a Lhotse manifest. When the extension and the contents disagree,
+    the input used to reach the wrong parser and fail with a message that never mentioned the
+    extension, e.g. "SupervisionSegment.__init__() got an unexpected keyword argument
+    'audio_filepath'" for a NeMo manifest named '.jsonl'. See issue #14287.
+    """
+
+    def test_reads_manifests_whose_extension_matches_their_contents(self, nemo_manifest_path: Path, cutset_path: Path):
+        assert len(list(guess_parse_cutset(str(nemo_manifest_path)))) == 10
+        assert len(list(guess_parse_cutset(str(cutset_path)))) == 10
+
+    @pytest.mark.parametrize("extension", [".jsonl", ".jsonl.gz"])
+    def test_rejects_nemo_manifest_with_lhotse_extension(
+        self, tmp_path: Path, nemo_manifest_path: Path, extension: str
+    ):
+        mislabeled = tmp_path / f"input_manifest{extension}"
+        payload = nemo_manifest_path.read_bytes()
+        if extension.endswith(".gz"):
+            payload = gzip.compress(payload)
+        mislabeled.write_bytes(payload)
+
+        with pytest.raises(ValueError, match="audio_filepath"):
+            guess_parse_cutset(str(mislabeled))
+
+    def test_rejects_lhotse_manifest_with_nemo_extension(self, tmp_path: Path, cutset_path: Path):
+        mislabeled = tmp_path / "cuts.json"
+        CutSet.from_file(cutset_path).to_file(mislabeled)
+
+        with pytest.raises(ValueError, match="contents are a Lhotse manifest"):
+            guess_parse_cutset(str(mislabeled))
+
+    def test_sniffing_detects_both_formats(self, nemo_manifest_path: Path, cutset_path: Path):
+        assert _sniff_manifest_format(str(nemo_manifest_path)) == "nemo"
+        assert _sniff_manifest_format(str(cutset_path)) == "lhotse"
+
+    @pytest.mark.parametrize(
+        "name,contents",
+        [
+            ("empty.jsonl", ""),
+            ("blank.jsonl", "\n\n"),
+            ("not_json.jsonl", "this is not json at all\n"),
+            ("scalar.jsonl", "42\n"),
+        ],
+    )
+    def test_sniffing_is_inconclusive_for_unparseable_manifests(self, tmp_path: Path, name: str, contents: str):
+        """An unrecognizable manifest must yield no opinion so that the existing behaviour is kept."""
+        path = tmp_path / name
+        path.write_text(contents)
+        assert _sniff_manifest_format(str(path)) is None
+
+    def test_sniffing_is_inconclusive_for_missing_and_templated_paths(self, tmp_path: Path):
+        assert _sniff_manifest_format(str(tmp_path / "does_not_exist.jsonl")) is None
+        assert _sniff_manifest_format(str(tmp_path / "shard_{0..3}.jsonl")) is None
+
+    def test_sniffing_is_inconclusive_when_first_record_exceeds_the_window(self, tmp_path: Path):
+        """A single record larger than the sniffing window cannot be parsed, so we must not guess."""
+        path = tmp_path / "huge_record.jsonl"
+        path.write_text(json.dumps({"audio_filepath": "a.wav", "pad": "x" * (2 * _MANIFEST_SNIFF_BYTES)}))
+        assert _sniff_manifest_format(str(path)) is None

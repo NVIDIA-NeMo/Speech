@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import pytest
+from nemo.collections.common.tokenizers.text_to_speech.ipa_lexicon import GRAPHEME_CHARACTER_SETS
 from nemo.collections.common.tokenizers.text_to_speech.tokenizer_utils import (
     any_locale_word_tokenize,
     english_word_tokenize,
@@ -75,6 +76,13 @@ class TestTokenizerUtils:
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
+    def test_english_word_tokenize_with_extended_latin(self):
+        output = english_word_tokenize("ŒUVRE", latin_charset_version=2)
+
+        assert output == self._create_expected_output(["œuvre"])
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
     def test_any_locale_word_tokenize(self):
         input_text = "apple banana pear"
         expected_output = self._create_expected_output(["apple", " ", "banana", " ", "pear"])
@@ -92,6 +100,43 @@ class TestTokenizerUtils:
 
         output = any_locale_word_tokenize(input_text)
         assert output == expected_output
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_any_locale_word_tokenize_with_extended_latin(self):
+        # Letters above U+00FF (œ U+0153, Việt with ệ U+1EC7, đường with đ U+0111/ư U+01B0/ờ U+1EDD,
+        # STRAẞE with ẞ U+1E9E) are word characters and must not split the word apart.
+        input_text = "cœur Việt đường STRAẞE..."
+        expected_output = self._create_expected_output(["cœur", " ", "Việt", " ", "đường", " ", "STRAẞE", "..."])
+
+        output = any_locale_word_tokenize(input_text, latin_charset_version=2)
+        assert output == expected_output
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    @pytest.mark.parametrize('locale', ['de-DE', 'fr-FR', 'vi-VN'])
+    def test_any_locale_word_tokenize_with_declared_latin_graphemes(self, locale):
+        input_text = ''.join(GRAPHEME_CHARACTER_SETS[locale])
+
+        output = any_locale_word_tokenize(input_text, latin_charset_version=2)
+
+        assert output == self._create_expected_output([input_text])
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_any_locale_word_tokenize_preserves_legacy_latin_default(self):
+        output = any_locale_word_tokenize("cœur")
+
+        assert output == self._create_expected_output(["c", "œ", "ur"])
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    @pytest.mark.parametrize('version', [True, 1.0, 3])
+    def test_word_tokenize_rejects_invalid_latin_charset_versions(self, version):
+        with pytest.raises(ValueError, match="Unsupported latin_charset_version"):
+            english_word_tokenize("text", latin_charset_version=version)
+        with pytest.raises(ValueError, match="Unsupported latin_charset_version"):
+            any_locale_word_tokenize("text", latin_charset_version=version)
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit

@@ -314,6 +314,11 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         if self.text_conditioning_tokenizer_name is None:
             self.text_conditioning_tokenizer_name = list(cfg.text_tokenizers.keys())[0]
 
+        # Codec decoding has large temporary convolution activations. Decode generated
+        # waveforms in smaller sub-batches when requested, without changing generation
+        # or the returned codes/audio.
+        self.codec_decode_batch_size = max(int(cfg.get('codec_decode_batch_size', 0)), 0)
+
         self.cfg_unconditional_prob = cfg.get('cfg_unconditional_prob', 0.0)
 
         # Multi-mode training configuration
@@ -2362,10 +2367,35 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             predicted_codes, predicted_codes_lens = self._prepare_codes_for_decode(
                 predicted_codes, predicted_codes_lens
             )
-            audio, audio_len, decoded_codes = self._codec_helper.codes_to_audio(
-                predicted_codes,
-                predicted_codes_lens,
-            )
+            decode_batch_size = self.codec_decode_batch_size
+            if decode_batch_size <= 0 or decode_batch_size >= batch_size:
+                audio, audio_len, _ = self._codec_helper.codes_to_audio(
+                    predicted_codes,
+                    predicted_codes_lens,
+                )
+            else:
+                # Codec output is independent per item, so sub-batch decoding is
+                # mathematically identical to decoding the full rollout batch. It
+                # only lowers the peak activation memory of the codec decoder.
+                audio_chunks = []
+                audio_len_chunks = []
+                for chunk_start in range(0, batch_size, decode_batch_size):
+                    chunk_end = min(chunk_start + decode_batch_size, batch_size)
+                    chunk_audio, chunk_audio_len, _ = self._codec_helper.codes_to_audio(
+                        predicted_codes[chunk_start:chunk_end],
+                        predicted_codes_lens[chunk_start:chunk_end],
+                    )
+                    audio_chunks.append(chunk_audio)
+                    audio_len_chunks.append(chunk_audio_len)
+
+                audio_len = torch.cat(audio_len_chunks, dim=0)
+                max_audio_len = max(chunk.size(1) for chunk in audio_chunks)
+                audio = audio_chunks[0].new_zeros(batch_size, max_audio_len)
+                output_start = 0
+                for chunk_audio in audio_chunks:
+                    output_end = output_start + chunk_audio.size(0)
+                    audio[output_start:output_end, : chunk_audio.size(1)] = chunk_audio
+                    output_start = output_end
 
             return StreamingFinalizeOutput(
                 audio=audio,

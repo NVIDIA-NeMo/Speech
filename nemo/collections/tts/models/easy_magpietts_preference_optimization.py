@@ -352,8 +352,8 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
         with torch.cuda.amp.autocast(enabled=False):
             logits_fp32 = logits.float()
             per_token_logps = torch.gather(logits_fp32.log_softmax(-1), dim=2, index=labels.unsqueeze(2)).squeeze(2)
-            # Top-k sampling assigns -inf to tokens outside its support. Padded
-            # labels may select one of those tokens, so multiplication by a zero
+            # Masked tokens have -inf log-probability. Padded labels may select
+            # one of those tokens, so multiplication by a zero
             # mask would produce `-inf * 0 = NaN`. Select masked values instead.
             per_token_logps = torch.where(
                 loss_mask.bool(), per_token_logps, torch.zeros_like(per_token_logps)
@@ -361,20 +361,16 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
         return per_token_logps
 
     @staticmethod
-    def _apply_sampling_transform(
+    def _apply_teacher_forced_transform(
         logits: torch.Tensor,
         temperature: float,
-        topk: int,
         forbidden_token_ids: Optional[List[int]] = None,
     ) -> torch.Tensor:
-        """Apply the same sanitization, token masking, temperature, and top-k used for sampling."""
+        """Apply sanitization, token masking, and temperature scaling for policy likelihoods."""
         logits = torch.nan_to_num(logits, nan=0.0, posinf=100.0, neginf=-100.0).clamp(-100.0, 100.0)
         if forbidden_token_ids:
             logits = logits.clone()
             logits[..., forbidden_token_ids] = float('-inf')
-        if topk < logits.size(-1):
-            topk_values = torch.topk(logits, topk, dim=-1).values
-            logits = logits.masked_fill(logits < topk_values[..., -1, None], float('-inf'))
         return logits / temperature
 
     def compute_local_transformer_logits(self, dec_out, audio_codes_target, targets_offset_by_one=False):
@@ -1124,15 +1120,27 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
         advantages: torch.Tensor,
         group_validities: torch.Tensor,
         sampling_temperature: Optional[float] = None,
-        sampling_topk: Optional[int] = None,
         forbidden_token_ids: Optional[List[int]] = None,
     ):
-        """Compute normalized GRPO, KL, and entropy for parallel action streams."""
-        if (sampling_temperature is None) != (sampling_topk is None):
-            raise ValueError("sampling_temperature and sampling_topk must either both be set or both be None.")
+        """Compute normalized GRPO, exact forward KL, and entropy for parallel action streams.
+
+        KL is evaluated over the complete policy/reference distributions rather than
+        estimated from only the sampled action. The sampled-action ``k3`` estimator
+        (``exp(log p_ref - log p_policy) - log p_ref + log p_policy - 1``) is
+        non-negative, but its exponential importance ratio has an unbounded
+        heavy tail. A single rare token can therefore dominate an otherwise
+        healthy batch. Since this method already materializes the full policy
+        distribution for entropy, exact ``KL(policy || reference)`` only requires
+        one additional reference log-softmax per stream and avoids that variance.
+
+        Both the GRPO and KL terms are masked by ``group_validities``. A group
+        rejected as reward-uninformative must not update the policy through a
+        hidden KL-only path.
+        """
         loss_mask = get_mask_from_lengths(target_lens).float()
+        group_mask = group_validities.float().unsqueeze(1)
         num_streams = targets.size(1)
-        total_loss = logits.new_zeros((), dtype=torch.float32)
+        total_po_loss = logits.new_zeros((), dtype=torch.float32)
         total_kl = logits.new_zeros((), dtype=torch.float32)
         total_entropy = logits.new_zeros((), dtype=torch.float32)
 
@@ -1141,11 +1149,9 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
             ei = si + vocab_size
             stream_logits = logits[:, :, si:ei]
             if sampling_temperature is not None:
-                assert sampling_topk is not None
-                stream_logits = self._apply_sampling_transform(
+                stream_logits = self._apply_teacher_forced_transform(
                     stream_logits,
                     temperature=sampling_temperature,
-                    topk=sampling_topk,
                     forbidden_token_ids=forbidden_token_ids,
                 )
             stream_labels = targets[:, stream_idx, :].long()
@@ -1160,11 +1166,11 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
             # This on-policy surrogate is value-identical to -advantage, while its
             # gradient is -advantage * grad(log pi(action)).
             with torch.cuda.amp.autocast(enabled=False):
-                per_token_loss = -(
+                per_token_po_loss = -(
                     torch.exp(per_token_logps.float() - per_token_logps.float().detach())
                     * advantages.float().unsqueeze(1)
                 )
-                per_token_loss = per_token_loss * group_validities.float().unsqueeze(1)
+                per_token_po_loss = per_token_po_loss * group_mask
 
                 logits_fp32 = stream_logits.float()
                 log_probs = logits_fp32.log_softmax(-1)
@@ -1180,23 +1186,30 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
                 with torch.no_grad():
                     ref_stream_logits = reference_logits[:, :, si:ei]
                     if sampling_temperature is not None:
-                        # Keep full reference support. Independently truncating the
-                        # reference top-k can assign zero probability to policy actions.
-                        ref_stream_logits = (
-                            torch.nan_to_num(ref_stream_logits, nan=0.0, posinf=100.0, neginf=-100.0)
-                            .clamp(-100.0, 100.0)
-                            .div(sampling_temperature)
+                        # Policy and reference must use identical temperature and
+                        # token support for a meaningful distribution-level KL.
+                        ref_stream_logits = self._apply_teacher_forced_transform(
+                            ref_stream_logits,
+                            temperature=sampling_temperature,
+                            forbidden_token_ids=forbidden_token_ids,
                         )
-                    per_token_ref_logps = self._get_per_token_logps(
-                        ref_stream_logits, stream_labels, loss_mask
-                    )
+                    ref_log_probs = ref_stream_logits.float().log_softmax(-1)
+
                 with torch.cuda.amp.autocast(enabled=False):
-                    per_token_kl = (
-                        torch.exp(per_token_ref_logps.float() - per_token_logps.float())
-                        - (per_token_ref_logps.float() - per_token_logps.float())
-                        - 1
+                    # Exact forward KL: sum_a p_policy(a) *
+                    # (log p_policy(a) - log p_reference(a)). Forbidden tokens
+                    # are -inf under both distributions; replace their undefined
+                    # (-inf - -inf) log-ratio with zero before multiplying by the
+                    # policy probability.
+                    log_ratio = torch.nan_to_num(
+                        log_probs - ref_log_probs,
+                        nan=0.0,
+                        posinf=0.0,
+                        neginf=0.0,
                     )
-                    per_token_loss = per_token_loss + grpo_beta * per_token_kl
+                    per_token_kl = (probs * log_ratio).sum(dim=-1).clamp_min(0.0)
+                    per_token_kl = per_token_kl * group_mask
+
                 stream_kl = (
                     (per_token_kl * loss_mask).sum(dim=1) / loss_mask.sum(dim=1).clamp_min(1e-8)
                 ).mean()
@@ -1204,20 +1217,20 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
                 stream_kl = logits.new_zeros((), dtype=torch.float32)
 
             if self.loss_type == "grpo":
-                stream_loss = (
-                    (per_token_loss * loss_mask).sum(dim=1) / loss_mask.sum(dim=1).clamp_min(1e-8)
+                stream_po_loss = (
+                    (per_token_po_loss * loss_mask).sum(dim=1) / loss_mask.sum(dim=1).clamp_min(1e-8)
                 ).mean()
             elif self.loss_type == "dr_grpo":
-                total_tokens = per_token_loss.shape[0] * self.max_decoder_steps
-                stream_loss = (per_token_loss * loss_mask).sum() / max(total_tokens, 1)
+                total_tokens = per_token_po_loss.shape[0] * self.max_decoder_steps
+                stream_po_loss = (per_token_po_loss * loss_mask).sum() / max(total_tokens, 1)
             else:
                 raise ValueError(f"Unknown loss function: {self.loss_type}")
 
-            total_loss = total_loss + stream_loss
+            total_po_loss = total_po_loss + stream_po_loss
             total_kl = total_kl + stream_kl
             total_entropy = total_entropy + stream_entropy
 
-        return total_loss / num_streams, total_kl / num_streams, total_entropy / num_streams
+        return total_po_loss / num_streams, total_kl / num_streams, total_entropy / num_streams
 
     def _compute_po_losses_from_outputs(
         self,
@@ -1246,7 +1259,6 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
             advantages=advantages,
             group_validities=group_validities,
             sampling_temperature=self.audio_sampling_temperature,
-            sampling_topk=self.audio_sampling_topk,
             forbidden_token_ids=SpecialAudioToken.get_forbidden_tokens(
                 self.codebook_size, forbid_audio_eos=False
             ),
@@ -1275,7 +1287,6 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
                 advantages=advantages,
                 group_validities=group_validities,
                 sampling_temperature=self.phoneme_sampling_temperature,
-                sampling_topk=self.phoneme_sampling_topk,
             )
 
         # GT phonemes are supervised targets, not sampled policy actions. Retain the
@@ -1287,7 +1298,15 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
         po_loss = audio_po_loss + self.phoneme_po_loss_weight * phoneme_po_loss
         kl_loss = audio_kl + self.phoneme_po_loss_weight * phoneme_kl
         entropy = audio_entropy + self.phoneme_po_loss_weight * phoneme_entropy
-        total_loss = po_loss + self.aux_phoneme_loss_weight * phoneme_aux_loss
+        # Keep policy and KL losses separate for logging. ``train_kl_loss`` is
+        # the raw exact KL; only ``grpo_beta * kl_loss`` contributes to the
+        # optimized objective.
+        grpo_beta = float(self.cfg.get('grpo_beta', 0.0))
+        total_loss = (
+            po_loss
+            + grpo_beta * kl_loss
+            + self.aux_phoneme_loss_weight * phoneme_aux_loss
+        )
         if self.entropy_coeff > 0:
             total_loss = total_loss - self.entropy_coeff * entropy
 

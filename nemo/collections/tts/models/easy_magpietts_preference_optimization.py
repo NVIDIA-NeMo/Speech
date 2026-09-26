@@ -28,15 +28,14 @@ from omegaconf import DictConfig, open_dict
 
 import nemo.collections.asr as nemo_asr
 from nemo.collections.asr.metrics.wer import word_error_rate
-from nemo.collections.asr.parts.mixins.transcription import TranscribeConfig
 from nemo.collections.tts.models.easy_magpietts import EasyMagpieTTSModel
 from nemo.collections.tts.modules.magpietts_modules import SpecialAudioToken
+from nemo.collections.tts.parts.utils.reward_asr import RewardASRRouter
 from nemo.collections.tts.parts.utils.helpers import (
     get_mask_from_lengths,
     get_speaker_embeddings_from_filepaths,
     print_grad_weight_summary,
     process_text_for_cer,
-    transcribe_with_whisper_from_filepaths,
 )
 from nemo.utils import logging
 
@@ -85,26 +84,23 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
             self._reference_model._no_state_dict = True
             logging.info("Reference model loaded and frozen")
 
-        reward_asr_model = cfg.get('reward_asr_model', 'nemo')
-        if reward_asr_model == 'nemo':
-            self._eval_asr_model = nemo_asr.models.EncDecRNNTBPEModel.from_pretrained(
-                model_name=cfg.get('reward_asr_model_name', "nvidia/parakeet-ctc-0.6b")
-            )
-            self._eval_asr_model.freeze()
-            self.whisper_processor = None
-            self.whisper_model = None
-        elif reward_asr_model == 'whisper':
-            from transformers import WhisperForConditionalGeneration, WhisperProcessor
-
-            self._eval_asr_model = None
-            self.whisper_processor = WhisperProcessor.from_pretrained("openai/whisper-large-v3")
-            self.whisper_model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-large-v3")
-            self.whisper_model.eval()
-            for param in self.whisper_model.parameters():
-                param.requires_grad = False
-            self.use_multilingual_asr = True
-        else:
-            raise ValueError(f"Unknown reward_asr_model: {reward_asr_model}")
+        reward_asr_cfg = cfg.get('reward_asr')
+        if reward_asr_cfg is None:
+            # Preserve the existing NeMo backend as the default while new recipes
+            # use reward_asr.default_backend and reward_asr.language_routes.
+            reward_asr_cfg = {
+                "default_backend": "nemo",
+                "language_routes": {},
+                "backends": {
+                    "nemo": {
+                        "type": "nemo",
+                        "model_name": cfg.get("reward_asr_model_name", "nvidia/parakeet-ctc-0.6b"),
+                    }
+                },
+            }
+        self._reward_asr_router = RewardASRRouter(reward_asr_cfg, device_getter=lambda: self.device)
+        self.reward_asr_log_samples = max(int(reward_asr_cfg.get("log_samples", 0)), 0)
+        self.use_multilingual_asr = True
 
         self._eval_speaker_verification_model = nemo_asr.models.EncDecSpeakerLabelModel.from_pretrained(
             model_name=cfg.get('speaker_verification_model_name', 'titanet_large')
@@ -177,8 +173,10 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
                     "changes sampled actions without a corresponding policy likelihood."
                 )
 
-        self._normalize_whisper_transcript = self.cfg.get('normalize_whisper_transcript', True)
-        if reward_asr_model == 'whisper' and self._normalize_whisper_transcript:
+        self._normalize_reward_transcript = self.cfg.get(
+            'normalize_reward_transcript', self.cfg.get('normalize_whisper_transcript', True)
+        )
+        if self._normalize_reward_transcript:
             self._normalizer_cache = {}
 
         # Entropy bonus coefficient – encourages exploration and prevents mode collapse.
@@ -662,45 +660,28 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
             f"prompt: {prompt_text}\n{table}\n"
         )
 
-    def _compute_pred_transcripts(
-        self, predicted_audio_paths: List[str], batch_repeated: Dict, reward_asr_model: str
-    ) -> List[str]:
-        """Transcribe predicted audio files using either the NeMo ASR model or Whisper.
+    def _compute_pred_transcripts(self, predicted_audio_paths: List[str], batch_repeated: Dict) -> List[str]:
+        """Route reward transcription by language, then normalize consistently for CER/WER."""
+        languages = list(batch_repeated.get('languages', ['en'] * len(predicted_audio_paths)))
+        raw_transcripts = self._reward_asr_router.transcribe(predicted_audio_paths, languages)
+        pred_transcripts = []
+        logged_languages: Dict[str, int] = {}
+        for item_idx, (language, transcript) in enumerate(zip(languages, raw_transcripts)):
+            normalizer = self._get_cached_normalizer(language) if self._normalize_reward_transcript else None
+            normalized = normalizer.normalize(transcript) if normalizer is not None else transcript
+            pred_transcripts.append(process_text_for_cer(normalized))
 
-        Returns a list of processed transcript strings (one per audio file), ready for CER/WER
-        computation.
-        """
-        if reward_asr_model == 'nemo':
-            pred_transcripts = self._eval_asr_model.transcribe(
-                predicted_audio_paths,
-                batch_size=len(predicted_audio_paths),
-                override_config=TranscribeConfig(
-                    use_lhotse=False, batch_size=len(predicted_audio_paths), num_workers=0
-                ),
-            )
-            return [process_text_for_cer(transcript.text) for transcript in pred_transcripts]
-
-        self.whisper_model.to(self.device)
-        pred_transcripts = [""] * len(predicted_audio_paths)
-        langs = batch_repeated.get('languages', ['en'] * len(predicted_audio_paths))
-        language_groups = {}
-        for item_idx, audio_path in enumerate(predicted_audio_paths):
-            language = langs[item_idx] if item_idx < len(langs) else 'en'
-            language_groups.setdefault(language, []).append((item_idx, audio_path))
-
-        for language, grouped_items in language_groups.items():
-            normalizer = self._get_cached_normalizer(language) if self._normalize_whisper_transcript else None
-            grouped_paths = [audio_path for _, audio_path in grouped_items]
-            group_transcripts = transcribe_with_whisper_from_filepaths(
-                audio_filepaths=grouped_paths,
-                language=language,
-                whisper_processor=self.whisper_processor,
-                whisper_model=self.whisper_model,
-                device=self.device,
-                normalizer=normalizer,
-            )
-            for (item_idx, _), transcript in zip(grouped_items, group_transcripts):
-                pred_transcripts[item_idx] = process_text_for_cer(transcript)
+            num_logged = logged_languages.get(language, 0)
+            if (
+                num_logged < self.reward_asr_log_samples
+                and getattr(self.trainer, "is_global_zero", True)
+            ):
+                gt_text = str(batch_repeated['raw_texts'][item_idx]).replace("\n", " ")
+                logging.info(
+                    f"[reward_asr_transcript] language={language} gt={gt_text[:240]!r} "
+                    f"raw_pred={transcript[:240]!r} normalized_pred={pred_transcripts[-1][:240]!r}"
+                )
+                logged_languages[language] = num_logged + 1
         return pred_transcripts
 
     def _compute_speaker_embeddings_parallel(
@@ -763,7 +744,6 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
             advantages, group validities, and timing information.
         """
         batch_repeated = self.repeat_items_in_batch(batch, num_generations_per_item)
-        reward_asr_model = self.cfg.get('reward_asr_model', 'nemo')
 
         use_cfg = False
         cfg_scale = 1.0
@@ -820,7 +800,7 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
         ]
 
         rewarding_start_time = time.perf_counter()
-        pred_transcripts = self._compute_pred_transcripts(predicted_audio_paths, batch_repeated, reward_asr_model)
+        pred_transcripts = self._compute_pred_transcripts(predicted_audio_paths, batch_repeated)
         try:
             pred_speaker_embeddings, gt_speaker_embeddings = self._compute_speaker_embeddings_parallel(
                 predicted_audio_paths, batch, num_generations_per_item
@@ -1552,3 +1532,7 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
         for tkey in ('audio_generation_time_sec', 'audio_save_time_sec', 'rewarding_time_sec'):
             self.log(f'train_{tkey}', float(timings.get(tkey, 0.0)), prog_bar=False, sync_dist=True)
         self.log('train_teacher_forced_time_sec', teacher_forced_time_sec, prog_bar=False, sync_dist=True)
+
+    def teardown(self, stage: str) -> None:
+        self._reward_asr_router.close()
+        super().teardown(stage)

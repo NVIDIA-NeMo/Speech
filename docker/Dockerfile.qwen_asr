@@ -1,0 +1,13 @@
+# Build with the same NeMo image used for training, then convert the resulting
+# image to SQSH with the deployment environment's standard enroot workflow.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+COPY scripts/tts/qwen_asr_requirements.txt /tmp/qwen_asr_requirements.txt
+
+# Qwen3-ASR currently pins Transformers 4.57.6, while NeMo uses Transformers
+# 5.x. Keep Qwen in a reproducible, isolated interpreter inside the image.
+RUN /opt/venv/bin/python -m venv /opt/qwen_asr \
+    && /opt/qwen_asr/bin/python -m pip install --no-cache-dir --upgrade pip \
+    && /opt/qwen_asr/bin/python -m pip install --no-cache-dir -r /tmp/qwen_asr_requirements.txt \
+    && /opt/qwen_asr/bin/python -c "import qwen_asr, torch, transformers; print(torch.__version__, transformers.__version__)"

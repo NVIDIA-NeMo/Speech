@@ -874,7 +874,12 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             "text": text_data["target_text_tokens"],
             "text_lens": text_data["target_token_lens"],
             "raw_texts": [
-                " ".join(s.text for s in cut.supervisions if s.speaker in self.output_roles) for cut in cuts
+                " ".join(
+                    s.normalized_text if s.has_custom("normalized_text") else s.text
+                    for s in cut.supervisions
+                    if s.speaker in self.output_roles
+                )
+                for cut in cuts
             ],
             "task": [getattr(cut, "task", "tts") for cut in cuts],
             "user_audio_turn_splitted": audio_data["user_audio_turn_splitted"],

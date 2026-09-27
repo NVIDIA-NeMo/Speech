@@ -67,9 +67,6 @@ Tutorial Overview
      - Online ASR Microphone Buffered Streaming
      - `Online ASR Microphone Buffered Streaming <https://github.com/NVIDIA-NeMo/Speech/blob/main/tutorials/asr/Online_ASR_Microphone_Demo_Buffered_Streaming.ipynb>`_
    * - ASR
-     - ASR CTC Language Fine-Tuning
-     - `ASR CTC Language Fine-Tuning <https://colab.research.google.com/github/NVIDIA-NeMo/Speech/blob/main/tutorials/asr/ASR_CTC_Language_Finetuning.ipynb>`_
-   * - ASR
      - Intro to Transducers
      - `Intro to Transducers <https://colab.research.google.com/github/NVIDIA-NeMo/Speech/blob/main/tutorials/asr/Intro_to_Transducers.ipynb>`_
    * - ASR
@@ -81,9 +78,6 @@ Tutorial Overview
    * - ASR
      - Speech Commands
      - `Speech Commands <https://colab.research.google.com/github/NVIDIA-NeMo/Speech/blob/main/tutorials/asr/Speech_Commands.ipynb>`_
-   * - ASR
-     - Online Offline Microphone Speech Commands
-     - `Online Offline Microphone Speech Commands <https://github.com/NVIDIA-NeMo/Speech/blob/main/tutorials/asr/Online_Offline_Speech_Commands_Demo.ipynb>`_
    * - ASR
      - Voice Activity Detection
      - `Voice Activity Detection <https://colab.research.google.com/github/NVIDIA-NeMo/Speech/blob/main/tutorials/asr/Voice_Activity_Detection.ipynb>`_
@@ -137,9 +131,6 @@ Tutorial Overview
    * - TTS
      - Basic and Advanced: NeMo TTS Primer
      - `NeMo TTS Primer <https://colab.research.google.com/github/NVIDIA-NeMo/Speech/blob/main/tutorials/tts/NeMo_TTS_Primer.ipynb>`_
-   * - TTS
-     - Basic and Advanced: TTS Speech/Text Aligner Inference
-     - `TTS Speech/Text Aligner Inference <https://colab.research.google.com/github/NVIDIA-NeMo/Speech/blob/main/tutorials/tts/Aligner_Inference_Examples.ipynb>`_
    * - TTS
      - Basic and Advanced: FastPitch and MixerTTS Model Training
      - `FastPitch and MixerTTS Model Training <https://colab.research.google.com/github/NVIDIA-NeMo/Speech/blob/main/tutorials/tts/FastPitch_MixerTTS_Training.ipynb>`_

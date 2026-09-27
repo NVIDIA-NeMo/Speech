@@ -214,7 +214,7 @@ SFSpeech Chinese/English Bilingual Speech
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 * Dataset URL: https://catalog.ngc.nvidia.com/orgs/nvidia/resources/sf_bilingual_speech_zh_en
 * Dataset Processing Script: https://github.com/NVIDIA-NeMo/Speech/tree/stable/scripts/dataset_processing/tts/sfbilingual/get_data.py
-* Command Line Instruction: please refer details in Section 1 (NGC Registry CLI installation), Section 2 (Downloading SFSpeech Dataset), and Section 3 (Creatiung Data Manifests) from https://github.com/NVIDIA-NeMo/Speech/blob/main/tutorials/tts/FastPitch_ChineseTTS_Training.ipynb. Below code block briefly describes the steps.
+* Command Line Instruction: the code block below briefly describes the steps (NGC Registry CLI installation, downloading the SFSpeech dataset, and creating data manifests).
 
 .. code-block:: bash
 

@@ -32,6 +32,7 @@ from nemo.collections.asr.inference.streaming.framing.request import FeatureBuff
 from nemo.collections.asr.inference.streaming.framing.request_options import ASRRequestOptions
 from nemo.collections.asr.inference.streaming.state.rnnt_state import RNNTStreamingState
 from nemo.collections.asr.inference.utils.enums import FeatureBufferPaddingMode, RequestType
+from nemo.collections.asr.inference.utils.per_stream_biasing import release_auto_managed_stream_biasing
 from nemo.collections.asr.inference.utils.pipeline_utils import (
     adjust_vad_segments,
     check_existance_of_required_attributes,
@@ -248,6 +249,17 @@ class BufferedRNNTPipeline(BasePipeline):
             state.set_prompt_index(prompt_idx)
 
         return state
+
+    def delete_state(self, stream_id: int) -> None:
+        """Delete the state and release the stream's biasing model if it was not released at `is_last`."""
+        state = self.get_state(stream_id)
+        if (
+            state is not None
+            and self.decoding_computer is not None
+            and self.decoding_computer.per_stream_biasing_enabled
+        ):
+            release_auto_managed_stream_biasing(state, self.decoding_computer.biasing_multi_model)
+        super().delete_state(stream_id)
 
     def get_sep(self) -> str:
         """Return the separator for the text processor."""

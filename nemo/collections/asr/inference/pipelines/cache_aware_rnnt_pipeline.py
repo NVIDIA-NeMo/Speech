@@ -264,6 +264,17 @@ class CacheAwareRNNTPipeline(BasePipeline):
             release_all_biasing_models(self.decoding_computer.biasing_multi_model, self._state_pool.values())
         super().close_session()
 
+    def delete_state(self, stream_id: int) -> None:
+        """Delete the state and release the stream's biasing model if it was not released at `is_last`."""
+        state = self.get_state(stream_id)
+        if (
+            state is not None
+            and self.decoding_computer is not None
+            and self.decoding_computer.per_stream_biasing_enabled
+        ):
+            release_auto_managed_stream_biasing(state, self.decoding_computer.biasing_multi_model)
+        super().delete_state(stream_id)
+
     def get_sep(self) -> str:
         """Return the separator for the text processor."""
         return self.sep

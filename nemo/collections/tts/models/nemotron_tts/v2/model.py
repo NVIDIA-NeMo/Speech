@@ -37,7 +37,6 @@ from nemo.collections.tts.data.text_to_speech_dataset_lhotse import MagpieTTSLho
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse_multiturn import MagpieTTSLhotseMultiturnDataset
 from nemo.collections.tts.models.nemotron_tts.v2.base import NemotronTTSBaseV2, TrainingMode
 from nemo.collections.tts.modules.magpietts_modules import (
-    LocalTransformerType,
     add_special_tokens,
     remove_eos_token,
     remove_special_tokens,
@@ -71,11 +70,10 @@ class ProcessBatchOutput:
     Output dataclass from process_batch containing loss values and model predictions.
 
     Attributes:
-        loss: Total combined loss (codebook_loss + phoneme_loss + local_transformer_loss)
+        loss: Total combined loss.
         codebook_loss: Cross-entropy loss for parallel audio codebook prediction
         phoneme_loss: Cross-entropy loss for phoneme prediction (None if no phoneme tokenizer)
-        local_transformer_loss: Loss from local transformer (None if not used)
-        local_transformer_logits: Logits from local transformer (None if not used)
+        acoustic_codes_predictor_loss: Loss from the acoustic codes predictor.
         logits: Predicted logits for audio codes (B, T', num_codebooks * num_tokens_per_codebook)
         phoneme_logits: Predicted logits for phoneme tokens (None if no phoneme tokenizer)
         phoneme_tokens_target: Target phoneme tokens for loss computation
@@ -90,8 +88,7 @@ class ProcessBatchOutput:
     loss: torch.Tensor
     codebook_loss: torch.Tensor
     phoneme_loss: Optional[torch.Tensor]
-    local_transformer_loss: Optional[torch.Tensor]
-    local_transformer_logits: Optional[torch.Tensor]
+    acoustic_codes_predictor_loss: torch.Tensor
     logits: torch.Tensor
     phoneme_logits: Optional[torch.Tensor]
     phoneme_tokens_target: Optional[torch.Tensor]
@@ -123,7 +120,7 @@ class NemotronTTSModelV2(NemotronTTSBaseV2):
         self.phoneme_corruption_type = cfg.get('phoneme_corruption_type', 'repeat_skip_unk')
         self.phoneme_loss_weight = cfg.get('phoneme_loss_weight', 1.0)
         self.parallel_codebook_loss_scale = cfg.get('parallel_codebook_loss_scale', 1.0)
-        self.local_transformer_loss_scale = cfg.get('local_transformer_loss_scale', 1.0)
+        self.acoustic_codes_predictor_loss_scale = cfg.get('acoustic_codes_predictor_loss_scale', 1.0)
 
         self.cross_entropy_loss = nn.CrossEntropyLoss(reduction='none')
 
@@ -875,6 +872,45 @@ class NemotronTTSModelV2(NemotronTTSBaseV2):
         sliced = torch.gather(sequence_embeddings, dim=1, index=gather_indices_exp)
         return sliced
 
+    def _acoustic_codes_predictor_targets(
+        self,
+        num_positions: int,
+        audio_codes_target: torch.Tensor,
+        audio_codes_lens_target: torch.Tensor,
+        audio_delay: torch.Tensor,
+        loss_mask: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """Place acoustic-code targets and an optional loss mask on the backbone timeline."""
+        targets = audio_codes_target.transpose(1, 2).long()
+        batch_size, num_frames, num_codes = targets.shape
+        if num_codes != self.acoustic_codes_predictor.num_audio_codebooks:
+            raise ValueError(
+                f"Target has {num_codes} codes, expected {self.acoustic_codes_predictor.num_audio_codebooks}"
+            )
+
+        codes = torch.full(
+            (batch_size, num_positions, num_codes),
+            self.acoustic_codes_predictor.mask_token_id,
+            dtype=torch.long,
+            device=targets.device,
+        )
+        offsets = torch.arange(num_frames, device=targets.device).unsqueeze(0)
+        positions = audio_delay.unsqueeze(1) + offsets
+        valid = (offsets < audio_codes_lens_target.unsqueeze(1)) & (positions < num_positions)
+        rows = torch.arange(batch_size, device=targets.device).unsqueeze(1).expand_as(valid)
+        codes[rows[valid], positions[valid]] = targets[valid]
+
+        aligned_loss_mask = None
+        if loss_mask is not None:
+            expected_shape = (batch_size, num_frames)
+            if loss_mask.shape != expected_shape:
+                raise ValueError(f"Loss mask has shape {tuple(loss_mask.shape)}, expected {expected_shape}")
+            aligned_loss_mask = torch.zeros((batch_size, num_positions), dtype=torch.bool, device=targets.device)
+            loss_mask = loss_mask.to(device=targets.device, dtype=torch.bool)
+            aligned_loss_mask[rows[valid], positions[valid]] = loss_mask[valid]
+
+        return codes, aligned_loss_mask
+
     def process_batch(
         self,
         text: torch.Tensor,
@@ -1222,28 +1258,20 @@ class NemotronTTSModelV2(NemotronTTSBaseV2):
         )
         loss = self.parallel_codebook_loss_scale * codebook_loss
 
-        # Compute local transformer loss if applicable
-        local_transformer_loss = None
-        local_transformer_logits = None
-        if self.local_transformer_type != LocalTransformerType.NO_LT:
-            assert self.local_transformer_type == LocalTransformerType.AR, "Unexpected local transformer type"
-
-            if dropout_audio_conditioning:
-                lt_masking = self.feature_masking
-            else:
-                lt_masking = None
-
-            local_transformer_logits = self._lt_helper.compute_logits(
-                pred_embeddings, audio_codes_target, targets_offset_by_one=False, feature_masking=lt_masking
-            )
-            local_transformer_loss, _ = self.compute_loss(
-                local_transformer_logits,
-                audio_codes_target,
-                audio_codes_lens_target,
-                agent_mask_target=agent_mask if self.cfg.get("mask_user_on_loss", False) else None,
-            )
-
-            loss = loss + self.local_transformer_loss_scale * local_transformer_loss
+        predictor_targets, predictor_loss_mask = self._acoustic_codes_predictor_targets(
+            num_positions=transformer_hidden_states.size(1),
+            audio_codes_target=audio_codes_target,
+            audio_codes_lens_target=audio_codes_lens_target,
+            audio_delay=audio_delay,
+            loss_mask=agent_mask if self.cfg.get("mask_user_on_loss", False) else None,
+        )
+        acoustic_codes_predictor_loss = self.acoustic_codes_predictor.compute_loss(
+            hidden_states=transformer_hidden_states,
+            target_codes=predictor_targets,
+            lengths=combined_channel_lens,
+            loss_mask=predictor_loss_mask,
+        )
+        loss = loss + self.acoustic_codes_predictor_loss_scale * acoustic_codes_predictor_loss
 
         # Compute phoneme loss if applicable
         phoneme_loss = None
@@ -1285,8 +1313,7 @@ class NemotronTTSModelV2(NemotronTTSBaseV2):
             loss=loss,
             codebook_loss=codebook_loss,
             phoneme_loss=phoneme_loss,
-            local_transformer_loss=local_transformer_loss,
-            local_transformer_logits=local_transformer_logits,
+            acoustic_codes_predictor_loss=acoustic_codes_predictor_loss,
             logits=logits,
             phoneme_logits=pb_phoneme_logits,
             phoneme_tokens_target=pb_phoneme_tokens_target,
@@ -1530,9 +1557,11 @@ class NemotronTTSModelV2(NemotronTTSBaseV2):
             phoneme_loss = batch_output.phoneme_loss
             self.log('train/phoneme_loss', phoneme_loss, prog_bar=True, sync_dist=True)
 
-        local_transformer_loss = batch_output.local_transformer_loss
-        if local_transformer_loss is not None:
-            self.log('train/local_transformer_loss', local_transformer_loss, prog_bar=True, sync_dist=True)
+        self.log(
+            'train/acoustic_codes_predictor_loss',
+            batch_output.acoustic_codes_predictor_loss,
+            sync_dist=True,
+        )
 
         # Log training mode info for multi-mode training
         if batch_output.selected_training_mode is not None:
@@ -1621,8 +1650,7 @@ class NemotronTTSModelV2(NemotronTTSBaseV2):
             agent_mask=batch["agent_mask"] if "agent_mask" in batch else None,
         )
         # Access ProcessBatchOutput dataclass attributes
-        # logits come from the parallel prediction head
-        # If using local_transformer, local_transformer_logits are also available
+        # Logits come from the auxiliary parallel prediction head.
         loss = batch_output.loss
         codebook_loss = batch_output.codebook_loss
         logits = batch_output.logits
@@ -1647,11 +1675,10 @@ class NemotronTTSModelV2(NemotronTTSBaseV2):
                 if isinstance(logger, WandbLogger) and wandb_log_dict:
                     logger.experiment.log(wandb_log_dict)
 
-        local_transformer_loss = batch_output.local_transformer_loss
         val_output = {
             'val_loss': loss,
             'val_codebook_loss': codebook_loss,
-            'val_local_transformer_loss': local_transformer_loss,
+            'val_acoustic_codes_predictor_loss': batch_output.acoustic_codes_predictor_loss,
         }
 
         if self.phoneme_tokenizer is not None:
@@ -1665,7 +1692,6 @@ class NemotronTTSModelV2(NemotronTTSBaseV2):
                 max_decoder_steps=330,
                 temperature=0.7,
                 topk=80,
-                use_local_transformer_for_inference=self.local_transformer_type == LocalTransformerType.AR,
                 use_cfg=self.cfg.get('inference_use_cfg_in_val', True),
                 cfg_scale=2.5,
             )
@@ -1891,9 +1917,8 @@ class NemotronTTSModelV2(NemotronTTSBaseV2):
         self.log("val_loss", val_loss, prog_bar=True, sync_dist=True)
         self.log("val/codebook_loss", val_codebook_loss, prog_bar=True, sync_dist=True)
 
-        if self.local_transformer_type != LocalTransformerType.NO_LT:
-            val_local_transformer_loss = collect("val_local_transformer_loss")
-            self.log("val/local_transformer_loss", val_local_transformer_loss, prog_bar=True, sync_dist=True)
+        predictor_loss = collect("val_acoustic_codes_predictor_loss")
+        self.log("val/acoustic_codes_predictor_loss", predictor_loss, sync_dist=True)
 
         if self.phoneme_tokenizer is not None:
             val_phoneme_loss = collect("val_phoneme_loss")

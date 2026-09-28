@@ -44,11 +44,10 @@ from nemo.collections.tts.modules.audio_codec_modules import (
 from nemo.collections.tts.modules.magpietts_modules import (
     CharAwareSubwordEncoder,
     CodecHelper,
-    LocalTransformerHelper,
-    LocalTransformerType,
     SpecialAudioToken,
     add_special_tokens,
 )
+from nemo.collections.tts.modules.nemotron_tts.v2 import AcousticCodesPredictor
 from nemo.collections.tts.parts.utils.helpers import get_mask_from_lengths
 from nemo.collections.tts.parts.utils.tts_dataset_utils import tokenize_text_with_phoneme_spans
 from nemo.core.classes import ModelPT
@@ -95,7 +94,6 @@ class StreamingConfig:
         training_mode: The training mode being used for inference.
         use_cfg: Whether classifier-free guidance is enabled.
         cfg_scale: CFG scale factor.
-        use_local_transformer: Whether to use local transformer for inference.
         temperature: Sampling temperature.
         topk: Top-k sampling parameter.
         phoneme_input_type: 'gt' or 'pred' for phoneme tokens.
@@ -108,7 +106,6 @@ class StreamingConfig:
     training_mode: TrainingMode
     use_cfg: bool
     cfg_scale: float
-    use_local_transformer: bool
     temperature: float
     topk: int
     phoneme_input_type: str
@@ -163,6 +160,7 @@ class StreamingState:
     gt_phoneme_lens: Optional[torch.Tensor] = None  # (B,) lengths after stacking
     gt_audio_embeddings: Optional[torch.Tensor] = None  # (B, T', E) pre-computed GT audio embeddings
     gt_audio_lens: Optional[torch.Tensor] = None  # (B,) lengths after stacking
+    acoustic_codes_predictor_cache: Optional[List] = None
 
 
 @dataclass
@@ -606,67 +604,37 @@ class NemotronTTSBaseV2(ModelPT):
         if self.disable_subword_embedding and not hasattr(self, 'cas_encoder'):
             raise ValueError("`disable_subword_embedding=True` requires CAS encoder initialization.")
 
-        # Projection from hidden_dim to audio_embedding_dim before final_proj (Identity if same)
+        # Keep the parallel audio head as the backbone auxiliary training objective.
         if self.audio_embedding_dim != cfg.hidden_dim:
             self.audio_out_projection = nn.Linear(cfg.hidden_dim, self.audio_embedding_dim)
         else:
             self.audio_out_projection = nn.Identity()
-
         self.final_proj = nn.Linear(
             self.audio_embedding_dim,
             self.num_audio_codebooks * self.num_all_tokens_per_codebook * self.frame_stacking_factor,
         )
 
-        self.local_transformer_type = LocalTransformerType(cfg.get('local_transformer_type', 'none').lower())
-        logging.info(f"Local transformer type: {self.local_transformer_type}")
-        if self.local_transformer_type != LocalTransformerType.NO_LT:
-            local_transformer_hidden_dim = cfg.get('local_transformer_hidden_dim', 256)
-            if local_transformer_hidden_dim != cfg.hidden_dim:
-                self.local_transformer_in_projection = nn.Linear(cfg.hidden_dim, local_transformer_hidden_dim)
-            else:
-                self.local_transformer_in_projection = nn.Identity()
-            self.local_transformer = transformer_2501.Transformer(
-                n_layers=self.cfg.get('local_transformer_n_layers', 2),
-                d_model=local_transformer_hidden_dim,
-                d_ffn=local_transformer_hidden_dim * 4,
-                sa_n_heads=self.cfg.get('local_transformer_n_heads', 1),
-                kernel_size=1,
-                is_causal=self.local_transformer_type == LocalTransformerType.AR,
-                max_length_causal_mask=self.num_audio_codebooks * self.frame_stacking_factor + 2,
-                use_learnable_pos_emb=True,
+        if self.decoder_type != 'nemotron_h':
+            raise ValueError("NemotronTTS v2 requires a Nemotron-H backbone")
+        prediction_schedule = cfg.get('acoustic_codes_predictor_schedule', None)
+        if prediction_schedule is None:
+            raise ValueError("NemotronTTS v2 requires acoustic_codes_predictor_schedule")
+        total_audio_codes = self.num_audio_codebooks * self.frame_stacking_factor
+        if sum(prediction_schedule) != total_audio_codes:
+            raise ValueError(
+                f"acoustic_codes_predictor_schedule predicts {sum(prediction_schedule)} codes, "
+                f"expected {total_audio_codes}"
             )
-            # Projection from local_transformer_hidden_dim to audio_embedding_dim (Identity if same)
-            if self.audio_embedding_dim != local_transformer_hidden_dim:
-                self.local_transformer_audio_out_projection = nn.Linear(
-                    local_transformer_hidden_dim, self.audio_embedding_dim
-                )
-            else:
-                self.local_transformer_audio_out_projection = nn.Identity()
-            local_transformer_out_projections = []
-            for _ in range(self.num_audio_codebooks * self.frame_stacking_factor):
-                # Have a separate projection layer for each codebook, to distinguish between them
-                local_transformer_out_projections.append(
-                    nn.Linear(self.audio_embedding_dim, self.num_all_tokens_per_codebook)
-                )
-            self.local_transformer_out_projections = nn.ModuleList(local_transformer_out_projections)
-
-            # EasyMagpie stacks frames into the channel dimension (B, C*S, T_stacked)
-            # via stack_codes, unlike Magpie which keeps them interleaved in time (B, C, T_full).
-            # We pass num_audio_codebooks=C*S and frame_stacking_factor=1 so the helper
-            # treats each stacked channel as an independent codebook without time-domain striding.
-            self._lt_helper = LocalTransformerHelper(
-                local_transformer=self.local_transformer,
-                audio_embeddings=self.audio_embeddings,
-                audio_in_projection=self.audio_in_projection,
-                local_transformer_in_projection=self.local_transformer_in_projection,
-                local_transformer_audio_out_projection=self.local_transformer_audio_out_projection,
-                local_transformer_out_projections=self.local_transformer_out_projections,
-                num_audio_codebooks=self.num_audio_codebooks * self.frame_stacking_factor,
-                frame_stacking_factor=1,
-                audio_eos_id=self.audio_eos_id,
-                mask_token_id=self.mask_token_id,
-                codebook_size=self.codebook_size,
-            )
+        self.acoustic_codes_predictor = AcousticCodesPredictor(
+            backbone_config=self.decoder.config,
+            embed_codes=self.embed_audio_tokens,
+            num_audio_codebooks=total_audio_codes,
+            audio_eos_id=self.audio_eos_id,
+            mask_token_id=self.mask_token_id,
+            codebook_size=self.codebook_size,
+            prediction_schedule=prediction_schedule,
+            n_layers=cfg.get('acoustic_codes_predictor_n_layers', 1),
+        )
 
     @property
     def codec_sil_codes(self):
@@ -844,6 +812,7 @@ class NemotronTTSBaseV2(ModelPT):
             state.past_key_values = out.past_key_values
             state.cache_seq_len += T
             state.last_hidden = out.last_hidden_state
+            self._advance_acoustic_codes_predictor(state, frames=T)
 
             # Advance logical streams consumed by this profile prefill.
             state.text_tokens_seen += T
@@ -1595,54 +1564,6 @@ class NemotronTTSBaseV2(ModelPT):
 
         return x, orig_lens
 
-    def _sample_audio_codes(
-        self,
-        last_hidden: torch.Tensor,
-        all_code_logits_t: torch.Tensor,
-        temperature: float,
-        topk: int,
-        use_local_transformer_for_inference: bool,
-        use_cfg: bool,
-        cfg_scale: float,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Sample audio codes from logits using either local transformer or parallel sampling.
-
-        Returns:
-            audio_codes_next: Sampled codes with temperature/topk (B, num_codebooks)
-            all_codes_next_argmax: Argmax sampled codes for EOS detection (B, num_codebooks)
-        """
-        if use_local_transformer_for_inference:
-            if self.local_transformer_type == LocalTransformerType.AR:
-                audio_codes_next = self._lt_helper.sample_autoregressive(
-                    dec_output=last_hidden[:, -1, :],
-                    temperature=temperature,
-                    topk=topk,
-                    use_cfg=use_cfg,
-                    cfg_scale=cfg_scale,
-                    use_kv_cache=False,
-                    sanitize_logits=True,
-                )
-                # Base class returns (B, C, S); flatten to (B, C*S) for downstream code
-                audio_codes_next = audio_codes_next.permute(0, 2, 1)
-                audio_codes_next = audio_codes_next.reshape(audio_codes_next.size(0), -1)
-            else:
-                raise ValueError(
-                    f"Local transformer inference requested but local transformer type is {self.local_transformer_type}"
-                )
-            # TODO @rfejgin: should we add argmax sampling for EOS here too?
-            all_codes_next_argmax = audio_codes_next
-        else:
-            # Parallel sampling from all codebook logits
-            audio_codes_next = self.sample_codes_from_logits(all_code_logits_t, temperature=temperature, topk=topk)
-            # Argmax sampling for reliable EOS detection
-            if temperature <= 0.0:
-                all_codes_next_argmax = audio_codes_next  # already argmax
-            else:
-                all_codes_next_argmax = self.sample_codes_from_logits(all_code_logits_t, temperature=0.01)
-
-        return audio_codes_next, all_codes_next_argmax
-
     def streaming_init(
         self,
         context_audio_codes: torch.Tensor,
@@ -1652,7 +1573,6 @@ class NemotronTTSBaseV2(ModelPT):
         inference_mode: Optional[str] = None,
         use_cfg: bool = False,
         cfg_scale: float = 1.0,
-        use_local_transformer: bool = False,
         temperature: float = 0.7,
         topk: int = 80,
         phoneme_input_type: str = 'predicted',
@@ -1693,7 +1613,6 @@ class NemotronTTSBaseV2(ModelPT):
                 If None, uses the default inference mode.
             use_cfg: Whether to use classifier-free guidance.
             cfg_scale: CFG scale factor (higher = stronger conditioning).
-            use_local_transformer: Whether to use local transformer for AR sampling.
             temperature: Sampling temperature for audio codes.
             topk: Top-k sampling parameter.
             phoneme_input_type: 'gt' or 'predicted' for phoneme tokens (use 'predicted' for streaming).
@@ -1802,7 +1721,6 @@ class NemotronTTSBaseV2(ModelPT):
                 training_mode=selected_training_mode,
                 use_cfg=use_cfg,
                 cfg_scale=cfg_scale,
-                use_local_transformer=use_local_transformer,
                 temperature=temperature,
                 topk=topk,
                 phoneme_input_type=phoneme_input_type,
@@ -1842,6 +1760,11 @@ class NemotronTTSBaseV2(ModelPT):
                 gt_audio_embeddings=gt_audio_embeddings,
                 gt_audio_lens=gt_audio_lens_state,
             )
+
+            state.acoustic_codes_predictor_cache = self.acoustic_codes_predictor.make_cache(
+                batch_size=last_hidden.size(0), device=device, dtype=last_hidden.dtype
+            )
+            self._advance_acoustic_codes_predictor(state, frames=last_hidden.size(1))
 
             return state
 
@@ -1918,6 +1841,7 @@ class NemotronTTSBaseV2(ModelPT):
             state.cache_seq_len += 1
 
             if prefill_like_step:
+                self._advance_acoustic_codes_predictor(state)
                 # Advance logical streams, keep audio silent, but predict phonemes if enabled.
                 state.context_position += needs_context.long()
                 state.text_tokens_seen += (~needs_context).long()
@@ -2267,7 +2191,9 @@ class NemotronTTSBaseV2(ModelPT):
                     state.audio_prediction_start_idx,
                 )
 
-            audio_codes_next_stacked, all_codes_next_argmax = self._predict_audio_codes(state)  # (B, C*S)
+            audio_codes_next_stacked, all_codes_next_argmax = self._predict_audio_codes(
+                state, needs_audio=needs_audio
+            )  # (B, C*S)
 
             S = self.frame_stacking_factor
             C = self.num_audio_codebooks
@@ -2306,6 +2232,8 @@ class NemotronTTSBaseV2(ModelPT):
 
             state.all_predictions.append(audio_codes_unstacked)
             audio_codes_next = audio_codes_unstacked
+        else:
+            self._advance_acoustic_codes_predictor(state)
 
         # Force-finish items when GT audio is exhausted (teacher forcing)
         if state.gt_audio_embeddings is not None and state.gt_audio_lens is not None:
@@ -2353,35 +2281,31 @@ class NemotronTTSBaseV2(ModelPT):
         # (B, phoneme_stacking_factor)
         return pred_phoneme_tokens
 
-    def _predict_audio_codes(self, state: StreamingState) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Predict audio codes from the last hidden state."""
-        actual_batch_size = state.config.batch_size
-        last_hidden = state.last_hidden
-
-        # Compute audio logits
-        last_hidden_audio = self.audio_out_projection(last_hidden[:, -1, :])
-        all_code_logits_t = self.final_proj(last_hidden_audio)
-
-        # Apply CFG if enabled
-        if state.config.use_cfg:
-            conditional_logits = all_code_logits_t[:actual_batch_size]
-            unconditional_logits = all_code_logits_t[actual_batch_size:]
-            all_code_logits_t = (
-                state.config.cfg_scale * conditional_logits + (1.0 - state.config.cfg_scale) * unconditional_logits
-            )
-
-        # Sample audio codes
-        audio_codes_next, all_codes_next_argmax = self._sample_audio_codes(
-            last_hidden=last_hidden,
-            all_code_logits_t=all_code_logits_t,
-            temperature=state.config.temperature,
-            topk=state.config.topk,
-            use_local_transformer_for_inference=state.config.use_local_transformer,
-            use_cfg=state.config.use_cfg,
-            cfg_scale=state.config.cfg_scale,
+    def _advance_acoustic_codes_predictor(self, state: StreamingState, frames: int = 1) -> None:
+        """Populate predictor caches for backbone positions that do not predict audio."""
+        if state.acoustic_codes_predictor_cache is None:
+            return
+        self.acoustic_codes_predictor.advance(
+            state.last_hidden[:, -frames:, :],
+            cache=state.acoustic_codes_predictor_cache,
         )
 
-        return audio_codes_next, all_codes_next_argmax
+    def _predict_audio_codes(
+        self, state: StreamingState, needs_audio: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Predict audio codes from the last hidden state."""
+        audio_codes_next = self.acoustic_codes_predictor.predict_codes(
+            hidden_states=state.last_hidden[:, -1:, :],
+            cache=state.acoustic_codes_predictor_cache,
+            temperature=state.config.temperature,
+            topk=state.config.topk,
+            use_cfg=state.config.use_cfg,
+            cfg_scale=state.config.cfg_scale,
+            sanitize_logits=True,
+            predict=needs_audio,
+        )
+        audio_codes_next = audio_codes_next.squeeze(1)
+        return audio_codes_next, audio_codes_next
 
     def streaming_finalize(
         self,
@@ -2402,6 +2326,7 @@ class NemotronTTSBaseV2(ModelPT):
         """
         batch_size = state.config.batch_size
         device = state.config.device
+        state.acoustic_codes_predictor_cache = None
 
         # Extract and decode phoneme predictions
         phoneme_tokens_list: List[List[int]] = []
@@ -2505,7 +2430,6 @@ class NemotronTTSBaseV2(ModelPT):
         topk: int = 80,
         use_cfg: bool = False,
         cfg_scale: float = 1.0,
-        use_local_transformer_for_inference: bool = False,
         phoneme_input_type: str = 'pred',
         phoneme_sampling_method: str = 'argmax',
         force_dropout_text: bool = False,
@@ -2536,7 +2460,6 @@ class NemotronTTSBaseV2(ModelPT):
             topk: Top-k sampling parameter.
             use_cfg: Whether to use classifier-free guidance.
             cfg_scale: CFG scale factor.
-            use_local_transformer_for_inference: Whether to use local transformer.
             phoneme_input_type: 'gt' or 'pred' for phoneme tokens.
             phoneme_sampling_method: 'argmax' or 'sample' for phoneme token selection.
             force_dropout_text: Whether to dropout text embeddings.
@@ -2625,7 +2548,6 @@ class NemotronTTSBaseV2(ModelPT):
                 context_text_tokens_lens=context_text_tokens_lens,
                 use_cfg=use_cfg,
                 cfg_scale=cfg_scale,
-                use_local_transformer=use_local_transformer_for_inference,
                 temperature=temperature,
                 topk=topk,
                 phoneme_input_type=phoneme_input_type,
@@ -2767,7 +2689,6 @@ class NemotronTTSBaseV2(ModelPT):
         context_audio_duration: float = 5.0,
         use_cfg: bool = True,
         cfg_scale: float = 2.5,
-        use_local_transformer: Optional[bool] = None,  # If unset, defaults to True if AR LT is present
         temperature: float = 0.7,
         topk: int = 80,
         max_steps: int = 330,
@@ -2783,11 +2704,6 @@ class NemotronTTSBaseV2(ModelPT):
         device = next(self.parameters()).device
         transcript = transcript.strip()
         context_text = (context_text or "[NO TEXT CONTEXT]").strip()
-        if use_local_transformer is None:
-            # EasyMagpie uses the local transformer only for AR; MASKGIT/NO_LT decode via
-            # parallel sampling (_sample_audio_codes raises if asked to use a non-AR local transformer).
-            use_local_transformer = self.local_transformer_type == LocalTransformerType.AR
-
         if main_tokenizer_name is None:
             # Match model init behavior: default to first configured tokenizer.
             main_tokenizer_name = list(self.cfg.text_tokenizers.keys())[0]
@@ -2873,7 +2789,6 @@ class NemotronTTSBaseV2(ModelPT):
                 topk=topk,
                 use_cfg=use_cfg,
                 cfg_scale=cfg_scale,
-                use_local_transformer_for_inference=use_local_transformer,
                 phoneme_input_type=phoneme_input_type,
                 phoneme_sampling_method='argmax',
                 use_teacher_forced=False,

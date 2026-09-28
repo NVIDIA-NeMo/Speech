@@ -29,6 +29,7 @@ from nemo.collections.tts.models.magpietts_preference_optimization import (
     MagpieTTSModelOfflinePODataGen,
     MagpieTTSModelOnlinePO,
 )
+from nemo.collections.tts.models.nemotron_tts import NemotronTTSBaseV2, NemotronTTSModelV2
 from nemo.collections.tts.models.ssl_tts import SSLDisentangler
 
 __all__ = [
@@ -48,4 +49,6 @@ __all__ = [
     "MagpieTTSModelOfflinePO",
     "MagpieTTSModelOnlinePO",
     "EasyMagpieCFGDistillation",
+    "NemotronTTSBaseV2",
+    "NemotronTTSModelV2",
 ]

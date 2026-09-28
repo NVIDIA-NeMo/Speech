@@ -19,6 +19,7 @@ import pytest
 import torch
 from torch import nn
 
+from nemo.collections.tts.modules.magpietts_modules import FeatureMasking
 from nemo.collections.tts.modules.nemotron_h_decoder import NemotronHConfig
 from nemo.collections.tts.modules.nemotron_tts.v2 import AcousticCodesPredictor
 
@@ -162,6 +163,42 @@ def test_loss_mask_controls_supervision_without_hiding_teacher_forced_codes():
         embedded_codes,
         target_codes[:, :, : SCHEDULE[0]].transpose(1, 2),
     )
+
+
+def test_loss_masks_teacher_forced_code_embeddings_between_blocks():
+    predictor = _make_predictor()
+    feature_masking = FeatureMasking(hidden_size=D_MODEL, mask_min=1.0, mask_max=1.0)
+    target_codes = torch.randint(0, CODEBOOK_SIZE, (2, 3, NUM_CODES))
+
+    loss = predictor.compute_loss(
+        hidden_states=torch.randn(2, 3, D_MODEL),
+        target_codes=target_codes,
+        lengths=torch.tensor([3, 3]),
+        feature_masking=feature_masking,
+    )
+    loss.backward()
+
+    assert feature_masking.masked_emb.grad is not None
+    assert torch.count_nonzero(feature_masking.masked_emb.grad) > 0
+    for embedding in predictor.embed_codes.embeddings[: SCHEDULE[0]]:
+        assert embedding.weight.grad is not None
+        assert torch.count_nonzero(embedding.weight.grad) == 0
+
+
+def test_feature_masking_respects_maskable_timesteps():
+    masking = FeatureMasking(hidden_size=D_MODEL, mask_min=1.0, mask_max=1.0)
+    inputs = torch.randn(2, 5, D_MODEL)
+    maskable = torch.tensor(
+        [
+            [False, True, True, False, False],
+            [False, False, True, True, False],
+        ]
+    )
+
+    output = masking(inputs, input_len=torch.tensor([4, 5]), maskable=maskable)
+
+    torch.testing.assert_close(output[maskable], masking.masked_emb.expand_as(output)[maskable])
+    torch.testing.assert_close(output[~maskable], inputs[~maskable])
 
 
 def test_next_block_embeds_only_codes_predicted_by_the_previous_block():

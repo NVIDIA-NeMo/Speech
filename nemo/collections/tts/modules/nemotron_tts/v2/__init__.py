@@ -15,4 +15,3 @@
 from nemo.collections.tts.modules.nemotron_tts.v2.acoustic_codes_predictor import AcousticCodesPredictor
 
 __all__ = ["AcousticCodesPredictor"]
-

@@ -179,6 +179,7 @@ class AcousticCodesPredictor(torch.nn.Module):
         target_codes: torch.Tensor,
         lengths: torch.Tensor,
         loss_mask: Optional[torch.Tensor] = None,
+        feature_masking=None,
     ) -> torch.Tensor:
         """Compute loss over codec tokens and AUDIO_EOS on the backbone timeline."""
         assert target_codes.size(-1) == sum(self.prediction_schedule), (
@@ -206,7 +207,10 @@ class AcousticCodesPredictor(torch.nn.Module):
 
         for block in self.blocks:
             if previous_codes is not None:
-                hidden_states = hidden_states + self._embed(previous_codes, previous_codebook_indices)
+                embedded_codes = self._embed(previous_codes, previous_codebook_indices)
+                if feature_masking is not None:
+                    embedded_codes = feature_masking(inputs=embedded_codes, input_len=lengths)
+                hidden_states = hidden_states + embedded_codes
             hidden_states = block(hidden_states)
             logits = block.compute_logits(hidden_states)
 

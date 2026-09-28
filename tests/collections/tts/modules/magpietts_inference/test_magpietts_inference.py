@@ -30,11 +30,9 @@ from nemo.collections.tts.modules.magpietts_inference.evaluate_generated_audio i
     _get_record_texts,
     load_evalset_config,
 )
-from nemo.collections.tts.modules.magpietts_inference.evaluate_generated_audio import (
-    main as evaluate_generated_audio_main,
-)
 from nemo.collections.tts.modules.magpietts_inference.evaluation import (
     EvaluationConfig,
+    evaluate_generated_audio_dir,
     resolve_evaluation_config_for_dataset,
 )
 from nemo.collections.tts.modules.magpietts_inference.utils import (
@@ -214,8 +212,9 @@ def _write_evalset_config(tmp_path, entry_overrides):
     return config_path
 
 
-def _patch_below_evaluate(monkeypatch, captured):
-    """Stub evaluate_dir/compute_global_metrics so that the real evaluate() wiring (incl. its FCD guard) runs."""
+@pytest.mark.unit
+def test_evaluate_generated_audio_dir_forwards_the_whole_config(monkeypatch):
+    captured = {}
 
     def fake_evaluate_dir(**kwargs):
         captured.update(kwargs)
@@ -225,109 +224,38 @@ def _patch_below_evaluate(monkeypatch, captured):
         captured["global_kwargs"] = kwargs
         return {}
 
+    # Stub below evaluate() so that its real wiring, including the FCD guard, runs.
     monkeypatch.setattr(f"{EVALUATE_MODULE}.evaluate_dir", fake_evaluate_dir)
     monkeypatch.setattr(f"{EVALUATE_MODULE}.compute_global_metrics", fake_compute_global_metrics)
-
-
-@pytest.mark.unit
-def test_standalone_main_applies_evalset_overrides(tmp_path, monkeypatch):
-    config_path = _write_evalset_config(
-        tmp_path,
-        {
-            "language": "de",
-            "asr_model": {"name": "some/asr", "type": "whisper"},
-        },
+    config = EvaluationConfig(
+        sv_model="wavlm",
+        asr_model_name="some/asr",
+        asr_model_type="whisper",
+        language="de",
+        with_fcd=False,
+        with_prosody_metrics=True,
+        asr_batch_size=4,
     )
-    captured = {}
-    _patch_below_evaluate(monkeypatch, captured)
-    argv = [
-        "evaluate_generated_audio.py",
-        "--evalset", "ds",
-        "--datasets_json_path", str(config_path),
-        "--datasets_base_path", str(tmp_path),
-        "--generated_audio_dir", str(tmp_path),
-        "--with_prosody_metrics",  # CLI-level settings without an evalset override are inherited
-        "--strip_text_annotations_for_metrics",
-    ]  # fmt: skip
-    monkeypatch.setattr("sys.argv", argv)
 
-    evaluate_generated_audio_main()
+    evaluate_generated_audio_dir("m.json", "audio", "generated", config)
 
-    assert captured["with_prosody_metrics"] is True
-    assert captured["strip_text_annotations_for_metrics"] is True
-    assert captured["language"] == "de"
+    assert (captured["manifest_path"], captured["audio_dir"], captured["generated_audio_dir"]) == (
+        "m.json",
+        "audio",
+        "generated",
+    )
+    assert (captured["language"], captured["sv_model_type"]) == ("de", "wavlm")
     assert (captured["asr_model_name"], captured["asr_model_type"]) == ("some/asr", "whisper")
-    assert captured["sv_model_type"] == "wavlm"
-    # Pins that the whole EvaluationConfig is forwarded: evaluate()'s own default for eou_model_name is None.
-    assert captured["eou_model_name"] == EvaluationConfig().eou_model_name
-    # manifest_path/audio_dir come from the evalset entry, resolved against --datasets_base_path.
-    assert captured["manifest_path"] == str(tmp_path / "m.json")
-    assert captured["audio_dir"] == str(tmp_path / "audio")
-    # The standalone script has no codec model argument: FCD is disabled instead of tripping evaluate()'s guard.
-    assert captured["global_kwargs"]["codec_model_path"] is None
-    assert captured["global_kwargs"]["gt_audio_paths"] is None
+    assert captured["with_prosody_metrics"] is True and captured["asr_batch_size"] == 4
+    # Every field is forwarded, not a hand-picked subset: evaluate()'s own default for eou_model_name is None.
+    assert captured["eou_model_name"] == config.eou_model_name
+    assert (
+        captured["global_kwargs"]["codec_model_path"] is None and captured["global_kwargs"]["gt_audio_paths"] is None
+    )
 
-
-@pytest.mark.unit
-def test_standalone_main_without_evalset_uses_cli_values(tmp_path, monkeypatch):
-    captured = {}
-    _patch_below_evaluate(monkeypatch, captured)
-    argv = [
-        "evaluate_generated_audio.py",
-        "--manifest_path", "m.json",
-        "--audio_dir", "audio",
-        "--generated_audio_dir", "generated",
-        "--language", "de",
-        "--strip_text_annotations_for_metrics",
-    ]  # fmt: skip
-    monkeypatch.setattr("sys.argv", argv)
-
-    evaluate_generated_audio_main()
-
-    assert captured["strip_text_annotations_for_metrics"] is True
-    assert captured["language"] == "de"
-    assert (captured["manifest_path"], captured["audio_dir"]) == ("m.json", "audio")
-    assert captured["generated_audio_dir"] == "generated"
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize(
-    "argv",
-    [
-        ["--evalset", "ds", "--generated_audio_dir", "g"],  # --evalset without --datasets_json_path
-        [
-            "--evalset",
-            "ds",
-            "--datasets_json_path",
-            "{cfg}",
-            "--manifest_path",
-            "m.json",
-            "--generated_audio_dir",
-            "g",
-        ],
-        ["--datasets_json_path", "{cfg}", "--manifest_path", "m.json", "--generated_audio_dir", "g"],
-        ["--datasets_base_path", "{base}", "--manifest_path", "m.json", "--generated_audio_dir", "g"],
-        ["--manifest_path", "m.json", "--audio_dir", "a"],  # missing --generated_audio_dir
-        ["--audio_dir", "a", "--generated_audio_dir", "g"],  # neither --evalset nor --manifest_path
-        [
-            "--evalset",
-            "missing",
-            "--datasets_json_path",
-            "{cfg}",
-            "--datasets_base_path",
-            "{base}",
-            "--generated_audio_dir",
-            "g",
-        ],
-    ],
-)
-def test_standalone_main_rejects_inconsistent_arguments(tmp_path, monkeypatch, argv):
-    # {cfg} and {base} stand for a valid evalset config that defines the single dataset "ds", and its base path.
-    config_path = _write_evalset_config(tmp_path, {})
-    argv = [arg.format(cfg=config_path, base=tmp_path) for arg in argv]
-    monkeypatch.setattr("sys.argv", ["evaluate_generated_audio.py", *argv])
-    with pytest.raises(SystemExit):
-        evaluate_generated_audio_main()
+    # FCD needs a codec model; the wrapper does not hide evaluate()'s guard.
+    with pytest.raises(ValueError, match="codec_model_path is required"):
+        evaluate_generated_audio_dir("m.json", "audio", "generated", EvaluationConfig())
 
 
 @pytest.mark.unit
@@ -368,33 +296,25 @@ def test_load_evalset_config_rejects_unrecognized_keys(tmp_path):
 
 
 @pytest.mark.unit
-def test_experiment_metrics_csv_header_matches_appended_rows(tmp_path):
+def test_experiment_metrics_csv_header_and_rows_stay_aligned(tmp_path, monkeypatch):
+    warnings_seen = []
+    monkeypatch.setattr(nemo_logging, "warning", lambda msg, *args, **kwargs: warnings_seen.append(msg))
     csv_path = tmp_path / "all_experiment_metrics.csv"
+
     write_csv_header_if_needed(str(csv_path), EXPERIMENT_METRICS_CSV_HEADER)
-    metrics = {"cer_filewise_avg": 0.1, "katakana_cer_cumulative": 0.2}
-    append_metrics_to_csv(str(csv_path), "ckpt", "ds", metrics)
+    write_csv_header_if_needed(str(csv_path), EXPERIMENT_METRICS_CSV_HEADER)  # matching header: nothing to report
+    append_metrics_to_csv(str(csv_path), "ckpt", "ds", {"cer_filewise_avg": 0.1, "katakana_cer_cumulative": 0.2})
 
     with open(csv_path) as f:
         rows = list(csv.DictReader(f))
 
-    assert len(rows) == 1
+    assert len(rows) == 1 and warnings_seen == []
     assert (rows[0]["checkpoint_name"], rows[0]["dataset"]) == ("ckpt", "ds")
     assert rows[0]["cer_filewise_avg"] == "0.1"
     assert rows[0]["katakana_cer_cumulative"] == "0.2"
     assert rows[0]["wer_filewise_avg"] == ""  # absent metrics leave an empty cell
     assert None not in rows[0]  # every value has a header column
     assert len(rows[0]) == len(EXPERIMENT_METRICS_CSV_HEADER.split(","))
-
-
-@pytest.mark.unit
-def test_write_csv_header_if_needed_warns_on_changed_layout(tmp_path, monkeypatch):
-    warnings_seen = []
-    monkeypatch.setattr(nemo_logging, "warning", lambda msg, *args, **kwargs: warnings_seen.append(msg))
-    csv_path = tmp_path / "all_experiment_metrics_with_ci.csv"
-
-    write_csv_header_if_needed(str(csv_path), EXPERIMENT_METRICS_CSV_HEADER)
-    write_csv_header_if_needed(str(csv_path), EXPERIMENT_METRICS_CSV_HEADER)
-    assert warnings_seen == []
 
     # A CSV written before a column was appended keeps its header; the changed layout is reported.
     old_header, dropped_column = EXPERIMENT_METRICS_CSV_HEADER.rsplit(",", 1)

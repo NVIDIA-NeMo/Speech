@@ -171,7 +171,7 @@ The optional keys are:
 
 Malformed values of ``language`` and ``asr_model`` (for example a JSON ``null`` or an ``asr_model`` without a supported ``type``) are rejected when the config is loaded; remove a key to inherit the command-line value. Keys that are not recognized, including training-only fields such as ``feature_dir``, are rejected, so that a misspelled key cannot silently fall back to the command-line value.
 
-The same per-dataset keys are honoured by the standalone ``evaluate_generated_audio.py --evalset <name> --datasets_json_path <config> --generated_audio_dir <dir>`` entry point, which computes the same metrics as the inference script except the Frechet Codec Distance. The CER/WER reference (``gt_text``) is taken from ``normalized_text`` when present, otherwise from ``original_text``, otherwise from ``text``. ``normalized_text`` and ``text`` are the same strings the dataloaders feed the model; ``original_text`` is the orthography kept in legacy phonemized manifests and is used only as the metric reference there, so ``gt_text`` and ``tts_text_input`` differ for such manifests.
+The CER/WER reference (``gt_text``) is taken from ``normalized_text`` when present, otherwise from ``original_text``, otherwise from ``text``. ``normalized_text`` and ``text`` are the same strings the dataloaders feed the model; ``original_text`` is the orthography kept in legacy phonemized manifests and is used only as the metric reference there, so ``gt_text`` and ``tts_text_input`` differ for such manifests.
 
 Resources
 #########

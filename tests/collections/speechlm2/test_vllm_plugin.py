@@ -467,6 +467,53 @@ class TestNeMoSpeechLMConfig:
         cfg = NeMoSpeechLMConfig(**_DEFAULT_CONFIG_KWARGS)
         assert cfg.audio_locator_tag == "<|audio|>"
 
+    @pytest.mark.parametrize("audio_token_id", [None, 0, 151935, 151936, 151945])
+    def test_audio_token_id_reaches_target_and_draft_configs(self, audio_token_id):
+        cfg = NeMoSpeechLMConfig(
+            **{**_DEFAULT_CONFIG_KWARGS, "pretrained_llm": "Qwen/Qwen3-1.7B"},
+            audio_token_id=audio_token_id,
+            speechlm_runtime_added_token_ids=[] if audio_token_id is None else [audio_token_id],
+        )
+        assert cfg.speechlm_runtime_added_token_ids == cfg.get_text_config().speechlm_runtime_added_token_ids
+        assert cfg.audio_token_id == audio_token_id
+        assert cfg.get_text_config().audio_token_id == audio_token_id
+        assert cfg.speechlm_output_vocab_size == 151936
+
+    def test_audio_token_id_survives_config_serialization(self, tmp_path):
+        cfg = NeMoSpeechLMConfig(
+            **_DEFAULT_CONFIG_KWARGS,
+            audio_token_id=4,
+            speechlm_runtime_added_token_ids=[4, 5],
+            llm_config={
+                "model_type": "qwen2",
+                "architectures": ["Qwen2ForCausalLM"],
+                "vocab_size": 100,
+            },
+        )
+        cfg.save_pretrained(tmp_path)
+        restored = NeMoSpeechLMConfig.from_pretrained(tmp_path)
+        assert restored.audio_token_id == restored.get_text_config().audio_token_id == 4
+        assert restored.speechlm_runtime_added_token_ids == [4, 5]
+        assert restored.get_text_config().speechlm_runtime_added_token_ids == [4, 5]
+        assert restored.speechlm_output_vocab_size == 100
+        assert restored.image_token_index == 100
+
+    @pytest.mark.parametrize("audio_token_id", [True, -1, 151946, "1"])
+    def test_invalid_audio_token_id_rejected(self, audio_token_id):
+        with pytest.raises(ValueError, match="audio_token_id"):
+            NeMoSpeechLMConfig(
+                **{**_DEFAULT_CONFIG_KWARGS, "pretrained_llm": "Qwen/Qwen3-1.7B"},
+                audio_token_id=audio_token_id,
+            )
+
+    @pytest.mark.parametrize("token_ids", [[True], [-1], [151946], ["1"], "1"])
+    def test_invalid_runtime_added_token_ids_rejected(self, token_ids):
+        with pytest.raises(ValueError, match="speechlm_runtime_added_token_ids"):
+            NeMoSpeechLMConfig(
+                **{**_DEFAULT_CONFIG_KWARGS, "pretrained_llm": "Qwen/Qwen3-1.7B"},
+                speechlm_runtime_added_token_ids=token_ids,
+            )
+
     def test_audio_locator_tag_custom_rejected(self):
         """Plugin only supports ``<|audio|>``; mismatched checkpoints fail at load time."""
         with pytest.raises(ValueError, match="audio_locator_tag"):

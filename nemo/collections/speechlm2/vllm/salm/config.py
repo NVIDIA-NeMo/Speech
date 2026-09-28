@@ -192,6 +192,8 @@ class NeMoSpeechLMConfig(PretrainedConfig):
         pe_encoder_config: dict | None = None,
         pe_encoder_overrides: dict | None = None,
         speaker_encoder: dict | None = None,
+        audio_token_id: int | None = None,
+        speechlm_runtime_added_token_ids: list[int] | None = None,
         **kwargs,
     ):
         required_fields = {
@@ -210,6 +212,8 @@ class NeMoSpeechLMConfig(PretrainedConfig):
             and pe_encoder_overrides is None
             and speaker_encoder is None
             and llm_config is None
+            and audio_token_id is None
+            and speechlm_runtime_added_token_ids is None
             and not kwargs
             and all(value is None for value in required_fields.values())
         )
@@ -223,6 +227,10 @@ class NeMoSpeechLMConfig(PretrainedConfig):
         self._pending_image_token_index = None
 
         super().__init__(**kwargs)
+        self.audio_token_id = audio_token_id
+        self.speechlm_runtime_added_token_ids = (
+            [] if speechlm_runtime_added_token_ids is None else speechlm_runtime_added_token_ids
+        )
 
         if is_default_init:
             # HuggingFace may instantiate config classes with no arguments when
@@ -345,9 +353,26 @@ class NeMoSpeechLMConfig(PretrainedConfig):
             if num_layers > 0:
                 self.text_config.layer_types = ["attention"] * num_layers
 
-        # Runtime audio placeholders need input rows, but are not trained output classes.
+        # Extra runtime embedding rows are not trained output classes.
         self.text_config.speechlm_output_vocab_size = int(self.text_config.vocab_size)
         self.text_config.vocab_size += _SPEECHLM_EMBED_EXTRA_ROWS
+        if audio_token_id is not None and (
+            isinstance(audio_token_id, bool)
+            or not isinstance(audio_token_id, int)
+            or not 0 <= audio_token_id < self.text_config.vocab_size
+        ):
+            raise ValueError("audio_token_id must be an integer within the SpeechLM embedding table.")
+        if not isinstance(self.speechlm_runtime_added_token_ids, list) or any(
+            isinstance(token_id, bool)
+            or not isinstance(token_id, int)
+            or not 0 <= token_id < self.text_config.vocab_size
+            for token_id in self.speechlm_runtime_added_token_ids
+        ):
+            raise ValueError("speechlm_runtime_added_token_ids must be a list of valid embedding-table IDs.")
+        # MTP may consume the nested text config. Older exports omit provenance;
+        # rerun prepare_for_vllm() with the source tokenizer to record additions.
+        self.text_config.audio_token_id = audio_token_id
+        self.text_config.speechlm_runtime_added_token_ids = self.speechlm_runtime_added_token_ids
         pending_image_token_index = self.__dict__.pop("_pending_image_token_index", None)
         if pending_image_token_index is not None and pending_image_token_index != self.image_token_index:
             raise ValueError(
@@ -370,7 +395,8 @@ class NeMoSpeechLMConfig(PretrainedConfig):
 
         vLLM calls this compatibility field ``image_token_index`` even for an
         audio multimodal target. Actual audio locations come from vLLM's
-        placeholder ranges; no token-index field is serialized by SpeechLM.
+        placeholder ranges. The exported audio_token_id and runtime-added token
+        metadata do not change this compatibility boundary.
         """
         vocab_size = getattr(self.text_config, "vocab_size", None)
         if vocab_size is None:
@@ -432,6 +458,8 @@ class NeMoSpeechLMConfig(PretrainedConfig):
             "llm_config",
             "pretrained_asr",
             "audio_locator_tag",
+            "audio_token_id",
+            "speechlm_runtime_added_token_ids",
             "image_token_index",
             "prompt_format",
             "pretrained_weights",

@@ -153,7 +153,9 @@ def configure_optimizers_exclude_norm_from_wd(model: LightningModule):
     ]
 
     # 4. Instantiate via Hydra
-    optimizer = safe_instantiate(model.cfg.optimizer, optim_groups, _convert_='all')
+    optimizer = safe_instantiate(
+        _optimizer_config_with_torch_dtypes(model.cfg.optimizer), optim_groups, _convert_='all'
+    )
     patch_flashoptim_uneven_shard_support(optimizer)
 
     ans = {"optimizer": optimizer}

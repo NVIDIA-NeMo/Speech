@@ -273,6 +273,9 @@ class NeMoSpeechLMForConditionalGeneration(
         logits = self.language_model.compute_logits(hidden_states)
         if logits is not None:
             logits[..., self.config.speechlm_output_vocab_size :] = -torch.inf
+            for token_id in getattr(self.config, "speechlm_runtime_added_token_ids", []):
+                if token_id < logits.shape[-1]:
+                    logits[..., token_id] = -torch.inf
         return logits
 
     def get_mm_mapping(self) -> MultiModelKeys:

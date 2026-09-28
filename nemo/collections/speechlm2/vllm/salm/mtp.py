@@ -150,6 +150,9 @@ class NeMoSpeechLMMTP(NemotronHMTP):
         logits = super().compute_logits(hidden_states, *args, **kwargs)
         if logits is not None:
             logits[..., self.config.speechlm_output_vocab_size :] = -torch.inf
+            for token_id in getattr(self.config, "speechlm_runtime_added_token_ids", []):
+                if token_id < logits.shape[-1]:
+                    logits[..., token_id] = -torch.inf
         return logits
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:

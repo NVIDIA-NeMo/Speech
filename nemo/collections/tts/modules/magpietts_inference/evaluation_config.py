@@ -26,14 +26,13 @@ from typing import Optional
 
 # Supported ASR backends: the values of --asr_model_type and of the "type" field of an evalset "asr_model" entry.
 ASR_MODEL_TYPES = ("nemo", "nemo_with_prompt", "whisper")
-# Keys of an evalset config entry that the inference/evaluation scripts read, plus "feature_dir", which shipped configs
-# carry over from the training DatasetMeta schema and which is accepted but unused here. Other keys are ignored with a
-# warning so that a misspelled override (e.g. "langauge") does not silently leave the CLI-level value in force.
+# Keys of an evalset config entry that the inference/evaluation scripts read. Any other key is rejected, so that a
+# misspelled override (e.g. "langauge") cannot silently leave the CLI-level value in force; training-only DatasetMeta
+# fields such as "feature_dir" or "sample_weight" do not belong in an evaluation config.
 EVALSET_ENTRY_KEYS = frozenset(
     {
         "manifest_path",
         "audio_dir",
-        "feature_dir",  # accepted for compatibility with existing configs; not read by these scripts
         "tokenizer_names",
         "language",
         "asr_model",

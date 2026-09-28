@@ -354,20 +354,17 @@ def test_malformed_evalset_overrides_are_rejected(tmp_path, entry_overrides, mat
 
 
 @pytest.mark.unit
-def test_load_evalset_config_warns_on_unrecognized_keys(tmp_path, monkeypatch):
-    warnings_seen = []
-    monkeypatch.setattr(nemo_logging, "warning", lambda msg, *args, **kwargs: warnings_seen.append(msg))
+def test_load_evalset_config_rejects_unrecognized_keys(tmp_path):
+    # Only the keys the inference/evaluation scripts read are accepted (as in examples/tts/evalset_config.json).
+    config_path = _write_evalset_config(tmp_path, {"tokenizer_names": ["english_phoneme"], "language": "en"})
+    assert "ds" in load_evalset_config(str(config_path), dataset_base_path=tmp_path)
 
-    # Keys consumed by the inference/evaluation scripts (e.g. the shipped examples/tts/evalset_config.json) are fine.
-    config_path = _write_evalset_config(tmp_path, {"feature_dir": None, "tokenizer_names": ["english_phoneme"]})
-    load_evalset_config(str(config_path), dataset_base_path=tmp_path)
-    assert warnings_seen == []
-
-    # A misspelled override would silently leave the CLI-level value in force; it is reported instead.
-    config_path = _write_evalset_config(tmp_path, {"langauge": "de"})
-    load_evalset_config(str(config_path), dataset_base_path=tmp_path)
-    assert len(warnings_seen) == 1
-    assert "Dataset ds" in warnings_seen[0] and "langauge" in warnings_seen[0]
+    # A misspelled override would silently leave the CLI-level value in force; it is rejected instead, and so are
+    # training-only DatasetMeta fields copied from a training config.
+    for entry, key in (({"langauge": "de"}, "langauge"), ({"feature_dir": None}, "feature_dir")):
+        config_path = _write_evalset_config(tmp_path, entry)
+        with pytest.raises(ValueError, match=rf"Dataset ds: unrecognized evalset keys \['{key}'\]; recognized keys"):
+            load_evalset_config(str(config_path), dataset_base_path=tmp_path)
 
 
 @pytest.mark.unit

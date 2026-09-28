@@ -162,7 +162,7 @@ def load_evalset_config(config_path: Optional[str] = None, dataset_base_path: Op
 
     Relative ``manifest_path``, ``audio_dir`` and ``asr_model.name`` (``.nemo``) paths are resolved against
     ``dataset_base_path``. Every entry is checked with ``validate_evalset_entry``; keys outside ``EVALSET_ENTRY_KEYS``
-    are ignored with a warning.
+    are rejected.
     """
     if config_path is None or not os.path.exists(config_path):
         raise ValueError("No dataset_json_path provided, please provide a valid path to the evalset config file.")
@@ -177,8 +177,8 @@ def load_evalset_config(config_path: Optional[str] = None, dataset_base_path: Op
         validate_evalset_entry(info, dataset_name=dataset_name)
         unrecognized_keys = sorted(set(info) - EVALSET_ENTRY_KEYS)
         if unrecognized_keys:
-            logging.warning(
-                f"Dataset {dataset_name}: ignoring unrecognized evalset keys {unrecognized_keys}; "
+            raise ValueError(
+                f"Dataset {dataset_name}: unrecognized evalset keys {unrecognized_keys}; "
                 f"recognized keys are {sorted(EVALSET_ENTRY_KEYS)}."
             )
         manifest_path = Path(info["manifest_path"])

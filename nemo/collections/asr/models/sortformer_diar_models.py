@@ -853,7 +853,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
 
         This function performs the following steps:
         1. Moves the audio signal to the correct device.
-        2. Normalizes the time-series audio signal.
+        2. Peak-normalizes each row by the max over its own valid samples (non-streaming mode only).
         3. Extract audio features from the time-series audio signal using the model's preprocessor.
 
         Args:
@@ -872,7 +872,10 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
         audio_signal = audio_signal.to(self.device)
         audio_signal_length = audio_signal_length.to(self.device)
         if not self.streaming_mode:
-            audio_signal = (1 / (audio_signal.max() + self.eps)) * audio_signal
+            # Scale each row by its own peak over its valid samples, independent of batch neighbors and padding.
+            valid = torch.arange(audio_signal.shape[1], device=audio_signal.device) < audio_signal_length.unsqueeze(1)
+            peak = audio_signal.masked_fill(~valid, float("-inf")).amax(dim=1, keepdim=True)
+            audio_signal = (1 / (peak + self.eps)) * audio_signal
 
         if self.max_batch_dur > 0 and self.max_batch_dur < batch_total_dur:
             processed_signal, processed_signal_length = self.oom_safe_feature_extraction(

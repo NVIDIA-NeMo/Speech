@@ -155,9 +155,9 @@ Evaluation set configuration
 .. code-block:: json
 
     {
-        "riva_en": {
-            "manifest_path": "en_US/riva/eval_manifest.json",
-            "audio_dir": "en_US/riva/audio",
+        "libritts_test_clean": {
+            "manifest_path": "LibriTTS/test_clean_manifest.json",
+            "audio_dir": "LibriTTS/test-clean",
             "language": "en",
             "asr_model": {"name": "nvidia/parakeet-tdt-1.1b", "type": "nemo"}
         }

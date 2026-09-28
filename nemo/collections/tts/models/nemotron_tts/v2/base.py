@@ -36,7 +36,11 @@ from nemo.collections.tts.data.text_to_speech_dataset_lhotse import (
 )
 from nemo.collections.tts.models import AudioCodecModel
 from nemo.collections.tts.modules import transformer_2501
-from nemo.collections.tts.modules.audio_codec_modules import VectorQuantizerIndexConverter
+from nemo.collections.tts.modules.audio_codec_modules import (
+    FiniteScalarQuantizer,
+    GroupFiniteScalarQuantizer,
+    VectorQuantizerIndexConverter,
+)
 from nemo.collections.tts.modules.magpietts_modules import (
     CharAwareSubwordEncoder,
     CodecHelper,
@@ -421,16 +425,25 @@ class NemotronTTSBaseV2(ModelPT):
         # Audio embedding dimension - can be smaller than hidden_dim to reduce parameters
         self.audio_embedding_dim = cfg.get('audio_embedding_dim', cfg.hidden_dim)
 
-        audio_embeddings = []
-        for _ in range(self.num_audio_codebooks * self.frame_stacking_factor):
-            audio_embeddings.append(nn.Embedding(self.num_all_tokens_per_codebook, self.audio_embedding_dim))
-        self.audio_embeddings = nn.ModuleList(audio_embeddings)
-
-        # Projection from audio_embedding_dim to embedding_dim (Identity if same)
-        if self.audio_embedding_dim != cfg.embedding_dim:
-            self.audio_in_projection = nn.Linear(self.audio_embedding_dim, cfg.embedding_dim)
+        # Input-side audio embeddings come either from one learned table per codebook channel, or
+        # from a single projection of the codec's own quantizer latents.
+        self.use_codec_latent_audio_embedding = cfg.get('use_codec_latent_audio_embedding', False)
+        self.audio_embeddings = None
+        self.audio_in_projection = None
+        self.audio_code_projection = None
+        if self.use_codec_latent_audio_embedding:
+            self._init_codec_latent_audio_embedding(cfg)
         else:
-            self.audio_in_projection = nn.Identity()
+            audio_embeddings = []
+            for _ in range(self.num_audio_codebooks * self.frame_stacking_factor):
+                audio_embeddings.append(nn.Embedding(self.num_all_tokens_per_codebook, self.audio_embedding_dim))
+            self.audio_embeddings = nn.ModuleList(audio_embeddings)
+
+            # Projection from audio_embedding_dim to embedding_dim (Identity if same)
+            if self.audio_embedding_dim != cfg.embedding_dim:
+                self.audio_in_projection = nn.Linear(self.audio_embedding_dim, cfg.embedding_dim)
+            else:
+                self.audio_in_projection = nn.Identity()
 
         # Speaker/context encoder for context audio embeddings.
         # This enables keeping the zero-shot conditioning module private at release time.
@@ -942,20 +955,40 @@ class NemotronTTSBaseV2(ModelPT):
             codes = codes[:, :, : codes_len.max()]
         return codes, codes_len
 
-    def embed_audio_tokens(self, audio_tokens):
+    def embed_audio_tokens(self, audio_tokens, codebook_indices=None):
         # audio_tokens: (B, C, T')
         # Add and average the embeddings of the audio tokens across the codebooks
         """Embed and average audio-code tokens across codebook channels.
 
         Args:
             audio_tokens: Audio token IDs shaped ``(B, C, T)``.
+            codebook_indices: Global codebook index for each input channel. Defaults to
+                the first ``C`` codebooks.
 
         Returns:
             Audio embeddings shaped ``(B, T, E)``.
         """
+        if codebook_indices is None:
+            codebook_indices = tuple(range(audio_tokens.size(1)))
+        else:
+            codebook_indices = tuple(codebook_indices)
+            if len(codebook_indices) != audio_tokens.size(1):
+                raise ValueError(
+                    f"Received {audio_tokens.size(1)} code channels but {len(codebook_indices)} codebook indices"
+                )
+
+        if self.use_codec_latent_audio_embedding:
+            all_codebook_indices = tuple(range(self.num_audio_codebooks * self.frame_stacking_factor))
+            if codebook_indices == all_codebook_indices:
+                return self._embed_audio_tokens_from_codec_latent(audio_tokens)
+            return sum(
+                self.embed_audio_codebook(codebook_idx, audio_tokens[:, input_idx, :])
+                for input_idx, codebook_idx in enumerate(codebook_indices)
+            ) / len(codebook_indices)
+
         audio_embedding = None
-        for c in range(audio_tokens.size(1)):
-            embedding = self.audio_embeddings[c](audio_tokens[:, c, :])
+        for input_idx, codebook_idx in enumerate(codebook_indices):
+            embedding = self.audio_embeddings[codebook_idx](audio_tokens[:, input_idx, :])
             if audio_embedding is None:
                 audio_embedding = embedding
             else:
@@ -964,6 +997,111 @@ class NemotronTTSBaseV2(ModelPT):
         # Project from audio_embedding_dim to embedding_dim
         audio_embedding = self.audio_in_projection(audio_embedding)
         return audio_embedding
+
+    def embed_audio_codebook(self, channel_index: int, codes: torch.Tensor) -> torch.Tensor:
+        """Embed one stacked codebook channel through the codec latent projection."""
+        num_channels = self.num_audio_codebooks * self.frame_stacking_factor
+        if not 0 <= channel_index < num_channels:
+            raise ValueError(f"Channel {channel_index} is outside the {num_channels} audio channels")
+        is_special = (codes >= self.codebook_size).unsqueeze(-1)
+
+        latent = self._decode_codebook_latent(channel_index // self.frame_stacking_factor, codes)
+        latent = latent.masked_fill(is_special, 0.0)
+        latent_dim = self.codec_latent_dim
+        weight = self.audio_code_projection.weight[:, channel_index * latent_dim : (channel_index + 1) * latent_dim]
+        embedded = torch.nn.functional.linear(latent, weight, self.audio_code_projection.bias)
+
+        special = self.audio_special_embeddings(self._special_token_rows(channel_index, codes))
+        return embedded + special * is_special
+
+    def _embed_audio_tokens_from_codec_latent(self, audio_tokens: torch.Tensor) -> torch.Tensor:
+        """Embed stacked audio tokens through the codec's quantizer latents."""
+        num_codebooks = self.num_audio_codebooks
+        stacking_factor = self.frame_stacking_factor
+        if audio_tokens.size(1) != num_codebooks * stacking_factor:
+            raise ValueError(
+                f"Expected {num_codebooks * stacking_factor} stacked codebook channels, got {audio_tokens.size(1)}"
+            )
+        batch_size, _, num_steps = audio_tokens.shape
+        audio_tokens = audio_tokens.long()
+
+        codes, _ = self.unstack_codes(audio_tokens, audio_tokens.new_zeros(batch_size), stacking_factor)
+        latent = self._decode_codec_latent(codes)
+        latent = latent.masked_fill((codes >= self.codebook_size).unsqueeze(-1), 0.0)
+        latent = latent.reshape(batch_size, num_codebooks, num_steps, stacking_factor, self.codec_latent_dim)
+        latent = latent.permute(0, 2, 1, 3, 4).reshape(batch_size, num_steps, -1)
+        embedded = self.audio_code_projection(latent)
+
+        is_special = (audio_tokens >= self.codebook_size).unsqueeze(-1)
+        special = self.audio_special_embeddings(self._special_token_rows(self.audio_special_channels, audio_tokens))
+        return embedded + (special * is_special).sum(dim=1)
+
+    def _init_codec_latent_audio_embedding(self, cfg: DictConfig):
+        """Initialize codec-latent projection and the small special-token table."""
+        quantizer = self._audio_code_quantizer
+        if not isinstance(quantizer, (FiniteScalarQuantizer, GroupFiniteScalarQuantizer)):
+            raise ValueError(
+                "`use_codec_latent_audio_embedding` requires an FSQ-based codec quantizer, "
+                f"but found {type(quantizer).__name__}"
+            )
+        if quantizer.num_codebooks != self.num_audio_codebooks:
+            raise ValueError(
+                f"Codec quantizer has {quantizer.num_codebooks} codebooks, but the model expects "
+                f"{self.num_audio_codebooks}"
+            )
+
+        num_channels = self.num_audio_codebooks * self.frame_stacking_factor
+        self.codec_latent_dim = quantizer.codebook_dim // quantizer.num_codebooks
+        self.audio_code_projection = nn.Linear(num_channels * self.codec_latent_dim, cfg.embedding_dim)
+        self.audio_special_embeddings = nn.Embedding(num_channels * len(SpecialAudioToken), cfg.embedding_dim)
+        self.register_buffer(
+            'audio_special_channels', torch.arange(num_channels).view(1, num_channels, 1), persistent=False
+        )
+        logging.info(
+            f"Embedding audio codes from {self.codec_latent_dim}-dim codec latents through a single projection "
+            f"instead of {num_channels} embedding tables"
+        )
+
+    @property
+    def _audio_code_quantizer(self):
+        """Return the quantizer whose index space the model's audio codes use."""
+        if self._codec_converter is not None:
+            return self._codec_converter.vector_quantizer_new
+        return self._codec_model.vector_quantizer
+
+    def _special_token_rows(self, channel_index, codes: torch.Tensor) -> torch.Tensor:
+        """Map channel-specific special-token IDs to embedding rows."""
+        num_special_tokens = len(SpecialAudioToken)
+        special_ids = (codes.long() - self.codebook_size).clamp(min=0, max=num_special_tokens - 1)
+        return channel_index * num_special_tokens + special_ids
+
+    def _decode_codec_latent(self, codes: torch.Tensor) -> torch.Tensor:
+        """Decode all codebooks to per-codebook codec latents."""
+        batch_size, num_codebooks, num_frames = codes.shape
+        codec_codes = codes.clamp(max=self.codebook_size - 1)
+        input_len = torch.full((batch_size,), num_frames, dtype=torch.long, device=codes.device)
+        with torch.no_grad():
+            latent = self._audio_code_quantizer.decode(
+                indices=codec_codes.permute(1, 0, 2), input_len=input_len
+            )
+        latent = latent.to(self.audio_code_projection.weight.dtype)
+        return latent.reshape(batch_size, num_codebooks, self.codec_latent_dim, num_frames).permute(0, 1, 3, 2)
+
+    def _decode_codebook_latent(self, codebook_index: int, codes: torch.Tensor) -> torch.Tensor:
+        """Decode one codebook to codec latents."""
+        if not 0 <= codebook_index < self.num_audio_codebooks:
+            raise ValueError(
+                f"Codebook {codebook_index} is outside the codec's {self.num_audio_codebooks} codebooks"
+            )
+        quantizer = self._audio_code_quantizer
+        if isinstance(quantizer, GroupFiniteScalarQuantizer):
+            quantizer = quantizer.fsqs[codebook_index]
+        codec_codes = codes.long().clamp(max=self.codebook_size - 1).reshape(1, -1, 1)
+        input_len = torch.ones(codec_codes.size(1), dtype=torch.long, device=codes.device)
+        with torch.no_grad():
+            latent = quantizer.decode(indices=codec_codes, input_len=input_len)
+        latent = latent.to(self.audio_code_projection.weight.dtype)
+        return latent.reshape(tuple(codes.shape) + (self.codec_latent_dim,))
 
     def embed_text_tokens(
         self,

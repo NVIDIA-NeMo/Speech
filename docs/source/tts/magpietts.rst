@@ -136,7 +136,6 @@ Several parameters control the generation behavior. The temperature setting affe
         --datasets_json_path /path/to/evalset_config.json \
         --datasets your_evaluation_set \
         --out_dir /path/to/output \
-        --run_evaluation \
         --temperature 0.6 \
         --topk 80 \
         --use_cfg \

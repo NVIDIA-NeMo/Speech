@@ -345,6 +345,8 @@ class NeMoSpeechLMConfig(PretrainedConfig):
             if num_layers > 0:
                 self.text_config.layer_types = ["attention"] * num_layers
 
+        # Runtime audio placeholders need input rows, but are not trained output classes.
+        self.text_config.speechlm_output_vocab_size = int(self.text_config.vocab_size)
         self.text_config.vocab_size += _SPEECHLM_EMBED_EXTRA_ROWS
         pending_image_token_index = self.__dict__.pop("_pending_image_token_index", None)
         if pending_image_token_index is not None and pending_image_token_index != self.image_token_index:

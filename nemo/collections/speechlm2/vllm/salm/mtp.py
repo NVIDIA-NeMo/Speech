@@ -146,6 +146,12 @@ class NeMoSpeechLMMTP(NemotronHMTP):
             is_multimodal=is_multimodal,
         )
 
+    def compute_logits(self, hidden_states: torch.Tensor, *args, **kwargs) -> torch.Tensor | None:
+        logits = super().compute_logits(hidden_states, *args, **kwargs)
+        if logits is not None:
+            logits[..., self.config.speechlm_output_vocab_size :] = -torch.inf
+        return logits
+
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         """Load only the SALM-prefixed weights required by the reusable draft head."""
         # NeMoSpeechLMConfig delegates this to the already padded text-config

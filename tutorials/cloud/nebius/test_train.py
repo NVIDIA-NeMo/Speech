@@ -7,13 +7,30 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
-from train import prepare_an4, publish_artifacts
+from omegaconf import OmegaConf
+
+from train import load_config, prepare_an4, publish_artifacts, write_transcription
 
 
 class ArtifactTests(unittest.TestCase):
     """Exercise the success marker and failure behavior without importing NeMo."""
+
+    def test_dataset_config_survives_detachment_for_reloaded_model(self) -> None:
+        cfg = load_config(Path('/tmp/train.json'), Path('/tmp/test.json'))
+        detached = OmegaConf.create(OmegaConf.to_container(cfg.model.test_ds, resolve=False))
+        self.assertEqual(detached.labels, cfg.model.labels)
+        self.assertEqual(detached.sample_rate, 16000)
+        self.assertEqual(detached.manifest_filepath, '/tmp/test.json')
+
+    def test_hypothesis_is_serialized_as_text(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / 'transcription.json'
+            for text in ['recognized speech', '']:
+                write_transcription('reference', SimpleNamespace(text=text), destination)
+                self.assertEqual(json.loads(destination.read_text()), {'reference': 'reference', 'prediction': text})
 
     def test_published_hash_matches_downloaded_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -11,6 +11,9 @@ import tarfile
 import tempfile
 import urllib.request
 from pathlib import Path
+from typing import Any
+
+from omegaconf import DictConfig, OmegaConf
 
 AN4_URL = 'https://dldata-public.s3.us-east-2.amazonaws.com/an4_sphere.tar.gz'
 AN4_SHA256 = 'a0525579493735d32b60fb6fa5975dd0eaacde087b0a4eeb7f13b7ef33077b12'
@@ -59,11 +62,26 @@ def publish_artifacts(source: Path, destination: Path) -> None:
     (destination / 'COMPLETE.json').write_text(json.dumps(hashes, indent=2) + '\n')
 
 
+def load_config(train_manifest: Path, test_manifest: Path) -> DictConfig:
+    """Fill manifest paths and resolve references before NeMo copies dataset sections."""
+    cfg = OmegaConf.load(Path(__file__).with_name('conformer.yaml'))
+    cfg.model.train_ds.manifest_filepath = str(train_manifest)
+    cfg.model.validation_ds.manifest_filepath = str(test_manifest)
+    cfg.model.test_ds.manifest_filepath = str(test_manifest)
+    OmegaConf.resolve(cfg)
+    return cfg
+
+
+def write_transcription(reference: str, hypothesis: Any, destination: Path) -> None:
+    """Persist the text of a NeMo Hypothesis, including a valid empty prediction."""
+    result = dict(reference=reference, prediction=hypothesis.text)
+    destination.write_text(json.dumps(result, indent=2) + '\n')
+
+
 def train(work: Path, artifacts: Path, max_steps: int) -> None:
     """Train, reload the exported model, evaluate AN4 test data, and transcribe a sample."""
     import lightning.pytorch as pl
     import torch
-    from omegaconf import OmegaConf
 
     from nemo.collections.asr.models import EncDecCTCModel
     from nemo.utils import logging
@@ -75,10 +93,7 @@ def train(work: Path, artifacts: Path, max_steps: int) -> None:
     with urllib.request.urlopen(AN4_URL, timeout=60) as response, archive.open('wb') as output:
         shutil.copyfileobj(response, output)
     train_manifest, test_manifest = prepare_an4(archive, work)
-    cfg = OmegaConf.load(Path(__file__).with_name('conformer.yaml'))
-    cfg.model.train_ds.manifest_filepath = str(train_manifest)
-    cfg.model.validation_ds.manifest_filepath = str(test_manifest)
-    cfg.model.test_ds.manifest_filepath = str(test_manifest)
+    cfg = load_config(train_manifest, test_manifest)
     trainer = pl.Trainer(
         accelerator='gpu',
         devices=1,
@@ -110,9 +125,8 @@ def train(work: Path, artifacts: Path, max_steps: int) -> None:
     record = json.loads(test_manifest.read_text().splitlines()[0])
     shutil.copyfile(record['audio_filepath'], artifacts / 'sample.wav')
     restored.eval()
-    predictions = restored.transcribe([str(artifacts / 'sample.wav')], batch_size=1, return_hypotheses=False)
-    result = dict(reference=record['text'], prediction=predictions[0])
-    (artifacts / 'transcription.json').write_text(json.dumps(result, indent=2) + '\n')
+    predictions = restored.transcribe([str(artifacts / 'sample.wav')], batch_size=1, return_hypotheses=True)
+    write_transcription(record['text'], predictions[0], artifacts / 'transcription.json')
     (artifacts / 'run.json').write_text(json.dumps(dict(seed=42, steps=trainer.global_step, an4_sha256=AN4_SHA256)))
     logging.info('Reloaded model test metrics: %s', metrics)
 

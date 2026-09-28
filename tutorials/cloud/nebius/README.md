@@ -36,10 +36,16 @@ It supplies NeMo, PyTorch, Lightning and audio dependencies without a runtime
 verify this on your selected platform before using the recipe for longer runs.
 The 250 GiB container disk holds the image and temporary dataset/model files.
 
-**Validation status:** CPU dataset preparation, unit tests and CLI packaging have
-been checked. Training, GPU/driver compatibility, remote storage persistence and
-reload on Serverless have not yet been validated end to end. No quality or run
-time result is claimed.
+**Live validation (2026-09-28):** the pinned image completed this 50-step job on
+an H100 80 GB in `eu-north1`, reloaded the exported model, evaluated all 130 test
+utterances and published six artifacts. Every downloaded SHA-256 matched. Test
+loss was 59.0579, WER was 1.0, and the sample prediction was empty, consistent
+with this short run from random weights. A second H100 job read the persisted
+artifacts through a read-only bucket mount, verified their hashes, reloaded the
+model with finite weights, and reproduced the sample transcription. The observed
+runtime was NeMo 3.0.0, PyTorch 2.12.0+cu132, CUDA 13.2 and driver 580.173.02.
+The provider deleted the training job VM and boot disk. These observations validate the pipeline, not model quality or
+cleanup behavior under every failure mode.
 
 ## Dataset and model configuration
 
@@ -82,15 +88,18 @@ secret scanner. Keep unrelated files out of this directory.
 nebius ai job run train.py --show-context
 ```
 
-Set the bucket **name** and your region, then launch one bounded run:
+Set the bucket resource **ID**, bucket **name** and region, then launch one bounded run.
+Use the native resource ID for submission; the bucket name is for S3 downloads.
+The `s3://` submission form additionally needs S3 endpoint/credential configuration:
 
 ```bash
+export OUTPUT_BUCKET_ID='YOUR_EXISTING_BUCKET_RESOURCE_ID'
 export OUTPUT_BUCKET='YOUR_EXISTING_BUCKET_NAME'
 export NEBIUS_REGION='YOUR_PROJECT_REGION'
 export JOB_NAME="nemo-an4-$(date -u +%Y%m%d-%H%M%S)"
 nebius ai job run train.py \
   --name "$JOB_NAME" \
-  --output "s3://$OUTPUT_BUCKET" \
+  --output "$OUTPUT_BUCKET_ID" \
   --timeout 1h \
   -- --max-steps 50
 ```
@@ -170,7 +179,8 @@ from nemo.collections.asr.models import EncDecCTCModel
 
 model = EncDecCTCModel.restore_from('/results/model.nemo')
 model.eval()
-print(model.transcribe(['/results/sample.wav'], batch_size=1, return_hypotheses=False))
+hypothesis = model.transcribe(['/results/sample.wav'], batch_size=1, return_hypotheses=True)[0]
+print(hypothesis.text)
 ```
 
 For example, from this tutorial directory (Docker with NVIDIA Container Toolkit):
@@ -179,7 +189,7 @@ For example, from this tutorial directory (Docker with NVIDIA Container Toolkit)
 export NEMO_IMAGE='nvcr.io/nvidia/nemo-speech@sha256:8b5b7e616aba612d26ab1d2d2b654aec0336d7e3c5f10d06c0a14a9a6e44cb89'
 docker run --rm --gpus all \
   -v "$PWD/outputs/$JOB_NAME:/results:ro" "$NEMO_IMAGE" \
-  python -c "from nemo.collections.asr.models import EncDecCTCModel; m = EncDecCTCModel.restore_from('/results/model.nemo'); m.eval(); print(m.transcribe(['/results/sample.wav'], batch_size=1, return_hypotheses=False))"
+  python -c "from nemo.collections.asr.models import EncDecCTCModel; m = EncDecCTCModel.restore_from('/results/model.nemo'); m.eval(); print(m.transcribe(['/results/sample.wav'], batch_size=1, return_hypotheses=True)[0].text)"
 ```
 
 ## Failures and cleanup
@@ -217,7 +227,7 @@ The following tests do not submit jobs or import NeMo. Use Python 3.11 or newer:
 
 ```bash
 python3 -m venv /tmp/nemo-tutorial-check
-/tmp/nemo-tutorial-check/bin/pip install soundfile==0.13.1
+/tmp/nemo-tutorial-check/bin/pip install soundfile==0.13.1 omegaconf==2.3.0
 /tmp/nemo-tutorial-check/bin/python -m unittest discover -s . -p test_train.py -v
 nebius ai job run train.py --show-context
 ```

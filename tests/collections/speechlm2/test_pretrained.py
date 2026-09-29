@@ -17,7 +17,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import torch
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from safetensors.torch import save_file
 
 from nemo.collections.speechlm2.parts import pretrained
@@ -783,3 +783,61 @@ def test_set_model_dict_for_partial_init_is_silent_when_all_tensors_match():
     with patch.object(pretrained.logging, "warning") as warn:
         pretrained.set_model_dict_for_partial_init({"a.weight": torch.ones(2)}, model_dict)
     warn.assert_not_called()
+
+
+class _TinyPerception(torch.nn.Module):
+    """Stand-in for AudioPerceptionModule: a real nn.Module whose encoder the PE mount replaces."""
+
+    def __init__(self, d_model: int):
+        super().__init__()
+        self.encoder = torch.nn.Linear(1, 1)
+        self.encoder.d_model = 1
+        self.modality_adapter = torch.nn.Identity()
+        self.proj = torch.nn.Linear(d_model, 8)
+        self.preprocessor = SimpleNamespace(featurizer=SimpleNamespace(normalize="per_feature"))
+
+
+def test_inline_pe_encoder_config_mounts_through_setup_speech_encoder_and_restores_weights(tmp_path):
+    from nemo.collections.asr.modules.parallel_expert_encoder import ParallelExpertEncoderPT
+    from tests.collections.asr.test_parallel_expert_encoder_two_branch import bundle_config
+
+    inline = OmegaConf.to_container(bundle_config(), resolve=True)
+    reference = ParallelExpertEncoderPT.from_inline_config(inline)
+    d_model = int(reference.d_model)
+    # Known, non-default tensors to restore through the regular checkpoint path.
+    expected = {k: torch.full_like(v, 0.25) if v.is_floating_point() else v for k, v in reference.state_dict().items()}
+    ckpt_dir = tmp_path / "ckpt"
+    ckpt_dir.mkdir()
+    save_file(
+        {f"perception.encoder.{k}": v.contiguous() for k, v in expected.items()}, str(ckpt_dir / "model.safetensors")
+    )
+
+    model = SimpleNamespace(
+        cfg=DictConfig(
+            {
+                "pretrained_asr": "unused-asr",
+                "pe_encoder_config": inline,
+                "perception": {
+                    "preprocessor": {"features": int(reference._feat_in), "normalize": "per_feature"},
+                    "encoder": {"d_model": 1},
+                    "modality_adapter": {"d_model": d_model},
+                },
+            }
+        ),
+        llm=None,
+    )
+    with (
+        patch.object(pretrained, "AudioPerceptionModule", side_effect=lambda cfg: _TinyPerception(d_model)),
+        patch.object(pretrained.ParallelExpertEncoderPT, "load_from_nemo") as load_from_nemo,
+    ):
+        pretrained.setup_speech_encoder(model, pretrained_weights=False)
+    load_from_nemo.assert_not_called()
+    assert type(model.perception.encoder).__name__ == type(reference).__name__
+
+    with patch.object(pretrained.logging, "warning") as warn:
+        pretrained.init_perception_from_checkpoint(model, str(ckpt_dir))
+    warn.assert_not_called()  # every checkpoint tensor found its parameter
+    restored = model.perception.encoder.state_dict()
+    assert set(restored) == set(expected)
+    for key, value in expected.items():
+        torch.testing.assert_close(restored[key], value)

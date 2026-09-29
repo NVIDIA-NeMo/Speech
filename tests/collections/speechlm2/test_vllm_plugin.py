@@ -668,6 +668,50 @@ class TestHybridBackendWeightMapping:
         assert mapped_name == canonical_name
         assert mapped_tensor is tensor
 
+    @staticmethod
+    def _lora_weights():
+        import torch
+
+        prefix = "llm.model.layers.0.mixer.in_proj"
+        w = torch.randn(4, 3)
+        a = torch.randn(2, 3)
+        b = torch.randn(4, 2)
+        return (
+            prefix,
+            w,
+            a,
+            b,
+            [(f"{prefix}.weight", w), (f"{prefix}.lora_A.weight", a), (f"{prefix}.lora_B.weight", b)],
+        )
+
+    @pytest.mark.parametrize(
+        ("lora_cfg", "scaling"),
+        [({"dim": 2, "alpha": 4}, 2.0), ({"r": 2, "lora_alpha": 1}, 0.5)],
+    )
+    def test_preprocess_merges_lora_adapters(self, lora_cfg, scaling):
+        import torch
+
+        from nemo.collections.speechlm2.vllm.salm.backends import HybridBackend
+
+        backend = HybridBackend(SimpleNamespace(text_config=SimpleNamespace(vocab_size=None), lora=lora_cfg))
+        prefix, w, a, b, weights = self._lora_weights()
+        out = dict(backend.preprocess_llm_weights(weights))
+        assert set(out) == {f"{prefix}.weight"}
+        torch.testing.assert_close(out[f"{prefix}.weight"], w + scaling * (b @ a))
+
+    def test_preprocess_rejects_unrecognized_lora_config(self):
+        from nemo.collections.speechlm2.vllm.salm.backends import HybridBackend
+
+        backend = HybridBackend(SimpleNamespace(text_config=SimpleNamespace(vocab_size=None), lora={"rank": 2}))
+        with pytest.raises(ValueError, match="rank/alpha"):
+            backend.preprocess_llm_weights(self._lora_weights()[-1])
+
+    def test_preprocess_passes_through_weights_without_lora(self, backend):
+        import torch
+
+        weights = [("llm.model.layers.0.mixer.in_proj.weight", torch.randn(4, 3))]
+        assert backend.preprocess_llm_weights(weights) == weights
+
     def test_a_log_reaches_vllm_loader_and_is_transformed_once(self, backend, monkeypatch):
         import torch
         from torch import nn

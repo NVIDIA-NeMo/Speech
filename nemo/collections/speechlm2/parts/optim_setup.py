@@ -17,6 +17,7 @@ from typing import Generator, Iterable
 
 import torch
 from lightning import LightningModule
+from omegaconf import OmegaConf
 
 from nemo.core.classes.common import safe_instantiate
 from nemo.core.optim import patch_flashoptim_uneven_shard_support
@@ -58,7 +59,7 @@ def configure_optimizers(model: LightningModule):
         exclude_patterns=model.cfg.get("freeze_params", []),
         keep_patterns=model.cfg.get("prevent_freeze_params", []),
     )
-    optimizer = safe_instantiate(model.cfg.optimizer, parameters, _convert_='all')
+    optimizer = safe_instantiate(_optimizer_config_with_torch_dtypes(model.cfg.optimizer), parameters, _convert_='all')
     patch_flashoptim_uneven_shard_support(optimizer)
     ans = {"optimizer": optimizer}
     if "lr_scheduler" in model.cfg:
@@ -152,7 +153,9 @@ def configure_optimizers_exclude_norm_from_wd(model: LightningModule):
     ]
 
     # 4. Instantiate via Hydra
-    optimizer = safe_instantiate(model.cfg.optimizer, optim_groups, _convert_='all')
+    optimizer = safe_instantiate(
+        _optimizer_config_with_torch_dtypes(model.cfg.optimizer), optim_groups, _convert_='all'
+    )
     patch_flashoptim_uneven_shard_support(optimizer)
 
     ans = {"optimizer": optimizer}
@@ -253,3 +256,23 @@ def freeze_and_subset(
 
 def is_frozen(module: torch.nn.Module) -> bool:
     return all(not p.requires_grad for p in module.parameters())
+
+
+def _optimizer_config_with_torch_dtypes(config):
+    """Resolve TE FusedAdam dtype strings to torch.dtype without changing other optimizers."""
+    target = config.get("_target_", "")
+    if target != "transformer_engine.pytorch.optimizers.fused_adam.FusedAdam":
+        return config
+    from nemo_automodel.shared.te_patches import apply_te_patches
+
+    apply_te_patches()
+    resolved = OmegaConf.to_container(config, resolve=True)
+    for key in ("master_weight_dtype", "exp_avg_dtype", "exp_avg_sq_dtype"):
+        value = resolved.get(key)
+        if isinstance(value, str):
+            dtype_name = value.removeprefix("torch.")
+            dtype = getattr(torch, dtype_name, None)
+            if not isinstance(dtype, torch.dtype):
+                raise ValueError(f"Invalid {key} for TE FusedAdam: {value!r}")
+            resolved[key] = dtype
+    return resolved

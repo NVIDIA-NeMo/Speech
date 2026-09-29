@@ -3367,3 +3367,23 @@ def test_dataloader_reweight_temperature_mixed_leaf_and_group(
     nested_total = dataset_counts["N1"] + dataset_counts["N2"]
     assert dataset_counts["N1"] / nested_total == pytest.approx(0.5, abs=0.15)
     assert dataset_counts["N2"] / nested_total == pytest.approx(0.5, abs=0.15)
+
+
+@pytest.mark.parametrize("multi_config", [False, True])
+@pytest.mark.parametrize("num_workers,prefetch_factor,expected", [(1, 4, 4), (1, None, 2), (0, None, None)])
+def test_prefetch_factor_reaches_dataloader(cutset_path, multi_config, num_workers, prefetch_factor, expected):
+    source = {"cuts_path": str(cutset_path), "batch_size": 2}
+    options = {
+        "seed": 0,
+        "shard_seed": 0,
+        "shuffle": False,
+        "num_workers": num_workers,
+        "prefetch_factor": prefetch_factor,
+    }
+    if multi_config:
+        config = OmegaConf.create({**options, "multi_config": True, "source": source})
+    else:
+        config = OmegaConf.create({**source, **options})
+    loader = get_lhotse_dataloader_from_config(config, global_rank=0, world_size=1, dataset=Identity())
+    assert loader.num_workers == num_workers
+    assert loader.prefetch_factor == expected

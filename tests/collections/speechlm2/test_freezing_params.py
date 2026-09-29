@@ -95,3 +95,108 @@ def test_configure_optimizers_with_lr_scheduler():
     assert ans.keys() == {"optimizer", "lr_scheduler"}
     assert isinstance(ans["optimizer"], torch.optim.AdamW)
     assert isinstance(ans["lr_scheduler"]["scheduler"], nemo.core.optim.lr_scheduler.CosineAnnealing)
+
+
+def test_fused_adam_dtype_config_preserves_source_and_applies_compatibility(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from nemo.collections.speechlm2.parts.optim_setup import _optimizer_config_with_torch_dtypes
+
+    apply_patches = Mock()
+    monkeypatch.setitem(
+        sys.modules, "nemo_automodel.shared.te_patches", SimpleNamespace(apply_te_patches=apply_patches)
+    )
+    config = DictConfig(
+        {
+            "_target_": "transformer_engine.pytorch.optimizers.fused_adam.FusedAdam",
+            "master_weight_dtype": "torch.float32",
+            "exp_avg_dtype": "bfloat16",
+            "exp_avg_sq_dtype": "bfloat16",
+            "lr": 9e-5,
+        }
+    )
+    resolved = _optimizer_config_with_torch_dtypes(config)
+    assert resolved["master_weight_dtype"] is torch.float32
+    assert resolved["exp_avg_dtype"] is torch.bfloat16
+    assert resolved["exp_avg_sq_dtype"] is torch.bfloat16
+    assert resolved["lr"] == 9e-5
+    assert config.master_weight_dtype == "torch.float32"
+    assert config.exp_avg_dtype == "bfloat16"
+    apply_patches.assert_called_once_with()
+
+
+def test_fused_adam_dtype_config_rejects_non_dtype_attributes(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    import pytest
+
+    from nemo.collections.speechlm2.parts.optim_setup import _optimizer_config_with_torch_dtypes
+
+    monkeypatch.setitem(
+        sys.modules, "nemo_automodel.shared.te_patches", SimpleNamespace(apply_te_patches=lambda: None)
+    )
+    config = DictConfig(
+        {"_target_": "transformer_engine.pytorch.optimizers.fused_adam.FusedAdam", "exp_avg_dtype": "torch.Tensor"}
+    )
+    with pytest.raises(ValueError, match="Invalid exp_avg_dtype"):
+        _optimizer_config_with_torch_dtypes(config)
+
+
+def test_non_te_optimizer_config_is_unchanged():
+    from nemo.collections.speechlm2.parts.optim_setup import _optimizer_config_with_torch_dtypes
+
+    config = DictConfig({"_target_": "torch.optim.adamw.AdamW", "lr": 1e-4})
+    assert _optimizer_config_with_torch_dtypes(config) is config
+
+
+def test_grouped_fused_adam_resolves_dtypes_and_applies_patch_before_construction(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from nemo.collections.speechlm2.parts import optim_setup
+
+    events = []
+    apply_patches = Mock(side_effect=lambda: events.append("patch"))
+    monkeypatch.setitem(
+        sys.modules, "nemo_automodel.shared.te_patches", SimpleNamespace(apply_te_patches=apply_patches)
+    )
+    model = DummyModel()
+    model.norm = torch.nn.LayerNorm(1)
+    model.cfg = DictConfig(
+        {
+            "optimizer": {
+                "_target_": "transformer_engine.pytorch.optimizers.fused_adam.FusedAdam",
+                "master_weight_dtype": "torch.float32",
+                "exp_avg_dtype": "bfloat16",
+                "exp_avg_sq_dtype": "bfloat16",
+                "weight_decay": 0.2,
+            },
+            "freeze_params": [r"conv\..+"],
+        }
+    )
+    original_config = model.cfg.copy()
+
+    def instantiate(config, groups, **kwargs):
+        events.append("construct")
+        assert events == ["patch", "construct"]
+        assert config["master_weight_dtype"] is torch.float32
+        assert config["exp_avg_dtype"] is torch.bfloat16
+        assert config["exp_avg_sq_dtype"] is torch.bfloat16
+        assert [g["weight_decay"] for g in groups] == [0.2, 0.0]
+        assert [id(p) for p in groups[0]["params"]] == [id(model.linear.weight)]
+        assert {id(p) for p in groups[1]["params"]} == {
+            id(model.linear.bias),
+            id(model.norm.weight),
+            id(model.norm.bias),
+        }
+        return torch.optim.AdamW(groups)
+
+    monkeypatch.setattr(optim_setup, "safe_instantiate", instantiate)
+    result = optim_setup.configure_optimizers_exclude_norm_from_wd(model)
+    assert isinstance(result["optimizer"], torch.optim.AdamW)
+    assert model.cfg == original_config
+    apply_patches.assert_called_once_with()

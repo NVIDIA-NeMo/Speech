@@ -68,6 +68,7 @@ ALLOWED_TARGET_PREFIXES = [
     "torch.nn.",
     "torch.distributed.fsdp.",
     "torch.optim.",
+    "transformer_engine.pytorch.optimizers.fused_adam.FusedAdam",
     "torch.utils.data.",
     "torchmetrics.",
     "lightning.pytorch.callbacks.",
@@ -105,6 +106,7 @@ ALLOWED_CLASS_PREFIXES_WITH_OPTIONAL_DEPENDENCIES = [
 
 ALLOWED_EXACT_CLASS_TARGETS = {
     "nemo_text_processing.text_normalization.normalize.Normalizer",
+    "transformer_engine.pytorch.optimizers.fused_adam.FusedAdam",
 }
 
 ALLOWED_LEGACY_FALLBACK_TARGETS = {

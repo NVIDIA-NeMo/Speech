@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import pytest
 import torch.nn
 from omegaconf import DictConfig
 
@@ -200,3 +201,46 @@ def test_grouped_fused_adam_resolves_dtypes_and_applies_patch_before_constructio
     assert isinstance(result["optimizer"], torch.optim.AdamW)
     assert model.cfg == original_config
     apply_patches.assert_called_once_with()
+
+
+def test_keep_patterns_override_module_level_freezing():
+    # e.g. LoRA setup freezes a whole backbone via requires_grad=False before
+    # the optimizer is built; prevent_freeze_params must still re-enable a subset.
+    model = DummyModel().train()
+    model.linear.weight.requires_grad = False
+    model.linear.bias.requires_grad = False
+    params = list(freeze_and_subset(model.named_parameters(), exclude_patterns=[], keep_patterns=[r"linear\.weight"]))
+    assert model.linear.weight.requires_grad
+    assert not model.linear.bias.requires_grad
+    assert any(p is model.linear.weight for p in params)
+    assert not any(p is model.linear.bias for p in params)
+
+
+def test_build_param_groups_applies_first_matching_multiplier():
+    from nemo.collections.speechlm2.parts.optim_setup import build_param_groups
+
+    model = DummyModel()
+    groups = build_param_groups(model.named_parameters(), {r"linear\.weight": 10.0, r"linear\..+": 2.0}, base_lr=1e-3)
+    assert len(groups) == 3
+    lr_of = {id(p): g["lr"] for g in groups for p in g["params"]}
+    assert lr_of[id(model.linear.weight)] == pytest.approx(1e-2)
+    assert lr_of[id(model.linear.bias)] == pytest.approx(2e-3)
+    assert lr_of[id(model.conv.weight)] == pytest.approx(1e-3)
+    assert lr_of[id(model.conv.bias)] == pytest.approx(1e-3)
+
+
+def test_configure_optimizers_with_lr_multipliers():
+    model = DummyModel()
+    model.cfg = DictConfig(
+        {
+            "optimizer": {"_target_": "torch.optim.adamw.AdamW", "lr": 1e-4},
+            "freeze_params": [r"conv\.bias"],
+            "lr_multipliers": {r"linear\..+": 5.0},
+        }
+    )
+    opt = configure_optimizers(model)["optimizer"]
+    lr_of = {id(p): g["lr"] for g in opt.param_groups for p in g["params"]}
+    assert lr_of[id(model.linear.weight)] == pytest.approx(5e-4)
+    assert lr_of[id(model.linear.bias)] == pytest.approx(5e-4)
+    assert lr_of[id(model.conv.weight)] == pytest.approx(1e-4)
+    assert id(model.conv.bias) not in lr_of

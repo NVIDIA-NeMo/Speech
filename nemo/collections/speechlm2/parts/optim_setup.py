@@ -43,6 +43,13 @@ def configure_optimizers(model: LightningModule):
     * (optional) ``lr_scheduler`` with hydra-style ``_target_`` pointing to LR scheduler class,
         and the remaining options passed directly to its ``__init__`` method.
 
+    * (optional) ``lr_multipliers``: a mapping of regex pattern -> float. Parameters whose names
+        match a pattern are placed in their own optimizer parameter group with
+        ``lr = optimizer.lr * multiplier``. Useful when submodules need different rates -- e.g.
+        adapting a speech encoder to a new acoustic condition wants a larger step than the LoRA
+        adapters on a frozen LLM. Patterns are tried in order; the first match wins, and anything
+        unmatched stays at the base LR.
+
     Returns:
         PyTorch Lightning Trainer-compatible dict with structure::
 
@@ -58,7 +65,11 @@ def configure_optimizers(model: LightningModule):
         model.named_parameters(),
         exclude_patterns=model.cfg.get("freeze_params", []),
         keep_patterns=model.cfg.get("prevent_freeze_params", []),
+        return_named=bool(model.cfg.get("lr_multipliers", None)),
     )
+    lr_multipliers = model.cfg.get("lr_multipliers", None)
+    if lr_multipliers:
+        parameters = build_param_groups(parameters, lr_multipliers, float(model.cfg.optimizer["lr"]))
     optimizer = safe_instantiate(_optimizer_config_with_torch_dtypes(model.cfg.optimizer), parameters, _convert_='all')
     patch_flashoptim_uneven_shard_support(optimizer)
     ans = {"optimizer": optimizer}
@@ -166,10 +177,48 @@ def configure_optimizers_exclude_norm_from_wd(model: LightningModule):
     return ans
 
 
+def build_param_groups(
+    named_parameters: Iterable[tuple[str, torch.nn.Parameter]],
+    lr_multipliers: dict,
+    base_lr: float,
+) -> list[dict]:
+    """
+    Split trainable parameters into optimizer groups with per-group learning rates.
+
+    Args:
+        named_parameters: ``(name, parameter)`` pairs for the trainable parameters.
+        lr_multipliers: mapping of regex pattern -> multiplier applied to ``base_lr``.
+            The first matching pattern wins; unmatched parameters keep ``base_lr``.
+        base_lr: the optimizer's configured learning rate.
+
+    Returns:
+        A list of parameter-group dicts suitable for a PyTorch optimizer.
+    """
+    compiled = [(re.compile(pat), float(mult)) for pat, mult in lr_multipliers.items()]
+    groups = {}
+    for name, param in named_parameters:
+        mult = 1.0
+        for pat, m in compiled:
+            if pat.match(name) is not None:
+                mult = m
+                break
+        groups.setdefault(mult, []).append(param)
+    out = []
+    for mult, params in sorted(groups.items()):
+        n_elem = sum(p.numel() for p in params)
+        logging.info(
+            f" | > optimizer group: lr={base_lr * mult:.3e} (x{mult}) "
+            f"{len(params)} tensors, {n_elem/1e6:.1f}M params"
+        )
+        out.append({"params": params, "lr": base_lr * mult})
+    return out
+
+
 def freeze_and_subset(
     named_parameters: Iterable[tuple[str, torch.nn.Parameter]],
     exclude_patterns: list[str],
     keep_patterns: list[str] = None,
+    return_named: bool = False,
 ) -> Generator[torch.nn.Parameter, None, None]:
     """
     Utility used to freeze select model parameters, and skip them for the purpose
@@ -224,6 +273,14 @@ def freeze_and_subset(
 
     trainable, nontrainable = 0, 0
     for name, param in named_parameters:
+        keep = _must_keep(name)
+        # ``prevent_freeze_params`` is an explicit instruction to train a parameter, so it has to
+        # override module-level freezing as well as the ``freeze_params`` regexes. LoRA setup sets
+        # requires_grad=False on the entire LLM backbone, so without this the guard below drops the
+        # parameter before any regex is consulted and partial SFT silently trains nothing — the run
+        # looks healthy and only the trainable-parameter count betrays it.
+        if keep and not param.requires_grad:
+            param.requires_grad = True
         # Honor module-level freezing (e.g. ConformerMultiLayerFeatureExtractor freezes tail
         # layers in its __init__). Without this guard, a param with ``requires_grad=False`` that
         # no exclude regex matches would still be yielded into the optimizer — the optimizer
@@ -233,11 +290,13 @@ def freeze_and_subset(
             nontrainable += param.numel()
             continue
         discard = False
-        if _exclude(name) and not _must_keep(name):
+        if _exclude(name) and not keep:
             param.requires_grad = False
             discard = True
         if not discard:
-            yield param
+            # build_param_groups needs the names to apply its regexes; plain
+            # optimizer construction only wants the tensors.
+            yield (name, param) if return_named else param
             trainable += param.numel()
         else:
             nontrainable += param.numel()

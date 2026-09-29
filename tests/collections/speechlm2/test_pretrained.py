@@ -699,3 +699,87 @@ def test_exclude_mtp_checkpoint_state_restores_hook_and_adapter_after_error():
     assert not model._load_state_dict_pre_hooks
     assert "from_hf" not in model.state_dict_adapter.__dict__
     assert model.state_dict_adapter.from_hf.__func__ is IdentityStateDictAdapter.from_hf
+
+
+def _pe_model(cfg_update):
+    pe_cfg = {
+        "perception": {
+            "preprocessor": {"features": 80, "normalize": "per_feature"},
+            "modality_adapter": {"d_model": 4},
+        },
+    }
+    pe_cfg.update(cfg_update)
+    return SimpleNamespace(
+        cfg=DictConfig(pe_cfg),
+        perception=SimpleNamespace(
+            encoder=SimpleNamespace(d_model=4),
+            modality_adapter=object(),
+            proj=torch.nn.Linear(4, 8),
+            preprocessor=SimpleNamespace(featurizer=SimpleNamespace(normalize="per_feature")),
+        ),
+    )
+
+
+def test_setup_parallel_expert_encoder_builds_from_inline_config():
+    pe_encoder = SimpleNamespace(
+        d_model=4,
+        n_spk=8,
+        _feat_in=80,
+        freeze_asr=False,
+        freeze_diar=True,
+        spk_kernel_scale=1.0,
+        chunk_size_seconds=45.0,
+        _bundle_config=DictConfig({"chunk_size_seconds": 45.0}),
+        online_inference_enabled=False,
+    )
+    inline = {"encoder": {"d_model": 4}}
+    model = _pe_model({"pe_encoder_config": inline})
+    with (
+        patch.object(pretrained.ParallelExpertEncoderPT, "from_inline_config", return_value=pe_encoder) as build,
+        patch.object(pretrained.ParallelExpertEncoderPT, "load_from_nemo") as load,
+    ):
+        pretrained.setup_parallel_expert_encoder(model)
+    build.assert_called_once()
+    assert dict(build.call_args.args[0]) == inline
+    load.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("cfg_update", "match"),
+    [
+        (
+            {"pe_encoder_path": "/tmp/placeholder.nemo", "pe_encoder_config": {"encoder": {}}},
+            "mutually exclusive",
+        ),
+        (
+            {"pe_encoder_config": {"encoder": {}}, "pe_encoder_overrides": {"diar_normalize_type": "none"}},
+            "pe_encoder_overrides",
+        ),
+    ],
+)
+def test_setup_parallel_expert_encoder_inline_config_validation(cfg_update, match):
+    model = _pe_model(cfg_update)
+    with (
+        patch.object(pretrained.ParallelExpertEncoderPT, "from_inline_config"),
+        patch.object(pretrained.ParallelExpertEncoderPT, "load_from_nemo"),
+        pytest.raises(ValueError, match=match),
+    ):
+        pretrained.setup_parallel_expert_encoder(model)
+
+
+def test_set_model_dict_for_partial_init_warns_about_unmatched_checkpoint_tensors():
+    model_dict = {"a.weight": torch.zeros(2), "b.weight": torch.zeros(3)}
+    pretrained_dict = {"a.weight": torch.ones(2), "renamed.weight": torch.ones(3)}
+    with patch.object(pretrained.logging, "warning") as warn:
+        out = pretrained.set_model_dict_for_partial_init(pretrained_dict, model_dict)
+    assert torch.equal(out["a.weight"], torch.ones(2))
+    assert torch.equal(out["b.weight"], torch.zeros(3))
+    assert warn.call_count == 1
+    assert "renamed.weight" in warn.call_args.args[0]
+
+
+def test_set_model_dict_for_partial_init_is_silent_when_all_tensors_match():
+    model_dict = {"a.weight": torch.zeros(2)}
+    with patch.object(pretrained.logging, "warning") as warn:
+        pretrained.set_model_dict_for_partial_init({"a.weight": torch.ones(2)}, model_dict)
+    warn.assert_not_called()

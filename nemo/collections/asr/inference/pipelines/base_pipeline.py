@@ -139,9 +139,12 @@ class BasePipeline(PipelineInterface):
         return [self.get_state(stream_id) for stream_id in stream_ids]
 
     def delete_state(self, stream_id: int) -> None:
-        """Delete the state from the state pool."""
+        """Delete the state from the state pool and the stream's buffered-streaming bufferer, if any."""
         if stream_id in self._state_pool:
             del self._state_pool[stream_id]
+        # An is_last request has already removed the bufferer; this removes it for a stream ended without one.
+        if isinstance(getattr(self, "bufferer", None), (BatchedAudioBufferer, BatchedFeatureBufferer)):
+            self.bufferer.rm_bufferer(stream_id)
 
     def delete_states(self, stream_ids: Iterable[int]) -> None:
         """Delete states for a list of stream IDs."""
@@ -158,6 +161,8 @@ class BasePipeline(PipelineInterface):
     def reset_session(self) -> None:
         """Reset the frame buffer and internal state pool"""
         self._state_pool.clear()
+        if isinstance(getattr(self, "bufferer", None), (BatchedAudioBufferer, BatchedFeatureBufferer)):
+            self.bufferer.reset()
 
     def open_session(self) -> None:
         """Start a new session by resetting the internal state pool"""

@@ -197,6 +197,27 @@ class CacheAwareCTCPipeline(BasePipeline):
         state.set_options(new_options)
         return state
 
+    def reset_session(self) -> None:
+        """Reset the state pool and restore all cache-aware feature-bufferer and encoder-cache slots."""
+        self.context_manager.reset()
+        self.bufferer.reset()
+        super().reset_session()
+
+    def delete_state(self, stream_id: int) -> None:
+        """Delete stream state and free cache-aware slots if they were not already freed via is_last."""
+        self._free_cache_aware_slots(stream_id)
+        super().delete_state(stream_id)
+
+    def _free_cache_aware_slots(self, stream_id: int) -> None:
+        """
+        Return the feature-bufferer and encoder-cache slots held by stream_id.
+
+        Idempotent: free_stream on each resource is a no-op when the stream is already
+        unmapped (the normal path after an is_last request).
+        """
+        self.bufferer.free_stream(stream_id)
+        self.context_manager.free_stream(stream_id)
+
     def get_sep(self) -> str:
         """Return the separator for the text processor."""
         return self.sep

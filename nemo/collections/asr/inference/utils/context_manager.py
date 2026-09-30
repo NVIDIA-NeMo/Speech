@@ -136,6 +136,23 @@ class CacheAwareContextManager:
         self.cache_last_time.index_copy_(1, slot_ids, new_context.cache_last_time)
         self.cache_last_channel_len.index_copy_(0, slot_ids, new_context.cache_last_channel_len)
 
+    def free_stream(self, stream_id: int) -> None:
+        """
+        Free the encoder-cache slot held by stream_id if any.
+
+        Idempotent: a no-op when the stream has no mapped slot (for example after an
+        is_last free via reset_slots()). Safe to call from delete_state(). Unlike
+        _reset_slots, this guards on membership so a double free cannot corrupt
+        the free_slots queue.
+        Args:
+            stream_id (int): stream id whose slot should be returned to the free pool
+        """
+        if self.cache_disabled:
+            return
+        slot_idx = self.streamidx2slotidx.get(stream_id)
+        if slot_idx is not None:
+            self._reset_slots([slot_idx])
+
     def reset_slots(self, stream_ids: list[int], eos_flags: list[bool]) -> None:
         """
         Resets the slots for the finished streams

@@ -27,8 +27,8 @@ from typing import Optional
 # Supported ASR backends: the values of --asr_model_type and of the "type" field of an evalset "asr_model" entry.
 ASR_MODEL_TYPES = ("nemo", "nemo_with_prompt", "whisper")
 # Keys of an evalset config entry that the inference/evaluation scripts read. Any other key is rejected, so that a
-# misspelled override (e.g. "langauge") cannot silently leave the default or CLI-level value in force; training-only DatasetMeta
-# fields such as "feature_dir" or "sample_weight" do not belong in an evaluation config.
+# misspelled override (e.g. "langauge") cannot silently leave the default or CLI-level value in force;
+# training-only DatasetMeta fields such as "feature_dir" or "sample_weight" do not belong in an evaluation config.
 EVALSET_ENTRY_KEYS = frozenset(
     {
         "manifest_path",
@@ -97,8 +97,8 @@ def validate_evalset_entry(info: dict, dataset_name: Optional[str] = None) -> No
     - ``strip_text_annotations_for_metrics``: JSON boolean.
 
     Absent keys are fine. A JSON ``null`` is rejected like any other wrong type, so that a broken override cannot
-    silently fall back to the CLI-level value. Used by ``load_evalset_config`` (``evaluate_generated_audio.py``) and
-    by ``resolve_evaluation_config_for_dataset``.
+    silently fall back to the default or CLI-level value. Used by ``load_evalset_config``
+    (``evaluate_generated_audio.py``) and by ``resolve_evaluation_config_for_dataset``.
 
     Args:
         info: One entry of the evalset config.
@@ -144,10 +144,10 @@ def resolve_evaluation_config_for_dataset(eval_config: EvaluationConfig, dataset
     - ``asr_model``: ``{"name": ..., "type": ...}`` overriding ``asr_model_name`` and ``asr_model_type``.
     - ``language``: overrides ``language``.
     - ``strip_text_annotations_for_metrics``: JSON boolean; the per-dataset switch for stripping annotation markers
-      from the CER/WER reference (``examples/tts/magpietts_inference.py`` has no run-level flag, so entries without
-      the key are not stripped). Set it to ``true`` for datasets whose brackets are non-verbal tags such as
-      ``[breath]``; leave it off for datasets whose square brackets mark emphasized *spoken* words (e.g.
-      ``"[You] want to ski"``), so those words stay in the reference.
+      from the CER/WER reference. Entries without the key inherit ``eval_config.strip_text_annotations_for_metrics``
+      (``False`` for ``examples/tts/magpietts_inference.py``, which has no run-level flag). Set it to ``true`` for
+      datasets whose brackets are non-verbal tags such as ``[breath]``; leave it off for datasets whose square
+      brackets mark emphasized *spoken* words (e.g. ``"[You] want to ski"``), so those words stay in the reference.
 
     Keys that are absent keep the value from ``eval_config``. ``eval_config`` itself is not mutated.
 
@@ -162,7 +162,7 @@ def resolve_evaluation_config_for_dataset(eval_config: EvaluationConfig, dataset
         ValueError: If a recognized key is malformed (see ``validate_evalset_entry``):
             ``language`` is not a non-empty string, ``asr_model`` lacks a valid
             ``name``/``type``, or ``strip_text_annotations_for_metrics`` is not a boolean. JSON ``null`` counts as
-            malformed, so a broken value never silently falls back to the default.
+            malformed, so a broken value never silently falls back to the default or CLI-level value.
     """
     validate_evalset_entry(dataset_meta)
     overrides = {}

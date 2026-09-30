@@ -148,8 +148,9 @@ def build_metric_reference_texts(
         Tuple of:
             - record_texts: ``(tts_text_input, dataloader_normalized_text)`` per record.
             - gt_texts_processed: the normalized reference per record.
-            - stripped_spans: per record, the normalized contents of the square-bracket spans that were removed
-              (empty lists when stripping is disabled).
+            - stripped_spans: per record, the non-empty normalized contents of the square-bracket spans that were
+              removed; spans that normalize to the empty string (e.g. ``[...]``) are omitted. Empty lists when
+              stripping is disabled.
     """
     record_texts, gt_texts_processed, stripped_spans = [], [], []
     normalized_span_cache: dict[str, str] = {}  # process_text_for_wer can be slow (pynini); spans repeat a lot

@@ -396,21 +396,17 @@ def test_malformed_evalset_overrides_are_rejected(tmp_path, entry_overrides, mat
 
 @pytest.mark.unit
 def test_load_evalset_config_rejects_unrecognized_keys(tmp_path):
-    # Only the keys the inference/evaluation scripts read are accepted (as in examples/tts/evalset_config.json).
-    config_path = _write_evalset_config(tmp_path, {"tokenizer_names": ["english_phoneme"], "language": "en"})
-    assert "ds" in load_evalset_config(str(config_path), dataset_base_path=tmp_path)
+    # Only the keys the inference/evaluation scripts read are accepted (as in examples/tts/evalset_config.json); the
+    # accepted entry carries the strip key, so dropping it from EVALSET_ENTRY_KEYS fails here.
+    entry = {"tokenizer_names": ["english_phoneme"], "language": "en", "strip_text_annotations_for_metrics": True}
+    config_path = _write_evalset_config(tmp_path, entry)
+    loaded = load_evalset_config(str(config_path), dataset_base_path=tmp_path)
+    assert loaded["ds"]["strip_text_annotations_for_metrics"] is True  # recognized and kept for the resolver
 
-    # A misspelled override would silently leave the CLI-level value in force; it is rejected instead, and so are
-    # training-only DatasetMeta fields copied from a training config.
-    for entry, key in (
-        ({"langauge": "de"}, "langauge"),
-        ({"feature_dir": None}, "feature_dir"),
-        (
-            {"strip_text_annotation_for_metrics": False},
-            "strip_text_annotation_for_metrics",
-        ),  # would leave stripping off
-    ):
-        config_path = _write_evalset_config(tmp_path, entry)
+    # A misspelled override would silently leave the default or CLI-level value in force; it is rejected instead,
+    # and so are training-only DatasetMeta fields copied from a training config.
+    for bad_entry, key in (({"langauge": "de"}, "langauge"), ({"feature_dir": None}, "feature_dir")):
+        config_path = _write_evalset_config(tmp_path, bad_entry)
         with pytest.raises(ValueError, match=rf"Dataset ds: unrecognized evalset keys \['{key}'\]; recognized keys"):
             load_evalset_config(str(config_path), dataset_base_path=tmp_path)
 

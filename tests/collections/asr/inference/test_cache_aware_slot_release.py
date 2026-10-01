@@ -183,6 +183,42 @@ def test_context_manager_reset_restores_all_slots_after_leak():
 
 
 @pytest.mark.unit
+def test_context_manager_reset_zeros_in_place_without_realloc():
+    """reset() must zero existing cache tensors and keep the same tensor storage."""
+    context_manager = _make_context_manager()
+    channel = context_manager.cache_last_channel
+    time = context_manager.cache_last_time
+    channel_len = context_manager.cache_last_channel_len
+    channel_ptr = channel.data_ptr()
+    time_ptr = time.data_ptr()
+    len_ptr = channel_len.data_ptr()
+
+    # Mutate so we can assert zeroing happened (initial state is already zeros).
+    channel.fill_(1.0)
+    time.fill_(2.0)
+    channel_len.fill_(3)
+    _allocate_context_slot(context_manager, 0)
+    assert context_manager.free_slots.qsize() == NUM_SLOTS - 1
+    assert not torch.all(channel == 0)
+
+    context_manager.reset()
+
+    assert context_manager.free_slots.qsize() == NUM_SLOTS
+    assert context_manager.streamidx2slotidx == {}
+    assert context_manager.slotidx2streamidx == {}
+    assert torch.all(context_manager.cache_last_channel == 0)
+    assert torch.all(context_manager.cache_last_time == 0)
+    assert torch.all(context_manager.cache_last_channel_len == 0)
+    # Same tensor objects / storage: no realloc via get_initial_cache_state.
+    assert context_manager.cache_last_channel is channel
+    assert context_manager.cache_last_time is time
+    assert context_manager.cache_last_channel_len is channel_len
+    assert context_manager.cache_last_channel.data_ptr() == channel_ptr
+    assert context_manager.cache_last_time.data_ptr() == time_ptr
+    assert context_manager.cache_last_channel_len.data_ptr() == len_ptr
+
+
+@pytest.mark.unit
 def test_context_manager_is_last_path_still_frees_via_reset_slots():
     """The intentional is_last free path (reset_slots with eos=True) must keep working."""
     context_manager = _make_context_manager()

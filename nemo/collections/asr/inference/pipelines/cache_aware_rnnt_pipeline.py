@@ -271,7 +271,20 @@ class CacheAwareRNNTPipeline(BasePipeline):
         super().reset_session()
 
     def delete_state(self, stream_id: int) -> None:
-        """Delete stream state and free cache-aware slots if they were not already freed via is_last."""
+        """
+        Delete stream state, release per-stream biasing if enabled, and free cache-aware slots.
+
+        Order matches the is_last teardown and sibling #16308: release biasing while state
+        still exists, then free slots, then drop state. Slot free is idempotent when
+        is_last already returned the slots.
+        """
+        state = self.get_state(stream_id)
+        if (
+            state is not None
+            and self.decoding_computer is not None
+            and self.decoding_computer.per_stream_biasing_enabled
+        ):
+            release_auto_managed_stream_biasing(state, self.decoding_computer.biasing_multi_model)
         self._free_cache_aware_slots(stream_id)
         super().delete_state(stream_id)
 

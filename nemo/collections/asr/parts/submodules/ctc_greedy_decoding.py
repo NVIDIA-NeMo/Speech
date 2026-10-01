@@ -32,6 +32,7 @@ from nemo.core.neural_types import HypothesisType, LengthsType, LogprobsType, Ne
 from nemo.core.utils.cuda_python_utils import (
     NeMoCUDAPythonException,
     check_cuda_python_cuda_graphs_conditional_nodes_supported,
+    create_conditional_node_mempool,
     cu_call,
     run_nvrtc,
     with_conditional_node,
@@ -78,6 +79,7 @@ class CTCDecoderCudaGraphsState:
     prediction_logprobs: torch.Tensor
 
     full_graph = None
+    full_graph_mempool = None
 
     def __init__(
         self,
@@ -866,10 +868,12 @@ class GreedyBatchedCTCInfer(Typing, ConfidenceMethodMixin, WithOptionalCudaGraph
         stream_for_graph = torch.cuda.Stream(self.state.device)
         stream_for_graph.wait_stream(torch.cuda.default_stream(self.state.device))
         self.state.full_graph = torch.cuda.CUDAGraph()
+        self.state.full_graph_mempool = create_conditional_node_mempool(self.state.device)
         with (
             torch.cuda.stream(stream_for_graph),
             torch.inference_mode(),
             torch.cuda.graph(self.state.full_graph, stream=stream_for_graph, capture_error_mode="thread_local"),
+            torch.cuda.use_mem_pool(self.state.full_graph_mempool),
         ):
             self._before_loop()
 

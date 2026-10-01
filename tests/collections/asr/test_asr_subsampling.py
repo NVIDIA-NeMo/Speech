@@ -64,6 +64,129 @@ class TestASRSubsamplingConvChunking:
         assert diff <= 0.2
 
 
+class TestStreamingDropExtraPreEncoded:
+    """``ConvSubsampling.get_streaming_drop_size`` must match what the encoder actually
+    produces from a ``cache_size``-long input segment.
+
+    Regression test for the streaming/full-pass mismatch reported in
+    https://github.com/NVIDIA-NeMo/NeMo/issues/15482 — the old formula
+    ``1 + (cache_size - 1) // subsampling_factor`` diverges from the true convolutional
+    recurrence for arbitrary ``pre_encode_cache_size``.
+    """
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "cache_size,expected_drop",
+        [(11, 1), ([0, 11], 2), (0, 0), ([0, 0], 0)],
+        ids=["scalar", "list", "empty_scalar", "empty_list"],
+    )
+    def test_legacy_pre_encode_drop_size(self, cache_size: int | list[int], expected_drop: int) -> None:
+        from nemo.collections.asr.modules.conformer_encoder import ConformerEncoder
+
+        class LegacyPreEncode(torch.nn.Module):
+            def get_streaming_cache_size(self) -> int | list[int]:
+                return cache_size
+
+        encoder = ConformerEncoder(
+            feat_in=80,
+            n_layers=1,
+            d_model=16,
+            subsampling_factor=8,
+            n_heads=4,
+        )
+        encoder.pre_encode = LegacyPreEncode()
+        encoder.setup_streaming_params()
+
+        assert encoder.streaming_cfg.pre_encode_cache_size == cache_size
+        assert encoder.streaming_cfg.drop_extra_pre_encoded == expected_drop
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "subsampling,subsampling_factor",
+        [
+            ("striding", 4),
+            ("striding", 8),
+            ("dw_striding", 4),
+            ("dw_striding", 8),
+        ],
+    )
+    @pytest.mark.parametrize("cache_size", [1, 4, 8, 9, 11, 16, 32])
+    def test_drop_size_matches_forward(self, subsampling, subsampling_factor, cache_size):
+        """For a causal conv subsampling, the number of output frames the actual
+        ``forward`` returns from a ``cache_size``-long input must equal
+        ``get_streaming_drop_size(cache_size)``.
+        """
+        from nemo.collections.asr.parts.submodules.subsampling import ConvSubsampling
+
+        feat_in = 80
+        sub = ConvSubsampling(
+            subsampling=subsampling,
+            subsampling_factor=subsampling_factor,
+            feat_in=feat_in,
+            feat_out=16,
+            conv_channels=16,
+            subsampling_conv_chunking_factor=1,
+            is_causal=True,
+        )
+        sub.eval()
+        x = torch.zeros(1, cache_size, feat_in)
+        lengths = torch.tensor([cache_size], dtype=torch.int64)
+        with torch.no_grad():
+            _, out_lengths = sub(x, lengths)
+        expected = int(out_lengths[0].item())
+        assert sub.get_streaming_drop_size(cache_size) == expected
+
+    @pytest.mark.unit
+    def test_drop_size_zero_for_empty_cache(self):
+        from nemo.collections.asr.parts.submodules.subsampling import ConvSubsampling, StackingSubsampling
+
+        sub = ConvSubsampling(
+            subsampling="striding",
+            subsampling_factor=8,
+            feat_in=80,
+            feat_out=16,
+            conv_channels=16,
+            subsampling_conv_chunking_factor=1,
+            is_causal=True,
+        )
+        assert sub.get_streaming_drop_size(0) == 0
+
+        stack = StackingSubsampling(subsampling_factor=4, feat_in=80, feat_out=16)
+        assert stack.get_streaming_drop_size(0) == 0
+
+    @pytest.mark.unit
+    def test_drop_size_legacy_formula_diverges_for_non_default_cache(self):
+        """Document the bug being fixed: at the issue-reported case ``cache_size=11``
+        with ``subsampling_factor=8``, the old formula returns 2 but the true value is 3.
+        """
+        from nemo.collections.asr.parts.submodules.subsampling import ConvSubsampling
+
+        sub = ConvSubsampling(
+            subsampling="striding",
+            subsampling_factor=8,
+            feat_in=80,
+            feat_out=16,
+            conv_channels=16,
+            subsampling_conv_chunking_factor=1,
+            is_causal=True,
+        )
+        cache_size = 11
+        legacy = 1 + (cache_size - 1) // 8
+        assert legacy == 2  # old, wrong
+        assert sub.get_streaming_drop_size(cache_size) == 3  # new, matches the forward pass
+
+    @pytest.mark.unit
+    def test_stacking_drop_size(self):
+        from nemo.collections.asr.parts.submodules.subsampling import StackingSubsampling
+
+        stack = StackingSubsampling(subsampling_factor=4, feat_in=80, feat_out=16)
+        # StackingSubsampling.get_streaming_cache_size() returns 0 by default, but the
+        # helper should still answer sensibly for any positive cache_size.
+        assert stack.get_streaming_drop_size(4) == 1
+        assert stack.get_streaming_drop_size(7) == 1
+        assert stack.get_streaming_drop_size(8) == 2
+
+
 def _build_conv_subsampling(feat_in=16, conv_channels=8, factor=4):
     """A tiny dw_striding ConvSubsampling for unit-testing the 32-bit chunking logic."""
     return ConvSubsampling(

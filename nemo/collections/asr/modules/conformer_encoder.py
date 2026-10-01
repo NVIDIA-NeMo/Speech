@@ -61,6 +61,9 @@ from nemo.utils import logging
 
 __all__ = ['ConformerEncoder', 'ConformerMultiLayerFeatureExtractor']
 
+# Precomputed log-mel feature value of digital silence.
+LOG_MEL_SILENCE = math.log(2**-24)
+
 
 class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
     """
@@ -677,10 +680,22 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             if isinstance(self.pre_encode, nn.Linear):
                 audio_signal = self.pre_encode(audio_signal)
             else:
+                # Later chunks carry pre_encode_cache_size frames over from the previous chunk.
+                # The first one has nothing to carry over, so pad it with silence and let the drop
+                # below handle it like any other chunk. Same as pad_and_drop_preencoded=True.
+                if self.training and self.att_context_style == "chunked_limited":
+                    cache_size = self.streaming_cfg.pre_encode_cache_size
+                    pad_frames = cache_size[1] if isinstance(cache_size, list) else cache_size
+                    if pad_frames > 0:
+                        audio_signal = nn.functional.pad(audio_signal, (0, 0, pad_frames, 0), value=LOG_MEL_SILENCE)
+                        length = length + pad_frames
+
                 audio_signal, length = self.pre_encode(x=audio_signal, lengths=length)
                 length = length.to(torch.int64)
                 # `self.streaming_cfg` is set by setup_streaming_cfg(), called in the init
-                if self.streaming_cfg.drop_extra_pre_encoded > 0 and cache_last_channel is not None:
+                if self.streaming_cfg.drop_extra_pre_encoded > 0 and (
+                    cache_last_channel is not None or (self.training and self.att_context_style == "chunked_limited")
+                ):
                     audio_signal = audio_signal[:, self.streaming_cfg.drop_extra_pre_encoded :, :]
                     length = (length - self.streaming_cfg.drop_extra_pre_encoded).clamp(min=0)
 

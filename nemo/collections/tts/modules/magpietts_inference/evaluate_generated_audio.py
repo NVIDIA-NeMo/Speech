@@ -1123,6 +1123,6 @@ def _warn_if_stripped_spans_were_spoken(
         f"Heuristic check{source}: strip_text_annotations_for_metrics removed {len(spoken_spans)} square-bracket "
         f"span(s) that appear in the ASR transcript of the generated audio (e.g. {examples}). They are scored as "
         "insertions and inflate CER/WER. Inspect the examples: if this dataset marks emphasized spoken words as "
-        '[word], remove "strip_text_annotations_for_metrics": true from its evalset entry; if the brackets are '
+        '[word], set "strip_text_annotations_for_metrics": false in its evalset entry; if the brackets are '
         "non-verbal tags, the model is reading them aloud."
     )

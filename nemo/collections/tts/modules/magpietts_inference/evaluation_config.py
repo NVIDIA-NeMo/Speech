@@ -65,7 +65,10 @@ class EvaluationConfig:
             Square-bracket spans are removed WITH their content, so enable this only for datasets whose brackets
             are non-verbal tags such as ``[breath]`` (``"strip_text_annotations_for_metrics": true`` in the evalset
             entry, see ``resolve_evaluation_config_for_dataset``); datasets that mark emphasized spoken words as
-            ``[word]`` must leave it off.
+            ``[word]`` must leave it off. When evalset entries are resolved with
+            ``resolve_evaluation_config_for_dataset``, leave this ``False`` and set the key per entry; ``True``
+            there asserts that every dataset strips, and an entry that omits the key or sets it to ``false``
+            raises.
         device: Device to use for running models used during evaluation.
         asr_batch_size: Batch size for ASR transcription.
         eou_batch_size: Batch size for EoU classification.
@@ -144,12 +147,16 @@ def resolve_evaluation_config_for_dataset(eval_config: EvaluationConfig, dataset
     - ``asr_model``: ``{"name": ..., "type": ...}`` overriding ``asr_model_name`` and ``asr_model_type``.
     - ``language``: overrides ``language``.
     - ``strip_text_annotations_for_metrics``: JSON boolean; the per-dataset switch for stripping annotation markers
-      from the CER/WER reference. Entries without the key inherit ``eval_config.strip_text_annotations_for_metrics``
-      (``False`` for ``examples/tts/magpietts_inference.py``, which has no run-level flag). Set it to ``true`` for
-      datasets whose brackets are non-verbal tags such as ``[breath]``; leave it off for datasets whose square
-      brackets mark emphasized *spoken* words (e.g. ``"[You] want to ski"``), so those words stay in the reference.
+      from the CER/WER reference. ``examples/tts/magpietts_inference.py`` leaves
+      ``eval_config.strip_text_annotations_for_metrics`` at ``False``, so its entries decide: absent means off.
+      A library caller may set it ``True`` only as an assertion that every dataset strips; an entry that omits the
+      key or sets it to ``false`` then raises, so a run-level value never silently decides for a dataset. Set the
+      key to ``true`` for datasets whose brackets are non-verbal tags such as ``[breath]``; leave it off for
+      datasets whose square brackets mark emphasized *spoken* words (e.g. ``"[You] want to ski"``), so those words
+      stay in the reference.
 
-    Keys that are absent keep the value from ``eval_config``. ``eval_config`` itself is not mutated.
+    Absent keys keep the value from ``eval_config`` (for the strip key only while that value is ``False``, see
+    above). ``eval_config`` itself is not mutated.
 
     Args:
         eval_config: CLI-level evaluation configuration.
@@ -162,9 +169,21 @@ def resolve_evaluation_config_for_dataset(eval_config: EvaluationConfig, dataset
         ValueError: If a recognized key is malformed (see ``validate_evalset_entry``):
             ``language`` is not a non-empty string, ``asr_model`` lacks a valid
             ``name``/``type``, or ``strip_text_annotations_for_metrics`` is not a boolean. JSON ``null`` counts as
-            malformed, so a broken value never silently falls back to the default or CLI-level value.
+            malformed, so a broken value never silently falls back to the default or CLI-level value. Also if
+            ``eval_config`` enables stripping and the entry omits ``strip_text_annotations_for_metrics`` or sets
+            it to ``false``.
     """
     validate_evalset_entry(dataset_meta)
+    entry_value = dataset_meta.get("strip_text_annotations_for_metrics")  # None, True or False after validation
+    if eval_config.strip_text_annotations_for_metrics and entry_value is not True:
+        state = "sets it to false" if entry_value is False else "does not set it"
+        where = f" for {dataset_meta['manifest_path']}" if dataset_meta.get("manifest_path") else ""
+        raise ValueError(
+            "strip_text_annotations_for_metrics conflict: eval_config enables stripping for every dataset, but the "
+            f"evalset entry{where} {state}. Bracket meaning is a property of each dataset: set "
+            '"strip_text_annotations_for_metrics": true in the entry if its brackets are non-verbal tags, or leave '
+            "eval_config.strip_text_annotations_for_metrics False and set the key per entry."
+        )
     overrides = {}
     if "asr_model" in dataset_meta:
         overrides["asr_model_name"] = dataset_meta["asr_model"]["name"]

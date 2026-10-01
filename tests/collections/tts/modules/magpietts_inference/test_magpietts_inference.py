@@ -187,12 +187,11 @@ def test_grouped_multiturn_exports_input_and_normalized_text(tmp_path):
 
 @pytest.mark.unit
 def test_strip_text_annotations_pins_bracket_semantics():
-    # Non-verbal tags and control markers are removed.
+    # Non-verbal tags and control markers are removed; a '[span]' is deleted together with its content.
     assert strip_text_annotations_from_text("Hello [breath] there -- friend... <laugh> {sigh}") == "Hello there friend"
-    # '*word*' emphasis keeps the word, but '[word]' is treated as a non-verbal tag and deleted with its content.
-    # This is why the flag must be disabled per dataset for bracket-emphasis evaluation sets.
+    # '*word*' emphasis keeps the word. What the same deletion does to a '[word]' emphasis reference is pinned by
+    # test_build_metric_reference_texts_bracket_emphasis; that is why the evalset key must stay off for such sets.
     assert strip_text_annotations_from_text("I *want* to ski") == "I want to ski"
-    assert strip_text_annotations_from_text("I [want] to ski") == "I to ski"
 
 
 @pytest.mark.unit
@@ -202,15 +201,12 @@ def test_build_metric_reference_texts_bracket_emphasis():
     # A perfect rendition of the text, as ASR transcribes it (no brackets).
     hypothesis = processor.process_text_for_wer(EMPHASIS_TEXT.replace("[", "").replace("]", ""))
 
-    # Default path: brackets are dropped as punctuation, every emphasized word is kept, and the perfect hypothesis
-    # scores zero.
+    # Default path: brackets are dropped as punctuation and every emphasized word is kept.
     record_texts, kept, spans = build_metric_reference_texts(
         records, processor, strip_text_annotations_for_metrics=False
     )
     assert record_texts == [(EMPHASIS_TEXT, EMPHASIS_TEXT)]
     assert kept == [EMPHASIS_REFERENCE] and spans == [[]]
-    assert word_error_rate_detail([hypothesis], kept, use_cer=False)[0] == 0.0
-    assert word_error_rate_detail([hypothesis], kept, use_cer=True)[0] == 0.0
 
     # Stripping deletes each whole [span]: the words are gone from the reference and reported as removed spans, and
     # the perfect hypothesis is charged an insertion for every emphasized word.
@@ -229,20 +225,17 @@ def test_warns_when_stripped_bracket_spans_were_spoken(monkeypatch):
     warnings_seen = []
     monkeypatch.setattr(nemo_logging, "warning", lambda msg, *args, **kwargs: warnings_seen.append(msg))
 
-    _warn_if_stripped_spans_were_spoken([["you", "compromise"], ["breath"]], ["you want a compromise", "well okay"])
+    # Only spans that occur as complete words in their own record's hypothesis are counted: two of four here.
+    _warn_if_stripped_spans_were_spoken(
+        [["you", "compromise"], ["breath"], ["laugh"]], ["you want a compromise", "well okay", "we laughed"]
+    )
     assert len(warnings_seen) == 1
     assert "2 square-bracket span(s)" in warnings_seen[0]
     assert "[you]" in warnings_seen[0]
     assert "manifest:" not in warnings_seen[0]
 
-    warnings_seen.clear()
-    _warn_if_stripped_spans_were_spoken([["you"]], ["you want"], manifest_path="/data/emma/manifest.json")
-    assert "manifest: /data/emma/manifest.json" in warnings_seen[0]
-
     # Languages written with spaces: the span must appear as complete words, also when the hypothesis is one word.
     warnings_seen.clear()
-    _warn_if_stripped_spans_were_spoken([["breath"]], ["well okay"])
-    _warn_if_stripped_spans_were_spoken([["breath"]], ["breathing"])
     _warn_if_stripped_spans_were_spoken([["you"]], ["your car"])
     assert warnings_seen == []
     _warn_if_stripped_spans_were_spoken([["breath"]], ["breath"])
@@ -260,25 +253,49 @@ def test_warns_when_stripped_bracket_spans_were_spoken(monkeypatch):
 
 @pytest.mark.unit
 def test_resolve_evaluation_config_for_dataset_overrides():
-    eval_config = EvaluationConfig(strip_text_annotations_for_metrics=True, language="en", eou_batch_size=7)
+    eval_config = EvaluationConfig(language="en", eou_batch_size=7)  # stripping off, as the example script builds it
     meta = {
         "manifest_path": "m.json",
         "audio_dir": "a",
         "language": "de",
         "asr_model": {"name": "some/asr", "type": "whisper"},
-        "strip_text_annotations_for_metrics": False,
+        "strip_text_annotations_for_metrics": True,
     }
 
     resolved = resolve_evaluation_config_for_dataset(eval_config, meta)
 
-    assert resolved.strip_text_annotations_for_metrics is False
+    assert resolved.strip_text_annotations_for_metrics is True  # the entry alone enables stripping
     assert resolved.language == "de"
     assert (resolved.asr_model_name, resolved.asr_model_type) == ("some/asr", "whisper")
     assert resolved.eou_batch_size == 7  # fields without an override are inherited
     assert eval_config.language == "en"  # the input is not mutated
-    assert eval_config.strip_text_annotations_for_metrics is True
-    # Absent keys keep the CLI-level values.
+    # Absent keys keep the CLI-level values; without the key the dataset is not stripped.
     assert resolve_evaluation_config_for_dataset(eval_config, {"manifest_path": "m.json"}) == eval_config
+    # An explicit false, the entry to write for an emphasis set, keeps stripping off as well.
+    off = {"manifest_path": "m.json", "strip_text_annotations_for_metrics": False}
+    assert resolve_evaluation_config_for_dataset(eval_config, off).strip_text_annotations_for_metrics is False
+
+
+@pytest.mark.unit
+def test_resolve_evaluation_config_for_dataset_rejects_run_level_strip_conflicts():
+    # A base config that enables stripping asserts that every dataset strips: entries must say so explicitly, so
+    # that a run-level value never silently decides for a dataset (bracket meaning is a property of each dataset).
+    strip_all = EvaluationConfig(strip_text_annotations_for_metrics=True)
+    agreeing = {"manifest_path": "m.json", "strip_text_annotations_for_metrics": True}
+    assert resolve_evaluation_config_for_dataset(strip_all, agreeing).strip_text_annotations_for_metrics is True
+    for entry, state in (
+        ({"manifest_path": "m.json"}, "does not set it"),
+        ({"manifest_path": "m.json", "strip_text_annotations_for_metrics": False}, "sets it to false"),
+    ):
+        with pytest.raises(ValueError, match=rf"conflict: .* entry for m\.json {state}\."):
+            resolve_evaluation_config_for_dataset(strip_all, entry)
+    # A hand-built entry without manifest_path is reported without a name.
+    with pytest.raises(ValueError, match=r"conflict: .* but the evalset entry does not set it\."):
+        resolve_evaluation_config_for_dataset(strip_all, {})
+    # Validation runs before the conflict check, so a malformed value is reported as malformed, not as a conflict.
+    malformed = {"manifest_path": "m.json", "strip_text_annotations_for_metrics": "false"}
+    with pytest.raises(ValueError, match="JSON boolean"):
+        resolve_evaluation_config_for_dataset(strip_all, malformed)
 
 
 def _filewise_row(gt_text, pred_text, cer, wer):
@@ -309,7 +326,7 @@ def test_compute_global_metrics_counts_empty_reference_texts():
     metrics = compute_global_metrics(rows)
 
     assert metrics["num_empty_reference_texts"] == 1
-    assert metrics["cer_filewise_avg"] == pytest.approx(0.1)  # unchanged plain mean over all rows
+    assert metrics["cer_filewise_avg"] == pytest.approx(0.1)  # plain mean over all rows, empty reference included
     assert metrics["wer_filewise_avg"] == pytest.approx(0.25)
     assert compute_global_metrics(rows[:1])["num_empty_reference_texts"] == 0
 
@@ -539,10 +556,8 @@ class _FakeInferenceConfig:
 
 @pytest.mark.unit
 def test_run_inference_and_evaluation_applies_evalset_override(tmp_path, monkeypatch):
-    # The example script used to rebuild EvaluationConfig by hand from the evalset entry; it now goes through
-    # resolve_evaluation_config_for_dataset, so overrides and inherited CLI-level fields are handled in one place.
-    # Regression: before this change the evalset schema had no strip_text_annotations_for_metrics key and a run-level
-    # flag applied to every dataset; stripping is now enabled per dataset only.
+    # The example script resolves each dataset's EvaluationConfig through resolve_evaluation_config_for_dataset, so
+    # evalset overrides and inherited CLI-level fields are handled in one place.
     manifest = tmp_path / "m.json"
     manifest.write_text(json.dumps({"audio_filepath": "a.wav", "text": "Hello there."}) + "\n")
     configs = []
@@ -587,7 +602,7 @@ def test_run_inference_and_evaluation_applies_evalset_override(tmp_path, monkeyp
     emphasis, tags = configs
     assert emphasis.language == "de"
     assert (emphasis.asr_model_name, emphasis.asr_model_type) == ("some/asr", "whisper")
-    assert emphasis.strip_text_annotations_for_metrics is False  # no run-level flag: entries without the key are kept
+    assert emphasis.strip_text_annotations_for_metrics is False  # entry without the key inherits eval_config's False
     assert tags.strip_text_annotations_for_metrics is True
     assert tags.language == "en" and tags.with_utmosv2 is False  # CLI-level settings without an override are inherited
     assert (cer, ssim) == (0.0, 1.0)

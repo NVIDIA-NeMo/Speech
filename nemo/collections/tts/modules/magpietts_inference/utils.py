@@ -1159,7 +1159,7 @@ def _add_inference_param_fields(
 
 
 class _RemovedStripFlagAction(argparse.Action):
-    """Reject the retired run-level --strip_text_annotations_for_metrics flag and point at the evalset key."""
+    """Reject --strip_text_annotations_for_metrics with a parser error that points at the per-dataset evalset key."""
 
     def __init__(self, option_strings, dest, **kwargs):
         kwargs.pop("nargs", None)

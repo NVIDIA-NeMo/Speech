@@ -12,7 +12,7 @@ you when producing a report.
 | `indexed` | `true` | Routes supported sources through indexed adapters such as `IndexedJsonlReader` and indexed NeMo-tar readers. Without it, streaming/replay behavior remains active. | `nemo.collections.common.data.lhotse.dataloader`, `lhotse.indexing` |
 | `use_stateful_dataloader` | `true` | Uses `torchdata.StatefulDataLoader` so dataloader iterator state can be saved in Lightning checkpoints. | NeMo Lhotse dataloader config |
 | `force_map_dataset` | `false` for training | Enforces iterable partitioning across data-parallel ranks and workers. Map-style training has too much sampler/manifest overhead; if a source cannot yet be indexed, report the migration as not launch-ready unless the user explicitly approves a temporary exception. | failure-modes §§18-22, conflict-matrix |
-| `indexes_root` | stable filesystem mirror, or node-local path populated before startup | Tells indexed readers where to find `.idx` sidecars. Prefer a persistent shared mirror. Use `/tmp/idx` only when the launcher stages indexes there before training. | failure-modes §16 |
+| `indexes_root` | stable filesystem mirror, or node-local path populated before startup | Tells indexed readers where to find `.idx` and gzip `.gzidx` sidecars. Prefer a persistent shared mirror. Use `/tmp/idx` only when the launcher stages both sidecars there before training. | failure-modes §16 |
 | `index_pack_root` | directory containing dataset-level `.idxpack` files | Resolves relative `index_pack` declarations. Keep the pack local and seekable at runtime. | NeMo Lhotse dataloader config |
 | `index_pack` on an outer `input_cfg` entry | explicit filename/path, when that dataset uses a pack | Propagates one pack through that dataset's nested leaves. It requires `indexed: true` and fails if the file is missing; omission keeps loose sidecars. | `convert_indexes_to_idxpack.py` |
 | `index_pack_max_open_files` | positive integer; default `32` | Bounds the process-local source descriptor cache shared by readers of one pack. | Lhotse `LazyPackedManifestIterator` |
@@ -24,7 +24,8 @@ you when producing a report.
 | `force_finite` | unset/false for training | Training usually needs infinite or epoch-controlled iteration; finite mode is normally for validation. | validation section |
 | `extra_fields` on indexed NeMo entries | unset | Indexed NeMo adapters cannot preserve arbitrary runtime field rewrites. Preprocess manifests instead. | failure-modes §2 |
 | `slice_length` on indexed entries | unset | Slicing rewrites cut/audio access and has no stable index unless preprocessed. | failure-modes §2 |
-| compressed `.jsonl.gz` / `.tar.gz` paths | reject for indexed sidecars | Indexing requires seekable uncompressed JSONL/tar inputs. Re-export or unpack first. | failure-modes §1 |
+| gzip `.jsonl.gz` / line-delimited `.json.gz` paths | keep with gzip-capable Lhotse and `indexed_gzip` installed | Build `.idx` offsets into the uncompressed stream plus `.gzidx` seek checkpoints. Supported v4 packs embed the latter. | failure-modes §1 |
+| compressed tar / other compressed JSONL paths | reject for indexed access | Unpack tars or convert manifests to plain/gzip seekable JSONL. | failure-modes §1 |
 | `pipe:` paths | reject | Pipe commands are not seekable. Materialize data first. | `lhotse.indexing` |
 
 ## Training iterable partition (`force_map_dataset: false`)
@@ -69,7 +70,7 @@ user explicitly approves a temporary exception.
 | concern | requirement | purpose |
 |---|---|---|
 | Per-chunk seed | invariant for all chunks in a resumable chain | Prevents model-level RNG divergence across resumes. |
-| Index mirror availability | `.idx` sidecars exist before training starts | Indexed readers fail or fall back to slow behavior when sidecars are missing. |
+| Index mirror availability | `.idx` and gzip `.gzidx` sidecars exist before loose reads | Indexed readers fail or fall back to slow behavior when sidecars are missing. Packed reads need only the declared pack and sources. |
 | Pack availability | every declared `index_pack` exists and matches its owning dataset layout | Pack declaration is strict; never rely on implicit filename inference or fallback. |
 | Optional index staging | YAML `indexes_root` matches the staged destination | Node-local paths such as `/tmp/idx` must be populated in every chunk. |
 | `num_workers`, `world_size` | unchanged between save and restore | Required by stateful dataloading and iterable partitioning. |
@@ -89,9 +90,9 @@ user explicitly approves a temporary exception.
 
 | concern | recommendation | purpose |
 |---|---|---|
-| Source format | uncompressed, seekable JSONL/tar or supported Shar cuts | Sidecar offsets must map to stable byte positions. |
+| Source format | plain/gzip seekable JSONL and uncompressed tar, including Shar | Gzip offsets address the uncompressed stream and require `.gzidx` seek checkpoints plus `indexed_gzip`. |
 | Workers | tune for memory and storage backend | Large manifests/tars plus many workers can OOM. Reduce workers or split blends. |
 | Mirror destination | persistent shared filesystem when available | Reuse sidecars across runs and avoid per-launch rebuilds. |
 | Remote sources | verify credentials/backend before building | Indexing remote data exercises storage credentials and byte-range access. |
 | Reusability | build once per source path set | Existing sidecars can be reused while source contents and paths are unchanged. |
-| Dataset-level pack | optional after sidecars exist; one per supported outer dataset | Collapses many sidecar opens and in-memory readers into one memory map without rescanning source data. Rebuild when collection identity, path order, source contents, or sidecars change. |
+| Dataset-level pack | optional after sidecars exist; one per supported outer dataset | Collapses sidecar opens into one memory map. Gzip JSONL selects v4 with embedded seek data and local sources; relocation requires rebuilding. Rebuild when collection identity, path order, source contents, or sidecars change. |

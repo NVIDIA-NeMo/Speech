@@ -66,12 +66,13 @@ For training iterable mode, list:
 
 ## Data Blend Audit
 
-<List unindexable entries such as compressed manifests/tars, `pipe:` paths,
+<List unindexable entries such as compressed tars/non-gzip compressed manifests, `pipe:` paths,
 unsupported `extra_fields`, `slice_length`, or mixed indexed/non-indexed chains.>
 
 | entry | reason | upstream fix |
 |---|---|---|
-| `<source>` | compressed cuts/manifests | re-export as uncompressed seekable files |
+| `<source>` | gzip JSONL missing dependency/indexes | install `lhotse[gzip]`; build `.idx` and `.gzidx` without changing the source |
+| `<source>` | compressed tar | unpack as seekable tar |
 | `<source>` | unsupported `extra_fields` | preprocess fields into the manifest |
 
 ## Launcher Review
@@ -112,12 +113,16 @@ _(full diff inline)_
 ### `<blend>.yaml` -> `<blend>-resumable.yaml`
 
 ```diff
--  - type: lhotse_shar
--    shar_path:
--      cuts: s3://bucket/path/cuts.0.jsonl.gz
-+  # Source excluded: compressed Shar cuts cannot be indexed.
-+  # Re-export with uncompressed cuts or convert to another seekable format.
+   - type: lhotse_shar
+     shar_path:
+       cuts: [/data/shar/cuts.0.jsonl.gz]
+-    indexed: false
++    indexed: true
 ```
+
+Keep gzip paths; prepare `.idx` and `.gzidx` and install `lhotse[gzip]` in both
+build and runtime environments. Record whether loose sidecars or a supported
+v4 pack with embedded gzip seek data will be used.
 
 _(full diff inline)_
 

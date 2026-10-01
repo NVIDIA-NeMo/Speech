@@ -51,6 +51,7 @@ import tempfile
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from itertools import zip_longest
 from multiprocessing import get_context
@@ -60,6 +61,7 @@ from typing import Optional
 import click
 from lhotse.index_pack import IndexPack, IndexPackArraySpec, IndexPackCollectionSpec, write_index_pack
 from lhotse.indexing import index_file_path
+from lhotse.packed_lazy import read_packed_range
 from lhotse.serialization import decode_json_line
 from omegaconf import DictConfig, ListConfig
 from scripts.dataloading._sharegpt_route_cli import ensure_sharegpt_route
@@ -658,7 +660,7 @@ def _authenticate_native_tar_route_source_pack(
     source_routes: Sequence[NativeTarOrdinalMapSpec],
     expected_sha256: str,
 ) -> None:
-    """Authenticate a v3 source pack and validate its complete collection schema."""
+    """Authenticate a source pack with route arrays and validate its collection schema."""
     _validate_source_pack_digest(source_pack, expected_sha256)
     expected_keys = _expected_source_pack_keys(source_collections, source_routes)
     actual_keys = set(source_pack._collections)
@@ -668,8 +670,10 @@ def _authenticate_native_tar_route_source_pack(
             f"expected_collections={len(expected_keys)}, actual_collections={len(actual_keys)}, "
             f"missing={len(set(expected_keys) - actual_keys)}, unexpected={len(actual_keys - set(expected_keys))}"
         )
-    if source_pack.version != 3:
-        raise ValueError(f"Native-tar route reuse requires a version-3 source pack, got version {source_pack.version}")
+    if source_pack.version not in (3, 4):
+        raise ValueError(
+            f"Native-tar route reuse requires a version-3 or version-4 source pack, got version {source_pack.version}"
+        )
     for spec in source_collections:
         _validate_source_pack_collection(source_pack, spec)
     for spec in source_routes:
@@ -693,11 +697,17 @@ def _native_tar_routing_signature(data: Mapping, *, path: str, row_index: int) -
     return "audio", nemo_tar_audio_member_name(audio_filepath)
 
 
+def _packed_gzip_index_info(pack: IndexPack, path: str):
+    lookup = getattr(pack, "gzip_index_info", None)
+    return lookup(path) if lookup is not None else None
+
+
 def _iter_packed_manifest_shard_rows(collection, shard_index: int):
     path = collection.path_for_shard(shard_index)
     row_count = collection.shard_length(shard_index)
     row_index = 0
-    with _open_data_path(path) as source:
+    gzip_info = _packed_gzip_index_info(collection.pack, path)
+    with _open_data_path(path) if gzip_info is None else nullcontext() as source:
         while row_index < row_count:
             first = collection.locate_in_shard(shard_index, row_index)
             batch_start = first.start
@@ -711,8 +721,11 @@ def _iter_packed_manifest_shard_rows(collection, shard_index: int):
                     break
                 batch_end_index += 1
                 batch_end = candidate.end
-            source.seek(batch_start)
-            raw = source.read(batch_end - batch_start)
+            if gzip_info is None:
+                source.seek(batch_start)
+                raw = source.read(batch_end - batch_start)
+            else:
+                raw = read_packed_range(collection.pack, path, batch_start, batch_end)
             if len(raw) != batch_end - batch_start:
                 raise EOFError(
                     f"Short packed manifest read from {path!r}: requested "
@@ -754,7 +767,8 @@ def _compare_native_tar_route_signatures(
     for shard_index, (source_manifest_path, target_manifest_path) in enumerate(
         zip(source_spec.manifest_paths, target_spec.manifest_paths, strict=True)
     ):
-        source_size = source_manifest_collection.source_size_for_shard(shard_index)
+        gzip_info = _packed_gzip_index_info(source_manifest_collection.pack, source_manifest_path)
+        source_size = gzip_info[0] if gzip_info else source_manifest_collection.source_size_for_shard(shard_index)
         current_source_size = int(_source_identity(source_manifest_path)["size_bytes"])
         if source_size != current_source_size:
             raise ValueError(
@@ -1950,7 +1964,7 @@ def _merge_native_tar_route_arrays(
     "--reuse-native-tar-routes-source-pack",
     type=click.Path(exists=True, dir_okay=False),
     default=None,
-    help="Authenticated version-3 idxpack built from the route-reuse source input_cfg.",
+    help="Authenticated version-3 or version-4 idxpack built from the route-reuse source input_cfg.",
 )
 @click.option(
     "--reuse-native-tar-routes-source-pack-sha256",

@@ -13,8 +13,9 @@ jobs:
       github.event_name == 'issue_comment' &&
       github.event.issue.pull_request &&
       github.event.comment.user.type != 'Bot' &&
-      (contains(github.event.comment.body, '/claude review') ||
-       contains(github.event.comment.body, '/claude strict-review'))
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association) &&
+      (github.event.comment.body == '/claude review' ||
+       github.event.comment.body == '/claude strict-review')
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
@@ -22,8 +23,8 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
       PR_NUMBER: ${{ github.event.issue.number }}
-      RETIRED_COMMAND: ${{ contains(github.event.comment.body, '/claude strict-review') && '/claude strict-review' || '/claude review' }}
-      REVIEW_COMMAND: ${{ contains(github.event.comment.body, '/claude strict-review') && '/review mode=strict' || '/review' }}
+      RETIRED_COMMAND: ${{ github.event.comment.body == '/claude strict-review' && '/claude strict-review' || '/claude review' }}
+      REVIEW_COMMAND: ${{ github.event.comment.body == '/claude strict-review' && '/review mode=strict' || '/review' }}
     steps:
       - name: Explain the replacement command
         env:

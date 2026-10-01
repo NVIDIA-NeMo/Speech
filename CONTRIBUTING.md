@@ -151,8 +151,9 @@ Comment `/review` on a pull request for the formal review service. Use
 `/review mode=strict` for deeper analysis, or add `model=claude` to select a
 Claude reviewer instead of the default Codex reviewer. `/review help` lists
 all options. The retired `/claude review` and `/claude strict-review` commands
-only reply with migration instructions; they do not run or automatically
-request a review.
+only reply with migration instructions when posted as an exact command by an
+owner, member, or collaborator. Quoted mentions, other commenters, and bots
+do not trigger a notice. These commands never run or automatically request a review.
 
 The repository policy lives in `.claude/skills/nemo-speech-pr-review/SKILL.md`. The review service
 must load this rubric from protected `main`, not the pull-request branch.

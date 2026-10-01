@@ -27,11 +27,15 @@ def test_review_redirect_is_least_privilege_and_does_not_execute_review() -> Non
     workflow = yaml.safe_load((ROOT / ".github/workflows/claude-review.yml").read_text())
     job = workflow["jobs"]["redirect-to-review"]
     condition = job["if"]
-    assert "github.event_name == 'issue_comment'" in condition
-    assert "github.event.issue.pull_request" in condition
-    assert "github.event.comment.user.type != 'Bot'" in condition
-    for command in ("/claude review", "/claude strict-review"):
-        assert f"contains(github.event.comment.body, '{command}')" in condition
+    assert " ".join(condition.split()) == (
+        "github.event_name == 'issue_comment' && "
+        "github.event.issue.pull_request && "
+        "github.event.comment.user.type != 'Bot' && "
+        'contains(fromJSON(\'["OWNER", "MEMBER", "COLLABORATOR"]\'), '
+        "github.event.comment.author_association) && "
+        "(github.event.comment.body == '/claude review' || "
+        "github.event.comment.body == '/claude strict-review')"
+    )
     assert job["permissions"] == {"pull-requests": "write"}
     assert "uses" not in job
     assert "secrets" not in job
@@ -44,7 +48,7 @@ def test_review_redirect_is_least_privilege_and_does_not_execute_review() -> Non
     assert "model=codex" in step["env"]["NOTICE"]
     assert "/review help" in step["env"]["NOTICE"]
     assert job["env"]["REVIEW_COMMAND"] == (
-        "${{ contains(github.event.comment.body, '/claude strict-review') && '/review mode=strict' || '/review' }}"
+        "${{ github.event.comment.body == '/claude strict-review' && '/review mode=strict' || '/review' }}"
     )
 
 

@@ -196,6 +196,10 @@ class Logger(metaclass=Singleton):
         if self._handlers.get("memory_all", None):
             self._handlers["memory_all"].setTarget(self._handlers["file"])
             self._handlers["memory_all"].close()  # flush and remove
+            # close() drops the target but leaves the handler on the logger, and
+            # MemoryHandler.flush() only empties its buffer when it has a target,
+            # so without this every later record is kept for the life of the run.
+            self._logger.removeHandler(self._handlers["memory_all"])
             del self._handlers["memory_all"]
 
     def add_err_file_handler(self, log_file):
@@ -215,6 +219,7 @@ class Logger(metaclass=Singleton):
         if self._handlers.get("memory_err", None):
             self._handlers["memory_err"].setTarget(self._handlers["file_err"])
             self._handlers["memory_err"].close()  # flush and remove
+            self._logger.removeHandler(self._handlers["memory_err"])
             del self._handlers["memory_err"]
 
     def getEffectiveLevel(self):

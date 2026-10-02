@@ -568,6 +568,18 @@ class TestPerPhraseBoostingParams:
             GPUBoostingTreeModel._validate_phrase_items([PhraseItem("abc", alpha=-1.0)])
 
     @pytest.mark.unit
+    def test_empty_phrase_raises(self):
+        """An empty phrase is rejected by name rather than dividing by zero when the tree is built."""
+        with pytest.raises(ValueError, match="Empty context-biasing phrase"):
+            GPUBoostingTreeModel._validate_phrase_items([PhraseItem("", alpha=1.0)])
+
+    @pytest.mark.unit
+    def test_empty_phrase_in_key_phrases_list_raises(self):
+        """The list channels reach the same guard that the file channel gets from stripping blank lines."""
+        with pytest.raises(ValueError, match="Empty context-biasing phrase"):
+            GPUBoostingTreeModel._validate_phrase_items([PhraseItem("abc"), PhraseItem("")])
+
+    @pytest.mark.unit
     def test_per_phrase_alpha_in_var_bpe_path(self):
         """Per-phrase alpha flows through build_from_var_bpe and scales the on-the-fly (potential-difference)
         scores uniformly across every tokenization, including the merged single arc."""

@@ -29,15 +29,14 @@ from omegaconf import DictConfig, open_dict
 
 import nemo.collections.asr as nemo_asr
 from nemo.collections.asr.metrics.wer import word_error_rate
-from nemo.collections.asr.parts.mixins.transcription import TranscribeConfig
 from nemo.collections.tts.models.easy_magpietts import EasyMagpieTTSModel
 from nemo.collections.tts.modules.magpietts_modules import SpecialAudioToken
+from nemo.collections.tts.parts.utils.reward_asr import RewardASRRouter
 from nemo.collections.tts.parts.utils.helpers import (
     get_mask_from_lengths,
     get_speaker_embeddings_from_filepaths,
     print_grad_weight_summary,
     process_text_for_cer,
-    transcribe_with_whisper_from_filepaths,
 )
 from nemo.utils import logging
 
@@ -86,26 +85,68 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
             self._reference_model._no_state_dict = True
             logging.info("Reference model loaded and frozen")
 
-        reward_asr_model = cfg.get('reward_asr_model', 'nemo')
-        if reward_asr_model == 'nemo':
-            self._eval_asr_model = nemo_asr.models.EncDecRNNTBPEModel.from_pretrained(
-                model_name=cfg.get('reward_asr_model_name', "nvidia/parakeet-ctc-0.6b")
-            )
-            self._eval_asr_model.freeze()
-            self.whisper_processor = None
-            self.whisper_model = None
-        elif reward_asr_model == 'whisper':
-            from transformers import WhisperForConditionalGeneration, WhisperProcessor
-
-            self._eval_asr_model = None
-            self.whisper_processor = WhisperProcessor.from_pretrained("openai/whisper-large-v3")
-            self.whisper_model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-large-v3")
-            self.whisper_model.eval()
-            for param in self.whisper_model.parameters():
-                param.requires_grad = False
-            self.use_multilingual_asr = True
-        else:
-            raise ValueError(f"Unknown reward_asr_model: {reward_asr_model}")
+        reward_asr_cfg = cfg.get('reward_asr')
+        if reward_asr_cfg is None:
+            # Backward-compatible translation for existing recipes. New recipes
+            # should use reward_asr.default_backend and language_routes directly.
+            legacy_backend = str(cfg.get("reward_asr_model", "nemo"))
+            model_name = cfg.get("reward_asr_model_name", "nvidia/parakeet-ctc-0.6b")
+            if legacy_backend in {"nemo", "nemotron"}:
+                backend_type = "nemo_process" if legacy_backend == "nemotron" else "nemo"
+                reward_asr_cfg = {
+                    "default_backend": legacy_backend,
+                    "language_routes": {},
+                    "log_samples": cfg.get("reward_asr_log_samples", 0),
+                    "backends": {
+                        legacy_backend: {
+                            "type": backend_type,
+                            "model_name": model_name,
+                            "batch_size": cfg.get("reward_asr_batch_size", 16),
+                            "attention_context": cfg.get("reward_asr_att_context_size"),
+                        }
+                    },
+                }
+            elif legacy_backend == "whisper":
+                reward_asr_cfg = {
+                    "default_backend": "whisper",
+                    "language_routes": {},
+                    "log_samples": cfg.get("reward_asr_log_samples", 0),
+                    "backends": {
+                        "whisper": {
+                            "type": "whisper",
+                            "model_name": "openai/whisper-large-v3",
+                        }
+                    },
+                }
+            elif legacy_backend == "qwen_whisper":
+                whisper_languages = list(cfg.get("qwen_asr_whisper_languages", ["hi"]))
+                qwen_cfg = {
+                    "type": "qwen",
+                    "model_name": cfg.get("qwen_asr_model_name", "Qwen/Qwen3-ASR-0.6B"),
+                    "batch_size": cfg.get("qwen_asr_batch_size", 4),
+                    "max_new_tokens": cfg.get("qwen_asr_max_new_tokens", 256),
+                }
+                if cfg.get("qwen_asr_python") is not None:
+                    qwen_cfg["python_executable"] = cfg.qwen_asr_python
+                reward_asr_cfg = {
+                    "default_backend": "qwen",
+                    "language_routes": {language: "whisper" for language in whisper_languages},
+                    "log_samples": cfg.get("reward_asr_log_samples", 0),
+                    "backends": {
+                        "qwen": qwen_cfg,
+                        "whisper": {
+                            "type": "whisper",
+                            "model_name": "openai/whisper-large-v3",
+                        },
+                    },
+                }
+            else:
+                raise ValueError(
+                    f"Unknown legacy reward_asr_model={legacy_backend!r}; configure model.reward_asr instead"
+                )
+        self._reward_asr_router = RewardASRRouter(reward_asr_cfg, device_getter=lambda: self.device)
+        self.reward_asr_log_samples = max(int(reward_asr_cfg.get("log_samples", 0)), 0)
+        self.use_multilingual_asr = True
 
         self._eval_speaker_verification_model = nemo_asr.models.EncDecSpeakerLabelModel.from_pretrained(
             model_name=cfg.get('speaker_verification_model_name', 'titanet_large')
@@ -126,14 +167,20 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
         if self.phoneme_po_loss_weight < 0.0:
             raise ValueError(f"phoneme_po_loss_weight must be non-negative, got {self.phoneme_po_loss_weight}.")
         train_dataset_cfg = self.cfg.get("train_ds", {}).get("dataset", {})
-        challenging_text_replacement_prob = float(train_dataset_cfg.get("challenging_text_replacement_prob", 0.0))
-        if challenging_text_replacement_prob > 0.0 and float(self.cfg.get("gt_phoneme_input_prob", 0.0)) > 0.0:
+        challenging_text_end_prob = float(train_dataset_cfg.get("challenging_text_end_prob", 0.0))
+        if challenging_text_end_prob > 0.0 and float(self.cfg.get("gt_phoneme_input_prob", 0.0)) > 0.0:
             raise ValueError(
                 "Challenging text replacement changes text without updating IPA. "
                 "Set gt_phoneme_input_prob=0 to use predicted phonemes."
             )
         self.audio_sampling_temperature = float(self.cfg.get('inference_temperature', 0.7))
         self.audio_sampling_topk = int(self.cfg.get('inference_topk', 80))
+        self.rollout_cfg_mode = str(self.cfg.get('rollout_cfg_mode', 'off'))
+        if self.rollout_cfg_mode not in {'off', 'alternate'}:
+            raise ValueError(
+                f"rollout_cfg_mode must be one of ['off', 'alternate'], got {self.rollout_cfg_mode!r}."
+            )
+        self.inference_cfg_scale = float(self.cfg.get('inference_cfg_scale', 2.5))
         if self.audio_sampling_topk <= 0:
             self.audio_sampling_topk = self.num_all_tokens_per_codebook
         if self.audio_sampling_topk > self.num_all_tokens_per_codebook:
@@ -178,8 +225,10 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
                     "changes sampled actions without a corresponding policy likelihood."
                 )
 
-        self._normalize_whisper_transcript = self.cfg.get('normalize_whisper_transcript', True)
-        if reward_asr_model == 'whisper' and self._normalize_whisper_transcript:
+        self._normalize_reward_transcript = self.cfg.get(
+            'normalize_reward_transcript', self.cfg.get('normalize_whisper_transcript', True)
+        )
+        if self._normalize_reward_transcript:
             self._normalizer_cache = {}
 
         # Entropy bonus coefficient – encourages exploration and prevents mode collapse.
@@ -316,6 +365,9 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
                 del state_dict[key]
         return state_dict
 
+    def _get_state_dict_keys_to_exclude(self):
+        return super()._get_state_dict_keys_to_exclude() + ['_reference_model']
+
     def _get_cached_normalizer(self, lang_key: Optional[str]):
         """Return a cached ``Normalizer`` for the given language, creating one on first access.
 
@@ -353,8 +405,8 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
         with torch.cuda.amp.autocast(enabled=False):
             logits_fp32 = logits.float()
             per_token_logps = torch.gather(logits_fp32.log_softmax(-1), dim=2, index=labels.unsqueeze(2)).squeeze(2)
-            # Top-k sampling assigns -inf to tokens outside its support. Padded
-            # labels may select one of those tokens, so multiplication by a zero
+            # Masked tokens have -inf log-probability. Padded labels may select
+            # one of those tokens, so multiplication by a zero
             # mask would produce `-inf * 0 = NaN`. Select masked values instead.
             per_token_logps = torch.where(
                 loss_mask.bool(), per_token_logps, torch.zeros_like(per_token_logps)
@@ -362,20 +414,16 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
         return per_token_logps
 
     @staticmethod
-    def _apply_sampling_transform(
+    def _apply_teacher_forced_transform(
         logits: torch.Tensor,
         temperature: float,
-        topk: int,
         forbidden_token_ids: Optional[List[int]] = None,
     ) -> torch.Tensor:
-        """Apply the same sanitization, token masking, temperature, and top-k used for sampling."""
+        """Apply sanitization, token masking, and temperature scaling for policy likelihoods."""
         logits = torch.nan_to_num(logits, nan=0.0, posinf=100.0, neginf=-100.0).clamp(-100.0, 100.0)
         if forbidden_token_ids:
             logits = logits.clone()
             logits[..., forbidden_token_ids] = float('-inf')
-        if topk < logits.size(-1):
-            topk_values = torch.topk(logits, topk, dim=-1).values
-            logits = logits.masked_fill(logits < topk_values[..., -1, None], float('-inf'))
         return logits / temperature
 
     def compute_local_transformer_logits(self, dec_out, audio_codes_target, targets_offset_by_one=False):
@@ -649,6 +697,7 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
             rows.append(
                 [
                     str(local_idx),
+                    "on" if item_metrics.get('used_cfg', False) else "off",
                     f"{item_metrics['cer_gt']:.4f}",
                     f"{item_metrics['wer_gt']:.4f}",
                     f"{item_metrics['spk_similarity']:.4f}",
@@ -659,7 +708,7 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
             )
 
         table = self._format_text_table(
-            headers=["item", "cer", "wer", "ssim", "utmos", "reward", "advantage"], rows=rows
+            headers=["item", "cfg", "cer", "wer", "ssim", "utmos", "reward", "advantage"], rows=rows
         )
         logging.info(
             f"[generate_and_reward] group={group_idx} language={language} valid={is_group_valid} "
@@ -667,45 +716,28 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
             f"prompt: {prompt_text}\n{table}\n"
         )
 
-    def _compute_pred_transcripts(
-        self, predicted_audio_paths: List[str], batch_repeated: Dict, reward_asr_model: str
-    ) -> List[str]:
-        """Transcribe predicted audio files using either the NeMo ASR model or Whisper.
+    def _compute_pred_transcripts(self, predicted_audio_paths: List[str], batch_repeated: Dict) -> List[str]:
+        """Route reward transcription by language, then normalize consistently for CER/WER."""
+        languages = list(batch_repeated.get('languages', ['en'] * len(predicted_audio_paths)))
+        raw_transcripts = self._reward_asr_router.transcribe(predicted_audio_paths, languages)
+        pred_transcripts = []
+        logged_languages: Dict[str, int] = {}
+        for item_idx, (language, transcript) in enumerate(zip(languages, raw_transcripts)):
+            normalizer = self._get_cached_normalizer(language) if self._normalize_reward_transcript else None
+            normalized = normalizer.normalize(transcript) if normalizer is not None else transcript
+            pred_transcripts.append(process_text_for_cer(normalized))
 
-        Returns a list of processed transcript strings (one per audio file), ready for CER/WER
-        computation.
-        """
-        if reward_asr_model == 'nemo':
-            pred_transcripts = self._eval_asr_model.transcribe(
-                predicted_audio_paths,
-                batch_size=len(predicted_audio_paths),
-                override_config=TranscribeConfig(
-                    use_lhotse=False, batch_size=len(predicted_audio_paths), num_workers=0
-                ),
-            )
-            return [process_text_for_cer(transcript.text) for transcript in pred_transcripts]
-
-        self.whisper_model.to(self.device)
-        pred_transcripts = [""] * len(predicted_audio_paths)
-        langs = batch_repeated.get('languages', ['en'] * len(predicted_audio_paths))
-        language_groups = {}
-        for item_idx, audio_path in enumerate(predicted_audio_paths):
-            language = langs[item_idx] if item_idx < len(langs) else 'en'
-            language_groups.setdefault(language, []).append((item_idx, audio_path))
-
-        for language, grouped_items in language_groups.items():
-            normalizer = self._get_cached_normalizer(language) if self._normalize_whisper_transcript else None
-            grouped_paths = [audio_path for _, audio_path in grouped_items]
-            group_transcripts = transcribe_with_whisper_from_filepaths(
-                audio_filepaths=grouped_paths,
-                language=language,
-                whisper_processor=self.whisper_processor,
-                whisper_model=self.whisper_model,
-                device=self.device,
-                normalizer=normalizer,
-            )
-            for (item_idx, _), transcript in zip(grouped_items, group_transcripts):
-                pred_transcripts[item_idx] = process_text_for_cer(transcript)
+            num_logged = logged_languages.get(language, 0)
+            if (
+                num_logged < self.reward_asr_log_samples
+                and getattr(self.trainer, "is_global_zero", True)
+            ):
+                gt_text = str(batch_repeated['raw_texts'][item_idx]).replace("\n", " ")
+                logging.info(
+                    f"[reward_asr_transcript] language={language} gt={gt_text[:240]!r} "
+                    f"raw_pred={transcript[:240]!r} normalized_pred={pred_transcripts[-1][:240]!r}"
+                )
+                logged_languages[language] = num_logged + 1
         return pred_transcripts
 
     def _compute_speaker_embeddings_parallel(
@@ -768,14 +800,7 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
             advantages, group validities, and timing information.
         """
         batch_repeated = self.repeat_items_in_batch(batch, num_generations_per_item)
-        reward_asr_model = self.cfg.get('reward_asr_model', 'nemo')
-
-        use_cfg = False
-        cfg_scale = 1.0
-        inference_cfg_prob = self.cfg.get('inference_cfg_prob', 0.0)
-        if (inference_cfg_prob == 1.0) or (inference_cfg_prob > 0.0 and mode == 'train'):
-            use_cfg = random.random() < inference_cfg_prob
-            cfg_scale = self.cfg.get('inference_cfg_scale', 1.0)
+        rollout_cfg_mode = self.rollout_cfg_mode if mode == 'train' else 'off'
 
         phoneme_input_type = 'pred'
         gt_phoneme_input_prob = self.cfg.get('gt_phoneme_input_prob', 0.0)
@@ -784,22 +809,33 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
             phoneme_input_type = 'gt' if random.random() < gt_phoneme_input_prob else 'pred'
 
         generation_start_time = time.perf_counter()
-        logging.info("Inference started")
-        output = self.infer_batch(
-            batch=batch_repeated,
-            max_decoder_steps=self.max_decoder_steps,
-            temperature=self.audio_sampling_temperature,
-            topk=self.audio_sampling_topk,
-            phoneme_temperature=self.phoneme_sampling_temperature,
-            phoneme_topk=self.phoneme_sampling_topk,
-            use_cfg=use_cfg,
-            cfg_scale=cfg_scale,
-            use_local_transformer_for_inference=use_local_transformer_for_inference,
-            phoneme_input_type=phoneme_input_type,
-            phoneme_sampling_method=self.cfg.get('inference_phoneme_sampling_method', 'argmax'),
-            force_dropout_text=False,
-            use_teacher_forced=False,
-            use_inference_mode=False,
+        logging.info(f"Inference started (rollout_cfg_mode={rollout_cfg_mode})")
+
+        def run_inference(inference_batch, use_cfg):
+            return self.infer_batch(
+                batch=inference_batch,
+                max_decoder_steps=self.max_decoder_steps,
+                temperature=self.audio_sampling_temperature,
+                topk=self.audio_sampling_topk,
+                phoneme_temperature=self.phoneme_sampling_temperature,
+                phoneme_topk=self.phoneme_sampling_topk,
+                use_cfg=use_cfg,
+                cfg_scale=self.inference_cfg_scale,
+                use_local_transformer_for_inference=use_local_transformer_for_inference,
+                phoneme_input_type=phoneme_input_type,
+                phoneme_sampling_method=self.cfg.get('inference_phoneme_sampling_method', 'argmax'),
+                force_dropout_text=False,
+                use_teacher_forced=False,
+                use_inference_mode=False,
+            )
+
+        use_cfg = rollout_cfg_mode == 'alternate' and int(self.global_step) % 2 == 1
+        output = run_inference(batch_repeated, use_cfg=use_cfg)
+        rollout_cfg_mask = torch.full(
+            (len(batch_repeated['raw_texts']),),
+            fill_value=use_cfg,
+            device=self.device,
+            dtype=torch.bool,
         )
         logging.info("Inference ended")
         audio_generation_time_sec = time.perf_counter() - generation_start_time
@@ -825,7 +861,7 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
         ]
 
         rewarding_start_time = time.perf_counter()
-        pred_transcripts = self._compute_pred_transcripts(predicted_audio_paths, batch_repeated, reward_asr_model)
+        pred_transcripts = self._compute_pred_transcripts(predicted_audio_paths, batch_repeated)
         try:
             pred_speaker_embeddings, gt_speaker_embeddings = self._compute_speaker_embeddings_parallel(
                 predicted_audio_paths, batch, num_generations_per_item
@@ -876,6 +912,7 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
                 'codes_len': int(predicted_codes_lens[idx].item()),
                 'utmos': float(utmos_score),
                 'language': str(languages[idx]) if idx < len(languages) else "unknown",
+                'used_cfg': bool(rollout_cfg_mask[idx].item()),
             }
 
             best_ssim_achievable = self.cfg.get('best_ssim_achievable', 0.9)
@@ -979,6 +1016,8 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
         all_groups_std_reward = all_groups_std_reward / max(num_groups, 1)
         advantages = torch.tensor([x['advantage'] for x in batch_metrics], device=self.device, dtype=torch.float32)
         group_validities = torch.tensor(group_validities, device=self.device, dtype=torch.float32)
+        cfg_rewards = [item['reward'] for item in batch_metrics if item['used_cfg']]
+        no_cfg_rewards = [item['reward'] for item in batch_metrics if not item['used_cfg']]
         rewarding_time_sec = time.perf_counter() - rewarding_start_time
 
         return {
@@ -992,6 +1031,17 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
             'predicted_phoneme_tokens_lens': predicted_phoneme_tokens_lens,
             'advantages': advantages,
             'group_validities': group_validities,
+            'cfg_fraction': rollout_cfg_mask.float().mean(),
+            'mean_reward_cfg': (
+                torch.tensor(np.mean(cfg_rewards), device=self.device, dtype=torch.float32)
+                if cfg_rewards
+                else None
+            ),
+            'mean_reward_no_cfg': (
+                torch.tensor(np.mean(no_cfg_rewards), device=self.device, dtype=torch.float32)
+                if no_cfg_rewards
+                else None
+            ),
             'rollout_phoneme_input_type': phoneme_input_type,
             'timings': {
                 'audio_generation_time_sec': float(audio_generation_time_sec),
@@ -1125,15 +1175,27 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
         advantages: torch.Tensor,
         group_validities: torch.Tensor,
         sampling_temperature: Optional[float] = None,
-        sampling_topk: Optional[int] = None,
         forbidden_token_ids: Optional[List[int]] = None,
     ):
-        """Compute normalized GRPO, KL, and entropy for parallel action streams."""
-        if (sampling_temperature is None) != (sampling_topk is None):
-            raise ValueError("sampling_temperature and sampling_topk must either both be set or both be None.")
+        """Compute normalized GRPO, exact forward KL, and entropy for parallel action streams.
+
+        KL is evaluated over the complete policy/reference distributions rather than
+        estimated from only the sampled action. The sampled-action ``k3`` estimator
+        (``exp(log p_ref - log p_policy) - log p_ref + log p_policy - 1``) is
+        non-negative, but its exponential importance ratio has an unbounded
+        heavy tail. A single rare token can therefore dominate an otherwise
+        healthy batch. Since this method already materializes the full policy
+        distribution for entropy, exact ``KL(policy || reference)`` only requires
+        one additional reference log-softmax per stream and avoids that variance.
+
+        Both the GRPO and KL terms are masked by ``group_validities``. A group
+        rejected as reward-uninformative must not update the policy through a
+        hidden KL-only path.
+        """
         loss_mask = get_mask_from_lengths(target_lens).float()
+        group_mask = group_validities.float().unsqueeze(1)
         num_streams = targets.size(1)
-        total_loss = logits.new_zeros((), dtype=torch.float32)
+        total_po_loss = logits.new_zeros((), dtype=torch.float32)
         total_kl = logits.new_zeros((), dtype=torch.float32)
         total_entropy = logits.new_zeros((), dtype=torch.float32)
 
@@ -1142,11 +1204,9 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
             ei = si + vocab_size
             stream_logits = logits[:, :, si:ei]
             if sampling_temperature is not None:
-                assert sampling_topk is not None
-                stream_logits = self._apply_sampling_transform(
+                stream_logits = self._apply_teacher_forced_transform(
                     stream_logits,
                     temperature=sampling_temperature,
-                    topk=sampling_topk,
                     forbidden_token_ids=forbidden_token_ids,
                 )
             stream_labels = targets[:, stream_idx, :].long()
@@ -1161,11 +1221,11 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
             # This on-policy surrogate is value-identical to -advantage, while its
             # gradient is -advantage * grad(log pi(action)).
             with torch.cuda.amp.autocast(enabled=False):
-                per_token_loss = -(
+                per_token_po_loss = -(
                     torch.exp(per_token_logps.float() - per_token_logps.float().detach())
                     * advantages.float().unsqueeze(1)
                 )
-                per_token_loss = per_token_loss * group_validities.float().unsqueeze(1)
+                per_token_po_loss = per_token_po_loss * group_mask
 
                 logits_fp32 = stream_logits.float()
                 log_probs = logits_fp32.log_softmax(-1)
@@ -1181,23 +1241,30 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
                 with torch.no_grad():
                     ref_stream_logits = reference_logits[:, :, si:ei]
                     if sampling_temperature is not None:
-                        # Keep full reference support. Independently truncating the
-                        # reference top-k can assign zero probability to policy actions.
-                        ref_stream_logits = (
-                            torch.nan_to_num(ref_stream_logits, nan=0.0, posinf=100.0, neginf=-100.0)
-                            .clamp(-100.0, 100.0)
-                            .div(sampling_temperature)
+                        # Policy and reference must use identical temperature and
+                        # token support for a meaningful distribution-level KL.
+                        ref_stream_logits = self._apply_teacher_forced_transform(
+                            ref_stream_logits,
+                            temperature=sampling_temperature,
+                            forbidden_token_ids=forbidden_token_ids,
                         )
-                    per_token_ref_logps = self._get_per_token_logps(
-                        ref_stream_logits, stream_labels, loss_mask
-                    )
+                    ref_log_probs = ref_stream_logits.float().log_softmax(-1)
+
                 with torch.cuda.amp.autocast(enabled=False):
-                    per_token_kl = (
-                        torch.exp(per_token_ref_logps.float() - per_token_logps.float())
-                        - (per_token_ref_logps.float() - per_token_logps.float())
-                        - 1
+                    # Exact forward KL: sum_a p_policy(a) *
+                    # (log p_policy(a) - log p_reference(a)). Forbidden tokens
+                    # are -inf under both distributions; replace their undefined
+                    # (-inf - -inf) log-ratio with zero before multiplying by the
+                    # policy probability.
+                    log_ratio = torch.nan_to_num(
+                        log_probs - ref_log_probs,
+                        nan=0.0,
+                        posinf=0.0,
+                        neginf=0.0,
                     )
-                    per_token_loss = per_token_loss + grpo_beta * per_token_kl
+                    per_token_kl = (probs * log_ratio).sum(dim=-1).clamp_min(0.0)
+                    per_token_kl = per_token_kl * group_mask
+
                 stream_kl = (
                     (per_token_kl * loss_mask).sum(dim=1) / loss_mask.sum(dim=1).clamp_min(1e-8)
                 ).mean()
@@ -1205,20 +1272,20 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
                 stream_kl = logits.new_zeros((), dtype=torch.float32)
 
             if self.loss_type == "grpo":
-                stream_loss = (
-                    (per_token_loss * loss_mask).sum(dim=1) / loss_mask.sum(dim=1).clamp_min(1e-8)
+                stream_po_loss = (
+                    (per_token_po_loss * loss_mask).sum(dim=1) / loss_mask.sum(dim=1).clamp_min(1e-8)
                 ).mean()
             elif self.loss_type == "dr_grpo":
-                total_tokens = per_token_loss.shape[0] * self.max_decoder_steps
-                stream_loss = (per_token_loss * loss_mask).sum() / max(total_tokens, 1)
+                total_tokens = per_token_po_loss.shape[0] * self.max_decoder_steps
+                stream_po_loss = (per_token_po_loss * loss_mask).sum() / max(total_tokens, 1)
             else:
                 raise ValueError(f"Unknown loss function: {self.loss_type}")
 
-            total_loss = total_loss + stream_loss
+            total_po_loss = total_po_loss + stream_po_loss
             total_kl = total_kl + stream_kl
             total_entropy = total_entropy + stream_entropy
 
-        return total_loss / num_streams, total_kl / num_streams, total_entropy / num_streams
+        return total_po_loss / num_streams, total_kl / num_streams, total_entropy / num_streams
 
     def _compute_po_losses_from_outputs(
         self,
@@ -1247,7 +1314,6 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
             advantages=advantages,
             group_validities=group_validities,
             sampling_temperature=self.audio_sampling_temperature,
-            sampling_topk=self.audio_sampling_topk,
             forbidden_token_ids=SpecialAudioToken.get_forbidden_tokens(
                 self.codebook_size, forbid_audio_eos=False
             ),
@@ -1276,7 +1342,6 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
                 advantages=advantages,
                 group_validities=group_validities,
                 sampling_temperature=self.phoneme_sampling_temperature,
-                sampling_topk=self.phoneme_sampling_topk,
             )
 
         # GT phonemes are supervised targets, not sampled policy actions. Retain the
@@ -1288,7 +1353,15 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
         po_loss = audio_po_loss + self.phoneme_po_loss_weight * phoneme_po_loss
         kl_loss = audio_kl + self.phoneme_po_loss_weight * phoneme_kl
         entropy = audio_entropy + self.phoneme_po_loss_weight * phoneme_entropy
-        total_loss = po_loss + self.aux_phoneme_loss_weight * phoneme_aux_loss
+        # Keep policy and KL losses separate for logging. ``train_kl_loss`` is
+        # the raw exact KL; only ``grpo_beta * kl_loss`` contributes to the
+        # optimized objective.
+        grpo_beta = float(self.cfg.get('grpo_beta', 0.0))
+        total_loss = (
+            po_loss
+            + grpo_beta * kl_loss
+            + self.aux_phoneme_loss_weight * phoneme_aux_loss
+        )
         if self.entropy_coeff > 0:
             total_loss = total_loss - self.entropy_coeff * entropy
 
@@ -1437,11 +1510,20 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
             'used_gt_phoneme_input': used_gt_phoneme_input,
         }
 
+    def _update_dataset_training_step(self) -> None:
+        dataset = getattr(getattr(self, "_train_dl", None), "dataset", None)
+        while dataset is not None:
+            if hasattr(dataset, "set_training_step"):
+                dataset.set_training_step(int(self.global_step))
+                return
+            dataset = getattr(dataset, "dataset", None)
+
     def training_step(self, batch, batch_idx):
         """Execute one full online PO training iteration: rollout generation, reward computation,
         chunked teacher-forced forward/backward, gradient clipping, optimizer step, LR scheduling,
         and logging of all training metrics and diagnostics.
         """
+        self._update_dataset_training_step()
         n_generations_per_item = self.cfg.get('n_generations_per_item', 6)
         optimizer = self.optimizers()
         if isinstance(optimizer, (list, tuple)):
@@ -1517,6 +1599,21 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
         self.log('train_used_gt_phoneme_input', po_outputs['used_gt_phoneme_input'], prog_bar=True, sync_dist=True)
         self.log('train_mean_reward', generated_codes_and_metrics['mean_reward'], prog_bar=True, sync_dist=True)
         self.log('train_std_reward', generated_codes_and_metrics['std_reward'], prog_bar=True, sync_dist=True)
+        self.log('train_cfg_fraction', generated_codes_and_metrics['cfg_fraction'], prog_bar=False, sync_dist=True)
+        if generated_codes_and_metrics['mean_reward_cfg'] is not None:
+            self.log(
+                'train_mean_reward_cfg',
+                generated_codes_and_metrics['mean_reward_cfg'],
+                prog_bar=False,
+                sync_dist=True,
+            )
+        if generated_codes_and_metrics['mean_reward_no_cfg'] is not None:
+            self.log(
+                'train_mean_reward_no_cfg',
+                generated_codes_and_metrics['mean_reward_no_cfg'],
+                prog_bar=False,
+                sync_dist=True,
+            )
 
         # Gradient / weight diagnostics to wandb.
         for metric_name, metric_value in grad_weight_metrics.items():
@@ -1534,3 +1631,7 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
         for tkey in ('audio_generation_time_sec', 'audio_save_time_sec', 'rewarding_time_sec'):
             self.log(f'train_{tkey}', float(timings.get(tkey, 0.0)), prog_bar=False, sync_dist=True)
         self.log('train_teacher_forced_time_sec', teacher_forced_time_sec, prog_bar=False, sync_dist=True)
+
+    def teardown(self, stage: str) -> None:
+        self._reward_asr_router.close()
+        super().teardown(stage)

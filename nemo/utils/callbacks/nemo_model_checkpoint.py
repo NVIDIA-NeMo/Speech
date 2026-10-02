@@ -28,6 +28,7 @@ from lightning.pytorch.trainer import call
 from lightning.pytorch.utilities import rank_zero_info
 
 from nemo.collections.common.callbacks import EMA
+from nemo.lightning.callback_group import CallbackGroup
 from nemo.utils import logging
 from nemo.utils.app_state import AppState
 from nemo.utils.callbacks.dist_ckpt_io import AsyncFinalizableCheckpointIO
@@ -541,6 +542,19 @@ class NeMoModelCheckpoint(ModelCheckpoint):
         return trainer.strategy.broadcast(exists)
 
     def _save_checkpoint(self, trainer: 'lightning.pytorch.Trainer', filepath: str) -> None:  # noqa: F821
+        group = CallbackGroup.get_instance()
+        group.on_save_checkpoint_start(trainer.global_step, async_save=self.async_save)
+        try:
+            self._save_checkpoint_with_lifecycle(trainer, filepath)
+        except Exception:
+            group.on_save_checkpoint_failure(trainer.global_step)
+            raise
+        finally:
+            group.on_save_checkpoint_end()
+
+    def _save_checkpoint_with_lifecycle(
+        self, trainer: 'lightning.pytorch.Trainer', filepath: str  # noqa: F821
+    ) -> None:
         # barrier_after=True, so all ranks continue after the unfinished checkpoint marker is placed.
         # if anything goes wrong during checkpointing, we should be able to detect that data is incomplete.
         self.set_checkpoint_unfinished_marker(filepath, barrier_after=True)
@@ -558,6 +572,7 @@ class NeMoModelCheckpoint(ModelCheckpoint):
                     rank_zero_info(f"Saving EMA weights to separate checkpoint {filepath}")
                 super()._save_checkpoint(trainer, filepath)
             self.remove_checkpoint_unfinished_marker(filepath, barrier_before=True)
+            CallbackGroup.get_instance().on_save_checkpoint_success(trainer.global_step)
         else:
             # Async save passed the finalization function to checkpoint_io,
             # sync save calls the finalization function immediately after save.
@@ -599,6 +614,7 @@ class NeMoModelCheckpoint(ModelCheckpoint):
             # barrier_before=True, so all ranks synchronize before removing the unfinished checkpoint marker
             # we don't want to remove the marker until all checkpointing is done.
             self.remove_checkpoint_unfinished_marker(filepath, barrier_before=True)
+            CallbackGroup.get_instance().on_save_checkpoint_success(global_step)
 
             if not self.async_save:
                 return

@@ -26,6 +26,7 @@ from omegaconf import DictConfig, OmegaConf, open_dict
 from nemo.collections.tts.losses.hifigan_losses import DiscriminatorLoss, FeatureMatchingLoss, GeneratorLoss
 from nemo.collections.tts.models.base import Vocoder
 from nemo.collections.tts.modules.hifigan_modules import MultiPeriodDiscriminator, MultiScaleDiscriminator
+from nemo.collections.tts.one_logger import TTSThroughputPolicy
 from nemo.collections.tts.parts.utils.callbacks import LoggingCallback
 from nemo.collections.tts.parts.utils.helpers import get_batch_size, get_num_workers, plot_spectrogram_to_numpy
 from nemo.core.classes import Exportable
@@ -33,6 +34,7 @@ from nemo.core.classes.common import PretrainedModelInfo, safe_instantiate, type
 from nemo.core.neural_types.elements import AudioSignal, MelSpectrogramType
 from nemo.core.neural_types.neural_type import NeuralType
 from nemo.core.optim.lr_scheduler import compute_max_steps, prepare_lr_scheduler
+from nemo.lightning.speech_throughput import register_throughput_policy
 from nemo.utils import logging, model_utils
 
 HAVE_WANDB = True
@@ -42,6 +44,7 @@ except ModuleNotFoundError:
     HAVE_WANDB = False
 
 
+@register_throughput_policy(TTSThroughputPolicy)
 class HifiGanModel(Vocoder, Exportable):
     """
     HiFi-GAN model (https://arxiv.org/abs/2010.05646) that is used to generate audio from mel spectrogram.

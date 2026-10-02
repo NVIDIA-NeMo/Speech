@@ -274,6 +274,14 @@ def _is_target_allowed(target: str) -> bool:
             except (ImportError, TypeError):
                 return False
 
+        if target == "nemo.collections.speechlm2.parts.lr_only_resume.ScaleRestoredLearningRate":
+            try:
+                from lightning.pytorch.callbacks import Callback
+
+                return issubclass(obj, Callback)
+            except (ImportError, TypeError):
+                return False
+
         if target.startswith("nemo.collections.speechlm2.parts.parallel."):
             try:
                 from lightning.pytorch.strategies.model_parallel import ModelParallelStrategy

@@ -1736,7 +1736,14 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             if predicted_audio_paths and context_audio_paths:
                 with torch.no_grad():
                     # ASR transcription for CER/WER
-                    if self.use_multilingual_asr:
+                    validation_asr_backend = self.cfg.get('validation_asr_backend', 'default')
+                    if validation_asr_backend == 'reward':
+                        if not hasattr(self, '_compute_pred_transcripts'):
+                            raise RuntimeError(
+                                "validation_asr_backend='reward' requires reward ASR transcription support"
+                            )
+                        pred_transcripts = self._compute_pred_transcripts(predicted_audio_paths, batch)
+                    elif self.use_multilingual_asr:
                         self.whisper_model.to(self.device)
                         languages = batch.get('languages', None)
                         if languages is None:
@@ -2020,9 +2027,10 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 phoneme_turn_dropout_turn_prob=self.cfg.get("phoneme_turn_dropout_turn_prob", 0.0),
                 phoneme_turn_max_words_to_drop=self.cfg.get("phoneme_turn_max_words_to_drop", 2),
                 challenging_texts_path=dataset_cfg.dataset.get("challenging_texts_path"),
-                challenging_text_replacement_prob=dataset_cfg.dataset.get(
-                    "challenging_text_replacement_prob", 0.0
-                ),
+                challenging_text_start_prob=dataset_cfg.dataset.get("challenging_text_start_prob", 0.0),
+                challenging_text_end_prob=dataset_cfg.dataset.get("challenging_text_end_prob", 0.0),
+                challenging_text_start_step=dataset_cfg.dataset.get("challenging_text_start_step", 0),
+                challenging_text_end_step=dataset_cfg.dataset.get("challenging_text_end_step", 0),
                 context_audio_shuffle_batch_prob=dataset_cfg.dataset.get(
                     "context_audio_shuffle_batch_prob", 0.0
                 ),

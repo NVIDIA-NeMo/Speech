@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import multiprocessing
 import random
 import re
 from typing import Dict, List, Union
@@ -178,7 +179,10 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         phoneme_turn_max_words_to_drop: int = 2,
         load_normalized_text_percent: float = 1.0,
         challenging_texts_path: str = None,
-        challenging_text_replacement_prob: float = 0.0,
+        challenging_text_start_prob: float = 0.0,
+        challenging_text_end_prob: float = 0.0,
+        challenging_text_start_step: int = 0,
+        challenging_text_end_step: int = 0,
         context_audio_shuffle_batch_prob: float = 0.0,
     ):
         super().__init__()
@@ -226,11 +230,21 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         if not 0.0 <= context_audio_shuffle_batch_prob <= 1.0:
             raise ValueError("context_audio_shuffle_batch_prob must be between 0 and 1.")
         self.context_audio_shuffle_batch_prob = context_audio_shuffle_batch_prob
-        if not 0.0 <= challenging_text_replacement_prob <= 1.0:
-            raise ValueError("challenging_text_replacement_prob must be between 0 and 1.")
-        self.challenging_text_replacement_prob = challenging_text_replacement_prob
+        if not 0.0 <= challenging_text_start_prob <= challenging_text_end_prob <= 1.0:
+            raise ValueError("Challenging text probabilities must satisfy 0 <= start_prob <= end_prob <= 1.")
+        if challenging_text_end_prob > 0.0 and not (
+            0 <= challenging_text_start_step < challenging_text_end_step
+        ):
+            raise ValueError("Challenging text steps must satisfy 0 <= start_step < end_step.")
+        self.challenging_text_start_prob = challenging_text_start_prob
+        self.challenging_text_end_prob = challenging_text_end_prob
+        self.challenging_text_start_step = challenging_text_start_step
+        self.challenging_text_end_step = challenging_text_end_step
+        # DataLoader workers inherit this shared value, allowing the trainer
+        # process to advance the schedule without recreating the dataloader.
+        self._training_step = multiprocessing.Value("q", 0, lock=False)
         self.challenging_texts = []
-        if self.challenging_text_replacement_prob > 0.0:
+        if self.challenging_text_end_prob > 0.0:
             if not challenging_texts_path:
                 raise ValueError("challenging_texts_path is required when challenging text replacement is enabled.")
             with open(challenging_texts_path, encoding="utf-8") as input_file:
@@ -239,7 +253,9 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
                 raise ValueError(f"No challenging texts found in {challenging_texts_path}.")
             logging.info(
                 f"Loaded {len(self.challenging_texts)} challenging texts from {challenging_texts_path}; "
-                f"batch replacement probability={self.challenging_text_replacement_prob:.4f}"
+                f"replacement schedule=({self.challenging_text_start_prob:.4f} at step "
+                f"{self.challenging_text_start_step}) -> ({self.challenging_text_end_prob:.4f} at step "
+                f"{self.challenging_text_end_step})"
             )
 
         self.frame_length = (
@@ -250,6 +266,22 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         num_codec_frames = int(duration * sample_rate / self.codec_model_samples_per_frame)
         num_audio_samples = num_codec_frames * self.codec_model_samples_per_frame
         return num_audio_samples
+
+    def set_training_step(self, step: int) -> None:
+        self._training_step.value = max(int(step), 0)
+
+    def get_challenging_text_replacement_prob(self, step: int = None) -> float:
+        step = self._training_step.value if step is None else int(step)
+        if step < self.challenging_text_start_step:
+            return 0.0
+        if step >= self.challenging_text_end_step:
+            return self.challenging_text_end_prob
+        progress = (step - self.challenging_text_start_step) / (
+            self.challenging_text_end_step - self.challenging_text_start_step
+        )
+        return self.challenging_text_start_prob + progress * (
+            self.challenging_text_end_prob - self.challenging_text_start_prob
+        )
 
     def _initialize_tokenizers(self):
         if self.text_tokenizer is None:
@@ -284,7 +316,8 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             else:
                 batch_tokenizer_names.append("english_phoneme")
 
-        if self.dataset_type == 'train' and random.random() < self.challenging_text_replacement_prob:
+        challenging_text_prob = self.get_challenging_text_replacement_prob()
+        if self.dataset_type == 'train' and random.random() < challenging_text_prob:
             candidates = [
                 (cut_idx, cut, supervision)
                 for cut_idx, cut in enumerate(cuts)
@@ -322,6 +355,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
                     logging.info(
                         f"[challenging_text_replacement] source="
                         f"{'normalized_text' if uses_normalized_text else 'text'} "
+                        f"step={self._training_step.value} probability={challenging_text_prob:.4f} "
                         f"required_slots={required_slots} available_slots={available_slots} "
                         f"original={original_text[:160]!r} replacement={replacement_text[:160]!r}"
                     )
@@ -884,7 +918,12 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             "text": text_data["target_text_tokens"],
             "text_lens": text_data["target_token_lens"],
             "raw_texts": [
-                " ".join(s.text for s in cut.supervisions if s.speaker in self.output_roles) for cut in cuts
+                " ".join(
+                    s.normalized_text if s.has_custom("normalized_text") else s.text
+                    for s in cut.supervisions
+                    if s.speaker in self.output_roles
+                )
+                for cut in cuts
             ],
             "task": [getattr(cut, "task", "tts") for cut in cuts],
             "user_audio_turn_splitted": audio_data["user_audio_turn_splitted"],

@@ -1065,20 +1065,26 @@ class NGramGPULanguageModel(ModelPT):
         scores = torch.empty([batch_size, self.vocab_size], device=device, dtype=self.arcs_weights.dtype)
         new_states = torch.empty([batch_size, self.vocab_size], dtype=torch.long, device=device)
 
-        ngram_advance_triton_kernel[batch_size,](
-            vocab_size=self.vocab_size,
-            states_ptr=states,
-            new_states_ptr=new_states,
-            scores_ptr=scores,
-            start_state=self.START_STATE,
-            to_states_ptr=self.to_states,
-            ilabels_ptr=self.ilabels,
-            arcs_weights_ptr=self.arcs_weights,
-            start_end_arcs_ptr=self.start_end_arcs,
-            backoff_to_states_ptr=self.backoff_to_states,
-            backoff_weights_ptr=self.backoff_weights,
-            BLOCK_SIZE=triton.next_power_of_2(self.vocab_size),
-        )
+        # Triton resolves the kernel's CUDA context from torch.cuda.current_device(), not from the
+        # device of the tensors passed in; on a non-default device (e.g. asr.device_id=1) that
+        # mismatch makes the launch dereference this device's pointers under device 0's context,
+        # raising "Pointer argument cannot be accessed from Triton". Pin the current device for the
+        # launch so it matches where these tensors actually live.
+        with torch.cuda.device(device):
+            ngram_advance_triton_kernel[batch_size,](
+                vocab_size=self.vocab_size,
+                states_ptr=states,
+                new_states_ptr=new_states,
+                scores_ptr=scores,
+                start_state=self.START_STATE,
+                to_states_ptr=self.to_states,
+                ilabels_ptr=self.ilabels,
+                arcs_weights_ptr=self.arcs_weights,
+                start_end_arcs_ptr=self.start_end_arcs,
+                backoff_to_states_ptr=self.backoff_to_states,
+                backoff_weights_ptr=self.backoff_weights,
+                BLOCK_SIZE=triton.next_power_of_2(self.vocab_size),
+            )
 
         return scores, new_states
 

@@ -135,21 +135,61 @@ class CacheAwareRNNTBeamStreamingState(CacheAwareRNNTStreamingState):
         self.partial_confidences = next_confidences
         self.best_hyp_idx = best_hyp_idx
 
-    def select_best_beam_idx_(self, *, score_norm: bool = False) -> int:
+    def select_best_beam_idx_(self, *, score_norm: bool = False, length_norm_power: float = 1.0) -> int:
         """Pick beam index into ``partial_*``; updates ``best_hyp_idx``.
 
         Per-chunk publish uses raw ``scores.argmax`` (via ``append_chunk_beam_``). At EOU,
         use ``score_norm=True`` to match offline :meth:`BatchedBeamHyps.flatten_sort_`.
+
+        ``score``/``current_lengths_nb`` on ``hyp_decoding_state`` are zeroed for the winning beam
+        right after every EOU collapse (see ``reset_beam_score_``), so both this ranking and the raw
+        per-chunk publish between EOUs already read values scoped to the current utterance -- no
+        baseline needs subtracting here. (An earlier version of this fix subtracted a
+        ``_score_baseline``/``_length_baseline`` snapshot at ranking time instead of resetting the
+        actual carry; that left the raw score used for every non-EOU chunk publish drifting
+        unboundedly for the life of the whole stream, which is what let beam scores blow up to
+        +/-inf on long audio with LM shallow fusion.)
+
+        ``length_norm_power`` is the exponent on the length term, i.e.
+        ``score / ((5 + length) / 6) ** length_norm_power`` -- the GNMT-style length penalty (Wu et
+        al., 2016) rather than a plain average. The ``5``/``6`` constants keep the penalty close to
+        ``1.0`` for short hypotheses (where ``length + 1`` over- normalizes) while still approaching
+        a plain length average as ``length`` grows. ``0.0`` disables length normalization entirely
+        (raw score) -- this is unsafe with LM fusion, since an unnormalized RNNT+LM score can favor
+        near-empty hypotheses.
         """
         if self.hyp_decoding_state is None:
             raise RuntimeError("Cannot select beam without decoding carry.")
 
         scores = self.hyp_decoding_state.score
         lengths_nb = self.hyp_decoding_state.current_lengths_nb
-        ranking = scores / (lengths_nb.to(dtype=scores.dtype) + 1) if score_norm else scores
+        if score_norm:
+            denom = ((5 + lengths_nb.to(dtype=scores.dtype)) / 6) ** length_norm_power
+            ranking = scores / denom
+        else:
+            ranking = scores
 
         self.best_hyp_idx = int(ranking.argmax().item())
         return self.best_hyp_idx
+
+    def reset_beam_score_(self) -> None:
+        """
+        Zero the winning beam's cumulative score/length right after an EOU beam collapse.
+
+        Resetting the actual ``hyp_decoding_state.score``/``current_lengths_nb`` carry here, instead
+        of only snapshotting a baseline for the next ``select_best_beam_idx_(score_norm=True)`` call,
+        means every reader of that carry -- EOU ranking *and* the raw per-chunk publish that runs
+        between EOUs -- sees values scoped to the current utterance, not a session-long accumulator.
+        """
+        if self.hyp_decoding_state is None:
+            return
+        # `select_beam_in_state_item_` builds these tensors inside `torch.inference_mode()`, so an
+        # in-place write here (outside that context) needs a clone first.
+        self.hyp_decoding_state.score = self.hyp_decoding_state.score.clone()
+        self.hyp_decoding_state.score[0] = 0.0
+        if self.hyp_decoding_state.current_lengths_nb is not None:
+            self.hyp_decoding_state.current_lengths_nb = self.hyp_decoding_state.current_lengths_nb.clone()
+            self.hyp_decoding_state.current_lengths_nb[0] = 0
 
     def get_best_hyp_idx(self) -> int:
         """Index into ``partial_*`` for publish (chunk argmax, or score argmax from carry)."""

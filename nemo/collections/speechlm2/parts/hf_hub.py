@@ -21,6 +21,7 @@ from omegaconf import DictConfig, OmegaConf
 from transformers.utils import cached_file
 
 SAFETENSORS_SINGLE_FILE = "model.safetensors"
+SAFETENSORS_INDEX_FILE = "model.safetensors.index.json"
 LLM_BACKBONE_DIR = "llm_backbone"
 
 
@@ -67,6 +68,9 @@ class HFHubMixin(
         distributed_setup = model_kwargs.pop("distributed_setup", None)
         device_mesh = distributed_setup.mesh_context.device_mesh if distributed_setup is not None else None
         torch_dtype = model_kwargs.pop("torch_dtype", None)
+        # Read (not pop): the single-file path still needs this left in model_kwargs so
+        # super()._from_pretrained() below (which requires it, no default) receives it.
+        proxies = model_kwargs.get("proxies", None)
 
         _cached_file_kwargs = dict(
             cache_dir=cache_dir,
@@ -74,6 +78,7 @@ class HFHubMixin(
             local_files_only=local_files_only,
             token=token,
             revision=revision,
+            proxies=proxies,
             _raise_exceptions_for_gated_repo=False,
             _raise_exceptions_for_missing_entries=False,
             _raise_exceptions_for_connection_errors=False,
@@ -101,6 +106,27 @@ class HFHubMixin(
                 model_kwargs['cfg']['torch_dtype'] = (
                     torch_dtype if isinstance(torch_dtype, str) else str(torch_dtype).replace("torch.", "")
                 )
+
+            # super()._from_pretrained() below only loads a single model.safetensors file,
+            # not the sharded format (index.json + weight_map). Handle that ourselves first.
+            resolved_index_file = cached_file(model_id, SAFETENSORS_INDEX_FILE, **_cached_file_kwargs)
+            if resolved_index_file is not None:
+                # Unlike super()._from_pretrained() below, we call cls(...) ourselves, so these
+                # hub-transport kwargs (which some huggingface_hub versions forward here) must be
+                # stripped here: they are not model init args and cls() does not accept them.
+                model_kwargs.pop("proxies", None)
+                model_kwargs.pop("resume_download", None)
+                # cls(...) must not be called from this frame: see _distributed_from_pretrained.
+                return _load_sharded_safetensors(
+                    cls=cls,
+                    model_kwargs=model_kwargs,
+                    model_id=model_id,
+                    index_file=resolved_index_file,
+                    cached_file_kwargs=_cached_file_kwargs,
+                    map_location=map_location,
+                    strict=strict,
+                )
+
             return super()._from_pretrained(
                 model_id=model_id,
                 revision=revision,
@@ -250,6 +276,30 @@ def _load_state_dict_with_dtensors(model, weight_dir):
     # the planner narrows each tensor to the local DTensor shard,
     # and copies directly into model parameter storage.
     dcp.load(state_dict, storage_reader=reader)
+
+
+def _load_sharded_safetensors(cls, model_kwargs, model_id: str, index_file: str, cached_file_kwargs: dict, map_location: str, strict: bool):
+    """Build the model and load a checkpoint sharded across multiple safetensors files
+    (index.json + weight_map). Shard filenames are read as-is, so any split (by size or by
+    submodule) works. cls(...) is called here, not in _from_pretrained: see
+    _distributed_from_pretrained for why."""
+    import json
+
+    from safetensors.torch import load_file
+
+    model = cls(**model_kwargs)
+    index = json.loads(Path(index_file).read_text())
+    shard_filenames = sorted(set(index["weight_map"].values()))
+
+    state_dict = {}
+    for shard_filename in shard_filenames:
+        resolved_shard_file = cached_file(model_id, shard_filename, **cached_file_kwargs)
+        if resolved_shard_file is None:
+            raise RuntimeError(f"Missing shard {shard_filename!r} listed in {index_file} for {model_id=}")
+        state_dict.update(load_file(resolved_shard_file, device=map_location))
+
+    model.load_state_dict(state_dict, strict=strict)
+    return model
 
 
 def _inject_local_artifact_paths(cfg: dict, model_id: str, cached_file_kwargs: dict) -> None:

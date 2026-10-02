@@ -1082,3 +1082,44 @@ def export_batched_beam_hyps_to_cpu_lists(
         if step_confidence_cpu is not None:
             confidences_out.append(bc)
     return tokens, timestamps_out, confidences_out, root_ptrs_list
+
+
+def batched_beam_hyps_to_hypotheses(
+    batched_beam_hyps: BatchedBeamHyps,
+    beam_indices: torch.Tensor,
+) -> list[Hypothesis]:
+    """
+    Convert MALSD beam output to Hypothesis objects at fixed physical beam slots.
+
+    Unlike :meth:`BatchedBeamHyps.to_hyps_list` (sorted best beam per stream), this uses
+    ``beam_indices[b]`` to pick the hypothesis in physical slot order — e.g. ``scores.argmax(-1)``
+    for streaming endpointing aligned with per-chunk publish.
+
+    Args:
+        batched_beam_hyps: Decoder output for one chunk (or right-context pass).
+        beam_indices: Per-stream physical beam index, shape ``[batch_size]``.
+
+    Returns:
+        One :class:`Hypothesis` per batch row (chunk-local tokens/timestamps), tensor-backed like
+        :func:`~nemo.collections.asr.parts.utils.rnnt_utils.batched_hyps_to_hypotheses`.
+    """
+    scores, transcripts, timestamps, durations, _, step_confidence = batched_beam_hyps._export(
+        sort=False, score_norm=False
+    )
+    hypotheses = []
+    for batch_idx in range(batched_beam_hyps.batch_size):
+        hyp = batched_beam_hyps._hypothesis_from_flat(
+            batch_idx,
+            int(beam_indices[batch_idx].item()),
+            scores,
+            transcripts,
+            timestamps,
+            durations,
+            step_confidence,
+        )
+        hyp.y_sequence = torch.as_tensor(hyp.y_sequence)
+        hyp.timestamp = torch.as_tensor(hyp.timestamp)
+        if hyp.token_duration is not None:
+            hyp.token_duration = torch.as_tensor(hyp.token_duration)
+        hypotheses.append(hyp)
+    return hypotheses

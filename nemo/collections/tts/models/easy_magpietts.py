@@ -1950,7 +1950,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             eos_id=self.eos_id,
             num_audio_codebooks=self.data_num_audio_codebooks,
             codec_model_samples_per_frame=self.codec_model_samples_per_frame,
-            prior_scaling_factor=0.0,
+            prior_scaling_factor=None,
             load_cached_codes_if_available=self.cfg.load_cached_codes_if_available,
             dataset_type=dataset_type,  # train or test used for setting phone prob to 1.0 in test dataset (worker_init_fn)
             use_text_conditioning_tokenizer=True,
@@ -1986,7 +1986,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 codec_model_input_sample_rate=self.codec_model_input_sample_rate,
                 frame_stacking_factor=self.frame_stacking_factor,
                 num_audio_codebooks=self.data_num_audio_codebooks,
-                prior_scaling_factor=0.0,
+                prior_scaling_factor=None,
                 load_cached_codes_if_available=self.cfg.load_cached_codes_if_available,
                 dataset_type=mode,  # train or test used for setting phone prob to 1.0 in test dataset (worker_init_fn)
                 load_16khz_audio=False,
@@ -2022,7 +2022,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 volume_norm=dataset_cfg.volume_norm,
                 codec_model_samples_per_frame=self.codec_model_samples_per_frame,
                 num_audio_codebooks=self.data_num_audio_codebooks,
-                prior_scaling_factor=0.0,
+                prior_scaling_factor=None,
                 load_cached_codes_if_available=self.cfg.load_cached_codes_if_available,
                 dataset_type=mode,  # train or test used for setting phone prob to 1.0 in test dataset (worker_init_fn)
                 load_16khz_audio=False,

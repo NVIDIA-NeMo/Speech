@@ -29,7 +29,7 @@ from tqdm import tqdm
 
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
 from nemo.collections.tts.models import ssl_tts
-from nemo.collections.tts.parts.utils.tts_dataset_utils import get_base_dir
+from nemo.collections.tts.parts.utils.tts_dataset_utils import get_base_dir, segment_wav
 from nemo.core.classes import Dataset
 from nemo.core.classes.common import safe_instantiate
 from nemo.utils import logging
@@ -126,33 +126,23 @@ class AudioDataset(Dataset):
         }
 
 
-def segment_wav(wav, segment_length, segment_hop_size, min_segment_length):
-    if len(wav) < segment_length:
-        pad = torch.zeros(segment_length - len(wav))
-        segment = torch.cat([wav, pad])
-        return [segment]
-    else:
-        si = 0
-        segments = []
-        while si < len(wav) - min_segment_length:
-            segment = wav[si : si + segment_length]
-            if len(segment) < segment_length:
-                pad = torch.zeros(segment_length - len(segment))
-                segment = torch.cat([segment, pad])
-            segments.append(segment)
-            si += segment_hop_size
-        return segments
-
-
 def segment_batch(batch, segment_length=44100, segment_hop_size=22050, min_segment_length=22050):
     all_segments = []
     segment_indices = []
     si = 0
+
     for bidx in range(len(batch['audio'])):
         audio = batch['audio'][bidx]
         audio_length = batch['audio_len'][bidx]
         audio_actual = audio[:audio_length]
-        audio_segments = segment_wav(audio_actual, segment_length, segment_hop_size, min_segment_length)
+
+        audio_segments = segment_wav(
+            wav=audio_actual,
+            segment_length=segment_length,
+            segment_hop_size=segment_hop_size,
+            min_segment_length=min_segment_length,
+        )
+
         all_segments += audio_segments
         segment_indices.append((si, si + len(audio_segments) - 1))
         si += len(audio_segments)

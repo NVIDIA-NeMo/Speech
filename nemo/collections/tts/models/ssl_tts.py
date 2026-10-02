@@ -480,7 +480,7 @@ class SSLDisentangler(ModelPT):
                         normalized_ed = 1.0
                     cers.append(normalized_ed)
 
-        return {
+        val_out = {
             'val_loss': loss_total.cpu(),
             'sv_loss': sv_loss.cpu(),
             'ctc_loss': ctc_loss.cpu(),
@@ -488,8 +488,11 @@ class SSLDisentangler(ModelPT):
             'accuracy_sv': acc_val.cpu(),
             'cer': torch.tensor(cers).mean().cpu(),
         }
+        self.validation_step_outputs.append(val_out)
+        return val_out
 
-    def on_validation_epoch_end(self, outputs):
+    def on_validation_epoch_end(self):
+        outputs = self.validation_step_outputs
         collect = lambda key: torch.stack([x[key] for x in outputs if torch.isfinite(x[key])]).mean()
         val_loss = collect("val_loss")
         val_sv_loss = collect("sv_loss")
@@ -503,3 +506,4 @@ class SSLDisentangler(ModelPT):
         self.log("val_content_loss", val_content_loss)
         self.log("accuracy_sv", accuracy_sv)
         self.log("cer", cer)
+        self.validation_step_outputs.clear()

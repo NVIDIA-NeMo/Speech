@@ -122,6 +122,14 @@ using MoE-specific optimizations (Grouped GEMM, DeepEP). It uses deferred initia
             audio_lens=audio_len,
         )
 
+Distributed checkpoint loading canonicalizes activation-checkpoint wrapper names before matching
+model tensors. With the default ``strict=False``, small compatibility gaps produce a warning, while
+global or per-top-level-component parameter coverage below 90% raises ``RuntimeError``.
+Pass ``strict=True`` to ``from_pretrained`` to additionally reject any missing parameter, missing
+persistent buffer, or unused checkpoint tensor. When a checkpoint stores multiple aliases for a tied tensor,
+one alias is loaded and the others are recognized with a warning rather than treated as unused. TransformerEngine
+``*_extra_state`` tensors have no direct load destination and are ignored with a warning in either mode.
+
 DuplexS2SModel
 **************
 

@@ -179,7 +179,7 @@ def clean_abbreviations(string, version=None):
     if version == "fastpitch":
         abbbreviations = ABBREVIATIONS_TTS_FASTPITCH
     elif version == "expanded":
-        abbbreviations.extend = ABBREVIATIONS_EXPANDED
+        abbbreviations = ABBREVIATIONS_COMMON + ABBREVIATIONS_EXPANDED
     for regex, replacement in abbbreviations:
         string = re.sub(regex, replacement, string)
     return string

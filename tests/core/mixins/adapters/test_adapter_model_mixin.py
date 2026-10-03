@@ -1142,6 +1142,76 @@ class TestAdapterModelMixin:
             assert (original_state_dict[ogkey] - restored_state_dict[newkey]).abs().mean() < 1e-6
 
     @pytest.mark.unit
+    def test_save_adapter_subset_then_load_with_default_name(self, monkeypatch):
+        # `load_adapters(filepath)` with the default `name=None` must restore exactly the
+        # adapters the file contains, even when the source model had more adapters than were
+        # saved. Otherwise the documented "share just the adapter module" workflow is unusable.
+        monkeypatch.setenv('TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD', '1')  # see load_adapters() docstring
+
+        cfg = get_model_config(in_features=50)
+        model = DefaultAdapterModel(cfg)
+
+        model.add_adapter(name='encoder:adapter_0', cfg=get_adapter_cfg(dim=5))
+        model.add_adapter(name='encoder:adapter_1', cfg=get_adapter_cfg(dim=5))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter_path = os.path.join(tmpdir, 'temp.pt')
+
+            # Save only one of the two adapters
+            model.save_adapters(adapter_path, name='encoder:adapter_0')
+
+            # Restore with the default `name=None`
+            new_model = DefaultAdapterModel(cfg)
+            new_model.load_adapters(adapter_path)
+
+        # Only the saved adapter must have been restored
+        assert new_model.get_enabled_adapters() == ['adapter_0']
+        assert new_model.decoder.is_adapter_available() is False
+
+        original_state_dict = model.encoder.get_adapter_module('adapter_0').state_dict()
+        restored_state_dict = new_model.encoder.get_adapter_module('adapter_0').state_dict()
+
+        assert set(original_state_dict.keys()) == set(restored_state_dict.keys())
+        for key in original_state_dict:
+            assert (original_state_dict[key] - restored_state_dict[key]).abs().mean() < 1e-6
+
+    @pytest.mark.unit
+    def test_save_load_adapter_with_name_that_is_prefix_of_another(self, monkeypatch):
+        # Adapter state dict keys are `<adapter_name>.<...>` inside a shared nn.ModuleDict, so
+        # selecting/stripping them by substring lets an adapter whose name merely contains
+        # another adapter's name leak into the saved file (and break the subsequent load).
+        monkeypatch.setenv('TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD', '1')  # see load_adapters() docstring
+
+        cfg = get_model_config(in_features=50)
+        model = DefaultAdapterModel(cfg)
+
+        model.add_adapter(name='encoder:adapter_0', cfg=get_adapter_cfg(dim=5))
+        model.add_adapter(name='encoder:adapter_0_v2', cfg=get_adapter_cfg(dim=5))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter_path = os.path.join(tmpdir, 'temp.pt')
+
+            model.save_adapters(adapter_path, name='encoder:adapter_0')
+
+            # The file must contain only `adapter_0`'s parameters
+            saved = torch.load(adapter_path, map_location='cpu', weights_only=False)
+            for module_state in saved['encoder:adapter_0']:
+                assert all(key.startswith('adapter_0.') for key in module_state), sorted(module_state.keys())
+                assert not any(key.startswith('adapter_0_v2.') for key in module_state), sorted(module_state.keys())
+
+            new_model = DefaultAdapterModel(cfg)
+            new_model.load_adapters(adapter_path, name='encoder:adapter_0')
+
+        assert new_model.get_enabled_adapters() == ['adapter_0']
+
+        original_state_dict = model.encoder.get_adapter_module('adapter_0').state_dict()
+        restored_state_dict = new_model.encoder.get_adapter_module('adapter_0').state_dict()
+
+        assert set(original_state_dict.keys()) == set(restored_state_dict.keys())
+        for key in original_state_dict:
+            assert (original_state_dict[key] - restored_state_dict[key]).abs().mean() < 1e-6
+
+    @pytest.mark.unit
     def test_single_decoder_save_load_adapter_only_partial_name(self):
         # create a model config, but do not add global_cfg to it
         # we want to test just module level adapter

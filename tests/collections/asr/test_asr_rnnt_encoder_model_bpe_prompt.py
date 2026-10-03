@@ -16,11 +16,13 @@
 import os
 import shutil
 import tempfile
+from types import SimpleNamespace
 
 import pytest
 import torch
 from omegaconf import DictConfig
 
+from nemo.collections.asr.data.audio_to_text_lhotse_prompt_index import LhotseSpeechToTextBpeDatasetWithPromptIndex
 from nemo.collections.asr.models.rnnt_bpe_models_prompt import EncDecRNNTBPEModelWithPrompt
 from nemo.collections.asr.parts.submodules import rnnt_beam_decoding as beam_decode
 from nemo.collections.asr.parts.submodules import rnnt_greedy_decoding as greedy_decode
@@ -31,6 +33,22 @@ from nemo.core.utils.numba_utils import __NUMBA_MINIMUM_VERSION__
 NUMBA_RNNT_LOSS_AVAILABLE = numba_utils.numba_cpu_is_supported(
     __NUMBA_MINIMUM_VERSION__
 ) or numba_utils.numba_cuda_is_supported(__NUMBA_MINIMUM_VERSION__)
+
+
+class _SizedIterableDataset(torch.utils.data.IterableDataset):
+    def __iter__(self):
+        return iter(())
+
+    def __len__(self):
+        return 100
+
+
+class _UnsizedIterableDataset(torch.utils.data.IterableDataset):
+    def __iter__(self):
+        return iter(())
+
+    def __len__(self):
+        raise NotImplementedError
 
 
 @pytest.fixture()
@@ -113,6 +131,52 @@ def rnnt_asr_model_with_prompt(test_data_dir):
 
 
 class TestEncDecRNNTBPEModelWithPrompt:
+    @pytest.mark.unit
+    def test_setup_training_data_limit_train_batches_with_lhotse(self):
+        trainer = SimpleNamespace(limit_train_batches=1.0)
+        dataset = object.__new__(LhotseSpeechToTextBpeDatasetWithPromptIndex)
+        model = SimpleNamespace(
+            _trainer=trainer,
+            world_size=1,
+            _update_dataset_config=lambda **kwargs: None,
+            _setup_dataloader_from_config=lambda config: SimpleNamespace(dataset=dataset),
+        )
+        train_data_config = DictConfig({'use_lhotse': True, 'is_tarred': True, 'batch_duration': 400})
+
+        EncDecRNNTBPEModelWithPrompt.setup_training_data(model, train_data_config)
+
+        assert trainer.limit_train_batches == 1.0
+
+    @pytest.mark.unit
+    def test_setup_training_data_limit_train_batches_with_iterable_dataset(self):
+        trainer = SimpleNamespace(limit_train_batches=1.0)
+        model = SimpleNamespace(
+            _trainer=trainer,
+            world_size=2,
+            _update_dataset_config=lambda **kwargs: None,
+            _setup_dataloader_from_config=lambda config: SimpleNamespace(dataset=_SizedIterableDataset()),
+        )
+        train_data_config = DictConfig({'is_tarred': True, 'batch_size': 10})
+
+        EncDecRNNTBPEModelWithPrompt.setup_training_data(model, train_data_config)
+
+        assert trainer.limit_train_batches == 5
+
+    @pytest.mark.unit
+    def test_setup_training_data_limit_train_batches_with_unsized_streaming_dataset(self):
+        trainer = SimpleNamespace(limit_train_batches=1.0)
+        model = SimpleNamespace(
+            _trainer=trainer,
+            world_size=1,
+            _update_dataset_config=lambda **kwargs: None,
+            _setup_dataloader_from_config=lambda config: SimpleNamespace(dataset=_UnsizedIterableDataset()),
+        )
+        train_data_config = DictConfig({'hf_data_cfg': {'path': 'dummy'}, 'streaming': True, 'batch_size': 10})
+
+        EncDecRNNTBPEModelWithPrompt.setup_training_data(model, train_data_config)
+
+        assert trainer.limit_train_batches == 1.0
+
     @pytest.mark.skipif(
         not NUMBA_RNNT_LOSS_AVAILABLE,
         reason='RNNTLoss has not been compiled with appropriate numba version.',

@@ -58,7 +58,7 @@ class NemotronNanoV3PromptFormatter(PromptFormatter):
     def encode_dialog(self, turns: list[dict], enable_thinking: bool = True) -> dict[str, torch.Tensor]:
         """Encode a dialog for Nemotron Nano v3 with <think> reasoning support.
 
-        Training loss is computed over responses from all assistant turns.
+        Training loss is computed over the response from the final assistant turn.
 
         Args:
             turns: List of turns with "role" and "slots"/"content" keys.
@@ -126,7 +126,7 @@ class NemotronNanoV3PromptFormatter(PromptFormatter):
             loss_mask.append(False)
 
         is_inference = turns[-1]["role"] != self.OUTPUT_ROLE
-        for turn in turns:
+        for idx, turn in enumerate(turns):
             role = turn["role"]
             expected_slots = self.get_slots(role)
             slot_values = turn.get("slots", {})
@@ -136,7 +136,7 @@ class NemotronNanoV3PromptFormatter(PromptFormatter):
             tokens = self.encode_turn(template, expected_slots, slot_values)
             turn_tokens.extend(tokens)
             turn_token_counts.append(len(tokens))
-            if not is_inference and role == self.OUTPUT_ROLE:
+            if not is_inference and role == self.OUTPUT_ROLE and idx == len(turns) - 1:
                 loss_mask.extend(self._assistant_loss_mask(tokens, template, expected_slots, slot_values))
             else:
                 loss_mask.extend([False] * len(tokens))

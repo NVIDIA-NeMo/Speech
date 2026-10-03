@@ -497,7 +497,10 @@ deep-ep = ["setuptools"]
 # Keep Torch wheel indexes explicit per CUDA extra. Automodel's upstream source
 # metadata is mirrored below so this repository controls the CUDA wheel index.
 [tool.uv.sources]
-nemo_automodel = { git = "https://github.com/NVIDIA-NeMo/Automodel.git", rev = "fccae250cd860dc4dce8d5791e08d3c85e873f88" }
+# Temporary immutable pin to the main-based DFlash training stack in
+# NVIDIA-NeMo/Automodel#3899. Replace this fork pin with the upstream merge
+# commit before marking the companion NeMo PR ready for review.
+nemo_automodel = { git = "https://github.com/Slyne/Automodel.git", rev = "47a0a0897690670a90051d29805c6d550a01572d" }
 cut-cross-entropy = { git = "https://github.com/apple/ml-cross-entropy.git", rev = "87a86aba72cfd2f0d8abecaf81c13c4528ea07d8" }
 megatron-fsdp = { git = "https://github.com/yuhezhang-ai/Megatron-LM.git", rev = "455389c480af6b3acdca74c7830c68b3274eb083", subdirectory = "megatron/core/distributed/fsdp/src" }
 deep_ep = { git = "https://github.com/deepseek-ai/DeepEP.git", rev = "7febc6e25660af0f54d95dd781ecdcd62265ecca" }

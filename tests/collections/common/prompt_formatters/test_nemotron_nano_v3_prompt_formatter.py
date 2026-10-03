@@ -128,7 +128,7 @@ def test_nemotron_nano_v3_training_multiturn_past_asst_no_think(bpe_tokenizer_wi
 @pytest.mark.parametrize("formatter_cls", [NemotronNanoV3PromptFormatter, Nemotron3p5PromptFormatter])
 @pytest.mark.parametrize("insert_bos,insert_eos", [(False, False), (True, False), (False, True), (True, True)])
 @pytest.mark.parametrize("historical_answer", ["TEST", ""])
-def test_nemotron_training_supervises_all_assistant_turns(
+def test_nemotron_training_supervises_only_final_assistant_turn(
     bpe_tokenizer_with_think, formatter_cls, insert_bos, insert_eos, historical_answer
 ):
     tokenizer = bpe_tokenizer_with_think
@@ -156,7 +156,7 @@ def test_nemotron_training_supervises_all_assistant_turns(
     chunks = [tokenizer.text_to_ids(turn) for turn in rendered_turns]
     expected_ids = [tokenizer.bos] if insert_bos else []
     expected_mask = [False] if insert_bos else []
-    for chunk, supervised in zip(chunks, [False, False, True, False, False, True]):
+    for chunk, supervised in zip(chunks, [False, False, False, False, False, True]):
         expected_ids.extend(chunk)
         if supervised:
             # This fixture has atomic tags/newlines: only response text + EOT carry loss.
@@ -200,11 +200,8 @@ def test_nemotron_masks_prefill_but_supervises_generated_content(
 
 
 @pytest.mark.parametrize("formatter_cls", [NemotronNanoV3PromptFormatter, Nemotron3p5PromptFormatter])
-@pytest.mark.parametrize(
-    "message,supervised_text",
-    [("TEST", "TEST"), ("", ""), ("<think>\nSYSTEM</think>TEST", "SYSTEM</think>TEST")],
-)
-def test_nemotron_supervises_assistant_before_tool(bpe_tokenizer_with_think, formatter_cls, message, supervised_text):
+@pytest.mark.parametrize("message", ["TEST", "", "<think>\nSYSTEM</think>TEST"])
+def test_nemotron_does_not_supervise_assistant_before_tool(bpe_tokenizer_with_think, formatter_cls, message):
     formatter = formatter_cls(bpe_tokenizer_with_think)
     ans = formatter.encode_dialog(
         [
@@ -214,9 +211,7 @@ def test_nemotron_supervises_assistant_before_tool(bpe_tokenizer_with_think, for
             {"role": "assistant", "content": "TEST"},
         ]
     )
-    assert bpe_tokenizer_with_think.ids_to_text(ans["input_ids"][ans["mask"]].tolist()) == (
-        supervised_text + "<|im_end|>TEST<|im_end|>"
-    )
+    assert bpe_tokenizer_with_think.ids_to_text(ans["input_ids"][ans["mask"]].tolist()) == "TEST<|im_end|>"
 
 
 @pytest.mark.parametrize("formatter_cls", [NemotronNanoV3PromptFormatter, Nemotron3p5PromptFormatter])

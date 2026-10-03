@@ -36,7 +36,7 @@ MatchboxNet models can be instantiated using the :class:`~nemo.collections.asr.m
 
 .. note::
   For model details and deep understanding about Speech Command Detedction training, inference, finetuning and etc.,
-  please refer to  ``<NeMo_git_root>/tutorials/asr/Speech_Commands.ipynb`` and ``<NeMo_git_root>/tutorials/asr/Online_Offline_Speech_Commands_Demo.ipynb``.
+  please refer to ``<NeMo_git_root>/tutorials/asr/Speech_Commands.ipynb``.
 
 
 

@@ -2007,9 +2007,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 challenging_text_end_prob=dataset_cfg.dataset.get("challenging_text_end_prob", 0.0),
                 challenging_text_start_step=dataset_cfg.dataset.get("challenging_text_start_step", 0),
                 challenging_text_end_step=dataset_cfg.dataset.get("challenging_text_end_step", 0),
-                context_audio_shuffle_batch_prob=dataset_cfg.dataset.get(
-                    "context_audio_shuffle_batch_prob", 0.0
-                ),
+                context_audio_shuffle_batch_prob=dataset_cfg.dataset.get("context_audio_shuffle_batch_prob", 0.0),
             )
             dataset = FallbackDataset(dataset)
         else:

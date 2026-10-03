@@ -32,14 +32,10 @@ from nemo.collections.asr.models.hybrid_rnnt_ctc_bpe_models_prompt import (
     EncDecHybridRNNTCTCBPEModelWithPrompt,
     HybridRNNTCTCPromptTranscribeConfig,
 )
-from nemo.collections.asr.models.rnnt_bpe_models_prompt import (
-    EncDecRNNTBPEModelWithPrompt,
-    RNNTPromptTranscribeConfig,
-)
+from nemo.collections.asr.models.rnnt_bpe_models_prompt import EncDecRNNTBPEModelWithPrompt, RNNTPromptTranscribeConfig
 from nemo.collections.asr.parts.mixins.transcription import TranscribeConfig
 from nemo.collections.tts.parts.utils.helpers import transcribe_with_whisper_from_filepaths
 from nemo.utils import logging
-
 
 DEFAULT_NEMOTRON_LANGUAGE_MAP = {
     "ar": "ar-AR",
@@ -106,9 +102,7 @@ class NemoRewardASRBackend(RewardASRBackend):
             self.model = nemo_asr.models.ASRModel.from_pretrained(model_name=model_name)
         self.model.freeze()
         self.disable_cuda_graphs = bool(cfg.get("disable_cuda_graphs", False))
-        self.reset_cuda_graphs_before_transcribe = bool(
-            cfg.get("reset_cuda_graphs_before_transcribe", True)
-        )
+        self.reset_cuda_graphs_before_transcribe = bool(cfg.get("reset_cuda_graphs_before_transcribe", True))
         if self.disable_cuda_graphs and hasattr(self.model, "disable_cuda_graphs"):
             # The RNNT decoder caches captured CUDA graphs. Interleaving those
             # graphs with a co-resident autoregressive TTS model can leave later
@@ -118,9 +112,7 @@ class NemoRewardASRBackend(RewardASRBackend):
             self.model.disable_cuda_graphs()
 
         self.language_map = dict(cfg.get("language_map", DEFAULT_NEMOTRON_LANGUAGE_MAP))
-        self.prompted = isinstance(
-            self.model, (EncDecHybridRNNTCTCBPEModelWithPrompt, EncDecRNNTBPEModelWithPrompt)
-        )
+        self.prompted = isinstance(self.model, (EncDecHybridRNNTCTCBPEModelWithPrompt, EncDecRNNTBPEModelWithPrompt))
         if self.prompted:
             prompt_dictionary = self.model.cfg.model_defaults.get("prompt_dictionary", {})
             missing = sorted(set(self.language_map.values()) - set(prompt_dictionary))
@@ -149,9 +141,7 @@ class NemoRewardASRBackend(RewardASRBackend):
             results = self.model.transcribe(
                 list(audio_paths),
                 batch_size=len(audio_paths),
-                override_config=TranscribeConfig(
-                    use_lhotse=False, batch_size=len(audio_paths), num_workers=0
-                ),
+                override_config=TranscribeConfig(use_lhotse=False, batch_size=len(audio_paths), num_workers=0),
             )
             return [result.text if hasattr(result, "text") else str(result) for result in results]
 
@@ -177,9 +167,7 @@ class NemoRewardASRBackend(RewardASRBackend):
                 verbose=False,
                 target_lang=target_lang,
             )
-            results = self.model.transcribe(
-                [path for _, path in items], batch_size=len(items), override_config=config
-            )
+            results = self.model.transcribe([path for _, path in items], batch_size=len(items), override_config=config)
             for (index, _), result in zip(items, results):
                 text = result.text if hasattr(result, "text") else str(result)
                 transcripts[index] = NEMOTRON_LANGUAGE_TAG_PATTERN.sub(" ", text).strip()
@@ -388,9 +376,7 @@ class RewardASRRouter:
 
         for backend_name, items in grouped.items():
             backend = self.backends[backend_name]
-            results = backend.transcribe(
-                [path for _, path, _ in items], [language for _, _, language in items]
-            )
+            results = backend.transcribe([path for _, path, _ in items], [language for _, _, language in items])
             for (index, _, _), transcript in zip(items, results):
                 transcripts[index] = transcript
         return transcripts

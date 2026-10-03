@@ -16,6 +16,7 @@
 
 from typing import Any
 
+import torch
 from torch import Tensor
 
 from nemo.collections.asr.inference.model_wrappers.asr_inference_wrapper import ASRInferenceWrapper
@@ -139,6 +140,41 @@ class CacheAwareASRInferenceWrapper(ASRInferenceWrapper):
             enabled: (bool) whether to enable CUDA graphs for the encoder streaming step.
         """
         self.asr_model.encoder.set_streaming_cuda_graphs(enabled=enabled)
+
+    def compile_encoder_layers(self) -> int:
+        """
+        Compile the encoder body with ``torch.compile`` so inductor fuses its elementwise work.
+
+        Cache-aware streaming spends far more host time launching kernels than the device spends
+        running them, so fusing the encoder into fewer, larger kernels is what shortens the step.
+        The whole body is compiled as one graph rather than layer by layer, which lets inductor fuse
+        across layer boundaries. Mode is the default one, not ``reduce-overhead``: that mode replays
+        through CUDA graphs, which this pipeline deliberately does not use. The batch width stays
+        dynamic, since it shrinks as streams finish, but the chunk's feature length is pinned; see
+        the note in the wrapper below.
+
+        Compilation happens on the first call and therefore inside the warmup iteration. Fusion
+        changes the order of low-precision arithmetic, so decoded text can differ from eager in the
+        last bits; a run that must match eager exactly should not call this.
+        Returns:
+            (int) 1 when the encoder was compiled, 0 when it has no compilable body.
+        """
+        encoder = self.asr_model.encoder
+        if not hasattr(encoder, "forward_internal"):
+            return 0
+        compiled = torch.compile(encoder.forward_internal, dynamic=True)
+
+        def forward_internal(audio_signal, length, bypass_pre_encode=False, **kwargs):
+            if not bypass_pre_encode:
+                # A cache-aware chunk always carries the bufferer's feature length, so pinning that
+                # dimension states a fact about the workload rather than constraining it. Left
+                # symbolic, the subsampling output length becomes an expression the shape solver
+                # cannot divide by, and it gives up once per layer per distinct batch width.
+                torch._dynamo.mark_static(audio_signal, 2)
+            return compiled(audio_signal, length, bypass_pre_encode=bypass_pre_encode, **kwargs)
+
+        encoder.forward_internal = forward_internal
+        return 1
 
     def stream_step(self, *args, **kwargs) -> Any:
         """

@@ -338,6 +338,8 @@ class CacheAwareCTCPipeline(BasePipeline):
             frames: (list[Frame]) List of frames to transcribe.
         """
         all_fbuffers, right_paddings = self.bufferer.update(frames)
+        # the bufferer keeps the batch together for the RNNT pipeline; this one still works per stream
+        all_fbuffers, right_paddings = list(all_fbuffers.unbind(0)), right_paddings.tolist()
 
         ready_state_ids = set()
         if len(all_fbuffers) > 0:

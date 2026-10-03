@@ -323,7 +323,9 @@ class NeMoStreamingPipelineAdapter(SpeechProcessor):
 
         # Track final/latest-partial outputs to write a NeMo-style prediction manifest line.
         self._final_transcript_acc += step_output.final_transcript or ""
-        self._final_translation_acc += step_output.final_translation or ""
+        self._final_translation_acc = self._append_translation_unit(
+            self._final_translation_acc, step_output.final_translation
+        )
         self._last_partial_transcript = step_output.partial_transcript or ""
         self._last_partial_translation = step_output.partial_translation or ""
 
@@ -338,6 +340,12 @@ class NeMoStreamingPipelineAdapter(SpeechProcessor):
                         {
                             "final_transcript": step_output.final_transcript,
                             "partial_transcript": step_output.partial_transcript,
+                            "mt_request_source": getattr(step_output, "_mt_request_source", ""),
+                            "mt_request_prefix": getattr(step_output, "_mt_request_prefix", ""),
+                            "mt_request_source_context": getattr(step_output, "_mt_request_source_context", ""),
+                            "mt_request_target_context": getattr(step_output, "_mt_request_target_context", ""),
+                            "mt_source_boundary_reason": getattr(step_output, "_mt_source_boundary_reason", ""),
+                            "mt_retained_source_suffix": getattr(step_output, "_mt_retained_source_suffix", ""),
                             "final_translation": step_output.final_translation,
                             "partial_translation": step_output.partial_translation,
                             "new_tokens": result.new_tokens,
@@ -370,16 +378,17 @@ class NeMoStreamingPipelineAdapter(SpeechProcessor):
             IncrementalOutput: Simulstream format with generated/deleted token lists.
         """
         if self.pipeline.nmt_enabled:
-            is_final = bool(step_output.final_transcript)
             prev_partial = self._prev_partial_translation
-            current_partial = step_output.final_translation if is_final else step_output.partial_translation
-            self._prev_partial_translation = "" if is_final else current_partial
+            curr_tokens = []
+            curr_tokens.extend(self._tokenize_text(step_output.final_translation))
+            curr_tokens.extend(self._tokenize_text(step_output.partial_translation))
+            self._prev_partial_translation = step_output.partial_translation
         else:
             prev_partial = previous_transcript
             current_partial = self._final_transcript_acc + self._last_partial_transcript
+            curr_tokens = self._tokenize_text(current_partial)
 
         prev_tokens = self._tokenize_text(prev_partial)
-        curr_tokens = self._tokenize_text(current_partial)
 
         common_prefix_len = 0
         for i in range(min(len(prev_tokens), len(curr_tokens))):
@@ -398,24 +407,48 @@ class NeMoStreamingPipelineAdapter(SpeechProcessor):
             deleted_string=self._join_tokens(deleted_tokens),
         )
 
+    def _append_translation_unit(self, accumulated: str, unit: str) -> str:
+        """Append a finalized target unit using the configured latency-unit spacing."""
+
+        if not accumulated:
+            return (unit or "").strip()
+        if not unit:
+            return accumulated
+        separator = "" if self.latency_unit == "char" else " "
+        return f"{accumulated.rstrip()}{separator}{unit.lstrip()}"
+
     def end_of_stream(self) -> IncrementalOutput:
         """
         Called at the end of the audio stream to finalize output.
 
         The last chunk was already processed with is_last=False in process_chunk() (simulstream
         doesn't signal which chunk is last), so this only finalizes stream state / writes the
-        prediction manifest line and emits an empty incremental output. Required by the
-        SpeechProcessor interface.
+        prediction manifest line and emits any translation finalized by the MT flush.
+        Required by the SpeechProcessor interface.
         """
         if self._finalized:
             return IncrementalOutput(new_tokens=[], new_string="", deleted_tokens=[], deleted_string="")
 
+        flushed_output = None
+        flush_translation_stream = getattr(self.pipeline, "flush_translation_stream", None)
+        if flush_translation_stream is not None:
+            flushed_output = flush_translation_stream(self.stream_id)
+            if flushed_output is not None and flushed_output.final_translation:
+                self._final_translation_acc = self._append_translation_unit(
+                    self._final_translation_acc, flushed_output.final_translation
+                )
+                self._last_partial_translation = ""
+
         pred_text = (self._final_transcript_acc + self._last_partial_transcript).strip()
-        pred_translation = (self._final_translation_acc + self._last_partial_translation).strip()
+        pred_translation = self._append_translation_unit(
+            self._final_translation_acc, self._last_partial_translation
+        ).strip()
         self._write_prediction_manifest_line(pred_text, pred_translation)
 
         self.pipeline.delete_state(self.stream_id)
         self._finalized = True
+        if flushed_output is not None:
+            return self._convert_to_incremental_output(flushed_output)
         return IncrementalOutput(new_tokens=[], new_string="", deleted_tokens=[], deleted_string="")
 
     def clear(self) -> None:

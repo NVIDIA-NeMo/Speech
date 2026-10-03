@@ -134,6 +134,15 @@ class BufferedRNNTPipeline(BasePipeline):
         self.return_tail_result = cfg.return_tail_result
         self.tokens_to_move = self.punctuation_ids.union(self.language_token_ids)
 
+        source_buffer_cfg = cfg.nmt.get("source_buffer", {})
+        self.mt_source_buffer_enabled = bool(source_buffer_cfg.get("enabled", False))
+        self.mt_history_size = max(0, int(source_buffer_cfg.get("history_size", 2)))
+        self.mt_history_max_tokens = max(1, int(source_buffer_cfg.get("history_max_tokens", 1024)))
+        self.mt_max_source_units = max(1, int(source_buffer_cfg.get("max_source_units", 256)))
+        self.mt_max_source_duration_ms = max(1, int(source_buffer_cfg.get("max_duration_ms", 30_000)))
+        self.mt_max_handoff_deferrals = max(0, int(source_buffer_cfg.get("max_handoff_deferrals", 1)))
+        self.mt_flush_at_stream_end = bool(source_buffer_cfg.get("flush_at_stream_end", True))
+
         self.zero_encoded = self.init_zero_enc() if self.right_padding else None
 
     def init_endpointer(self) -> None:

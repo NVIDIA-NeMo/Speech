@@ -83,6 +83,10 @@ class StreamingState:
         # Translation attributes
         self.previous_translation_info = ("", "")
         self.previous_context = ("", "")
+        self.mt_source_buffer = None
+        self.mt_context_history = []
+        self.mt_handoff_deferrals = 0
+        self.mt_previous_source = ""
 
         # Word-level ASR output attributes (cleared after cleanup_after_response):
         # - words: Raw word-level ASR output

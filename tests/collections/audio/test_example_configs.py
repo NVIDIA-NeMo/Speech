@@ -23,20 +23,11 @@ from omegaconf import OmegaConf
 REPO_ROOT = Path(__file__).parents[3]
 
 
-def test_salm_automodel_uses_portable_moe_dispatcher():
-    cfg = OmegaConf.load(REPO_ROOT / "examples/speechlm2/conf/salm_automodel.yaml")
-
-    assert cfg.model.automodel_backend.dispatcher == "torch"
-
-
 @pytest.mark.unit
-@pytest.mark.parametrize(
-    "config_name",
-    ["salm_asr_decoder_qformer.yaml", "salm_asr_decoder_multilayerproj.yaml"],
-)
+@pytest.mark.parametrize("config_name", ["beamforming_flex_channels.yaml"])
 def test_example_config_targets_resolve(config_name):
     """Every ``_target_`` in the config must import and accept the keys given next to it (nothing is built)."""
-    cfg = OmegaConf.to_container(OmegaConf.load(REPO_ROOT / "examples/speechlm2/conf" / config_name), resolve=False)
+    cfg = OmegaConf.to_container(OmegaConf.load(REPO_ROOT / "examples/audio/conf" / config_name), resolve=False)
 
     targets = list(_iter_targets(cfg))
     assert targets, f"No _target_ entries found in {config_name}"

@@ -598,6 +598,170 @@ def test_a_sentinel_row_after_skipped_chunks_fails_closed():
 
 
 # ==============================================================================================
+# Grad mode: a trainable branch follows the caller's, so torch.no_grad() / inference_mode() reach it
+# ==============================================================================================
+_PATHS = ["offline", "online_inference", "stream_step"]
+# The branch a case leaves trainable; the other one is frozen.
+_FREEZE_FLAGS = {
+    "asr": dict(freeze_asr=False, freeze_diar=True),
+    "diar": dict(freeze_asr=True, freeze_diar=False),
+}
+
+
+class _SavesInputForBackward(torch.autograd.Function):
+    """An identity that saves its input for backward, as the autograd Function of a fused kernel does.
+
+    PyTorch refuses to save an inference tensor while autograd records, so on CPU this fails the way the
+    fused Triton subsampling of a ``dw_striding`` encoder fails on GPU when autograd is turned back on under
+    ``torch.inference_mode()``.
+    """
+
+    @staticmethod
+    def forward(ctx, x, weight):
+        ctx.save_for_backward(x)
+        return x.clone()
+
+    @staticmethod
+    def backward(ctx, grad):
+        return grad, None
+
+
+def _grad_mode_encoder(path, trainable, **overrides):
+    """The plain class for the offline forward and online inference, the streaming class for its step."""
+    encoder_cls = StreamingParallelExpertEncoder if path == "stream_step" else ParallelExpertEncoder
+    torch.manual_seed(0)
+    kwargs = dict(
+        asr_encoder_cfg=streaming_asr_encoder_cfg(),
+        diarization_model_cfg=toy_diarization_model_cfg(),
+        asr_normalize_type=None,
+        **WINDOWED_PE_KWARGS,
+        **_FREEZE_FLAGS[trainable],
+    )
+    kwargs.update(overrides)
+    enc = encoder_cls(**kwargs)
+    enc._suppress_online_pbar = True
+    return enc
+
+
+def _spy_on_branch_graphs(enc, save_input_for_backward=False) -> dict:
+    """Record, per branch and per call, whether autograd recorded the output of the branch's ``pre_encode``.
+
+    Every path (offline forward, online inference, streaming step) runs ``pre_encode`` in both branches. With
+    ``save_input_for_backward``, its output also passes through :class:`_SavesInputForBackward`, tied to the
+    ``pre_encode`` weights, so it is saved for backward exactly when those weights are recorded.
+    """
+    seen = {"asr": [], "diar": []}
+
+    def spy(branch, pre_encode):
+        weight = next(pre_encode.parameters())
+
+        def hook(module, args, output):
+            x, *rest = output
+            if save_input_for_backward:
+                x = _SavesInputForBackward.apply(x, weight)
+            seen[branch].append(x.requires_grad)
+            return (x, *rest)
+
+        pre_encode.register_forward_hook(hook)
+
+    spy("asr", enc.asr_encoder.pre_encode)
+    spy("diar", enc.diarization_model.encoder.pre_encode)
+    return seen
+
+
+def _run_path(enc, path) -> list:
+    """Run ``path`` without ``spk_targets``, so both branches run, in the caller's grad mode. Returns its outputs."""
+    generator = torch.Generator().manual_seed(0)
+    if path != "stream_step":
+        mels = torch.randn(1, _MEL_FEATURES, 160, generator=generator)
+        with enc.online_inference(path == "online_inference"):
+            return [enc(mels, torch.tensor([160]))[0]]
+    enc.setup_streaming_params()
+    chunk_size, shift = _chunk_size(enc), _shift_size(enc)
+    mels = torch.randn(1, _MEL_FEATURES, 512, generator=generator)
+    state = list(enc.get_initial_cache_state(batch_size=1))
+    outputs = []
+    for step in range(2):
+        out = enc.cache_aware_stream_step(
+            processed_signal=mels[:, :, step * shift : step * shift + chunk_size],
+            processed_signal_length=torch.tensor([chunk_size]),
+            cache_last_channel=state[0],
+            cache_last_time=state[1],
+            cache_last_channel_len=state[2],
+            keep_all_outputs=False,
+            drop_extra_pre_encoded=0 if step == 0 else enc.streaming_cfg.drop_extra_pre_encoded,
+        )
+        outputs.append(out[0])
+        state = list(out[2:])
+    return outputs
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("trainable", sorted(_FREEZE_FLAGS))
+@pytest.mark.parametrize("path", _PATHS)
+def test_a_trainable_branch_builds_no_graph_under_no_grad(path, trainable):
+    """Under an outer ``torch.no_grad()`` (validation, generation), a trainable branch keeps autograd off.
+
+    Otherwise it builds a graph nobody uses and holds its activations for it. ``freeze_asr`` is false by default,
+    so this is the ASR branch of every validation and generation step. The fused output never requires grad either
+    way, since the fusion runs outside the branches.
+    """
+    enc = _grad_mode_encoder(path, trainable).eval()
+    seen = _spy_on_branch_graphs(enc)
+    with torch.no_grad():
+        outputs = _run_path(enc, path)
+    assert seen["asr"] and seen["diar"], f"a branch did not run: {seen}"
+    assert not any(seen["asr"] + seen["diar"]), f"a branch built a graph under torch.no_grad(): {seen}"
+    assert not any(output.requires_grad for output in outputs)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("trainable", sorted(_FREEZE_FLAGS))
+@pytest.mark.parametrize("path", _PATHS)
+def test_a_trainable_branch_runs_under_inference_mode(path, trainable):
+    """Under ``torch.inference_mode()``, Lightning's default for ``trainer.validate``, every path runs.
+
+    A trainable branch that turns autograd back on makes each autograd Function in it save inference tensors for
+    backward, which raises ("Inference tensors cannot be saved for backward"). On GPU, the fused Triton
+    subsampling of a ``dw_striding`` branch is such a Function; :class:`_SavesInputForBackward` stands in for it.
+    """
+    enc = _grad_mode_encoder(path, trainable).eval()
+    seen = _spy_on_branch_graphs(enc, save_input_for_backward=True)
+    with torch.inference_mode():
+        outputs = _run_path(enc, path)
+    assert seen["asr"] and seen["diar"], f"a branch did not run: {seen}"
+    assert not any(seen["asr"] + seen["diar"]), f"a branch built a graph under torch.inference_mode(): {seen}"
+    assert not any(output.requires_grad for output in outputs)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("trainable", sorted(_FREEZE_FLAGS))
+@pytest.mark.parametrize("path", _PATHS)
+def test_with_grad_enabled_only_the_trainable_branch_builds_a_graph(path, trainable):
+    """Pin for training: with grad enabled, the trainable branch builds its graph and the frozen one does not.
+
+    Every parameter is made to require grad first, as an outer blanket unfreeze would, so only the frozen
+    branch's grad mode keeps it out of the graph. On the offline (training) forward the gradients are checked
+    end to end; continuous speaker features let them reach the diarizer through the fusion.
+    """
+    enc = _grad_mode_encoder(
+        path, trainable, speaker_feature_mode="continuous", speaker_activity_threshold=None
+    ).train()
+    for parameter in enc.parameters():
+        parameter.requires_grad_(True)
+    seen = _spy_on_branch_graphs(enc)
+    outputs = _run_path(enc, path)
+    frozen = "diar" if trainable == "asr" else "asr"
+    assert seen[trainable] and all(seen[trainable]), f"the trainable branch built no graph: {seen}"
+    assert seen[frozen] and not any(seen[frozen]), f"the frozen branch built a graph: {seen}"
+    if path == "offline":
+        sum(output.sum() for output in outputs).backward()
+        branches = {"asr": enc.asr_encoder, "diar": enc.diarization_model}
+        assert any(p.grad is not None and bool(p.grad.abs().sum() > 0) for p in branches[trainable].parameters())
+        assert all(p.grad is None for p in branches[frozen].parameters())
+
+
+# ==============================================================================================
 # The diarizer input's normalization (`diar_normalize_type`): as the base class, per chunk in a stream
 # ==============================================================================================
 def _chunk_size(enc) -> int:

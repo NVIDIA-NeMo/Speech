@@ -606,8 +606,11 @@ class ParallelExpertEncoder(nn.Module):
             :class:`StreamingParallelExpertEncoder`. The offline forward and online inference normalise
             each whole utterance; the streaming class's ``cache_aware_stream_step`` normalises each
             chunk on its own, as it does the ASR input.
-        freeze_diar (bool): Freeze the Sortformer parameters. Defaults to ``True``.
-        freeze_asr (bool): Freeze the wrapped ASR ConformerEncoder. Defaults to ``False``.
+        freeze_diar (bool): Freeze the Sortformer parameters. Defaults to ``True``. A frozen branch
+            always runs without autograd. A trainable one runs in the caller's grad mode, so it builds
+            no graph under ``torch.no_grad()`` or ``torch.inference_mode()``.
+        freeze_asr (bool): Freeze the wrapped ASR ConformerEncoder. Defaults to ``False``. The ASR
+            branch's grad mode follows the same rule.
         online_inference_length (int): Online-inference window in encoder output frames
             (default ``500`` ~= 40s); ``<= 0`` disables it.
         chunk_left_context (int): Left context (output frames) per online window, shared by
@@ -1339,7 +1342,7 @@ class ParallelExpertEncoder(nn.Module):
                 self._normalize_diar_input(audio_signal, length), self.diarization_model
             )
             diar_length = length.to(device=diar_signal.device)
-            with torch.set_grad_enabled(not self.freeze_diar):
+            with _branch_grad_mode(self.freeze_diar):
                 emb_seq, emb_seq_length = self.diarization_model.frontend_encoder(
                     processed_signal=diar_signal,
                     processed_signal_length=diar_length,
@@ -1368,7 +1371,7 @@ class ParallelExpertEncoder(nn.Module):
         asr_audio_signal = self._match_module_io(asr_audio_signal, self.asr_encoder)
         asr_length = length.to(device=asr_audio_signal.device)
 
-        with torch.set_grad_enabled(not self.freeze_asr):
+        with _branch_grad_mode(self.freeze_asr):
             asr_encoded, asr_encoded_len = self.asr_encoder(
                 audio_signal=asr_audio_signal,
                 length=asr_length,
@@ -1467,7 +1470,7 @@ class ParallelExpertEncoder(nn.Module):
 
             asr_chunk = asr_audio_signal[:, :, enc_stt:enc_end]
             chunk_length = (length - enc_stt).clamp(min=0, max=enc_end - enc_stt)
-            with torch.set_grad_enabled(not self.freeze_asr):
+            with _branch_grad_mode(self.freeze_asr):
                 enc_ctx, _ = self.asr_encoder(audio_signal=asr_chunk, length=chunk_length)
             # Trim context off in output-frame space using rounded cumulative positions.
             left_drop = left_offset // self.subsampling_factor
@@ -1484,7 +1487,7 @@ class ParallelExpertEncoder(nn.Module):
                 diar_chunk = diar_audio_signal[:, :, enc_stt:enc_end].transpose(1, 2)  # (B, t, feat_in)
                 diar_chunk_length = (diar_length - enc_stt).clamp(min=0, max=enc_end - enc_stt)
                 with (
-                    torch.set_grad_enabled(not self.freeze_diar),
+                    _branch_grad_mode(self.freeze_diar),
                     _disable_dist_feature_sync(),
                     _default_dtype(stream_dtype),
                 ):
@@ -1678,7 +1681,7 @@ class StreamingParallelExpertEncoder(ParallelExpertEncoder, StreamingEncoder):
         )
         if drop_extra_pre_encoded is not None:
             asr_kwargs["drop_extra_pre_encoded"] = drop_extra_pre_encoded
-        with torch.set_grad_enabled(not self.freeze_asr):
+        with _branch_grad_mode(self.freeze_asr):
             asr_out = self.asr_encoder.cache_aware_stream_step(**asr_kwargs)
         asr_encoded, asr_encoded_len = asr_out[0], asr_out[1]
         rest = tuple(asr_out[2:])
@@ -1772,7 +1775,7 @@ class StreamingParallelExpertEncoder(ParallelExpertEncoder, StreamingEncoder):
         if drop_extra_pre_encoded is not None:
             step_kwargs["drop_extra_pre_encoded"] = drop_extra_pre_encoded
         with (
-            torch.set_grad_enabled(not self.freeze_diar),
+            _branch_grad_mode(self.freeze_diar),
             _disable_dist_feature_sync(),
             _default_dtype(self._diar_stream_dtype),
         ):
@@ -2001,3 +2004,20 @@ def _require_asr_encoder_interface(encoder) -> None:
             f"{missing} and so cannot serve as a ParallelExpertEncoder ASR branch. The branch must "
             f"be a cache-aware encoder (e.g. ConformerEncoder, StreamingTransformerEncoder)."
         )
+
+
+def _branch_grad_mode(frozen: bool) -> torch.set_grad_enabled:
+    """Grad mode for running one branch: the caller's, and always off for a frozen branch.
+
+    It never turns autograd on. Under an outer ``torch.no_grad()`` (validation, generation), a trainable
+    branch would otherwise build a graph nobody uses and hold its activations. Under an outer
+    ``torch.inference_mode()`` (Lightning's default for ``validate``), an autograd Function in the branch,
+    such as the fused Triton subsampling, would then try to save inference tensors for backward and raise.
+
+    Args:
+        frozen (bool): The branch is frozen (``freeze_asr`` / ``freeze_diar``).
+
+    Returns:
+        torch.set_grad_enabled: The context manager to run the branch in.
+    """
+    return torch.set_grad_enabled(torch.is_grad_enabled() and not frozen)

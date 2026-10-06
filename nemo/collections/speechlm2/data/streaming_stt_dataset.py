@@ -210,7 +210,9 @@ def decode_with_blank(
     spaces.
 
     Args:
-        ids: Token IDs to decode.
+        ids: Token IDs to decode. An id that the tokenizer does not have (HF ``convert_ids_to_tokens`` gives None
+            for it, as for any id ``>= len(tokenizer.tokenizer)``) is dropped, as ``ids_to_text`` drops it. An LLM
+            whose vocabulary keeps rows beyond the tokenizer (``allow_shrink_embedding: false``) can emit one.
         blank_token: The blank token string (e.g., ``"<blank>"``).
         tokenizer: NeMo AutoTokenizer.
         replace_blank: If provided, blank tokens are replaced with this string
@@ -242,30 +244,39 @@ def decode_with_blank(
         write_id = tokenizer.tokenizer.convert_tokens_to_ids(write_token)
 
     speaker_token_ids = speaker_token_ids or {}
+    # Each content id is converted to its token as it is read, so a segment holds tokens. HF
+    # ``convert_ids_to_tokens`` gives None for an id that the tokenizer does not have, which ``tokens_to_text``
+    # cannot join, so such an id is skipped: the text is that of the ids without it. This check costs nothing
+    # extra, whereas a bound would need ``len(tokenizer.tokenizer)``, which builds the whole vocabulary of an HF
+    # fast tokenizer on every call (tens of ms for Qwen3). ``int()`` as for a list of ids: HF converts a lone id
+    # only if it is a Python int.
+    convert_id = tokenizer.tokenizer.convert_ids_to_tokens
     segments = []
     current = []
     for tid in ids:
         if tid in speaker_token_ids:
             if current:
-                segments.append(tokenizer.ids_to_tokens(current))
+                segments.append(current)
                 current = []
             segments.append(speaker_token_ids[tid])
         elif tid == blank_id:
             if current:
-                segments.append(tokenizer.ids_to_tokens(current))
+                segments.append(current)
                 current = []
             if replace_blank is not None:
                 segments.append(replace_blank)
         elif tid == write_id:
             if current:
-                segments.append(tokenizer.ids_to_tokens(current))
+                segments.append(current)
                 current = []
             if replace_write is not None:
                 segments.append(replace_write)
         else:
-            current.append(tid)
+            token = convert_id(int(tid))
+            if token is not None:
+                current.append(token)
     if current:
-        segments.append(tokenizer.ids_to_tokens(current))
+        segments.append(current)
 
     text_segments = []
     for seg in segments:

@@ -14,6 +14,7 @@
 
 """`<spk:N>` token registration and decode round-tripping."""
 
+import numpy as np
 import pytest
 
 from nemo.collections.common.tokenizers import AutoTokenizer
@@ -27,6 +28,8 @@ BASE = {
     "write_token": "<|write|>",
     "end_of_audio_token": "<|im_start|>",
 }
+# Rows of Qwen3-1.7B's LM head (`config.vocab_size`): more than its tokenizer has ids.
+QWEN3_LM_HEAD_ROWS = 151936
 
 
 def _config_defaults() -> dict:
@@ -125,3 +128,81 @@ class TestSpeakerTokenDecoding:
         hf.add_special_tokens({"additional_special_tokens": ["<blank>"]})
         ids = hf.encode("hello world", add_special_tokens=False)
         assert decode_with_blank(ids, "<blank>", nt, speaker_token_ids={}) == decode_with_blank(ids, "<blank>", nt)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "kwargs, expected",
+        [
+            ({}, "<spk:0> hello diarization<lang:en> <spk:1> hi"),
+            (
+                {"replace_blank": "|", "collapse_whitespace": False},
+                "<spk:0>  hello diarization<lang:en> | <spk:1>  hi | |",
+            ),
+        ],
+        ids=["default", "kept_blanks_and_spacing"],
+    )
+    def test_ids_beyond_the_tokenizer_decode_as_if_absent(self, kwargs, expected):
+        """With ``allow_shrink_embedding: false`` the LLM keeps the rows of its vocabulary beyond the tokenizer, so a
+        decoder can emit an id that the tokenizer does not have. ``ids_to_tokens`` maps it to None, on which
+        ``tokens_to_text`` raised TypeError. It is dropped, as ``ids_to_text`` drops it: wherever it falls, the
+        text is that of the ids without it. The tokenizer's last id, an added content token, is kept."""
+        nt = AutoTokenizer("Qwen/Qwen3-1.7B", use_fast=True)
+        hf = nt.tokenizer
+        hf.add_special_tokens({"additional_special_tokens": ["<blank>"] + [f"<spk:{i}>" for i in range(2)]})
+        # The tokenizer's last id, right below the first spare id. A bound below len(tokenizer) would drop it: HF's
+        # vocab_size (which leaves out added tokens), a hard-coded size, or len(tokenizer) - 1.
+        hf.add_tokens(["<lang:en>"])
+        lang = hf.convert_tokens_to_ids("<lang:en>")
+        assert lang == len(hf) - 1
+        blank_id = hf.convert_tokens_to_ids("<blank>")
+        spk0, spk1 = (hf.convert_tokens_to_ids(f"<spk:{i}>") for i in range(2))
+        spk_map = {spk0: "<spk:0>", spk1: "<spk:1>"}
+        hello = hf.encode(" hello", add_special_tokens=False)
+        di, ar, ization = hf.encode(" diarization", add_special_tokens=False)  # one word, three pieces
+        hi = hf.encode(" hi", add_special_tokens=False)
+        spare = [len(hf), QWEN3_LM_HEAD_ROWS - 1]
+        ids = [spk0, *hello, di, ar, ization, lang, blank_id, spk1, *hi, blank_id, blank_id]
+        # Before the first tag, inside a word, before a tag, as all there is between two blanks, and at the end.
+        with_spare = [spare[0], spk0, *hello, di, spare[1], ar, ization, lang, blank_id, spare[0], spk1, *hi, blank_id]
+        with_spare += [*spare, blank_id, spare[1]]
+
+        assert decode_with_blank(ids, "<blank>", nt, speaker_token_ids=spk_map, **kwargs) == expected
+        assert decode_with_blank(with_spare, "<blank>", nt, speaker_token_ids=spk_map, **kwargs) == expected
+
+    @pytest.mark.unit
+    def test_ids_beyond_the_tokenizer_are_dropped_without_its_size(self):
+        """Whether the tokenizer has an id is found from that id alone. ``len()`` of an HF fast tokenizer, which is
+        also NeMo's ``vocab_size``, builds its whole vocabulary on every call: tens of ms for Qwen3, against well
+        under 1 ms to decode a text. A tokenizer that refuses its size and its vocabulary decodes as the real one,
+        NumPy ids as Python ones."""
+
+        class SizeRefused:
+            """Forwards to ``inner``, but refuses its size and its vocabulary."""
+
+            def __init__(self, inner, **attributes):
+                self.inner = inner
+                vars(self).update(attributes)
+
+            def __getattr__(self, name):
+                if name in ("vocab_size", "vocab", "get_vocab"):
+                    raise AssertionError(f"decode_with_blank asked for the tokenizer's {name}")
+                return getattr(self.inner, name)
+
+            def __len__(self):
+                raise AssertionError("decode_with_blank asked for len(tokenizer)")
+
+        nt = AutoTokenizer("Qwen/Qwen3-1.7B", use_fast=True)
+        hf = nt.tokenizer
+        hf.add_special_tokens({"additional_special_tokens": ["<blank>"]})
+        blank_id = hf.convert_tokens_to_ids("<blank>")
+        hello = hf.encode("hello", add_special_tokens=False)
+        di, ar, ization = hf.encode(" diarization", add_special_tokens=False)
+        there = hf.encode(" there", add_special_tokens=False)
+        ids = [*hello, di, ar, ization, blank_id, *there]
+        with_spare = [*hello, di, len(hf), ar, ization, blank_id, *there, QWEN3_LM_HEAD_ROWS - 1]
+        refused = SizeRefused(nt, tokenizer=SizeRefused(hf))
+
+        assert decode_with_blank(ids, "<blank>", nt) == "hello diarization there"
+        assert decode_with_blank(with_spare, "<blank>", refused) == "hello diarization there"
+        # NumPy ids too: HF converts a lone id only if it is a Python int.
+        assert decode_with_blank(list(np.array(with_spare)), "<blank>", refused) == "hello diarization there"

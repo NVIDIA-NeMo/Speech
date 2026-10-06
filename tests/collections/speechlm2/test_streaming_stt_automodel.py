@@ -491,6 +491,46 @@ def test_validation_step_runs(model):
     assert torch.isfinite(model._partial_val_losses["val_set_0"][0])
 
 
+def test_validation_decode_drops_ids_beyond_the_tokenizer(model, monkeypatch):
+    """StreamingSTTModelAutomodel never shrinks the LLM's vocabulary to the tokenizer (nor does StreamingSTTModel
+    with ``allow_shrink_embedding: false``), so the argmax of the LM head can be an id that the tokenizer does not
+    have. The validation step logs the decoded prediction, which raised TypeError on such an id; it now decodes as
+    if the id were absent."""
+    import nemo.collections.speechlm2.models.streaming_stt_model as stt_module
+
+    vocab_size, rows = len(model.tokenizer.tokenizer), model.llm.lm_head.weight.shape[0]
+    assert rows > vocab_size, (rows, vocab_size)
+    hello, there = model.tokenizer.tokenizer.encode("hello there", add_special_tokens=False)
+    batch = make_batch(model)
+    # The argmax at the six supervised positions of each row: the two words, with ids beyond the tokenizer before,
+    # between and after them.
+    forced = [vocab_size, hello, rows - 1, there, vocab_size, rows - 1]
+    supervised = (batch.target_tokens != IGNORE_INDEX).nonzero(as_tuple=True)
+    forward = model.forward
+
+    def forward_with_forced_argmax(*args, **kwargs):
+        out = forward(*args, **kwargs)
+        logits = torch.zeros_like(out["logits"])
+        logits[supervised + (torch.tensor(forced).repeat(batch.target_tokens.shape[0]),)] = 1.0
+        return {**out, "logits": logits}
+
+    decode = stt_module.decode_with_blank
+    decoded = []
+
+    def recording_decode(ids, *args, **kwargs):
+        decoded.append((ids, decode(ids, *args, **kwargs)))
+        return decoded[-1][1]
+
+    monkeypatch.setattr(model, "forward", forward_with_forced_argmax)
+    monkeypatch.setattr(stt_module, "decode_with_blank", recording_decode)
+    model.on_validation_epoch_start()
+    model.validation_step({"val_set_0": batch}, batch_idx=0)
+
+    (_, _), (pred_ids, pred_text) = decoded  # The reference, then the prediction.
+    assert pred_ids == forced
+    assert pred_text == "hello there"
+
+
 def test_configure_optimizers_only_sees_trainable_params(model):
     ans = model.configure_optimizers()
     optimizer = ans["optimizer"]

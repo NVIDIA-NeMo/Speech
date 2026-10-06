@@ -160,13 +160,43 @@ def test_malformed_preexisting_locator_fails_closed(text):
         _parse(chat_utils, [_AUDIO, {"type": "text", "text": text}])
 
 
-def test_multiple_audio_payloads_fail_closed_before_registration():
+def test_multiple_audio_payloads_are_registered_in_order_with_matching_locators():
     chat_utils, calls = _fake_vllm_chat_utils()
     _patch_speechlm_training_prompt_contract(chat_utils)
 
-    with pytest.raises(ValueError, match="exactly one audio"):
-        _parse(chat_utils, [_AUDIO, _AUDIO, {"type": "text", "text": "Compare"}])
-    assert calls == []
+    audio_2 = {"type": "audio_url", "audio_url": {"url": "data:audio/wav;base64,AQ=="}}
+    result = _parse(chat_utils, [_AUDIO, audio_2, {"type": "text", "text": "Compare"}])
+
+    assert result == [{"role": "user", "content": "Compare <|audio|> <|audio|>"}]
+    assert calls[0]["registered_audio_parts"] == [_AUDIO, audio_2]
+    assert calls[0]["rendered"].count("<|audio|>") == 2
+
+
+def test_multiple_preexisting_locators_must_match_payload_count_and_exact_suffix():
+    chat_utils, calls = _fake_vllm_chat_utils()
+    _patch_speechlm_training_prompt_contract(chat_utils)
+    audio_2 = {"type": "audio_url", "audio_url": {"url": "data:audio/wav;base64,AQ=="}}
+    audio_3 = {"type": "audio_url", "audio_url": {"url": "data:audio/wav;base64,Ag=="}}
+
+    result = _parse(
+        chat_utils,
+        [
+            _AUDIO,
+            audio_2,
+            audio_3,
+            {"type": "text", "text": "Compare <|audio|> <|audio|> <|audio|>"},
+        ],
+    )
+    assert result == [{"role": "user", "content": "Compare <|audio|> <|audio|> <|audio|>"}]
+    assert calls[0]["registered_audio_parts"] == [_AUDIO, audio_2, audio_3]
+
+    with pytest.raises(ValueError, match="counts must match"):
+        _parse(chat_utils, [_AUDIO, audio_2, {"type": "text", "text": "Compare <|audio|>"}])
+    with pytest.raises(ValueError, match="final"):
+        _parse(
+            chat_utils,
+            [_AUDIO, audio_2, {"type": "text", "text": "<|audio|> <|audio|> Compare"}],
+        )
 
 
 def test_noninterleaved_string_contract_is_enforced():

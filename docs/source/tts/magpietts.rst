@@ -133,6 +133,7 @@ Several parameters control the generation behavior. The temperature setting affe
     python examples/tts/magpietts_inference.py \
         --nemo_files /path/to/magpietts_model.nemo \
         --codecmodel_path /path/to/audio_codec.nemo \
+        --datasets_json_path /path/to/evalset_config.json \
         --datasets your_evaluation_set \
         --out_dir /path/to/output \
         --temperature 0.6 \
@@ -145,6 +146,34 @@ For production deployments, enabling the attention prior during inference adds a
 When using models trained with frame stacking, you can enable the Local Transformer during inference with ``--use_local_transformer``. The MaskGit decoding mode can be activated for faster inference at a slight quality trade-off, with ``--maskgit_n_steps`` controlling the number of refinement iterations.
 
 To enable Long-form speech generation (beta) set ``--longform_mode`` to ``auto or always``; this will either automatically detect the long form text or always use the long form inference pipeline. For comprehensive documentation on longform inference, see the :doc:`Longform Inference Guide <magpietts-longform>`.
+
+Evaluation set configuration
+----------------------------
+
+``--datasets_json_path`` points to a JSON file that maps each dataset name to its manifest, its audio directory, and optional per-dataset evaluation overrides. Relative paths are resolved against ``--datasets_base_path``. ``--datasets`` selects a subset of the entries.
+
+.. code-block:: json
+
+    {
+        "libritts_test_clean": {
+            "manifest_path": "LibriTTS/test_clean_manifest.json",
+            "audio_dir": "LibriTTS/test-clean",
+            "language": "en",
+            "asr_model": {"name": "nvidia/parakeet-tdt-1.1b", "type": "nemo"},
+            "strip_text_annotations_for_metrics": false
+        }
+    }
+
+The optional keys are:
+
+- ``language``: overrides ``--language`` for this dataset.
+- ``asr_model``: ``{"name": ..., "type": ...}`` overrides ``--asr_model_name`` and ``--asr_model_type``.
+- ``tokenizer_names``: list of text tokenizer names to use for this dataset (``magpietts_inference.py`` only).
+- ``strip_text_annotations_for_metrics``: JSON boolean that enables annotation stripping for this dataset (default: off; there is no run-level flag). When enabled, annotation and control markers such as ``<tag>``, ``{tag}``, ``[tag]``, ``--``, ``...`` and ``*`` are removed from the reference and from the ASR hypothesis before CER/WER are computed. Square-bracket spans are removed together with their content, which is correct for non-verbal tags like ``[breath]`` but deletes the spoken word for datasets that mark emphasis as ``[word]``. Leave it off for such datasets; otherwise every emphasized word is scored as an insertion and CER/WER are inflated.
+
+Malformed values of ``language``, ``asr_model`` and ``strip_text_annotations_for_metrics`` (for example a JSON ``null``, the string ``"false"``, or an ``asr_model`` without a supported ``type``) are rejected when the config is loaded; remove ``language`` or ``asr_model`` to inherit the command-line value, or ``strip_text_annotations_for_metrics`` to leave stripping off. Keys that are not recognized, including training-only fields such as ``feature_dir``, are rejected, so that a misspelled key cannot silently leave the default or command-line value in force.
+
+Each row of the filewise metrics JSON records the effective ``strip_text_annotations_for_metrics`` value, the aggregated metrics include ``num_empty_reference_texts`` (references that became empty after normalization), and the evaluator logs a warning when removed bracket spans show up in the ASR transcript of the generated audio. The CER/WER reference (``gt_text``) is taken from ``normalized_text`` when present, otherwise from ``original_text``, otherwise from ``text``. ``normalized_text`` and ``text`` are the same strings the dataloaders feed the model; ``original_text`` is the orthography kept in legacy phonemized manifests and is used only as the metric reference there, so ``gt_text`` and ``tts_text_input`` differ for such manifests.
 
 Resources
 #########

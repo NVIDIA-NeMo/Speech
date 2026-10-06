@@ -187,6 +187,8 @@ class LhotseDataLoadingConfig:
     input_sampling_rate: int | None = None
     seed: int | str = 0
     num_workers: int = 0
+    # Number of batches each worker prefetches; None leaves PyTorch's default.
+    prefetch_factor: int | None = None
     pin_memory: bool = False
     channel_selector: int | str | None = None
 
@@ -642,6 +644,10 @@ def get_lhotse_dataloader_from_single_config(
         # reads only light-weight JSON objects; it samples mini-batches and passes
         # the meta-data to Dataset, which performs the actual I/O inside its __getitem__ method.
         dloader_kwargs = dict(dataset=dataset, sampler=sampler)
+    if config.prefetch_factor is not None and global_rank == 0:
+        logging.info(
+            "Lhotse DataLoader: num_workers=%s prefetch_factor=%s", config.num_workers, config.prefetch_factor
+        )
     dloader = _build_dataloader(
         use_stateful_dataloader=config.use_stateful_dataloader,
         dp_rank=global_rank,
@@ -651,6 +657,7 @@ def get_lhotse_dataloader_from_single_config(
         batch_size=None,
         num_workers=config.num_workers,
         pin_memory=config.pin_memory,
+        **({"prefetch_factor": config.prefetch_factor} if config.prefetch_factor is not None else {}),
     )
 
     return dloader
@@ -691,6 +698,7 @@ def get_lhotse_dataloader_from_multi_config(
             "seed",
             "shard_seed",
             "num_workers",
+            "prefetch_factor",
             "pin_memory",
             "shuffle",
             "sampler_fusion",
@@ -783,6 +791,12 @@ def get_lhotse_dataloader_from_multi_config(
         # reads only light-weight JSON objects; it samples mini-batches and passes
         # the meta-data to Dataset, which performs the actual I/O inside its __getitem__ method.
         dloader_kwargs = dict(dataset=dataset, sampler=sampler)
+    if shared_opts.prefetch_factor is not None and global_rank == 0:
+        logging.info(
+            "Lhotse DataLoader: num_workers=%s prefetch_factor=%s",
+            shared_opts.num_workers,
+            shared_opts.prefetch_factor,
+        )
     dloader = _build_dataloader(
         use_stateful_dataloader=shared_opts.use_stateful_dataloader,
         dp_rank=global_rank,
@@ -792,6 +806,7 @@ def get_lhotse_dataloader_from_multi_config(
         batch_size=None,
         num_workers=shared_opts.num_workers,
         pin_memory=shared_opts.pin_memory,
+        **({"prefetch_factor": shared_opts.prefetch_factor} if shared_opts.prefetch_factor is not None else {}),
     )
 
     return dloader

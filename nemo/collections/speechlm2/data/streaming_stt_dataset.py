@@ -69,7 +69,7 @@ class StreamingSTTBatch:
         target_tokens: (B, L) target token IDs for the LLM. Non-trainable positions are IGNORE_INDEX.
         target_token_lens: (B,) lengths of the target token sequences.
         text: list of ground-truth transcription strings.
-        cuts: Optional[CutSet] containing the cuts for the batch.
+        cuts: Optional[CutSet] containing the cuts for the batch, as sampled: not padded to the batch length.
     """
 
     audios: Optional[torch.Tensor] = None
@@ -1606,9 +1606,10 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
         return targets, lengths
 
     def __getitem__(self, cuts: CutSet) -> StreamingSTTBatch | None:
-        # Snapshot before collation: the fault-tolerant collator returns only the survivors, so
-        # afterwards there is nothing left to compare against.
+        # Snapshot before collation: the fault-tolerant collator returns only the survivors, padded
+        # to the longest cut, so afterwards neither the requested ids nor the cuts as sampled are left.
         strict = self.cfg.strict_audio_loading
+        requested = list(cuts)
         requested_ids = tuple(cut.id for cut in cuts) if strict else ()
 
         try:
@@ -1636,12 +1637,16 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
             logging.warning("No cuts found in the batch")
             return None
 
+        # Go on with the survivors as they were sampled, not as padded. Speaker activity built on a
+        # padded cut gains silent frames, which can change the column order `fix_speaker_activity`
+        # picks, so a row's targets would depend on the batch it was drawn into. The deferred path
+        # gets these cuts too. The audio stays padded; the targets are zero-padded when collated.
+        cuts = _unpadded_survivors(requested, cuts)
         text = [cut.supervisions[0].text for cut in cuts]
 
         if self.defer_get_batch:
-            # Deferred (online forced alignment): `get_batch_data` runs on the training process and
-            # recomputes the activities from `cuts` there. Collation must happen after that, because
-            # the K>1 branch re-pads `audio_lens` and the target length is derived from it.
+            # Deferred (online forced alignment): the model aligns the words on the training process,
+            # then calls `get_batch_data`, which builds the speaker activities from `cuts` there.
             return StreamingSTTBatch(
                 cuts=cuts,
                 audios=audios,
@@ -1872,8 +1877,8 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
                 [target_tokens.shape[1] for _ in range(len(all_target_ids))], dtype=torch.long
             )
 
-        # Collate speaker activity AFTER the K>1 re-pad above, since the per-sample target length
-        # is derived from the final `audio_lens`.
+        # A row's target length is its activity's own frame count (`audio_lens` is not used), so it
+        # does not follow the K>1 re-pad above: `spk_targets` can have fewer frames than the audio.
         spk_targets = spk_target_length = None
         if self._multispeaker_enabled:
             if speaker_activities is None:
@@ -2008,3 +2013,16 @@ def _content_for_words(
         if first_span is not None and last_span is not None:
             return transcript[first_span[0] : last_span[1]]
     return " ".join(alignments[i].text for i in indices)
+
+
+def _unpadded_survivors(requested: list, collated: CutSet) -> CutSet:
+    """The cuts of ``requested`` that ``collate_audio`` returned as ``collated``, without its padding.
+
+    ``collate_audio`` pads every cut to the longest one, keeping its id, and with ``fault_tolerant=True``
+    drops those whose audio fails to load. Each survivor is matched to the requested cut with its id;
+    cuts that share an id are matched in order.
+    """
+    by_id = {}
+    for cut in requested:
+        by_id.setdefault(cut.id, []).append(cut)
+    return CutSet([by_id[cut.id].pop(0) for cut in collated])

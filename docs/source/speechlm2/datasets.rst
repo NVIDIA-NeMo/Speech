@@ -890,7 +890,14 @@ after the flush token follows the same rules, so it opens with the tag of a run 
 
 .. note::
 
-   Earlier versions built these targets incorrectly in three cases, so recipes that use them now train on
+   The speaker-activity targets built from a cut's RTTM (``spk_targets``) no longer depend on the batch the cut is
+   drawn into: earlier versions built them on the cut padded with silence to the longest cut of its batch, which
+   could swap its speaker columns or mark a frame past its end, so recipes that use them now train on slightly
+   different targets.
+
+.. note::
+
+   Earlier versions built these SOT targets incorrectly in three cases, so recipes that use them now train on
    different targets. Recipes with prefix placement, no switch token and no flush token are unaffected.
 
    - **Suffix placement:** a chunk that spanned a speaker change carried the next run's prefix tag, so its

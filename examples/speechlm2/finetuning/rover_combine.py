@@ -133,7 +133,10 @@ def main():
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from task_metrics import score_wer, wer_normalizers
 
-    systems = [[json.loads(line) for line in open(p)] for p in args.hyps]
+    systems = []
+    for path in args.hyps:
+        with open(path) as f:
+            systems.append([json.loads(line) for line in f])
     n = len(systems[0])
     if any(len(s) != n for s in systems):
         raise SystemExit(f"hypothesis files differ in length: {[len(s) for s in systems]}")

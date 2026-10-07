@@ -57,10 +57,14 @@ def main():
     a = p.parse_args()
     from vllm import LLM, SamplingParams
 
-    rows = [json.loads(line) for line in open(a.texts)]
+    with open(a.texts) as f:
+        rows = [json.loads(line) for line in f]
     for r in rows:
         r["text"] = clean(r["text"])
-    refs = {norm(json.loads(line)["text"]) for line in open(a.exclude)} if a.exclude else set()
+    refs = set()
+    if a.exclude:
+        with open(a.exclude) as f:
+            refs = {norm(json.loads(line)["text"]) for line in f}
     n0 = len(rows)
     rows = [r for r in rows if r["text"] and norm(r["text"]) not in refs]
     print(f"[spoken] {n0} rows, {n0 - len(rows)} dropped (empty or equal to a test reference)")

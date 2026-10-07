@@ -45,7 +45,8 @@ def main():
     from nemo.collections.tts.parts.utils.tts_dataset_utils import chunk_text_for_inference, get_tokenizer_for_language
 
     si, sn = map(int, a.shard.split("/"))
-    rows = [json.loads(line) for line in open(a.texts)][si::sn]
+    with open(a.texts) as f:
+        rows = [json.loads(line) for line in f][si::sn]
     if a.limit:
         rows = rows[: a.limit]
     voices = [(v.split(":")[0], int(v.split(":")[1])) for v in a.voices.split(",")]

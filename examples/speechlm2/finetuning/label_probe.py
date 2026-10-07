@@ -44,9 +44,10 @@ def features(paths, windows=True):
     per_src = []
     for p in paths:
         by = collections.defaultdict(dict)
-        for line in open(p):
-            r = json.loads(line)
-            by[r["id"]][r["window"]] = r
+        with open(p) as f:
+            for line in f:
+                r = json.loads(line)
+                by[r["id"]][r["window"]] = r
         per_src.append(by)
     ids = sorted(per_src[0])
     labels = sorted(per_src[0][ids[0]]["full"]["scores"])

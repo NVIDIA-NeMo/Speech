@@ -171,7 +171,8 @@ def main():
     # Hydra overrides (key=value) may follow --keep-steps, whose nargs would otherwise swallow them.
     overrides = [x for x in sys.argv[1:] if "=" in x and not x.startswith("-")]
     a = p.parse_args([x for x in sys.argv[1:] if x not in overrides])
-    cfg = yaml.safe_load(open(a.config))
+    with open(a.config) as f:
+        cfg = yaml.safe_load(f)
     exp = Path(cfg["exp_manager"]["explicit_log_dir"])
     exp.mkdir(parents=True, exist_ok=True)
     t = cfg["trainer"]
@@ -180,111 +181,115 @@ def main():
 
     lock_path = Path(os.environ.get("SALM_FT_WORK", "salm_ft_work")).absolute() / ".train.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    lock = open(lock_path, "w")
-    print(f"[train] waiting for the GPU training lock {lock_path} ...", flush=True)
-    fcntl.flock(lock, fcntl.LOCK_EX)
+    with open(lock_path, "w") as lock:
+        print(f"[train] waiting for the GPU training lock {lock_path} ...", flush=True)
+        fcntl.flock(lock, fcntl.LOCK_EX)
 
-    if a.preflight:
-        ck = cfg["model"]["init_from_checkpoint"]
-        r = subprocess.run(
-            [
-                sys.executable,
-                str(Path(__file__).parent / "check_checkpoint_coverage.py"),
-                "--checkpoint",
-                ck,
-                "--config",
-                str(a.config),
-            ],
-            cwd=NEMO_ROOT,
-            capture_output=True,
-            text=True,
-        )
-        for line in (r.stdout + r.stderr).splitlines():
-            if line.startswith(
-                ("checkpoint tensors", "model parameters", "matched", "new LoRA", "OK:", "ERROR", "  ")
-            ):
-                print(f"[preflight] {line}")
-        if r.returncode != 0:
-            sys.exit("checkpoint coverage preflight failed: the configured model does not match the checkpoint")
-
-    if a.smoke:
-        log = exp.parent / f"{exp.name}.smoke.log"
-        vci = ["trainer.val_check_interval=10"] if "val_check_interval" in t else []
-        pr = torchrun(
-            a.config,
-            exp,
-            [
-                "trainer.max_steps=20",
-                "trainer.limit_train_batches=20",
-                "trainer.limit_val_batches=2",
-                *vci,
-                f"exp_manager.explicit_log_dir={exp}.smoke",
-                "exp_manager.create_checkpoint_callback=false",
-            ],
-            log,
-        )
-        rc = pr.wait()
-        text = log.read_text(errors="ignore")
-        restored = re.findall(r"(\d+) / (\d+) layers are restored \((\d+) exact, (\d+) partial, (\d+) skipped", text)
-        checks = {
-            "smoke run exited cleanly": rc == 0,
-            "parallel-expert encoder mounted (if declared)": (
-                "Mounted ParallelExpertEncoder" in text or not declares_parallel_expert(cfg["model"])
-            ),
-            "restore log clean (0 partial, 0 skipped)": bool(restored)
-            and all(r[3] == "0" and r[4] == "0" for r in restored),
-            "no checkpoint tensors dropped": not re.search(r"were dropped|no matching parameter", text),
-            "finite loss": not re.search(r"loss[^a-z]*nan", text, re.I),
-        }
-        for k, v in checks.items():
-            print(f"[smoke] {'OK  ' if v else 'FAIL'} {k}")
-        if restored:
-            print(f"[smoke] {restored[0][0]} / {restored[0][1]} layers restored")
-        shutil.rmtree(f"{exp}.smoke", ignore_errors=True)
-        if not all(checks.values()):
-            sys.exit(f"smoke run failed; see {log}")
-
-    log = exp / "train.log"
-    pr = torchrun(a.config, exp, overrides, log)
-    stop = threading.Event()
-    keep_thread = None
-    if a.keep_steps is not None:
-        keep_thread = threading.Thread(target=keeper, args=(exp / "checkpoints", set(a.keep_steps), stop), daemon=True)
-        keep_thread.start()
-    t0, last_print = time.time(), 0.0
-    while pr.poll() is None:
-        time.sleep(60)
-        ev = events(exp)
-        step = ev["loss"][-1].step + 1 if "loss" in ev else 0
-        if "val_loss" not in ev and step > math.ceil(interval * 1.6):
-            pr.terminate()
-            sys.exit(
-                f"no val_loss by step {step} (validation interval {interval}): validation is not running. "
-                f"Lower limit_train_batches below the real batches per epoch (epoch_batches.py)."
+        if a.preflight:
+            ck = cfg["model"]["init_from_checkpoint"]
+            r = subprocess.run(
+                [
+                    sys.executable,
+                    str(Path(__file__).parent / "check_checkpoint_coverage.py"),
+                    "--checkpoint",
+                    ck,
+                    "--config",
+                    str(a.config),
+                ],
+                cwd=NEMO_ROOT,
+                capture_output=True,
+                text=True,
             )
-        if time.time() - last_print > 300:
-            vl = (
-                f"  val_loss {ev['val_loss'][-1].value:.4f} @ {ev['val_loss'][-1].step + 1}"
-                if "val_loss" in ev
-                else ""
+            for line in (r.stdout + r.stderr).splitlines():
+                if line.startswith(
+                    ("checkpoint tensors", "model parameters", "matched", "new LoRA", "OK:", "ERROR", "  ")
+                ):
+                    print(f"[preflight] {line}")
+            if r.returncode != 0:
+                sys.exit("checkpoint coverage preflight failed: the configured model does not match the checkpoint")
+
+        if a.smoke:
+            log = exp.parent / f"{exp.name}.smoke.log"
+            vci = ["trainer.val_check_interval=10"] if "val_check_interval" in t else []
+            pr = torchrun(
+                a.config,
+                exp,
+                [
+                    "trainer.max_steps=20",
+                    "trainer.limit_train_batches=20",
+                    "trainer.limit_val_batches=2",
+                    *vci,
+                    f"exp_manager.explicit_log_dir={exp}.smoke",
+                    "exp_manager.create_checkpoint_callback=false",
+                ],
+                log,
             )
-            print(
-                (
-                    f"[train] {(time.time() - t0) / 60:5.1f} min  step {step}  loss {ev['loss'][-1].value:.4f}{vl}"
-                    if "loss" in ev
-                    else f"[train] {(time.time() - t0) / 60:5.1f} min  starting ..."
+            rc = pr.wait()
+            text = log.read_text(errors="ignore")
+            restored = re.findall(
+                r"(\d+) / (\d+) layers are restored \((\d+) exact, (\d+) partial, (\d+) skipped", text
+            )
+            checks = {
+                "smoke run exited cleanly": rc == 0,
+                "parallel-expert encoder mounted (if declared)": (
+                    "Mounted ParallelExpertEncoder" in text or not declares_parallel_expert(cfg["model"])
                 ),
-                flush=True,
+                "restore log clean (0 partial, 0 skipped)": bool(restored)
+                and all(r[3] == "0" and r[4] == "0" for r in restored),
+                "no checkpoint tensors dropped": not re.search(r"were dropped|no matching parameter", text),
+                "finite loss": not re.search(r"loss[^a-z]*nan", text, re.I),
+            }
+            for k, v in checks.items():
+                print(f"[smoke] {'OK  ' if v else 'FAIL'} {k}")
+            if restored:
+                print(f"[smoke] {restored[0][0]} / {restored[0][1]} layers restored")
+            shutil.rmtree(f"{exp}.smoke", ignore_errors=True)
+            if not all(checks.values()):
+                sys.exit(f"smoke run failed; see {log}")
+
+        log = exp / "train.log"
+        pr = torchrun(a.config, exp, overrides, log)
+        stop = threading.Event()
+        keep_thread = None
+        if a.keep_steps is not None:
+            keep_thread = threading.Thread(
+                target=keeper, args=(exp / "checkpoints", set(a.keep_steps), stop), daemon=True
             )
-            last_print = time.time()
-    stop.set()
-    if keep_thread is not None:
-        keep_thread.join()  # final pass: prune checkpoints written in the last minute
-    if pr.returncode != 0:
-        sys.exit(f"training failed (rc={pr.returncode}); see {log}")
-    ev = events(exp)
-    print("[train] val_loss by step: " + ", ".join(f"{e.step + 1}: {e.value:.4f}" for e in ev.get("val_loss", [])))
-    print("[train] checkpoints:", sorted(os.listdir(exp / "checkpoints")))
+            keep_thread.start()
+        t0, last_print = time.time(), 0.0
+        while pr.poll() is None:
+            time.sleep(60)
+            ev = events(exp)
+            step = ev["loss"][-1].step + 1 if "loss" in ev else 0
+            if "val_loss" not in ev and step > math.ceil(interval * 1.6):
+                pr.terminate()
+                sys.exit(
+                    f"no val_loss by step {step} (validation interval {interval}): validation is not running. "
+                    f"Lower limit_train_batches below the real batches per epoch (epoch_batches.py)."
+                )
+            if time.time() - last_print > 300:
+                vl = (
+                    f"  val_loss {ev['val_loss'][-1].value:.4f} @ {ev['val_loss'][-1].step + 1}"
+                    if "val_loss" in ev
+                    else ""
+                )
+                print(
+                    (
+                        f"[train] {(time.time() - t0) / 60:5.1f} min  step {step}  loss {ev['loss'][-1].value:.4f}{vl}"
+                        if "loss" in ev
+                        else f"[train] {(time.time() - t0) / 60:5.1f} min  starting ..."
+                    ),
+                    flush=True,
+                )
+                last_print = time.time()
+        stop.set()
+        if keep_thread is not None:
+            keep_thread.join()  # final pass: prune checkpoints written in the last minute
+        if pr.returncode != 0:
+            sys.exit(f"training failed (rc={pr.returncode}); see {log}")
+        ev = events(exp)
+        print("[train] val_loss by step: " + ", ".join(f"{e.step + 1}: {e.value:.4f}" for e in ev.get("val_loss", [])))
+        print("[train] checkpoints:", sorted(os.listdir(exp / "checkpoints")))
 
 
 if __name__ == "__main__":

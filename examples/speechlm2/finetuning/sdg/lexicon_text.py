@@ -46,13 +46,8 @@ def main():
     a = p.parse_args()
     csv.field_size_limit(10**9)
     rng = random.Random(4)
-    names = sorted(
-        {
-            re.sub(r"\s+", " ", r["name"]).strip()
-            for r in csv.DictReader(open(a.list, errors="replace"))
-            if r.get("name")
-        }
-    )
+    with open(a.list, errors="replace") as f:
+        names = sorted({re.sub(r"\s+", " ", r["name"]).strip() for r in csv.DictReader(f) if r.get("name")})
     fam = {}
     for n in names:
         fam.setdefault(re.split(r"[\s-]", n)[0], []).append(n)

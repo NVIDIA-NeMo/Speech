@@ -372,3 +372,76 @@ def test_prompt_search_runs_without_a_shell(monkeypatch):
     argv, kw = calls[0]
     assert isinstance(argv, list) and argv[-1] == "it's a; rm -rf /"
     assert not kw.get("shell")
+
+
+# ---------------------------------------------------------------- benchmark archive extraction
+
+
+@pytest.mark.unit
+def test_librispeech_extraction_preserves_audio_and_manifest(tmp_path, monkeypatch):
+    import io
+    import tarfile
+
+    prep = load("prepare_benchmarks")
+    monkeypatch.setattr(prep, "WORK", tmp_path)
+    root = tmp_path / "data" / "librispeech"
+    root.mkdir(parents=True)
+    audio = io.BytesIO()
+    sf.write(audio, np.zeros(3200, dtype=np.float32), 16000, format="FLAC")
+    audio_bytes = audio.getvalue()
+    prefix = "LibriSpeech/test-clean/1/2/"
+    with tarfile.open(root / "test-clean.tar.gz", "w:gz") as archive:
+        for name, contents in (("1-2-0001.flac", audio_bytes), ("1-2.trans.txt", b"1-2-0001 HELLO WORLD\n")):
+            member = tarfile.TarInfo(prefix + name)
+            member.size = len(contents)
+            archive.addfile(member, io.BytesIO(contents))
+
+    prep.cmd_librispeech(Namespace())
+
+    extracted = root / prefix / "1-2-0001.flac"
+    assert extracted.read_bytes() == audio_bytes
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "manifests" / "librispeech" / "test_clean.json").read_text().splitlines()
+    ]
+    assert rows == [
+        {
+            "id": "1-2-0001",
+            "audio_filepath": str(extracted),
+            "duration": 0.2,
+            "text": "hello world",
+            "context": "Provide a verbatim transcript of the audio.",
+        }
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("kind", ["parent_path", "absolute_path", "external_symlink"])
+def test_librispeech_extraction_contains_unsafe_members(tmp_path, monkeypatch, kind):
+    import io
+    import tarfile
+
+    prep = load("prepare_benchmarks")
+    monkeypatch.setattr(prep, "WORK", tmp_path / "work")
+    root = prep.WORK / "data" / "librispeech"
+    root.mkdir(parents=True)
+    outside = tmp_path / "outside.txt"
+    with tarfile.open(root / "test-clean.tar.gz", "w:gz") as archive:
+        if kind == "external_symlink":
+            member = tarfile.TarInfo("LibriSpeech/test-clean/escape")
+            member.type = tarfile.SYMTYPE
+            member.linkname = str(outside)
+            archive.addfile(member)
+        else:
+            member = tarfile.TarInfo("../../../outside.txt" if kind == "parent_path" else str(outside))
+            member.size = 6
+            archive.addfile(member, io.BytesIO(b"escape"))
+
+    if kind == "absolute_path":
+        # The data filter strips leading slashes, keeping the file inside the destination.
+        prep.cmd_librispeech(Namespace())
+        assert (root / str(outside).lstrip("/")).read_bytes() == b"escape"
+    else:
+        with pytest.raises(tarfile.FilterError):
+            prep.cmd_librispeech(Namespace())
+    assert not outside.exists()

@@ -65,7 +65,8 @@ def main():
     from transformers import AutoTokenizer
     from vllm import SamplingParams
 
-    labels = [label.strip() for label in open(a.labels) if label.strip()]
+    with open(a.labels) as f:
+        labels = [label.strip() for label in f if label.strip()]
     tok = AutoTokenizer.from_pretrained(a.model, trust_remote_code=True)
     llm = start_engine(
         model=a.model,

@@ -47,7 +47,8 @@ def atomic_write(path, text):
 
 
 for p in sys.argv[1:]:
-    rows = open(p).read().splitlines()
+    with open(p) as f:
+        rows = f.read().splitlines()
     before = sum(json.loads(a)["text"] != json.loads(b)["text"] for a, b in zip(rows, rows[1:])) / max(
         1, len(rows) - 1
     )

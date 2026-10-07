@@ -44,11 +44,14 @@ def main():
     p.add_argument("--subset", default=None, help="tune | heldout: restrict to that side of the speaker split")
     p.add_argument("--split", default=None, help="JSON {id: tune|heldout} for --subset")
     a = p.parse_args()
-    man = {r["id"]: r for r in map(json.loads, open(a.manifest))}
+    with open(a.manifest) as f:
+        man = {r["id"]: r for r in map(json.loads, f)}
     if a.subset:
-        split = json.load(open(a.split))
+        with open(a.split) as f:
+            split = json.load(f)
         man = {k: v for k, v in man.items() if split[k] == a.subset}
-    hyp = [json.loads(line) for line in open(a.hyps)]
+    with open(a.hyps) as f:
+        hyp = [json.loads(line) for line in f]
     rows = [(man[h["id"]], _THINK.sub("", h.get("pred_text") or "").strip()) for h in hyp if h["id"] in man]
     assert len(rows) == len(man), f"{len(rows)} hypotheses for {len(man)} references"
 
@@ -74,7 +77,8 @@ def main():
     if a.by:
         for v in sorted({m.get(a.by) for m, _ in rows}):
             res[f"{a.by}={v}"] = score([x for x in rows if x[0].get(a.by) == v])
-    json.dump(res, open(a.hyps + (f".{a.subset}" if a.subset else "") + ".eka.json", "w"), indent=1)
+    with open(a.hyps + (f".{a.subset}" if a.subset else "") + ".eka.json", "w") as f:
+        json.dump(res, f, indent=1)
     for k, v in res.items():
         print(
             f"{k:40s} n={v['n']:5d}  WER raw {100 * v['wer_raw']:5.2f}  norm {100 * v['wer_norm']:5.2f}  "

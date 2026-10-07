@@ -183,7 +183,8 @@ def main():
     jobs = list(zip(args.manifest, args.out, [args.prompt] * len(args.manifest)))
     if args.prompts_file:
         assert len(args.manifest) == 1, "--prompts-file takes a single manifest"
-        cands = json.load(open(args.prompts_file))
+        with open(args.prompts_file) as f:
+            cands = json.load(f)
         jobs = [(args.manifest[0], f"{args.out[0]}.p{k}.jsonl", c) for k, c in enumerate(cands)]
     planned = []
     for manifest, out, fixed_prompt in jobs:

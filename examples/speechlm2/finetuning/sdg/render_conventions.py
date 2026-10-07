@@ -148,7 +148,8 @@ class Catalog:
     STOP = {"tablet", "capsule", "syrup", "injection", "cream", "gel", "drops", "suspension", "the", "and", "with"}
 
     def __init__(self, path):
-        cat = [r for r in json.load(open(path)) if r.get("product_name")]
+        with open(path) as f:
+            cat = [r for r in json.load(f) if r.get("product_name")]
         self.by_family = {}
         for r in cat:
             fam = re.split(r"[\s-]", r["product_name"].strip())[0].lower()
@@ -201,22 +202,23 @@ def main():
     cat = Catalog(a.catalog) if a.catalog else None
     out = []
     for path in a.inputs:
-        for r in map(json.loads, open(path)):
-            is_entity = r.get("style") == "narration_entity"
-            for v in range(a.variants):
-                row = {k: r[k] for k in ("audio_filepath", "duration", "style", "concept", "voice") if k in r}
-                row["id"] = f"{r['id']}_v{v}"
-                if rng.random() < a.plain_frac:
-                    row.update(text=r["text"], context=P_MED)
-                else:
-                    st = sample_style(rng)
-                    ctx = describe(st)
-                    if cat is not None and rng.random() < a.bias_frac:
-                        bl = bias_list(r["text"], st, cat, rng, is_entity)
-                        if bl:
-                            ctx += f" Possible terms (may be incomplete or wrong): {bl}."
-                    row.update(text=render(r["text"], st), context=ctx, fmt=st)
-                out.append(row)
+        with open(path) as f:
+            for r in map(json.loads, f):
+                is_entity = r.get("style") == "narration_entity"
+                for v in range(a.variants):
+                    row = {k: r[k] for k in ("audio_filepath", "duration", "style", "concept", "voice") if k in r}
+                    row["id"] = f"{r['id']}_v{v}"
+                    if rng.random() < a.plain_frac:
+                        row.update(text=r["text"], context=P_MED)
+                    else:
+                        st = sample_style(rng)
+                        ctx = describe(st)
+                        if cat is not None and rng.random() < a.bias_frac:
+                            bl = bias_list(r["text"], st, cat, rng, is_entity)
+                            if bl:
+                                ctx += f" Possible terms (may be incomplete or wrong): {bl}."
+                        row.update(text=render(r["text"], st), context=ctx, fmt=st)
+                    out.append(row)
     rng.shuffle(out)
     with open(a.out, "w") as f:
         for r in out:

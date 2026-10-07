@@ -31,7 +31,8 @@ a = ap.parse_args()
 from transformers import AutoTokenizer
 
 tok = AutoTokenizer.from_pretrained(a.tokenizer)
-rows = [json.loads(line) for line in open(a.manifest)]
+with open(a.manifest) as f:
+    rows = [json.loads(line) for line in f]
 total = 0
 for r in rows:
     total += int(float(r["duration"]) / 0.08) + len(tok.encode(r.get("context", ""))) + len(tok.encode(r["text"])) + 20

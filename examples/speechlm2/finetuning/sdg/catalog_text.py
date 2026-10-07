@@ -51,7 +51,8 @@ def main():
     p.add_argument("--model", default="openai/gpt-oss-120b")
     a = p.parse_args()
     rng = random.Random(0)
-    cat = [r for r in json.load(open(a.catalog)) if r.get("product_name")]
+    with open(a.catalog) as f:
+        cat = [r for r in json.load(f) if r.get("product_name")]
     fams = sorted({r.get("_clean_product") or r["product_name"].lower() for r in cat})
     rng.shuffle(fams)
     dev_fams = set(fams[: len(fams) // 20])

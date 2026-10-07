@@ -460,7 +460,8 @@ def main():
     p.add_argument("--labels", default=None, help="file with one class label per line")
     p.add_argument("--by-duration", action="store_true", help="asr: WER per segment-duration bucket")
     a = p.parse_args()
-    rows = [json.loads(line) for line in open(a.hyps) if line.strip()]
+    with open(a.hyps) as f:
+        rows = [json.loads(line) for line in f if line.strip()]
     if a.by_duration:
         for k, v in wer_by_duration(rows, a.normalizer or "simple").items():
             print(

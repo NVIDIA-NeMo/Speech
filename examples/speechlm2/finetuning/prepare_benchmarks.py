@@ -903,7 +903,8 @@ def cmd_gtzan_crops(a):
     """Add three 10 s crops (offsets 0/10/20 s) of every training clip to the full clips: 4x the
     examples for a 443-clip training set. Pure manifest offsets; dev/test stay full 30 s clips."""
     d = out_dir("gtzan")
-    rows = [json.loads(line) for line in open(d / "train_ft.json")]
+    with open(d / "train_ft.json") as f:
+        rows = [json.loads(line) for line in f]
     out = []
     for r in rows:
         out.append(r)
@@ -1082,7 +1083,7 @@ def cmd_librispeech(a):
         urllib.request.urlretrieve("https://www.openslr.org/resources/12/test-clean.tar.gz", tgz)
     if not (root / "LibriSpeech" / "test-clean").is_dir():
         with tarfile.open(tgz) as tf:
-            tf.extractall(root)
+            tf.extractall(root, filter="data")
     rows = []
     for trans in sorted((root / "LibriSpeech" / "test-clean").rglob("*.trans.txt")):
         for line in trans.read_text().splitlines():

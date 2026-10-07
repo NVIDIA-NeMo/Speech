@@ -55,7 +55,8 @@ def main():
     p.add_argument("--ngram", type=int, default=8)
     p.add_argument("--drop-out", default=None)
     a = p.parse_args()
-    test = [json.loads(line) for line in open(a.test) if line.strip()]
+    with open(a.test) as f:
+        test = [json.loads(line) for line in f if line.strip()]
     refs = {norm(r["text"]) for r in test if norm(r["text"])}
     ref_ngrams = {}
     for r in refs:
@@ -64,7 +65,8 @@ def main():
     ents = {e for r in test for e in entities(r)}
     kept = []
     for path in a.train:
-        rows = [json.loads(line) for line in open(path) if line.strip()]
+        with open(path) as f:
+            rows = [json.loads(line) for line in f if line.strip()]
         texts = [norm(r["text"]) for r in rows]
         exact = sum(t in refs for t in texts)
         hit_refs, bad = set(), 0

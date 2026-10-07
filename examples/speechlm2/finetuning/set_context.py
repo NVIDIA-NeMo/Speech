@@ -39,4 +39,5 @@ for src, dst in zip(a.pairs[::2], a.pairs[1::2]):
             r["context"] = tpl.format(**r)
             fo.write(json.dumps(r, ensure_ascii=False) + "\n")
             n += 1
-    print(f"{dst}: {n} rows; context={json.loads(open(dst).readline())['context'][:100]!r}")
+    with open(dst) as f:
+        print(f"{dst}: {n} rows; context={json.loads(f.readline())['context'][:100]!r}")

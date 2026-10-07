@@ -92,7 +92,8 @@ def main():
             + shlex.split(a.task_args)  # the only free-form part: decoder/task flags
         )
         for k, pr in enumerate(prompts):
-            s = json.load(open(f"{out / tag}.p{k}.jsonl.summary.json"))
+            with open(f"{out / tag}.p{k}.jsonl.summary.json") as f:
+                s = json.load(f)
             tried[pr] = dict(score=s["score"], metric=s.get("metric", ""), round=tag, hyps=f"{out / tag}.p{k}.jsonl")
 
     evaluate(a.seed_prompt, "r0")
@@ -100,7 +101,8 @@ def main():
     best = lambda: (min if lower else max)(tried, key=lambda k: tried[k]["score"])  # noqa: E731
     for r in range(1, a.rounds + 1):
         b = best()
-        rows = [json.loads(line) for line in open(tried[b]["hyps"])]
+        with open(tried[b]["hyps"]) as f:
+            rows = [json.loads(line) for line in f]
         wrong = [
             x for x in rows if str(x.get("pred_text", "")).strip().lower() != str(x.get("text", "")).strip().lower()
         ]
@@ -122,7 +124,8 @@ def main():
         )
         cand_file = out / f"r{r}_candidates.json"
         run([a.python_vllm, str(HERE / "prompt_search.py"), "--propose", str(req), str(cand_file), a.proposer])
-        evaluate(json.load(open(cand_file)), f"r{r}")
+        with open(cand_file) as f:
+            evaluate(json.load(f), f"r{r}")
         print(f"[search] round {r}: best {tried[best()]['score']:.4f}  {best()!r}", flush=True)
     ranking = sorted(tried.items(), key=lambda kv: kv[1]["score"], reverse=not lower)
     (out / "search.json").write_text(
@@ -137,10 +140,11 @@ def propose(req_file, out_file, model):
     from vllm import LLM, SamplingParams
 
     llm = LLM(model=model, max_model_len=8192, gpu_memory_utilization=0.40)
-    msg = [
-        {"role": "system", "content": "Reasoning: medium\nOutput only JSON."},
-        {"role": "user", "content": json.load(open(req_file))},
-    ]
+    with open(req_file) as f:
+        msg = [
+            {"role": "system", "content": "Reasoning: medium\nOutput only JSON."},
+            {"role": "user", "content": json.load(f)},
+        ]
     txt = llm.chat([msg], SamplingParams(temperature=0.8, max_tokens=4000))[0].outputs[0].text
     m = re.search(r"\[.*\]", txt.split("assistantfinal")[-1], re.S)
     cands = [c.strip() for c in json.loads(m.group(0)) if isinstance(c, str) and c.strip()] if m else []

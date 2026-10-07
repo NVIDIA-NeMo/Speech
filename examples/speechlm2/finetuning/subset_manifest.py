@@ -44,7 +44,8 @@ def main():
         p.error("--count must be a positive integer")
     if a.fraction is not None and not 0 < a.fraction <= 1:
         p.error("--fraction must be in (0, 1]")
-    rows = [json.loads(line) for line in open(a.inp) if line.strip()]
+    with open(a.inp) as f:
+        rows = [json.loads(line) for line in f if line.strip()]
     rng = random.Random(a.seed)
     if a.per_class is not None:
         by = collections.defaultdict(list)

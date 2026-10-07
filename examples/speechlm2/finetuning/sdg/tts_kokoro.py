@@ -75,7 +75,8 @@ def main():
     from kokoro import KModel, KPipeline
 
     si, sn = map(int, a.shard.split("/"))
-    rows = [json.loads(line) for line in open(a.texts)][si::sn]
+    with open(a.texts) as f:
+        rows = [json.loads(line) for line in f][si::sn]
     rows = rows[: a.limit] if a.limit else rows
     excl = set(filter(None, a.exclude_voices.split(",")))
     voices = [v for v in (a.voices.split(",") if a.voices else VOICES_A + VOICES_B) if v not in excl]

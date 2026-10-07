@@ -103,23 +103,23 @@ def main():
 
     work = Path(os.environ.get("SALM_FT_WORK", "salm_ft_work")).absolute()
     work.mkdir(parents=True, exist_ok=True)
-    lock = open(work / ".train.lock", "w")
-    fcntl.flock(lock, fcntl.LOCK_EX)
-    raw = a.out.parent / (a.out.name + "_raw")
-    subprocess.run(
-        [
-            sys.executable,
-            "examples/speechlm2/to_hf.py",
-            "class_path=nemo.collections.speechlm2.models.SALMAutomodel",
-            f"ckpt_path={link}",
-            f"ckpt_config={a.exp_dir / 'exp_config.yaml'}",
-            f"output_dir={raw}",
-        ],
-        cwd=NEMO_ROOT,
-        check=True,
-        stdout=subprocess.DEVNULL,
-    )
-    fcntl.flock(lock, fcntl.LOCK_UN)
+    with open(work / ".train.lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        raw = a.out.parent / (a.out.name + "_raw")
+        subprocess.run(
+            [
+                sys.executable,
+                "examples/speechlm2/to_hf.py",
+                "class_path=nemo.collections.speechlm2.models.SALMAutomodel",
+                f"ckpt_path={link}",
+                f"ckpt_config={a.exp_dir / 'exp_config.yaml'}",
+                f"output_dir={raw}",
+            ],
+            cwd=NEMO_ROOT,
+            check=True,
+            stdout=subprocess.DEVNULL,
+        )
+        fcntl.flock(lock, fcntl.LOCK_UN)
 
     from safetensors import safe_open
 

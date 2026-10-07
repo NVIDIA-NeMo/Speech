@@ -433,6 +433,9 @@ class BucketData:
         Raises:
             ValueError: If the benchmark is unknown.
         """
+        if benchmark_name is not None and benchmark_name not in self.benchmarks:
+            raise ValueError(f"Unknown benchmark: '{benchmark_name}'.")
+
         if context_type is None:
             return True
 
@@ -498,12 +501,17 @@ class BucketData:
         if items is None or not items:
             raise ValueError(f"Filewise metrics not loaded for benchmark: '{benchmark_name}'.")
 
-        output = []
         validation_context = f"filewise metrics for benchmark '{benchmark_name}'"
+
+        if all(metric_name not in item for item in items):
+            raise ValueError(f"Unknown or empty metric '{metric_name}' for benchmark '{benchmark_name}'.")
+
+        output = []
 
         for item in items:
             if metric_name not in item:
-                continue
+                sample = item.get("pred_audio_filepath", "<unknown sample>")
+                raise ValueError(f"Metric '{metric_name}' in {validation_context} is missing for sample '{sample}'.")
 
             value = _validate_numeric_metric_value(
                 value=item[metric_name],
@@ -514,9 +522,6 @@ class BucketData:
                 sample = item.get("pred_audio_filepath", "<unknown sample>")
                 raise ValueError(_nan_sample_message(metric_name, validation_context, sample))
             output.append(value)
-
-        if not output:
-            raise ValueError(f"Unknown or empty metric '{metric_name}' for benchmark '{benchmark_name}'.")
 
         return output
 
@@ -562,7 +567,8 @@ class BucketData:
         Raises:
             ValueError: If the benchmark is unknown or does not have the requested context type,
                 no benchmark has the requested context type, filewise metrics are not loaded,
-                the metric is missing, or any sample is NaN.
+                no sample carries the metric, the metric is missing from some samples, or any
+                sample is NaN.
             TypeError: If any metric value is not numeric.
         """
         if benchmark_name is None:

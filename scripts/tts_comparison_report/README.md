@@ -235,9 +235,9 @@ Two spec attributes control when a metric is reported:
 an absent or NaN aggregated value skips the row. For `DistributionMetricsRegistry` entries (`pred_gt_ssim`, in
 artifacts written before it was saved per file) a key absent from every sample skips the statistical test and
 the box plot with a warning, and the pooled statistical test of the summary section includes the metric only
-when every benchmark carries it in both buckets; a key present in some samples only, or any NaN value, fails
-the report. Metrics without `optional` fail the report when the aggregated value is missing or NaN, when no
-sample carries the key, or when any sample is NaN.
+when every benchmark carries it in both buckets. Metrics without `optional` fail the report when the aggregated
+value is missing or NaN or when no sample carries the key. For every distribution metric, optional or not, a key
+present in some samples only, or any NaN value, fails the report.
 - `context_type` - the metric is reported only for benchmarks generated with this context type.
 `ssim_pred_context_avg` and `pred_context_ssim` are restricted to `ContextType.audio`: they are
 omitted from text-context benchmark sections, and the summary table and pooled statistical tests

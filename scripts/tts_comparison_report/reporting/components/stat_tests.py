@@ -111,8 +111,8 @@ def run_stat_tests(
         therefore includes an optional metric only if every benchmark carries it in both buckets.
 
     Raises:
-        ValueError: If a metric has a NaN sample, an optional metric's key is missing from some
-            samples only, no sample carries a required metric's key, or benchmark data is invalid.
+        ValueError: If a metric has a NaN sample or a key missing from some samples, no sample
+            carries a required metric's key, or benchmark data is invalid.
         TypeError: If a metric value is not numeric.
     """
     results = []

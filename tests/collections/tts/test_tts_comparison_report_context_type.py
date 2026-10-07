@@ -242,6 +242,10 @@ class TestBucketContextType:
         with pytest.raises(ValueError, match="Unknown benchmark"):
             baseline.get_benchmark_context_type("libritts")
 
+        # The unrestricted scope still validates an explicitly named benchmark.
+        with pytest.raises(ValueError, match="Unknown benchmark"):
+            baseline.has_context_type(None, "libritts")
+
     @pytest.mark.unit
     def test_metric_samples_pooled_over_requested_context_type_only(self):
         baseline, _ = _make_buckets(_audio_benchmark, _text_benchmark)
@@ -509,11 +513,16 @@ class TestGroundTruthSsim:
             run_stat_tests(baseline, candidate, AUDIO_BENCHMARK)
 
     @pytest.mark.unit
-    def test_required_metric_with_nan_sample_still_fails(self):
+    def test_required_metric_with_nan_or_missing_sample_fails(self):
         baseline, candidate = _make_buckets(_audio_benchmark)
         candidate.benchmarks[AUDIO_BENCHMARK].filewise_metrics[2]["cer"] = float("nan")
 
         with pytest.raises(ValueError, match="'cer'.*contains NaN for sample 'predicted_audio_2.wav'"):
+            run_stat_tests(baseline, candidate, AUDIO_BENCHMARK)
+
+        # A key missing from some samples is an error too; the test never runs on a reduced distribution.
+        del candidate.benchmarks[AUDIO_BENCHMARK].filewise_metrics[1]["utmosv2"]
+        with pytest.raises(ValueError, match="'utmosv2'.*missing for sample 'predicted_audio_1.wav'"):
             run_stat_tests(baseline, candidate, AUDIO_BENCHMARK)
 
     @pytest.mark.unit

@@ -34,6 +34,8 @@ __all__ = [
     "NON_AXIS_FIELDS",
     "CpWERScoringConfig",
     "join_reference_manifest",
+    "resolve_normalizer",
+    "resolve_placements",
     "resolve_text_fields",
     "score_rows",
 ]
@@ -63,6 +65,8 @@ NON_AXIS_FIELDS = (
     "use_normalizer",
     "normalizer_language",
     "subset_field",
+    "cpwer_placement_ref",
+    "cpwer_placement_hyp",
 )
 
 # Cut ids carry a `-<offset>-<duration>` suffix that a source manifest's id does not. `{6,}` rather
@@ -106,6 +110,11 @@ class CpWERScoringConfig:
     cpwer_report_notag_ceiling: bool = True
     subset_field: str = "subset_for_metrics"
 
+    # --- non-axis: the placement of each role. None follows cpwer_placement. Set them when the roles differ, as for
+    # a suffix-placement model scored against references written in prefix form ---
+    cpwer_placement_ref: Optional[str] = None
+    cpwer_placement_hyp: Optional[str] = None
+
     def effective_normalizer(self) -> Optional[str]:
         """The normalizer cpWER will actually use, resolving the inherit-from-WER default."""
         return resolve_normalizer(self)
@@ -121,6 +130,8 @@ class CpWERScoringConfig:
         """
         for name, accepted in (
             ("cpwer_placement", ("prefix", "suffix")),
+            ("cpwer_placement_ref", (None, "prefix", "suffix")),
+            ("cpwer_placement_hyp", (None, "prefix", "suffix")),
             ("cpwer_speaker_order", ("index", "first_seen")),
             ("cpwer_ceiling_source", ("strip_tags", "streams")),
         ):
@@ -144,6 +155,24 @@ def resolve_normalizer(cfg) -> Optional[str]:
         Optional[str]: ``cpwer_normalizer`` when set, otherwise ``use_normalizer``.
     """
     return cfg.cpwer_normalizer if cfg.cpwer_normalizer is not None else cfg.use_normalizer
+
+
+def resolve_placements(cfg) -> tuple:
+    """The tag placements cpWER will actually parse the reference and the hypothesis with.
+
+    A free function for the reason :func:`resolve_normalizer` is one: it must also work on a ``DictConfig``. An object
+    without the role fields reads as having them unset, as a stamp recorded before they existed does.
+
+    Args:
+        cfg: a :class:`CpWERScoringConfig`, or any object with its fields (e.g. a ``DictConfig``).
+
+    Returns:
+        tuple: ``(reference placement, hypothesis placement)``: ``cpwer_placement_ref`` and ``cpwer_placement_hyp``
+        where set, otherwise ``cpwer_placement``.
+    """
+    ref = getattr(cfg, "cpwer_placement_ref", None)
+    hyp = getattr(cfg, "cpwer_placement_hyp", None)
+    return (cfg.cpwer_placement if ref is None else ref, cfg.cpwer_placement if hyp is None else hyp)
 
 
 def score_rows(rows: list, cfg: CpWERScoringConfig, *, reference_field=None, hypothesis_field=None) -> tuple:

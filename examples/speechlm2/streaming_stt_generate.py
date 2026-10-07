@@ -35,6 +35,13 @@ Usage::
         max_segment_duration=30 \
         max_concurrent_segments=16
 
+    # A model trained with suffix speaker tags, scored against references written in prefix form:
+    python streaming_stt_generate.py \
+        pretrained_name=/data/suffix_model_hf \
+        inputs=/data/test.jsonl \
+        cpwer_placement_ref=prefix \
+        cpwer_placement_hyp=suffix
+
 The model's ``generate()`` method returns ``list[str]`` directly.
 """
 
@@ -215,8 +222,9 @@ class StreamingSTTEvalConfig(CpWERScoringConfig):
     settings rather than being a kind of cpWER config, and a second metric must be able to
     contribute its own fields beside these. Its fields -- `compute_cpwer`, `use_normalizer`,
     `normalizer_language`, the ten cpWER axes, `cpwer_placement`, `cpwer_max_speakers`,
-    `cpwer_report_notag_ceiling`, `subset_field` -- are defined once there so the two entry points
-    cannot drift. Inherited fields sort first in `--cfg job`, which is the one cosmetic cost.
+    `cpwer_report_notag_ceiling`, `subset_field`, `cpwer_placement_ref`, `cpwer_placement_hyp` -- are
+    defined once there so the two entry points cannot drift. Inherited fields sort first in
+    `--cfg job`, which is the one cosmetic cost.
     """
 
     pretrained_name: str = ""
@@ -271,8 +279,8 @@ class StreamingSTTEvalConfig(CpWERScoringConfig):
     # scoring works.
     score_inline: bool = True
     # Every cpWER setting -- `compute_cpwer`, the ten axes, `cpwer_placement`, `cpwer_max_speakers`,
-    # `cpwer_report_notag_ceiling`, `subset_field` -- is inherited from CpWERScoringConfig, so this
-    # script and the offline scorer cannot disagree about what they mean.
+    # `cpwer_report_notag_ceiling`, `subset_field`, `cpwer_placement_ref` / `_hyp` -- is inherited from
+    # CpWERScoringConfig, so this script and the offline scorer cannot disagree about what they mean.
     # Feed ORACLE RTTM speaker targets to the encoder at inference instead of letting a
     # ParallelExpertEncoder run its own streaming diarizer. Separates "does the speaker kernel
     # help" from "is the streaming diarizer good enough" -- a weak infusion result is otherwise
@@ -307,6 +315,9 @@ def main(cfg: StreamingSTTEvalConfig):
         )
 
     logging.info(f"Hydra config:\n{OmegaConf.to_yaml(cfg)}")
+    # Before the model loads: a typo in a scoring key would otherwise fail only after all the GPU work, or, with
+    # `score_inline=false`, be stamped into `_run` unchecked. Unbound, because Hydra hands over a DictConfig.
+    CpWERScoringConfig.validate(cfg)
 
     if cfg.seed is not None:
         logging.warning(f"Setting random seed to {cfg.seed}, this will slow down the inference")
@@ -699,7 +710,8 @@ def _build_run_block(cfg: StreamingSTTEvalConfig, *, seg_mode: bool) -> dict:
 
     Returns:
         dict: one flat block, identical for every row of a run. Groups: writer provenance
-            (``build``, ``head_sha``); what a scorer must refuse on (``placement``, ``seg_mode``,
+            (``build``, ``head_sha``); what a scorer must refuse on (``placement``, with
+            ``placement_ref`` / ``placement_hyp`` only when set, ``seg_mode``,
             ``max_segment_duration``, ``seg_method``); what it needs to re-derive ``text`` /
             ``pred_text`` (``inference_normalizer``, ``normalizer_language``); and the run knobs
             that change the hypothesis, so two manifests are only comparable where these agree.
@@ -711,6 +723,8 @@ def _build_run_block(cfg: StreamingSTTEvalConfig, *, seg_mode: bool) -> dict:
         "head_sha": _head_sha(),
         # --- what a scorer must refuse on ---
         "placement": cfg.cpwer_placement,
+        # Only when set, so that a run which sets no role placement writes the block it always did.
+        **_role_placements(cfg),
         "seg_mode": seg_mode,
         "max_segment_duration": cfg.max_segment_duration,
         "seg_method": cfg.seg_method,
@@ -827,6 +841,16 @@ def _build_record(
     if rec.annotated is not None:
         record["pred_text_annotated"] = rec.annotated
     return record
+
+
+def _role_placements(cfg) -> dict:
+    """``placement_ref`` / ``placement_hyp`` for the ``_run`` block: the role placements that are set, by role."""
+    out = {}
+    for role in ("ref", "hyp"):
+        value = getattr(cfg, f"cpwer_placement_{role}", None)
+        if value is not None:
+            out[f"placement_{role}"] = value
+    return out
 
 
 if __name__ == "__main__":

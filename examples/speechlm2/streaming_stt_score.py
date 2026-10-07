@@ -31,6 +31,9 @@ Usage::
     # the same manifest under a different normalizer -- this is the point of the split
     python streaming_stt_score.py manifest=eval/run.jsonl cpwer_normalizer=chime8
 
+    # a suffix-placement hypothesis against references written in prefix form
+    python streaming_stt_score.py manifest=eval/run.jsonl cpwer_placement_ref=prefix cpwer_placement_hyp=suffix
+
     # inspect what a manifest was produced with, score nothing
     python streaming_stt_score.py manifest=eval/run.jsonl dry_run=true
 
@@ -51,6 +54,11 @@ reproduces this repo's historical behaviour:
     cpwer_drop_tag_residue      False scores "<spk:0" as text
     cpwer_speaker_order         index | first_seen -- changes only the ins/del/sub split
     cpwer_ceiling_source        strip_tags | streams -- affects the no-tag ceiling only
+
+Tag placement -- not an axis, since the reference scorer knows prefix only:
+
+    cpwer_placement             prefix | suffix -- whether a tag opens or closes its speaker's run
+    cpwer_placement_ref/_hyp    the same per role; null (the default) follows cpwer_placement
 
 Scorer-only knobs:
 
@@ -75,7 +83,12 @@ from omegaconf import MISSING, OmegaConf
 from nemo.collections.asr.metrics.wer import word_error_rate_detail
 from nemo.collections.asr.parts.utils.sot_speaker_alignment import remove_speaker_tags
 from nemo.collections.asr.parts.utils.text_normalizers import build_normalizer
-from nemo.collections.speechlm2.parts.metrics import CpWERScoringConfig, join_reference_manifest, score_rows
+from nemo.collections.speechlm2.parts.metrics import (
+    CpWERScoringConfig,
+    join_reference_manifest,
+    resolve_placements,
+    score_rows,
+)
 from nemo.collections.speechlm2.parts.metrics.cpwer_report import cpwer_metrics_dict, format_cpwer_report
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
@@ -122,6 +135,7 @@ def main(cfg: CpWERScoreConfig):
         return
 
     _refuse_unscorable(rows)
+    _warn_placement_mismatch(rows, cfg)
 
     per_row, corpus, subsets = score_rows(
         rows, cfg, reference_field=cfg.reference_field, hypothesis_field=cfg.hypothesis_field
@@ -175,11 +189,11 @@ def _refuse_unscorable(rows: list) -> None:
             "permutation cannot undo a per-segment relabeling. Score cpWER per cut "
             "(max_segment_duration=0), or add cross-segment speaker stitching."
         )
-    placements = {r["_run"].get("placement") for r in rows if isinstance(r.get("_run"), dict)}
+    placements = {_run_placements(r["_run"]) for r in rows if isinstance(r.get("_run"), dict)}
     if len(placements) > 1:
         raise ValueError(
-            f"Rows disagree on tag placement ({sorted(placements)}). This manifest is a "
-            "concatenation of runs that are not comparable; score them separately."
+            f"Rows disagree on tag placement (reference, hypothesis: {sorted(placements, key=str)}). This manifest "
+            "is a concatenation of runs that are not comparable; score them separately."
         )
 
 
@@ -196,6 +210,8 @@ def _report_provenance(rows: list, cfg: CpWERScoreConfig) -> None:
         suffix = "" if len(values) == 1 else f"   (!! {len(values)} distinct values across rows)"
         logging.info(f"    {key}: {first[key]!r}{suffix}")
     logging.info(f"Requested cpWER normalizer: {cfg.effective_normalizer()!r}")
+    logging.info(f"Requested tag placement (reference, hypothesis): {resolve_placements(cfg)}")
+    _warn_placement_mismatch(rows, cfg)
     if first.get("inference_normalizer") != cfg.effective_normalizer():
         logging.info(
             f"    differs from the inference-time normalizer {first.get('inference_normalizer')!r}; "
@@ -262,6 +278,33 @@ def _json_safe(obj):
     if isinstance(obj, float) and not math.isfinite(obj):
         return None
     return obj
+
+
+def _run_placements(run: dict) -> tuple:
+    """The ``(reference, hypothesis)`` placements of a ``_run`` block: a role's own where stamped, else ``placement``.
+
+    A run that sets no role placement stamps neither, so its pair is ``(placement, placement)``.
+    """
+    placement = run.get("placement")
+    ref, hyp = run.get("placement_ref"), run.get("placement_hyp")
+    return (placement if ref is None else ref, placement if hyp is None else hyp)
+
+
+def _warn_placement_mismatch(rows: list, cfg: CpWERScoreConfig) -> None:
+    """Warn when the requested ``(reference, hypothesis)`` placements are not the ones the run stamped.
+
+    Not refused: re-scoring under another placement is legitimate (references joined from another source, or a run
+    scored with the wrong one), but it changes the number, so it must not pass silently.
+    """
+    runs = [r["_run"] for r in rows if isinstance(r.get("_run"), dict) and r["_run"].get("placement")]
+    stamped = {_run_placements(run) for run in runs}
+    requested = resolve_placements(cfg)
+    if stamped and requested not in stamped:
+        logging.warning(
+            f"Scoring with tag placement (reference, hypothesis) {requested}, but the run stamped "
+            f"{sorted(stamped)}. Set cpwer_placement (or cpwer_placement_ref / cpwer_placement_hyp) to the "
+            "stamped pair unless the change is intended."
+        )
 
 
 if __name__ == "__main__":

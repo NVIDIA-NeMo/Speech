@@ -87,6 +87,8 @@ class CpWER:
         drop_tag_residue: bool = True,
         speaker_order: str = 'index',
         ceiling_source: str = 'strip_tags',
+        placement_ref: Optional[str] = None,
+        placement_hyp: Optional[str] = None,
     ):
         if normalizer is not None and normalizer_name is not None:
             raise ValueError("Pass either normalizer= (a callable) or normalizer_name= (a family name), not both.")
@@ -97,6 +99,9 @@ class CpWER:
         else:
             self.normalizer = _identity
         _validate('placement', placement, ('prefix', 'suffix'))
+        for name, value in (('placement_ref', placement_ref), ('placement_hyp', placement_hyp)):
+            if value is not None:
+                _validate(name, value, ('prefix', 'suffix'))
         _validate('speaker_order', speaker_order, ('index', 'first_seen'))
         _validate('ceiling_source', ceiling_source, ('strip_tags', 'streams'))
         self.untagged_speaker = untagged_speaker
@@ -118,6 +123,10 @@ class CpWER:
         self.reset()
         # 'suffix' when targets close a run with `<spk:N>` instead of opening it.
         self.placement = placement
+        # Per role, because a suffix-placement model is scored against references written in prefix form. None
+        # follows `placement`, so old call sites are unchanged.
+        self.placement_ref = placement_ref
+        self.placement_hyp = placement_hyp
 
     @classmethod
     def from_config(cls, cfg, normalizer=None) -> "CpWER":
@@ -134,11 +143,14 @@ class CpWER:
         Returns:
             CpWER: configured, with counters reset.
         """
+        from nemo.collections.speechlm2.parts.metrics.cpwer_scoring import resolve_placements
+
         if normalizer is None:
             from nemo.collections.asr.parts.utils.text_normalizers import build_normalizer
             from nemo.collections.speechlm2.parts.metrics.cpwer_scoring import resolve_normalizer
 
             normalizer = build_normalizer(resolve_normalizer(cfg), cfg.normalizer_language)
+        placement_ref, placement_hyp = resolve_placements(cfg)
         return cls(
             normalize=True,
             normalizer=normalizer,
@@ -156,6 +168,8 @@ class CpWER:
             drop_tag_residue=cfg.cpwer_drop_tag_residue,
             speaker_order=cfg.cpwer_speaker_order,
             ceiling_source=cfg.cpwer_ceiling_source,
+            placement_ref=placement_ref,
+            placement_hyp=placement_hyp,
         )
 
     def reset(self):
@@ -195,13 +209,18 @@ class CpWER:
             default_speaker=self.untagged_speaker_ref if role == 'ref' else self.untagged_speaker_hyp,
             keep_empty=self.keep_empty_streams,
             max_speakers=self.max_speakers,
-            placement=self.placement,
+            placement=self._placement(role),
             tag_syntax=self.tag_syntax_ref if role == 'ref' else self.tag_syntax_hyp,
             case_sensitive=self.tag_case_sensitive,
             drop_tag_residue=self.drop_tag_residue,
             speaker_order=self.speaker_order,
         )
         return OrderedDict((i, self.normalizer(t).strip()) for i, t in grouped.items())
+
+    def _placement(self, role: str) -> str:
+        """The tag placement ``role`` (``'ref'`` or ``'hyp'``) is parsed with: its own when set, else `placement`."""
+        own = self.placement_ref if role == 'ref' else self.placement_hyp
+        return self.placement if own is None else own
 
     def score_session(self, ref_raw: str, hyp_raw: str) -> CpWERSessionResult:
         """Score one session from RAW (still tagged) reference and hypothesis strings."""
@@ -245,7 +264,7 @@ class CpWER:
                     default_speaker=self.untagged_speaker_ref,
                     keep_empty=False,
                     max_speakers=self.max_speakers,
-                    placement=self.placement,
+                    placement=self._placement('ref'),
                     tag_syntax=self.tag_syntax_ref,
                     case_sensitive=self.tag_case_sensitive,
                     drop_tag_residue=self.drop_tag_residue,

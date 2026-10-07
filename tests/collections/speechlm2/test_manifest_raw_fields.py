@@ -239,3 +239,17 @@ def test_run_block_records_seg_mode_and_placement():
     run = _build_run_block(cfg, seg_mode=True)
     assert run["placement"] == "suffix"
     assert run["seg_mode"] is True
+
+
+@pytest.mark.unit
+def test_run_block_records_a_role_placement_only_when_set():
+    """A run that sets no role placement writes the block it always did; a role that is set is recorded."""
+    cfg = StreamingSTTEvalConfig()
+    cfg.cpwer_placement = "suffix"
+    assert set(_build_run_block(cfg, seg_mode=False)) == _RUN_KEYS
+    cfg.cpwer_placement_ref = "prefix"
+    run = _build_run_block(cfg, seg_mode=False)
+    assert set(run) == _RUN_KEYS | {"placement_ref"}
+    assert (run["placement"], run["placement_ref"]) == ("suffix", "prefix")
+    cfg.cpwer_placement_hyp = "suffix"
+    assert _build_run_block(cfg, seg_mode=False)["placement_hyp"] == "suffix"

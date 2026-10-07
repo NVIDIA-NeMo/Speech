@@ -279,6 +279,68 @@ def test_suffix_placement_orphans_an_unclosed_trailing_run():
     }
 
 
+# --------------------------------------------------------------------------- #
+# The placement of each role
+# --------------------------------------------------------------------------- #
+# Speakers A, B, A: a reference in prefix form, and the word-perfect hypothesis of a suffix-placement model.
+_ABA_REF = "<spk:0> so the budget is fine <spk:1> yeah <spk:0> but the schedule slipped"
+_ABA_SUFFIX_HYP = "so the budget is fine <spk:0> yeah <spk:1> but the schedule slipped <spk:0>"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "ref,hyp,shared",
+    [
+        # One placement for both roles gives 8 of the 10 reference words to the wrong speaker.
+        (_ABA_REF, _ABA_SUFFIX_HYP, 0.8),
+        # On two alternating speakers the permutation search swaps them back, which hides the error.
+        ("<spk:0> a b c <spk:1> d e", "a b c <spk:0> d e <spk:1>", 0.0),
+    ],
+    ids=["A-B-A", "A-B"],
+)
+def test_a_suffix_hypothesis_is_scored_against_a_prefix_reference(ref, hyp, shared):
+    """Each role is parsed with its own placement, so the word-perfect hypothesis scores 0."""
+    # Both roles set, or the shared placement for the hypothesis and the reference's own.
+    for roles in (
+        {'placement_ref': 'prefix', 'placement_hyp': 'suffix'},
+        {'placement': 'suffix', 'placement_ref': 'prefix'},
+    ):
+        result = CpWER(normalize=False, verbose=False, **roles).score_session(ref, hyp)
+        assert (result.cpwer, result.errors) == (0.0, 0), roles
+    assert CpWER(normalize=False, verbose=False, placement='suffix').score_session(ref, hyp).cpwer == shared
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("placement", ["prefix", "suffix"])
+def test_unset_role_placements_follow_the_shared_one(placement):
+    """None, the default, means `placement`, so a call site that sets no role scores as it did."""
+    pairs = [(_ABA_REF, _ABA_SUFFIX_HYP), (_ABA_SUFFIX_HYP, _ABA_REF), ("<spk:0> a b <spk:1> c", "a b <spk:1> c x")]
+    for ref, hyp in pairs:
+        expected = CpWER(normalize=False, verbose=False, placement=placement).score_session(ref, hyp)
+        for roles in ({'placement_ref': None, 'placement_hyp': None}, {'placement_ref': placement}):
+            got = CpWER(normalize=False, verbose=False, placement=placement, **roles).score_session(ref, hyp)
+            assert got == expected, (ref, hyp, roles)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("role", ["placement_ref", "placement_hyp"])
+@pytest.mark.parametrize("bad", ["postfix", "Suffix", ""])
+def test_a_role_placement_is_validated(role, bad):
+    """A typo is rejected, not parsed as prefix."""
+    with pytest.raises(ValueError, match=f"Unknown {role}={bad!r}"):
+        CpWER(**{role: bad})
+
+
+@pytest.mark.unit
+def test_the_streams_ceiling_reads_the_reference_with_its_own_placement():
+    """`ceiling_source='streams'` parses the reference again, with the reference's placement."""
+    kwargs = dict(normalize=False, verbose=False, ceiling_source='streams')
+    roles = CpWER(placement='suffix', placement_ref='prefix', **kwargs).score_session(_ABA_REF, _ABA_SUFFIX_HYP)
+    prefix = CpWER(placement='prefix', **kwargs).score_session(_ABA_REF, _ABA_SUFFIX_HYP)
+    # The flat reference is one stream with all 10 words: "yeah" is one insertion, and speaker 1 one deletion.
+    assert roles.notag_ceiling == prefix.notag_ceiling == 0.2
+
+
 @pytest.mark.unit
 def test_zero_ref_words_is_scored_as_zero():
     """GATE 2: a reference that parses into streams but normalizes to no words scores 0.0.

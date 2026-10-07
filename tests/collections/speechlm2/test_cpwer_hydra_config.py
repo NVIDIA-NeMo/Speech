@@ -67,6 +67,50 @@ def test_metric_builds_from_a_dictconfig():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("cls", [StreamingSTTEvalConfig, CpWERScoreConfig])
+def test_role_placements_are_taken_from_the_command_line(cls):
+    """Both scripts take `cpwer_placement_ref` / `cpwer_placement_hyp`, unset (null) by default."""
+    default = _as_hydra(cls)
+    assert (default.cpwer_placement_ref, default.cpwer_placement_hyp) == (None, None)
+    overrides = OmegaConf.from_dotlist(["cpwer_placement_ref=prefix", "cpwer_placement_hyp=suffix"])
+    cfg = OmegaConf.merge(OmegaConf.structured(cls), overrides)
+    # Speakers A, B, A: a prefix reference, and the word-perfect hypothesis of a suffix-placement model.
+    ref = "<spk:0> so the budget is fine <spk:1> yeah <spk:0> but the schedule slipped"
+    hyp = "so the budget is fine <spk:0> yeah <spk:1> but the schedule slipped <spk:0>"
+    assert CpWER.from_config(cfg).score_session(ref, hyp).cpwer == 0.0
+    assert axis_fingerprint(cfg)["non_axis"].endswith(",placement_ref='prefix',placement_hyp='suffix'")
+
+
+@pytest.mark.unit
+def test_the_scorer_rejects_an_unknown_role_placement():
+    """The scorer validates its config before reading the manifest, which does not exist here."""
+    from examples.speechlm2.streaming_stt_score import main
+
+    with pytest.raises(ValueError, match="cpwer_placement_hyp='postfix'"):
+        main(_as_hydra(CpWERScoreConfig, manifest="unused", cpwer_placement_hyp="postfix"))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("key", ["cpwer_placement", "cpwer_placement_ref", "cpwer_placement_hyp"])
+@pytest.mark.parametrize("score_inline", [True, False])
+def test_the_inference_script_rejects_an_unknown_placement_before_loading_the_model(monkeypatch, key, score_inline):
+    """A typo fails before the GPU work rather than after it, and is never stamped into `_run` unchecked."""
+    main = _inference_main_that_stops_at_model_load(monkeypatch)
+    with pytest.raises(ValueError, match=f"{key}='postfix'"):
+        main(_as_hydra(StreamingSTTEvalConfig, score_inline=score_inline, **{key: "postfix"}))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "overrides", [{}, {"cpwer_placement_ref": "prefix", "cpwer_placement_hyp": "suffix"}, {"score_inline": False}]
+)
+def test_the_inference_script_loads_the_model_for_a_valid_scoring_config(monkeypatch, overrides):
+    main = _inference_main_that_stops_at_model_load(monkeypatch)
+    with pytest.raises(_ModelLoaded):
+        main(_as_hydra(StreamingSTTEvalConfig, **overrides))
+
+
+@pytest.mark.unit
 def test_cpwer_normalizer_is_not_silently_ignored():
     """The worse bug: a wrong number rather than an error.
 
@@ -84,3 +128,20 @@ def test_cpwer_normalizer_is_not_silently_ignored():
     assert (
         scores["whisper"] != scores["chime8"]
     ), f"cpwer_normalizer had no effect: both normalizers gave {scores['whisper']} reference words"
+
+
+class _ModelLoaded(Exception):
+    """Raised where the inference script would load the model, so a test can stop it there."""
+
+
+def _inference_main_that_stops_at_model_load(monkeypatch):
+    """The inference script's entry point, with the model load replaced by raising :class:`_ModelLoaded`."""
+    import examples.speechlm2.streaming_stt_generate as generate
+
+    class _Model:
+        @staticmethod
+        def from_pretrained(*args, **kwargs):
+            raise _ModelLoaded()
+
+    monkeypatch.setattr(generate, "StreamingSTTModel", _Model)
+    return generate.main

@@ -887,7 +887,9 @@ For the words ``a b`` of speaker 0 and ``c d`` of speaker 1, all in one chunk, t
      - ``<|turn_start|> a b <spk:0> <|turn_start|> c d <spk:1>``
 
 ``examples/speechlm2/conf/streaming_stt_multispeaker_suffix.yaml`` is ``streaming_stt_multispeaker.yaml`` with
-suffix placement and ``<|turn_start|>``; its manifest paths are left to the command line.
+suffix placement and ``<|turn_start|>``; its manifest paths are left to the command line. The manifests' references
+stay in prefix form, so score a suffix model with ``cpwer_placement_ref=prefix cpwer_placement_hyp=suffix`` (see
+:doc:`evaluation`).
 
 When the words fall into different chunks, each chunk's turn carries the tags of the runs it opens (prefix) or
 closes (suffix); a run that continues into the next chunk is not tagged again. With ``use_flush_token``, the turn

@@ -137,6 +137,62 @@ def test_capabilities_with_no_reference_equivalent_force_not_comparable(override
 
 
 @pytest.mark.unit
+def test_the_default_stamp_is_unchanged():
+    """A config that sets no role placement stamps exactly what it did before they existed."""
+    fp = axis_fingerprint(CpWERScoringConfig())
+    assert fp["verdict"] == "no (2 of 9 comparable axes match)"
+    assert fp["non_axis"] == "placement='prefix',max_speakers=None"
+    assert len(fp["deviations"]) == 7 and not any("placement" in d for d in fp["deviations"])
+
+
+@pytest.mark.unit
+def test_the_shared_placement_alone_stamps_as_before():
+    fp = axis_fingerprint(CpWERScoringConfig(**REFERENCE_AXES, cpwer_placement="suffix"))
+    assert fp["deviations"] == ["cpwer_placement='suffix' has no reference equivalent"]
+    assert fp["verdict"] == "no (cpwer_placement='suffix' has no reference equivalent)"
+    assert fp["non_axis"] == "placement='suffix',max_speakers=None"
+
+
+@pytest.mark.unit
+def test_mixed_role_placements_have_no_reference_equivalent():
+    cfg = CpWERScoringConfig(**REFERENCE_AXES, cpwer_placement_ref="prefix", cpwer_placement_hyp="suffix")
+    fp = axis_fingerprint(cfg)
+    reason = "cpwer_placement_ref='prefix', cpwer_placement_hyp='suffix' has no reference equivalent"
+    assert fp["deviations"] == [reason]
+    assert fp["verdict"] == f"no ({reason})"
+    assert fp["non_axis"] == "placement='prefix',max_speakers=None,placement_ref='prefix',placement_hyp='suffix'"
+    assert f"    differs: {reason}" in format_cpwer_report(_scored(cfg), cfg).splitlines()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "roles,non_axis,verdict",
+    [
+        (
+            {"cpwer_placement_hyp": "suffix"},
+            "placement='prefix',max_speakers=None,placement_hyp='suffix'",
+            "no (cpwer_placement_ref='prefix', cpwer_placement_hyp='suffix' has no reference equivalent)",
+        ),
+        (
+            {"cpwer_placement_ref": "suffix"},
+            "placement='prefix',max_speakers=None,placement_ref='suffix'",
+            "no (cpwer_placement_ref='suffix', cpwer_placement_hyp='prefix' has no reference equivalent)",
+        ),
+        # Set, but prefix for both roles, which is what the reference scorer does.
+        (
+            {"cpwer_placement": "suffix", "cpwer_placement_ref": "prefix", "cpwer_placement_hyp": "prefix"},
+            "placement='suffix',max_speakers=None,placement_ref='prefix',placement_hyp='prefix'",
+            "yes (9 of 9 comparable axes; cpwer_ceiling_source excluded)",
+        ),
+    ],
+    ids=["hyp_only", "ref_only", "both_prefix"],
+)
+def test_a_role_placement_is_stamped_when_set(roles, non_axis, verdict):
+    fp = axis_fingerprint(CpWERScoringConfig(**REFERENCE_AXES, **roles))
+    assert (fp["non_axis"], fp["verdict"]) == (non_axis, verdict)
+
+
+@pytest.mark.unit
 def test_fingerprint_never_raises_on_an_unusual_combination():
     """It describes; it does not gate. Gating here would block a legitimate experiment."""
     axis_fingerprint(CpWERScoringConfig(cpwer_placement="suffix", cpwer_normalizer="chime8", cpwer_max_speakers=2))

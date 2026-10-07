@@ -93,6 +93,22 @@ def test_corpus_metrics_match_the_recorded_block():
 
 
 @pytest.mark.unit
+def test_rescoring_reproduces_the_golden_manifest_byte_for_byte():
+    """Settings added later, at their defaults, must not move one byte of an existing scored manifest.
+
+    The rows are written as the fixture tool writes them. Every value the metrics file records is reproduced too,
+    the ``cpwer_axes`` stamp included; it predates ``cpwer_by_num_speakers``, so that file is compared by value.
+    """
+    rows, cfg, (per_row, corpus, subsets) = _rescore()
+    written = "".join(json.dumps({**row, **scored}, sort_keys=True) + "\n" for row, scored in zip(rows, per_row))
+    assert written == (FIXTURES / "cpwer_golden.jsonl").read_text()
+    with open(FIXTURES / "cpwer_golden_metrics.json") as handle:
+        recorded = json.load(handle)
+    actual = cpwer_metrics_dict(corpus, subsets, cfg)
+    assert {key: actual[key] for key in recorded} == recorded
+
+
+@pytest.mark.unit
 def test_the_fixture_was_generated_at_the_reference_corner():
     """Otherwise it would pin whatever the defaults happened to be, which is a weaker claim."""
     with open(FIXTURES / "cpwer_golden_metrics.json") as handle:

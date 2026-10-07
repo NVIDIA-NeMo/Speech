@@ -22,6 +22,7 @@ from .cpwer_scoring import (
     CpWERScoringConfig,
     join_reference_manifest,
     resolve_normalizer,
+    resolve_placements,
     resolve_text_fields,
     score_rows,
 )
@@ -46,6 +47,7 @@ __all__ = [
     'NON_AXIS_FIELDS',
     'score_rows',
     'resolve_normalizer',
+    'resolve_placements',
     'resolve_text_fields',
     'join_reference_manifest',
     'TokenAccuracy',

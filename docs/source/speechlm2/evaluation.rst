@@ -116,8 +116,9 @@ The manifest
      - The input manifest row, nested whole. Per-subset bucketing reads its key from here.
    * - ``_run``
      - dict
-     - What produced the manifest: ``build``, ``head_sha``, ``placement``, ``seg_mode``,
-       ``inference_normalizer``, ``oracle_spk_targets`` and the rest.
+     - What produced the manifest: ``build``, ``head_sha``, ``placement`` (and ``placement_ref`` /
+       ``placement_hyp`` when set), ``seg_mode``, ``inference_normalizer``, ``oracle_spk_targets``
+       and the rest.
 
 .. warning::
 
@@ -180,6 +181,26 @@ this repository's historical behaviour**, pinned against a snapshot.
 
 ``cpwer_placement`` (``prefix`` | ``suffix``) and ``cpwer_max_speakers`` are settings rather than
 axes: they describe the data, and no reference scorer has an equivalent.
+
+``cpwer_placement_ref`` and ``cpwer_placement_hyp`` set the placement of one role. Each defaults to
+``null``, which follows ``cpwer_placement``, so a command that sets neither scores and stamps as
+before. Set them when the roles differ, as for a model trained with suffix tags and evaluated on
+manifests whose references are in prefix form:
+
+.. code-block:: bash
+
+   python examples/speechlm2/streaming_stt_score.py manifest=eval/run.jsonl \
+       cpwer_placement_ref=prefix cpwer_placement_hyp=suffix
+
+Scoring such a run with ``cpwer_placement=suffix`` alone reads every reference tag as closing the
+run before it. Against ``<spk:0> so the budget is fine <spk:1> yeah <spk:0> but the schedule
+slipped``, the word-perfect suffix hypothesis then scores 80% instead of 0%. Sessions that alternate
+between two speakers hide the error, because the permutation search swaps the speakers back. A role
+placement that is set is stamped (``non_axis`` and ``_run``), a placement other than ``prefix`` in
+either role makes the verdict "no reference equivalent", and the scorer refuses a manifest whose
+rows disagree on the two placements. The scorer does not read the placements from ``_run``: it warns
+when the pair it is asked for differs from the stamped one, and ``dry_run=true`` prints both, so
+pass the run's placements again when re-scoring it under, say, another normalizer.
 
 Structural markers are never scored, whatever the axes: ``<spk_x>`` and ``<|turn_x|>`` (``x`` in
 lowercase letters), such as the turn-start token ``<|turn_start|>`` or the older ``<spk_switch>``,

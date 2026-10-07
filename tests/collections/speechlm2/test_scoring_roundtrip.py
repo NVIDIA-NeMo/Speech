@@ -36,6 +36,7 @@ from examples.speechlm2.streaming_stt_score import (  # noqa: E402
     _default_path,
     _json_safe,
     _refuse_unscorable,
+    main,
 )
 from nemo.collections.speechlm2.parts.metrics import CpWER, score_rows  # noqa: E402
 from nemo.collections.speechlm2.parts.metrics.cpwer_report import cpwer_metrics_dict  # noqa: E402
@@ -64,6 +65,7 @@ def _with_run(rows, **run):
         {},
         {"cpwer_normalizer": "chime8"},
         {"cpwer_speaker_order": "first_seen", "cpwer_keep_empty_streams": False},
+        {"cpwer_placement_ref": "prefix", "cpwer_placement_hyp": "suffix"},
     ],
 )
 def test_offline_scoring_equals_inline_scoring(overrides):
@@ -126,6 +128,54 @@ def test_rows_disagreeing_on_placement_are_refused():
     rows = _with_run(_ROWS[:1]) + _with_run(_ROWS[1:], placement="suffix")
     with pytest.raises(ValueError, match="disagree on tag placement"):
         _refuse_unscorable(rows)
+
+
+@pytest.mark.unit
+def test_rows_disagreeing_on_a_role_placement_are_refused():
+    """The same `placement`, but one run read its references as prefix: two runs, not one."""
+    rows = _with_run(_ROWS[:1], placement="suffix") + _with_run(_ROWS[1:], placement="suffix", placement_ref="prefix")
+    match = r"disagree on tag placement \(reference, hypothesis: \[\('prefix', 'suffix'\), \('suffix', 'suffix'\)\]\)"
+    with pytest.raises(ValueError, match=match):
+        _refuse_unscorable(rows)
+
+
+@pytest.mark.unit
+def test_rows_that_resolve_to_the_same_placements_are_accepted():
+    """What is compared is the placement each role was read with, not how the run spelled it."""
+    rows = _with_run(_ROWS[:1], placement="prefix", placement_hyp="suffix")
+    rows += _with_run(_ROWS[1:], placement="suffix", placement_ref="prefix")
+    _refuse_unscorable(rows)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize(
+    "run,overrides,warned",
+    [
+        # Read as ref=prefix, hyp=suffix, re-scored with the defaults: prefix/prefix, a different number.
+        ({"placement_hyp": "suffix"}, {}, True),
+        ({"placement": "suffix"}, {}, True),
+        ({"placement_hyp": "suffix"}, {"cpwer_placement_ref": "prefix", "cpwer_placement_hyp": "suffix"}, False),
+        # The pair is compared, not its spelling.
+        ({"placement_hyp": "suffix"}, {"cpwer_placement": "suffix", "cpwer_placement_ref": "prefix"}, False),
+        ({}, {}, False),
+        # No stamp to compare with.
+        ({"placement": None}, {"cpwer_placement": "suffix"}, False),
+    ],
+    ids=["roles-vs-defaults", "suffix-vs-defaults", "roles-match", "roles-respelled", "defaults", "unstamped"],
+)
+def test_a_placement_other_than_the_runs_is_warned_about(tmp_path, monkeypatch, run, overrides, warned, dry_run):
+    """Re-scoring under another placement is allowed, since references may be joined from elsewhere, but not silent."""
+    from omegaconf import OmegaConf
+
+    manifest = tmp_path / "run.jsonl"
+    manifest.write_text("".join(json.dumps(row) + "\n" for row in _with_run(_ROWS, **run)))
+    seen = []
+    # NeMo's logger does not propagate to caplog, so capture the warning at the source.
+    target = "examples.speechlm2.streaming_stt_score.logging.warning"
+    monkeypatch.setattr(target, lambda msg, *a, **k: seen.append(msg))
+    main(OmegaConf.structured(CpWERScoreConfig(manifest=str(manifest), dry_run=dry_run, **overrides)))
+    assert any("tag placement" in msg for msg in seen) == warned, seen
 
 
 @pytest.mark.unit

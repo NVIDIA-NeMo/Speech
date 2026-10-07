@@ -28,7 +28,12 @@ an axis added later reads as "at its default then" instead of invalidating the r
 
 from typing import Optional
 
-from nemo.collections.speechlm2.parts.metrics.cpwer_scoring import AXIS_FIELDS, CpWERScoringConfig, resolve_normalizer
+from nemo.collections.speechlm2.parts.metrics.cpwer_scoring import (
+    AXIS_FIELDS,
+    CpWERScoringConfig,
+    resolve_normalizer,
+    resolve_placements,
+)
 
 __all__ = ["REFERENCE_AXES", "axis_fingerprint", "cpwer_metrics_dict", "format_cpwer_report"]
 
@@ -163,7 +168,8 @@ def axis_fingerprint(cfg: CpWERScoringConfig) -> dict:
     Returns:
         dict: ``resolved`` (sorted ``key=value`` text over all ten axes), ``deviations`` (one
         readable phrase per axis differing from the reference), ``verdict`` (``"yes (9 of 9 ...)"``
-        or ``"no"``), and ``non_axis`` for the settings that change a number without being axes.
+        or ``"no"``), and ``non_axis`` for the settings that change a number without being axes (the role
+        placements only when set).
     """
     resolved = {name: getattr(cfg, name) for name in AXIS_FIELDS}
     resolved["cpwer_normalizer"] = resolve_normalizer(cfg)
@@ -178,8 +184,8 @@ def axis_fingerprint(cfg: CpWERScoringConfig) -> dict:
     # deviation on an axis -- it is a configuration that scorer cannot express at all, so a
     # comparison is not meaningful regardless of how the ten axes are set.
     incomparable = []
-    if cfg.cpwer_placement != "prefix":
-        incomparable.append(f"cpwer_placement={cfg.cpwer_placement!r} has no reference equivalent")
+    if resolve_placements(cfg) != ("prefix", "prefix"):
+        incomparable.append(f"{_placement_setting(cfg)} has no reference equivalent")
     if cfg.cpwer_max_speakers is not None:
         incomparable.append(f"cpwer_max_speakers={cfg.cpwer_max_speakers!r} has no reference equivalent")
 
@@ -191,11 +197,18 @@ def axis_fingerprint(cfg: CpWERScoringConfig) -> dict:
     else:
         verdict = f"yes ({matched} of {len(REFERENCE_AXES)} comparable axes; cpwer_ceiling_source excluded)"
 
+    non_axis = f"placement={cfg.cpwer_placement!r},max_speakers={cfg.cpwer_max_speakers!r}"
+    # The role placements only when set, so that a config without them keeps the stamp it always had.
+    for role in ("ref", "hyp"):
+        value = getattr(cfg, f"cpwer_placement_{role}", None)
+        if value is not None:
+            non_axis += f",placement_{role}={value!r}"
+
     return {
         "resolved": ",".join(f"{k}={resolved[k]!r}" for k in sorted(resolved)),
         "deviations": deviations + incomparable,
         "verdict": verdict,
-        "non_axis": f"placement={cfg.cpwer_placement!r},max_speakers={cfg.cpwer_max_speakers!r}",
+        "non_axis": non_axis,
     }
 
 
@@ -213,3 +226,11 @@ def _rates(block: dict, name: str, scale: str) -> dict:
 
 def _pct(value) -> str:
     return "n/a" if value is None else f"{value:.2f}%"
+
+
+def _placement_setting(cfg) -> str:
+    """The placement as the verdict names it: ``cpwer_placement`` alone, or both roles once either is set."""
+    if getattr(cfg, "cpwer_placement_ref", None) is None and getattr(cfg, "cpwer_placement_hyp", None) is None:
+        return f"cpwer_placement={cfg.cpwer_placement!r}"
+    ref, hyp = resolve_placements(cfg)
+    return f"cpwer_placement_ref={ref!r}, cpwer_placement_hyp={hyp!r}"

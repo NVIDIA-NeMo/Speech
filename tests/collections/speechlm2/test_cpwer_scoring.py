@@ -88,6 +88,75 @@ def test_validate_accepts_any_axis_combination():
 
 
 # --------------------------------------------------------------------------------------------
+# the placement of each role
+# --------------------------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_role_placements_are_non_axis_settings_that_default_to_unset():
+    """Classified, so the inventory holds, and unset by default, so no default changes."""
+    assert {"cpwer_placement_ref", "cpwer_placement_hyp"} <= set(NON_AXIS_FIELDS)
+    cfg = CpWERScoringConfig()
+    assert (cfg.cpwer_placement, cfg.cpwer_placement_ref, cfg.cpwer_placement_hyp) == ("prefix", None, None)
+    cfg.validate()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "fields,expected",
+    [
+        ({}, ("prefix", "prefix")),
+        ({"cpwer_placement": "suffix"}, ("suffix", "suffix")),
+        ({"cpwer_placement_hyp": "suffix"}, ("prefix", "suffix")),
+        ({"cpwer_placement": "suffix", "cpwer_placement_ref": "prefix"}, ("prefix", "suffix")),
+        (
+            {"cpwer_placement": "suffix", "cpwer_placement_ref": "prefix", "cpwer_placement_hyp": "prefix"},
+            ("prefix", "prefix"),
+        ),
+    ],
+)
+def test_each_role_resolves_to_its_own_placement_or_the_shared_one(fields, expected):
+    from nemo.collections.speechlm2.parts.metrics import resolve_placements
+
+    cfg = CpWERScoringConfig(**fields)
+    cfg.validate()
+    assert resolve_placements(cfg) == expected
+
+
+@pytest.mark.unit
+def test_an_object_without_the_role_fields_resolves_them_as_unset():
+    """As a stamp written before they existed reads: at their default then."""
+    from types import SimpleNamespace
+
+    from nemo.collections.speechlm2.parts.metrics import resolve_placements
+
+    assert resolve_placements(SimpleNamespace(cpwer_placement="suffix")) == ("suffix", "suffix")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("field", ["cpwer_placement_ref", "cpwer_placement_hyp"])
+@pytest.mark.parametrize("bad", ["postfix", "Prefix", ""])
+def test_validate_rejects_an_unknown_role_placement(field, bad):
+    cfg = CpWERScoringConfig(**{field: bad})
+    with pytest.raises(ValueError, match=f"Unknown {field}={bad!r}"):
+        cfg.validate()
+
+
+@pytest.mark.unit
+def test_score_rows_parses_each_role_with_its_own_placement():
+    """Speakers A, B, A, prefix reference, word-perfect suffix hypothesis: 0 errors per role, 8 of 10 shared."""
+    row = _row(
+        "<spk:0> so the budget is fine <spk:1> yeah <spk:0> but the schedule slipped",
+        "so the budget is fine <spk:0> yeah <spk:1> but the schedule slipped <spk:0>",
+    )
+    roles = CpWERScoringConfig(cpwer_placement_ref="prefix", cpwer_placement_hyp="suffix")
+    per_row, corpus, _ = score_rows([row], roles)
+    assert (per_row[0]["cpwer"], corpus["cpwer_errors_corpus"], corpus["cpwer_ref_words_corpus"]) == (0.0, 0, 10)
+    per_row, corpus, _ = score_rows([row], CpWERScoringConfig(cpwer_placement="suffix"))
+    assert (per_row[0]["cpwer"], corpus["cpwer_errors_corpus"], corpus["cpwer_ref_words_corpus"]) == (0.8, 8, 10)
+
+
+# --------------------------------------------------------------------------------------------
 # field resolution
 # --------------------------------------------------------------------------------------------
 

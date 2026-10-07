@@ -382,9 +382,12 @@ class BucketData:
             Bucket data initialized with discovered benchmark artifacts.
 
         Raises:
-            FileNotFoundError: If the expected results directory is missing.
+            FileNotFoundError: If the expected results directory is missing or, when `check_audio` is
+                set, a benchmark lacks its audio directory or its generated, target or (for audio-context
+                benchmarks) context audio files.
             ValueError: If a recognized benchmark directory does not use the required
-                '<configuration>_<language>_<benchmark>' naming format.
+                '<configuration>_<language>_<benchmark>' naming format, or if a generated audio file has
+                no matching target or context audio file.
         """
         obj = cls(name=bucket_name, path=bucket_path)
         results_path = bucket_path / bucket_structure.eval_output_subdir

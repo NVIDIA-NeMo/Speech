@@ -218,7 +218,7 @@ a benchmark name to a `BenchmarkMeta` holding its language code and the context 
 the benchmark was generated:
 - `ContextType.audio` (default) - speaker identity was conditioned on a context audio prompt;
 - `ContextType.text` - speaker identity was conditioned on a text description; no context audio exists,
-so the audio report shows the target recording only.
+so the audio report sections of these benchmarks have no context column.
 
 To add or remove a benchmark, update `BENCHMARK_META`; `SUPPORTED_BENCHMARK_NAMES` is derived from it.
 Declare text-context benchmarks explicitly, otherwise the report fails because their context

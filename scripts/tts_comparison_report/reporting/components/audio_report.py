@@ -76,7 +76,8 @@ def prepare_audio_pairs(
     Args:
         bucket_baseline: Baseline bucket data.
         bucket_candidate: Candidate bucket data.
-        bucket_structure: Bucket naming and path conventions used to resolve the reference audio files.
+        bucket_structure: Bucket naming and path conventions used to resolve the matching target and
+            context audio files.
         used_benchmarks: Benchmark names to include in the audio report.
         samples_per_benchmark: Maximum number of audio pairs to sample per benchmark.
 

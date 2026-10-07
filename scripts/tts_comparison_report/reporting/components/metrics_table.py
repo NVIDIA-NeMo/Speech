@@ -70,6 +70,8 @@ def prepare_benchmark_metrics_table_rows(
 
     Returns:
         Table rows containing metric names and formatted baseline/candidate values.
+        Metrics restricted to a context type are omitted for benchmarks generated
+        with a different context type.
 
     Raises:
         ValueError: If a required metric is missing for the benchmark.
@@ -77,6 +79,9 @@ def prepare_benchmark_metrics_table_rows(
     rows = []
 
     for metric in MetricsRegistry:
+        if not bucket_baseline.has_context_type(metric.context_type, benchmark_name):
+            continue
+
         a = bucket_baseline.get_metric_avg_value(
             metric_name=metric.key,
             benchmark_name=benchmark_name,
@@ -89,7 +94,7 @@ def prepare_benchmark_metrics_table_rows(
         if a is None or b is None:
             if metric.optional:
                 continue
-            raise ValueError(f"Unknown metric '{metric.key}' for benchmark '{benchmark_name}'.")
+            raise ValueError(f"Metric '{metric.key}' is missing or NaN for benchmark '{benchmark_name}'.")
 
         a_str, b_str = _format_metric_values(a, b, metric)
 
@@ -110,7 +115,9 @@ def prepare_summary_metrics_table_rows(
 
     Returns:
         Table rows containing metric names and formatted macro-averaged
-        baseline/candidate values.
+        baseline/candidate values. Metrics restricted to a context type are
+        averaged over benchmarks with that context type only and omitted when
+        no such benchmark is present.
 
     Raises:
         ValueError: If a required metric is missing for any benchmark included
@@ -122,10 +129,15 @@ def prepare_summary_metrics_table_rows(
         if not metric.include_in_summary:
             continue
 
+        benchmark_names = bucket_baseline.get_benchmark_names(metric.context_type)
+
+        if not benchmark_names:
+            continue
+
         a_vals, b_vals = [], []
         skip = False
 
-        for benchmark_name in bucket_baseline.benchmarks:
+        for benchmark_name in benchmark_names:
             a = bucket_baseline.get_metric_avg_value(
                 metric_name=metric.key,
                 benchmark_name=benchmark_name,
@@ -139,7 +151,7 @@ def prepare_summary_metrics_table_rows(
                 if metric.optional:
                     skip = True
                     break
-                raise ValueError(f"Unknown metric '{metric.key}' for benchmark '{benchmark_name}'.")
+                raise ValueError(f"Metric '{metric.key}' is missing or NaN for benchmark '{benchmark_name}'.")
 
             a_vals.append(a)
             b_vals.append(b)

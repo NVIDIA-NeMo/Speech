@@ -14,9 +14,6 @@
 from dataclasses import dataclass
 from typing import BinaryIO, Optional
 
-import boto3
-from botocore.config import Config
-
 from scripts.tts_comparison_report.reporting.constants import S3_SIGNATURE_VERSION
 
 
@@ -40,6 +37,10 @@ class S3Client:
         aws_access_key_id: str,
         aws_secret_access_key: str,
     ) -> None:
+        # Imported here so that the report package can be imported (and unit-tested) without boto3 installed.
+        import boto3
+        from botocore.config import Config
+
         self.cfg = cfg
         config = Config(
             connect_timeout=cfg.connect_timeout,

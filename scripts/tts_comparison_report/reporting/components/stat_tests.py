@@ -18,11 +18,16 @@ from typing import Optional
 
 from scipy.stats import mannwhitneyu
 from scripts.tts_comparison_report.reporting.constants import P_VAL_ROUND_DIGITS
-from scripts.tts_comparison_report.reporting.metrics import DistributionMetricsRegistry
+from scripts.tts_comparison_report.reporting.metrics import DistributionMetricSpec, DistributionMetricsRegistry
 from scripts.tts_comparison_report.reporting.models import BucketData, StatTestAnalysisInfo, StatTestResult, Winner
 
 
 _SIGNIFICANCE_LEVEL: float = 0.05
+
+# Appended to every warning about an optional distribution metric that is skipped as unavailable.
+_UNAVAILABLE_METRIC_HINT: str = (
+    "Filewise metrics written before the field was saved per file lack it; re-run the evaluation to include it."
+)
 
 
 class _Alternative(str, Enum):
@@ -98,22 +103,34 @@ def run_stat_tests(
             across all benchmarks.
 
     Returns:
-        List of StatTestResult instances for configured distribution metrics.
+        List of StatTestResult instances for configured distribution metrics. Metrics
+        restricted to a context type are skipped when the benchmark scope contains no
+        benchmark generated with that context type. Optional metrics are skipped with a
+        warning when, in either bucket, the key is absent from the filewise metrics of a
+        benchmark in the scope (see `BucketData.has_metric_samples`); the pooled scope
+        therefore includes an optional metric only if every benchmark carries it in both buckets.
 
     Raises:
-        ValueError: If metric samples are missing or benchmark data is invalid.
+        ValueError: If a metric has a NaN sample or a key missing from some samples, no sample
+            carries a required metric's key, or benchmark data is invalid.
+        TypeError: If a metric value is not numeric.
     """
     results = []
 
     for metric in DistributionMetricsRegistry:
-        if metric.optional:
-            baseline_has_metric = bucket_baseline.has_metric_samples(metric.key, benchmark_name)
-            candidate_has_metric = bucket_candidate.has_metric_samples(metric.key, benchmark_name)
-            if not baseline_has_metric or not candidate_has_metric:
-                continue
+        if not bucket_baseline.has_context_type(metric.context_type, benchmark_name):
+            continue
 
-        baseline = bucket_baseline.get_metric_samples(metric.key, benchmark_name)
-        candidate = bucket_candidate.get_metric_samples(metric.key, benchmark_name)
+        if metric.optional and not (
+            bucket_baseline.has_metric_samples(metric.key, benchmark_name, metric.context_type)
+            and bucket_candidate.has_metric_samples(metric.key, benchmark_name, metric.context_type)
+        ):
+            message = _format_unavailable_metric_warning(metric, bucket_baseline, bucket_candidate, benchmark_name)
+            warnings.warn(message, stacklevel=2)
+            continue
+
+        baseline = bucket_baseline.get_metric_samples(metric.key, benchmark_name, metric.context_type)
+        candidate = bucket_candidate.get_metric_samples(metric.key, benchmark_name, metric.context_type)
         winner, alternative, p_value = _run_single_stat_test(
             baseline=baseline,
             candidate=candidate,
@@ -196,4 +213,47 @@ def prepare_stat_tests_analysis_info(
     return StatTestAnalysisInfo(
         winner=winner,
         advantages=advantages,
+    )
+
+
+def _format_unavailable_metric_warning(
+    metric: DistributionMetricSpec,
+    bucket_baseline: BucketData,
+    bucket_candidate: BucketData,
+    benchmark_name: Optional[str],
+) -> str:
+    buckets = (bucket_baseline, bucket_candidate)
+
+    if benchmark_name is not None:
+        reasons = []
+
+        for bucket in buckets:
+            reason = bucket.describe_unavailable_metric(metric.key, benchmark_name)
+
+            if reason is not None:
+                reasons.append(f"{reason} in bucket '{bucket.name}'")
+
+        joined_reasons = "; ".join(reasons)
+        return (
+            f"Skipping the statistical test for metric '{metric.key}' on benchmark '{benchmark_name}': "
+            f"{joined_reasons}. {_UNAVAILABLE_METRIC_HINT}"
+        )
+
+    # Benchmark names in discovery order, deduplicated across both buckets.
+    in_scope: list[str] = []
+    unavailable: list[str] = []
+
+    for bucket in buckets:
+        for name in bucket.get_benchmark_names(metric.context_type):
+            if name not in in_scope:
+                in_scope.append(name)
+
+            if name not in unavailable and bucket.describe_unavailable_metric(metric.key, name) is not None:
+                unavailable.append(name)
+
+    joined_names = ", ".join(unavailable)
+    return (
+        f"Skipping the pooled statistical test for metric '{metric.key}': "
+        f"unavailable for {len(unavailable)} of {len(in_scope)} benchmarks ({joined_names}); "
+        f"see the per-benchmark warnings. {_UNAVAILABLE_METRIC_HINT}"
     )

@@ -11,57 +11,81 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 
 
 _ROOT: Path = Path(__file__).parent.parent
 
-# Benchmark names supported by the comparison report pipeline.
-BENCHMARK_META: dict[str, str] = {
-    'libritts': 'en',
-    'riva_en': 'en',
-    'riva_en_hard_sentences': 'en',
-    'riva_en_short_sentences': 'en',
-    'riva_en_qa': 'en',
-    'riva_en_qa_longform': 'en',
-    'King_ASR_sa_diacritics': 'ar',
-    'King_ASR_sa_no_diacritics': 'ar',
-    'King_ASR_uae_diacritics': 'ar',
-    'King_ASR_uae_no_diacritics': 'ar',
-    'cmltts_de': 'de',
-    'cmltts_es': 'es',
-    'cmltts_fr': 'fr',
-    'AI4bharat': 'hi',
-    'cmltts_it': 'it',
-    'jvs_jsut': 'ja',
-    'F5I9N7A1': 'ko',
-    'cmltts_pt': 'pt',
-    'vivos': 'vi',
-    'mscenespeech': 'zh',
-    'ar_MSA_qa_ct_text': 'ar',
-    'ar_MSA_qa': 'ar',
-    'de_qa_ct_text': 'de',
-    'de_qa': 'de',
-    'es_qa_ct_text': 'es',
-    'es_qa': 'es',
-    'fr_qa_ct_text': 'fr',
-    'fr_qa': 'fr',
-    'it_qa_ct_text': 'it',
-    'it_qa': 'it',
-    'ja_qa_ct_text': 'ja',
-    'ja_qa': 'ja',
-    'ko_qa_ct_text': 'ko',
-    'ko_qa': 'ko',
-    'pt_qa_ct_text': 'pt',
-    'pt_qa': 'pt',
-    'vi_qa_ct_text': 'vi',
-    'vi_qa': 'vi',
-    'zh_qa_ct_text': 'zh',
-    'zh_qa': 'zh',
-    'hi_qa_ct_text': 'hi',
-    'hi_qa': 'hi',
-    'hi_qa_expanded_pronunciation_ct_text': 'hi',
-    'hi_qa_expanded_pronunciation': 'hi',
+
+class ContextType(str, Enum):
+    """Type of speaker context the model was conditioned on when a benchmark was generated."""
+
+    # Speaker identity was conditioned on a context audio prompt.
+    audio = "audio"
+    # Speaker identity was conditioned on a text description; no context audio exists.
+    text = "text"
+
+
+@dataclass(frozen=True)
+class BenchmarkMeta:
+    """Static metadata of a benchmark supported by the comparison report pipeline."""
+
+    # Language code used in results directory names and report navigation.
+    lang: str
+    # Context type used when the benchmark was generated. Metrics that compare generated
+    # audio against the context audio are reported only for audio-context benchmarks.
+    context_type: ContextType = ContextType.audio
+
+
+# Benchmarks supported by the comparison report pipeline. Benchmark names ending with
+# '_ct_text' were generated with text context and therefore have no context audio.
+BENCHMARK_META: dict[str, BenchmarkMeta] = {
+    'libritts': BenchmarkMeta('en'),
+    'riva_en': BenchmarkMeta('en'),
+    'riva_en_hard_sentences': BenchmarkMeta('en'),
+    'riva_en_short_sentences': BenchmarkMeta('en'),
+    'riva_en_qa': BenchmarkMeta('en'),
+    'riva_en_qa_longform': BenchmarkMeta('en'),
+    'King_ASR_sa_diacritics': BenchmarkMeta('ar'),
+    'King_ASR_sa_no_diacritics': BenchmarkMeta('ar'),
+    'King_ASR_uae_diacritics': BenchmarkMeta('ar'),
+    'King_ASR_uae_no_diacritics': BenchmarkMeta('ar'),
+    'cmltts_de': BenchmarkMeta('de'),
+    'cmltts_es': BenchmarkMeta('es'),
+    'cmltts_fr': BenchmarkMeta('fr'),
+    'AI4bharat': BenchmarkMeta('hi'),
+    'cmltts_it': BenchmarkMeta('it'),
+    'jvs_jsut': BenchmarkMeta('ja'),
+    'F5I9N7A1': BenchmarkMeta('ko'),
+    'cmltts_pt': BenchmarkMeta('pt'),
+    'vivos': BenchmarkMeta('vi'),
+    'mscenespeech': BenchmarkMeta('zh'),
+    'ar_MSA_qa_ct_text': BenchmarkMeta('ar', ContextType.text),
+    'ar_MSA_qa': BenchmarkMeta('ar'),
+    'de_qa_ct_text': BenchmarkMeta('de', ContextType.text),
+    'de_qa': BenchmarkMeta('de'),
+    'es_qa_ct_text': BenchmarkMeta('es', ContextType.text),
+    'es_qa': BenchmarkMeta('es'),
+    'fr_qa_ct_text': BenchmarkMeta('fr', ContextType.text),
+    'fr_qa': BenchmarkMeta('fr'),
+    'it_qa_ct_text': BenchmarkMeta('it', ContextType.text),
+    'it_qa': BenchmarkMeta('it'),
+    'ja_qa_ct_text': BenchmarkMeta('ja', ContextType.text),
+    'ja_qa': BenchmarkMeta('ja'),
+    'ko_qa_ct_text': BenchmarkMeta('ko', ContextType.text),
+    'ko_qa': BenchmarkMeta('ko'),
+    'pt_qa_ct_text': BenchmarkMeta('pt', ContextType.text),
+    'pt_qa': BenchmarkMeta('pt'),
+    'vi_qa_ct_text': BenchmarkMeta('vi', ContextType.text),
+    'vi_qa': BenchmarkMeta('vi'),
+    'zh_qa_ct_text': BenchmarkMeta('zh', ContextType.text),
+    'zh_qa': BenchmarkMeta('zh'),
+    'hi_qa_ct_text': BenchmarkMeta('hi', ContextType.text),
+    'hi_qa': BenchmarkMeta('hi'),
+    'hi_qa_expanded_pronunciation_ct_text': BenchmarkMeta('hi', ContextType.text),
+    'hi_qa_expanded_pronunciation': BenchmarkMeta('hi'),
 }
 
 SUPPORTED_BENCHMARK_NAMES: list[str] = list(BENCHMARK_META.keys())

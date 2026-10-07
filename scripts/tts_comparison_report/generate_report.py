@@ -15,10 +15,8 @@ import logging
 import os
 from argparse import ArgumentParser, RawDescriptionHelpFormatter
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
-from paramiko import AutoAddPolicy, SSHClient
-from paramiko.sftp_client import SFTPClient
 from scripts.tts_comparison_report.reporting import (
     DUMMY_TASK_ID,
     SUPPORTED_BENCHMARK_NAMES,
@@ -32,6 +30,12 @@ from scripts.tts_comparison_report.reporting import (
     S3Config,
     SFTPStorage,
 )
+from scripts.tts_comparison_report.reporting.constants import BENCHMARK_META, ContextType
+
+if TYPE_CHECKING:
+    # paramiko is only needed for remote buckets; it is imported lazily when remote access is requested.
+    # SSHClient is not imported here: main() imports it at runtime, and that binding serves its annotation.
+    from paramiko.sftp_client import SFTPClient
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logging.captureWarnings(True)
@@ -169,6 +173,12 @@ def _validate_audio_report_benchmarks(
         if name not in supported_set:
             raise ValueError(f"Benchmark name for audio report '{name}' is not included in evaluation benchmarks.")
 
+        if BENCHMARK_META[name].context_type != ContextType.audio:
+            raise ValueError(
+                f"Benchmark '{name}' was generated with text context and has no context audio, "
+                "so it cannot be included in the audio report."
+            )
+
 
 def main() -> None:
     """Parse CLI arguments, generate comparison reports, and upload them to S3.
@@ -196,8 +206,8 @@ def main() -> None:
 
     storage: BaseStorage
     s3_client: Optional[S3Client] = None
-    ssh_client: Optional[SSHClient] = None
-    sftp: Optional[SFTPClient] = None
+    ssh_client: Optional["SSHClient"] = None
+    sftp: Optional["SFTPClient"] = None
     eval_report_url: Optional[str] = None
     audio_report_url: Optional[str] = None
     audio_report_benchmarks: Optional[list[str]] = None
@@ -257,6 +267,8 @@ def main() -> None:
                 raise ValueError(f"Environment variable '{_REMOTE_PASSWORD}' is not set.")
 
             logger.info(f"\nSetting remote connection with host: {args.remote_hostname}")
+
+            from paramiko import AutoAddPolicy, SSHClient
 
             ssh_client = SSHClient()
             ssh_client.set_missing_host_key_policy(policy=AutoAddPolicy())

@@ -19,6 +19,7 @@ Walks a NeMo dataloading config (``input_cfg`` YAML, including nested ``group``
 entries and per-entry YAML references), discovers every JSONL/tar file an
 indexed dataloader will need, and creates the corresponding ``.idx`` sidecars
 next to each data file.
+Gzip JSONL also creates a ``.gzidx`` seek-index companion.
 
 Two tar layouts are dispatched correctly:
 
@@ -71,6 +72,7 @@ from nemo.collections.common.data.lhotse.indexed_adapters import (
     wds_v2_metadata_path,
 )
 from nemo.collections.common.data.lhotse.nemo_adapters import expand_sharded_filepaths
+from nemo.collections.common.data.lhotse.nemo_tar_routing import _open_indexed_manifest_path
 from nemo.collections.common.data.lhotse.wds_catalog import discover_webdataset_shards
 
 # --------------------------------------------------------------------------- #
@@ -400,7 +402,7 @@ def discover(
 
 
 def _discover_shar(shar_path, jobs: list[IndexJob], indexes_root: Optional[str]) -> None:
-    """Index every uncompressed JSONL/tar shard inside one or more Shar dirs."""
+    """Index every JSONL/tar shard inside one or more Shar dirs."""
     if shar_path is None:
         return
     if isinstance(shar_path, (str, Path)):
@@ -417,7 +419,7 @@ def _discover_shar(shar_path, jobs: list[IndexJob], indexes_root: Optional[str])
         for v in shar_path.values():
             for raw in _flatten_path_spec(v):
                 for p in expand_sharded_filepaths(raw):
-                    if p.endswith(".jsonl"):
+                    if p.endswith((".jsonl", ".jsonl.gz")):
                         jobs.append(IndexJob(p, JSONL, indexes_root))
                     elif p.endswith(".tar"):
                         jobs.append(IndexJob(p, WDS_TAR, indexes_root))
@@ -430,7 +432,7 @@ def _discover_shar(shar_path, jobs: list[IndexJob], indexes_root: Optional[str])
         if not d.is_dir():
             continue
         for p in sorted(d.iterdir()):
-            if p.suffix == ".jsonl":
+            if p.name.endswith((".jsonl", ".jsonl.gz")):
                 jobs.append(IndexJob(str(p), JSONL, indexes_root))
             elif p.suffix == ".tar":
                 jobs.append(IndexJob(str(p), WDS_TAR, indexes_root))
@@ -444,6 +446,10 @@ def _discover_shar(shar_path, jobs: list[IndexJob], indexes_root: Optional[str])
 def _remove_sidecars_for_rebuild(job: IndexJob) -> None:
     idx_path = Path(job.idx_path())
     idx_path.unlink(missing_ok=True)
+    if job.kind == JSONL and job.path.endswith((".jsonl.gz", ".json.gz")):
+        from lhotse.indexing import gzip_index_file_path
+
+        Path(gzip_index_file_path(job.path, index_path=idx_path)).unlink(missing_ok=True)
     if job.kind == WDS_TAR_V2:
         wds_v2_metadata_path(idx_path).unlink(missing_ok=True)
 
@@ -510,13 +516,24 @@ def _validate_legacy_sidecar(job: IndexJob) -> None:
         raise ValueError(f"Index contains no source-size sentinel: {idx_path}")
     if offsets.shape[0] > 1 and (offsets[1:] < offsets[:-1]).any():
         raise ValueError(f"Index offsets are not monotonic: {idx_path}")
-    source_size = _source_size(job.path)
+    gzip_jsonl = job.kind == JSONL and job.path.endswith((".jsonl.gz", ".json.gz"))
+    if gzip_jsonl:
+        from lhotse.indexing import gzip_index_file_path
+
+        seek_index_path = gzip_index_file_path(job.path, index_path=idx_path)
+        with _open_indexed_manifest_path(job.path, idx_path) as source:
+            source_size = source.seek(0, os.SEEK_END)
+    else:
+        source_size = _source_size(job.path)
     if int(offsets[-1]) != source_size:
         raise ValueError(f"Index sentinel mismatch for {job.path}: index={int(offsets[-1])}, source={source_size}")
 
     if not job.path.startswith(("ais://", "s3://")):
         source_stat = Path(job.path).stat()
-        if source_stat.st_mtime_ns > idx_path.stat().st_mtime_ns:
+        index_mtime = idx_path.stat().st_mtime_ns
+        if gzip_jsonl:
+            index_mtime = min(index_mtime, Path(seek_index_path).stat().st_mtime_ns)
+        if source_stat.st_mtime_ns > index_mtime:
             raise ValueError(f"Indexed source is newer than sidecar: {job.path}")
 
 

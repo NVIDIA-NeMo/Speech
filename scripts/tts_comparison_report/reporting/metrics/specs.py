@@ -35,7 +35,7 @@ class MetricSpec:
     multiplier: float | int = 1
     # Whether this metric should appear in the cross-benchmark summary table.
     include_in_summary: bool = True
-    # Whether this metric may be absent from bucket metrics without causing an error.
+    # Whether this metric may be absent (or NaN) in the aggregated metrics without causing an error.
     optional: bool = False
     # Context type a benchmark must have been generated with for this metric to be reported;
     # None means the metric is reported for every benchmark.

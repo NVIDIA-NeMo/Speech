@@ -29,7 +29,7 @@ EVALUATE_MODULE = "nemo.collections.tts.modules.magpietts_inference.evaluate_gen
 def test_evaluate_keeps_pred_gt_ssim_in_the_filewise_metrics(monkeypatch):
     """The comparison report reads the per-file ground-truth SSIM, so it must survive the saved-metrics filter."""
     nan = float("nan")
-    # One row with ground-truth audio and one text-context row without it (the evaluator writes NaN per row).
+    # One complete row and one row without ground-truth or context audio (the evaluator writes NaN for both SSIMs).
     rows = [
         _filewise_row(pred_gt_ssim=0.81, pred_context_ssim=0.42),
         _filewise_row(pred_gt_ssim=nan, pred_context_ssim=nan, pred_audio_filepath="pred_1.wav"),

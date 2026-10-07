@@ -160,7 +160,7 @@ def _text_benchmark(
 
 
 def _nan_gt_ssim_benchmark(offset: float) -> BenchmarkData:
-    """Audio-context benchmark with NaN ground-truth SSIM, i.e. a broken evaluation (every dataset has GT audio)."""
+    """Audio-context benchmark with NaN ground-truth SSIM, i.e. a broken evaluation (every benchmark has GT audio)."""
     return _audio_benchmark(offset, gt_ssim=[float("nan")] * NUM_SAMPLES, gt_ssim_avg=float("nan"))
 
 

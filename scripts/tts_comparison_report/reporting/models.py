@@ -562,7 +562,7 @@ class BucketData:
         Raises:
             ValueError: If the benchmark is unknown or does not have the requested context type,
                 no benchmark has the requested context type, filewise metrics are not loaded,
-                or the metric is missing.
+                the metric is missing, or any sample is NaN.
             TypeError: If any metric value is not numeric.
         """
         if benchmark_name is None:
@@ -581,8 +581,8 @@ class BucketData:
         """Return why a metric is unavailable for a benchmark, or `None` if every sample carries a non-NaN value.
 
         A metric is unavailable only when no filewise metrics item carries the key, which is the
-        case for artifacts written before the metric was saved per file. Every evaluation dataset
-        has the reference audio the per-file metrics need, so a key that is present in some items
+        case for artifacts written before the metric was saved per file. Every benchmark has the
+        ground-truth audio the per-file metrics need, so a key that is present in some items
         only, or a NaN value, indicates a broken evaluation or manifest and is an error.
 
         Args:

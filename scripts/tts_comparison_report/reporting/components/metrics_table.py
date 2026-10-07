@@ -74,7 +74,7 @@ def prepare_benchmark_metrics_table_rows(
         with a different context type.
 
     Raises:
-        ValueError: If a required metric is missing for the benchmark.
+        ValueError: If a required metric is missing or NaN for the benchmark.
     """
     rows = []
 
@@ -120,7 +120,7 @@ def prepare_summary_metrics_table_rows(
         no such benchmark is present.
 
     Raises:
-        ValueError: If a required metric is missing for any benchmark included
+        ValueError: If a required metric is missing or NaN for any benchmark included
             in the summary.
     """
     rows = []

@@ -194,12 +194,12 @@ reported only for benchmarks generated with audio context. In the summary sectio
 macro-averaged and pooled across audio-context benchmarks only, and they are omitted from the
 sections of text-context benchmarks (names ending with `_ct_text`).
 - `SSIM (pred vs GT)` (speaker similarity against the ground-truth recording) does not depend on the
-context type, so it is reported for text-context benchmarks as well. Every evaluation dataset has
+context type, so it is reported for text-context benchmarks as well. Every benchmark has
 ground-truth audio, so a NaN value, aggregated or per file, fails the report: it indicates a broken
 evaluation or manifest. Filewise metrics written before `pred_gt_ssim` was saved per file lack the key;
 such benchmarks keep the metrics-table row (from the aggregated value) but skip the statistical test and
-the box plot with a warning, and the pooled summary includes the metric only when every benchmark carries
-it in both buckets. Re-run the evaluation to include them.
+the box plot with a warning, and the pooled statistical test of the summary section includes the metric only
+when every benchmark carries it in both buckets. Re-run the evaluation to include them.
 - Text-context benchmarks have no context audio, so they cannot be listed in
 `--audio_report_benchmarks`. They can still be part of `--benchmarks` when `--audio_report` is enabled;
 audio discovery is skipped for them.
@@ -231,12 +231,13 @@ To add or remove a metric, update the metric registries in `reporting/metrics/re
 - `DistributionMetricsRegistry` - for metrics used in statistical tests and visualizations.
 
 Two spec attributes control when a metric is reported:
-- `optional` - the metric key may be absent: from the filewise metrics for `DistributionMetricsRegistry`
-entries (`pred_gt_ssim` in artifacts written before it was saved per file), or from the aggregated metrics
-JSON for `MetricsRegistry` entries (no current entry). Benchmarks without the key are skipped, with a
-warning for distribution metrics, and the pooled statistical test includes the metric only when every
-benchmark carries it in both buckets. A key present in some samples only, or any NaN value, fails the
-report, optional or not. Metrics without `optional` also fail the report when the key is missing.
+- `optional` - the metric key may be absent. For `MetricsRegistry` entries (the four `eou_*_rate` metrics)
+an absent or NaN aggregated value skips the row. For `DistributionMetricsRegistry` entries (`pred_gt_ssim`, in
+artifacts written before it was saved per file) a key absent from every sample skips the statistical test and
+the box plot with a warning, and the pooled statistical test of the summary section includes the metric only
+when every benchmark carries it in both buckets; a key present in some samples only, or any NaN value, fails
+the report. Metrics without `optional` fail the report when the aggregated value is missing or NaN, when no
+sample carries the key, or when any sample is NaN.
 - `context_type` - the metric is reported only for benchmarks generated with this context type.
 `ssim_pred_context_avg` and `pred_context_ssim` are restricted to `ContextType.audio`: they are
 omitted from text-context benchmark sections, and the summary table and pooled statistical tests

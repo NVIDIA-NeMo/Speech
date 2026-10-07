@@ -49,6 +49,7 @@ def _collect_audio_pairs(
 
         pair = AudioPair(
             context_path=baseline_meta[name].context_path,
+            target_path=baseline_meta[name].target_path,
             baseline_path=baseline_paths[name],
             candidate_path=candidate_paths[name],
             text=baseline_meta[name].gt_text,
@@ -69,14 +70,18 @@ def prepare_audio_pairs(
 ) -> dict[str, list[AudioPair]]:
     """Prepare audio pairs for the selected benchmarks.
 
+    Each pair holds, for one utterance, the context prompt (audio-context benchmarks), the target
+    recording, and the baseline and candidate samples.
+
     Args:
         bucket_baseline: Baseline bucket data.
         bucket_candidate: Candidate bucket data.
+        bucket_structure: Bucket naming and path conventions used to resolve the reference audio files.
         used_benchmarks: Benchmark names to include in the audio report.
         samples_per_benchmark: Maximum number of audio pairs to sample per benchmark.
 
     Returns:
-        Mapping from benchmark name to sampled baseline/candidate audio pairs.
+        Mapping from benchmark name to sampled audio pairs.
 
     Raises:
         ValueError: If benchmark audio sets or sample metadata are inconsistent.

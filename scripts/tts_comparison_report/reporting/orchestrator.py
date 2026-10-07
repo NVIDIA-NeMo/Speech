@@ -27,6 +27,7 @@ from scripts.tts_comparison_report.reporting.constants import (
     S3_IMAGES_DIR,
     S3_LINK_EXPIRES_IN,
     TQDM_NCOLS,
+    ContextType,
 )
 from scripts.tts_comparison_report.reporting.helpers import generate_s3_prefix, make_expiration_info, make_task_info
 from scripts.tts_comparison_report.reporting.models import (
@@ -151,9 +152,16 @@ class Orchestrator:
             benchmark_info = []
 
             for i, pair in enumerate(audio_pairs[benchmark_name]):
-                context_url = self._upload_audio_file(
-                    path=pair.context_path,
-                    key=f"{s3_prefix}/{S3_AUDIO_DIR}/context_{benchmark_name}_{i}.wav",
+                context_url = None
+
+                if pair.context_path is not None:
+                    context_url = self._upload_audio_file(
+                        path=pair.context_path,
+                        key=f"{s3_prefix}/{S3_AUDIO_DIR}/context_{benchmark_name}_{i}.wav",
+                    )
+                target_url = self._upload_audio_file(
+                    path=pair.target_path,
+                    key=f"{s3_prefix}/{S3_AUDIO_DIR}/target_{benchmark_name}_{i}.wav",
                 )
                 baseline_url = self._upload_audio_file(
                     path=pair.baseline_path,
@@ -165,6 +173,7 @@ class Orchestrator:
                 )
                 pair_info = UploadedAudioPairInfo(
                     context_url=context_url,
+                    target_url=target_url,
                     baseline_url=baseline_url,
                     candidate_url=candidate_url,
                     text=pair.text,
@@ -248,12 +257,14 @@ class Orchestrator:
         benchmark_blocks, benchmark_section_info = [], []
 
         for benchmark_name in used_benchmarks:
+            has_context = BENCHMARK_META[benchmark_name].context_type == ContextType.audio
             pair_blocks = []
 
             for pair in uploaded_audio_info[benchmark_name]:
                 block = self.renderer.render(
                     name=TemplateName.audio_report_pair,
                     context_url=pair.context_url,
+                    target_url=pair.target_url,
                     baseline_url=pair.baseline_url,
                     candidate_url=pair.candidate_url,
                     text=pair.text,
@@ -264,6 +275,7 @@ class Orchestrator:
                 name=TemplateName.audio_report_block,
                 title=benchmark_name,
                 section_id=benchmark_name,
+                has_context=has_context,
                 baseline_name=baseline_name,
                 candidate_name=candidate_name,
                 pair_blocks=pair_blocks,

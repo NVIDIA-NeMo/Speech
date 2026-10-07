@@ -30,7 +30,6 @@ from scripts.tts_comparison_report.reporting import (
     S3Config,
     SFTPStorage,
 )
-from scripts.tts_comparison_report.reporting.constants import BENCHMARK_META, ContextType
 
 if TYPE_CHECKING:
     # paramiko is only needed for remote buckets; it is imported lazily when remote access is requested.
@@ -128,7 +127,10 @@ def _create_argparser() -> ArgumentParser:
     parser.add_argument(
         "--audio_report",
         action='store_true',
-        help="Generate additional report with side-by-side audio comparison.",
+        help=(
+            "Generate additional report with side-by-side audio comparison: the target recording, the baseline and "
+            "candidate samples and, for audio-context benchmarks, the context audio prompt."
+        ),
     )
     parser.add_argument(
         "--audio_report_benchmarks",
@@ -172,12 +174,6 @@ def _validate_audio_report_benchmarks(
     for name in audio_report_benchmarks:
         if name not in supported_set:
             raise ValueError(f"Benchmark name for audio report '{name}' is not included in evaluation benchmarks.")
-
-        if BENCHMARK_META[name].context_type != ContextType.audio:
-            raise ValueError(
-                f"Benchmark '{name}' was generated with text context and has no context audio, "
-                "so it cannot be included in the audio report."
-            )
 
 
 def main() -> None:

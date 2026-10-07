@@ -1,8 +1,15 @@
 <div class="audio-pair-card">
   <div class="audio-pair-row">
+    {% if context_url is not none %}
     <div class="audio-cell">
       <audio controls preload="metadata">
       <source src="{{ context_url }}" type="audio/wav">
+      </audio>
+    </div>
+    {% endif %}
+    <div class="audio-cell">
+      <audio controls preload="metadata">
+      <source src="{{ target_url }}" type="audio/wav">
       </audio>
     </div>
     <div class="audio-cell">

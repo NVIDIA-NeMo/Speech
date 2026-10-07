@@ -40,26 +40,50 @@ class BucketStructure:
     metrics_filewise_suffix: str = "_filewise_metrics_0.json"
     context_audio_dir: str = "audio/repeat_0"
     context_audio_prefix: str = "context_audio_"
+    target_audio_dir: str = "audio/repeat_0"
+    target_audio_prefix: str = "target_audio_"
     generated_audio_dir: str = "audio/repeat_0"
     generated_audio_prefix: str = "predicted_audio_"
 
 
-def _map_generated_to_context_name(
+def _map_generated_to_reference_name(
     generated_name: str,
     generated_prefix: str,
-    context_prefix: str,
+    reference_prefix: str,
 ) -> str:
     suffix = generated_name.split(generated_prefix)[-1]
-    return f"{context_prefix}{suffix}"
+    return f"{reference_prefix}{suffix}"
+
+
+def _get_reference_audio_path(
+    sample_name: str,
+    reference_audio_paths: dict[str, Path],
+    generated_prefix: str,
+    reference_prefix: str,
+    kind: str,
+) -> Path:
+    key = _map_generated_to_reference_name(
+        generated_name=sample_name,
+        generated_prefix=generated_prefix,
+        reference_prefix=reference_prefix,
+    )
+    if key not in reference_audio_paths:
+        raise ValueError(f"Missing {kind} audio '{key}' for sample '{sample_name}'.")
+
+    return reference_audio_paths[key]
 
 
 @dataclass(frozen=True)
 class BenchmarkSampleMeta:
-    """Metadata describing one generated sample within a benchmark."""
+    """Metadata describing one generated sample within a benchmark.
+
+    `context_path` is `None` for samples of text-context benchmarks, which have no context audio prompt.
+    """
 
     name: str
     gt_text: str
-    context_path: Path
+    target_path: Path
+    context_path: Optional[Path]
     sample_id: str
 
     @staticmethod
@@ -70,43 +94,63 @@ class BenchmarkSampleMeta:
 
     @staticmethod
     def _get_sample_id(item: dict[str, Any]) -> str:
-        parts = [item["gt_audio_filepath"], item["context_audio_filepath"]]
+        # Text-context rows carry a null context path; `str` keeps the id defined for them as well.
+        parts = [str(item.get("gt_audio_filepath")), str(item.get("context_audio_filepath"))]
         return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
     @classmethod
     def create(
         cls,
         item: dict[str, Any],
+        target_audio_paths: dict[str, Path],
         context_audio_paths: dict[str, Path],
         bucket_structure: BucketStructure,
+        with_context: bool,
     ) -> Self:
         """Create sample metadata from one filewise metrics item.
 
         Args:
             item: One entry from the filewise metrics JSON.
-            context_audio_paths: Mapping from context audio file name to its path.
+            target_audio_paths: Mapping from target audio file name to its path.
+            context_audio_paths: Mapping from context audio file name to its path. Used only when
+                `with_context` is set.
             bucket_structure: Bucket naming and path conventions.
+            with_context: Whether the sample has a context audio prompt, i.e. whether the benchmark
+                was generated with audio context.
 
         Returns:
             Sample metadata extracted from the given filewise metrics item.
 
         Raises:
-            ValueError: If required keys are missing from the item.
-            KeyError: If the corresponding context audio file is not found.
+            ValueError: If required keys are missing from the item, or if the target audio file or,
+                when `with_context` is set, the context audio file of the sample is not found.
         """
         cls._validate(item)
 
         name = Path(item["pred_audio_filepath"]).stem
 
-        key = _map_generated_to_context_name(
-            generated_name=name,
+        target_path = _get_reference_audio_path(
+            sample_name=name,
+            reference_audio_paths=target_audio_paths,
             generated_prefix=bucket_structure.generated_audio_prefix,
-            context_prefix=bucket_structure.context_audio_prefix,
+            reference_prefix=bucket_structure.target_audio_prefix,
+            kind="target",
         )
+        context_path = None
+
+        if with_context:
+            context_path = _get_reference_audio_path(
+                sample_name=name,
+                reference_audio_paths=context_audio_paths,
+                generated_prefix=bucket_structure.generated_audio_prefix,
+                reference_prefix=bucket_structure.context_audio_prefix,
+                kind="context",
+            )
         obj = cls(
             name=name,
             gt_text=item["gt_text"],
-            context_path=context_audio_paths[key],
+            target_path=target_path,
+            context_path=context_path,
             sample_id=cls._get_sample_id(item),
         )
         return obj
@@ -117,6 +161,7 @@ def _collect_audio_paths(
     prefix: str,
     audio_paths: dict[str, Path],
     storage: BaseStorage,
+    kind: str,
 ) -> None:
     if not storage.exists(root):
         raise FileNotFoundError(f"Missing audio directory: '{root}'.")
@@ -126,20 +171,29 @@ def _collect_audio_paths(
             continue
         audio_paths[p.stem] = p
 
+    if not audio_paths:
+        raise FileNotFoundError(
+            f"No {kind} audio files were found in '{root}'. "
+            "The bucket structure likely differs from the one specified in 'BucketStructure'."
+        )
+
 
 def _validate_audio_pairs(
-    context_audio_paths: dict[str, Path],
+    reference_audio_paths: dict[str, Path],
     generated_audio_paths: dict[str, Path],
-    bucket_structure: BucketStructure,
+    generated_prefix: str,
+    reference_prefix: str,
+    kind: str,
+    location: Path,
 ) -> None:
     for name in generated_audio_paths:
-        key = _map_generated_to_context_name(
+        key = _map_generated_to_reference_name(
             generated_name=name,
-            generated_prefix=bucket_structure.generated_audio_prefix,
-            context_prefix=bucket_structure.context_audio_prefix,
+            generated_prefix=generated_prefix,
+            reference_prefix=reference_prefix,
         )
-        if key not in context_audio_paths:
-            raise ValueError(f"Missing context audio: '{key}'.")
+        if key not in reference_audio_paths:
+            raise ValueError(f"Missing {kind} audio '{key}' for generated sample '{name}' in '{location}'.")
 
 
 @dataclass
@@ -150,6 +204,7 @@ class BenchmarkData:
     metrics_path: Optional[Path] = None
     filewise_metrics_path: Optional[Path] = None
     generated_audio_paths: dict[str, Path] = field(default_factory=dict)
+    target_audio_paths: dict[str, Path] = field(default_factory=dict)
     context_audio_paths: dict[str, Path] = field(default_factory=dict)
 
     metrics: Optional[dict[str, float | None]] = None
@@ -163,6 +218,7 @@ class BenchmarkData:
         bucket_structure: BucketStructure,
         check_audio: bool,
         storage: BaseStorage,
+        context_type: ContextType = ContextType.audio,
     ) -> Self:
         """Create benchmark data by discovering benchmark artifacts in storage.
 
@@ -170,8 +226,11 @@ class BenchmarkData:
             benchmark_name: Name of the benchmark.
             benchmark_path: Path to the benchmark directory inside the evaluation bucket.
             bucket_structure: Bucket naming and path conventions.
-            check_audio: Whether generated audio files should also be discovered.
+            check_audio: Whether audio files should also be discovered: the generated audio, the
+                target recordings and, for audio-context benchmarks, the context audio prompts.
             storage: Storage backend used to access local or remote files.
+            context_type: Context type the benchmark was generated with. Context audio is
+                discovered and required only for `ContextType.audio`.
 
         Returns:
             Benchmark data initialized with discovered artifact paths.
@@ -179,7 +238,8 @@ class BenchmarkData:
         Raises:
             FileNotFoundError: If required metrics files are missing, audio directories
                 are missing, or expected audio files cannot be found.
-            ValueError: If generated audio files do not have matching context audio files.
+            ValueError: If a generated audio file has no matching target audio file or, for
+                audio-context benchmarks, no matching context audio file.
         """
         obj = cls(name=benchmark_name)
 
@@ -195,32 +255,44 @@ class BenchmarkData:
 
         if check_audio:
             _collect_audio_paths(
-                root=benchmark_path / bucket_structure.context_audio_dir,
-                prefix=bucket_structure.context_audio_prefix,
-                audio_paths=obj.context_audio_paths,
-                storage=storage,
-            )
-            if not obj.context_audio_paths:
-                raise FileNotFoundError(
-                    f"No context audio files were found in '{benchmark_path / bucket_structure.context_audio_dir}'. "
-                    "The bucket structure likely differs from the one specified in 'BucketStructure'."
-                )
-            _collect_audio_paths(
                 root=benchmark_path / bucket_structure.generated_audio_dir,
                 prefix=bucket_structure.generated_audio_prefix,
                 audio_paths=obj.generated_audio_paths,
                 storage=storage,
+                kind="generated",
             )
-            if not obj.generated_audio_paths:
-                raise FileNotFoundError(
-                    f"No generated audio files were found in '{benchmark_path / bucket_structure.generated_audio_dir}'. "
-                    "The bucket structure likely differs from the one specified in 'BucketStructure'."
-                )
+            _collect_audio_paths(
+                root=benchmark_path / bucket_structure.target_audio_dir,
+                prefix=bucket_structure.target_audio_prefix,
+                audio_paths=obj.target_audio_paths,
+                storage=storage,
+                kind="target",
+            )
             _validate_audio_pairs(
-                context_audio_paths=obj.context_audio_paths,
+                reference_audio_paths=obj.target_audio_paths,
                 generated_audio_paths=obj.generated_audio_paths,
-                bucket_structure=bucket_structure,
+                generated_prefix=bucket_structure.generated_audio_prefix,
+                reference_prefix=bucket_structure.target_audio_prefix,
+                kind="target",
+                location=benchmark_path / bucket_structure.target_audio_dir,
             )
+
+            if context_type == ContextType.audio:
+                _collect_audio_paths(
+                    root=benchmark_path / bucket_structure.context_audio_dir,
+                    prefix=bucket_structure.context_audio_prefix,
+                    audio_paths=obj.context_audio_paths,
+                    storage=storage,
+                    kind="context",
+                )
+                _validate_audio_pairs(
+                    reference_audio_paths=obj.context_audio_paths,
+                    generated_audio_paths=obj.generated_audio_paths,
+                    generated_prefix=bucket_structure.generated_audio_prefix,
+                    reference_prefix=bucket_structure.context_audio_prefix,
+                    kind="context",
+                    location=benchmark_path / bucket_structure.context_audio_dir,
+                )
         return obj
 
     def load_metrics(self, storage: BaseStorage) -> None:
@@ -301,8 +373,9 @@ class BucketData:
             bucket_path: Path to the bucket root directory.
             bucket_structure: Bucket naming and path conventions.
             benchmark_names: Benchmark names expected in the bucket.
-            check_audio: Whether generated audio files should also be discovered. Audio
-                discovery is skipped for text-context benchmarks, which have no context audio.
+            check_audio: Whether audio files should also be discovered. Generated audio and
+                target recordings are required for every benchmark; context audio prompts are
+                required for audio-context benchmarks only.
             storage: Storage instance used to access local or remote files.
 
         Returns:
@@ -333,8 +406,9 @@ class BucketData:
                 benchmark_name=name,
                 benchmark_path=benchmark_path,
                 bucket_structure=bucket_structure,
-                check_audio=check_audio and BENCHMARK_META[name].context_type == ContextType.audio,
+                check_audio=check_audio,
                 storage=storage,
+                context_type=BENCHMARK_META[name].context_type,
             )
             if obj.configuration_str is None:
                 lang = BENCHMARK_META[name].lang
@@ -701,16 +775,17 @@ class BucketData:
 
         Args:
             benchmark_name: Name of the benchmark.
-            bucket_structure: Bucket naming and path conventions used to resolve
-                matching context audio files.
+            bucket_structure: Bucket naming and path conventions used to resolve the
+                matching target and context audio files.
 
         Returns:
-            Mapping from sample name to benchmark sample metadata.
+            Mapping from sample name to benchmark sample metadata. The context path is
+            `None` for text-context benchmarks.
 
         Raises:
-            ValueError: If the benchmark is unknown, filewise metrics are not loaded,
-                or context audio paths are not loaded.
-            KeyError: If a matching context audio file cannot be found for a sample.
+            ValueError: If the benchmark is unknown, filewise metrics or target audio paths
+                are not loaded, context audio paths are not loaded for an audio-context
+                benchmark, or a sample has no matching target or context audio file.
         """
         if benchmark_name not in self.benchmarks:
             raise ValueError(f"Unknown benchmark: '{benchmark_name}'.")
@@ -720,9 +795,15 @@ class BucketData:
         if not items:
             raise ValueError(f"Filewise metrics not loaded for benchmark: '{benchmark_name}'.")
 
-        paths = self.benchmarks[benchmark_name].context_audio_paths
+        target_paths = self.benchmarks[benchmark_name].target_audio_paths
 
-        if not paths:
+        if not target_paths:
+            raise ValueError(f"Target audio paths not loaded for benchmark: '{benchmark_name}'.")
+
+        with_context = self.get_benchmark_context_type(benchmark_name) == ContextType.audio
+        context_paths = self.benchmarks[benchmark_name].context_audio_paths
+
+        if with_context and not context_paths:
             raise ValueError(f"Context audio paths not loaded for benchmark: '{benchmark_name}'.")
 
         output = {}
@@ -730,8 +811,10 @@ class BucketData:
         for item in items:
             meta = BenchmarkSampleMeta.create(
                 item=item,
-                context_audio_paths=paths,
+                target_audio_paths=target_paths,
+                context_audio_paths=context_paths,
                 bucket_structure=bucket_structure,
+                with_context=with_context,
             )
             output[meta.name] = meta
 
@@ -820,9 +903,13 @@ class UploadedBoxPlotsInfo:
 
 @dataclass(frozen=True)
 class AudioPair:
-    """Matched context, baseline, and candidate audio files for one sample."""
+    """Matched context, target, baseline, and candidate audio files for one sample.
 
-    context_path: Path
+    `context_path` is `None` for text-context benchmarks, which have no context audio prompt.
+    """
+
+    context_path: Optional[Path]
+    target_path: Path
     baseline_path: Path
     candidate_path: Path
     text: str
@@ -830,9 +917,13 @@ class AudioPair:
 
 @dataclass(frozen=True)
 class UploadedAudioPairInfo:
-    """Uploaded context, baseline, and candidate audio URLs for one sample."""
+    """Uploaded context, target, baseline, and candidate audio URLs for one sample.
 
-    context_url: str
+    `context_url` is `None` for text-context benchmarks, which have no context audio prompt.
+    """
+
+    context_url: Optional[str]
+    target_url: str
     baseline_url: str
     candidate_url: str
     text: str

@@ -501,7 +501,21 @@ class BucketData:
         metric_name: str,
         benchmark_name: Optional[str] = None,
     ) -> bool:
-        """Return whether filewise samples contain a metric for the requested benchmark scope."""
+        """Return whether filewise samples contain a metric for the requested benchmark scope.
+
+        Args:
+            metric_name: Name of the metric to check.
+            benchmark_name: Benchmark to check. If omitted, each discovered
+                benchmark is checked independently.
+
+        Returns:
+            True if every selected benchmark has at least one value for the metric
+            that is not a numeric NaN; otherwise False. Returns True when no
+            benchmarks are selected.
+
+        Raises:
+            ValueError: If the benchmark is unknown or filewise metrics are not loaded.
+        """
         benchmark_names = self.benchmarks if benchmark_name is None else [benchmark_name]
 
         for name in benchmark_names:

@@ -332,8 +332,8 @@ class WER(Metric):
             words += len(r_list)
             scores += edit_distance(r_list, h_list)['total']
 
-        self.scores = torch.tensor(scores, device=self.scores.device, dtype=self.scores.dtype)
-        self.words = torch.tensor(words, device=self.words.device, dtype=self.words.dtype)
+        self.scores += torch.tensor(scores, device=self.scores.device, dtype=self.scores.dtype)
+        self.words += torch.tensor(words, device=self.words.device, dtype=self.words.dtype)
         self.hypotheses = hypotheses
         return None
 

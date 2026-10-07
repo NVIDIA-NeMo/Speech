@@ -521,6 +521,7 @@ class TestGroundTruthSsim:
             run_stat_tests(baseline, candidate, AUDIO_BENCHMARK)
 
         # A key missing from some samples is an error too; the test never runs on a reduced distribution.
+        baseline, candidate = _make_buckets(_audio_benchmark)
         del candidate.benchmarks[AUDIO_BENCHMARK].filewise_metrics[1]["utmosv2"]
         with pytest.raises(ValueError, match="'utmosv2'.*missing for sample 'predicted_audio_1.wav'"):
             run_stat_tests(baseline, candidate, AUDIO_BENCHMARK)

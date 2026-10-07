@@ -8,6 +8,8 @@ quadratic_duration: 20
 
 model:
   use_lhotse: true
+  # Keep validation-only scorers and waveform codec modules on CPU between validation epochs.
+  offload_validation_models: true
   
   # Decoder backend selection
   # Options: "huggingface" (default), "nemotron_h"

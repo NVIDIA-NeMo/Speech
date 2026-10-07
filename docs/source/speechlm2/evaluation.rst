@@ -181,6 +181,10 @@ this repository's historical behaviour**, pinned against a snapshot.
 ``cpwer_placement`` (``prefix`` | ``suffix``) and ``cpwer_max_speakers`` are settings rather than
 axes: they describe the data, and no reference scorer has an equivalent.
 
+Structural markers are never scored, whatever the axes: ``<spk_x>`` and ``<|turn_x|>`` (``x`` in
+lowercase letters), such as the turn-start token ``<|turn_start|>`` or the older ``<spk_switch>``,
+open a speaker run but are not words, so they are dropped from the cpWER streams and the WER text.
+
 The normalizer is usually the one that matters. On a 2912-session conversational corpus, switching
 from ``whisper`` to ``chime8`` moved cpWER by 0.50 pp, while flipping all six parser-shaped axes at
 once moved it by 0.0000 pp — that corpus contains no bracket tags, no ``speaker N:`` spellings and

@@ -204,6 +204,68 @@ def test_suffix_placement_drops_the_structural_switch_marker():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("marker", ["<|turn_start|>", "<|turn_end|>"])
+def test_turn_markers_are_not_words(marker):
+    """The turn-start token `<|turn_start|>` (and any `<|turn_x|>`) is a structural marker too."""
+    got = sot_to_speaker_texts(f"{marker} how are you <spk:0> {marker} i am fine <spk:1>", placement='suffix')
+    assert got == {0: "how are you", 1: "i am fine"}
+    assert sot_to_speaker_texts(f"{marker}<spk:0> how are you {marker}<spk:1> i am fine") == got
+    assert remove_speaker_tags(f"{marker} how are you <spk:0>") == "how are you"
+
+
+@pytest.mark.unit
+def test_the_turn_start_token_makes_no_phantom_speaker():
+    """In front of the first tag, `<|turn_start|>` was a word of the default speaker 0: a third, phantom speaker."""
+    ref = "<spk:2> hi there <spk:3> yes"
+    hyp = "<|turn_start|><spk:2> hi there <|turn_start|><spk:3> yes"
+    assert sot_to_speaker_texts(hyp) == {2: "hi there", 3: "yes"}
+    result = CpWER(normalize=False, verbose=False).score_session(ref, hyp)
+    assert (result.cpwer, result.num_hyp_speakers) == (0.0, 2)  # it was (2/3, 3): two inserted words
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("marker", ["<spk_switch>", "<|turn_start|>"])
+def test_a_marker_glued_to_a_word_is_dropped(marker):
+    """A marker with no space before it was scored as part of the word."""
+    text = f"<spk:0> i am fine,{marker} <spk:1> yes{marker}<spk:0> ok"
+    assert sot_to_speaker_texts(text) == {0: "i am fine, ok", 1: "yes"}
+    assert remove_speaker_tags(text) == "i am fine, yes ok"
+    # Glued on both sides, it still separates two words, as in the speaker-agnostic text.
+    assert sot_to_speaker_texts(f"<spk:0> yes{marker}ok") == {0: "yes ok"}
+    assert remove_speaker_tags(f"<spk:0> yes{marker}ok") == "yes ok"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "text,placement",
+    [
+        ("<spk:0> so you need it <spk:1> i <spk:0> very complex <spk:2> yeah", "prefix"),
+        ("so you need it <spk:0> i <spk:1> very complex <spk:0> yeah <spk:2>", "suffix"),
+        (
+            "<spk_switch> so you need it <spk:0> <spk_switch> i <spk:1> "
+            "<spk_switch> very complex <spk:0> <spk_switch> yeah <spk:2>",
+            "suffix",
+        ),
+    ],
+    ids=["prefix", "suffix", "suffix_spk_switch"],
+)
+def test_the_manifest_formats_parse_as_before(text, placement):
+    """The three formats of the manifests in use, each read with its own placement, give the same streams."""
+    assert remove_speaker_tags(text) == "so you need it i very complex yeah"
+    assert sot_to_speaker_texts(text, placement=placement) == {0: "so you need it very complex", 1: "i", 2: "yeah"}
+
+
+@pytest.mark.unit
+def test_the_structural_pattern():
+    from nemo.collections.asr.parts.utils.sot_speaker_alignment import SPEAKER_STRUCTURAL_PATTERN
+
+    for marker in ("<spk_switch>", "<|turn_start|>", "<|turn_end|>"):
+        assert SPEAKER_STRUCTURAL_PATTERN.fullmatch(marker), marker
+    for other in ("<spk:0>", "<|im_start|>", "<|write|>", "<blank>", "<turn_start>", "<|turn_start_2|>", "<|Turn|>"):
+        assert not SPEAKER_STRUCTURAL_PATTERN.search(other), other
+
+
+@pytest.mark.unit
 def test_suffix_placement_orphans_an_unclosed_trailing_run():
     """A run the model never closed falls to `default_speaker`, it does not inherit the previous.
 

@@ -453,6 +453,17 @@ class TestComputeWordSpans:
         assert spans[0][0] > transcript.index(">"), f"span started inside the tag: {spans[0]}"
         assert [transcript[a:b] for a, b in spans] == ["i", "think"]
 
+    def test_word_does_not_match_inside_the_turn_start_token(self):
+        """The same for `<|turn_start|>`, whose "turn" and "start" are words too."""
+        alignments = [
+            WordAlignment(text="start", start_time=0.0, end_time=0.2),
+            WordAlignment(text="turn", start_time=0.3, end_time=0.5),
+        ]
+        transcript = "<|turn_start|> start turn <spk:0>"
+        spans = compute_word_spans(alignments, transcript)
+        assert spans[0][0] > transcript.index(">"), f"span started inside the token: {spans[0]}"
+        assert [transcript[a:b] for a, b in spans] == ["start", "turn"]
+
     def test_word_matching_the_tag_text_is_not_swallowed(self):
         """Words that look like tag internals ("spk", a bare digit) must still be located."""
         alignments = [

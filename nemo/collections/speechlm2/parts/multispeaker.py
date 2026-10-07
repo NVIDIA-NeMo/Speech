@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import warnings
 from dataclasses import dataclass
 from typing import Optional
 
@@ -19,7 +20,13 @@ from omegaconf import DictConfig, open_dict
 
 from nemo.core.classes.common import safe_instantiate
 
-__all__ = ["MultiSpeakerConfig", "build_speaker_tokens", "maybe_init_lss_loss"]
+__all__ = [
+    "MultiSpeakerConfig",
+    "TurnStartTokenDeprecationWarning",
+    "build_speaker_tokens",
+    "maybe_init_lss_loss",
+    "resolve_turn_start_token",
+]
 
 
 @dataclass(frozen=True)
@@ -101,6 +108,58 @@ class MultiSpeakerConfig:
             enable=bool(cfg.get('enable', True)),
             speaker_token_template=cfg.get('speaker_token_template', "<spk:{i}>"),
         )
+
+
+class TurnStartTokenDeprecationWarning(FutureWarning):
+    """A deprecated name of the turn-start token is used, see :func:`resolve_turn_start_token`.
+
+    A category of its own so that NeMo shows it: NeMo logs warnings and drops every one whose category has an
+    ``ignore`` filter, whatever the filter's message, and Lightning registers one for ``FutureWarning``.
+    """
+
+
+def resolve_turn_start_token(
+    value: Optional[str], deprecated_value: Optional[str], name: str, deprecated_name: str
+) -> Optional[str]:
+    """The turn-start token set under ``name`` or under ``deprecated_name``, its former name.
+
+    The turn-start token is the optional content-free marker that opens every speaker run of the
+    SOT targets. It used to be called the switch token: the dataset key ``speaker_switch_token`` is
+    now ``turn_start_token``, and the model key ``speaker_tokens.switch_token`` is now
+    ``speaker_tokens.turn_start_token``. The old names still work. Every reader of these keys
+    resolves them here, so the rules are the same everywhere:
+
+    * ``None`` and ``""`` count as unset, under either name;
+    * set under the deprecated name only: that value, with a :class:`TurnStartTokenDeprecationWarning`;
+    * set under both names to the same value: that value, with that warning;
+    * set under both names to different values: ``ValueError``.
+
+    The value is never changed: a model trained with ``<spk_switch>`` keeps it.
+
+    Args:
+        value: the value under ``name``.
+        deprecated_value: the value under ``deprecated_name``.
+        name: the key's name, for the messages, e.g. ``"turn_start_token"``.
+        deprecated_name: the deprecated key's name, e.g. ``"speaker_switch_token"``.
+
+    Returns:
+        The token, or ``None`` when it is set under neither name.
+    """
+    value = value or None
+    deprecated_value = deprecated_value or None
+    if deprecated_value is None:
+        return value
+    if value is not None and value != deprecated_value:
+        raise ValueError(
+            f"{name}={value!r} and {deprecated_name}={deprecated_value!r} are both set and differ. "
+            f"{deprecated_name} is the deprecated name of {name}: set only {name}."
+        )
+    warnings.warn(
+        f"{deprecated_name} is deprecated: it was renamed to {name}. Using {deprecated_value!r} as {name}.",
+        TurnStartTokenDeprecationWarning,
+        stacklevel=2,
+    )
+    return deprecated_value
 
 
 def build_speaker_tokens(speaker_cfg: DictConfig | dict | None, tokenizer) -> list[int]:

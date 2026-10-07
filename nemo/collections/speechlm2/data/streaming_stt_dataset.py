@@ -32,6 +32,7 @@ from torch.nn.utils.rnn import pad_sequence
 
 from nemo.collections.asr.parts.utils.asr_multispeaker_utils import get_hidden_length_from_sample_length
 from nemo.collections.asr.parts.utils.sot_speaker_alignment import (
+    SPEAKER_STRUCTURAL_PATTERN,
     collate_speaker_activity_targets,
     ensure_single_speaker_sot,
     fix_speaker_activity,
@@ -40,7 +41,7 @@ from nemo.collections.asr.parts.utils.sot_speaker_alignment import (
 from nemo.collections.common.tokenizers import AutoTokenizer
 from nemo.collections.speechlm2.data.salm_dataset import left_collate_vectors
 from nemo.collections.speechlm2.parts.alignments import WordAlignment, get_word_alignments_for_batch
-from nemo.collections.speechlm2.parts.multispeaker import MultiSpeakerConfig
+from nemo.collections.speechlm2.parts.multispeaker import MultiSpeakerConfig, resolve_turn_start_token
 from nemo.collections.speechlm2.parts.utils import to_dataclass
 
 AUDIO_TOKEN_IDX = -200
@@ -116,12 +117,20 @@ class StreamingSTTDataConfig:
     #   'suffix' -- `words <spk:0> words <spk:1>`. Identity is decided after the whole turn
     #     has been heard, at the cost of losing that conditioning.
     # Both are built from the words' `speaker_ids`, so prefix-format manifests serve either.
+    # Any other value is rejected (it used to train prefix silently).
     speaker_tag_placement: str = 'prefix'
-    # Optional content-free boundary marker opening each new speaker run, e.g. `<spk_switch>`.
-    # Splits 'a speaker changed' from 'who it is' into two decisions. Costs one extra token
-    # per run, which matters most where the emission budget is tight (low latency).
-    # suffix: `<spk_switch> words <spk:0> <spk_switch> words <spk:1>`;
-    # prefix: `<spk_switch><spk:0> words <spk_switch><spk:1> words`.
+    # Optional content-free marker opening every speaker run, e.g. `<|turn_start|>`. A run is a
+    # maximal stretch of words of one speaker in SOT order, so the first run is opened too; the
+    # token marks no pause or utterance boundary. Splits 'a speaker changed' from 'who it is'
+    # into two decisions. Costs one extra token per run, which matters most where the emission
+    # budget is tight (low latency). It must equal `model.speaker_tokens.turn_start_token`, which
+    # registers it as a single token, and match `SPEAKER_STRUCTURAL_PATTERN` (`<|turn_x|>` or
+    # `<spk_x>`), which scoring strips. No default: unset means no token.
+    # suffix: `<|turn_start|> words <spk:0> <|turn_start|> words <spk:1>`;
+    # prefix: `<|turn_start|><spk:0> words <|turn_start|><spk:1> words`.
+    turn_start_token: Optional[str] = None
+    # Deprecated: the former name of `turn_start_token`, still read (see `resolve_turn_start_token`).
+    # It is resolved into `turn_start_token` on construction and is None afterwards.
     speaker_switch_token: Optional[str] = None
     audio_tag: str = "<audio>"
     blank_token: str = "<blank>"
@@ -189,6 +198,13 @@ class StreamingSTTDataConfig:
     # than the config asks for, with only a warning. Off by default so existing runs are unchanged;
     # turn it on when a silently short batch would be worse than a crash. Mirrors SALMDataset.
     strict_audio_loading: bool = False
+
+    def __post_init__(self):
+        self.turn_start_token = resolve_turn_start_token(
+            self.turn_start_token, self.speaker_switch_token, "turn_start_token", "speaker_switch_token"
+        )
+        self.speaker_switch_token = None
+        _check_speaker_tag_placement(self.speaker_tag_placement)
 
 
 def decode_with_blank(
@@ -380,9 +396,10 @@ def get_llm_messages_for_sample(
     write_token: str = "",
     speaker_token_template: Optional[str] = None,
     speaker_tag_placement: str = 'prefix',
-    speaker_switch_token: Optional[str] = None,
+    turn_start_token: Optional[str] = None,
     use_flush_token: bool = False,
     flush_token: str = "",
+    speaker_switch_token: Optional[str] = None,
 ) -> List[dict]:
     """
     Get the LLM messages for a sample, using the alignments to determine the turns for the audio and text.
@@ -428,7 +445,17 @@ def get_llm_messages_for_sample(
         audio_duration_secs: The duration of the audio in seconds.
         frame_length_in_secs: The length of a single frame in seconds.
         alignments: List of WordAlignment objects for the sample.
+        speaker_token_template: When set (e.g. ``"<spk:{i}>"``), SOT speaker tags are emitted from
+            ``WordAlignment.speaker``. ``None`` disables tagging.
+        speaker_tag_placement: ``'prefix'`` (the tag opens each speaker run) or ``'suffix'`` (it
+            closes it). Any other value raises ``ValueError``.
+        turn_start_token: Optional marker opening every speaker run (e.g. ``"<|turn_start|>"``).
+        speaker_switch_token: Deprecated name of ``turn_start_token``.
     """
+    turn_start_token = resolve_turn_start_token(
+        turn_start_token, speaker_switch_token, "turn_start_token", "speaker_switch_token"
+    )
+    _check_speaker_tag_placement(speaker_tag_placement)
 
     messages = [{"role": system_role, "content": system_prompt}]
 
@@ -463,21 +490,22 @@ def get_llm_messages_for_sample(
     # from the group's FIRST word, so a speaker change on any later word of the group would be
     # silently swallowed and those words attributed to the wrong speaker.
     last_emitted_speaker: Optional[int] = None
-    # Suffix placement and the switch token cannot reuse the tags the transcript slice carries: the
-    # manifests are prefix-format, so a slice spanning a speaker change holds the NEXT run's opening
-    # tag where a suffix target needs the previous run's closing one, and a mid-group run opening
-    # would have no switch token. Those configurations render each group run by run instead.
-    render_per_run = bool(speaker_token_template) and (speaker_tag_placement == 'suffix' or bool(speaker_switch_token))
-    speaker_markup = _speaker_markup_pattern(speaker_token_template, speaker_switch_token) if render_per_run else None
+    # Suffix placement and the turn-start token cannot reuse the tags the transcript slice carries:
+    # the manifests are prefix-format, so a slice spanning a speaker change holds the NEXT run's
+    # opening tag where a suffix target needs the previous run's closing one, and a mid-group run
+    # opening would have no turn-start token. Those configurations render each group run by run.
+    render_per_run = bool(speaker_token_template) and (speaker_tag_placement == 'suffix' or bool(turn_start_token))
+    speaker_markup = _speaker_markup_pattern(speaker_token_template, turn_start_token) if render_per_run else None
 
     def _render_speaker_runs(word_indices: list[int]) -> str:
         """Render a group as maximal same-speaker runs, with tags taken from ``speaker_ids``.
 
-        Each run's text is its transcript slice with every speaker tag and switch token removed.
-        A run whose speaker differs from ``last_emitted_speaker`` is opened:
+        Each run's text is its transcript slice with every speaker tag, the turn-start token and
+        any other structural marker (``SPEAKER_STRUCTURAL_PATTERN``) removed. A run whose speaker
+        differs from ``last_emitted_speaker`` is opened:
 
-        * prefix: ``<switch><spk:N>`` in front of the run;
-        * suffix: ``<switch>`` in front of the run, when a switch token is set.
+        * prefix: ``<turn_start><spk:N>`` in front of the run;
+        * suffix: ``<turn_start>`` in front of the run, when a turn-start token is set.
 
         Under suffix placement a run is closed with `` <spk:N>`` when the word after it (in the
         next group, if the run reaches the group's end) belongs to another speaker. Runs of words
@@ -521,9 +549,9 @@ def get_llm_messages_for_sample(
             opener = ""
             if speaker != last_emitted_speaker:
                 if speaker_tag_placement == 'suffix':
-                    opener = speaker_switch_token or ""
+                    opener = turn_start_token or ""
                 else:
-                    opener = f"{speaker_switch_token or ''}{speaker_token_template.format(i=speaker)}"
+                    opener = f"{turn_start_token or ''}{speaker_token_template.format(i=speaker)}"
             if opener:
                 piece = f"{opener}{piece}" if piece.startswith((" ", "\t")) else f"{opener} {piece}"
                 if run_i:
@@ -550,8 +578,8 @@ def get_llm_messages_for_sample(
         So ``last_emitted_speaker`` must track the group's **last** word, not its first: a group
         may end on a different speaker than it began, via a mid-group tag the slice already carried.
 
-        This holds for prefix placement without a switch token only. Suffix placement and the
-        switch token rebuild the group run by run (``_render_speaker_runs``), ignoring ``content``.
+        This holds for prefix placement without a turn-start token only. Suffix placement and the
+        turn-start token rebuild the group run by run (``_render_speaker_runs``), ignoring ``content``.
         """
         nonlocal last_emitted_speaker
         if not speaker_token_template or not word_indices:
@@ -741,9 +769,10 @@ def get_llm_messages_for_batch(
     write_token: str = "",
     speaker_token_template: Optional[str] = None,
     speaker_tag_placement: str = 'prefix',
-    speaker_switch_token: Optional[str] = None,
+    turn_start_token: Optional[str] = None,
     use_flush_token: bool = False,
     flush_token: str = "",
+    speaker_switch_token: Optional[str] = None,
 ) -> List[List[dict]]:
     """
     Get the LLM messages for a batch of samples.
@@ -764,7 +793,13 @@ def get_llm_messages_for_batch(
             assistant turn (default 1 = emit each word immediately).
         speaker_token_template: When set (e.g. ``"<spk:{i}>"``), emit a SOT speaker tag whenever
             the speaker changes, using ``WordAlignment.speaker``. ``None`` disables tagging.
+        speaker_tag_placement: ``'prefix'`` or ``'suffix'``, see :func:`get_llm_messages_for_sample`.
+        turn_start_token: Optional marker opening every speaker run (e.g. ``"<|turn_start|>"``).
+        speaker_switch_token: Deprecated name of ``turn_start_token``.
     """
+    turn_start_token = resolve_turn_start_token(
+        turn_start_token, speaker_switch_token, "turn_start_token", "speaker_switch_token"
+    )
     if transcripts is None:
         transcripts = [None] * len(audio_durations_secs)
     batch_messages = []
@@ -792,7 +827,7 @@ def get_llm_messages_for_batch(
                 write_token=write_token,
                 speaker_token_template=speaker_token_template,
                 speaker_tag_placement=speaker_tag_placement,
-                speaker_switch_token=speaker_switch_token,
+                turn_start_token=turn_start_token,
                 use_flush_token=use_flush_token,
                 flush_token=flush_token,
             )
@@ -1444,6 +1479,24 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
                     "special token -- the model must add the <spk:N> tokens to the tokenizer before "
                     "constructing the dataset."
                 )
+            # The turn-start token, like the tags, must be one token, and it must be a structural
+            # marker, which every scorer strips; any other string would be scored as a word.
+            turn_start = self.cfg.turn_start_token
+            if turn_start is not None:
+                if not SPEAKER_STRUCTURAL_PATTERN.fullmatch(turn_start):
+                    raise ValueError(
+                        f"turn_start_token={turn_start!r} must match {SPEAKER_STRUCTURAL_PATTERN.pattern!r}, for "
+                        "example '<|turn_start|>': scoring strips only such markers, so any other string would "
+                        "be scored as a word."
+                    )
+                turn_start_ids = self.tokenizer.tokenizer.encode(turn_start, add_special_tokens=False)
+                if len(turn_start_ids) != 1:
+                    raise ValueError(
+                        f"turn_start_token {turn_start!r} tokenizes into {len(turn_start_ids)} tokens "
+                        f"{turn_start_ids}. It must be a single special token: set "
+                        "model.speaker_tokens.turn_start_token to the same string, so that the model registers it "
+                        "before constructing the dataset."
+                    )
             # The model registers `speaker_tokens.max_speakers` tags, which may be fewer than the
             # `num_speakers` target columns (the reference fuses 8 columns and emits 4 tags), so
             # count the consecutive single-token tags instead of requiring one per column.
@@ -1724,7 +1777,7 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
             words_per_group=self.cfg.words_per_group,
             speaker_token_template=self._speaker_token_template,
             speaker_tag_placement=self.cfg.speaker_tag_placement,
-            speaker_switch_token=(self.cfg.speaker_switch_token if self._multispeaker_enabled else None),
+            turn_start_token=(self.cfg.turn_start_token if self._multispeaker_enabled else None),
             chunk_step=K,
             prepend_write_token=self.cfg.prepend_write_token,
             write_token=self.cfg.write_token,
@@ -1986,13 +2039,29 @@ def _assert_prefix(longer: list[int], shorter: list[int], hf_tok, what: str) -> 
         )
 
 
-def _speaker_markup_pattern(template: str, switch_token: Optional[str]) -> "re.Pattern[str]":
-    """Match any speaker tag rendered from ``template``, or the switch token, with the whitespace before it."""
+def _speaker_markup_pattern(template: str, turn_start_token: Optional[str]) -> "re.Pattern[str]":
+    """Match a speaker tag rendered from ``template``, the turn-start token or any other structural marker
+    (``SPEAKER_STRUCTURAL_PATTERN``), with the whitespace before it.
+
+    Every structural marker is matched, not only the configured token, so that a manifest written with another
+    one (``<spk_switch>`` under a ``<|turn_start|>`` config, or under suffix placement without a token) does not
+    leak it into the targets.
+    """
     head, sep, tail = template.partition("{i}")
     alternatives = [re.escape(head) + r"\d+" + re.escape(tail) if sep else re.escape(template)]
-    if switch_token:
-        alternatives.append(re.escape(switch_token))
+    if turn_start_token:
+        alternatives.append(re.escape(turn_start_token))
+    alternatives.append(SPEAKER_STRUCTURAL_PATTERN.pattern)
     return re.compile(r"\s*(?:" + "|".join(alternatives) + ")")
+
+
+def _check_speaker_tag_placement(placement: str) -> None:
+    """Raise unless ``placement`` is ``'prefix'`` or ``'suffix'``: any other value used to train prefix silently."""
+    if placement not in ("prefix", "suffix"):
+        raise ValueError(
+            f"speaker_tag_placement={placement!r} is not supported: use 'prefix' (the tag opens each speaker run) "
+            "or 'suffix' (the tag closes it)."
+        )
 
 
 def _content_for_words(

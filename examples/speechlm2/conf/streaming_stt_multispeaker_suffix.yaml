@@ -1,0 +1,201 @@
+# Multi-speaker (SOT) streaming STT with suffix speaker tags and a turn-start token.
+#
+# A copy of streaming_stt_multispeaker.yaml that differs only in how speaker runs are marked:
+#   * data.dataset.speaker_tag_placement: suffix -- the <spk:N> tag CLOSES each speaker run
+#     (`a b <spk:0> c d <spk:1>`), so the model names the speaker after hearing the run;
+#   * model.speaker_tokens.turn_start_token registers <|turn_start|> as a single token, and
+#     data.dataset.turn_start_token (which must equal it) puts it in front of every run, the
+#     first included: `<|turn_start|> a b <spk:0> <|turn_start|> c d <spk:1>`.
+# The manifest paths are left null, as in streaming_stt.yaml: set them (or input_cfg) on the
+# command line.
+#
+# Deltas vs. streaming_stt.yaml:
+#   * model.speaker_tokens        -> registers <spk:N> as SINGLE tokens (stock Qwen3 splits
+#                                    "<spk:0>" into SIX, which would swamp the loss)
+#   * data.dataset.multispeaker_cfg -> emits <spk:N> tags in the interleaved targets AND
+#                                    RTTM-derived spk_targets (B, T, n_spk)
+#   * manifests must carry `alignments` + `speaker_ids`; produce them with
+#     scripts/speechlm2/align_manifest.py (runs in the conda `nemo` env, needs PYTHONPATH=<repo>)
+#
+# This recipe has NO speaker kernel -- it is the CONTROL arm. Prior offline-SALM results say SOT
+# text alone gives poor cpWER and the speaker kernel is what buys the improvement, so a *small*
+# gap against an infusion run means the infusion is miswired, not ineffective.
+model:
+  pretrained_llm: Qwen/Qwen3-1.7B
+  pretrained_asr: nvidia/nemotron-speech-streaming-en-0.6b
+  load_llm_weights: true
+  load_asr_weights: true
+
+  sample_rate: 16000
+  blank_token: "<blank>"
+  frame_length_in_secs: 0.08
+  chunk_size: 2
+  att_context_size: [70, 1]
+  audio_pad_to: 16
+
+  # SOT speaker tokens. Key names mirror the SALM/phPEE reference
+  # (nemo/collections/speechlm2/parts/multispeaker.py) so recipes port across.
+  speaker_tokens:
+    enable: true
+    template: "<spk:{i}>"
+    max_speakers: 4          # matches the debug data (1-4 speakers) and Sortformer-4spk
+    base_token_id: null      # only for a pre-patched tokenizer with contiguous ids
+    turn_start_token: "<|turn_start|>"
+
+  freeze_speech_encoder: false
+  freeze_modality_adapter: false
+  freeze_modality_proj: false
+  freeze_llm_model: true
+  freeze_llm_head: false
+  freeze_embed_tokens: false
+
+  # LoRA (uncomment to enable)
+  # lora:
+  #   task_type: CAUSAL_LM
+  #   r: 128
+  #   lora_alpha: 256
+  #   lora_dropout: 0.01
+
+  perception:
+    # spec_augment:
+    #   _target_: nemo.collections.asr.modules.SpectrogramAugmentation
+    #   freq_masks: 2 # set to zero to disable it
+    #   # you may use lower time_masks for smaller models to have a faster convergence
+    #   time_masks: 10 # set to zero to disable it
+    #   freq_width: 27
+    #   time_width: 0.05
+
+    modality_adapter:
+      _target_: nemo.collections.speechlm2.modules.perception.IdentityConnector
+
+  optimizer:
+    _target_: torch.optim.AdamW
+    lr: 5e-4
+    betas: [0.9, 0.98]
+    weight_decay: 1e-3
+    foreach: true
+
+  lr_scheduler:
+    _target_: nemo.core.optim.lr_scheduler.CosineAnnealing
+    warmup_steps: 1000
+    min_lr: 1e-6
+    max_steps: ${trainer.max_steps}
+
+data:
+  # --- StreamingSTTDataset config ---
+  dataset:
+    sample_rate: ${model.sample_rate}
+    frame_length_in_secs: ${model.frame_length_in_secs}
+    chunk_size: ${model.chunk_size}
+    num_delay_frames: 0
+    audio_tag: "<audio>"
+    blank_token: ${model.blank_token}
+    system_role: system
+    system_prompt: "Transcribe the audio into text."
+    # words_per_group MUST stay 1 while multispeaker is enabled: the tag is derived from a group's
+    # FIRST word, so a speaker change on a later word would be silently dropped (the dataset
+    # asserts this).
+    words_per_group: 1
+    speaker_tag_placement: suffix
+    turn_start_token: ${model.speaker_tokens.turn_start_token}
+    multispeaker_cfg:
+      enable: true
+      num_speakers: ${model.speaker_tokens.max_speakers}
+      speaker_token_template: ${model.speaker_tokens.template}
+      sample_rate: ${model.sample_rate}
+      window_stride: 0.01          # preprocessor hop; with subsampling_factor -> the 80 ms grid
+      subsampling_factor: 8
+      # Bounds the brute-force permutation search in fix_speaker_activity. Uncapped, an
+      # 8-active-speaker cut enumerates 8! = 40320 permutations: measured 48.7 s PER CUT in a
+      # dataloader worker. 720 = 6!.
+      max_alignment_permutations: 720
+
+  # --- Lhotse dataloader config ---
+  train_ds:
+    sample_rate: ${data.dataset.sample_rate}
+    # The manifests store `rttm_filepath` RELATIVE to their own directory. Without this the RTTM
+    # read fails for every cut, each one gets the missing-RTTM sentinel, and the encoder quietly
+    # answers with its own diarizer -- so the run trains with NO oracle speaker supervision while
+    # looking entirely healthy. The sentinel is a legitimate value, so nothing downstream flags it.
+    resolve_path_fields: [rttm_filepath]
+    input_cfg: null
+    manifest_filepath: null
+    seed: 42
+    shuffle: true
+    shard_seed: "randomized"
+    num_workers: 4
+    batch_size: 4
+    # Optional bucketing:
+    # batch_size: null
+    # use_bucketing: true
+    # batch_duration: 200
+    # bucket_duration_bins: [5, 10, 15, 20, 25, 30]
+    # num_buckets: 6
+    # bucket_buffer_size: 5000
+
+  validation_ds:
+    datasets:
+      val_set_0:
+        input_cfg: null
+        manifest_filepath: null
+    sample_rate: ${data.dataset.sample_rate}
+    batch_size: 4
+    # The manifests store `rttm_filepath` RELATIVE to their own directory. Without this the RTTM
+    # read fails for every cut, each one gets the missing-RTTM sentinel, and the encoder quietly
+    # answers with its own diarizer -- so the run trains with NO oracle speaker supervision while
+    # looking entirely healthy. The sentinel is a legitimate value, so nothing downstream flags it.
+    resolve_path_fields: [rttm_filepath]
+    num_workers: 4
+    seed: 42
+    shard_seed: "randomized"
+
+trainer:
+  devices: -1
+  accelerator: gpu
+  num_nodes: 1
+  precision: bf16-true
+  logger: false
+  enable_checkpointing: false
+  use_distributed_sampler: false
+  max_steps: 100000
+  limit_train_batches: 5000
+  val_check_interval: ${trainer.limit_train_batches}
+  limit_val_batches: 10
+  log_every_n_steps: 10
+  num_sanity_val_steps: 1
+  gradient_clip_val: 1.0
+  accumulate_grad_batches: 1
+  strategy:
+    _target_: lightning.pytorch.strategies.DDPStrategy
+    gradient_as_bucket_view: true
+    find_unused_parameters: true
+
+
+exp_manager:
+  exp_dir: null
+  explicit_log_dir: null
+  name: streaming_stt
+  create_tensorboard_logger: false
+  create_checkpoint_callback: true
+  use_datetime_version: true
+  max_time_per_run: "00:03:50:00"
+
+  resume_from_checkpoint: null
+  resume_if_exists: true
+  resume_ignore_no_checkpoint: true
+
+  create_wandb_logger: false
+  wandb_logger_kwargs:
+    name: ${exp_manager.name}
+    project: null
+    resume: true
+
+  checkpoint_callback_params:
+    filename: "{step}"
+    monitor: val_acc
+    mode: max
+    every_n_train_steps: null
+    every_n_epochs: 1
+    save_top_k: 1
+    always_save_nemo: false
+    save_nemo_on_train_end: false

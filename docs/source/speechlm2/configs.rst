@@ -579,11 +579,21 @@ When the model is built with a dataset config whose ``multispeaker_cfg`` is enab
   targets fails with a shape error;
 - ``multispeaker_cfg.missing_rttm_target`` equals the encoder's ``missing_rttm_target``. Otherwise
   rows without an RTTM are fused as real speaker activity instead of being filled from the
-  diarizer.
+  diarizer;
+- ``model.speaker_tokens.turn_start_token`` (none while the speaker tokens are disabled) equals the
+  dataset's ``turn_start_token``, both unset included, each also read under its deprecated name
+  (``switch_token``, ``speaker_switch_token``). The model registers the token and the dataset writes
+  it into the targets, so a token set on one side only is an error.
 
 The validation dataset config is checked the same way. ``StreamingSTTModelAutomodel`` runs the
 encoder checks in ``configure_model()``, after it mounts the encoder. The dataset requires
-``<spk:0>`` to be a single token and logs how many consecutive tags are registered.
+``<spk:0>`` and a turn-start token to be single tokens and logs how many consecutive tags are
+registered.
+
+``model.speaker_tokens`` accepts the keys ``enable``, ``template``, ``max_speakers``,
+``base_token_id`` and ``turn_start_token``, plus the deprecated ``switch_token``; any other key is
+an error. The turn-start token is described under "StreamingSTTDataset speaker tags" in
+:doc:`datasets`.
 
 Without a dataset config nothing is compared: ``from_pretrained`` (an HF export, as
 ``streaming_stt_generate.py`` loads one) and ``streaming_stt_to_hf.py`` build the model from its

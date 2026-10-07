@@ -24,21 +24,25 @@ import torch
 
 SPEAKER_TOKEN_PATTERN = re.compile(r"<spk:(\d+)>")
 _SPEAKER_TOKEN_SPLIT_PATTERN = re.compile(r"(<spk:\d+>)")
-# Residue of a malformed/unclosed tag, e.g. "<spk:0" or "<spk>" -- dropped rather than scored.
 # Structural, content-free markers that may appear in SOT text but are NOT words and NOT
-# speaker identities: they open a new speaker run in the deferred-identity (suffix) format.
-# They must be stripped before scoring, or the model adding/dropping one counts as a word
-# error and the reference word count is inflated.
+# speaker identities: `<spk_x>` and `<|turn_x|>`. The turn-start token that opens every speaker
+# run is one of them: `<|turn_start|>`, or `<spk_switch>` in models trained before its rename.
+# They must be stripped before scoring, or the model adding/dropping one counts as a word error
+# and the reference word count is inflated. StreamingSTTDataset requires a configured turn-start
+# token to match this pattern, and strips every match from the targets it rebuilds run by run.
 SPEAKER_SWITCH_TOKEN = "<spk_switch>"
-_SPEAKER_STRUCTURAL_PATTERN = re.compile(r"<spk_[a-z]+>")
+SPEAKER_STRUCTURAL_PATTERN = re.compile(r"<spk_[a-z]+>|<\|turn_[a-z]+\|>")
 
+# Residue of a malformed/unclosed tag, e.g. "<spk:0" or "<spk>" -- dropped rather than scored.
 _MALFORMED_SPEAKER_TOKEN = re.compile(r"<spk:?\d*>?")
 
 # Tag syntaxes a speaker run may open with. Every pattern exposes exactly one group named `spk`
 # holding the speaker index, so the parser needs no per-syntax branching. These are SEPARATE from
-# the four module-level regexes above, which stay byte-identical because the training data path
-# (`salm_dataset`, `streaming_stt_dataset`) and `scripts/speechlm2/align_manifest.py` import them
-# by name.
+# the module-level regexes above. Of those, `SPEAKER_TOKEN_PATTERN` and
+# `_SPEAKER_TOKEN_SPLIT_PATTERN` stay byte-identical: `scripts/speechlm2/align_manifest.py`
+# imports them by name, and the training data path (`salm_dataset`, `streaming_stt_dataset`)
+# parses tags with them through the helpers of this module. `SPEAKER_STRUCTURAL_PATTERN` only
+# ever removes markers that are not words, so it may widen to new ones.
 #
 # A group name may appear only once per pattern, so alternatives are numbered and the parser reads
 # whichever one matched (see `_speaker_of`).
@@ -82,6 +86,7 @@ _ALIGNMENT_TIMELINE_QUANTILES = np.linspace(0.1, 0.9, 9, dtype=np.float32)
 __all__ = [
     "sot_to_speaker_texts",
     "remove_speaker_tags",
+    "SPEAKER_STRUCTURAL_PATTERN",
     "SPEAKER_TOKEN_PATTERN",
     "collate_speaker_activity_targets",
     "dtw_cost",
@@ -214,14 +219,17 @@ def parse_speaker_tokens(text: str) -> list[int]:
 
 
 def remove_speaker_tags(text: Optional[str]) -> str:
-    """Return ``text`` with every ``<spk:N>`` tag removed and whitespace collapsed.
+    """Return ``text`` with every ``<spk:N>`` tag and structural marker removed, whitespace collapsed.
+
+    The structural markers are those of ``SPEAKER_STRUCTURAL_PATTERN``, such as the turn-start
+    token ``<|turn_start|>`` (``<spk_switch>`` in models trained before its rename).
 
     Never raises -- unlike :func:`strip_speaker_tags`, which rejects untagged text. Use this on the
     speaker-agnostic WER path so a pure speaker swap is not scored as word errors.
     """
     if not text:
         return ""
-    return " ".join(_SPEAKER_STRUCTURAL_PATTERN.sub(" ", SPEAKER_TOKEN_PATTERN.sub(" ", text)).split())
+    return " ".join(SPEAKER_STRUCTURAL_PATTERN.sub(" ", SPEAKER_TOKEN_PATTERN.sub(" ", text)).split())
 
 
 def sot_to_speaker_texts(
@@ -282,9 +290,10 @@ def sot_to_speaker_texts(
 
     Three behaviours below look like bugs and are not:
 
-    * ``<spk_switch>`` and friends are stripped in EVERY configuration, including
-      ``drop_tag_residue=False``. They are structural markers that open a run in the
-      deferred-identity format, not words -- scoring them would inflate the reference word count.
+    * Structural markers (``SPEAKER_STRUCTURAL_PATTERN``: ``<spk_x>`` and ``<|turn_x|>``, such as
+      the turn-start token ``<|turn_start|>`` or the older ``<spk_switch>``) are stripped in EVERY
+      configuration, including ``drop_tag_residue=False``. They open a speaker run but are not
+      words -- scoring them would inflate the reference word count.
     * ``'canonical'`` matches ``speaker 3-4 was chosen`` as a tag for speaker 3. The false positive
       is inherited deliberately, because the pattern is what another scorer uses and diverging from
       it would silently change agreement with that scorer.
@@ -309,9 +318,8 @@ def sot_to_speaker_texts(
 
     def _words(chunk: str) -> list:
         out = []
-        for word in chunk.split():
-            if _SPEAKER_STRUCTURAL_PATTERN.fullmatch(word):
-                continue  # structural marker, never a word -- stripped on every axis setting
+        # Structural markers are never words -- stripped on every axis setting, also when glued to one.
+        for word in SPEAKER_STRUCTURAL_PATTERN.sub(" ", chunk).split():
             if drop_tag_residue and _MALFORMED_SPEAKER_TOKEN.fullmatch(word):
                 continue
             out.append(word)

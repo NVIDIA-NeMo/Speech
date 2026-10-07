@@ -865,28 +865,67 @@ shape the tags:
 
 - ``speaker_tag_placement: prefix`` (default) puts the tag in front of the first word of each speaker run.
 - ``speaker_tag_placement: suffix`` puts the tag after the last word of each run, so the model names the
-  speaker only after hearing the whole run.
-- ``speaker_switch_token`` (for example ``<spk_switch>``, also registered through
-  ``model.speaker_tokens.switch_token``) adds a content-free marker in front of every run.
+  speaker only after hearing the whole run. Any other value, ``postfix`` included, is rejected.
+- ``turn_start_token`` (for example ``<|turn_start|>``) adds a content-free marker in front of every run. It has
+  no default. ``model.speaker_tokens.turn_start_token`` registers it and must be set to the same string.
 
+A run is a maximal stretch of words of one speaker, in transcript order, so the first run is opened too: the
+turn-start token marks neither a pause nor an utterance boundary. Both placements work with and without the token.
 For the words ``a b`` of speaker 0 and ``c d`` of speaker 1, all in one chunk, the assistant content is:
 
 .. list-table::
    :header-rows: 1
 
    * - placement
-     - no switch token
-     - with ``<spk_switch>``
+     - no turn-start token
+     - with ``<|turn_start|>``
    * - prefix
      - ``<spk:0> a b <spk:1> c d``
-     - ``<spk_switch><spk:0> a b <spk_switch><spk:1> c d``
+     - ``<|turn_start|><spk:0> a b <|turn_start|><spk:1> c d``
    * - suffix
      - ``a b <spk:0> c d <spk:1>``
-     - ``<spk_switch> a b <spk:0> <spk_switch> c d <spk:1>``
+     - ``<|turn_start|> a b <spk:0> <|turn_start|> c d <spk:1>``
+
+``examples/speechlm2/conf/streaming_stt_multispeaker_suffix.yaml`` is ``streaming_stt_multispeaker.yaml`` with
+suffix placement and ``<|turn_start|>``; its manifest paths are left to the command line.
 
 When the words fall into different chunks, each chunk's turn carries the tags of the runs it opens (prefix) or
 closes (suffix); a run that continues into the next chunk is not tagged again. With ``use_flush_token``, the turn
 after the flush token follows the same rules, so it opens with the tag of a run it starts.
+
+The turn-start token must be a single token and a structural marker: it must match ``<|turn_x|>`` or ``<spk_x>``
+(``x`` in lowercase letters), the markers that scoring strips instead of counting them as words. Under suffix
+placement or with a turn-start token, the targets are rebuilt run by run from the words' speakers, and every such
+marker in the text of a run is removed, so a manifest written with another marker does not leak it into the
+targets. Prefix placement without a token keeps the manifest text as it is, so a marker in it can reach the
+targets. When the model is built with a dataset config, it checks that the two settings of the token agree (see
+:doc:`configs`).
+
+The turn-start token used to be called the switch token. Its old keys are deprecated but still read:
+
+.. list-table::
+   :header-rows: 1
+
+   * - setting
+     - key
+     - deprecated key
+   * - dataset
+     - ``turn_start_token``
+     - ``speaker_switch_token``
+   * - model
+     - ``speaker_tokens.turn_start_token``
+     - ``speaker_tokens.switch_token``
+   * - ``get_llm_messages_for_sample`` and ``get_llm_messages_for_batch``
+     - ``turn_start_token=``
+     - ``speaker_switch_token=``
+
+A deprecated key is used with a ``FutureWarning``. ``null`` and ``""`` count as unset under either key, and
+setting the two keys to different values is an error. Configs are never rewritten and the token keeps its
+string, so a model trained with ``<spk_switch>`` keeps that token, at the same id. A config that uses the new
+keys needs code that has them. Older code ignores the keys without an error: a recipe that sets them trains
+without the token, and a model trained with the token runs without it. The exception is a model whose embedding
+table was shrunk to the tokenizer (``allow_shrink_embedding: true``, which ``StreamingSTTModelAutomodel``
+ignores): it fails to load.
 
 .. note::
 
@@ -898,15 +937,15 @@ after the flush token follows the same rules, so it opens with the tag of a run 
 .. note::
 
    Earlier versions built these SOT targets incorrectly in three cases, so recipes that use them now train on
-   different targets. Recipes with prefix placement, no switch token and no flush token are unaffected.
+   different targets. Recipes with prefix placement, no turn-start token and no flush token are unaffected.
 
    - **Suffix placement:** a chunk that spanned a speaker change carried the next run's prefix tag, so its
      words were attributed to the wrong speaker (``a b <spk:1> c d <spk:1>``).
-   - **Switch token:** under prefix placement it was ignored; under suffix placement it was missing inside a
-     chunk that spanned a change.
+   - **Turn-start token** (then called the switch token): under prefix placement it was ignored; under suffix
+     placement it was missing inside a chunk that spanned a change.
    - **Flush turn:** it dropped the tag of a run it opened.
 
-   Results of models trained with suffix placement or a switch token before this fix should be re-measured
+   Results of models trained with suffix placement or a turn-start token before this fix should be re-measured
    before they are compared with prefix models.
 
 DataModule

@@ -173,6 +173,22 @@ def test_structural_markers_are_stripped_on_every_axis_setting():
             assert "<spk_switch>" not in " ".join(out.values())
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize("marker", ["<|turn_start|>", "<|turn_end|>"])
+def test_turn_markers_are_stripped_on_every_axis_setting(marker):
+    """`<|turn_start|>`, the turn-start token, is not a word either, nor is any `<|turn_x|>`."""
+    for residue in (True, False):
+        for placement in ("prefix", "suffix"):
+            for syntax in ("spk", "canonical"):
+                out = parse(
+                    f"{marker}<spk:0> alpha {marker} bravo",
+                    placement=placement,
+                    drop_tag_residue=residue,
+                    tag_syntax=syntax,
+                )
+                assert out == {0: "alpha bravo"}, out
+
+
 # --------------------------------------------------------------------------------------------
 # speaker_order
 # --------------------------------------------------------------------------------------------

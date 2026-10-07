@@ -49,7 +49,7 @@ from nemo.collections.speechlm2.modules.perception import AudioPerceptionModule
 from nemo.collections.speechlm2.parts.alignments import ForcedAligner
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
 from nemo.collections.speechlm2.parts.lora import maybe_install_lora
-from nemo.collections.speechlm2.parts.multispeaker import MultiSpeakerConfig
+from nemo.collections.speechlm2.parts.multispeaker import MultiSpeakerConfig, resolve_turn_start_token
 from nemo.collections.speechlm2.parts.optim_setup import configure_optimizers, is_frozen
 from nemo.collections.speechlm2.parts.pretrained import (
     has_parallel_expert_encoder_bundle,
@@ -364,6 +364,8 @@ class StreamingSTTModelConfig:
     # so recipes port across: {enable, template, max_speakers, base_token_id}. When enabled, the
     # `<spk:N>` tags are registered as single special tokens -- stock Qwen3 splits `<spk:0>` into
     # SIX tokens, which would make every speaker change cost six emissions and swamp the loss.
+    # `turn_start_token` (formerly `switch_token`, still read) registers the marker that opens
+    # every speaker run; it must equal the dataset's `turn_start_token`. Any other key is rejected.
     speaker_tokens: Optional[dict] = None
     # Path to a self-contained ParallelExpertEncoder ".nemo" bundle. When set, the perception
     # encoder built from `pretrained_asr` is REPLACED by the bundle's encoder, which carries the
@@ -380,6 +382,9 @@ class StreamingSTTModelConfig:
     # swapped independently. `{asr_model, diar_model}` (each a local .nemo OR a
     # pretrained id) plus any ParallelExpertEncoder ctor kwarg.
     parallel_expert_encoder: Optional[dict] = None
+
+    def __post_init__(self):
+        self.speaker_tokens = _speaker_tokens_with_turn_start(self.speaker_tokens)
 
 
 @dataclass
@@ -733,6 +738,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         # add_special_tokens calls, and the tokenizer is rebuilt from `pretrained_llm` on every
         # init rather than serialized with the checkpoint -- so do not reorder them after training.
         self.speaker_token_ids: list[int] = []
+        self.turn_start_token_id: Optional[int] = None
         cfg = self.core_cfg.speaker_tokens or {}
         if cfg and cfg.get("enable", True):
             template = cfg.get("template", "<spk:{i}>")
@@ -742,12 +748,14 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                 for i in range(max_speakers)
                 if not token_in_vocab(template.format(i=i), self.tokenizer)
             ]
-            # Optional content-free run-opening marker for deferred-identity (suffix) targets.
-            # It carries no speaker identity, so it is registered but kept out of
-            # `speaker_token_ids`, which downstream code treats as the identity vocabulary.
-            switch_token = cfg.get("switch_token")
-            if switch_token and not token_in_vocab(switch_token, self.tokenizer):
-                new_tokens.append(switch_token)
+            # Optional content-free marker that opens every speaker run (`turn_start_token`,
+            # formerly `switch_token`). It carries no speaker identity, so it is registered but kept
+            # out of `speaker_token_ids`, which downstream code treats as the identity vocabulary.
+            # It goes in the same call as the tags, after them, so models trained with it keep
+            # their ids.
+            turn_start_token = _model_turn_start_token(cfg)
+            if turn_start_token and not token_in_vocab(turn_start_token, self.tokenizer):
+                new_tokens.append(turn_start_token)
             if new_tokens:
                 self.tokenizer.add_special_tokens({"additional_special_tokens": new_tokens})
                 self._resize_llm_embeddings()
@@ -767,17 +775,17 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                     f"speaker token {template.format(i=0)!r} resolved to id {self.speaker_token_ids[0]}, "
                     f"expected base_token_id={base}. The tokenizer does not match the configured layout."
                 )
-            self.speaker_switch_token_id = (
-                self.tokenizer.tokenizer.convert_tokens_to_ids(switch_token) if switch_token else None
+            self.turn_start_token_id = (
+                self.tokenizer.tokenizer.convert_tokens_to_ids(turn_start_token) if turn_start_token else None
             )
-            if switch_token and not token_in_vocab(switch_token, self.tokenizer):
-                raise ValueError(f"speaker switch token {switch_token!r} is not a single token after registration.")
+            if turn_start_token and not token_in_vocab(turn_start_token, self.tokenizer):
+                raise ValueError(f"turn-start token {turn_start_token!r} is not a single token after registration.")
             logging.info(
-                "Registered %d speaker tokens: ids %s (switch token %s -> %s)",
+                "Registered %d speaker tokens: ids %s (turn-start token %s -> %s)",
                 max_speakers,
                 self.speaker_token_ids,
-                switch_token,
-                self.speaker_switch_token_id,
+                turn_start_token,
+                self.turn_start_token_id,
             )
 
     def _setup_forced_aligner(self, forced_aligner, data_cfg, val_data_cfg, dataset_cls) -> None:
@@ -903,6 +911,14 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         cfg = self.core_cfg.speaker_tokens or {}
         template = cfg.get("template", "<spk:{i}>")
         return {tid: template.format(i=i) for i, tid in enumerate(getattr(self, "speaker_token_ids", []))}
+
+    @property
+    def speaker_switch_token_id(self) -> Optional[int]:
+        """Deprecated name of ``turn_start_token_id``: the turn-start token's id, ``None`` without one.
+
+        The token is not in :attr:`speaker_token_map`, so decoding drops it.
+        """
+        return getattr(self, "turn_start_token_id", None)
 
     @property
     def text_vocab_size(self):
@@ -1769,6 +1785,10 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
           missing-RTTM splice).
         - Its ``missing_rttm_target`` must equal the dataset's. Otherwise rows without an RTTM
           are fused as real speaker activity instead of being filled from the diarizer.
+        - The turn-start token must be the same on both sides: ``model.speaker_tokens.turn_start_token``
+          (``None`` when the speaker tokens are disabled) and the dataset's ``turn_start_token``, each
+          also read under its deprecated name. Otherwise the token is either written into the targets
+          without being registered as one token, or registered and never supervised.
 
         Without a dataset config (inference, HF reload) there is nothing to compare, so nothing
         is checked. Safe to call before the perception module exists: the encoder checks are
@@ -1792,6 +1812,14 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                         "and above would have no speaker-target column. Set max_speakers <= num_speakers "
                         "(fewer tags than columns is valid)."
                     )
+            model_token = _model_turn_start_token(spk_cfg)
+            data_token = _data_turn_start_token(cfg, name)
+            if model_token != data_token:
+                raise ValueError(
+                    f"model.speaker_tokens.turn_start_token={model_token!r} but {name}.turn_start_token="
+                    f"{data_token!r}. These must match: the model registers the token (none while its speaker "
+                    "tokens are disabled) and the dataset writes it into the targets."
+                )
             n_spk = getattr(encoder, "n_spk", None)
             if n_spk is not None and int(n_spk) != ms.num_speakers:
                 raise ValueError(
@@ -3929,3 +3957,64 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                 )
 
         return result
+
+
+# The keys `model.speaker_tokens` accepts. `switch_token` is the deprecated name of `turn_start_token`.
+_SPEAKER_TOKENS_KEYS = ("enable", "template", "max_speakers", "base_token_id", "turn_start_token", "switch_token")
+
+
+def _speaker_tokens_with_turn_start(speaker_tokens: Optional[dict]) -> Optional[dict]:
+    """A copy of ``model.speaker_tokens`` whose turn-start token is resolved into ``turn_start_token``.
+
+    The deprecated ``switch_token`` is resolved with :func:`resolve_turn_start_token` and left out of the copy;
+    the config the model saves keeps the keys it was given. A key outside ``_SPEAKER_TOKENS_KEYS`` raises, so
+    that a misspelled or renamed key fails instead of being ignored.
+    """
+    if not speaker_tokens:
+        return speaker_tokens
+    unknown = sorted(str(key) for key in speaker_tokens if key not in _SPEAKER_TOKENS_KEYS)
+    if unknown:
+        raise ValueError(
+            f"model.speaker_tokens has unknown keys {unknown}. Its keys are enable, template, max_speakers, "
+            "base_token_id and turn_start_token (switch_token is the deprecated name of turn_start_token)."
+        )
+    resolved = dict(speaker_tokens)
+    deprecated = resolved.pop("switch_token", None)
+    if "turn_start_token" in resolved or deprecated is not None:
+        resolved["turn_start_token"] = resolve_turn_start_token(
+            resolved.get("turn_start_token"),
+            deprecated,
+            "model.speaker_tokens.turn_start_token",
+            "model.speaker_tokens.switch_token",
+        )
+    return resolved
+
+
+def _model_turn_start_token(speaker_tokens: Optional[dict]) -> Optional[str]:
+    """The turn-start token ``model.speaker_tokens`` registers: ``None`` when it sets none or is disabled."""
+    if not speaker_tokens or not speaker_tokens.get("enable", True):
+        return None
+    return resolve_turn_start_token(
+        speaker_tokens.get("turn_start_token"),
+        speaker_tokens.get("switch_token"),
+        "model.speaker_tokens.turn_start_token",
+        "model.speaker_tokens.switch_token",
+    )
+
+
+def _data_turn_start_token(data_cfg, name: str) -> Optional[str]:
+    """The turn-start token a dataset config sets, under ``turn_start_token`` or its deprecated name.
+
+    The messages name the keys as the dataset does; ``name``, which may be prose ("the validation dataset
+    config"), only prefixes the error two differing values raise.
+    """
+
+    def get(key):
+        return data_cfg.get(key, None) if hasattr(data_cfg, "get") else getattr(data_cfg, key, None)
+
+    try:
+        return resolve_turn_start_token(
+            get("turn_start_token"), get("speaker_switch_token"), "turn_start_token", "speaker_switch_token"
+        )
+    except ValueError as err:
+        raise ValueError(f"{name}: {err}") from err

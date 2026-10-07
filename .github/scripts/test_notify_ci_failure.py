@@ -48,7 +48,7 @@ class NotificationContractTests(unittest.TestCase):
         actual = set(re.findall(r"- ([\w-]+)", dependencies.group(1)))
         self.assertEqual(actual, EXPECTED_NEEDS)
         workflow_jobs = set(re.findall(r"^  ([\w-]+):$", self.workflow.split("jobs:\n", 1)[1], re.M))
-        self.assertTrue(actual <= workflow_jobs)
+        self.assertLessEqual(actual, workflow_jobs)
         self.assertNotIn(JOB_ID, actual)
 
     def test_no_checkout_or_token_is_needed_to_notify(self) -> None:

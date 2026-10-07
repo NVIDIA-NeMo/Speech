@@ -349,6 +349,170 @@ class TestASRModulesBasicTests:
         torch.testing.assert_close(actual.data, expected.data, rtol=0.0, atol=0.0)
 
     @pytest.mark.unit
+    @pytest.mark.parametrize("use_vectorized_code", [False, True])
+    def test_SpectrogramAugmentation_caps_total_time_masking_for_short_recordings(self, use_vectorized_code):
+        augment = modules.SpectrogramAugmentation(
+            time_masks=10,
+            time_width=12,
+            use_vectorized_spec_augment=use_vectorized_code,
+            rng=random.Random(17),
+        )
+        augment.configure_short_recording_time_mask_cap(
+            frame_duration_seconds=0.01,
+            max_duration_seconds=1.0,
+            max_mask_fraction=0.1,
+        )
+        features = torch.ones(1, 8, 50)
+        lengths = torch.tensor([50])
+
+        torch.manual_seed(23)
+        result = augment(input_spec=features, length=lengths)
+
+        masked_time_steps = (result[0] == 0).all(dim=0).sum().item()
+        assert masked_time_steps <= 5
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("use_vectorized_code", [False, True])
+    def test_SpectrogramAugmentation_short_cap_preserves_long_recording_behavior(self, use_vectorized_code):
+        baseline = modules.SpectrogramAugmentation(
+            time_masks=10,
+            time_width=12,
+            use_vectorized_spec_augment=use_vectorized_code,
+            rng=random.Random(19),
+        )
+        capped = copy.deepcopy(baseline)
+        capped.configure_short_recording_time_mask_cap(
+            frame_duration_seconds=0.01,
+            max_duration_seconds=1.0,
+            max_mask_fraction=0.1,
+        )
+        features = torch.ones(2, 8, 120)
+        lengths = torch.tensor([100, 120])
+
+        torch.manual_seed(29)
+        expected = baseline(input_spec=features.clone(), length=lengths)
+        torch.manual_seed(29)
+        actual = capped(input_spec=features.clone(), length=lengths)
+
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("use_vectorized_code", [False, True])
+    @pytest.mark.parametrize("time_width", [12, 0.15])
+    def test_short_cap_preserves_mixed_batch_long_rows_and_rng(self, use_vectorized_code, time_width):
+        baseline = modules.SpectrogramAugmentation(
+            freq_masks=2,
+            freq_width=2,
+            time_masks=10,
+            time_width=time_width,
+            use_vectorized_spec_augment=use_vectorized_code,
+            rng=random.Random(17),
+        )
+        capped = copy.deepcopy(baseline)
+        capped.configure_short_recording_time_mask_cap(frame_duration_seconds=0.01)
+        lengths = torch.tensor([50, 120, 1, 120])
+        features = torch.ones(4, 8, 120)
+
+        torch.manual_seed(23)
+        expected = baseline(input_spec=features.clone(), length=lengths)
+        baseline_torch_rng = torch.get_rng_state()
+        baseline_python_rng = baseline.spec_augment._rng.getstate()
+        torch.manual_seed(23)
+        actual = capped(input_spec=features.clone(), length=lengths)
+
+        torch.testing.assert_close(actual[[1, 3]], expected[[1, 3]], rtol=0, atol=0)
+        assert capped.spec_augment._rng.getstate() == baseline_python_rng
+        assert torch.equal(torch.get_rng_state(), baseline_torch_rng)
+        assert (actual[0, :, :50] == 0).all(dim=0).sum().item() <= 5
+        assert (actual[2, :, :1] == 0).all(dim=0).sum().item() == 0
+
+        # A later batch must also see precisely the uncapped RNG state.
+        next_features = torch.ones(1, 8, 120)
+        next_lengths = torch.tensor([120])
+        torch.set_rng_state(baseline_torch_rng)
+        expected_next = baseline(input_spec=next_features.clone(), length=next_lengths)
+        torch.set_rng_state(baseline_torch_rng)
+        actual_next = capped(input_spec=next_features.clone(), length=next_lengths)
+        torch.testing.assert_close(actual_next, expected_next, rtol=0, atol=0)
+        assert capped.spec_augment._rng.getstate() == baseline.spec_augment._rng.getstate()
+
+    @pytest.mark.unit
+    def test_SpectrogramAugmentation_packed_short_recording_cap(self):
+        augment = modules.SpectrogramAugmentation(time_masks=10, time_width=12)
+        augment.configure_short_recording_time_mask_cap(
+            frame_duration_seconds=0.01,
+            max_duration_seconds=1.0,
+            max_mask_fraction=0.1,
+        )
+        lengths = torch.tensor([50, 120])
+        features = torch.ones(2, 8, 120)
+        packed = pack_encoder_output(features.transpose(1, 2), lengths)
+
+        torch.manual_seed(31)
+        result = augment.forward_packed(packed)
+        short_result = result.data[:50]
+
+        masked_time_steps = (short_result == 0).all(dim=1).sum().item()
+        assert masked_time_steps <= 5
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        ("kwargs", "match"),
+        [
+            ({"frame_duration_seconds": 0.0}, "frame_duration_seconds must be positive"),
+            ({"frame_duration_seconds": 0.01, "max_duration_seconds": 0.0}, "must be positive"),
+            ({"frame_duration_seconds": 0.01, "max_mask_fraction": 1.1}, "must be in"),
+        ],
+    )
+    def test_SpectrogramAugmentation_rejects_invalid_short_recording_cap(self, kwargs, match):
+        augment = modules.SpectrogramAugmentation(time_masks=1, time_width=2)
+
+        with pytest.raises(ValueError, match=match):
+            augment.configure_short_recording_time_mask_cap(**kwargs)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("numba_available", [False, True])
+    @pytest.mark.parametrize("use_vectorized_code", [False, True])
+    def test_short_recording_cap_logs_numba_fallback_and_preserves_pytorch_behavior(
+        self, monkeypatch, caplog, numba_available, use_vectorized_code
+    ):
+        from nemo.collections.asr.modules import audio_preprocessing
+
+        monkeypatch.setattr(audio_preprocessing, "NUMBA_CUDA_AVAILABLE", numba_available)
+        # CPU-only imports omit this optional symbol; install the mock explicitly.
+        monkeypatch.delattr(audio_preprocessing, "SpecAugmentNumba", raising=False)
+        monkeypatch.setattr(
+            audio_preprocessing, "SpecAugmentNumba", lambda **kwargs: torch.nn.Identity(), raising=False
+        )
+        monkeypatch.setattr(logging._logger, "propagate", True)
+        kwargs = {
+            "time_masks": 10,
+            "time_width": 12,
+            "use_vectorized_spec_augment": use_vectorized_code,
+        }
+        augment = modules.SpectrogramAugmentation(**kwargs, use_numba_spec_augment=True, rng=random.Random(17))
+        baseline = modules.SpectrogramAugmentation(**kwargs, rng=random.Random(17))
+        assert (augment.spec_augment_numba is not None) == numba_available
+
+        augment.configure_short_recording_time_mask_cap(frame_duration_seconds=0.01)
+
+        assert "overriding use_numba_spec_augment=True" in caplog.text
+        assert augment.spec_augment_numba is None
+        lengths = torch.tensor([50, 120, 1])
+        features = torch.ones(3, 8, 120)
+        torch.manual_seed(23)
+        expected = baseline(input_spec=features.clone(), length=lengths)
+        baseline_torch_rng = torch.get_rng_state()
+        torch.manual_seed(23)
+        actual = augment(input_spec=features.clone(), length=lengths)
+
+        torch.testing.assert_close(actual[1], expected[1], rtol=0, atol=0)
+        assert torch.equal(torch.get_rng_state(), baseline_torch_rng)
+        assert augment.spec_augment._rng.getstate() == baseline.spec_augment._rng.getstate()
+        assert (actual[0, :, :50] == 0).all(dim=0).sum().item() <= 5
+        assert (actual[2, :, :1] == 0).all(dim=0).sum().item() == 0
+
+    @pytest.mark.unit
     def test_SpectrogramAugmentation_packed_cutout_preserves_frontend_padded_rng_range(self):
         preprocessor = modules.AudioToMelSpectrogramPreprocessor(
             features=8, normalize=None, dither=0, pad_to=16

@@ -786,9 +786,9 @@ class BucketData:
             `None` for text-context benchmarks.
 
         Raises:
-            ValueError: If the benchmark is unknown, filewise metrics or target audio paths
-                are not loaded, context audio paths are not loaded for an audio-context
-                benchmark, or a sample has no matching target or context audio file.
+            ValueError: If the benchmark is unknown, filewise metrics or generated or target audio
+                paths are not loaded, context audio paths are not loaded for an audio-context
+                benchmark, or a sample has no matching generated, target or context audio file.
         """
         if benchmark_name not in self.benchmarks:
             raise ValueError(f"Unknown benchmark: '{benchmark_name}'.")
@@ -809,6 +809,8 @@ class BucketData:
         if with_context and not context_paths:
             raise ValueError(f"Context audio paths not loaded for benchmark: '{benchmark_name}'.")
 
+        generated_paths = self.get_benchmark_audio_paths(benchmark_name)
+        generated_dir = next(iter(generated_paths.values())).parent
         output = {}
 
         for item in items:
@@ -819,6 +821,12 @@ class BucketData:
                 bucket_structure=bucket_structure,
                 with_context=with_context,
             )
+            # Every sample scored in the filewise metrics must have been generated; otherwise the
+            # audio report would silently show fewer samples than were evaluated.
+            if meta.name not in generated_paths:
+                raise ValueError(
+                    f"Missing generated audio '{meta.name}.wav' for sample '{meta.name}' in '{generated_dir}'."
+                )
             output[meta.name] = meta
 
         return output

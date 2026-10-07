@@ -860,6 +860,34 @@ class TestAudioReport:
             prepare_audio_pairs(baseline, candidate, structure, [TEXT_BENCHMARK], NUM_AUDIO_SAMPLES)
 
     @pytest.mark.unit
+    def test_metrics_row_without_generated_audio_is_an_error(self):
+        baseline, candidate, _ = _paired_buckets()
+        for bucket in (baseline, candidate):
+            del bucket.benchmarks[TEXT_BENCHMARK].generated_audio_paths["predicted_audio_1"]
+
+        with pytest.raises(
+            ValueError, match="Missing generated audio 'predicted_audio_1.wav' for sample 'predicted_audio_1'"
+        ):
+            prepare_audio_pairs(baseline, candidate, BucketStructure(), [TEXT_BENCHMARK], NUM_AUDIO_SAMPLES)
+
+    @pytest.mark.unit
+    def test_differing_sample_sets_name_the_missing_samples(self):
+        baseline, candidate, _ = _paired_buckets()
+        # The candidate was evaluated on one utterance fewer: its metrics and audio agree, but the buckets differ.
+        del candidate.benchmarks[TEXT_BENCHMARK].generated_audio_paths["predicted_audio_1"]
+        del candidate.benchmarks[TEXT_BENCHMARK].target_audio_paths["target_audio_1"]
+        candidate.benchmarks[TEXT_BENCHMARK].filewise_metrics = [
+            item
+            for item in candidate.benchmarks[TEXT_BENCHMARK].filewise_metrics
+            if item["pred_audio_filepath"] != "predicted_audio_1.wav"
+        ]
+
+        with pytest.raises(
+            ValueError, match="differ for benchmark 'de_qa_ct_text': missing in bucket 'candidate': predicted_audio_1"
+        ):
+            prepare_audio_pairs(baseline, candidate, BucketStructure(), [TEXT_BENCHMARK], NUM_AUDIO_SAMPLES)
+
+    @pytest.mark.unit
     def test_audio_report_renders_target_column_and_optional_context(self):
         baseline, candidate, storage = _paired_buckets()
         s3_client = _FakeS3Client()

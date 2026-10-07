@@ -13,6 +13,7 @@
 # limitations under the License.
 import random
 import warnings
+from pathlib import Path
 
 from scripts.tts_comparison_report.reporting.constants import SEED
 from scripts.tts_comparison_report.reporting.models import AudioPair, BucketData, BucketStructure
@@ -33,7 +34,10 @@ def _collect_audio_pairs(
     pairs = []
 
     if set(baseline_paths) != set(candidate_paths):
-        raise ValueError(f"Audio sample sets differ for benchmark '{benchmark_name}'.")
+        raise ValueError(
+            f"Audio sample sets differ for benchmark '{benchmark_name}': "
+            + _describe_missing_samples(bucket_baseline, baseline_paths, bucket_candidate, candidate_paths)
+        )
 
     for name in baseline_paths:
         if name not in candidate_paths or name not in baseline_meta or name not in candidate_meta:
@@ -102,3 +106,21 @@ def prepare_audio_pairs(
         pairs[benchmark_name] = sampled_pairs
 
     return pairs
+
+
+def _describe_missing_samples(
+    bucket_baseline: BucketData,
+    baseline_paths: dict[str, Path],
+    bucket_candidate: BucketData,
+    candidate_paths: dict[str, Path],
+) -> str:
+    parts = []
+
+    for bucket, missing in [
+        (bucket_candidate, sorted(set(baseline_paths) - set(candidate_paths))),
+        (bucket_baseline, sorted(set(candidate_paths) - set(baseline_paths))),
+    ]:
+        if missing:
+            parts.append(f"missing in bucket '{bucket.name}': {', '.join(missing)}")
+
+    return "; ".join(parts) + "."

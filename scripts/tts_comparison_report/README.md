@@ -207,7 +207,9 @@ listed in `--audio_report_benchmarks`; their sections have no context column.
 - The audio report expects `predicted_audio_<idx>.wav`, `target_audio_<idx>.wav` and, for audio-context
 benchmarks, `context_audio_<idx>.wav` under `audio/repeat_0` of each benchmark directory, as written by
 `magpietts_inference`. When `--audio_report` is enabled these files are required for every benchmark listed in
-`--benchmarks`, not only for those in `--audio_report_benchmarks`.
+`--benchmarks`, not only for those in `--audio_report_benchmarks`. Every sample scored in the filewise metrics
+must have its generated file, and both buckets must contain the same samples; a mismatch fails the report with
+the samples named.
 
 ## Maintenance
 

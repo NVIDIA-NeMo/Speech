@@ -15,7 +15,7 @@ import errno
 import json
 from abc import ABC, abstractmethod
 from pathlib import Path
-from stat import S_ISDIR
+from stat import S_ISDIR, S_ISLNK
 from typing import Any, BinaryIO, Generator
 
 from paramiko.sftp_client import SFTPClient
@@ -46,7 +46,9 @@ class BaseStorage(ABC):
 
         Args:
             path: Directory path to iterate.
-            only_dirs: Whether to yield only directory entries.
+            only_dirs: Whether to yield only directory entries. When True,
+                symbolic links are followed, so a link whose target is a
+                directory is yielded as the link path; dangling links are skipped.
 
         Yields:
             Paths of directory entries.
@@ -144,6 +146,24 @@ class SFTPStorage(BaseStorage):
                 return False
             raise
 
+    def _is_dir(self, path: Path, mode: int) -> bool:
+        if S_ISDIR(mode):
+            return True
+
+        if S_ISLNK(mode):
+            try:
+                return S_ISDIR(self.sftp.stat(path.as_posix()).st_mode)
+
+            except FileNotFoundError:
+                return False
+
+            except OSError as e:
+                if getattr(e, "errno", None) == errno.ENOENT:
+                    return False
+                raise
+
+        return False
+
     def iter_dir(
         self,
         path: Path,
@@ -151,9 +171,12 @@ class SFTPStorage(BaseStorage):
     ) -> Generator[Path, None, None]:
         """See the BaseStorage class docstring."""
         for item in self.sftp.listdir_attr(path.as_posix()):
-            if only_dirs and not S_ISDIR(item.st_mode):
+            item_path = path / item.filename
+
+            if only_dirs and not self._is_dir(item_path, item.st_mode):
                 continue
-            yield path / item.filename
+
+            yield item_path
 
     def open_file(self, path: Path) -> BinaryIO:
         """See the BaseStorage class docstring."""

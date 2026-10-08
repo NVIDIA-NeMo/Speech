@@ -242,7 +242,7 @@ class MultiSpeakerSOTWordTimestampAligner:
         ctc_frame_seconds: Optional[float] = None,
         sortformer_frame_seconds: Optional[float] = None,
         speaker_activity_threshold: float = 0.5,
-        speaker_logprob_weight: float = 0.0,
+        speaker_logprob_weight: float = 1.0,
         maximum_token_len: float = 1.0,
         epsilon: float = 1.0e-6,
         online_inference_length: int = 0,
@@ -846,6 +846,11 @@ class MultiSpeakerSOTWordTimestampAligner:
                 )
                 context["final_scores"][stream["speaker_tag"]] = score
 
+        for context in contexts:
+            context["rows"], context["constrained_word_count"] = self._constrain_words_to_diarization(
+                context["rows"], context["mapping"], context["diarization_timestamps"]
+            )
+
         return [
             self._result(
                 rows=context["rows"],
@@ -858,6 +863,7 @@ class MultiSpeakerSOTWordTimestampAligner:
                 preliminary_scores=context["preliminary_scores"],
                 final_scores=context["final_scores"],
                 assignment_scores=context["assignment_scores"],
+                constrained_word_count=context["constrained_word_count"],
                 diarization_timestamps=context["diarization_timestamps"],
                 diarization_frame_seconds=prepared["diarization_frame_seconds"],
                 diarization_max_speaker_count=prepared["diarization_max_speaker_count"],
@@ -914,6 +920,7 @@ class MultiSpeakerSOTWordTimestampAligner:
         preliminary_scores: Dict[Optional[int], float],
         final_scores: Dict[Optional[int], float],
         assignment_scores: Dict[int, List[float]],
+        constrained_word_count: int,
         diarization_timestamps: Sequence[Dict[str, Any]],
         diarization_frame_seconds: Optional[float],
         diarization_max_speaker_count: Optional[int],
@@ -931,6 +938,7 @@ class MultiSpeakerSOTWordTimestampAligner:
             preliminary_scores (Dict[Optional[int], float]): CTC-only stream scores.
             final_scores (Dict[Optional[int], float]): Speaker-aware stream scores.
             assignment_scores (Dict[int, List[float]]): Speaker-column assignment scores.
+            constrained_word_count (int): Words projected into their mapped diarization activity.
             diarization_timestamps (Sequence[Dict[str, Any]]): Native diarization activity segments.
             diarization_frame_seconds (Optional[float]): Native diarization frame duration.
             diarization_max_speaker_count (Optional[int]): Fixed boolean-label speaker dimension.
@@ -957,6 +965,7 @@ class MultiSpeakerSOTWordTimestampAligner:
                 "preliminary_ctc_path_scores": preliminary_scores,
                 "final_path_scores": final_scores,
                 "speaker_assignment_scores": assignment_scores,
+                "diarization_constrained_word_count": constrained_word_count,
             },
         }
 
@@ -1339,7 +1348,7 @@ class MultiSpeakerSOTWordTimestampAligner:
             Tuple[Dict[int, Optional[int]], Dict[int, List[float]]]: Mapping and assignment scores.
         """
         mapping = {tag: None for tag in speaker_tags}
-        if speaker_probs is None or len(speaker_tags) > speaker_probs.shape[1]:
+        if speaker_probs is None:
             return mapping, {}
         rows_by_tag = self._group_words_by_speaker(preliminary_rows)
         scores = []
@@ -1351,12 +1360,69 @@ class MultiSpeakerSOTWordTimestampAligner:
                     torch.log(speaker_probs[row["start_frame"] : row["end_frame"] + 1, column].clamp_min(self.epsilon))
                     for row in rows_by_tag[tag]
                 ]
-                column_scores.append(float(torch.cat(values).mean()))
+                column_scores.append(float(torch.cat(values).sum()))
             diagnostics[tag] = column_scores
             scores.append(column_scores)
-        for tag, column in zip(speaker_tags, self._maximum_weight_assignment(scores)):
-            mapping[tag] = column
+        active_columns = (
+            torch.nonzero((speaker_probs >= self.speaker_activity_threshold).any(dim=0), as_tuple=False)
+            .flatten()
+            .tolist()
+        )
+        if not active_columns:
+            return mapping, diagnostics
+        active_scores = [[row[column] for column in active_columns] for row in scores]
+        if len(speaker_tags) <= len(active_columns):
+            assignments = self._maximum_weight_assignment(active_scores)
+            for tag, active_index in zip(speaker_tags, assignments):
+                mapping[tag] = active_columns[active_index]
+        else:
+            for tag, row in zip(speaker_tags, active_scores):
+                mapping[tag] = active_columns[max(range(len(row)), key=row.__getitem__)]
         return mapping, diagnostics
+
+    @staticmethod
+    def _constrain_words_to_diarization(
+        rows: Sequence[Dict[str, Any]],
+        speaker_mapping: Dict[int, Optional[int]],
+        diarization_timestamps: Sequence[Dict[str, Any]],
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """Keep every mapped word interval inside one native diarization segment."""
+        segments_by_column: Dict[int, List[Tuple[float, float]]] = {}
+        for segment in diarization_timestamps:
+            segments_by_column.setdefault(int(segment["speaker"]), []).append(
+                (float(segment["start"]), float(segment["end"]))
+            )
+        if not diarization_timestamps:
+            return [dict(row) for row in rows], 0
+
+        constrained = []
+        changed = 0
+        for row in rows:
+            output = dict(row)
+            column = speaker_mapping.get(row["speaker_tag"])
+            segments = segments_by_column.get(column, [])
+            if not segments:
+                changed += 1
+                continue
+            if segments:
+                start, end = float(row["start"]), float(row["end"])
+
+                def rank(segment: Tuple[float, float]) -> Tuple[float, float]:
+                    segment_start, segment_end = segment
+                    overlap = max(0.0, min(end, segment_end) - max(start, segment_start))
+                    distance = max(segment_start - end, start - segment_end, 0.0)
+                    return overlap, -distance
+
+                segment_start, segment_end = max(segments, key=rank)
+                duration = min(end - start, segment_end - segment_start)
+                projected_start = min(max(start, segment_start), segment_end - duration)
+                projected_end = projected_start + duration
+                if not math.isclose(projected_start, start) or not math.isclose(projected_end, end):
+                    changed += 1
+                    output["start"] = projected_start
+                    output["end"] = projected_end
+            constrained.append(output)
+        return constrained, changed
 
     @staticmethod
     def _maximum_weight_assignment(scores: Sequence[Sequence[float]]) -> List[int]:

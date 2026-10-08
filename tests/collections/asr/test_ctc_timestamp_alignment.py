@@ -8,8 +8,81 @@ from nemo.collections.speechlm2.parts.ctc_timestamp_utils import MultiSpeakerSOT
 
 
 @pytest.mark.unit
-def test_word_timestamp_alignment_defaults_to_ctc_only():
-    assert MultiSpeakerSOTWordTimestampAligner().speaker_logprob_weight == 0.0
+def test_word_timestamp_alignment_defaults_to_speaker_aware():
+    assert MultiSpeakerSOTWordTimestampAligner().speaker_logprob_weight == 1.0
+
+
+@pytest.mark.unit
+def test_speaker_mapping_uses_total_evidence_for_unequal_stream_lengths():
+    aligner = MultiSpeakerSOTWordTimestampAligner()
+    speaker_probs = torch.tensor(
+        [
+            [0.9, 0.1],
+            [0.9, 0.1],
+            [0.9, 0.1],
+            [0.99, 0.51],
+        ]
+    )
+    rows = [
+        {"speaker_tag": 0, "start_frame": 0, "end_frame": 2},
+        {"speaker_tag": 1, "start_frame": 3, "end_frame": 3},
+    ]
+
+    mapping, _ = aligner._resolve_speaker_mapping([0, 1], rows, speaker_probs)
+
+    assert mapping == {0: 0, 1: 1}
+
+
+@pytest.mark.unit
+def test_speaker_mapping_ignores_columns_without_active_diarization():
+    aligner = MultiSpeakerSOTWordTimestampAligner()
+    speaker_probs = torch.tensor(
+        [
+            [0.9, 0.49, 0.1],
+            [0.9, 0.49, 0.1],
+            [0.1, 0.49, 0.9],
+            [0.1, 0.49, 0.9],
+        ]
+    )
+    rows = [
+        {"speaker_tag": 0, "start_frame": 0, "end_frame": 1},
+        {"speaker_tag": 1, "start_frame": 2, "end_frame": 3},
+    ]
+
+    mapping, _ = aligner._resolve_speaker_mapping([0, 1], rows, speaker_probs)
+
+    assert mapping == {0: 0, 1: 2}
+
+
+@pytest.mark.unit
+def test_word_intervals_are_constrained_to_mapped_diarization_segments():
+    rows = [
+        {"word": "before", "speaker_tag": 0, "start": 0.0, "end": 0.2},
+        {"word": "inside", "speaker_tag": 0, "start": 0.6, "end": 0.8},
+        {"word": "after", "speaker_tag": 0, "start": 1.2, "end": 1.6},
+    ]
+
+    constrained, changed = MultiSpeakerSOTWordTimestampAligner._constrain_words_to_diarization(
+        rows,
+        {0: 1},
+        [{"speaker": 1, "start": 0.5, "end": 1.0}],
+    )
+
+    assert changed == 2
+    assert [row["start"] for row in constrained] == pytest.approx([0.5, 0.6, 0.6])
+    assert [row["end"] for row in constrained] == pytest.approx([0.7, 0.8, 1.0])
+
+
+@pytest.mark.unit
+def test_word_timestamp_alignment_drops_speaker_without_activity():
+    constrained, changed = MultiSpeakerSOTWordTimestampAligner._constrain_words_to_diarization(
+        [{"word": "hello", "speaker_tag": 0, "start": 0.0, "end": 0.2}],
+        {0: 1},
+        [{"speaker": 0, "start": 0.0, "end": 0.5}],
+    )
+
+    assert constrained == []
+    assert changed == 1
 
 
 def _dense_reference(

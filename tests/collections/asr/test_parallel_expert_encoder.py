@@ -596,7 +596,7 @@ def test_timestamp_extractor_maps_speakers_from_preliminary_ctc_paths(monkeypatc
 
 
 @pytest.mark.unit
-def test_timestamp_extractor_keeps_parallel_mode_when_speakers_exceed_columns(
+def test_timestamp_extractor_reuses_active_column_when_speakers_exceed_columns(
     monkeypatch,
 ):
     blank_id = 2
@@ -619,7 +619,7 @@ def test_timestamp_extractor_keeps_parallel_mode_when_speakers_exceed_columns(
     )[0]
 
     assert result["alignment_mode"] == "parallel"
-    assert result["speaker_tag_to_sortformer_column"] == {0: None, 1: None}
+    assert result["speaker_tag_to_sortformer_column"] == {0: 0, 1: 0}
 
 
 @pytest.mark.unit

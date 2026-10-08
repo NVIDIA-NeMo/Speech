@@ -419,9 +419,10 @@ python export_checkpoint.py --exp-dir /path/to/exp --step 420 \
 It builds the output under `<out>.unfinished` and renames it into place only when complete. It symlinks
 `step=420.ckpt` to a name without `=` (Hydra can't parse `=` in an override value), runs
 `examples/speechlm2/to_hf.py` with the run's resolved `exp_config.yaml` (not your input YAML), and asserts that
-`lora_B` is non-zero (it initializes to zero, so zero means the trained weights never reached the export). It then
-merges `W_effective = W_base + (alpha / dim) · (B @ A)` in float32, drops the adapter tensors and the `lora` config
-block so nothing can apply the update twice, and restores `pretrained_asr`, without which vLLM refuses the config. A
+`lora_B.weight` is non-zero (it initializes to zero, so zero means the trained weights never reached the export).
+TransformerEngine `_extra_state` bookkeeping is excluded from this check. It also requires at least one non-zero
+paired, scaled `B @ A` delta before writing the merged weights. It then merges
+`W_effective = W_base + (alpha / dim) · (B @ A)` in float32, drops the adapter tensors and the `lora` config block so nothing can apply the update twice, and restores `pretrained_asr`, without which vLLM refuses the config. A
 run trained without LoRA (`--lora-targets ""`) keeps the ordinary full-rank export. Adapter tensors without a `lora`
 config block, a `lora` block without adapter tensors, or unpaired or mis-shaped adapters are rejected.
 
@@ -530,7 +531,8 @@ the loaders are non-strict, and training proceeds from randomly initialized subm
 python check_checkpoint_coverage.py --checkpoint /path/to/checkpoint --config conf/my_finetune.yaml
 ```
 
-A correct config matches every checkpoint tensor, and the only unmatched model parameters are the new LoRA adapters:
+A correct config matches every checkpoint tensor by name and shape, and the only unmatched model parameters are
+the new LoRA adapters. Shape mismatches are reported with the tensor name and both shapes and cause preflight to fail:
 
 ```
 checkpoint tensors: N
@@ -539,7 +541,8 @@ matched:            N
 new LoRA adapters:  K (expected — these are created by the recipe)
 ```
 
-The check builds the model, so it needs a free GPU.
+The check reads only the safetensors header, without loading checkpoint tensor data. It builds the configured model
+on CPU in bfloat16, so it needs enough host RAM for the model (roughly two bytes per parameter).
 
 ### During training: the restore log
 

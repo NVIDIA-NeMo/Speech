@@ -19,11 +19,11 @@
 1. symlinks ``step=420.ckpt`` (or ``step=420-last.ckpt``) to an ``=``-free name
    (Hydra cannot parse ``=`` inside an override value),
 2. runs ``examples/speechlm2/to_hf.py`` with the run's resolved ``exp_config.yaml``,
-3. if the run trained LoRA adapters: asserts that ``lora_B`` is non-zero (it initializes to exactly
-   zero, so a zero ``lora_B`` means the trained weights never made it into the export), then merges
+3. if the run trained LoRA adapters: asserts that ``lora_B.weight`` is non-zero (it initializes to exactly
+   zero, so a zero ``lora_B.weight`` means the trained weights never made it into the export), then merges
    ``W + (alpha/dim) * B @ A`` into the base weights (merge_lora_checkpoint.py, which also rejects
-   unpaired or mis-shaped adapters), so no serving stack can silently drop them. A run without LoRA
-   (``--lora-targets ""``) keeps the ordinary full-rank export,
+   unpaired or mis-shaped adapters and all-zero paired deltas), so no serving stack can silently drop them.
+   A run without LoRA (``--lora-targets ""``) keeps the ordinary full-rank export,
 4. restores ``pretrained_asr`` from the base checkpoint's config (vLLM refuses a config without it),
 5. writes ``provenance.json`` (the run's training fingerprint, the step and the base checkpoint digest).
 
@@ -48,6 +48,7 @@ HERE = Path(__file__).resolve().parent
 NEMO_ROOT = HERE.parents[2]
 sys.path.insert(0, str(HERE))
 from fingerprint import FingerprintMismatch, checkpoint_digest, differences  # noqa: E402
+from merge_lora_checkpoint import LORA_WEIGHT_RE  # noqa: E402
 
 
 def export_provenance(exp_dir: Path, step: int, base_checkpoint: Path) -> dict:
@@ -75,7 +76,7 @@ def lora_keys(path: Path) -> list:
     from safetensors import safe_open
 
     with safe_open(str(path), "pt") as f:
-        return [k for k in f.keys() if ".lora_A" in k or ".lora_B" in k]
+        return [k for k in f.keys() if LORA_WEIGHT_RE.match(k)]
 
 
 def main():
@@ -129,7 +130,9 @@ def main():
         if not raw_cfg.get("lora"):
             sys.exit("the export has LoRA tensors but its config has no `lora` block: malformed adapter state")
         with safe_open(str(raw / "model.safetensors"), "pt") as f:
-            b = [t for t in (f.get_tensor(k) for k in keys if "lora_B" in k) if t.numel() > 0]
+            b = [
+                t for t in (f.get_tensor(k) for k in keys if LORA_WEIGHT_RE.match(k).group(2) == "B") if t.numel() > 0
+            ]
         if not b:
             sys.exit("the export has lora_A tensors but no non-empty lora_B: malformed adapter state")
         m = max(t.abs().max().item() for t in b)

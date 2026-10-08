@@ -34,7 +34,7 @@ import re
 import shutil
 from pathlib import Path
 
-_LORA_RE = re.compile(r"(.+)\.lora_(A|B)(?:\.default)?\.weight$")
+LORA_WEIGHT_RE = re.compile(r"(.+)\.lora_(A|B)(?:\.default)?\.weight$")
 # TransformerEngine parks FP8 bookkeeping beside every linear it wraps, adapters
 # included. Those tensors carry no weights, but leaving them behind would point
 # at submodules that no longer exist after the merge.
@@ -74,7 +74,7 @@ def main():
         if _LORA_EXTRA_RE.search(name):
             dropped_extra += 1
             continue
-        m = _LORA_RE.match(name)
+        m = LORA_WEIGHT_RE.match(name)
         if m is None:
             base[name] = tensor
             continue
@@ -85,6 +85,7 @@ def main():
         raise SystemExit("no LoRA tensors found; the checkpoint is already merged or was trained without LoRA")
 
     merged = 0
+    has_nonzero_delta = False
     for key in sorted(set(lora_a) & set(lora_b)):
         if key not in base:
             raise SystemExit(f"adapter {key} has no base weight to merge into")
@@ -92,12 +93,16 @@ def main():
         delta = scaling * (lora_b[key].float() @ lora_a[key].float())
         if delta.shape != w.shape:
             raise SystemExit(f"shape mismatch merging {key}: base {tuple(w.shape)} vs delta {tuple(delta.shape)}")
+        has_nonzero_delta = has_nonzero_delta or bool(delta.any().item())
         base[key] = (w.float() + delta).to(w.dtype)
         merged += 1
 
     unmatched = set(lora_a) ^ set(lora_b)
     if unmatched:
         raise SystemExit(f"unpaired LoRA tensors: {sorted(unmatched)[:5]}")
+
+    if not has_nonzero_delta:
+        raise SystemExit("all paired LoRA deltas are zero: the export would contain only the base weights")
 
     print(
         f"[merge] merged {merged} adapter pairs; dropped {len(lora_a) + len(lora_b)} adapter "

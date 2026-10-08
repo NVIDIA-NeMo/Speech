@@ -19,9 +19,9 @@ this project: NeMo assembles a model whose module layout differs from the one
 that produced the checkpoint, the loader is non-strict, and training or
 evaluation proceeds with randomly initialized submodules and no warning.
 
-The check builds the model on the meta device where possible and compares its
-`state_dict()` keys against the safetensors header, which is read without
-loading any tensor data.
+The check builds the model on CPU and compares its `state_dict()` keys and
+shapes against the safetensors header, which is read without loading any
+checkpoint tensor data.
 
 Exit code 0 means every checkpoint tensor has a home and every model parameter
 is covered.
@@ -43,12 +43,12 @@ def parse_args():
     return p.parse_args()
 
 
-def safetensors_keys(path: Path) -> set[str]:
-    """Read tensor names from the safetensors header without mapping the payload."""
+def safetensors_shapes(path: Path) -> dict[str, tuple[int, ...]]:
+    """Read tensor names and shapes from the header without mapping the payload."""
     with path.open("rb") as f:
         header_len = struct.unpack("<Q", f.read(8))[0]
         header = json.loads(f.read(header_len))
-    return {k for k in header if k != "__metadata__"}
+    return {k: tuple(v["shape"]) for k, v in header.items() if k != "__metadata__"}
 
 
 def group(name: str) -> str:
@@ -62,7 +62,8 @@ def main():
     if not weights.is_file():
         sys.exit(f"missing {weights}")
 
-    ckpt_keys = {k for k in safetensors_keys(weights) if not k.endswith(args.ignore_suffix)}
+    ckpt_shapes = {k: shape for k, shape in safetensors_shapes(weights).items() if not k.endswith(args.ignore_suffix)}
+    ckpt_keys = set(ckpt_shapes)
 
     from omegaconf import OmegaConf
 
@@ -83,7 +84,8 @@ def main():
     # large LLM at ~2 bytes/parameter of host RAM.
     cfg["torch_dtype"] = "bfloat16"
     model = SALMAutomodel(cfg)
-    model_keys = {k for k in model.state_dict() if not k.endswith(args.ignore_suffix)}
+    model_shapes = {k: tuple(v.shape) for k, v in model.state_dict().items() if not k.endswith(args.ignore_suffix)}
+    model_keys = set(model_shapes)
     del model
 
     missing_in_model = sorted(ckpt_keys - model_keys)  # checkpoint tensors that would be dropped
@@ -93,9 +95,11 @@ def main():
     new_adapters = sorted(k for k in model_keys - ckpt_keys if is_adapter(k))
     missing_in_ckpt = sorted(k for k in model_keys - ckpt_keys if not is_adapter(k))
 
+    shape_mismatches = sorted(k for k in ckpt_keys & model_keys if ckpt_shapes[k] != model_shapes[k])
+
     print(f"checkpoint tensors: {len(ckpt_keys)}")
     print(f"model parameters:   {len(model_keys)}")
-    print(f"matched:            {len(ckpt_keys & model_keys)}")
+    print(f"matched:            {len(ckpt_keys & model_keys) - len(shape_mismatches)}")
     if new_adapters:
         print(f"new LoRA adapters:  {len(new_adapters)} (expected — these are created by the recipe)")
 
@@ -112,6 +116,14 @@ def main():
         print("These modules would keep their random initialization. Grouped:")
         for g, c in Counter(group(k) for k in missing_in_ckpt).most_common(20):
             print(f"  {c:5d}  {g}")
+
+    if shape_mismatches:
+        ok = False
+        print(f"\nERROR: {len(shape_mismatches)} checkpoint tensors have incompatible shapes.")
+        for k in shape_mismatches[:20]:
+            print(f"  {k}: checkpoint {ckpt_shapes[k]}, model {model_shapes[k]}")
+        if len(shape_mismatches) > 20:
+            print(f"  ... {len(shape_mismatches) - 20} more shape mismatches")
 
     if ok:
         print("\nOK: the configured model and the checkpoint agree on every tensor.")

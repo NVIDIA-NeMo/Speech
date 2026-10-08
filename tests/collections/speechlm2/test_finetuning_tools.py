@@ -19,6 +19,7 @@ import subprocess
 import sys
 from argparse import Namespace
 from pathlib import Path
+from types import ModuleType
 
 import numpy as np
 import pytest
@@ -177,6 +178,52 @@ def test_training_refuses_checkpoints_of_unknown_provenance(tmp_path, monkeypatc
         rt.check_provenance(tmp_path / "exp", {"model": {}}, [])
 
 
+# ---------------------------------------------------------------- checkpoint coverage
+
+
+@pytest.mark.unit
+def test_checkpoint_shapes_read_only_header(tmp_path):
+    coverage = load("check_checkpoint_coverage")
+    path = tmp_path / "model.safetensors"
+    save_file({"w": torch.zeros(2, 3), "counter": torch.tensor(1)}, str(path), metadata={"format": "pt"})
+    data = path.read_bytes()
+    header_end = 8 + int.from_bytes(data[:8], "little")
+    path.write_bytes(data[:header_end])  # No checkpoint payload remains to load.
+    assert coverage.safetensors_shapes(path) == {"w": (2, 3), "counter": ()}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model_shape,expected_status", [((2, 3), 0), ((3, 2), 1)])
+def test_checkpoint_coverage_compares_shapes(tmp_path, monkeypatch, capsys, model_shape, expected_status):
+    coverage = load("check_checkpoint_coverage")
+    save_file(
+        {"llm.weight": torch.zeros(2, 3), "counter": torch.tensor(1), "llm._extra_state": torch.ones(1)},
+        str(tmp_path / "model.safetensors"),
+    )
+    (tmp_path / "config.json").write_text("{}")
+    state = {
+        "llm.weight": torch.zeros(model_shape),
+        "counter": torch.tensor(1),
+        "llm._extra_state": torch.ones(2),
+        "llm.lora_A.weight": torch.zeros(1, 3),
+        "llm.lora_B.weight": torch.zeros(2, 1),
+    }
+    models = ModuleType("nemo.collections.speechlm2.models")
+    models.SALMAutomodel = lambda cfg: Namespace(state_dict=lambda: state)
+    monkeypatch.setitem(sys.modules, models.__name__, models)
+    monkeypatch.setattr(
+        coverage, "parse_args", lambda: Namespace(checkpoint=tmp_path, config=None, ignore_suffix="_extra_state")
+    )
+    assert coverage.main() == expected_status
+    output = capsys.readouterr().out
+    assert "new LoRA adapters:  2" in output
+    if expected_status:
+        assert "incompatible shapes" in output
+        assert "llm.weight: checkpoint (2, 3), model (3, 2)" in output
+    else:
+        assert "OK:" in output
+
+
 # ---------------------------------------------------------------- export and averaging
 
 
@@ -211,6 +258,108 @@ def test_export_detects_lora_tensors(tmp_path):
     )
     assert ex.lora_keys(plain) == []
     assert sorted(ex.lora_keys(lora)) == ["llm.layers.0.q_proj.lora_A.weight", "llm.layers.0.q_proj.lora_B.weight"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("adapter_suffix", ["", ".default"])
+def test_export_rejects_zero_lora_weights_despite_nonzero_bookkeeping(tmp_path, monkeypatch, adapter_suffix):
+    ex = load("export_checkpoint")
+    exp = tmp_path / "exp"
+    (exp / "checkpoints" / "step=1.ckpt").mkdir(parents=True)
+    out = tmp_path / "export"
+    raw = tmp_path / "export_raw"
+    monkeypatch.setenv("SALM_FT_WORK", str(tmp_path / "work"))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "export_checkpoint.py",
+            "--exp-dir",
+            str(exp),
+            "--step",
+            "1",
+            "--base-checkpoint",
+            str(tmp_path / "base"),
+            "--out",
+            str(out),
+        ],
+    )
+    monkeypatch.setattr(ex, "export_provenance", lambda *args: {})
+
+    def convert(cmd, **kwargs):
+        assert "to_hf.py" in cmd[1], "zero adapter weights must be rejected before merging"
+        raw.mkdir()
+        save_file(
+            {
+                "llm.weight": torch.zeros(2, 2),
+                f"llm.lora_A{adapter_suffix}.weight": torch.ones(1, 2),
+                f"llm.lora_B{adapter_suffix}.weight": torch.zeros(2, 1),
+                f"llm.lora_B{adapter_suffix}._extra_state": torch.ones(1),
+            },
+            str(raw / "model.safetensors"),
+        )
+        (raw / "config.json").write_text(json.dumps({"lora": {"dim": 1, "alpha": 1}}))
+
+    monkeypatch.setattr(ex.subprocess, "run", convert)
+    with pytest.raises(SystemExit, match="lora_B is all zero"):
+        ex.main()
+    assert not out.exists()
+    assert len(ex.lora_keys(raw / "model.safetensors")) == 2
+
+
+@pytest.mark.unit
+def test_merge_rejects_nonzero_factors_with_zero_delta(tmp_path, monkeypatch):
+    merge = load("merge_lora_checkpoint")
+    src, dst = tmp_path / "raw", tmp_path / "merged"
+    src.mkdir()
+    save_file(
+        {
+            "llm.weight": torch.ones(2, 2),
+            "llm.lora_A.weight": torch.tensor([[1.0, 0.0], [-1.0, 0.0]]),
+            "llm.lora_B.weight": torch.ones(2, 2),
+        },
+        str(src / "model.safetensors"),
+    )
+    (src / "config.json").write_text(json.dumps({"lora": {"dim": 2, "alpha": 4}}))
+    monkeypatch.setattr(merge, "parse_args", lambda: Namespace(src=src, dst=dst, scaling=None))
+    with pytest.raises(SystemExit, match="all paired LoRA deltas are zero"):
+        merge.main()
+    assert not (dst / "model.safetensors").exists()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("adapter_suffix", ["", ".default"])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_merge_preserves_weight_arithmetic(tmp_path, monkeypatch, adapter_suffix, dtype):
+    from safetensors.torch import load_file
+
+    merge = load("merge_lora_checkpoint")
+    src, dst = tmp_path / "raw", tmp_path / "merged"
+    src.mkdir()
+    w = torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=dtype)
+    a = torch.tensor([[0.125, 0.25]], dtype=dtype)
+    b = torch.tensor([[0.5], [-0.25]], dtype=dtype)
+    save_file(
+        {
+            "llm.weight": w,
+            f"llm.lora_A{adapter_suffix}.weight": a,
+            f"llm.lora_B{adapter_suffix}.weight": b,
+            f"llm.lora_B{adapter_suffix}._extra_state": torch.ones(1),
+            "unchanged.weight": torch.eye(2, dtype=dtype),
+            f"unchanged.lora_A{adapter_suffix}.weight": torch.ones(1, 2, dtype=dtype),
+            f"unchanged.lora_B{adapter_suffix}.weight": torch.zeros(2, 1, dtype=dtype),
+        },
+        str(src / "model.safetensors"),
+    )
+    config = {"lora": {"dim": 1, "alpha": 2}, "pretrained_asr": "test-encoder"}
+    (src / "config.json").write_text(json.dumps(config))
+    monkeypatch.setattr(merge, "parse_args", lambda: Namespace(src=src, dst=dst, scaling=None))
+    merge.main()
+    merged = load_file(str(dst / "model.safetensors"))
+    assert set(merged) == {"llm.weight", "unchanged.weight"}
+    assert torch.equal(merged["llm.weight"], (w.float() + 2.0 * (b.float() @ a.float())).to(w.dtype))
+    assert torch.equal(merged["unchanged.weight"], torch.eye(2, dtype=dtype))
+    assert json.loads((dst / "config.json").read_text()) == {"pretrained_asr": "test-encoder"}
 
 
 @pytest.mark.unit

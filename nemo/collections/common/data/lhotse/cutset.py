@@ -67,10 +67,10 @@ def temperature_reweighting(weights: List[Union[float, int]], temperature: float
 
     Args:
         weights: List of dataset weights (can be hours, sample counts, or probabilities).
-                 Values can be any positive float/int, not limited to [0, 1].
+                 Values must be nonnegative, with at least one positive value. Zeros remain disabled.
         temperature: Scaling factor.
                      - 1.0: preserves original weight ratios
-                     - 0.0: equalizes all weights (w^0 = 1)
+                     - 0.0: equalizes positive weights; zero weights remain zero
                      - <1.0: oversamples smaller datasets
                      - >1.0: amplifies weight differences
 
@@ -86,9 +86,13 @@ def temperature_reweighting(weights: List[Union[float, int]], temperature: float
     if len(weights) == 0:
         return []
     weights = np.asarray(weights)
-    if np.any(weights <= 0):
-        raise ValueError(f"All weights must be positive (> 0), got: {weights.tolist()}")
-    weights = weights**temperature
+    positive = weights > 0
+    if np.any(weights < 0) or not np.any(positive):
+        raise ValueError(f"Weights must be nonnegative with at least one positive value, got: {weights.tolist()}")
+    # Keep disabled graph slots addressable for saved packing-buffer origins.
+    # They must remain disabled even when temperature=0 (where 0**0 is 1).
+    weights = np.where(positive, weights, 1) ** temperature
+    weights[~positive] = 0
     return (weights / weights.sum()).tolist()
 
 
@@ -1921,13 +1925,22 @@ def mux(
 ) -> CutSet:
     """
     Helper function to call the right multiplexing method flavour in lhotse.
-    The result is always an infinitely iterable ``CutSet``, but depending on whether ``max_open_streams`` is set,
-    it will select a more appropriate multiplexing strategy.
+    Unless ``force_finite`` is set, the result is infinitely iterable. ``max_open_streams`` selects
+    the multiplexing strategy. Finite mixtures omit disabled sources so iteration stops after all
+    positive-weight sources are exhausted; infinite mixtures retain source slots for graph restoration.
     """
     if max_open_streams is not None:
         assert not force_finite, "max_open_streams and metadata_only/force_finite options are not compatible"
         cuts = CutSet.infinite_mux(*cutsets, weights=weights, seed=seed, max_open_streams=max_open_streams)
     else:
+        if force_finite and weights is not None:
+            # Lhotse's finite mux otherwise keeps disabled sources active after
+            # all positive-weight sources end, then samples an all-zero mixture.
+            enabled = [(cs, weight) for cs, weight in zip(cutsets, weights) if weight > 0]
+            if not enabled:
+                raise ValueError("Finite mixtures require at least one positive weight.")
+            cutsets, weights = zip(*enabled)
+            weights = list(weights)
         if not force_finite:
             cutsets = [cs.repeat(preserve_id=True) for cs in cutsets]
         if len(cutsets) == 1:

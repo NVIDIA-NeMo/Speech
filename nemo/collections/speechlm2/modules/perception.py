@@ -29,6 +29,19 @@ from nemo.collections.asr.parts.packed_sequence import (
 from nemo.core import Exportable, NeuralModule, typecheck
 
 
+def _configure_short_recording_spec_augment(spec_augmentation: nn.Module | None, preprocessor: nn.Module) -> None:
+    """Apply the SpeechLM short-recording safety policy when supported."""
+    configure = getattr(spec_augmentation, "configure_short_recording_time_mask_cap", None)
+    if not callable(configure):
+        return
+    featurizer = preprocessor.featurizer
+    configure(
+        frame_duration_seconds=featurizer.hop_length / featurizer.sample_rate,
+        max_duration_seconds=1.0,
+        max_mask_fraction=0.1,
+    )
+
+
 class AudioPerceptionModule(NeuralModule, Exportable):
     """Audio perception module that consists of audio encoder(s) and modality adapter."""
 
@@ -87,6 +100,7 @@ class AudioPerceptionModule(NeuralModule, Exportable):
             self.spec_augmentation = self.from_config_dict(cfg.spec_augment)
         else:
             self.spec_augmentation = None
+        _configure_short_recording_spec_augment(self.spec_augmentation, self.preprocessor)
         self.modality_adapter = self.from_config_dict(cfg.modality_adapter)
         if isinstance(self.modality_adapter, (QformerConnector, MultiLayerProjectionConnector)):
             from nemo.collections.asr.modules.conformer_encoder import ConformerMultiLayerFeatureExtractor
@@ -534,6 +548,7 @@ class AudioTranscriptionPerceptionModule(NeuralModule, Exportable):
         self.spec_augmentation = None
         if 'spec_augment' in cfg and cfg.spec_augment is not None:
             self.spec_augmentation = self.from_config_dict(cfg.spec_augment)
+        _configure_short_recording_spec_augment(self.spec_augmentation, self.preprocessor)
         self.modality_adapter = self.from_config_dict(cfg.modality_adapter)
         if isinstance(self.modality_adapter, (QformerConnector, MultiLayerProjectionConnector)):
             from nemo.collections.asr.modules.conformer_encoder import ConformerMultiLayerFeatureExtractor

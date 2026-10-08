@@ -18,7 +18,7 @@ import torch.nn as nn
 from lightning.pytorch.plugins import HalfPrecision
 from omegaconf import DictConfig
 
-from nemo.utils.trainer_utils import FlashPrecision, HalfPrecisionForAudio, resolve_trainer_cfg
+from nemo.utils.trainer_utils import AutomodelBF16Precision, FlashPrecision, HalfPrecisionForAudio, resolve_trainer_cfg
 
 
 class TestForwardContext:
@@ -115,18 +115,46 @@ class TestResolveTrainerCfg:
         assert plugins[0].precision == "fp16-flash"
         assert plugins[0]._desired_input_dtype == torch.float16
 
-    def test_legacy_automodel_aliases_resolve_to_flash_precision(self):
+    def test_bf16_automodel_uses_its_own_precision_plugin(self):
         cfg = DictConfig({"precision": "bf16-automodel"})
         resolved = resolve_trainer_cfg(cfg)
         plugins = resolved["plugins"]
-        assert isinstance(plugins[0], FlashPrecision)
-        assert plugins[0].precision == "bf16-flash"
+        assert type(plugins[0]) is AutomodelBF16Precision
+        assert plugins[0].precision == "bf16-automodel"
+
+    def test_legacy_fp16_automodel_alias_resolves_to_flash_precision(self):
 
         cfg = DictConfig({"precision": "fp16-automodel"})
         resolved = resolve_trainer_cfg(cfg)
         plugins = resolved["plugins"]
         assert isinstance(plugins[0], FlashPrecision)
         assert plugins[0].precision == "fp16-flash"
+
+
+class TestAutomodelBF16Precision:
+    def test_preserves_mixed_parameter_and_buffer_dtypes(self):
+        module = nn.Sequential(nn.Linear(4, 4), nn.Linear(4, 4))
+        module[0].to(dtype=torch.bfloat16)
+        module.register_buffer("router_correction", torch.ones(4, dtype=torch.float32))
+        plugin = AutomodelBF16Precision()
+        assert plugin.convert_module(module) is module
+        assert module[0].weight.dtype == torch.bfloat16
+        assert module[1].weight.dtype == torch.float32
+        assert module.router_correction.dtype == torch.float32
+
+    def test_no_autocast_or_default_dtype_change(self):
+        plugin = AutomodelBF16Precision()
+        with plugin.forward_context():
+            assert torch.get_default_dtype() == torch.float32
+            assert not torch.is_autocast_enabled("cpu")
+            assert torch.ones(1).dtype == torch.float32
+
+    def test_converts_non_audio_inputs_only(self):
+        plugin = AutomodelBF16Precision()
+        inputs = {"audio_signal": torch.ones(3, dtype=torch.float32), "features": torch.ones(3, dtype=torch.float32)}
+        converted = plugin.convert_input(inputs)
+        assert converted["audio_signal"].dtype == torch.float32
+        assert converted["features"].dtype == torch.bfloat16
 
     def test_bf16_true_still_creates_half_precision_for_audio(self):
         cfg = DictConfig({"precision": "bf16-true"})

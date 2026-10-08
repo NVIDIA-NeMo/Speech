@@ -50,7 +50,7 @@ See the `SALM paper <https://arxiv.org/abs/2310.09424>`_ for more details.
       # Freezing parameters
       freeze_params:
         - "^llm\\.model\\.layers\\.[0-4]\\..+$"  # Regex patterns for parameters to freeze
-      prevent_freeze_params: []  # Override freeze_params for specific submodules
+      prevent_freeze_params: []  # Keep these trainable, overriding freeze_params and module-level freezing
       
       # Optional LoRA settings for efficient fine-tuning
       lora:
@@ -451,6 +451,19 @@ Model Parameters
 - **pretrained_audio_codec**: Path to the pretrained audio codec model (for speech generation)
 - **init_from_checkpoint**: Path to a training checkpoint to initialize model weights from (see :ref:`fine-tuning-from-checkpoint` below)
 - **freeze_params**: Regex patterns of parameters to freeze during training
+- **prevent_freeze_params**: Regex patterns of parameters that must stay trainable. They take precedence
+  over ``freeze_params`` and also over module-level freezing: a matching parameter is re-enabled even if
+  its module was frozen during setup (for example, when LoRA adapters freeze the rest of the LLM).
+- **lr_multipliers**: Optional mapping of parameter-name regex to learning-rate multiplier, e.g.
+  ``{"perception\\..*": 10.0}``. Matching parameters get their own optimizer parameter group with
+  ``lr = optimizer.lr * multiplier``; the first matching pattern wins and unmatched parameters keep the
+  base learning rate.
+- **pe_encoder_path**: Path to a standalone ParallelExpertEncoder ``.nemo`` bundle (or a pretrained model
+  id) to mount as the perception encoder. Optional **pe_encoder_overrides** adjust the bundle's config.
+- **pe_encoder_config**: Inline ParallelExpertEncoder config, as embedded in consolidated checkpoints.
+  It constructs only the encoder architecture: the weights must come from the checkpoint loaded
+  afterwards (e.g. via ``init_from_checkpoint``), otherwise the encoder keeps its random initialization.
+  It is mutually exclusive with ``pe_encoder_path`` and cannot be combined with ``pe_encoder_overrides``.
 - **audio_loss_weight/text_loss_weight**: Weighting of different loss components
 
 Perception Module

@@ -68,6 +68,7 @@ ALLOWED_TARGET_PREFIXES = [
     "torch.nn.",
     "torch.distributed.fsdp.",
     "torch.optim.",
+    "transformer_engine.pytorch.optimizers.fused_adam.FusedAdam",
     "torch.utils.data.",
     "torchmetrics.",
     "lightning.pytorch.callbacks.",
@@ -105,6 +106,7 @@ ALLOWED_CLASS_PREFIXES_WITH_OPTIONAL_DEPENDENCIES = [
 
 ALLOWED_EXACT_CLASS_TARGETS = {
     "nemo_text_processing.text_normalization.normalize.Normalizer",
+    "transformer_engine.pytorch.optimizers.fused_adam.FusedAdam",
 }
 
 ALLOWED_LEGACY_FALLBACK_TARGETS = {
@@ -269,6 +271,14 @@ def _is_target_allowed(target: str) -> bool:
                 from torch.optim.lr_scheduler import _LRScheduler
 
                 return issubclass(obj, _LRScheduler)
+            except (ImportError, TypeError):
+                return False
+
+        if target == "nemo.collections.speechlm2.parts.lr_only_resume.ScaleRestoredLearningRate":
+            try:
+                from lightning.pytorch.callbacks import Callback
+
+                return issubclass(obj, Callback)
             except (ImportError, TypeError):
                 return False
 

@@ -26,9 +26,11 @@ from huggingface_hub.errors import LocalEntryNotFoundError
 from omegaconf import OmegaConf
 from torch import nn
 
+from nemo.collections.tts.data.text_to_speech_dataset_lhotse_multiturn import MagpieTTSLhotseMultiturnDataset
 from nemo.collections.tts.models import AudioCodecModel
 from nemo.collections.tts.models.easy_magpietts import EasyMagpieTTSModel
 from nemo.collections.tts.models.easy_magpietts_inference import EasyModelInferenceParameters, TrainingMode
+from tests.collections.tts.data.test_magpietts_dataset_lhotse import _multiturn_cutset
 from tests.collections.tts.models.test_audio_codec import create_codec_config
 
 
@@ -533,3 +535,49 @@ def test_validation_step_smoke(model, toy_batch, tmp_path):
     assert torch.isfinite(output["val_codebook_loss"])
     assert output["val_local_transformer_loss"] is None
     assert model.validation_step_outputs[-1] == output
+
+
+@pytest.mark.run_only_on('CPU')
+def test_multiturn_lhotse_dataloader_omits_alignment_prior():
+    """EMTTS multiturn batches must omit the alignment prior, rather than return a zero-scaled tensor."""
+    with torch.device('cpu'):
+        cfg = tiny_easy_magpie_cfg(
+            {'use_bpe_char_tokenizer': False, 'load_cached_codes_if_available': True, 'use_multiturn_dataset': True}
+        )
+        cfg.text_tokenizers = {
+            'english_char': {
+                '_target_': 'nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.EnglishCharsTokenizer'
+            }
+        }
+        cfg.text_conditioning_tokenizer_name = 'english_char'
+        cfg.context_duration_min = 0.04
+        cfg.context_duration_max = 0.04
+        model = _make_easy_magpie_model(cfg)
+
+        cuts = _multiturn_cutset()
+        for cut in cuts:
+            cut.tokenizer_names = ['english_char']
+        dataset_cfg = OmegaConf.create(
+            {
+                'use_lhotse': True,
+                'volume_norm': False,
+                'dataset': {'batch_size': 1},
+            }
+        )
+
+        # Supply in-memory cuts while exercising the real Lhotse sampler, dataset, and dataloader.
+        with patch(
+            'nemo.collections.common.data.lhotse.dataloader.read_cutset_from_config', return_value=(cuts, False)
+        ):
+            model.setup_training_data(dataset_cfg)
+        dataloader = model.train_dataloader()
+        assert isinstance(dataloader.dataset.dataset, MagpieTTSLhotseMultiturnDataset)
+        batch = next(iter(dataloader))
+
+        assert batch['audio_codes'].shape == (1, model.data_num_audio_codebooks, 8)
+        assert batch['text_lens'].item() > 0
+        assert batch['raw_texts'] == ['hello okay']
+        assert batch['user_mask'].sum().item() > 0
+        assert batch['agent_mask'].sum().item() > 0
+        # Ensure the alignment prior is not present
+        assert 'align_prior_matrix' not in batch

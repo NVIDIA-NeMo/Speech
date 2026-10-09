@@ -149,6 +149,11 @@ class NeMoSpeechLMForConditionalGeneration(
                 )
                 self._uses_pe_encoder = _is_parallel_expert_encoder(getattr(self.perception, "encoder", None))
 
+        if isinstance(backend, HybridBackend):
+            from nemo.collections.speechlm2.vllm.salm.precision import preserve_hybrid_precision
+
+            preserve_hybrid_precision(self.language_model)
+
         self.make_empty_intermediate_tensors = self.language_model.make_empty_intermediate_tensors
 
     # ── language-model integration ──

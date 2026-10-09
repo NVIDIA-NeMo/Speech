@@ -160,6 +160,9 @@ class NeMoSpeechLMMTP(NemotronHMTP):
         # NeMoSpeechLMConfig delegates this to the already padded text-config
         # vocabulary used to construct NemotronHMTP. Reading config directly
         # avoids coupling padding to vLLM's internal module names.
+        from nemo.collections.speechlm2.vllm.salm.precision import preserve_hybrid_precision
+
+        preserve_hybrid_precision(self)
         target_vocab = int(self.config.vocab_size)
         if target_vocab <= 0:
             raise ValueError(f"Draft model vocabulary size must be positive, got {target_vocab}.")

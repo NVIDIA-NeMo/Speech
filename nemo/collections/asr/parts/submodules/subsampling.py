@@ -482,7 +482,10 @@ class ConvSubsampling(torch.nn.Module):
         else:
             raise ValueError(f"Not valid sub-sampling: {subsampling}!")
 
-        self.conv = MaskedConvSequential(*layers)
+        if self.conv2d_subsampling:
+            self.conv = MaskedConvSequential(*layers)
+        else:
+            self.conv = torch.nn.Sequential(*layers)
 
         # The kernels implement `dw_striding`'s layout, [conv, act] + (sampling_num - 1) x
         # [dw, pw, act], with ReLU baked in; a factor of 2 stops after [conv, act], leaving no
@@ -493,7 +496,8 @@ class ConvSubsampling(torch.nn.Module):
                 "use_triton=True was requested, but the fused kernels only cover dw_striding with "
                 "subsampling_factor >= 4 and a ReLU activation, falling back to PyTorch instead."
             )
-        self.conv.fuse_triton = supported and (TRITON_AVAILABLE if use_triton is None else use_triton)
+        if self.conv2d_subsampling:
+            self.conv.fuse_triton = supported and (TRITON_AVAILABLE if use_triton is None else use_triton)
 
     def get_sampling_frames(self):
         return [1, self.subsampling_factor]
@@ -529,34 +533,38 @@ class ConvSubsampling(torch.nn.Module):
             x = x.transpose(1, 2)
 
         # split inputs if chunking_factor is set
-        if self.subsampling_conv_chunking_factor != -1 and self.conv2d_subsampling:
-            if self.subsampling_conv_chunking_factor == 1:
-                # if subsampling_conv_chunking_factor is 1, we split only if needed
-                # avoiding a bug / feature limiting indexing of tensors to 2**31
-                # see https://github.com/pytorch/pytorch/issues/80020
-                # Split on '>=': at equality the tensor already holds INT_MAX elements, the
-                # value that trips canUse32BitIndexMath. Guard the conv input and its output.
-                need_to_split = (
-                    self._first_conv_output_numel(x) >= _MAX_CONV_NUMEL_32BIT
-                    or torch.numel(x) >= _MAX_CONV_NUMEL_32BIT
-                )
-            else:
-                # if subsampling_conv_chunking_factor > 1 we always split
-                need_to_split = True
+        if self.conv2d_subsampling:
+            if self.subsampling_conv_chunking_factor != -1:
+                if self.subsampling_conv_chunking_factor == 1:
+                    # if subsampling_conv_chunking_factor is 1, we split only if needed
+                    # avoiding a bug / feature limiting indexing of tensors to 2**31
+                    # see https://github.com/pytorch/pytorch/issues/80020
+                    # Split on '>=': at equality the tensor already holds INT_MAX elements, the
+                    # value that trips canUse32BitIndexMath. Guard the conv input and its output.
+                    need_to_split = (
+                        self._first_conv_output_numel(x) >= _MAX_CONV_NUMEL_32BIT
+                        or torch.numel(x) >= _MAX_CONV_NUMEL_32BIT
+                    )
+                else:
+                    # if subsampling_conv_chunking_factor > 1 we always split
+                    need_to_split = True
 
-            if need_to_split:
-                x, lengths, success = self.conv_split_by_batch(x, lengths)
-                if not success:  # if unable to split by batch, try by channel
-                    if self._subsampling == 'dw_striding':
-                        # TODO: implement lengths inside conv_split_by_channel
-                        x = self.conv_split_by_channel(x)
-                        lengths = out_lengths
-                    else:
-                        x, lengths = self.conv(x, lengths)  # try anyway
+                if need_to_split:
+                    x, lengths, success = self.conv_split_by_batch(x, lengths)
+                    if not success:  # if unable to split by batch, try by channel
+                        if self._subsampling == 'dw_striding':
+                            # TODO: implement lengths inside conv_split_by_channel
+                            x = self.conv_split_by_channel(x)
+                            lengths = out_lengths
+                        else:
+                            x, lengths = self.conv(x, lengths)  # try anyway
+                else:
+                    x, lengths = self.conv(x, lengths)
             else:
                 x, lengths = self.conv(x, lengths)
         else:
-            x, lengths = self.conv(x)
+            x = self.conv(x)
+            lengths = out_lengths
 
         # Flatten Channel and Frequency Axes
         if self.conv2d_subsampling:
@@ -784,8 +792,16 @@ def apply_channel_mask(tensor, mask):
     return tensor * expanded_mask
 
 
-def calculate_conv_output_size(input_size: torch.Tensor, kernel_size: int, stride: int, padding: tuple[int, int]):
+def calculate_conv_output_size(
+    input_size: torch.Tensor,
+    kernel_size: int,
+    stride: int,
+    padding: tuple[int, int],
+    ceil_mode: bool = False,
+):
     """Calculate exact output size after convolution."""
+    if ceil_mode:
+        return (input_size + padding[0] + padding[1] - kernel_size + stride - 1) // stride + 1
     return (input_size + padding[0] + padding[1] - kernel_size) // stride + 1
 
 
@@ -828,11 +844,23 @@ class MaskedConvSequential(nn.Sequential):
             x = layer(x)
 
             # Update lengths for stride operations with proper padding
-            if hasattr(layer, 'stride') and layer.stride != (1, 1):
-                current_lengths = calculate_conv_output_size(
-                    current_lengths, layer.kernel_size[0], layer.stride[0], _layer_padding(layer)
-                )
-                mask = self._create_mask(x, current_lengths.long())
+            if hasattr(layer, 'stride'):
+                stride = layer.stride if isinstance(layer.stride, (tuple, list)) else (layer.stride, layer.stride)
+                if stride != (1, 1):
+                    kernel_size = (
+                        layer.kernel_size
+                        if isinstance(layer.kernel_size, (tuple, list))
+                        else (layer.kernel_size, layer.kernel_size)
+                    )
+                    ceil_mode = getattr(layer, 'ceil_mode', False)
+                    current_lengths = calculate_conv_output_size(
+                        current_lengths,
+                        kernel_size[0],
+                        stride[0],
+                        _layer_padding(layer),
+                        ceil_mode=ceil_mode,
+                    )
+                    mask = self._create_mask(x, current_lengths.long())
 
         return x, current_lengths, mask
 
@@ -902,7 +930,8 @@ def _layer_padding(layer):
     """
     if hasattr(layer, "_left_padding"):
         return layer._left_padding, layer._right_padding
-    return layer.padding[0], layer.padding[0]
+    pad = layer.padding if isinstance(layer.padding, (tuple, list)) else (layer.padding, layer.padding)
+    return pad[0], pad[0]
 
 
 def _is_depthwise(layer):

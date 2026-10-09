@@ -216,3 +216,47 @@ class TestSubsamplingReductionModulePooling:
         assert out_lengths[0].item() == out.shape[1]
         expected = torch.div(lengths - reduction_factor, reduction_factor, rounding_mode='floor') + 1
         assert out_lengths.tolist() == expected.tolist()
+
+
+class TestConvSubsamplingForwardModes:
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "subsampling,chunking_factor",
+        [
+            ("striding", -1),
+            ("striding", 1),
+            ("dw_striding", -1),
+            ("dw_striding", 1),
+            ("striding_conv1d", -1),
+            ("striding_conv1d", 1),
+            ("dw_striding_conv1d", -1),
+            ("dw_striding_conv1d", 1),
+            ("vggnet", -1),
+            ("vggnet", 1),
+        ],
+    )
+    def test_forward_with_lengths(self, subsampling, chunking_factor):
+        """Verify forward pass executes and returns valid shapes and lengths for all subsampling types and chunking factors (#16223)."""
+        sub = ConvSubsampling(
+            subsampling=subsampling,
+            subsampling_factor=4,
+            feat_in=80,
+            feat_out=128,
+            conv_channels=64,
+            subsampling_conv_chunking_factor=chunking_factor,
+        ).eval()
+
+        batch_size = 2
+        time_len = 100
+        x = torch.randn(batch_size, time_len, 80)
+        lengths = torch.tensor([100, 90], dtype=torch.long)
+
+        out, out_lengths = sub(x, lengths)
+
+        assert out.ndim == 3
+        assert out.shape[0] == batch_size
+        assert out.shape[2] == 128
+        assert out_lengths.shape == (batch_size,)
+        assert out_lengths[0].item() == out.shape[1]
+        assert (out_lengths <= out.shape[1]).all()
+        assert out_lengths[1] < out_lengths[0]

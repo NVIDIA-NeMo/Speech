@@ -800,16 +800,32 @@ class AbstractCTCDecoding(ConfidenceMixin):
         Returns:
 
         """
-        start_index = 0
+        non_blank_frames = hypothesis.timestamp if hypothesis.timestamp is not None else []
+        if isinstance(non_blank_frames, torch.Tensor):
+            non_blank_frames = non_blank_frames.tolist()
+        non_blank_frames = list(non_blank_frames)
 
-        # If the exact timestep information is available, utilize the 1st non-ctc blank token timestep
-        # as the start index.
-        if hypothesis.timestamp is not None and len(hypothesis.timestamp) > 0:
-            start_index = max(0, hypothesis.timestamp[0] - 1)
-
-        # Construct the start and end indices brackets
-        end_indices = np.asarray(token_lengths).cumsum()
-        start_indices = np.concatenate(([start_index], end_indices[:-1]))
+        if len(non_blank_frames) == len(token_lengths) and len(non_blank_frames) > 0:
+            # Every token occupies exactly one frame, so the timesteps are the token positions.
+            start_indices = np.asarray(non_blank_frames)
+            end_indices = start_indices + 1
+        elif len(non_blank_frames) > len(token_lengths):
+            # Consecutive repeats were folded into one token. `token_lengths[i]` is the distance between the first
+            # frames of tokens `i - 1` and `i`, so its cumulative sum is the first frame of each token.
+            start_indices = np.asarray(token_lengths).cumsum()
+            next_start_indices = np.append(start_indices[1:], np.iinfo(np.int64).max)
+            non_blank_set = set(non_blank_frames)
+            end_indices = []
+            for start, next_start in zip(start_indices.tolist(), next_start_indices.tolist()):
+                end = start
+                while end < next_start and end in non_blank_set:
+                    end += 1
+                end_indices.append(end)
+            end_indices = np.asarray(end_indices)
+        else:
+            # No timestep information, `token_lengths` is all that is known.
+            end_indices = np.asarray(token_lengths).cumsum()
+            start_indices = np.concatenate(([0], end_indices[:-1]))
 
         # Merge the results per token into a list of dictionaries
         offsets = [

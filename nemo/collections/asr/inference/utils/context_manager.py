@@ -74,7 +74,14 @@ class CacheAwareContextManager:
         self.reset()
 
     def reset(self) -> None:
-        """Resets the context manager"""
+        """
+        Reset stream/slot maps and restore free-slot capacity.
+
+        On first call (cache tensors still None) allocate via get_initial_cache_state.
+        On later calls (session open/close) zero existing tensors in place so peak RSS
+        does not grow from a second full cache while the old one is still referenced.
+        Assumes a zero initial cache, the same assumption as _reset_slots.
+        """
         if self.cache_disabled:
             return
 
@@ -83,12 +90,17 @@ class CacheAwareContextManager:
         self.free_slots = Queue(self.num_slots)
         for i in range(self.num_slots):
             self.free_slots.put(i)
-        (
-            self.cache_last_channel,  # [17, B, 70, 512]
-            self.cache_last_time,  # [17, B, 512, 8]
-            self.cache_last_channel_len,  # B
-        ) = self.cache_aware_model.get_initial_cache_state(self.num_slots)
-        self.device = self.cache_last_channel.device
+        if self.cache_last_channel is None:
+            (
+                self.cache_last_channel,  # [17, B, 70, 512]
+                self.cache_last_time,  # [17, B, 512, 8]
+                self.cache_last_channel_len,  # B
+            ) = self.cache_aware_model.get_initial_cache_state(self.num_slots)
+            self.device = self.cache_last_channel.device
+        else:
+            self.cache_last_channel.zero_()
+            self.cache_last_time.zero_()
+            self.cache_last_channel_len.zero_()
 
     def _reset_slots(self, slot_ids: list[int]) -> None:
         """
@@ -137,6 +149,23 @@ class CacheAwareContextManager:
         self.cache_last_channel_len.index_copy_(
             0, slot_ids, new_context.cache_last_channel_len.index_select(0, tgt_slot_ids)
         )
+
+    def free_stream(self, stream_id: int) -> None:
+        """
+        Free the encoder-cache slot held by stream_id if any.
+
+        Idempotent: a no-op when the stream has no mapped slot (for example after an
+        is_last free via reset_slots()). Safe to call from delete_state(). Unlike
+        _reset_slots, this guards on membership so a double free cannot corrupt
+        the free_slots queue.
+        Args:
+            stream_id (int): stream id whose slot should be returned to the free pool
+        """
+        if self.cache_disabled:
+            return
+        slot_idx = self.streamidx2slotidx.get(stream_id)
+        if slot_idx is not None:
+            self._reset_slots([slot_idx])
 
     def reset_slots(self, stream_ids: list[int], eos_flags: list[bool]) -> None:
         """

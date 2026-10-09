@@ -13,6 +13,7 @@
 # limitations under the License.
 import random
 import warnings
+from pathlib import Path
 
 from scripts.tts_comparison_report.reporting.constants import SEED
 from scripts.tts_comparison_report.reporting.models import AudioPair, BucketData, BucketStructure
@@ -33,7 +34,10 @@ def _collect_audio_pairs(
     pairs = []
 
     if set(baseline_paths) != set(candidate_paths):
-        raise ValueError(f"Audio sample sets differ for benchmark '{benchmark_name}'.")
+        raise ValueError(
+            f"Audio sample sets differ for benchmark '{benchmark_name}': "
+            + _describe_missing_samples(bucket_baseline, baseline_paths, bucket_candidate, candidate_paths)
+        )
 
     for name in baseline_paths:
         if name not in candidate_paths or name not in baseline_meta or name not in candidate_meta:
@@ -49,6 +53,7 @@ def _collect_audio_pairs(
 
         pair = AudioPair(
             context_path=baseline_meta[name].context_path,
+            target_path=baseline_meta[name].target_path,
             baseline_path=baseline_paths[name],
             candidate_path=candidate_paths[name],
             text=baseline_meta[name].gt_text,
@@ -69,14 +74,19 @@ def prepare_audio_pairs(
 ) -> dict[str, list[AudioPair]]:
     """Prepare audio pairs for the selected benchmarks.
 
+    Each pair holds, for one utterance, the context prompt (audio-context benchmarks), the target
+    recording, and the baseline and candidate samples.
+
     Args:
         bucket_baseline: Baseline bucket data.
         bucket_candidate: Candidate bucket data.
+        bucket_structure: Bucket naming and path conventions used to resolve the matching target and
+            context audio files.
         used_benchmarks: Benchmark names to include in the audio report.
         samples_per_benchmark: Maximum number of audio pairs to sample per benchmark.
 
     Returns:
-        Mapping from benchmark name to sampled baseline/candidate audio pairs.
+        Mapping from benchmark name to sampled audio pairs.
 
     Raises:
         ValueError: If benchmark audio sets or sample metadata are inconsistent.
@@ -96,3 +106,21 @@ def prepare_audio_pairs(
         pairs[benchmark_name] = sampled_pairs
 
     return pairs
+
+
+def _describe_missing_samples(
+    bucket_baseline: BucketData,
+    baseline_paths: dict[str, Path],
+    bucket_candidate: BucketData,
+    candidate_paths: dict[str, Path],
+) -> str:
+    parts = []
+
+    for bucket, missing in [
+        (bucket_candidate, sorted(set(baseline_paths) - set(candidate_paths))),
+        (bucket_baseline, sorted(set(candidate_paths) - set(baseline_paths))),
+    ]:
+        if missing:
+            parts.append(f"missing in bucket '{bucket.name}': {', '.join(missing)}")
+
+    return "; ".join(parts) + "."

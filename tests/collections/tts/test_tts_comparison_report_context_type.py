@@ -11,10 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Unit tests for the TTS comparison report tool: context-type gating of metrics and audio discovery, and
-the availability rule of the ground-truth speaker-similarity metric (``pred_gt_ssim``)."""
+"""Unit tests for the TTS comparison report tool: context-type gating of metrics, the availability rule of
+the ground-truth speaker-similarity metric (``pred_gt_ssim``), and the audio report, which shows the target
+recording for every benchmark and the context prompt for audio-context benchmarks only."""
 
 import json
+import re
 import warnings
 from io import BytesIO
 from pathlib import Path
@@ -24,6 +26,7 @@ import matplotlib
 import pytest
 
 from scripts.tts_comparison_report.generate_report import _validate_audio_report_benchmarks
+from scripts.tts_comparison_report.reporting.components.audio_report import prepare_audio_pairs
 from scripts.tts_comparison_report.reporting.components.boxplots import BoxPlotsConfig, prepare_boxplots
 from scripts.tts_comparison_report.reporting.components.eval_report import prepare_eval_artifacts
 from scripts.tts_comparison_report.reporting.components.metrics_table import (
@@ -31,13 +34,21 @@ from scripts.tts_comparison_report.reporting.components.metrics_table import (
     prepare_summary_metrics_table_rows,
 )
 from scripts.tts_comparison_report.reporting.components.stat_tests import run_stat_tests
-from scripts.tts_comparison_report.reporting.constants import BENCHMARK_META, ContextType
+from scripts.tts_comparison_report.reporting.constants import BENCHMARK_META, TEMPLATES_DIR, ContextType
 from scripts.tts_comparison_report.reporting.metrics import (
     DistributionMetricSpec,
     DistributionMetricsRegistry,
     MetricsRegistry,
 )
-from scripts.tts_comparison_report.reporting.models import BenchmarkData, BucketData, BucketStructure
+from scripts.tts_comparison_report.reporting.models import (
+    BenchmarkData,
+    BucketData,
+    BucketStructure,
+    ExpirationInfo,
+    TaskInfo,
+)
+from scripts.tts_comparison_report.reporting.orchestrator import Orchestrator
+from scripts.tts_comparison_report.reporting.renderer import Renderer
 from scripts.tts_comparison_report.reporting.storage import BaseStorage
 
 AUDIO_BENCHMARK = "de_qa"
@@ -46,6 +57,10 @@ CONTEXT_SSIM_NAME = "SSIM (pred vs context)"
 GT_SSIM_KEY = "pred_gt_ssim"
 GT_SSIM_NAME = "SSIM (pred vs GT)"
 NUM_SAMPLES = 8
+# Number of utterances per benchmark in the in-memory buckets of the audio report tests.
+NUM_AUDIO_SAMPLES = 2
+# Audio layouts under ``audio/repeat_0`` that ``_bucket_files`` can write next to the generated audio.
+AUDIO_LAYOUTS = ("audio", "text", "no-target", "none")
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 # Sentinel for the ground-truth SSIM fixture parameters: derive finite values from the bucket offset.
 _FINITE: Any = object()
@@ -607,67 +622,308 @@ class _InMemoryStorage(BaseStorage):
         return self._files[path]
 
 
-def _bucket_files(root: str, benchmark_dirs: dict[str, bool]) -> dict[str, bytes]:
-    """Lay out a results bucket; benchmarks mapped to True also get context and generated audio."""
+class _FakeS3Client:
+    """Record uploaded keys and return deterministic URLs instead of talking to S3."""
+
+    def __init__(self):
+        self.keys: list[str] = []
+
+    def upload_fileobj(self, fileobj: BinaryIO, key: str, expires_in: int, content_type: Optional[str] = None) -> str:
+        assert fileobj.read() == b"RIFF"
+        return self._store(key)
+
+    def upload_bytes(self, data: bytes, key: str, expires_in: int, content_type: Optional[str] = None) -> str:
+        return self._store(key)
+
+    def _store(self, key: str) -> str:
+        self.keys.append(key)
+        return f"https://s3.test/{key}"
+
+
+def _filewise_items(benchmark_name: str) -> list[dict[str, Any]]:
+    """Filewise metrics rows carrying the keys the audio report pairs samples by.
+
+    Text-context rows keep the ``context_audio_filepath`` key with a ``None`` value, as the evaluator writes them.
+    """
+    with_context = BENCHMARK_META[benchmark_name].context_type == ContextType.audio
+    return [
+        {
+            "pred_audio_filepath": f"predicted_audio_{i}.wav",
+            "gt_text": f"Utterance {i} of {benchmark_name}.",
+            "gt_audio_filepath": f"gt/{benchmark_name}/{i}.wav",
+            "context_audio_filepath": f"ctx/{benchmark_name}/{i}.wav" if with_context else None,
+        }
+        for i in range(NUM_AUDIO_SAMPLES)
+    ]
+
+
+def _bucket_files(root: str, benchmark_dirs: dict[str, str]) -> dict[str, bytes]:
+    """Lay out a results bucket as ``magpietts_inference`` writes it.
+
+    Args:
+        root: Bucket root directory.
+        benchmark_dirs: Mapping from results directory name (``<configuration>_<lang>_<benchmark>``) to the audio
+            layout under ``audio/repeat_0``: ``"audio"`` (context, target and generated files), ``"text"`` (target
+            and generated), ``"no-target"`` (context and generated) or ``"none"`` (no audio directory).
+    """
     files = {}
 
-    for dir_name, with_audio in benchmark_dirs.items():
+    for dir_name, layout in benchmark_dirs.items():
+        if layout not in AUDIO_LAYOUTS:
+            raise ValueError(f"Unknown audio layout: '{layout}'.")
+
         benchmark_name = dir_name.split("_", 2)[2]
         base = f"{root}/results/{dir_name}"
         files[f"{base}/{benchmark_name}_metrics_0.json"] = b"{}"
-        files[f"{base}/{benchmark_name}_filewise_metrics_0.json"] = b"[]"
-        if with_audio:
-            files[f"{base}/audio/repeat_0/context_audio_0.wav"] = b"RIFF"
-            files[f"{base}/audio/repeat_0/predicted_audio_0.wav"] = b"RIFF"
+        files[f"{base}/{benchmark_name}_filewise_metrics_0.json"] = json.dumps(
+            _filewise_items(benchmark_name)
+        ).encode()
+
+        if layout == "none":
+            continue
+
+        prefixes = ["predicted_audio_"]
+        if layout in ("audio", "no-target"):
+            prefixes.append("context_audio_")
+        if layout in ("audio", "text"):
+            prefixes.append("target_audio_")
+
+        for i in range(NUM_AUDIO_SAMPLES):
+            for prefix in prefixes:
+                files[f"{base}/audio/repeat_0/{prefix}{i}.wav"] = b"RIFF"
 
     return files
 
 
-class TestAudioReportGating:
-    @pytest.mark.unit
-    def test_bucket_loading_skips_audio_discovery_for_text_context_benchmarks(self):
-        storage = _InMemoryStorage(
-            _bucket_files("/buckets/a", {f"cfg_de_{AUDIO_BENCHMARK}": True, f"cfg_de_{TEXT_BENCHMARK}": False})
-        )
+def _load_bucket(name: str, storage: BaseStorage, benchmark_names: tuple[str, ...]) -> BucketData:
+    bucket = BucketData.from_storage(
+        bucket_name=name,
+        bucket_path=Path(f"/buckets/{name}"),
+        bucket_structure=BucketStructure(),
+        benchmark_names=benchmark_names,
+        check_audio=True,
+        storage=storage,
+    )
+    bucket.load_metrics(storage)
+    return bucket
 
-        bucket = BucketData.from_storage(
-            bucket_name="A",
-            bucket_path=Path("/buckets/a"),
-            bucket_structure=BucketStructure(),
-            benchmark_names=(TEXT_BENCHMARK, AUDIO_BENCHMARK),
-            check_audio=True,
-            storage=storage,
-        )
+
+def _paired_buckets() -> tuple[BucketData, BucketData, _InMemoryStorage]:
+    """Baseline and candidate buckets with one audio-context and one text-context benchmark in a shared storage."""
+    layouts = {f"cfg_de_{AUDIO_BENCHMARK}": "audio", f"cfg_de_{TEXT_BENCHMARK}": "text"}
+    files = {}
+
+    for name in ("baseline", "candidate"):
+        files.update(_bucket_files(f"/buckets/{name}", layouts))
+
+    storage = _InMemoryStorage(files)
+    names = (TEXT_BENCHMARK, AUDIO_BENCHMARK)
+    return _load_bucket("baseline", storage, names), _load_bucket("candidate", storage, names), storage
+
+
+def _sample_names(prefix: str) -> set[str]:
+    return {f"{prefix}{i}" for i in range(NUM_AUDIO_SAMPLES)}
+
+
+def _report_sections(report: str) -> dict[str, str]:
+    """Split the rendered audio report into benchmark sections keyed by section id."""
+    parts = re.split(r'<h2 id="([^"]+)">', report)
+    return dict(zip(parts[1::2], parts[2::2]))
+
+
+def _header_labels(section: str) -> list[str]:
+    return re.findall(r'<div class="model-header">\s*(.*?)\s*</div>', section, flags=re.S)
+
+
+class TestAudioReport:
+    @pytest.mark.unit
+    def test_bucket_loading_collects_target_audio_for_every_context_type(self):
+        layouts = {f"cfg_de_{AUDIO_BENCHMARK}": "audio", f"cfg_de_{TEXT_BENCHMARK}": "text"}
+        storage = _InMemoryStorage(_bucket_files("/buckets/a", layouts))
+
+        bucket = _load_bucket("a", storage, (TEXT_BENCHMARK, AUDIO_BENCHMARK))
+        audio_data = bucket.benchmarks[AUDIO_BENCHMARK]
+        text_data = bucket.benchmarks[TEXT_BENCHMARK]
 
         assert set(bucket.benchmarks) == {AUDIO_BENCHMARK, TEXT_BENCHMARK}
         assert bucket.configuration_str == "cfg"
-        assert set(bucket.benchmarks[AUDIO_BENCHMARK].context_audio_paths) == {"context_audio_0"}
-        assert set(bucket.benchmarks[AUDIO_BENCHMARK].generated_audio_paths) == {"predicted_audio_0"}
-        assert bucket.benchmarks[TEXT_BENCHMARK].context_audio_paths == {}
-        assert bucket.benchmarks[TEXT_BENCHMARK].generated_audio_paths == {}
+        assert set(audio_data.context_audio_paths) == _sample_names("context_audio_")
+        assert set(audio_data.target_audio_paths) == _sample_names("target_audio_")
+        assert set(audio_data.generated_audio_paths) == _sample_names("predicted_audio_")
+        # Text-context benchmarks have no context prompt but do have the target recording.
+        assert text_data.context_audio_paths == {}
+        assert set(text_data.target_audio_paths) == _sample_names("target_audio_")
+        assert set(text_data.generated_audio_paths) == _sample_names("predicted_audio_")
 
     @pytest.mark.unit
-    def test_bucket_loading_still_requires_audio_for_audio_context_benchmarks(self):
-        storage = _InMemoryStorage(_bucket_files("/buckets/a", {f"cfg_de_{AUDIO_BENCHMARK}": False}))
+    @pytest.mark.parametrize(
+        "benchmark_name, layout, message",
+        [
+            (AUDIO_BENCHMARK, "text", "No context audio files"),
+            (TEXT_BENCHMARK, "no-target", "No target audio files"),
+            (AUDIO_BENCHMARK, "none", "Missing audio directory"),
+        ],
+    )
+    def test_bucket_loading_requires_reference_audio(self, benchmark_name, layout, message):
+        storage = _InMemoryStorage(_bucket_files("/buckets/a", {f"cfg_de_{benchmark_name}": layout}))
 
-        with pytest.raises(FileNotFoundError, match="Missing audio directory"):
+        with pytest.raises(FileNotFoundError, match=message):
             BucketData.from_storage(
                 bucket_name="A",
                 bucket_path=Path("/buckets/a"),
                 bucket_structure=BucketStructure(),
-                benchmark_names=(AUDIO_BENCHMARK,),
+                benchmark_names=(benchmark_name,),
                 check_audio=True,
                 storage=storage,
             )
 
     @pytest.mark.unit
-    def test_audio_report_rejects_text_context_benchmarks(self):
+    @pytest.mark.parametrize(
+        "benchmark_name, missing_prefix",
+        [(TEXT_BENCHMARK, "target_audio_"), (AUDIO_BENCHMARK, "context_audio_")],
+    )
+    def test_bucket_loading_requires_a_reference_file_for_every_sample(self, benchmark_name, missing_prefix):
+        layout = "audio" if benchmark_name == AUDIO_BENCHMARK else "text"
+        files = _bucket_files("/buckets/a", {f"cfg_de_{benchmark_name}": layout})
+        del files[f"/buckets/a/results/cfg_de_{benchmark_name}/audio/repeat_0/{missing_prefix}1.wav"]
+        kind = missing_prefix.split("_")[0]
+        message = f"Missing {kind} audio '{missing_prefix}1' for generated sample 'predicted_audio_1' in '/buckets/a/"
+
+        with pytest.raises(ValueError, match=message):
+            BucketData.from_storage(
+                bucket_name="A",
+                bucket_path=Path("/buckets/a"),
+                bucket_structure=BucketStructure(),
+                benchmark_names=(benchmark_name,),
+                check_audio=True,
+                storage=_InMemoryStorage(files),
+            )
+
+    @pytest.mark.unit
+    def test_audio_report_benchmarks_admit_text_context(self):
         benchmarks = [AUDIO_BENCHMARK, TEXT_BENCHMARK]
 
-        _validate_audio_report_benchmarks(benchmarks, [AUDIO_BENCHMARK])
-
-        with pytest.raises(ValueError, match="text context"):
-            _validate_audio_report_benchmarks(benchmarks, [AUDIO_BENCHMARK, TEXT_BENCHMARK])
+        _validate_audio_report_benchmarks(benchmarks, [AUDIO_BENCHMARK, TEXT_BENCHMARK])
 
         with pytest.raises(ValueError, match="not included in evaluation benchmarks"):
             _validate_audio_report_benchmarks([TEXT_BENCHMARK], [AUDIO_BENCHMARK])
+
+        with pytest.raises(ValueError, match="Empty list of benchmark names"):
+            _validate_audio_report_benchmarks(benchmarks, [])
+
+    @pytest.mark.unit
+    def test_audio_pairs_carry_target_and_optional_context(self):
+        baseline, candidate, _ = _paired_buckets()
+        used = [AUDIO_BENCHMARK, TEXT_BENCHMARK]
+
+        pairs = prepare_audio_pairs(baseline, candidate, BucketStructure(), used, NUM_AUDIO_SAMPLES)
+
+        assert set(pairs) == set(used)
+        for benchmark_name in used:
+            assert len(pairs[benchmark_name]) == NUM_AUDIO_SAMPLES
+            for pair in pairs[benchmark_name]:
+                idx = pair.baseline_path.stem.removeprefix("predicted_audio_")
+                assert pair.target_path.name == f"target_audio_{idx}.wav"
+                assert pair.candidate_path.name == f"predicted_audio_{idx}.wav"
+                assert pair.text == f"Utterance {idx} of {benchmark_name}."
+        for pair in pairs[AUDIO_BENCHMARK]:
+            assert pair.context_path is not None
+            assert pair.context_path.name == pair.target_path.name.replace("target_", "context_")
+        for pair in pairs[TEXT_BENCHMARK]:
+            assert pair.context_path is None
+
+        # A metrics row whose reference file was not discovered is an error that names the sample.
+        del baseline.benchmarks[TEXT_BENCHMARK].target_audio_paths["target_audio_1"]
+        with pytest.raises(ValueError, match="Missing target audio 'target_audio_1' for sample 'predicted_audio_1'"):
+            baseline.get_benchmark_sample_meta(TEXT_BENCHMARK, BucketStructure())
+
+    @pytest.mark.unit
+    def test_text_context_sample_ids_match_across_buckets(self):
+        """Text-context rows (null context path) get distinct sample ids that are equal across buckets."""
+        baseline, candidate, _ = _paired_buckets()
+        structure = BucketStructure()
+
+        baseline_meta = baseline.get_benchmark_sample_meta(TEXT_BENCHMARK, structure)
+        candidate_meta = candidate.get_benchmark_sample_meta(TEXT_BENCHMARK, structure)
+
+        assert set(baseline_meta) == _sample_names("predicted_audio_")
+        assert {n: m.sample_id for n, m in baseline_meta.items()} == {
+            n: m.sample_id for n, m in candidate_meta.items()
+        }
+        assert len({m.sample_id for m in baseline_meta.values()}) == NUM_AUDIO_SAMPLES
+        assert all(meta.context_path is None for meta in baseline_meta.values())
+        assert all(meta.target_path.name.startswith("target_audio_") for meta in baseline_meta.values())
+
+        # Buckets evaluated on different data are still detected.
+        candidate.benchmarks[TEXT_BENCHMARK].filewise_metrics[0]["gt_audio_filepath"] = "gt/other.wav"
+        with pytest.raises(ValueError, match="Sample id mismatch"):
+            prepare_audio_pairs(baseline, candidate, structure, [TEXT_BENCHMARK], NUM_AUDIO_SAMPLES)
+
+    @pytest.mark.unit
+    def test_metrics_row_without_generated_audio_is_an_error(self):
+        baseline, candidate, _ = _paired_buckets()
+        for bucket in (baseline, candidate):
+            del bucket.benchmarks[TEXT_BENCHMARK].generated_audio_paths["predicted_audio_1"]
+
+        with pytest.raises(
+            ValueError, match="Missing generated audio 'predicted_audio_1.wav' for sample 'predicted_audio_1'"
+        ):
+            prepare_audio_pairs(baseline, candidate, BucketStructure(), [TEXT_BENCHMARK], NUM_AUDIO_SAMPLES)
+
+    @pytest.mark.unit
+    def test_differing_sample_sets_name_the_missing_samples(self):
+        baseline, candidate, _ = _paired_buckets()
+        # The candidate was evaluated on one utterance fewer: its metrics and audio agree, but the buckets differ.
+        del candidate.benchmarks[TEXT_BENCHMARK].generated_audio_paths["predicted_audio_1"]
+        del candidate.benchmarks[TEXT_BENCHMARK].target_audio_paths["target_audio_1"]
+        candidate.benchmarks[TEXT_BENCHMARK].filewise_metrics = [
+            item
+            for item in candidate.benchmarks[TEXT_BENCHMARK].filewise_metrics
+            if item["pred_audio_filepath"] != "predicted_audio_1.wav"
+        ]
+
+        with pytest.raises(
+            ValueError, match="differ for benchmark 'de_qa_ct_text': missing in bucket 'candidate': predicted_audio_1"
+        ):
+            prepare_audio_pairs(baseline, candidate, BucketStructure(), [TEXT_BENCHMARK], NUM_AUDIO_SAMPLES)
+
+    @pytest.mark.unit
+    def test_audio_report_renders_target_column_and_optional_context(self):
+        baseline, candidate, storage = _paired_buckets()
+        s3_client = _FakeS3Client()
+        orchestrator = Orchestrator(BucketStructure(), storage, s3_client, Renderer(TEMPLATES_DIR))
+        used = [AUDIO_BENCHMARK, TEXT_BENCHMARK]
+        prefix = "reports/test"
+        pairs = prepare_audio_pairs(baseline, candidate, BucketStructure(), used, NUM_AUDIO_SAMPLES)
+
+        uploaded = orchestrator._upload_audio(used, pairs, prefix)
+        report = orchestrator._render_audio_report(
+            baseline_name="A",
+            candidate_name="B",
+            used_benchmarks=used,
+            uploaded_audio_info=uploaded,
+            task_info=TaskInfo(task_id="NEMOTTS-1", jira_id="NEMOTTS-1", jira_url="https://jira.test/NEMOTTS-1"),
+            expiration_info=ExpirationInfo(timestamp=0, path_str="2027-01-01T00-00-00Z", user_str="2027-01-01"),
+        )
+        sections = _report_sections(report)
+        audio_section = sections[AUDIO_BENCHMARK]
+        text_section = sections[TEXT_BENCHMARK]
+
+        assert _header_labels(audio_section) == ["Context", "Target", "A", "B"]
+        assert audio_section.count("<audio") == 4 * NUM_AUDIO_SAMPLES
+        assert "no-context" not in audio_section
+        assert _header_labels(text_section) == ["Target", "A", "B"]
+        assert text_section.count("<audio") == 3 * NUM_AUDIO_SAMPLES
+        assert re.search(r'class="[^"]*\bno-context\b', text_section)
+
+        for benchmark_name in used:
+            assert f"{prefix}/audio/target_{benchmark_name}_0.wav" in s3_client.keys
+            for i in range(NUM_AUDIO_SAMPLES):
+                assert f"{prefix}/audio/context_{TEXT_BENCHMARK}_{i}.wav" not in s3_client.keys
+        assert f"{prefix}/audio/context_{AUDIO_BENCHMARK}_0.wav" in s3_client.keys
+        assert uploaded[TEXT_BENCHMARK][0].context_url is None
+        assert (
+            uploaded[TEXT_BENCHMARK][0].target_url == f"https://s3.test/{prefix}/audio/target_{TEXT_BENCHMARK}_0.wav"
+        )
+        assert uploaded[TEXT_BENCHMARK][0].target_url in text_section
+        assert uploaded[AUDIO_BENCHMARK][0].context_url in audio_section

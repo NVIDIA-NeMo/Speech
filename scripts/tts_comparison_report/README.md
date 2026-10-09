@@ -4,7 +4,8 @@ This tool generates HTML comparison reports for TTS evaluation buckets and uploa
 
 The `generate_report` script compares two evaluation buckets produced by `magpietts_inference` and generates:
 1. an HTML evaluation report with aggregated and per-benchmark metrics;
-2. an optional HTML audio comparison report with side-by-side audio samples.
+2. an optional HTML audio comparison report that shows, for each sampled utterance, the context audio
+prompt (audio-context benchmarks), the target recording, and the baseline and candidate samples side by side.
 
 Both reports are uploaded to S3-compatible object storage and returned as presigned URLs, 
 which can be opened directly in a browser. If the audio report is enabled, its link is 
@@ -200,9 +201,15 @@ evaluation or manifest. Filewise metrics written before `pred_gt_ssim` was saved
 such benchmarks keep the metrics-table row (from the aggregated value) but skip the statistical test and
 the box plot with a warning, and the pooled statistical test of the summary section includes the metric only
 when every benchmark carries it in both buckets. Re-run the evaluation to include them.
-- Text-context benchmarks have no context audio, so they cannot be listed in
-`--audio_report_benchmarks`. They can still be part of `--benchmarks` when `--audio_report` is enabled;
-audio discovery is skipped for them.
+- The audio report shows the target recording (the ground-truth utterance) for every sample next to the
+generated audio; audio-context benchmarks also show the context prompt. Text-context benchmarks can be
+listed in `--audio_report_benchmarks`; their sections have no context column.
+- The audio report expects `predicted_audio_<idx>.wav`, `target_audio_<idx>.wav` and, for audio-context
+benchmarks, `context_audio_<idx>.wav` under `audio/repeat_0` of each benchmark directory, as written by
+`magpietts_inference`. When `--audio_report` is enabled these files are required for every benchmark listed in
+`--benchmarks`, not only for those in `--audio_report_benchmarks`. Every sample scored in the filewise metrics
+must have its generated file, and both buckets must contain the same samples; a mismatch fails the report with
+the samples named.
 
 ## Maintenance
 
@@ -212,7 +219,8 @@ Supported benchmarks are declared in `BENCHMARK_META` in `reporting/constants.py
 a benchmark name to a `BenchmarkMeta` holding its language code and the context type used when
 the benchmark was generated:
 - `ContextType.audio` (default) - speaker identity was conditioned on a context audio prompt;
-- `ContextType.text` - speaker identity was conditioned on a text description, so no context audio exists.
+- `ContextType.text` - speaker identity was conditioned on a text description; no context audio exists,
+so the audio report sections of these benchmarks have no context column.
 
 To add or remove a benchmark, update `BENCHMARK_META`; `SUPPORTED_BENCHMARK_NAMES` is derived from it.
 Declare text-context benchmarks explicitly, otherwise the report fails because their context

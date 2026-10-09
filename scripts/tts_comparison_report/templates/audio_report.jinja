@@ -213,7 +213,7 @@
 
     .model-header-row {
       display: grid;
-      grid-template-columns: 1fr 1fr 1fr;
+      grid-template-columns: 1fr 1fr 1fr 1fr;
       gap: 20px;
       margin-bottom: 14px;
       padding: 0 18px;
@@ -246,9 +246,15 @@
 
     .audio-pair-row {
       display: grid;
-      grid-template-columns: 1fr 1fr 1fr;
+      grid-template-columns: 1fr 1fr 1fr 1fr;
       gap: 20px;
       align-items: start;
+    }
+
+    /* Text-context benchmarks have no context prompt, so their sections drop the first column. */
+    .no-context .model-header-row,
+    .no-context .audio-pair-row {
+      grid-template-columns: 1fr 1fr 1fr;
     }
 
     .audio-cell {

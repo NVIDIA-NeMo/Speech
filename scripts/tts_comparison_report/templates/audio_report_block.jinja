@@ -1,8 +1,13 @@
 <h2 id="{{ section_id }}"> {{ title }} </h2>
-<div class="card">
+<div class="card{% if not has_context %} no-context{% endif %}">
   <div class="model-header-row">
+    {% if has_context %}
     <div class="model-header">
       Context
+    </div>
+    {% endif %}
+    <div class="model-header">
+      Target
     </div>
     <div class="model-header">
       {{ baseline_name }}

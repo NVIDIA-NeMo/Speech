@@ -938,6 +938,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, cuts: CutSet) -> Dict[str, Union[torch.Tensor, List]]:
         self._initialize_tokenizers()
+
         cuts, batch_tokenizer_names = self._prepare_cuts(cuts)
 
         audio_data = self._collate_audio_channels(cuts)

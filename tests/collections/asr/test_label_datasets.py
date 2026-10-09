@@ -137,6 +137,38 @@ class TestASRDatasets:
             assert count == 2
 
     @pytest.mark.unit
+    def test_feat_label_dataset_infers_labels_from_manifest(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest_path = os.path.join(tmpdir, 'manifest_input.json')
+            with open(manifest_path, 'w', encoding='utf-8') as fp:
+                for i, label in enumerate(['speech', 'background', 'speech']):
+                    feat_file = os.path.join(tmpdir, f"feat_{i}.pt")
+                    torch.save(torch.randn(80, 5), feat_file)
+                    entry = {'feature_file': feat_file, 'duration': 1.0, 'label': label}
+                    fp.write(json.dumps(entry) + '\n')
+
+            dataset = FeatureToLabelDataset(manifest_filepath=manifest_path, labels=None)
+
+            assert dataset.labels == ['background', 'speech']
+            assert dataset.num_classes == 2
+            assert torch.equal(dataset[0][2], torch.tensor(1))
+            assert torch.equal(dataset[1][2], torch.tensor(0))
+
+    @pytest.mark.unit
+    def test_feat_label_dataset_regression(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest_path = os.path.join(tmpdir, 'manifest_input.json')
+            with open(manifest_path, 'w', encoding='utf-8') as fp:
+                feat_file = os.path.join(tmpdir, "feat_0.pt")
+                torch.save(torch.randn(80, 5), feat_file)
+                fp.write(json.dumps({'feature_file': feat_file, 'duration': 1.0, 'label': 0.5}) + '\n')
+
+            dataset = FeatureToLabelDataset(manifest_filepath=manifest_path, is_regression_task=True)
+
+            assert len(dataset) == 1
+            assert dataset.num_classes == 1
+
+    @pytest.mark.unit
     def test_audio_multilabel_dataset(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             manifest_path = os.path.join(tmpdir, 'manifest_input.json')

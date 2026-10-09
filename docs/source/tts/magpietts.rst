@@ -179,7 +179,9 @@ of IPA tokens across batches and distributed ranks; padding, BOS, and EOS
 are excluded. Both metrics use teacher forcing, so they do not measure
 autoregressive sequence accuracy. Setting ``run_val_inference: false``
 avoids loading the audio evaluation models. For text-only training, set the
-audio sampler weights to zero and the text sampler weight to one.
+audio sampler weights to zero and the text sampler weight to one. In
+``randomized_round_robin`` mode, zero-weight namespaces are excluded before
+constructing samplers, including in distributed dataloading workers.
 
 Duration-based text batching
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -205,7 +207,9 @@ existing ``num_tokens * token_equivalent_duration`` behavior is preserved.
 Set ``batch_size: null``, ``batch_duration``, and ``use_bucketing: true`` in
 the text dataset's sampler configuration. Lhotse then groups similar lengths
 and chooses a variable number of records per batch. Its duration constraint
-accounts for padding to the longest sequence in the batch. Configure
+accounts for padding to the longest sequence in the batch. The final record
+can exceed the duration target when it increases that longest length, so
+leave GPU memory headroom. Configure
 ``bucket_buffer_size`` large enough to fill the desired duration budget.
 
 Use ``max_duration`` to filter individual oversized records. For example,
@@ -215,7 +219,7 @@ budgets approximately 12,800 padded timesteps per GPU batch. These are virtual
 seconds for sampling; they do not represent spoken-audio duration. Select
 budgets for the model and GPU memory in use, and account for distributed
 training overhead. With two nodes of eight GPUs and one microbatch per
-optimizer step, this corresponds to at most 204,800 padded timesteps across
+optimizer step, this corresponds to a target of 204,800 padded timesteps across
 all ranks. Gradient accumulation multiplies this global budget. The number
 of examples varies with sequence length, so reassess learning-rate and
 evaluation schedules when changing the budget.

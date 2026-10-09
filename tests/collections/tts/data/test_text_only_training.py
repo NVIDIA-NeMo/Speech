@@ -423,3 +423,34 @@ def test_text_only_duration_filters_oversized_ipa_without_fixed_batch_size(datas
     loader = get_lhotse_dataloader_from_config(config, global_rank=0, world_size=1, dataset=dataset)
     batches = list(loader)
     assert [sample_id for batch in batches for sample_id in batch["sample_id"]] == ["1"]
+
+
+@pytest.mark.parametrize("world_size", [1, 16])
+def test_zero_weight_audio_source_is_not_opened(dataset, cuts, tmp_path, world_size):
+    text_config = {
+        "input_cfg": [{"type": "txt_norm_jsonl", "paths": str(tmp_path / "text.jsonl")}],
+        "token_equivalent_duration": 0.08,
+        "batch_size": 1,
+        "use_bucketing": False,
+        "force_iterable_dataset": True,
+    }
+    disabled_config = {
+        **text_config,
+        "input_cfg": [{"type": "txt_norm_jsonl", "paths": str(tmp_path / "disabled_missing.jsonl")}],
+    }
+    config = {
+        "multi_config": True,
+        "sampler_fusion": "randomized_round_robin",
+        "sampler_weights": {"disabled_audio": 0.0, "text": 1.0},
+        "disabled_audio": disabled_config,
+        "text": text_config,
+        "num_workers": 0,
+        "shuffle": False,
+        "seed": 42,
+        "shard_seed": 42,
+    }
+    loader = get_lhotse_dataloader_from_config(config, global_rank=0, world_size=world_size, dataset=dataset)
+    iterator = iter(loader)
+    for _ in range(4):
+        batch = next(iterator)
+        assert batch["task"] == ["text_only"]

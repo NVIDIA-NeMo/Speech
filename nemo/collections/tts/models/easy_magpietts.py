@@ -1717,6 +1717,34 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 "val_codebook_loss": output.codebook_loss,
                 "val_local_transformer_loss": output.codebook_loss,
             }
+            # Weight epoch accuracy by IPA token count, excluding padding and
+            # BOS/EOS (including EOS used to fill partial phoneme stacks).
+            targets = output.phoneme_tokens_target
+            predictions = (
+                output.phoneme_logits.reshape(
+                    *output.phoneme_logits.shape[:2], self.phoneme_stacking_factor, self.phoneme_vocab_size
+                )
+                .argmax(dim=-1)
+                .transpose(1, 2)
+            )
+            mask = get_mask_from_lengths(output.phoneme_tokens_lens_target).unsqueeze(1).expand_as(targets)
+            for special_id in (
+                self.phoneme_tokenizer.pad,
+                self.phoneme_tokenizer.bos_token_id,
+                self.phoneme_tokenizer.eos_token_id,
+            ):
+                mask = mask & targets.ne(special_id)
+            token_count = mask.sum()
+            accuracy = ((predictions == targets) & mask).sum().float() / token_count.clamp_min(1)
+            self.log(
+                "val/text_only_phoneme_token_accuracy",
+                accuracy,
+                on_step=False,
+                on_epoch=True,
+                batch_size=int(token_count),
+                sync_dist=True,
+                prog_bar=True,
+            )
             self.validation_step_outputs.append(val_output)
             return val_output
         # Extract inputs from batch and pass explicitly to process_batch

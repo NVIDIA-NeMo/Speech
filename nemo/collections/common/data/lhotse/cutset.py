@@ -426,10 +426,7 @@ def read_txt_norm_jsonl(config: DictConfig) -> tuple[CutSet, bool]:
 
     token_equivalent_duration = config.get("token_equivalent_duration")
     if token_equivalent_duration is None:
-        raise ValueError(
-            "txt_norm_jsonl requires token_equivalent_duration "
-            "(seconds per token)"
-        )
+        raise ValueError("txt_norm_jsonl requires token_equivalent_duration (seconds per token)")
 
     cuts = CutSet(
         LhotseTextNormJsonlAdapter(
@@ -440,6 +437,8 @@ def read_txt_norm_jsonl(config: DictConfig) -> tuple[CutSet, bool]:
             role=config.get("role") or "agent",
             shuffle_shards=config.get("shuffle", False),
             shard_seed=config.get("shard_seed", "trng"),
+            duration_phoneme_tokenizer_path=config.get("duration_phoneme_tokenizer_path"),
+            duration_padding_tokens=config.get("duration_padding_tokens", 0),
         )
     )
 

@@ -263,13 +263,19 @@ class LhotseTextNormJsonlAdapter:
     role: str = "agent"
     shuffle_shards: bool = False
     shard_seed: object = "trng"
+    duration_phoneme_tokenizer_path: str | None = None
+    duration_padding_tokens: int = 0
 
     def __post_init__(self):
         self.paths = list(expand_sharded_filepaths(self.paths))
-        if (
-            not math.isfinite(self.token_equivalent_duration)
-            or self.token_equivalent_duration <= 0
-        ):
+        if type(self.duration_padding_tokens) is not int or self.duration_padding_tokens < 0:
+            raise ValueError("duration_padding_tokens must be a nonnegative integer")
+        self._duration_phoneme_tokenizer = None
+        if self.duration_phoneme_tokenizer_path is not None:
+            from tokenizers import Tokenizer
+
+            self._duration_phoneme_tokenizer = Tokenizer.from_file(str(self.duration_phoneme_tokenizer_path))
+        if not math.isfinite(self.token_equivalent_duration) or self.token_equivalent_duration <= 0:
             raise ValueError("token_equivalent_duration must be finite and positive")
         if self.sampling_rate <= 0:
             raise ValueError("sample_rate must be positive")
@@ -285,9 +291,7 @@ class LhotseTextNormJsonlAdapter:
                     raise ValueError(f"{path}: record {index}: expected an object")
                 for key in ("text", "text_normalized", "ipa"):
                     if key not in row or not isinstance(row[key], str):
-                        raise ValueError(
-                            f"{path}: record {index}: {key!r} must be a string"
-                        )
+                        raise ValueError(f"{path}: record {index}: {key!r} must be a string")
 
                 cut_id = row.get("id")
                 if not isinstance(cut_id, str) or not cut_id:
@@ -295,18 +299,22 @@ class LhotseTextNormJsonlAdapter:
                 num_tokens = row.get("num_tokens")
                 if type(num_tokens) is not int or num_tokens <= 0:
                     raise ValueError(f"{path}: record {index}: num_tokens must be a positive integer")
-                duration = num_tokens * self.token_equivalent_duration
+                # Source and IPA channels overlap in time. Measure the longer
+                # channel so bucketing and duration limits account for target expansion.
+                duration_num_tokens = num_tokens
+                if self._duration_phoneme_tokenizer is not None:
+                    duration_num_tokens = max(
+                        duration_num_tokens, len(self._duration_phoneme_tokenizer.encode(row["ipa"]).ids)
+                    )
+                duration_num_tokens += self.duration_padding_tokens
+                duration = duration_num_tokens * self.token_equivalent_duration
                 if not math.isfinite(duration):
                     raise ValueError(f"{path}: record {index}: duration must be finite")
                 num_samples = compute_num_samples(duration, self.sampling_rate)
                 if num_samples <= 0:
                     raise ValueError(f"{path}: record {index}: duration is less than one sample")
                 duration = num_samples / self.sampling_rate
-                language = (
-                    row.get("language_id")
-                    or row.get("normalization_language_id")
-                    or self.language
-                )
+                language = row.get("language_id") or row.get("normalization_language_id") or self.language
                 # A SHAR placeholder provides metadata but cannot load audio.
                 recording = Recording(
                     id=cut_id,
@@ -332,6 +340,8 @@ class LhotseTextNormJsonlAdapter:
                 # The supplied phoneme collator's language lookup uses cut.lang.
                 cut_custom["lang"] = language
                 cut_custom["task"] = "text_only"
+                if self._duration_phoneme_tokenizer is not None or self.duration_padding_tokens:
+                    cut_custom["sampling_num_tokens"] = duration_num_tokens
                 yield MonoCut(
                     id=cut_id,
                     start=0.0,

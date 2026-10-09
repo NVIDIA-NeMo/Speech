@@ -311,6 +311,7 @@ class HybridBackend(_BaseBackend):
                     )
             elif hf_name in (
                 "backbone.embed_tokens.weight",
+                "backbone.embeddings.weight",  # NemotronH's own name for the embedding
                 "lm_head.weight",
             ):
                 if target_vocab:

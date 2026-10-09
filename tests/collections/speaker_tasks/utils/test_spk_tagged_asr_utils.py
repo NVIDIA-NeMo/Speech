@@ -1588,3 +1588,87 @@ class TestSpeakerTaggedASRMethods:
 
         assert result.shape == chunk_audio.shape
         assert result.dtype == chunk_audio.dtype
+
+
+class TestAddSpeakerTranscriptions:
+    """Test SpeakerTaggedASR._add_speaker_transcriptions with more than one session"""
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "sessions",
+        [
+            {
+                "sess_a": (
+                    [("hello", 0.08, 0.4, "speaker_0"), ("world", 0.48, 0.8, "speaker_0")],
+                    [("hello world", 0.08, 0.8, "speaker_0")],
+                ),
+                "sess_b": (
+                    [
+                        ("good", 1.6, 1.92, "speaker_1"),
+                        ("morning", 2.0, 2.32, "speaker_1"),
+                        ("everyone", 2.56, 3.04, "speaker_2"),
+                    ],
+                    [("good morning", 1.6, 2.32, "speaker_1"), ("everyone", 2.56, 3.04, "speaker_2")],
+                ),
+            },
+            {
+                "sess_a": (
+                    [("yes", 0.08, 0.4, "speaker_0"), ("okay", 0.48, 0.8, "speaker_0")],
+                    [("yes okay", 0.08, 0.8, "speaker_0")],
+                ),
+                "sess_b": (
+                    [("yes", 1.6, 1.92, "speaker_1"), ("okay", 2.56, 3.04, "speaker_2")],
+                    [("yes", 1.6, 1.92, "speaker_1"), ("okay", 2.56, 3.04, "speaker_2")],
+                ),
+            },
+            {
+                "sess_a": (
+                    [
+                        ("one", 0.08, 0.24, "speaker_0"),
+                        ("two", 0.32, 0.48, "speaker_0"),
+                        ("three", 0.56, 0.72, "speaker_0"),
+                    ],
+                    [("one two three", 0.08, 0.72, "speaker_0")],
+                ),
+                "sess_b": (
+                    [("four", 1.6, 1.92, "speaker_1")],
+                    [("four", 1.6, 1.92, "speaker_1")],
+                ),
+                "sess_c": (
+                    [("five", 2.0, 2.32, "speaker_2"), ("six", 2.56, 3.04, "speaker_3")],
+                    [("five", 2.0, 2.32, "speaker_2"), ("six", 2.56, 3.04, "speaker_3")],
+                ),
+            },
+        ],
+        ids=["different_words", "same_words_different_times", "three_sessions_fewer_words"],
+    )
+    def test_each_session_keeps_its_own_timestamps(self, sessions):
+        """Session i must get its own word/segment timestamps, tagged with its own speakers"""
+        hypotheses, word_and_ts_seq = [], {}
+        for uniq_id, (words, segments) in sessions.items():
+            hypotheses.append(
+                Hypothesis(
+                    score=0.0,
+                    y_sequence=[],
+                    text=" ".join(word for word, *_ in words),
+                    timestamp={
+                        'word': [{'word': word, 'start': start, 'end': end} for word, start, end, _ in words],
+                        'segment': [{'segment': text, 'start': start, 'end': end} for text, start, end, _ in segments],
+                    },
+                )
+            )
+            word_and_ts_seq[uniq_id] = {'words': [{'word': word, 'speaker': spk} for word, _, _, spk in words]}
+
+        # pylint: disable=protected-access
+        best_hyps, _ = SpeakerTaggedASR._add_speaker_transcriptions(
+            SimpleNamespace(),
+            transcriptions=(hypotheses, hypotheses),
+            speaker_transcriptions=[None] * len(sessions),
+            word_and_ts_seq=word_and_ts_seq,
+            test_manifest_dict={uniq_id: {} for uniq_id in sessions},
+        )
+        # pylint: enable=protected-access
+
+        for hyp, (words, segments) in zip(best_hyps, sessions.values()):
+            assert [(w['word'], w['start'], w['end'], w['speaker']) for w in hyp.timestamp['word']] == words
+            assert [(s['segment'], s['start'], s['end'], s['speaker']) for s in hyp.timestamp['segment']] == segments

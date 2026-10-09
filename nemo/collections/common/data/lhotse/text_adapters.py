@@ -343,6 +343,7 @@ class LhotseTextNormJsonlAdapter:
                 cut_custom = deepcopy(row)
                 # The supplied phoneme collator's language lookup uses cut.lang.
                 cut_custom["lang"] = language
+                cut_custom["task"] = "text_only"
                 yield MonoCut(
                     id=cut_id,
                     start=0.0,

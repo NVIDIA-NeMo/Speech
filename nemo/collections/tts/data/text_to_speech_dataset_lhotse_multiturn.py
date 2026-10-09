@@ -311,6 +311,8 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         for cut in cuts:
             if cut.has_custom("tokenizer_names"):
                 batch_tokenizer_names.append(random.choice(cut.tokenizer_names))
+            elif getattr(cut, "task", "tts") == "text_only":
+                batch_tokenizer_names.append(self.text_conditioning_tokenizer_name)
             else:
                 batch_tokenizer_names.append("english_phoneme")
 
@@ -946,10 +948,50 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         batch_dict["user_mask_lens"] = user_mask_lens
         return batch_dict
 
+    def _collate_text_only_batch(self, cuts: CutSet, batch_tokenizer_names: list[str]) -> Dict:
+        """Reuse text/phoneme collation without loading any audio or audio context."""
+        if self.phoneme_tokenizer is None:
+            raise ValueError("text_only training requires a phoneme tokenizer")
+        text_data = self._collate_text_channels(cuts, batch_tokenizer_names)
+        phoneme_data = self._collate_phoneme_tokens(cuts)
+        languages = [self._get_language(cut) for cut in cuts]
+        contexts = []
+        for cut, language in zip(cuts, languages):
+            context_text = next((sup.context_text for sup in cut.supervisions if sup.has_custom("context_text")), None)
+            context_text = f"<PHONEME_ONLY><{language}>" + (f" {context_text}" if context_text else "")
+            contexts.append(self._encode_context_text(context_text, language)[0])
+        return {
+            "sample_id": [str(cut.id) for cut in cuts],
+            "dataset_names": [self._get_dataset_name(cut) for cut in cuts],
+            "languages": languages,
+            "task": ["text_only"] * len(cuts),
+            "text": text_data["target_text_tokens"],
+            "text_lens": text_data["target_token_lens"],
+            "source_tokens": text_data["source_tokens"],
+            "source_token_lens": text_data["source_token_lens"],
+            "phoneme_tokens": phoneme_data["target_phoneme_tokens"],
+            "phoneme_tokens_lens": phoneme_data["target_phoneme_lens"],
+            "phoneme_turn_dropout": phoneme_data["phoneme_turn_dropout"],
+            "context_text_tokens": collate_vectors(
+                contexts, padding_value=self.text_tokenizer.tokenizer_pad_ids[self.text_conditioning_tokenizer_name]
+            ),
+            "context_text_tokens_lens": torch.tensor([len(context) for context in contexts]),
+            "has_text_context": torch.ones(len(cuts), dtype=torch.bool),
+            "raw_texts": [
+                " ".join(s.text for s in cut.supervisions if s.speaker in self.output_roles) for cut in cuts
+            ],
+        }
+
     def __getitem__(self, cuts: CutSet) -> Dict[str, Union[torch.Tensor, List]]:
         self._initialize_tokenizers()
 
         cuts, batch_tokenizer_names = self._prepare_cuts(cuts)
+
+        text_only = [getattr(cut, "task", "tts") == "text_only" for cut in cuts]
+        if any(text_only):
+            if not all(text_only):
+                raise ValueError("text_only and audio cuts must be sampled in separate batches")
+            return self._collate_text_only_batch(cuts, batch_tokenizer_names)
 
         audio_data = self._collate_audio_channels(cuts)
         text_data = self._collate_text_channels(cuts, batch_tokenizer_names)
@@ -1068,6 +1110,16 @@ def build_token_channel(
     apply_partial_phoneme_text: bool = False,
     load_normalized_text_percent: float = 1.0,
 ) -> torch.Tensor:
+
+    if getattr(cut, "task", "tts") == "text_only":
+        # Duration is sampling metadata, not a token budget. Keep the raw input
+        # and never inject normalized IPA targets into this text channel.
+        ids = []
+        for supervision in cut.supervisions:
+            if supervision.speaker in roles:
+                raw_ids = tokenizer.encode(supervision.text, tokenizer_name=tokenizer_name)
+                ids.extend(([bos_id] if add_text_bos else []) + raw_ids + [eos_id])
+        return torch.tensor(ids, dtype=torch.long)
 
     total = compute_num_frames(cut.duration, frame_length, cut.sampling_rate)
     tokens = torch.ones(total, dtype=torch.long) * pad_id
@@ -1251,6 +1303,20 @@ def build_phoneme_channel(
     phoneme_turn_max_words_to_drop: int = 2,
     apply_turn_dropout: bool = False,
 ) -> tuple[torch.Tensor, bool]:
+    if getattr(cut, "task", "tts") == "text_only":
+        # Explicit IPA supervision applies even to short utterances and languages
+        # excluded from phoneme conditioning in ordinary audio training.
+        ids = []
+        for supervision in cut.supervisions:
+            if supervision.speaker in roles:
+                ipa = _get_supervision_ipa_text(supervision)
+                if not ipa.strip():
+                    raise ValueError(f"text_only cut {cut.id} requires a nonempty IPA target")
+                ids.extend([bos_id] + phoneme_tokenizer.encode(ipa) + [eos_id])
+        if not ids:
+            raise ValueError(f"text_only cut {cut.id} has no target supervision")
+        return torch.tensor(ids, dtype=torch.long), False
+
     language = (
         cut.lang
         if cut.has_custom("lang")

@@ -121,6 +121,28 @@ GRPO is particularly effective because it continuously adapts to the model's cur
 
 For comprehensive documentation on preference optimization, including step-by-step instructions for both DPO and GRPO, see the :doc:`Preference Optimization Guide <magpietts-po>`.
 
+Text-only IPA pretraining with EasyMagpieTTS
+-------------------------------------------
+
+The multi-turn EasyMagpieTTS dataset supports separate batches tagged with
+``task: text_only``. The ``txt_norm_jsonl`` adapter supplies this tag for
+records containing ``id``, raw ``text``, ``text_normalized``, ``ipa``,
+and a positive ``num_tokens``. Configure ``token_equivalent_duration`` for
+sampling and a phoneme tokenizer for the model.
+
+For these batches, the text channel receives the complete raw text, and the
+phoneme channel receives the complete normalized IPA with BOS and EOS.
+The text context starts with ``<PHONEME_ONLY><language-id>``; for example,
+``<PHONEME_ONLY><en-US>`` when the record's language ID is ``en-US``.
+The language ID is preserved as provided by the adapter.
+
+Training applies only the phoneme loss, without loading target or conditioning
+audio, running the codec or speaker encoder, or computing audio-token losses.
+Text-only validation also skips audio generation and audio quality metrics.
+Short sentences and languages excluded by ``ignore_phoneme_languages`` still
+use their supplied IPA targets. Text-only and audio cuts must be sampled in
+separate batches; the existing audio-training path is unchanged.
+
 Inference
 #########
 

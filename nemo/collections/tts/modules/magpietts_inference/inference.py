@@ -1013,9 +1013,7 @@ class EasyMagpieInferenceRunner(BaseInferenceRunner):
             if self._current_precomputed_audio_embedding is not None:
                 batch_size = batch['text'].size(0)
                 audio_embedding = self._current_precomputed_audio_embedding.to(batch['text'].device)
-                batch['precomputed_context_audio_embedding'] = audio_embedding.unsqueeze(0).expand(
-                    batch_size, -1, -1
-                )
+                batch['precomputed_context_audio_embedding'] = audio_embedding.unsqueeze(0).expand(batch_size, -1, -1)
                 batch['precomputed_context_audio_embedding_lens'] = torch.full(
                     (batch_size,),
                     audio_embedding.size(0),

@@ -30,13 +30,13 @@ import nemo.collections.asr as nemo_asr
 from nemo.collections.asr.metrics.wer import word_error_rate
 from nemo.collections.tts.models.easy_magpietts import EasyMagpieTTSModel
 from nemo.collections.tts.modules.magpietts_modules import SpecialAudioToken
-from nemo.collections.tts.parts.utils.reward_asr import RewardASRRouter
 from nemo.collections.tts.parts.utils.helpers import (
     get_mask_from_lengths,
     get_speaker_embeddings_from_filepaths,
     print_grad_weight_summary,
     process_text_for_cer,
 )
+from nemo.collections.tts.parts.utils.reward_asr import RewardASRRouter
 from nemo.utils import logging
 
 try:
@@ -46,6 +46,7 @@ try:
 except (ImportError, ModuleNotFoundError):
     Normalizer = None
     PYNINI_AVAILABLE = False
+
 
 class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
     """
@@ -176,9 +177,7 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
         self.audio_sampling_topk = int(self.cfg.get('inference_topk', 80))
         self.rollout_cfg_mode = str(self.cfg.get('rollout_cfg_mode', 'off'))
         if self.rollout_cfg_mode not in {'off', 'alternate'}:
-            raise ValueError(
-                f"rollout_cfg_mode must be one of ['off', 'alternate'], got {self.rollout_cfg_mode!r}."
-            )
+            raise ValueError(f"rollout_cfg_mode must be one of ['off', 'alternate'], got {self.rollout_cfg_mode!r}.")
         self.inference_cfg_scale = float(self.cfg.get('inference_cfg_scale', 2.5))
         if self.audio_sampling_topk <= 0:
             self.audio_sampling_topk = self.num_all_tokens_per_codebook
@@ -193,9 +192,7 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
         self.phoneme_sampling_topk = int(
             self.cfg.get(
                 'inference_phoneme_topk',
-                self.phoneme_vocab_size
-                if self.phoneme_po_loss_weight > 0.0
-                else self.audio_sampling_topk,
+                self.phoneme_vocab_size if self.phoneme_po_loss_weight > 0.0 else self.audio_sampling_topk,
             )
         )
         self.po_groups_per_subbatch = max(int(self.cfg.get('po_groups_per_subbatch', 1)), 1)
@@ -407,9 +404,7 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
             # Masked tokens have -inf log-probability. Padded labels may select
             # one of those tokens, so multiplication by a zero
             # mask would produce `-inf * 0 = NaN`. Select masked values instead.
-            per_token_logps = torch.where(
-                loss_mask.bool(), per_token_logps, torch.zeros_like(per_token_logps)
-            )
+            per_token_logps = torch.where(loss_mask.bool(), per_token_logps, torch.zeros_like(per_token_logps))
         return per_token_logps
 
     @staticmethod
@@ -727,10 +722,7 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
             pred_transcripts.append(process_text_for_cer(normalized))
 
             num_logged = logged_languages.get(language, 0)
-            if (
-                num_logged < self.reward_asr_log_samples
-                and getattr(self.trainer, "is_global_zero", True)
-            ):
+            if num_logged < self.reward_asr_log_samples and getattr(self.trainer, "is_global_zero", True):
                 gt_text = str(batch_repeated['raw_texts'][item_idx]).replace("\n", " ")
                 logging.info(
                     f"[reward_asr_transcript] language={language} gt={gt_text[:240]!r} "
@@ -1032,9 +1024,7 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
             'group_validities': group_validities,
             'cfg_fraction': rollout_cfg_mask.float().mean(),
             'mean_reward_cfg': (
-                torch.tensor(np.mean(cfg_rewards), device=self.device, dtype=torch.float32)
-                if cfg_rewards
-                else None
+                torch.tensor(np.mean(cfg_rewards), device=self.device, dtype=torch.float32) if cfg_rewards else None
             ),
             'mean_reward_no_cfg': (
                 torch.tensor(np.mean(no_cfg_rewards), device=self.device, dtype=torch.float32)
@@ -1231,9 +1221,7 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
                 probs = log_probs.exp()
                 per_token_entropy = -torch.xlogy(probs, probs).sum(-1)
 
-            stream_entropy = (
-                (per_token_entropy * loss_mask).sum(dim=1) / loss_mask.sum(dim=1).clamp_min(1e-8)
-            ).mean()
+            stream_entropy = ((per_token_entropy * loss_mask).sum(dim=1) / loss_mask.sum(dim=1).clamp_min(1e-8)).mean()
 
             grpo_beta = float(self.cfg.get('grpo_beta', 0.0))
             if not self.reference_free and reference_logits is not None and grpo_beta > 0.0:
@@ -1264,9 +1252,7 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
                     per_token_kl = (probs * log_ratio).sum(dim=-1).clamp_min(0.0)
                     per_token_kl = per_token_kl * group_mask
 
-                stream_kl = (
-                    (per_token_kl * loss_mask).sum(dim=1) / loss_mask.sum(dim=1).clamp_min(1e-8)
-                ).mean()
+                stream_kl = ((per_token_kl * loss_mask).sum(dim=1) / loss_mask.sum(dim=1).clamp_min(1e-8)).mean()
             else:
                 stream_kl = logits.new_zeros((), dtype=torch.float32)
 
@@ -1313,9 +1299,7 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
             advantages=advantages,
             group_validities=group_validities,
             sampling_temperature=self.audio_sampling_temperature,
-            forbidden_token_ids=SpecialAudioToken.get_forbidden_tokens(
-                self.codebook_size, forbid_audio_eos=False
-            ),
+            forbidden_token_ids=SpecialAudioToken.get_forbidden_tokens(self.codebook_size, forbid_audio_eos=False),
         )
 
         zero = audio_logits.new_zeros((), dtype=torch.float32)
@@ -1329,9 +1313,7 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
                 or policy_output.phoneme_tokens_lens_target is None
             ):
                 raise RuntimeError("Predicted-phoneme PO requires phoneme logits, targets, and target lengths.")
-            reference_phoneme_logits = (
-                reference_output.phoneme_logits if reference_output is not None else None
-            )
+            reference_phoneme_logits = reference_output.phoneme_logits if reference_output is not None else None
             phoneme_po_loss, phoneme_kl, phoneme_entropy = self._compute_action_po_components(
                 logits=policy_output.phoneme_logits,
                 reference_logits=reference_phoneme_logits,
@@ -1356,11 +1338,7 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
         # the raw exact KL; only ``grpo_beta * kl_loss`` contributes to the
         # optimized objective.
         grpo_beta = float(self.cfg.get('grpo_beta', 0.0))
-        total_loss = (
-            po_loss
-            + grpo_beta * kl_loss
-            + self.aux_phoneme_loss_weight * phoneme_aux_loss
-        )
+        total_loss = po_loss + grpo_beta * kl_loss + self.aux_phoneme_loss_weight * phoneme_aux_loss
         if self.entropy_coeff > 0:
             total_loss = total_loss - self.entropy_coeff * entropy
 

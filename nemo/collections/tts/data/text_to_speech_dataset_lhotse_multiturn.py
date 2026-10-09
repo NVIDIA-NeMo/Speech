@@ -948,7 +948,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         contexts = []
         for cut, language in zip(cuts, languages):
             context_text = next((sup.context_text for sup in cut.supervisions if sup.has_custom("context_text")), None)
-            context_text = f"<PHONEME_ONLY><{language}>" + (f" {context_text}" if context_text else "")
+            context_text = f"[{language.upper()}][TEXT_ONLY]" + (f" {context_text}" if context_text else "")
             contexts.append(self._encode_context_text(context_text, language)[0])
         return {
             "sample_id": [str(cut.id) for cut in cuts],

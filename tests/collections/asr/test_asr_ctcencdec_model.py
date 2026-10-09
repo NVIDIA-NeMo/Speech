@@ -30,6 +30,24 @@ from nemo.collections.common.parts.preprocessing.parsers import make_parser
 from nemo.utils.config_utils import assert_dataclass_signature_match, update_model_config
 
 
+class _LengthAwareDecoder(torch.nn.Module):
+    """Test double that proves EncDecCTCModel forwards encoded lengths."""
+
+    requires_encoded_lengths = True
+
+    def __init__(self, num_classes_with_blank: int):
+        super().__init__()
+        self.num_classes_with_blank = num_classes_with_blank
+        self.received_lengths = None
+
+    def forward(self, encoder_output, encoded_lengths):
+        self.received_lengths = encoded_lengths.detach().clone()
+        logits = encoder_output.new_zeros(
+            encoder_output.shape[0], encoder_output.shape[-1], self.num_classes_with_blank
+        )
+        return torch.log_softmax(logits, dim=-1)
+
+
 @pytest.fixture()
 def asr_model():
     preprocessor = {'_target_': 'nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor'}
@@ -108,6 +126,19 @@ class TestEncDecCTCModel:
         assert isinstance(instance2, EncDecCTCModel)
 
     @pytest.mark.unit
+    def test_frozen_encoder_stays_in_eval_when_parent_trains(self, asr_model):
+        asr_model.freeze_encoder()
+        asr_model.train()
+
+        assert asr_model.training
+        assert not asr_model.encoder.training
+        assert all(not parameter.requires_grad for parameter in asr_model.encoder.parameters())
+
+        asr_model.unfreeze_encoder()
+        assert asr_model.encoder.training
+        assert all(parameter.requires_grad for parameter in asr_model.encoder.parameters())
+
+    @pytest.mark.unit
     def test_forward(self, asr_model):
         asr_model = asr_model.eval()
 
@@ -136,6 +167,24 @@ class TestEncDecCTCModel:
         assert diff <= 1e-6
         diff = torch.max(torch.abs(logprobs_instance - logprobs_batch))
         assert diff <= 1e-6
+
+    @pytest.mark.unit
+    def test_forward_passes_lengths_to_length_aware_decoder(self, asr_model):
+        asr_model = asr_model.eval()
+        asr_model.preprocessor.featurizer.dither = 0.0
+        asr_model.preprocessor.featurizer.pad_to = 0
+        recording_decoder = _LengthAwareDecoder(asr_model.decoder.num_classes_with_blank)
+        asr_model.decoder = recording_decoder
+
+        input_signal = torch.randn(size=(2, 512))
+        input_lengths = torch.tensor([512, 321])
+        with torch.no_grad():
+            _, encoded_lengths, _ = asr_model(
+                input_signal=input_signal,
+                input_signal_length=input_lengths,
+            )
+
+        assert torch.equal(recording_decoder.received_lengths, encoded_lengths)
 
     @pytest.mark.unit
     def test_predict_step(self, asr_model):

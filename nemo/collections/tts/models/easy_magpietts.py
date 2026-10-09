@@ -91,14 +91,14 @@ class ProcessBatchOutput:
     phoneme_loss: Optional[torch.Tensor]
     local_transformer_loss: Optional[torch.Tensor]
     local_transformer_logits: Optional[torch.Tensor]
-    logits: torch.Tensor
+    logits: Optional[torch.Tensor]
     phoneme_logits: Optional[torch.Tensor]
     phoneme_tokens_target: Optional[torch.Tensor]
     phoneme_tokens_lens_target: Optional[torch.Tensor]
-    audio_codes_target: torch.Tensor
-    audio_codes_lens_target: torch.Tensor
-    context_audio_codes: torch.Tensor
-    context_audio_codes_lens: torch.Tensor
+    audio_codes_target: Optional[torch.Tensor]
+    audio_codes_lens_target: Optional[torch.Tensor]
+    context_audio_codes: Optional[torch.Tensor]
+    context_audio_codes_lens: Optional[torch.Tensor]
     selected_training_mode: Optional[str]
 
 
@@ -864,6 +864,99 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         sliced = torch.gather(sequence_embeddings, dim=1, index=gather_indices_exp)
         return sliced
 
+    @staticmethod
+    def _is_text_only_batch(task) -> bool:
+        tasks = [task] if isinstance(task, str) else task
+        if tasks and any(t == "text_only" for t in tasks):
+            if not all(t == "text_only" for t in tasks):
+                raise ValueError("text_only and audio examples must be processed in separate batches")
+            return True
+        return False
+
+    def _process_text_only_batch(
+        self,
+        text,
+        text_lens,
+        context_text_tokens,
+        context_text_tokens_lens,
+        phoneme_tokens,
+        phoneme_tokens_lens,
+        mode="train",
+        training_mode=None,
+    ) -> ProcessBatchOutput:
+        """Predict normalized IPA with no codec, speaker, or audio decoder calls."""
+        if self.phoneme_tokenizer is None or phoneme_tokens is None or phoneme_tokens_lens is None:
+            raise ValueError("text_only training requires phoneme tokens and lengths")
+        selected_mode = training_mode or (
+            random.choice(self.training_modes) if mode == "train" else self.training_modes[0]
+        )
+        context = self.embed_text_tokens(
+            context_text_tokens,
+            text_lens=context_text_tokens_lens,
+            disable_cas_embedding=self.disable_cas_for_context_text,
+        )
+        context_lens = context_text_tokens_lens
+        if self.task_embedding is not None and selected_mode.mode_idx is not None:
+            mode_ids = torch.full((text.size(0),), selected_mode.mode_idx, dtype=torch.long, device=text.device)
+            context, context_lens = self.join_embeddings_temporally(
+                [self.task_embedding(mode_ids).unsqueeze(1), context],
+                [torch.ones_like(context_lens), context_lens],
+            )
+        text_embedding, text_channel_lens = self.prepare_text_channel_embeddings(
+            text,
+            text_lens,
+            context_lens,
+            is_multiturn=self.cfg.get("use_multiturn_dataset", False),
+            text_pad_id=self.pad_id,
+        )
+        phoneme_delay = context_lens + selected_mode.streaming_phonemes_delay
+        # Fill partial final stacks with EOS rather than batch padding targets.
+        phoneme_tokens = phoneme_tokens.masked_fill(
+            ~get_mask_from_lengths(phoneme_tokens_lens), self.phoneme_tokenizer.eos_token_id
+        )
+        (
+            phoneme_embedding,
+            phoneme_channel_lens,
+            _,
+            stacked_lens,
+            clean_tokens,
+            _,
+        ) = self.prepare_phoneme_channel_embeddings(
+            phoneme_tokens,
+            phoneme_tokens_lens,
+            phoneme_delay,
+            apply_corruption=False,
+            dropout_complete_phoneme_channel=False,
+        )
+        combined_lens = torch.maximum(text_channel_lens, phoneme_channel_lens)
+        max_len = int(combined_lens.max())
+        pad = lambda tensor: torch.nn.functional.pad(tensor, (0, 0, 0, max_len - tensor.size(1)))
+        full_embedding = pad(context) + pad(text_embedding) + pad(phoneme_embedding)
+        hidden = self.forward(
+            inputs_embeds=full_embedding, attention_mask=get_mask_from_lengths(combined_lens)
+        ).last_hidden_state
+        target_lens = stacked_lens - 1
+        predictions = self.slice_sequence_embeddings(hidden, phoneme_delay, target_lens)
+        logits = self.phoneme_final_proj(predictions)
+        targets = clean_tokens[:, :, 1:].long()
+        phoneme_loss, _ = self.compute_phoneme_loss(logits, targets, target_lens)
+        return ProcessBatchOutput(
+            loss=self.phoneme_loss_weight * phoneme_loss,
+            codebook_loss=phoneme_loss.new_zeros(()),
+            phoneme_loss=phoneme_loss,
+            local_transformer_loss=None,
+            local_transformer_logits=None,
+            logits=None,
+            phoneme_logits=logits,
+            phoneme_tokens_target=targets,
+            phoneme_tokens_lens_target=target_lens,
+            audio_codes_target=None,
+            audio_codes_lens_target=None,
+            context_audio_codes=None,
+            context_audio_codes_lens=None,
+            selected_training_mode=selected_mode.name,
+        )
+
     def process_batch(
         self,
         text: torch.Tensor,
@@ -923,6 +1016,18 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         Returns:
             ProcessBatchOutput: Contains loss values and model predictions
         """
+        if self._is_text_only_batch(task):
+            return self._process_text_only_batch(
+                text,
+                text_lens,
+                context_text_tokens,
+                context_text_tokens_lens,
+                phoneme_tokens,
+                phoneme_tokens_lens,
+                mode,
+                training_mode,
+            )
+
         # Select training mode
         selected_training_mode = training_mode
         if selected_training_mode is None:
@@ -1280,6 +1385,19 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         )
 
     def training_step(self, batch, batch_idx):
+        if self._is_text_only_batch(batch.get("task")):
+            output = self._process_text_only_batch(
+                batch["text"],
+                batch["text_lens"],
+                batch["context_text_tokens"],
+                batch["context_text_tokens_lens"],
+                batch.get("phoneme_tokens"),
+                batch.get("phoneme_tokens_lens"),
+            )
+            self.log("train/loss", output.loss, prog_bar=True, sync_dist=True)
+            self.log("train/phoneme_loss", output.phoneme_loss, prog_bar=True, sync_dist=True)
+            self.log("train/codebook_loss", output.codebook_loss, prog_bar=True, sync_dist=True)
+            return output.loss
         if 'context_audio_codes' in batch:
             context_audio_codes = batch['context_audio_codes']
             context_audio_codes_lens = batch['context_audio_codes_lens']
@@ -1561,6 +1679,24 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         return loss
 
     def validation_step(self, batch, batch_idx):
+        if self._is_text_only_batch(batch.get("task")):
+            output = self._process_text_only_batch(
+                batch["text"],
+                batch["text_lens"],
+                batch["context_text_tokens"],
+                batch["context_text_tokens_lens"],
+                batch.get("phoneme_tokens"),
+                batch.get("phoneme_tokens_lens"),
+                mode="val",
+            )
+            val_output = {
+                "val_loss": output.loss,
+                "val_phoneme_loss": output.phoneme_loss,
+                "val_codebook_loss": output.codebook_loss,
+                "val_local_transformer_loss": output.codebook_loss,
+            }
+            self.validation_step_outputs.append(val_output)
+            return val_output
         # Extract inputs from batch and pass explicitly to process_batch
         print(
             f"[Validation] global_rank: {self.global_rank}, "

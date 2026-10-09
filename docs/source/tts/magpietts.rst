@@ -181,6 +181,50 @@ autoregressive sequence accuracy. Setting ``run_val_inference: false``
 avoids loading the audio evaluation models. For text-only training, set the
 audio sampler weights to zero and the text sampler weight to one.
 
+Duration-based text batching
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The ``txt_norm_jsonl`` reader can account for IPA expansion when estimating
+sampling duration. Set these options on each text manifest entry in ``input_cfg``:
+
+.. code-block:: yaml
+
+    - type: txt_norm_jsonl
+      paths: /path/to/train_text.jsonl
+      duration_phoneme_tokenizer_path: /path/to/ipa_tokenizer.json
+      duration_padding_tokens: 16
+
+The virtual duration is
+``(max(num_tokens, encoded_ipa_tokens) + duration_padding_tokens) * token_equivalent_duration``.
+The source ``num_tokens`` and the complete text/IPA targets remain unchanged.
+Manifest token counts must use the same source tokenizer as training.
+Padding should cover the context tags, BOS/EOS, and phoneme-channel delay;
+increase it if longer text contexts are supplied. Without these options, the
+existing ``num_tokens * token_equivalent_duration`` behavior is preserved.
+
+Set ``batch_size: null``, ``batch_duration``, and ``use_bucketing: true`` in
+the text dataset's sampler configuration. Lhotse then groups similar lengths
+and chooses a variable number of records per batch. Its duration constraint
+accounts for padding to the longest sequence in the batch. Configure
+``bucket_buffer_size`` large enough to fill the desired duration budget.
+
+Use ``max_duration`` to filter individual oversized records. For example,
+with ``token_equivalent_duration: 0.08``, ``max_duration: 655.36`` permits
+at most 8,192 estimated timesteps per record, and ``batch_duration: 1024``
+budgets approximately 12,800 padded timesteps per GPU batch. These are virtual
+seconds for sampling; they do not represent spoken-audio duration. Select
+budgets for the model and GPU memory in use, and account for distributed
+training overhead. With two nodes of eight GPUs and one microbatch per
+optimizer step, this corresponds to at most 204,800 padded timesteps across
+all ranks. Gradient accumulation multiplies this global budget. The number
+of examples varies with sequence length, so reassess learning-rate and
+evaluation schedules when changing the budget.
+
+The generic ``cut_text_into_windows_tokens`` setting is inactive when
+``use_multimodal_sampling: false`` and does not split aligned text/IPA records.
+Filtering complete records avoids changing the alignment between raw text
+and normalized IPA.
+
 Inference
 #########
 

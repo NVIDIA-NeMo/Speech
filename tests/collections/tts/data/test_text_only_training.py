@@ -345,3 +345,81 @@ def test_finite_text_only_validation_is_deterministic_and_sharded(dataset, tmp_p
         rank_ids.append(set(ids))
     assert rank_ids[0].isdisjoint(rank_ids[1])
     assert rank_ids[0] | rank_ids[1] == {row["id"] for row in rows}
+
+
+def test_text_only_duration_can_account_for_ipa_tokens(tmp_path, cuts):
+    from tokenizers import Tokenizer as BackendTokenizer
+    from tokenizers import models, pre_tokenizers
+
+    from nemo.collections.common.data.lhotse.cutset import read_cutset_from_config
+
+    backend = BackendTokenizer(models.WordLevel({"<unk>": 0}, unk_token="<unk>"))
+    backend.pre_tokenizer = pre_tokenizers.Whitespace()
+    tokenizer_path = tmp_path / "ipa_tokenizer.json"
+    backend.save(str(tokenizer_path))
+    rows = [json.loads(line) for line in (tmp_path / "text.jsonl").read_text().splitlines()]
+    rows[1]["num_tokens"] = 100  # Input can also be longer than the IPA channel.
+    (tmp_path / "text.jsonl").write_text("\n".join(json.dumps(row) for row in rows))
+    config = OmegaConf.create(
+        {
+            "input_cfg": [
+                {
+                    "type": "txt_norm_jsonl",
+                    "paths": str(tmp_path / "text.jsonl"),
+                    "duration_phoneme_tokenizer_path": str(tokenizer_path),
+                    "duration_padding_tokens": 16,
+                }
+            ],
+            "force_finite": True,
+            "token_equivalent_duration": 0.08,
+        }
+    )
+    sampled, _ = read_cutset_from_config(config)
+    sampled = list(sampled)
+    for cut, row in zip(sampled, rows):
+        expected = max(row["num_tokens"], len(backend.encode(row["ipa"]).ids)) + 16
+        assert cut.duration == pytest.approx(expected * 0.08)
+        assert cut.num_tokens == row["num_tokens"]  # Preserve source metadata.
+        assert cut.supervisions[0].ipa == row["ipa"]
+    assert sampled[0].duration > rows[0]["num_tokens"] * 0.08
+
+
+@pytest.mark.parametrize("padding", [-1, 1.5, True])
+def test_text_only_duration_rejects_invalid_padding(tmp_path, padding):
+    with pytest.raises(ValueError, match="duration_padding_tokens"):
+        LhotseTextNormJsonlAdapter(str(tmp_path / "text.jsonl"), 0.08, duration_padding_tokens=padding)
+
+
+def test_text_only_duration_filters_oversized_ipa_without_fixed_batch_size(dataset, cuts, tmp_path):
+    from tokenizers import Tokenizer as BackendTokenizer
+    from tokenizers import models, pre_tokenizers
+
+    backend = BackendTokenizer(models.WordLevel({"<unk>": 0}, unk_token="<unk>"))
+    backend.pre_tokenizer = pre_tokenizers.Whitespace()
+    tokenizer_path = tmp_path / "ipa_tokenizer.json"
+    backend.save(str(tokenizer_path))
+    config = {
+        "input_cfg": [
+            {
+                "type": "txt_norm_jsonl",
+                "paths": str(tmp_path / "text.jsonl"),
+                "duration_phoneme_tokenizer_path": str(tokenizer_path),
+                "duration_padding_tokens": 16,
+            }
+        ],
+        "token_equivalent_duration": 0.08,
+        "batch_duration": 6.0,
+        "batch_size": None,
+        "max_duration": 3.0,
+        "use_bucketing": False,
+        "use_multimodal_sampling": False,
+        "force_finite": True,
+        "force_map_dataset": True,
+        "shuffle": False,
+        "seed": 42,
+        "shard_seed": 42,
+        "num_workers": 0,
+    }
+    loader = get_lhotse_dataloader_from_config(config, global_rank=0, world_size=1, dataset=dataset)
+    batches = list(loader)
+    assert [sample_id for batch in batches for sample_id in batch["sample_id"]] == ["1"]

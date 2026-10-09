@@ -408,3 +408,33 @@ jobs:
           path: |
             .coverage
           include-hidden-files: true
+
+  notify-nightly-failure:
+    name: Notify scheduled CI failure
+    runs-on: ubuntu-latest
+    needs:
+      - ephemeral-runner-routing
+      - pre-flight
+      - configure
+      - code-linting
+      - cicd-wait-in-queue
+      - cicd-test-container-build
+      - cicd-import-tests
+      - L0_Setup_Test_Data_And_Models
+      - cicd-main-unit-tests
+      - cicd-main-speech
+      - Nemo_CICD_Test
+      - Coverage
+    permissions: {}
+    # Do not depend on setup outputs: failures there skip downstream jobs.
+    if: >-
+      ${{ always() && !cancelled() && failure() &&
+          github.repository == 'NVIDIA-NeMo/Speech' &&
+          github.event_name == 'schedule' &&
+          github.ref_name == github.event.repository.default_branch }}
+    steps:
+      - name: Notify CI alerts channel
+        uses: NVIDIA-NeMo/FW-CI-templates/.github/actions/notify-ci-failure@631c404d00a9e60afc591cd071d35d2e18f82fc6
+        with:
+          needs-json: ${{ toJSON(needs) }}
+          webhook: ${{ secrets.SLACK_WEBHOOK }}

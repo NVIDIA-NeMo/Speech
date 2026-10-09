@@ -45,14 +45,19 @@ from nemo.collections.common.tokenizers import AutoTokenizer
 from nemo.collections.speechlm2.data.salm_dataset import left_collate_vectors
 from nemo.collections.speechlm2.models.salm import _resolve_audios_in_prompt, replace_placeholders_and_build_targets
 from nemo.collections.speechlm2.modules.perception import AudioTranscriptionPerceptionModule
+from nemo.collections.speechlm2.one_logger import SALMThroughputPolicy
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
 from nemo.collections.speechlm2.parts.lora import maybe_install_lora
 from nemo.collections.speechlm2.parts.optim_setup import configure_optimizers, is_frozen
 from nemo.collections.speechlm2.parts.pretrained import load_pretrained_hf, move_embedding
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, MaskType, NeuralType
+from nemo.lightning.callback_group import with_model_init_callbacks
+from nemo.lightning.speech_throughput import register_throughput_policy
 from nemo.utils import logging
 
 
+@register_throughput_policy(SALMThroughputPolicy)
+@with_model_init_callbacks
 class SALMWithAsrDecoder(LightningModule, HFHubMixin):
     def __init__(self, cfg) -> None:
         assert isinstance(cfg, dict), (
@@ -240,6 +245,10 @@ class SALMWithAsrDecoder(LightningModule, HFHubMixin):
                 m.eval()
 
         inputs = self.prepare_inputs(batch)
+        # Count the actual mixed text/audio positions after audio embeddings
+        # have been inserted, excluding padding.
+        self._last_batch_num_tokens = inputs["attention_mask"].long().sum().detach()
+        self._last_batch_num_examples = int(inputs["input_embeds"].shape[0])
         forward_outputs = self(inputs["input_embeds"], attention_mask=inputs["attention_mask"])
         num_frames = (inputs["target_ids"] != -100).long().sum()
         with loss_parallel():

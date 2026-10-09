@@ -25,6 +25,7 @@ from torch import nn
 
 from nemo.collections.tts.losses.aligner_loss import BinLoss, ForwardSumLoss
 from nemo.collections.tts.models.base import NeedsNormalizer
+from nemo.collections.tts.one_logger import TTSThroughputPolicy
 from nemo.collections.tts.parts.utils.helpers import (
     binarize_attention,
     g2p_backward_compatible_support,
@@ -33,6 +34,7 @@ from nemo.collections.tts.parts.utils.helpers import (
 )
 from nemo.core.classes import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo, safe_instantiate
+from nemo.lightning.speech_throughput import register_throughput_policy
 from nemo.utils import logging, model_utils
 
 HAVE_WANDB = True
@@ -42,6 +44,7 @@ except ModuleNotFoundError:
     HAVE_WANDB = False
 
 
+@register_throughput_policy(TTSThroughputPolicy)
 class AlignerModel(NeedsNormalizer, ModelPT):
     """Speech-to-text alignment model (https://arxiv.org/pdf/2108.10447.pdf) that is used to learn alignments between mel spectrogram and text."""
 

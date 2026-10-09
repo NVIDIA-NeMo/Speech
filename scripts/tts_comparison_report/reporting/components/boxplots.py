@@ -168,10 +168,16 @@ def prepare_boxplots(
 ) -> BytesIO:
     """Create an in-memory box plot figure for summary or benchmark-level metrics.
 
+    Only distribution metrics that have a result in `stat_test_results` are plotted, so
+    metrics skipped by the statistical tests are skipped here as well: context-restricted
+    metrics on text-context benchmarks, and optional metrics that are unavailable for a
+    benchmark in the scope in either bucket (see `run_stat_tests`).
+
     Args:
         bucket_baseline: Baseline bucket data.
         bucket_candidate: Candidate bucket data.
-        stat_test_results: Statistical test results used to highlight the winning model.
+        stat_test_results: Statistical test results used to select plotted metrics and
+            highlight the winning model.
         cfg: Plot styling and layout configuration.
         benchmark_name: Benchmark name. If omitted, metric samples are aggregated
             across all benchmarks.
@@ -199,10 +205,12 @@ def prepare_boxplots(
             baseline = bucket_baseline.get_metric_samples(
                 metric_name=metric.key,
                 benchmark_name=benchmark_name,
+                context_type=metric.context_type,
             )
             candidate = bucket_candidate.get_metric_samples(
                 metric_name=metric.key,
                 benchmark_name=benchmark_name,
+                context_type=metric.context_type,
             )
             baseline = np.asarray(baseline, dtype=float)
             candidate = np.asarray(candidate, dtype=float)

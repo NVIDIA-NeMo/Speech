@@ -11,14 +11,17 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
+
 import errno
 import json
 from abc import ABC, abstractmethod
 from pathlib import Path
 from stat import S_ISDIR, S_ISLNK
-from typing import Any, BinaryIO, Generator
+from typing import TYPE_CHECKING, Any, BinaryIO, Generator
 
-from paramiko.sftp_client import SFTPClient
+if TYPE_CHECKING:  # paramiko is only needed by callers that construct an SFTPStorage (generate_report.py)
+    from paramiko.sftp_client import SFTPClient
 
 
 class BaseStorage(ABC):

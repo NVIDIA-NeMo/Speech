@@ -19,7 +19,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Optional, Self
 
-from scripts.tts_comparison_report.reporting.constants import BENCHMARK_META, TQDM_NCOLS
+from scripts.tts_comparison_report.reporting.constants import BENCHMARK_META, TQDM_NCOLS, ContextType
 from scripts.tts_comparison_report.reporting.storage import BaseStorage
 from tqdm import tqdm
 
@@ -301,7 +301,8 @@ class BucketData:
             bucket_path: Path to the bucket root directory.
             bucket_structure: Bucket naming and path conventions.
             benchmark_names: Benchmark names expected in the bucket.
-            check_audio: Whether generated audio files should also be discovered.
+            check_audio: Whether generated audio files should also be discovered. Audio
+                discovery is skipped for text-context benchmarks, which have no context audio.
             storage: Storage instance used to access local or remote files.
 
         Returns:
@@ -332,11 +333,11 @@ class BucketData:
                 benchmark_name=name,
                 benchmark_path=benchmark_path,
                 bucket_structure=bucket_structure,
-                check_audio=check_audio,
+                check_audio=check_audio and BENCHMARK_META[name].context_type == ContextType.audio,
                 storage=storage,
             )
             if obj.configuration_str is None:
-                lang = BENCHMARK_META[name]
+                lang = BENCHMARK_META[name].lang
                 suffix = f"_{lang}_{name}"
 
                 if not dir_name.endswith(suffix):
@@ -378,6 +379,70 @@ class BucketData:
 
         if pbar:
             pbar.close()
+
+    def get_benchmark_context_type(self, benchmark_name: str) -> ContextType:
+        """Return the context type a benchmark was generated with.
+
+        Args:
+            benchmark_name: Name of the benchmark.
+
+        Returns:
+            Context type declared for the benchmark in `BENCHMARK_META`.
+
+        Raises:
+            ValueError: If the benchmark is unknown.
+        """
+        if benchmark_name not in self.benchmarks:
+            raise ValueError(f"Unknown benchmark: '{benchmark_name}'.")
+
+        return BENCHMARK_META[benchmark_name].context_type
+
+    def get_benchmark_names(self, context_type: Optional[ContextType] = None) -> list[str]:
+        """Return names of discovered benchmarks, optionally restricted to one context type.
+
+        Args:
+            context_type: If given, only benchmarks generated with this context type are returned.
+
+        Returns:
+            Benchmark names in discovery order.
+        """
+        names = list(self.benchmarks)
+
+        if context_type is None:
+            return names
+
+        return [name for name in names if self.get_benchmark_context_type(name) == context_type]
+
+    def has_context_type(
+        self,
+        context_type: Optional[ContextType],
+        benchmark_name: Optional[str] = None,
+    ) -> bool:
+        """Return whether a benchmark scope contains data generated with a context type.
+
+        Used to decide whether a metric restricted to a context type applies to a report section.
+
+        Args:
+            context_type: Required context type. `None` means no restriction.
+            benchmark_name: Benchmark name. If omitted, the scope is the whole bucket and the
+                result is `True` if at least one benchmark has the context type.
+
+        Returns:
+            Whether the scope contains at least one benchmark with the required context type.
+
+        Raises:
+            ValueError: If the benchmark is unknown.
+        """
+        if benchmark_name is not None and benchmark_name not in self.benchmarks:
+            raise ValueError(f"Unknown benchmark: '{benchmark_name}'.")
+
+        if context_type is None:
+            return True
+
+        if benchmark_name is None:
+            return bool(self.get_benchmark_names(context_type))
+
+        return self.get_benchmark_context_type(benchmark_name) == context_type
 
     def get_metric_avg_value(
         self,
@@ -436,12 +501,17 @@ class BucketData:
         if items is None or not items:
             raise ValueError(f"Filewise metrics not loaded for benchmark: '{benchmark_name}'.")
 
-        output = []
         validation_context = f"filewise metrics for benchmark '{benchmark_name}'"
+
+        if all(metric_name not in item for item in items):
+            raise ValueError(f"Unknown or empty metric '{metric_name}' for benchmark '{benchmark_name}'.")
+
+        output = []
 
         for item in items:
             if metric_name not in item:
-                continue
+                sample = item.get("pred_audio_filepath", "<unknown sample>")
+                raise ValueError(f"Metric '{metric_name}' in {validation_context} is missing for sample '{sample}'.")
 
             value = _validate_numeric_metric_value(
                 value=item[metric_name],
@@ -449,21 +519,26 @@ class BucketData:
                 context=validation_context,
             )
             if math.isnan(value):
-                raise ValueError(
-                    f"Metric '{metric_name}' in {validation_context} contains NaN; "
-                    "statistical tests and box plots require non-NaN samples."
-                )
+                sample = item.get("pred_audio_filepath", "<unknown sample>")
+                raise ValueError(_nan_sample_message(metric_name, validation_context, sample))
             output.append(value)
-
-        if not output:
-            raise ValueError(f"Unknown or empty metric '{metric_name}' for benchmark '{benchmark_name}'.")
 
         return output
 
-    def _aggregate_metric_stats(self, metric_name: str) -> list[float]:
+    def _aggregate_metric_stats(
+        self,
+        metric_name: str,
+        context_type: Optional[ContextType],
+    ) -> list[float]:
+        benchmark_names = self.get_benchmark_names(context_type)
+
+        if not benchmark_names:
+            scope = "No benchmarks" if context_type is None else f"No benchmarks with '{context_type.value}' context"
+            raise ValueError(f"{scope} are available to aggregate metric '{metric_name}'.")
+
         output = []
 
-        for benchmark_name in self.benchmarks:
+        for benchmark_name in benchmark_names:
             output.extend(self._get_metric_stats(metric_name, benchmark_name))
 
         if not output:
@@ -475,62 +550,125 @@ class BucketData:
         self,
         metric_name: str,
         benchmark_name: Optional[str] = None,
+        context_type: Optional[ContextType] = None,
     ) -> list[float]:
-        """Return filewise samples for a metric from one or all benchmarks.
+        """Return filewise samples for a metric from one benchmark or aggregated across benchmarks.
 
         Args:
             metric_name: Name of the metric to retrieve.
             benchmark_name: Benchmark name. If omitted, samples are aggregated
-                across all benchmarks.
+                across all benchmarks with the requested context type.
+            context_type: Context type the benchmarks must have been generated with.
+                If omitted, benchmarks of every context type are used.
 
         Returns:
             List of numeric metric samples.
 
         Raises:
-            ValueError: If the benchmark is unknown, filewise metrics are not loaded,
-                or the metric is missing.
+            ValueError: If the benchmark is unknown or does not have the requested context type,
+                no benchmark has the requested context type, filewise metrics are not loaded,
+                no sample carries the metric, the metric is missing from some samples, or any
+                sample is NaN.
             TypeError: If any metric value is not numeric.
         """
         if benchmark_name is None:
-            return self._aggregate_metric_stats(metric_name)
+            return self._aggregate_metric_stats(metric_name, context_type)
+
+        if not self.has_context_type(context_type, benchmark_name):
+            raise ValueError(f"Benchmark '{benchmark_name}' was not generated with '{context_type.value}' context.")
+
         return self._get_metric_stats(metric_name, benchmark_name)
+
+    def describe_unavailable_metric(
+        self,
+        metric_name: str,
+        benchmark_name: str,
+    ) -> Optional[str]:
+        """Return why a metric is unavailable for a benchmark, or `None` if every sample carries a non-NaN value.
+
+        A metric is unavailable only when no filewise metrics item carries the key, which is the
+        case for artifacts written before the metric was saved per file. Every benchmark has the
+        ground-truth audio the per-file metrics need, so a key that is present in some items
+        only, or a NaN value, indicates a broken evaluation or manifest and is an error.
+
+        Args:
+            metric_name: Name of the metric to check.
+            benchmark_name: Name of the benchmark.
+
+        Returns:
+            `None` if every item carries a value that is not NaN; otherwise a single-line reason
+            stating that the key is absent from the benchmark's filewise metrics. Non-numeric
+            values are not checked here; `get_metric_samples` raises for them.
+
+        Raises:
+            ValueError: If the benchmark is unknown, filewise metrics are not loaded, the key is
+                missing from some items only, or any value is NaN.
+        """
+        if benchmark_name not in self.benchmarks:
+            raise ValueError(f"Unknown benchmark: '{benchmark_name}'.")
+
+        items = self.benchmarks[benchmark_name].filewise_metrics
+
+        if items is None or not items:
+            raise ValueError(f"Filewise metrics not loaded for benchmark: '{benchmark_name}'.")
+
+        if all(metric_name not in item for item in items):
+            return f"'{metric_name}' is absent from the filewise metrics"
+
+        validation_context = f"filewise metrics for benchmark '{benchmark_name}'"
+
+        for item in items:
+            sample = item.get("pred_audio_filepath", "<unknown sample>")
+
+            if metric_name not in item:
+                raise ValueError(f"Metric '{metric_name}' in {validation_context} is missing for sample '{sample}'.")
+
+            value = item[metric_name]
+
+            if isinstance(value, (int, float)) and math.isnan(value):
+                raise ValueError(_nan_sample_message(metric_name, validation_context, sample))
+
+        return None
 
     def has_metric_samples(
         self,
         metric_name: str,
         benchmark_name: Optional[str] = None,
+        context_type: Optional[ContextType] = None,
     ) -> bool:
-        """Return whether filewise samples contain a metric for the requested benchmark scope.
+        """Return whether every benchmark in a scope carries filewise values of a metric.
+
+        Used to decide whether an optional distribution metric is tested and plotted for a report
+        section. A benchmark counts as available unless the key is absent from all of its filewise
+        metrics items (see `describe_unavailable_metric`); a NaN value or a key missing from some
+        items only is an error, not an unavailable metric.
 
         Args:
             metric_name: Name of the metric to check.
-            benchmark_name: Benchmark to check. If omitted, each discovered
-                benchmark is checked independently.
+            benchmark_name: Benchmark name. If omitted, the scope is every benchmark with the
+                requested context type.
+            context_type: Context type the benchmarks must have been generated with when
+                `benchmark_name` is omitted. If omitted, benchmarks of every context type are used.
 
         Returns:
-            True if every selected benchmark has at least one value for the metric
-            that is not a numeric NaN; otherwise False. Returns True when no
-            benchmarks are selected.
+            `True` if the scope is not empty and every benchmark in it carries the metric; `False`
+            if the key is absent from any benchmark in the scope or if no benchmark is selected.
 
         Raises:
-            ValueError: If the benchmark is unknown or filewise metrics are not loaded.
+            ValueError: If the benchmark is unknown, filewise metrics are not loaded for a
+                benchmark in the scope, or a benchmark has a NaN value or a partially missing key.
         """
-        benchmark_names = self.benchmarks if benchmark_name is None else [benchmark_name]
+        if benchmark_name is not None:
+            benchmark_names = [benchmark_name]
+        else:
+            benchmark_names = self.get_benchmark_names(context_type)
 
-        for name in benchmark_names:
-            if name not in self.benchmarks:
-                raise ValueError(f"Unknown benchmark: '{name}'.")
+        if not benchmark_names:
+            return False
 
-            items = self.benchmarks[name].filewise_metrics
-            if items is None or not items:
-                raise ValueError(f"Filewise metrics not loaded for benchmark: '{name}'.")
-            values = [item[metric_name] for item in items if metric_name in item]
-            if not values:
-                return False
-            if all(isinstance(value, (int, float)) and math.isnan(value) for value in values):
-                return False
+        reasons = [self.describe_unavailable_metric(metric_name, name) for name in benchmark_names]
 
-        return True
+        return all(reason is None for reason in reasons)
 
     def get_benchmark_audio_paths(self, benchmark_name: str) -> dict[str, Path]:
         """Return generated audio file paths for a benchmark.
@@ -698,3 +836,10 @@ class UploadedAudioPairInfo:
     baseline_url: str
     candidate_url: str
     text: str
+
+
+def _nan_sample_message(metric_name: str, validation_context: str, sample: str) -> str:
+    return (
+        f"Metric '{metric_name}' in {validation_context} contains NaN for sample '{sample}'; "
+        "statistical tests and box plots require non-NaN samples."
+    )

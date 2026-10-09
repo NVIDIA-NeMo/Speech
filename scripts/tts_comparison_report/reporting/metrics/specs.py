@@ -14,6 +14,8 @@
 from dataclasses import dataclass
 from typing import Optional
 
+from scripts.tts_comparison_report.reporting.constants import ContextType
+
 
 @dataclass(frozen=True)
 class MetricSpec:
@@ -33,8 +35,11 @@ class MetricSpec:
     multiplier: float | int = 1
     # Whether this metric should appear in the cross-benchmark summary table.
     include_in_summary: bool = True
-    # Whether this metric may be absent from bucket metrics without causing an error.
+    # Whether this metric may be absent (or NaN) in the aggregated metrics without causing an error.
     optional: bool = False
+    # Context type a benchmark must have been generated with for this metric to be reported;
+    # None means the metric is reported for every benchmark.
+    context_type: Optional[ContextType] = None
 
 
 @dataclass(frozen=True)
@@ -51,5 +56,10 @@ class DistributionMetricSpec:
     add_to_box_plot: bool = True
     # Optional y-axis range applied to the metric plot as (min, max).
     plot_range: Optional[tuple[float, float]] = None
-    # Whether this metric may be absent from filewise metrics.
+    # Whether the metric key may be absent from a benchmark's filewise metrics (artifacts written
+    # before the metric was saved per file, e.g. `pred_gt_ssim`). Such benchmarks are skipped with a
+    # warning; a key present in some samples only, or any NaN value, still fails the report.
     optional: bool = False
+    # Context type a benchmark must have been generated with for this metric to be reported;
+    # None means the metric is reported for every benchmark.
+    context_type: Optional[ContextType] = None

@@ -269,7 +269,7 @@ class Orchestrator:
                 pair_blocks=pair_blocks,
             )
             benchmark_blocks.append(block)
-            benchmark_language = BENCHMARK_META[benchmark_name]
+            benchmark_language = BENCHMARK_META[benchmark_name].lang
             name_info = f"{benchmark_name} ({benchmark_language})"
             benchmark_section_info.append((benchmark_name, name_info))
 
@@ -373,7 +373,7 @@ class Orchestrator:
                 image_block=image_block,
             )
             benchmark_blocks.append(block)
-            benchmark_language = BENCHMARK_META[benchmark_name]
+            benchmark_language = BENCHMARK_META[benchmark_name].lang
             name_info = f"{benchmark_name} ({benchmark_language})"
             benchmark_section_info.append((benchmark_name, name_info))
 

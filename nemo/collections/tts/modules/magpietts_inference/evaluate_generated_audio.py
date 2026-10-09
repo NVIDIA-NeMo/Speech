@@ -108,6 +108,7 @@ FILEWISE_METRICS_TO_SAVE = [
     'cer_pred_gt_audio',
     'wer',
     'wer_pred_gt_audio',
+    'pred_gt_ssim',  # read per file by the comparison report, also for text-context benchmarks without context audio
     'pred_context_ssim',
     'pred_gt_esim',
     'pred_gt_ems',

@@ -55,7 +55,9 @@ from nemo.collections.common.data.lhotse.text_adapters import (
     NeMoSFTJsonlAdapter,
     NemotronTextConversationAdapter,
     TextTurn,
+    LhotseTextNormJsonlAdapter,
 )
+
 from nemo.collections.common.parts.preprocessing.manifest import get_full_path
 
 
@@ -421,6 +423,38 @@ def read_nemo_sft_jsonl(config: DictConfig) -> tuple[CutSet, bool]:
     )
     if not config.get("force_finite", False):
         cuts = cuts.repeat(preserve_id=True)
+    return cuts, True
+
+
+@data_type_parser("txt_norm_jsonl")
+def read_txt_norm_jsonl(config: DictConfig) -> tuple[CutSet, bool]:
+    """Read normalized text and IPA JSONL records into a CutSet."""
+    if config.get("indexed", False):
+        raise ValueError("txt_norm_jsonl does not support indexed=True")
+
+    token_equivalent_duration = config.get("token_equivalent_duration")
+    if token_equivalent_duration is None:
+        raise ValueError(
+            "txt_norm_jsonl requires token_equivalent_duration "
+            "(seconds per token)"
+        )
+
+    cuts = CutSet(
+        LhotseTextNormJsonlAdapter(
+            paths=config.paths,
+            token_equivalent_duration=float(token_equivalent_duration),
+            sampling_rate=int(config.get("sample_rate", 16000)),
+            language=config.get("language") or "en",
+            role=config.get("role") or "agent",
+            shuffle_shards=config.get("shuffle", False),
+            shard_seed=config.get("shard_seed", "trng"),
+        )
+    )
+
+    if not config.get("force_finite", False):
+        cuts = cuts.repeat(preserve_id=True)
+
+    # True selects iterable dataset handling, matching other text parsers.
     return cuts, True
 
 

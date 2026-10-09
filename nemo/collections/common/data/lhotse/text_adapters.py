@@ -19,6 +19,7 @@ import math
 import os
 import random
 import tarfile
+from copy import deepcopy
 from collections import deque
 from dataclasses import dataclass
 from itertools import groupby
@@ -27,7 +28,8 @@ from typing import Iterator, Literal, Optional, Sequence, Union
 
 import numpy as np
 import torch
-from lhotse import AudioSource, CutSet, Recording
+from lhotse import AudioSource, CutSet, MonoCut, Recording, SupervisionSegment
+
 from lhotse.audio import AudioLoadingError
 from lhotse.custom import CustomFieldMixin
 from lhotse.cut import Cut
@@ -263,6 +265,93 @@ class LhotseTextJsonlAdapter(IteratorNode):
                     continue
                 yield TextExample(data[self.text_field], language=self.language)
 
+
+@dataclass
+class LhotseTextNormJsonlAdapter:
+    paths: object
+    token_equivalent_duration: float
+    sampling_rate: int = 16000
+    language: str = "en"
+    role: str = "agent"
+    shuffle_shards: bool = False
+    shard_seed: object = "trng"
+
+    def __post_init__(self):
+        self.paths = list(expand_sharded_filepaths(self.paths))
+        if (
+            not math.isfinite(self.token_equivalent_duration)
+            or self.token_equivalent_duration <= 0
+        ):
+            raise ValueError("token_equivalent_duration must be finite and positive")
+        if self.sampling_rate <= 0:
+            raise ValueError("sample_rate must be positive")
+
+    def __iter__(self):
+        paths = list(self.paths)
+        if self.shuffle_shards:
+            random.Random(resolve_seed(self.shard_seed)).shuffle(paths)
+
+        for path in paths:
+            for index, row in enumerate(load_jsonl(path)):
+                if not isinstance(row, dict):
+                    raise ValueError(f"{path}: record {index}: expected an object")
+                for key in ("text", "text_normalized", "ipa"):
+                    if key not in row or not isinstance(row[key], str):
+                        raise ValueError(
+                            f"{path}: record {index}: {key!r} must be a string"
+                        )
+
+                cut_id = row.get("id")
+                if not isinstance(cut_id, str) or not cut_id:
+                    raise ValueError(f"{path}: record {index}: id must be a nonempty string")
+                num_tokens = row.get("num_tokens")
+                if type(num_tokens) is not int or num_tokens <= 0:
+                    raise ValueError(f"{path}: record {index}: num_tokens must be a positive integer")
+                duration = num_tokens * self.token_equivalent_duration
+                if not math.isfinite(duration):
+                    raise ValueError(f"{path}: record {index}: duration must be finite")
+                num_samples = compute_num_samples(duration, self.sampling_rate)
+                if num_samples <= 0:
+                    raise ValueError(f"{path}: record {index}: duration is less than one sample")
+                duration = num_samples / self.sampling_rate
+                language = (
+                    row.get("language_id")
+                    or row.get("normalization_language_id")
+                    or self.language
+                )
+                # A SHAR placeholder provides metadata but cannot load audio.
+                recording = Recording(
+                    id=cut_id,
+                    sources=[AudioSource(type="shar", channels=[0], source="")],
+                    sampling_rate=self.sampling_rate,
+                    num_samples=num_samples,
+                    duration=duration,
+                )
+                supervision_custom = deepcopy(row)
+                supervision_custom["normalized_text"] = row["text_normalized"]
+                supervision = SupervisionSegment(
+                    id=f"{cut_id}-sup",
+                    recording_id=cut_id,
+                    start=0.0,
+                    duration=duration,
+                    channel=0,
+                    text=row["text"],
+                    language=language,
+                    speaker=self.role,
+                    custom=supervision_custom,
+                )
+                cut_custom = deepcopy(row)
+                # The supplied phoneme collator's language lookup uses cut.lang.
+                cut_custom["lang"] = language
+                yield MonoCut(
+                    id=cut_id,
+                    start=0.0,
+                    duration=duration,
+                    channel=0,
+                    recording=recording,
+                    supervisions=[supervision],
+                    custom=cut_custom,
+                )
 
 @registered_prompt_format_fn(TextExample)
 def default_text_example_prompt_format_fn(example: TextExample, prompt):

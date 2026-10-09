@@ -1304,8 +1304,11 @@ class CTCBPEDecoding(AbstractCTCDecoding):
         Returns:
             A list of word-level confidence scores.
         """
+        # The hypothesis text strips the space before punctuation, so words and boundaries must too.
+        token_ids = hypothesis.text[0]
+        decode = self.decode_tokens_to_str_with_strip_punctuation
         return self._aggregate_token_confidence_subwords_sentencepiece(
-            self.decode_tokens_to_str(hypothesis.text[0]).split(), hypothesis.token_confidence, hypothesis.text[0]
+            decode(token_ids).split(), hypothesis.token_confidence, token_ids, decode
         )
 
     def decode_tokens_to_str(self, tokens: List[str]) -> str:

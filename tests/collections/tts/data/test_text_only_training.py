@@ -110,8 +110,8 @@ def test_text_only_dataset_reuses_collators_without_audio(dataset, cuts):
     assert not batch["phoneme_turn_dropout"].any()
     assert "$1,204.50" in dataset.text_tokenizer.encoded
     assert "normalized words" not in dataset.text_tokenizer.encoded
-    assert "<PHONEME_ONLY><en-US>" in dataset.text_tokenizer.encoded
-    assert "<PHONEME_ONLY><vi>" in dataset.text_tokenizer.encoded
+    assert "[EN-US][TEXT_ONLY]" in dataset.text_tokenizer.encoded
+    assert "[VI][TEXT_ONLY]" in dataset.text_tokenizer.encoded
     dataset._collate_audio_channels.assert_not_called()
     dataset._collect_cut_features.assert_not_called()
 

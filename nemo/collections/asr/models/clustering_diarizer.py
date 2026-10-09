@@ -157,11 +157,22 @@ class ClusteringDiarizer(torch.nn.Module, Model, DiarizationMixin):
             self._diarizer_params.speaker_embeddings.parameters.multiscale_weights,
         )
 
+    def _get_batch_size(self, default_batch_size: int = 64) -> int:
+        """
+        Batch size for the VAD and speaker-embedding dataloaders.
+
+        A config without a top-level ``batch_size`` would pass ``None`` to the DataLoader, which turns
+        off batching and fails in the collate function with ``TypeError: iteration over a 0-d tensor``.
+        The default matches the ``batch_size: 64`` in the diarizer inference configs.
+        """
+        batch_size = self._cfg.get('batch_size')
+        return default_batch_size if batch_size is None else batch_size
+
     def _setup_vad_test_data(self, manifest_vad_input):
         vad_dl_config = {
             'manifest_filepath': manifest_vad_input,
             'sample_rate': self._cfg.sample_rate,
-            'batch_size': self._cfg.get('batch_size'),
+            'batch_size': self._get_batch_size(),
             'vad_stream': True,
             'labels': [
                 'infer',
@@ -177,7 +188,7 @@ class ClusteringDiarizer(torch.nn.Module, Model, DiarizationMixin):
         spk_dl_config = {
             'manifest_filepath': manifest_file,
             'sample_rate': self._cfg.sample_rate,
-            'batch_size': self._cfg.get('batch_size'),
+            'batch_size': self._get_batch_size(),
             'trim_silence': False,
             'labels': None,
             'num_workers': self._cfg.num_workers,

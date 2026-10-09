@@ -543,10 +543,8 @@ def get_forced_aligned_timestamps_with_external_model(
                 timestamps["segment"].append(
                     {
                         "segment": segment.text,
-                        "start_offset": (
-                            int(segment.t_start / output_timestep_duration) if segment.t_start != -1 else -1
-                        ),
-                        "end_offset": int(segment.t_end / output_timestep_duration) if segment.t_end != -1 else -1,
+                        "start_offset": _time_to_offset(segment.t_start, output_timestep_duration),
+                        "end_offset": _time_to_offset(segment.t_end, output_timestep_duration),
                         "start": round(segment.t_start, 2),
                         "end": round(segment.t_end, 2),
                     }
@@ -561,8 +559,8 @@ def get_forced_aligned_timestamps_with_external_model(
                     timestamps["word"].append(
                         {
                             "word": word.text,
-                            "start_offset": int(word.t_start / output_timestep_duration) if word.t_start != -1 else -1,
-                            "end_offset": int(word.t_end / output_timestep_duration) if word.t_end != -1 else -1,
+                            "start_offset": _time_to_offset(word.t_start, output_timestep_duration),
+                            "end_offset": _time_to_offset(word.t_end, output_timestep_duration),
                             "start": round(word.t_start, 2),
                             "end": round(word.t_end, 2),
                         }
@@ -596,19 +594,15 @@ def get_forced_aligned_timestamps_with_external_model(
                         if "segment" in timestamp_type:
                             if segment.t_end == word.t_end:
                                 timestamps["segment"][-1]["end"] = previous_token_end
-                                timestamps["segment"][-1]["end_offset"] = (
-                                    int(previous_token_end / output_timestep_duration)
-                                    if previous_token_end != -1
-                                    else -1
+                                timestamps["segment"][-1]["end_offset"] = _time_to_offset(
+                                    previous_token_end, output_timestep_duration
                                 )
 
                         if "word" in timestamp_type:
                             if word.t_end == token.t_end:
                                 timestamps["word"][-1]["end"] = previous_token_end
-                                timestamps["word"][-1]["end_offset"] = (
-                                    int(previous_token_end / output_timestep_duration)
-                                    if previous_token_end != -1
-                                    else -1
+                                timestamps["word"][-1]["end_offset"] = _time_to_offset(
+                                    previous_token_end, output_timestep_duration
                                 )
 
                         token.t_end = token.t_start = previous_token_end
@@ -619,10 +613,8 @@ def get_forced_aligned_timestamps_with_external_model(
                                 "char": external_ctc_model.tokenizer.ids_to_text([token.token_id]),
                                 "token_id": token.token_id,
                                 "token": token.text,
-                                "start_offset": (
-                                    int(token.t_start / output_timestep_duration) if token.t_start != -1 else -1
-                                ),
-                                "end_offset": int(token.t_end / output_timestep_duration) if token.t_end != -1 else -1,
+                                "start_offset": _time_to_offset(token.t_start, output_timestep_duration),
+                                "end_offset": _time_to_offset(token.t_end, output_timestep_duration),
                                 "start": round(token.t_start, 2),
                                 "end": round(token.t_end, 2),
                             }
@@ -669,3 +661,9 @@ def get_forced_aligned_timestamps_with_external_model(
             )
 
     return main_model_predictions
+
+
+def _time_to_offset(time: float, step: float) -> int:
+    # Invert the aligner's frame-to-time conversion without rounding a frame down:
+    # for example, 29 * 0.08 / 0.08 is 28.999999999999996. Preserve skipped tokens.
+    return int(round(time / step)) if time != -1 else -1

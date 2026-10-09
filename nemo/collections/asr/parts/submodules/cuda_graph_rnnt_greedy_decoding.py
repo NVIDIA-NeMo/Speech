@@ -22,6 +22,7 @@ import torch
 from nemo.collections.asr.parts.utils import rnnt_utils
 from nemo.core.utils.cuda_python_utils import (
     check_cuda_python_cuda_graphs_conditional_nodes_supported,
+    create_conditional_node_mempool,
     cu_call,
     run_nvrtc,
     with_conditional_node,
@@ -108,6 +109,7 @@ class RNNTGreedyDecodeCudaGraph:
         self.scores_cpu = None
         self.labels_cpu = None
         self.graph = None
+        self.graph_mempool = None
 
         self.first_call = True
 
@@ -168,6 +170,7 @@ class RNNTGreedyDecodeCudaGraph:
         self.graph = None
 
         self.graph = torch.cuda.CUDAGraph()
+        self.graph_mempool = create_conditional_node_mempool(self.device)
 
         # Always create a new stream, because the per-thread default stream disallows stream capture to a graph.
         stream_for_graph = torch.cuda.Stream(self.device)
@@ -175,6 +178,7 @@ class RNNTGreedyDecodeCudaGraph:
             torch.cuda.stream(stream_for_graph),
             torch.inference_mode(),
             torch.cuda.graph(self.graph, stream=stream_for_graph, capture_error_mode="thread_local"),
+            torch.cuda.use_mem_pool(self.graph_mempool),
         ):
             # This is failing...
             self.f = torch.zeros(

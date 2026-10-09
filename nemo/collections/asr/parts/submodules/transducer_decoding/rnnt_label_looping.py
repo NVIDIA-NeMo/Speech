@@ -31,7 +31,13 @@ from nemo.collections.asr.parts.submodules.transducer_decoding.label_looping_bas
     SeparateGraphsLabelLooping,
 )
 from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMethodMixin
-from nemo.core.utils.cuda_python_utils import CUDA_GRAPH_COMPILE_ERROR_TYPES, cu_call, run_nvrtc, with_conditional_node
+from nemo.core.utils.cuda_python_utils import (
+    CUDA_GRAPH_COMPILE_ERROR_TYPES,
+    create_conditional_node_mempool,
+    cu_call,
+    run_nvrtc,
+    with_conditional_node,
+)
 from nemo.core.utils.optional_libs import CUDA_PYTHON_AVAILABLE, cuda_python_required
 from nemo.utils import logging
 
@@ -191,6 +197,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
 
     separate_graphs: Optional[SeparateGraphsLabelLooping]
     full_graph: Optional[torch.cuda.CUDAGraph]
+    full_graph_mempool: Optional[torch.cuda.MemPool]
     state: Optional[LabelLoopingState]
 
     def __init__(
@@ -268,6 +275,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
 
         self.state = None
         self.full_graph = None
+        self.full_graph_mempool = None
         self.separate_graphs = None
 
         self.cuda_graphs_mode = None
@@ -278,6 +286,7 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
         """Reset state to release memory (for CUDA graphs implementations)"""
         self.state = None
         self.full_graph = None
+        self.full_graph_mempool = None
         self.separate_graphs = None
 
     def _get_step_confidence(self, logits: torch.Tensor) -> Optional[torch.Tensor]:
@@ -1002,10 +1011,12 @@ class GreedyBatchedRNNTLabelLoopingComputer(GreedyBatchedLabelLoopingComputerBas
         stream_for_graph = torch.cuda.Stream(self.state.device)
         stream_for_graph.wait_stream(torch.cuda.default_stream(self.state.device))
         self.full_graph = torch.cuda.CUDAGraph()
+        self.full_graph_mempool = create_conditional_node_mempool(self.state.device)
         with (
             torch.cuda.stream(stream_for_graph),
             torch.inference_mode(),
             torch.cuda.graph(self.full_graph, stream=stream_for_graph, capture_error_mode="thread_local"),
+            torch.cuda.use_mem_pool(self.full_graph_mempool),
         ):
             self._before_outer_loop()
 

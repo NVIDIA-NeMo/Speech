@@ -121,6 +121,19 @@ def cu_call(f_call_out):
         return tuple(others)
 
 
+def create_conditional_node_mempool(device: torch.device) -> torch.cuda.MemPool:
+    """
+    Create a memory pool for capturing a CUDA graph that contains conditional nodes.
+
+    Capture the graph inside ``torch.cuda.use_mem_pool`` with this pool, and keep the pool for as long as the
+    graph can be replayed. Allocations made while capturing the conditional node bodies then come from this pool
+    instead of the default pool, where ``torch.cuda.empty_cache()`` can return them to the driver while the graph
+    still uses them.
+    """
+    with torch.cuda.device(device):
+        return torch.cuda.MemPool()
+
+
 @contextlib.contextmanager
 @cuda_python_required
 def with_conditional_node(while_loop_kernel, while_loop_args, while_loop_conditional_handle, device):
@@ -131,6 +144,9 @@ def with_conditional_node(while_loop_kernel, while_loop_args, while_loop_conditi
     and after the rest of the while loop body graph (because we need
     to decide both whether to enter the loop, and also whether to
     execute the next iteration of the loop).
+
+    The body is captured on its own stream, so ``torch.cuda.graph`` does not route the body's allocations to
+    the parent graph's private pool. Callers route them with ``create_conditional_node_mempool``.
     """
     # NB: depending on cuda-python version, cudaStreamGetCaptureInfo can return either 5 or 6 elements
     capture_status, _, graph, *_ = cu_call(

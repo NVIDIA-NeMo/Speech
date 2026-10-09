@@ -108,12 +108,5 @@ same text and audio prompts. The generated token IDs must match. Also inspect
 vLLM's speculative-decoding metrics to confirm that draft tokens are proposed
 and accepted; matching output alone does not prove that DFlash was active.
 
-Hybrid checkpoint precision
----------------------------
-
-The SpeechLM wrapper preserves FP32 Mamba ``A``, ``D``, and ``dt_bias``
-parameters before checkpoint loading, for both the target and MTP draft.
-MoE routers use FP32 weights, operands, and output logits, matching the
-Automodel training precision contract. Other language-model and perception
-weights retain their configured serving precision. FP32 SSM cache defaults
-are delegated to vLLM's NemotronH configuration hook.
+For the precision guarantees shared by ordinary hybrid serving and MTP,
+see :ref:`speechlm2-vllm-hybrid-precision` in the general serving guide.

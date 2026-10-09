@@ -687,6 +687,13 @@ def get_lhotse_dataloader_from_multi_config(
         if isinstance(c, DictConfig) and name not in ("sampler_weights",)  # exclude dict opts
     }
 
+    if shared_opts.sampler_fusion == "randomized_round_robin" and shared_opts.sampler_weights is not None:
+        # RoundRobinSampler starts at a worker-dependent source before drawing
+        # from its weights. Remove disabled sources before they can be opened or yielded.
+        configs = {name: config for name, config in configs.items() if shared_opts.sampler_weights[name] != 0}
+        if not configs:
+            raise ValueError("At least one dataset must have a nonzero sampler weight")
+
     source_samplers, source_use_iterable_dataset = {}, []
     for name, config in configs.items():
         try:

@@ -107,3 +107,6 @@ Compare greedy generation with and without ``--speculative-config`` using the
 same text and audio prompts. The generated token IDs must match. Also inspect
 vLLM's speculative-decoding metrics to confirm that draft tokens are proposed
 and accepted; matching output alone does not prove that DFlash was active.
+
+For the precision guarantees shared by ordinary hybrid serving and MTP,
+see :ref:`speechlm2-vllm-hybrid-precision` in the general serving guide.

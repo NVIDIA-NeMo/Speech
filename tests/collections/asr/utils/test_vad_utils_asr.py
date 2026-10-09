@@ -15,6 +15,7 @@
 
 import numpy as np
 import pytest
+import torch
 from lhotse import SupervisionSegment
 
 from nemo.collections.asr.parts.utils.vad_utils import (
@@ -25,6 +26,7 @@ from nemo.collections.asr.parts.utils.vad_utils import (
     get_nonspeech_segments,
     load_speech_overlap_segments_from_rttm,
     load_speech_segments_from_rttm,
+    merge_overlap_segment,
     read_rttm_as_supervisions,
 )
 
@@ -124,6 +126,22 @@ class TestVADUtils:
         ref, hyp = frame_vad_construct_supervisions_per_file(frame_labels, frame_labels, 0.02)
         assert _annotation_equals(ref, expected)
         assert _annotation_equals(hyp, expected)
+
+    @pytest.mark.parametrize(
+        ["segments", "expected"],
+        [
+            ([[0.0, 1.5], [1.0, 3.5]], [[0.0, 3.5]]),
+            ([[2.0, 3.0], [0.0, 1.0]], [[0.0, 1.0], [2.0, 3.0]]),
+            # a long segment that covers the segments starting after it
+            ([[0.0, 10.0], [1.0, 2.0], [3.0, 4.0]], [[0.0, 10.0]]),
+            ([[0.0, 5.0], [1.0, 10.0], [2.0, 3.0]], [[0.0, 10.0]]),
+            ([[3.0, 4.0], [0.0, 10.0], [12.0, 13.0], [1.0, 2.0]], [[0.0, 10.0], [12.0, 13.0]]),
+        ],
+    )
+    @pytest.mark.unit
+    def test_merge_overlap_segment(self, segments, expected):
+        merged = merge_overlap_segment(torch.tensor(segments))
+        torch.testing.assert_close(merged, torch.tensor(expected))
 
 
 def _annotation_equals(annotation, expected_segments, *, atol=1e-6):

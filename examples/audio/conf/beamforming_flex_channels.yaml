@@ -33,7 +33,7 @@ model:
     pin_memory: true
 
   channel_augment:
-    _target_: nemo.collections.asr.parts.submodules.multichannel_modules.ChannelAugment
+    _target_: nemo.collections.audio.parts.submodules.multichannel.ChannelAugment
     num_channels_min: 2 # minimal number of channels selected for each batch
     num_channels_max: null # max number of channels is determined by the batch size
     permute_channels: true

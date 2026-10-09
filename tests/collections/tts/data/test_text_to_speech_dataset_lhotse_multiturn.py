@@ -16,10 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from nemo.collections.tts.data.text_to_speech_dataset_lhotse_multiturn import (
-    MagpieTTSLhotseMultiturnDataset,
-)
-
+from nemo.collections.tts.data.text_to_speech_dataset_lhotse_multiturn import MagpieTTSLhotseMultiturnDataset
 
 pytestmark = pytest.mark.unit
 

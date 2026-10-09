@@ -232,9 +232,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         self.context_audio_shuffle_batch_prob = context_audio_shuffle_batch_prob
         if not 0.0 <= challenging_text_start_prob <= challenging_text_end_prob <= 1.0:
             raise ValueError("Challenging text probabilities must satisfy 0 <= start_prob <= end_prob <= 1.")
-        if challenging_text_end_prob > 0.0 and not (
-            0 <= challenging_text_start_step < challenging_text_end_step
-        ):
+        if challenging_text_end_prob > 0.0 and not (0 <= challenging_text_start_step < challenging_text_end_step):
             raise ValueError("Challenging text steps must satisfy 0 <= start_step < end_step.")
         self.challenging_text_start_prob = challenging_text_start_prob
         self.challenging_text_end_prob = challenging_text_end_prob
@@ -330,9 +328,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
                 total_slots = compute_num_frames(cut.duration, self.frame_length, cut.sampling_rate)
                 start_slot = compute_num_frames(supervision.start, self.frame_length, cut.sampling_rate)
                 available_slots = total_slots - start_slot
-                for replacement_text in random.sample(
-                    self.challenging_texts, min(32, len(self.challenging_texts))
-                ):
+                for replacement_text in random.sample(self.challenging_texts, min(32, len(self.challenging_texts))):
                     replacement_ids = tokenize_text_with_phoneme_spans(
                         text_tokenizer=self.text_tokenizer,
                         text_str=replacement_text,
@@ -833,8 +829,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             languages[target_idx] != languages[donor_idx] for target_idx, donor_idx in donor_indices.items()
         )
         language_pairs = ", ".join(
-            f"{languages[target_idx]}<-{languages[donor_idx]}"
-            for target_idx, donor_idx in donor_indices.items()
+            f"{languages[target_idx]}<-{languages[donor_idx]}" for target_idx, donor_idx in donor_indices.items()
         )
         logging.info(
             f"[context_audio_shuffle] shuffled={len(donor_indices)} "

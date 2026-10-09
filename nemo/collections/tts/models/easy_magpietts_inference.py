@@ -1302,9 +1302,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             )
         if has_precomputed_audio:
             if precomputed_context_audio_embedding.ndim != 3:
-                raise ValueError(
-                    "`precomputed_context_audio_embedding` must have shape (batch, time, embedding_dim)."
-                )
+                raise ValueError("`precomputed_context_audio_embedding` must have shape (batch, time, embedding_dim).")
             if precomputed_context_audio_embedding.shape[0] != batch_size:
                 raise ValueError("Precomputed context audio batch size must match context text batch size.")
             if precomputed_context_audio_embedding.shape[2] != self.cfg.embedding_dim:
@@ -1326,9 +1324,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 batch_size, self.data_num_audio_codebooks, 0, dtype=torch.long, device=device
             )
             context_audio_codes_lens = torch.zeros(batch_size, dtype=torch.long, device=device)
-            context_audio_embedding_lens = precomputed_context_audio_embedding_lens.to(
-                device=device, dtype=torch.long
-            )
+            context_audio_embedding_lens = precomputed_context_audio_embedding_lens.to(device=device, dtype=torch.long)
         else:
             if context_audio_codes is None:
                 if context_audio is None:
@@ -2527,9 +2523,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             context_text_tokens_lens = batch['context_text_tokens_lens']
             precomputed_context_audio_embedding = batch.get('precomputed_context_audio_embedding')
             precomputed_context_audio_embedding_lens = batch.get('precomputed_context_audio_embedding_lens')
-            if (precomputed_context_audio_embedding is None) != (
-                precomputed_context_audio_embedding_lens is None
-            ):
+            if (precomputed_context_audio_embedding is None) != (precomputed_context_audio_embedding_lens is None):
                 raise ValueError(
                     "`precomputed_context_audio_embedding` and `precomputed_context_audio_embedding_lens` "
                     "must be provided together."
@@ -2803,9 +2797,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         ) + [self.eos_id]
         text = torch.tensor([text_tokens], dtype=torch.long, device=device)
         text_lens = torch.tensor([len(text_tokens)], dtype=torch.long, device=device)
-        context_text_tokens = self.tokenizer.encode(
-            context_text, tokenizer_name=self.text_conditioning_tokenizer_name
-        )
+        context_text_tokens = self.tokenizer.encode(context_text, tokenizer_name=self.text_conditioning_tokenizer_name)
         context_text_tensor = torch.tensor([context_text_tokens], dtype=torch.long, device=device)
         context_text_lens = torch.tensor([len(context_text_tokens)], dtype=torch.long, device=device)
 

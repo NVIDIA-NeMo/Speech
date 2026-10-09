@@ -46,6 +46,7 @@ from nemo.collections.common.data.lhotse.text_adapters import (
     AudioTurn,
     LhotseTextAdapter,
     LhotseTextJsonlAdapter,
+    LhotseTextNormJsonlAdapter,
     LhotseTextPairAdapter,
     MaterializedSFTMessagesAdapter,
     NeMoMultimodalConversation,
@@ -55,9 +56,7 @@ from nemo.collections.common.data.lhotse.text_adapters import (
     NeMoSFTJsonlAdapter,
     NemotronTextConversationAdapter,
     TextTurn,
-    LhotseTextNormJsonlAdapter,
 )
-
 from nemo.collections.common.parts.preprocessing.manifest import get_full_path
 
 

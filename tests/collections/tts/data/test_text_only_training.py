@@ -102,7 +102,9 @@ def dataset():
     return result
 
 
-def test_text_only_dataset_reuses_collators_without_audio(dataset, cuts):
+@pytest.mark.parametrize("normalized_text_probability", [0.0, 0.5, 1.0])
+def test_text_only_dataset_reuses_collators_without_audio(dataset, cuts, normalized_text_probability):
+    dataset.load_normalized_text_percent = normalized_text_probability
     batch = dataset[cuts]
     assert batch["task"] == ["text_only", "text_only"]
     assert "audio" not in batch and "context_audio" not in batch

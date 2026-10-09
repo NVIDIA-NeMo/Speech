@@ -132,6 +132,8 @@ sampling and a phoneme tokenizer for the model.
 
 For these batches, the text channel receives the complete raw text, and the
 phoneme channel receives the complete normalized IPA with BOS and EOS.
+The audio-training option ``load_normalized_text_percent`` does not replace
+the raw input text in text-only batches.
 The text context starts with the language tag followed by the task tag:
 ``[EN-US][TEXT_ONLY]`` when the record's language ID is ``en-US``.
 The language tag uses the same uppercase square-bracket format as regular

@@ -19,8 +19,8 @@ import math
 import os
 import random
 import tarfile
-from copy import deepcopy
 from collections import deque
+from copy import deepcopy
 from dataclasses import dataclass
 from itertools import groupby
 from pathlib import Path, PurePosixPath
@@ -29,7 +29,6 @@ from typing import Iterator, Literal, Optional, Sequence, Union
 import numpy as np
 import torch
 from lhotse import AudioSource, CutSet, MonoCut, Recording, SupervisionSegment
-
 from lhotse.audio import AudioLoadingError
 from lhotse.custom import CustomFieldMixin
 from lhotse.cut import Cut
@@ -363,6 +362,7 @@ class LhotseTextNormJsonlAdapter:
                     supervisions=[supervision],
                     custom=cut_custom,
                 )
+
 
 @registered_prompt_format_fn(TextExample)
 def default_text_example_prompt_format_fn(example: TextExample, prompt):

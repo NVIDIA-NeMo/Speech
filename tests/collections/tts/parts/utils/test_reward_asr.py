@@ -18,12 +18,7 @@ import textwrap
 import pytest
 import torch
 
-from nemo.collections.tts.parts.utils.reward_asr import (
-    ProcessRewardASRBackend,
-    RewardASRBackend,
-    RewardASRRouter,
-)
-
+from nemo.collections.tts.parts.utils.reward_asr import ProcessRewardASRBackend, RewardASRBackend, RewardASRRouter
 
 pytestmark = pytest.mark.unit
 

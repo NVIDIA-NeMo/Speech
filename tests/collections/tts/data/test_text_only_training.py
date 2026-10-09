@@ -91,6 +91,7 @@ def dataset():
         ignore_phoneme_languages=["vi"],
         phoneme_turn_dropout_batch_prob=1.0,
         phoneme_turn_dropout_turn_prob=1.0,
+        load_normalized_text_percent=0.0,
     )
     result.text_tokenizer = Tokenizer()
     result.phoneme_tokenizer = Tokenizer()
@@ -102,9 +103,7 @@ def dataset():
     return result
 
 
-@pytest.mark.parametrize("normalized_text_probability", [0.0, 0.5, 1.0])
-def test_text_only_dataset_reuses_collators_without_audio(dataset, cuts, normalized_text_probability):
-    dataset.load_normalized_text_percent = normalized_text_probability
+def test_text_only_dataset_reuses_collators_without_audio(dataset, cuts):
     batch = dataset[cuts]
     assert batch["task"] == ["text_only", "text_only"]
     assert "audio" not in batch and "context_audio" not in batch
@@ -130,6 +129,7 @@ def test_text_only_collators_keep_full_sequences(dataset, cuts):
         bos_id=1,
         add_text_bos=False,
         tokenizer_name="test",
+        load_normalized_text_percent=0.0,
     )
     phonemes, dropped = build_phoneme_channel(
         cuts[1],
@@ -456,3 +456,72 @@ def test_zero_weight_audio_source_is_not_opened(dataset, cuts, tmp_path, world_s
     for _ in range(4):
         batch = next(iterator)
         assert batch["task"] == ["text_only"]
+
+
+@pytest.mark.parametrize("normalized_text", [None, "normalized words"])
+@pytest.mark.parametrize(
+    "probability,draw,use_normalized",
+    [(0.0, 0.0, False), (1.0, 1.0, True), (0.5, 0.49, True), (0.5, 0.5, False)],
+)
+def test_text_only_selects_raw_or_normalized_input(
+    dataset, cuts, monkeypatch, normalized_text, probability, draw, use_normalized
+):
+    from nemo.collections.tts.parts.utils import tts_dataset_utils
+
+    for cut in cuts:
+        if normalized_text is None:
+            cut.supervisions[0].custom.pop("normalized_text")
+        else:
+            cut.supervisions[0].normalized_text = normalized_text
+    dataset.load_normalized_text_percent = probability
+    monkeypatch.setattr(tts_dataset_utils.random, "random", lambda: draw)
+    batch = dataset[cuts]
+    selected = [normalized_text] * 2 if normalized_text is not None and use_normalized else ["$1,204.50", "7"]
+    for i, text in enumerate(selected):
+        expected = dataset.text_tokenizer.encode(text) + [dataset.eos_id]
+        assert batch["text"][i, : batch["text_lens"][i]].tolist() == expected
+    assert batch["phoneme_tokens_lens"].tolist() == [222, 11]
+    assert cuts[0].supervisions[0].text == "$1,204.50"
+    assert cuts[1].supervisions[0].text == "7"
+    dataset._collate_audio_channels.assert_not_called()
+    dataset._collect_cut_features.assert_not_called()
+
+
+def test_text_only_duration_accounts_for_normalized_input(tmp_path):
+    from tokenizers import Tokenizer as BackendTokenizer
+    from tokenizers import models, pre_tokenizers
+
+    from nemo.collections.common.data.lhotse.cutset import read_cutset_from_config
+
+    backend = BackendTokenizer(models.WordLevel({"<unk>": 0}, unk_token="<unk>"))
+    backend.pre_tokenizer = pre_tokenizers.Whitespace()
+    tokenizer_path = tmp_path / "text_tokenizer.json"
+    backend.save(str(tokenizer_path))
+    path = tmp_path / "text.jsonl"
+    row = {
+        "id": "expanded",
+        "text": "123",
+        "text_normalized": "one hundred twenty three",
+        "ipa": "ipa",
+        "num_tokens": 1,
+    }
+    path.write_text(json.dumps(row) + "\n")
+    config = {
+        "input_cfg": [
+            {
+                "type": "txt_norm_jsonl",
+                "paths": str(path),
+                "duration_text_tokenizer_path": str(tokenizer_path),
+                "duration_phoneme_tokenizer_path": str(tokenizer_path),
+                "duration_padding_tokens": 16,
+            }
+        ],
+        "force_finite": True,
+        "token_equivalent_duration": 0.08,
+    }
+    sampled, _ = read_cutset_from_config(OmegaConf.create(config))
+    cut = next(iter(sampled))
+    assert cut.duration == pytest.approx((4 + 16) * 0.08)
+    assert cut.sampling_num_tokens == 20
+    assert cut.num_tokens == 1
+    assert cut.supervisions[0].normalized_text == row["text_normalized"]

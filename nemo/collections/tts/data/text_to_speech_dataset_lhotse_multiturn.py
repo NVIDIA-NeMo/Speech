@@ -1112,12 +1112,17 @@ def build_token_channel(
 ) -> torch.Tensor:
 
     if getattr(cut, "task", "tts") == "text_only":
-        # Duration is sampling metadata, not a token budget. Keep the raw input
-        # and never inject normalized IPA targets into this text channel.
+        # Duration is sampling metadata, not a token budget. Select the same
+        # raw/normalized transcript as audio training and keep its full sequence.
         ids = []
         for supervision in cut.supervisions:
             if supervision.speaker in roles:
-                raw_ids = tokenizer.encode(supervision.text, tokenizer_name=tokenizer_name)
+                text = _select_text_for_tts_input(
+                    text=supervision.text,
+                    normalized_text=supervision.normalized_text if supervision.has_custom("normalized_text") else None,
+                    load_normalized_text_percent=load_normalized_text_percent,
+                )
+                raw_ids = tokenizer.encode(text, tokenizer_name=tokenizer_name)
                 ids.extend(([bos_id] if add_text_bos else []) + raw_ids + [eos_id])
         return torch.tensor(ids, dtype=torch.long)
 

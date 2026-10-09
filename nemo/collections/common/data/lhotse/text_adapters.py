@@ -276,6 +276,7 @@ class LhotseTextNormJsonlAdapter:
     shard_seed: object = "trng"
     duration_phoneme_tokenizer_path: str | None = None
     duration_padding_tokens: int = 0
+    duration_text_tokenizer_path: str | None = None
 
     def __post_init__(self):
         self.paths = list(expand_sharded_filepaths(self.paths))
@@ -286,6 +287,11 @@ class LhotseTextNormJsonlAdapter:
             from tokenizers import Tokenizer
 
             self._duration_phoneme_tokenizer = Tokenizer.from_file(str(self.duration_phoneme_tokenizer_path))
+        self._duration_text_tokenizer = None
+        if self.duration_text_tokenizer_path is not None:
+            from tokenizers import Tokenizer
+
+            self._duration_text_tokenizer = Tokenizer.from_file(str(self.duration_text_tokenizer_path))
         if not math.isfinite(self.token_equivalent_duration) or self.token_equivalent_duration <= 0:
             raise ValueError("token_equivalent_duration must be finite and positive")
         if self.sampling_rate <= 0:
@@ -316,6 +322,13 @@ class LhotseTextNormJsonlAdapter:
                 if self._duration_phoneme_tokenizer is not None:
                     duration_num_tokens = max(
                         duration_num_tokens, len(self._duration_phoneme_tokenizer.encode(row["ipa"]).ids)
+                    )
+                if self._duration_text_tokenizer is not None:
+                    duration_num_tokens = max(
+                        duration_num_tokens,
+                        len(
+                            self._duration_text_tokenizer.encode(row["text_normalized"], add_special_tokens=False).ids
+                        ),
                     )
                 duration_num_tokens += self.duration_padding_tokens
                 duration = duration_num_tokens * self.token_equivalent_duration
@@ -351,7 +364,11 @@ class LhotseTextNormJsonlAdapter:
                 # The supplied phoneme collator's language lookup uses cut.lang.
                 cut_custom["lang"] = language
                 cut_custom["task"] = "text_only"
-                if self._duration_phoneme_tokenizer is not None or self.duration_padding_tokens:
+                if (
+                    self._duration_phoneme_tokenizer is not None
+                    or self._duration_text_tokenizer is not None
+                    or self.duration_padding_tokens
+                ):
                     cut_custom["sampling_num_tokens"] = duration_num_tokens
                 yield MonoCut(
                     id=cut_id,

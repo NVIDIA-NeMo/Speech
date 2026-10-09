@@ -130,10 +130,15 @@ records containing ``id``, raw ``text``, ``text_normalized``, ``ipa``,
 and a positive ``num_tokens``. Configure ``token_equivalent_duration`` for
 sampling and a phoneme tokenizer for the model.
 
-For these batches, the text channel receives the complete raw text, and the
-phoneme channel receives the complete normalized IPA with BOS and EOS.
-The audio-training option ``load_normalized_text_percent`` does not replace
-the raw input text in text-only batches.
+For these batches, the text channel receives the complete input transcript,
+and the phoneme channel receives the complete normalized IPA with BOS and EOS.
+The same ``load_normalized_text_percent`` option used by audio training selects
+the input transcript: ``0.0`` uses raw text, ``1.0`` uses normalized text,
+and intermediate values select normalized text with that probability per turn.
+Missing normalized text falls back to raw text. The IPA target is unchanged.
+For example, set ``model.train_ds.load_normalized_text_percent: 0.5`` to mix
+both inputs, and ``model.validation_ds.load_normalized_text_percent: 0.0``
+to evaluate normalization from raw input.
 The text context starts with the language tag followed by the task tag:
 ``[EN-US][TEXT_ONLY]`` when the record's language ID is ``en-US``.
 The language tag uses the same uppercase square-bracket format as regular
@@ -196,10 +201,18 @@ sampling duration. Set these options on each text manifest entry in ``input_cfg`
     - type: txt_norm_jsonl
       paths: /path/to/train_text.jsonl
       duration_phoneme_tokenizer_path: /path/to/ipa_tokenizer.json
+      duration_text_tokenizer_path: /path/to/text_tokenizer.json
       duration_padding_tokens: 16
 
-The virtual duration is
-``(max(num_tokens, encoded_ipa_tokens) + duration_padding_tokens) * token_equivalent_duration``.
+The virtual duration is:
+
+.. code-block:: text
+
+    (max(num_tokens, encoded_ipa_tokens, encoded_normalized_text_tokens)
+     + duration_padding_tokens) * token_equivalent_duration
+
+The optional text tokenizer measures normalized input so either transcript fits
+the duration budget; use the same tokenizer JSON as the model's text channel.
 The source ``num_tokens`` and the complete text/IPA targets remain unchanged.
 Manifest token counts must use the same source tokenizer as training.
 Padding should cover the context tags, BOS/EOS, and phoneme-channel delay;

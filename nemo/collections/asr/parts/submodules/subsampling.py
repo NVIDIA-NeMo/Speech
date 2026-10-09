@@ -161,6 +161,11 @@ class StackingSubsampling(torch.nn.Module):
         return x, lengths
 
 
+# Conv kernels index elements with 32-bit ints, so a tensor entering or leaving a conv must
+# hold fewer than this many elements. See https://github.com/pytorch/pytorch/issues/80020
+_MAX_CONV_NUMEL_32BIT = 2**31 - 1
+
+
 class ConvSubsampling(torch.nn.Module):
     """Convolutional subsampling which supports VGGNet and striding approach introduced in:
     VGGNet Subsampling: Transformer-transducer: end-to-end speech recognition with self-attention (https://arxiv.org/pdf/1910.12977.pdf)
@@ -496,6 +501,19 @@ class ConvSubsampling(torch.nn.Module):
     def get_streaming_cache_size(self):
         return [0, self.subsampling_factor + 1]
 
+    def _first_conv_output_numel(self, x):
+        """Element count of the first conv's output, the largest activation in the stack.
+
+        ``x`` is the ``(B, T, F)`` input before the channel dim is added. Only valid for the
+        strided 'striding'/'dw_striding' variants; 'vgg' starts with stride-1 convs, so its
+        largest activation is not bounded by this estimate.
+        """
+        b, t, f = x.size()
+        pad = (self._left_padding, self._right_padding)
+        out_t = calculate_conv_output_size(t, self._kernel_size, self._stride, pad)
+        out_f = calculate_conv_output_size(f, self._kernel_size, self._stride, pad)
+        return b * self._conv_channels * out_t * out_f
+
     def forward(self, x, lengths):
         out_lengths = calc_length(
             lengths,
@@ -516,11 +534,12 @@ class ConvSubsampling(torch.nn.Module):
                 # if subsampling_conv_chunking_factor is 1, we split only if needed
                 # avoiding a bug / feature limiting indexing of tensors to 2**31
                 # see https://github.com/pytorch/pytorch/issues/80020
-                x_ceil = 2**31 / self._conv_channels * self._stride * self._stride
-                if torch.numel(x) > x_ceil:
-                    need_to_split = True
-                else:
-                    need_to_split = False
+                # Split on '>=': at equality the tensor already holds INT_MAX elements, the
+                # value that trips canUse32BitIndexMath. Guard the conv input and its output.
+                need_to_split = (
+                    self._first_conv_output_numel(x) >= _MAX_CONV_NUMEL_32BIT
+                    or torch.numel(x) >= _MAX_CONV_NUMEL_32BIT
+                )
             else:
                 # if subsampling_conv_chunking_factor > 1 we always split
                 need_to_split = True
@@ -584,14 +603,19 @@ class ConvSubsampling(torch.nn.Module):
         else:
             # avoiding a bug / feature limiting indexing of tensors to 2**31
             # see https://github.com/pytorch/pytorch/issues/80020
-            x_ceil = 2**31 / self._conv_channels * self._stride * self._stride
-            p = math.ceil(math.log(torch.numel(x) / x_ceil, 2))
-            cf = 2**p
+            # Smallest power-of-two split with each chunk strictly below the limit (+1 forces
+            # strict); size against the larger of conv input and first-conv output.
+            numel = max(self._first_conv_output_numel(x), torch.numel(x))
+            cf = 2 ** math.ceil(math.log(numel // _MAX_CONV_NUMEL_32BIT + 1, 2))
             logging.debug(f'using auto set chunking factor: {cf}')
 
         new_batch_size = b // cf
-        if new_batch_size == 0:  # input is too big
-            return x, lengths, False
+        if new_batch_size == 0:
+            # If cf > b and one sample fits, use single-sample batches rather than the channel
+            # fallback (which runs the full first conv up front).
+            if max(self._first_conv_output_numel(x[:1]), torch.numel(x[:1])) >= _MAX_CONV_NUMEL_32BIT:
+                return x, lengths, False
+            new_batch_size = 1
 
         logging.debug(f'conv subsampling: using split batch size {new_batch_size}')
 
@@ -621,8 +645,8 @@ class ConvSubsampling(torch.nn.Module):
             else:
                 # avoiding a bug / feature limiting indexing of tensors to 2**31
                 # see https://github.com/pytorch/pytorch/issues/80020
-                p = math.ceil(math.log(torch.numel(x) / 2**31, 2))
-                cf = 2**p
+                # +1 keeps each chunk strictly below the limit and avoids a fractional factor.
+                cf = 2 ** math.ceil(math.log(torch.numel(x) // _MAX_CONV_NUMEL_32BIT + 1, 2))
                 logging.debug(f'using auto set chunking factor: {cf}')
 
             new_c = int(c // cf)

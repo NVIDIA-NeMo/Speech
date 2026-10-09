@@ -40,6 +40,7 @@ from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
 from nemo.collections.tts.models import EasyMagpieTTSInferenceModel, MagpieTTSModel
 from nemo.collections.tts.models.easy_magpietts_inference import EasyModelInferenceParameters
 from nemo.collections.tts.models.magpietts import ModelInferenceParameters
+from nemo.collections.tts.modules.magpietts_inference.evaluation_config import ASR_MODEL_TYPES
 from nemo.collections.tts.modules.magpietts_inference.inference import (
     BaseInferenceRunner,
     EasyMagpieInferenceConfig,
@@ -619,49 +620,64 @@ def parse_layer_list(layer_str: Optional[str]) -> Optional[List[int]]:
     return [int(layer.strip()) for layer in layer_str.split(",")]
 
 
+# Metric columns of all_experiment_metrics.csv / all_experiment_metrics_with_ci.csv after "checkpoint_name,dataset".
+# The header and append_metrics_to_csv are both derived from this tuple so they cannot drift apart. Append new
+# metrics at the END so that rows appended to a pre-existing CSV keep their earlier columns aligned
+# (write_csv_header_if_needed warns when the existing header differs).
+EXPERIMENT_METRICS_CSV_COLUMNS = (
+    "cer_filewise_avg",
+    "wer_filewise_avg",
+    "cer_cumulative",
+    "wer_cumulative",
+    "cer_pred_gt_audio_filewise_avg",
+    "cer_pred_gt_audio_cumulative",
+    "wer_pred_gt_audio_filewise_avg",
+    "wer_pred_gt_audio_cumulative",
+    "ssim_pred_gt_avg",
+    "ssim_pred_context_avg",
+    "ssim_gt_context_avg",
+    "ssim_pred_gt_avg_alternate",
+    "ssim_pred_context_avg_alternate",
+    "ssim_gt_context_avg_alternate",
+    "esim_pred_gt_avg",
+    "ems_pred_gt_avg",
+    "pitch_distance_avg",
+    "intensity_distance_avg",
+    "speech_rate_distance_avg",
+    "cer_gt_audio_cumulative",
+    "wer_gt_audio_cumulative",
+    "utmosv2_avg",
+    "total_gen_audio_seconds",
+    "frechet_codec_distance",
+    "eou_cutoff_rate",
+    "eou_silence_rate",
+    "eou_noise_rate",
+    "eou_error_rate",
+    "katakana_cer_filewise_avg",
+    "katakana_cer_cumulative",
+    "num_empty_reference_texts",
+)
+EXPERIMENT_METRICS_CSV_HEADER = ",".join(("checkpoint_name", "dataset") + EXPERIMENT_METRICS_CSV_COLUMNS)
+
+
 def write_csv_header_if_needed(csv_path: str, header: str) -> None:
-    """Write CSV header if file doesn't exist."""
+    """Write the CSV header if the file does not exist; warn if an existing file was written with another header."""
     if not os.path.exists(csv_path):
         with open(csv_path, "w") as f:
             f.write(header + "\n")
+        return
+    with open(csv_path) as f:
+        existing_header = f.readline().rstrip("\n")
+    if existing_header != header:
+        logging.warning(
+            f"{csv_path} was written with a different column layout; rows appended from now on follow the current "
+            f"header. Existing header: {existing_header}. Current header: {header}."
+        )
 
 
 def append_metrics_to_csv(csv_path: str, checkpoint_name: str, dataset: str, metrics: dict) -> None:
-    """Append metrics to a CSV file."""
-    values = [
-        checkpoint_name,
-        dataset,
-        metrics.get('cer_filewise_avg', ''),
-        metrics.get('wer_filewise_avg', ''),
-        metrics.get('cer_cumulative', ''),
-        metrics.get('wer_cumulative', ''),
-        metrics.get('cer_pred_gt_audio_filewise_avg', ''),
-        metrics.get('cer_pred_gt_audio_cumulative', ''),
-        metrics.get('wer_pred_gt_audio_filewise_avg', ''),
-        metrics.get('wer_pred_gt_audio_cumulative', ''),
-        metrics.get('ssim_pred_gt_avg', ''),
-        metrics.get('ssim_pred_context_avg', ''),
-        metrics.get('ssim_gt_context_avg', ''),
-        metrics.get('ssim_pred_gt_avg_alternate', ''),
-        metrics.get('ssim_pred_context_avg_alternate', ''),
-        metrics.get('ssim_gt_context_avg_alternate', ''),
-        metrics.get('esim_pred_gt_avg', ''),
-        metrics.get('ems_pred_gt_avg', ''),
-        metrics.get('pitch_distance_avg', ''),
-        metrics.get('intensity_distance_avg', ''),
-        metrics.get('speech_rate_distance_avg', ''),
-        metrics.get('cer_gt_audio_cumulative', ''),
-        metrics.get('wer_gt_audio_cumulative', ''),
-        metrics.get('utmosv2_avg', ''),
-        metrics.get('total_gen_audio_seconds', ''),
-        metrics.get('frechet_codec_distance', ''),
-        metrics.get('eou_cutoff_rate', ''),
-        metrics.get('eou_silence_rate', ''),
-        metrics.get('eou_noise_rate', ''),
-        metrics.get('eou_error_rate', ''),
-        metrics.get('katakana_cer_filewise_avg', ''),
-        metrics.get('katakana_cer_cumulative', ''),
-    ]
+    """Append one row to a CSV file whose header is ``EXPERIMENT_METRICS_CSV_HEADER``."""
+    values = [checkpoint_name, dataset] + [metrics.get(column, '') for column in EXPERIMENT_METRICS_CSV_COLUMNS]
     with open(csv_path, "a") as f:
         f.write(",".join(str(v) for v in values) + "\n")
     logging.info(f"Metrics appended to: {csv_path}")
@@ -828,6 +844,7 @@ def _group_multiturn_filewise_metrics_by_sample(filewise_metrics: list) -> list:
                 "tts_text_input": [r.get("tts_text_input", "") for r in turns],
                 "dataloader_normalized_text": [r.get("dataloader_normalized_text") for r in turns],
                 "reference_text": [r.get("gt_text", "") for r in turns],
+                "strip_text_annotations_for_metrics": turns[0].get("strip_text_annotations_for_metrics"),
                 "asr_hyp": [r.get("pred_text", "") for r in turns],
                 "pred_audio_paths": [r.get("pred_audio_filepath", "") for r in turns],
                 "target_audio_path": group["target_audio_path"],
@@ -890,6 +907,7 @@ def _write_grouped_multiturn_filewise_metrics_csv(csv_path: str, grouped_rows: l
         "tts_text_input",
         "dataloader_normalized_text",
         "reference_text",
+        "strip_text_annotations_for_metrics",
         "asr_hyp",
         "predicted_phoneme_text_turns",
         "predicted_phoneme_tokens_turns",
@@ -1140,6 +1158,21 @@ def _add_inference_param_fields(
         group.add_argument(f"--{f.name}", **extra_args)
 
 
+class _RemovedStripFlagAction(argparse.Action):
+    """Reject --strip_text_annotations_for_metrics with a parser error that points at the per-dataset evalset key."""
+
+    def __init__(self, option_strings, dest, **kwargs):
+        kwargs.pop("nargs", None)
+        super().__init__(option_strings, dest, nargs=0, **kwargs)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        parser.error(
+            f"{option_string} was removed: whether [..], <..> and {{..}} markers are stripped from the CER/WER "
+            'reference is a property of each dataset. Set "strip_text_annotations_for_metrics": true or false in the '
+            "dataset's evalset config entry instead (default: not stripped)."
+        )
+
+
 def _add_common_args(parser: argparse.ArgumentParser) -> None:
     """Add arguments shared by all model types."""
 
@@ -1254,7 +1287,7 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
         '--asr_model_type',
         type=str,
         default='nemo',
-        choices=['nemo', 'nemo_with_prompt', 'whisper'],
+        choices=list(ASR_MODEL_TYPES),
         help="Type of ASR model provided in 'asr_model_name'",
     )
     eval_group.add_argument(
@@ -1280,8 +1313,11 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     eval_group.add_argument('--prosody_model_size', type=str, default="small", choices=["small", "large"])
     eval_group.add_argument(
         '--strip_text_annotations_for_metrics',
-        action='store_true',
-        help='Strip bracket/tag/control annotations from reference and ASR hypothesis text while computing text metrics.',
+        action=_RemovedStripFlagAction,
+        help=(
+            'Removed. Stripping of annotation markers from the CER/WER reference is set per dataset with '
+            '"strip_text_annotations_for_metrics": true|false in the evalset config; passing this flag is an error.'
+        ),
     )
     eval_group.add_argument(
         '--violin_plot_metrics',

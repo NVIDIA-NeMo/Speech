@@ -16,7 +16,8 @@
 
 Audio remains registered through vLLM's multimodal parser while the rendered
 user content matches ``SALMDataset``: text is followed by one ASCII space and
-the final ``<|audio|>`` locator.
+one ordered ``<|audio|>`` locator per audio payload, with adjacent locators
+separated by one ASCII space.
 """
 
 from __future__ import annotations
@@ -73,7 +74,7 @@ def _text_value(part: Any, part_type: str) -> str:
 
 
 def _canonicalize_speechlm_parts(parts: Iterable[Any]) -> list[Any]:
-    """Retain one audio payload but render ``text <|audio|>``."""
+    """Retain ordered audio payloads but render text followed by matching locators."""
     parts = list(parts)
     audio_parts: list[Any] = []
     text_values: list[str] = []
@@ -91,21 +92,20 @@ def _canonicalize_speechlm_parts(parts: Iterable[Any]) -> list[Any]:
 
     if not audio_parts:
         return parts
-    if len(audio_parts) != 1:
-        raise ValueError(
-            "NeMo SpeechLM exact prompt rendering supports exactly one audio "
-            f"payload per user message; got {len(audio_parts)}."
-        )
 
     text = " ".join(text_values)
+    locator_suffix = " ".join([_AUDIO_LOCATOR] * len(audio_parts))
     locator_count = text.count(_AUDIO_LOCATOR)
-    if locator_count > 1:
-        raise ValueError("NeMo SpeechLM prompt contains more than one <|audio|> locator for " "one audio payload.")
-    if locator_count == 1:
+    if locator_count:
+        if locator_count != len(audio_parts):
+            raise ValueError(
+                f"NeMo SpeechLM prompt contains {locator_count} {_AUDIO_LOCATOR} locators "
+                f"for {len(audio_parts)} audio payloads; counts must match."
+            )
         expected = (
-            _AUDIO_LOCATOR
-            if text == _AUDIO_LOCATOR
-            else f"{text.removesuffix(_AUDIO_LOCATOR).rstrip()} {_AUDIO_LOCATOR}"
+            locator_suffix
+            if text == locator_suffix
+            else f"{text.removesuffix(locator_suffix).rstrip()} {locator_suffix}"
         )
         if text != expected:
             raise ValueError(
@@ -114,14 +114,14 @@ def _canonicalize_speechlm_parts(parts: Iterable[Any]) -> list[Any]:
             )
         canonical_text = text
     elif text:
-        canonical_text = f"{text} {_AUDIO_LOCATOR}"
+        canonical_text = f"{text} {locator_suffix}"
     else:
-        canonical_text = _AUDIO_LOCATOR
+        canonical_text = locator_suffix
 
     # The media item is still parsed and registered. Its explicit locator in
     # the final text consumes the registered placeholder, preventing vLLM from
     # prepending a missing locator.
-    return [audio_parts[0], {"type": "text", "text": canonical_text}]
+    return [*audio_parts, {"type": "text", "text": canonical_text}]
 
 
 def _patch_speechlm_training_prompt_contract(chat_utils: Any) -> None:

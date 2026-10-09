@@ -144,3 +144,20 @@ We use ``black`` as our style guide. To check whether your code will pass style 
 Collection is a logical grouping of related Neural Modules. It is a grouping of modules that share a domain area or semantics.
 When contributing module to a collection, please make sure it belongs to that category.
 If you would like to start a new one and contribute back to the platform, you are very welcome to do so.
+
+## Pull-request reviews
+
+Comment `/review` on a pull request for the formal review service. Use
+`/review mode=strict` for deeper analysis, or add `model=claude` to select a
+Claude reviewer instead of the default Codex reviewer. `/review help` lists
+all options. The retired `/claude review` and `/claude strict-review` commands
+only reply with migration instructions when posted as an exact command by an
+owner, member, or collaborator. Quoted mentions, other commenters, and bots
+do not trigger a notice. These commands never run or automatically request a review.
+
+The repository policy lives in `.claude/skills/nemo-speech-pr-review/SKILL.md`. The review service
+must load this rubric from protected `main`, not the pull-request branch.
+Before deploying this migration, publish the rubric, register its repository
+profile, and verify a Ready plugin snapshot containing it. Until those
+prerequisites are verified, do not rely on the redirect as evidence that the
+repository-specific review policy is active.

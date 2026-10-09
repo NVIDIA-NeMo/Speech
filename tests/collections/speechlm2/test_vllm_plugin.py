@@ -467,6 +467,53 @@ class TestNeMoSpeechLMConfig:
         cfg = NeMoSpeechLMConfig(**_DEFAULT_CONFIG_KWARGS)
         assert cfg.audio_locator_tag == "<|audio|>"
 
+    @pytest.mark.parametrize("audio_token_id", [None, 0, 151935, 151936, 151945])
+    def test_audio_token_id_reaches_target_and_draft_configs(self, audio_token_id):
+        cfg = NeMoSpeechLMConfig(
+            **{**_DEFAULT_CONFIG_KWARGS, "pretrained_llm": "Qwen/Qwen3-1.7B"},
+            audio_token_id=audio_token_id,
+            speechlm_runtime_added_token_ids=[] if audio_token_id is None else [audio_token_id],
+        )
+        assert cfg.speechlm_runtime_added_token_ids == cfg.get_text_config().speechlm_runtime_added_token_ids
+        assert cfg.audio_token_id == audio_token_id
+        assert cfg.get_text_config().audio_token_id == audio_token_id
+        assert cfg.speechlm_output_vocab_size == 151936
+
+    def test_audio_token_id_survives_config_serialization(self, tmp_path):
+        cfg = NeMoSpeechLMConfig(
+            **_DEFAULT_CONFIG_KWARGS,
+            audio_token_id=4,
+            speechlm_runtime_added_token_ids=[4, 5],
+            llm_config={
+                "model_type": "qwen2",
+                "architectures": ["Qwen2ForCausalLM"],
+                "vocab_size": 100,
+            },
+        )
+        cfg.save_pretrained(tmp_path)
+        restored = NeMoSpeechLMConfig.from_pretrained(tmp_path)
+        assert restored.audio_token_id == restored.get_text_config().audio_token_id == 4
+        assert restored.speechlm_runtime_added_token_ids == [4, 5]
+        assert restored.get_text_config().speechlm_runtime_added_token_ids == [4, 5]
+        assert restored.speechlm_output_vocab_size == 100
+        assert restored.image_token_index == 100
+
+    @pytest.mark.parametrize("audio_token_id", [True, -1, 151946, "1"])
+    def test_invalid_audio_token_id_rejected(self, audio_token_id):
+        with pytest.raises(ValueError, match="audio_token_id"):
+            NeMoSpeechLMConfig(
+                **{**_DEFAULT_CONFIG_KWARGS, "pretrained_llm": "Qwen/Qwen3-1.7B"},
+                audio_token_id=audio_token_id,
+            )
+
+    @pytest.mark.parametrize("token_ids", [[True], [-1], [151946], ["1"], "1"])
+    def test_invalid_runtime_added_token_ids_rejected(self, token_ids):
+        with pytest.raises(ValueError, match="speechlm_runtime_added_token_ids"):
+            NeMoSpeechLMConfig(
+                **{**_DEFAULT_CONFIG_KWARGS, "pretrained_llm": "Qwen/Qwen3-1.7B"},
+                speechlm_runtime_added_token_ids=token_ids,
+            )
+
     def test_audio_locator_tag_custom_rejected(self):
         """Plugin only supports ``<|audio|>``; mismatched checkpoints fail at load time."""
         with pytest.raises(ValueError, match="audio_locator_tag"):
@@ -620,6 +667,50 @@ class TestHybridBackendWeightMapping:
 
         assert mapped_name == canonical_name
         assert mapped_tensor is tensor
+
+    @staticmethod
+    def _lora_weights():
+        import torch
+
+        prefix = "llm.model.layers.0.mixer.in_proj"
+        w = torch.randn(4, 3)
+        a = torch.randn(2, 3)
+        b = torch.randn(4, 2)
+        return (
+            prefix,
+            w,
+            a,
+            b,
+            [(f"{prefix}.weight", w), (f"{prefix}.lora_A.weight", a), (f"{prefix}.lora_B.weight", b)],
+        )
+
+    @pytest.mark.parametrize(
+        ("lora_cfg", "scaling"),
+        [({"dim": 2, "alpha": 4}, 2.0), ({"r": 2, "lora_alpha": 1}, 0.5)],
+    )
+    def test_preprocess_merges_lora_adapters(self, lora_cfg, scaling):
+        import torch
+
+        from nemo.collections.speechlm2.vllm.salm.backends import HybridBackend
+
+        backend = HybridBackend(SimpleNamespace(text_config=SimpleNamespace(vocab_size=None), lora=lora_cfg))
+        prefix, w, a, b, weights = self._lora_weights()
+        out = dict(backend.preprocess_llm_weights(weights))
+        assert set(out) == {f"{prefix}.weight"}
+        torch.testing.assert_close(out[f"{prefix}.weight"], w + scaling * (b @ a))
+
+    def test_preprocess_rejects_unrecognized_lora_config(self):
+        from nemo.collections.speechlm2.vllm.salm.backends import HybridBackend
+
+        backend = HybridBackend(SimpleNamespace(text_config=SimpleNamespace(vocab_size=None), lora={"rank": 2}))
+        with pytest.raises(ValueError, match="rank/alpha"):
+            backend.preprocess_llm_weights(self._lora_weights()[-1])
+
+    def test_preprocess_passes_through_weights_without_lora(self, backend):
+        import torch
+
+        weights = [("llm.model.layers.0.mixer.in_proj.weight", torch.randn(4, 3))]
+        assert backend.preprocess_llm_weights(weights) == weights
 
     def test_a_log_reaches_vllm_loader_and_is_transformed_once(self, backend, monkeypatch):
         import torch

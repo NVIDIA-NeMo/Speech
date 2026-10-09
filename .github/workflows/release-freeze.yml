@@ -29,7 +29,7 @@ permissions:
 
 jobs:
   code-freeze:
-    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_code_freeze.yml@493e7ad25cbbd9467e606fde716f5d3353ebed17 # github app authentication
+    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_code_freeze.yml@61445a177938967f70c94094b98402e979452151 # github app authentication
     with:
       app-id: ${{ vars.BOT_ID }}
       environment-name: main

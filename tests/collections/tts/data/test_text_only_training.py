@@ -24,6 +24,7 @@ from lhotse import CutSet
 from omegaconf import OmegaConf
 from torch import nn
 
+from nemo.collections.common.data.lhotse.dataloader import get_lhotse_dataloader_from_config
 from nemo.collections.common.data.lhotse.text_adapters import LhotseTextNormJsonlAdapter
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse_multiturn import (
     MagpieTTSLhotseMultiturnDataset,
@@ -274,3 +275,73 @@ def test_regular_audio_collators_keep_existing_behavior(dataset, cuts):
 def test_model_rejects_mixed_tasks(tasks):
     with pytest.raises(ValueError, match="text_only"):
         EasyMagpieTTSModel._is_text_only_batch(tasks)
+
+
+def test_text_only_validation_accuracy_excludes_special_tokens_and_padding(dataset, cuts):
+    model = _text_only_model(stacking_factor=2)
+    model.validation_step_outputs = []
+    targets = torch.tensor([[[3, 5, 2], [4, 2, 0]], [[6, 1, 8], [2, 0, 9]]])
+    predictions = targets.clone()
+    predictions[0, 0, 1] = 7  # One wrong IPA token out of four.
+    predictions[1, :, 2] = 7  # Wrong batch padding must not count.
+    logits = torch.full((*targets.shape, 32), -100.0).scatter(-1, predictions.unsqueeze(-1), 100.0)
+    logits = logits.permute(0, 2, 1, 3).reshape(2, 3, 64)
+    model._process_text_only_batch = Mock(
+        return_value=SimpleNamespace(
+            loss=torch.tensor(1.0),
+            phoneme_loss=torch.tensor(1.0),
+            codebook_loss=torch.tensor(0.0),
+            phoneme_logits=logits,
+            phoneme_tokens_target=targets,
+            phoneme_tokens_lens_target=torch.tensor([3, 2]),
+        )
+    )
+    model.validation_step(dataset[cuts], 0)
+    args, kwargs = model.log.call_args
+    assert args[0] == "val/text_only_phoneme_token_accuracy"
+    assert args[1].item() == pytest.approx(0.75)
+    assert kwargs["batch_size"] == 4
+    assert kwargs["on_epoch"] and kwargs["sync_dist"]
+    assert not kwargs["on_step"]
+
+
+@pytest.mark.parametrize("num_workers", [0, 2])
+def test_finite_text_only_validation_is_deterministic_and_sharded(dataset, tmp_path, num_workers):
+    path = tmp_path / "validation.jsonl"
+    rows = [
+        {
+            "id": f"validation-{i}",
+            "text": str(i),
+            "text_normalized": "number",
+            "ipa": "number IPA",
+            "num_tokens": 4,
+        }
+        for i in range(8)
+    ]
+    path.write_text("\n".join(json.dumps(row) for row in rows))
+    config = {
+        "input_cfg": [{"type": "txt_norm_jsonl", "paths": str(path), "language": "en"}],
+        "token_equivalent_duration": 0.08,
+        "batch_size": 2,
+        "use_bucketing": False,
+        "use_multimodal_sampling": False,
+        "force_finite": True,
+        "force_map_dataset": True,
+        "shuffle": False,
+        "seed": 42,
+        "shard_seed": 42,
+        "drop_last": False,
+        "num_workers": num_workers,
+    }
+    rank_ids = []
+    for rank in range(2):
+        loader = get_lhotse_dataloader_from_config(config, global_rank=rank, world_size=2, dataset=dataset)
+        batches = list(loader)
+        assert len(batches) == 2  # Terminates after one pass rather than repeating.
+        assert all(batch["task"] == ["text_only"] * 2 for batch in batches)
+        ids = [sample_id for batch in batches for sample_id in batch["sample_id"]]
+        assert len(ids) == len(set(ids)) == 4
+        assert ids == [sample_id for batch in loader for sample_id in batch["sample_id"]]
+        rank_ids.append(set(ids))
+    assert rank_ids[0].isdisjoint(rank_ids[1])
+    assert rank_ids[0] | rank_ids[1] == {row["id"] for row in rows}

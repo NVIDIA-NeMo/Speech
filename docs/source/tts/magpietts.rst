@@ -144,6 +144,43 @@ Short sentences and languages excluded by ``ignore_phoneme_languages`` still
 use their supplied IPA targets. Text-only and audio cuts must be sampled in
 separate batches; the existing audio-training path is unchanged.
 
+For text-only validation, use the multi-turn Lhotse dataset and a held-out
+``txt_norm_jsonl`` manifest. Finite, map-style sampling prevents repetition
+across validation workers and partitions batches across distributed ranks:
+
+.. code-block:: yaml
+
+    model:
+      use_multiturn_dataset: true
+      run_val_inference: false
+      validation_ds:
+        use_lhotse: true
+        volume_norm: false
+        dataset:
+          input_cfg:
+            - type: txt_norm_jsonl
+              paths: /path/to/held_out_text.jsonl
+              language: en
+          token_equivalent_duration: 0.08
+          batch_size: 4
+          use_multimodal_sampling: false
+          use_bucketing: false
+          force_finite: true
+          force_map_dataset: true
+          shuffle: false
+          seed: 42
+          shard_seed: 42
+          drop_last: false
+          num_workers: 2
+
+Validation logs ``val/phoneme_loss`` and
+``val/text_only_phoneme_token_accuracy``. Accuracy is weighted by the number
+of IPA tokens across batches and distributed ranks; padding, BOS, and EOS
+are excluded. Both metrics use teacher forcing, so they do not measure
+autoregressive sequence accuracy. Setting ``run_val_inference: false``
+avoids loading the audio evaluation models. For text-only training, set the
+audio sampler weights to zero and the text sampler weight to one.
+
 Inference
 #########
 

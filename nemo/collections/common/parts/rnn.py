@@ -228,9 +228,76 @@ class LSTMDropout(torch.nn.Module):
             if 'weight' in name or 'bias' in name:
                 v.data *= float(weights_init_scale)
 
+    def _single_step_supported(self) -> bool:
+        """
+        Whether the unrolled single-timestep path may stand in for the cuDNN call.
+
+        Only the plain unidirectional, non-projected, sequence-first case is covered, and only in eval
+        mode, where the inter-layer dropout of `torch.nn.LSTM` and `self.dropout` are both identities.
+        Tracing keeps the cuDNN path whatever the shapes: `torch.lstm_cell` lowers to
+        `aten::_thnn_fused_lstm_cell`, which the ONNX exporter has no symbolic for, and a traced graph
+        should hold the general recurrence rather than one unrolled timestep of it.
+        Autocast keeps it too: `torch.nn.LSTM` casts to float16 under autocast whatever the autocast
+        dtype is, while `torch.lstm_cell` follows that dtype, so the two paths would return states of
+        different dtypes and a later `batch_copy_states` into a cached state would fail.
+        """
+        if torch.jit.is_tracing():
+            return False
+        if torch.is_autocast_enabled(self.lstm.weight_ih_l0.device.type):
+            return False
+        lstm = self.lstm
+        return not lstm.bidirectional and lstm.proj_size == 0 and not lstm.batch_first
+
+    def _single_step(
+        self, x: torch.Tensor, h: Tuple[torch.Tensor, torch.Tensor]
+    ) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+        """
+        One timestep of the stacked LSTM, layer by layer, with `torch.lstm_cell`.
+
+        Autoregressive transducer decoding calls this module once per symbol with a sequence length of
+        one. Each such call pays cuDNN's fixed per-call setup — descriptors and workspace — for a single
+        timestep of work, and on a small batch that setup, not the arithmetic, is what the step costs;
+        `torch.lstm_cell` runs the same recurrence without it. How much this saves depends on the GPU,
+        the driver and the size of the prediction network. Accumulation order inside the gate GEMM
+        differs from cuDNN, so results agree to within low-precision rounding rather than bit for bit.
+        Args:
+            x: (torch.Tensor) input of shape (1, B, input_size).
+            h: (tuple) `(h_0, c_0)`, each of shape (num_layers, B, hidden_size).
+        Returns:
+            (tuple) output of shape (1, B, hidden_size) and the new `(h_n, c_n)`.
+        """
+        h_0, c_0 = h
+        inp = x[0]
+        h_n, c_n = [], []
+        for layer in range(self.lstm.num_layers):
+            h_l, c_l = torch.lstm_cell(
+                inp,
+                (h_0[layer], c_0[layer]),
+                getattr(self.lstm, f"weight_ih_l{layer}"),
+                getattr(self.lstm, f"weight_hh_l{layer}"),
+                getattr(self.lstm, f"bias_ih_l{layer}"),
+                getattr(self.lstm, f"bias_hh_l{layer}"),
+            )
+            h_n.append(h_l)
+            c_n.append(c_l)
+            inp = h_l
+        return inp.unsqueeze(0), (torch.stack(h_n), torch.stack(c_n))
+
     def forward(
         self, x: torch.Tensor, h: Optional[Tuple[torch.Tensor, torch.Tensor]] = None
     ) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+        """
+        Run the stacked LSTM over `x`, taking the unrolled path for a single inference timestep.
+
+        Args:
+            x: (torch.Tensor) input of shape (T, B, input_size).
+            h: (tuple | None) optional initial `(h_0, c_0)`, each of shape (num_layers, B, hidden_size).
+        Returns:
+            (tuple) output of shape (T, B, hidden_size) and the final `(h_n, c_n)`.
+        """
+        if not self.training and h is not None and x.shape[0] == 1 and self._single_step_supported():
+            return self._single_step(x, h)
+
         x, h = self.lstm(x, h)
 
         if self.dropout:

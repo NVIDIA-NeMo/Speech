@@ -497,7 +497,10 @@ deep-ep = ["setuptools"]
 # Keep Torch wheel indexes explicit per CUDA extra. Automodel's upstream source
 # metadata is mirrored below so this repository controls the CUDA wheel index.
 [tool.uv.sources]
-nemo_automodel = { git = "https://github.com/NVIDIA-NeMo/Automodel.git", rev = "fccae250cd860dc4dce8d5791e08d3c85e873f88" }
+# Temporary immutable pin to the main-based DFlash training stack in
+# NVIDIA-NeMo/Automodel#3899. Replace this fork pin with the upstream merge
+# commit before marking the companion NeMo PR ready for review.
+nemo_automodel = { git = "https://github.com/Slyne/Automodel.git", rev = "e74baca7b75cb252ca73b830691b8382d102318f" }
 cut-cross-entropy = { git = "https://github.com/apple/ml-cross-entropy.git", rev = "87a86aba72cfd2f0d8abecaf81c13c4528ea07d8" }
 megatron-fsdp = { git = "https://github.com/yuhezhang-ai/Megatron-LM.git", rev = "455389c480af6b3acdca74c7830c68b3274eb083", subdirectory = "megatron/core/distributed/fsdp/src" }
 deep_ep = { git = "https://github.com/deepseek-ai/DeepEP.git", rev = "7febc6e25660af0f54d95dd781ecdcd62265ecca" }
@@ -532,25 +535,23 @@ explicit = true
 
 [[tool.uv.dependency-metadata]]
 name = "nemo-automodel"
-version = "0.5.0+cb03cf61"
+version = "0.8.0+e74baca7b"
 requires-python = ">=3.10"
-# Keep Automodel main's core dependency metadata static here so this repo
-# controls the CUDA wheel index.
+# Mirror the pinned Automodel core dependencies so this repository controls
+# the CUDA wheel index. Refresh this metadata together with the source pin.
 requires-dist = [
     "datasets>=4.0.0",
     "megatron-fsdp==0.5.0",
     "mistral-common[audio,hf-hub,sentencepiece]",
-    "pybind11",
+    "ninja",
     "pyyaml",
     "tiktoken",
-    "torch>=2.7.0",
+    "torch>=2.6.0",
     "torchdata",
-    "transformers==5.12.1",
-    "wandb>=0.28.0",
-    "torchao",
-    "mlflow",
+    "transformers==5.18.0",
+    "torchao>=0.16.0",
     "flashoptim>=0.1.3",
-    "quack-kernels==0.6.1; sys_platform == 'linux'",
+    "quack-kernels==0.6.4; sys_platform == 'linux'",
 ]
 
 [dependency-groups]

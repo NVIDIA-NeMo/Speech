@@ -54,6 +54,7 @@ from vllm.multimodal.parse import AudioProcessorItems, MultiModalDataItems, Mult
 from vllm.multimodal.processing import (
     BaseMultiModalProcessor,
     BaseProcessingInfo,
+    ProcessorInputs,
     PromptReplacement,
     PromptUpdate,
     PromptUpdateDetails,
@@ -326,6 +327,8 @@ class NeMoSpeechLMAudioInputs(TensorSchema):
     type: Literal["audio_features"] = "audio_features"
     audio_signal: Annotated[torch.Tensor | list[torch.Tensor], TensorShape("b", "t")]
     audio_signal_length: Annotated[torch.Tensor, TensorShape("b")]
+    # True for items whose request opted into CTC timestamp capture.
+    capture_ctc_timestamps: Annotated[torch.Tensor | None, TensorShape("b")]
 
 
 class NeMoSpeechLMProcessingInfo(BaseProcessingInfo):
@@ -515,6 +518,8 @@ class NeMoSpeechLMMultiModalProcessor(
         return dict(
             audio_signal=MultiModalFieldConfig.batched("audio"),
             audio_signal_length=MultiModalFieldConfig.batched("audio"),
+            # Read on the host while encoding, so it must not be moved to the GPU.
+            capture_ctc_timestamps=MultiModalFieldConfig.batched("audio", keep_on_cpu=True),
         )
 
     def _hf_processor_applies_updates(
@@ -557,6 +562,11 @@ class NeMoSpeechLMMultiModalProcessor(
         mm_kwargs: Mapping[str, object],
         tok_kwargs: Mapping[str, object],
     ) -> BatchFeature:
+        """Per-request preprocessing, under vLLM's hook name (this model has no Hugging Face processor).
+
+        Expands each audio placeholder into its estimated encoder token count, tokenizes the
+        prompt, and packages the audio with its CTC timestamp opt-in flag.
+        """
         tokenizer = self.info.get_tokenizer()
         _ensure_special_tokens(tokenizer)
         mm_data = dict(mm_data)
@@ -599,6 +609,9 @@ class NeMoSpeechLMMultiModalProcessor(
         if audios:
             result["audio_signal"] = audio_list
             result["audio_signal_length"] = torch.tensor(audio_lengths)
+            # Opt-in: a capture nobody aligns would stay in host memory until the byte cap evicts it.
+            capture = bool(mm_kwargs.get("capture_ctc_timestamps", False))
+            result["capture_ctc_timestamps"] = torch.full((len(audio_list),), capture)
         return result
 
 
@@ -645,6 +658,22 @@ class NeMoSpeechLMDummyInputsBuilder(
     def get_dummy_text(self, mm_counts: Mapping[str, int]) -> str:
         num_audios = mm_counts.get("audio", 0)
         return "Transcribe the following: " + _AUDIO_PLACEHOLDER * num_audios
+
+    def get_dummy_processor_inputs(
+        self,
+        seq_len: int,
+        mm_counts: Mapping[str, int],
+        mm_options: Mapping[str, BaseDummyOptions],
+    ) -> ProcessorInputs:
+        """Dummy inputs that opt into CTC timestamp capture.
+
+        vLLM profiles peak memory on these at startup. Captured requests also produce
+        the CTC timestamp inputs in the encoder forward, so the profile must include
+        them; outside a scheduled step nothing is stored.
+        """
+        inputs = super().get_dummy_processor_inputs(seq_len, mm_counts, mm_options)
+        inputs.hf_processor_mm_kwargs = {**inputs.hf_processor_mm_kwargs, "capture_ctc_timestamps": True}
+        return inputs
 
 
 def _config_has_pe_encoder(config) -> bool:

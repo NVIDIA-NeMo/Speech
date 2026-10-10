@@ -2160,7 +2160,7 @@ class TestMTPPlugin:
         assert torch.equal(result, torch.zeros(2, 2))
 
     def test_target_weight_split_excludes_salm_mtp_and_rejects_bare_mtp(self):
-        """The target loader should route SALM draft weights and reject native names."""
+        """The target loader should route SALM draft weights, leave a bundled CTC head, and reject native names."""
         import torch
 
         from nemo.collections.speechlm2.vllm.salm.model import NeMoSpeechLMForConditionalGeneration
@@ -2173,6 +2173,8 @@ class TestMTPPlugin:
                 ("llm.mtp.layers.0.weight", torch.ones(4)),
                 ("llm.model.layers.0.weight", llm_tensor),
                 ("llm.model.layers.0._extra_state", torch.ones(5)),
+                ("ctc_timestamp.decoder.decoder_layers.0.weight", torch.ones(6)),
+                ("ctc_timestamp.tokenizer.model_proto", torch.ones(7, dtype=torch.uint8)),
             ]
         )
 

@@ -33,6 +33,7 @@ Requires NeMo toolkit for the audio encoder:
     pip install 'nemo-toolkit[asr]'
 """
 
+import contextlib
 from collections.abc import Callable, Iterable
 from typing import Any
 
@@ -65,6 +66,19 @@ from nemo.collections.speechlm2.vllm.salm.audio import (
 )
 from nemo.collections.speechlm2.vllm.salm.backends import HybridBackend, make_backend
 from nemo.collections.speechlm2.vllm.salm.config import _AUDIO_PLACEHOLDER
+from nemo.collections.speechlm2.vllm.salm.ctc_timestamps import (
+    active_aligner,
+    ctc_adapter_path,
+    ctc_timestamp_config,
+    install_worker_methods,
+    read_speaker_prior_weight,
+    register_aligner,
+    require_v1_model_runner,
+    store_alignment_states,
+    take_step_hashes,
+    tokenizer_special_tokens,
+)
+from nemo.utils import logging
 
 _AUDIO_INPUT_DTYPE = torch.float32
 _PERCEPTION_DTYPE = torch.bfloat16
@@ -75,6 +89,22 @@ def _is_parallel_expert_encoder(module: nn.Module) -> bool:
     return bool(getattr(module, "supports_external_speaker_targets", False)) and callable(
         getattr(module, "online_inference", None)
     )
+
+
+def _require_resampling_rate(perception: Any) -> None:
+    """Refuse a perception module built for a sample rate other than the one audio is resampled to.
+
+    vLLM resamples every request's audio to ``_SAMPLING_RATE`` before the encoder sees it
+    (``NeMoSpeechLMProcessingInfo.get_data_parser``), and audio durations are computed
+    from that rate.
+    """
+    featurizer = getattr(getattr(perception, "preprocessor", None), "featurizer", None)
+    sample_rate = getattr(featurizer, "sample_rate", None)
+    if sample_rate is not None and sample_rate != _SAMPLING_RATE:
+        raise ValueError(
+            f"The perception preprocessor expects {sample_rate} Hz audio, but the NeMo SpeechLM vLLM plugin "
+            f"resamples audio to {_SAMPLING_RATE} Hz."
+        )
 
 
 @MULTIMODAL_REGISTRY.register_processor(
@@ -117,6 +147,7 @@ class NeMoSpeechLMForConditionalGeneration(
 
         with self._mark_tower_model(vllm_config, {"audio"}):
             self.perception = _load_nemo_perception(config.perception)
+            _require_resampling_rate(self.perception)
             pe_encoder_path = getattr(config, "pe_encoder_path", None)
             pe_encoder_config = getattr(config, "pe_encoder_config", None)
             speaker_encoder = getattr(config, "speaker_encoder", None)
@@ -149,7 +180,69 @@ class NeMoSpeechLMForConditionalGeneration(
                 )
                 self._uses_pe_encoder = _is_parallel_expert_encoder(getattr(self.perception, "encoder", None))
 
+        # Installed even without an adapter, so ctc_timestamps() gets a clear "not
+        # enabled" error instead of an unknown method.
+        install_worker_methods()
+        self._maybe_enable_ctc_timestamps(ctc_timestamp_config(vllm_config.model_config), vllm_config)
+
         self.make_empty_intermediate_tensors = self.language_model.make_empty_intermediate_tensors
+
+    def _maybe_enable_ctc_timestamps(self, ctc_config: Any, vllm_config: VllmConfig) -> None:
+        """Arm CTC timestamp capture when the checkpoint names a CTC adapter or bundles the head.
+
+        Driven by the checkpoint (``ctc_timestamp_config``), mirroring how
+        ``encoder_quantization`` travels, so serving needs no extra flags;
+        ``ctc_timestamps.enabled=false`` turns a bundled head off. When this engine
+        cannot produce timestamps, a bundled head (``"optional"``) is skipped with a
+        warning, while a named adapter or ``enabled: true`` fails at startup.
+        """
+        adapter_path = ctc_adapter_path(ctc_config)
+        if not adapter_path:
+            return
+
+        from nemo.collections.speechlm2.parts.ctc_timestamp_utils import get_ctc_timestamp_aligner
+        from nemo.collections.speechlm2.vllm.salm.ctc_timestamps import install_encoder_cache_binding
+
+        unavailable = self._ctc_timestamps_unavailable(vllm_config)
+        if unavailable is not None:
+            if not (isinstance(ctc_config, dict) and ctc_config.get("optional")):
+                raise ValueError(unavailable)
+            logging.warning(
+                "[NeMoSpeechLM] Serving without CTC timestamps, although the checkpoint bundles a CTC head: %s "
+                "Set ctc_timestamps.enabled=false to skip the head without this warning.",
+                unavailable,
+            )
+            return
+        encoder = self.perception.encoder
+        speaker_prior_weight = read_speaker_prior_weight(ctc_config)
+        encoder.ctc_timestamp_model_path = adapter_path
+        device = next(encoder.parameters()).device
+        # Load now rather than on the first timestamped request, so a bad artifact
+        # path fails at startup instead of mid-serve.
+        aligner = get_ctc_timestamp_aligner(encoder, adapter_path, device)
+        aligner.speaker_logprob_weight = speaker_prior_weight
+
+        register_aligner(aligner, tokenizer_special_tokens(vllm_config.model_config))
+        install_encoder_cache_binding()
+        logging.info("[NeMoSpeechLM] CTC timestamps enabled from checkpoint config: %s", adapter_path)
+
+    def _ctc_timestamps_unavailable(self, vllm_config: VllmConfig) -> str | None:
+        """Why this engine cannot produce CTC timestamps, or ``None`` when it can."""
+        encoder = self.perception.encoder
+        if not getattr(encoder, "supports_ctc_timestamp_inputs", False):
+            return f"{type(encoder).__name__} cannot produce CTC timestamp inputs."
+        if not self._uses_pe_encoder and self.encoder_chunk_size_seconds:
+            # Captured inputs cover one forward over the whole audio; nothing would
+            # reassemble the inputs of the chunks this setting splits it into.
+            return (
+                "CTC timestamps need one unchunked encoder forward, but encoder_chunk_size_seconds="
+                f"{self.encoder_chunk_size_seconds} is set."
+            )
+        try:
+            require_v1_model_runner(vllm_config)
+        except ValueError as error:
+            return str(error)
+        return None
 
     # ── language-model integration ──
 
@@ -192,6 +285,7 @@ class NeMoSpeechLMForConditionalGeneration(
         self,
         audio_signal: torch.Tensor | list[torch.Tensor] | None = None,
         audio_signal_length: torch.Tensor | None = None,
+        capture_ctc_timestamps: torch.Tensor | None = None,
         **kwargs,
     ) -> NeMoSpeechLMAudioInputs | None:
         if audio_signal is None:
@@ -210,6 +304,7 @@ class NeMoSpeechLMForConditionalGeneration(
         return NeMoSpeechLMAudioInputs(
             audio_signal=audio_signal,
             audio_signal_length=audio_signal_length,
+            capture_ctc_timestamps=capture_ctc_timestamps,
         )
 
     def _process_audio(self, audio_input: NeMoSpeechLMAudioInputs) -> tuple[torch.Tensor, ...]:
@@ -230,9 +325,14 @@ class NeMoSpeechLMForConditionalGeneration(
         # forward and the per-chunk embeddings are concatenated. ``None``
         # disables chunking and runs a single forward over the full batch.
         # A ParallelExpertEncoder instead runs its own context-preserving online
-        # inference over the full audio, so it bypasses the chunking helper.
+        # inference over the full audio, so it bypasses the chunking helper, and so
+        # does CTC timestamp capture, whose inputs cover one forward.
         with torch.no_grad():
-            if self._uses_pe_encoder:
+            if active_aligner() is not None:
+                audio_embeds = self._encode_with_ctc_capture(
+                    audio_signal, audio_lengths, audio_input.capture_ctc_timestamps
+                )
+            elif self._uses_pe_encoder:
                 with self.perception.encoder.online_inference():
                     audio_embs, audio_emb_lens = self.perception(
                         input_signal=audio_signal, input_signal_length=audio_lengths
@@ -248,6 +348,43 @@ class NeMoSpeechLMForConditionalGeneration(
                 )
 
         return tuple(emb.to(_PERCEPTION_DTYPE) for emb in audio_embeds)
+
+    def _encode_with_ctc_capture(
+        self, audio_signal: torch.Tensor, audio_lengths: torch.Tensor, capture: torch.Tensor | None
+    ) -> list[torch.Tensor]:
+        """One encoder forward over the whole audio that also keeps each row's alignment states.
+
+        Args:
+            audio_signal (torch.Tensor): Padded audio, one row per item.
+            audio_lengths (torch.Tensor): Valid samples per row.
+            capture (torch.Tensor | None): Per row, on the host, whether to keep its
+                alignment states; ``None`` keeps no row, as for a request that did not opt in.
+        """
+        # vLLM passes only tensors here, so each row's mm_hash comes from the runner
+        # hook, which lists the step's hashes in encoding order. Every row takes one,
+        # kept or not, so the rest stay paired. Outside the hook (vLLM's startup
+        # profiling pass) there are none: the states are still produced, so memory is
+        # profiled as served, but nothing is stored.
+        num_audio_items = audio_signal.shape[0]
+        mm_hashes = take_step_hashes(num_audio_items)
+        keep = [False] * num_audio_items if capture is None else capture.tolist()
+        online = self.perception.encoder.online_inference() if self._uses_pe_encoder else contextlib.nullcontext()
+        with online:
+            if not any(keep):
+                audio_embs, audio_emb_lens = self.perception(
+                    input_signal=audio_signal, input_signal_length=audio_lengths
+                )
+            else:
+                durations = audio_lengths.double() / _SAMPLING_RATE
+                audio_embs, audio_emb_lens, alignment_states = self.perception(
+                    input_signal=audio_signal,
+                    input_signal_length=audio_lengths,
+                    return_ctc_timestamp_inputs=True,
+                )
+                if mm_hashes is not None:
+                    kept_hashes = [mm_hash if kept else None for mm_hash, kept in zip(mm_hashes, keep)]
+                    store_alignment_states(kept_hashes, alignment_states, durations)
+        return [emb[:emblen] for emb, emblen in zip(audio_embs, audio_emb_lens)]
 
     def embed_multimodal(self, **kwargs) -> MultiModalEmbeddings:
         audio_input = self._parse_audio_input(**kwargs)
@@ -310,6 +447,8 @@ class NeMoSpeechLMForConditionalGeneration(
     def _split_perception_llm(
         weights: Iterable[tuple[str, torch.Tensor]],
     ) -> tuple[dict[str, torch.Tensor], list[tuple[str, torch.Tensor]]]:
+        from nemo.collections.speechlm2.parts.ctc_timestamp_utils import CTC_TIMESTAMP_BUNDLE_PREFIX
+
         perception: dict[str, torch.Tensor] = {}
         llm: list[tuple[str, torch.Tensor]] = []
         for name, tensor in weights:
@@ -319,6 +458,8 @@ class NeMoSpeechLMForConditionalGeneration(
                 perception[name[len("perception.") :]] = tensor
             elif name.startswith("llm.mtp."):
                 pass  # MTP draft-head weights; loaded by the speculative draft model, not here
+            elif name.startswith(CTC_TIMESTAMP_BUNDLE_PREFIX):
+                pass  # a bundled CTC timestamp head; the aligner loads it from the checkpoint file
             elif name.startswith("mtp."):
                 raise ValueError(
                     f"Unsupported bare MTP tensor {name!r}; NeMo SpeechLM exports must store draft weights "

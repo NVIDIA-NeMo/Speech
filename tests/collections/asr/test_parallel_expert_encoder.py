@@ -15,7 +15,7 @@
 
 import io
 import tarfile
-from types import SimpleNamespace
+import weakref
 
 import pytest
 import torch
@@ -40,6 +40,7 @@ from nemo.collections.speechlm2.parts.ctc_timestamp_utils import (
     _disable_max_seq_length_sync,
     align_prepared_batch,
     get_ctc_timestamp_aligner,
+    merge_prepared_batches,
 )
 
 # ``@experimental`` wraps the class in a wrapt proxy, so ``__new__`` (used to build
@@ -103,16 +104,20 @@ def test_deferred_ctc_head_runs_only_when_generated_text_is_aligned(monkeypatch)
     captured = {}
 
     class _Decoder(nn.Module):
+        num_classes_with_blank = 3
+
         def forward(self, encoder_output, encoded_lengths):
             captured["decoder_args"] = (encoder_output, encoded_lengths)
-            return torch.zeros(encoder_output.shape[0], encoder_output.shape[2], 3)
+            return torch.arange(12.0).reshape(1, 4, 3)
 
-    def prepare_alignment(ctc_log_probs, sortformer_sigmoids, sot_transcripts, **kwargs):
-        captured["prepare_args"] = (ctc_log_probs, sortformer_sigmoids, sot_transcripts, kwargs)
-        return {"records": []}
+    def prepare(ctc_shape, read_columns, sortformer_sigmoids, sot_transcripts, **kwargs):
+        captured["prepare_args"] = (ctc_shape, sortformer_sigmoids, sot_transcripts, kwargs)
+        # Transcripts become targets before the head runs.
+        assert "decoder_args" not in captured
+        return {"records": read_columns([[2, 0]], [3])}
 
     aligner = MultiSpeakerSOTWordTimestampAligner(ctc_decoder=_Decoder())
-    monkeypatch.setattr(aligner, "prepare_alignment", prepare_alignment)
+    monkeypatch.setattr(aligner, "_prepare", prepare)
     asr_encoded = torch.zeros(1, 16, 4)
     asr_lengths = torch.tensor([4])
     speaker_probs = torch.zeros(1, 6, 2)
@@ -130,11 +135,13 @@ def test_deferred_ctc_head_runs_only_when_generated_text_is_aligned(monkeypatch)
 
     prepared = aligner.prepare_from_inputs(timestamp_inputs, ["<spk:0> hello"], [1.0])
 
-    assert prepared == {"records": []}
+    # Columns 2 and 0 of the record's three valid frames, not the head's whole output.
+    (log_probs,) = prepared["records"]
+    assert torch.equal(log_probs, torch.tensor([[2.0, 0.0], [5.0, 3.0], [8.0, 6.0]]))
     decoder_states, decoder_lengths = captured["decoder_args"]
     assert decoder_states is asr_encoded and decoder_lengths is asr_lengths
-    ctc_log_probs, sortformer_sigmoids, transcripts, kwargs = captured["prepare_args"]
-    assert ctc_log_probs.shape == (1, 4, 3)
+    ctc_shape, sortformer_sigmoids, transcripts, kwargs = captured["prepare_args"]
+    assert tuple(ctc_shape) == (1, 4, 3)
     assert sortformer_sigmoids is speaker_probs and transcripts == ["<spk:0> hello"]
     assert kwargs["ctc_lengths"].tolist() == [4]
     # Speaker frames past the four CTC frames are never aligned.
@@ -251,7 +258,7 @@ def test_ctc_timestamp_loader_disables_distributed_length_sync(monkeypatch, tmp_
 
 
 @pytest.mark.unit
-def test_ctc_timestamp_loader_records_the_encoder_windows_and_subsampling(monkeypatch, tmp_path):
+def test_ctc_timestamp_loader_copies_the_encoder_windows_on_every_call(monkeypatch, tmp_path):
     adapter_path = tmp_path / "adapter.pt"
     adapter_path.touch()
     adapter = CTCTimestampArtifact(decoder=nn.Linear(4, 4), tokenizer=object(), decoder_config={})
@@ -262,13 +269,16 @@ def test_ctc_timestamp_loader_records_the_encoder_windows_and_subsampling(monkey
     encoder = _PEE.__new__(_PEE)
     nn.Module.__init__(encoder)
     encoder.online_inference_length, encoder.chunk_left_context, encoder.chunk_right_context = 500, 50, 25
-    encoder.asr_encoder = SimpleNamespace(subsampling_factor=8)
 
     aligner = get_ctc_timestamp_aligner(encoder, str(adapter_path), torch.device("cpu"))
 
-    # Recorded once, so aligning stored inputs never reads the encoder again.
     assert (aligner.online_inference_length, aligner.chunk_left_context, aligner.chunk_right_context) == (500, 50, 25)
-    assert aligner.subsampling_factor == 8
+    assert all(value is not encoder for value in vars(aligner).values())
+
+    encoder.online_inference_length, encoder.chunk_left_context, encoder.chunk_right_context = 250, 40, 10
+
+    assert get_ctc_timestamp_aligner(encoder, str(adapter_path), torch.device("cpu")) is aligner
+    assert (aligner.online_inference_length, aligner.chunk_left_context, aligner.chunk_right_context) == (250, 40, 10)
 
 
 @pytest.mark.unit
@@ -391,7 +401,7 @@ def test_timestamp_extractor_batches_all_speakers_in_parallel(monkeypatch):
     for frame, label in enumerate(labels):
         logits[frame, label] = 12.0
 
-    extractor = MultiSpeakerSOTWordTimestampAligner(blank_id=blank_id)
+    extractor = MultiSpeakerSOTWordTimestampAligner(blank_id=blank_id, ctc_frame_seconds=0.01)
     monkeypatch.setattr(extractor, "_tokenize_words", tokenize_words)
     calls = []
     original = extractor._ctc_forced_align_batched
@@ -425,7 +435,7 @@ def test_timestamp_extractor_runs_untagged_single_speaker_in_parallel(monkeypatc
     logits = torch.full((5, 2), -12.0)
     for frame, label in enumerate([blank_id, 0, blank_id, 0, blank_id]):
         logits[frame, label] = 12.0
-    extractor = MultiSpeakerSOTWordTimestampAligner(blank_id=blank_id)
+    extractor = MultiSpeakerSOTWordTimestampAligner(blank_id=blank_id, ctc_frame_seconds=0.01)
     monkeypatch.setattr(extractor, "_tokenize_words", tokenize_words)
     calls = []
     original = extractor._ctc_forced_align_batched
@@ -461,7 +471,7 @@ def _tokenize_by_table(token_ids):
 @pytest.mark.unit
 def test_prepared_alignment_keeps_only_the_columns_its_transcript_uses(monkeypatch):
     blank_id = 5
-    extractor = MultiSpeakerSOTWordTimestampAligner(blank_id=blank_id)
+    extractor = MultiSpeakerSOTWordTimestampAligner(blank_id=blank_id, ctc_frame_seconds=0.01)
     monkeypatch.setattr(extractor, "_tokenize_words", _tokenize_by_table({"a": 3, "b": 1}))
     log_probs = torch.log_softmax(torch.randn(1, 6, blank_id + 1), dim=-1)
 
@@ -471,6 +481,25 @@ def test_prepared_alignment_keeps_only_the_columns_its_transcript_uses(monkeypat
     # Blank first, then the transcript's tokens in vocabulary order.
     assert torch.equal(record["ctc_log_probs"], log_probs[0][:, [blank_id, 1, 3]])
     assert [stream["labels"] for stream in record["streams"]] == [[0, 2, 0], [0, 1, 0, 2, 0]]
+
+
+@pytest.mark.unit
+def test_prepared_alignment_needs_an_audio_duration_or_ctc_frame_seconds():
+    aligner = MultiSpeakerSOTWordTimestampAligner(blank_id=2)
+
+    with pytest.raises(ValueError, match="Record 0 has no audio duration"):
+        aligner.prepare_alignment(torch.zeros(1, 4, 3), None, ["a"])
+
+
+@pytest.mark.unit
+def test_clean_sot_transcript_drops_special_tokens_but_keeps_speaker_tags():
+    special_tokens = ["<s>", "</s>", "<|im_end|>", "<spk:0>", "<SPK:1>"]
+
+    cleaned = MultiSpeakerSOTWordTimestampAligner.clean_sot_transcript(
+        "<s><spk:0> hello  <|im_end|>world <SPK:1> yes</s>", special_tokens
+    )
+
+    assert cleaned == "<spk:0> hello world <SPK:1> yes"
 
 
 @pytest.mark.unit
@@ -525,6 +554,89 @@ def test_a_prepared_batch_aligns_without_the_aligner_that_prepared_it(monkeypatc
 
 
 @pytest.mark.unit
+def test_merged_prepared_batches_align_like_separate_batches(monkeypatch):
+    torch.manual_seed(0)
+    blank_id = 2
+    extractor = MultiSpeakerSOTWordTimestampAligner(blank_id=blank_id, ctc_frame_seconds=0.01)
+    monkeypatch.setattr(extractor, "_tokenize_words", _tokenize_by_table({"a": 0, "b": 1}))
+    short = extractor.prepare_alignment(torch.log_softmax(torch.randn(1, 5, blank_id + 1), dim=-1), None, ["a b"])
+    long = extractor.prepare_alignment(torch.log_softmax(torch.randn(1, 9, blank_id + 1), dim=-1), None, ["b a b"])
+
+    merged = merge_prepared_batches([short, long])
+
+    assert align_prepared_batch(merged) == align_prepared_batch(short) + align_prepared_batch(long)
+    stricter = {**long, "config": {**long["config"], "maximum_token_len": 0.5}}
+    assert merge_prepared_batches([short, stricter]) is None
+
+
+class _WindowProbeDecoder(nn.Module):
+    """A CTC head whose calls record how many of its earlier outputs are still alive."""
+
+    num_classes_with_blank = 4
+
+    def __init__(self):
+        super().__init__()
+        self.projection = nn.Linear(16, 4)
+        self.outputs = []
+        self.live = []
+
+    def forward(self, encoder_output, encoded_lengths):
+        self.live.append(sum(output() is not None for output in self.outputs))
+        log_probs = torch.log_softmax(self.projection(encoder_output.transpose(1, 2)), dim=-1)
+        self.outputs.append(weakref.ref(log_probs))
+        return log_probs
+
+
+def _same(left, right):
+    """Equality for prepared batches: tensors must match in dtype and every value."""
+    if isinstance(left, torch.Tensor):
+        return isinstance(right, torch.Tensor) and left.dtype == right.dtype and torch.equal(left, right)
+    if isinstance(left, dict):
+        return isinstance(right, dict) and left.keys() == right.keys() and all(_same(left[k], right[k]) for k in left)
+    if isinstance(left, (list, tuple)):
+        return type(left) is type(right) and len(left) == len(right) and all(map(_same, left, right))
+    return left == right
+
+
+@pytest.mark.unit
+def test_prepared_inputs_match_the_whole_head_output_one_window_at_a_time(monkeypatch):
+    torch.manual_seed(0)
+    decoder = _WindowProbeDecoder()
+    aligner = MultiSpeakerSOTWordTimestampAligner(
+        ctc_decoder=decoder, online_inference_length=3, chunk_left_context=1, chunk_right_context=1
+    )
+    monkeypatch.setattr(aligner, "_tokenize_words", _tokenize_by_table({"a": 0, "b": 2}))
+    diarization_labels = torch.zeros(2, 4, 56, dtype=torch.bool)
+    diarization_labels[0, 1, 10:30] = True
+    timestamp_inputs = CTCTimestampInputs(
+        asr_encoded=torch.randn(2, 16, 7),
+        asr_encoded_lengths=torch.tensor([7, 5]),
+        sortformer_sigmoids=torch.rand(2, 7, 2),
+        sortformer_lengths=torch.tensor([7, 5]),
+        diarization_labels=diarization_labels,
+        diarization_lengths=torch.tensor([56, 40]),
+    )
+    transcripts = ["<spk:0> a b <spk:1> b", "a"]
+
+    prepared = aligner.prepare_from_inputs(timestamp_inputs, transcripts, [0.56, 0.4])
+
+    # No earlier window was alive when the next one was decoded.
+    assert decoder.live == [0, 0, 0]
+    expected = aligner.prepare_alignment(
+        aligner.ctc_log_probs_from_inputs(timestamp_inputs),
+        timestamp_inputs.sortformer_sigmoids,
+        transcripts,
+        ctc_lengths=timestamp_inputs.asr_encoded_lengths,
+        sortformer_lengths=timestamp_inputs.sortformer_lengths,
+        audio_durations=[0.56, 0.4],
+        diarization_labels=diarization_labels,
+        diarization_lengths=timestamp_inputs.diarization_lengths,
+    )
+    assert decoder.live == [0, 0, 0, 0, 0, 0]
+    assert _same(prepared, expected)
+
+
+@pytest.mark.unit
 def test_compact_batched_ctc_alignment_handles_repeated_tokens():
     blank_id = 1
     target = torch.tensor([[blank_id, 0, blank_id, 0, blank_id]])
@@ -572,7 +684,9 @@ def test_timestamp_extractor_maps_speakers_from_preliminary_ctc_paths(monkeypatc
             [0.9, 0.1],
         ]
     )
-    extractor = MultiSpeakerSOTWordTimestampAligner(blank_id=blank_id, speaker_logprob_weight=speaker_weight)
+    extractor = MultiSpeakerSOTWordTimestampAligner(
+        blank_id=blank_id, speaker_logprob_weight=speaker_weight, ctc_frame_seconds=0.01
+    )
     monkeypatch.setattr(extractor, "_tokenize_words", tokenize_words)
     calls = 0
     original = extractor._ctc_forced_align_batched
@@ -609,7 +723,7 @@ def test_timestamp_extractor_keeps_parallel_mode_when_speakers_exceed_columns(
     logits = torch.full((len(frame_labels), blank_id + 1), -12.0)
     for frame, label in enumerate(frame_labels):
         logits[frame, label] = 12.0
-    extractor = MultiSpeakerSOTWordTimestampAligner(blank_id=blank_id)
+    extractor = MultiSpeakerSOTWordTimestampAligner(blank_id=blank_id, ctc_frame_seconds=0.01)
     monkeypatch.setattr(extractor, "_tokenize_words", tokenize_words)
 
     result = extractor.extract_from_outputs_batch(
@@ -636,7 +750,7 @@ def test_timestamp_extractor_batch_honors_record_lengths(monkeypatch):
             logits[frame, label] = 12.0
         return torch.log_softmax(logits, dim=-1)
 
-    extractor = MultiSpeakerSOTWordTimestampAligner(blank_id=blank_id)
+    extractor = MultiSpeakerSOTWordTimestampAligner(blank_id=blank_id, ctc_frame_seconds=0.01)
     monkeypatch.setattr(extractor, "_tokenize_words", tokenize_words)
     dp_calls = []
     original = extractor._ctc_forced_align_batched
@@ -666,8 +780,8 @@ def test_timestamp_extractor_batch_honors_record_lengths(monkeypatch):
 
     assert [result["num_ctc_frames"] for result in results] == [4, 5]
     assert [result["alignment_mode"] for result in results] == ["parallel", "parallel"]
-    # Two streams over the batch's 7 padded frames, with only the blank and token columns each transcript uses.
-    assert dp_calls == [(torch.Size([2, 7, 2]), [4, 5])]
+    # Two streams over the longest record's 5 valid frames, keeping each transcript's blank and token columns.
+    assert dp_calls == [(torch.Size([2, 5, 2]), [4, 5])]
     assert results[0]["diarization_timestamps"] == [{"speaker": 0, "start": 0.0, "end": 0.02}]
     assert results[1]["diarization_timestamps"] == [{"speaker": 1, "start": 0.01, "end": 0.04}]
     assert [result["diarization_frame_seconds"] for result in results] == [0.01, 0.01]

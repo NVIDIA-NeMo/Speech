@@ -1667,13 +1667,12 @@ class SALMAutomodel(LightningModule, HFHubMixin):
 
 
 def _decode_timestamp_transcript(tokenizer: Any, answer_tokens: torch.Tensor) -> str:
+    from nemo.collections.speechlm2.parts.ctc_timestamp_utils import MultiSpeakerSOTWordTimestampAligner
+
     token_ids = answer_tokens.detach().cpu().tolist()
     text = tokenizer.ids_to_text(token_ids, remove_special_tokens=False)
-    hf_tokenizer = getattr(tokenizer, "tokenizer", None)
-    for token in getattr(hf_tokenizer, "all_special_tokens", ()):
-        if re.fullmatch(r"<spk:\d+>", token, flags=re.IGNORECASE) is None:
-            text = text.replace(token, " ")
-    text = " ".join(text.split())
+    special_tokens = getattr(getattr(tokenizer, "tokenizer", None), "all_special_tokens", ())
+    text = MultiSpeakerSOTWordTimestampAligner.clean_sot_transcript(text, special_tokens)
     if not text:
         raise ValueError("The generated ASR answer is empty after removing non-speaker special tokens.")
     return text

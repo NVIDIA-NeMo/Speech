@@ -77,6 +77,33 @@ def test_safetensors_artifact_round_trip_contains_only_decoder_and_tokenizer(tmp
 
 
 @pytest.mark.unit
+def test_safetensors_artifact_behind_a_hugging_face_cache_symlink_loads(tmp_path):
+    pytest.importorskip("safetensors")
+    tokenizer_path = Path(__file__).resolve().parents[2] / ".data/asr/tokenizers/an4_spe_128/tokenizer.model"
+    tokenizer = SentencePieceTokenizer(str(tokenizer_path))
+    config = {
+        "feat_in": 8,
+        "num_classes": tokenizer.vocab_size,
+        "vocabulary": tokenizer.ids_to_tokens(list(range(tokenizer.vocab_size))),
+        "use_transformer": False,
+    }
+    decoder = TransformerCTCDecoder(**config)
+    # A Hugging Face cache keeps model.safetensors as a symlink to a blob named by its hash, without the suffix.
+    blob = tmp_path / "blobs" / "fe3b898b42a65837"
+    blob.parent.mkdir()
+    save_ctc_timestamp_artifact(tmp_path / "head.safetensors", decoder, tokenizer, config).rename(blob)
+    snapshot = tmp_path / "snapshots" / "a7376a71"
+    snapshot.mkdir(parents=True)
+    (snapshot / "model.safetensors").symlink_to(Path("../..") / "blobs" / blob.name)
+
+    # Through the symlink, and as the resolved blob that the aligner cache and hf_hub pass on.
+    for source in (snapshot / "model.safetensors", blob):
+        restored = load_ctc_timestamp_artifact(source)
+        assert restored.tokenizer.text_to_ids("hello world") == tokenizer.text_to_ids("hello world")
+        assert restored.decoder_config == config
+
+
+@pytest.mark.unit
 def test_load_combined_checkpoint_ignores_salm_tensors_and_restores_ctc_head(tmp_path):
     safetensors = pytest.importorskip("safetensors")
     safetensors_torch = pytest.importorskip("safetensors.torch")

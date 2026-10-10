@@ -151,6 +151,64 @@ The focused runtime components are public from ``nemo.collections.speechlm2.part
 ``TransformerCTCDecoder``, ``MultiSpeakerSOTWordTimestampAligner``, and
 ``load_ctc_timestamp_artifact``.
 
+CTC timestamps in vLLM chat responses
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A vLLM server whose checkpoint bundles a compatible CTC timestamp head, or
+configures ``ctc_timestamps.adapter_path``, can attach timestamps to chat
+completions. Enable the middleware when starting the server:
+
+.. code-block:: bash
+
+    vllm serve /path/to/checkpoint \
+        --middleware nemo.collections.speechlm2.vllm.salm.ctc_serving.ctc_timestamp_middleware
+
+Timestamps need vLLM's V1 GPU model runner. When the engine uses Model Runner
+V2 (for example with a DFlash2 draft, and by default from vLLM 0.30), a bundled
+head is skipped with a warning and opted-in requests report
+``error="not_enabled"``; a configured ``adapter_path`` or
+``ctc_timestamps.enabled=true`` fails at startup instead. Set
+``ctc_timestamps.enabled=false``, in ``config.json`` or with
+``--hf-overrides``, to serve a bundled checkpoint without timestamps.
+
+Opt in per request with ``mm_processor_kwargs.capture_ctc_timestamps=true``.
+Timestamp requests support one audio item and one completion (``n=1``).
+Set ``skip_special_tokens=false`` to preserve the generated ``<spk:N>`` tags
+for speaker attribution. Non-streaming responses include a top-level
+``ctc_timestamps`` object with ``words``, ``diarization``,
+``speaker_tag_to_diarization_speaker`` and ``error``.
+
+Streaming responses use the same opt-in, together with ``stream=true``:
+
+.. code-block:: json
+
+    {
+      "model": "served-model-name",
+      "messages": [{"role": "user", "content": [
+        {"type": "text", "text": "Transcribe the audio with speaker tags."},
+        {"type": "input_audio", "input_audio": {"data": "<base64 WAV>", "format": "wav"}}
+      ]}],
+      "stream": true,
+      "stream_options": {"include_usage": true},
+      "skip_special_tokens": false,
+      "mm_processor_kwargs": {"capture_ctc_timestamps": true}
+    }
+
+Text deltas arrive as they are generated. After generation, the server aligns
+the full transcript using the captured encoder states; it does not run the
+audio encoder again. The final choice chunk carries both ``finish_reason``
+and the top-level ``ctc_timestamps`` object. Alignment adds latency only to
+stream completion. If requested, vLLM's final usage chunk follows, then the
+``data: [DONE]`` event. Clients should read ``ctc_timestamps`` from the final
+choice chunk and consume the stream through ``[DONE]`` to receive usage too.
+
+If alignment fails after text has streamed, the final timestamp object reports
+``error="alignment_failed"`` with empty ``words``; the transcript remains
+available. The HTTP status has already been sent. Other timestamp errors have
+the same meaning as in non-streaming responses. A disconnected client releases
+its capture. Requests without timestamp opt-in retain vLLM's usual streaming
+behavior.
+
 SALMAutomodel is particularly useful for:
 
 * Efficient training of Speech LLMs with MoE backbones (e.g., Nemotron Nano V3)

@@ -166,7 +166,7 @@ def test_diarization_timestamps_are_contiguous_10ms_activity_segments():
         ]
     )
 
-    segments = MultiSpeakerSOTWordTimestampAligner._diarization_segments(
+    segments = MultiSpeakerSOTWordTimestampAligner.diarization_segments(
         labels,
         frame_seconds=0.01,
         time_offset=1.0,

@@ -33,7 +33,6 @@ from nemo.collections.tts.models.easy_magpietts_inference import EasyModelInfere
 from tests.collections.tts.data.test_magpietts_dataset_lhotse import _multiturn_cutset
 from tests.collections.tts.models.test_audio_codec import create_codec_config
 
-
 pytestmark = pytest.mark.unit
 
 BPE_TOKENIZER_NAME = "nemotron_bpe"
@@ -581,3 +580,16 @@ def test_multiturn_lhotse_dataloader_omits_alignment_prior():
         assert batch['agent_mask'].sum().item() > 0
         # Ensure the alignment prior is not present
         assert 'align_prior_matrix' not in batch
+
+
+def test_text_only_cas_setting_leaves_speech_text_embeddings_unchunked(model):
+    text, text_lens = _padded_token_tensor(model, ["abc", "de"])
+    delay = torch.zeros_like(text_lens)
+    expected, expected_lens = model.prepare_text_channel_embeddings(text, text_lens, delay)
+    OmegaConf.update(model._cfg, "text_only_cas_chunk_size", 3, force_add=True)
+    with patch.object(model.cas_encoder, "forward", wraps=model.cas_encoder.forward) as cas:
+        actual, actual_lens = model.prepare_text_channel_embeddings(text, text_lens, delay)
+    assert cas.call_count == 1
+    assert "max_subwords_per_chunk" not in cas.call_args.kwargs
+    torch.testing.assert_close(actual, expected)
+    torch.testing.assert_close(actual_lens, expected_lens)

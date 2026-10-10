@@ -22,6 +22,7 @@ import numpy as np
 import torch
 from einops import rearrange
 from torch import Tensor
+from torch.utils.checkpoint import checkpoint
 from torch.utils.data import get_worker_info
 
 from nemo.collections.tts.modules import transformer_2501
@@ -228,15 +229,26 @@ class CharAwareSubwordEncoder(NeuralModule):
         char_ids = char_ids.to(device=device)
         return char_ids, char_lengths
 
-    def forward(self, subword_ids: Tensor, subword_mask: Tensor | None = None) -> Tensor:
+    def forward(
+        self,
+        subword_ids: Tensor,
+        subword_mask: Tensor | None = None,
+        max_subwords_per_chunk: int | None = None,
+    ) -> Tensor:
         """
         Args:
             subword_ids (Tensor): A tensor of shape (batch_size, max_subword_length) containing the subword ids.
             subword_mask (Tensor | None): A tensor of shape (batch_size, max_subword_length) containing the mask for the subword ids.
                 If None, a mask of ones will be used.
+            max_subwords_per_chunk: Optional bound on the character encoder's token microbatch.
+                Training checkpoints each chunk; None preserves the unchunked path.
         Returns:
             Tensor: A tensor of shape (batch_size, max_subword_length, d_embed) containing the subword embeddings.
         """
+        if max_subwords_per_chunk is not None and (
+            type(max_subwords_per_chunk) is not int or max_subwords_per_chunk <= 0
+        ):
+            raise ValueError("max_subwords_per_chunk must be a positive integer or None")
         device = subword_ids.device
         if subword_mask is None:
             subword_mask = torch.ones_like(subword_ids).bool()
@@ -252,17 +264,35 @@ class CharAwareSubwordEncoder(NeuralModule):
             return torch.zeros((B, T, D), dtype=self.embed_tokens.weight.dtype, device=device)
 
         char_ids, char_lengths = self.prepare_inputs(subword_ids, subword_mask)
-        char_mask = get_mask_from_lengths(char_lengths)
-        char_emb = self.embed_tokens(char_ids)
-        # char emb has the shape  [B*T, N, channels], where N is the max number of chars tokens decoded from bpe tokens
-        x = self.encoder(x=char_emb, x_mask=char_mask)['output']
-
-        # Get average embedding over the chars
-        mean_emb = ((x / char_mask.unsqueeze(-1).sum(1, keepdim=True)) * char_mask.unsqueeze(-1)).sum(1)
+        if max_subwords_per_chunk is None:
+            char_mask = get_mask_from_lengths(char_lengths)
+            char_emb = self.embed_tokens(char_ids)
+            # char emb has the shape [B*T, N, channels], where N is the longest BPE token's character count.
+            x = self.encoder(x=char_emb, x_mask=char_mask)['output']
+            mean_emb = ((x / char_mask.unsqueeze(-1).sum(1, keepdim=True)) * char_mask.unsqueeze(-1)).sum(1)
+        else:
+            # Each subword is an independent character sequence. Bound its microbatch
+            # and checkpoint from integer IDs so character activations are not retained.
+            chunks = []
+            for start in range(0, char_ids.size(0), max_subwords_per_chunk):
+                lengths = char_lengths[start : start + max_subwords_per_chunk]
+                ids = char_ids[start : start + max_subwords_per_chunk, : int(lengths.max().item())]
+                if self.training and torch.is_grad_enabled():
+                    pooled = checkpoint(self._encode_character_chunk, ids, lengths, use_reentrant=False)
+                else:
+                    pooled = self._encode_character_chunk(ids, lengths)
+                chunks.append(pooled)
+            mean_emb = torch.cat(chunks, dim=0)
         subword_emb = torch.zeros((subword_mask.size(0), subword_mask.size(1), mean_emb.size(-1)), device=device)
         subword_emb[subword_mask.unsqueeze(-1).expand(-1, -1, mean_emb.size(-1))] = mean_emb.view(-1)
 
         return subword_emb
+
+    def _encode_character_chunk(self, char_ids: Tensor, char_lengths: Tensor) -> Tensor:
+        char_mask = get_mask_from_lengths(char_lengths)
+        char_emb = self.embed_tokens(char_ids)
+        x = self.encoder(x=char_emb, x_mask=char_mask)['output']
+        return ((x / char_mask.unsqueeze(-1).sum(1, keepdim=True)) * char_mask.unsqueeze(-1)).sum(1)
 
 
 def worker_init_fn(worker_id):

@@ -980,6 +980,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         text_lens: Optional[torch.Tensor] = None,
         disable_cas_embedding: bool = False,
         is_multiturn: bool = False,
+        cas_chunk_size: Optional[int] = None,
     ) -> torch.Tensor:
         """Embed text tokens using decoder embedding + optional CAS, or CAS-only when configured.
 
@@ -989,6 +990,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             disable_cas_embedding: When True, skip adding CAS embeddings even if the model uses the BPE char tokenizer.
                 This is needed for legacy models where context text was trained without CAS embeddings.
             is_multiturn: When True creates the text_mask based on non text pad ids positions, so that it can support multiturn.
+            cas_chunk_size: Optional character-encoder microbatch bound, used by text-only training.
         """
         if text_lens is None:
             text_lens = torch.full(
@@ -1003,11 +1005,18 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         if self.disable_subword_embedding:
             if disable_cas_embedding:
                 raise ValueError("Cannot disable CAS embedding when `disable_subword_embedding=True`.")
+            if cas_chunk_size is not None:
+                return self.cas_encoder(text_tokens, subword_mask=text_mask, max_subwords_per_chunk=cas_chunk_size)
             return self.cas_encoder(text_tokens, subword_mask=text_mask)
 
         text_embedded = self.decoder.get_input_embeddings()(text_tokens)
         if self.use_bpe_char_tokenizer and not disable_cas_embedding:
-            cas_embedding = self.cas_encoder(text_tokens, subword_mask=text_mask)
+            if cas_chunk_size is not None:
+                cas_embedding = self.cas_encoder(
+                    text_tokens, subword_mask=text_mask, max_subwords_per_chunk=cas_chunk_size
+                )
+            else:
+                cas_embedding = self.cas_encoder(text_tokens, subword_mask=text_mask)
             text_embedded = text_embedded + cas_embedding
         return text_embedded
 

@@ -525,3 +525,13 @@ def test_text_only_duration_accounts_for_normalized_input(tmp_path):
     assert cut.sampling_num_tokens == 20
     assert cut.num_tokens == 1
     assert cut.supervisions[0].normalized_text == row["text_normalized"]
+
+
+def test_text_only_chunk_size_reaches_context_and_input_embeddings(dataset, cuts):
+    model = _text_only_model()
+    model._cfg.text_only_cas_chunk_size = 3
+    model.embed_text_tokens = Mock(wraps=model.embed_text_tokens)
+    loss = model.training_step(dataset[cuts], 0)
+    assert torch.isfinite(loss)
+    assert model.embed_text_tokens.call_count == 2
+    assert all(call.kwargs["cas_chunk_size"] == 3 for call in model.embed_text_tokens.call_args_list)

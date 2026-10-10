@@ -418,6 +418,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         dropout_text_input: bool = False,
         is_multiturn: bool = False,
         text_pad_id: int = None,
+        cas_chunk_size: Optional[int] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Prepare text embeddings as a channel input with delay handling.
@@ -437,6 +438,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 therefore may contain timeline-aligned text padding tokens.
             text_pad_id: Token ID used for timeline padding in multi-turn text.
                 Required when ``is_multiturn`` is True.
+            cas_chunk_size: Optional character-encoder microbatch bound for text-only training.
 
         Returns:
             Tuple of:
@@ -447,7 +449,10 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         device = text.device
 
         # Embed text tokens (CAS-only when disable_subword_embedding=True).
-        text_embedded = self.embed_text_tokens(text, text_lens=text_lens, is_multiturn=is_multiturn)  # (B, L, E)
+        cas_kwargs = {} if cas_chunk_size is None else {"cas_chunk_size": cas_chunk_size}
+        text_embedded = self.embed_text_tokens(
+            text, text_lens=text_lens, is_multiturn=is_multiturn, **cas_kwargs
+        )  # (B, L, E)
 
         # Handle text dropout - zero out the embeddings
         if dropout_text_input:
@@ -904,10 +909,13 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         selected_mode = training_mode or (
             random.choice(self.training_modes) if mode == "train" else self.training_modes[0]
         )
+        cas_chunk_size = self.cfg.get("text_only_cas_chunk_size", 0) or None
+        cas_kwargs = {} if cas_chunk_size is None else {"cas_chunk_size": cas_chunk_size}
         context = self.embed_text_tokens(
             context_text_tokens,
             text_lens=context_text_tokens_lens,
             disable_cas_embedding=self.disable_cas_for_context_text,
+            **cas_kwargs,
         )
         context_lens = context_text_tokens_lens
         if self.task_embedding is not None and selected_mode.mode_idx is not None:
@@ -922,6 +930,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             context_lens,
             is_multiturn=self.cfg.get("use_multiturn_dataset", False),
             text_pad_id=self.pad_id,
+            **cas_kwargs,
         )
         phoneme_delay = context_lens + selected_mode.streaming_phonemes_delay
         # Fill partial final stacks with EOS rather than batch padding targets.

@@ -190,6 +190,29 @@ audio sampler weights to zero and the text sampler weight to one. In
 ``randomized_round_robin`` mode, zero-weight namespaces are excluded before
 constructing samplers, including in distributed dataloading workers.
 
+Memory-efficient character embeddings
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When using CAS (``use_bpe_char_tokenizer: true``), set
+``model.text_only_cas_chunk_size: 256`` to encode at most 256 valid BPE tokens
+at a time for text-only batches. Training uses non-reentrant activation
+checkpointing for each character-encoder chunk, including its embedding
+lookup. This keeps the full input text and IPA targets and their gradients;
+it does not split the sequence presented to the main decoder.
+
+Without this option, CAS pads every valid BPE token in the batch to the
+longest token's character count and retains its character-level activations.
+A rare wide token can therefore cause an OOM even for a modest main-model
+sequence length. Chunking bounds the character microbatch and its temporary
+activations; checkpointing avoids accumulating all chunks' saved activations.
+It trades additional computation during backward for lower GPU memory use.
+
+The default ``0`` preserves existing behavior. This setting applies only to
+``task: text_only`` training and validation; audio batches use the unchanged
+CAS path. It adds no model parameters or checkpoint keys. Choose the text
+batch budget and the per-record length limit separately, and verify both
+with the main decoder and optimizer active.
+
 Duration-based text batching
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

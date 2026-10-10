@@ -593,3 +593,104 @@ def test_text_only_cas_setting_leaves_speech_text_embeddings_unchunked(model):
     assert "max_subwords_per_chunk" not in cas.call_args.kwargs
     torch.testing.assert_close(actual, expected)
     torch.testing.assert_close(actual_lens, expected_lens)
+
+
+@pytest.mark.parametrize("cas_only", [False, True])
+@pytest.mark.parametrize("training", [False, True])
+def test_global_cas_chunk_size_applies_to_text_embeddings(cas_only, training):
+    model = _make_easy_magpie_model(tiny_easy_magpie_cfg({"disable_subword_embedding": cas_only}))
+    model.train(training)
+    text, text_lens = _padded_token_tensor(model, ["a longer example", "short"])
+    expected = model.embed_text_tokens(text, text_lens=text_lens)
+    OmegaConf.update(model._cfg, "cas_chunk_size", 3, force_add=True)
+    with patch.object(model.cas_encoder, "forward", wraps=model.cas_encoder.forward) as cas:
+        actual = model.embed_text_tokens(text, text_lens=text_lens)
+    assert cas.call_count == 1
+    assert cas.call_args.kwargs["max_subwords_per_chunk"] == 3
+    torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
+
+
+def test_explicit_cas_chunk_size_overrides_global_setting(model):
+    OmegaConf.update(model._cfg, "cas_chunk_size", 2, force_add=True)
+    text, text_lens = _padded_token_tensor(model, ["a longer example", "short"])
+    with patch.object(model.cas_encoder, "forward", wraps=model.cas_encoder.forward) as cas:
+        model.embed_text_tokens(text, text_lens=text_lens, cas_chunk_size=3)
+    assert cas.call_args.kwargs["max_subwords_per_chunk"] == 3
+
+
+def test_global_cas_chunk_size_preserves_disabled_context_embedding(model):
+    OmegaConf.update(model._cfg, "cas_chunk_size", 2, force_add=True)
+    text, text_lens = _padded_token_tensor(model, ["context", "short"])
+    with patch.object(model.cas_encoder, "forward", wraps=model.cas_encoder.forward) as cas:
+        actual = model.embed_text_tokens(text, text_lens=text_lens, disable_cas_embedding=True)
+    cas.assert_not_called()
+    torch.testing.assert_close(actual, model.decoder.get_input_embeddings()(text))
+
+
+@pytest.mark.parametrize("multiturn", [False, True])
+def test_global_cas_chunks_preserve_speech_loss_targets_and_gradients(multiturn):
+    model = _make_easy_magpie_model(tiny_easy_magpie_cfg({"use_multiturn_dataset": multiturn}))
+    model.train()
+    batch = _toy_batch(model)
+    kwargs = {
+        key: batch[key]
+        for key in (
+            "text",
+            "text_lens",
+            "context_text_tokens",
+            "context_text_tokens_lens",
+            "audio_codes",
+            "audio_codes_lens",
+            "context_audio_codes",
+            "context_audio_codes_lens",
+            "agent_mask",
+            "task",
+        )
+    }
+    _seed_everything()
+    expected = model.process_batch(**kwargs, mode="train", training_mode=model.training_modes[0])
+    expected.loss.backward()
+    expected_loss = expected.loss.detach().clone()
+    expected_logits = expected.logits.detach().clone()
+    expected_targets = expected.audio_codes_target.detach().clone()
+    grads = {
+        name: None if param.grad is None else param.grad.detach().clone() for name, param in model.named_parameters()
+    }
+    model.zero_grad(set_to_none=True)
+    del expected
+    OmegaConf.update(model._cfg, "cas_chunk_size", 3, force_add=True)
+    _seed_everything()
+    with patch.object(model.cas_encoder, "forward", wraps=model.cas_encoder.forward) as cas:
+        actual = model.process_batch(**kwargs, mode="train", training_mode=model.training_modes[0])
+    assert cas.call_count == 2
+    assert all(call.kwargs["max_subwords_per_chunk"] == 3 for call in cas.call_args_list)
+    torch.testing.assert_close(actual.loss, expected_loss, rtol=1e-5, atol=1e-6)
+    torch.testing.assert_close(actual.logits, expected_logits, rtol=1e-5, atol=1e-6)
+    torch.testing.assert_close(actual.audio_codes_target, expected_targets)
+    actual.loss.backward()
+    for name, param in model.named_parameters():
+        if grads[name] is None:
+            assert param.grad is None
+        else:
+            torch.testing.assert_close(param.grad, grads[name], rtol=1e-4, atol=1e-6, msg=name)
+    assert model.cas_encoder.embed_tokens.weight.grad.abs().sum() > 0
+
+
+@pytest.mark.parametrize("training", [False, True])
+def test_none_cas_chunk_size_keeps_legacy_path(model, training):
+    model.train(training)
+    text, text_lens = _padded_token_tensor(model, ["context", "short"])
+    expected = model.embed_text_tokens(text, text_lens=text_lens)
+    OmegaConf.update(model._cfg, "cas_chunk_size", None, force_add=True)
+    with patch.object(model.cas_encoder, "forward", wraps=model.cas_encoder.forward) as cas:
+        actual = model.embed_text_tokens(text, text_lens=text_lens)
+    assert "max_subwords_per_chunk" not in cas.call_args.kwargs
+    torch.testing.assert_close(actual, expected)
+
+
+@pytest.mark.parametrize("chunk_size", [0, -1, 1.5, True])
+def test_global_cas_chunk_size_requires_positive_integer(model, chunk_size):
+    OmegaConf.update(model._cfg, "cas_chunk_size", chunk_size, force_add=True)
+    text, text_lens = _padded_token_tensor(model, ["context"])
+    with pytest.raises(ValueError, match="max_subwords_per_chunk must be a positive integer"):
+        model.embed_text_tokens(text, text_lens=text_lens)

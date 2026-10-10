@@ -438,7 +438,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 therefore may contain timeline-aligned text padding tokens.
             text_pad_id: Token ID used for timeline padding in multi-turn text.
                 Required when ``is_multiturn`` is True.
-            cas_chunk_size: Optional character-encoder microbatch bound for text-only training.
+            cas_chunk_size: Optional character-encoder microbatch bound; None uses the shared model setting.
 
         Returns:
             Tuple of:

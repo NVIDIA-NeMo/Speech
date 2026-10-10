@@ -990,8 +990,11 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             disable_cas_embedding: When True, skip adding CAS embeddings even if the model uses the BPE char tokenizer.
                 This is needed for legacy models where context text was trained without CAS embeddings.
             is_multiturn: When True creates the text_mask based on non text pad ids positions, so that it can support multiturn.
-            cas_chunk_size: Optional character-encoder microbatch bound, used by text-only training.
+            cas_chunk_size: Optional character-encoder token microbatch bound.
+                None uses the shared model.cas_chunk_size setting, which defaults to None.
         """
+        if cas_chunk_size is None:
+            cas_chunk_size = self.cfg.get("cas_chunk_size", None)
         if text_lens is None:
             text_lens = torch.full(
                 (text_tokens.size(0),), text_tokens.size(1), dtype=torch.long, device=text_tokens.device

@@ -323,6 +323,32 @@ def test_sequence_packed_fused_qkv_matches_default_and_preserves_checkpoint_keys
     assert set(encoder.state_dict()) == state_keys
 
 
+def test_sequence_packed_qkv_runs_a_specialized_projection_through_its_forward():
+    torch.manual_seed(0)
+    encoder = _make_encoder(position="rope")
+    inputs = torch.randn(2, 6, encoder.d_model)
+    lengths = torch.tensor([6, 3])
+    with torch.no_grad():
+        plain = encoder.forward_sequence_packed(inputs, lengths, bypass_pre_encode=True)
+    calls = []
+
+    class _RecordingLinear(torch.nn.Linear):
+        def forward(self, x):
+            calls.append(tuple(x.shape))
+            return super().forward(x)
+
+    for layer in encoder.layers:
+        projection = _RecordingLinear(layer.attn.w_qkv.in_features, layer.attn.w_qkv.out_features)
+        projection.load_state_dict(layer.attn.w_qkv.state_dict())
+        layer.attn.w_qkv = projection
+
+    with torch.no_grad():
+        specialized = encoder.forward_sequence_packed(inputs, lengths, bypass_pre_encode=True)
+
+    assert calls == [(9, encoder.d_model)] * len(encoder.layers)
+    torch.testing.assert_close(specialized.data, plain.data, rtol=1e-5, atol=1e-6)
+
+
 def test_sequence_packed_layers_receive_only_valid_tokens(monkeypatch):
     encoder = _make_encoder(position="rope")
     encoded = torch.randn(3, 7, encoder.d_model)

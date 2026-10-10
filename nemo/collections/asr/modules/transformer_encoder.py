@@ -590,7 +590,9 @@ class MultiHeadAttention(nn.Module):
     def _project_sequence_packed_qkv(self, x, *, position_ids, fused_qkv):
         """Project packed states to Q/K/V and apply any Q/K preparation."""
         total_tokens = x.shape[0]
-        if fused_qkv:
+        # Slicing .weight for F.linear is valid only for a plain nn.Linear; any other projection
+        # (quantized, adapted) applies its own forward.
+        if fused_qkv or type(self.w_qkv) is not nn.Linear:
             qkv = self.w_qkv(x).view(total_tokens, 3, self.n_heads, self.head_dim)
             q, k, v = (projection.contiguous() for projection in qkv.unbind(dim=1))
         else:

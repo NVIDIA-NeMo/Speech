@@ -170,10 +170,28 @@ class NeMoSpeechLMMTP(NemotronHMTP):
         pattern = self.config.mtp_hybrid_override_pattern
         if not isinstance(pattern, str) or not pattern:
             raise ValueError(f"mtp_hybrid_override_pattern must be a non-empty string, got {pattern!r}.")
-        return super().load_weights(
-            _remap_nemo_mtp_weights(
-                weights,
-                target_vocab,
-                expected_layer_modules=len(pattern),
+        head_tensors = 0
+
+        def _count_head_tensors(items: Iterable[tuple[str, torch.Tensor]]) -> Iterable[tuple[str, torch.Tensor]]:
+            nonlocal head_tensors
+            for name, tensor in items:
+                if name.startswith("mtp."):
+                    head_tensors += 1
+                yield name, tensor
+
+        loaded = super().load_weights(
+            _count_head_tensors(
+                _remap_nemo_mtp_weights(
+                    weights,
+                    target_vocab,
+                    expected_layer_modules=len(pattern),
+                )
             )
         )
+        if head_tensors == 0:
+            raise ValueError(
+                "Speculative MTP is enabled, but the checkpoint has no 'llm.mtp.*' draft-head tensors, so the "
+                "draft head would run on uninitialized weights (vLLM skips its missing-weight check for quantized "
+                "checkpoints). Export the MTP head with the checkpoint or disable speculative decoding."
+            )
+        return loaded

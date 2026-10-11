@@ -24,8 +24,6 @@ NeMo supports using `Lhotse`_, a speech data handling library, as a dataloading 
     constant in time (i.e., stationary); in fact, each mini-batch will have roughly the same ratio of data coming from each source.
     Since the multiplexing is done dynamically, it is very easy to tune the sampling weights.
 
-.. caution:: As of now, Lhotse is mainly supported in most ASR model configurations. We aim to gradually extend this support to other speech tasks.
-
 .. _Lhotse: https://github.com/lhotse-speech/lhotse
 .. _Lhotse Cuts documentation: https://lhotse.readthedocs.io/en/latest/cuts.html
 .. |tutorial_shar| image:: https://colab.research.google.com/assets/colab-badge.svg
@@ -388,6 +386,69 @@ Some other Lhotse related arguments we support:
 
 The full and always up-to-date list of supported options can be found in ``LhotseDataLoadingConfig`` class.
 
+.. _lhotse-audio-augmentation:
+
+On-the-fly audio augmentation
+-----------------------------
+
+The Lhotse loader can modify audio as batches are loaded. These options belong in the same dataset block as
+``use_lhotse`` and the input source:
+
+* ``noise_path`` selects a noise source. ``noise_snr`` sets the range from which the signal-to-noise ratio is sampled,
+  and ``noise_mix_prob`` sets the probability of mixing noise into a cut.
+* ``rir_enabled`` convolves a cut with a room impulse response with probability ``rir_prob``. Set ``rir_path`` to a
+  Lhotse RecordingSet manifest, or omit it to generate synthetic room impulse responses.
+* ``lowpass_enabled`` approximates a low-pass filter by resampling down and back to the original sample rate. The
+  cutoff is sampled from ``lowpass_frequencies_interval`` and the transform is applied with ``lowpass_prob``.
+* ``compression_enabled`` encodes and decodes audio with Opus, MP3, Vorbis, or GSM. Configure the codec choices,
+  optional selection weights, compression range, and probability with ``compression_codecs``,
+  ``compression_codec_weights``, ``compression_level_interval``, and ``compression_prob``.
+* ``clipping_enabled`` applies a sampled gain followed by hard clipping or soft saturation. ``clipping_prob`` controls
+  whether the augmentation is applied. After it is selected, ``clipping_prob_hard`` is the probability of using hard
+  clipping instead of soft saturation.
+* ``perturb_speed: true`` adds the original, 0.9x, and 1.1x versions to the sampling stream. It does not apply speed
+  perturbation to custom recordings, so do not use it when a custom recording must remain synchronized.
+
+For example, the following block sets each degradation's application probability to ``0.5``:
+
+.. code-block:: yaml
+
+    model:
+      train_ds:
+        use_lhotse: true
+        cuts_path: /path/to/train_cuts.jsonl
+        sample_rate: 16000
+
+        noise_path: /path/to/noise_cuts.jsonl
+        noise_snr: [0.0, 20.0]
+        noise_mix_prob: 0.5
+
+        rir_enabled: true
+        rir_prob: 0.5
+        # Set rir_path to use recorded RIRs; omit it for synthetic RIRs.
+
+        lowpass_enabled: true
+        lowpass_frequencies_interval: [3500.0, 8000.0]
+        lowpass_prob: 0.5
+
+        compression_enabled: true
+        compression_codecs: [opus, mp3, vorbis, gsm]
+        compression_level_interval: [0.8, 0.99]
+        compression_prob: 0.5
+
+        clipping_enabled: true
+        clipping_gain_db: [0.0, 24.0]
+        clipping_prob: 0.5
+        clipping_prob_hard: 0.5
+
+Noise mixing, reverberation, low-pass filtering, and clipping or saturation affect the cut's main recording. Custom
+recordings remain unchanged. Compression also leaves custom recordings unchanged by default; set
+``compression_enable_for_custom_fields: true`` to compress them as well.
+
+The upper value in ``lowpass_frequencies_interval`` must not exceed half the cut's sample rate. The loader warns when
+libsox is not the active resampling backend. Codec availability depends on the installed SoundFile/libsndfile build.
+See :ref:`lhotse-config-reference` for the complete option list and current defaults.
+
 .. _asr-dataset-config-format:
 
 Extended multi-dataset configuration format
@@ -497,6 +558,53 @@ The final weight is the product of outer and inner weight:
             tags:
               source_lang: pl
               target_lang: en
+
+Reweighting nested data sources
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``reweight_temperature`` changes the sampling distribution without requiring normalized weights. At each
+``input_cfg`` level, positive source weights are transformed as
+
+.. math::
+
+    \hat{w}_i = \frac{w_i^{\tau}}{\sum_j w_j^{\tau}},
+
+where :math:`\tau` is the temperature for that level. A temperature of ``1.0`` preserves the original ratios,
+``0.0`` gives every sibling source equal probability, values between zero and one increase the relative sampling of
+smaller sources, and values above one increase the differences between weights.
+
+A scalar temperature is applied to every nesting level. A list assigns one temperature to each level, from the outer
+``input_cfg`` inward, and its length must equal the maximum nesting depth. This example preserves the 70/30 split
+between groups and samples the two datasets inside each group equally:
+
+.. code-block:: yaml
+
+    model:
+      train_ds:
+        use_lhotse: true
+        reweight_temperature: [1.0, 0.0]
+        input_cfg:
+          - type: group
+            weight: 0.7
+            input_cfg:
+              - type: lhotse_shar
+                shar_path: /path/to/dataset_a
+                weight: 900
+              - type: lhotse_shar
+                shar_path: /path/to/dataset_b
+                weight: 100
+          - type: group
+            weight: 0.3
+            input_cfg:
+              - type: lhotse_shar
+                shar_path: /path/to/dataset_c
+                weight: 50
+              - type: lhotse_shar
+                shar_path: /path/to/dataset_d
+                weight: 200
+
+The nesting depth includes ``input_cfg`` blocks loaded from external YAML files. A list with too few or too many
+values raises ``ValueError``; use a scalar when every level should use the same temperature.
 
 Configuring multimodal dataloading
 -----------------------------------
@@ -1601,7 +1709,24 @@ repo.
 
     CutSet.from_cuts(cuts).to_file("cuts.jsonl")  # uncompressed!
 
-For Lhotse Shar (sharded archive), see the upstream tutorial: |tutorial_shar|.
+**Lhotse Shar dataset** — copy a CutSet and its audio into sequentially readable shards. All paths for fields being
+exported must resolve when the command runs:
+
+.. code-block:: bash
+
+    lhotse shar export \
+        --num-jobs 8 \
+        --shard-size 1000 \
+        --audio flac \
+        /path/to/cuts.jsonl \
+        /path/to/output_shar
+
+Choose the shard size and worker count for the storage system, and add ``--no-shuffle`` when the input order must be
+preserved. Use ``--custom NAME:FORMAT`` for each custom recording or array that should be copied into the Lhotse Shar
+dataset. Export synchronized audio fields such as ``target_recording`` with, for example,
+``--custom target_recording:flac``; leaving such a field in its original storage can make it inconsistent with a cut
+that has a nonzero start time. Custom fields that are not exported remain in the cut metadata and refer to their
+original storage. See the upstream tutorial for more about the format: |tutorial_shar|.
 
 **Parquet** — write a ``pyarrow`` table with the column names the
 ``LazyParquetIterator`` reads (``audio``, ``text``, ``duration``,

@@ -1,2 +1,2 @@
-Model Name,Dataset,Sampling Rate,Model Class,Model Card
-nvidia/sr_ssl_flowmatching_16k_430m,Libri-Light,16000Hz,nemo.collections.audio.models.FlowMatchingAudioToAudioModel,`sr_ssl_flowmatching_16k_430m <https://huggingface.co/nvidia/sr_ssl_flowmatching_16k_430m>`_
+Model Name,Use,Dataset,Sampling Rate,Model Class,Model Card
+nvidia/sr_ssl_flowmatching_16k_430m,Fine-tuning a speech restoration model,Libri-Light,16 kHz,nemo.collections.audio.models.FlowMatchingAudioToAudioModel,`sr_ssl_flowmatching_16k_430m <https://huggingface.co/nvidia/sr_ssl_flowmatching_16k_430m>`_

@@ -1,10 +1,23 @@
-Resources and Documentation
-===========================
+Resources and Tutorials
+=======================
 
-Tutorial notebooks can be found under `the audio tutorials folder <https://github.com/NVIDIA-NeMo/Speech/tree/main/tutorials/audio>`_. If you are just starting with NeMo, consider trying out the tutorials of `NeMo Primer <https://github.com/NVIDIA-NeMo/Speech/blob/main/tutorials/00_NeMo_Primer.ipynb>`_ and `NeMo Model <https://github.com/NVIDIA-NeMo/Speech/blob/main/tutorials/01_NeMo_Models.ipynb>`_. These tutorials can be run on Google Colab by specifying the link to the notebooks' GitHub pages on Colab.
+Tutorials
+---------
 
-If you are looking for information about a particular model, or would like to find out more about the model architectures available in the directory of `nemo.collections.audio <https://github.com/NVIDIA-NeMo/Speech/tree/main/nemo/collections/audio>`_, refer to the :doc:`Models <./models>` section.
+The `Audio tutorials folder <https://github.com/NVIDIA-NeMo/Speech/tree/main/tutorials/audio>`_ contains notebooks for:
 
-Information about how to load model checkpoints (either local files or pretrained ones from NGC), as well as a list of the checkpoints available on NGC are located on the :doc:`Checkpoints <./checkpoints>` section.
+* training and running speech enhancement models;
+* augmenting speech enhancement data during loading with Lhotse; and
+* removing background noise with Maxine BNR 2.0.
 
-Documentation regarding the configuration files specific to the NeMo audio models can be found on the :doc:`Configuration Files <./configs>` section.
+The notebooks can be run locally or opened from GitHub in Google Colab. Use a GPU runtime for the training notebooks.
+
+Examples and Source
+-------------------
+
+* `Training, processing, and evaluation scripts
+  <https://github.com/NVIDIA-NeMo/Speech/tree/main/examples/audio>`_
+* `Audio model configurations <https://github.com/NVIDIA-NeMo/Speech/tree/main/examples/audio/conf>`_
+* `Audio collection source <https://github.com/NVIDIA-NeMo/Speech/tree/main/nemo/collections/audio>`_
+* `NeMo-to-Lhotse conversion utility
+  <https://github.com/NVIDIA-NeMo/Speech/blob/main/scripts/audio_to_audio/convert_nemo_to_lhotse.py>`_

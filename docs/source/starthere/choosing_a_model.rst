@@ -60,6 +60,29 @@ TTS: Which Model Should I Use?
      - Audio Codec
      - Neural audio codec for tokenizing audio. Used by MagpieTTS internally.
 
+Audio Processing: Which Model Should I Use?
+-------------------------------------------
+
+.. list-table::
+   :widths: 30 30 40
+   :header-rows: 1
+
+   * - I want to...
+     - Starting Point
+     - Why
+   * - Remove background noise from speech
+     - `SE Denoising SB 16 kHz Small <https://huggingface.co/nvidia/se_den_sb_16k_small>`_
+     - Processes mono speech with a pretrained Schrödinger bridge denoising model.
+   * - Reduce reverberation in speech
+     - `SE Dereverberation SB 16 kHz Small <https://huggingface.co/nvidia/se_der_sb_16k_small>`_
+     - Processes mono speech with a pretrained Schrödinger bridge dereverberation model.
+   * - Fine-tune for a speech restoration task
+     - `SR SSL FlowMatching 16 kHz 430M <https://huggingface.co/nvidia/sr_ssl_flowmatching_16k_430m>`_
+     - Provides pretrained weights for fine-tuning on paired data or clean data with online augmentation.
+
+For trainable masking, prediction, beamforming, generative, multichannel, and streaming-oriented configurations, see
+:doc:`Audio Models </audio/models>` and :doc:`Audio Configuration Files </audio/configs>`.
+
 Speaker Tasks: Which Model Should I Use?
 -----------------------------------------
 

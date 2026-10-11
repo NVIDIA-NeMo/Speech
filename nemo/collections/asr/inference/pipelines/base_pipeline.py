@@ -543,19 +543,26 @@ class BasePipeline(PipelineInterface):
             )
         return lang_index
 
-    def _resolve_default_language_code(self) -> str:
+    def _resolve_default_language_code(self) -> str | None:
         """
         Pick the language used when a request does not specify one.
 
-        Prefers the model's automatic language-detection prompt when available, so that a
-        multilingual model does not silently transcribe every language as English.
+        Prefers a language the model itself declares, then the usual language-agnostic keys, so
+        that a multilingual model does not silently transcribe every language as English.
         Returns:
-            (str) "auto" when the model's prompt dictionary supports it, otherwise "en-US".
+            (str | None) A key of the model's prompt dictionary, or None when the model has no
+                prompts or defines none of the candidates, in which case the caller must supply a
+                language explicitly.
         """
         if not getattr(self, '_prompt_config', None):
-            return "en-US"
+            return None
+
+        declared = getattr(self.asr_model.asr_model, 'default_prompt_language', None)
+        if declared is not None:
+            return declared
+
         prompt_dict = self._prompt_config['prompt_dict']
-        return "auto" if "auto" in prompt_dict else "en-US"
+        return next((code for code in ("auto", "en-US") if code in prompt_dict), None)
 
     def _create_one_hot_prompts(self, indices: Tensor) -> Tensor:
         """

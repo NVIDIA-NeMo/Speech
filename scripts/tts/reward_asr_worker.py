@@ -95,9 +95,7 @@ def load_nemo(args, language_map):
             results = model.transcribe(
                 audio_paths,
                 batch_size=len(audio_paths),
-                override_config=TranscribeConfig(
-                    use_lhotse=False, batch_size=len(audio_paths), num_workers=0
-                ),
+                override_config=TranscribeConfig(use_lhotse=False, batch_size=len(audio_paths), num_workers=0),
             )
             return [result.text if hasattr(result, "text") else str(result) for result in results]
 
@@ -122,9 +120,7 @@ def load_nemo(args, language_map):
                     verbose=False,
                     target_lang=target_lang,
                 )
-                results = model.transcribe(
-                    [path for _, path in chunk], batch_size=len(chunk), override_config=config
-                )
+                results = model.transcribe([path for _, path in chunk], batch_size=len(chunk), override_config=config)
                 for (index, _), result in zip(chunk, results):
                     text = result.text if hasattr(result, "text") else str(result)
                     transcripts[index] = LANGUAGE_TAG_PATTERN.sub(" ", text).strip()

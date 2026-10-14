@@ -286,6 +286,12 @@ positive ``inference_phoneme_temperature``, ``inference_phoneme_topk>=2``, and
 ``phoneme_confidence_unk_threshold=0``. Phoneme sampling temperature and top-k
 can be configured independently of audio sampling.
 
+``model.rollout_cfg_mode`` accepts ``off`` (the default) and ``alternate``.
+The latter enables classifier-free guidance on odd training steps using
+``model.inference_cfg_scale``. Validation reward rollouts use ``off``.
+``model.codec_decode_batch_size`` limits the number of generated items decoded
+at once; zero retains full-batch decoding.
+
 ``model.save_reward_audios`` defaults to ``True``. Set it to ``False`` to remove
 generated and reference WAVs when each ``generate_and_reward`` call returns or
 raises an exception. Each call uses a private directory in ``/dev/shm`` (RAM-backed
@@ -299,19 +305,58 @@ normal completion. This protection requires the cleanup process to survive:
 killing the entire job/container can kill both processes, so the job/container
 runtime must clean up its shared-memory storage in that case.
 
-EasyMagpie Multiturn Training Augmentations
------------------------------------------
+EasyMagpie Challenging-Text Curriculum
+------------------------------------
 
-Configure ``model.train_ds.dataset.challenging_texts_path`` with a UTF-8 file
-containing one prompt per line and set ``challenging_text_replacement_prob``
-to enable replacement of eligible English training prompts. A replacement must
-fit the available token slots. For online PO, set
-``model.gt_phoneme_input_prob=0`` because replacement prompts have no matching
-ground-truth IPA alignment.
+The multiturn training dataset can replace an eligible English TTS supervision
+with text from a UTF-8 file containing one prompt per line. Configure
+``model.train_ds.dataset`` with ``challenging_texts_path``,
+``challenging_text_start_prob``, ``challenging_text_end_prob``,
+``challenging_text_start_step``, and ``challenging_text_end_step``. Replacement
+is disabled before the start step, increases linearly between the two steps,
+and remains at the end probability afterwards. A positive end probability
+requires ``0 <= start_step < end_step``. The schedule is communicated to
+DataLoader workers without rebuilding the dataloader.
 
+For online PO with replacement enabled, set ``model.gt_phoneme_input_prob=0``
+because replacement text has no corresponding ground-truth IPA alignment.
 ``model.train_ds.dataset.context_audio_shuffle_batch_prob`` independently
 enables replacing eligible audio contexts with contexts from other batch
-items. Text contexts are preserved. Both augmentations apply only to training.
+items; text contexts are preserved. Both augmentations apply to training only.
+
+EasyMagpie Reward ASR Routing
+----------------------------
+
+EasyMagpie online PO accepts ``model.reward_asr`` to select transcription
+backends by language while preserving rollout order. For example:
+
+.. code-block:: yaml
+
+    reward_asr:
+      default_backend: nemo
+      language_routes: {hi: whisper}
+      backends:
+        nemo:
+          type: nemo
+          model_name: nvidia/parakeet-ctc-0.6b
+          batch_size: 16
+        whisper:
+          type: whisper
+          model_name: openai/whisper-large-v3
+
+The ``nemo_process`` and ``qwen`` types use a persistent worker in
+``scripts/tts/reward_asr_worker.py``. The Qwen backend requires a Python runtime
+with ``qwen_asr`` installed; its default is ``/opt/qwen_asr/bin/python``. Override
+the backend's ``python_executable`` and, when needed, ``worker_script`` for your
+environment. The training package does not install the separate Qwen runtime.
+The ``nemo_process`` backend defaults to the training Python executable.
+
+``model.validation_asr_backend=reward`` reuses the reward router for validation
+transcription; the default retains the base model's validation ASR selection.
+``model.normalize_reward_transcript`` defaults to ``True`` and inherits
+``normalize_whisper_transcript`` when omitted. Existing ``reward_asr_model``
+recipes are translated when ``reward_asr`` is absent. Worker processes are
+closed during model teardown.
 
 See Also
 ########

@@ -232,9 +232,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         self.context_audio_shuffle_batch_prob = context_audio_shuffle_batch_prob
         if not 0.0 <= challenging_text_start_prob <= challenging_text_end_prob <= 1.0:
             raise ValueError("Challenging text probabilities must satisfy 0 <= start_prob <= end_prob <= 1.")
-        if challenging_text_end_prob > 0.0 and not (
-            0 <= challenging_text_start_step < challenging_text_end_step
-        ):
+        if challenging_text_end_prob > 0.0 and not (0 <= challenging_text_start_step < challenging_text_end_step):
             raise ValueError("Challenging text steps must satisfy 0 <= start_step < end_step.")
         self.challenging_text_start_prob = challenging_text_start_prob
         self.challenging_text_end_prob = challenging_text_end_prob

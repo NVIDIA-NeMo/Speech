@@ -299,6 +299,20 @@ normal completion. This protection requires the cleanup process to survive:
 killing the entire job/container can kill both processes, so the job/container
 runtime must clean up its shared-memory storage in that case.
 
+EasyMagpie Multiturn Training Augmentations
+-----------------------------------------
+
+Configure ``model.train_ds.dataset.challenging_texts_path`` with a UTF-8 file
+containing one prompt per line and set ``challenging_text_replacement_prob``
+to enable replacement of eligible English training prompts. A replacement must
+fit the available token slots. For online PO, set
+``model.gt_phoneme_input_prob=0`` because replacement prompts have no matching
+ground-truth IPA alignment.
+
+``model.train_ds.dataset.context_audio_shuffle_batch_prob`` independently
+enables replacing eligible audio contexts with contexts from other batch
+items. Text contexts are preserved. Both augmentations apply only to training.
+
 See Also
 ########
 

@@ -297,9 +297,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
                 total_slots = compute_num_frames(cut.duration, self.frame_length, cut.sampling_rate)
                 start_slot = compute_num_frames(supervision.start, self.frame_length, cut.sampling_rate)
                 available_slots = total_slots - start_slot
-                for replacement_text in random.sample(
-                    self.challenging_texts, min(32, len(self.challenging_texts))
-                ):
+                for replacement_text in random.sample(self.challenging_texts, min(32, len(self.challenging_texts))):
                     replacement_ids = tokenize_text_with_phoneme_spans(
                         text_tokenizer=self.text_tokenizer,
                         text_str=replacement_text,
@@ -544,8 +542,8 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
     ) -> tuple[Union[torch.Tensor, None], Union[torch.Tensor, None]]:
         matching_supervisions = [s for s in cut.supervisions if s.speaker in self.output_roles]
 
-        if self.load_cached_codes_if_available:
-            if context_text is None and len(matching_supervisions) > 0 and cut.has_custom("target_codes"):
+        if self.load_cached_codes_if_available and cut.has_custom("target_codes"):
+            if context_text is None and len(matching_supervisions) > 0:
                 sup = random.choice(matching_supervisions)
                 codes_array = cut.target_codes.load().astype(np.int32)
                 start_frame = int(max(0, sup.start) * self.sample_rate / self.codec_model_samples_per_frame)
@@ -799,8 +797,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             languages[target_idx] != languages[donor_idx] for target_idx, donor_idx in donor_indices.items()
         )
         language_pairs = ", ".join(
-            f"{languages[target_idx]}<-{languages[donor_idx]}"
-            for target_idx, donor_idx in donor_indices.items()
+            f"{languages[target_idx]}<-{languages[donor_idx]}" for target_idx, donor_idx in donor_indices.items()
         )
         logging.info(
             f"[context_audio_shuffle] shuffled={len(donor_indices)} "

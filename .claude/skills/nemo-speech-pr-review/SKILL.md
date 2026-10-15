@@ -3,7 +3,7 @@ name: nemo-speech-pr-review
 description: Repository review rubric for the formal /review command.
 license: Apache-2.0
 disable-model-invocation: true
-user_invocable: false
+user-invocable: false
 ---
 
 # PR review

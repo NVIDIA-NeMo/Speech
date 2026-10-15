@@ -1,9 +1,8 @@
 ---
 name: debug-training-logs
-description: Debug distributed training failures (NeMo, Megatron, PyTorch) from worker stderr logs and optional AIStore daemon logs. Finds root cause across NCCL timeouts, data loading errors, and storage failures.
+description: Debug distributed training failures (NeMo, Megatron, PyTorch) from worker stderr logs and optional AIStore daemon logs. Finds root cause across NCCL timeouts, data loading errors, and storage failures. The argument is the path to the worker stderr logs (required), optionally followed by the path to the AIStore daemon logs.
 disable-model-invocation: true
 allowed-tools: Bash Read Grep Glob Agent
-argument-hint: <path-to-logs-dir> [ais-logs-dir]
 ---
 
 # Distributed Training Log Debugger

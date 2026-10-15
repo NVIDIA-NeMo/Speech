@@ -339,7 +339,10 @@ class EncDecRNNTBPEModel(EncDecRNNTModel, ASRBPEMixin):
         self.decoder = EncDecRNNTBPEModel.from_config_dict(new_decoder_config)
 
         del self.loss
-        self.loss = RNNTLoss(num_classes=self.joint.num_classes_with_blank - 1)
+        loss_name, loss_kwargs = self.extract_rnnt_loss_cfg(self.cfg.get('loss', None))
+        self.loss = RNNTLoss(
+            num_classes=self.joint.num_classes_with_blank - 1, loss_name=loss_name, loss_kwargs=loss_kwargs
+        )
 
         if decoding_cfg is None:
             # Assume same decoding config as before

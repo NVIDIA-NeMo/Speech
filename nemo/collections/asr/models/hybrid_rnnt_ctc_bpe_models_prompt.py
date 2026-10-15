@@ -315,18 +315,18 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(PromptStreamingMixin, EncDecHybridRN
             The model's outputs that are processed by `_transcribe_output_processing()`.
         """
         audio, audio_lens = batch[0], batch[1]
-        prompt, prompt_indices = None, None
+        language_prompt_features, language_prompt_indices = None, None
 
         if len(batch) >= 5:
             prompt_or_indices = batch[4]
             if prompt_or_indices.dim() == 1:
-                prompt_indices = prompt_or_indices
+                language_prompt_indices = prompt_or_indices
             else:
-                prompt = prompt_or_indices
+                language_prompt_features = prompt_or_indices
 
         batch_size = audio.shape[0]
 
-        if prompt is None and prompt_indices is None:
+        if language_prompt_features is None and language_prompt_indices is None:
             target_lang = trcfg.target_lang
             prompt_dict = self.cfg.model_defaults.get('prompt_dictionary')
 
@@ -340,10 +340,13 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(PromptStreamingMixin, EncDecHybridRN
                 )
 
             prompt_id = prompt_dict[target_lang]
-            prompt_indices = torch.full((batch_size,), prompt_id, dtype=torch.long, device=audio.device)
+            language_prompt_indices = torch.full((batch_size,), prompt_id, dtype=torch.long, device=audio.device)
 
         encoded, encoded_len = self.forward(
-            input_signal=audio, input_signal_length=audio_lens, prompt=prompt, prompt_indices=prompt_indices
+            input_signal=audio,
+            input_signal_length=audio_lens,
+            language_prompt_features=language_prompt_features,
+            language_prompt_indices=language_prompt_indices,
         )
 
         # Prepare output dictionary based on decoder type
@@ -479,8 +482,8 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(PromptStreamingMixin, EncDecHybridRN
             "input_signal_length": NeuralType(tuple('B'), LengthsType(), optional=True),
             "processed_signal": NeuralType(('B', 'D', 'T'), SpectrogramType(), optional=True),
             "processed_signal_length": NeuralType(tuple('B'), LengthsType(), optional=True),
-            "prompt": NeuralType(('B', 'T', 'D'), LabelsType(), optional=True),
-            "prompt_indices": NeuralType(tuple('B'), LabelsType(), optional=True),
+            "language_prompt_features": NeuralType(('B', 'T', 'D'), LabelsType(), optional=True),
+            "language_prompt_indices": NeuralType(tuple('B'), LabelsType(), optional=True),
         }
 
     @property
@@ -497,8 +500,8 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(PromptStreamingMixin, EncDecHybridRN
         input_signal_length=None,
         processed_signal=None,
         processed_signal_length=None,
-        prompt=None,
-        prompt_indices=None,
+        language_prompt_features=None,
+        language_prompt_indices=None,
     ):
         """
         Forward pass of the model. Note that for RNNT Models, the forward pass of the model is a 3 step process,
@@ -514,12 +517,13 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(PromptStreamingMixin, EncDecHybridRN
                 of shape (B, D, T) that has undergone processing via some DALI preprocessor.
             processed_signal_length: Vector of length B, that contains the individual lengths of the
                 processed audio sequences.
-            prompt: (backward-compatible) Pre-built one-hot prompt tensor of shape [B, T, D].
+            language_prompt_features: (backward-compatible) Pre-built one-hot prompt tensor
+                of shape [B, T, D].
                 If provided, used directly (trimmed to encoder length if needed).
-            prompt_indices: Tensor of shape [B] containing language ID indices per sample.
+            language_prompt_indices: Tensor of shape [B] containing language ID indices per sample.
                 The model creates the prompt tensor after encoding using the actual
                 encoder output length, guaranteeing no size mismatch.
-                Ignored if ``prompt`` is also provided.
+                Ignored if ``language_prompt_features`` is also provided.
 
         Returns:
             A tuple of 2 elements -
@@ -548,22 +552,29 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(PromptStreamingMixin, EncDecHybridRN
         encoded = torch.transpose(encoded, 1, 2)  # B * D * T -> B * T * D
 
         if self.concat:
-            if prompt is not None:
+            if language_prompt_features is not None:
                 # Backward-compatible path: caller provided a pre-built [B, T, D] one-hot tensor
-                if prompt.shape[1] > encoded.shape[1]:
-                    prompt = prompt[:, : encoded.shape[1], :]
-            elif prompt_indices is not None:
+                if language_prompt_features.shape[1] > encoded.shape[1]:
+                    language_prompt_features = language_prompt_features[:, : encoded.shape[1], :]
+            elif language_prompt_indices is not None:
                 # New path: build one-hot from per-sample language ID indices
                 batch_size = encoded.shape[0]
                 time_steps = encoded.shape[1]
                 num_prompts = self.num_prompts
-                prompt = torch.zeros(batch_size, time_steps, num_prompts, dtype=encoded.dtype, device=encoded.device)
-                prompt.scatter_(2, prompt_indices.view(batch_size, 1, 1).expand(-1, time_steps, -1), 1.0)
+                language_prompt_features = torch.zeros(
+                    batch_size, time_steps, num_prompts, dtype=encoded.dtype, device=encoded.device
+                )
+                language_prompt_features.scatter_(
+                    2, language_prompt_indices.view(batch_size, 1, 1).expand(-1, time_steps, -1), 1.0
+                )
             else:
-                raise ValueError("Either prompt or prompt_indices must be provided when concat mode is enabled.")
+                raise ValueError(
+                    "Either language_prompt_features or language_prompt_indices must be provided "
+                    "when concat mode is enabled."
+                )
 
             out_dtype = encoded.dtype
-            concat_enc_states = torch.cat([encoded, prompt], dim=-1)
+            concat_enc_states = torch.cat([encoded, language_prompt_features], dim=-1)
             encoded = self.prompt_kernel(concat_enc_states).to(out_dtype)
 
         encoded = torch.transpose(encoded, 1, 2)  # B * T * D -> B * D * T
@@ -580,17 +591,20 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(PromptStreamingMixin, EncDecHybridRN
         signal, signal_len, transcript, transcript_len, prompt_or_indices = batch
 
         # Detect whether batch[4] is old-style prompt [B, T, D] or new-style indices [B]
-        prompt, prompt_indices = None, None
+        language_prompt_features, language_prompt_indices = None, None
         if prompt_or_indices.dim() == 1:
-            prompt_indices = prompt_or_indices
+            language_prompt_indices = prompt_or_indices
         else:
-            prompt = prompt_or_indices
+            language_prompt_features = prompt_or_indices
 
         if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
             encoded, encoded_len = self.forward(processed_signal=signal, processed_signal_length=signal_len)
         else:
             encoded, encoded_len = self.forward(
-                input_signal=signal, input_signal_length=signal_len, prompt=prompt, prompt_indices=prompt_indices
+                input_signal=signal,
+                input_signal_length=signal_len,
+                language_prompt_features=language_prompt_features,
+                language_prompt_indices=language_prompt_indices,
             )
         del signal
 
@@ -699,17 +713,20 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(PromptStreamingMixin, EncDecHybridRN
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         signal, signal_len, transcript, transcript_len, prompt_or_indices = batch
 
-        prompt, prompt_indices = None, None
+        language_prompt_features, language_prompt_indices = None, None
         if prompt_or_indices.dim() == 1:
-            prompt_indices = prompt_or_indices
+            language_prompt_indices = prompt_or_indices
         else:
-            prompt = prompt_or_indices
+            language_prompt_features = prompt_or_indices
 
         if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
             encoded, encoded_len = self.forward(processed_signal=signal, processed_signal_length=signal_len)
         else:
             encoded, encoded_len = self.forward(
-                input_signal=signal, input_signal_length=signal_len, prompt=prompt, prompt_indices=prompt_indices
+                input_signal=signal,
+                input_signal_length=signal_len,
+                language_prompt_features=language_prompt_features,
+                language_prompt_indices=language_prompt_indices,
             )
         del signal
 
@@ -736,17 +753,20 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(PromptStreamingMixin, EncDecHybridRN
 
         signal, signal_len, transcript, transcript_len, prompt_or_indices = batch
 
-        prompt, prompt_indices = None, None
+        language_prompt_features, language_prompt_indices = None, None
         if prompt_or_indices.dim() == 1:
-            prompt_indices = prompt_or_indices
+            language_prompt_indices = prompt_or_indices
         else:
-            prompt = prompt_or_indices
+            language_prompt_features = prompt_or_indices
 
         if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
             encoded, encoded_len = self.forward(processed_signal=signal, processed_signal_length=signal_len)
         else:
             encoded, encoded_len = self.forward(
-                input_signal=signal, input_signal_length=signal_len, prompt=prompt, prompt_indices=prompt_indices
+                input_signal=signal,
+                input_signal_length=signal_len,
+                language_prompt_features=language_prompt_features,
+                language_prompt_indices=language_prompt_indices,
             )
         del signal
 

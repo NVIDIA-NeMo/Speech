@@ -181,14 +181,14 @@ class TestEncDecHybridRNNTCTCBPEModelWithPrompt:
                 logprobs_ins, _ = hybrid_asr_model_with_prompt.forward(
                     input_signal=input_signal[i : i + 1],
                     input_signal_length=length[i : i + 1],
-                    prompt=prompt[i : i + 1],
+                    language_prompt_features=prompt[i : i + 1],
                 )
                 logprobs_instance.append(logprobs_ins)
             logits_instance = torch.cat(logprobs_instance, 0)
 
             # batch size 4
             logprobs_batch, _ = hybrid_asr_model_with_prompt.forward(
-                input_signal=input_signal, input_signal_length=length, prompt=prompt
+                input_signal=input_signal, input_signal_length=length, language_prompt_features=prompt
             )
 
         assert logits_instance.shape == logprobs_batch.shape
@@ -224,14 +224,14 @@ class TestEncDecHybridRNNTCTCBPEModelWithPrompt:
                 logprobs_ins, _ = hybrid_asr_model_with_prompt.forward(
                     input_signal=input_signal[i : i + 1],
                     input_signal_length=length[i : i + 1],
-                    prompt_indices=prompt_indices[i : i + 1],
+                    language_prompt_indices=prompt_indices[i : i + 1],
                 )
                 logprobs_instance.append(logprobs_ins)
             logits_instance = torch.cat(logprobs_instance, 0)
 
             # batch size 4
             logprobs_batch, _ = hybrid_asr_model_with_prompt.forward(
-                input_signal=input_signal, input_signal_length=length, prompt_indices=prompt_indices
+                input_signal=input_signal, input_signal_length=length, language_prompt_indices=prompt_indices
             )
 
         assert logits_instance.shape == logprobs_batch.shape
@@ -270,10 +270,10 @@ class TestEncDecHybridRNNTCTCBPEModelWithPrompt:
 
         with torch.no_grad():
             out_from_prompt, _ = hybrid_asr_model_with_prompt.forward(
-                input_signal=input_signal, input_signal_length=length, prompt=prompt_one_hot
+                input_signal=input_signal, input_signal_length=length, language_prompt_features=prompt_one_hot
             )
             out_from_indices, _ = hybrid_asr_model_with_prompt.forward(
-                input_signal=input_signal, input_signal_length=length, prompt_indices=prompt_indices
+                input_signal=input_signal, input_signal_length=length, language_prompt_indices=prompt_indices
             )
 
         assert out_from_prompt.shape == out_from_indices.shape
@@ -511,9 +511,9 @@ class TestEncDecHybridRNNTCTCBPEModelWithPrompt:
         output_types = hybrid_asr_model_with_prompt.output_types
 
         # Check that prompt is included in input types
-        assert 'prompt' in input_types
+        assert 'language_prompt_features' in input_types
         # Check axes - neural types use tuples with symbolic names
-        prompt_axes = input_types['prompt'].axes
+        prompt_axes = input_types['language_prompt_features'].axes
         assert len(prompt_axes) == 3  # Should be 3D tensor
 
         # Check standard input types are present
@@ -559,7 +559,7 @@ class TestEncDecHybridRNNTCTCBPEModelWithPrompt:
 
         with torch.no_grad():
             encoded, encoded_len = hybrid_asr_model_with_prompt.forward(
-                input_signal=input_signal, input_signal_length=length, prompt=long_prompt
+                input_signal=input_signal, input_signal_length=length, language_prompt_features=long_prompt
             )
 
         # Should not crash and should produce valid output

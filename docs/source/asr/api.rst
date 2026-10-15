@@ -27,7 +27,7 @@ Model Classes
 
 .. autoclass:: nemo.collections.asr.models.EncDecRNNTBPEModelWithPrompt
     :show-inheritance:
-    :members: transcribe, set_inference_prompt, initialize_prompt_feature, change_vocabulary, setup_training_data, setup_optimization, setup_validation_data, setup_test_data, register_artifact
+    :members: transcribe, forward, resolve_prompt_language, default_prompt_language, set_inference_prompt, initialize_prompt_feature, change_vocabulary, setup_training_data, setup_optimization, setup_validation_data, setup_test_data, register_artifact
 
 
 .. autoclass:: nemo.collections.asr.models.EncDecHybridRNNTCTCBPEModelWithPrompt

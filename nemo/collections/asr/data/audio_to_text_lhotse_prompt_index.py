@@ -46,7 +46,7 @@ class LhotseSpeechToTextBpeDatasetWithPromptIndex(LhotseAudioLoadingDatasetMixin
         audio_signal_length: Audio lengths [B]
         transcripts: Token IDs [B, T]
         transcript_length: Token lengths [B]
-        prompt_indices: Language ID indices [B] (NOT full tensors)
+        language_prompt_indices: Language ID indices [B] (NOT full tensors)
     """
 
     @property
@@ -56,7 +56,7 @@ class LhotseSpeechToTextBpeDatasetWithPromptIndex(LhotseAudioLoadingDatasetMixin
             'audio_signal_length': NeuralType(tuple('B'), LengthsType()),
             'transcripts': NeuralType(('B', 'T'), LabelsType()),
             'transcript_length': NeuralType(tuple('B'), LengthsType()),
-            'prompt_indices': NeuralType(tuple('B'), LabelsType()),  # Just indices, not full tensors
+            'language_prompt_indices': NeuralType(tuple('B'), LabelsType()),  # Just indices, not full tensors
         }
 
     def __init__(self, tokenizer: TokenizerSpec, cfg: Dict) -> None:
@@ -85,10 +85,20 @@ class LhotseSpeechToTextBpeDatasetWithPromptIndex(LhotseAudioLoadingDatasetMixin
         # Index used for the language-agnostic / auto prompt
         self.auto_index = self.prompt_dict.get('auto', 101)
 
+        # Language used when a cut names none, or names one absent from the dictionary. Transcription
+        # sets this so that audio without a language still decodes; training leaves it unset, which
+        # keeps the strict behaviour of failing on data whose language cannot be honoured.
+        self.default_lang = cfg.get('default_lang', None)
+        if self.default_lang is not None:
+            self.default_lang_index = self._get_prompt_index(self.default_lang)
+        else:
+            self.default_lang_index = None
+
         logging.info(
             f"LhotseSpeechToTextBpeDatasetWithPromptIndex: "
             f"default_prompt_mode={self.default_prompt_mode}, "
-            f"unified_auto_ratio={self.unified_auto_ratio}"
+            f"unified_auto_ratio={self.unified_auto_ratio}, "
+            f"default_lang={self.default_lang}"
         )
 
     def _get_prompt_index(self, prompt_key: str) -> int:
@@ -123,25 +133,48 @@ class LhotseSpeechToTextBpeDatasetWithPromptIndex(LhotseAudioLoadingDatasetMixin
         mode = self._get_prompt_mode(cut)
 
         if mode == 'langID':
-            return self._get_prompt_index(cut.supervisions[0].language)
+            return self._get_language_index(cut)
         elif mode == 'auto':
             return self.auto_index
         elif mode == 'unified':
             if random.random() < self.unified_auto_ratio:
                 return self.auto_index
-            return self._get_prompt_index(cut.supervisions[0].language)
+            return self._get_language_index(cut)
         else:
             logging.warning(f"Unknown prompt_mode '{mode}', falling back to unified")
             if random.random() < self.unified_auto_ratio:
                 return self.auto_index
-            return self._get_prompt_index(cut.supervisions[0].language)
+            return self._get_language_index(cut)
+
+    def _get_language_index(self, cut) -> int:
+        """Prompt index for a cut's own language, falling back to ``default_lang`` when configured."""
+        language = cut.supervisions[0].language
+        if language in self.prompt_dict:
+            return self.prompt_dict[language]
+
+        if self.default_lang_index is not None:
+            self._warn_once(
+                f"Cut language {language!r} is not in the prompt dictionary; "
+                f"using the default language '{self.default_lang}' instead."
+            )
+            return self.default_lang_index
+
+        return self._get_prompt_index(language)
+
+    def _warn_once(self, message: str) -> None:
+        """Log a resolution warning once, since this runs per cut."""
+        if not hasattr(self, '_warned_messages'):
+            self._warned_messages = set()
+        if message not in self._warned_messages:
+            self._warned_messages.add(message)
+            logging.warning(message)
 
     def __getitem__(self, cuts) -> Tuple[torch.Tensor, ...]:
         audio, audio_lens, cuts = self.load_audio_with_cuts(cuts)
         tokens = [torch.as_tensor(self.tokenizer(c.supervisions[0].text, c.supervisions[0].language)) for c in cuts]
 
         # Get prompt indices (just the language ID per sample, NOT full tensors)
-        prompt_indices = torch.tensor([self._get_prompt_index_for_cut(c) for c in cuts], dtype=torch.long)
+        language_prompt_indices = torch.tensor([self._get_prompt_index_for_cut(c) for c in cuts], dtype=torch.long)
 
         # Create final tensors
         token_lens = torch.tensor([t.size(0) for t in tokens], dtype=torch.long)
@@ -152,5 +185,5 @@ class LhotseSpeechToTextBpeDatasetWithPromptIndex(LhotseAudioLoadingDatasetMixin
             audio_lens,  # Audio lengths [B]
             tokens,  # Text tokens [B, T]
             token_lens,  # Token lengths [B]
-            prompt_indices,  # Language ID indices [B] - model creates full tensor
+            language_prompt_indices,  # Language ID indices [B] - model creates full tensor
         )

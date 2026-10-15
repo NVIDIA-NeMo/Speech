@@ -543,19 +543,26 @@ class BasePipeline(PipelineInterface):
             )
         return lang_index
 
-    def _resolve_default_language_code(self) -> str:
+    def _resolve_default_language_code(self) -> str | None:
         """
         Pick the language used when a request does not specify one.
 
-        Prefers the model's automatic language-detection prompt when available, so that a
-        multilingual model does not silently transcribe every language as English.
+        Prefers a language the model itself declares. Only ``auto`` is implied otherwise: it is the
+        established language-agnostic prompt, whereas guessing at a locale such as ``en-US`` would
+        silently transcribe every language as English.
         Returns:
-            (str) "auto" when the model's prompt dictionary supports it, otherwise "en-US".
+            (str | None) A key of the model's prompt dictionary, or None when the model has no
+                prompts or declares no default and defines no ``auto``, in which case the caller
+                must supply a language explicitly.
         """
         if not getattr(self, '_prompt_config', None):
-            return "en-US"
-        prompt_dict = self._prompt_config['prompt_dict']
-        return "auto" if "auto" in prompt_dict else "en-US"
+            return None
+
+        declared = getattr(self.asr_model.asr_model, 'default_prompt_language', None)
+        if declared is not None:
+            return declared
+
+        return "auto" if "auto" in self._prompt_config['prompt_dict'] else None
 
     def _create_one_hot_prompts(self, indices: Tensor) -> Tensor:
         """
@@ -568,6 +575,22 @@ class BasePipeline(PipelineInterface):
         num_prompts = self._prompt_config['num_prompts']
         return torch.nn.functional.one_hot(indices, num_classes=num_prompts).to(self._prompt_config['compute_dtype'])
 
+    def _build_prompt_indices(self, states: list) -> Tensor:
+        """
+        Collect the per-stream prompt indices for a batch of states.
+        Args:
+            states: (list) List of streaming states.
+        Returns:
+            (Tensor) Prompt indices of shape [B].
+        Raises:
+            ValueError: If any prompt index is out of range.
+        """
+        indices = torch.tensor([getattr(s, 'prompt_idx', 0) for s in states], device=self.device, dtype=torch.long)
+        num_prompts = self._prompt_config['num_prompts']
+        if torch.any((indices < 0) | (indices >= num_prompts)):
+            raise ValueError("Found out-of-range prompt index in batch.")
+        return indices
+
     def _build_prompt_vectors(self, states: list) -> Tensor:
         """
         Build prompt vectors for a batch of states using one-hot encoding.
@@ -578,11 +601,7 @@ class BasePipeline(PipelineInterface):
         Raises:
             ValueError: If any prompt index is out of range.
         """
-        indices = torch.tensor([getattr(s, 'prompt_idx', 0) for s in states], device=self.device, dtype=torch.long)
-        num_prompts = self._prompt_config['num_prompts']
-        if torch.any((indices < 0) | (indices >= num_prompts)):
-            raise ValueError("Found out-of-range prompt index in batch.")
-        return self._create_one_hot_prompts(indices)
+        return self._create_one_hot_prompts(self._build_prompt_indices(states))
 
     def run(
         self,

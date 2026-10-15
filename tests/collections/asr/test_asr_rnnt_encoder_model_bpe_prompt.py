@@ -151,14 +151,14 @@ class TestEncDecRNNTBPEModelWithPrompt:
                 logprobs_ins, _ = rnnt_asr_model_with_prompt.forward(
                     input_signal=input_signal[i : i + 1],
                     input_signal_length=length[i : i + 1],
-                    prompt_indices=prompt_indices[i : i + 1],
+                    language_prompt_indices=prompt_indices[i : i + 1],
                 )
                 logprobs_instance.append(logprobs_ins)
             logits_instance = torch.cat(logprobs_instance, 0)
 
             # batch size 4
             logprobs_batch, _ = rnnt_asr_model_with_prompt.forward(
-                input_signal=input_signal, input_signal_length=length, prompt_indices=prompt_indices
+                input_signal=input_signal, input_signal_length=length, language_prompt_indices=prompt_indices
             )
 
         assert logits_instance.shape == logprobs_batch.shape
@@ -331,8 +331,8 @@ class TestEncDecRNNTBPEModelWithPrompt:
         output_types = rnnt_asr_model_with_prompt.output_types
 
         # Check that prompt_indices is included in input types (1D, per-sample language id)
-        assert 'prompt_indices' in input_types
-        prompt_axes = input_types['prompt_indices'].axes
+        assert 'language_prompt_indices' in input_types
+        prompt_axes = input_types['language_prompt_indices'].axes
         assert len(prompt_axes) == 1  # 1D tensor [B]
 
         # Check standard input types are present
@@ -397,12 +397,12 @@ class TestEncDecRNNTBPEModelWithPrompt:
             out_a, _ = rnnt_asr_model_with_prompt.forward(
                 input_signal=input_signal,
                 input_signal_length=length,
-                prompt_indices=torch.tensor([0, 0], dtype=torch.long),
+                language_prompt_indices=torch.tensor([0, 0], dtype=torch.long),
             )
             out_b, _ = rnnt_asr_model_with_prompt.forward(
                 input_signal=input_signal,
                 input_signal_length=length,
-                prompt_indices=torch.tensor([1, 1], dtype=torch.long),
+                language_prompt_indices=torch.tensor([1, 1], dtype=torch.long),
             )
 
         assert out_a.shape == out_b.shape

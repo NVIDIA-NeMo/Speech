@@ -71,6 +71,9 @@ def main(cfg):
 
     model.maybe_init_from_pretrained_checkpoint(cfg=cfg)
 
+    if mode == 'onlinepo_train' and trainer.ckpt_path is None:
+        trainer.validate(model)
+
     if mode in _TRAIN_MODES:
         trainer.fit(model)
     elif mode == 'test':

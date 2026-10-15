@@ -38,7 +38,9 @@ from nemo.collections.asr.parts.submodules.multi_head_attention import (
     RotaryPositionalEncoding,
 )
 from nemo.collections.asr.parts.submodules.subsampling import FeatureStacking, StackingSubsampling
-from nemo.core.classes.module import freeze, unfreeze
+from nemo.core.classes.exportable import Exportable
+from nemo.core.classes.module import NeuralModule, freeze, unfreeze
+from nemo.core.neural_types import AcousticEncodedRepresentation, LengthsType, NeuralType, SpectrogramType
 from nemo.utils import logging
 from nemo.utils.decorators import experimental
 
@@ -361,7 +363,7 @@ class MultiHeadAttention(nn.Module):
         # Matrix c: fold u @ K^T into FlexAttention by rewriting Q as (Q + u).
         return score_mod, q + bias_u
 
-    def forward(self, x, block_mask=None, pos_emb=None):
+    def forward(self, x, block_mask=None, pos_emb=None, attn_mask=None):
         B, T, _ = x.shape
         H, D = self.n_heads, self.head_dim
 
@@ -380,8 +382,21 @@ class MultiHeadAttention(nn.Module):
         if self._uses_rel_pos:
             score_mod, q = self._build_rel_pos_score_mod(q, pos_emb)
 
-        attn_fn = _transformer_utils._get_flex_attention(q)
-        out = attn_fn(q, k, v, block_mask=block_mask, score_mod=score_mod)
+        if attn_mask is None:
+            attn_fn = _transformer_utils._get_flex_attention(q)
+            out = attn_fn(q, k, v, block_mask=block_mask, score_mod=score_mod)
+        else:
+            # Accumulate reduced-precision attention in fp32, as FlexAttention does.
+            dtype = torch.float32 if q.dtype in (torch.float16, torch.bfloat16) else q.dtype
+            bias = torch.zeros_like(attn_mask, dtype=dtype)
+            if score_mod is not None:
+                bias = bias + score_mod._relative_position_bias.to(dtype)
+            bias = bias.masked_fill(~attn_mask, float("-inf"))
+            # Avoid all-masked softmax rows in exported runtimes and return zero, as FlexAttention does.
+            valid_rows = attn_mask.any(dim=-1, keepdim=True)
+            bias = torch.where(valid_rows, bias, 0.0)
+            out = F.scaled_dot_product_attention(q.to(dtype), k.to(dtype), v.to(dtype), attn_mask=bias, dropout_p=0.0)
+            out = torch.where(valid_rows, out, 0.0).to(v.dtype)
         out = out.transpose(1, 2).contiguous().view(B, T, self.d_model)
         return self.out_proj(out)
 
@@ -685,8 +700,8 @@ class TransformerBlock(nn.Module):
         self.norm2 = nn.LayerNorm(cfg.d_model)
         self.ffn = FeedForward(cfg)
 
-    def forward(self, x, block_mask=None, pos_emb=None):
-        x = x + self.drop(self.attn(self.norm1(x), block_mask=block_mask, pos_emb=pos_emb))
+    def forward(self, x, block_mask=None, pos_emb=None, attn_mask=None):
+        x = x + self.drop(self.attn(self.norm1(x), block_mask=block_mask, pos_emb=pos_emb, attn_mask=attn_mask))
         x = x + self.drop(self.ffn(self.norm2(x)))
         return x
 
@@ -756,7 +771,7 @@ class TransformerBlock(nn.Module):
 
 
 @experimental
-class TransformerEncoder(nn.Module):
+class TransformerEncoder(NeuralModule, Exportable):
     """Pre-norm Transformer encoder for ASR.
 
     Architecture: PreEncode -> PositionalEncoding -> LayerNorm -> N x TransformerBlock -> FinalNorm
@@ -997,6 +1012,43 @@ class TransformerEncoder(nn.Module):
 
         self.set_max_audio_length(self.pos_emb_max_len)
 
+    @property
+    def input_types(self) -> dict[str, NeuralType]:
+        """Describe the padded feature and length inputs used for export."""
+        return {
+            "audio_signal": NeuralType(('B', 'D', 'T'), SpectrogramType()),
+            "length": NeuralType(('B',), LengthsType()),
+        }
+
+    @property
+    def output_types(self) -> dict[str, NeuralType]:
+        """Describe encoded features and their subsampled lengths."""
+        return {
+            "outputs": NeuralType(('B', 'D', 'T'), AcousticEncodedRepresentation()),
+            "encoded_lengths": NeuralType(('B',), LengthsType()),
+        }
+
+    def input_example(self, max_batch: int = 1, max_dim: int = 256) -> tuple[torch.Tensor, torch.Tensor]:
+        """Create export inputs with max_batch samples and max_dim feature frames."""
+        parameter = next(self.parameters())
+        return (
+            torch.randn(max_batch, self._feat_in, max_dim, device=parameter.device, dtype=parameter.dtype),
+            torch.full((max_batch,), max_dim, device=parameter.device, dtype=torch.int64),
+        )
+
+    def forward_for_export(
+        self, audio_signal: torch.Tensor, length: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Encode padded features using ONNX-compatible attention.
+
+        Batch and time dimensions are dynamic.
+        For positional encodings, call set_max_audio_length before export to provision the largest supported sequence.
+        This exports offline inference without streaming caches or pre-encoder bypass.
+        """
+        if not torch.jit.is_tracing() and not torch.onnx.is_in_onnx_export():
+            self.update_max_seq_length(seq_length=audio_signal.size(2), device=audio_signal.device)
+        return self.forward_internal(audio_signal, length, for_export=True)
+
     def forward(self, audio_signal, length, bypass_pre_encode=False):
         """
         Args:
@@ -1028,7 +1080,7 @@ class TransformerEncoder(nn.Module):
             self.update_max_seq_length(seq_length=audio_signal.size(2), device=audio_signal.device)
         return self.forward_internal(audio_signal, length, bypass_pre_encode=bypass_pre_encode)
 
-    def forward_internal(self, audio_signal, length, bypass_pre_encode=False):
+    def forward_internal(self, audio_signal, length, bypass_pre_encode=False, for_export=False):
         if length is None:
             length = audio_signal.new_full(
                 (audio_signal.size(0),),
@@ -1070,12 +1122,20 @@ class TransformerEncoder(nn.Module):
 
         B, T, _ = x.shape
         mask_mod = self._build_mask_mod(length)
-        block_mask = create_block_mask(mask_mod, B=B, H=1, Q_LEN=T, KV_LEN=T, device=x.device)
+        if for_export:
+            # Broadcast the existing mask function instead of constructing FlexAttention metadata.
+            batch = torch.arange(B, device=x.device)[:, None, None, None]
+            positions = torch.arange(T, device=x.device)
+            attn_mask = mask_mod(batch, 0, positions[None, None, :, None], positions[None, None, None, :])
+            block_mask = None
+        else:
+            block_mask = create_block_mask(mask_mod, B=B, H=1, Q_LEN=T, KV_LEN=T, device=x.device)
+            attn_mask = None
         # For ``abs_pos`` the positional information is already baked into ``x``, so we don't
         # need to thread ``pos_emb`` through each layer; only ``rel_pos`` consumes it.
         layer_pos_emb = pos_emb if self.self_attention_model == "rel_pos" else None
         for layer in self.layers:
-            x = layer(x, block_mask=block_mask, pos_emb=layer_pos_emb)
+            x = layer(x, block_mask=block_mask, pos_emb=layer_pos_emb, attn_mask=attn_mask)
 
         x = self.final_norm(x)
         if self.out_proj is not None:

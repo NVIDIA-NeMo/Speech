@@ -24,6 +24,32 @@ Loading Checkpoints
     model = nemo_asr.models.ASRModel.from_pretrained("nvidia/parakeet-tdt-0.6b-v2")
 
 
+Exporting a Transformer Encoder to ONNX
+---------------------------------------
+
+Export an offline Transformer encoder with NeMo's existing API:
+
+.. code-block:: python
+
+    model.eval()
+    encoder = model.encoder
+    encoder.set_max_audio_length(5000)
+    encoder.export("encoder.onnx", onnx_opset_version=17)
+
+Set the maximum length to cover the longest feature sequence you need; the exported positional cache cannot grow later.
+Batch size and sequence length may vary within that limit.
+
+Inputs are ``audio_signal`` of shape ``(batch, features, frames)`` and int64 ``length`` of shape ``(batch,)``.
+Outputs are ``outputs`` of shape ``(batch, channels, encoded_frames)`` and int64 ``encoded_lengths``.
+
+Export uses scaled dot-product attention with the encoder's weights, positional encodings and masks.
+Ordinary training and inference retain FlexAttention.
+Check outputs, lengths and transcripts with your intended runtime and precision, since rounding can affect recognition.
+
+Preprocessing, decoding, streaming caches and ``bypass_pre_encode`` are outside this interface.
+For RNNT/TDT, ``model.export("model.onnx")`` exports the encoder and combined prediction/joint network separately.
+
+
 Basic Transcription
 -------------------
 

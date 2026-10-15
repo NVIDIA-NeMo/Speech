@@ -77,7 +77,8 @@ class FeatureStacking(nn.Module):
         x = x.transpose(1, 2)  # (B, C, T) -> (B, T, C)
         b, t, c = x.size()
         pad_size = (self.subsampling_factor - (t % self.subsampling_factor)) % self.subsampling_factor
-        if pad_size > 0:
+        # Keep padding in the exported graph even when the example length is divisible.
+        if torch.jit.is_tracing() or pad_size > 0:
             x = nn.functional.pad(x, (0, 0, 0, pad_size))
         t_new = (t + pad_size) // self.subsampling_factor
         x = x.reshape(b, t_new, c * self.subsampling_factor)

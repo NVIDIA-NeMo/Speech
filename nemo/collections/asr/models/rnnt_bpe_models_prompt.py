@@ -175,6 +175,7 @@ class EncDecRNNTBPEModelWithPrompt(PromptStreamingMixin, EncDecRNNTBPEModel, ASR
             use_cer=self.cfg.get('use_cer', False),
             log_prediction=self.cfg.get('log_prediction', True),
             dist_sync_on_step=True,
+            normalize_wer=self.cfg.get('normalize_wer', False),
         )
 
         if self.joint.fuse_loss_wer:

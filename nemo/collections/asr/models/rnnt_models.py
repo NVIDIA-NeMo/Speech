@@ -115,6 +115,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             use_cer=self._cfg.get('use_cer', False),
             log_prediction=self._cfg.get('log_prediction', True),
             dist_sync_on_step=True,
+            normalize_wer=self._cfg.get('normalize_wer', False),
         )
 
         # Whether to compute loss during evaluation
@@ -400,6 +401,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
                 use_cer=self.wer.use_cer,
                 log_prediction=self.wer.log_prediction,
                 dist_sync_on_step=True,
+                normalize_wer=self.wer.normalize_wer,
             )
 
             # Setup fused Joint step
@@ -460,6 +462,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             use_cer=self.wer.use_cer,
             log_prediction=self.wer.log_prediction,
             dist_sync_on_step=True,
+            normalize_wer=self.wer.normalize_wer,
         )
 
         # Setup fused Joint step

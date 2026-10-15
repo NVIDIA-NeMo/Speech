@@ -104,6 +104,10 @@ model:
   phoneme_text_eop_marker: "<eop>"
   ignore_phoneme_languages: [] # Languages for which missing IPA phoneme fields are allowed during training.
   add_language_to_context_text: false # Prefix context text with language metadata for multilingual conditioning.
+  # Online-PO only: sample one assistant target turn, teacher-force its conversation
+  # prefix, and apply GRPO only to the sampled target audio span.
+  multiturn_grpo_enabled: false
+  multiturn_grpo_max_prefix_seconds: 60.0
 
   phoneme_tokenizer:
     _target_: nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.IPABPETokenizer

@@ -428,6 +428,16 @@ class TestMagpieTTSLhotseDatasets:
         assert batch["dataset_names"] == ["unknown"]
         assert batch["languages"] == ["en"]
         assert batch["raw_texts"] == ["hello okay"]
+        assert [[turn["role"] for turn in turns] for turns in batch["turn_metadata"]] == [
+            ["user", "assistant", "user", "assistant"]
+        ]
+        assert [[turn["text"] for turn in turns] for turns in batch["turn_metadata"]] == [
+            ["hi", "hello", "ok", "okay"]
+        ]
+        first_agent_turn = batch["turn_metadata"][0][1]
+        assert first_agent_turn["ipa"] == "həloʊ"
+        assert first_agent_turn["start_frame"] == 15
+        assert first_agent_turn["end_frame"] == 25
         assert batch["task"] == ["dialog"]
         assert batch["audio"].shape[0] == 1
         assert batch["source_audio"].shape[0] == 1

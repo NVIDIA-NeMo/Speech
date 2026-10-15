@@ -30,7 +30,7 @@ from omegaconf import DictConfig, open_dict
 import nemo.collections.asr as nemo_asr
 from nemo.collections.asr.metrics.wer import word_error_rate
 from nemo.collections.tts.models.easy_magpietts import EasyMagpieTTSModel
-from nemo.collections.tts.modules.magpietts_modules import SpecialAudioToken
+from nemo.collections.tts.modules.magpietts_modules import SpecialAudioToken, add_special_tokens
 from nemo.collections.tts.parts.utils.helpers import (
     get_mask_from_lengths,
     get_speaker_embeddings_from_filepaths,
@@ -235,6 +235,26 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
         # Filter out poor groups for stable optimization.
         self.best_cer_threshold = self.cfg.get('best_cer_threshold', 1.0)
         self.worst_cer_threshold = self.cfg.get('worst_cer_threshold', 1.0)
+
+        if self.multiturn_grpo_enabled:
+            if not self.cfg.get("use_multiturn_dataset", False):
+                raise ValueError("multiturn_grpo_enabled requires use_multiturn_dataset=true.")
+            if self.phoneme_po_loss_weight != 0.0 or self.aux_phoneme_loss_weight != 0.0:
+                raise ValueError(
+                    "The minimal multi-turn GRPO path optimizes audio actions only. "
+                    "Set phoneme_po_loss_weight=0 and aux_phoneme_loss_weight=0."
+                )
+            if not self.reference_free or float(self.cfg.get("grpo_beta", 0.0)) != 0.0:
+                raise ValueError(
+                    "The minimal multi-turn GRPO path currently requires reference_free=true and grpo_beta=0."
+                )
+            if self.rollout_cfg_mode != 'off':
+                raise ValueError("The minimal multi-turn GRPO path currently requires rollout_cfg_mode='off'.")
+            if challenging_text_end_prob != 0.0:
+                raise ValueError("Disable challenging-text replacement for the minimal multi-turn GRPO path.")
+            context_shuffle_prob = float(train_dataset_cfg.get("context_audio_shuffle_batch_prob", 0.0))
+            if context_shuffle_prob != 0.0:
+                raise ValueError("Disable context-audio shuffle for the minimal multi-turn GRPO path.")
 
         if self.trainer is not None and str(self.trainer.precision) in ("32", "32-true"):
             self.decoder.float()
@@ -458,6 +478,671 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
                 repeated_batch[key] = value
         return repeated_batch
 
+    @property
+    def multiturn_grpo_enabled(self) -> bool:
+        """Return whether target-turn GRPO with a ground-truth conversation prefix is enabled."""
+        return bool(self.cfg.get("multiturn_grpo_enabled", False))
+
+    @staticmethod
+    def _is_user_turn(turn: Dict) -> bool:
+        """Return ``True`` when dataset turn metadata identifies a user turn."""
+        return str(turn.get("role", "")).lower() == "user"
+
+    @staticmethod
+    def _is_assistant_turn(turn: Dict) -> bool:
+        """Return ``True`` for either supported assistant role spelling."""
+        return str(turn.get("role", "")).lower() in {"assistant", "agent"}
+
+    def _select_multiturn_target(self, batch: Dict, mode: str) -> Dict:
+        """Choose the assistant turn whose audio actions will receive the GRPO loss.
+
+        The v1 path accepts one strictly alternating conversation per rank. During
+        training it samples uniformly from assistant turns starting before
+        ``multiturn_grpo_max_prefix_seconds``; evaluation deterministically selects
+        the last eligible turn. The returned copy is augmented with timeline and
+        turn-count indices used to validate prefix traversal.
+        """
+        turn_metadata = batch.get("turn_metadata")
+        if not isinstance(turn_metadata, list) or len(turn_metadata) != 1:
+            raise ValueError(
+                "The minimal multi-turn GRPO path requires exactly one conversation per rank "
+                "(train batch size 1) and dataset-provided turn_metadata."
+            )
+
+        turns = turn_metadata[0]
+        if not turns:
+            raise ValueError("Cannot select a multi-turn GRPO target from an empty conversation.")
+        roles = [str(turn.get("role", "")).lower() for turn in turns]
+        if roles[0] != "user" or any(left == right for left, right in zip(roles, roles[1:])):
+            raise ValueError(
+                "The minimal multi-turn GRPO path currently supports strictly alternating "
+                "conversations that start with a user turn."
+            )
+
+        max_prefix_seconds = float(self.cfg.get("multiturn_grpo_max_prefix_seconds", float("inf")))
+        candidates = [
+            idx
+            for idx, turn in enumerate(turns)
+            if self._is_assistant_turn(turn)
+            and idx > 0
+            and self._is_user_turn(turns[idx - 1])
+            and float(turn["start"]) <= max_prefix_seconds
+        ]
+        if not candidates:
+            raise ValueError(
+                "No assistant turn satisfies the multi-turn GRPO target constraints. "
+                f"max_prefix_seconds={max_prefix_seconds}."
+            )
+
+        if mode == "train":
+            target_metadata_idx = random.choice(candidates)
+        else:
+            target_metadata_idx = candidates[-1]
+        target_turn = copy.deepcopy(turns[target_metadata_idx])
+        target_turn["metadata_idx"] = target_metadata_idx
+        target_turn["assistant_turn_idx"] = sum(self._is_assistant_turn(turn) for turn in turns[:target_metadata_idx])
+        target_turn["user_turn_idx"] = sum(self._is_user_turn(turn) for turn in turns[:target_metadata_idx])
+        return target_turn
+
+    def _encode_turn_text(self, text: str, num_repeats: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """Tokenize one assistant transcript and replicate it for grouped rollouts.
+
+        Returns padded-free token rows containing a terminal text EOS and their
+        identical lengths, both with batch size ``num_repeats``.
+        """
+        tokenizer_name = list(self.cfg.text_tokenizers.keys())[0]
+        token_ids = self.tokenizer.encode(text, tokenizer_name=tokenizer_name) + [self.eos_id]
+        tokens = torch.tensor(token_ids, dtype=torch.long, device=self.device).unsqueeze(0)
+        tokens = tokens.repeat(num_repeats, 1)
+        lens = torch.full((num_repeats,), len(token_ids), dtype=torch.long, device=self.device)
+        return tokens, lens
+
+    def _encode_turn_phonemes(self, ipa: str, num_repeats: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """Encode GT IPA conditioning for one assistant turn and grouped rollouts.
+
+        GT phonemes are part of the rollout state in the minimal implementation;
+        they are not sampled actions and receive no phoneme PO loss.
+        """
+        if self.phoneme_tokenizer is None:
+            raise RuntimeError("The minimal multi-turn GRPO path requires a phoneme tokenizer.")
+        token_ids = (
+            [self.phoneme_tokenizer.bos_token_id]
+            + self.phoneme_tokenizer.encode(ipa or "")
+            + [self.phoneme_tokenizer.eos_token_id]
+        )
+        tokens = torch.tensor(token_ids, dtype=torch.long, device=self.device).unsqueeze(0)
+        tokens = tokens.repeat(num_repeats, 1)
+        lens = torch.full((num_repeats,), len(token_ids), dtype=torch.long, device=self.device)
+        return tokens, lens
+
+    @staticmethod
+    def _reset_streaming_turn_state(state) -> None:
+        """Reset turn-local streaming flags while retaining the causal prefix cache.
+
+        Transformer/Mamba cache state, absolute audio progress, and the last audio
+        input remain intact so the next user/assistant pair continues the same
+        conversation. EOS, text, and phoneme completion flags are per-turn and are
+        therefore cleared.
+        """
+        state.finished.zero_()
+        state.text_finished.zero_()
+        state.audio_prediction_start_idx.fill_(-1)
+        state.audio_prediction_end_idx.fill_(-1)
+        state.phoneme_prediction_start_idx.fill_(-1)
+        state.phoneme_prediction_end_idx.fill_(-1)
+        for attr in (
+            "turn_text_tokens_seen",
+            "phoneme_steps",
+            "phoneme_stream_ended",
+            "phoneme_eos_detected",
+        ):
+            if hasattr(state, attr):
+                getattr(state, attr).zero_()
+        state.last_phoneme_tokens = None
+        state.gt_audio_embeddings = None
+        state.gt_audio_lens = None
+        state.gt_phoneme_embeddings = None
+        state.gt_phoneme_lens = None
+
+    def _set_gt_turn_phonemes(self, state, phoneme_tokens: torch.Tensor, phoneme_lens: torch.Tensor) -> None:
+        """Install stacked GT phoneme embeddings for the current assistant turn.
+
+        ``streaming_step`` consumes these embeddings instead of predicted phoneme
+        feedback. This keeps the first multi-turn objective audio-only and makes
+        rollout/replay conditioning deterministic.
+        """
+        stacked, stacked_lens = self.stack_codes(
+            phoneme_tokens.unsqueeze(1),
+            phoneme_lens,
+            self.phoneme_tokenizer.bos_token_id,
+            self.phoneme_tokenizer.eos_token_id,
+            self.phoneme_stacking_factor,
+            1,
+        )
+        state.gt_phoneme_embeddings = self.embed_phoneme_tokens(stacked)
+        state.gt_phoneme_lens = stacked_lens
+
+    def _set_gt_assistant_audio(self, state, audio: torch.Tensor, audio_lens: torch.Tensor) -> None:
+        """Teacher-force one prior assistant waveform into the streaming prefix.
+
+        The waveform is codec-encoded, converted, wrapped with audio BOS/EOS, and
+        frame-stacked exactly like model inference. Its embeddings are offset by
+        the state's absolute audio progress so subsequent streaming steps consume
+        the GT assistant actions while extending the existing conversation cache.
+        """
+        audio_codes, audio_codes_lens = self._codec_helper.audio_to_codes(audio, audio_lens)
+        if self._codec_converter is not None:
+            audio_codes = self._codec_converter.convert_original_to_new(
+                audio_tokens=audio_codes, audio_lens=audio_codes_lens
+            ).long()
+        audio_codes, audio_codes_lens = add_special_tokens(
+            codes=audio_codes,
+            codes_len=audio_codes_lens,
+            bos_id=self.audio_bos_id,
+            eos_id=self.audio_eos_id,
+        )
+        audio_codes, audio_codes_lens = self.stack_codes(
+            audio_codes,
+            audio_codes_lens,
+            self.audio_bos_id,
+            self.audio_eos_id,
+            self.frame_stacking_factor,
+            self.num_audio_codebooks,
+        )
+        audio_codes = audio_codes[:, :, :-1]
+        audio_codes_lens = audio_codes_lens - 1
+        turn_embeddings = self.embed_audio_tokens(audio_codes)
+
+        if not torch.equal(state.audio_steps, state.audio_steps[:1].expand_as(state.audio_steps)):
+            raise RuntimeError("Repeated GRPO states diverged before GT-prefix audio prefill.")
+        offset = int(state.audio_steps[0].item())
+        if offset > 0:
+            prefix = turn_embeddings.new_zeros(turn_embeddings.size(0), offset, turn_embeddings.size(2))
+            turn_embeddings = torch.cat([prefix, turn_embeddings], dim=1)
+        state.gt_audio_embeddings = turn_embeddings
+        state.gt_audio_lens = audio_codes_lens + offset
+
+    def _prepare_user_turn_embedding(self, audio: torch.Tensor, audio_lens: torch.Tensor) -> torch.Tensor:
+        """Codec-encode one user turn for timeline-aligned speech conditioning.
+
+        A leading zero embedding matches the BOS alignment used by supervised
+        multi-turn training. The returned tensor is ready for
+        :meth:`streaming_prefill`.
+        """
+        user_codes, user_codes_lens = self._codec_helper.audio_to_codes(audio, audio_lens)
+        if self._codec_converter is not None:
+            user_codes = self._codec_converter.convert_original_to_new(
+                audio_tokens=user_codes, audio_lens=user_codes_lens
+            ).long()
+        user_codes, user_codes_lens = self.stack_codes(
+            user_codes,
+            user_codes_lens,
+            self.audio_bos_id,
+            self.audio_eos_id,
+            self.frame_stacking_factor,
+            self.num_audio_codebooks,
+        )
+        user_embeddings = self.embed_audio_tokens(user_codes)
+        max_len = int(user_codes_lens.max().item())
+        user_embeddings = user_embeddings[:, :max_len]
+        bos_pad = user_embeddings.new_zeros(user_embeddings.size(0), 1, user_embeddings.size(2))
+        return torch.cat([bos_pad, user_embeddings], dim=1)
+
+    def _prefill_user_turn(
+        self,
+        state,
+        user_audio: torch.Tensor,
+        user_audio_lens: torch.Tensor,
+        turn_text: torch.Tensor,
+        turn_text_lens: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Append a user turn to the cache before generating its assistant response.
+
+        User speech embeddings (or duration-only silence when disabled) fill the
+        conversation timeline. The final ``streaming_speech_delay`` positions also
+        consume the first assistant text tokens, matching the streaming training
+        alignment. Remaining text tokens and lengths are returned for generation.
+        """
+        batch_size = turn_text.size(0)
+        delay_tokens = int(state.config.training_mode.streaming_speech_delay)
+        if self.cfg.get("condition_on_user_speech", False):
+            user_embeddings = self._prepare_user_turn_embedding(user_audio, user_audio_lens)
+            if user_embeddings.size(1) < delay_tokens:
+                pad = user_embeddings.new_zeros(
+                    batch_size, delay_tokens - user_embeddings.size(1), user_embeddings.size(2)
+                )
+                user_embeddings = torch.cat([pad, user_embeddings], dim=1)
+            user_prefill_steps = user_embeddings.size(1)
+            user_prefill_tokens = torch.full(
+                (batch_size, user_prefill_steps),
+                self.pad_id,
+                dtype=turn_text.dtype,
+                device=turn_text.device,
+            )
+        else:
+            samples_per_step = self.codec_model_samples_per_frame * self.frame_stacking_factor
+            user_prefill_steps = max(int(round(user_audio.size(-1) / samples_per_step)), 1)
+            user_prefill_tokens = torch.full(
+                (batch_size, user_prefill_steps),
+                self.pad_id,
+                dtype=turn_text.dtype,
+                device=turn_text.device,
+            )
+            user_embeddings = None
+            delay_tokens = min(delay_tokens, user_prefill_steps)
+
+        num_warmup = min(delay_tokens, int(turn_text_lens.min().item()), turn_text.size(1))
+        warmup_tokens = torch.full(
+            (batch_size, delay_tokens),
+            self.pad_id,
+            dtype=turn_text.dtype,
+            device=turn_text.device,
+        )
+        if num_warmup > 0:
+            warmup_tokens[:, :num_warmup] = turn_text[:, :num_warmup]
+        remaining_text = turn_text[:, num_warmup:]
+        remaining_lens = torch.clamp(turn_text_lens - num_warmup, min=0)
+
+        if user_embeddings is not None and delay_tokens > 0:
+            warmup_user = user_embeddings[:, -delay_tokens:]
+            user_embeddings = user_embeddings[:, :-delay_tokens]
+            user_prefill_tokens = user_prefill_tokens[:, :-delay_tokens]
+        else:
+            warmup_user = None
+
+        if user_prefill_tokens.size(1) > 0:
+            state = self.streaming_prefill(
+                state=state,
+                text_tokens=user_prefill_tokens,
+                use_inference_mode=True,
+                user_audio_channel_embedding=user_embeddings,
+            )
+        for step_idx in range(delay_tokens):
+            user_step = warmup_user[:, step_idx] if warmup_user is not None else None
+            state.finished.zero_()
+            state, _, _ = self.streaming_step(
+                state=state,
+                text_tokens=warmup_tokens[:, step_idx],
+                user_audio_channel_embedding=user_step,
+                prefill_like_step=True,
+                prefill_like_is_last_step=step_idx == delay_tokens - 1,
+                use_inference_mode=True,
+            )
+        return remaining_text, remaining_lens
+
+    def _run_streaming_assistant_turn(
+        self,
+        state,
+        text: torch.Tensor,
+        text_lens: torch.Tensor,
+        max_steps: int,
+    ) -> None:
+        """Advance one assistant turn until every rollout emits audio EOS or hits its limit.
+
+        Text is streamed relative to the turn's starting position. Depending on
+        state configuration, audio feedback is either GT (prefix turns) or sampled
+        policy output (the selected target turn).
+        """
+        turn_offset = state.text_tokens_seen.clone()
+        batch_size = text.size(0)
+        device = text.device
+        for _ in range(max_steps):
+            relative_position = state.text_tokens_seen - turn_offset
+            text_exhausted = relative_position >= text_lens
+            if text.size(1) == 0:
+                current_tokens = torch.full((batch_size,), self.eos_id, dtype=torch.long, device=device)
+            else:
+                position = relative_position.clamp(min=0, max=text.size(1) - 1)
+                current_tokens = text[torch.arange(batch_size, device=device), position]
+                current_tokens = torch.where(
+                    text_exhausted,
+                    torch.full_like(current_tokens, self.eos_id),
+                    current_tokens,
+                )
+            state, _, _ = self.streaming_step(
+                state=state,
+                text_tokens=current_tokens,
+                use_inference_mode=True,
+            )
+            if bool(state.finished.all().item()):
+                return
+
+    @torch.inference_mode()
+    def _generate_multiturn_target_rollouts(
+        self,
+        batch: Dict,
+        target_turn: Dict,
+        num_generations: int,
+        use_local_transformer_for_inference: bool,
+    ):
+        """Generate grouped audio rollouts for one selected assistant turn.
+
+        The method initializes ``num_generations`` identical streaming states, then
+        walks the conversation in chronological user/assistant pairs. Every prior
+        user turn is prefixed as speech conditioning and every prior assistant turn
+        is teacher-forced with GT phonemes/audio. Only the selected assistant turn
+        samples audio. Prediction bookkeeping is reset after its user prefill so
+        finalization returns target-turn audio only, never prefix or future audio.
+
+        Runtime checks verify that exactly N user turns and N-1 assistant turns were
+        consumed for assistant turn N and that generated codec lengths fit the
+        source turn's fixed timeline window.
+        """
+        if batch["audio"].size(0) != 1:
+            raise ValueError("The minimal multi-turn GRPO rollout requires train batch size 1.")
+        if num_generations < 2:
+            raise ValueError("Multi-turn GRPO requires at least two generations per target turn.")
+        if not hasattr(self, "_codec_sil_codes_buffer"):
+            self._generate_codec_silence_buffer()
+
+        if "context_audio_codes" in batch:
+            context_codes = batch["context_audio_codes"].repeat_interleave(num_generations, dim=0)
+            context_lens = batch["context_audio_codes_lens"].repeat_interleave(num_generations, dim=0)
+        else:
+            context_codes, context_lens = self._codec_helper.audio_to_codes(
+                batch["context_audio"], batch["context_audio_lens"]
+            )
+            context_codes = context_codes.repeat_interleave(num_generations, dim=0)
+            context_lens = context_lens.repeat_interleave(num_generations, dim=0)
+        context_text = batch["context_text_tokens"].repeat_interleave(num_generations, dim=0)
+        context_text_lens = batch["context_text_tokens_lens"].repeat_interleave(num_generations, dim=0)
+
+        state = self.streaming_init(
+            context_audio_codes=context_codes,
+            context_audio_codes_lens=context_lens,
+            context_text_tokens=context_text,
+            context_text_tokens_lens=context_text_lens,
+            use_cfg=False,
+            cfg_scale=1.0,
+            use_local_transformer=use_local_transformer_for_inference,
+            temperature=self.audio_sampling_temperature,
+            topk=self.audio_sampling_topk,
+            phoneme_temperature=self.phoneme_sampling_temperature,
+            phoneme_topk=self.phoneme_sampling_topk,
+            phoneme_input_type="gt",
+            phoneme_sampling_method="argmax",
+            use_inference_mode=True,
+        )
+
+        turns = batch["turn_metadata"][0]
+        user_turn_row = 0
+        prefix_assistant_turns = 0
+        target_seen = False
+        target_metadata_idx = int(target_turn["metadata_idx"])
+        for metadata_idx, turn in enumerate(turns[: target_metadata_idx + 1]):
+            if self._is_user_turn(turn):
+                continue
+            if (
+                not self._is_assistant_turn(turn)
+                or metadata_idx == 0
+                or not self._is_user_turn(turns[metadata_idx - 1])
+            ):
+                raise ValueError("Expected every assistant turn to be immediately preceded by a user turn.")
+
+            self._reset_streaming_turn_state(state)
+            turn_text, turn_text_lens = self._encode_turn_text(str(turn["text"]), num_generations)
+            turn_phonemes, turn_phoneme_lens = self._encode_turn_phonemes(str(turn.get("ipa", "")), num_generations)
+            self._set_gt_turn_phonemes(state, turn_phonemes, turn_phoneme_lens)
+
+            user_audio = batch["user_audio_turn_splitted"][user_turn_row : user_turn_row + 1]
+            user_audio_lens = batch["user_audio_turn_splitted_lens"][user_turn_row : user_turn_row + 1]
+            user_turn_row += 1
+            user_audio = user_audio.repeat_interleave(num_generations, dim=0)
+            user_audio_lens = user_audio_lens.repeat_interleave(num_generations, dim=0)
+
+            is_target = metadata_idx == target_metadata_idx
+            turn_text, turn_text_lens = self._prefill_user_turn(
+                state, user_audio, user_audio_lens, turn_text, turn_text_lens
+            )
+            if is_target:
+                # User prefill may append one tensor containing many silence frames, while
+                # streaming EOS bookkeeping assumes one frame-stack per list entry. Keep
+                # the populated cache/last-audio token but start target output indexing at 0.
+                state.all_predictions = []
+                state.audio_prediction_start_idx.fill_(-1)
+                state.audio_prediction_end_idx.fill_(-1)
+
+            turn_steps = max(int(turn["end_frame"]) - int(turn["start_frame"]), 1)
+            if not is_target:
+                prefix_assistant_turns += 1
+                start_sample = int(round(float(turn["start"]) * self.sample_rate))
+                end_sample = int(round(float(turn["end"]) * self.sample_rate))
+                gt_audio = batch["audio"][:, start_sample:end_sample].repeat_interleave(num_generations, dim=0)
+                gt_audio_lens = torch.full(
+                    (num_generations,),
+                    gt_audio.size(1),
+                    dtype=torch.long,
+                    device=gt_audio.device,
+                )
+                self._set_gt_assistant_audio(state, gt_audio, gt_audio_lens)
+                max_steps = turn_steps + int(turn_text_lens.max().item()) + 8
+            else:
+                state.gt_audio_embeddings = None
+                state.gt_audio_lens = None
+                max_steps = min(self.max_decoder_steps, turn_steps)
+                target_seen = True
+
+            self._run_streaming_assistant_turn(state, turn_text, turn_text_lens, max_steps)
+            if is_target:
+                break
+            state.gt_audio_embeddings = None
+            state.gt_audio_lens = None
+            state.all_predictions = []
+
+        if not target_seen:
+            raise RuntimeError(f"Selected assistant turn metadata_idx={target_metadata_idx} was not generated.")
+        expected_user_turns = int(target_turn["user_turn_idx"])
+        if user_turn_row != expected_user_turns:
+            raise RuntimeError(
+                "GT-prefix traversal consumed an unexpected number of user turns: "
+                f"consumed={user_turn_row}, expected={expected_user_turns}."
+            )
+        expected_prefix_assistant_turns = int(target_turn["assistant_turn_idx"])
+        if prefix_assistant_turns != expected_prefix_assistant_turns:
+            raise RuntimeError(
+                "GT-prefix traversal consumed an unexpected number of assistant turns: "
+                f"consumed={prefix_assistant_turns}, expected={expected_prefix_assistant_turns}."
+            )
+
+        output = self.streaming_finalize(state, use_inference_mode=True)
+        target_capacity = (
+            int(target_turn["end_frame"]) - int(target_turn["start_frame"])
+        ) * self.frame_stacking_factor
+        if (output.audio_codes_len > target_capacity).any():
+            raise RuntimeError(
+                "Selected-turn rollout exceeded its target window: "
+                f"lengths={output.audio_codes_len.tolist()}, capacity={target_capacity}."
+            )
+        target_turn["prefix_user_turns"] = user_turn_row
+        target_turn["prefix_assistant_turns"] = prefix_assistant_turns
+        return output
+
+    def _prepare_user_audio_embeddings_for_po(self, batch: Dict) -> Optional[torch.Tensor]:
+        """Restore packed user-turn embeddings onto the full replay timeline.
+
+        The multi-turn dataset packs user waveforms across turns and records each
+        turn's conversation index and sample boundaries. This method codec-encodes
+        the packed waveforms and scatters their real (non-special) embeddings into
+        a ``[1, timeline, hidden]`` tensor. Training-time silence/trim augmentation
+        is intentionally omitted so rollout and teacher-forced PO replay share the
+        same deterministic GT prefix.
+        """
+        if not self.cfg.get("condition_on_user_speech", False) or batch.get("user_audio_turn_splitted") is None:
+            return None
+        if batch["text"].size(0) != 1:
+            raise ValueError("The minimal multi-turn GRPO replay requires train batch size 1.")
+
+        user_audio = batch["user_audio_turn_splitted"]
+        user_audio_lens = batch["user_audio_turn_splitted_lens"]
+        user_codes, user_codes_lens = self._codec_helper.audio_to_codes(user_audio, user_audio_lens)
+        if self._codec_converter is not None:
+            user_codes = self._codec_converter.convert_original_to_new(
+                audio_tokens=user_codes, audio_lens=user_codes_lens
+            ).long()
+        user_codes, user_codes_lens = self.stack_codes(
+            user_codes,
+            user_codes_lens,
+            self.audio_bos_id,
+            self.audio_eos_id,
+            self.frame_stacking_factor,
+            self.num_audio_codebooks,
+        )
+        packed_embeddings = self.embed_audio_tokens(user_codes)
+
+        timeline_len = batch["text"].size(1)
+        restored = packed_embeddings.new_zeros(1, timeline_len, packed_embeddings.size(-1))
+        samples_per_step = self.codec_model_samples_per_frame * self.frame_stacking_factor
+        indices = batch["user_audio_turn_splitted_indices"].to(packed_embeddings.device)
+        for turn_idx, (batch_idx, start_sample, end_sample) in enumerate(indices):
+            if int(batch_idx.item()) != 0:
+                raise ValueError("Unexpected packed user-turn batch index in batch-size-1 replay.")
+            start_frame = int(torch.ceil(start_sample.float() / samples_per_step).item())
+            end_frame = int(end_sample.item()) // samples_per_step
+            start_frame = max(0, min(start_frame, timeline_len))
+            end_frame = max(start_frame, min(end_frame, timeline_len))
+            copy_len = end_frame - start_frame
+            if copy_len <= 0:
+                continue
+            turn_len = int(user_codes_lens[turn_idx].item())
+            real_start = 1
+            real_end = max(real_start, turn_len - 1)
+            turn_embedding = packed_embeddings[turn_idx, real_start:real_end]
+            copy_len = min(copy_len, turn_embedding.size(0))
+            if copy_len > 0:
+                restored[0, start_frame : start_frame + copy_len] = turn_embedding[:copy_len]
+        return restored
+
+    def _build_multiturn_po_replay(
+        self,
+        batch: Dict,
+        target_turn: Dict,
+        target_codes: torch.Tensor,
+        target_codes_lens: torch.Tensor,
+        num_generations: int,
+    ) -> tuple[Dict, torch.Tensor, torch.Tensor]:
+        """Build teacher-forced PO inputs for GT prefix plus sampled target audio.
+
+        GT codec frames are copied only up to the target start. Each rollout's
+        sampled target codes are inserted into the source turn's fixed frame window;
+        shorter generations leave zero-filled future positions, which are causally
+        after every optimized action. ``audio_action_mask`` marks only inserted
+        sampled target timesteps, excluding GT prefix, user regions, padding, and
+        unsampled suffixes from GRPO/KL/entropy terms.
+
+        The replay batch copies only fields consumed by ``process_batch`` to avoid
+        multiplying full conversation waveforms and packed-turn tensors by the
+        rollout group size. User-prefix embeddings are detached before chunking
+        because the prefix is conditioning state and would otherwise share one
+        autograd graph across independent backward calls.
+        """
+        if batch["text"].size(0) != 1:
+            raise ValueError("The minimal multi-turn GRPO replay requires train batch size 1.")
+
+        if "audio_codes" in batch:
+            gt_codes = batch["audio_codes"]
+            gt_codes_lens = batch["audio_codes_lens"]
+        else:
+            gt_codes, gt_codes_lens = self._codec_helper.audio_to_codes(batch["audio"], batch["audio_lens"])
+        del gt_codes_lens
+
+        start_frame = int(target_turn["start_frame"])
+        end_frame = int(target_turn["end_frame"])
+        if end_frame <= start_frame:
+            raise ValueError(f"Invalid target turn frame range: [{start_frame}, {end_frame}).")
+        stacking_factor = int(self.frame_stacking_factor)
+        prefix_raw_len = start_frame * stacking_factor
+        total_raw_len = end_frame * stacking_factor
+        target_raw_capacity = total_raw_len - prefix_raw_len
+
+        replay_codes = gt_codes.new_zeros(num_generations, gt_codes.size(1), total_raw_len)
+        prefix_copy_len = min(prefix_raw_len, gt_codes.size(-1))
+        if prefix_copy_len > 0:
+            replay_codes[:, :, :prefix_copy_len] = gt_codes[:, :, :prefix_copy_len].repeat(num_generations, 1, 1)
+
+        action_mask = torch.zeros(
+            num_generations,
+            end_frame,
+            dtype=torch.bool,
+            device=target_codes.device,
+        )
+        for item_idx in range(num_generations):
+            generated_len = min(int(target_codes_lens[item_idx].item()), target_raw_capacity)
+            if generated_len > 0:
+                replay_codes[
+                    item_idx,
+                    :,
+                    prefix_raw_len : prefix_raw_len + generated_len,
+                ] = target_codes[item_idx, :, :generated_len]
+            generated_steps = min(
+                (generated_len + stacking_factor - 1) // stacking_factor,
+                end_frame - start_frame,
+            )
+            action_mask[item_idx, start_frame : start_frame + generated_steps] = True
+
+        replay_lens = torch.full(
+            (num_generations,),
+            total_raw_len,
+            dtype=torch.long,
+            device=replay_codes.device,
+        )
+        replay_keys = {
+            "text",
+            "text_lens",
+            "context_text_tokens",
+            "context_text_tokens_lens",
+            "context_audio",
+            "context_audio_lens",
+            "context_audio_codes",
+            "context_audio_codes_lens",
+            "phoneme_tokens",
+            "phoneme_tokens_lens",
+            "phoneme_turn_dropout",
+            "task",
+            "agent_mask",
+            "agent_mask_lens",
+            "raw_texts",
+            "languages",
+            "sample_id",
+            "dataset_names",
+        }
+        replay_batch = self.repeat_items_in_batch(
+            {key: value for key, value in batch.items() if key in replay_keys},
+            num_generations,
+        )
+        replay_batch["raw_texts"] = [str(target_turn["text"])] * num_generations
+        replay_batch["text"] = replay_batch["text"][:, : end_frame + 1]
+        replay_batch["text_lens"] = torch.full(
+            (num_generations,),
+            replay_batch["text"].size(1),
+            dtype=torch.long,
+            device=replay_batch["text"].device,
+        )
+        if "phoneme_tokens" in replay_batch:
+            replay_batch["phoneme_tokens"] = replay_batch["phoneme_tokens"][:, : end_frame + 1]
+            replay_batch["phoneme_tokens_lens"] = torch.full(
+                (num_generations,),
+                replay_batch["phoneme_tokens"].size(1),
+                dtype=torch.long,
+                device=replay_batch["phoneme_tokens"].device,
+            )
+        replay_batch["agent_mask"] = replay_batch["agent_mask"][:, :end_frame]
+        replay_batch["agent_mask_lens"] = torch.full(
+            (num_generations,),
+            end_frame,
+            dtype=torch.long,
+            device=replay_batch["agent_mask"].device,
+        )
+        replay_batch["audio_action_mask"] = action_mask
+
+        user_audio_embedded = self._prepare_user_audio_embeddings_for_po(batch)
+        if user_audio_embedded is not None:
+            # The GT prefix is conditioning state, not a sampled action. Detach it before
+            # repeating so independent teacher-forced chunks do not share one autograd graph.
+            replay_batch["user_audio_embedded"] = user_audio_embedded.detach().repeat_interleave(
+                num_generations, dim=0
+            )
+        return replay_batch, replay_codes, replay_lens
+
     def _unstack_rollout_phoneme_tokens(self, output) -> tuple[torch.Tensor, torch.Tensor]:
         """Convert inference's offset stacked phoneme timeline into padded token sequences.
 
@@ -646,7 +1331,11 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
             context_audio_codes_lens=context_audio_codes_lens,
             phoneme_tokens=batch.get('phoneme_tokens'),
             phoneme_tokens_lens=batch.get('phoneme_tokens_lens'),
+            phoneme_turn_dropout=batch.get('phoneme_turn_dropout'),
             mode=mode,
+            task=batch.get('task'),
+            agent_mask=batch.get('agent_mask'),
+            user_audio_embedded=batch.get('user_audio_embedded'),
         )
 
     def _format_text_table(self, headers: List[str], rows: List[List[str]]) -> str:
@@ -791,51 +1480,91 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
             Dict containing mean/std rewards, per-item metrics, predicted codes,
             advantages, group validities, and timing information.
         """
-        batch_repeated = self.repeat_items_in_batch(batch, num_generations_per_item)
+        source_batch = batch
+        multiturn_target = None
+        if self.multiturn_grpo_enabled:
+            multiturn_target = self._select_multiturn_target(batch, mode=mode)
+            batch = dict(batch)
+            batch["raw_texts"] = [str(multiturn_target["text"])]
+            total_assistant_turns = sum(self._is_assistant_turn(turn) for turn in source_batch["turn_metadata"][0])
+            sample_id = source_batch.get("sample_id", ["unknown"])[0]
+            logging.info(
+                "[multiturn_grpo_target] "
+                f"sample_id={sample_id} "
+                f"assistant_turn={int(multiturn_target['assistant_turn_idx']) + 1}/{total_assistant_turns} "
+                f"metadata_idx={multiturn_target['metadata_idx']} "
+                f"prefix_user_turns={multiturn_target['user_turn_idx']} "
+                f"prefix_assistant_turns={multiturn_target['assistant_turn_idx']} "
+                f"window={float(multiturn_target['start']):.2f}-{float(multiturn_target['end']):.2f}s "
+                f"text={str(multiturn_target['text'])[:160]!r}"
+            )
+            batch_repeated = {
+                "raw_texts": batch["raw_texts"] * num_generations_per_item,
+                "languages": batch.get("languages", ["en"]) * num_generations_per_item,
+                "sample_id": batch.get("sample_id", ["unknown"]) * num_generations_per_item,
+            }
+        else:
+            batch_repeated = self.repeat_items_in_batch(batch, num_generations_per_item)
         rollout_cfg_mode = self.rollout_cfg_mode if mode == 'train' else 'off'
 
-        phoneme_input_type = 'pred'
-        gt_phoneme_input_prob = self.cfg.get('gt_phoneme_input_prob', 0.0)
-        can_use_gt_phonemes = ('phoneme_tokens' in batch_repeated) and ('phoneme_tokens_lens' in batch_repeated)
-        if can_use_gt_phonemes and gt_phoneme_input_prob > 0.0 and mode == 'train':
-            phoneme_input_type = 'gt' if random.random() < gt_phoneme_input_prob else 'pred'
+        phoneme_input_type = 'gt' if self.multiturn_grpo_enabled else 'pred'
+        if not self.multiturn_grpo_enabled:
+            gt_phoneme_input_prob = self.cfg.get('gt_phoneme_input_prob', 0.0)
+            can_use_gt_phonemes = ('phoneme_tokens' in batch_repeated) and ('phoneme_tokens_lens' in batch_repeated)
+            if can_use_gt_phonemes and gt_phoneme_input_prob > 0.0 and mode == 'train':
+                phoneme_input_type = 'gt' if random.random() < gt_phoneme_input_prob else 'pred'
 
         generation_start_time = time.perf_counter()
         logging.info(f"Inference started (rollout_cfg_mode={rollout_cfg_mode})")
-
-        def run_inference(inference_batch, use_cfg):
-            return self.infer_batch(
-                batch=inference_batch,
-                max_decoder_steps=self.max_decoder_steps,
-                temperature=self.audio_sampling_temperature,
-                topk=self.audio_sampling_topk,
-                phoneme_temperature=self.phoneme_sampling_temperature,
-                phoneme_topk=self.phoneme_sampling_topk,
-                use_cfg=use_cfg,
-                cfg_scale=self.inference_cfg_scale,
+        if self.multiturn_grpo_enabled:
+            output = self._generate_multiturn_target_rollouts(
+                batch=source_batch,
+                target_turn=multiturn_target,
+                num_generations=num_generations_per_item,
                 use_local_transformer_for_inference=use_local_transformer_for_inference,
-                phoneme_input_type=phoneme_input_type,
-                phoneme_sampling_method=self.cfg.get('inference_phoneme_sampling_method', 'argmax'),
-                force_dropout_text=False,
-                use_teacher_forced=False,
-                use_inference_mode=False,
             )
+            rollout_cfg_mask = torch.zeros(len(batch_repeated['raw_texts']), device=self.device, dtype=torch.bool)
+        else:
 
-        use_cfg = rollout_cfg_mode == 'alternate' and int(self.global_step) % 2 == 1
-        output = run_inference(batch_repeated, use_cfg=use_cfg)
-        rollout_cfg_mask = torch.full(
-            (len(batch_repeated['raw_texts']),),
-            fill_value=use_cfg,
-            device=self.device,
-            dtype=torch.bool,
-        )
+            def run_inference(inference_batch, use_cfg):
+                return self.infer_batch(
+                    batch=inference_batch,
+                    max_decoder_steps=self.max_decoder_steps,
+                    temperature=self.audio_sampling_temperature,
+                    topk=self.audio_sampling_topk,
+                    phoneme_temperature=self.phoneme_sampling_temperature,
+                    phoneme_topk=self.phoneme_sampling_topk,
+                    use_cfg=use_cfg,
+                    cfg_scale=self.inference_cfg_scale,
+                    use_local_transformer_for_inference=use_local_transformer_for_inference,
+                    phoneme_input_type=phoneme_input_type,
+                    phoneme_sampling_method=self.cfg.get('inference_phoneme_sampling_method', 'argmax'),
+                    force_dropout_text=False,
+                    use_teacher_forced=False,
+                    use_inference_mode=False,
+                )
+
+            use_cfg = rollout_cfg_mode == 'alternate' and int(self.global_step) % 2 == 1
+            output = run_inference(batch_repeated, use_cfg=use_cfg)
+            rollout_cfg_mask = torch.full(
+                (len(batch_repeated['raw_texts']),),
+                fill_value=use_cfg,
+                device=self.device,
+                dtype=torch.bool,
+            )
         logging.info("Inference ended")
         audio_generation_time_sec = time.perf_counter() - generation_start_time
 
-        predicted_audio = output.predicted_audio
-        predicted_audio_lens = output.predicted_audio_lens
-        predicted_codes = output.predicted_codes
-        predicted_codes_lens = output.predicted_codes_lens
+        if self.multiturn_grpo_enabled:
+            predicted_audio = output.audio
+            predicted_audio_lens = output.audio_len
+            predicted_codes = output.audio_codes
+            predicted_codes_lens = output.audio_codes_len
+        else:
+            predicted_audio = output.predicted_audio
+            predicted_audio_lens = output.predicted_audio_lens
+            predicted_codes = output.predicted_codes
+            predicted_codes_lens = output.predicted_codes_lens
         predicted_phoneme_tokens = None
         predicted_phoneme_tokens_lens = None
         if phoneme_input_type == 'pred':
@@ -906,6 +1635,17 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
                 'language': str(languages[idx]) if idx < len(languages) else "unknown",
                 'used_cfg': bool(rollout_cfg_mask[idx].item()),
             }
+            if multiturn_target is not None:
+                item_metrics.update(
+                    {
+                        'target_assistant_turn': int(multiturn_target['assistant_turn_idx']) + 1,
+                        'target_metadata_idx': int(multiturn_target['metadata_idx']),
+                        'prefix_user_turns': int(multiturn_target['prefix_user_turns']),
+                        'prefix_assistant_turns': int(multiturn_target['prefix_assistant_turns']),
+                        'target_start_sec': float(multiturn_target['start']),
+                        'target_end_sec': float(multiturn_target['end']),
+                    }
+                )
 
             best_ssim_achievable = self.cfg.get('best_ssim_achievable', 0.9)
             mean_cer_dataset = self.cfg.get('mean_cer_dataset', 0.1)
@@ -1033,6 +1773,7 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
                 else None
             ),
             'rollout_phoneme_input_type': phoneme_input_type,
+            'multiturn_target': multiturn_target,
             'timings': {
                 'audio_generation_time_sec': float(audio_generation_time_sec),
                 'audio_save_time_sec': float(audio_save_time_sec),
@@ -1143,6 +1884,17 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
         predicted_codes = self._codec_converter.convert_new_to_original(
             audio_tokens=predicted_codes, audio_lens=predicted_codes_lens
         )
+        if self.multiturn_grpo_enabled:
+            target_turn = generated_codes_and_metrics.get("multiturn_target")
+            if target_turn is None:
+                raise RuntimeError("Multi-turn rollout did not return selected target metadata.")
+            batch_repeated, predicted_codes, predicted_codes_lens = self._build_multiturn_po_replay(
+                batch=batch,
+                target_turn=target_turn,
+                target_codes=predicted_codes,
+                target_codes_lens=predicted_codes_lens,
+                num_generations=n_generations_per_item,
+            )
         batch_repeated['audio_codes'] = predicted_codes
         batch_repeated['audio_codes_lens'] = predicted_codes_lens
         if generated_codes_and_metrics.get('rollout_phoneme_input_type') == 'pred':
@@ -1166,6 +1918,7 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
         group_validities: torch.Tensor,
         sampling_temperature: Optional[float] = None,
         forbidden_token_ids: Optional[List[int]] = None,
+        action_mask: Optional[torch.Tensor] = None,
     ):
         """Compute normalized GRPO, exact forward KL, and entropy for parallel action streams.
 
@@ -1182,7 +1935,20 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
         rejected as reward-uninformative must not update the policy through a
         hidden KL-only path.
         """
-        loss_mask = get_mask_from_lengths(target_lens).float()
+        loss_mask = get_mask_from_lengths(target_lens, x=targets[:, 0, :])
+        if action_mask is not None:
+            if action_mask.dim() != 2 or action_mask.size(0) != targets.size(0):
+                raise ValueError(
+                    f"Expected action_mask [B,T], got {tuple(action_mask.shape)} for targets "
+                    f"{tuple(targets.shape)}."
+                )
+            if action_mask.size(1) < targets.size(-1):
+                action_mask = torch.nn.functional.pad(
+                    action_mask, (0, targets.size(-1) - action_mask.size(1)), value=False
+                )
+            action_mask = action_mask[:, : targets.size(-1)].to(device=targets.device, dtype=torch.bool)
+            loss_mask = loss_mask.bool() & action_mask
+        loss_mask = loss_mask.float()
         group_mask = group_validities.float().unsqueeze(1)
         num_streams = targets.size(1)
         total_po_loss = logits.new_zeros((), dtype=torch.float32)
@@ -1280,6 +2046,7 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
         advantages: torch.Tensor,
         group_validities: torch.Tensor,
         rollout_phoneme_input_type: str,
+        audio_action_mask: Optional[torch.Tensor] = None,
     ):
         """Compute joint audio/phoneme GRPO and optional GT-phoneme auxiliary loss."""
         audio_logits = policy_output.local_transformer_logits
@@ -1301,6 +2068,7 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
             group_validities=group_validities,
             sampling_temperature=self.audio_sampling_temperature,
             forbidden_token_ids=SpecialAudioToken.get_forbidden_tokens(self.codebook_size, forbid_audio_eos=False),
+            action_mask=audio_action_mask,
         )
 
         zero = audio_logits.new_zeros((), dtype=torch.float32)
@@ -1437,6 +2205,7 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
                 advantages=advantages_sub,
                 group_validities=group_validities_sub,
                 rollout_phoneme_input_type=rollout_phoneme_input_type,
+                audio_action_mask=batch_sub.get("audio_action_mask"),
             )
 
             if do_backward:

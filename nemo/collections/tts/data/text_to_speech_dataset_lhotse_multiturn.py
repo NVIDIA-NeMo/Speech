@@ -920,6 +920,25 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
                 )
                 for cut in cuts
             ],
+            "turn_metadata": [
+                [
+                    {
+                        "role": supervision.speaker,
+                        "text": (
+                            supervision.normalized_text
+                            if supervision.has_custom("normalized_text")
+                            else supervision.text
+                        ),
+                        "ipa": _get_supervision_ipa_text(supervision),
+                        "start": float(supervision.start),
+                        "end": float(supervision.end),
+                        "start_frame": compute_num_frames(supervision.start, self.frame_length, cut.sampling_rate),
+                        "end_frame": compute_num_frames(supervision.end, self.frame_length, cut.sampling_rate),
+                    }
+                    for supervision in sorted(cut.supervisions, key=lambda item: item.start)
+                ]
+                for cut in cuts
+            ],
             "task": [getattr(cut, "task", "tts") for cut in cuts],
             "user_audio_turn_splitted": audio_data["user_audio_turn_splitted"],
             "user_audio_turn_splitted_lens": audio_data["user_audio_turn_splitted_lens"],

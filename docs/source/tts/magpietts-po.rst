@@ -276,6 +276,43 @@ For models with a Local Transformer, GRPO can optimize both with and without the
     +model.use_local_transformer_prob=0.5  # 50% of generations use LT
 
 
+EasyMagpie Online PO Options
+---------------------------
+
+For ``examples/tts/easy_magpietts.py`` in ``onlinepo_train`` mode, set
+``model.phoneme_po_loss_weight`` above zero to optimize sampled phoneme actions
+alongside audio. This requires ``inference_phoneme_sampling_method=sample``, a
+positive ``inference_phoneme_temperature``, ``inference_phoneme_topk>=2``, and
+``phoneme_confidence_unk_threshold=0``. Phoneme sampling temperature and top-k
+can be configured independently of audio sampling.
+
+``model.save_reward_audios`` defaults to ``True``. Set it to ``False`` to remove
+generated and reference WAVs when each ``generate_and_reward`` call returns or
+raises an exception. Each call uses a private directory in ``/dev/shm`` (RAM-backed
+host storage, not GPU memory). Writable ``/dev/shm`` is required; there is no disk
+fallback. Reward scoring finishes before cleanup; returned codes, rewards, and
+metrics remain available.
+
+A lightweight cleanup process also removes the directory if the training process
+exits abruptly, including ``SIGTERM``, ``SIGKILL``, or ``os._exit``. It is reaped on
+normal completion. This protection requires the cleanup process to survive:
+killing the entire job/container can kill both processes, so the job/container
+runtime must clean up its shared-memory storage in that case.
+
+EasyMagpie Multiturn Training Augmentations
+-----------------------------------------
+
+Configure ``model.train_ds.dataset.challenging_texts_path`` with a UTF-8 file
+containing one prompt per line and set ``challenging_text_replacement_prob``
+to enable replacement of eligible English training prompts. A replacement must
+fit the available token slots. For online PO, set
+``model.gt_phoneme_input_prob=0`` because replacement prompts have no matching
+ground-truth IPA alignment.
+
+``model.train_ds.dataset.context_audio_shuffle_batch_prob`` independently
+enables replacing eligible audio contexts with contexts from other batch
+items. Text contexts are preserved. Both augmentations apply only to training.
+
 See Also
 ########
 

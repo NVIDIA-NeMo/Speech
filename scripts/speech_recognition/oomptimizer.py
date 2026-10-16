@@ -145,7 +145,7 @@ class ProfilingBatchGenerator:
                 seq_length = select_seq_length[item["seq_length"]]
                 tnsr = torch.ones(B, seq_length, device=self.device)
             else:
-                raise RuntimeError("Unexpected item in oomptimizer schema: {item}")
+                raise RuntimeError(f"Unexpected item in oomptimizer schema: {item}")
             batch.append(tnsr)
             names.append(item.get("name"))
         args = [elem for name, elem in zip(names, batch) if name is None]

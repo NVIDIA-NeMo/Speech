@@ -24,31 +24,45 @@ on:
         required: false
         default: true
 
+permissions:
+  contents: read
+
 jobs:
   code-freeze:
-    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_code_freeze.yml@d37760ed20154a1d6f0d6aa0cb84a67f76ed6d38 # v0.86.0
+    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_code_freeze.yml@61445a177938967f70c94094b98402e979452151 # merged GitHub App authentication (FW-CI-templates #592)
     with:
+      app-id: ${{ vars.BOT_ID }}
+      environment-name: main
       library-name: NeMo-Toolkit
       python-package: nemo
       release-type: ${{ inputs.type_of_release }}
       freeze-commit: ${{ inputs.freeze-commit }}
       dry-run: ${{ inputs.dry-run }}
-      use-pat: true
     secrets:
       SLACK_WEBHOOK: ${{ secrets.SLACK_RELEASE_ENDPOINT }}
       SLACK_WEBHOOK_ADMIN: ${{ secrets.SLACK_WEBHOOK_ADMIN }}
-      PAT: ${{ secrets.PAT }}
+      BOT_KEY: ${{ secrets.BOT_KEY }}
 
   freeze-tags:
     runs-on: ubuntu-latest
     needs: [code-freeze]
     environment: main
     steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.BOT_ID }}
+          private-key: ${{ secrets.BOT_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
       - name: Checkout repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           path: ${{ github.run_id }}
-          token: ${{ secrets.PAT }}
+          token: ${{ steps.app-token.outputs.token }}
+          persist-credentials: false
           fetch-depth: 0
           fetch-tags: true
           ref: ${{ inputs.dry-run == true && inputs.freeze-commit || needs.code-freeze.outputs.release-branch }}
@@ -68,6 +82,7 @@ jobs:
         id: create-pull-request
         if: ${{ inputs.dry-run != true }}
         with:
+          token: ${{ steps.app-token.outputs.token }}
           path: ${{ github.run_id }}
           base: ${{ needs.code-freeze.outputs.release-branch }}
           branch: ci/freeze-tags-${{ needs.code-freeze.outputs.release-branch }}

@@ -56,6 +56,7 @@ __all__ = [
 
 CTC_TIMESTAMP_ARTIFACT_FORMAT = "nemo_ctc_timestamp_artifact_v1"
 CTC_TIMESTAMP_BUNDLE_PREFIX = "ctc_timestamp."
+CTC_UPSAMPLING_MODES = ("conv_transpose", "repeat", "repeat_phase")
 
 
 class TransformerCTCDecoder(ConvASRDecoder):
@@ -69,6 +70,11 @@ class TransformerCTCDecoder(ConvASRDecoder):
 
     d_model is intentionally constrained to feat_in. This keeps the head strictly
     Transformer+Conv (or Conv-only), without a separate Linear projection layer.
+
+    An ``upsampling_factor`` above 1 first raises the frame rate: every encoder frame becomes
+    ``upsampling_factor`` frames, so the CTC output has ``upsampling_factor`` times as many frames
+    (see :meth:`output_lengths`). The default factor of 1 adds no layer and no parameters, so
+    checkpoints trained before this option load and behave exactly as before.
     """
 
     requires_encoded_lengths = False
@@ -101,9 +107,11 @@ class TransformerCTCDecoder(ConvASRDecoder):
         residual: bool = False,
         residual_scale: float = 1.0,
         learnable_residual_scale: bool = False,
+        upsampling_factor: int = 1,
+        upsampling_mode: str = "conv_transpose",
     ):
         """
-        Initialize the optional Transformer bridge and CTC projection.
+        Initialize the optional upsampling layer, Transformer bridge and CTC projection.
 
         Args:
             feat_in (int): Number of input encoder features.
@@ -132,9 +140,32 @@ class TransformerCTCDecoder(ConvASRDecoder):
             residual (bool): Whether to add the bridge input to its output.
             residual_scale (float): Initial residual branch scale.
             learnable_residual_scale (bool): Whether the residual scale is trainable.
+            upsampling_factor (int): Output frames per encoder frame, a positive integer. 1 (default)
+                adds no upsampling layer; above 1 an upsampling layer runs first.
+            upsampling_mode (str): Upsampling layer used when ``upsampling_factor > 1``:
+                ``"conv_transpose"`` (learned ConvTranspose1d with kernel and stride equal to the factor,
+                initialized to repeat each frame), ``"repeat"`` (parameter-free frame repetition) or
+                ``"repeat_phase"`` (repetition plus a learned, zero-initialized embedding per sub-frame
+                position). All three only read their own encoder frame, so padding never leaks into valid frames.
+                ``"repeat"`` and ``"repeat_phase"`` need the Transformer bridge to tell sub-frames apart, and
+                ``"repeat"`` also needs positional attention (not ``self_attention_model="no_pos"``).
         """
         if residual and not use_transformer:
             raise ValueError("TransformerCTCDecoder residual connections require use_transformer=True.")
+        if isinstance(upsampling_factor, bool) or not isinstance(upsampling_factor, int) or upsampling_factor < 1:
+            raise ValueError(f"upsampling_factor must be a positive integer, got {upsampling_factor!r}.")
+        if upsampling_mode not in CTC_UPSAMPLING_MODES:
+            raise ValueError(f"upsampling_mode must be one of {CTC_UPSAMPLING_MODES}, got {upsampling_mode!r}.")
+        if upsampling_factor > 1 and upsampling_mode != "conv_transpose" and not use_transformer:
+            raise ValueError(
+                f"upsampling_mode={upsampling_mode!r} gives every sub-frame the same states unless "
+                "use_transformer=True; use upsampling_mode='conv_transpose' for a Conv-only head."
+            )
+        if upsampling_factor > 1 and upsampling_mode == "repeat" and self_attention_model in (None, "no_pos"):
+            raise ValueError(
+                "upsampling_mode='repeat' needs positional attention to tell sub-frames apart; "
+                f"self_attention_model={self_attention_model!r} has none."
+            )
 
         super().__init__(
             feat_in=feat_in,
@@ -145,9 +176,28 @@ class TransformerCTCDecoder(ConvASRDecoder):
         )
 
         self.use_transformer = use_transformer
-        self.requires_encoded_lengths = use_transformer
+        # Callers must know the valid lengths of an upsampled output, so they have to pass them in.
+        self.requires_encoded_lengths = use_transformer or upsampling_factor > 1
         self.transformer = None
         self.residual = residual
+        self.upsampling_factor = upsampling_factor
+        self.upsampling_mode = upsampling_mode
+
+        # Factor 1 registers nothing, so the state dict of earlier checkpoints still matches exactly.
+        if upsampling_factor > 1:
+            # Recorded in the state dict for every mode, so a loader that ignores upsampling_factor
+            # fails its strict load instead of running the head at the wrong frame rate.
+            self.register_buffer("upsample_factor", torch.tensor(upsampling_factor), persistent=True)
+        if upsampling_factor > 1 and upsampling_mode == "conv_transpose":
+            self.upsample = nn.ConvTranspose1d(
+                feat_in, feat_in, kernel_size=upsampling_factor, stride=upsampling_factor
+            )
+            with torch.no_grad():
+                # Start as plain frame repetition: every sub-frame copies its encoder frame.
+                self.upsample.weight.copy_(torch.eye(feat_in).unsqueeze(-1).expand(-1, -1, upsampling_factor))
+                self.upsample.bias.zero_()
+        elif upsampling_factor > 1 and upsampling_mode == "repeat_phase":
+            self.upsample_phase = nn.Parameter(torch.zeros(feat_in, upsampling_factor))
 
         if self.use_transformer:
             transformer_d_model = feat_in if d_model is None else int(d_model)
@@ -191,20 +241,34 @@ class TransformerCTCDecoder(ConvASRDecoder):
                 else:
                     self.register_buffer("residual_scale", torch.tensor(float(residual_scale)), persistent=True)
 
+    def output_lengths(self, encoded_lengths: torch.Tensor) -> torch.Tensor:
+        """
+        Valid CTC output frame counts for ``encoded_lengths`` encoder frames.
+
+        Args:
+            encoded_lengths (torch.Tensor): Valid encoder frame counts shaped ``(B,)``.
+
+        Returns:
+            torch.Tensor: ``encoded_lengths * upsampling_factor`` (the input itself for factor 1).
+        """
+        return encoded_lengths if self.upsampling_factor == 1 else encoded_lengths * self.upsampling_factor
+
     def forward(self, encoder_output: torch.Tensor, encoded_lengths: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Return CTC log probabilities from channels-first encoder states.
-        With ``use_transformer``, the states first pass through the Transformer bridge, whose scaled
-        output is added to its input when ``residual`` is set; the inherited convolution and
-        log-softmax follow.
+        With ``upsampling_factor > 1``, every frame first becomes ``upsampling_factor`` frames. With
+        ``use_transformer``, the states then pass through the Transformer bridge, whose scaled output is
+        added to its input when ``residual`` is set; the inherited convolution and log-softmax follow.
 
         Args:
             encoder_output (torch.Tensor): Acoustic states shaped ``(B, D, T)``.
-            encoded_lengths (Optional[torch.Tensor]): Valid frame counts shaped ``(B,)``. Required when
-                ``use_transformer=True`` so padded frames cannot affect the Transformer bridge.
+            encoded_lengths (Optional[torch.Tensor]): Valid encoder frame counts shaped ``(B,)``. Required
+                when ``use_transformer=True`` so padded frames cannot affect the Transformer bridge, and
+                when ``upsampling_factor > 1``.
 
         Returns:
-            torch.Tensor: Log probabilities shaped ``(B, T, num_classes_with_blank)``.
+            torch.Tensor: Log probabilities shaped ``(B, T * upsampling_factor, num_classes_with_blank)``;
+                their valid lengths are :meth:`output_lengths` of ``encoded_lengths``.
         """
         if encoder_output.ndim != 3:
             raise ValueError(
@@ -218,6 +282,14 @@ class TransformerCTCDecoder(ConvASRDecoder):
             )
 
         encoded = encoder_output
+        if self.upsampling_factor > 1:
+            if encoded_lengths is None:
+                raise ValueError(
+                    "TransformerCTCDecoder requires encoded_lengths when upsampling_factor > 1, "
+                    "so callers can use output_lengths() for the upsampled frames."
+                )
+            encoded = self._upsample(encoded)
+            encoded_lengths = self.output_lengths(encoded_lengths)
         if self.use_transformer:
             if encoded_lengths is None:
                 raise ValueError("TransformerCTCDecoder requires encoded_lengths when use_transformer=True.")
@@ -233,6 +305,24 @@ class TransformerCTCDecoder(ConvASRDecoder):
                 encoded = residual_input + self.residual_scale.to(dtype=encoded.dtype) * encoded
 
         return super().forward(encoder_output=encoded)
+
+    def _upsample(self, encoded: torch.Tensor) -> torch.Tensor:
+        """
+        Turn every encoder frame into ``upsampling_factor`` consecutive frames.
+
+        Args:
+            encoded (torch.Tensor): Acoustic states shaped ``(B, D, T)``.
+
+        Returns:
+            torch.Tensor: States shaped ``(B, D, T * upsampling_factor)``.
+        """
+        if self.upsampling_mode == "conv_transpose":
+            return self.upsample(encoded)
+        repeated = encoded.repeat_interleave(self.upsampling_factor, dim=-1)
+        if self.upsampling_mode == "repeat_phase":
+            # Column t * factor + j gets the embedding of sub-frame position j.
+            repeated = repeated + self.upsample_phase.to(dtype=repeated.dtype).repeat(1, encoded.shape[-1])
+        return repeated
 
 
 class MultiSpeakerSOTWordTimestampAligner:
@@ -275,6 +365,16 @@ class MultiSpeakerSOTWordTimestampAligner:
         online_inference_length: int = 0,
         chunk_left_context: int = 0,
         chunk_right_context: int = 0,
+        boundary_interpolation: Optional[Dict[str, Any]] = None,
+        boundary_profile_radius_frames: int = 4,
+        boundary_profile_points: int = 33,
+        boundary_logprob_floor: float = -20.0,
+        boundary_logprob_ceiling: float = 0.0,
+        boundary_max_correction_seconds: float = 0.24,
+        boundary_outside_word_duration_seconds: float = 0.24,
+        boundary_grid_seconds: float = 0.01,
+        boundary_min_onset_spacing_seconds: float = 0.01,
+        boundary_min_word_duration_seconds: float = 0.01,
     ) -> None:
         """
         Initialize multi-speaker SOT word timestamp alignment.
@@ -289,7 +389,8 @@ class MultiSpeakerSOTWordTimestampAligner:
             speaker_activity_threshold (float): Threshold for speaker activity metadata.
             speaker_logprob_weight (float): Weight of the Sortformer prior in CTC alignment; defaults to 1.0.
             maximum_token_len (float): Maximum emitted word duration in seconds.
-            max_word_frames (int): Banded CTC word duration and onset-snap cap in CTC frames.
+            max_word_frames (int): Banded CTC word duration and onset-snap cap in encoder frames; prepared
+                batches record it in CTC frames, i.e. times the CTC head's ``upsampling_factor``.
             timestamp_language (Optional[str]): Explicit alignment-unit policy: zh/ja characters,
                 th newmm words, or unchanged whitespace words for other languages. None selects
                 per-transcript script detection.
@@ -298,6 +399,25 @@ class MultiSpeakerSOTWordTimestampAligner:
                 head over stored states; 0 runs it over the whole sequence at once.
             chunk_left_context (int): Encoder frames of left context per deferred head window.
             chunk_right_context (int): Encoder frames of right context per deferred head window.
+            boundary_interpolation (Optional[Dict[str, Any]]): Calibrated edge interpolation parameters
+                (``weights``, ``mean`` shaped (2, 2 * boundary_profile_points), and ``offset`` shaped
+                (2,)), with start/end on axis zero. Refines boundaries before diarization refinement. None disables
+                this checkpoint-specific correction; fit it on independent calibration audio.
+            boundary_profile_radius_frames (int): Edge neighborhood half-width in CTC frames; defaults to 4.
+            boundary_profile_points (int): Samples per token/blank profile; defaults to 33. Changing profile
+                geometry or log-probability clipping requires refitting calibration weights and means.
+            boundary_logprob_floor (float): Lower clip bound before interpolation; defaults to -20.0.
+            boundary_logprob_ceiling (float): Upper clip bound before interpolation; defaults to 0.0.
+            boundary_max_correction_seconds (float): Absolute correction cap; defaults to 0.24. Zero disables
+                learned corrections, but retains seed duration, rounding, and ordering rules.
+            boundary_outside_word_duration_seconds (float): Seed duration for words outside their speaker's
+                VAD before applying corrections; defaults to 0.24. These words are retained.
+            boundary_grid_seconds (float): Output rounding grid relative to the recording offset;
+                defaults to 0.01. This does not change the acoustic resolution or profile sampling geometry.
+            boundary_min_onset_spacing_seconds (float): Same-speaker onset spacing target; defaults to 0.01.
+                Reduced when recording bounds cannot accommodate it. Zero permits coincident onsets.
+            boundary_min_word_duration_seconds (float): Minimum interpolated duration before VAD refinement;
+                defaults to 0.01. Recording bounds take precedence for shorter clips.
         """
         if speaker_logprob_weight < 0:
             raise ValueError("speaker_logprob_weight must be non-negative.")
@@ -321,6 +441,38 @@ class MultiSpeakerSOTWordTimestampAligner:
         self.online_inference_length = int(online_inference_length)
         self.chunk_left_context = int(chunk_left_context)
         self.chunk_right_context = int(chunk_right_context)
+        for name, value, minimum in (
+            ('boundary_profile_radius_frames', boundary_profile_radius_frames, 1),
+            ('boundary_profile_points', boundary_profile_points, 2),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+                raise ValueError(f'{name} must be an integer >= {minimum}.')
+            setattr(self, name, value)
+        for name, value in (
+            ('boundary_logprob_floor', boundary_logprob_floor),
+            ('boundary_logprob_ceiling', boundary_logprob_ceiling),
+            ('boundary_max_correction_seconds', boundary_max_correction_seconds),
+            ('boundary_outside_word_duration_seconds', boundary_outside_word_duration_seconds),
+            ('boundary_grid_seconds', boundary_grid_seconds),
+            ('boundary_min_onset_spacing_seconds', boundary_min_onset_spacing_seconds),
+            ('boundary_min_word_duration_seconds', boundary_min_word_duration_seconds),
+        ):
+            if not math.isfinite(value):
+                raise ValueError(f'{name} must be finite.')
+            if name.endswith('_seconds'):
+                allow_zero = name in ('boundary_max_correction_seconds', 'boundary_min_onset_spacing_seconds')
+                if value < 0 or (value == 0 and not allow_zero):
+                    raise ValueError(f'{name} must be {"non-negative" if allow_zero else "positive"}.')
+            setattr(self, name, float(value))
+        if self.boundary_logprob_floor >= self.boundary_logprob_ceiling:
+            raise ValueError('boundary_logprob_floor must be less than boundary_logprob_ceiling.')
+        if boundary_interpolation is not None:
+            profile_shape = (2, 2 * self.boundary_profile_points)
+            for name, shape in [('weights', profile_shape), ('mean', profile_shape), ('offset', (2,))]:
+                value = np.asarray(boundary_interpolation.get(name, []), dtype=np.float64)
+                if value.shape != shape or not np.isfinite(value).all():
+                    raise ValueError(f'boundary_interpolation {name} must be finite with shape {shape}')
+        self.boundary_interpolation = boundary_interpolation
 
     @classmethod
     def clean_sot_transcript(cls, transcript: str, special_tokens: Sequence[str]) -> str:
@@ -388,13 +540,13 @@ class MultiSpeakerSOTWordTimestampAligner:
             timestamp_inputs (Any): ``CTCTimestampInputs`` whose ``asr_encoded`` is shaped ``(B, D, T)``.
 
         Returns:
-            torch.Tensor: CTC log probabilities shaped ``(B, T, classes)``.
+            torch.Tensor: CTC log probabilities shaped ``(B, T * upsampling_factor, classes)``.
         """
         output = None
         for batch_start, start, chunk in self._iter_ctc_windows(timestamp_inputs):
             if output is None:
                 states = timestamp_inputs.asr_encoded
-                output = chunk.new_empty((states.shape[0], states.shape[-1], chunk.shape[-1]))
+                output = chunk.new_empty((states.shape[0], self._ctc_frames(states.shape[-1]), chunk.shape[-1]))
             output[batch_start : batch_start + chunk.shape[0], start : start + chunk.shape[1]] = chunk
             del chunk
         return output
@@ -423,15 +575,16 @@ class MultiSpeakerSOTWordTimestampAligner:
         """
         states = timestamp_inputs.asr_encoded
         num_frames = states.shape[-1]
+        num_ctc_frames = self._ctc_frames(num_frames)
         num_classes = int(self.ctc_decoder.num_classes_with_blank)
 
         return self._prepare(
-            (states.shape[0], num_frames, num_classes),
+            (states.shape[0], num_ctc_frames, num_classes),
             partial(_read_deferred_ctc_columns, self, timestamp_inputs, num_classes),
             timestamp_inputs.sortformer_sigmoids,
             sot_transcripts,
-            ctc_lengths=timestamp_inputs.asr_encoded_lengths.clamp(max=num_frames),
-            # Speaker frames past the CTC timeline are never aligned.
+            ctc_lengths=self._ctc_frames(timestamp_inputs.asr_encoded_lengths).clamp(max=num_ctc_frames),
+            # Speaker frames past the encoder timeline are never aligned.
             sortformer_lengths=timestamp_inputs.sortformer_lengths.clamp(max=num_frames),
             audio_durations=audio_durations,
             diarization_labels=timestamp_inputs.diarization_labels,
@@ -744,7 +897,17 @@ class MultiSpeakerSOTWordTimestampAligner:
                 "speaker_activity_threshold": self.speaker_activity_threshold,
                 "speaker_logprob_weight": speaker_logprob_weight,
                 "maximum_token_len": self.maximum_token_len,
-                "max_word_frames": self.max_word_frames,
+                "max_word_frames": self._ctc_frames(self.max_word_frames),
+                "boundary_interpolation": self.boundary_interpolation,
+                "boundary_profile_radius_frames": self.boundary_profile_radius_frames,
+                "boundary_profile_points": self.boundary_profile_points,
+                "boundary_logprob_floor": self.boundary_logprob_floor,
+                "boundary_logprob_ceiling": self.boundary_logprob_ceiling,
+                "boundary_max_correction_seconds": self.boundary_max_correction_seconds,
+                "boundary_outside_word_duration_seconds": self.boundary_outside_word_duration_seconds,
+                "boundary_grid_seconds": self.boundary_grid_seconds,
+                "boundary_min_onset_spacing_seconds": self.boundary_min_onset_spacing_seconds,
+                "boundary_min_word_duration_seconds": self.boundary_min_word_duration_seconds,
                 "timestamp_language": self.timestamp_language,
                 "epsilon": self.epsilon,
             },
@@ -883,14 +1046,15 @@ class MultiSpeakerSOTWordTimestampAligner:
         Each core of ``online_inference_length`` frames is decoded with its left and right
         context, then trimmed back to the core. The records are split into sub-batches so a
         decoder call stays within ``_CTC_WINDOW_MAX_ELEMENTS``, unless one context window is
-        already larger than that.
+        already larger than that. Windows are laid out in encoder frames; an upsampling head
+        returns ``upsampling_factor`` CTC frames for each of them.
 
         Args:
             timestamp_inputs (Any): ``CTCTimestampInputs`` whose ``asr_encoded`` is shaped ``(B, D, T)``.
 
         Yields:
             Tuple[int, int, torch.Tensor]: First record index, first CTC frame index, and the
-                core's log probs shaped ``(B_window, T_core, classes)``.
+                core's log probs shaped ``(B_window, T_core * upsampling_factor, classes)``.
         """
         states = timestamp_inputs.asr_encoded
         lengths = timestamp_inputs.asr_encoded_lengths
@@ -904,7 +1068,7 @@ class MultiSpeakerSOTWordTimestampAligner:
             context_start = max(start - self.chunk_left_context, 0)
             context_end = min(end + self.chunk_right_context, states.shape[-1])
             context_frames = context_end - context_start
-            batch_size = max(1, self._CTC_WINDOW_MAX_ELEMENTS // (context_frames * vocab_size))
+            batch_size = max(1, self._CTC_WINDOW_MAX_ELEMENTS // (self._ctc_frames(context_frames) * vocab_size))
             for batch_start in range(0, states.shape[0], batch_size):
                 batch_end = min(batch_start + batch_size, states.shape[0])
                 context_lengths = (lengths[batch_start:batch_end] - context_start).clamp(min=0, max=context_frames)
@@ -912,13 +1076,28 @@ class MultiSpeakerSOTWordTimestampAligner:
                     states[batch_start:batch_end, :, context_start:context_end].to(dtype=decoder_dtype),
                     encoded_lengths=context_lengths,
                 )
-                if context_logits.shape[1] != context_frames:
+                if context_logits.shape[1] != self._ctc_frames(context_frames):
                     raise ValueError(
-                        f"The CTC head returned {context_logits.shape[1]} frames for {context_frames} input frames."
+                        f"The CTC head returned {context_logits.shape[1]} frames for {context_frames} input frames "
+                        f"(expected {self._ctc_frames(context_frames)})."
                     )
-                left_drop = start - context_start
-                yield batch_start, start, context_logits[:, left_drop : left_drop + end - start]
+                left_drop = self._ctc_frames(start - context_start)
+                core_frames = self._ctc_frames(end - start)
+                yield batch_start, self._ctc_frames(start), context_logits[:, left_drop : left_drop + core_frames]
                 del context_logits
+
+    def _ctc_frames(self, encoder_frames: Union[int, torch.Tensor]) -> Union[int, torch.Tensor]:
+        """
+        Convert encoder frames to CTC output frames of the deferred CTC head.
+
+        Args:
+            encoder_frames (Union[int, torch.Tensor]): Encoder frame count(s).
+
+        Returns:
+            Union[int, torch.Tensor]: ``encoder_frames`` times the head's ``upsampling_factor`` (1 without a
+                head or for a head that does not upsample).
+        """
+        return encoder_frames * int(getattr(self.ctc_decoder, "upsampling_factor", 1))
 
     @staticmethod
     def _group_words_by_speaker(
@@ -961,6 +1140,7 @@ class MultiSpeakerSOTWordTimestampAligner:
                     "speaker": speaker,
                     "start": word["start"],
                     "end": word["end"],
+                    **({'_outside_diarization': True} if word.get('_outside_diarization') else {}),
                 }
             )
         return grouped
@@ -1119,6 +1299,7 @@ class MultiSpeakerSOTWordTimestampAligner:
                     "start": start,
                     "end": end,
                     "start_frame": frames[0],
+                    "_boundary_labels": [labels[word_frames[0][1]], labels[word_frames[-1][1]]],
                     "end_frame": end_frame,
                     "ctc_confidence": float(torch.exp(selected.mean())),
                     "sortformer_column": column,
@@ -1909,7 +2090,8 @@ def _refine_word_timestamps(result, max_frames=12):
     word in the segment or the segment end. Unmatched words retain their onset; their offset uses the
     next same-speaker onset, or the original offset for the final word. Onset moves and durations are
     capped at ``max_frames`` frames of ``min(ctc_frame_seconds, 0.08)`` seconds, so the cap respects
-    both the actual CTC frame duration and nominal 80 ms frames.
+    both the actual CTC frame duration and nominal 80 ms frames. Words marked as wholly outside VAD
+    by boundary interpolation retain their interpolated spans instead; the private marker is removed.
 
     Args:
         result (Dict[str, Any]): Alignment result with ``speaker_word_timestamps``, ``ctc_frame_seconds``,
@@ -1943,7 +2125,11 @@ def _refine_word_timestamps(result, max_frames=12):
         memberships = []
         for word in words:
             index = bisect_right(starts, word['start']) - 1
-            memberships.append(index if index >= 0 and word['start'] < intervals[index][1] else None)
+            memberships.append(
+                index
+                if not word.get('_outside_diarization') and index >= 0 and word['start'] < intervals[index][1]
+                else None
+            )
         seen = set()
         for word, index in zip(words, memberships):
             if index is None:
@@ -1955,7 +2141,9 @@ def _refine_word_timestamps(result, max_frames=12):
                     moved += 1
                 seen.add(index)
         for i, (word, index) in enumerate(zip(words, memberships)):
-            if index is None:
+            if word.pop('_outside_diarization', False):
+                end = word['end']
+            elif index is None:
                 end = words[i + 1]['start'] if i + 1 < len(words) else word['end']
             elif i + 1 < len(words) and memberships[i + 1] == index:
                 end = words[i + 1]['start']
@@ -2089,12 +2277,159 @@ def _align_banded_ctc(aligner, prepared):
             diarization_frame_seconds=prepared['diarization_frame_seconds'],
             diarization_max_speaker_count=prepared['diarization_max_speaker_count'],
         )
+        calibration = prepared['config'].get('boundary_interpolation')
+        if calibration is not None:
+            # Use raw DP edges, before any VAD snapping or extending.
+            _interpolate_word_boundaries(
+                rows,
+                ctc,
+                record['ctc_step'],
+                record['time_offset'],
+                record['audio_duration'],
+                diarization,
+                mapping,
+                calibration,
+                aligner=aligner,
+            )
+            result['speaker_word_timestamps'] = aligner._public_word_timestamps(rows)
+            result['boundary_interpolation'] = {
+                'method': 'calibrated_edge_local_linear_interpolation',
+                'estimated_grid_seconds': aligner.boundary_grid_seconds,
+                'outside_words': sum(w.get('_outside_diarization', False) for w in rows),
+                'calibration_id': calibration.get('calibration_id'),
+            }
         result['speaker_assignment_mode'] = 'token_distribution'
         result['alignment_diagnostics']['failed_streams'] = failures
         result['alignment_diagnostics']['one_pass'] = True
         result['alignment_diagnostics']['banded'] = diagnostics
-        results.append(_refine_word_timestamps(result, aligner.max_word_frames))
+        results.append(_refine_word_timestamps(result, prepared['config']['max_word_frames']))
     return results
+
+
+def _boundary_profiles(
+    logp: np.ndarray,
+    boundaries: np.ndarray,
+    labels: np.ndarray,
+    step: float,
+    offset: float,
+    *,
+    aligner: Optional[MultiSpeakerSOTWordTimestampAligner] = None,
+) -> np.ndarray:
+    """
+    Interpolate only word-edge neighborhoods with a batched matrix product.
+    Gather each edge's configured neighborhood for the target token and blank channels. With
+    default settings, interpolate 33 positions across +/- four CTC frames (10 ms apart for a 40 ms head).
+    Edges outside the recording use endpoint replication. Cost is O(number of word edges),
+    not constant time; no dense fine-resolution recording or vocabulary matrix is allocated.
+
+    Args:
+        logp (np.ndarray): Compact CTC log probabilities (frames, classes), blank in column zero.
+        boundaries (np.ndarray): Unrefined start/end times (words, 2), in seconds.
+        labels (np.ndarray): First/last target token column for each word (words, 2).
+        step (float): CTC frame duration in seconds.
+        offset (float): Recording time offset in seconds.
+        aligner (Optional[MultiSpeakerSOTWordTimestampAligner]): Profile geometry and clipping settings.
+            None uses the aligner's defaults, preserving standalone calibration-helper usage.
+
+    Returns:
+        np.ndarray: Start/end profiles shaped (2, words, 2 * boundary_profile_points), token then blank channel.
+    """
+    if aligner is None:
+        aligner = MultiSpeakerSOTWordTimestampAligner()
+    radius = aligner.boundary_profile_radius_frames
+    points = aligner.boundary_profile_points
+    centers = (np.asarray(boundaries).T - offset) / step
+    base = np.floor(centers).astype(np.int64)
+    # Include the right neighbor needed to interpolate fractional edge positions.
+    coarse = np.arange(-radius, radius + 2)
+    indices = np.clip(base[..., None] + coarse, 0, len(logp) - 1)
+    columns = np.stack([np.asarray(labels).T, np.zeros_like(np.asarray(labels).T)], axis=-1)
+    samples = logp[indices[..., None], columns[..., None, :]].swapaxes(-1, -2)
+    samples = np.clip(samples, aligner.boundary_logprob_floor, aligner.boundary_logprob_ceiling)
+    fine = np.linspace(0, 2 * radius, points) + (centers - base)[..., None]
+    matrix = np.maximum(1.0 - np.abs(np.arange(len(coarse))[:, None] - fine[..., None, :]), 0.0)
+    return (samples @ matrix).reshape(2, len(boundaries), 2 * points)
+
+
+def _interpolate_word_boundaries(
+    rows: List[Dict[str, Any]],
+    logp: np.ndarray,
+    step: float,
+    offset: float,
+    duration: Optional[float],
+    diarization: Sequence[Dict[str, Any]],
+    mapping: Dict[Optional[int], Optional[int]],
+    calibration: Dict[str, Any],
+    *,
+    aligner: Optional[MultiSpeakerSOTWordTimestampAligner] = None,
+) -> None:
+    """
+    Update raw DP word edges with a calibrated estimate before VAD refinement.
+    Wholly speaker-inactive words use a configurable seed span and are marked so subsequent VAD
+    refinement cannot replace their interpolated end with an unrelated word/segment boundary.
+    Separate start/end centered linear regressors and offsets are fitted on calibration audio,
+    never on evaluation references. Correction limits, rounding, onset spacing and minimum duration
+    come from the aligner; recording bounds and same-speaker transcript order are preserved.
+    Interpolation cannot create acoustic evidence absent in the coarse logits.
+
+    Args:
+        rows (List[Dict[str, Any]]): Mutable aligned words with ``_boundary_labels``.
+        logp (np.ndarray): Compact CTC log probabilities (frames, classes), blank column zero.
+        step (float): CTC frame duration in seconds.
+        offset (float): Recording time offset in seconds.
+        duration (Optional[float]): Audio duration, or None to use CTC frame count times step.
+        diarization (Sequence[Dict[str, Any]]): Native speaker VAD intervals in seconds.
+        mapping (Dict[Optional[int], Optional[int]]): Transcript speaker to diarization column.
+        calibration (Dict[str, Any]): Start/end weights, feature means, and offsets in seconds.
+        aligner (Optional[MultiSpeakerSOTWordTimestampAligner]): Interpolation settings. None uses
+            the aligner's defaults, preserving standalone calibration-helper usage.
+
+    Returns:
+        None: Word rows are updated in place; none are removed.
+    """
+    if not rows:
+        return
+    if aligner is None:
+        aligner = MultiSpeakerSOTWordTimestampAligner(boundary_interpolation=calibration)
+    segments = defaultdict(list)
+    for segment in diarization:
+        segments[segment['speaker']].append((segment['start'], segment['end']))
+    intervals = {}
+    for speaker, values in segments.items():
+        values.sort()
+        intervals[speaker] = (np.array([s for s, _ in values]), np.array([e for _, e in values]))
+    upper = offset + (duration if duration is not None else len(logp) * step)
+    for word in rows:
+        starts, ends = intervals.get(mapping.get(word['speaker_tag']), ([], []))
+        last = np.searchsorted(starts, word['end'], side='left') - 1
+        outside = last < 0 or ends[last] <= word['start']
+        word['_outside_diarization'] = bool(outside)
+        if outside:
+            word['end'] = min(word['start'] + aligner.boundary_outside_word_duration_seconds, upper)
+    boundaries = np.array([[w['start'], w['end']] for w in rows])
+    labels = np.array([w['_boundary_labels'] for w in rows])
+    profiles = _boundary_profiles(logp, boundaries, labels, step, offset, aligner=aligner)
+    centered = profiles - np.asarray(calibration['mean'])[:, None, :]
+    corrections = (centered @ np.asarray(calibration['weights'])[..., None])[..., 0]
+    corrections += np.asarray(calibration['offset'])[:, None]
+    cap = aligner.boundary_max_correction_seconds
+    grid_seconds = aligner.boundary_grid_seconds
+    refined = boundaries + np.clip(corrections.T, -cap, cap)
+    refined = np.clip(offset + np.round((refined - offset) / grid_seconds) * grid_seconds, offset, upper)
+    # Independent regressors must not reorder the transcript inside a speaker stream.
+    indices_by_speaker = defaultdict(list)
+    for index, word in enumerate(rows):
+        indices_by_speaker[word['speaker_tag']].append(index)
+    for indices in indices_by_speaker.values():
+        spacing = min(aligner.boundary_min_onset_spacing_seconds, (upper - offset) / (len(indices) + 1))
+        grid = np.arange(len(indices)) * spacing
+        ordered = np.maximum.accumulate(refined[indices, 0] - grid) + grid
+        refined[indices, 0] = np.minimum(ordered, upper - len(indices) * spacing + grid)
+    minimum_duration = aligner.boundary_min_word_duration_seconds
+    refined[:, 0] = np.minimum(refined[:, 0], max(offset, upper - minimum_duration))
+    refined[:, 1] = np.minimum(upper, np.maximum(refined[:, 0] + minimum_duration, refined[:, 1]))
+    for word, (start, end) in zip(rows, refined):
+        word['start'], word['end'] = float(start), float(end)
 
 
 def _lexical_characters(text):

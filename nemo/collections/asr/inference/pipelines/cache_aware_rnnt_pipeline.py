@@ -264,6 +264,40 @@ class CacheAwareRNNTPipeline(BasePipeline):
             release_all_biasing_models(self.decoding_computer.biasing_multi_model, self._state_pool.values())
         super().close_session()
 
+    def reset_session(self) -> None:
+        """Reset the state pool and restore all cache-aware feature-bufferer and encoder-cache slots."""
+        self.context_manager.reset()
+        self.bufferer.reset()
+        super().reset_session()
+
+    def delete_state(self, stream_id: int) -> None:
+        """
+        Delete stream state, release per-stream biasing if enabled, and free cache-aware slots.
+
+        Order matches the is_last teardown and sibling #16308: release biasing while state
+        still exists, then free slots, then drop state. Slot free is idempotent when
+        is_last already returned the slots.
+        """
+        state = self.get_state(stream_id)
+        if (
+            state is not None
+            and self.decoding_computer is not None
+            and self.decoding_computer.per_stream_biasing_enabled
+        ):
+            release_auto_managed_stream_biasing(state, self.decoding_computer.biasing_multi_model)
+        self._free_cache_aware_slots(stream_id)
+        super().delete_state(stream_id)
+
+    def _free_cache_aware_slots(self, stream_id: int) -> None:
+        """
+        Return the feature-bufferer and encoder-cache slots held by stream_id.
+
+        Idempotent: free_stream on each resource is a no-op when the stream is already
+        unmapped (the normal path after an is_last request).
+        """
+        self.bufferer.free_stream(stream_id)
+        self.context_manager.free_stream(stream_id)
+
     def get_sep(self) -> str:
         """Return the separator for the text processor."""
         return self.sep

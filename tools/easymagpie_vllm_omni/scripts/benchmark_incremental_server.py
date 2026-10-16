@@ -316,6 +316,7 @@ def parse_args():
     parser.add_argument("--timeout", type=float, default=300.0, help="Per-request timeout in seconds")
     parser.add_argument("--no-warmup", action="store_true", help="Skip one warmup request per worker")
     parser.add_argument("--output-dir", default=None, help="If set, save each generated waveform")
+    parser.add_argument("--seed", type=int, default=1234, help="Prompt sampling seed (default: %(default)s)")
     return parser.parse_args()
 
 
@@ -330,6 +331,7 @@ def main() -> None:
     if args.send_delay_ms < 0:
         raise ValueError("--send-delay-ms cannot be negative")
 
+    random.seed(args.seed)
     text_items = base._load_items(args.text_file)
     if not text_items:
         raise ValueError(f"No usable lines found in {args.text_file}")

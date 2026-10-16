@@ -53,6 +53,7 @@ from nemo.collections.common.data.lhotse.sampling import (
     BucketingFilter,
     CERFilter,
     ContextSpeakerSimilarityFilter,
+    DropoutFilter,
     DurationFilter,
     FixedBucketBatchSizeConstraint2D,
     MultimodalFixedBucketBatchSizeConstraint2D,
@@ -908,6 +909,8 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
     )
     # CER filtering, same as native NeMo dataloaders.
     cuts = cuts.filter(CERFilter(config.max_cer))
+    # Dataset entries opt in through tags: {filter_dropout: true} in input_cfg.
+    cuts = cuts.filter(DropoutFilter())
     # Context speaker similarity filtering, same as native NeMo dataloaders.
     cuts = cuts.filter(ContextSpeakerSimilarityFilter(config.min_context_speaker_similarity))
 

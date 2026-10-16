@@ -1628,6 +1628,26 @@ options by what they control.
 
 **Filtering.** ``max_cer``, ``min_context_speaker_similarity``, ``keep``.
 
+Dropout filtering is enabled per dataset through ``input_cfg`` tags, with no
+model or dataloader option. Add ``filter_dropout: true`` to the dataset's tags
+to reject MonoCuts whose cut-level ``custom.dropout`` is boolean ``true``::
+
+    - type: lhotse_shar
+      shar_path: /path/to/shar
+      weight: 1.0
+      tags:
+        filter_dropout: true
+
+NeMo attaches tags to each cut before applying the filter. A missing or false
+``filter_dropout`` tag keeps all cuts from that dataset, including flagged
+cuts. Both the policy tag and the dropout flag must be actual booleans;
+strings such as ``"true"`` do not enable filtering. Missing dropout flags and
+other example types pass through. Nested CSV and supervision metadata are
+not consulted, and a dataset name is not required. Like CER filtering, this
+runs after dataset mixing and cut transforms, before batching. Consequently,
+datasets with more rejected cuts contribute a smaller share of the accepted
+examples. Existing dataset paths, weights, and other tags can be retained.
+
 For exact types and defaults, see the dataclass definition in the source
 file — it is the single source of truth.
 

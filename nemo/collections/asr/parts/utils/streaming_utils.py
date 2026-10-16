@@ -1676,9 +1676,12 @@ class CacheAwareStreamingAudioBuffer:
             audio_chunk = torch.cat((cache_pre_encode, audio_chunk), dim=-1)
 
             if self.online_normalization:
+                normalization_lengths = (self.streams_length - self.buffer_idx + added_len).clamp(
+                    min=0, max=audio_chunk.size(-1)
+                )
                 audio_chunk, x_mean, x_std = normalize_batch(
                     x=audio_chunk,
-                    seq_len=torch.tensor([audio_chunk.size(-1)] * audio_chunk.size(0)),
+                    seq_len=normalization_lengths,
                     normalize_type=self.model_normalize_type,
                 )
 
@@ -1870,10 +1873,14 @@ class CacheAwareStreamingAudioBuffer:
                         dtype=main_chunk.dtype,
                     )
 
+            asr_normalization_lengths = (self.streams_length - self.buffer_idx + cache_pre_encode.size(-1)).clamp(
+                min=0, max=cache_pre_encode.size(-1) + main_chunk.size(-1)
+            )
             asr_chunk, asr_chunk_lengths = self._prepare_chunk_view(
                 main_chunk=main_chunk,
                 cache_pre_encode=cache_pre_encode,
                 zeros_pads=zeros_pads,
+                normalization_lengths=asr_normalization_lengths,
             )
             diar_main_chunk = self.buffer[:, :, self.buffer_idx : self.buffer_idx + chunk_size + right_context_size]
             diar_normalization_lengths = (self.streams_length - self.buffer_idx + cache_pre_encode.size(-1)).clamp(

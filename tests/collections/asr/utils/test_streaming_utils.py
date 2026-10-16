@@ -112,3 +112,71 @@ def test_diar_view_normalization_uses_real_ragged_lengths(
 
     diar_normalization_lengths = captured_lengths[1::2]
     assert diar_normalization_lengths == list(expected_diar_normalization_lengths)
+
+
+@pytest.mark.unit
+def test_iter_normalization_uses_real_ragged_lengths(monkeypatch):
+    """Online normalization must use each stream's own valid length, not the padded width.
+
+    Streams of 20 and 16 frames share a batch. At the second step the physical chunk is
+    3 cache frames plus 6 buffer frames, but only 5 of those are real for the 16-frame
+    stream, so its statistics must be taken over 5 and not over 9.
+    """
+    streaming_buffer, _ = _make_streaming_buffer((20, 16))
+    streaming_buffer.online_normalization = True
+    streaming_buffer.model_normalize_type = "per_feature"
+    captured_lengths = []
+
+    def capture_normalization(x, seq_len, normalize_type):
+        captured_lengths.append(tuple(seq_len.tolist()))
+        return x, None, None
+
+    monkeypatch.setattr(streaming_utils, "normalize_batch", capture_normalization)
+
+    list(streaming_buffer)
+
+    assert captured_lengths == [(14, 14), (9, 5)]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("right_context_size", [8, 40])
+def test_asr_view_normalization_uses_real_ragged_lengths(monkeypatch, right_context_size):
+    """The ASR view gets the same treatment as the diarization view of the same step."""
+    streaming_buffer, _ = _make_streaming_buffer((20, 16))
+    streaming_buffer.online_normalization = True
+    streaming_buffer.model_normalize_type = "per_feature"
+    captured_lengths = []
+
+    def capture_normalization(x, seq_len, normalize_type):
+        captured_lengths.append(tuple(seq_len.tolist()))
+        return x, None, None
+
+    monkeypatch.setattr(streaming_utils, "normalize_batch", capture_normalization)
+
+    list(streaming_buffer.iter_with_right_context(right_context_size))
+
+    asr_normalization_lengths = captured_lengths[0::2]
+    assert asr_normalization_lengths == [(14, 14), (9, 5)]
+
+
+@pytest.mark.unit
+def test_online_normalization_is_invariant_to_batch_composition():
+    """A stream's normalized features must not depend on how long its neighbours are.
+
+    The 16-frame stream is run alone and then alongside a 20-frame stream. Its own valid
+    frames must come out identical, because nothing about that stream changed.
+    """
+    alone, _ = _make_streaming_buffer((16,))
+    batched, _ = _make_streaming_buffer((16, 20))
+    for buffer in (alone, batched):
+        buffer.online_normalization = True
+        buffer.model_normalize_type = "per_feature"
+
+    alone_steps = list(alone)
+    batched_steps = list(batched)
+
+    assert len(alone_steps) == len(batched_steps)
+    for (alone_chunk, alone_lengths), (batched_chunk, batched_lengths) in zip(alone_steps, batched_steps):
+        valid = int(alone_lengths[0])
+        assert int(batched_lengths[0]) == valid
+        torch.testing.assert_close(alone_chunk[0, :, :valid], batched_chunk[0, :, :valid], atol=0.0, rtol=0.0)

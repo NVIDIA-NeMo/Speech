@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import multiprocessing
 import random
 import re
 from typing import Dict, List, Union
@@ -135,6 +136,8 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         phoneme_turn_max_words_to_drop: Turns with this many words or fewer keep empty phoneme string.
         load_normalized_text_percent: Probability in `[0.0, 1.0]` of loading the normalized transcript when
             available. Defaults to `1.0`.
+        context_audio_shuffle_batch_prob: Probability of replacing valid audio contexts with audio contexts
+            from other items in the same training batch. Text contexts are not changed.
     """
 
     def __init__(
@@ -175,6 +178,12 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         phoneme_turn_dropout_turn_prob: float = 0.0,
         phoneme_turn_max_words_to_drop: int = 2,
         load_normalized_text_percent: float = 1.0,
+        challenging_texts_path: str = None,
+        challenging_text_start_prob: float = 0.0,
+        challenging_text_end_prob: float = 0.0,
+        challenging_text_start_step: int = 0,
+        challenging_text_end_step: int = 0,
+        context_audio_shuffle_batch_prob: float = 0.0,
     ):
         super().__init__()
         self.sample_rate = sample_rate
@@ -218,6 +227,34 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         self.phoneme_turn_max_words_to_drop = phoneme_turn_max_words_to_drop
         _validate_probability("load_normalized_text_percent", load_normalized_text_percent)
         self.load_normalized_text_percent = load_normalized_text_percent
+        if not 0.0 <= context_audio_shuffle_batch_prob <= 1.0:
+            raise ValueError("context_audio_shuffle_batch_prob must be between 0 and 1.")
+        self.context_audio_shuffle_batch_prob = context_audio_shuffle_batch_prob
+        if not 0.0 <= challenging_text_start_prob <= challenging_text_end_prob <= 1.0:
+            raise ValueError("Challenging text probabilities must satisfy 0 <= start_prob <= end_prob <= 1.")
+        if challenging_text_end_prob > 0.0 and not (0 <= challenging_text_start_step < challenging_text_end_step):
+            raise ValueError("Challenging text steps must satisfy 0 <= start_step < end_step.")
+        self.challenging_text_start_prob = challenging_text_start_prob
+        self.challenging_text_end_prob = challenging_text_end_prob
+        self.challenging_text_start_step = challenging_text_start_step
+        self.challenging_text_end_step = challenging_text_end_step
+        # DataLoader workers inherit this shared value, allowing the trainer
+        # process to advance the schedule without recreating the dataloader.
+        self._training_step = multiprocessing.Value("q", 0, lock=False)
+        self.challenging_texts = []
+        if self.challenging_text_end_prob > 0.0:
+            if not challenging_texts_path:
+                raise ValueError("challenging_texts_path is required when challenging text replacement is enabled.")
+            with open(challenging_texts_path, encoding="utf-8") as input_file:
+                self.challenging_texts = [line.strip() for line in input_file if line.strip()]
+            if not self.challenging_texts:
+                raise ValueError(f"No challenging texts found in {challenging_texts_path}.")
+            logging.info(
+                f"Loaded {len(self.challenging_texts)} challenging texts from {challenging_texts_path}; "
+                f"replacement schedule=({self.challenging_text_start_prob:.4f} at step "
+                f"{self.challenging_text_start_step}) -> ({self.challenging_text_end_prob:.4f} at step "
+                f"{self.challenging_text_end_step})"
+            )
 
         self.frame_length = (
             self.codec_model_samples_per_frame / codec_model_input_sample_rate
@@ -227,6 +264,22 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         num_codec_frames = int(duration * sample_rate / self.codec_model_samples_per_frame)
         num_audio_samples = num_codec_frames * self.codec_model_samples_per_frame
         return num_audio_samples
+
+    def set_training_step(self, step: int) -> None:
+        self._training_step.value = max(int(step), 0)
+
+    def get_challenging_text_replacement_prob(self, step: int = None) -> float:
+        step = self._training_step.value if step is None else int(step)
+        if step < self.challenging_text_start_step:
+            return 0.0
+        if step >= self.challenging_text_end_step:
+            return self.challenging_text_end_prob
+        progress = (step - self.challenging_text_start_step) / (
+            self.challenging_text_end_step - self.challenging_text_start_step
+        )
+        return self.challenging_text_start_prob + progress * (
+            self.challenging_text_end_prob - self.challenging_text_start_prob
+        )
 
     def _initialize_tokenizers(self):
         if self.text_tokenizer is None:
@@ -260,6 +313,49 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
                 batch_tokenizer_names.append(random.choice(cut.tokenizer_names))
             else:
                 batch_tokenizer_names.append("english_phoneme")
+
+        challenging_text_prob = self.get_challenging_text_replacement_prob()
+        if self.dataset_type == 'train' and random.random() < challenging_text_prob:
+            candidates = [
+                (cut_idx, cut, supervision)
+                for cut_idx, cut in enumerate(cuts)
+                if str(getattr(cut, "task", "tts")).lower() == "tts" and self._get_language(cut) == "en"
+                for supervision in cut.supervisions
+                if supervision.speaker in self.output_roles
+            ]
+            if candidates:
+                cut_idx, cut, supervision = random.choice(candidates)
+                total_slots = compute_num_frames(cut.duration, self.frame_length, cut.sampling_rate)
+                start_slot = compute_num_frames(supervision.start, self.frame_length, cut.sampling_rate)
+                available_slots = total_slots - start_slot
+                for replacement_text in random.sample(self.challenging_texts, min(32, len(self.challenging_texts))):
+                    replacement_ids = tokenize_text_with_phoneme_spans(
+                        text_tokenizer=self.text_tokenizer,
+                        text_str=replacement_text,
+                        tokenizer_name=batch_tokenizer_names[cut_idx],
+                        enable_phoneme_text_input=self.enable_phoneme_text_input,
+                        phoneme_tokenizer=self.phoneme_tokenizer,
+                        text_phoneme_token_offset=self.text_phoneme_token_offset,
+                        bop_marker=self.phoneme_text_bop_marker,
+                        eop_marker=self.phoneme_text_eop_marker,
+                    )
+                    required_slots = len(replacement_ids) + 1 + int(self.add_text_bos)
+                    if required_slots > available_slots:
+                        continue
+                    uses_normalized_text = supervision.has_custom("normalized_text")
+                    original_text = supervision.normalized_text if uses_normalized_text else supervision.text
+                    supervision.text = replacement_text
+                    if uses_normalized_text:
+                        supervision.normalized_text = replacement_text
+                    supervision.challenging_text_replaced = True
+                    logging.info(
+                        f"[challenging_text_replacement] source="
+                        f"{'normalized_text' if uses_normalized_text else 'text'} "
+                        f"step={self._training_step.value} probability={challenging_text_prob:.4f} "
+                        f"required_slots={required_slots} available_slots={available_slots} "
+                        f"original={original_text[:160]!r} replacement={replacement_text[:160]!r}"
+                    )
+                    break
 
         return cuts, batch_tokenizer_names
 
@@ -478,8 +574,8 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
     ) -> tuple[Union[torch.Tensor, None], Union[torch.Tensor, None]]:
         matching_supervisions = [s for s in cut.supervisions if s.speaker in self.output_roles]
 
-        if self.load_cached_codes_if_available:
-            if context_text is None and len(matching_supervisions) > 0 and cut.has_custom("target_codes"):
+        if self.load_cached_codes_if_available and cut.has_custom("target_codes"):
+            if context_text is None and len(matching_supervisions) > 0:
                 sup = random.choice(matching_supervisions)
                 codes_array = cut.target_codes.load().astype(np.int32)
                 start_frame = int(max(0, sup.start) * self.sample_rate / self.codec_model_samples_per_frame)
@@ -678,6 +774,68 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
 
         return features
 
+    def _maybe_shuffle_context_audio(self, features: Dict[str, List]) -> None:
+        if (
+            self.dataset_type != 'train'
+            or self.context_audio_shuffle_batch_prob <= 0.0
+            or random.random() >= self.context_audio_shuffle_batch_prob
+        ):
+            return
+
+        batch_size = len(features["languages"])
+        has_text_context = features["has_text_context"]
+        if len(has_text_context) != batch_size:
+            has_text_context = [False] * batch_size
+
+        if len(features["context_audio_codes"]) == batch_size:
+            context_key = "context_audio_codes"
+            context_lens_key = "context_audio_codes_lens"
+            minimum_valid_context_len = 3
+        elif len(features["context_audio"]) == batch_size:
+            context_key = "context_audio"
+            context_lens_key = "context_audio_lens"
+            minimum_valid_context_len = self.codec_model_samples_per_frame + 1
+        else:
+            return
+
+        context_lens = features[context_lens_key]
+        eligible_indices = [
+            idx
+            for idx in range(batch_size)
+            if not has_text_context[idx] and context_lens[idx] >= minimum_valid_context_len
+        ]
+        if len(eligible_indices) < 2:
+            return
+
+        languages = features["languages"]
+        donor_indices = {}
+        for target_idx in eligible_indices:
+            candidates = [
+                donor_idx
+                for donor_idx in eligible_indices
+                if donor_idx != target_idx and languages[donor_idx] != languages[target_idx]
+            ]
+            if not candidates:
+                candidates = [donor_idx for donor_idx in eligible_indices if donor_idx != target_idx]
+            donor_indices[target_idx] = random.choice(candidates)
+
+        original_contexts = list(features[context_key])
+        original_context_lens = list(context_lens)
+        for target_idx, donor_idx in donor_indices.items():
+            features[context_key][target_idx] = original_contexts[donor_idx]
+            context_lens[target_idx] = original_context_lens[donor_idx]
+
+        cross_lingual_count = sum(
+            languages[target_idx] != languages[donor_idx] for target_idx, donor_idx in donor_indices.items()
+        )
+        language_pairs = ", ".join(
+            f"{languages[target_idx]}<-{languages[donor_idx]}" for target_idx, donor_idx in donor_indices.items()
+        )
+        logging.info(
+            f"[context_audio_shuffle] shuffled={len(donor_indices)} "
+            f"cross_lingual={cross_lingual_count}/{len(donor_indices)} pairs={language_pairs}"
+        )
+
     def _add_optional_batch_fields(
         self,
         batch_dict: Dict[str, Union[torch.Tensor, List]],
@@ -755,7 +913,12 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             "text": text_data["target_text_tokens"],
             "text_lens": text_data["target_token_lens"],
             "raw_texts": [
-                " ".join(s.text for s in cut.supervisions if s.speaker in self.output_roles) for cut in cuts
+                " ".join(
+                    s.normalized_text if s.has_custom("normalized_text") else s.text
+                    for s in cut.supervisions
+                    if s.speaker in self.output_roles
+                )
+                for cut in cuts
             ],
             "task": [getattr(cut, "task", "tts") for cut in cuts],
             "user_audio_turn_splitted": audio_data["user_audio_turn_splitted"],
@@ -791,6 +954,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         text_data = self._collate_text_channels(cuts, batch_tokenizer_names)
         phoneme_data = self._collate_phoneme_tokens(cuts)
         features = self._collect_cut_features(cuts, batch_tokenizer_names, audio_data["target_audio_lens"])
+        self._maybe_shuffle_context_audio(features)
 
         return self._build_batch_dict(cuts, audio_data, text_data, phoneme_data, features)
 
@@ -921,6 +1085,7 @@ def build_token_channel(
                 and enable_phoneme_text_input
                 and partial_phoneme_text_prob > 0.0
                 and language not in (ignore_phoneme_languages or [])
+                and not supervision.has_custom("challenging_text_replaced")
                 and supervision.has_custom("ipa_alignment")
                 and not has_phoneme_text_spans(
                     text,

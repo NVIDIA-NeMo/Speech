@@ -94,6 +94,8 @@ class StreamingConfig:
         use_local_transformer: Whether to use local transformer for inference.
         temperature: Sampling temperature.
         topk: Top-k sampling parameter.
+        phoneme_temperature: Sampling temperature for predicted phonemes.
+        phoneme_topk: Top-k sampling parameter for predicted phonemes.
         phoneme_input_type: 'gt' or 'pred' for phoneme tokens.
         phoneme_sampling_method: 'argmax' or 'sample' for phoneme token selection.
         dummy_context_embedding_unconditional: Unconditional embedding for CFG (if enabled).
@@ -110,6 +112,8 @@ class StreamingConfig:
     phoneme_input_type: str
     phoneme_sampling_method: str
     dummy_context_embedding_unconditional: Optional[torch.Tensor]
+    phoneme_temperature: Optional[float] = None
+    phoneme_topk: Optional[int] = None
 
 
 @dataclass
@@ -310,6 +314,11 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         self.text_conditioning_tokenizer_name = cfg.get('text_conditioning_tokenizer_name', None)
         if self.text_conditioning_tokenizer_name is None:
             self.text_conditioning_tokenizer_name = list(cfg.text_tokenizers.keys())[0]
+
+        # Codec decoding has large temporary convolution activations. Decode generated
+        # waveforms in smaller sub-batches when requested, without changing generation
+        # or the returned codes/audio.
+        self.codec_decode_batch_size = max(int(cfg.get('codec_decode_batch_size', 0)), 0)
 
         self.cfg_unconditional_prob = cfg.get('cfg_unconditional_prob', 0.0)
 
@@ -1154,12 +1163,14 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             # Replace NaN/inf then clamp to prevent extreme values causing NaN in softmax
             codebook_logits = torch.nan_to_num(codebook_logits, nan=0.0, posinf=100.0, neginf=-100.0)
             codebook_logits = codebook_logits.clamp(min=-100.0, max=100.0)
-            codebook_logits_topk = torch.topk(codebook_logits, topk, dim=-1)[0]  # (B, topk)
-            indices_to_remove = codebook_logits < codebook_logits_topk[:, -1].unsqueeze(
-                -1
-            )  # (B, num_tokens_per_codebook)
-            codebook_logits_rescored = codebook_logits.clone()
-            codebook_logits_rescored[indices_to_remove] = float('-inf')
+            if topk < self.phoneme_vocab_size:
+                codebook_logits_topk = torch.topk(codebook_logits, topk, dim=-1)[0]  # (B, topk)
+                indices_to_remove = codebook_logits < codebook_logits_topk[:, -1].unsqueeze(
+                    -1
+                )  # (B, num_tokens_per_codebook)
+                codebook_logits_rescored = codebook_logits.masked_fill(indices_to_remove, float('-inf'))
+            else:
+                codebook_logits_rescored = codebook_logits
 
             if temperature <= 0.0:
                 # Argmax sampling for deterministic output
@@ -1524,6 +1535,8 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         gt_audio_codes: Optional[torch.Tensor] = None,
         gt_audio_codes_lens: Optional[torch.Tensor] = None,
         use_inference_mode: bool = True,
+        phoneme_temperature: Optional[float] = None,
+        phoneme_topk: Optional[int] = None,
     ) -> StreamingState:
         """
         Initialize streaming TTS inference state.
@@ -1558,6 +1571,8 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             use_local_transformer: Whether to use local transformer for AR sampling.
             temperature: Sampling temperature for audio codes.
             topk: Top-k sampling parameter.
+            phoneme_temperature: Sampling temperature for predicted phonemes. Defaults to ``temperature``.
+            phoneme_topk: Top-k sampling parameter for predicted phonemes. Defaults to ``topk``.
             phoneme_input_type: 'gt' or 'predicted' for phoneme tokens (use 'predicted' for streaming).
             phoneme_sampling_method: 'argmax' or 'sample' for phoneme token selection.
             gt_phoneme_tokens: Optional GT phoneme tokens (B, L) with BOS/EOS for teacher forcing.
@@ -1667,6 +1682,8 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 use_local_transformer=use_local_transformer,
                 temperature=temperature,
                 topk=topk,
+                phoneme_temperature=temperature if phoneme_temperature is None else phoneme_temperature,
+                phoneme_topk=topk if phoneme_topk is None else phoneme_topk,
                 phoneme_input_type=phoneme_input_type,
                 phoneme_sampling_method=phoneme_sampling_method,
                 dummy_context_embedding_unconditional=dummy_context_embedding_unconditional,
@@ -2194,7 +2211,13 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             pred_phoneme_tokens = self.sample_codes_from_logits_phoneme(all_code_logits_t_phoneme, temperature=0.0)
         else:
             pred_phoneme_tokens = self.sample_codes_from_logits_phoneme(
-                all_code_logits_t_phoneme, temperature=state.config.temperature, topk=state.config.topk
+                all_code_logits_t_phoneme,
+                temperature=(
+                    state.config.temperature
+                    if state.config.phoneme_temperature is None
+                    else state.config.phoneme_temperature
+                ),
+                topk=state.config.topk if state.config.phoneme_topk is None else state.config.phoneme_topk,
             )
 
         # In prediction mode, low-confidence phoneme steps are replaced with UNK across
@@ -2345,10 +2368,35 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             predicted_codes, predicted_codes_lens = self._prepare_codes_for_decode(
                 predicted_codes, predicted_codes_lens
             )
-            audio, audio_len, decoded_codes = self._codec_helper.codes_to_audio(
-                predicted_codes,
-                predicted_codes_lens,
-            )
+            decode_batch_size = self.codec_decode_batch_size
+            if decode_batch_size <= 0 or decode_batch_size >= batch_size:
+                audio, audio_len, _ = self._codec_helper.codes_to_audio(
+                    predicted_codes,
+                    predicted_codes_lens,
+                )
+            else:
+                # Codec output is independent per item, so sub-batch decoding is
+                # mathematically identical to decoding the full rollout batch. It
+                # only lowers the peak activation memory of the codec decoder.
+                audio_chunks = []
+                audio_len_chunks = []
+                for chunk_start in range(0, batch_size, decode_batch_size):
+                    chunk_end = min(chunk_start + decode_batch_size, batch_size)
+                    chunk_audio, chunk_audio_len, _ = self._codec_helper.codes_to_audio(
+                        predicted_codes[chunk_start:chunk_end],
+                        predicted_codes_lens[chunk_start:chunk_end],
+                    )
+                    audio_chunks.append(chunk_audio)
+                    audio_len_chunks.append(chunk_audio_len)
+
+                audio_len = torch.cat(audio_len_chunks, dim=0)
+                max_audio_len = max(chunk.size(1) for chunk in audio_chunks)
+                audio = audio_chunks[0].new_zeros(batch_size, max_audio_len)
+                output_start = 0
+                for chunk_audio in audio_chunks:
+                    output_end = output_start + chunk_audio.size(0)
+                    audio[output_start:output_end, : chunk_audio.size(1)] = chunk_audio
+                    output_start = output_end
 
             return StreamingFinalizeOutput(
                 audio=audio,
@@ -2373,6 +2421,8 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         force_dropout_text: bool = False,
         use_teacher_forced: bool = False,
         use_inference_mode: bool = True,
+        phoneme_temperature: Optional[float] = None,
+        phoneme_topk: Optional[int] = None,
     ) -> InferBatchOutput:
         """
         Batch inference using streaming infrastructure.
@@ -2396,6 +2446,8 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             max_decoder_steps: Maximum number of decoder steps.
             temperature: Sampling temperature for audio codes. Use 0.0 for argmax.
             topk: Top-k sampling parameter.
+            phoneme_temperature: Sampling temperature for predicted phonemes. Defaults to ``temperature``.
+            phoneme_topk: Top-k sampling parameter for predicted phonemes. Defaults to ``topk``.
             use_cfg: Whether to use classifier-free guidance.
             cfg_scale: CFG scale factor.
             use_local_transformer_for_inference: Whether to use local transformer.
@@ -2490,6 +2542,8 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 use_local_transformer=use_local_transformer_for_inference,
                 temperature=temperature,
                 topk=topk,
+                phoneme_temperature=phoneme_temperature,
+                phoneme_topk=phoneme_topk,
                 phoneme_input_type=phoneme_input_type,
                 phoneme_sampling_method=phoneme_sampling_method,
                 gt_phoneme_tokens=gt_phoneme_tokens,

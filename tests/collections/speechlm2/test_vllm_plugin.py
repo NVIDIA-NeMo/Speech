@@ -984,6 +984,28 @@ class TestAudioProcessing:
         assert model.perception.encoder.context_exits == 1
         assert model.perception.encoder.online_inference_enabled is False
 
+    def test_pe_processing_uses_encoder_graphs_and_falls_back_to_eager(self):
+        import torch
+
+        model = self._make_pe_processing_model(torch)
+        audio_input = SimpleNamespace(audio_signal=torch.ones(2, 16), audio_signal_length=torch.tensor([16, 8]))
+        graph_calls = []
+
+        def graphs(audio_signal, audio_lengths):
+            graph_calls.append(audio_lengths.tolist())
+            return [torch.zeros(5, 4), torch.zeros(2, 4)]
+
+        model._encoder_graphs = graphs
+        result = model._process_audio(audio_input)
+        assert graph_calls == [[16, 8]]
+        assert [r.shape for r in result] == [(5, 4), (2, 4)]
+        assert model.perception.online_enabled_during_forward is None  # eager forward did not run
+
+        model._encoder_graphs = lambda audio_signal, audio_lengths: None  # e.g. audio too long to graph
+        result = model._process_audio(audio_input)
+        assert [r.shape for r in result] == [(3, 4), (3, 4)]
+        assert model.perception.online_enabled_during_forward is True
+
     def test_pe_processing_error_does_not_leak_online_inference_state(self):
         import torch
 
@@ -1299,6 +1321,255 @@ class TestAudioProcessing:
         assert len(result["audio_signal"]) == 1
         assert result["audio_signal"][0].shape[-1] == 12345
         assert torch.equal(result["audio_signal_length"], torch.tensor([12345]))
+
+    @pytest.mark.parametrize("separable", [True, False])
+    def test_call_hf_processor_expands_the_cached_template_like_direct_tokenization(self, separable):
+        from nemo.collections.speechlm2.vllm.salm.audio import NeMoSpeechLMMultiModalProcessor
+
+        tokenizer = _SpecialTokenTokenizer(separable=separable)
+        processor = object.__new__(NeMoSpeechLMMultiModalProcessor)
+        processor.info = SimpleNamespace(
+            get_tokenizer=lambda: tokenizer,
+            _estimate_audio_tokens=lambda samples, chunk_size_seconds=None, estimator_config=None: samples // 100,
+            _get_encoder_chunk_size_seconds=lambda: None,
+            _get_audio_token_estimator_config=lambda: None,
+        )
+        prompt = "Transcribe this: <|audio|> then <|audio|> please"
+
+        reference = _SpecialTokenTokenizer(separable=separable)
+        # The first request repeats no placeholder, so its own expansion cannot tell a nonseparable tokenizer apart.
+        for lengths in ([100, 100], [300, 500], [700, 200], [100, 900]):
+            result = processor._call_hf_processor(
+                prompt=prompt, mm_data={"audios": [[0.0] * n for n in lengths]}, mm_kwargs={}, tok_kwargs={}
+            )
+            first, second = ("<|audio|>" * (n // 100) for n in lengths)
+            expanded = f"Transcribe this: {first} then {second} please"
+            assert result["input_ids"][0].tolist() == reference.encode(expanded)
+
+        # Separable: the template and a probe expansion are tokenized once; every request expands the cached ids.
+        # Otherwise every request is tokenized directly.
+        assert len(tokenizer.encoded) == (2 if separable else 2 + 4)
+        assert tokenizer.encoded[0] == prompt
+
+    def test_encoder_graph_runner_splits_batches_into_buckets(self):
+        from nemo.collections.speechlm2.vllm.salm.encoder_graphs import EncoderGraphRunner
+
+        runner = object.__new__(EncoderGraphRunner)
+        runner.long_audio = False
+        runner.batch_sizes, runner.window = [8, 16, 32, 64, 128], 4000
+        runner.max_rows_x_frames = 128 * runner.window
+        assert runner._split(1, 4000) == [8]
+        assert runner._split(8, 4000) == [8]
+        assert runner._split(80, 4000) == [64, 16]
+        assert runner._split(71, 4000) == [64, 8]
+        assert runner._split(300, 4000) == [128, 128, 32, 8, 8]
+        # two-window audio: graphs hold at most half the rows
+        assert runner._split(80, 8000) == [64, 16]
+        assert runner._split(130, 8000) == [64, 64, 8]
+
+    def test_encoder_graph_runner_defaults_cover_low_concurrency(self):
+        """One request replays a one-row graph, not a padded batch."""
+        import inspect
+
+        from nemo.collections.speechlm2.vllm.salm.encoder_graphs import EncoderGraphRunner
+
+        runner = object.__new__(EncoderGraphRunner)
+        runner.long_audio = False
+        runner.batch_sizes = list(inspect.signature(EncoderGraphRunner).parameters["batch_sizes"].default)
+        runner.window = 4000
+        runner.max_rows_x_frames = runner.batch_sizes[-1] * runner.window
+        assert runner.batch_sizes[:3] == [1, 2, 4]
+        assert runner._split(1, 4000) == [1]
+        assert runner._split(3, 4000) == [4]
+        assert runner._split(4, 4000) == [4]
+        assert runner._split(5, 4000) == [8]
+        # Rows past the large graphs are padded into one small graph, not split over several.
+        assert runner._split(13, 4000) == [8, 8]
+        assert runner._split(12, 4000) == [8, 4]
+        assert runner._split(37, 4000) == [32, 8]
+
+    def test_encoder_graph_capture_raises_the_recompile_limit_only_while_capturing(self):
+        """Capturing every bucket compiles more attention variants than dynamo's default limit allows."""
+        import torch
+
+        from nemo.collections.speechlm2.vllm.salm import encoder_graphs
+        from nemo.collections.speechlm2.vllm.salm.encoder_graphs import EncoderGraphRunner
+
+        config = torch._dynamo.config
+        name = "recompile_limit" if hasattr(config, "recompile_limit") else "cache_size_limit"
+        before = getattr(config, name)
+        runner = object.__new__(EncoderGraphRunner)
+        runner.long_audio = False
+        runner.perception = SimpleNamespace(
+            maybe_preprocess_audio=lambda audio, lengths, *_: (audio[:, None], lengths)
+        )
+        runner.max_frames, runner.graphs, runner.enabled, runner.ctc_timestamp_inputs = 800, {}, True, False
+        seen = []
+
+        def capture_all(n_feat, dtype):
+            seen.append(getattr(config, name))
+            raise RuntimeError("stop after the limit is checked")
+
+        runner._capture_all = capture_all
+        assert runner(torch.zeros(1, 300), torch.tensor([300])) is None
+        assert seen == [max(before, encoder_graphs._CAPTURE_RECOMPILE_LIMIT)]
+        assert getattr(config, name) == before
+
+    def test_shared_graph_buffers_hand_out_views_of_one_buffer_per_slot(self):
+        import torch
+
+        from nemo.collections.common.parts.optional_cuda_graphs import SharedGraphBuffers
+
+        buffers = SharedGraphBuffers()
+        big = buffers.view("x", (4, 3, 5), torch.float32, "cpu")
+        small = buffers.view("x", (2, 3, 4), torch.float32, "cpu")
+        other = buffers.view("y", (2, 3, 4), torch.float32, "cpu")
+        assert small.is_contiguous() and small.data_ptr() == big.data_ptr()
+        assert other.data_ptr() != big.data_ptr()
+        # A larger request gets a new buffer; the earlier views keep the old one.
+        bigger = buffers.view("x", (8, 3, 5), torch.float32, "cpu")
+        assert bigger.data_ptr() != big.data_ptr() and big.numel() == 60
+
+    @pytest.mark.parametrize(
+        "frames,expected", [(8001, 8400), (8400, 8400), (8401, 8800), (11999, 12000), (12000, 12000)]
+    )
+    def test_long_audio_pads_only_the_last_window_to_its_bucket(self, frames, expected):
+        from nemo.collections.speechlm2.vllm.salm.encoder_graphs import EncoderGraphRunner
+
+        runner = object.__new__(EncoderGraphRunner)
+        runner.long_audio = False
+        runner.window, runner.last_window_bucket = 4000, 400
+        assert runner._long_frames(frames) == expected
+
+    def test_long_audio_steps_pad_rows_by_at_most_half(self):
+        from nemo.collections.speechlm2.vllm.salm.encoder_graphs import EncoderGraphRunner
+
+        runner = object.__new__(EncoderGraphRunner)
+        runner.step_batch_sizes = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 24, 32, 48, 64, 96, 128]
+        for rows in range(1, 129):
+            size = runner._bucket(rows)
+            assert rows <= size <= max(16, 1.5 * rows)
+        assert runner._bucket(129) is None
+
+    def test_encoder_graph_options_come_from_the_model_config(self):
+        from nemo.collections.speechlm2.vllm.salm.encoder_graphs import encoder_graph_options
+
+        assert encoder_graph_options(SimpleNamespace(encoder_cuda_graphs=True)) == {}
+        config = SimpleNamespace(
+            encoder_cuda_graph_batch_sizes=[1, 4, 32],
+            encoder_cuda_graph_frame_bucket=128,
+            encoder_cuda_graph_max_windows=1,
+            encoder_cuda_graph_long_audio=False,
+            encoder_cuda_graph_last_window_bucket=500,
+        )
+        assert encoder_graph_options(config) == {
+            "batch_sizes": (1, 4, 32),
+            "frame_bucket": 128,
+            "max_windows": 1,
+            "long_audio": False,
+            "last_window_bucket": 500,
+        }
+
+    @pytest.mark.parametrize(
+        "kwargs", [{"batch_sizes": ()}, {"batch_sizes": (0, 8)}, {"frame_bucket": 0}, {"max_windows": 0}]
+    )
+    def test_encoder_graph_runner_rejects_invalid_buckets(self, kwargs):
+        import torch
+
+        from nemo.collections.speechlm2.vllm.salm.encoder_graphs import EncoderGraphRunner
+
+        with pytest.raises(ValueError):
+            EncoderGraphRunner(torch.nn.Module(), **kwargs)
+
+    @pytest.mark.parametrize("window,frame_bucket,max_windows", [(4000, 256, 1), (4000, 256, 2), (1024, 128, 2)])
+    def test_encoder_graph_runner_captures_every_reachable_bucket(self, window, frame_bucket, max_windows):
+        from nemo.collections.speechlm2.vllm.salm.encoder_graphs import EncoderGraphRunner
+
+        runner = object.__new__(EncoderGraphRunner)
+        runner.long_audio = False
+        runner.window, runner.frame_bucket, runner.max_frames = window, frame_bucket, window * max_windows
+        runner.batch_sizes, runner.max_rows_x_frames = [8, 16], 16 * window
+        captured = set()
+        runner._capture = lambda rows, frames, n_feat, dtype: captured.add((rows, frames))
+        runner._capture_all(n_feat=128, dtype=None)
+        for frames in range(1, runner.max_frames + 1):
+            bucket = runner._frame_bucket(frames)
+            assert bucket >= frames
+            assert {(rows, bucket) for rows in runner._split(17, bucket)} <= captured
+
+    def test_encoder_graph_runner_falls_back_to_eager_when_capture_fails(self):
+        """A failed capture, even after some buckets were captured, makes this and every later call return None."""
+        import torch
+
+        from nemo.collections.speechlm2.vllm.salm.encoder_graphs import EncoderGraphRunner
+
+        runner = object.__new__(EncoderGraphRunner)
+        runner.long_audio = False
+        runner.perception = SimpleNamespace(
+            maybe_preprocess_audio=lambda audio, lengths, *_: (audio[:, None], lengths)
+        )
+        runner.window, runner.frame_bucket, runner.max_frames = 400, 128, 800
+        runner.batch_sizes, runner.max_rows_x_frames = [8], 8 * 400
+        runner.graphs, runner.pool, runner.enabled = {}, object(), True
+        attempts = []
+
+        def capture(rows, frames, n_feat, dtype):
+            attempts.append((rows, frames))
+            if len(attempts) > 1:
+                raise RuntimeError("operation not permitted when stream is capturing")
+            runner.graphs[rows, frames] = None
+
+        runner._capture = capture
+        audio, lengths = torch.zeros(2, 300), torch.tensor([300, 200])
+        assert runner(audio, lengths) is None
+        assert runner(audio, lengths) is None
+        assert len(attempts) == 2 and runner.graphs == {} and runner.pool is None and not runner.enabled
+
+    def test_encoder_graph_runner_failed_capture_leaves_eager_inference_working(self, monkeypatch):
+        """A capture that syncs the host fails; the eager forward still runs on the same device afterwards."""
+        import torch
+
+        if not torch.cuda.is_available():
+            pytest.skip("CUDA required")
+        from nemo.collections.speechlm2.vllm.salm.encoder_graphs import EncoderGraphRunner
+
+        torch.manual_seed(0)
+        perception = _toy_perception().cuda().eval()
+        runner = EncoderGraphRunner(perception, batch_sizes=(4,), frame_bucket=128, max_windows=1)
+        forward = runner._forward
+        monkeypatch.setattr(runner, "_forward", lambda x, x_len: (x_len.max().item(), forward(x, x_len))[1])
+        audio = torch.randn(2, 1500, device="cuda")
+        lengths = torch.tensor([1500, 900], device="cuda")
+        assert runner(audio, lengths) is None
+        assert not runner.enabled and runner.graphs == {}
+        with torch.no_grad(), perception.encoder.online_inference():
+            emb, emb_len = perception(input_signal=audio, input_signal_length=lengths)
+        assert torch.isfinite(emb).all() and emb_len.tolist()[0] > 0
+
+    def test_encoder_graph_runner_matches_eager_forward(self):
+        """Graph replays over padded buckets return the eager forward's per-row embeddings."""
+        import torch
+
+        if not torch.cuda.is_available():
+            pytest.skip("CUDA required")
+        from nemo.collections.speechlm2.vllm.salm.encoder_graphs import EncoderGraphRunner
+
+        torch.manual_seed(0)
+        perception = _toy_perception().cuda().eval()
+        runner = EncoderGraphRunner(perception, batch_sizes=(4, 8, 16), frame_bucket=128, max_windows=2)
+        for batch, max_len in ((3, 150), (13, 600), (21, 1000)):
+            lengths = torch.randint(200, max_len * 10 + 1, (batch,), device="cuda")
+            lengths[0] = max_len * 10
+            audio = torch.randn(batch, max_len * 10, device="cuda")
+            got = runner(audio, lengths)
+            with torch.no_grad():
+                emb, emb_len = perception(input_signal=audio, input_signal_length=lengths)
+            assert len(got) == batch
+            for i in range(batch):
+                torch.testing.assert_close(got[i], emb[i, : emb_len[i]])
+        # longer than max_windows windows: left to the eager path
+        assert runner(torch.randn(1, 30000, device="cuda"), torch.tensor([30000], device="cuda")) is None
+        assert {b for b, _ in runner.graphs} <= {4, 8, 16}
 
     def test_perception_forward(self):
         """A small NeMo perception module should encode dummy audio to embeddings."""
@@ -2473,6 +2744,69 @@ class TestMTPPlugin:
 
         with pytest.raises(ValueError, match="backbone vocabulary boundary"):
             NeMoSpeechLMConfig(**_DEFAULT_CONFIG_KWARGS, image_token_index=42)
+
+
+class _SpecialTokenTokenizer:
+    """Whitespace tokenizer with ``<|audio|>`` as a special token (split out of the text before tokenizing).
+
+    With ``separable=False`` the special token's id depends on the preceding token, so the template ids cannot
+    be expanded.
+    """
+
+    def __init__(self, separable=True):
+        self.separable = separable
+        self.encoded = []
+
+    def get_vocab(self):
+        return {"<|audio|>": 1}
+
+    def add_special_tokens(self, tokens):
+        pass
+
+    def encode(self, prompt, add_special_tokens=True):
+        import re
+
+        self.encoded.append(prompt)
+        ids = [0] if add_special_tokens else []
+        for piece in re.split(r"(<\|audio\|>)", prompt):
+            if piece == "<|audio|>":
+                ids.append(1 if self.separable or ids[-1] != 1 else 2)
+            else:
+                ids.extend(10 + len(w) for w in piece.split())
+        return ids
+
+
+def _toy_perception():
+    """Stand-in for the perception module: a framewise 'preprocessor', a 2x subsampling encoder with a
+    length-masked mean (so padding would leak into valid frames if it were not masked), and the online-inference
+    API."""
+    import torch
+    from torch import nn
+
+    class _ToyPerception(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = nn.Linear(10, 8)
+            self.encoder = SimpleNamespace(chunk_feat_len=1024, online_inference=contextlib.nullcontext)
+
+        def maybe_preprocess_audio(self, input_signal, input_signal_length, processed_signal, processed_signal_length):
+            if processed_signal is not None:
+                return processed_signal, processed_signal_length
+            b, n = input_signal.shape
+            return input_signal[:, : n // 10 * 10].view(b, -1, 10).transpose(1, 2), input_signal_length // 10
+
+        def forward(
+            self, input_signal=None, input_signal_length=None, processed_signal=None, processed_signal_length=None
+        ):
+            x, x_len = self.maybe_preprocess_audio(
+                input_signal, input_signal_length, processed_signal, processed_signal_length
+            )
+            mask = (torch.arange(x.shape[-1], device=x.device) < x_len[:, None]).unsqueeze(1)
+            mean = (x * mask).sum(-1, keepdim=True) / x_len[:, None, None]
+            h = self.proj(((x - mean) * mask).transpose(1, 2))
+            return h[:, ::2], (x_len + 1) // 2
+
+    return _ToyPerception()
 
 
 class _FakeTokenizer:

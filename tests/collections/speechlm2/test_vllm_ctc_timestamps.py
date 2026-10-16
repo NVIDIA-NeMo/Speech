@@ -1901,3 +1901,25 @@ def test_requests_without_recorded_audio_are_not_reported_as_evicted(aligner, ca
         ct._empty_result("no_capture")
     ]
     assert "No capture is recorded" in caplog.text and "evicted" not in caplog.text
+
+
+def test_encoder_graphs_serve_capture_and_store_their_alignment_states(aligner):
+    pytest.importorskip("vllm")
+    model = _model_with_fake_perception()
+    graph_calls = []
+
+    def graphs(audio_signal, audio_lengths, return_ctc_timestamp_inputs=False):
+        graph_calls.append(return_ctc_timestamp_inputs)
+        embeddings = [torch.zeros(5, 4), torch.zeros(2, 4)]
+        return (embeddings, _inputs(2, 4)) if return_ctc_timestamp_inputs else embeddings
+
+    model._encoder_graphs = graphs
+    ct._begin_step(["hash-a", "hash-b", "hash-c", "hash-d"])
+    embeddings = model._process_audio(_audio([False, True]))
+    model._process_audio(_audio([False, False]))
+    ct._end_step()
+
+    assert [tuple(e.shape) for e in embeddings] == [(5, 4), (2, 4)]
+    assert graph_calls == [True, False]
+    assert model.perception.forwards == []  # no eager forward
+    assert list(ct._store) == ["hash-b"]

@@ -6,7 +6,7 @@ their speech encoder and language backbone. It supports ordinary generation
 and checkpoint-backed speculative decoding.
 
 CTC word timestamp alignment
----------------------------
+----------------------------
 
 When CTC timestamps are requested, native SpeechLM and the vLLM timestamp
 worker use the same single-pass banded CTC word aligner. Speaker mapping

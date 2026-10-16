@@ -921,9 +921,14 @@ class AdapterModelPTMixin(AdapterModuleMixin):
                             # inside of the state dict.
                             # It will be normalized in the corresponding `load_adapters()` call.
                             adapter_state_dict = module.adapter_layer.state_dict()
+                            # `adapter_layer` is a ModuleDict holding every adapter of this module,
+                            # so its keys are `<some adapter name>.<...>`. Match on the exact
+                            # `<adapter_name>.` prefix - a substring test would also pick up any
+                            # adapter whose name merely contains `adapter_name`.
+                            adapter_key_prefix = f'{adapter_name}.'
                             state_dict = {}
                             for k, v in adapter_state_dict.items():
-                                if adapter_name in k:
+                                if k.startswith(adapter_key_prefix):
                                     state_dict[k] = v
 
                             output_dict[key].append(state_dict)
@@ -973,7 +978,10 @@ class AdapterModelPTMixin(AdapterModuleMixin):
             name = [name]
 
         if name is None:
-            name = list(config.keys())
+            # Restore exactly the adapters that this file contains. `config` is the *source model's*
+            # entire adapter config, which is a superset of the file whenever `save_adapters` was
+            # called with an explicit `name`, so it cannot be used to derive the list to restore.
+            name = list(state_dict.keys())
 
         # For all module:adapter names (note, for global modules, we ignore the module: part)
         for module_adapter_name in name:
@@ -1038,12 +1046,15 @@ class AdapterModelPTMixin(AdapterModuleMixin):
             for state, module in zip(adapter_state, modules_to_load):
                 # Note that state is a list of multiple state dicts for 1:1 Module mapping.
                 # However, the state_dict keys are of the form `adapter_name.<module hierarchy with dots>`.
-                # We therefore strip the `adapter_name.` part of the state dict
+                # We therefore strip the leading `adapter_name.` prefix of the state dict
                 # And then directly load each module with its 1:1 state dict.
+                # Only the exact prefix is matched/stripped, so keys belonging to another adapter
+                # whose name contains `adapter_name` are neither picked up nor mangled.
+                adapter_key_prefix = f'{adapter_name}.'
                 sub_dict = {}
                 for k, v in state.items():
-                    if adapter_name in k:
-                        k_ = k.replace(f"{adapter_name}.", "")
+                    if k.startswith(adapter_key_prefix):
+                        k_ = k[len(adapter_key_prefix) :]
                         sub_dict[k_] = v
 
                 module.load_state_dict(sub_dict, strict=strict)

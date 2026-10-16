@@ -1098,15 +1098,25 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         else:
             streaming_cfg.pre_encode_cache_size = 0
 
+        # Number of subsampled output frames produced from the pre-encode left-context
+        # cache. This is what we drop after subsampling so chunked inference matches a
+        # full pass. For convolutional subsampling with stride > 1, this is NOT a simple
+        # floor division — see ``ConvSubsampling.get_streaming_drop_size``.
         if isinstance(streaming_cfg.pre_encode_cache_size, list):
-            if streaming_cfg.pre_encode_cache_size[1] >= 1:
-                streaming_cfg.drop_extra_pre_encoded = (
-                    1 + (streaming_cfg.pre_encode_cache_size[1] - 1) // self.subsampling_factor
-                )
-            else:
-                streaming_cfg.drop_extra_pre_encoded = 0
+            pre_encode_cache = streaming_cfg.pre_encode_cache_size[1]
         else:
-            streaming_cfg.drop_extra_pre_encoded = streaming_cfg.pre_encode_cache_size // self.subsampling_factor
+            pre_encode_cache = streaming_cfg.pre_encode_cache_size
+
+        if pre_encode_cache <= 0:
+            streaming_cfg.drop_extra_pre_encoded = 0
+        elif hasattr(self.pre_encode, "get_streaming_drop_size"):
+            streaming_cfg.drop_extra_pre_encoded = self.pre_encode.get_streaming_drop_size(pre_encode_cache)
+        else:
+            # Preserve the legacy list/scalar rules for custom pre_encode modules.
+            if isinstance(streaming_cfg.pre_encode_cache_size, list):
+                streaming_cfg.drop_extra_pre_encoded = 1 + (pre_encode_cache - 1) // self.subsampling_factor
+            else:
+                streaming_cfg.drop_extra_pre_encoded = pre_encode_cache // self.subsampling_factor
 
         for m in self.layers.modules():
             if hasattr(m, "_max_cache_len"):

@@ -28,6 +28,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from huggingface_hub.errors import StrictDataclassClassValidationError
+from transformers import PretrainedConfig
 
 try:
     import nemo.collections.speechlm2.vllm.salm as _salm_module
@@ -497,6 +499,18 @@ class TestNeMoSpeechLMConfig:
         assert restored.get_text_config().speechlm_runtime_added_token_ids == [4, 5]
         assert restored.speechlm_output_vocab_size == 100
         assert restored.image_token_index == 100
+
+    def test_serialization_validates_layout_without_mutating_serving_shim(self, tmp_path):
+        cfg = NeMoSpeechLMConfig(
+            **_DEFAULT_CONFIG_KWARGS,
+            llm_config={"model_type": "qwen2", "architectures": ["Qwen2ForCausalLM"], "vocab_size": 100},
+        )
+        cfg.save_pretrained(tmp_path)
+        assert cfg.text_config.layer_types == ["attention"] * cfg.text_config.num_hidden_layers
+        if hasattr(PretrainedConfig, "validate"):
+            cfg.text_config.layer_types[0] = "invalid_layout"
+            with pytest.raises(StrictDataclassClassValidationError, match="layer_types"):
+                cfg.save_pretrained(tmp_path)
 
     @pytest.mark.parametrize("audio_token_id", [True, -1, 151946, "1"])
     def test_invalid_audio_token_id_rejected(self, audio_token_id):
@@ -1015,9 +1029,23 @@ class TestAudioProcessing:
         torch.nn.Module.__init__(model)
         model.perception = _Perception()
         model._uses_pe_encoder = True
+        model._perception_weights_initialized = False
 
         with pytest.raises(RuntimeError, match="does not exactly match"):
             model._load_perception_weights({})
+
+        assert not model._perception_weights_initialized
+        seed = {key: value.clone() for key, value in model.perception.state_dict().items()}
+        model._load_perception_weights(seed)
+        assert model._perception_weights_initialized
+        before_bias = model.perception.encoder.bias.detach().clone()
+        update = torch.full_like(model.perception.encoder.weight, 0.5)
+        assert model._load_perception_weights({"encoder.weight": update}) == {"perception.encoder.weight"}
+        torch.testing.assert_close(model.perception.encoder.weight, update)
+        torch.testing.assert_close(model.perception.encoder.bias, before_bias)
+        assert model._load_perception_weights({}) == set()
+        with pytest.raises(RuntimeError, match="unexpected"):
+            model._load_perception_weights({"wrong.weight": update})
 
         model._uses_pe_encoder = False
         assert model._load_perception_weights({}) == set()

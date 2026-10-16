@@ -29,6 +29,7 @@ def _bare_model():
     model = SALMAutomodel.__new__(SALMAutomodel)
     torch.nn.Module.__init__(model)
     model.cfg = DictConfig({"debug_log_training_batches": 0})
+    model.parameter_config = None
     model._fused_linear_cross_entropy = None
     return model
 

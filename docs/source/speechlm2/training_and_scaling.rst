@@ -292,6 +292,32 @@ For distributed inference, launch with ``torchrun``:
       inputs=path/to/manifest \
       ep_size=2
 
+Native NeMo-RL checkpoints
+""""""""""""""""""""""""""
+
+The canonical ``examples/speechlm2/to_hf.py`` exporter accepts
+``checkpoint_format=nemo_rl`` for flat DCP checkpoints saved by NeMo-RL.
+Point ``ckpt_path`` at ``policy/weights/model`` and ``ckpt_config`` at the
+SpeechLM model configuration. The exporter retains the native frozen MTP head
+without enabling auxiliary MTP training, and uses the model's canonical HF
+dtype mapping so intrinsically FP32 weights and router buffers are preserved.
+Empty Transformer Engine bookkeeping entries are omitted by the canonical
+adapter; they contain no numerical weights. Loading requires complete parameter
+and persistent-buffer coverage, including frozen and MTP parameters, with
+activation-checkpoint wrapper names mapped to their canonical checkpoint names.
+
+For training integrations, ``SALMAutomodel`` accepts the public Automodel
+``ParameterConfig`` construction option. It applies the declared update surface
+and storage dtypes before checkpoint loading and wrapping; optional
+``perception_mixed_precision`` selects the normal FSDP2 compute/reduction policy.
+``retain_native_mtp: true`` preserves native MTP topology while ``mtp.enabled``
+remains false. These options do not change existing training defaults.
+
+The vLLM SpeechLM model requires a complete initial PE/dual-encoder state.
+After successful initialization, normal ``load_weights`` calls can update only
+the selected perception tensors; supplied names and shapes are checked before
+mutation, and omitted frozen tensors retain their seed values.
+
 Packed Sequences (THD)
 """"""""""""""""""""""
 
@@ -439,3 +465,67 @@ When customizing the training scripts, keep these points in mind:
 1. **Path Overrides**: Override paths in the YAML configuration files with your own, as needed
 2. **W&B Keys**: Update Weights & Biases API keys in configuration files
 3. **Batch Size Tuning**: Adjust batch size based on your GPU memory and model size
+
+Refit destination diagnostics
+-----------------------------
+
+The vLLM SpeechLM loader optionally checks bounded destination samples after
+normal BF16 refits. Set ``speechlm_refit_verification`` in the model's Hugging
+Face configuration (or the standard vLLM ``hf_overrides``), for example:
+
+.. code-block:: json
+
+   {
+     "speechlm_refit_verification": {
+       "output_dir": "/path/to/job-output/refit",
+       "samples": {
+         "language_model.backbone.layers.0.norm.weight": null,
+         "language_model.backbone.layers.0.mixer.D": 0,
+         "language_model.backbone.layers.0.mixer.dt_bias": 0,
+         "language_model.backbone.layers.0.mixer.out_proj.weight": 1,
+         "perception.proj.weight": null
+       }
+     }
+   }
+
+Sample names must be actual destination parameters; the example perception
+name must be adjusted to the checkpoint's architecture. ``null`` selects a
+replicated layout. Axis 0 is supported only for unfused Mamba ``D`` and
+``dt_bias``; axis 1 is supported only for the Mamba output projection with
+the normal row-parallel ``input_dim=1`` parameter metadata. Quantized, fused
+and transformed tensors are outside this diagnostic's contract.
+
+The first complete checkpoint load retains its normal strict behavior.
+Subsequent calls retain at most four scalar expectations per selected tensor,
+then compare the loaded destination exactly after the normal transport-to-
+destination dtype cast. A mismatch or nonfinite sample fails the call. Each
+process/TP-rank JSONL records call order, UTC boundaries, all received source
+names, global source coordinates and checked destination values. Default
+loading has no sampling or receipt writes.
+
+This proves destination versus received transport only. To qualify a complete
+refit, aggregate bucket/rank receipts and require the expected source-name and
+sample-name coverage. Establish source correspondence separately against the
+native checkpoint at that refit. In a synchronous loop refitting before each
+update, the first resumed refit before update 21 corresponds to saved step 20,
+not step 22. Require at least one probe that differs from the seed after BF16
+rounding to distinguish an updated source from stale seed weights.
+
+GSPO post-training
+------------------
+
+The NeMo RL SpeechLM GSPO guide (``docs/guides/gspo-speechlm.md`` in the NeMo RL repository)
+describes the full-scale, 400-update recipe, its Parquet data contract, selected
+parameter surface, training/resume commands, and canonical HF export. It supports
+compatible full SpeechLM checkpoints with or without a bundled CTC timestamp head.
+
+For CTC-bearing checkpoints, Speech registers the head as frozen state and retains
+its floating-point storage, serialized tokenizer bytes, and metadata through native
+checkpoints and HF export. Core and CTC tensor coverage remain strict. Updating the
+shared speech encoder can still affect timestamp quality even though the head is
+frozen; timestamp accuracy requires a separate evaluation.
+
+Use ``examples/speechlm2/prepare_rl_export_config.py --seed <full-hf-seed> --output <config.json>``
+to reconstruct the model and CTC configuration for ``examples/speechlm2/to_hf.py``.
+The resulting file is the converter's ``ckpt_config`` input, not an HF model config.
+Keep the original seed available for its tokenizer and backbone configuration.

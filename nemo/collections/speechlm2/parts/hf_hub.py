@@ -101,6 +101,14 @@ class HFHubMixin(
         # this setting skips loading the original pretrained ASR and LLM weights, and loads the
         # final trained model weights directly.
         model_kwargs['cfg']['pretrained_weights'] = False
+        # Timestamp tensors are a frozen, registered artifact, not unexpected
+        # language-model weights. Read their construction metadata before init.
+        from nemo.collections.speechlm2.parts.ctc_timestamp_checkpoint import read_ctc_timestamp_config
+
+        weight_file = weights_path or cached_file(model_id, SAFETENSORS_SINGLE_FILE, **_cached_file_kwargs)
+        ctc_config = read_ctc_timestamp_config(weight_file) if weight_file is not None else None
+        if ctc_config is not None:
+            model_kwargs['cfg']['ctc_timestamp_artifact'] = ctc_config
 
         if device_mesh is None:
             # Non-distributed: for Automodel checkpoints we must build the modules
@@ -128,6 +136,9 @@ class HFHubMixin(
                 model = _load_from_local_weights(cls, model_kwargs, weights_path, map_location, strict)
             if weights_path is not None:
                 _attach_bundled_ctc_timestamp(model, weights_path)
+            ctc_timestamp = getattr(model, "ctc_timestamp", None)
+            if ctc_timestamp is not None:
+                ctc_timestamp.validate_tokenizer()
             return model
 
         # --- Distributed flow ---
@@ -143,7 +154,18 @@ class HFHubMixin(
             torch_dtype=torch_dtype,
             distributed_setup=distributed_setup,
             cached_file_kwargs=_cached_file_kwargs,
+            strict=strict,
         )
+
+    def _save_pretrained(self, save_directory: Path) -> None:
+        ctc_timestamp = self._modules.get("ctc_timestamp")
+        if ctc_timestamp is None:
+            super()._save_pretrained(save_directory)
+            return
+        from safetensors.torch import save_model
+
+        ctc_timestamp.validate_tokenizer()
+        save_model(self, str(save_directory / SAFETENSORS_SINGLE_FILE), metadata=ctc_timestamp.artifact_metadata)
 
     def save_pretrained(
         self,
@@ -205,6 +227,7 @@ def _distributed_from_pretrained(
     torch_dtype,
     distributed_setup,
     cached_file_kwargs,
+    strict=False,
 ):
     """Create a distributed model instance outside of a classmethod frame.
 
@@ -230,7 +253,7 @@ def _distributed_from_pretrained(
     weight_file = cached_file(model_id, SAFETENSORS_SINGLE_FILE, **cached_file_kwargs)
     if weight_file is None:
         raise RuntimeError(f"Missing {SAFETENSORS_SINGLE_FILE} file for {model_id=}")
-    _load_state_dict_with_dtensors(instance, str(Path(weight_file).parent))
+    _load_state_dict_with_dtensors(instance, str(Path(weight_file).parent), strict=strict)
 
     return instance
 
@@ -241,7 +264,7 @@ def _load_from_local_weights(cls, model_kwargs, weights_path, map_location, stri
     return cls._load_as_safetensor(model, str(weights_path), map_location, strict)
 
 
-def _load_state_dict_with_dtensors(model, weight_dir):
+def _load_state_dict_with_dtensors(model, weight_dir, *, strict=False):
     """Load safetensors weights into a model with DTensor parameters using DCP.
 
     Uses ``torch.distributed.checkpoint`` with ``_HuggingFaceStorageReader``
@@ -251,28 +274,38 @@ def _load_state_dict_with_dtensors(model, weight_dir):
     Args:
         model: The model with DTensor parameters (after ``configure_model``).
         weight_dir: Directory containing ``.safetensors`` file(s).
+        strict: Require complete parameter and persistent-buffer coverage.
+            False retains permissive loading for existing callers.
     """
-    from itertools import chain
-
     import torch.distributed.checkpoint as dcp
     from nemo_automodel.components.checkpoint._backports.hf_storage import _HuggingFaceStorageReader
 
-    # Build state dict from named_parameters/named_buffers.
-    # This avoids FSDP2 state-dict hooks that model.state_dict() triggers.
-    # DCP will write directly into these tensors in-place.
-    all_params = dict(chain(model.named_parameters(), model.named_buffers()))
+    from nemo.collections.speechlm2.parts.weight_loading import apply_checkpoint_extra_state, checkpoint_load_state
 
-    # DCP is strict by default — it errors on model keys missing from the
-    # checkpoint (e.g. positional-encoding buffers computed at init).
-    # Read the checkpoint metadata first and keep only matching keys.
     reader = _HuggingFaceStorageReader(path=weight_dir)
-    checkpoint_keys = reader.read_metadata().state_dict_metadata.keys()
-    state_dict = {k: v for k, v in all_params.items() if k in checkpoint_keys}
+    metadata = reader.read_metadata().state_dict_metadata
+    shapes = {key: tuple(value.size) for key, value in metadata.items()}
+    if strict:
+        state_dict = checkpoint_load_state(model, shapes)
+    else:
+        from itertools import chain
+        from nemo.collections.speechlm2.parts.weight_loading import canonical_parameter_name
+
+        state_dict = {
+            canonical_parameter_name(key): value
+            for key, value in chain(model.named_parameters(), model.named_buffers())
+            if canonical_parameter_name(key) in shapes
+        }
 
     # DCP + HF storage reader: parses safetensors header for byte offsets,
     # the planner narrows each tensor to the local DTensor shard,
     # and copies directly into model parameter storage.
     dcp.load(state_dict, storage_reader=reader)
+    if strict:
+        apply_checkpoint_extra_state(model, state_dict)
+    ctc_timestamp = getattr(model, "ctc_timestamp", None)
+    if ctc_timestamp is not None:
+        ctc_timestamp.validate_tokenizer()
 
 
 def _inject_local_artifact_paths(cfg: dict, model_id: str, cached_file_kwargs: dict) -> None:

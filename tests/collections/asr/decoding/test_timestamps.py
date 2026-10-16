@@ -15,11 +15,20 @@
 import os.path
 import re
 from functools import cached_property
+from types import SimpleNamespace
 from typing import Any
+
+import pytest
+import torch
 
 from nemo.collections.asr.models import ASRModel
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
-from nemo.collections.asr.parts.utils.timestamp_utils import get_segment_offsets, get_words_offsets
+from nemo.collections.asr.parts.utils.timestamp_utils import (
+    get_forced_aligned_timestamps_with_external_model,
+    get_segment_offsets,
+    get_words_offsets,
+)
+from nemo.collections.common.tokenizers.char_tokenizer import CharTokenizer
 
 
 class BaseTimestampsTest:
@@ -316,3 +325,48 @@ class BaseTimestampsTest:
         )
 
         assert segment_offsets == self.segment_offsets_expected_output_gap
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("subsampling_factor", [4, 8])
+@pytest.mark.parametrize("start_frame, end_frame", [(28, 29), (29, 58), (57, 58)])
+@pytest.mark.parametrize("punctuation", ["", "."])
+def test_forced_aligned_timestamps_preserve_frames(tmp_path, subsampling_factor, start_frame, end_frame, punctuation):
+    vocab_path = tmp_path / "vocab.txt"
+    vocab_path.write_text("'a'\n'.'\n", encoding="utf-8")
+    tokenizer = CharTokenizer(str(vocab_path), unk_token="?", special_tokens_to_remove_while_decoding=[])
+    model = SimpleNamespace(
+        tokenizer=tokenizer,
+        cfg={"preprocessor": {"window_stride": 0.01}},
+        encoder=SimpleNamespace(subsampling_factor=subsampling_factor),
+        device=torch.device("cpu"),
+    )
+    blank_id = tokenizer.vocab_size
+    frame_ids = torch.full((64,), blank_id)
+    frame_ids[start_frame:end_frame] = tokenizer.token_to_id("a")
+    if punctuation:
+        frame_ids[end_frame : end_frame + 2] = tokenizer.token_to_id(punctuation)
+    log_probs = torch.full((64, blank_id + 1), -100.0)
+    log_probs.scatter_(1, frame_ids.unsqueeze(1), 0.0)
+
+    # Exercise the supported precomputed-hypothesis path, including Viterbi alignment.
+    # Frames 29 and 58 do not survive int(frame * step / step) in floating point.
+    result = get_forced_aligned_timestamps_with_external_model(
+        audio=[Hypothesis(score=0.0, y_sequence=log_probs, text="a" + punctuation)],
+        external_ctc_model=model,
+        main_model_predictions=[Hypothesis(score=0.0, y_sequence=[], text="a" + punctuation)],
+        has_hypotheses=True,
+        verbose=False,
+    )[0]
+
+    step = 0.01 * subsampling_factor
+    for level in ("char", "word", "segment"):
+        timestamp = result.timestamp[level][0]
+        assert (timestamp["start_offset"], timestamp["end_offset"]) == (start_frame, end_frame)
+        assert timestamp["start"] == pytest.approx(start_frame * step)
+        assert timestamp["end"] == pytest.approx(end_frame * step)
+    if punctuation:
+        timestamp = result.timestamp["char"][-1]
+        assert timestamp["char"] == punctuation
+        assert timestamp["start_offset"] == timestamp["end_offset"] == end_frame
+        assert timestamp["start"] == timestamp["end"] == pytest.approx(end_frame * step)

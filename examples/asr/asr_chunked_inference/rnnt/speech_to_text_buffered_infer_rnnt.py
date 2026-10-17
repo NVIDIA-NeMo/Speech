@@ -81,6 +81,7 @@ from nemo.collections.asr.parts.utils.streaming_utils import (
 from nemo.collections.asr.parts.utils.transcribe_utils import (
     compute_output_filename,
     get_buffered_pred_feat_rnnt,
+    get_inference_device,
     setup_model,
     write_transcription,
 )
@@ -182,18 +183,9 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
         manifest = None  # ignore dataset_manifest if audio_dir and dataset_manifest both presents
 
     # setup GPU
-    if cfg.cuda is None:
-        if torch.cuda.is_available():
-            device = [0]  # use 0th CUDA device
-            accelerator = 'gpu'
-        else:
-            device = 1
-            accelerator = 'cpu'
-    else:
-        device = [cfg.cuda]
-        accelerator = 'gpu'
-    map_location = torch.device('cuda:{}'.format(device[0]) if accelerator == 'gpu' else 'cpu')
-    logging.info(f"Inference will be done on device : {device}")
+    map_location = get_inference_device(cuda=cfg.cuda, allow_mps=False)
+    accelerator = 'gpu' if map_location.type == 'cuda' else 'cpu'
+    logging.info(f"Inference will be done on device : {map_location}")
 
     asr_model, model_name = setup_model(cfg, map_location)
 

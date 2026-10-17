@@ -33,6 +33,7 @@ from nemo.collections.asr.parts.utils.eval_utils import cal_write_wer
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.asr.parts.utils.transcribe_utils import (
     compute_output_filename,
+    get_inference_device,
     get_inference_dtype,
     prepare_audio_data,
     restore_transcription_order,
@@ -245,27 +246,16 @@ def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List[Hypothesis
 
     # setup GPU
     torch.set_float32_matmul_precision(cfg.matmul_precision)
-    if cfg.cuda is None:
-        if torch.cuda.is_available():
-            device = [0]  # use 0th CUDA device
-            accelerator = 'gpu'
-            map_location = torch.device('cuda:0')
-        elif cfg.allow_mps and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            logging.warning(
-                "MPS device (Apple Silicon M-series GPU) support is experimental."
-                " Env variable `PYTORCH_ENABLE_MPS_FALLBACK=1` should be set in most cases to avoid failures."
-            )
-            device = [0]
-            accelerator = 'mps'
-            map_location = torch.device('mps')
-        else:
-            device = 1
-            accelerator = 'cpu'
-            map_location = torch.device('cpu')
-    else:
-        device = [cfg.cuda]
+    map_location = get_inference_device(cuda=cfg.cuda, allow_mps=cfg.allow_mps)
+    if map_location.type == 'cuda':
+        device = [map_location.index]
         accelerator = 'gpu'
-        map_location = torch.device(f'cuda:{cfg.cuda}')
+    elif map_location.type == 'mps':
+        device = [0]
+        accelerator = 'mps'
+    else:
+        device = 1
+        accelerator = 'cpu'
 
     logging.info(f"Inference will be done on device: {map_location}")
 

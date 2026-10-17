@@ -23,9 +23,11 @@ import pytest
 import torch
 
 from nemo.collections.asr.metrics.cpwer import (
+    calculate_corpus_cpWER,
     calculate_session_cpWER,
     calculate_session_cpWER_bruteforce,
     concat_perm_word_error_rate,
+    concat_perm_word_error_rate_with_corpus,
 )
 
 
@@ -243,3 +245,56 @@ class TestConcatPermWordErrorRate:
     def test_length_mismatch_raises(self):
         with pytest.raises(ValueError):
             concat_perm_word_error_rate([["a"]], [["a"], ["b"]])
+
+
+class TestCorpusCpWER:
+    """Test corpus-level aggregation without losing speaker boundaries."""
+
+    @pytest.mark.unit
+    def test_cross_boundary_errors_are_preserved(self):
+        refs = [["the cat", "sat on"]] * 3
+        hyps = [["the cat sat", "on"]] * 3
+
+        assert_cpwer_equals(calculate_corpus_cpWER(hyps, refs), 0.5)
+
+    @pytest.mark.unit
+    def test_sessions_are_weighted_by_reference_words(self):
+        refs = [["one two"], ["a b c d e f g h"]]
+        hyps = [["one wrong"], ["a b c d e f g h"]]
+
+        assert_cpwer_equals(calculate_corpus_cpWER(hyps, refs), 1 / 10)
+
+    @pytest.mark.unit
+    def test_insertions_in_empty_reference_session_are_counted(self):
+        refs = [[], ["kept"]]
+        hyps = [["extra"], ["kept"]]
+
+        assert_cpwer_equals(calculate_corpus_cpWER(hyps, refs), 1.0)
+
+    @pytest.mark.unit
+    def test_length_mismatch_raises(self):
+        with pytest.raises(ValueError):
+            calculate_corpus_cpWER([["a"]], [["a"], ["b"]])
+
+    @pytest.mark.unit
+    def test_session_and_corpus_values_are_calculated_together(self):
+        refs = [["one two"], ["a b c d e f g h"]]
+        hyps = [["one wrong"], ["a b c d e f g h"]]
+
+        session_values, corpus_value, _, _ = concat_perm_word_error_rate_with_corpus(hyps, refs)
+
+        assert session_values == [0.5, 0.0]
+        assert_cpwer_equals(corpus_value, 1 / 10)
+
+    @pytest.mark.unit
+    def test_empty_session_behavior_is_preserved(self):
+        empty_cpwer, _, _ = calculate_session_cpWER([], [])
+        empty_speaker_cpwer, _, _ = calculate_session_cpWER([""], [""])
+        session_values, corpus_cpwer, _, _ = concat_perm_word_error_rate_with_corpus([[]], [[]])
+        _, empty_corpus_cpwer, _, _ = concat_perm_word_error_rate_with_corpus([], [])
+
+        assert empty_cpwer == 0.0
+        assert empty_speaker_cpwer == float('inf')
+        assert session_values == [0.0]
+        assert corpus_cpwer == float('inf')
+        assert empty_corpus_cpwer == float('inf')

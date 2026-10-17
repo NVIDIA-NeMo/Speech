@@ -167,6 +167,13 @@ Evaluation set configuration
 The optional keys are:
 
 - ``language``: overrides ``--language`` for this dataset.
+
+By default, a per-record manifest ``language`` takes precedence over the dataset
+or command-line language during inference. Pass ``--ignore_manifest_language``
+to ``magpietts_inference.py`` to use the dataset or command-line language instead.
+This is useful when a newer model uses corrected language tags in the evalset
+configuration. Omitting the flag preserves the behavior for older models.
+
 - ``asr_model``: ``{"name": ..., "type": ...}`` overrides ``--asr_model_name`` and ``--asr_model_type``.
 - ``tokenizer_names``: list of text tokenizer names to use for this dataset (``magpietts_inference.py`` only).
 - ``strip_text_annotations_for_metrics``: JSON boolean that enables annotation stripping for this dataset (default: off; there is no run-level flag). When enabled, annotation and control markers such as ``<tag>``, ``{tag}``, ``[tag]``, ``--``, ``...`` and ``*`` are removed from the reference and from the ASR hypothesis before CER/WER are computed. Square-bracket spans are removed together with their content, which is correct for non-verbal tags like ``[breath]`` but deletes the spoken word for datasets that mark emphasis as ``[word]``. Leave it off for such datasets; otherwise every emphasized word is scored as an insertion and CER/WER are inflated.

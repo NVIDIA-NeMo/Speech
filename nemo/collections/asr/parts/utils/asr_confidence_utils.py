@@ -17,7 +17,7 @@ import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from functools import partial
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Callable, List, Optional
 
 import torch
 from omegaconf import DictConfig, OmegaConf
@@ -432,7 +432,11 @@ class ConfidenceMixin(ABC):
         return word_confidence
 
     def _aggregate_token_confidence_subwords_sentencepiece(
-        self, words: List[str], token_confidence: List[float], token_ids: List[int]
+        self,
+        words: List[str],
+        token_confidence: List[float],
+        token_ids: List[int],
+        decode_prefix: Optional[Callable[[List[int]], str]] = None,
     ) -> List[float]:
         """Implementation of token confidence aggregation for subword-based models.
 
@@ -442,6 +446,9 @@ class ConfidenceMixin(ABC):
             words: List of words of a hypothesis.
             token_confidence: List of token-level confidence scores of a hypothesis.
             token_ids: List of token ids of a hypothesis.
+            decode_prefix: Ids-to-text call used to locate word boundaries. Must be the one that
+                produced ``words``, or a token can be attributed to the wrong word. Defaults to
+                ``decode_ids_to_str``.
 
         Returns:
             A list of word-level confidence scores.
@@ -449,24 +456,52 @@ class ConfidenceMixin(ABC):
         word_confidence = []
         # run only if there are final words
         if len(words) > 0:
-            j = 0
+            decode = decode_prefix if decode_prefix is not None else self.decode_ids_to_str
+            num_words = len(words)
+            int_token_ids = [int(t) for t in token_ids]
+
+            # Fast path: group on the SentencePiece word-start marker, and trust it only if the
+            # group count matches the decoded text's own word count.
+            underline = '\u2581'  # '▁'
+            pieces = self.decode_ids_to_tokens(int_token_ids)
+            fast_groups: List[List[int]] = []
             prev_unk = False
-            prev_underline = False
-            for i, token_id in enumerate(token_ids):
-                token = self.decode_ids_to_tokens([int(token_id)])[0]
-                token_text = self.decode_ids_to_str([int(token_id)])
-                # treat `<unk>` as a separate word regardless of the next token
-                # to match the result of `tokenizer.ids_to_text`
-                if (token != token_text or prev_unk) and i > j:
-                    # do not add confidence for `▁` if the current token starts with `▁`
-                    # to match the result of `tokenizer.ids_to_text`
-                    if not prev_underline:
-                        word_confidence.append(self._aggregate_confidence(token_confidence[j:i]))
-                    j = i
-                prev_unk = token == '<unk>'
-                prev_underline = token == '▁'
-            if not prev_underline:
-                word_confidence.append(self._aggregate_confidence(token_confidence[j : len(token_ids)]))
+            for i, piece in enumerate(pieces):
+                is_unk = piece == '<unk>'
+                starts_word = piece.startswith(underline) or is_unk or prev_unk
+                if not fast_groups or starts_word:
+                    fast_groups.append([i, i + 1])
+                else:
+                    fast_groups[-1][1] = i + 1
+                prev_unk = is_unk
+            fast_groups = [g for g in fast_groups if not all(pieces[k] == underline for k in range(g[0], g[1]))]
+
+            if len(fast_groups) == num_words:
+                groups: List[List[int]] = fast_groups
+            else:
+                # Exact path: a token opens a word whenever the decoded prefix gains one. Byte-fallback
+                # whitespace and punctuation the decode re-spaces carry no marker in the pieces, so only
+                # the decode itself knows where the boundaries are.
+                groups = []
+                prev_count = 0
+                for i in range(len(int_token_ids)):
+                    cur_count = min(len(decode(int_token_ids[: i + 1]).split()), num_words)
+                    if cur_count > prev_count:
+                        while len(groups) < cur_count - 1:
+                            groups.append([i, i + 1])
+                        groups.append([i, i + 1])
+                        prev_count = cur_count
+                    elif groups:
+                        groups[-1][1] = i + 1
+
+                while len(groups) < num_words:
+                    groups.append(list(groups[-1]) if groups else [0, len(int_token_ids)])
+                groups = groups[:num_words]
+
+            for start, end in groups:
+                # Guard against an empty range (possible for a back-filled bucket).
+                lo, hi = (start, end) if end > start else (start, start + 1)
+                word_confidence.append(self._aggregate_confidence(token_confidence[lo:hi]))
         if len(words) != len(word_confidence):
             raise RuntimeError(
                 f"""Something went wrong with word-level confidence aggregation.\n

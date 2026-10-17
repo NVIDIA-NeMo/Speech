@@ -124,6 +124,12 @@ asr-only = [
     "whisper_normalizer",
 ]
 
+# TensorRT's CUDA variant is explicit; the ASR builder uses the 10.x API.
+trt = [
+    "tensorrt-cu13>=10.13.3,<11; sys_platform == 'linux'",
+    "polygraphy>=0.49.24,<1",
+]
+
 tts = [
     "einops",
     "janome",

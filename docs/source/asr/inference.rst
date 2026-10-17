@@ -309,3 +309,49 @@ Execution Flow
 
 When writing custom inference scripts, follow the execution flow diagram at the
 `ASR examples README <https://github.com/NVIDIA-NeMo/Speech/blob/main/examples/asr/README.md>`_.
+
+
+Offline TensorRT encoder
+------------------------
+
+Run an offline ASR encoder in TensorRT while NeMo handles preprocessing and RNNT/TDT decoding in PyTorch.
+Install the optional build/runtime dependencies with pip or uv:
+
+.. code-block:: bash
+
+    pip install 'nemo-toolkit[asr,trt]'
+    # Or:
+    uv pip install 'nemo-toolkit[asr,trt]'
+
+The ``trt`` extra targets Linux with TensorRT 10.13.3 or later in the 10.x series, using its CUDA 13 package, plus Polygraphy.
+ONNX is already a base NeMo dependency.
+Use a CUDA 13-compatible NVIDIA driver and PyTorch installation; see the `TensorRT installation guide <https://docs.nvidia.com/deeplearning/tensorrt/latest/installing-tensorrt/install-pip.html>`_.
+Torch-TensorRT and Triton Inference Server are separate optional tools.
+
+Export the encoder to ONNX, then build an engine:
+
+.. code-block:: bash
+
+    python examples/asr/export/build_trt_encoder.py \
+        --onnx encoder.onnx --engine encoder.plan --features 128
+
+Set ``--features`` to the model's feature count.
+Defaults cover batches 1–16 and 8–4000 padded feature frames; the ONNX export must support those shapes and positional-cache limits.
+Use ``--help`` for build options.
+FP32 with TF32 disabled is the default; check recognition accuracy when enabling ``--fp16``.
+Build for the GPU and TensorRT/CUDA versions you will deploy.
+
+Transcribe mono audio at the checkpoint's sample rate, using the same checkpoint as the export:
+
+.. code-block:: bash
+
+    python examples/asr/export/transducer/infer_transducer_trt.py \
+        --model model.nemo --engine encoder.plan \
+        --audio a.wav b.wav --output predictions.jsonl \
+        --batch-size 2 --compare-native
+
+``--compare-native`` adds the PyTorch encoder's transcript to each output record.
+This is an accuracy example: it retains the native encoder, uses FP32 preprocessing/decoding and disables decoder CUDA graphs.
+
+For integration into your own loop, see `TensorRTEncoder <https://github.com/NVIDIA-NeMo/Speech/blob/main/nemo/collections/asr/parts/submodules/tensorrt_encoder.py>`_ for tensor and stream requirements.
+Streaming encoder caches, training and CUDA graph capture are not supported.

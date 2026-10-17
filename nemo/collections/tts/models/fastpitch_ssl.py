@@ -23,13 +23,16 @@ from omegaconf import DictConfig
 from nemo.collections.tts.losses.fastpitchloss import DurationLoss, MelLoss, PitchLoss
 from nemo.collections.tts.modules.fastpitch import FastPitchSSLModule, average_features
 from nemo.collections.tts.modules.transformer import mask_from_lens
+from nemo.collections.tts.one_logger import TTSThroughputPolicy
 from nemo.collections.tts.parts.utils.helpers import plot_multipitch_to_numpy, plot_spectrogram_to_numpy
 from nemo.core.classes import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo, safe_instantiate
+from nemo.lightning.speech_throughput import register_throughput_policy
 from nemo.utils import logging, model_utils
 from nemo.utils.decorators import experimental
 
 
+@register_throughput_policy(TTSThroughputPolicy)
 @experimental
 class FastPitchModel_SSL(ModelPT):
     """

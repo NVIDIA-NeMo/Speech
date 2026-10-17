@@ -545,6 +545,7 @@ class NeMoModelCheckpoint(ModelCheckpoint):
         # if anything goes wrong during checkpointing, we should be able to detect that data is incomplete.
         self.set_checkpoint_unfinished_marker(filepath, barrier_after=True)
         ema_callback = self._ema_callback(trainer)
+        storage_options = None
         if ema_callback is not None:
             if self.async_save:
                 raise ValueError('async_save with EMA not supported')
@@ -553,11 +554,11 @@ class NeMoModelCheckpoint(ModelCheckpoint):
 
             # save EMA copy of the model as well.
             with ema_callback.save_ema_model(trainer):
-                filepath = self._ema_format_filepath(filepath)
+                ema_filepath = self._ema_format_filepath(filepath)
                 if self.verbose:
-                    rank_zero_info(f"Saving EMA weights to separate checkpoint {filepath}")
-                super()._save_checkpoint(trainer, filepath)
-            self.remove_checkpoint_unfinished_marker(filepath, barrier_before=True)
+                    rank_zero_info(f"Saving EMA weights to separate checkpoint {ema_filepath}")
+                super()._save_checkpoint(trainer, ema_filepath)
+            self.remove_checkpoint_unfinished_marker(ema_filepath, barrier_before=True)
         else:
             # Async save passed the finalization function to checkpoint_io,
             # sync save calls the finalization function immediately after save.

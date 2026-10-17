@@ -277,7 +277,9 @@ def _normalize_hypothesis_group_id(hypothesis_id: str) -> str:
     return f'{prefix}-0'
 
 
-def merge_all_hypotheses(hypotheses_list, timestamps, subsampling_factor, chunk_duration_seconds=3600):
+def merge_all_hypotheses(
+    hypotheses_list, timestamps, subsampling_factor, chunk_duration_seconds=3600, window_stride=0.01
+):
     """
     Group hypotheses by ID and merge each group into a single hypothesis.
 
@@ -286,6 +288,7 @@ def merge_all_hypotheses(hypotheses_list, timestamps, subsampling_factor, chunk_
         timestamps: True if timestamps generation is enabled
         subsampling_factor: Subsampling factor of the encoder
         chunk_duration_seconds: Duration of each chunk in seconds (default: 3600)
+        window_stride: Preprocessor window stride in seconds (default: 0.01)
 
     Returns:
         List[Hypothesis]: List of merged hypotheses, one per unique ID
@@ -303,7 +306,7 @@ def merge_all_hypotheses(hypotheses_list, timestamps, subsampling_factor, chunk_
 
                 all_merged_hypotheses.append(
                     merge_hypotheses_of_same_audio(
-                        same_audio_hypotheses, timestamps, subsampling_factor, chunk_duration_seconds
+                        same_audio_hypotheses, timestamps, subsampling_factor, chunk_duration_seconds, window_stride
                     )
                 )
             same_audio_hypotheses = []
@@ -316,13 +319,15 @@ def merge_all_hypotheses(hypotheses_list, timestamps, subsampling_factor, chunk_
     if same_audio_hypotheses:
         all_merged_hypotheses.append(
             merge_hypotheses_of_same_audio(
-                same_audio_hypotheses, timestamps, subsampling_factor, chunk_duration_seconds
+                same_audio_hypotheses, timestamps, subsampling_factor, chunk_duration_seconds, window_stride
             )
         )
     return all_merged_hypotheses
 
 
-def merge_hypotheses_of_same_audio(hypotheses_list, timestamps, subsampling_factor, chunk_duration_seconds=3600):
+def merge_hypotheses_of_same_audio(
+    hypotheses_list, timestamps, subsampling_factor, chunk_duration_seconds=3600, window_stride=0.01
+):
     """
     Merge hypotheses from the same audio source into a single hypothesis.
     Used for combining results when long audio is split into hour-long segments
@@ -333,6 +338,8 @@ def merge_hypotheses_of_same_audio(hypotheses_list, timestamps, subsampling_fact
         timestamps: True if timestamps generation is enabled
         subsampling_factor: Subsampling factor of the encoder
         chunk_duration_seconds: Duration of each chunk in seconds (default: 3600)
+        window_stride: Preprocessor window stride in seconds (default: 0.01). One encoder frame
+            lasts ``window_stride * subsampling_factor`` seconds.
 
     Returns:
         Hypothesis: Single merged hypothesis
@@ -369,8 +376,8 @@ def merge_hypotheses_of_same_audio(hypotheses_list, timestamps, subsampling_fact
 
             # Time offset for this chunk
             time_offset = chunk_idx * chunk_duration_seconds
-            # Frame offset for this chunk (convert time to frames)
-            frame_offset = int(time_offset * 1000 / subsampling_factor)
+            # Frame offset for this chunk (convert time to encoder frames)
+            frame_offset = round(time_offset / (window_stride * subsampling_factor))
 
             # Merge word timestamps with offset
             if 'word' in hyp.timestamp and hyp.timestamp['word']:

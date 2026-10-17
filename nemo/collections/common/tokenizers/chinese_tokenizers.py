@@ -37,7 +37,17 @@ from typing import List
 
 import jieba
 import opencc
-from pangu import spacing
+
+try:
+    from pangu import spacing
+except ImportError:
+    try:
+        from pangu import space_text as spacing
+    except ImportError:
+        try:
+            from pangu import spacing_text as spacing
+        except ImportError:
+            spacing = None
 
 
 class ChineseProcessor:
@@ -52,6 +62,11 @@ class ChineseProcessor:
         return self.normalizer.convert(text)
 
     def detokenize(self, text: List[str]) -> str:
+        if spacing is None:
+            raise ImportError(
+                "Please ensure that you have installed `pangu` to use ChineseProcessor detokenization: pip install pangu"
+            )
+
         RE_WS_IN_FW = re.compile(
             r'([\u2018\u2019\u201c\u201d\u2e80-\u312f\u3200-\u32ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff'
             r'\uff00-\uffef])\s+(?=[\u2018\u2019\u201c\u201d\u2e80-\u312f\u3200-\u32ff\u3400-\u4dbf\u4e00-\u9fff'

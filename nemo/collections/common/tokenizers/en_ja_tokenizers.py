@@ -86,7 +86,13 @@ class JaMecabProcessor:
 
     def detokenize(self, text: List[str]) -> str:
         """Detokenize Japanese text and remove whitespace inside full-width spans."""
-        from pangu import spacing
+        try:
+            from pangu import spacing
+        except ImportError:
+            try:
+                from pangu import space_text as spacing
+            except ImportError:
+                from pangu import spacing_text as spacing
 
         RE_WS_IN_FW = re.compile(
             r'([\u2018\u2019\u201c\u201d\u2e80-\u312f\u3200-\u32ff\u3400-\u4dbf'

@@ -85,6 +85,30 @@ def test_join_char_level_timestamps_without_filter():
 
 
 @pytest.mark.unit
+def test_join_char_level_timestamps_does_not_accumulate_rounding_drift():
+    subsampling_factor = 8
+    chunk_offsets = [0] + [750 * subsampling_factor - 100] * 59
+    hypotheses = [
+        Hypothesis(
+            score=0.0,
+            y_sequence=torch.tensor([1]),
+            timestamp={"char": [_make_char("a", 1, 0, 1)]},
+        )
+        for _ in chunk_offsets
+    ]
+
+    out = join_char_level_timestamps(
+        hypotheses=hypotheses,
+        chunk_offsets=chunk_offsets,
+        subsampling_factor=subsampling_factor,
+        window_stride=0.01,
+        merged_tokens=None,
+    )
+
+    assert out[-1]["start_offset"] == sum(chunk_offsets) // subsampling_factor
+
+
+@pytest.mark.unit
 def test_join_char_level_timestamps_with_filter():
     # Merging char level timestamps within same audio segment.
     subsampling_factor = 8

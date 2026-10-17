@@ -125,6 +125,14 @@ class TestVADUtils:
         assert _annotation_equals(ref, expected)
         assert _annotation_equals(hyp, expected)
 
+        # test for mixed input: rttm prediction scored against frame labels, and the reverse
+        ref, hyp = frame_vad_construct_supervisions_per_file(rttm_file, frame_labels, 0.02)
+        assert _annotation_equals(ref, expected)
+        assert _annotation_equals(hyp, expected)
+        ref, hyp = frame_vad_construct_supervisions_per_file(frame_labels, rttm_file, 0.02)
+        assert _annotation_equals(ref, expected)
+        assert _annotation_equals(hyp, expected)
+
 
 def _annotation_equals(annotation, expected_segments, *, atol=1e-6):
     """Compare a list of :class:`lhotse.SupervisionSegment` to expected ``(start, end, speaker)`` tuples."""

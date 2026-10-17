@@ -260,7 +260,8 @@ def perform_streaming(
         final_offline_tran = None
 
     cache_last_channel, cache_last_time, cache_last_channel_len = asr_model.encoder.get_initial_cache_state(
-        batch_size=batch_size
+    batch_size=batch_size,
+    dtype=compute_dtype,
     )
 
     previous_hypotheses = None
@@ -339,14 +340,6 @@ def main(cfg: TranscriptionConfig):
         compute_dtype = torch.float32
     else:
         compute_dtype = get_inference_dtype(compute_dtype=cfg.compute_dtype, device=device)
-
-    if compute_dtype != torch.float32:
-        # NB: cache-aware models do not currently work with compute_dtype != float32
-        # since in some layers output is force-casted to float32
-        # TODO(vbataev): implement support in future; set `compute_dtype` in config to None by default
-        raise NotImplementedError(
-            f"Compute dtype {compute_dtype} is not yet supported for cache-aware models, use float32 instead"
-        )
 
     if sum((cfg.audio_file is not None, cfg.dataset_manifest is not None, cfg.audio_dir is not None)) != 1:
         raise ValueError("Exactly one of the `audio_file`, `dataset_manifest` or `audio_dir` should be non-empty!")

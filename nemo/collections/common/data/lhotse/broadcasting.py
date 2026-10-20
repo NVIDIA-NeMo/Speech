@@ -167,7 +167,11 @@ class BroadcastingDataLoader:
 
         group, src = self._group_and_source
         if self._is_source:
-            source_iterator = iter(self._source)
+            try:
+                source_iterator = iter(self._source)
+            except Exception as error:
+                _broadcast_packet(_error_packet(error, "source iterator creation failed"), group, src)
+                raise
             while True:
                 try:
                     batch = next(source_iterator)

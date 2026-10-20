@@ -261,16 +261,23 @@ class _RaisesAfterOneBatch:
         raise ValueError("source iterator exploded")
 
 
+class _RaisesOnIteratorCreation:
+    def __iter__(self):
+        raise ValueError("iterator creation failed")
+
+
 class _UnpicklableBatch:
     def __reduce__(self):
         raise TypeError("batch is intentionally unpicklable")
 
 
-def _source_iterator_error_worker(rank: int, world_size: int, port: int, queue: mp.Queue) -> None:
+def _source_iterator_error_worker(
+    rank: int, world_size: int, port: int, queue: mp.Queue, source_type=_RaisesAfterOneBatch
+) -> None:
     try:
         _init_gloo(rank, world_size, port)
         mesh = _build_cp_mesh(world_size)
-        source = _RaisesAfterOneBatch() if is_dp_source_rank(mesh) else None
+        source = source_type() if is_dp_source_rank(mesh) else None
         loader = BroadcastingDataLoader(source=source, device_mesh=mesh)
         received = []
         try:
@@ -381,3 +388,33 @@ def test_broadcasting_dataloader_allows_synchronized_early_break():
     for status, _, received in results:
         assert status == "ok", results
         assert received == [0]
+
+
+def test_broadcasting_dataloader_reports_iterator_creation_failure(monkeypatch):
+    class FailingSource:
+        def __iter__(self):
+            raise ValueError('iterator creation failed')
+
+    mesh = _FakeMesh({'cp': 2}, {'cp': 0}, groups={'cp': object()}, ranks={'cp': [0, 1]})
+    monkeypatch.setattr(dist, 'is_initialized', lambda: True)
+    packets = []
+    monkeypatch.setattr(broadcasting, '_broadcast_packet', lambda packet, group, src: packets.append(packet))
+    with pytest.raises(ValueError, match='iterator creation failed'):
+        list(BroadcastingDataLoader(FailingSource(), mesh))
+    assert len(packets) == 1
+    assert packets[0][0] == 'error'
+    assert 'iterator creation failed' in packets[0][1]
+
+
+def _source_iterator_creation_error_worker(rank, world_size, port, queue):
+    _source_iterator_error_worker(rank, world_size, port, queue, source_type=_RaisesOnIteratorCreation)
+
+
+def test_broadcasting_dataloader_propagates_iterator_creation_error():
+    results = _spawn_workers(_source_iterator_creation_error_worker, world_size=2, timeout=15)
+    assert len(results) == 2, results
+    results_by_rank = {result[1]: result for result in results}
+    assert results_by_rank[0][:4] == ("err", 0, [], "ValueError")
+    assert "iterator creation failed" in results_by_rank[0][4]
+    assert results_by_rank[1][:4] == ("err", 1, [], "RuntimeError")
+    assert "source iterator creation failed" in results_by_rank[1][4]

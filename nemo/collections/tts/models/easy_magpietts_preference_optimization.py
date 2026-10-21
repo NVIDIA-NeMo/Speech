@@ -17,7 +17,7 @@ import copy
 import os
 import random
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import soundfile as sf
@@ -31,11 +31,12 @@ from nemo.collections.tts.models.easy_magpietts import EasyMagpieTTSModel
 from nemo.collections.tts.modules.magpietts_modules import SpecialAudioToken
 from nemo.collections.tts.parts.utils.helpers import (
     get_mask_from_lengths,
-    get_speaker_embeddings_from_filepaths,
+    get_speaker_embeddings_from_waveforms,
     print_grad_weight_summary,
     process_text_for_cer,
 )
 from nemo.collections.tts.parts.utils.reward_asr import RewardASRRouter
+from nemo.collections.tts.parts.utils.reward_audio import split_audio_batch
 from nemo.utils import logging
 
 try:
@@ -506,19 +507,8 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
 
     def _get_audio_dir(self) -> str:
         """Return (and create if needed) the directory used to store intermediate waveforms during PO."""
-        # As discussed, commenting out /dev/shm section for now
-
-        # import atexit
-        # import shutil
-        # if not self.cfg.get('save_reward_audios', True):
-        #     if not hasattr(self, '_tmp_reward_audio_dir'):
-        #         job_id = os.environ.get('SLURM_JOB_ID', 'local')
-        #         self._tmp_reward_audio_dir = os.path.join(
-        #             '/dev/shm', f'easy_magpie_rewards_{job_id}_rank{self.global_rank}'
-        #         )
-        #         os.makedirs(self._tmp_reward_audio_dir, exist_ok=True)
-        #         atexit.register(shutil.rmtree, self._tmp_reward_audio_dir, ignore_errors=True)
-        #     return self._tmp_reward_audio_dir
+        if not self.cfg.get('save_reward_audios', True):
+            raise RuntimeError('Reward audio saving is disabled.')
 
         if self.logger is not None and hasattr(self.logger, "log_dir") and self.logger.log_dir is not None:
             log_dir = self.logger.log_dir
@@ -546,31 +536,52 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
             sample_rate: Sampling rate written into the WAV header.
 
         Returns:
-            List of absolute file paths, one per batch item.
+            List of absolute file paths when saving is enabled, otherwise an empty list.
         """
+        if not self.cfg.get('save_reward_audios', True):
+            return []
         audio_dir = self._get_audio_dir()
         paths = []
         for idx in range(waveforms.size(0)):
             wav = waveforms[idx].float().detach().cpu().numpy()
             wav = wav[: int(waveform_lens[idx].item())]
-            # path = os.path.join(audio_dir, f'{prefix}_rank{self.global_rank}_{time_id}_{idx}.wav')
             path = os.path.join(audio_dir, f'{prefix}_rank{self.global_rank}_{idx}.wav')
             sf.write(path, wav, sample_rate)
             paths.append(path)
         return paths
 
-    def _get_reference_audio_paths(self, batch_repeated: Dict) -> List[str]:
+    def _get_reference_audio(self, batch_repeated: Dict) -> Tuple[List[torch.Tensor], int]:
         """
-        Build per-item reference audio paths for speaker similarity reward.
-        Priority: audio_filepaths -> context_audio -> context_audio_codes.
+        Return detached reference waveforms and their sample rate for speaker similarity.
+        Prefer context audio; otherwise decode cached context codes.
+
+        Args:
+            batch_repeated: Batch with ``context_audio``/``context_audio_lens`` or
+                ``context_audio_codes``/``context_audio_codes_lens``. The code
+                path also needs target ``audio_codes``/``audio_codes_lens`` for
+                examples without an audio context.
+
+        Returns:
+            A pair of true-length detached mono waveform tensors and their
+            sample rate in Hz. Raw context uses ``self.sample_rate``; decoded
+            codes use ``self.output_sample_rate``. Optional WAV exports follow
+            ``save_reward_audios`` and are not used by reward consumers.
+
+        Raises:
+            ValueError: If no supported context is present or waveform lengths
+                are invalid.
         """
         if 'context_audio' in batch_repeated and 'context_audio_lens' in batch_repeated:
             # TODO: Handle text context here support here.
-            return self._save_waveforms_to_paths(
+            self._save_waveforms_to_paths(
                 waveforms=batch_repeated['context_audio'],
                 waveform_lens=batch_repeated['context_audio_lens'],
                 prefix='reference_context_audio',
                 sample_rate=self.sample_rate,
+            )
+            return (
+                split_audio_batch(batch_repeated['context_audio'], batch_repeated['context_audio_lens']),
+                self.sample_rate,
             )
 
         if 'context_audio_codes' in batch_repeated and 'context_audio_codes_lens' in batch_repeated:
@@ -606,12 +617,13 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
                 context_codes,
                 context_lens,
             )
-            return self._save_waveforms_to_paths(
+            self._save_waveforms_to_paths(
                 waveforms=context_audio,
                 waveform_lens=context_audio_lens,
                 prefix='reference_context_codes_decoded',
                 sample_rate=self.output_sample_rate,
             )
+            return split_audio_batch(context_audio, context_audio_lens), self.output_sample_rate
 
         raise ValueError(
             "Could not construct reference audio for speaker similarity. Need one of: "
@@ -713,10 +725,19 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
             f"prompt: {prompt_text}\n{table}\n"
         )
 
-    def _compute_pred_transcripts(self, predicted_audio_paths: List[str], batch_repeated: Dict) -> List[str]:
-        """Route reward transcription by language, then normalize consistently for CER/WER."""
-        languages = list(batch_repeated.get('languages', ['en'] * len(predicted_audio_paths)))
-        raw_transcripts = self._reward_asr_router.transcribe(predicted_audio_paths, languages)
+    def _compute_pred_transcripts(self, predicted_waveforms: List[torch.Tensor], batch_repeated: Dict) -> List[str]:
+        """Route reward transcription by language, then normalize for CER/WER.
+
+        Args:
+            predicted_waveforms: True-length mono tensors at ``self.output_sample_rate``.
+            batch_repeated: Rollout batch with per-item ``languages`` and ``raw_texts``.
+                Missing languages default to English.
+
+        Returns:
+            One normalized transcript per waveform in its original input order.
+        """
+        languages = list(batch_repeated.get('languages', ['en'] * len(predicted_waveforms)))
+        raw_transcripts = self._reward_asr_router.transcribe(predicted_waveforms, self.output_sample_rate, languages)
         pred_transcripts = []
         logged_languages: Dict[str, int] = {}
         for item_idx, (language, transcript) in enumerate(zip(languages, raw_transcripts)):
@@ -735,17 +756,32 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
         return pred_transcripts
 
     def _compute_speaker_embeddings_parallel(
-        self, predicted_audio_paths: List[str], batch: Dict, num_generations_per_item: int
-    ):
+        self, predicted_waveforms: List[torch.Tensor], batch: Dict, num_generations_per_item: int
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Extract speaker embeddings for both predicted and reference audio and align their batch
         dimensions so that cosine similarity can be computed element-wise.
+
+        Args:
+            predicted_waveforms: Generated mono tensors at ``self.output_sample_rate``,
+                with one waveform for each repeated rollout item.
+            batch: Original batch containing the reference context audio or codes.
+            num_generations_per_item: Number of generated candidates per original item.
+
+        Returns:
+            Predicted and reference embedding tensors, each with shape ``[B * G, D]``
+            on the model device. Reference embeddings are repeated to align with
+            the ``G`` candidates per original item.
+
+        Raises:
+            RuntimeError: If predicted and reference embedding counts do not match.
+            ValueError: If reference audio or waveform parameters are invalid.
         """
-        reference_audio_paths = self._get_reference_audio_paths(batch)
-        pred_speaker_embeddings = get_speaker_embeddings_from_filepaths(
-            predicted_audio_paths, self._eval_speaker_verification_model, self.device
+        reference_waveforms, reference_rate = self._get_reference_audio(batch)
+        pred_speaker_embeddings = get_speaker_embeddings_from_waveforms(
+            predicted_waveforms, self.output_sample_rate, self._eval_speaker_verification_model, self.device
         )
-        gt_speaker_embeddings = get_speaker_embeddings_from_filepaths(
-            reference_audio_paths, self._eval_speaker_verification_model, self.device
+        gt_speaker_embeddings = get_speaker_embeddings_from_waveforms(
+            reference_waveforms, reference_rate, self._eval_speaker_verification_model, self.device
         )
         if num_generations_per_item > 1:
             gt_speaker_embeddings = gt_speaker_embeddings.repeat_interleave(num_generations_per_item, dim=0)
@@ -757,25 +793,28 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
             )
         return pred_speaker_embeddings, gt_speaker_embeddings
 
-    def _compute_utmos_scores_batched(self, predicted_audio_paths: List[str]) -> List[float]:
-        """Compute UTMOSv2 naturalness scores for the given audio files.
+    def _compute_utmos_scores_batched(self, predicted_waveforms: List[torch.Tensor]) -> List[float]:
+        """Score variable-length waveforms in batches without writing audio files.
 
-        Returns a list of zeros if UTMOS is disabled.
+        Args:
+            predicted_waveforms: True-length generated mono tensors at
+                ``self.output_sample_rate``.
+
+        Returns:
+            One MOS score per waveform in input order, zeros when UTMOS is
+            disabled, or an empty list for an empty input sequence.
         """
         if not self.use_utmos:
-            return [0.0] * len(predicted_audio_paths)
-        if len(predicted_audio_paths) == 0:
+            return [0.0] * len(predicted_waveforms)
+        if not predicted_waveforms:
             return []
-        utmos_batch_size = max(int(self.cfg.get('utmos_batch_size', len(predicted_audio_paths))), 1)
-        utmos_num_workers = max(int(self.cfg.get('utmos_num_workers', 0)), 0)
-        target_device = self.device if self.utmos_device == 'cuda' else self.utmos_device
-        self._utmos_calculator.to(target_device)
-        audio_dir = self._get_audio_dir()
-        val_list = [os.path.basename(p) for p in predicted_audio_paths]
-        batch_results = self._utmos_calculator.process_directory(
-            audio_dir, batch_size=utmos_batch_size, num_workers=utmos_num_workers, val_list=val_list
+        return self._utmos_calculator.score_waveforms(
+            predicted_waveforms,
+            sample_rate=self.output_sample_rate,
+            batch_size=max(int(self.cfg.get('utmos_batch_size', len(predicted_waveforms))), 1),
+            num_workers=max(int(self.cfg.get('utmos_num_workers', 0)), 0),
+            device=self.device if self.utmos_device == 'cuda' else self.utmos_device,
         )
-        return [float(item['predicted_mos']) for item in batch_results]
 
     def generate_and_reward(
         self,
@@ -843,7 +882,8 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
         if phoneme_input_type == 'pred':
             predicted_phoneme_tokens, predicted_phoneme_tokens_lens = self._unstack_rollout_phoneme_tokens(output)
         save_start_time = time.perf_counter()
-        predicted_audio_paths = self._save_waveforms_to_paths(
+        predicted_waveforms = split_audio_batch(predicted_audio, predicted_audio_lens)
+        self._save_waveforms_to_paths(
             waveforms=predicted_audio,
             waveform_lens=predicted_audio_lens,
             prefix='generated',
@@ -855,16 +895,16 @@ class EasyMagpieTTSModelOnlinePO(EasyMagpieTTSModel):
         ]
 
         rewarding_start_time = time.perf_counter()
-        pred_transcripts = self._compute_pred_transcripts(predicted_audio_paths, batch_repeated)
+        pred_transcripts = self._compute_pred_transcripts(predicted_waveforms, batch_repeated)
         try:
             pred_speaker_embeddings, gt_speaker_embeddings = self._compute_speaker_embeddings_parallel(
-                predicted_audio_paths, batch, num_generations_per_item
+                predicted_waveforms, batch, num_generations_per_item
             )
         except Exception as e:
             logging.warning(f"Speaker-embedding reward failed. Falling back to zero SSIM reward. Error: {e}")
             pred_speaker_embeddings = None
             gt_speaker_embeddings = None
-        utmos_scores = self._compute_utmos_scores_batched(predicted_audio_paths)
+        utmos_scores = self._compute_utmos_scores_batched(predicted_waveforms)
 
         batch_metrics = []
         cer_reward_weight = self.cfg.get('cer_reward_weight', 0.5)

@@ -64,7 +64,7 @@ except (ImportError, ModuleNotFoundError) as e:
     logging.warning(
         f"UTMOSv2Calculator not available: {e}. "
         "UTMOSv2 metrics will be disabled. Install required dependencies to enable."
-        "To install utmosv2 run `pip install git+https://github.com/sarulab-speech/UTMOSv2.git@v1.2.1`."
+        "To install utmosv2 run `pip install git+https://github.com/sarulab-speech/UTMOSv2.git@v1.3.0`."
     )
 
 

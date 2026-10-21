@@ -111,7 +111,7 @@ class ValidationInferenceEngine:
         if self.params.use_utmos and not _HAVE_UTMOSV2:
             raise ImportError(
                 "UTMOSv2 is required for UTMOS scoring but is not installed. "
-                "Install it with: `pip install git+https://github.com/sarulab-speech/UTMOSv2.git@v1.2.1`."
+                "Install it with: `pip install git+https://github.com/sarulab-speech/UTMOSv2.git@v1.3.0`."
             )
 
     @property

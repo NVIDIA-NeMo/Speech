@@ -54,6 +54,7 @@ import soundfile as sf
 import torch
 from numba import jit, prange
 
+from nemo.collections.tts.parts.utils.reward_audio import resample_audio
 from nemo.collections.tts.parts.utils.tts_dataset_utils import stack_tensors
 from nemo.collections.tts.torch.tts_data_types import DATA_STR2DATA_CLASS, MAIN_DATA_TYPES, WithLens
 from nemo.utils import logging
@@ -964,3 +965,101 @@ def print_grad_weight_summary(metrics: Dict[str, float], step: int, is_global_ze
 
     summary = "\n".join(lines)
     logging.info(summary)
+
+
+@torch.inference_mode()
+def transcribe_with_whisper_from_waveforms(
+    waveforms: Sequence[torch.Tensor],
+    sample_rate: int,
+    language: Optional[Union[str, Sequence[Optional[str]]]],
+    whisper_processor: Any,
+    whisper_model: Any,
+    device: Union[str, torch.device],
+    normalizer: Optional[Any] = None,
+    batch_size: Optional[int] = None,
+) -> List[str]:
+    """Transcribe variable-length waveforms in batches at Whisper's 16 kHz input rate.
+
+    Args:
+        waveforms: Nonempty mono tensors with shapes ``[T_i]`` at ``sample_rate``.
+        sample_rate: Input sample rate in Hz. Waveforms are resampled to 16 kHz.
+        language: One Whisper language for all inputs, one per waveform, or
+            ``None`` to omit the forced language prompt.
+        whisper_processor: Whisper processor providing feature extraction,
+            decoder prompts, and batch decoding.
+        whisper_model: Whisper generation model; features use its parameter dtype.
+        device: Device on which the model and generated input features reside.
+        normalizer: Optional object with ``normalize(text)`` applied to transcripts.
+        batch_size: Maximum items per language batch; ``None`` uses the input count.
+
+    Returns:
+        One transcript per waveform in the original input order, optionally
+        normalized. An empty input sequence returns an empty list.
+
+    Raises:
+        ValueError: If the language count, batch size, sample rate, or waveforms
+            are invalid.
+        RuntimeError: If Whisper returns a different number of transcripts.
+    """
+    if not waveforms:
+        return []
+    if batch_size is None:
+        batch_size = len(waveforms)
+    if batch_size <= 0:
+        raise ValueError('batch_size must be positive.')
+    languages = [language] * len(waveforms) if isinstance(language, str) or language is None else list(language)
+    if len(languages) != len(waveforms):
+        raise ValueError('Expected one language per waveform.')
+    groups = defaultdict(list)
+    for index, lang in enumerate(languages):
+        groups[lang].append(index)
+    transcripts = [''] * len(waveforms)
+    for lang, indices in groups.items():
+        forced_ids = whisper_processor.get_decoder_prompt_ids(language=lang, task='transcribe') if lang else None
+        for start in range(0, len(indices), batch_size):
+            chunk = indices[start : start + batch_size]
+            # The HF feature extractor uses NumPy; transfers happen only here.
+            arrays = [wav.cpu().numpy() for wav in resample_audio([waveforms[i] for i in chunk], sample_rate, 16000)]
+            inputs = whisper_processor(arrays, sampling_rate=16000, return_tensors='pt', padding=True).input_features
+            inputs = inputs.to(device=device, dtype=whisper_model.dtype)
+            ids = whisper_model.generate(inputs, forced_decoder_ids=forced_ids)
+            results = whisper_processor.batch_decode(ids, skip_special_tokens=True)
+            if len(results) != len(chunk):
+                raise RuntimeError('Whisper returned the wrong number of transcripts.')
+            for index, text in zip(chunk, results):
+                transcripts[index] = normalizer.normalize(text) if normalizer is not None else text
+    return transcripts
+
+
+@torch.inference_mode()
+def get_speaker_embeddings_from_waveforms(
+    waveforms: Sequence[torch.Tensor],
+    sample_rate: int,
+    speaker_verification_model: torch.nn.Module,
+    device: Union[str, torch.device],
+) -> torch.Tensor:
+    """Extract a batch of speaker embeddings directly from unpadded waveforms.
+
+    Args:
+        waveforms: Nonempty sequence of mono tensors with shapes ``[T_i]``.
+        sample_rate: Input sample rate in Hz, shared by all waveforms.
+        speaker_verification_model: Model with ``cfg.preprocessor.sample_rate``
+            and a forward method returning ``(logits, embeddings)``. Its weights
+            must already reside on ``device``.
+        device: Device for the padded waveform batch, lengths, and embeddings.
+
+    Returns:
+        Embedding tensor with shape ``[B, D]`` on ``device``, in input order.
+        Waveforms are detached, resampled to the model's configured rate, and
+        padded only for inference; their true lengths are passed to the model.
+
+    Raises:
+        ValueError: If a sample rate is nonpositive or a waveform is empty or
+            not one-dimensional.
+    """
+    target_rate = int(speaker_verification_model.cfg.preprocessor.sample_rate)
+    audio = [wav.to(device) for wav in resample_audio(waveforms, sample_rate, target_rate)]
+    lengths = torch.tensor([wav.numel() for wav in audio], dtype=torch.long, device=device)
+    padded = torch.nn.utils.rnn.pad_sequence(audio, batch_first=True)
+    _, embeddings = speaker_verification_model.forward(input_signal=padded, input_signal_length=lengths)
+    return embeddings

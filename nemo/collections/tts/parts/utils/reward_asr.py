@@ -15,6 +15,7 @@
 """Configurable ASR backends used to score generated TTS audio."""
 
 import abc
+import base64
 import json
 import os
 import re
@@ -34,7 +35,8 @@ from nemo.collections.asr.models.hybrid_rnnt_ctc_bpe_models_prompt import (
 )
 from nemo.collections.asr.models.rnnt_bpe_models_prompt import EncDecRNNTBPEModelWithPrompt, RNNTPromptTranscribeConfig
 from nemo.collections.asr.parts.mixins.transcription import TranscribeConfig
-from nemo.collections.tts.parts.utils.helpers import transcribe_with_whisper_from_filepaths
+from nemo.collections.tts.parts.utils.helpers import transcribe_with_whisper_from_waveforms
+from nemo.collections.tts.parts.utils.reward_audio import resample_audio
 from nemo.utils import logging
 
 DEFAULT_NEMOTRON_LANGUAGE_MAP = {
@@ -58,8 +60,18 @@ class RewardASRBackend(abc.ABC):
     """Minimal interface for reward transcription implementations."""
 
     @abc.abstractmethod
-    def transcribe(self, audio_paths: Sequence[str], languages: Sequence[str]) -> List[str]:
-        """Return one transcript for each audio path."""
+    def transcribe(self, waveforms: Sequence[torch.Tensor], sample_rate: int, languages: Sequence[str]) -> List[str]:
+        """Return one transcript for each in-memory waveform.
+
+        Args:
+            waveforms: Unpadded mono tensors with shapes ``[T_i]``, in request order.
+            sample_rate: Actual input sample rate in Hz, shared by all waveforms.
+                Each backend converts to its model's expected rate when needed.
+            languages: One language code per waveform, used for routing or prompts.
+
+        Returns:
+            Transcript strings in the original waveform order.
+        """
 
     def close(self) -> None:
         """Release backend resources."""
@@ -77,11 +89,12 @@ class WhisperRewardASRBackend(RewardASRBackend):
         for parameter in self.model.parameters():
             parameter.requires_grad = False
 
-    def transcribe(self, audio_paths: Sequence[str], languages: Sequence[str]) -> List[str]:
+    def transcribe(self, waveforms: Sequence[torch.Tensor], sample_rate: int, languages: Sequence[str]) -> List[str]:
         device = self.device_getter()
         self.model.to(device)
-        return transcribe_with_whisper_from_filepaths(
-            audio_filepaths=audio_paths,
+        return transcribe_with_whisper_from_waveforms(
+            waveforms=waveforms,
+            sample_rate=sample_rate,
             language=languages,
             whisper_processor=self.processor,
             whisper_model=self.model,
@@ -129,7 +142,8 @@ class NemoRewardASRBackend(RewardASRBackend):
                     )
                 self.model.encoder.set_default_att_context_size(attention_context)
 
-    def transcribe(self, audio_paths: Sequence[str], languages: Sequence[str]) -> List[str]:
+    def transcribe(self, waveforms: Sequence[torch.Tensor], sample_rate: int, languages: Sequence[str]) -> List[str]:
+        waveforms = resample_audio(waveforms, sample_rate, int(self.model.cfg.sample_rate))
         self.model.to(self.device_getter())
         if (
             self.reset_cuda_graphs_before_transcribe
@@ -139,16 +153,16 @@ class NemoRewardASRBackend(RewardASRBackend):
             self.model.maybe_enable_cuda_graphs(force_reinit=True)
         if not self.prompted:
             results = self.model.transcribe(
-                list(audio_paths),
-                batch_size=len(audio_paths),
-                override_config=TranscribeConfig(use_lhotse=False, batch_size=len(audio_paths), num_workers=0),
+                list(waveforms),
+                batch_size=len(waveforms),
+                override_config=TranscribeConfig(use_lhotse=False, batch_size=len(waveforms), num_workers=0),
             )
             return [result.text if hasattr(result, "text") else str(result) for result in results]
 
-        transcripts = [""] * len(audio_paths)
-        grouped: Dict[str, List[tuple[int, str]]] = {}
-        for index, (audio_path, language) in enumerate(zip(audio_paths, languages)):
-            grouped.setdefault(language, []).append((index, audio_path))
+        transcripts = [""] * len(waveforms)
+        grouped: Dict[str, List[tuple[int, torch.Tensor]]] = {}
+        for index, (waveform, language) in enumerate(zip(waveforms, languages)):
+            grouped.setdefault(language, []).append((index, waveform))
 
         for language, items in grouped.items():
             if language not in self.language_map:
@@ -239,6 +253,7 @@ class ProcessRewardASRBackend(RewardASRBackend):
         if self.process is not None and self.process.poll() is None:
             return
 
+        self.close()
         device = self.device_getter()
         device_index = device.index if device.index is not None else 0
         worker_env = os.environ.copy()
@@ -256,7 +271,7 @@ class ProcessRewardASRBackend(RewardASRBackend):
                 "--model",
                 self.model_name,
                 "--device",
-                "cuda:0",
+                "cuda:0" if device.type == 'cuda' else str(device),
                 "--batch-size",
                 str(self.batch_size),
                 "--max-new-tokens",
@@ -279,11 +294,16 @@ class ProcessRewardASRBackend(RewardASRBackend):
             f"(stderr: {stderr_path})"
         )
 
-    def _request(self, audio_paths: Sequence[str], languages: Sequence[str]) -> List[str]:
+    def _request(self, waveforms: Sequence[torch.Tensor], sample_rate: int, languages: Sequence[str]) -> List[str]:
         self._start()
         request = {
             "command": "transcribe",
-            "audio_paths": list(audio_paths),
+            # Lossless float32 samples, not WAV files or JSON float lists.
+            "waveforms": [
+                base64.b64encode(wav.cpu().numpy().astype('<f4', copy=False).tobytes()).decode('ascii')
+                for wav in resample_audio(waveforms, sample_rate, sample_rate)
+            ],
+            "sample_rate": sample_rate,
             "languages": list(languages),
             "attention_context": self.attention_context,
         }
@@ -293,18 +313,18 @@ class ProcessRewardASRBackend(RewardASRBackend):
         if response.get("status") != "ok":
             raise RuntimeError(f"ASR worker failed: {response}")
         transcripts = response.get("transcripts", [])
-        if len(transcripts) != len(audio_paths):
-            raise RuntimeError(f"ASR worker returned {len(transcripts)} transcripts for {len(audio_paths)} inputs")
+        if len(transcripts) != len(waveforms):
+            raise RuntimeError(f"ASR worker returned {len(transcripts)} transcripts for {len(waveforms)} inputs")
         return transcripts
 
-    def transcribe(self, audio_paths: Sequence[str], languages: Sequence[str]) -> List[str]:
+    def transcribe(self, waveforms: Sequence[torch.Tensor], sample_rate: int, languages: Sequence[str]) -> List[str]:
         try:
-            return self._request(audio_paths, languages)
+            return self._request(waveforms, sample_rate, languages)
         except (BrokenPipeError, TimeoutError, RuntimeError):
             # A single restart handles transient worker failures without hiding a
             # persistent configuration or model error.
             self.close()
-            return self._request(audio_paths, languages)
+            return self._request(waveforms, sample_rate, languages)
 
     def close(self) -> None:
         process = self.process
@@ -321,6 +341,10 @@ class ProcessRewardASRBackend(RewardASRBackend):
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait(timeout=5)
+        if process is not None:
+            for handle in (process.stdin, process.stdout):
+                if handle is not None:
+                    handle.close()
         if self.stderr_handle is not None:
             self.stderr_handle.close()
             self.stderr_handle = None
@@ -371,20 +395,43 @@ class RewardASRRouter:
                 )
             self.backends[name] = backend_types[backend_type](backend_cfg, device_getter)
 
-    def transcribe(self, audio_paths: Sequence[str], languages: Sequence[str]) -> List[str]:
-        if len(audio_paths) != len(languages):
+    def transcribe(self, waveforms: Sequence[torch.Tensor], sample_rate: int, languages: Sequence[str]) -> List[str]:
+        """Route waveform batches by language while preserving input order.
+
+        Args:
+            waveforms: Unpadded mono tensors with shapes ``[T_i]``.
+            sample_rate: Positive input sample rate in Hz, shared by all waveforms.
+            languages: One language code per waveform; unconfigured languages use
+                the default backend.
+
+        Returns:
+            One transcript per waveform in input order, or an empty list for an
+            empty request.
+
+        Raises:
+            ValueError: If the sample rate is nonpositive or waveform/language
+                counts differ.
+            RuntimeError: If a backend returns a different number of transcripts.
+        """
+        if sample_rate <= 0:
+            raise ValueError('sample_rate must be positive.')
+        if len(waveforms) != len(languages):
             raise ValueError(
-                f"audio_paths and languages must have equal lengths, got {len(audio_paths)} and {len(languages)}"
+                f"waveforms and languages must have equal lengths, got {len(waveforms)} and {len(languages)}"
             )
-        transcripts = [""] * len(audio_paths)
-        grouped: Dict[str, List[tuple[int, str, str]]] = {}
-        for index, (audio_path, language) in enumerate(zip(audio_paths, languages)):
+        transcripts = [""] * len(waveforms)
+        grouped: Dict[str, List[tuple[int, torch.Tensor, str]]] = {}
+        for index, (waveform, language) in enumerate(zip(waveforms, languages)):
             backend_name = self.language_routes.get(language, self.default_backend)
-            grouped.setdefault(backend_name, []).append((index, audio_path, language))
+            grouped.setdefault(backend_name, []).append((index, waveform, language))
 
         for backend_name, items in grouped.items():
             backend = self.backends[backend_name]
-            results = backend.transcribe([path for _, path, _ in items], [language for _, _, language in items])
+            results = backend.transcribe(
+                [waveform for _, waveform, _ in items], sample_rate, [language for _, _, language in items]
+            )
+            if len(results) != len(items):
+                raise RuntimeError(f'ASR backend {backend_name!r} returned the wrong number of transcripts.')
             for (index, _, _), transcript in zip(items, results):
                 transcripts[index] = transcript
         return transcripts

@@ -570,6 +570,17 @@ def test_detect_vllm_architecture_returns_model_embedding_vocab():
     assert vocab_size == 151936
 
 
+def test_detect_vllm_architecture_names_transcribe():
+    """A ParallelExpertEncoder on a NemotronH backbone exports under its dedicated architecture name."""
+    backbone = SimpleNamespace(architectures=["NemotronHForCausalLM"], vocab_size=131072)
+    with patch("transformers.AutoConfig.from_pretrained", return_value=backbone):
+        architecture, _ = to_hf._detect_vllm_architecture(
+            {"pretrained_llm": "fake-model", "pe_encoder_path": "/models/pee.nemo"}
+        )
+
+    assert architecture == "Nemotron3_5TranscribeForConditionalGeneration"
+
+
 @pytest.mark.parametrize("vocab_size", [None, True, 0, -1])
 def test_detect_vllm_architecture_rejects_invalid_model_vocab(vocab_size):
     backbone = SimpleNamespace(architectures=["Qwen2ForCausalLM"], vocab_size=vocab_size)

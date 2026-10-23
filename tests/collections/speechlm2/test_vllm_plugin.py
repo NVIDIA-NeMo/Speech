@@ -176,6 +176,37 @@ def test_dflash_alias_registration_supports_class_backed_registry():
     assert FakeRegistry.models["AutomodelDraft"] is NativeModel
 
 
+@pytest.mark.skipif(not _HAS_CONFIG, reason="SpeechLM vLLM plugin not available")
+@pytest.mark.parametrize(
+    ("model_cfg", "backbone_architectures", "expected"),
+    [
+        pytest.param(
+            {"pe_encoder_path": "/models/pee.nemo"},
+            ["NemotronHForCausalLM"],
+            "Nemotron3_5TranscribeForConditionalGeneration",
+            id="training-config",
+        ),
+        pytest.param(
+            {"pe_encoder_path": None, "pe_encoder_config": {"target": "ParallelExpertEncoderPT"}},
+            ["NemotronHForCausalLM"],
+            "Nemotron3_5TranscribeForConditionalGeneration",
+            id="exported-config",
+        ),
+        pytest.param({}, ["NemotronHForCausalLM"], "NeMoSpeechLMForConditionalGeneration", id="no-pe-encoder"),
+        pytest.param(
+            {"pe_encoder_path": "/models/pee.nemo"},
+            ["Qwen3ForCausalLM"],
+            "NeMoSpeechLMForConditionalGeneration",
+            id="transformer-backbone",
+        ),
+    ],
+)
+def test_checkpoint_architecture_names_transcribe_by_structure(model_cfg, backbone_architectures, expected):
+    from nemo.collections.speechlm2.vllm.salm.config import checkpoint_architecture
+
+    assert checkpoint_architecture(model_cfg, backbone_architectures) == expected
+
+
 @pytest.mark.skipif(not _HAS_CONFIG, reason="NeMoSpeechLMConfig not available")
 class TestNeMoSpeechLMConfig:
     """Tests for NeMoSpeechLMConfig."""
@@ -1461,6 +1492,31 @@ class TestPluginRegistration:
 
         assert MODELS_CONFIG_MAP["NeMoSpeechLMForConditionalGeneration"] is NeMoSpeechLMForConditionalGenerationConfig
 
+    def test_register_transcribe_architecture(self, monkeypatch):
+        """The dedicated PE-encoder/NemotronH architecture name resolves to the SpeechLM class and config hook."""
+        from transformers import AutoConfig
+        from vllm.model_executor.models.config import MODELS_CONFIG_MAP
+        from vllm.model_executor.models.registry import ModelRegistry
+
+        from nemo.collections.speechlm2.vllm.salm import register
+        from nemo.collections.speechlm2.vllm.salm.config_hook import NeMoSpeechLMForConditionalGenerationConfig
+
+        monkeypatch.setattr(
+            AutoConfig,
+            "from_pretrained",
+            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError()),
+        )
+
+        register()
+
+        speechlm = ModelRegistry.models["NeMoSpeechLMForConditionalGeneration"]
+        transcribe = ModelRegistry.models["Nemotron3_5TranscribeForConditionalGeneration"]
+        assert (transcribe.module_name, transcribe.class_name) == (speechlm.module_name, speechlm.class_name)
+        assert (
+            MODELS_CONFIG_MAP["Nemotron3_5TranscribeForConditionalGeneration"]
+            is NeMoSpeechLMForConditionalGenerationConfig
+        )
+
     @pytest.mark.parametrize(
         ("is_hybrid", "backbone_dtype", "initial_dtype", "expected_dtype"),
         [
@@ -1747,7 +1803,7 @@ class TestMTPPlugin:
         assert "NeMoSpeechLMMTPModel" in ModelRegistry.get_supported_archs()
 
     def test_mtp_patch_extends_mtp_model_types(self, monkeypatch):
-        """register() should add 'nemo_speechlm_mtp' to vLLM's MTPModelTypes Literal."""
+        """register() should add both SpeechLM draft model types to vLLM's MTPModelTypes Literal."""
         from typing import get_args
 
         import vllm.config.speculative as _spec_mod
@@ -1764,6 +1820,7 @@ class TestMTPPlugin:
         register()
 
         assert "nemo_speechlm_mtp" in get_args(_spec_mod.MTPModelTypes)
+        assert "nemotron3_5_transcribe_mtp" in get_args(_spec_mod.MTPModelTypes)
 
     def test_patched_override_routes_nemo_mtp_config(self, monkeypatch):
         """hf_config_override should rewrite nemo_speechlm configs with MTP heads."""
@@ -1793,6 +1850,50 @@ class TestMTPPlugin:
         assert result.architectures == ["NeMoSpeechLMMTPModel"]
         assert result.n_predict == 1
         assert result.num_nextn_predict_layers == 1
+
+    @pytest.mark.parametrize(
+        ("architecture", "mtp_model_type", "mtp_architecture"),
+        [
+            ("NeMoSpeechLMForConditionalGeneration", "nemo_speechlm_mtp", "NeMoSpeechLMMTPModel"),
+            (
+                "Nemotron3_5TranscribeForConditionalGeneration",
+                "nemotron3_5_transcribe_mtp",
+                "Nemotron3_5TranscribeMTPModel",
+            ),
+        ],
+    )
+    def test_patched_override_names_draft_after_target(
+        self, monkeypatch, architecture, mtp_model_type, mtp_architecture
+    ):
+        """The dedicated architecture's MTP draft uses vLLM's native model type and name; both resolve to one class."""
+        from transformers import AutoConfig
+        from vllm.config.speculative import SpeculativeConfig
+        from vllm.model_executor.models.registry import ModelRegistry
+
+        from nemo.collections.speechlm2.vllm.salm import register
+
+        monkeypatch.setattr(
+            AutoConfig,
+            "from_pretrained",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError()),
+        )
+        register()
+
+        hf_cfg = self._HFConfigLike(
+            model_type="nemo_speechlm",
+            architectures=[architecture],
+            mtp={
+                "enabled": True,
+                "num_nextn_predict_layers": 2,
+                "use_repeated_layer": True,
+            },
+        )
+        result = SpeculativeConfig.hf_config_override(hf_cfg)
+
+        assert result.model_type == mtp_model_type
+        assert result.architectures == [mtp_architecture]
+        draft = ModelRegistry.models[mtp_architecture]
+        assert (draft.module_name, draft.class_name) == ("nemo.collections.speechlm2.vllm.salm.mtp", "NeMoSpeechLMMTP")
 
     def test_patched_override_is_pickleable_for_spawned_engine(self, monkeypatch):
         """The callable retained on draft ModelConfig must survive multiprocessing spawn."""

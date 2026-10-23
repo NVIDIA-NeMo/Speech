@@ -108,6 +108,16 @@ def test_text_then_one_ascii_space_then_audio_locator_exactly():
     assert "\n" not in calls[0]["rendered"]
 
 
+@pytest.mark.parametrize("model_type", ["nemo_speechlm", "nemo_speechlm_mtp", "nemotron3_5_transcribe_mtp"])
+def test_contract_covers_every_speechlm_model_type(model_type):
+    chat_utils, calls = _fake_vllm_chat_utils()
+    _patch_speechlm_training_prompt_contract(chat_utils)
+
+    result = _parse(chat_utils, [_AUDIO, {"type": "text", "text": "Transcribe"}], model_type=model_type)
+
+    assert result == [{"role": "user", "content": "Transcribe <|audio|>"}]
+
+
 def test_text_only_generator_is_preserved():
     chat_utils, calls = _fake_vllm_chat_utils()
     _patch_speechlm_training_prompt_contract(chat_utils)

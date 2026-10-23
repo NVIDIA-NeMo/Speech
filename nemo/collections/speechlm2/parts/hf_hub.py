@@ -20,6 +20,7 @@ from huggingface_hub.hub_mixin import DataclassInstance
 from omegaconf import DictConfig, OmegaConf
 from transformers.utils import cached_file
 
+from nemo.collections.speechlm2.vllm.salm.config import checkpoint_architecture
 from nemo.utils import logging
 
 SAFETENSORS_SINGLE_FILE = "model.safetensors"
@@ -189,7 +190,10 @@ class HFHubMixin(
             # in a checkpoint that can be loaded by another user.
             config.pop("trust_remote_code", None)
             config.setdefault("model_type", "nemo_speechlm")
-            config.setdefault("architectures", ["NeMoSpeechLMForConditionalGeneration"])
+            if "architectures" not in config:
+                llm_config = getattr(getattr(self, "llm", None), "config", None)
+                backbone_architectures = getattr(llm_config, "architectures", None) or []
+                config["architectures"] = [checkpoint_architecture(config, backbone_architectures)]
         return super().save_pretrained(
             save_directory=save_directory,
             config=config,

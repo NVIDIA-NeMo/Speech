@@ -175,7 +175,15 @@ class NemoRewardASRBackend(RewardASRBackend):
 
 
 class ProcessRewardASRBackend(RewardASRBackend):
-    """Persistent ASR worker isolated from the TTS model's CUDA context."""
+    """Run reward ASR in a persistent worker process (``scripts/tts/reward_asr_worker.py``).
+
+    Process isolation is required for two reasons:
+
+    * Qwen3-ASR (``type: qwen``) depends on a pinned ``transformers`` 4.x release that conflicts with the
+      ``transformers`` 5.x used by NeMo, so the worker runs under a separate ``python_executable``.
+    * ``type: nemo_process`` keeps NeMo ASR, including its RNNT CUDA graphs, out of the TTS model's CUDA
+      context.
+    """
 
     def __init__(self, cfg: Mapping, device_getter: Callable[[], torch.device]):
         self.device_getter = device_getter

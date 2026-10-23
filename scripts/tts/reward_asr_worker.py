@@ -13,7 +13,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Persistent JSON-lines worker for process-isolated reward ASR backends."""
+"""Persistent JSON-lines worker for process-isolated reward ASR backends.
+
+``ProcessRewardASRBackend`` in ``nemo/collections/tts/parts/utils/reward_asr.py`` starts one worker per
+training rank and exchanges one JSON request and response per line over stdin/stdout.
+
+Qwen3-ASR requires this separate interpreter: ``qwen-asr`` pins an exact ``transformers`` 4.x release,
+which cannot be installed alongside the ``transformers`` 5.x used by NeMo. It therefore runs from its own
+virtual environment (the backend's ``python_executable``). The ``nemo`` backend uses the same protocol to
+keep NeMo ASR out of the TTS model's CUDA context.
+
+NeMo is not installed in the Qwen environment, so this script must not import NeMo at module level.
+Backend dependencies are imported inside ``load_qwen`` and ``load_nemo``.
+"""
 
 import argparse
 import contextlib

@@ -743,6 +743,31 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         return features
 
     def _maybe_shuffle_context_audio(self, features: Dict[str, List]) -> None:
+        """Probabilistically replace audio contexts with contexts from other batch items.
+
+        Apply only to training batches, with probability
+        ``context_audio_shuffle_batch_prob``. Eligible items have no text context
+        and contain at least three codec frames or more than one codec frame's
+        worth of waveform samples. Require at least two eligible items and
+        prefer cached codes when they are available for the entire batch.
+
+        For each eligible item, sample another eligible donor, preferring a
+        different language and falling back to the same language when needed.
+        Donors are sampled independently and may be reused. Assign each donor's
+        original context and length, leaving text contexts unchanged.
+
+        Args:
+            features: Mutable batch feature lists containing ``languages``,
+                ``has_text_context``, ``context_audio_codes``,
+                ``context_audio_codes_lens``, ``context_audio``, and
+                ``context_audio_lens``. The selected context lists must cover
+                the entire batch. If text-context flags do not cover the
+                batch, treat all items as having no text context.
+
+        Returns:
+            None. Updates eligible context entries and their lengths in
+            ``features`` in place; leaves the batch unchanged when skipped.
+        """
         if (
             self.dataset_type != 'train'
             or self.context_audio_shuffle_batch_prob <= 0.0

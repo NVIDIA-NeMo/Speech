@@ -553,18 +553,19 @@ class DurationFilter:
 
 class ValidationStatusFilter:
     """
-    Callable, returns ``True`` if a cut's validation status is equal to keep and ``False`` otherwise.
+    Callable, returns ``True`` if a cut's validation status is equal to keep (or one of keep, when it is
+    a list of statuses) and ``False`` otherwise.
     Acts as a pass-through for objects of other type than Cut.
     """
 
-    def __init__(self, keep: str = "pass") -> None:
-        self.keep = keep
+    def __init__(self, keep: str | Sequence[str] = "pass") -> None:
+        self.keep = frozenset([keep] if isinstance(keep, str) else keep)
 
     def __call__(self, example) -> bool:
         if (
             isinstance(example, MonoCut)
             and example.has_custom("validation_status")
-            and example.validation_status != self.keep
+            and example.validation_status not in self.keep
         ):
             return False
         else:

@@ -184,8 +184,9 @@ class LhotseDataLoadingConfig:
     excluded_speaker_ids: Any = None
     speaker_filter_fields: list[str] | None = None
 
-    # 2.4 Filters on validation status. If the validation status is not "pass", the cut will be filtered out.
-    keep: str = "pass"
+    # 2.4 Filters on validation status. Cuts whose validation status is not keep (a status or a list of
+    # statuses) are filtered out.
+    keep: Any = "pass"
 
     # 3. Supported existing NeMo options.
     shuffle: bool = False

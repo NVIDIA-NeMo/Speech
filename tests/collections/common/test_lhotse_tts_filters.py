@@ -144,6 +144,12 @@ def test_cut_validation_status_filter(cut_example):
     f = ValidationStatusFilter("any_other_status")
     assert f(cut_example) == False
 
+    f = ValidationStatusFilter(["pass", "fail_ssim"])
+    assert f(cut_example) == True
+
+    f = ValidationStatusFilter(["wrong_text", "fail_ssim"])
+    assert f(cut_example) == False
+
 
 def test_cut_speaker_filter_by_speaker(cut_example):
     f = SpeakerFilter(

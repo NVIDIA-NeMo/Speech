@@ -181,6 +181,9 @@ class LhotseDataLoadingConfig:
     # 2.3 Filters on CER and/or cosine speaker similarity of the context audio serving for TTS use cases.
     max_cer: float | None = float("inf")
     min_context_speaker_similarity: float | None = -1
+    # Per-language overrides keyed by the cut's ``lang`` tag, e.g. {en: 0.03}; null disables the filter for a language.
+    max_cer_by_lang: Any = None
+    min_context_speaker_similarity_by_lang: Any = None
     excluded_speaker_ids: Any = None
     speaker_filter_fields: list[str] | None = None
 
@@ -975,9 +978,13 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
         )
     )
     # CER filtering, same as native NeMo dataloaders.
-    cuts = cuts.filter(CERFilter(config.max_cer))
+    cuts = cuts.filter(CERFilter(config.max_cer, config.max_cer_by_lang))
     # Context speaker similarity filtering, same as native NeMo dataloaders.
-    cuts = cuts.filter(ContextSpeakerSimilarityFilter(config.min_context_speaker_similarity))
+    cuts = cuts.filter(
+        ContextSpeakerSimilarityFilter(
+            config.min_context_speaker_similarity, config.min_context_speaker_similarity_by_lang
+        )
+    )
 
     if tokenizer is not None and config.pretokenize:
         cuts = cuts.filter(TokenPerSecondFilter(config.min_tps, config.max_tps))

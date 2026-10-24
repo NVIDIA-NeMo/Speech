@@ -572,14 +572,23 @@ class ValidationStatusFilter:
             return True
 
 
+def _threshold_for(cut: MonoCut, default: float, by_lang: dict[str, float]) -> float:
+    if not by_lang or not cut.custom:
+        return default
+    return by_lang.get(cut.custom.get("lang"), default)
+
+
 class CERFilter:
     """
     Callable, returns ``True`` if a cut's CER is less than max_cer and ``False`` otherwise.
+    ``max_cer_by_lang`` maps a cut's ``lang`` tag to a threshold that replaces max_cer for that language
+    (``None`` disables the filter for it).
     Acts as a pass-through for objects of other type than Cut.
     """
 
-    def __init__(self, max_cer: float | None) -> None:
+    def __init__(self, max_cer: float | None, max_cer_by_lang: dict[str, float | None] | None = None) -> None:
         self.max_cer = ifnone(max_cer, float("inf"))
+        self.max_cer_by_lang = {k: ifnone(v, float("inf")) for k, v in (max_cer_by_lang or {}).items()}
 
     def __call__(self, example) -> bool:
         if (
@@ -587,7 +596,7 @@ class CERFilter:
             and len(example.supervisions) > 0
             and example.supervisions[0].has_custom("cer")
         ):
-            return example.supervisions[0].cer <= self.max_cer
+            return example.supervisions[0].cer <= _threshold_for(example, self.max_cer, self.max_cer_by_lang)
         else:
             return True
 
@@ -639,11 +648,20 @@ class SpeakerFilter:
 class ContextSpeakerSimilarityFilter:
     """
     Callable, returns ``True`` if a cut's context speaker similarity is greater than min_context_speaker_similarity and ``False`` otherwise.
+    ``min_context_speaker_similarity_by_lang`` maps a cut's ``lang`` tag to a threshold that replaces
+    min_context_speaker_similarity for that language (``None`` disables the filter for it).
     Acts as a pass-through for objects of other type than Cut.
     """
 
-    def __init__(self, min_context_speaker_similarity: float | None) -> None:
+    def __init__(
+        self,
+        min_context_speaker_similarity: float | None,
+        min_context_speaker_similarity_by_lang: dict[str, float | None] | None = None,
+    ) -> None:
         self.min_context_speaker_similarity = ifnone(min_context_speaker_similarity, -1)
+        self.min_context_speaker_similarity_by_lang = {
+            k: ifnone(v, -float("inf")) for k, v in (min_context_speaker_similarity_by_lang or {}).items()
+        }
 
     def __call__(self, example) -> bool:
         if (
@@ -652,7 +670,10 @@ class ContextSpeakerSimilarityFilter:
             and example.supervisions[0].has_custom("context_speaker_similarity")
             and example.supervisions[0].context_speaker_similarity is not None
         ):
-            return example.supervisions[0].context_speaker_similarity >= self.min_context_speaker_similarity
+            threshold = _threshold_for(
+                example, self.min_context_speaker_similarity, self.min_context_speaker_similarity_by_lang
+            )
+            return example.supervisions[0].context_speaker_similarity >= threshold
         else:
             return True
 

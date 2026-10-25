@@ -23,7 +23,7 @@
   "dependencies": {
     "@pipecat-ai/client-js": "^0.4.0",
     "@pipecat-ai/websocket-transport": "^0.4.1",
-    "protobufjs": "^7.4.0",
+    "protobufjs": "^8.6.4",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   }

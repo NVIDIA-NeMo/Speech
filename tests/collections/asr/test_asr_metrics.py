@@ -176,6 +176,39 @@ class TestWordErrorRate:
         assert abs(self.get_wer_ctc('a f c', 'a b c', test_wer_bpe) - 1.0 / 3.0) < 1e-6
 
     @pytest.mark.unit
+    def test_wer_metric_accumulates_updates(self):
+        decoding = Mock(
+            blank_id=len(self.vocabulary),
+            labels_map=self.vocabulary.copy(),
+            ctc_decoder_predictions_tensor=Mock(
+                side_effect=[
+                    [Hypothesis(score=1.0, y_sequence=[], text='cat')],
+                    [Hypothesis(score=1.0, y_sequence=[], text='ducati motorcycle')],
+                ]
+            ),
+            decode_ids_to_str=self.decode_token_to_str_with_vocabulary_mock,
+            spec=CTCDecoding,
+        )
+        wer = WER(decoding, use_cer=False, log_prediction=False)
+
+        for prediction, reference in [('cat', 'cot'), ('ducati motorcycle', 'ducuti motorcycle')]:
+            wer.update(
+                predictions=self.__string_to_ctc_tensor(prediction, use_tokenizer=False),
+                predictions_lengths=None,
+                targets=self.__reference_string_to_tensor(reference, use_tokenizer=False),
+                targets_lengths=torch.tensor([len(reference)]),
+            )
+
+        wer_value, scores, words = wer.compute()
+        torch.testing.assert_close(wer_value, torch.tensor(2.0 / 3.0))
+        torch.testing.assert_close(scores, torch.tensor(2.0))
+        torch.testing.assert_close(words, torch.tensor(3.0))
+
+        wer.reset()
+        assert wer.scores.item() == 0
+        assert wer.words.item() == 0
+
+    @pytest.mark.unit
     @pytest.mark.parametrize("test_wer_bpe", [False, True])
     def test_wer_metric_randomized(self, test_wer_bpe):
         """This test relies on correctness of word_error_rate function."""

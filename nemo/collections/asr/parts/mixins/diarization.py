@@ -26,9 +26,11 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
+from nemo.collections.asr.one_logger import DiarizationThroughputPolicy
 from nemo.collections.asr.parts.utils.speaker_utils import audio_rttm_map, get_uniqname_from_filepath
 from nemo.collections.asr.parts.utils.vad_utils import PostProcessingParams, load_postprocessing_from_yaml
 from nemo.collections.common.data.utils import move_data_to_device
+from nemo.lightning.speech_throughput import register_throughput_policy
 from nemo.utils import logging
 
 GenericDiarizationType = Union[List[Any], List[List[Any]], Tuple[Any], Tuple[List[Any]]]
@@ -128,6 +130,7 @@ def get_value_from_diarization_config(diarcfg, key, default):
         return default
 
 
+@register_throughput_policy(DiarizationThroughputPolicy)
 class SpkDiarizationMixin(ABC):
     """
     An abstract class for diarize-able models.

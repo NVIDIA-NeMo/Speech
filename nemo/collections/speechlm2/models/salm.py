@@ -39,6 +39,7 @@ from transformers import GenerationConfig
 from nemo.collections.common.prompts import PromptFormatter
 from nemo.collections.common.tokenizers import AutoTokenizer
 from nemo.collections.speechlm2.data.salm_dataset import left_collate_vectors
+from nemo.collections.speechlm2.one_logger import SALMThroughputPolicy
 from nemo.collections.speechlm2.parts.encoder_chunking import encode_audio_with_optional_chunking
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
 from nemo.collections.speechlm2.parts.input_utils import _unpad_inputs
@@ -51,9 +52,13 @@ from nemo.collections.speechlm2.parts.pretrained import (
     setup_speech_encoder,
 )
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, MaskType, NeuralType
+from nemo.lightning.callback_group import with_model_init_callbacks
+from nemo.lightning.speech_throughput import register_throughput_policy
 from nemo.utils import logging
 
 
+@register_throughput_policy(SALMThroughputPolicy)
+@with_model_init_callbacks
 class SALM(LightningModule, HFHubMixin):
     def __init__(self, cfg) -> None:
         assert isinstance(cfg, dict), (
@@ -217,10 +222,9 @@ class SALM(LightningModule, HFHubMixin):
                 m.eval()
 
         inputs = self.prepare_inputs(batch)
-        # Counters consumed by TrainingStatsCallback. ``attention_mask`` is 1
-        # for every real LLM input position (text non-pad + audio frames
-        # post-perception) and 0 for padding.
-        self._last_batch_num_tokens = int(inputs["attention_mask"].long().sum().item())
+        # Exact work counter consumed by training telemetry callbacks.
+        # The mask covers text and post-perception audio positions, but not padding.
+        self._last_batch_num_tokens = inputs["attention_mask"].long().sum().detach()
         self._last_batch_num_examples = int(inputs["input_embeds"].shape[0])
         forward_outputs = self(inputs["input_embeds"], attention_mask=inputs["attention_mask"])
         num_frames = (inputs["target_ids"] != -100).long().sum()

@@ -32,14 +32,17 @@ from nemo.collections.asr.parts.preprocessing.segment import ChannelSelectorType
 from nemo.collections.audio.data import audio_to_audio_dataset
 from nemo.collections.audio.data.audio_to_audio_lhotse import LhotseAudioToTargetDataset
 from nemo.collections.audio.metrics.audio import AudioMetricWrapper
+from nemo.collections.audio.one_logger import AudioThroughputPolicy
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
 from nemo.core.classes import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo, safe_instantiate
+from nemo.lightning.speech_throughput import register_throughput_policy
 from nemo.utils import logging, model_utils
 
 __all__ = ['AudioToAudioModel']
 
 
+@register_throughput_policy(AudioThroughputPolicy)
 class AudioToAudioModel(ModelPT, ABC):
     """Base class for audio-to-audio models.
 

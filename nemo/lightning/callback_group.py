@@ -15,7 +15,8 @@
 
 import atexit
 import functools
-from typing import Any, Callable, List, Optional
+from contextlib import contextmanager
+from typing import Any, Callable, Iterator, List, Optional
 
 from lightning.pytorch.callbacks import Callback as PTLCallback
 from nemo.lightning.base_callback import BaseCallback
@@ -44,7 +45,8 @@ class CallbackGroup:
         return cls._instance
 
     def __init__(self) -> None:
-        self._callbacks: List[BaseCallback] = [OneLoggerNeMoCallback()]
+        one_logger = OneLoggerNeMoCallback()
+        self._callbacks: List[BaseCallback] = [one_logger] if self._is_enabled(one_logger) else []
         # Ensure application-end is emitted at most once per process
         self._app_end_emitted: bool = False
 
@@ -55,6 +57,11 @@ class CallbackGroup:
             callback: The callback to register.
         """
         self._callbacks.append(callback)
+
+    @staticmethod
+    def _is_enabled(callback: BaseCallback) -> bool:
+        """Return whether a callback should emit lifecycle events in this process."""
+        return bool(getattr(callback, 'enabled_for_current_rank', True))
 
     def update_config(self, nemo_version: str, trainer: Any, **kwargs) -> None:
         """Update configuration across all registered callbacks and attach them to trainer.
@@ -68,7 +75,7 @@ class CallbackGroup:
         sanitized_group_callbacks: List[BaseCallback] = []
         for cb in self._callbacks:
             # Will ignore other callbacks like unittest.mock.MagicMock
-            if not isinstance(cb, BaseCallback):
+            if not isinstance(cb, BaseCallback) or not self._is_enabled(cb):
                 continue
             if hasattr(cb, 'update_config'):
                 method = getattr(cb, 'update_config')
@@ -76,11 +83,17 @@ class CallbackGroup:
                     method(nemo_version=nemo_version, trainer=trainer, **kwargs)
             sanitized_group_callbacks.append(cb)
 
-        # Filter trainer callbacks to avoid leaking MagicMocks from tests
-        existing = list(getattr(trainer, 'callbacks', []))
-        sanitized_trainer_callbacks = [cb for cb in existing if isinstance(cb, PTLCallback)]
+        self.attach_to_trainer(trainer, callbacks=sanitized_group_callbacks)
 
-        callbacks = sanitized_group_callbacks + sanitized_trainer_callbacks
+    def attach_to_trainer(self, trainer: Any, callbacks: Optional[List[BaseCallback]] = None) -> None:
+        """Attach registered Lightning callbacks once, preserving existing callback order."""
+        callbacks = callbacks if callbacks is not None else self._callbacks
+        callbacks = [cb for cb in callbacks if self._is_enabled(cb)]
+        existing = [cb for cb in getattr(trainer, 'callbacks', []) if isinstance(cb, PTLCallback)]
+        callback_types = {type(cb) for cb in existing}
+        callbacks = existing + [
+            cb for cb in callbacks if isinstance(cb, PTLCallback) and type(cb) not in callback_types
+        ]
 
         # Sanitize callback state_key for pickling safety
         for cb in callbacks:
@@ -115,7 +128,7 @@ class CallbackGroup:
 
         def dispatcher(*args, **kwargs):
             for cb in self._callbacks:
-                if hasattr(cb, method_name):
+                if self._is_enabled(cb) and hasattr(cb, method_name):
                     method = getattr(cb, method_name)
                     if callable(method):
                         method(*args, **kwargs)
@@ -133,7 +146,7 @@ class CallbackGroup:
             return
         self._app_end_emitted = True
         for cb in self._callbacks:
-            if hasattr(cb, 'on_app_end'):
+            if self._is_enabled(cb) and hasattr(cb, 'on_app_end'):
                 method = getattr(cb, 'on_app_end')
                 if callable(method):
                     method(*args, **kwargs)
@@ -167,13 +180,46 @@ def hook_class_init_with_callbacks(cls, start_callback: str, end_callback: str) 
         group = CallbackGroup.get_instance()
         if hasattr(group, start_callback):
             getattr(group, start_callback)()
-        result = original_init(self, *args, **kwargs)
-        if hasattr(group, end_callback):
-            getattr(group, end_callback)()
-        return result
+        try:
+            return original_init(self, *args, **kwargs)
+        finally:
+            if hasattr(group, end_callback):
+                getattr(group, end_callback)()
+            setattr(self, '_in_wrapped_init', False)
 
     wrapped_init._init_wrapped_for_callbacks = True
     cls.__init__ = wrapped_init
+
+
+def with_model_init_callbacks(cls):
+    """Decorate a model class to emit callbacks around its initialization."""
+    hook_class_init_with_callbacks(cls, 'on_model_init_start', 'on_model_init_end')
+    return cls
+
+
+@contextmanager
+def callback_context(start_callback: str, end_callback: str, *args, **kwargs) -> Iterator[None]:
+    """Emit a paired lifecycle callback around an operation."""
+    group = CallbackGroup.get_instance()
+    getattr(group, start_callback)(*args, **kwargs)
+    try:
+        yield
+    finally:
+        getattr(group, end_callback)(*args, **kwargs)
+
+
+def with_callback_context(start_callback: str, end_callback: str) -> Callable:
+    """Decorate an operation with paired lifecycle callbacks."""
+
+    def decorator(func: Callable) -> Callable:
+        @functools.wraps(func)
+        def wrapped(*args, **kwargs):
+            with callback_context(start_callback, end_callback):
+                return func(*args, **kwargs)
+
+        return wrapped
+
+    return decorator
 
 
 # Eagerly create the singleton on import so that early callers can use it
@@ -183,4 +229,10 @@ CallbackGroup.get_instance()
 # non-Hydra entrypoints). Safe due to idempotent on_app_end.
 atexit.register(lambda: CallbackGroup.get_instance().on_app_end())
 
-__all__ = ['CallbackGroup', 'hook_class_init_with_callbacks']
+__all__ = [
+    'CallbackGroup',
+    'callback_context',
+    'hook_class_init_with_callbacks',
+    'with_callback_context',
+    'with_model_init_callbacks',
+]

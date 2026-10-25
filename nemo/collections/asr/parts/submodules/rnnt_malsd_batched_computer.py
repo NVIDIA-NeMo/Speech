@@ -583,6 +583,10 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
                 batch_size, self.beam_size, -1
             )  # [(B x Beam), V]
 
+            # Must precede fusion: `topk_fusion_model` rewrites `log_probs` in place with AM+LM
+            # scores, which are not a normalized distribution and would put confidence out of range.
+            step_confidence = self._get_step_confidence(log_probs)
+
             if self.has_fusion_models:
                 log_probs_top_k, labels_top_k = self.topk_fusion_model(
                     fusion_scores_list,
@@ -649,8 +653,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             )  # labels for extended hypotheses
 
             next_step_confidence = None
-            if self.preserve_step_confidence:
-                step_confidence = self._get_step_confidence(log_probs)
+            if step_confidence is not None:
                 next_step_confidence = torch.gather(step_confidence, dim=-1, index=hyps_indices)
 
             # step 3: store results
@@ -1215,6 +1218,10 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
             self.state.batch_size, self.beam_size, -1
         )  # [(B x Beam), V]
 
+        # Must precede fusion: `topk_fusion_model` rewrites `log_probs` in place with AM+LM
+        # scores, which are not a normalized distribution and would put confidence out of range.
+        step_confidence = self._get_step_confidence(log_probs)
+
         if self.has_fusion_models:
             log_probs_top_k, labels_top_k = self.topk_fusion_model(
                 self.state.fusion_scores_list,
@@ -1290,8 +1297,7 @@ class ModifiedALSDBatchedRNNTComputer(WithOptionalCudaGraphs, ConfidenceMethodMi
         self.state.next_scores.copy_(next_hyps_prob)
 
         next_step_confidence = None
-        if self.preserve_step_confidence:
-            step_confidence = self._get_step_confidence(log_probs)
+        if step_confidence is not None:
             next_step_confidence = torch.gather(step_confidence, dim=-1, index=self.state.next_idx)
 
         # step 3: store results

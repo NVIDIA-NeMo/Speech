@@ -518,6 +518,10 @@ Here a warmup over the first 45% of the training, a decay to 90% and a final dec
             boundaries: [0.0, 0.45, 0.9, 1.0]
             values: [1e-5, 4e-3, 1e-5, 1e-6]
 
+``max_steps`` is the number of optimizer steps of the training, a positive integer:
+``ModelPT`` passes it from the trainer, or ``sched.max_steps`` sets it explicitly.
+Relative boundaries require it, step boundaries ignore it.
+
 Scheduler Params
 ~~~~~~~~~~~~~~~~
 

@@ -170,6 +170,10 @@ class PiecewiseLinearParams(SchedulerParams):
     """
     Piecewise Linear parameter config
     It is not derived from Config as it is not a NeMo object (and in particular it doesn't need a name).
+
+    ``max_steps`` is the number of optimizer steps of the training, a positive integer;
+    ``prepare_lr_scheduler`` fills it in from the trainer or from ``sched.max_steps``.
+    Relative ``boundaries`` require it, step ``boundaries`` ignore it.
     """
 
     max_steps: int = 0

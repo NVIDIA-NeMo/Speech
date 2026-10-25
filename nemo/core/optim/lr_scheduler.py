@@ -741,7 +741,9 @@ class PiecewiseLinear(_LRScheduler):
         boundaries: increasing positions, in optimizer steps or (``relative``) in fractions of ``max_steps``
         values: learning-rate multiplier at each boundary, one per boundary
         relative: interpret ``boundaries`` as fractions of ``max_steps``
-        max_steps: total number of optimizer steps, a positive integer required when ``relative`` is set
+        max_steps: the number of optimizer steps of the training, a positive integer;
+            required with ``relative`` and ignored otherwise;
+            :func:`prepare_lr_scheduler` fills it in from the trainer or from ``sched.max_steps``
         last_epoch: the index of the last optimizer step, -1 for a fresh schedule
     """
 
@@ -765,8 +767,8 @@ class PiecewiseLinear(_LRScheduler):
             raise ValueError("`boundaries` and `values` must be finite")
         if any(later <= earlier for earlier, later in zip(boundaries, boundaries[1:])):
             raise ValueError("`boundaries` must be strictly increasing")
-        if relative and (max_steps is None or max_steps <= 0):
-            raise ValueError(f"Relative `boundaries` need a positive `max_steps`, got {max_steps!r}")
+        if relative and not (isinstance(max_steps, int) and max_steps > 0):
+            raise ValueError(f"Relative `boundaries` need a positive integer `max_steps`, got {max_steps!r}")
         self.boundaries = boundaries
         self.values = values
         self.relative = relative

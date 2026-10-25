@@ -1290,8 +1290,8 @@ class TestPiecewiseLinear:
             PiecewiseLinear(_sgd_with_group_lrs(1.0), boundaries=[], values=[])
         with pytest.raises(ValueError, match="strictly increasing"):
             PiecewiseLinear(_sgd_with_group_lrs(1.0), boundaries=[0, 1, 1], values=[1.0, 1.0, 1.0])
-        for max_steps in (None, 0, -5):
-            with pytest.raises(ValueError, match="positive `max_steps`"):
+        for max_steps in (None, 0, -5, 10.5, "10"):
+            with pytest.raises(ValueError, match="positive integer `max_steps`"):
                 PiecewiseLinear(
                     _sgd_with_group_lrs(1.0), boundaries=[0, 1], values=[1.0, 1.0], relative=True, max_steps=max_steps
                 )

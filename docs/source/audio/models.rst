@@ -37,6 +37,11 @@ Flow Matching Model
 Flow matching model is a generative model using a noise-to-data process to transform the input (degraded) audio signal into the target (clean) audio signal :cite:`audio-models-ku2024generative`. The model consists of an encoder and decoder, a neural estimator, a flow model and a sampler.
 
 
+Background Noise Removal (BNR) Model
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Background Noise Removal (BNR) 2.0 is a single-channel speech denoising model that uses the SEASR architecture. It combines convolutional feature extraction with GRU-based temporal modeling and a learnable masking mechanism operating in a learned transform domain. See `SEASR: A Speech Enhancement Model Using the SAEV Representation <https://ieeexplore.ieee.org/stamp/stamp.jsp?tp=&arnumber=10837982>`_ for details.
+
+
 References
 ----------
 

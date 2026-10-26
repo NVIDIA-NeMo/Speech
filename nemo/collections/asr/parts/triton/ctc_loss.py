@@ -55,7 +55,10 @@ import triton
 import triton.language as tl
 from torch import Tensor
 
-__all__ = ["packed_ctc_loss"]
+__all__ = ["PACKED_CTC_LOSS_DTYPES", "packed_ctc_loss"]
+
+# the dtypes the kernels read; the recursion runs in float32 either way
+PACKED_CTC_LOSS_DTYPES = (torch.float32, torch.bfloat16, torch.float16)
 
 
 def packed_ctc_loss(
@@ -95,6 +98,8 @@ def packed_ctc_loss(
         raise ValueError(f"log_probs must have shape (T_total, D), got {tuple(log_probs.shape)}.")
     if not log_probs.is_cuda:
         raise RuntimeError("The packed CTC loss kernel requires CUDA tensors.")
+    if log_probs.dtype not in PACKED_CTC_LOSS_DTYPES:
+        raise TypeError(f"log_probs must be float32, bfloat16 or float16, got {log_probs.dtype}.")
     batch_size = lengths.numel()
     if cu_seqlens.shape != (batch_size + 1,):
         raise ValueError(f"cu_seqlens must have shape ({batch_size + 1},), got {tuple(cu_seqlens.shape)}.")

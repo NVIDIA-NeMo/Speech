@@ -243,6 +243,27 @@ class TestPackedCTCLossKernel:
         torch.testing.assert_close(flat.grad, dense.grad)
 
     @pytest.mark.unit
+    def test_float64_takes_padded_path(self, monkeypatch):
+        # the kernel computes in float32; float64 log probabilities keep the padded kernel and its precision
+        def no_kernel(*args, **kwargs):
+            raise AssertionError("forward_packed ran the kernel on float64 log probabilities")
+
+        monkeypatch.setattr(ctc_module, "packed_ctc_loss", no_kernel)
+        logits, lengths, targets, target_lengths = self._small_case("cuda")
+        criterion = CTCLoss(num_classes=4, reduction="none")
+        losses = self._compare(criterion, logits.double(), lengths, targets, target_lengths, atol=1e-10, rtol=1e-10)
+        assert losses.dtype == torch.float64
+
+    @pytest.mark.unit
+    def test_kernel_rejects_float64(self):
+        from nemo.collections.asr.parts.triton.ctc_loss import packed_ctc_loss
+
+        logits, lengths, targets, target_lengths = self._small_case("cuda")
+        packed = pack_encoder_output(logits.double().log_softmax(-1), lengths)
+        with pytest.raises(TypeError, match="float32"):
+            packed_ctc_loss(packed.data, packed.cu_seqlens, packed.lengths, targets, target_lengths, blank=4)
+
+    @pytest.mark.unit
     def test_over_allocated_targets_and_filler_utterances(self):
         # the static-shape regime of a captured step: the targets buffer is far wider than the longest target
         # and holds junk beyond each length, and the batch is padded with zero-length utterances at the end;

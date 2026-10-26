@@ -23,7 +23,7 @@ from nemo.core.neural_types import LabelsType, LengthsType, LogprobsType, LossTy
 from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 
 if TRITON_AVAILABLE:
-    from nemo.collections.asr.parts.triton.ctc_loss import packed_ctc_loss
+    from nemo.collections.asr.parts.triton.ctc_loss import PACKED_CTC_LOSS_DTYPES, packed_ctc_loss
 
 __all__ = ['CTCLoss']
 
@@ -73,10 +73,12 @@ class CTCLoss(nn.CTCLoss, Serialization, Typing):
     def forward_packed(self, log_probs: PackedEncoderActivations, targets: Tensor, target_lengths: Tensor) -> Tensor:
         """Compute the CTC loss from token-flat log probabilities with explicit sequence boundaries.
 
-        On CUDA the loss runs as a kernel over the token-flat log probabilities
+        On CUDA, for float32, bfloat16 and float16 log probabilities,
+        the loss runs as a kernel over the token-flat log probabilities
         (:func:`nemo.collections.asr.parts.triton.ctc_loss.packed_ctc_loss`),
         so neither the padded ``(B, T, D)`` log probabilities nor their gradient are formed.
-        Elsewhere the padded log probabilities are materialized for the padded kernel of ``forward``.
+        Elsewhere, and for float64 (the kernel computes in float32),
+        the padded log probabilities are materialized for the padded kernel of ``forward``.
         Both give the loss and the gradient of ``forward``;
         ``reduction`` and ``zero_infinity`` apply unchanged,
         and ``targets`` and ``target_lengths`` may live on the CPU, as for ``forward``.
@@ -94,7 +96,7 @@ class CTCLoss(nn.CTCLoss, Serialization, Typing):
                 f"forward_packed expects PackedEncoderActivations as log_probs, got {type(log_probs).__name__}; "
                 "padded log probabilities go to forward."
             )
-        if log_probs.data.is_cuda and TRITON_AVAILABLE:
+        if log_probs.data.is_cuda and TRITON_AVAILABLE and log_probs.data.dtype in PACKED_CTC_LOSS_DTYPES:
             # the kernel reads the targets and their lengths on the device of the log probabilities,
             # and the reductions below divide by the lengths, so both move there
             targets = targets.to(device=log_probs.data.device, dtype=torch.long)

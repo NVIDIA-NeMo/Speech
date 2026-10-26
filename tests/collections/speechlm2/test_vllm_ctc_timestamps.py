@@ -274,33 +274,11 @@ def test_release_false_keeps_captures_until_the_worker_releases_them(aligner):
     assert ct._store == {} and ct._request_hashes == {} and ct._external_ids == {}
 
 
-def test_ranks_that_hold_no_captures_still_encode_but_store_nothing(aligner, monkeypatch):
-    class StubRunner:
-        def _batch_mm_inputs_from_scheduler(self, step):
-            return step.hashes, None, [(req_id, None) for req_id in step.req_ids]
-
-        def _execute_mm_encoder(self, step):
-            # What _encode_with_ctc_capture does: the forward always runs, and states
-            # are stored only under the step's hashes.
-            count = len(step.hashes)
-            hashes = ct.take_step_hashes(count)
-            if hashes is not None:
-                ct.store_alignment_states(hashes, _inputs(count, 4), [1.0] * count)
-            return "encoded"
-
-    monkeypatch.setitem(sys.modules, "vllm.v1.worker.gpu_model_runner", SimpleNamespace(GPUModelRunner=StubRunner))
-    ct.install_encoder_cache_binding()
+def test_ranks_that_hold_no_captures_still_encode_but_store_nothing(aligner, monkeypatch, model_runner):
+    run = _hooked_runner(monkeypatch, model_runner)
     monkeypatch.setattr(ct, "_holds_captures", lambda: False)
-    step = SimpleNamespace(
-        scheduled_new_reqs=[
-            SimpleNamespace(req_id="req-a-0123abcd", mm_features=[SimpleNamespace(identifier="hash-a")])
-        ],
-        hashes=["hash-a"],
-        req_ids=["req-a-0123abcd"],
-        free_encoder_mm_hashes=[],
-    )
 
-    assert StubRunner()._execute_mm_encoder(step) == "encoded"
+    assert run([("req-a-0123abcd", "hash-a")], [("req-a-0123abcd", "hash-a")]) == "encoded"
 
     assert ct._store == {} and ct._request_hashes == {}
     assert ct._worker_prepare_requests(None, [("req-a", "x")]) == {"count": 1, "batches": []}
@@ -511,7 +489,7 @@ def test_a_request_with_the_same_clip_twice_gets_no_timestamps(aligner):
     clip = SimpleNamespace(identifier="hash-a")
     twice = SimpleNamespace(req_id="twice", mm_features=[clip, clip])
     once = SimpleNamespace(req_id="once", mm_features=[clip])
-    ct._record_new_requests(SimpleNamespace(scheduled_new_reqs=[twice, once]))
+    ct._record_new_requests(ct._new_request_hashes(SimpleNamespace(scheduled_new_reqs=[twice, once])))
 
     results = ct.align_finished_requests([("twice", "one two"), ("once", "three")], release=True)
 
@@ -588,13 +566,6 @@ def test_special_tokens_come_from_the_model_tokenizer(monkeypatch):
     assert ct.tokenizer_special_tokens(SimpleNamespace(skip_tokenizer_init=False)) == ("<s>", "<spk:0>")
     assert ct.tokenizer_special_tokens(SimpleNamespace(skip_tokenizer_init=True)) == ()
     assert ct.tokenizer_special_tokens(None) == ()
-
-
-def test_model_runner_v2_is_refused():
-    ct.require_v1_model_runner(SimpleNamespace())
-    ct.require_v1_model_runner(SimpleNamespace(use_v2_model_runner=False))
-    with pytest.raises(ValueError, match="VLLM_USE_V2_MODEL_RUNNER=0"):
-        ct.require_v1_model_runner(SimpleNamespace(use_v2_model_runner=True))
 
 
 def test_byte_budget_evicts_unowned_captures_oldest_first_but_keeps_the_newest(aligner, monkeypatch, caplog):
@@ -802,46 +773,116 @@ def test_collate_assembles_padded_rows_on_the_gpu(aligner):
     assert torch.count_nonzero(batch.asr_encoded[1, :, 3:]) == 0
 
 
-def _hooked_runner(monkeypatch):
-    """A stand-in for vLLM's GPU model runner with the capture hook installed, and a builder for its steps."""
-
-    class StubRunner:
-        def _batch_mm_inputs_from_scheduler(self, step):
-            return step.hashes, None, [(req_id, None) for req_id in step.req_ids]
-
-        def _execute_mm_encoder(self, step):
-            # What _process_audio does for the items vLLM encodes this step.
-            if step.hashes:
-                count = len(step.hashes)
-                ct.store_alignment_states(ct.take_step_hashes(count), _inputs(count, 4), [1.0] * count)
-            return "encoded"
-
-    def step(new_requests, encoded, freed=()):
-        return SimpleNamespace(
-            scheduled_new_reqs=[
-                SimpleNamespace(req_id=req_id, mm_features=[SimpleNamespace(identifier=mm_hash)])
-                for req_id, mm_hash in new_requests
-            ],
-            hashes=[mm_hash for _, mm_hash in encoded],
-            req_ids=[req_id for req_id, _ in encoded],
-            free_encoder_mm_hashes=list(freed),
-        )
-
-    monkeypatch.setitem(sys.modules, "vllm.v1.worker.gpu_model_runner", SimpleNamespace(GPUModelRunner=StubRunner))
-    ct.install_encoder_cache_binding()
-    return StubRunner(), step
+@pytest.fixture(params=["v1", "v2"])
+def model_runner(request):
+    return request.param
 
 
-def test_runner_hook_keys_captures_by_hash_maps_cache_hits_and_ignores_outside_forwards(aligner, monkeypatch):
-    runner, step = _hooked_runner(monkeypatch)
+def _hooked_runner(monkeypatch, model_runner):
+    """Stand-ins for vLLM's model runner with the capture hooks installed, and a function that runs one step.
 
-    first = step([("req-a-0123abcd", "hash-a")], [("req-a-0123abcd", "hash-a")])
-    assert runner._execute_mm_encoder(first) == "encoded"
+    A step adds ``new_requests``, frees the ``freed`` audio and encodes ``encoded``, each ``(req_id, mm_hash)``.
+    """
+
+    def forward(count):
+        # What _process_audio does: the forward always runs, and stores states only under the step's hashes.
+        hashes = ct.take_step_hashes(count) if count else None
+        if hashes is not None:
+            ct.store_alignment_states(hashes, _inputs(count, 4), [1.0] * count)
+        return "encoded"
+
+    if model_runner == "v1":
+
+        class StubRunner:
+            def _batch_mm_inputs_from_scheduler(self, step):
+                return step.hashes, None, [(req_id, None) for req_id in step.req_ids]
+
+            def _execute_mm_encoder(self, step):
+                return forward(len(step.hashes))
+
+        monkeypatch.setitem(sys.modules, "vllm.v1.worker.gpu_model_runner", SimpleNamespace(GPUModelRunner=StubRunner))
+        ct.install_encoder_cache_binding()
+        runner = StubRunner()
+
+        def run(new_requests, encoded, freed=()):
+            step = SimpleNamespace(
+                scheduled_new_reqs=[
+                    SimpleNamespace(req_id=req_id, mm_features=[SimpleNamespace(identifier=mm_hash)])
+                    for req_id, mm_hash in new_requests
+                ],
+                hashes=[mm_hash for _, mm_hash in encoded],
+                req_ids=[req_id for req_id, _ in encoded],
+                free_encoder_mm_hashes=list(freed),
+            )
+            return runner._execute_mm_encoder(step)
+
+        return run
+
+    class StubEncoderCache:
+        def __init__(self):
+            self.mm_features, self.encoder_outputs = {}, {}
+
+        def add_request(self, req_id, mm_features):
+            self.mm_features[req_id] = mm_features
+
+        def free_encoder_cache(self, mm_hash):
+            self.encoder_outputs.pop(mm_hash, None)
+
+    class StubEncoderRunner:
+        def __init__(self, encoder_cache):
+            self.encoder_cache = encoder_cache
+
+        def prepare_mm_inputs(self, scheduled_encoder_inputs):
+            features = [
+                self.encoder_cache.mm_features[req_id][index]
+                for req_id, indices in scheduled_encoder_inputs.items()
+                for index in indices
+            ]
+            hashes = [f.identifier for f in features if f.identifier not in self.encoder_cache.encoder_outputs]
+            return hashes, [("audio", None)] * len(hashes)
+
+    class StubModelState:
+        def __init__(self, encoder_cache):
+            self.encoder_cache = encoder_cache
+            self.encoder_runner = StubEncoderRunner(encoder_cache)
+
+        def execute_mm_encoder(self, scheduled_encoder_inputs):
+            hashes, _ = self.encoder_runner.prepare_mm_inputs(scheduled_encoder_inputs)
+            self.encoder_cache.encoder_outputs.update(dict.fromkeys(hashes))
+            return forward(len(hashes))
+
+    monkeypatch.setitem(
+        sys.modules, "vllm.v1.worker.gpu.mm.encoder_cache", SimpleNamespace(EncoderCache=StubEncoderCache)
+    )
+    monkeypatch.setitem(
+        sys.modules, "vllm.v1.worker.gpu.model_states.interface", SimpleNamespace(ModelState=StubModelState)
+    )
+    ct.install_encoder_cache_binding(model_runner_v2=True)
+    encoder_cache = StubEncoderCache()
+    model_state = StubModelState(encoder_cache)
+
+    def run(new_requests, encoded, freed=()):
+        # Model Runner V2's order: free evicted audio, add new requests, then encode.
+        for mm_hash in freed:
+            encoder_cache.free_encoder_cache(mm_hash)
+        for req_id, mm_hash in new_requests:
+            encoder_cache.add_request(req_id, [SimpleNamespace(identifier=mm_hash)])
+        return model_state.execute_mm_encoder({req_id: [0] for req_id, _ in encoded})
+
+    return run
+
+
+def test_runner_hook_keys_captures_by_hash_maps_cache_hits_and_ignores_outside_forwards(
+    aligner, monkeypatch, model_runner
+):
+    run = _hooked_runner(monkeypatch, model_runner)
+
+    assert run([("req-a-0123abcd", "hash-a")], [("req-a-0123abcd", "hash-a")]) == "encoded"
     # The same audio again is an encoder-cache hit: scheduled, but never encoded.
-    runner._execute_mm_encoder(step([("req-b-0123abcd", "hash-a")], []))
+    run([("req-b-0123abcd", "hash-a")], [])
     # A forward outside the hook, like vLLM's startup profiling pass on dummy audio, gets no hashes.
     assert ct.take_step_hashes(1) is None
-    runner._execute_mm_encoder(step([("req-c-0123abcd", "hash-c")], [("req-c-0123abcd", "hash-c")]))
+    run([("req-c-0123abcd", "hash-c")], [("req-c-0123abcd", "hash-c")])
 
     assert set(ct._store) == {"hash-a", "hash-c"} and not ct._uncompacted
     results = ct.align_finished_requests([("req-a", "a"), ("req-b", "b"), ("req-c", "c")], release=True)
@@ -850,20 +891,20 @@ def test_runner_hook_keys_captures_by_hash_maps_cache_hits_and_ignores_outside_f
 
     # Released, but kept until vLLM evicts the audio from its encoder cache.
     assert set(ct._store) == {"hash-a", "hash-c"}
-    runner._execute_mm_encoder(step([], [], freed=["hash-a"]))
+    run([], [], freed=["hash-a"])
     assert list(ct._store) == ["hash-c"]
 
 
-def test_audio_encoded_again_keeps_the_capture_an_earlier_request_owns(aligner, monkeypatch):
-    runner, step = _hooked_runner(monkeypatch)
+def test_audio_encoded_again_keeps_the_capture_an_earlier_request_owns(aligner, monkeypatch, model_runner):
+    run = _hooked_runner(monkeypatch, model_runner)
     both = [("req-a-0123abcd", "hash-a"), ("req-b-0123abcd", "hash-b")]
-    runner._execute_mm_encoder(step(both, both))
+    run(both, both)
     monkeypatch.setenv("NEMO_CTC_TIMESTAMP_RETAIN_GB", str(2.5 * ct._store["hash-a"]["nbytes"] / 1e9))
 
     # vLLM evicts hash-a's audio while req-a waits for alignment, then encodes it again for
     # req-a2 in the same step as req-c's new audio.
     again = [("req-c-0123abcd", "hash-c"), ("req-a2-0123abcd", "hash-a")]
-    runner._execute_mm_encoder(step(again, again, freed=["hash-a"]))
+    run(again, again, freed=["hash-a"])
 
     assert set(ct._store) == {"hash-a", "hash-b"}
     results = ct.align_finished_requests([("req-a", "a"), ("req-b", "b"), ("req-c", "c")], release=True)
@@ -1694,16 +1735,40 @@ def test_a_bundled_head_this_engine_cannot_use_is_skipped_but_requested_timestam
     torch.nn.Module.__init__(model)
     model.perception = SimpleNamespace(encoder=SimpleNamespace(supports_ctc_timestamp_inputs=True))
     model._uses_pe_encoder = False
-    model.encoder_chunk_size_seconds = None
-    model_runner_v2 = SimpleNamespace(use_v2_model_runner=True)
+    model.encoder_chunk_size_seconds = 30.0  # timestamps need one unchunked encoder forward
 
-    model._maybe_enable_ctc_timestamps({"adapter_path": "/model.safetensors", "optional": True}, model_runner_v2)
+    model._maybe_enable_ctc_timestamps({"adapter_path": "/model.safetensors", "optional": True}, SimpleNamespace())
     assert ct.active_aligner() is None and "Serving without CTC timestamps" in caplog.text
 
     # A named adapter, or a bundled head with enabled: true, asked for timestamps, so startup fails.
     for requested in ({"adapter_path": "/adapter.pt"}, {"adapter_path": "/model.safetensors", "optional": False}):
-        with pytest.raises(ValueError, match="Model Runner V2"):
-            model._maybe_enable_ctc_timestamps(requested, model_runner_v2)
+        with pytest.raises(ValueError, match="unchunked"):
+            model._maybe_enable_ctc_timestamps(requested, SimpleNamespace())
+
+
+@pytest.mark.parametrize("model_runner_v2", [False, True])
+def test_timestamps_bind_the_model_runner_the_engine_uses(monkeypatch, model_runner_v2):
+    pytest.importorskip("vllm")
+    from nemo.collections.speechlm2.parts import ctc_timestamp_utils
+    from nemo.collections.speechlm2.vllm.salm import model as model_module
+
+    monkeypatch.setattr(ct, "_registry", {})
+    monkeypatch.setattr(ctc_timestamp_utils, "get_ctc_timestamp_aligner", lambda *args: SimpleNamespace())
+    monkeypatch.setattr(model_module, "tokenizer_special_tokens", lambda model_config: ())
+    bound = []
+    monkeypatch.setattr(ct, "install_encoder_cache_binding", bound.append)
+    model = object.__new__(model_module.NeMoSpeechLMForConditionalGeneration)
+    torch.nn.Module.__init__(model)
+    model.perception = SimpleNamespace(
+        encoder=SimpleNamespace(supports_ctc_timestamp_inputs=True, parameters=lambda: iter([torch.zeros(1)]))
+    )
+    model._uses_pe_encoder = False
+    model.encoder_chunk_size_seconds = None
+    vllm_config = SimpleNamespace(use_v2_model_runner=model_runner_v2, model_config=None)
+
+    model._maybe_enable_ctc_timestamps({"adapter_path": "/model.safetensors", "optional": True}, vllm_config)
+
+    assert ct.active_aligner() is not None and bound == [model_runner_v2]
 
 
 def test_a_server_told_to_skip_the_bundled_head_passes_requests_through(server, tmp_path):
@@ -1721,7 +1786,7 @@ def test_requests_to_an_engine_that_skipped_the_bundled_head_report_not_enabled(
     _checkpoint(tmp_path)
     server.hf_config.ctc_timestamps = None
     server.app.state.engine_client.model_config.model = str(tmp_path)
-    # The engine skipped the head, for example on Model Runner V2: it registered no aligner and kept nothing.
+    # The engine skipped the head, for example with a chunked encoder: it registered no aligner and kept nothing.
     monkeypatch.setattr(ct, "_registry", {})
     server.script["capture"] = lambda request_id: None
 

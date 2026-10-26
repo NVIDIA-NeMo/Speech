@@ -29,12 +29,14 @@ points. vLLM makes that awkward in two ways:
 * The scheduler only runs the encoder for audio whose ``mm_hash`` is absent from the
   encoder cache, so a request served from that cache produces no inputs of its own.
 
-Both are solved by keying on ``mm_hash``, the identity vLLM already uses. A hook on
-``_execute_mm_encoder`` reads each step's hashes before the encoder runs and hands them
+Both are solved by keying on ``mm_hash``, the identity vLLM already uses. A hook on the
+model runner's encoder step reads the step's hashes before the encoder runs and hands them
 to the forward through per-thread state, in the order vLLM encodes the items, so each
 row's inputs are stored under its audio's hash. Every new request is mapped to its
-hashes, so a cache hit finds the inputs its audio produced earlier. The hook calls
-``_batch_mm_inputs_from_scheduler``, whose signature matches in vLLM 0.23 and 0.28.
+hashes, so a cache hit finds the inputs its audio produced earlier. On the V1 runner the
+hook wraps ``GPUModelRunner._execute_mm_encoder``; on Model Runner V2 it wraps
+``ModelState.execute_mm_encoder`` and the ``EncoderCache`` methods that add requests and
+free audio (:func:`install_encoder_cache_binding`).
 
 The inputs move to pinned host memory without blocking the engine. An ASR state is
 1,280 values per 80 ms frame, far less than the vocabulary-wide CTC output, so the
@@ -184,25 +186,6 @@ def active_aligner() -> Any:
     return _registry.get("aligner")
 
 
-def require_v1_model_runner(vllm_config: Any) -> None:
-    """Refuse CTC timestamps on vLLM's Model Runner V2.
-
-    Captured inputs are keyed, trimmed and compacted by a hook on the V1 runner's
-    ``GPUModelRunner._execute_mm_encoder``. Under V2, the default from vLLM 0.30 on,
-    that hook never runs: nothing would be aligned, and the inputs would pile up in
-    host memory.
-
-    Args:
-        vllm_config (Any): The engine's ``VllmConfig``; without ``use_v2_model_runner``
-            (older vLLM) the V1 runner is assumed.
-    """
-    if getattr(vllm_config, "use_v2_model_runner", False):
-        raise ValueError(
-            "CTC timestamps need vLLM's V1 GPU model runner, but this engine uses Model Runner V2; "
-            "set VLLM_USE_V2_MODEL_RUNNER=0."
-        )
-
-
 def read_speaker_prior_weight(ctc_config: Any) -> float:
     """Read the Sortformer prior weight from a checkpoint's ``ctc_timestamps`` block.
 
@@ -337,7 +320,7 @@ def tokenizer_special_tokens(model_config: Any) -> tuple[str, ...]:
 def take_step_hashes(count: int) -> list[str] | None:
     """Return the ``mm_hash`` of each item in one encoder forward, in item order.
 
-    The hook around vLLM's ``_execute_mm_encoder`` lists the step's hashes before the
+    The hook around the model runner's encoder step lists the step's hashes before the
     encoder runs, in the order vLLM encodes the items, and each forward takes the next
     ``count`` of them. One step can run several forwards, because vLLM batches
     consecutive items only while they share a modality and fields, so a forward must
@@ -471,9 +454,9 @@ def _record_request_hashes(pairs) -> None:
             _forget_request(next(iter(_request_hashes)))
 
 
-def _record_new_requests(scheduler_output: Any) -> None:
-    """Map newly scheduled requests to their hashes, and count each one's multimodal items."""
-    pairs = list(_new_request_hashes(scheduler_output))
+def _record_new_requests(pairs) -> None:
+    """Map new requests to their hashes, from ``(req_id, mm_hash)`` pairs, and count each one's multimodal items."""
+    pairs = list(pairs)
     with _lock:
         # Counted first, so a request the hash map then forgets loses its count too.
         _request_items.update(Counter(req_id for req_id, _ in pairs))
@@ -1378,11 +1361,21 @@ def ctc_release(llm: Any, outputs: Sequence[Any]) -> None:
     release_captures(llm.collective_rpc, [out.request_id for out in outputs])
 
 
-def install_encoder_cache_binding() -> None:
-    """Key captured inputs by ``mm_hash`` and record the request-to-hash map.
+def install_encoder_cache_binding(model_runner_v2: bool = False) -> None:
+    """Key captured inputs by ``mm_hash`` and record the request-to-hash map, on the engine's model runner.
 
-    The hook passes straight through while no encoder is registered.
+    The hooks pass straight through while no encoder is registered.
+
+    Args:
+        model_runner_v2 (bool): Hook vLLM's Model Runner V2 instead of the V1 GPU model runner.
     """
+    if model_runner_v2:
+        _bind_model_runner_v2()
+    else:
+        _bind_model_runner_v1()
+
+
+def _bind_model_runner_v1() -> None:
     try:
         from vllm.v1.worker.gpu_model_runner import GPUModelRunner
     except ImportError:  # pragma: no cover - vLLM absent
@@ -1401,30 +1394,74 @@ def install_encoder_cache_binding() -> None:
         # New requests resolve to their hashes here, including those whose audio is
         # an encoder-cache hit and therefore never reaches the batch below; without
         # this, repeated audio would find no inputs.
-        _record_new_requests(scheduler_output)
+        _record_new_requests(_new_request_hashes(scheduler_output))
         # vLLM evicting audio only ends cache hits on its capture; owners that have
         # not been aligned yet keep it.
         _follow_engine_cache(freed=getattr(scheduler_output, "free_encoder_mm_hashes", ()))
-        # Audio encoded again replaces a capture an earlier request may still own, so only
-        # captures new to the store can be refused.
-        with _lock:
-            retained = set(_store)
 
         # The forward receives only tensors, so it takes its items' hashes from here, in
         # the order vLLM encodes them.
         mm_hashes, _, item_refs = self._batch_mm_inputs_from_scheduler(scheduler_output)
-        _begin_step(mm_hashes)
-        try:
-            outputs = original(self, scheduler_output, *args, **kwargs)
-        finally:
-            _end_step()
-
-        _follow_engine_cache(encoded=mm_hashes)
-        _record_request_hashes((req_id, mm_hash) for mm_hash, (req_id, _position) in zip(mm_hashes, item_refs))
-        _trim_store([mm_hash for mm_hash in mm_hashes if mm_hash not in retained])
-        _compact_ready()
-        return outputs
+        owners = [(req_id, mm_hash) for mm_hash, (req_id, _position) in zip(mm_hashes, item_refs)]
+        return _encode_step(mm_hashes, lambda: original(self, scheduler_output, *args, **kwargs), owners)
 
     _execute_mm_encoder._nemo_ctc_timestamp_bound = True
     GPUModelRunner._execute_mm_encoder = _execute_mm_encoder
     logging.info("[NeMoSpeechLM] CTC timestamp inputs bound to vLLM encoder-cache identity.")
+
+
+def _bind_model_runner_v2() -> None:
+    try:
+        from vllm.v1.worker.gpu.mm.encoder_cache import EncoderCache
+        from vllm.v1.worker.gpu.model_states.interface import ModelState
+    except ImportError:  # pragma: no cover - vLLM without Model Runner V2
+        return
+
+    execute_mm_encoder = ModelState.execute_mm_encoder
+    if getattr(execute_mm_encoder, "_nemo_ctc_timestamp_bound", False):
+        return
+    add_request, free_encoder_cache = EncoderCache.add_request, EncoderCache.free_encoder_cache
+
+    # V2 adds a step's new requests and frees its evicted audio before the step's encoder runs,
+    # each request and hash on its own call.
+    def _add_request(self, req_id, mm_features, *args, **kwargs):
+        add_request(self, req_id, mm_features, *args, **kwargs)
+        if active_aligner() is not None and _holds_captures():
+            _record_new_requests((req_id, feature.identifier) for feature in mm_features or () if feature.identifier)
+
+    def _free_encoder_cache(self, mm_hash, *args, **kwargs):
+        free_encoder_cache(self, mm_hash, *args, **kwargs)
+        if active_aligner() is not None and _holds_captures():
+            _follow_engine_cache(freed=(mm_hash,))
+
+    def _execute_mm_encoder(self, scheduled_encoder_inputs, *args, **kwargs):
+        if active_aligner() is None or not _holds_captures():
+            return execute_mm_encoder(self, scheduled_encoder_inputs, *args, **kwargs)
+        # The items the original encodes, in its order; listing them changes nothing.
+        mm_hashes, _ = self.encoder_runner.prepare_mm_inputs(scheduled_encoder_inputs)
+        return _encode_step(mm_hashes, lambda: execute_mm_encoder(self, scheduled_encoder_inputs, *args, **kwargs))
+
+    _execute_mm_encoder._nemo_ctc_timestamp_bound = True
+    EncoderCache.add_request = _add_request
+    EncoderCache.free_encoder_cache = _free_encoder_cache
+    ModelState.execute_mm_encoder = _execute_mm_encoder
+    logging.info("[NeMoSpeechLM] CTC timestamp inputs bound to vLLM encoder-cache identity (Model Runner V2).")
+
+
+def _encode_step(mm_hashes: Sequence[str], encode, owners: Sequence[tuple[str, str]] = ()) -> Any:
+    """Run one encoder step with its hashes handed to the forward, then record, trim and compact its captures."""
+    # Audio encoded again replaces a capture an earlier request may still own, so only
+    # captures new to the store can be refused.
+    with _lock:
+        retained = set(_store)
+    _begin_step(mm_hashes)
+    try:
+        outputs = encode()
+    finally:
+        _end_step()
+
+    _follow_engine_cache(encoded=mm_hashes)
+    _record_request_hashes(owners)
+    _trim_store([mm_hash for mm_hash in mm_hashes if mm_hash not in retained])
+    _compact_ready()
+    return outputs

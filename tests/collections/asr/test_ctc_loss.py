@@ -298,3 +298,13 @@ class TestPackedCTCLossKernel:
         packed = pack_encoder_output(logits.log_softmax(-1), lengths)
         with pytest.raises(ValueError, match="targets width"):
             CTCLoss(num_classes=4).forward_packed(packed, targets, target_lengths + 1)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("zero_infinity", [False, True])
+    def test_rejects_negative_target_lengths(self, zero_infinity):
+        # a negative length is malformed input, not an impossible alignment that zero_infinity may zero
+        logits, lengths, targets, target_lengths = self._small_case("cuda")
+        packed = pack_encoder_output(logits.log_softmax(-1), lengths)
+        target_lengths[0] = -1
+        with pytest.raises(ValueError, match="negative"):
+            CTCLoss(num_classes=4, zero_infinity=zero_infinity).forward_packed(packed, targets, target_lengths)

@@ -87,7 +87,8 @@ def packed_ctc_loss(
         cu_seqlens: cumulative frame counts, shape ``(B + 1,)``, integer.
         lengths: frames per utterance, shape ``(B,)``, integer.
         targets: padded target ids, shape ``(B, U)``, integer.
-        target_lengths: target ids per utterance, shape ``(B,)``, integer, at most ``U``.
+        target_lengths: target ids per utterance, shape ``(B,)``, integer, between 0 and ``U``
+            (checked outside a CUDA graph capture, where no host read is possible).
         blank: index of the blank class.
         zero_infinity: replace an infinite loss and its gradient by zero.
 
@@ -109,12 +110,14 @@ def packed_ctc_loss(
         raise ValueError(f"target_lengths must have shape ({batch_size},), got {tuple(target_lengths.shape)}.")
     if not 0 <= blank < log_probs.shape[1]:
         raise ValueError(f"blank must be a class index below {log_probs.shape[1]}, got {blank}.")
-    # The same host check as the padded kernel, and the longest target sizes the states,
-    # so that an over-allocated targets buffer costs nothing.
-    # A graph capture cannot sync: there the width stands in, and the sampler guarantees the bound.
+    # The host checks of the padded kernel (no negative length, none beyond the targets width),
+    # and the longest target sizes the states, so that an over-allocated targets buffer costs nothing.
+    # A graph capture cannot sync: there the width stands in, and the sampler guarantees the bounds.
     longest = targets.shape[1]
     if batch_size and not torch.cuda.is_current_stream_capturing():
-        longest = int(target_lengths.max())
+        shortest, longest = (int(bound) for bound in torch.aminmax(target_lengths))
+        if shortest < 0:
+            raise ValueError(f"target_lengths must not be negative, got {shortest}.")
         if longest > targets.shape[1]:
             raise ValueError(f"target_lengths must not exceed the targets width {targets.shape[1]}, got {longest}.")
     return _PackedCTCLoss.apply(

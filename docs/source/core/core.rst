@@ -62,8 +62,8 @@ When using PyTorch Lightning, NeMo users can automatically train with:
 - early stopping
 - and more
 
-The two main aspects of the Lightning API are the `LightningModule <https://lightning.ai/docs/pytorch/stable/common/lightning_module>`_
-and the `Trainer <https://lightning.ai/docs/pytorch/stable/common/trainer>`_.
+The two main aspects of the Lightning API are the `LightningModule <https://lightning.ai/docs/pytorch/stable/common/lightning_module.html>`_
+and the `Trainer <https://lightning.ai/docs/pytorch/stable/common/trainer.html>`_.
 
 PyTorch Lightning ``LightningModule``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -168,10 +168,10 @@ While validation logic can be found in ``validation_step``:
         return {'val_loss': val_loss, 'tp': tp, 'fn': fn, 'fp': fp}
 
 PyTorch Lightning then handles all of the boilerplate code needed for training. Virtually any aspect of training can be customized
-via PyTorch Lightning `hooks <https://lightning.ai/docs/pytorch/stable/common/hooks>`_,
-`strategies <https://lightning.ai/docs/pytorch/stable/extensions/strategy>`_,
-`callbacks <https://lightning.ai/docs/pytorch/stable/extensions/callbacks>`_, or by overriding
-`LightningModule methods <https://lightning.ai/docs/pytorch/stable/common/lightning_module>`_.
+via PyTorch Lightning `hooks <https://lightning.ai/docs/pytorch/stable/common/hooks.html>`_,
+`strategies <https://lightning.ai/docs/pytorch/stable/extensions/strategy.html>`_,
+`callbacks <https://lightning.ai/docs/pytorch/stable/extensions/callbacks.html>`_, or by overriding
+`LightningModule methods <https://lightning.ai/docs/pytorch/stable/common/lightning_module.html>`_.
 
 For more domain-specific information, see:
 
@@ -201,7 +201,7 @@ First, instantiate the model and trainer, then call ``.fit``:
     # Or we can run the test loop on test data by calling
     trainer.test(model=model)
 
-All `Trainer arguments <https://lightning.ai/docs/pytorch/stable/common/trainer>`_ can be set in the NeMo configuration.
+All `Trainer arguments <https://lightning.ai/docs/pytorch/stable/common/trainer.html>`_ can be set in the NeMo configuration.
     
 
 Configuration
@@ -445,6 +445,38 @@ Optimizers
     name: rmsprop opt: <class 'torch.optim.rmsprop.RMSprop'>
     name: rprop opt: <class 'torch.optim.rprop.Rprop'>
     name: novograd opt: <class 'nemo.core.optim.novograd.Novograd'>
+    name: muon opt: <class 'nemo.core.optim.muon.Muon'>
+
+``muon`` (Muon with an AdamW fallback) decides per parameter by shape:
+a matrix below ``adam_dim_threshold`` in both dimensions takes the Muon update, every other parameter AdamW.
+The shape alone does not tell an embedding from a hidden matrix,
+so exclude small-vocabulary embeddings and tied output projections explicitly with ``use_muon`` on their parameter group,
+in Python or, for a model attribute, through ``optim_param_groups``:
+
+.. code-block:: python
+
+    from nemo.core.optim import Muon
+
+    optimizer = Muon(
+        [
+            {"params": hidden_matrices},
+            {"params": [model.embedding.weight], "use_muon": False, "weight_decay": 0.0},
+        ],
+        lr=0.02,
+        weight_decay=0.01,
+    )
+
+.. code-block:: yaml
+
+    model:
+        optim:
+            name: muon
+            lr: 0.02
+            weight_decay: 0.01
+        optim_param_groups:
+            embedding:
+                use_muon: false
+                weight_decay: 0.0
 
 Optimizer Params
 ~~~~~~~~~~~~~~~~

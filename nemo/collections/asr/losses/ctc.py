@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import torch
 from torch import Tensor, nn
 
 from nemo.collections.asr.parts.packed_sequence import PackedEncoderActivations, unpack_encoder_output
@@ -77,7 +78,8 @@ class CTCLoss(nn.CTCLoss, Serialization, Typing):
         so neither the padded ``(B, T, D)`` log probabilities nor their gradient are formed.
         Elsewhere the padded log probabilities are materialized for the padded kernel of ``forward``.
         Both give the loss and the gradient of ``forward``;
-        ``reduction`` and ``zero_infinity`` apply unchanged.
+        ``reduction`` and ``zero_infinity`` apply unchanged,
+        and ``targets`` and ``target_lengths`` may live on the CPU, as for ``forward``.
 
         Args:
             log_probs: concatenated per-utterance log probabilities, shape ``(sum(T_i), D)`` including the blank.
@@ -93,12 +95,16 @@ class CTCLoss(nn.CTCLoss, Serialization, Typing):
                 "padded log probabilities go to forward."
             )
         if log_probs.data.is_cuda and TRITON_AVAILABLE:
+            # the kernel reads the targets and their lengths on the device of the log probabilities,
+            # and the reductions below divide by the lengths, so both move there
+            targets = targets.to(device=log_probs.data.device, dtype=torch.long)
+            target_lengths = target_lengths.to(device=log_probs.data.device, dtype=torch.long)
             losses = packed_ctc_loss(
                 log_probs.data,
                 log_probs.cu_seqlens,
                 log_probs.lengths,
-                targets.long(),
-                target_lengths.long(),
+                targets,
+                target_lengths,
                 blank=self._blank,
                 zero_infinity=self.zero_infinity,
             )

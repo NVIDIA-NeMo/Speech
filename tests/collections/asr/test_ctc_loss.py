@@ -113,6 +113,18 @@ class TestPackedCTCLossKernel:
         self._compare(criterion, logits, lengths, targets, target_lengths)
 
     @pytest.mark.unit
+    @pytest.mark.parametrize("reduction", ["none", "mean", "sum", "mean_batch", "mean_volume"])
+    @pytest.mark.parametrize("on_cpu", ["targets", "target_lengths", "both"])
+    def test_cpu_target_metadata(self, reduction, on_cpu):
+        # the targets and their lengths may stay on the CPU, as forward accepts them
+        logits, lengths, targets, target_lengths = self._small_case("cuda")
+        if on_cpu != "target_lengths":
+            targets = targets.cpu()
+        if on_cpu != "targets":
+            target_lengths = target_lengths.cpu()
+        self._compare(CTCLoss(num_classes=4, reduction=reduction), logits, lengths, targets, target_lengths)
+
+    @pytest.mark.unit
     def test_kernel_path_is_taken(self, monkeypatch):
         def no_unpack(*args, **kwargs):
             raise AssertionError("forward_packed formed the padded log probabilities on CUDA")

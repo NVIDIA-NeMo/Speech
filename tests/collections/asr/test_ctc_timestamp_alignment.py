@@ -345,6 +345,107 @@ def test_deferred_head_never_decodes_a_batch_of_one_on_the_gpu():
 
 
 @pytest.mark.unit
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def test_deferred_columns_reach_the_host_under_a_cuda_default_device():
+    from nemo.collections.speechlm2.parts.ctc_timestamp_utils import _read_deferred_ctc_columns
+
+    class Decoder(torch.nn.Module):
+        num_classes_with_blank = 8
+        upsampling_factor = 1
+
+        def forward(self, states, encoded_lengths):
+            return states.transpose(1, 2).log_softmax(dim=-1)
+
+    class Tokenizer:
+        def text_to_ids(self, text):
+            return []
+
+    aligner = MultiSpeakerSOTWordTimestampAligner(ctc_decoder=Decoder(), tokenizer=Tokenizer(), blank_id=7)
+    states = torch.randn(2, 8, 5, device="cuda")
+    inputs = SimpleNamespace(asr_encoded=states, asr_encoded_lengths=torch.tensor([5, 3], device="cuda"))
+    with torch.device("cuda"):
+        kept = _read_deferred_ctc_columns(aligner, inputs, 8, [[7, 1, 2], [7, 3]], [5, 3])
+
+    assert [record.device.type for record in kept] == ["cpu", "cpu"]
+    expected = states.transpose(1, 2).log_softmax(dim=-1).cpu()
+    assert torch.equal(kept[0], expected[0][:, [7, 1, 2]]) and torch.equal(kept[1], expected[1][:3, [7, 3]])
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("use_transformer", [True, False])
+@pytest.mark.parametrize("upsampling_factor", [1, 2])
+def test_split_transformer_ctc_head_matches_its_whole_forward(use_transformer, upsampling_factor):
+    # The deferred head runs TransformerCTCDecoder.trunk on each window and classify on slices of its frames.
+    from nemo.collections.speechlm2.parts.ctc_timestamp_utils import TransformerCTCDecoder
+
+    class Tokenizer:
+        def text_to_ids(self, text):
+            return [{"a": 2, "b": 7}[word] for word in text.split()]
+
+    torch.manual_seed(5)
+    decoder = TransformerCTCDecoder(
+        feat_in=32,
+        num_classes=39,
+        use_transformer=use_transformer,
+        n_heads=2,
+        n_layers=1,
+        drop_rate=0.0,
+        sync_max_audio_length=False,
+        upsampling_factor=upsampling_factor,
+    ).eval()
+    # In float64, the two paths' rounding differences vanish when the kept columns are cast to float32.
+    decoder.double()
+    aligner = MultiSpeakerSOTWordTimestampAligner(
+        ctc_decoder=decoder,
+        tokenizer=Tokenizer(),
+        blank_id=20,  # A blank other than the last column.
+        online_inference_length=3,
+        chunk_left_context=1,
+        chunk_right_context=2,
+    )
+    inputs = SimpleNamespace(
+        asr_encoded=torch.randn(3, 32, 7, dtype=torch.float64),
+        asr_encoded_lengths=torch.tensor([7, 5, 2]),
+        sortformer_sigmoids=torch.rand(3, 7, 2),
+        sortformer_lengths=torch.tensor([7, 5, 2]),
+        diarization_labels=None,
+        diarization_lengths=None,
+        diarization_frame_seconds=0.01,
+    )
+    transcripts = ["<spk:0> a a <spk:1> b", "b a", ""]
+    durations = [0.7, 0.5, 0.2]
+    with torch.no_grad():
+        chunks = []
+        for start in range(0, 7, 3):
+            end = min(start + 3, 7)
+            left, right = max(start - 1, 0), min(end + 2, 7)
+            lengths = (inputs.asr_encoded_lengths - left).clamp(min=0, max=right - left)
+            output = decoder(inputs.asr_encoded[:, :, left:right], lengths)
+            chunks.append(output[:, (start - left) * upsampling_factor : (end - left) * upsampling_factor])
+        expected = aligner.prepare_alignment(
+            torch.cat(chunks, dim=1),
+            inputs.sortformer_sigmoids,
+            transcripts,
+            ctc_lengths=inputs.asr_encoded_lengths * upsampling_factor,
+            sortformer_lengths=inputs.sortformer_lengths,
+            audio_durations=durations,
+        )
+        # Small enough that each window's frames reach classify in slices of two frames.
+        aligner._CTC_WINDOW_MAX_ELEMENTS = 80
+        actual = aligner.prepare_from_inputs(inputs, transcripts, durations)
+
+    for record, reference in zip(actual["records"], expected["records"]):
+        assert record.keys() == reference.keys()
+        for key in record:
+            if isinstance(record[key], torch.Tensor):
+                torch.testing.assert_close(record[key], reference[key], rtol=0, atol=1e-6)
+            else:
+                assert record[key] == reference[key]
+        assert record["ctc_log_probs"].dtype == torch.float32 and record["ctc_log_probs"].device.type == "cpu"
+    assert aligner.align_prepared(actual) == aligner.align_prepared(expected)
+
+
+@pytest.mark.unit
 def test_banded_ctc_cannot_start_inside_an_infeasible_long_target():
     labels = np.zeros(10001, dtype=np.int64)
     labels[1::2] = 1

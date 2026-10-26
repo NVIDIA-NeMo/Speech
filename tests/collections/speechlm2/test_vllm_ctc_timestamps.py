@@ -417,13 +417,13 @@ def test_the_search_worker_process_returns_what_the_server_process_would(monkeyp
         audio_durations=[0.96, 0.96],
         diarization_labels=torch.rand(2, 2, 96) > 0.5,
     )
-    monkeypatch.setattr(ct, "_search_pool", None)
+    monkeypatch.setattr(ct, "_registry", {})
     try:
         in_worker = asyncio.run(_search_in_worker([ct._pack(prepared)]))
         # One torch thread: a pool of them would spin-wait between the search's small ops, taking the CPUs.
-        worker_threads = ct._search_pool.submit(torch.get_num_threads).result()
+        worker_threads = ct._registry["search_pool"].submit(torch.get_num_threads).result()
     finally:
-        ct._search_pool.shutdown()
+        ct._registry["search_pool"].shutdown()
 
     assert in_worker == ct._align_group([prepared])
     assert worker_threads == 1
@@ -446,9 +446,9 @@ def test_a_submitted_call_is_prepared_on_its_own_thread_and_collected_once(align
     prepare = ct._worker_prepare_requests
     threads = []
 
-    def prepare_and_record_thread(*args):
+    def prepare_and_record_thread(*args, **kwargs):
         threads.append(threading.current_thread())
-        return prepare(*args)
+        return prepare(*args, **kwargs)
 
     monkeypatch.setattr(ct, "_worker_prepare_requests", prepare_and_record_thread)
 
@@ -469,9 +469,9 @@ def test_a_submitted_call_runs_on_the_stream_it_was_submitted_from(aligner, monk
     prepare = ct._worker_prepare_requests
     streams = []
 
-    def prepare_and_record_stream(*args):
+    def prepare_and_record_stream(*args, **kwargs):
         streams.append(torch.cuda.current_stream())
-        return prepare(*args)
+        return prepare(*args, **kwargs)
 
     monkeypatch.setattr(ct, "_worker_prepare_requests", prepare_and_record_stream)
     engine_stream = torch.cuda.Stream()
@@ -484,7 +484,7 @@ def test_a_submitted_call_runs_on_the_stream_it_was_submitted_from(aligner, monk
 
 
 def test_a_failed_submitted_call_fails_its_requests(aligner, monkeypatch):
-    def broken(*args):
+    def broken(*args, **kwargs):
         raise KeyError("broken prepare")
 
     monkeypatch.setattr(ct, "_worker_prepare_requests", broken)
@@ -578,6 +578,87 @@ def test_an_error_in_a_shared_prepared_batch_reaches_only_its_request(aligner, m
     assert prepared == [2]
     assert _words(fine[0]) == ["fine"]
     assert isinstance(exploded, RuntimeError) and str(exploded) == "search failure"
+
+
+def test_a_prepare_error_in_a_shared_submission_fails_only_its_request(aligner):
+    _capture(2, 4, ["hash-fine", "hash-crash"])
+    ct._record_request_hashes([("req-fine-0123abcd", "hash-fine"), ("req-crash-0123abcd", "hash-crash")])
+    submitted = []
+
+    async def rpc(method, args):
+        if method == ct.WORKER_SUBMIT_METHOD:
+            submitted.append(len(args[1]))
+        return [_WORKER_METHODS[method](None, *args)]
+
+    async def serve():
+        requests = (ct.align_async(rpc, [(f"req-{name}", name)]) for name in ["fine", "crash"])
+        return await asyncio.wait_for(asyncio.gather(*requests, return_exceptions=True), timeout=30)
+
+    fine, crashed = asyncio.run(serve())
+
+    assert submitted == [2]
+    assert _words(fine[0]) == ["fine"]
+    assert isinstance(crashed, RuntimeError) and "kernel failure" in str(crashed)
+    assert ct._store == {} and ct._request_hashes == {}
+
+
+def test_a_synchronous_prepare_still_raises_a_record_error(aligner):
+    _capture(1, 4, ["hash-crash"])
+    ct._record_request_hashes([("req-crash-0123abcd", "hash-crash")])
+
+    with pytest.raises(RuntimeError, match="kernel failure"):
+        ct.align_finished_requests([("req-crash", "crash")], release=True)
+
+
+@pytest.mark.parametrize("hung", [ct.WORKER_SUBMIT_METHOD, ct.WORKER_COLLECT_METHOD])
+def test_an_engine_call_that_never_returns_fails_its_requests_by_the_deadline(aligner, monkeypatch, hung):
+    monkeypatch.setattr(ct, "_PREPARE_TIMEOUT", 0.2)
+    monkeypatch.setattr(ct, "_COLLECT_INTERVAL", 0.01)
+
+    async def rpc(method, args):
+        if method == hung:
+            await asyncio.Event().wait()
+        return [True] if method == ct.WORKER_SUBMIT_METHOD else [{}]
+
+    async def serve():
+        return await asyncio.wait_for(ct.align_async(rpc, [("req-a", "a")]), timeout=10)
+
+    with pytest.raises(TimeoutError, match="not prepared within"):
+        asyncio.run(serve())
+
+
+def test_a_collection_outstanding_at_a_deadline_still_delivers_its_replies(aligner, monkeypatch):
+    # Another request's deadline does not cancel the collection: the worker hands each reply out only once.
+    monkeypatch.setattr(ct, "_PREPARE_TIMEOUT", 1.0)
+    monkeypatch.setattr(ct, "_COLLECT_INTERVAL", 0.01)
+    _capture(1, 4, ["hash-b"])
+    ct._record_request_hashes([("req-b-0123abcd", "hash-b")])
+    jobs = {}
+
+    async def rpc(method, args):
+        if method == ct.WORKER_SUBMIT_METHOD:
+            request_id = args[1][0][0]
+            jobs[request_id] = args[0]
+            return [True] if request_id == "req-a" else [ct._worker_submit_prepare(None, *args)]
+        if jobs.get("req-b") not in args[0]:
+            return [{}]  # req-a was accepted, but its reply never comes
+        replies = {}
+        while jobs["req-b"] not in replies:
+            replies.update(ct._worker_collect_prepared(None, args[0]))
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.6)  # req-a's deadline passes with req-b's reply handed out but not yet returned
+        return [replies]
+
+    async def serve():
+        first = asyncio.ensure_future(ct.align_async(rpc, [("req-a", "a")], chunk_size=1))
+        await asyncio.sleep(0.6)
+        second = ct.align_async(rpc, [("req-b", "b")], chunk_size=1)
+        return await asyncio.wait_for(asyncio.gather(first, second, return_exceptions=True), timeout=10)
+
+    a, b = asyncio.run(serve())
+
+    assert isinstance(a, TimeoutError) and "not prepared within" in str(a)
+    assert _words(b[0]) == ["b"]
 
 
 def test_concurrent_server_alignments_share_one_search(aligner, monkeypatch):
@@ -2146,6 +2227,20 @@ def test_a_batch_takes_each_requests_reply_from_the_core_that_holds_it():
         "batches": first["batches"] + second["batches"],
         "failed": {},
     }
+
+
+def test_a_batch_keeps_a_record_error_from_the_core_that_owns_the_record():
+    from nemo.collections.speechlm2.vllm.salm.ctc_serving import _owner_reply
+
+    # The second core owns item 1 and failed to prepare it; the first core's entry for item 1 is not its own.
+    first = {"count": 2, "errors": [None, "no_capture"], "diarization": [None, None], "batches": []}
+    first["failed"] = {1: "not this core's record"}
+    second = {"count": 2, "errors": ["no_capture", None], "diarization": [None, None], "batches": []}
+    second["failed"] = {1: "kernel failure"}
+
+    merged = _owner_reply([[first], [second]])
+
+    assert merged["failed"] == {1: "kernel failure"}
 
 
 def test_a_request_served_by_a_later_data_parallel_core_gets_its_timestamps(dp_server):

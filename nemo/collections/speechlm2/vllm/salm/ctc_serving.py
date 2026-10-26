@@ -384,7 +384,8 @@ def _owner_reply(core_replies: list[list]) -> Any:
     so the diarization and error of an empty transcript or a failed alignment come from the owner
     too. A request no core owns takes the first core's entry, as in vLLM. Each core prepares only
     the requests it owns, so its prepared batches are kept whole. A request more than one core
-    holds a capture of is listed under ``failed``, which ``align_async`` raises for that request.
+    holds a capture of is listed under ``failed``, which ``align_async`` raises for that request,
+    as is a request whose owner failed to prepare it.
     """
     holders = [reply for replies in core_replies for reply in replies if isinstance(reply, dict) and "errors" in reply]
     if not holders:
@@ -400,11 +401,20 @@ def _owner_reply(core_replies: list[list]) -> Any:
         "errors": [reply["errors"][item] for item, reply in enumerate(source)],
         "diarization": [reply["diarization"][item] for item, reply in enumerate(source)],
         "batches": [batch for reply in holders for batch in reply["batches"]],
-        # A request two cores captured fails on its own, not the requests prepared with it.
+        # A request two cores captured, or its owner failed to prepare, fails on its own, not the requests
+        # prepared with it.
         "failed": {
-            item: f"{len(held_by)} data-parallel engine cores hold a CTC capture of this request."
-            for item, held_by in enumerate(owners)
-            if len(held_by) > 1
+            **{
+                item: message
+                for item, reply in enumerate(source)
+                for failed_item, message in (reply.get("failed") or {}).items()
+                if int(failed_item) == item
+            },
+            **{
+                item: f"{len(held_by)} data-parallel engine cores hold a CTC capture of this request."
+                for item, held_by in enumerate(owners)
+                if len(held_by) > 1
+            },
         },
     }
 

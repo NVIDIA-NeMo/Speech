@@ -2340,7 +2340,7 @@ def _read_deferred_ctc_columns(
             del log_probs
         # The vocabulary-wide output must not outlive its window.
         del window, slices
-    host = torch.empty(kept.shape, dtype=kept.dtype, pin_memory=kept.is_cuda)
+    host = torch.empty(kept.shape, dtype=kept.dtype, device="cpu", pin_memory=kept.is_cuda)
     host.copy_(kept)
     return [
         host[row, :length, : len(record_columns)].clone()

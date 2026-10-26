@@ -183,10 +183,6 @@ _uncompacted: deque[dict] = deque()
 _lock = threading.RLock()
 # One alignment batcher per event loop; a server has one.
 _batchers: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
-# The process a server's alignment searches run in, started on first use (see _search). On a thread of the server
-# process, the search's Python would hold the GIL, and its torch ops would wake torch's thread pool, against the
-# event loop that serves every request.
-_search_pool: Any = None
 _prepare_batchers: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
 
@@ -701,7 +697,7 @@ def align_finished_requests(finished: Sequence[tuple[str, str]], *, release: boo
     return align_prepared_requests(prepare_finished_requests(finished, release=release))
 
 
-def prepare_finished_requests(finished: Sequence[tuple[str, str]], *, release: bool) -> dict:
+def prepare_finished_requests(finished: Sequence[tuple[str, str]], *, release: bool, isolate: bool = False) -> dict:
     """Run the deferred CTC head for finished requests and keep what aligning them needs.
 
     The half of :func:`align_finished_requests` that needs the captured inputs, the CTC head
@@ -714,25 +710,28 @@ def prepare_finished_requests(finished: Sequence[tuple[str, str]], *, release: b
         finished (Sequence[tuple[str, str]]): As in :func:`align_finished_requests`.
         release (bool): Afterwards drop each request's claim on its capture, also when
             preparing fails.
+        isolate (bool): Report a request's error other than ``ValueError`` under ``failed``
+            and keep preparing the others, instead of raising it.
 
     Returns:
         dict: ``count``, the number of items; ``errors``, per item the ``error`` its result
         reports (see :func:`align_finished_requests`); ``diarization``, per item in no
         batch its diarization from the capture alone, or ``None``; and ``batches``: each
         ``items``, the indices it covers, and ``prepared``, a batch for
-        :func:`align_prepared_requests`. Items in no batch get results without words.
+        :func:`align_prepared_requests`. Items in no batch get results without words. With
+        ``isolate``, ``failed`` maps an item's index to the message of its error.
 
     Raises:
-        Exception: Any error other than ``ValueError`` while preparing.
+        Exception: Any error other than ``ValueError`` while preparing, unless ``isolate``.
     """
     try:
-        return _prepare_finished_requests(finished)
+        return _prepare_finished_requests(finished, isolate)
     finally:
         if release:
             _release_requests([request_id for request_id, _ in finished])
 
 
-def _prepare_finished_requests(finished: Sequence[tuple[str, str]]) -> dict:
+def _prepare_finished_requests(finished: Sequence[tuple[str, str]], isolate: bool = False) -> dict:
     """:func:`prepare_finished_requests` without releasing, which that function does on every exit."""
     from nemo.collections.speechlm2.parts.ctc_timestamp_utils import MultiSpeakerSOTWordTimestampAligner
 
@@ -810,12 +809,15 @@ def _prepare_finished_requests(finished: Sequence[tuple[str, str]]) -> dict:
         )
 
     device = next(aligner.ctc_decoder.parameters()).device
+    failed: dict[int, str] | None = {} if isolate else None
     for chunk in _head_batches(aligner, pending):
-        for items, prepared in _prepare_chunk(aligner, chunk, device):
+        for items, prepared in _prepare_chunk(aligner, chunk, device, failed):
             reply["batches"].append({"items": items, "prepared": prepared})
+    if failed:
+        reply["failed"] = failed
     prepared_items = {index for batch in reply["batches"] for index in batch["items"]}
     for index, _, entry in pending:
-        if index not in prepared_items:
+        if index not in prepared_items and index not in (failed or {}):
             errors[index] = "alignment_failed"
             diarization[index] = _capture_diarization(entry)
     return reply
@@ -924,8 +926,13 @@ def _head_batches(aligner: Any, pending: list) -> list[list]:
     return batches
 
 
-def _prepare_chunk(aligner: Any, chunk: list, device: torch.device) -> list[tuple[list[int], dict]]:
-    """Run the deferred head for one batch from :func:`_head_batches` and prepare its alignment."""
+def _prepare_chunk(
+    aligner: Any, chunk: list, device: torch.device, failed: dict[int, str] | None = None
+) -> list[tuple[list[int], dict]]:
+    """Run the deferred head for one batch from :func:`_head_batches` and prepare its alignment.
+
+    A request's error other than ``ValueError`` is raised, or recorded under its index in ``failed`` when given.
+    """
     entries = [entry for _, _, entry in chunk]
     prepared = None
     try:
@@ -937,15 +944,19 @@ def _prepare_chunk(aligner: Any, chunk: list, device: torch.device) -> list[tupl
         )
     except Exception as error:  # noqa: BLE001
         if len(chunk) == 1:
-            if not isinstance(error, ValueError):
+            if isinstance(error, ValueError):
+                logging.warning("[NeMoSpeechLM] CTC alignment failed: %s", error)
+                return []
+            if failed is None:
                 raise
-            logging.warning("[NeMoSpeechLM] CTC alignment failed: %s", error)
+            logging.error("[NeMoSpeechLM] Preparing CTC timestamps failed: %s", error, exc_info=error)
+            failed[chunk[0][0]] = str(error)
             return []
     if prepared is None:
         # Retry one by one, so that a single bad transcript, or a batch too large for
         # device memory, does not cost the rest their timestamps. Not from inside the
         # handler: its traceback keeps the failed batch's device tensors alive.
-        return [batch for item in chunk for batch in _prepare_chunk(aligner, [item], device)]
+        return [batch for item in chunk for batch in _prepare_chunk(aligner, [item], device, failed)]
     return [([index for index, _, _ in chunk], prepared)]
 
 
@@ -1067,21 +1078,24 @@ def _align_record(prepared: dict, record: dict) -> dict | None | Exception:
 
 async def _search(group: list[dict]) -> list[list[dict | None | Exception] | BaseException]:
     """:func:`_align_packed_group` in the search worker process, restarted if it died."""
-    global _search_pool
     from concurrent.futures import ProcessPoolExecutor
     from concurrent.futures.process import BrokenProcessPool
     from multiprocessing import get_context
 
-    if _search_pool is None:
-        _search_pool = ProcessPoolExecutor(
-            1, mp_context=get_context("spawn"), initializer=torch.set_num_threads, initargs=(1,)
-        )
-    pool = _search_pool
+    # The process is started on first use. On a thread of the server process, the search's Python would hold the GIL,
+    # and its torch ops would wake torch's thread pool, against the event loop that serves every request.
+    with _lock:
+        pool = _registry.get("search_pool")
+        if pool is None:
+            pool = _registry["search_pool"] = ProcessPoolExecutor(
+                1, mp_context=get_context("spawn"), initializer=torch.set_num_threads, initargs=(1,)
+            )
     try:
         return await asyncio.get_running_loop().run_in_executor(pool, _align_packed_group, group)
     except BrokenProcessPool:
-        if _search_pool is pool:
-            _search_pool = None
+        with _lock:
+            if _registry.get("search_pool") is pool:
+                del _registry["search_pool"]
         raise
 
 
@@ -1250,7 +1264,9 @@ def _holds_captures() -> bool:
         return True
 
 
-def _worker_prepare_requests(worker: Any, items: list, release: bool = True, require_enabled: bool = True) -> dict:
+def _worker_prepare_requests(
+    worker: Any, items: list, release: bool = True, require_enabled: bool = True, isolate: bool = False
+) -> dict:
     """``collective_rpc`` entry point for both modes: prepare finished requests where their inputs live.
 
     ``collective_rpc`` calls every worker; the ones that hold no captures answer with no
@@ -1264,6 +1280,7 @@ def _worker_prepare_requests(worker: Any, items: list, release: bool = True, req
         require_enabled (bool): Raise when the model was loaded without timestamps. A
             server, which asks for every timestamped request, passes ``False`` to get
             empty results instead.
+        isolate (bool): As in :func:`prepare_finished_requests`.
 
     Returns:
         dict: The reply of :func:`prepare_finished_requests`, with its tensors packed so
@@ -1277,7 +1294,9 @@ def _worker_prepare_requests(worker: Any, items: list, release: bool = True, req
             "CTC timestamps are not enabled for this model: its config has no ctc_timestamps.adapter_path "
             "(check the hf_overrides key)."
         )
-    reply = prepare_finished_requests([(request_id, text) for request_id, text in items], release=release)
+    reply = prepare_finished_requests(
+        [(request_id, text) for request_id, text in items], release=release, isolate=isolate
+    )
     return _pack_reply(reply)
 
 
@@ -1342,7 +1361,8 @@ class _Preparer:
             job_id, items, release, require_enabled, stream = self._jobs.get()
             try:
                 with torch.cuda.stream(stream) if stream is not None else contextlib.nullcontext():
-                    reply = _worker_prepare_requests(None, items, release, require_enabled)
+                    # Requests that finish together share this call, so one's error must not fail the others.
+                    reply = _worker_prepare_requests(None, items, release, require_enabled, isolate=True)
             except Exception as error:  # noqa: BLE001
                 logging.error("[NeMoSpeechLM] Preparing CTC timestamps failed: %s", error, exc_info=error)
                 reply = {"exception": str(error)}
@@ -1468,16 +1488,24 @@ class _PrepareBatcher:
                 group = self._pending[: self._chunk_size]
                 del self._pending[: self._chunk_size]
                 job_id = uuid.uuid4().hex
+                deadline = time.monotonic() + _PREPARE_TIMEOUT
                 try:
-                    await self._rpc(
-                        WORKER_SUBMIT_METHOD,
-                        args=(job_id, [item for item, _ in group], self._release, self._require_enabled),
+                    await asyncio.wait_for(
+                        self._rpc(
+                            WORKER_SUBMIT_METHOD,
+                            args=(job_id, [item for item, _ in group], self._release, self._require_enabled),
+                        ),
+                        _PREPARE_TIMEOUT,
                     )
+                except asyncio.TimeoutError:
+                    _settle(group, _prepare_timeout_error())
+                    group = []
+                    continue
                 except Exception as error:  # noqa: BLE001
                     _settle(group, error)
                     group = []
                     continue
-                self._submitted[job_id] = (group, time.monotonic() + _PREPARE_TIMEOUT)
+                self._submitted[job_id] = (group, deadline)
                 group = []
                 if self._collect_task is None:
                     self._collect_task = asyncio.get_running_loop().create_task(self._collect())
@@ -1490,10 +1518,19 @@ class _PrepareBatcher:
             self._pending.clear()
 
     async def _collect(self) -> None:
+        call: asyncio.Task | None = None
         try:
             while self._submitted:
+                call = asyncio.get_running_loop().create_task(
+                    self._rpc(WORKER_COLLECT_METHOD, args=(list(self._submitted),))
+                )
+                # Requests past their deadline fail while the call is outstanding, but the call itself is not
+                # cancelled: each worker hands a reply out once, so the replies it brings back still count.
+                while not call.done():
+                    await asyncio.wait({call}, timeout=self._until_deadline())
+                    self._expire()
                 try:
-                    replies = await self._rpc(WORKER_COLLECT_METHOD, args=(list(self._submitted),))
+                    replies = call.result()
                 except Exception as error:  # noqa: BLE001
                     for group, _ in self._submitted.values():
                         _settle(group, error)
@@ -1511,13 +1548,12 @@ class _PrepareBatcher:
                     task = asyncio.get_running_loop().create_task(self._finish(_unpack_reply(reply), group))
                     self._aligning.add(task)
                     task.add_done_callback(self._aligning.discard)
-                now = time.monotonic()
-                for job_id in [job_id for job_id, (_, deadline) in self._submitted.items() if deadline < now]:
-                    group, _ = self._submitted.pop(job_id)
-                    _settle(group, TimeoutError(f"CTC timestamps were not prepared within {_PREPARE_TIMEOUT:g} s."))
+                self._expire()
                 if not ready:
                     await asyncio.sleep(_COLLECT_INTERVAL)
         finally:
+            if call is not None and not call.done():
+                call.cancel()
             self._collect_task = None
             for group, _ in self._submitted.values():
                 for _, future in group:
@@ -1525,11 +1561,24 @@ class _PrepareBatcher:
                         future.cancel()
             self._submitted.clear()
 
+    def _until_deadline(self) -> float:
+        """Seconds until the earliest submitted call's deadline, at most one, so later submissions are checked too."""
+        if not self._submitted:
+            return 1.0
+        return min(1.0, max(0.0, min(deadline for _, deadline in self._submitted.values()) - time.monotonic()))
+
+    def _expire(self) -> None:
+        """Fail the requests of every submitted call past its deadline."""
+        now = time.monotonic()
+        for job_id in [job_id for job_id, (_, deadline) in self._submitted.items() if deadline < now]:
+            group, _ = self._submitted.pop(job_id)
+            _settle(group, _prepare_timeout_error())
+
     @staticmethod
     async def _finish(reply: dict, group: list[tuple[tuple[str, str], asyncio.Future]]) -> None:
         """Align a prepared reply and answer each request of its group; an error reaches only its requests."""
         failed: dict[int, BaseException] = {
-            item: RuntimeError(message) for item, message in (reply.get("failed") or {}).items()
+            int(item): RuntimeError(message) for item, message in (reply.get("failed") or {}).items()
         }
         try:
             aligned = await asyncio.gather(
@@ -1549,10 +1598,11 @@ class _PrepareBatcher:
                 for entry, outcome in zip(reply["batches"], aligned)
             ]
             results = _results_from(reply, aligned)
-        except BaseException as error:  # noqa: BLE001
+        except asyncio.CancelledError as error:
             _settle(group, error)
-            if not isinstance(error, Exception):
-                raise
+            raise
+        except Exception as error:  # noqa: BLE001
+            _settle(group, error)
             return
         for item, ((_, future), result) in enumerate(zip(group, results)):
             if future.done():
@@ -1561,6 +1611,11 @@ class _PrepareBatcher:
                 future.set_exception(failed[item])
             else:
                 future.set_result(result)
+
+
+def _prepare_timeout_error() -> TimeoutError:
+    """The error of a request whose prepare reply did not come within ``_PREPARE_TIMEOUT``."""
+    return TimeoutError(f"CTC timestamps were not prepared within {_PREPARE_TIMEOUT:g} s.")
 
 
 def _settle(group: list[tuple[Any, asyncio.Future]], error: BaseException) -> None:

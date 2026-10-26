@@ -18,18 +18,16 @@
 No checkpoint or HF download is required. Slot pools are exercised with num_slots=2.
 """
 
-from queue import Queue
 from types import SimpleNamespace
 
 import pytest
 import torch
+from omegaconf import OmegaConf
 
 from nemo.collections.asr.inference.pipelines.base_pipeline import BasePipeline
 from nemo.collections.asr.inference.pipelines.cache_aware_ctc_pipeline import CacheAwareCTCPipeline
 from nemo.collections.asr.inference.pipelines.cache_aware_rnnt_pipeline import CacheAwareRNNTPipeline
-from nemo.collections.asr.inference.streaming.buffering.audio_bufferer import AudioBufferer
 from nemo.collections.asr.inference.streaming.buffering.cache_feature_bufferer import BatchedCacheFeatureBufferer
-from nemo.collections.asr.inference.utils.constants import LOG_MEL_ZERO
 from nemo.collections.asr.inference.utils.context_manager import CacheAwareContextManager
 
 PIPELINES = [
@@ -51,30 +49,31 @@ class _StubCacheAwareModel:
         return cache_last_channel, cache_last_time, cache_last_channel_len
 
 
+_PREPROCESSOR_CFG = OmegaConf.create(
+    {
+        "_target_": "nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor",
+        "sample_rate": 16000,
+        "window_size": 0.025,
+        "window_stride": 0.01,
+        "features": 8,
+        "n_fft": 512,
+        "log": True,
+        "dither": 0.0,
+        "pad_to": 0,
+    }
+)
+
+
 def _make_bufferer(num_slots: int = NUM_SLOTS) -> BatchedCacheFeatureBufferer:
-    """Build a BatchedCacheFeatureBufferer without constructing a real preprocessor."""
-    bufferer = BatchedCacheFeatureBufferer.__new__(BatchedCacheFeatureBufferer)
-    bufferer.num_slots = num_slots
-    bufferer.sample_rate = 16000
-    bufferer.buffer_size_in_secs = 0.16
-    bufferer.chunk_size_in_secs = 0.16
-    bufferer.device = torch.device("cpu")
-    bufferer.ZERO_LEVEL_SPEC_DB_VAL = LOG_MEL_ZERO
-    bufferer.n_feat = 4
-    bufferer.feature_buffer_len = 2
-    bufferer.feature_chunk_len = 2
-    bufferer.audio_bufferers = [AudioBufferer(16000, 0.16) for _ in range(num_slots)]
-    bufferer.feature_buffer = torch.full(
-        [num_slots, bufferer.n_feat, bufferer.feature_buffer_len],
-        LOG_MEL_ZERO,
-        dtype=torch.float32,
+    """Build the real BatchedCacheFeatureBufferer on CPU with a small mel preprocessor."""
+    return BatchedCacheFeatureBufferer(
+        num_slots=num_slots,
+        sample_rate=16000,
+        buffer_size_in_secs=0.16,
+        chunk_size_in_secs=0.16,
+        preprocessor_cfg=_PREPROCESSOR_CFG,
+        device=torch.device("cpu"),
     )
-    bufferer.streamidx2slotidx = {}
-    bufferer.slotidx2streamidx = {}
-    bufferer.available_slots = Queue(num_slots)
-    for i in range(num_slots):
-        bufferer.available_slots.put(i)
-    return bufferer
 
 
 def _allocate_bufferer_slot(bufferer: BatchedCacheFeatureBufferer, stream_id: int) -> int:
@@ -219,22 +218,6 @@ def test_context_manager_reset_zeros_in_place_without_realloc():
 
 
 @pytest.mark.unit
-def test_context_manager_is_last_path_still_frees_via_reset_slots():
-    """The intentional is_last free path (reset_slots with eos=True) must keep working."""
-    context_manager = _make_context_manager()
-    _allocate_context_slot(context_manager, 7)
-    assert context_manager.free_slots.qsize() == NUM_SLOTS - 1
-
-    context_manager.reset_slots([7], [True])
-    assert context_manager.free_slots.qsize() == NUM_SLOTS
-    assert 7 not in context_manager.streamidx2slotidx
-
-    # Idempotent free_stream after is_last must not over-fill the queue.
-    context_manager.free_stream(7)
-    assert context_manager.free_slots.qsize() == NUM_SLOTS
-
-
-@pytest.mark.unit
 @pytest.mark.parametrize("pipeline_cls", PIPELINES)
 def test_delete_state_frees_slots_for_streams_ended_without_is_last(pipeline_cls):
     """Many short streams ending via delete_state must recover free slot counts (issue repro shape)."""
@@ -281,8 +264,8 @@ def test_delete_state_after_is_last_free_is_idempotent(pipeline_cls):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("pipeline_cls", PIPELINES)
-def test_close_session_and_open_session_restore_leaked_slots(pipeline_cls):
-    """close_session / open_session must restore capacity even when delete_state was never called."""
+def test_close_session_and_open_session_restore_all_slots(pipeline_cls):
+    """close_session / open_session return every slot, including streams that never called delete_state."""
     pipeline = _make_pipeline(pipeline_cls)
     _take_slots(pipeline, list(range(NUM_SLOTS)))
     assert _free_counts(pipeline) == (0, 0)
@@ -301,8 +284,8 @@ def test_close_session_and_open_session_restore_leaked_slots(pipeline_cls):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("pipeline_cls", PIPELINES)
-def test_without_delete_state_override_slots_remain_leaked(pipeline_cls):
-    """Control: BasePipeline.delete_state alone does not return slots (documents the bug)."""
+def test_base_delete_state_only_drops_state_and_keeps_slots(pipeline_cls):
+    """BasePipeline.delete_state only drops state; the cache-aware override is what frees slots."""
     pipeline = _make_pipeline(pipeline_cls)
     _take_slots(pipeline, [0])
     BasePipeline.delete_state(pipeline, 0)

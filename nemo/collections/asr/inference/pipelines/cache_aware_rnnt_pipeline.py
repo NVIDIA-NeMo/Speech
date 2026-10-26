@@ -274,8 +274,8 @@ class CacheAwareRNNTPipeline(BasePipeline):
         """
         Delete stream state, release per-stream biasing if enabled, and free cache-aware slots.
 
-        Order matches the is_last teardown and sibling #16308: release biasing while state
-        still exists, then free slots, then drop state. Slot free is idempotent when
+        Order matches the is_last teardown: release biasing while state still exists,
+        then free slots, then drop state. Slot free is idempotent when
         is_last already returned the slots.
         """
         state = self.get_state(stream_id)

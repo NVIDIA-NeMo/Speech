@@ -2734,6 +2734,66 @@ def test_force_iterable_dataset(cutset_path: Path):
     assert set(c.id for b in batches_iter for c in b) == set(c.id for b in batches_map for c in b)
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "finite_options", [{"force_finite": True}, {"metadata_only": True}, {"force_finite": True, "metadata_only": True}]
+)
+@pytest.mark.parametrize("weights", [[1, 0, 2], [0, 1, 0]])
+@pytest.mark.parametrize("temperature", [0.0, 1.0])
+def test_finite_mixture_exhausts_positive_sources_with_disabled_slots(
+    cutset_shar_path, finite_options, weights, temperature
+):
+    config = OmegaConf.create(
+        {
+            "input_cfg": [
+                {
+                    "type": "lhotse",
+                    "shar_path": cutset_shar_path,
+                    "weight": weight,
+                    "tags": {"source_slot": slot},
+                }
+                for slot, weight in enumerate(weights)
+            ],
+            "shard_seed": 42,
+            "reweight_temperature": [temperature],
+            **finite_options,
+        }
+    )
+
+    cuts, is_tarred = cutset_module.read_cutset_from_config(config)
+    # Consume to exhaustion: the old finite mux fails after the enabled sources end.
+    source_counts = Counter(cut.source_slot for cut in cuts)
+
+    assert is_tarred
+    assert source_counts == {slot: 10 for slot, weight in enumerate(weights) if weight > 0}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("temperature", [0.0, 1.0])
+def test_infinite_mixture_retains_disabled_source_slots(cutset_shar_path, temperature):
+    config = OmegaConf.create(
+        {
+            "input_cfg": [
+                {
+                    "type": "lhotse",
+                    "shar_path": cutset_shar_path,
+                    "weight": weight,
+                    "tags": {"source_slot": slot},
+                }
+                for slot, weight in enumerate([1, 0, 2])
+            ],
+            "shard_seed": 42,
+            "reweight_temperature": [temperature],
+        }
+    )
+
+    cuts, _ = cutset_module.read_cutset_from_config(config)
+
+    assert len(cuts.cuts.sources) == 3
+    assert cuts.cuts.weights[1] == 0.0
+    assert {cut.source_slot for cut in islice(cuts, 30)} == {0, 2}
+
+
 def test_force_map_dataset(cutset_shar_path: Path):
     config = OmegaConf.create({"shar_path": cutset_shar_path, "batch_size": 2, "num_workers": 2, "force_finite": True})
     dl = get_lhotse_dataloader_from_config(config=config, global_rank=0, world_size=1, dataset=Identity())
@@ -3367,3 +3427,23 @@ def test_dataloader_reweight_temperature_mixed_leaf_and_group(
     nested_total = dataset_counts["N1"] + dataset_counts["N2"]
     assert dataset_counts["N1"] / nested_total == pytest.approx(0.5, abs=0.15)
     assert dataset_counts["N2"] / nested_total == pytest.approx(0.5, abs=0.15)
+
+
+@pytest.mark.parametrize("multi_config", [False, True])
+@pytest.mark.parametrize("num_workers,prefetch_factor,expected", [(1, 4, 4), (1, None, 2), (0, None, None)])
+def test_prefetch_factor_reaches_dataloader(cutset_path, multi_config, num_workers, prefetch_factor, expected):
+    source = {"cuts_path": str(cutset_path), "batch_size": 2}
+    options = {
+        "seed": 0,
+        "shard_seed": 0,
+        "shuffle": False,
+        "num_workers": num_workers,
+        "prefetch_factor": prefetch_factor,
+    }
+    if multi_config:
+        config = OmegaConf.create({**options, "multi_config": True, "source": source})
+    else:
+        config = OmegaConf.create({**source, **options})
+    loader = get_lhotse_dataloader_from_config(config, global_rank=0, world_size=1, dataset=Identity())
+    assert loader.num_workers == num_workers
+    assert loader.prefetch_factor == expected

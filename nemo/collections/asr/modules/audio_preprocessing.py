@@ -534,6 +534,8 @@ class SpectrogramAugmentation(NeuralModule):
         else:
             self.spec_augment = lambda input_spec, length: input_spec
 
+        # Retain the requested backend even on hosts without Numba CUDA support.
+        self.use_numba_spec_augment = use_numba_spec_augment
         # Check if numba is supported, and use a Numba kernel if it is
         if use_numba_spec_augment and NUMBA_CUDA_AVAILABLE:
             logging.info('Numba CUDA SpecAugment kernel is being used')
@@ -546,6 +548,33 @@ class SpectrogramAugmentation(NeuralModule):
                 mask_value=mask_value,
             )
         else:
+            self.spec_augment_numba = None
+
+    def configure_short_recording_time_mask_cap(
+        self,
+        *,
+        frame_duration_seconds: float,
+        max_duration_seconds: float = 1.0,
+        max_mask_fraction: float = 0.1,
+    ) -> None:
+        """Limit aggregate time masking on sub-threshold recordings.
+
+        The cap uses PyTorch SpecAugment, overriding a requested Numba backend.
+        The vectorized PyTorch implementation does not require Numba.
+        """
+        if isinstance(self.spec_augment, SpecAugment):
+            self.spec_augment.configure_short_recording_time_mask_cap(
+                frame_duration_seconds=frame_duration_seconds,
+                max_duration_seconds=max_duration_seconds,
+                max_mask_fraction=max_mask_fraction,
+            )
+            if self.use_numba_spec_augment:
+                logging.warning(
+                    "The short-recording time-mask cap uses PyTorch SpecAugment; "
+                    "overriding use_numba_spec_augment=True because the Numba backend "
+                    "does not support per-recording time-mask limits. "
+                    "This can change augmentation RNG, outputs and throughput, including for long recordings."
+                )
             self.spec_augment_numba = None
 
     @typecheck()

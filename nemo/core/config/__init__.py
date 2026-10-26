@@ -21,6 +21,7 @@ from nemo.core.config.optimizers import (
     AdamaxParams,
     AdamParams,
     AdamWParams,
+    MuonParams,
     NovogradParams,
     OptimizerParams,
     RMSpropParams,

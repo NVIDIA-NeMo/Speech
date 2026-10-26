@@ -146,11 +146,23 @@ class NeMoSpeechLMMTP(NemotronHMTP):
             is_multimodal=is_multimodal,
         )
 
+    def compute_logits(self, hidden_states: torch.Tensor, *args, **kwargs) -> torch.Tensor | None:
+        logits = super().compute_logits(hidden_states, *args, **kwargs)
+        if logits is not None:
+            logits[..., self.config.speechlm_output_vocab_size :] = -torch.inf
+            for token_id in getattr(self.config, "speechlm_runtime_added_token_ids", []):
+                if token_id < logits.shape[-1]:
+                    logits[..., token_id] = -torch.inf
+        return logits
+
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         """Load only the SALM-prefixed weights required by the reusable draft head."""
         # NeMoSpeechLMConfig delegates this to the already padded text-config
         # vocabulary used to construct NemotronHMTP. Reading config directly
         # avoids coupling padding to vLLM's internal module names.
+        from nemo.collections.speechlm2.vllm.salm.precision import preserve_hybrid_precision
+
+        preserve_hybrid_precision(self)
         target_vocab = int(self.config.vocab_size)
         if target_vocab <= 0:
             raise ValueError(f"Draft model vocabulary size must be positive, got {target_vocab}.")
@@ -161,10 +173,28 @@ class NeMoSpeechLMMTP(NemotronHMTP):
         pattern = self.config.mtp_hybrid_override_pattern
         if not isinstance(pattern, str) or not pattern:
             raise ValueError(f"mtp_hybrid_override_pattern must be a non-empty string, got {pattern!r}.")
-        return super().load_weights(
-            _remap_nemo_mtp_weights(
-                weights,
-                target_vocab,
-                expected_layer_modules=len(pattern),
+        head_tensors = 0
+
+        def _count_head_tensors(items: Iterable[tuple[str, torch.Tensor]]) -> Iterable[tuple[str, torch.Tensor]]:
+            nonlocal head_tensors
+            for name, tensor in items:
+                if name.startswith("mtp."):
+                    head_tensors += 1
+                yield name, tensor
+
+        loaded = super().load_weights(
+            _count_head_tensors(
+                _remap_nemo_mtp_weights(
+                    weights,
+                    target_vocab,
+                    expected_layer_modules=len(pattern),
+                )
             )
         )
+        if head_tensors == 0:
+            raise ValueError(
+                "Speculative MTP is enabled, but the checkpoint has no 'llm.mtp.*' draft-head tensors, so the "
+                "draft head would run on uninitialized weights (vLLM skips its missing-weight check for quantized "
+                "checkpoints). Export the MTP head with the checkpoint or disable speculative decoding."
+            )
+        return loaded

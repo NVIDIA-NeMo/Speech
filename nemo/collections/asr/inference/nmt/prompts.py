@@ -153,6 +153,104 @@ class RivaTranslatorPromptTemplate(PromptTemplate):
         return response.split('\n')[0]
 
 
+class RivaV2TranslatorPromptTemplate(PromptTemplate):
+    """Message builder for the Riva-Translate-4B-Instruct-v2 chat template."""
+
+    LANGUAGE_CODES = {
+        "arabic": "ar",
+        "brazilian portuguese": "pt-br",
+        "bulgarian": "bg",
+        "chinese": "zh",
+        "croatian": "hr",
+        "czech": "cs",
+        "danish": "da",
+        "dutch": "nl",
+        "english": "en",
+        "estonian": "et",
+        "european portuguese": "pt-pt",
+        "european spanish": "es-es",
+        "finnish": "fi",
+        "french": "fr",
+        "german": "de",
+        "greek": "el",
+        "hindi": "hi",
+        "hungarian": "hu",
+        "indonesian": "id",
+        "italian": "it",
+        "japanese": "ja",
+        "korean": "ko",
+        "latin american spanish": "es-us",
+        "latam spanish": "es-us",
+        "latvian": "lv",
+        "lithuanian": "lt",
+        "norwegian": "no",
+        "polish": "pl",
+        "portuguese": "pt",
+        "romanian": "ro",
+        "russian": "ru",
+        "simplified chinese": "zh",
+        "slovak": "sk",
+        "slovenian": "sl",
+        "spanish": "es",
+        "swedish": "sv",
+        "thai": "th",
+        "traditional chinese": "zh-tw",
+        "turkish": "tr",
+        "ukrainian": "uk",
+        "vietnamese": "vi",
+    }
+
+    @classmethod
+    def messages(
+        cls,
+        src_lang: str,
+        tgt_lang: str,
+        src_prefix: str,
+        tgt_prefix: str,
+        src_context: str = "",
+        tgt_context: str = "",
+    ) -> list[dict[str, str]]:
+        """Build messages to be rendered by the model-provided chat template."""
+
+        source_code = cls.LANGUAGE_CODES.get(src_lang.lower(), src_lang.lower())
+        target_code = cls.LANGUAGE_CODES.get(tgt_lang.lower(), tgt_lang.lower())
+        messages = [{"role": "system", "content": f"{source_code}-{target_code}"}]
+
+        source_context = re.sub(r"\s+", " ", src_context).strip()
+        target_context = re.sub(r"\s+", " ", tgt_context).strip()
+        if bool(source_context) != bool(target_context):
+            raise ValueError("Riva v2 source and target context must either both be set or both be empty")
+        if source_context:
+            messages.extend(
+                [
+                    {"role": "user", "content": source_context},
+                    {"role": "assistant", "content": target_context},
+                ]
+            )
+
+        messages.append({"role": "user", "content": re.sub(r"\s+", " ", src_prefix).strip()})
+        target_prefix = re.sub(r"\s+", " ", tgt_prefix).strip()
+        if target_prefix:
+            messages.append({"role": "assistant", "content": target_prefix})
+        return messages
+
+    @classmethod
+    def format(
+        cls,
+        src_lang: str,
+        tgt_lang: str,
+        src_prefix: str,
+        tgt_prefix: str,
+        src_context: str = "",
+        tgt_context: str = "",
+    ) -> str:
+        raise RuntimeError("Riva v2 prompts must be rendered with the model tokenizer")
+
+    @classmethod
+    def extract(cls, response: str) -> str:
+        return response.split('\n')[0]
+
+
 class QwenReasoningTranslatorPromptTemplate(PromptTemplate):
     """
     Chat-style prompt template for Qwen Reasoning model to perform translation.

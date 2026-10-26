@@ -67,6 +67,101 @@ Configuration Files
 
 The main configuration file (``s2s_training.yaml``) contains all model, training, and data parameters. See :doc:`configs` for more details. It's recommended to copy and modify this file rather than overriding options in the SLURM script to maintain versioning and configuration clarity.
 
+Short-Recording SpecAugment
+---------------------------
+
+SpeechLM perception modules automatically cap aggregate time masking at 10% of
+valid frames for recordings shorter than one second. The threshold uses the
+frontend's frame duration. This policy supports dense and packed PyTorch
+SpecAugment; long recordings retain their existing masks and RNG behavior.
+
+The Numba backend does not support this cap. Enabling the policy overrides
+``use_numba_spec_augment: true`` with PyTorch SpecAugment and logs a warning,
+including when restoring a checkpoint. The vectorized PyTorch implementation
+is independent of Numba and remains available through
+``use_vectorized_spec_augment: true``. Set ``use_numba_spec_augment: false``
+explicitly in the model's ``spec_augment`` configuration to select this backend
+without the override warning.
+
+For a restored Numba experiment, the backend switch may change RNG behavior,
+outputs and throughput, including for batches containing only long recordings.
+The long-recording preservation guarantee applies relative to the selected
+PyTorch implementation. Outside SpeechLM, enabling the cap through
+``SpectrogramAugmentation.configure_short_recording_time_mask_cap`` has the
+same behavior; Numba augmentation without the cap remains supported.
+
+Zero-Weight Dataset Sources
+---------------------------
+
+Zero-weight sources remain disabled at every reweighting temperature, including
+zero. Infinite training mixtures retain disabled source slots for restored
+packing-buffer origins. Finite mixtures (``force_finite: true`` or
+``metadata_only: true``) omit disabled slots and stop when all positive-weight
+sources are exhausted. Retain the infinite mixture's source layout when
+resuming its saved data state.
+
+.. _speechlm-lr-only-continuation:
+
+Reducing LR After a Full-State Resume
+-------------------------------------
+
+``ScaleRestoredLearningRate`` applies a one-time reduction to a restored NeMo
+``CosineAnnealing`` schedule. It preserves optimizer moments, scheduler position,
+model weights and the global step. Use it when continuing a checkpoint with a
+smaller learning rate while retaining the original cosine schedule horizon.
+It requires exactly one optimizer and one ``CosineAnnealing`` scheduler; all
+restored parameter groups must have the specified original base LR and the
+scheduler must have the specified original minimum LR.
+
+Add the callback to the training YAML and resume the **full** checkpoint:
+
+.. code-block:: yaml
+
+    model:
+      init_from_checkpoint: null
+
+    trainer:
+      callbacks:
+        - _target_: nemo.collections.speechlm2.parts.lr_only_resume.ScaleRestoredLearningRate
+          factor: 0.75
+          source_step: 16500
+          original_base_lr: 0.0001
+          original_min_lr: 0.00001
+
+    exp_manager:
+      resume_if_exists: true
+      resume_from_checkpoint: /path/to/source/checkpoints/step=16500.ckpt
+
+Keep the existing model, optimizer, scheduler and other callback configuration
+from the source experiment. The example's rates must match the source scheduler's
+``base_lrs`` and ``min_lr`` exactly; its current decayed LR is scaled by the same
+factor. ``factor`` must be greater than zero and less than one. The SpeechLM
+training entrypoint resolves ``trainer.callbacks`` from this configuration.
+``model.init_from_checkpoint`` loads weights only and cannot supply this callback's
+required optimizer, scheduler and global-step state.
+
+The first resume must use the canonical source path ending in
+``/step=<source_step>.ckpt``. For this example, the required basename is
+``step=16500.ckpt`` and the restored global step must be 16500. Both a single-file
+checkpoint and a distributed checkpoint directory can use this basename. Pass
+an absolute path to that checkpoint; ``step=16500-last.ckpt``, ``last.ckpt`` and
+other aliases do not satisfy the callback's source check.
+
+After applying the reduction, advance training by at least one optimizer step
+before saving a continuation checkpoint. For every later resume, **retain the
+same callback configuration and all four original arguments**. Change only
+``exp_manager.resume_from_checkpoint`` to the new continuation checkpoint, for
+example ``/path/to/continuation/checkpoints/step=17000.ckpt``. Do not change
+``source_step`` to 17000 or apply ``factor`` again. Lightning restores the
+callback's checkpointed ``applied`` state, keyed by its factor and original
+source step, so it skips rescaling and continues the already reduced schedule.
+Removing the callback drops that restore contract; changing its configuration
+can prevent its saved state from being matched.
+
+The callback does not migrate dataloader state or checkpoint formats. Retain the
+source experiment's sampler, packing-buffer and data configuration when exact
+data continuation is required.
+
 Debugging
 ---------
 

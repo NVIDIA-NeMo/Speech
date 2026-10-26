@@ -29,6 +29,7 @@ import pytest
 import torch
 
 from nemo.collections.tts.models.easy_magpietts_inference import EasyMagpieTTSInferenceModel
+from nemo.collections.tts.models.nemotron_tts.v2.base import NemotronTTSBaseV2
 from nemo.collections.tts.modules.magpietts_modules import LocalTransformerType
 
 
@@ -126,3 +127,95 @@ class TestEasyDoTtsPrecomputedContext:
                 context_audio_file_path="context.wav",
                 precomputed_context_audio_embedding=torch.randn(7, 1536),
             )
+
+
+class TestNemotronTTSV2PrecomputedContext:
+    @staticmethod
+    def _make_model():
+        model = MagicMock(spec=NemotronTTSBaseV2)
+        model.parameters.side_effect = lambda: iter([torch.zeros(1)])
+        model.cfg = MagicMock()
+        model.cfg.embedding_dim = 8
+        model.cfg.text_tokenizers = {"english_phoneme": object()}
+        model.tokenizer = MagicMock()
+        model.tokenizer.tokenizers = {"english_phoneme": object()}
+        model.tokenizer.encode.return_value = [1, 2, 3]
+        model.enable_phoneme_text_input = False
+        model.phoneme_tokenizer = None
+        model.text_phoneme_token_offset = None
+        model.phoneme_text_bop_marker = "<bop>"
+        model.phoneme_text_eop_marker = "<eop>"
+        model.eos_id = 0
+        model.text_conditioning_tokenizer_name = "text_ce_tokenizer"
+        model.data_num_audio_codebooks = 4
+        model._codec_helper = MagicMock()
+        model.infer_batch.return_value = SimpleNamespace(
+            predicted_audio=torch.zeros(1, 1), predicted_audio_lens=torch.zeros(1, dtype=torch.long)
+        )
+        return model
+
+    @pytest.mark.unit
+    def test_do_tts_passes_precomputed_context_without_v1_options(self):
+        model = self._make_model()
+        context_embedding = torch.randn(7, 8)
+
+        NemotronTTSBaseV2.do_tts(
+            model,
+            "hello world",
+            context_text="Speaker: Example",
+            precomputed_context_audio_embedding=context_embedding,
+        )
+
+        _args, kwargs = model.infer_batch.call_args
+        batch = kwargs["batch"]
+        assert batch["precomputed_context_audio_embedding"].shape == (1, 7, 8)
+        assert batch["precomputed_context_audio_embedding_lens"].tolist() == [7]
+        assert "context_audio_codes" not in batch
+        assert "use_local_transformer_for_inference" not in kwargs
+
+    @pytest.mark.unit
+    def test_do_tts_rejects_raw_and_precomputed_context(self):
+        model = self._make_model()
+
+        with pytest.raises(ValueError, match="context_audio_file_path"):
+            NemotronTTSBaseV2.do_tts(
+                model,
+                "hello world",
+                context_audio_file_path="context.wav",
+                precomputed_context_audio_embedding=torch.randn(7, 8),
+            )
+
+    @pytest.mark.unit
+    def test_prepare_context_bypasses_codec_and_speaker_encoder(self):
+        model = self._make_model()
+        model.training_modes = [SimpleNamespace(mode_idx=None)]
+        model.task_embedding = None
+        model.use_speaker_encoder = True
+        model.disable_cas_for_context_text = False
+        model.embed_text_tokens.return_value = torch.zeros(2, 3, 8)
+        model._validate_precomputed_context_audio.side_effect = (
+            lambda embedding, lengths, batch_size: NemotronTTSBaseV2._validate_precomputed_context_audio(
+                model, embedding, lengths, batch_size
+            )
+        )
+        model.join_embeddings_temporally.side_effect = lambda embeddings, lengths: (
+            torch.cat(embeddings, dim=1),
+            torch.stack(lengths).sum(dim=0),
+        )
+        context_embedding = torch.randn(2, 4, 8)
+        context_embedding_lens = torch.tensor([4, 2])
+
+        combined, combined_lens, context_codes, context_code_lens = NemotronTTSBaseV2.prepare_context_tensors(
+            model,
+            context_text_tokens=torch.ones(2, 3, dtype=torch.long),
+            context_text_tokens_lens=torch.tensor([3, 2]),
+            precomputed_context_audio_embedding=context_embedding,
+            precomputed_context_audio_embedding_lens=context_embedding_lens,
+        )
+
+        assert combined.shape == (2, 7, 8)
+        assert combined_lens.tolist() == [7, 4]
+        assert context_codes.shape == (2, 4, 0)
+        assert context_code_lens.tolist() == [0, 0]
+        model._codec_helper.audio_to_codes.assert_not_called()
+        model.encode_context_audio_embeddings.assert_not_called()

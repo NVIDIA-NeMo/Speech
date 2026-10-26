@@ -293,6 +293,54 @@ class TestPackedCTCLossKernel:
         torch.testing.assert_close(wide.grad, tight.grad)
 
     @pytest.mark.unit
+    def test_cuda_graph_replay(self):
+        # under capture no host read is possible, so the width of the targets buffer sizes the states;
+        # replays with other targets, lengths and junk beyond the lengths in the same buffers
+        # must give the eager loss and gradient, which the longest target of each batch sizes
+        from nemo.collections.asr.parts.triton.ctc_loss import packed_ctc_loss
+
+        torch.manual_seed(19)
+        lengths = torch.tensor([70, 7, 4, 0], device="cuda")
+        cu_seqlens = torch.tensor([0, 70, 77, 81, 81], dtype=torch.int32, device="cuda")
+        log_probs = torch.randn(81, 6, device="cuda").log_softmax(-1).requires_grad_()
+        targets = torch.randint(0, 5, (4, 32), device="cuda")
+        target_lengths = torch.tensor([4, 3, 2, 0], device="cuda")
+
+        def reference(targets, target_lengths):
+            leaf = log_probs.detach().clone().requires_grad_()
+            loss = packed_ctc_loss(leaf, cu_seqlens, lengths, targets, target_lengths, blank=5)
+            loss.sum().backward()
+            return loss.detach(), leaf.grad
+
+        # the warm-up compiles the specialization of the capture, where the width stands in for the longest target
+        stream = torch.cuda.Stream()
+        stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(stream):
+            full_width = torch.tensor([32, 0, 0, 0], device="cuda")
+            packed_ctc_loss(log_probs, cu_seqlens, lengths, targets, full_width, blank=5).sum().backward()
+        torch.cuda.current_stream().wait_stream(stream)
+        log_probs.grad = None
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            static_loss = packed_ctc_loss(log_probs, cu_seqlens, lengths, targets, target_lengths, blank=5)
+            static_loss.sum().backward()
+        static_grad = log_probs.grad
+
+        batches = [
+            (targets.clone(), target_lengths.clone()),
+            (torch.randint(0, 5, (4, 32), device="cuda"), torch.tensor([32, 2, 1, 0], device="cuda")),
+            (torch.randint(0, 5, (4, 32), device="cuda"), torch.tensor([0, 1, 2, 0], device="cuda")),
+        ]
+        for new_targets, new_target_lengths in batches:
+            targets.copy_(new_targets)
+            target_lengths.copy_(new_target_lengths)
+            graph.replay()
+            expected_loss, expected_grad = reference(new_targets, new_target_lengths)
+            torch.testing.assert_close(static_loss, expected_loss, atol=1e-5, rtol=1e-5)
+            torch.testing.assert_close(static_grad, expected_grad, atol=1e-5, rtol=1e-5)
+            assert static_loss[3].item() == 0.0
+
+    @pytest.mark.unit
     def test_rejects_target_lengths_beyond_width(self):
         logits, lengths, targets, target_lengths = self._small_case("cuda")
         packed = pack_encoder_output(logits.log_softmax(-1), lengths)

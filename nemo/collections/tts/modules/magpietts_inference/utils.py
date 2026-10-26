@@ -37,7 +37,7 @@ import torch
 from omegaconf import DictConfig, OmegaConf, open_dict
 
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
-from nemo.collections.tts.models import EasyMagpieTTSInferenceModel, MagpieTTSModel
+from nemo.collections.tts.models import EasyMagpieTTSInferenceModel, MagpieTTSModel, NemotronTTSBaseV2
 from nemo.collections.tts.models.easy_magpietts_inference import EasyModelInferenceParameters
 from nemo.collections.tts.models.magpietts import ModelInferenceParameters
 from nemo.collections.tts.modules.magpietts_inference.evaluation_config import ASR_MODEL_TYPES
@@ -333,7 +333,7 @@ def load_magpie_model(config: ModelLoadConfig, device: str = "cuda") -> Tuple[Ma
 
         # Load weights
         logging.info(f"Loading weights from checkpoint: {config.checkpoint_file}")
-        ckpt = torch.load(config.checkpoint_file)
+        ckpt = torch.load(config.checkpoint_file, weights_only=False)
         state_dict = update_checkpoint_state_dict(ckpt['state_dict'])
         model.load_state_dict(state_dict)
 
@@ -372,6 +372,13 @@ def load_magpie_model(config: ModelLoadConfig, device: str = "cuda") -> Tuple[Ma
     logging.info("Model loaded and ready for inference.")
 
     return model, checkpoint_name
+
+
+def select_easy_magpie_model_class(model_cfg: DictConfig) -> type:
+    """Select the decoder-only model implementation for a saved model configuration."""
+    if model_cfg.get('acoustic_codes_predictor_schedule'):
+        return NemotronTTSBaseV2
+    return EasyMagpieTTSInferenceModel
 
 
 def load_easy_magpie_model(config: ModelLoadConfig, device: str = "cuda") -> Tuple[EasyMagpieTTSInferenceModel, str]:
@@ -417,10 +424,11 @@ def load_easy_magpie_model(config: ModelLoadConfig, device: str = "cuda") -> Tup
             if config.phoneme_tokenizer_path and hasattr(model_cfg, 'phoneme_tokenizer'):
                 model_cfg.phoneme_tokenizer.tokenizer_path = config.phoneme_tokenizer_path
 
-        model = EasyMagpieTTSInferenceModel(cfg=model_cfg)
+        model_cls = select_easy_magpie_model_class(model_cfg)
+        model = model_cls(cfg=model_cfg)
 
         logging.info(f"Loading weights from checkpoint: {config.checkpoint_file}")
-        ckpt = torch.load(config.checkpoint_file)
+        ckpt = torch.load(config.checkpoint_file, weights_only=False)
         state_dict = ckpt['state_dict']
         model.load_state_dict(state_dict)
 

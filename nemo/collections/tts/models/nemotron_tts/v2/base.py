@@ -2435,6 +2435,7 @@ class NemotronTTSBaseV2(ModelPT):
         force_dropout_text: bool = False,
         use_teacher_forced: bool = False,
         use_inference_mode: bool = True,
+        **kwargs,
     ) -> InferBatchOutput:
         """
         Batch inference using streaming infrastructure.
@@ -2460,6 +2461,7 @@ class NemotronTTSBaseV2(ModelPT):
             topk: Top-k sampling parameter.
             use_cfg: Whether to use classifier-free guidance.
             cfg_scale: CFG scale factor.
+            kwargs: Additional compatibility arguments from shared inference runners; ignored by v2.
             phoneme_input_type: 'gt' or 'pred' for phoneme tokens.
             phoneme_sampling_method: 'argmax' or 'sample' for phoneme token selection.
             force_dropout_text: Whether to dropout text embeddings.

@@ -18,15 +18,18 @@ Tests for MagpieTTS inference.
 """
 
 import csv
+import inspect
 import json
 import os
 
 import pytest
 import torch
+from omegaconf import OmegaConf
 from examples.tts.magpietts_inference import main as magpietts_inference_main
 from examples.tts.magpietts_inference import run_inference_and_evaluation
 
 from nemo.collections.asr.metrics.wer import word_error_rate_detail
+from nemo.collections.tts.models import EasyMagpieTTSInferenceModel, NemotronTTSBaseV2
 from nemo.collections.tts.modules.magpietts_inference.evaluate_generated_audio import (
     FILEWISE_METRICS_TO_SAVE,
     _get_record_texts,
@@ -47,6 +50,7 @@ from nemo.collections.tts.modules.magpietts_inference.utils import (
     _group_multiturn_filewise_metrics_by_sample,
     _write_grouped_multiturn_filewise_metrics_csv,
     append_metrics_to_csv,
+    select_easy_magpie_model_class,
     write_csv_header_if_needed,
 )
 from nemo.collections.tts.parts.utils.tts_dataset_utils import DefaultTextProcessor
@@ -536,6 +540,25 @@ def test_example_script_rejects_removed_strip_flag(capsys):
     with pytest.raises(SystemExit):
         magpietts_inference_main(["--strip_text_annotations_for_metrics"])
     assert '"strip_text_annotations_for_metrics": true or false' in capsys.readouterr().err
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "model_cfg,expected_class",
+    [
+        (OmegaConf.create({}), EasyMagpieTTSInferenceModel),
+        (OmegaConf.create({"acoustic_codes_predictor_schedule": [1, 1]}), NemotronTTSBaseV2),
+    ],
+)
+def test_select_easy_magpie_model_class(model_cfg, expected_class):
+    assert select_easy_magpie_model_class(model_cfg) is expected_class
+
+
+@pytest.mark.unit
+def test_nemotron_tts_v2_infer_batch_accepts_compatibility_kwargs():
+    parameters = inspect.signature(NemotronTTSBaseV2.infer_batch).parameters
+    assert 'use_local_transformer_for_inference' not in parameters
+    assert parameters['kwargs'].kind is inspect.Parameter.VAR_KEYWORD
 
 
 class _FakeRunner:

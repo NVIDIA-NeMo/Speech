@@ -20,6 +20,7 @@ import json
 import logging
 import sys
 import threading
+import time
 import weakref
 from collections import deque
 from types import SimpleNamespace
@@ -37,6 +38,16 @@ def _cpu_default_device():
     """Keep CPU fixtures independent of modules that select CUDA during collection."""
     with torch.device("cpu"):
         yield
+
+
+# The server's search, in its worker process; the fixture below moves it onto a thread for the other tests.
+_search_in_worker = ct._search
+
+
+@pytest.fixture(autouse=True)
+def _search_on_a_thread(monkeypatch):
+    """Search on a thread, where the fakes patched into this process apply; one test checks the worker process."""
+    monkeypatch.setattr(ct, "_search", lambda group: asyncio.to_thread(ct._align_packed_group, group))
 
 
 @pytest.fixture(autouse=True)
@@ -309,17 +320,13 @@ def test_offline_api_aligns_repeatedly_then_releases(aligner):
 def test_sync_and_async_clients_send_the_same_rpcs_and_get_the_same_results(aligner):
     _capture(3, 4, ["hash-a", "hash-b", "hash-c"])
     ct._record_request_hashes([(f"req-{name}-0123abcd", f"hash-{name}") for name in "abc"])
-    methods = {
-        ct.WORKER_PREPARE_METHOD: ct._worker_prepare_requests,
-        ct.WORKER_RELEASE_METHOD: ct._worker_release_requests,
-    }
     sent = []
 
     def rpc(method, args):
         sent.append((method, args))
-        reply = methods[method](None, *args)
+        reply = _WORKER_METHODS[method](None, *args)
         # Every rank replies; only the first one prepares.
-        other_rank = None if reply is None else {"count": reply["count"], "batches": []}
+        other_rank = {"count": reply["count"], "batches": []} if method == ct.WORKER_PREPARE_METHOD else None
         return [reply, other_rank]
 
     async def rpc_async(method, args):
@@ -333,7 +340,11 @@ def test_sync_and_async_clients_send_the_same_rpcs_and_get_the_same_results(alig
 
     assert via_async == sync
     assert [_words(result) for result in sync] == [["a"], ["b", "c"], ["d"]]
-    assert sent == sync_sent and [len(args[0]) for _, args in sent] == [2, 1]
+    assert [len(args[0]) for _, args in sync_sent] == [2, 1]
+    # The async client submits the same chunks and collects their replies.
+    assert [args[1] for method, args in sent if method == ct.WORKER_SUBMIT_METHOD] == [
+        args[0] for _, args in sync_sent
+    ]
 
     asyncio.run(ct.release_captures_async(rpc_async, ["req-a", "req-b"]))
     assert list(ct._store) == ["hash-c"]
@@ -358,7 +369,7 @@ def test_async_alignment_runs_off_the_event_loop_thread(aligner, monkeypatch):
     )
 
     async def rpc(method, args):
-        return [ct._worker_prepare_requests(None, *args)]
+        return [_WORKER_METHODS[method](None, *args)]
 
     (result,) = asyncio.run(ct.align_async(rpc, [("req-a", "a b")]))
 
@@ -370,7 +381,7 @@ def _serve_concurrently(names):
     """Align one request per name, all at once on one event loop, as a server's middleware does."""
 
     async def rpc(method, args):
-        return [ct._worker_prepare_requests(None, *args)]
+        return [_WORKER_METHODS[method](None, *args)]
 
     async def serve():
         requests = (ct.align_async(rpc, [(f"req-{name}", name)]) for name in names)
@@ -391,6 +402,184 @@ def _record_searches(monkeypatch):
     return searches
 
 
+def test_the_search_worker_process_returns_what_the_server_process_would(monkeypatch):
+    from nemo.collections.speechlm2.parts.ctc_timestamp_utils import MultiSpeakerSOTWordTimestampAligner
+
+    class Tokenizer:
+        def text_to_ids(self, text):
+            return [{"a": 0, "b": 2}[word] for word in text.split()]
+
+    torch.manual_seed(0)
+    prepared = MultiSpeakerSOTWordTimestampAligner(tokenizer=Tokenizer(), blank_id=3).prepare_alignment(
+        torch.log_softmax(torch.randn(2, 12, 4), dim=-1),
+        torch.rand(2, 12, 2),
+        ["<spk:0> a b <spk:1> b", "a"],
+        audio_durations=[0.96, 0.96],
+        diarization_labels=torch.rand(2, 2, 96) > 0.5,
+    )
+    monkeypatch.setattr(ct, "_search_pool", None)
+    try:
+        in_worker = asyncio.run(_search_in_worker([ct._pack(prepared)]))
+        # One torch thread: a pool of them would spin-wait between the search's small ops, taking the CPUs.
+        worker_threads = ct._search_pool.submit(torch.get_num_threads).result()
+    finally:
+        ct._search_pool.shutdown()
+
+    assert in_worker == ct._align_group([prepared])
+    assert worker_threads == 1
+
+
+def _collect(job_id, timeout=30.0):
+    """Collect one submitted call, waiting for the preparing thread."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        ready = ct._worker_collect_prepared(None, [job_id])
+        if job_id in ready:
+            return ready[job_id]
+        time.sleep(0.01)
+    raise TimeoutError(job_id)
+
+
+def test_a_submitted_call_is_prepared_on_its_own_thread_and_collected_once(aligner, monkeypatch):
+    _capture(1, 4, ["hash-a"])
+    ct._record_request_hashes([("req-a-0123abcd", "hash-a")])
+    prepare = ct._worker_prepare_requests
+    threads = []
+
+    def prepare_and_record_thread(*args):
+        threads.append(threading.current_thread())
+        return prepare(*args)
+
+    monkeypatch.setattr(ct, "_worker_prepare_requests", prepare_and_record_thread)
+
+    assert ct._worker_submit_prepare(None, "job-1", [["req-a", "a b"]], False) is True
+    reply = ct._unpack(_collect("job-1"))
+
+    assert threads == [ct._preparer()._thread]
+    assert reply["errors"] == [None] and [batch["items"] for batch in reply["batches"]] == [[0]]
+    assert ct._worker_collect_prepared(None, ["job-1"]) == {}
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def test_a_submitted_call_runs_on_the_stream_it_was_submitted_from(aligner, monkeypatch):
+    # The engine submits from its own stream. On a stream of their own, the head's kernels would share SMs with the
+    # engine's, which corrupts Model Runner V2's sampled tokens.
+    _capture(1, 4, ["hash-a"])
+    ct._record_request_hashes([("req-a-0123abcd", "hash-a")])
+    prepare = ct._worker_prepare_requests
+    streams = []
+
+    def prepare_and_record_stream(*args):
+        streams.append(torch.cuda.current_stream())
+        return prepare(*args)
+
+    monkeypatch.setattr(ct, "_worker_prepare_requests", prepare_and_record_stream)
+    engine_stream = torch.cuda.Stream()
+
+    with torch.cuda.stream(engine_stream):
+        assert ct._worker_submit_prepare(None, "job-1", [["req-a", "a b"]], False) is True
+    _collect("job-1")
+
+    assert streams == [engine_stream]
+
+
+def test_a_failed_submitted_call_fails_its_requests(aligner, monkeypatch):
+    def broken(*args):
+        raise KeyError("broken prepare")
+
+    monkeypatch.setattr(ct, "_worker_prepare_requests", broken)
+
+    async def rpc(method, args):
+        return [_WORKER_METHODS[method](None, *args)]
+
+    with pytest.raises(RuntimeError, match="broken prepare"):
+        asyncio.run(asyncio.wait_for(ct.align_async(rpc, [("req-a", "a")]), timeout=30))
+
+
+def test_a_reply_that_never_comes_fails_its_requests_instead_of_hanging(aligner, monkeypatch):
+    monkeypatch.setattr(ct, "_PREPARE_TIMEOUT", 0.05)
+    monkeypatch.setattr(ct, "_COLLECT_INTERVAL", 0.001)
+
+    async def rpc(method, args):
+        # Accepts the submission, but its reply never becomes ready.
+        return [True] if method == ct.WORKER_SUBMIT_METHOD else [{}]
+
+    with pytest.raises(TimeoutError, match="not prepared within"):
+        asyncio.run(asyncio.wait_for(ct.align_async(rpc, [("req-a", "a")]), timeout=30))
+
+
+def test_data_parallel_collection_forgets_calls_the_server_gave_up_on():
+    from nemo.collections.speechlm2.vllm.salm.ctc_serving import _capture_owner_rpc
+
+    answers = {0: {"job": {"count": 1, "errors": [None], "diarization": [None], "batches": []}}, 1: {}}
+
+    async def call_utility(method, *args, engine):
+        core = int.from_bytes(engine, "little")
+        return [answers[core]]
+
+    engine = SimpleNamespace(
+        engine_core=SimpleNamespace(core_engines=[core.to_bytes(2, "little") for core in range(2)]),
+        collective_rpc=None,
+    )
+    engine.engine_core._call_utility_async = call_utility
+    rpc = _capture_owner_rpc(engine)
+
+    # Core 0 has answered, core 1 not yet: nothing is done.
+    assert asyncio.run(rpc(ct.WORKER_COLLECT_METHOD, args=(["job"],))) == [{}]
+    # The server stops asking for the call; then core 1's late answer alone does not complete it.
+    answers[0] = {}
+    asyncio.run(rpc(ct.WORKER_COLLECT_METHOD, args=([],)))
+    answers[1] = {"job": {"count": 1, "errors": ["no_capture"], "diarization": [None], "batches": []}}
+    assert asyncio.run(rpc(ct.WORKER_COLLECT_METHOD, args=(["job"],))) == [{}]
+
+
+def test_workers_that_hold_no_captures_answer_none(aligner, monkeypatch):
+    monkeypatch.setattr(ct, "_holds_captures", lambda: False)
+
+    assert ct._worker_submit_prepare(None, "job-1", [["req-a", "a"]]) is None
+    assert ct._worker_collect_prepared(None, ["job-1"]) is None
+
+
+def test_requests_that_finish_together_are_prepared_in_one_rpc(aligner):
+    _capture(3, 4, ["hash-a", "hash-b", "hash-c"])
+    ct._record_request_hashes([(f"req-{name}-0123abcd", f"hash-{name}") for name in "abc"])
+    prepared = []
+
+    async def rpc(method, args):
+        if method == ct.WORKER_SUBMIT_METHOD:
+            prepared.append([request_id for request_id, _ in args[1]])
+        return [_WORKER_METHODS[method](None, *args)]
+
+    async def serve():
+        return await asyncio.gather(*(ct.align_async(rpc, [(f"req-{name}", name)]) for name in "abc"))
+
+    results = asyncio.run(serve())
+
+    assert [_words(result) for (result,) in results] == [["a"], ["b"], ["c"]]
+    assert prepared == [["req-a", "req-b", "req-c"]]
+
+
+def test_an_error_in_a_shared_prepared_batch_reaches_only_its_request(aligner, monkeypatch):
+    _capture(2, 4, ["hash-fine", "hash-explode"])
+    ct._record_request_hashes([("req-fine-0123abcd", "hash-fine"), ("req-explode-0123abcd", "hash-explode")])
+    prepared = []
+
+    async def rpc(method, args):
+        if method == ct.WORKER_SUBMIT_METHOD:
+            prepared.append(len(args[1]))
+        return [_WORKER_METHODS[method](None, *args)]
+
+    async def serve():
+        requests = (ct.align_async(rpc, [(f"req-{name}", name)]) for name in ["fine", "explode"])
+        return await asyncio.wait_for(asyncio.gather(*requests, return_exceptions=True), timeout=30)
+
+    fine, exploded = asyncio.run(serve())
+
+    assert prepared == [2]
+    assert _words(fine[0]) == ["fine"]
+    assert isinstance(exploded, RuntimeError) and str(exploded) == "search failure"
+
+
 def test_concurrent_server_alignments_share_one_search(aligner, monkeypatch):
     _capture(3, 4, ["hash-a", "hash-b", "hash-c"])
     ct._record_request_hashes([(f"req-{name}-0123abcd", f"hash-{name}") for name in "abc"])
@@ -407,6 +596,8 @@ def test_server_searches_take_at_most_the_record_cap(aligner, monkeypatch):
     ct._record_request_hashes([(f"req-{name}-0123abcd", f"hash-{name}") for name in "abc"])
     searches = _record_searches(monkeypatch)
     monkeypatch.setattr(ct, "_SERVER_ALIGN_RECORDS", 2)
+    # One record per prepared batch, so that the cap, not the deferred-head batch size, splits the searches.
+    monkeypatch.setattr(ct, "_ALIGN_BATCH", 1)
 
     results = _serve_concurrently("abc")
 
@@ -1115,8 +1306,15 @@ def test_startup_profiling_inputs_opt_into_capture_in_the_processor(monkeypatch)
 
 _WORKER_METHODS = {
     ct.WORKER_PREPARE_METHOD: ct._worker_prepare_requests,
+    ct.WORKER_SUBMIT_METHOD: ct._worker_submit_prepare,
+    ct.WORKER_COLLECT_METHOD: ct._worker_collect_prepared,
     ct.WORKER_RELEASE_METHOD: ct._worker_release_requests,
 }
+
+
+def _logical_rpc(method):
+    """The RPC as the tests count it: a submission and its collections are one prepare."""
+    return {ct.WORKER_SUBMIT_METHOD: ct.WORKER_PREPARE_METHOD, ct.WORKER_COLLECT_METHOD: None}.get(method, method)
 
 
 @pytest.fixture
@@ -1148,7 +1346,8 @@ def server(aligner):
     rpcs = []
 
     async def collective_rpc(method, args):
-        rpcs.append(method)
+        if _logical_rpc(method):
+            rpcs.append(_logical_rpc(method))
         return [_WORKER_METHODS[method](None, *args)]
 
     hf_config = SimpleNamespace(ctc_timestamps={"adapter_path": "/adapter.pt"})
@@ -1805,11 +2004,28 @@ def test_a_server_whose_checkpoint_bundles_the_ctc_head_attaches_timestamps(serv
     assert _words(response.json()["ctc_timestamps"]) == ["hi", "there"]
 
 
+class _InlinePreparer:
+    """A worker's preparing thread, run inline: these fake workers share one process, and swap the module's state."""
+
+    def __init__(self):
+        self.ready = {}
+
+    def submit(self, job_id, items, release, require_enabled, stream=None):
+        try:
+            self.ready[job_id] = ct._worker_prepare_requests(None, items, release, require_enabled)
+        except Exception as error:  # noqa: BLE001
+            self.ready[job_id] = {"exception": str(error)}
+
+    def collect(self, job_ids):
+        return {job_id: self.ready.pop(job_id) for job_id in job_ids if job_id in self.ready}
+
+
 class _Worker:
     """One vLLM worker process, with an engine-side store of its own; only rank 0 holds captures."""
 
     def __init__(self, rank):
         self.rank = rank
+        self.preparer = _InlinePreparer()
         self.state = {
             "_store": {},
             "_request_hashes": {},
@@ -1823,10 +2039,11 @@ class _Worker:
     @contextlib.contextmanager
     def active(self):
         """Run the block in this worker: the module's store is this worker's meanwhile."""
-        outer = {name: getattr(ct, name) for name in [*self.state, "_holds_captures"]}
+        outer = {name: getattr(ct, name) for name in [*self.state, "_holds_captures", "_preparer"]}
         for name, value in self.state.items():
             setattr(ct, name, value)
         ct._holds_captures = lambda: self.rank == 0
+        ct._preparer = lambda: self.preparer
         try:
             yield
         finally:
@@ -1851,7 +2068,8 @@ class _DataParallelEngine:
         assert method == "collective_rpc"
         worker_method, _, worker_args, _ = args
         core = int.from_bytes(engine, "little")
-        self.rpcs.append((worker_method, core))
+        if _logical_rpc(worker_method):
+            self.rpcs.append((_logical_rpc(worker_method), core))
         replies = []
         for worker in self.workers[core]:
             with worker.active():
@@ -1907,6 +2125,27 @@ def test_vllm_data_parallel_collective_rpc_returns_only_the_first_cores_replies(
     client._call_utility_async = call_utility
 
     assert asyncio.run(client.collective_rpc_async(ct.WORKER_PREPARE_METHOD)) == ["core 0"]
+
+
+def test_a_batch_takes_each_requests_reply_from_the_core_that_holds_it():
+    from nemo.collections.speechlm2.vllm.salm.ctc_serving import _owner_reply
+
+    # Per core: the capture-holding worker's reply, then another rank's.
+    first = {"count": 3, "errors": [None, "no_capture", "no_capture"], "diarization": [None, None, None]}
+    first["batches"] = [{"items": [0], "prepared": "first core"}]
+    second = {"count": 3, "errors": ["no_capture", "alignment_failed", None], "diarization": [None, ["s"], None]}
+    second["batches"] = [{"items": [2], "prepared": "second core"}]
+    other_rank = {"count": 3, "batches": []}
+
+    merged = _owner_reply([[first, other_rank], [second, other_rank]])
+
+    assert merged == {
+        "count": 3,
+        "errors": [None, "alignment_failed", None],
+        "diarization": [None, ["s"], None],
+        "batches": first["batches"] + second["batches"],
+        "failed": {},
+    }
 
 
 def test_a_request_served_by_a_later_data_parallel_core_gets_its_timestamps(dp_server):

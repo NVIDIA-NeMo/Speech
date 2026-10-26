@@ -41,9 +41,11 @@ is cancelled or cannot be aligned releases its capture.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import re
 import uuid
+import weakref
 from collections.abc import AsyncIterator
 from contextlib import aclosing
 from http import HTTPStatus
@@ -53,6 +55,7 @@ import anyio
 from starlette.responses import StreamingResponse
 
 from nemo.collections.speechlm2.vllm.salm.ctc_timestamps import (
+    WORKER_COLLECT_METHOD,
     _empty_result,
     align_async,
     ctc_adapter_path,
@@ -68,6 +71,8 @@ _SSE_BOUNDARY = re.compile(rb"\r?\n\r?\n")
 
 # The errors a prepare reply reports for a request when its engine core holds no capture of it.
 _NOT_HELD = frozenset({"no_capture", "not_enabled"})
+# The capture-owner RPC of each data-parallel engine client (see _capture_owner_rpc).
+_owner_rpcs: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
 
 async def ctc_timestamp_middleware(request: Any, call_next: Any) -> Any:
@@ -317,48 +322,91 @@ def _reported_request_id(completion: dict, predicted: str) -> str:
 
 
 def _capture_owner_rpc(engine: Any) -> Any:
-    """``engine.collective_rpc`` for preparing one request, answered by the engine core that holds its capture.
+    """``engine.collective_rpc`` for preparing requests, answered per request by the engine core that holds its capture.
 
     Under data parallelism, vLLM's ``collective_rpc`` runs on every engine core but returns only
     the first core's replies (``DPLBAsyncMPClient.call_utility_async``), while a request's capture
-    lives on the core that served it, so this collects each core's replies and keeps the owner's.
-    A single engine keeps vLLM's own path. Releasing needs no owner: vLLM's ``collective_rpc``
-    reaches every core.
+    lives on the core that served it, so this calls every core and, once all have answered for a
+    call, keeps each request's owner's reply. A single engine keeps vLLM's own path. Releasing
+    needs no owner: vLLM's ``collective_rpc`` reaches every core.
     """
     core = getattr(engine, "engine_core", None)
     identities = list(getattr(core, "core_engines", None) or ())
     if len(identities) < 2:
         return engine.collective_rpc
+    try:
+        rpc = _owner_rpcs.get(engine)
+    except TypeError:  # An engine client without weak references gets a new function per call.
+        rpc = None
+    if rpc is not None:
+        return rpc
+    # Per job id, each core's capture-holding reply so far.
+    partial: dict[str, dict[int, Any]] = {}
 
     async def rpc(method: str, timeout: float | None = None, args: tuple = (), kwargs: dict | None = None) -> list:
-        replies = await asyncio.gather(
+        core_replies = await asyncio.gather(
             *(
                 core._call_utility_async("collective_rpc", method, timeout, args, kwargs, engine=identity)
                 for identity in identities
             )
         )
-        return [_owner_reply(replies)]
+        if method != WORKER_COLLECT_METHOD:
+            return [_holder_reply(replies) for replies in core_replies]
+        # Calls the server no longer waits for (it timed them out) are not asked for again; forget their replies.
+        for job_id in set(partial) - set(args[0]):
+            del partial[job_id]
+        done = {}
+        for index, replies in enumerate(core_replies):
+            for job_id, reply in (_holder_reply(replies) or {}).items():
+                partial.setdefault(job_id, {})[index] = reply
+        for job_id in [job_id for job_id, by_core in partial.items() if len(by_core) == len(identities)]:
+            by_core = partial.pop(job_id)
+            failed = next((reply for reply in by_core.values() if "exception" in reply), None)
+            done[job_id] = failed or _owner_reply([[by_core[index]] for index in range(len(identities))])
+        return [done]
 
+    with contextlib.suppress(TypeError):
+        _owner_rpcs[engine] = rpc
     return rpc
 
 
+def _holder_reply(replies: list) -> Any:
+    """A core's reply from its worker that holds captures: the first that is not ``None``."""
+    return next((reply for reply in replies if reply is not None), None)
+
+
 def _owner_reply(core_replies: list[list]) -> Any:
-    """The prepare reply of the engine core that holds the request's capture.
+    """The prepare reply of each request's owner: the engine core that holds its capture.
 
     Of a core's per-worker replies, only the worker that holds captures answers with ``errors``.
-    A core without the request's capture reports ``no_capture``, or ``not_enabled`` without
-    timestamps; the owner reports anything else. Ownership decides, not words or batches, so the
-    diarization and error of an empty transcript or a failed alignment come from the owner too.
-    With no owner, the first core's reply stands, as in vLLM.
-
-    Raises:
-        RuntimeError: More than one core holds a capture of the request.
+    A core without a request's capture reports ``no_capture``, or ``not_enabled`` without
+    timestamps, for it; the owner reports anything else. Ownership decides, not words or batches,
+    so the diarization and error of an empty transcript or a failed alignment come from the owner
+    too. A request no core owns takes the first core's entry, as in vLLM. Each core prepares only
+    the requests it owns, so its prepared batches are kept whole. A request more than one core
+    holds a capture of is listed under ``failed``, which ``align_async`` raises for that request.
     """
     holders = [reply for replies in core_replies for reply in replies if isinstance(reply, dict) and "errors" in reply]
-    owners = [reply for reply in holders if not _NOT_HELD.issuperset(reply["errors"])]
-    if len(owners) > 1:
-        raise RuntimeError(f"{len(owners)} data-parallel engine cores hold a CTC capture of this request.")
-    return (owners or holders or core_replies[0])[0]
+    if not holders:
+        return core_replies[0][0]
+    owners = [[] for _ in range(holders[0]["count"])]
+    for index, reply in enumerate(holders):
+        for item, error in enumerate(reply["errors"]):
+            if error not in _NOT_HELD:
+                owners[item].append(index)
+    source = [holders[held_by[0]] if held_by else holders[0] for held_by in owners]
+    return {
+        "count": len(owners),
+        "errors": [reply["errors"][item] for item, reply in enumerate(source)],
+        "diarization": [reply["diarization"][item] for item, reply in enumerate(source)],
+        "batches": [batch for reply in holders for batch in reply["batches"]],
+        # A request two cores captured fails on its own, not the requests prepared with it.
+        "failed": {
+            item: f"{len(held_by)} data-parallel engine cores hold a CTC capture of this request."
+            for item, held_by in enumerate(owners)
+            if len(held_by) > 1
+        },
+    }
 
 
 async def _release(engine: Any, request_id: str) -> None:

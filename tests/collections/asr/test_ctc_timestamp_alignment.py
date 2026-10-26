@@ -246,6 +246,105 @@ def test_banded_ctc_anchor_band_and_greedy_cache_agree():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("prior_dtype", [None, np.float32, np.float64])
+@pytest.mark.parametrize("frames,tokens", [(40, 6), (1500, 600)])  # full band; a band narrower than the target
+def test_compiled_banded_forward_matches_the_numpy_loop(prior_dtype, frames, tokens):
+    from nemo.collections.speechlm2.parts import ctc_timestamp_utils as utils
+
+    if not utils.NUMBA_AVAILABLE:
+        pytest.skip("Numba is not installed")
+    rng = np.random.default_rng(frames + tokens)
+    columns = 12
+    logp = np.log(rng.dirichlet(np.ones(columns), size=frames)).astype(np.float32)
+    # Ties between predecessors exercise the stay, step, skip preference; repeated tokens disable skips.
+    logp[rng.random(logp.shape) < 0.2] = -2.0
+    target = rng.integers(1, columns, size=tokens)
+    target[1::7] = target[::7][: len(target[1::7])]
+    labels = np.zeros(2 * tokens + 1, dtype=np.int64)
+    labels[1::2] = target
+    positions = np.sort(rng.choice(frames + 50, size=frames, replace=False))
+    logp = np.concatenate([logp, np.log(rng.dirichlet(np.ones(columns), size=50)).astype(np.float32)])
+    prior = None if prior_dtype is None else np.log(rng.uniform(0.01, 1.0, size=len(logp))).astype(prior_dtype)
+    states = len(labels)
+    half = states if frames < 1000 else min(states, int(np.ceil(0.10 * states + 100)))
+    width = min(states, 2 * half + 1)
+    starts = utils._ctc_anchor_band_starts(logp[positions].argmax(axis=1), target, states, half, width)
+
+    compiled = utils._ctc_banded_forward(logp, labels, positions, prior, starts, width)
+    loop = utils._ctc_banded_forward_numpy(logp, labels, positions, prior, starts, width)
+
+    assert compiled[0].dtype == loop[0].dtype == np.float32
+    assert np.array_equal(compiled[0], loop[0])
+    assert np.array_equal(compiled[1], loop[1])
+
+
+@pytest.mark.unit
+def test_deferred_columns_stay_float32_while_another_thread_changes_the_default_dtype():
+    # A vLLM server prepares on a thread of its own while the speech encoder, on the engine thread, sets the
+    # process-wide default dtype to bfloat16 around its streaming steps.
+    from nemo.collections.speechlm2.parts.ctc_timestamp_utils import _read_deferred_ctc_columns
+
+    class Decoder(torch.nn.Module):
+        num_classes_with_blank = 8
+        upsampling_factor = 1
+
+        def forward(self, states, encoded_lengths):
+            return states.transpose(1, 2).log_softmax(dim=-1)
+
+    class Tokenizer:
+        def text_to_ids(self, text):
+            return []
+
+    aligner = MultiSpeakerSOTWordTimestampAligner(ctc_decoder=Decoder(), tokenizer=Tokenizer(), blank_id=7)
+    inputs = SimpleNamespace(asr_encoded=torch.randn(2, 8, 5), asr_encoded_lengths=torch.tensor([5, 3]))
+    previous = torch.get_default_dtype()
+    torch.set_default_dtype(torch.bfloat16)
+    try:
+        kept = _read_deferred_ctc_columns(aligner, inputs, 8, [[7, 1, 2], [7, 3]], [5, 3])
+    finally:
+        torch.set_default_dtype(previous)
+
+    assert [record.dtype for record in kept] == [torch.float32, torch.float32]
+    assert [tuple(record.shape) for record in kept] == [(5, 3), (3, 2)]
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def test_deferred_head_never_decodes_a_batch_of_one_on_the_gpu():
+    # torch.compile specializes the decoder's attention for a batch of one; a lone record is decoded twice instead, so
+    # the CTC head never adds that variant to the compiled function it shares with the speech encoder.
+    from nemo.collections.speechlm2.parts.ctc_timestamp_utils import _read_deferred_ctc_columns
+
+    class Decoder(torch.nn.Module):
+        num_classes_with_blank = 8
+        upsampling_factor = 1
+
+        def __init__(self):
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.zeros(1))
+            self.batch_sizes = []
+
+        def forward(self, states, encoded_lengths):
+            self.batch_sizes.append(states.shape[0])
+            return states.transpose(1, 2).log_softmax(dim=-1)
+
+    class Tokenizer:
+        def text_to_ids(self, text):
+            return []
+
+    decoder = Decoder().cuda()
+    aligner = MultiSpeakerSOTWordTimestampAligner(ctc_decoder=decoder, tokenizer=Tokenizer(), blank_id=7)
+    states = torch.randn(1, 8, 5, device="cuda")
+    inputs = SimpleNamespace(asr_encoded=states, asr_encoded_lengths=torch.tensor([5], device="cuda"))
+
+    (kept,) = _read_deferred_ctc_columns(aligner, inputs, 8, [[7, 1, 2]], [5])
+
+    assert decoder.batch_sizes == [2]
+    expected = states.transpose(1, 2).log_softmax(dim=-1)[0][:, [7, 1, 2]].cpu()
+    assert torch.equal(kept, expected)
+
+
+@pytest.mark.unit
 def test_banded_ctc_cannot_start_inside_an_infeasible_long_target():
     labels = np.zeros(10001, dtype=np.int64)
     labels[1::2] = 1

@@ -57,27 +57,31 @@ fill the budget, new captures are refused, so no request loses a capture it alre
 A result without word timestamps names the reason in its ``error``; its 10 ms
 diarization, which needs only the capture, is still returned.
 
-Alignment is split where its work changes kind. The engine process, where the inputs
-live, runs the CTC head on the device and keeps only the log-prob columns each
-transcript's tokens use, window by window, in batches bounded by ``_HEAD_FRAME_BUDGET``
-(:func:`prepare_finished_requests`). Both modes reach it through one worker method and
-``collective_rpc``. The caller then runs the CPU-bound
-alignment search on that compact batch (:func:`align_prepared_requests`), so the engine
-is busy only for the head. The client functions :func:`align` and
-:func:`release_captures` serve a synchronous ``LLM``, which is what
-:func:`ctc_timestamps`, :func:`ctc_word_timestamps` and :func:`ctc_release` do;
-:func:`align_async` and :func:`release_captures_async` serve a server's async engine
-client, which is what ``ctc_serving`` does. Callers pass the external request id, which
-vLLM's scheduler knows with a random suffix appended.
+Alignment is split where its work changes kind. The worker that holds the inputs runs
+the CTC head on the device and keeps only the log-prob columns each transcript's tokens
+use, window by window, in batches bounded by ``_HEAD_FRAME_BUDGET``
+(:func:`prepare_finished_requests`). The caller then runs the CPU-bound alignment search
+on that compact batch (:func:`align_prepared_requests`). A synchronous ``LLM`` prepares
+through one worker method and ``collective_rpc`` (:func:`align` and
+:func:`release_captures`, which :func:`ctc_timestamps`, :func:`ctc_word_timestamps` and
+:func:`ctc_release` use). A server must not hold up the engine's step loop for that, so
+:func:`align_async` submits finished requests to a thread of that worker, which prepares
+them on the engine's CUDA stream, and collects the replies once ready (``_Preparer``,
+``_PrepareBatcher``); ``ctc_serving`` uses it and :func:`release_captures_async`. Callers
+pass the external request id, which vLLM's scheduler knows with a random suffix appended.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import json
 import os
+import queue
 import threading
+import time
+import uuid
 import weakref
 from collections import Counter, deque
 from collections.abc import Sequence
@@ -99,6 +103,9 @@ _MAX_TRACKED_REQUESTS = 1 << 16
 
 # Worker method names reached through collective_rpc.
 WORKER_PREPARE_METHOD = "nemo_ctc_prepare_requests"
+# A server prepares off the engine's step loop: it submits finished requests and collects the replies (see _Preparer).
+WORKER_SUBMIT_METHOD = "nemo_ctc_submit_prepare"
+WORKER_COLLECT_METHOD = "nemo_ctc_collect_prepared"
 WORKER_RELEASE_METHOD = "nemo_ctc_release_requests"
 
 # Marks a tensor packed as dtype, shape and bytes in a worker reply. vLLM rebuilds
@@ -113,10 +120,20 @@ _INTERNAL_ID_SUFFIX_LEN = 8
 _ALIGN_BATCH = 16
 
 # Bounds a deferred-head call by its requests times the frames the head decodes at
-# once: a window, or the longest request when it fits in one. The head's
-# vocabulary-wide output for those frames dominates the device memory preparing
-# takes, about 1.6 GiB at this budget with a 32,769-class BF16 head.
+# once: a window, or the longest request when it fits in one. The head classifies
+# those frames in slices (see _read_deferred_ctc_columns), so the budget bounds the
+# device memory of the head's states and kept columns, not its vocabulary-wide output.
 _HEAD_FRAME_BUDGET = 8192
+
+# How long a server waits before collecting again when none of its submitted requests was ready, in seconds.
+_COLLECT_INTERVAL = 0.005
+
+# Prepared replies an engine keeps for collection at most; a server that stopped collecting loses the oldest.
+_MAX_UNCOLLECTED = 4096
+
+# Seconds a server waits for a submitted call's reply before failing its requests, so that a reply that never comes
+# (a stuck device, an evicted reply, a lost engine core) cannot leave them waiting forever.
+_PREPARE_TIMEOUT = 600.0
 
 # Maximum records a server merges into one alignment task (see _AlignmentBatcher).
 # Each record keeps its own frame support and band; no cross-record DP padding is needed.
@@ -136,6 +153,9 @@ _FIELDS = (
     ("diarization_labels", 2, "diarization_lengths"),
     ("diarization_lengths", None, None),
 )
+
+# The tensors of a prepared record (see MultiSpeakerSOTWordTimestampAligner.prepare_alignment).
+_RECORD_TENSORS = ("ctc_log_probs", "speaker_probs", "diarization_labels")
 
 # The current encoder step's hashes stay thread-local: the hook hands them to the
 # forwards it runs, on the engine thread.
@@ -163,6 +183,11 @@ _uncompacted: deque[dict] = deque()
 _lock = threading.RLock()
 # One alignment batcher per event loop; a server has one.
 _batchers: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+# The process a server's alignment searches run in, started on first use (see _search). On a thread of the server
+# process, the search's Python would hold the GIL, and its torch ops would wake torch's thread pool, against the
+# event loop that serves every request.
+_search_pool: Any = None
+_prepare_batchers: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
 
 def register_aligner(aligner: Any, special_tokens: Sequence[str] = ()) -> None:
@@ -811,7 +836,7 @@ def align_prepared_requests(reply: dict) -> list[dict]:
     Raises:
         Exception: Any aligner error other than ``ValueError``.
     """
-    return _results_from(reply, [_align_batch(batch["prepared"]) for batch in reply["batches"]])
+    return _results_from(reply, [_align_batch(_unpack(batch["prepared"])) for batch in reply["batches"]])
 
 
 def _results_from(reply: dict, aligned: Sequence[list[dict | None]]) -> list[dict]:
@@ -820,9 +845,11 @@ def _results_from(reply: dict, aligned: Sequence[list[dict | None]]) -> list[dic
     diarization = reply.get("diarization") or [None] * reply["count"]
     results: list[dict] = [_empty_result(error, segments or ()) for error, segments in zip(errors, diarization)]
     for batch, batch_results in zip(reply["batches"], aligned):
-        prepared = batch["prepared"]
-        for index, record, result in zip(batch["items"], prepared["records"], batch_results):
+        for position, (index, result) in enumerate(zip(batch["items"], batch_results)):
             if result is None:
+                # Rare, so the batch is unpacked only here.
+                prepared = _unpack(batch["prepared"])
+                record = prepared["records"][position]
                 results[index] = _empty_result("alignment_failed", _record_diarization(prepared, record))
             else:
                 results[index] = _public_result(result)
@@ -946,15 +973,15 @@ class _AlignmentBatcher:
     loop once per batch, so a one-record search costs several times more per record than a
     merged one. The first batch starts a search at once; the batches that arrive while it
     runs on a worker thread queue up, and the next search takes all of them, up to
-    ``_SERVER_ALIGN_RECORDS`` records.
+    ``_SERVER_ALIGN_RECORDS`` records. Batches stay packed until the search worker.
     """
 
     def __init__(self) -> None:
         self._pending: list[tuple[dict, asyncio.Future]] = []
         self._drain_task: asyncio.Task | None = None
 
-    async def align(self, prepared: dict) -> list[dict | None]:
-        """Align one prepared batch, merged with whatever else is waiting."""
+    async def align(self, prepared: dict) -> list[dict | None | Exception]:
+        """Align one packed prepared batch, merged with whatever else is waiting."""
         loop = asyncio.get_running_loop()
         future = loop.create_future()
         self._pending.append((prepared, future))
@@ -972,7 +999,7 @@ class _AlignmentBatcher:
                     records += len(self._pending[0][0]["records"])
                     group.append(self._pending.pop(0))
                 try:
-                    outcomes = await asyncio.to_thread(_align_group, [prepared for prepared, _ in group])
+                    outcomes = await _search([prepared for prepared, _ in group])
                 except Exception as error:  # noqa: BLE001
                     outcomes = [error] * len(group)
                 for (_, future), outcome in zip(group, outcomes):
@@ -1022,8 +1049,45 @@ def _align_group(group: list[dict]) -> list[list[dict | None] | BaseException]:
         try:
             outcomes.append(_align_batch(prepared))
         except Exception as error:  # noqa: BLE001
-            outcomes.append(error)
+            if len(prepared["records"]) == 1:
+                outcomes.append(error)
+            else:
+                # Requests prepared together share a batch; an error reaches only its own request.
+                outcomes.append([_align_record(prepared, record) for record in prepared["records"]])
     return outcomes
+
+
+def _align_record(prepared: dict, record: dict) -> dict | None | Exception:
+    """Align one record of a prepared batch on its own; its error is returned, not raised."""
+    try:
+        return _align_batch({**prepared, "records": [record]})[0]
+    except Exception as error:  # noqa: BLE001
+        return error
+
+
+async def _search(group: list[dict]) -> list[list[dict | None | Exception] | BaseException]:
+    """:func:`_align_packed_group` in the search worker process, restarted if it died."""
+    global _search_pool
+    from concurrent.futures import ProcessPoolExecutor
+    from concurrent.futures.process import BrokenProcessPool
+    from multiprocessing import get_context
+
+    if _search_pool is None:
+        _search_pool = ProcessPoolExecutor(
+            1, mp_context=get_context("spawn"), initializer=torch.set_num_threads, initargs=(1,)
+        )
+    pool = _search_pool
+    try:
+        return await asyncio.get_running_loop().run_in_executor(pool, _align_packed_group, group)
+    except BrokenProcessPool:
+        if _search_pool is pool:
+            _search_pool = None
+        raise
+
+
+def _align_packed_group(group: list[dict]) -> list[list[dict | None | Exception] | BaseException]:
+    """:func:`_align_group` on packed prepared batches, unpacked here, in the search worker."""
+    return _align_group([_unpack(prepared) for prepared in group])
 
 
 def _pack(value: Any) -> Any:
@@ -1041,6 +1105,26 @@ def _pack(value: Any) -> Any:
     return value
 
 
+def _pack_reply(reply: dict) -> dict:
+    """:func:`_pack` for a prepare reply, visiting only the records' ``_RECORD_TENSORS``, its only tensors."""
+    return {
+        **reply,
+        "batches": [
+            {
+                **batch,
+                "prepared": {
+                    **batch["prepared"],
+                    "records": [
+                        {**record, **{name: _pack(record[name]) for name in _RECORD_TENSORS if name in record}}
+                        for record in batch["prepared"]["records"]
+                    ],
+                },
+            }
+            for batch in reply["batches"]
+        ],
+    }
+
+
 def _unpack(value: Any) -> Any:
     """Rebuild the tensors :func:`_pack` replaced."""
     if isinstance(value, dict):
@@ -1054,6 +1138,13 @@ def _unpack(value: Any) -> Any:
     if isinstance(value, list):
         return [_unpack(item) for item in value]
     return value
+
+
+def _unpack_reply(reply: Any) -> Any:
+    """:func:`_unpack` for a prepare reply, leaving each batch's prepared alignment packed for the search."""
+    if not isinstance(reply, dict) or "batches" not in reply:
+        return _unpack(reply)
+    return {**_unpack({key: value for key, value in reply.items() if key != "batches"}), "batches": reply["batches"]}
 
 
 def _collate(entries: list[dict], device: torch.device) -> Any:
@@ -1186,7 +1277,8 @@ def _worker_prepare_requests(worker: Any, items: list, release: bool = True, req
             "CTC timestamps are not enabled for this model: its config has no ctc_timestamps.adapter_path "
             "(check the hf_overrides key)."
         )
-    return _pack(prepare_finished_requests([(request_id, text) for request_id, text in items], release=release))
+    reply = prepare_finished_requests([(request_id, text) for request_id, text in items], release=release)
+    return _pack_reply(reply)
 
 
 def _worker_release_requests(worker: Any, request_ids: list) -> None:
@@ -1195,12 +1287,86 @@ def _worker_release_requests(worker: Any, request_ids: list) -> None:
     _release_requests(list(request_ids))
 
 
+def _worker_submit_prepare(
+    worker: Any, job_id: str, items: list, release: bool = True, require_enabled: bool = True
+) -> bool | None:
+    """``collective_rpc`` entry point: queue :func:`_worker_prepare_requests` on the preparing thread, under ``job_id``.
+
+    Returns at once; workers that hold no captures answer ``None``.
+    """
+    del worker
+    if not _holds_captures():
+        return None
+    stream = torch.cuda.current_stream() if torch.cuda.is_available() else None
+    _preparer().submit(job_id, items, release, require_enabled, stream)
+    return True
+
+
+def _worker_collect_prepared(worker: Any, job_ids: list) -> dict | None:
+    """``collective_rpc`` entry point: the ready replies among ``job_ids``, each handed out once.
+
+    A reply is :func:`_worker_prepare_requests`'s, or ``{"exception": message}``; workers that hold no captures
+    answer ``None``.
+    """
+    del worker
+    if not _holds_captures():
+        return None
+    return _preparer().collect(job_ids)
+
+
+class _Preparer:
+    """Prepares submitted calls on a thread of their own, off the engine's step loop.
+
+    The GPU work goes to the stream the engine submitted from, in order with the engine's own kernels: on a stream of
+    its own it would share SMs with them, and vLLM's Model Runner V2 rejection sampler then corrupts bonus tokens.
+    """
+
+    def __init__(self) -> None:
+        self._jobs: queue.SimpleQueue = queue.SimpleQueue()
+        self._ready: dict[str, dict] = {}
+        self._ready_lock = threading.Lock()
+        self._thread = threading.Thread(target=self._run, name="nemo-ctc-prepare", daemon=True)
+        self._thread.start()
+
+    def submit(self, job_id: str, items: list, release: bool, require_enabled: bool, stream: Any = None) -> None:
+        """Queue one prepare call, to run on ``stream`` (a ``torch.cuda.Stream``) when given."""
+        self._jobs.put((job_id, items, release, require_enabled, stream))
+
+    def collect(self, job_ids: Sequence[str]) -> dict:
+        """Hand out the replies among ``job_ids`` that are ready."""
+        with self._ready_lock:
+            return {job_id: self._ready.pop(job_id) for job_id in job_ids if job_id in self._ready}
+
+    def _run(self) -> None:
+        while True:
+            job_id, items, release, require_enabled, stream = self._jobs.get()
+            try:
+                with torch.cuda.stream(stream) if stream is not None else contextlib.nullcontext():
+                    reply = _worker_prepare_requests(None, items, release, require_enabled)
+            except Exception as error:  # noqa: BLE001
+                logging.error("[NeMoSpeechLM] Preparing CTC timestamps failed: %s", error, exc_info=error)
+                reply = {"exception": str(error)}
+            with self._ready_lock:
+                self._ready[job_id] = reply
+                while len(self._ready) > _MAX_UNCOLLECTED:
+                    self._ready.pop(next(iter(self._ready)))
+
+
+def _preparer() -> _Preparer:
+    """This process's preparing thread, started on first use."""
+    with _lock:
+        preparer = _registry.get("preparer")
+        if preparer is None:
+            preparer = _registry["preparer"] = _Preparer()
+    return preparer
+
+
 def install_worker_methods() -> None:
     """Expose preparing and releasing to callers outside the engine as worker methods.
 
     ``collective_rpc`` resolves a method name on the worker, so the entry points are
-    attached to vLLM's GPU worker class under ``WORKER_PREPARE_METHOD`` and
-    ``WORKER_RELEASE_METHOD``.
+    attached to vLLM's GPU worker class under ``WORKER_PREPARE_METHOD``,
+    ``WORKER_SUBMIT_METHOD``, ``WORKER_COLLECT_METHOD`` and ``WORKER_RELEASE_METHOD``.
     """
     try:
         from vllm.v1.worker.gpu_worker import Worker
@@ -1208,6 +1374,8 @@ def install_worker_methods() -> None:
         return
     for name, method in (
         (WORKER_PREPARE_METHOD, _worker_prepare_requests),
+        (WORKER_SUBMIT_METHOD, _worker_submit_prepare),
+        (WORKER_COLLECT_METHOD, _worker_collect_prepared),
         (WORKER_RELEASE_METHOD, _worker_release_requests),
     ):
         if getattr(Worker, name, None) is not method:
@@ -1254,18 +1422,163 @@ async def align_async(
 ) -> list[dict]:
     """:func:`align` for an async engine client, e.g. a server's ``EngineClient.collective_rpc``.
 
-    The alignment search runs on a worker thread, so the event loop keeps serving other
-    requests, and is merged with the searches of the other requests aligned meanwhile
-    (``_AlignmentBatcher``), so a busy server pays its per-frame cost once per batch.
+    Preparing runs off the engine's step loop, batched with the other callers' requests
+    (``_PrepareBatcher``). The alignment search runs on a worker thread, so the event loop keeps
+    serving other requests, and is merged with the searches of the other requests aligned
+    meanwhile (``_AlignmentBatcher``), so a busy server pays its per-frame cost once per batch.
     """
-    batcher = _batcher()
-    results: list[dict] = []
-    for batch in _rpc_batches(items, chunk_size):
-        replies = await rpc(WORKER_PREPARE_METHOD, args=(batch, release, require_enabled))
-        reply = _unpack(replies[0])
-        aligned = await asyncio.gather(*(batcher.align(entry["prepared"]) for entry in reply["batches"]))
-        results.extend(_results_from(reply, aligned))
-    return results
+    if chunk_size < 1:
+        raise ValueError(f"chunk_size must be at least 1; got {chunk_size}.")
+    batcher = _prepare_batcher(rpc, release, require_enabled, chunk_size)
+    return list(await asyncio.gather(*(batcher.align(item) for item in items)))
+
+
+class _PrepareBatcher:
+    """Submits the finished requests of concurrent callers together and collects their replies.
+
+    Requests that finish while a submission is in flight join the next one, up to ``chunk_size``;
+    one RPC collects every submitted call's reply.
+    """
+
+    def __init__(self, rpc: Any, release: bool, require_enabled: bool, chunk_size: int) -> None:
+        self._rpc = rpc
+        self._release = release
+        self._require_enabled = require_enabled
+        self._chunk_size = chunk_size
+        self._pending: list[tuple[tuple[str, str], asyncio.Future]] = []
+        # Per submitted call: its requests and the time by which its reply must have come.
+        self._submitted: dict[str, tuple[list[tuple[tuple[str, str], asyncio.Future]], float]] = {}
+        self._submit_task: asyncio.Task | None = None
+        self._collect_task: asyncio.Task | None = None
+        self._aligning: set[asyncio.Task] = set()
+
+    async def align(self, item: tuple[str, str]) -> dict:
+        """Prepare and align one finished request, batched with whatever else is waiting."""
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        self._pending.append((item, future))
+        if self._submit_task is None:
+            self._submit_task = loop.create_task(self._submit())
+        return await future
+
+    async def _submit(self) -> None:
+        group: list[tuple[tuple[str, str], asyncio.Future]] = []
+        try:
+            while self._pending:
+                group = self._pending[: self._chunk_size]
+                del self._pending[: self._chunk_size]
+                job_id = uuid.uuid4().hex
+                try:
+                    await self._rpc(
+                        WORKER_SUBMIT_METHOD,
+                        args=(job_id, [item for item, _ in group], self._release, self._require_enabled),
+                    )
+                except Exception as error:  # noqa: BLE001
+                    _settle(group, error)
+                    group = []
+                    continue
+                self._submitted[job_id] = (group, time.monotonic() + _PREPARE_TIMEOUT)
+                group = []
+                if self._collect_task is None:
+                    self._collect_task = asyncio.get_running_loop().create_task(self._collect())
+        finally:
+            self._submit_task = None
+            # A submission cancelled with its event loop must not leave requests waiting forever.
+            for _, future in group + self._pending:
+                if not future.done():
+                    future.cancel()
+            self._pending.clear()
+
+    async def _collect(self) -> None:
+        try:
+            while self._submitted:
+                try:
+                    replies = await self._rpc(WORKER_COLLECT_METHOD, args=(list(self._submitted),))
+                except Exception as error:  # noqa: BLE001
+                    for group, _ in self._submitted.values():
+                        _settle(group, error)
+                    self._submitted.clear()
+                    break
+                # The worker that holds captures answers; the others answer None.
+                ready = next((reply for reply in replies if reply is not None), None) or {}
+                for job_id, reply in ready.items():
+                    group, _ = self._submitted.pop(job_id, (None, None))
+                    if group is None:
+                        continue
+                    if "exception" in reply:
+                        _settle(group, RuntimeError(reply["exception"]))
+                        continue
+                    task = asyncio.get_running_loop().create_task(self._finish(_unpack_reply(reply), group))
+                    self._aligning.add(task)
+                    task.add_done_callback(self._aligning.discard)
+                now = time.monotonic()
+                for job_id in [job_id for job_id, (_, deadline) in self._submitted.items() if deadline < now]:
+                    group, _ = self._submitted.pop(job_id)
+                    _settle(group, TimeoutError(f"CTC timestamps were not prepared within {_PREPARE_TIMEOUT:g} s."))
+                if not ready:
+                    await asyncio.sleep(_COLLECT_INTERVAL)
+        finally:
+            self._collect_task = None
+            for group, _ in self._submitted.values():
+                for _, future in group:
+                    if not future.done():
+                        future.cancel()
+            self._submitted.clear()
+
+    @staticmethod
+    async def _finish(reply: dict, group: list[tuple[tuple[str, str], asyncio.Future]]) -> None:
+        """Align a prepared reply and answer each request of its group; an error reaches only its requests."""
+        failed: dict[int, BaseException] = {
+            item: RuntimeError(message) for item, message in (reply.get("failed") or {}).items()
+        }
+        try:
+            aligned = await asyncio.gather(
+                *(_batcher().align(entry["prepared"]) for entry in reply["batches"]), return_exceptions=True
+            )
+            for entry, outcome in zip(reply["batches"], aligned):
+                for position, item in enumerate(entry["items"]):
+                    error = outcome if isinstance(outcome, BaseException) else outcome[position]
+                    if isinstance(error, BaseException):
+                        failed[item] = error
+            aligned = [
+                (
+                    [None] * len(entry["items"])
+                    if isinstance(outcome, BaseException)
+                    else [None if isinstance(result, BaseException) else result for result in outcome]
+                )
+                for entry, outcome in zip(reply["batches"], aligned)
+            ]
+            results = _results_from(reply, aligned)
+        except BaseException as error:  # noqa: BLE001
+            _settle(group, error)
+            if not isinstance(error, Exception):
+                raise
+            return
+        for item, ((_, future), result) in enumerate(zip(group, results)):
+            if future.done():
+                continue
+            if item in failed:
+                future.set_exception(failed[item])
+            else:
+                future.set_result(result)
+
+
+def _settle(group: list[tuple[Any, asyncio.Future]], error: BaseException) -> None:
+    """Fail every request of a group that is still waiting."""
+    for _, future in group:
+        if not future.done():
+            future.set_exception(error)
+
+
+def _prepare_batcher(rpc: Any, release: bool, require_enabled: bool, chunk_size: int) -> _PrepareBatcher:
+    """The prepare batcher of the running event loop for this RPC and these settings."""
+    loop = asyncio.get_running_loop()
+    batchers = _prepare_batchers.setdefault(loop, {})
+    key = (rpc, release, require_enabled, chunk_size)
+    batcher = batchers.get(key)
+    if batcher is None:
+        batcher = batchers[key] = _PrepareBatcher(rpc, release, require_enabled, chunk_size)
+    return batcher
 
 
 def release_captures(rpc: Any, request_ids: Sequence[str]) -> None:

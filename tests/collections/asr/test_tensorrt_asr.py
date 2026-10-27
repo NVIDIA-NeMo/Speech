@@ -240,12 +240,13 @@ def test_waveform_profile_compatibility(monkeypatch):
             return []
 
         def get_tensor_shape(self, name):
+            # Like TensorRT's context, the shape depends on the tensor: lengths are rank 1, signals rank 3.
             shape = self.shapes[self.inputs[0]]
-            if name in ("processed_length", "encoded_lengths"):
-                return (shape[0],)
             if self.frontend:
-                return shape[0], 128, shape[1] // 160 + 1
-            return shape[0], 2048, (shape[2] + 7) // 8
+                outputs = {"processed_signal": (shape[0], 128, shape[1] // 160 + 1), "processed_length": (shape[0],)}
+            else:
+                outputs = {"outputs": (shape[0], 2048, (shape[2] + 7) // 8), "encoded_lengths": (shape[0],)}
+            return outputs[name]
 
     monkeypatch.setattr(tensorrt_plan, "TensorRTPlan", Plan)
     decoder = {"encoder_hidden": 2048, "max_frames": 500}

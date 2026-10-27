@@ -22,13 +22,15 @@ import pytest
 import torch
 
 from nemo.collections.asr.parts.submodules.tensorrt_encoder import TensorRTEncoder
+from nemo.collections.asr.parts.submodules.tensorrt_plan import TensorRTPlan
 
 
 @pytest.mark.unit
-def test_missing_tensorrt(monkeypatch):
+@pytest.mark.parametrize("runtime", [TensorRTEncoder, TensorRTPlan])
+def test_missing_tensorrt(monkeypatch, runtime):
     monkeypatch.setitem(sys.modules, "tensorrt", None)
-    with pytest.raises(ImportError, match="TensorRTEncoder requires"):
-        TensorRTEncoder("unused.plan")
+    with pytest.raises(ImportError, match="requires TensorRT"):
+        runtime("unused.plan")
 
 
 @pytest.fixture(scope="module", params=["float32", "float16"])
@@ -149,3 +151,40 @@ def test_invalid_engine(tmp_path):
     path.write_bytes(b"not an engine")
     with pytest.raises(RuntimeError, match="Cannot deserialize"):
         TensorRTEncoder(path)
+
+
+@pytest.mark.unit
+@pytest.mark.run_only_on("GPU")
+def test_encoder_rejects_capture(engine_path, monkeypatch):
+    encoder = TensorRTEncoder(engine_path)
+    features = torch.ones((2, 4, 16), device="cuda")
+    lengths = torch.tensor([16, 9], device="cuda")
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: True)
+    with pytest.raises(RuntimeError, match="does not support CUDA graph capture"):
+        encoder(features, lengths)
+
+
+@pytest.mark.unit
+@pytest.mark.run_only_on("GPU")
+def test_shared_plan_capture_and_output_lifetime(engine_path):
+    plan = TensorRTPlan(engine_path, cache_contexts=True)
+    stream = torch.cuda.Stream()
+    captured = []
+    with torch.cuda.stream(stream):
+        for batch, frames in ((1, 8), (4, 64)):
+            features = torch.ones((batch, 4, frames), device="cuda", dtype=plan.dtypes["audio_signal"])
+            lengths = torch.full((batch,), frames, device="cuda", dtype=plan.dtypes["length"])
+            saved = plan(audio_signal=features, length=lengths)
+            stream.synchronize()
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph, stream=stream):
+                output = plan(audio_signal=features, length=lengths)
+            captured.append((graph, features, lengths, output, saved))
+        torch.cuda.empty_cache()
+        for graph, features, lengths, output, saved in captured:
+            features.fill_(3)
+            graph.replay()
+            torch.testing.assert_close(output["outputs"], features * 2, atol=0, rtol=0)
+            torch.testing.assert_close(output["encoded_lengths"], lengths, atol=0, rtol=0)
+            torch.testing.assert_close(saved["outputs"], torch.full_like(features, 2), atol=0, rtol=0)
+    stream.synchronize()

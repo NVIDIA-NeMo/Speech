@@ -19,6 +19,8 @@ from pathlib import Path
 
 import torch
 
+from nemo.collections.asr.parts.submodules.tensorrt_plan import TensorRTPlan
+
 
 class TensorRTEncoder:
     """Run an offline ASR encoder using PyTorch-owned CUDA tensors.
@@ -44,32 +46,23 @@ class TensorRTEncoder:
     """
 
     def __init__(self, engine_path: str | Path, device: str | torch.device = "cuda") -> None:
-        try:
-            import tensorrt as trt
-        except ImportError as exc:
-            raise ImportError(
-                "TensorRTEncoder requires TensorRT 10.x. Install NeMo with pip install 'nemo-toolkit[asr,trt]'."
-            ) from exc
-        if int(trt.__version__.split(".")[0]) < 10:
-            raise ImportError("TensorRTEncoder requires TensorRT 10 or newer.")
-        self.device = torch.device(device)
-        if self.device.type != "cuda":
-            raise ValueError("TensorRTEncoder requires a CUDA device.")
-        if self.device.index is None:
-            self.device = torch.device("cuda", torch.cuda.current_device())
-        self._trt = trt
-        self._logger = trt.Logger(trt.Logger.WARNING)
-        with torch.cuda.device(self.device):
-            self._runtime = trt.Runtime(self._logger)
-            self._engine = self._runtime.deserialize_cuda_engine(Path(engine_path).read_bytes())
-            if self._engine is None:
-                raise RuntimeError(f"Cannot deserialize TensorRT engine: {engine_path}")
-            self._validate_engine()
-            self._context = self._engine.create_execution_context()
-            if self._context is None:
-                raise RuntimeError("Cannot create TensorRT execution context.")
+        # The shared plan owns execution; this class supplies the encoder's typed interface.
+        self._plan = TensorRTPlan(engine_path, device)
+        self.device = self._plan.device
+        if set(self._plan.inputs) != {"audio_signal", "length"} or set(self._plan.outputs) != {
+            "outputs",
+            "encoded_lengths",
+        }:
+            raise ValueError(
+                "Expected offline ASR encoder inputs audio_signal/length and outputs outputs/encoded_lengths."
+            )
+        for name, dtype in self._plan.dtypes.items():
+            allowed = (
+                (torch.int32, torch.int64) if name in ("length", "encoded_lengths") else (torch.float16, torch.float32)
+            )
+            if dtype not in allowed:
+                raise ValueError(f"Unsupported TensorRT I/O dtype for {name}: {dtype}")
         self._stream: torch.cuda.Stream | None = None
-        self._buffers: dict[str, torch.Tensor] = {}
 
     @torch.inference_mode()
     def __call__(self, audio_signal: torch.Tensor, length: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -93,66 +86,8 @@ class TensorRTEncoder:
             if self._stream is not None and self._stream != stream:
                 raise ValueError("Use a separate TensorRTEncoder instance for each CUDA stream.")
             self._stream = stream
-            buffers = self._bind_inputs(audio_signal, length)
-            missing = self._context.infer_shapes()
-            if missing:
-                raise RuntimeError(f"Insufficient shape inputs: {missing}")
-            for name in ("outputs", "encoded_lengths"):
-                shape = tuple(self._context.get_tensor_shape(name))
-                if any(size < 0 for size in shape):
-                    raise RuntimeError(f"Output shape cannot be inferred: {name} {shape}")
-                buffers[name] = torch.empty(shape, dtype=self._dtypes[name], device=self.device)
-                if not self._context.set_tensor_address(name, buffers[name].data_ptr()):
-                    raise RuntimeError(f"Cannot bind TensorRT output: {name}")
-            if not self._context.execute_async_v3(stream.cuda_stream):
-                raise RuntimeError("TensorRT encoder execution failed.")
-            # TensorRT does not register external uses with PyTorch's caching allocator.
-            for tensor in buffers.values():
-                tensor.record_stream(stream)
-            self._buffers = buffers
-        return buffers["outputs"], buffers["encoded_lengths"]
-
-    def _validate_engine(self) -> None:
-        trt = self._trt
-        modes = {
-            "audio_signal": trt.TensorIOMode.INPUT,
-            "length": trt.TensorIOMode.INPUT,
-            "outputs": trt.TensorIOMode.OUTPUT,
-            "encoded_lengths": trt.TensorIOMode.OUTPUT,
-        }
-        names = {self._engine.get_tensor_name(i) for i in range(self._engine.num_io_tensors)}
-        if names != set(modes):
-            raise ValueError(f"Expected offline ASR encoder I/O names {set(modes)}, got {names}.")
-        types = {
-            trt.float32: torch.float32,
-            trt.float16: torch.float16,
-            trt.int32: torch.int32,
-            trt.int64: torch.int64,
-        }
-        self._dtypes: dict[str, torch.dtype] = {}
-        for name, mode in modes.items():
-            if self._engine.get_tensor_mode(name) != mode:
-                raise ValueError(f"Incorrect TensorRT I/O mode for {name}.")
-            if self._engine.get_tensor_location(name) != trt.TensorLocation.DEVICE:
-                raise ValueError(f"Only device I/O is supported: {name}")
-            if self._engine.get_tensor_format(name) != trt.TensorFormat.LINEAR:
-                raise ValueError(f"Only linear I/O is supported: {name}")
-            dtype = self._engine.get_tensor_dtype(name)
-            allowed = (trt.int32, trt.int64) if name in ("length", "encoded_lengths") else (trt.float16, trt.float32)
-            if dtype not in allowed:
-                raise ValueError(f"Unsupported TensorRT I/O dtype for {name}: {dtype}")
-            self._dtypes[name] = types[dtype]
-
-    def _bind_inputs(self, audio_signal: torch.Tensor, length: torch.Tensor) -> dict[str, torch.Tensor]:
-        buffers = {}
-        for name, tensor in (("audio_signal", audio_signal), ("length", length)):
-            tensor = tensor.to(dtype=self._dtypes[name]).contiguous()
-            bounds = self._engine.get_tensor_profile_shape(name, 0)
-            if any(size < lo or size > hi for size, lo, hi in zip(tensor.shape, bounds[0], bounds[2])):
-                raise ValueError(f"Input shape is outside the engine profile: {name} {tuple(tensor.shape)}")
-            if not self._context.set_input_shape(name, tuple(tensor.shape)):
-                raise ValueError(f"Invalid TensorRT input shape: {name} {tuple(tensor.shape)}")
-            if not self._context.set_tensor_address(name, tensor.data_ptr()):
-                raise RuntimeError(f"Cannot bind TensorRT input: {name}")
-            buffers[name] = tensor
-        return buffers
+            outputs = self._plan(
+                audio_signal=audio_signal.to(dtype=self._plan.dtypes["audio_signal"]),
+                length=length.to(dtype=self._plan.dtypes["length"]),
+            )
+        return outputs["outputs"], outputs["encoded_lengths"]

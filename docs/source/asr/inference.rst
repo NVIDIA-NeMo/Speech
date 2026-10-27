@@ -357,6 +357,8 @@ Transcribe mono audio at the checkpoint's sample rate, using the same checkpoint
 
 ``--compare-native`` adds the PyTorch encoder's transcript to each output record.
 This is an accuracy example: it retains the native encoder, uses FP32 preprocessing/decoding and disables decoder CUDA graphs.
+Prompt-conditioned models are rejected, because the example passes the encoder output to the decoder without the prompt projection.
+A cache-aware streaming encoder runs offline, over whole utterances without caches, and the example warns about it.
 
 For integration into your own loop, see `TensorRTEncoder <https://github.com/NVIDIA-NeMo/Speech/blob/main/nemo/collections/asr/parts/submodules/tensorrt_encoder.py>`_ for tensor and stream requirements.
 Streaming encoder caches, training and CUDA graph capture are not supported.

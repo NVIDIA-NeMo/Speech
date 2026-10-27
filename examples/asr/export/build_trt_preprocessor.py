@@ -60,8 +60,6 @@ def main() -> None:
         dynamic_axes={
             "input_signal": {0: "batch", 1: "samples"},
             "length": {0: "batch"},
-            "processed_signal": {0: "batch", 2: "frames"},
-            "processed_length": {0: "batch"},
         },
     )
     del model, preprocessor

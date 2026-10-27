@@ -863,7 +863,7 @@ The model introduces several prompt-specific configuration parameters in the ``m
 
 **Dataset Configuration:**
 
-The model requires training data with prompt annotations when using Lhotse datasets:
+The model requires training data with language annotations when using Lhotse datasets:
 
 .. code-block:: yaml
 
@@ -871,20 +871,35 @@ The model requires training data with prompt annotations when using Lhotse datas
     train_ds:
       use_lhotse: true
       initialize_prompt_feature: true
-      prompt_field: "target_lang"     # Field name for prompt extraction
+      lang_field: target_lang         # Manifest key holding the utterance language
       prompt_dictionary: ${model.model_defaults.prompt_dictionary}
       num_prompts: ${model.model_defaults.num_prompts}
-      
+      default_prompt_mode: unified    # langID | auto | unified
+      unified_auto_ratio: 0.5         # Probability of the "auto" prompt in unified mode
+
     validation_ds:
       use_lhotse: true
       initialize_prompt_feature: true
-      prompt_field: "target_lang"
+      lang_field: target_lang
       prompt_dictionary: ${model.model_defaults.prompt_dictionary}
       num_prompts: ${model.model_defaults.num_prompts}
+      default_prompt_mode: langID
+
+The prompt index for each utterance is chosen by its prompt mode:
+
+- ``langID``: the utterance's language.
+- ``auto``: the language-agnostic ``auto`` prompt.
+- ``unified``: ``auto`` with probability ``unified_auto_ratio``, otherwise the utterance's language.
+  This is the default; it trains one model for both prompted and language-agnostic decoding.
+
+A Lhotse input config can set the mode per dataset with ``tags: {prompt_mode: langID}``; otherwise
+``default_prompt_mode`` applies. Transcription always uses ``langID``.
 
 **Manifest Format:**
 
-Training manifests should include prompt information:
+The language is read from the manifest key named by ``lang_field`` (``lang`` by default; the example
+configs use ``target_lang``). It must be a key of ``prompt_dictionary``, or a bare code such as ``en``
+that matches exactly one locale key; unsupported languages raise an error.
 
 .. code-block:: json
 
@@ -941,7 +956,7 @@ variant:
         'fr-FR': 2,
         'es-ES': 3,
         # ... additional language codes ...
-        'auto': 127,                   # Per-sample dynamic language (read from manifest)
+        'auto': 127,                   # Language-agnostic prompt
       }
 
 **Dataset Configuration:**
@@ -955,16 +970,21 @@ The model uses the same index-based Lhotse dataset
     train_ds:
       use_lhotse: true
       initialize_prompt_feature: true
-      prompt_field: "target_lang"     # Field name for per-sample prompt extraction
+      lang_field: target_lang
       prompt_dictionary: ${model.model_defaults.prompt_dictionary}
       num_prompts: ${model.model_defaults.num_prompts}
+      default_prompt_mode: unified    # langID | auto | unified
+      unified_auto_ratio: 0.5
 
     validation_ds:
       use_lhotse: true
       initialize_prompt_feature: true
-      prompt_field: "target_lang"
+      lang_field: target_lang
       prompt_dictionary: ${model.model_defaults.prompt_dictionary}
       num_prompts: ${model.model_defaults.num_prompts}
+      default_prompt_mode: langID
+
+Prompt modes behave as described for the hybrid model.
 
 **Manifest Format:**
 

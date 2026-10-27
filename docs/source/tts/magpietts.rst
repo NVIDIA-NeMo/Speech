@@ -167,6 +167,12 @@ Evaluation set configuration
 The optional keys are:
 
 - ``language``: overrides ``--language`` for this dataset.
+- ``precomputed_context_audio_embedding_key``: for EasyMagpie, select a speaker-encoded
+  audio context from the table provided with ``--precomputed_context_audio_embeddings_path``.
+  The table is a torch-saved dictionary with ``audio_embeddings[key]["embedding"]`` tensors
+  shaped ``(time, embedding_dim)``. ``__zero__`` selects an empty audio context without a
+  table. Context text is still encoded normally. Omit the key to use the manifest's
+  audio context.
 - ``asr_model``: ``{"name": ..., "type": ...}`` overrides ``--asr_model_name`` and ``--asr_model_type``.
 - ``tokenizer_names``: list of text tokenizer names to use for this dataset (``magpietts_inference.py`` only).
 - ``strip_text_annotations_for_metrics``: JSON boolean that enables annotation stripping for this dataset (default: off; there is no run-level flag). When enabled, annotation and control markers such as ``<tag>``, ``{tag}``, ``[tag]``, ``--``, ``...`` and ``*`` are removed from the reference and from the ASR hypothesis before CER/WER are computed. Square-bracket spans are removed together with their content, which is correct for non-verbal tags like ``[breath]`` but deletes the spoken word for datasets that mark emphasis as ``[word]``. Leave it off for such datasets; otherwise every emphasized word is scored as an insertion and CER/WER are inflated.

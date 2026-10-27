@@ -275,8 +275,13 @@ flag directly:
         decoder_type=rnnt \
         strip_lang_tags=true
 
-Use ``target_lang=<lang-code>`` to pin every sample in the batch to one language, or
-``target_lang=auto`` to read the per-sample ``target_lang`` field from each manifest entry.
+``target_lang`` must be a key of the model's ``prompt_dictionary``. A bare language code such as
+``en`` is also accepted when it matches exactly one locale key (for example ``en-US``). An
+unsupported language raises an error. ``target_lang=auto`` (the default when ``target_lang`` is
+unset) selects the language-agnostic prompt; quality on languages the model was not trained on is
+not guaranteed. This script applies one prompt to every sample. For per-utterance languages, use
+``model.transcribe()``, which reads each manifest entry's ``lang`` field when ``target_lang`` is
+unset and uses ``auto`` for entries without one.
 Setting ``strip_lang_tags=true`` removes ``<xx-XX>`` language tags from the decoded text
 (pattern is customizable via ``lang_tag_pattern``).
 
@@ -352,9 +357,43 @@ Transcribe mono audio at the checkpoint's sample rate, using the same checkpoint
 
 ``--compare-native`` adds the PyTorch encoder's transcript to each output record.
 This is an accuracy example: it retains the native encoder, uses FP32 preprocessing/decoding and disables decoder CUDA graphs.
+Prompt-conditioned models are rejected, because the example passes the encoder output to the decoder without the prompt projection.
+A cache-aware streaming encoder runs offline, over whole utterances without caches, and the example warns about it.
 
 For integration into your own loop, see `TensorRTEncoder <https://github.com/NVIDIA-NeMo/Speech/blob/main/nemo/collections/asr/parts/submodules/tensorrt_encoder.py>`_ for tensor and stream requirements.
 Streaming encoder caches, training and CUDA graph capture are not supported.
+
+
+Waveform preprocessing engine
+-----------------------------
+
+Build a standalone log-mel preprocessor from the same checkpoint as the encoder:
+
+.. code-block:: bash
+
+    python examples/asr/export/build_trt_preprocessor.py \
+        --model model.nemo --onnx preprocessor.onnx --engine preprocessor.plan
+
+Building requires NeMo, PyTorch, TensorRT and Polygraphy.
+The engine uses the checkpoint's evaluation settings, FP32 with TF32 disabled, and no dithering or training augmentation.
+Dynamic export supports per-feature or no normalization with ``frame_splicing=1``.
+Defaults cover batches 1–16 and 800–640000 padded waveform samples; use ``--help`` to adjust them and ensure the resulting features fit the encoder.
+
+Prepare mono audio at the checkpoint's sample rate.
+Store zero-padded float32 ``input_signal`` arrays of shape ``[batch, samples]`` and int64 ``length`` arrays of shape ``[batch]`` in an NPZ file.
+
+Run preprocessing with NumPy, TensorRT and cuda-python, without PyTorch:
+
+.. code-block:: bash
+
+    python examples/asr/export/run_trt_preprocessor.py \
+        --engine preprocessor.plan --input waveforms.npz --output features.npz
+
+The outputs, ``processed_signal`` and ``processed_length``, contain features and lengths in feature frames for the encoder.
+The example reloads the engine and copies CPU/GPU buffers on each call; serving should retain them and pass GPU outputs directly to the encoder.
+
+Near-silent audio can amplify FP32 rounding during normalization, including between native CPU and CUDA execution.
+Validate recognition accuracy; identical features or transcripts are not guaranteed.
 
 
 Prediction network and joint engine

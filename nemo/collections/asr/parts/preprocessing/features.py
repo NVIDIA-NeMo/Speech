@@ -405,18 +405,36 @@ class FilterbankFeatures(nn.Module):
         logging.debug(f"nb_augmentation_prob: {nb_augmentation_prob}")
 
     def stft(self, x, *, center=None):
+        """Short-time Fourier transform of a waveform batch as a real-valued tensor.
+
+        Everything export-specific about the STFT lives here,
+        so a custom export overrides this method alone.
+        Under ONNX export the transform runs with `return_complex=False`, since the exporter rejects complex outputs;
+        otherwise the complex result is viewed as real.
+
+        Args:
+            x: waveform batch of shape (B, S).
+            center: pad the waveform so that frames are centered; defaults to `not self.exact_pad`.
+
+        Returns:
+            spectrum of shape (B, N, T, 2) with the real and imaginary parts in the last dimension.
+        """
         if center is None:
             center = not self.exact_pad
-        return torch.stft(
+        exporting = torch.onnx.is_in_onnx_export()
+        spectrum = torch.stft(
             x,
             n_fft=self.n_fft,
             hop_length=self.hop_length,
             win_length=self.win_length,
             center=center,
             window=self.window.to(dtype=torch.float, device=x.device),
-            return_complex=True,
+            return_complex=not exporting,
             pad_mode="constant",
         )
+        if exporting:
+            return spectrum
+        return torch.view_as_real(spectrum)
 
     def log_zero_guard_value_fn(self, x):
         if isinstance(self.log_zero_guard_value, str):
@@ -513,10 +531,10 @@ class FilterbankFeatures(nn.Module):
         local_frames = frame_indices - frame_cu_seqlens[frame_sequence_ids]
         global_frames = torch.div(block_offsets[frame_sequence_ids], self.hop_length, rounding_mode="floor")
         global_frames = global_frames + local_frames
-        spectra = spectra.index_select(-1, global_frames).transpose(0, 1)
+        spectra = spectra.index_select(1, global_frames).transpose(0, 1)
 
         guard_value = 0 if not self.use_grads else CONSTANT
-        spectra = torch.sqrt(torch.view_as_real(spectra).pow(2).sum(-1) + guard_value)
+        spectra = torch.sqrt(spectra.pow(2).sum(-1) + guard_value)
         if self.training and self.nb_augmentation_prob > 0.0:
             narrowband = torch.tensor(
                 self._rng.choices(
@@ -585,10 +603,9 @@ class FilterbankFeatures(nn.Module):
         with torch.amp.autocast(x.device.type, enabled=False):
             x = self.stft(x)
 
-        # torch stft returns complex tensor (of shape [B,N,T]); so convert to magnitude
+        # stft returns the real and imaginary parts (of shape [B,N,T,2]); so convert to magnitude
         # guard is needed for sqrt if grads are passed through
         guard = 0 if not self.use_grads else CONSTANT
-        x = torch.view_as_real(x)
         x = torch.sqrt(x.pow(2).sum(-1) + guard)
 
         if self.training and self.nb_augmentation_prob > 0.0:
@@ -636,9 +653,14 @@ class FilterbankFeatures(nn.Module):
         if pad_to == "max":
             x = nn.functional.pad(x, (0, self.max_length - x.size(-1)), value=self.pad_value)
         elif pad_to > 0:
-            pad_amt = x.size(-1) % pad_to
-            if pad_amt != 0:
-                x = nn.functional.pad(x, (0, pad_to - pad_amt), value=self.pad_value)
+            if torch.onnx.is_in_onnx_export():
+                # Keep padding dependent on the runtime time dimension, including zero padding.
+                pad_amt = (pad_to - x.size(-1) % pad_to) % pad_to
+                x = nn.functional.pad(x, (0, pad_amt), value=self.pad_value)
+            else:
+                pad_amt = x.size(-1) % pad_to
+                if pad_amt != 0:
+                    x = nn.functional.pad(x, (0, pad_to - pad_amt), value=self.pad_value)
         return x, seq_len
 
 

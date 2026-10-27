@@ -27,7 +27,11 @@ from omegaconf import DictConfig, OmegaConf
 from safetensors.torch import save_file
 
 from nemo.collections.speechlm2.parts.hf_hub import LLM_BACKBONE_DIR
-from nemo.collections.speechlm2.vllm.salm.config import _mtp_pattern_from_backbone_config, _resolve_speechlm_mtp_config
+from nemo.collections.speechlm2.vllm.salm.config import (
+    _mtp_pattern_from_backbone_config,
+    _resolve_speechlm_mtp_config,
+    checkpoint_architecture,
+)
 from nemo.core.classes.common import safe_instantiate
 from nemo.core.config import hydra_runner
 from nemo.utils.dtype import str_to_dtype
@@ -301,11 +305,12 @@ def save_llm_backbone_config(model: torch.nn.Module, output_dir: str | Path) -> 
 def _detect_vllm_architecture(model_cfg: dict) -> tuple[str, int]:
     """Determine the vLLM plugin model class and backbone vocabulary size.
 
-    The SALM plugin registers a single architecture name and selects between
-    transformer and hybrid backends at instantiation time, so this function
-    verifies the backbone config is reachable and returns the unified name
-    plus the embedding-table vocabulary bound. The hybrid-vs-transformer split
-    is handled inside the plugin.
+    The SALM plugin serves every SpeechLM with one model class and selects
+    between transformer and hybrid backends at instantiation time. This
+    function verifies the backbone config is reachable and returns the
+    architecture name (a dedicated name for a ParallelExpertEncoder on a
+    NemotronH backbone, the generic name otherwise; see
+    ``checkpoint_architecture``) plus the embedding-table vocabulary bound.
 
     Raises:
         ValueError: If the HF config cannot be loaded, has no architecture, or
@@ -329,7 +334,7 @@ def _detect_vllm_architecture(model_cfg: dict) -> tuple[str, int]:
     if isinstance(vocab_size, bool) or not isinstance(vocab_size, int) or vocab_size <= 0:
         raise ValueError(f"HF config for {pretrained_llm!r} has invalid 'vocab_size': {vocab_size!r}.")
 
-    return "NeMoSpeechLMForConditionalGeneration", vocab_size
+    return checkpoint_architecture(model_cfg, archs), vocab_size
 
 
 def prepare_for_vllm(output_dir: str, model_cfg: dict) -> None:

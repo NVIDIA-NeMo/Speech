@@ -18,7 +18,7 @@ import os
 import tarfile
 from abc import ABC, abstractmethod
 from pathlib import PurePosixPath
-from typing import List
+from typing import List, Optional
 
 import torch
 from omegaconf import DictConfig, OmegaConf, open_dict
@@ -28,6 +28,7 @@ import nemo.collections.asr.models as asr_models
 from nemo.collections.asr.parts.mixins.asr_adapter_mixins import ASRAdapterModelMixin
 from nemo.collections.asr.parts.mixins.streaming import StreamingEncoder
 from nemo.collections.asr.parts.utils import asr_module_utils
+from nemo.collections.asr.parts.utils.prompt_language_utils import resolve_prompt_index
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.asr.parts.utils.tokenizer_utils import (
     extract_capitalized_tokens_from_vocab,
@@ -969,7 +970,24 @@ class PromptStreamingMixin:
             torch.nn.Linear(proj_out_size * 2, proj_out_size),
         )
 
-    def set_inference_prompt(self, target_lang: str):
+    def resolve_prompt_language(self, target_lang: Optional[str]) -> int:
+        """Map a language name to its prompt index.
+
+        Accepts an exact ``prompt_dictionary`` key (``"de-DE"``, ``"de"``) or a bare language code
+        that matches exactly one locale key. None selects the language-agnostic ``"auto"`` prompt.
+
+        Args:
+            target_lang: Language name, or None for the language-agnostic prompt.
+
+        Returns:
+            (int) Index into the prompt one-hot vector.
+
+        Raises:
+            ValueError: If the language is not supported by the model, or is ambiguous.
+        """
+        return resolve_prompt_index(target_lang, self.cfg.model_defaults.get('prompt_dictionary') or {})
+
+    def set_inference_prompt(self, target_lang: Optional[str]):
         """
         Set the language prompt for streaming inference.
 
@@ -978,17 +996,10 @@ class PromptStreamingMixin:
         ``change_decoding_strategy``.
 
         Args:
-            target_lang: A key from the model's ``prompt_dictionary``
+            target_lang: Language name, resolved by :meth:`resolve_prompt_language`
                          (e.g. ``"en-US"``, ``"auto"``).
         """
-        prompt_dict = self.cfg.model_defaults.get('prompt_dictionary', {})
-        if target_lang not in prompt_dict:
-            available = list(prompt_dict.keys())
-            raise ValueError(
-                f"Unknown target language '{target_lang}'. "
-                f"Available: {available[:20]}{'...' if len(available) > 20 else ''}"
-            )
-        self._inference_prompt_index = prompt_dict[target_lang]
+        self._inference_prompt_index = self.resolve_prompt_language(target_lang)
         logging.info(f"Inference prompt set to '{target_lang}' (index {self._inference_prompt_index})")
 
     def _apply_prompt_to_encoded(self, encoded: Tensor) -> Tensor:

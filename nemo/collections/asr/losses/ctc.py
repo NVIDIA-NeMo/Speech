@@ -14,8 +14,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from torch import nn
+from torch import Tensor, nn
 
+from nemo.collections.asr.parts.packed_sequence import PackedEncoderActivations, unpack_encoder_output
 from nemo.core.classes import Serialization, Typing, typecheck
 from nemo.core.neural_types import LabelsType, LengthsType, LogprobsType, LossType, NeuralType
 
@@ -63,6 +64,34 @@ class CTCLoss(nn.CTCLoss, Serialization, Typing):
             losses = losses.sum() / target_lengths.sum()  # same as above but longer samples weigh more
 
         return losses
+
+    def forward_packed(self, log_probs: PackedEncoderActivations, targets: Tensor, target_lengths: Tensor) -> Tensor:
+        """Compute the CTC loss from token-flat log probabilities with explicit sequence boundaries.
+
+        This is a compatibility boundary, not a padding-free CTC kernel:
+        it materializes the padded log probabilities for the existing kernel and calls ``forward``,
+        so the encoder and the vocabulary projection can stay packed up to this call.
+        ``reduction`` and ``zero_infinity`` apply unchanged.
+
+        Args:
+            log_probs: concatenated per-utterance log probabilities, shape ``(sum(T_i), D)`` including the blank.
+            targets: padded target ids, shape ``(B, U)``.
+            target_lengths: number of target ids per utterance, shape ``(B,)``.
+
+        Returns:
+            The loss as ``forward`` returns it for the configured reduction.
+        """
+        if not isinstance(log_probs, PackedEncoderActivations):
+            raise TypeError(
+                f"forward_packed expects PackedEncoderActivations as log_probs, got {type(log_probs).__name__}; "
+                "padded log probabilities go to forward."
+            )
+        return self.forward(
+            log_probs=unpack_encoder_output(log_probs),
+            targets=targets,
+            input_lengths=log_probs.lengths,
+            target_lengths=target_lengths,
+        )
 
     @typecheck()
     def forward(self, log_probs, targets, input_lengths, target_lengths):

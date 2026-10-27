@@ -1013,22 +1013,27 @@ def test_processor_marks_the_audio_of_requests_that_opt_into_capture():
         _get_audio_token_estimator_config=lambda: None,
     )
 
-    def capture_flags(mm_kwargs):
-        result = processor._call_hf_processor(
-            prompt="<|audio|> <|audio|>",
-            mm_data={"audios": [[0.0] * 8, [0.0] * 4]},
-            mm_kwargs=mm_kwargs,
-            tok_kwargs={},
+    audios = [[0.0] * 8, [0.0] * 4]
+
+    def capture_flags_with_prompt(mm_kwargs):  # vLLM 0.28 processor contract
+        result = processor._call_hf_processor_with_prompt(
+            prompt="<|audio|> <|audio|>", mm_data={"audios": audios}, mm_kwargs=mm_kwargs, tok_kwargs={}
         )
         return result["capture_ctc_timestamps"].tolist()
 
-    assert capture_flags({}) == [False, False]
-    assert capture_flags({"capture_ctc_timestamps": True}) == [True, True]
+    def capture_flags_audio_only(mm_kwargs):  # vLLM 0.32 processor contract
+        result = processor._call_hf_processor_audio_only(hf_data={"audio": audios}, hf_kwargs=mm_kwargs)
+        return result["capture_ctc_timestamps"].tolist()
+
+    for capture_flags in (capture_flags_with_prompt, capture_flags_audio_only):
+        assert capture_flags({}) == [False, False]
+        assert capture_flags({"capture_ctc_timestamps": True}) == [True, True]
     # Read on the host while encoding, where a device copy would need a sync.
     assert processor._get_mm_fields_config(None, {})["capture_ctc_timestamps"].field.keep_on_cpu
 
 
 def test_startup_profiling_inputs_opt_into_capture(monkeypatch):
+    """vLLM 0.28 builds the profiling inputs in the dummy-inputs builder."""
     pytest.importorskip("vllm")
     from vllm.multimodal.processing.dummy_inputs import BaseDummyInputsBuilder
 
@@ -1038,12 +1043,33 @@ def test_startup_profiling_inputs_opt_into_capture(monkeypatch):
         BaseDummyInputsBuilder,
         "get_dummy_processor_inputs",
         lambda self, seq_len, mm_counts, mm_options: SimpleNamespace(hf_processor_mm_kwargs={}),
+        raising=False,
     )
     builder = object.__new__(NeMoSpeechLMDummyInputsBuilder)
 
     inputs = builder.get_dummy_processor_inputs(64, {"audio": 1}, {})
 
     assert inputs.hf_processor_mm_kwargs == {"capture_ctc_timestamps": True}
+
+
+def test_startup_profiling_inputs_opt_into_capture_in_the_processor(monkeypatch):
+    """vLLM 0.32 builds the profiling inputs in the processor (``get_dummy_inputs``)."""
+    pytest.importorskip("vllm")
+    from vllm.multimodal.processing import BaseMultiModalProcessor
+
+    from nemo.collections.speechlm2.vllm.salm.audio import NeMoSpeechLMMultiModalProcessor
+
+    monkeypatch.setattr(
+        BaseMultiModalProcessor,
+        "get_dummy_inputs",
+        lambda self, seq_len, mm_counts, mm_options: SimpleNamespace(hf_processor_mm_kwargs={"other": 1}),
+        raising=False,
+    )
+    processor = object.__new__(NeMoSpeechLMMultiModalProcessor)
+
+    inputs = processor.get_dummy_inputs(64, {"audio": 1}, {})
+
+    assert inputs.hf_processor_mm_kwargs == {"other": 1, "capture_ctc_timestamps": True}
 
 
 _WORKER_METHODS = {

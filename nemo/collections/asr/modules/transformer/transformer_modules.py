@@ -112,7 +112,8 @@ class TransformerEmbedding(nn.Module):
 
         # prepare position embedding for asynchronius decoding (canary streaming)
         if torch.is_tensor(start_pos):
-            shift_pos = start_pos.unsqueeze(-1)
+            # under tracing the shape-derived start position is a CPU tensor even for CUDA inputs
+            shift_pos = start_pos.unsqueeze(-1).to(input_ids.device)
             start_pos = 0
         else:
             shift_pos = None

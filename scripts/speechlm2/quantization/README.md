@@ -36,7 +36,7 @@ than for English, for more throughput. Measure both on your own test sets agains
 - `transformers` with NemotronH support, `torch`, `safetensors` and `datasets`.
 - The default FP8 calibration reads the gated `nvidia/Nemotron-Post-Training-Dataset-v2`. Log in to Hugging Face
   with access to it, or pass `--calib-dataset cnn_dailymail`.
-- vLLM 0.28 and NeMo with the SpeechLM plugin's quantized serving (NVIDIA-NeMo/Speech#16341), for calibration and
+- vLLM 0.32 and NeMo with the SpeechLM plugin's quantized serving (NVIDIA-NeMo/Speech#16341), for calibration and
   serving. Serving the CTC timestamp head also needs NVIDIA-NeMo/Speech#16344; without it, assemble with
   `--skip-ctc-head`.
 - Working space on top of the source checkpoint. Keeping the BF16 decoder export, the quantized decoder and the

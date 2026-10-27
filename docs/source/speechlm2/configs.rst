@@ -491,6 +491,7 @@ Example configurations for all model types can be found in the example directory
 
 - SALM: `examples/speechlm2/conf/salm.yaml`
 - SALMAutomodel: `examples/speechlm2/conf/salm_automodel.yaml`
+- SALM DFlash draft training: ``examples/speechlm2/conf/dflash.yaml`` (launch with ``dflash_train.py``)
 - DuplexS2SModel: `examples/speechlm2/conf/s2s_duplex.yaml`
 - DuplexS2SSpeechDecoderModel: `examples/speechlm2/conf/s2s_duplex_speech_decoder.yaml`
 - DuplexSTTModel: `examples/speechlm2/conf/duplex_stt.yaml`

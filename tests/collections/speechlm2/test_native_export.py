@@ -130,7 +130,7 @@ def test_native_mtp_retention_without_head_exports_disabled(tmp_path):
     assert "retain_native_mtp" not in metadata
     loaded = load_file(tmp_path / "model.safetensors")
     assert set(loaded) == {"llm.proj.weight"}
-    torch.testing.assert_close(loaded["llm.proj.weight"], model.llm.proj.weight, rtol=0, atol=0)
+    torch.testing.assert_close(loaded["llm.proj.weight"], model.llm.proj.weight.detach().cpu(), rtol=0, atol=0)
 
 
 def test_native_mtp_retention_accepts_null_mtp_block():

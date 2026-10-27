@@ -1,0 +1,8 @@
+# NVIDIA NeMo Speech 26.07.00, Linux amd64 (immutable platform manifest).
+image: nvcr.io/nvidia/nemo-speech@sha256:8b5b7e616aba612d26ab1d2d2b654aec0336d7e3c5f10d06c0a14a9a6e44cb89
+entry: train.py
+platform: gpu-h100-sxm
+preset: 1gpu-16vcpu-200gb
+timeout: 1h
+disk_size: 250Gi
+output: auto

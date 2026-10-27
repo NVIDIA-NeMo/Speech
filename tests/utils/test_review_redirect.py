@@ -57,7 +57,7 @@ def test_formal_review_rubric_is_inert_and_uses_formal_submission() -> None:
     metadata = yaml.safe_load(rubric.split("---", 2)[1])
     assert metadata["name"] == "nemo-speech-pr-review"
     assert metadata["disable-model-invocation"] is True
-    assert metadata["user_invocable"] is False
+    assert metadata["user-invocable"] is False
     assert "mode=light" in rubric
     assert "mode=strict" in rubric
     assert "Do not run GitHub commands or" in rubric

@@ -640,6 +640,7 @@ class ConvSubsampling(torch.nn.Module):
             raise NotImplementedError("Causal subsampling has no sequence-packed form.")
         if packed.data.shape[1] != self._feat_in:
             raise ValueError(f"Packed features must have width {self._feat_in}, got {packed.data.shape[1]}.")
+        self._check_packed_stack_gaps()
         layout = packed_slot_layout(packed, alignment=self.subsampling_factor, gap=self.subsampling_factor)
         outputs = []
         lengths = []
@@ -662,6 +663,28 @@ class ConvSubsampling(torch.nn.Module):
         return _new_packed_encoder_activations(
             torch.cat(outputs), out_lengths, _lengths_to_cu_seqlens(out_lengths), max_seqlen
         )
+
+    def _check_packed_stack_gaps(self):
+        """Verify that no layer of the stack reads across utterances on the gapped time axis.
+
+        At the input stage every slot starts at a multiple of the subsampling factor
+        and leaves at least that many empty frames after its utterance.
+        A layer with time kernel k, stride s and padding (left, right) reads at most max(left, right) frames
+        beyond an utterance, which must stay inside the gap,
+        and leaves at least ceil((gap + k - left - right - s) / s) empty frames behind it.
+        """
+        gap = self.subsampling_factor
+        for layer in self.conv:
+            if not hasattr(layer, 'kernel_size'):
+                continue
+            kernel, stride = _time_axis(layer.kernel_size), _time_axis(layer.stride)
+            left, right = _layer_padding(layer)
+            if max(left, right) > gap:
+                raise NotImplementedError(
+                    f"{type(layer).__name__} with time padding {(left, right)} reads beyond the {gap} empty frames "
+                    "between utterances; this convolution stack has no sequence-packed form."
+                )
+            gap = -(-(gap + kernel - left - right - stride) // stride)
 
     def _packed_sequence_groups(self, layout: PackedSlotLayout) -> list[tuple[int, int]]:
         """Split the utterances into groups whose convolution activations stay below the indexing limit.
@@ -1139,6 +1162,11 @@ def _layer_padding(layer):
     if isinstance(layer.padding, int):  # pooling layers keep one value for both axes
         return layer.padding, layer.padding
     return layer.padding[0], layer.padding[0]
+
+
+def _time_axis(value):
+    """The time (height) entry of a per-axis layer attribute, which pooling layers may keep as one int."""
+    return value[0] if isinstance(value, (tuple, list)) else value
 
 
 def _is_depthwise(layer):

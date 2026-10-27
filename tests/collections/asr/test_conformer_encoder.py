@@ -20,6 +20,7 @@ import pytest
 import torch
 from omegaconf import DictConfig, OmegaConf
 
+from nemo.collections.asr.modules import transformer_encoder_utils
 from nemo.collections.asr.modules.conformer_encoder import ConformerEncoder
 from nemo.collections.asr.parts.packed_sequence import (
     PackedEncoderActivations,
@@ -627,8 +628,8 @@ class TestPackedConformerEncoder:
         torch.testing.assert_close(packed.data, _valid_frames(padded_out, padded_lengths))
 
     @pytest.mark.unit
-    def test_interctc_capture_is_packed(self):
-        torch.manual_seed(7)
+    def test_interctc_capture_is_rejected(self):
+        """The InterCTC consumer expects padded (B, D, T) tensors, so the packed forward refuses the capture."""
         encoder = _packed_encoder().double().eval()
         lengths = torch.tensor([20, 13])
         features = _packed_test_features(lengths)
@@ -636,14 +637,14 @@ class TestPackedConformerEncoder:
         encoder.update_access_cfg({"interctc": {"capture_layers": [0]}, "detach": True}, guid=guid)
         encoder.set_access_enabled(access_enabled=True, guid=guid)
         try:
-            packed = encoder.forward_sequence_packed(features, lengths)
+            with pytest.raises(NotImplementedError, match="InterCTC"):
+                encoder.forward_sequence_packed(features, lengths)
+            # the padded forward still captures
+            encoder(audio_signal=features, length=lengths)
             registry = {}
             for module_registry in encoder.get_module_registry(encoder).values():
                 registry.update(module_registry)
-            captured = registry["interctc/layer_output_0"][0]
-            assert isinstance(captured, PackedEncoderActivations) and not captured.data.requires_grad
-            assert captured.lengths.tolist() == packed.lengths.tolist()
-            assert registry["interctc/layer_length_0"][0].tolist() == packed.lengths.tolist()
+            assert registry["interctc/layer_output_0"][0].shape[-1] == 16
         finally:
             encoder.reset_registry()
             encoder.set_access_enabled(access_enabled=False, guid=guid)
@@ -660,13 +661,45 @@ class TestPackedConformerEncoder:
 
     @pytest.mark.unit
     def test_state_dict_unchanged(self):
-        reference = ConformerEncoder(
-            feat_in=8, n_layers=2, d_model=16, n_heads=2, subsampling_conv_channels=4, subsampling_factor=4
+        """The packed forward adds no parameter or buffer: the keys of a small encoder as recorded on `main`."""
+        encoder = ConformerEncoder(
+            feat_in=8, n_layers=1, d_model=16, n_heads=2, subsampling_conv_channels=4, subsampling_factor=4
         )
-        again = ConformerEncoder(
-            feat_in=8, n_layers=2, d_model=16, n_heads=2, subsampling_conv_channels=4, subsampling_factor=4
-        )
-        assert set(reference.state_dict()) == set(again.state_dict())
+        recorded = {
+            "pre_encode": ["conv.0.bias", "conv.0.weight", "conv.2.bias", "conv.2.weight", "out.bias", "out.weight"],
+            "layers.0.feed_forward1": ["linear1.bias", "linear1.weight", "linear2.bias", "linear2.weight"],
+            "layers.0.feed_forward2": ["linear1.bias", "linear1.weight", "linear2.bias", "linear2.weight"],
+            "layers.0.self_attn": [
+                "linear_k.bias",
+                "linear_k.weight",
+                "linear_out.bias",
+                "linear_out.weight",
+                "linear_pos.weight",
+                "linear_q.bias",
+                "linear_q.weight",
+                "linear_v.bias",
+                "linear_v.weight",
+                "pos_bias_u",
+                "pos_bias_v",
+            ],
+            "layers.0.conv": [
+                "batch_norm.bias",
+                "batch_norm.num_batches_tracked",
+                "batch_norm.running_mean",
+                "batch_norm.running_var",
+                "batch_norm.weight",
+                "depthwise_conv.bias",
+                "depthwise_conv.weight",
+                "pointwise_conv1.bias",
+                "pointwise_conv1.weight",
+                "pointwise_conv2.bias",
+                "pointwise_conv2.weight",
+            ],
+        }
+        norms = ["norm_conv", "norm_feed_forward1", "norm_feed_forward2", "norm_out", "norm_self_att"]
+        keys = [f"{prefix}.{name}" for prefix, names in recorded.items() for name in names]
+        keys += [f"layers.0.{norm}.{parameter}" for norm in norms for parameter in ("bias", "weight")]
+        assert sorted(encoder.state_dict()) == sorted(keys)
         assert "layers.0.self_attn.linear_pos.weight" in _packed_encoder().state_dict()
 
 
@@ -691,22 +724,57 @@ class TestPackedConformerEncoderCuda:
         for name, parameter in packed_encoder.named_parameters():
             torch.testing.assert_close(parameter.grad, padded_grads[name].grad, atol=1e-4, rtol=1e-3, msg=name)
 
-    @pytest.mark.unit
-    def test_bf16_autocast_matches_padded(self):
-        torch.manual_seed(9)
-        encoder = _packed_encoder(d_model=32, n_heads=2).cuda().eval()
-        lengths = torch.tensor([300, 7, 150], device="cuda")
-        features = _packed_test_features(lengths, dtype=torch.float32, device="cuda")
-        with torch.autocast("cuda", dtype=torch.bfloat16), torch.no_grad():
-            padded_out, padded_lengths = encoder(audio_signal=features, length=lengths)
-            packed = encoder.forward_sequence_packed(features, lengths)
-        padded_valid = _valid_frames(padded_out, padded_lengths).float()
-        torch.testing.assert_close(packed.data.float(), padded_valid, atol=5e-2, rtol=5e-2)
+    @staticmethod
+    def _half_precision_flash_attention_available():
+        return transformer_encoder_utils._get_flash_attention_varlen_for_device(torch.device("cuda")) is not None
 
     @pytest.mark.unit
-    def test_attention_dropout_with_rel_pos_is_rejected(self):
-        encoder = _packed_encoder(dropout_att=0.1).cuda().train()
+    @pytest.mark.parametrize("self_attention_model", ["rel_pos", "abs_pos", "rope"])
+    def test_bf16_autocast_matches_padded_outputs_and_gradients(self, self_attention_model):
+        """rel_pos runs FlexAttention with the position bias; abs_pos and rope run variable-length FlashAttention."""
+        if self_attention_model != "rel_pos" and not self._half_precision_flash_attention_available():
+            pytest.skip("requires a variable-length FlashAttention provider")
+        torch.manual_seed(9)
+        padded_encoder = _packed_encoder(self_attention_model=self_attention_model, d_model=32, n_heads=2)
+        padded_encoder = padded_encoder.cuda().eval()
+        packed_encoder = copy.deepcopy(padded_encoder)
+        lengths = torch.tensor([300, 7, 150], device="cuda")
+        features = _packed_test_features(lengths, dtype=torch.float32, device="cuda")
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            padded_out, padded_lengths = padded_encoder(audio_signal=features, length=lengths)
+            packed = packed_encoder.forward_sequence_packed(features, lengths)
+        padded_valid = _valid_frames(padded_out, padded_lengths).float()
+        torch.testing.assert_close(packed.data.float(), padded_valid, atol=5e-2, rtol=5e-2)
+        padded_valid.square().mean().backward()
+        packed.data.float().square().mean().backward()
+        padded_grads = dict(padded_encoder.named_parameters())
+        for name, parameter in packed_encoder.named_parameters():
+            # bf16 rounds differently in the padded and the packed kernels, so the gradients are compared in norm
+            reference = padded_grads[name].grad
+            assert (parameter.grad - reference).norm() <= 0.1 * reference.norm() + 1e-5, name
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("self_attention_model", ["abs_pos", "rope"])
+    def test_attention_dropout_runs_through_flash_attention_in_bf16(self, self_attention_model):
+        if not self._half_precision_flash_attention_available():
+            pytest.skip("requires a variable-length FlashAttention provider")
+        torch.manual_seed(10)
+        encoder = _packed_encoder(self_attention_model=self_attention_model, dropout_att=0.1, d_model=32, n_heads=2)
+        encoder = encoder.cuda().train()
+        lengths = torch.tensor([300, 7, 150], device="cuda")
+        features = _packed_test_features(lengths, dtype=torch.float32, device="cuda")
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            packed = encoder.forward_sequence_packed(features, lengths)
+        assert packed.data.shape == (int(packed.lengths.sum()), 32) and torch.isfinite(packed.data).all()
+        packed.data.float().square().mean().backward()
+        assert encoder.layers[0].self_attn.linear_q.weight.grad is not None
+
+    @pytest.mark.unit
+    def test_attention_dropout_without_flash_attention_is_rejected(self):
+        """FlexAttention has no dropout: rel_pos attention, and abs_pos attention in float32, refuse dropout_att."""
         lengths = torch.tensor([30, 7], device="cuda")
         features = _packed_test_features(lengths, dtype=torch.float32, device="cuda")
-        with pytest.raises(NotImplementedError, match="dropout"):
-            encoder.forward_sequence_packed(features, lengths)
+        for self_attention_model in ("rel_pos", "abs_pos"):
+            encoder = _packed_encoder(self_attention_model=self_attention_model, dropout_att=0.1).cuda().train()
+            with pytest.raises(NotImplementedError, match="dropout_att"):
+                encoder.forward_sequence_packed(features, lengths)

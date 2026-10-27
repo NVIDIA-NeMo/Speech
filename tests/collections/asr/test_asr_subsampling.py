@@ -509,3 +509,12 @@ class TestPackedConvSubsampling:
             ConvSubsampling("striding_conv1d", 4, 8, 12, 4).forward_packed(packed)
         with pytest.raises(NotImplementedError):
             ConvSubsampling("striding", 4, 8, 12, 4, is_causal=True).forward_packed(packed)
+
+    @pytest.mark.unit
+    def test_rejects_a_stack_that_reads_across_utterances(self):
+        module = ConvSubsampling("striding", 4, 8, 12, 4)
+        # the second 3x3 stage has two empty frames after every utterance; a time padding of three would read the next
+        module.conv[2].padding = (3, 3)
+        packed = pack_encoder_output(torch.randn(1, 10, 8), torch.tensor([10]))
+        with pytest.raises(NotImplementedError, match="reads beyond the 2 empty frames"):
+            module.forward_packed(packed)

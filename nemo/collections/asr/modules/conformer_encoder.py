@@ -868,12 +868,12 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         batch normalization in the convolution modules takes its training statistics from the valid frames only,
         while the padded forward includes the padded frames (see ``ConformerConvolution.forward_packed``).
         Dropout draws its masks per token, so same-seed elementwise equality with the padded forward is not promised.
-        Intermediate layer captures for InterCTC (``interctc/layer_output_X``) are registered as
-        ``PackedEncoderActivations``; their consumer must accept the packed form.
 
         Not supported: streaming caches, limited or chunked attention context, ``rel_pos_local_attn``,
         reduction layers, adapters, causal subsampling,
-        and attention dropout together with ``rel_pos`` attention on CUDA (FlexAttention has no dropout).
+        intermediate layer captures (InterCTC and ``save_encoder_tensors``, whose consumers expect padded tensors),
+        and on CUDA attention dropout except through ``abs_pos`` or ``rope`` attention in half precision
+        (FlexAttention has no dropout, variable-length FlashAttention has).
 
         Args:
             audio_signal: packed features (``PackedEncoderActivations`` with data ``(sum(T_i), feat_in)``),
@@ -894,6 +894,14 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             raise NotImplementedError("Sequence-packed execution does not sample attention context sizes.")
         if self.reduction_position is not None:
             raise NotImplementedError("Reduction layers have no sequence-packed form.")
+        if self.is_access_enabled(getattr(self, "model_guid", None)):
+            if self.interctc_capture_at_layers is None:
+                self.interctc_capture_at_layers = self.access_cfg.get('interctc', {}).get('capture_layers', [])
+            if self.interctc_capture_at_layers or self.access_cfg.get('save_encoder_tensors', False):
+                raise NotImplementedError(
+                    "Intermediate layer captures (InterCTC, save_encoder_tensors) have no sequence-packed form: "
+                    "their consumers expect padded (B, D, T) tensors."
+                )
 
         if isinstance(audio_signal, PackedEncoderActivations):
             if (
@@ -964,16 +972,6 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                     x = x * 0.0 + original_signal
                 else:
                     x = (x - original_signal) / (1.0 - drop_prob) + original_signal
-
-            if self.is_access_enabled(getattr(self, "model_guid", None)):
-                if self.interctc_capture_at_layers is None:
-                    self.interctc_capture_at_layers = self.access_cfg.get('interctc', {}).get('capture_layers', [])
-                if lth in self.interctc_capture_at_layers:
-                    lth_x = self.out_proj(x) if self.out_proj is not None else x
-                    self.register_accessible_tensor(
-                        name=f'interctc/layer_output_{lth}', tensor=packed.with_data(lth_x)
-                    )
-                    self.register_accessible_tensor(name=f'interctc/layer_length_{lth}', tensor=packed.lengths)
 
         if self.out_proj is not None:
             x = self.out_proj(x)

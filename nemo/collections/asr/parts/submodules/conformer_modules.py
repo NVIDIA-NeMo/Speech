@@ -330,7 +330,8 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
     ) -> torch.Tensor:
         """The layer over token-flat input of all utterances, with explicit boundaries instead of padding masks.
 
-        Streaming caches, adapters and local attention are not supported in this form.
+        Streaming caches, adapters, local attention and the ``save_encoder_tensors`` capture
+        are not supported in this form.
 
         Args:
             x: input signals, shape ``(T_total, d_model)``.
@@ -364,12 +365,7 @@ class ConformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
         x = self.feed_forward2(x)
         residual = residual + self.dropout(x) * self.fc_factor
 
-        x = self.norm_out(residual)
-        if self.is_access_enabled(getattr(self, "model_guid", None)) and self.access_cfg.get(
-            'save_encoder_tensors', False
-        ):
-            self.register_accessible_tensor(name='encoder', tensor=x)
-        return x
+        return self.norm_out(residual)
 
 
 class ConformerConvolution(nn.Module):

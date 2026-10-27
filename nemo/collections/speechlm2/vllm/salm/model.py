@@ -35,6 +35,7 @@ Requires NeMo toolkit for the audio encoder:
 
 import contextlib
 from collections.abc import Callable, Iterable
+from datetime import datetime, timezone
 from typing import Any
 
 import torch
@@ -54,6 +55,7 @@ from vllm.multimodal import MULTIMODAL_REGISTRY
 from vllm.sequence import IntermediateTensors
 
 from nemo.collections.speechlm2.parts.encoder_chunking import encode_audio_with_optional_chunking
+from nemo.collections.speechlm2.parts.weight_loading import load_perception_state
 from nemo.collections.speechlm2.vllm.salm.audio import (
     _SAMPLING_RATE,
     NeMoSpeechLMAudioInputs,
@@ -73,7 +75,6 @@ from nemo.collections.speechlm2.vllm.salm.ctc_timestamps import (
     install_worker_methods,
     read_speaker_prior_weight,
     register_aligner,
-    require_v1_model_runner,
     store_alignment_states,
     take_step_hashes,
     tokenizer_special_tokens,
@@ -141,6 +142,7 @@ class NeMoSpeechLMForConditionalGeneration(
         super().__init__()
         config = vllm_config.model_config.hf_config
         self.config = config
+        self._perception_weights_initialized = False
         self.encoder_chunk_size_seconds = getattr(config, "encoder_chunk_size_seconds", None)
 
         backend = make_backend(config)
@@ -235,7 +237,7 @@ class NeMoSpeechLMForConditionalGeneration(
         from nemo.collections.speechlm2.parts.ctc_timestamp_utils import get_ctc_timestamp_aligner
         from nemo.collections.speechlm2.vllm.salm.ctc_timestamps import install_encoder_cache_binding
 
-        unavailable = self._ctc_timestamps_unavailable(vllm_config)
+        unavailable = self._ctc_timestamps_unavailable()
         if unavailable is not None:
             if not (isinstance(ctc_config, dict) and ctc_config.get("optional")):
                 raise ValueError(unavailable)
@@ -255,10 +257,10 @@ class NeMoSpeechLMForConditionalGeneration(
         aligner.speaker_logprob_weight = speaker_prior_weight
 
         register_aligner(aligner, tokenizer_special_tokens(vllm_config.model_config))
-        install_encoder_cache_binding()
+        install_encoder_cache_binding(getattr(vllm_config, "use_v2_model_runner", False))
         logging.info("[NeMoSpeechLM] CTC timestamps enabled from checkpoint config: %s", adapter_path)
 
-    def _ctc_timestamps_unavailable(self, vllm_config: VllmConfig) -> str | None:
+    def _ctc_timestamps_unavailable(self) -> str | None:
         """Why this engine cannot produce CTC timestamps, or ``None`` when it can."""
         encoder = self.perception.encoder
         if not getattr(encoder, "supports_ctc_timestamp_inputs", False):
@@ -270,10 +272,6 @@ class NeMoSpeechLMForConditionalGeneration(
                 "CTC timestamps need one unchunked encoder forward, but encoder_chunk_size_seconds="
                 f"{self.encoder_chunk_size_seconds} is set."
             )
-        try:
-            require_v1_model_runner(vllm_config)
-        except ValueError as error:
-            return str(error)
         return None
 
     # ── language-model integration ──
@@ -463,23 +461,19 @@ class NeMoSpeechLMForConditionalGeneration(
 
     def _load_perception_weights(self, perception_weights: dict[str, torch.Tensor]) -> set[str]:
         check_fp8_encoder_weights(self.perception, perception_weights)
-        self.perception = self.perception.to(_PERCEPTION_DTYPE)
-        incompatible = self.perception.load_state_dict(perception_weights, strict=False)
-
         from nemo.collections.speechlm2.modules.perception import IndependentDualEncoder
 
         requires_exact_architecture = (
             isinstance(getattr(self.perception, "encoder", None), IndependentDualEncoder) or self._uses_pe_encoder
         )
-        if requires_exact_architecture:
-            missing = [name for name in incompatible.missing_keys if not name.endswith("._extra_state")]
-            unexpected = [name for name in incompatible.unexpected_keys if not name.endswith("._extra_state")]
-            if missing or unexpected:
-                raise RuntimeError(
-                    "Speech encoder checkpoint does not exactly match its exported architecture: "
-                    f"missing={missing}, unexpected={unexpected}."
-                )
-        return {"perception." + k for k in perception_weights}
+        loaded = load_perception_state(
+            self.perception,
+            perception_weights,
+            require_complete=requires_exact_architecture and not self._perception_weights_initialized,
+        )
+        self.perception = self.perception.to(_PERCEPTION_DTYPE)
+        self._perception_weights_initialized = True
+        return loaded
 
     @staticmethod
     def _split_perception_llm(
@@ -509,14 +503,52 @@ class NeMoSpeechLMForConditionalGeneration(
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         perception_weights, llm_raw = self._split_perception_llm(weights)
+        verification = None
+        verification_config = getattr(self.config, "speechlm_refit_verification", None)
+        # The first complete checkpoint load remains strict. Diagnostics apply
+        # only to subsequent normal load_weights calls used by refit.
+        if verification_config and self._perception_weights_initialized:
+            from vllm.distributed import get_tensor_model_parallel_rank, get_tensor_model_parallel_world_size
+
+            from nemo.collections.speechlm2.parts.refit_verification import RefitWeightVerifier
+
+            verification = RefitWeightVerifier(
+                self,
+                verification_config["samples"],
+                tp_rank=get_tensor_model_parallel_rank(),
+                tp_size=get_tensor_model_parallel_world_size(),
+            )
+            self._refit_verification_load_call = getattr(self, "_refit_verification_load_call", 0) + 1
+            verification_started = datetime.now(timezone.utc).isoformat()
+            for name, tensor in perception_weights.items():
+                verification.capture("perception." + name, tensor)
         loaded_perception = self._load_perception_weights(perception_weights)
 
         preprocessed = self._backend.preprocess_llm_weights(llm_raw)
         hf_weights = self._backend.nemo_to_hf_llm_weights(preprocessed)
-        combined = (("language_model." + n, t) for n, t in hf_weights)
+
+        def combined_weights():
+            for name, tensor in hf_weights:
+                name = "language_model." + name
+                if verification is not None:
+                    verification.capture(name, tensor)
+                yield name, tensor
 
         loader = AutoWeightsLoader(self)
-        loaded_llm = loader.load_weights(combined)
+        loaded_llm = loader.load_weights(combined_weights())
+
+        if verification is not None:
+            from nemo.collections.speechlm2.parts.refit_verification import append_refit_receipt
+
+            receipt = verification.verify()
+            receipt["load_call"] = self._refit_verification_load_call
+            receipt["started_utc"] = verification_started
+            receipt["finished_utc"] = datetime.now(timezone.utc).isoformat()
+            receipt["received_source_names"] = ["perception." + name for name in perception_weights] + [
+                name for name, _ in llm_raw
+            ]
+            receipt["scope"] = "destination samples versus received BF16 refit; not full policy correspondence"
+            append_refit_receipt(verification_config["output_dir"], receipt)
 
         return loaded_llm | loaded_perception
 

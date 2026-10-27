@@ -20,6 +20,7 @@ import json
 import logging
 import sys
 import threading
+import time
 import weakref
 from collections import deque
 from types import SimpleNamespace
@@ -37,6 +38,16 @@ def _cpu_default_device():
     """Keep CPU fixtures independent of modules that select CUDA during collection."""
     with torch.device("cpu"):
         yield
+
+
+# The server's search, in its worker process; the fixture below moves it onto a thread for the other tests.
+_search_in_worker = ct._search
+
+
+@pytest.fixture(autouse=True)
+def _search_on_a_thread(monkeypatch):
+    """Search on a thread, where the fakes patched into this process apply; one test checks the worker process."""
+    monkeypatch.setattr(ct, "_search", lambda group: asyncio.to_thread(ct._align_packed_group, group))
 
 
 @pytest.fixture(autouse=True)
@@ -274,33 +285,11 @@ def test_release_false_keeps_captures_until_the_worker_releases_them(aligner):
     assert ct._store == {} and ct._request_hashes == {} and ct._external_ids == {}
 
 
-def test_ranks_that_hold_no_captures_still_encode_but_store_nothing(aligner, monkeypatch):
-    class StubRunner:
-        def _batch_mm_inputs_from_scheduler(self, step):
-            return step.hashes, None, [(req_id, None) for req_id in step.req_ids]
-
-        def _execute_mm_encoder(self, step):
-            # What _encode_with_ctc_capture does: the forward always runs, and states
-            # are stored only under the step's hashes.
-            count = len(step.hashes)
-            hashes = ct.take_step_hashes(count)
-            if hashes is not None:
-                ct.store_alignment_states(hashes, _inputs(count, 4), [1.0] * count)
-            return "encoded"
-
-    monkeypatch.setitem(sys.modules, "vllm.v1.worker.gpu_model_runner", SimpleNamespace(GPUModelRunner=StubRunner))
-    ct.install_encoder_cache_binding()
+def test_ranks_that_hold_no_captures_still_encode_but_store_nothing(aligner, monkeypatch, model_runner):
+    run = _hooked_runner(monkeypatch, model_runner)
     monkeypatch.setattr(ct, "_holds_captures", lambda: False)
-    step = SimpleNamespace(
-        scheduled_new_reqs=[
-            SimpleNamespace(req_id="req-a-0123abcd", mm_features=[SimpleNamespace(identifier="hash-a")])
-        ],
-        hashes=["hash-a"],
-        req_ids=["req-a-0123abcd"],
-        free_encoder_mm_hashes=[],
-    )
 
-    assert StubRunner()._execute_mm_encoder(step) == "encoded"
+    assert run([("req-a-0123abcd", "hash-a")], [("req-a-0123abcd", "hash-a")]) == "encoded"
 
     assert ct._store == {} and ct._request_hashes == {}
     assert ct._worker_prepare_requests(None, [("req-a", "x")]) == {"count": 1, "batches": []}
@@ -331,17 +320,13 @@ def test_offline_api_aligns_repeatedly_then_releases(aligner):
 def test_sync_and_async_clients_send_the_same_rpcs_and_get_the_same_results(aligner):
     _capture(3, 4, ["hash-a", "hash-b", "hash-c"])
     ct._record_request_hashes([(f"req-{name}-0123abcd", f"hash-{name}") for name in "abc"])
-    methods = {
-        ct.WORKER_PREPARE_METHOD: ct._worker_prepare_requests,
-        ct.WORKER_RELEASE_METHOD: ct._worker_release_requests,
-    }
     sent = []
 
     def rpc(method, args):
         sent.append((method, args))
-        reply = methods[method](None, *args)
+        reply = _WORKER_METHODS[method](None, *args)
         # Every rank replies; only the first one prepares.
-        other_rank = None if reply is None else {"count": reply["count"], "batches": []}
+        other_rank = {"count": reply["count"], "batches": []} if method == ct.WORKER_PREPARE_METHOD else None
         return [reply, other_rank]
 
     async def rpc_async(method, args):
@@ -355,7 +340,11 @@ def test_sync_and_async_clients_send_the_same_rpcs_and_get_the_same_results(alig
 
     assert via_async == sync
     assert [_words(result) for result in sync] == [["a"], ["b", "c"], ["d"]]
-    assert sent == sync_sent and [len(args[0]) for _, args in sent] == [2, 1]
+    assert [len(args[0]) for _, args in sync_sent] == [2, 1]
+    # The async client submits the same chunks and collects their replies.
+    assert [args[1] for method, args in sent if method == ct.WORKER_SUBMIT_METHOD] == [
+        args[0] for _, args in sync_sent
+    ]
 
     asyncio.run(ct.release_captures_async(rpc_async, ["req-a", "req-b"]))
     assert list(ct._store) == ["hash-c"]
@@ -380,7 +369,7 @@ def test_async_alignment_runs_off_the_event_loop_thread(aligner, monkeypatch):
     )
 
     async def rpc(method, args):
-        return [ct._worker_prepare_requests(None, *args)]
+        return [_WORKER_METHODS[method](None, *args)]
 
     (result,) = asyncio.run(ct.align_async(rpc, [("req-a", "a b")]))
 
@@ -392,7 +381,7 @@ def _serve_concurrently(names):
     """Align one request per name, all at once on one event loop, as a server's middleware does."""
 
     async def rpc(method, args):
-        return [ct._worker_prepare_requests(None, *args)]
+        return [_WORKER_METHODS[method](None, *args)]
 
     async def serve():
         requests = (ct.align_async(rpc, [(f"req-{name}", name)]) for name in names)
@@ -413,6 +402,268 @@ def _record_searches(monkeypatch):
     return searches
 
 
+def test_the_search_worker_process_returns_what_the_server_process_would(monkeypatch):
+    from nemo.collections.speechlm2.parts.ctc_timestamp_utils import MultiSpeakerSOTWordTimestampAligner
+
+    class Tokenizer:
+        def text_to_ids(self, text):
+            return [{"a": 0, "b": 2}[word] for word in text.split()]
+
+    torch.manual_seed(0)
+    prepared = MultiSpeakerSOTWordTimestampAligner(tokenizer=Tokenizer(), blank_id=3).prepare_alignment(
+        torch.log_softmax(torch.randn(2, 12, 4), dim=-1),
+        torch.rand(2, 12, 2),
+        ["<spk:0> a b <spk:1> b", "a"],
+        audio_durations=[0.96, 0.96],
+        diarization_labels=torch.rand(2, 2, 96) > 0.5,
+    )
+    monkeypatch.setattr(ct, "_registry", {})
+    try:
+        # The empty group start_search_worker sends only starts the process.
+        started = asyncio.run(_search_in_worker([]))
+        in_worker = asyncio.run(_search_in_worker([ct._pack(prepared)]))
+        # One torch thread: a pool of them would spin-wait between the search's small ops, taking the CPUs.
+        worker_threads = ct._registry["search_pool"].submit(torch.get_num_threads).result()
+    finally:
+        ct._registry["search_pool"].shutdown()
+
+    assert started == []
+    assert in_worker == ct._align_group([prepared])
+    assert worker_threads == 1
+
+
+def _collect(job_id, timeout=30.0):
+    """Collect one submitted call, waiting for the preparing thread."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        ready = ct._worker_collect_prepared(None, [job_id])
+        if job_id in ready:
+            return ready[job_id]
+        time.sleep(0.01)
+    raise TimeoutError(job_id)
+
+
+def test_a_submitted_call_is_prepared_on_its_own_thread_and_collected_once(aligner, monkeypatch):
+    _capture(1, 4, ["hash-a"])
+    ct._record_request_hashes([("req-a-0123abcd", "hash-a")])
+    prepare = ct._worker_prepare_requests
+    threads = []
+
+    def prepare_and_record_thread(*args, **kwargs):
+        threads.append(threading.current_thread())
+        return prepare(*args, **kwargs)
+
+    monkeypatch.setattr(ct, "_worker_prepare_requests", prepare_and_record_thread)
+
+    assert ct._worker_submit_prepare(None, "job-1", [["req-a", "a b"]], False) is True
+    reply = ct._unpack(_collect("job-1"))
+
+    assert threads == [ct._preparer()._thread]
+    assert reply["errors"] == [None] and [batch["items"] for batch in reply["batches"]] == [[0]]
+    assert ct._worker_collect_prepared(None, ["job-1"]) == {}
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def test_a_submitted_call_runs_on_the_stream_it_was_submitted_from(aligner, monkeypatch):
+    # The engine submits from its own stream. On a stream of their own, the head's kernels would share SMs with the
+    # engine's, which corrupts Model Runner V2's sampled tokens.
+    _capture(1, 4, ["hash-a"])
+    ct._record_request_hashes([("req-a-0123abcd", "hash-a")])
+    prepare = ct._worker_prepare_requests
+    streams = []
+
+    def prepare_and_record_stream(*args, **kwargs):
+        streams.append(torch.cuda.current_stream())
+        return prepare(*args, **kwargs)
+
+    monkeypatch.setattr(ct, "_worker_prepare_requests", prepare_and_record_stream)
+    engine_stream = torch.cuda.Stream()
+
+    with torch.cuda.stream(engine_stream):
+        assert ct._worker_submit_prepare(None, "job-1", [["req-a", "a b"]], False) is True
+    _collect("job-1")
+
+    assert streams == [engine_stream]
+
+
+def test_a_failed_submitted_call_fails_its_requests(aligner, monkeypatch):
+    def broken(*args, **kwargs):
+        raise KeyError("broken prepare")
+
+    monkeypatch.setattr(ct, "_worker_prepare_requests", broken)
+
+    async def rpc(method, args):
+        return [_WORKER_METHODS[method](None, *args)]
+
+    with pytest.raises(RuntimeError, match="broken prepare"):
+        asyncio.run(asyncio.wait_for(ct.align_async(rpc, [("req-a", "a")]), timeout=30))
+
+
+def test_a_reply_that_never_comes_fails_its_requests_instead_of_hanging(aligner, monkeypatch):
+    monkeypatch.setattr(ct, "_PREPARE_TIMEOUT", 0.05)
+    monkeypatch.setattr(ct, "_COLLECT_INTERVAL", 0.001)
+
+    async def rpc(method, args):
+        # Accepts the submission, but its reply never becomes ready.
+        return [True] if method == ct.WORKER_SUBMIT_METHOD else [{}]
+
+    with pytest.raises(TimeoutError, match="not prepared within"):
+        asyncio.run(asyncio.wait_for(ct.align_async(rpc, [("req-a", "a")]), timeout=30))
+
+
+def test_data_parallel_collection_forgets_calls_the_server_gave_up_on():
+    from nemo.collections.speechlm2.vllm.salm.ctc_serving import _capture_owner_rpc
+
+    answers = {0: {"job": {"count": 1, "errors": [None], "diarization": [None], "batches": []}}, 1: {}}
+
+    async def call_utility(method, *args, engine):
+        core = int.from_bytes(engine, "little")
+        return [answers[core]]
+
+    engine = SimpleNamespace(
+        engine_core=SimpleNamespace(core_engines=[core.to_bytes(2, "little") for core in range(2)]),
+        collective_rpc=None,
+    )
+    engine.engine_core._call_utility_async = call_utility
+    rpc = _capture_owner_rpc(engine)
+
+    # Core 0 has answered, core 1 not yet: nothing is done.
+    assert asyncio.run(rpc(ct.WORKER_COLLECT_METHOD, args=(["job"],))) == [{}]
+    # The server stops asking for the call; then core 1's late answer alone does not complete it.
+    answers[0] = {}
+    asyncio.run(rpc(ct.WORKER_COLLECT_METHOD, args=([],)))
+    answers[1] = {"job": {"count": 1, "errors": ["no_capture"], "diarization": [None], "batches": []}}
+    assert asyncio.run(rpc(ct.WORKER_COLLECT_METHOD, args=(["job"],))) == [{}]
+
+
+def test_workers_that_hold_no_captures_answer_none(aligner, monkeypatch):
+    monkeypatch.setattr(ct, "_holds_captures", lambda: False)
+
+    assert ct._worker_submit_prepare(None, "job-1", [["req-a", "a"]]) is None
+    assert ct._worker_collect_prepared(None, ["job-1"]) is None
+
+
+def test_requests_that_finish_together_are_prepared_in_one_rpc(aligner):
+    _capture(3, 4, ["hash-a", "hash-b", "hash-c"])
+    ct._record_request_hashes([(f"req-{name}-0123abcd", f"hash-{name}") for name in "abc"])
+    prepared = []
+
+    async def rpc(method, args):
+        if method == ct.WORKER_SUBMIT_METHOD:
+            prepared.append([request_id for request_id, _ in args[1]])
+        return [_WORKER_METHODS[method](None, *args)]
+
+    async def serve():
+        return await asyncio.gather(*(ct.align_async(rpc, [(f"req-{name}", name)]) for name in "abc"))
+
+    results = asyncio.run(serve())
+
+    assert [_words(result) for (result,) in results] == [["a"], ["b"], ["c"]]
+    assert prepared == [["req-a", "req-b", "req-c"]]
+
+
+def test_an_error_in_a_shared_prepared_batch_reaches_only_its_request(aligner, monkeypatch):
+    _capture(2, 4, ["hash-fine", "hash-explode"])
+    ct._record_request_hashes([("req-fine-0123abcd", "hash-fine"), ("req-explode-0123abcd", "hash-explode")])
+    prepared = []
+
+    async def rpc(method, args):
+        if method == ct.WORKER_SUBMIT_METHOD:
+            prepared.append(len(args[1]))
+        return [_WORKER_METHODS[method](None, *args)]
+
+    async def serve():
+        requests = (ct.align_async(rpc, [(f"req-{name}", name)]) for name in ["fine", "explode"])
+        return await asyncio.wait_for(asyncio.gather(*requests, return_exceptions=True), timeout=30)
+
+    fine, exploded = asyncio.run(serve())
+
+    assert prepared == [2]
+    assert _words(fine[0]) == ["fine"]
+    assert isinstance(exploded, RuntimeError) and str(exploded) == "search failure"
+
+
+def test_a_prepare_error_in_a_shared_submission_fails_only_its_request(aligner):
+    _capture(2, 4, ["hash-fine", "hash-crash"])
+    ct._record_request_hashes([("req-fine-0123abcd", "hash-fine"), ("req-crash-0123abcd", "hash-crash")])
+    submitted = []
+
+    async def rpc(method, args):
+        if method == ct.WORKER_SUBMIT_METHOD:
+            submitted.append(len(args[1]))
+        return [_WORKER_METHODS[method](None, *args)]
+
+    async def serve():
+        requests = (ct.align_async(rpc, [(f"req-{name}", name)]) for name in ["fine", "crash"])
+        return await asyncio.wait_for(asyncio.gather(*requests, return_exceptions=True), timeout=30)
+
+    fine, crashed = asyncio.run(serve())
+
+    assert submitted == [2]
+    assert _words(fine[0]) == ["fine"]
+    assert isinstance(crashed, RuntimeError) and "kernel failure" in str(crashed)
+    assert ct._store == {} and ct._request_hashes == {}
+
+
+def test_a_synchronous_prepare_still_raises_a_record_error(aligner):
+    _capture(1, 4, ["hash-crash"])
+    ct._record_request_hashes([("req-crash-0123abcd", "hash-crash")])
+
+    with pytest.raises(RuntimeError, match="kernel failure"):
+        ct.align_finished_requests([("req-crash", "crash")], release=True)
+
+
+@pytest.mark.parametrize("hung", [ct.WORKER_SUBMIT_METHOD, ct.WORKER_COLLECT_METHOD])
+def test_an_engine_call_that_never_returns_fails_its_requests_by_the_deadline(aligner, monkeypatch, hung):
+    monkeypatch.setattr(ct, "_PREPARE_TIMEOUT", 0.2)
+    monkeypatch.setattr(ct, "_COLLECT_INTERVAL", 0.01)
+
+    async def rpc(method, args):
+        if method == hung:
+            await asyncio.Event().wait()
+        return [True] if method == ct.WORKER_SUBMIT_METHOD else [{}]
+
+    async def serve():
+        return await asyncio.wait_for(ct.align_async(rpc, [("req-a", "a")]), timeout=10)
+
+    with pytest.raises(TimeoutError, match="not prepared within"):
+        asyncio.run(serve())
+
+
+def test_a_collection_outstanding_at_a_deadline_still_delivers_its_replies(aligner, monkeypatch):
+    # Another request's deadline does not cancel the collection: the worker hands each reply out only once.
+    monkeypatch.setattr(ct, "_PREPARE_TIMEOUT", 1.0)
+    monkeypatch.setattr(ct, "_COLLECT_INTERVAL", 0.01)
+    _capture(1, 4, ["hash-b"])
+    ct._record_request_hashes([("req-b-0123abcd", "hash-b")])
+    jobs = {}
+
+    async def rpc(method, args):
+        if method == ct.WORKER_SUBMIT_METHOD:
+            request_id = args[1][0][0]
+            jobs[request_id] = args[0]
+            return [True] if request_id == "req-a" else [ct._worker_submit_prepare(None, *args)]
+        if jobs.get("req-b") not in args[0]:
+            return [{}]  # req-a was accepted, but its reply never comes
+        replies = {}
+        while jobs["req-b"] not in replies:
+            replies.update(ct._worker_collect_prepared(None, args[0]))
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.6)  # req-a's deadline passes with req-b's reply handed out but not yet returned
+        return [replies]
+
+    async def serve():
+        first = asyncio.ensure_future(ct.align_async(rpc, [("req-a", "a")], chunk_size=1))
+        await asyncio.sleep(0.6)
+        second = ct.align_async(rpc, [("req-b", "b")], chunk_size=1)
+        return await asyncio.wait_for(asyncio.gather(first, second, return_exceptions=True), timeout=10)
+
+    a, b = asyncio.run(serve())
+
+    assert isinstance(a, TimeoutError) and "not prepared within" in str(a)
+    assert _words(b[0]) == ["b"]
+
+
 def test_concurrent_server_alignments_share_one_search(aligner, monkeypatch):
     _capture(3, 4, ["hash-a", "hash-b", "hash-c"])
     ct._record_request_hashes([(f"req-{name}-0123abcd", f"hash-{name}") for name in "abc"])
@@ -429,6 +680,8 @@ def test_server_searches_take_at_most_the_record_cap(aligner, monkeypatch):
     ct._record_request_hashes([(f"req-{name}-0123abcd", f"hash-{name}") for name in "abc"])
     searches = _record_searches(monkeypatch)
     monkeypatch.setattr(ct, "_SERVER_ALIGN_RECORDS", 2)
+    # One record per prepared batch, so that the cap, not the deferred-head batch size, splits the searches.
+    monkeypatch.setattr(ct, "_ALIGN_BATCH", 1)
 
     results = _serve_concurrently("abc")
 
@@ -511,7 +764,7 @@ def test_a_request_with_the_same_clip_twice_gets_no_timestamps(aligner):
     clip = SimpleNamespace(identifier="hash-a")
     twice = SimpleNamespace(req_id="twice", mm_features=[clip, clip])
     once = SimpleNamespace(req_id="once", mm_features=[clip])
-    ct._record_new_requests(SimpleNamespace(scheduled_new_reqs=[twice, once]))
+    ct._record_new_requests(ct._new_request_hashes(SimpleNamespace(scheduled_new_reqs=[twice, once])))
 
     results = ct.align_finished_requests([("twice", "one two"), ("once", "three")], release=True)
 
@@ -588,13 +841,6 @@ def test_special_tokens_come_from_the_model_tokenizer(monkeypatch):
     assert ct.tokenizer_special_tokens(SimpleNamespace(skip_tokenizer_init=False)) == ("<s>", "<spk:0>")
     assert ct.tokenizer_special_tokens(SimpleNamespace(skip_tokenizer_init=True)) == ()
     assert ct.tokenizer_special_tokens(None) == ()
-
-
-def test_model_runner_v2_is_refused():
-    ct.require_v1_model_runner(SimpleNamespace())
-    ct.require_v1_model_runner(SimpleNamespace(use_v2_model_runner=False))
-    with pytest.raises(ValueError, match="VLLM_USE_V2_MODEL_RUNNER=0"):
-        ct.require_v1_model_runner(SimpleNamespace(use_v2_model_runner=True))
 
 
 def test_byte_budget_evicts_unowned_captures_oldest_first_but_keeps_the_newest(aligner, monkeypatch, caplog):
@@ -802,46 +1048,116 @@ def test_collate_assembles_padded_rows_on_the_gpu(aligner):
     assert torch.count_nonzero(batch.asr_encoded[1, :, 3:]) == 0
 
 
-def _hooked_runner(monkeypatch):
-    """A stand-in for vLLM's GPU model runner with the capture hook installed, and a builder for its steps."""
-
-    class StubRunner:
-        def _batch_mm_inputs_from_scheduler(self, step):
-            return step.hashes, None, [(req_id, None) for req_id in step.req_ids]
-
-        def _execute_mm_encoder(self, step):
-            # What _process_audio does for the items vLLM encodes this step.
-            if step.hashes:
-                count = len(step.hashes)
-                ct.store_alignment_states(ct.take_step_hashes(count), _inputs(count, 4), [1.0] * count)
-            return "encoded"
-
-    def step(new_requests, encoded, freed=()):
-        return SimpleNamespace(
-            scheduled_new_reqs=[
-                SimpleNamespace(req_id=req_id, mm_features=[SimpleNamespace(identifier=mm_hash)])
-                for req_id, mm_hash in new_requests
-            ],
-            hashes=[mm_hash for _, mm_hash in encoded],
-            req_ids=[req_id for req_id, _ in encoded],
-            free_encoder_mm_hashes=list(freed),
-        )
-
-    monkeypatch.setitem(sys.modules, "vllm.v1.worker.gpu_model_runner", SimpleNamespace(GPUModelRunner=StubRunner))
-    ct.install_encoder_cache_binding()
-    return StubRunner(), step
+@pytest.fixture(params=["v1", "v2"])
+def model_runner(request):
+    return request.param
 
 
-def test_runner_hook_keys_captures_by_hash_maps_cache_hits_and_ignores_outside_forwards(aligner, monkeypatch):
-    runner, step = _hooked_runner(monkeypatch)
+def _hooked_runner(monkeypatch, model_runner):
+    """Stand-ins for vLLM's model runner with the capture hooks installed, and a function that runs one step.
 
-    first = step([("req-a-0123abcd", "hash-a")], [("req-a-0123abcd", "hash-a")])
-    assert runner._execute_mm_encoder(first) == "encoded"
+    A step adds ``new_requests``, frees the ``freed`` audio and encodes ``encoded``, each ``(req_id, mm_hash)``.
+    """
+
+    def forward(count):
+        # What _process_audio does: the forward always runs, and stores states only under the step's hashes.
+        hashes = ct.take_step_hashes(count) if count else None
+        if hashes is not None:
+            ct.store_alignment_states(hashes, _inputs(count, 4), [1.0] * count)
+        return "encoded"
+
+    if model_runner == "v1":
+
+        class StubRunner:
+            def _batch_mm_inputs_from_scheduler(self, step):
+                return step.hashes, None, [(req_id, None) for req_id in step.req_ids]
+
+            def _execute_mm_encoder(self, step):
+                return forward(len(step.hashes))
+
+        monkeypatch.setitem(sys.modules, "vllm.v1.worker.gpu_model_runner", SimpleNamespace(GPUModelRunner=StubRunner))
+        ct.install_encoder_cache_binding()
+        runner = StubRunner()
+
+        def run(new_requests, encoded, freed=()):
+            step = SimpleNamespace(
+                scheduled_new_reqs=[
+                    SimpleNamespace(req_id=req_id, mm_features=[SimpleNamespace(identifier=mm_hash)])
+                    for req_id, mm_hash in new_requests
+                ],
+                hashes=[mm_hash for _, mm_hash in encoded],
+                req_ids=[req_id for req_id, _ in encoded],
+                free_encoder_mm_hashes=list(freed),
+            )
+            return runner._execute_mm_encoder(step)
+
+        return run
+
+    class StubEncoderCache:
+        def __init__(self):
+            self.mm_features, self.encoder_outputs = {}, {}
+
+        def add_request(self, req_id, mm_features):
+            self.mm_features[req_id] = mm_features
+
+        def free_encoder_cache(self, mm_hash):
+            self.encoder_outputs.pop(mm_hash, None)
+
+    class StubEncoderRunner:
+        def __init__(self, encoder_cache):
+            self.encoder_cache = encoder_cache
+
+        def prepare_mm_inputs(self, scheduled_encoder_inputs):
+            features = [
+                self.encoder_cache.mm_features[req_id][index]
+                for req_id, indices in scheduled_encoder_inputs.items()
+                for index in indices
+            ]
+            hashes = [f.identifier for f in features if f.identifier not in self.encoder_cache.encoder_outputs]
+            return hashes, [("audio", None)] * len(hashes)
+
+    class StubModelState:
+        def __init__(self, encoder_cache):
+            self.encoder_cache = encoder_cache
+            self.encoder_runner = StubEncoderRunner(encoder_cache)
+
+        def execute_mm_encoder(self, scheduled_encoder_inputs):
+            hashes, _ = self.encoder_runner.prepare_mm_inputs(scheduled_encoder_inputs)
+            self.encoder_cache.encoder_outputs.update(dict.fromkeys(hashes))
+            return forward(len(hashes))
+
+    monkeypatch.setitem(
+        sys.modules, "vllm.v1.worker.gpu.mm.encoder_cache", SimpleNamespace(EncoderCache=StubEncoderCache)
+    )
+    monkeypatch.setitem(
+        sys.modules, "vllm.v1.worker.gpu.model_states.interface", SimpleNamespace(ModelState=StubModelState)
+    )
+    ct.install_encoder_cache_binding(model_runner_v2=True)
+    encoder_cache = StubEncoderCache()
+    model_state = StubModelState(encoder_cache)
+
+    def run(new_requests, encoded, freed=()):
+        # Model Runner V2's order: free evicted audio, add new requests, then encode.
+        for mm_hash in freed:
+            encoder_cache.free_encoder_cache(mm_hash)
+        for req_id, mm_hash in new_requests:
+            encoder_cache.add_request(req_id, [SimpleNamespace(identifier=mm_hash)])
+        return model_state.execute_mm_encoder({req_id: [0] for req_id, _ in encoded})
+
+    return run
+
+
+def test_runner_hook_keys_captures_by_hash_maps_cache_hits_and_ignores_outside_forwards(
+    aligner, monkeypatch, model_runner
+):
+    run = _hooked_runner(monkeypatch, model_runner)
+
+    assert run([("req-a-0123abcd", "hash-a")], [("req-a-0123abcd", "hash-a")]) == "encoded"
     # The same audio again is an encoder-cache hit: scheduled, but never encoded.
-    runner._execute_mm_encoder(step([("req-b-0123abcd", "hash-a")], []))
+    run([("req-b-0123abcd", "hash-a")], [])
     # A forward outside the hook, like vLLM's startup profiling pass on dummy audio, gets no hashes.
     assert ct.take_step_hashes(1) is None
-    runner._execute_mm_encoder(step([("req-c-0123abcd", "hash-c")], [("req-c-0123abcd", "hash-c")]))
+    run([("req-c-0123abcd", "hash-c")], [("req-c-0123abcd", "hash-c")])
 
     assert set(ct._store) == {"hash-a", "hash-c"} and not ct._uncompacted
     results = ct.align_finished_requests([("req-a", "a"), ("req-b", "b"), ("req-c", "c")], release=True)
@@ -850,20 +1166,20 @@ def test_runner_hook_keys_captures_by_hash_maps_cache_hits_and_ignores_outside_f
 
     # Released, but kept until vLLM evicts the audio from its encoder cache.
     assert set(ct._store) == {"hash-a", "hash-c"}
-    runner._execute_mm_encoder(step([], [], freed=["hash-a"]))
+    run([], [], freed=["hash-a"])
     assert list(ct._store) == ["hash-c"]
 
 
-def test_audio_encoded_again_keeps_the_capture_an_earlier_request_owns(aligner, monkeypatch):
-    runner, step = _hooked_runner(monkeypatch)
+def test_audio_encoded_again_keeps_the_capture_an_earlier_request_owns(aligner, monkeypatch, model_runner):
+    run = _hooked_runner(monkeypatch, model_runner)
     both = [("req-a-0123abcd", "hash-a"), ("req-b-0123abcd", "hash-b")]
-    runner._execute_mm_encoder(step(both, both))
+    run(both, both)
     monkeypatch.setenv("NEMO_CTC_TIMESTAMP_RETAIN_GB", str(2.5 * ct._store["hash-a"]["nbytes"] / 1e9))
 
     # vLLM evicts hash-a's audio while req-a waits for alignment, then encodes it again for
     # req-a2 in the same step as req-c's new audio.
     again = [("req-c-0123abcd", "hash-c"), ("req-a2-0123abcd", "hash-a")]
-    runner._execute_mm_encoder(step(again, again, freed=["hash-a"]))
+    run(again, again, freed=["hash-a"])
 
     assert set(ct._store) == {"hash-a", "hash-b"}
     results = ct.align_finished_requests([("req-a", "a"), ("req-b", "b"), ("req-c", "c")], release=True)
@@ -1074,8 +1390,15 @@ def test_startup_profiling_inputs_opt_into_capture_in_the_processor(monkeypatch)
 
 _WORKER_METHODS = {
     ct.WORKER_PREPARE_METHOD: ct._worker_prepare_requests,
+    ct.WORKER_SUBMIT_METHOD: ct._worker_submit_prepare,
+    ct.WORKER_COLLECT_METHOD: ct._worker_collect_prepared,
     ct.WORKER_RELEASE_METHOD: ct._worker_release_requests,
 }
+
+
+def _logical_rpc(method):
+    """The RPC as the tests count it: a submission and its collections are one prepare."""
+    return {ct.WORKER_SUBMIT_METHOD: ct.WORKER_PREPARE_METHOD, ct.WORKER_COLLECT_METHOD: None}.get(method, method)
 
 
 @pytest.fixture
@@ -1107,7 +1430,8 @@ def server(aligner):
     rpcs = []
 
     async def collective_rpc(method, args):
-        rpcs.append(method)
+        if _logical_rpc(method):
+            rpcs.append(_logical_rpc(method))
         return [_WORKER_METHODS[method](None, *args)]
 
     hf_config = SimpleNamespace(ctc_timestamps={"adapter_path": "/adapter.pt"})
@@ -1168,6 +1492,24 @@ def server(aligner):
         return client.post(path, json=body, headers=headers or {})
 
     return SimpleNamespace(post=post, script=script, rpcs=rpcs, hf_config=hf_config, app=app)
+
+
+def test_the_first_request_starts_the_search_worker_once(server, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    groups = []
+    monkeypatch.setattr(ct, "_search", lambda group: groups.append(group) or asyncio.sleep(0))
+    client = TestClient(server.app)
+    adapter = server.hf_config.ctc_timestamps
+
+    server.hf_config.ctc_timestamps = {"enabled": False}
+    client.get("/health")
+    assert groups == []  # without timestamps, no worker
+
+    server.hf_config.ctc_timestamps = adapter
+    client.get("/health")
+    client.get("/v1/models")
+    assert groups == [[]]
 
 
 def test_an_opted_in_chat_completion_gets_ctc_timestamps_and_releases_its_capture(server):
@@ -1694,16 +2036,40 @@ def test_a_bundled_head_this_engine_cannot_use_is_skipped_but_requested_timestam
     torch.nn.Module.__init__(model)
     model.perception = SimpleNamespace(encoder=SimpleNamespace(supports_ctc_timestamp_inputs=True))
     model._uses_pe_encoder = False
-    model.encoder_chunk_size_seconds = None
-    model_runner_v2 = SimpleNamespace(use_v2_model_runner=True)
+    model.encoder_chunk_size_seconds = 30.0  # timestamps need one unchunked encoder forward
 
-    model._maybe_enable_ctc_timestamps({"adapter_path": "/model.safetensors", "optional": True}, model_runner_v2)
+    model._maybe_enable_ctc_timestamps({"adapter_path": "/model.safetensors", "optional": True}, SimpleNamespace())
     assert ct.active_aligner() is None and "Serving without CTC timestamps" in caplog.text
 
     # A named adapter, or a bundled head with enabled: true, asked for timestamps, so startup fails.
     for requested in ({"adapter_path": "/adapter.pt"}, {"adapter_path": "/model.safetensors", "optional": False}):
-        with pytest.raises(ValueError, match="Model Runner V2"):
-            model._maybe_enable_ctc_timestamps(requested, model_runner_v2)
+        with pytest.raises(ValueError, match="unchunked"):
+            model._maybe_enable_ctc_timestamps(requested, SimpleNamespace())
+
+
+@pytest.mark.parametrize("model_runner_v2", [False, True])
+def test_timestamps_bind_the_model_runner_the_engine_uses(monkeypatch, model_runner_v2):
+    pytest.importorskip("vllm")
+    from nemo.collections.speechlm2.parts import ctc_timestamp_utils
+    from nemo.collections.speechlm2.vllm.salm import model as model_module
+
+    monkeypatch.setattr(ct, "_registry", {})
+    monkeypatch.setattr(ctc_timestamp_utils, "get_ctc_timestamp_aligner", lambda *args: SimpleNamespace())
+    monkeypatch.setattr(model_module, "tokenizer_special_tokens", lambda model_config: ())
+    bound = []
+    monkeypatch.setattr(ct, "install_encoder_cache_binding", bound.append)
+    model = object.__new__(model_module.NeMoSpeechLMForConditionalGeneration)
+    torch.nn.Module.__init__(model)
+    model.perception = SimpleNamespace(
+        encoder=SimpleNamespace(supports_ctc_timestamp_inputs=True, parameters=lambda: iter([torch.zeros(1)]))
+    )
+    model._uses_pe_encoder = False
+    model.encoder_chunk_size_seconds = None
+    vllm_config = SimpleNamespace(use_v2_model_runner=model_runner_v2, model_config=None)
+
+    model._maybe_enable_ctc_timestamps({"adapter_path": "/model.safetensors", "optional": True}, vllm_config)
+
+    assert ct.active_aligner() is not None and bound == [model_runner_v2]
 
 
 def test_a_server_told_to_skip_the_bundled_head_passes_requests_through(server, tmp_path):
@@ -1721,7 +2087,7 @@ def test_requests_to_an_engine_that_skipped_the_bundled_head_report_not_enabled(
     _checkpoint(tmp_path)
     server.hf_config.ctc_timestamps = None
     server.app.state.engine_client.model_config.model = str(tmp_path)
-    # The engine skipped the head, for example on Model Runner V2: it registered no aligner and kept nothing.
+    # The engine skipped the head, for example with a chunked encoder: it registered no aligner and kept nothing.
     monkeypatch.setattr(ct, "_registry", {})
     server.script["capture"] = lambda request_id: None
 
@@ -1740,11 +2106,28 @@ def test_a_server_whose_checkpoint_bundles_the_ctc_head_attaches_timestamps(serv
     assert _words(response.json()["ctc_timestamps"]) == ["hi", "there"]
 
 
+class _InlinePreparer:
+    """A worker's preparing thread, run inline: these fake workers share one process, and swap the module's state."""
+
+    def __init__(self):
+        self.ready = {}
+
+    def submit(self, job_id, items, release, require_enabled, stream=None):
+        try:
+            self.ready[job_id] = ct._worker_prepare_requests(None, items, release, require_enabled)
+        except Exception as error:  # noqa: BLE001
+            self.ready[job_id] = {"exception": str(error)}
+
+    def collect(self, job_ids):
+        return {job_id: self.ready.pop(job_id) for job_id in job_ids if job_id in self.ready}
+
+
 class _Worker:
     """One vLLM worker process, with an engine-side store of its own; only rank 0 holds captures."""
 
     def __init__(self, rank):
         self.rank = rank
+        self.preparer = _InlinePreparer()
         self.state = {
             "_store": {},
             "_request_hashes": {},
@@ -1758,10 +2141,11 @@ class _Worker:
     @contextlib.contextmanager
     def active(self):
         """Run the block in this worker: the module's store is this worker's meanwhile."""
-        outer = {name: getattr(ct, name) for name in [*self.state, "_holds_captures"]}
+        outer = {name: getattr(ct, name) for name in [*self.state, "_holds_captures", "_preparer"]}
         for name, value in self.state.items():
             setattr(ct, name, value)
         ct._holds_captures = lambda: self.rank == 0
+        ct._preparer = lambda: self.preparer
         try:
             yield
         finally:
@@ -1786,7 +2170,8 @@ class _DataParallelEngine:
         assert method == "collective_rpc"
         worker_method, _, worker_args, _ = args
         core = int.from_bytes(engine, "little")
-        self.rpcs.append((worker_method, core))
+        if _logical_rpc(worker_method):
+            self.rpcs.append((_logical_rpc(worker_method), core))
         replies = []
         for worker in self.workers[core]:
             with worker.active():
@@ -1842,6 +2227,41 @@ def test_vllm_data_parallel_collective_rpc_returns_only_the_first_cores_replies(
     client._call_utility_async = call_utility
 
     assert asyncio.run(client.collective_rpc_async(ct.WORKER_PREPARE_METHOD)) == ["core 0"]
+
+
+def test_a_batch_takes_each_requests_reply_from_the_core_that_holds_it():
+    from nemo.collections.speechlm2.vllm.salm.ctc_serving import _owner_reply
+
+    # Per core: the capture-holding worker's reply, then another rank's.
+    first = {"count": 3, "errors": [None, "no_capture", "no_capture"], "diarization": [None, None, None]}
+    first["batches"] = [{"items": [0], "prepared": "first core"}]
+    second = {"count": 3, "errors": ["no_capture", "alignment_failed", None], "diarization": [None, ["s"], None]}
+    second["batches"] = [{"items": [2], "prepared": "second core"}]
+    other_rank = {"count": 3, "batches": []}
+
+    merged = _owner_reply([[first, other_rank], [second, other_rank]])
+
+    assert merged == {
+        "count": 3,
+        "errors": [None, "alignment_failed", None],
+        "diarization": [None, ["s"], None],
+        "batches": first["batches"] + second["batches"],
+        "failed": {},
+    }
+
+
+def test_a_batch_keeps_a_record_error_from_the_core_that_owns_the_record():
+    from nemo.collections.speechlm2.vllm.salm.ctc_serving import _owner_reply
+
+    # The second core owns item 1 and failed to prepare it; the first core's entry for item 1 is not its own.
+    first = {"count": 2, "errors": [None, "no_capture"], "diarization": [None, None], "batches": []}
+    first["failed"] = {1: "not this core's record"}
+    second = {"count": 2, "errors": ["no_capture", None], "diarization": [None, None], "batches": []}
+    second["failed"] = {1: "kernel failure"}
+
+    merged = _owner_reply([[first], [second]])
+
+    assert merged["failed"] == {1: "kernel failure"}
 
 
 def test_a_request_served_by_a_later_data_parallel_core_gets_its_timestamps(dp_server):

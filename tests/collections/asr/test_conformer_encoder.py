@@ -644,7 +644,7 @@ class TestPackedConformerEncoder:
             registry = {}
             for module_registry in encoder.get_module_registry(encoder).values():
                 registry.update(module_registry)
-            assert registry["interctc/layer_output_0"][0].shape[-1] == 16
+            assert registry["interctc/layer_output_0"][0].shape[1] == 16  # (B, D, T)
         finally:
             encoder.reset_registry()
             encoder.set_access_enabled(access_enabled=False, guid=guid)

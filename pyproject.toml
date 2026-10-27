@@ -193,7 +193,7 @@ speechlm2-only = [
 # Install this serving extra separately from the cu*/compiled* extras below.
 vllm = [
     "peft>=0.18.1",
-    "vllm==0.28.0; sys_platform == 'linux'",
+    "vllm==0.32.0; sys_platform == 'linux' and python_version >= '3.11'",
 ]
 
 all = [
@@ -471,7 +471,7 @@ override-dependencies = [
     "gitpython>=3.1.50",
     "mako>=1.3.12",
     "pyarrow>=23.0.1",
-    "aiohttp>=3.14.0",
+    "aiohttp>=3.14.3",
     "pillow>=12.3.0"
 ]
 no-binary-package = [

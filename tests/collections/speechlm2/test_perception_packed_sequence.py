@@ -23,7 +23,7 @@ from nemo.collections.speechlm2.modules.perception import (
     IdentityConnector,
     _configure_short_recording_spec_augment,
 )
-from tests.collections.asr.test_parallel_expert_encoder_two_branch import build_toy_packed_pe_encoder
+from tests.collections.asr.test_parallel_expert_encoder import build_toy_packed_pe_encoder
 
 
 def test_speechlm_configures_short_recording_cap_from_frontend_frame_duration():

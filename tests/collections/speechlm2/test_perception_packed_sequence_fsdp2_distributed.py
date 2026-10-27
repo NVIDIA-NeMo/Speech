@@ -23,7 +23,7 @@ from nemo.collections.asr.parts.packed_sequence import pack_encoder_output
 from nemo.collections.speechlm2.models.salm_automodel import _fully_shard_perception
 from nemo.collections.speechlm2.modules.perception import AudioPerceptionModule, IdentityConnector
 from nemo.collections.speechlm2.parts.cp_helpers import encode_audio_with_cp_distribution
-from tests.collections.asr.test_parallel_expert_encoder_two_branch import build_toy_packed_pe_encoder
+from tests.collections.asr.test_parallel_expert_encoder import build_toy_packed_pe_encoder
 
 
 class _FeaturePassthrough(torch.nn.Module):

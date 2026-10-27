@@ -12,6 +12,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import os
+import tempfile
+
+import onnx
 import pytest
 import torch
 from omegaconf import ListConfig
@@ -271,6 +275,143 @@ class TestConvSubsamplingStrides:
             ConvSubsampling("dw_striding", 6, 8, 16, [2, 2, 2], conv_strides=[1, 3, 2])
         with pytest.raises(ValueError, match="one entry per stride"):
             ConvSubsampling("striding", 6, 8, 16, [2, 2], conv_strides=[1, 3, 2])
+        with pytest.raises(ValueError, match="needs conv_strides"):
+            ConvSubsampling("striding", 4, 8, 16, [2, 3])
+        with pytest.raises(ValueError, match="conv_strides must be positive integers"):
+            ConvSubsampling("striding", 6, 8, 16, 4, conv_strides=[-1, -3, 2])
+        with pytest.raises(ValueError, match="freq_pools must be positive integers"):
+            ConvSubsampling("striding", 6, 8, 16, 4, conv_strides=[1, 3, 2], freq_pools=[0, 1, 1])
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("batch_size", [4, 1])
+    def test_batch_chunking_matches_unchunked(self, batch_size):
+        torch.manual_seed(0)
+        module = _build_strided_conv_subsampling()
+        features = torch.randn(batch_size, 50, 8)
+        lengths = torch.tensor([50, 31, 50, 12][:batch_size])
+        with torch.no_grad():
+            reference, reference_lengths = module(x=features, lengths=lengths)
+            # a factor above 1 always splits by batch; a batch of one falls back to the unsplit convolution
+            module.change_subsampling_conv_chunking_factor(2)
+            out, out_lengths = module(x=features, lengths=lengths)
+        torch.testing.assert_close(out, reference, atol=1e-5, rtol=1e-5)
+        assert out_lengths.tolist() == reference_lengths.tolist()
+
+    @pytest.mark.unit
+    def test_export_to_onnx(self):
+        torch.manual_seed(0)
+        module = _build_strided_conv_subsampling()
+        features = torch.randn(2, 50, 8)
+        lengths = torch.tensor([50, 31])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            filename = os.path.join(tmpdir, 'subsampling.onnx')
+            torch.onnx.export(
+                module,
+                (features, lengths),
+                filename,
+                input_names=['features', 'lengths'],
+                output_names=['outputs', 'out_lengths'],
+                dynamic_axes={
+                    'features': {0: 'batch', 1: 'time'},
+                    'lengths': {0: 'batch'},
+                    'outputs': {0: 'batch', 1: 'time'},
+                    'out_lengths': {0: 'batch'},
+                },
+                opset_version=17,
+                dynamo=False,
+            )
+            onnx_model = onnx.load(filename)
+            onnx.checker.check_model(onnx_model, full_check=True)  # throws when failed
+            assert [node.name for node in onnx_model.graph.input] == ['features', 'lengths']
+            try:
+                import onnxruntime
+            except ImportError:
+                return
+            session = onnxruntime.InferenceSession(filename, providers=['CPUExecutionProvider'])
+            outputs, out_lengths = session.run(None, {'features': features.numpy(), 'lengths': lengths.numpy()})
+        with torch.no_grad():
+            reference, reference_lengths = module(x=features, lengths=lengths)
+        torch.testing.assert_close(torch.from_numpy(outputs), reference, atol=1e-5, rtol=1e-5)
+        assert out_lengths.tolist() == reference_lengths.tolist()
+
+    @pytest.mark.unit
+    def test_production_configuration(self):
+        # 80 mel features, channels 32, 64, 64, time strides 1, 3, 2 and one frequency pool of 2
+        module = _build_strided_conv_subsampling(feat_in=80, feat_out=256, conv_channels=[32, 64, 64])
+        features = torch.randn(3, 101, 80)
+        lengths = torch.tensor([101, 67, 13])
+        with torch.no_grad():
+            out, out_lengths = module(x=features, lengths=lengths)
+        assert out.shape == (3, 17, 256) and out_lengths.tolist() == [17, 12, 3]
+        assert module.out.weight.shape == (256, 64 * 40)
+        # the 32-bit indexing guard counts the first convolution's output elements,
+        # which in this configuration is the largest activation of the stack
+        first_conv_numel = module.conv[0](features.unsqueeze(1)).numel()
+        assert module._first_conv_output_numel(features) == first_conv_numel
+        assert module._max_conv_numel(features) == first_conv_numel
+
+    @pytest.mark.unit
+    def test_max_conv_numel_counts_every_stage(self):
+        # channels 2 then 8 with time strides 2, 1 and no pooling: the second convolution's output
+        # is four times the first one's, so the first-conv estimate alone would under-count the stack
+        module = _build_strided_conv_subsampling(
+            subsampling_factor=2, conv_channels=[2, 8], conv_strides=[2, 1], freq_pools=[1, 1]
+        )
+        features = torch.randn(4, 50, 8)
+        activation_numels = [features.numel()]
+        x = features.unsqueeze(1)
+        with torch.no_grad():
+            for layer in module.conv:
+                x = layer(x)
+                if isinstance(layer, torch.nn.Conv2d):
+                    activation_numels.append(x.numel())
+        assert activation_numels == [1600, 1600, 6400]
+        assert module._max_conv_numel(features) == max(activation_numels)
+        assert module._first_conv_output_numel(features) == 1600
+        # a frequency pool after the first stage halves the second convolution's map
+        pooled = _build_strided_conv_subsampling(
+            subsampling_factor=2, conv_channels=[2, 8], conv_strides=[2, 1], freq_pools=[2, 1]
+        )
+        assert pooled._max_conv_numel(features) == 3200
+
+    @pytest.mark.unit
+    def test_guard_splits_when_a_later_convolution_is_largest(self, monkeypatch):
+        torch.manual_seed(0)
+        module = _build_strided_conv_subsampling(
+            subsampling_factor=2, conv_channels=[2, 8], conv_strides=[2, 1], freq_pools=[1, 1]
+        )
+        features = torch.randn(4, 50, 8)
+        lengths = torch.tensor([50, 31, 50, 12])
+        with torch.no_grad():
+            reference, reference_lengths = module(x=features, lengths=lengths)
+        # the limit sits at the second convolution's output, above the input and the first output
+        limit = module._max_conv_numel(features)
+        assert limit > max(features.numel(), module._first_conv_output_numel(features))
+        monkeypatch.setattr(subsampling_module, "_MAX_CONV_NUMEL_32BIT", limit)
+        split_calls = _install_split_spy(monkeypatch, module)
+        chunk_batches = []
+        original_forward = module.conv.forward
+
+        def recording_forward(inp, lens):
+            chunk_batches.append(int(inp.shape[0]))
+            return original_forward(inp, lens)
+
+        monkeypatch.setattr(module.conv, "forward", recording_forward)
+        with torch.no_grad():
+            out, out_lengths = module(x=features, lengths=lengths)
+        assert split_calls == [4] and chunk_batches == [2, 2]
+        for chunk_batch in chunk_batches:
+            assert module._max_conv_numel(features[:chunk_batch]) < limit
+        torch.testing.assert_close(out, reference, atol=1e-5, rtol=1e-5)
+        assert out_lengths.tolist() == reference_lengths.tolist()
+        # with a frequency pool after the first stage the stack stays below the same limit: no split
+        pooled = _build_strided_conv_subsampling(
+            subsampling_factor=2, conv_channels=[2, 8], conv_strides=[2, 1], freq_pools=[2, 1]
+        )
+        pooled_split_calls = _install_split_spy(monkeypatch, pooled)
+        with torch.no_grad():
+            pooled(x=features, lengths=lengths)
+        assert not pooled_split_calls
 
     @pytest.mark.unit
     def test_defaults_unchanged(self):
@@ -279,6 +420,17 @@ class TestConvSubsamplingStrides:
         features = torch.randn(1, 20, 8)
         out, out_lengths = module(x=features, lengths=torch.tensor([20]))
         assert out.shape == (1, 5, 16) and out_lengths.tolist() == [5]
+
+    @pytest.mark.unit
+    def test_reset_parameters_without_output_bias(self):
+        # reset_parameters re-initializes the dw_striding stages and the projection; no bias to draw without out_bias
+        module = ConvSubsampling("dw_striding", 4, 8, 16, 4, out_bias=False)
+        assert module.out.bias is None
+        module.reset_parameters()
+        with_bias = ConvSubsampling("dw_striding", 4, 8, 16, 4)
+        torch.nn.init.zeros_(with_bias.out.bias)
+        with_bias.reset_parameters()
+        assert with_bias.out.bias.abs().sum() > 0
 
     @pytest.mark.unit
     def test_layer_padding_of_pooling_layers(self):

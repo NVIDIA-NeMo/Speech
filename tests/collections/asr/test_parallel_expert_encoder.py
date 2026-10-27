@@ -2894,6 +2894,43 @@ def test_capture_survives_garbage_collection_of_leaked_graphs():
 
 
 @pytest.mark.unit
+def test_graphs_share_their_pool_under_an_allocator_split_limit():
+    """vLLM 0.32 profiles, and so captures, under max_split_size_mb:20; graphs must still reuse their shared pool."""
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA required")
+    pool, graphs, seen = torch.cuda.graph_pool_handle(), [], []
+    before = torch._C._accelerator_getAllocatorSettings()
+    torch._C._accelerator_setAllocatorSettings("garbage_collection_threshold:0.9,max_split_size_mb:20")
+    try:
+        # Like the encoder's per-window activations: temporaries just under 20 MiB, a little smaller per graph.
+        for k in range(8):
+            x = torch.zeros(int((19.9 - 0.15 * k) * 2**20) // 2, device="cuda", dtype=torch.bfloat16)
+
+            def run(x=x):
+                if torch.cuda.is_current_stream_capturing():
+                    seen.append(torch._C._accelerator_getAllocatorSettings())
+                t = x
+                for _ in range(20):
+                    t = t + 1
+                return t.sum()
+
+            graphs.append(capture_cuda_graph(run, pool=pool))
+        restored = torch._C._accelerator_getAllocatorSettings()
+        pool_bytes = sum(
+            segment["total_size"]
+            for segment in torch.cuda.memory_snapshot()
+            if tuple(segment.get("segment_pool_id", (0, 0))) == tuple(pool)
+        )
+    finally:
+        graphs.clear()
+        torch._C._accelerator_setAllocatorSettings(before)
+    # Under the limit every temporary takes a new 20 MiB segment: about 3 GiB for these graphs.
+    assert pool_bytes < 256 * 2**20
+    assert seen == ["garbage_collection_threshold:0.9"] * 8
+    assert restored == "garbage_collection_threshold:0.9,max_split_size_mb:20"
+
+
+@pytest.mark.unit
 def test_group_by_length_joins_rows_within_the_length_ratio_and_caps_the_group_size():
     from nemo.collections.speechlm2.vllm.salm.encoder_graphs import _group_by_length
 

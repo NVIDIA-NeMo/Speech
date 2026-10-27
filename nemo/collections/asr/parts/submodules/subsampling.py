@@ -617,7 +617,6 @@ class ConvSubsampling(torch.nn.Module):
             f //= pool
         return largest
 
-
     def forward_packed(self, packed: PackedEncoderActivations) -> PackedEncoderActivations:
         """Subsample token-flat features to token-flat outputs.
 

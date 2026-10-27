@@ -19,7 +19,9 @@ import torch
 
 from nemo.collections.audio.parts.submodules.conformer import SpectrogramConformer
 from nemo.collections.audio.parts.submodules.ncsnpp import (
+    GaussianFourierProjection,
     NoiseConditionalScoreNetworkPlusPlus,
+    ResnetBlockBigGANPlusPlus,
     SpectrogramNoiseConditionalScoreNetworkPlusPlus,
 )
 from nemo.collections.audio.parts.submodules.transformerunet import SpectrogramTransformerUNet, TransformerUNet
@@ -172,3 +174,68 @@ def test_spectrogram_conformer_forward(spectrogram_conformer, mock_input_4d):
     assert output.shape[2] == input_dim
     assert output.shape[3] == time_steps
     assert torch.all(output_length == input_length)
+
+
+@pytest.mark.unit
+def test_gaussian_fourier_projection():
+    """Test Gaussian Fourier projection shape, determinism, and neural type ports."""
+    embedding_size = 32
+    proj = GaussianFourierProjection(embedding_size=embedding_size, scale=1.0)
+
+    # Check neural types definitions
+    assert "input" in proj.input_types
+    assert "output" in proj.output_types
+
+    # Forward pass with 1D scalar batch
+    batch_size = 4
+    x = torch.linspace(0.0, 1.0, batch_size)
+    embeddings = proj(x)
+    assert embeddings.shape == (batch_size, 2 * embedding_size)
+    assert torch.isfinite(embeddings).all()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("in_ch,out_ch", [(8, 8), (8, 16)])
+@pytest.mark.parametrize("use_time_emb", [True, False])
+def test_resnet_block_biggan_plus_plus(in_ch: int, out_ch: int, use_time_emb: bool):
+    """Test ResNet block from BigGAN/NCSN++ with channel matching/projection and diffusion conditioning."""
+    time_emb_dim = 32 if use_time_emb else None
+    block = ResnetBlockBigGANPlusPlus(
+        activation=torch.nn.SiLU(),
+        in_ch=in_ch,
+        out_ch=out_ch,
+        diffusion_step_embedding_dim=time_emb_dim,
+    )
+    batch_size = 2
+    height, width = 16, 16
+    x = torch.randn(batch_size, in_ch, height, width)
+    time_emb = torch.randn(batch_size, 32) if use_time_emb else None
+
+    out = block(x, diffusion_time_embedding=time_emb)
+    assert out.shape == (batch_size, out_ch, height, width)
+    assert torch.isfinite(out).all()
+
+
+@pytest.mark.unit
+def test_resnet_block_biggan_plus_plus_unexpected_time_embedding():
+    """Test that passing time embedding to an unconditioned block raises ValueError."""
+    block = ResnetBlockBigGANPlusPlus(
+        activation=torch.nn.SiLU(),
+        in_ch=8,
+        out_ch=8,
+        diffusion_step_embedding_dim=None,
+    )
+    x = torch.randn(2, 8, 16, 16)
+    time_emb = torch.randn(2, 32)
+    with pytest.raises(ValueError, match="diffusion_step_embedding_dim was not set"):
+        block(x, diffusion_time_embedding=time_emb)
+
+
+@pytest.mark.unit
+def test_ncsnpp_invalid_channels_raises_value_error(ncsnpp, mock_input_4d):
+    """Test that passing invalid channel count raises ValueError instead of AssertionError."""
+    input_, input_length, _ = mock_input_4d
+    # input_ has 2 channels, create invalid 3-channel input
+    invalid_input = torch.cat([input_, input_[:, :1]], dim=1)
+    with pytest.raises(ValueError, match="Expected input with"):
+        ncsnpp(input=invalid_input, input_length=input_length)

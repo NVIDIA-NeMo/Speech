@@ -61,6 +61,7 @@ from nemo.collections.speechlm2.vllm.salm.ctc_timestamps import (
     ctc_adapter_path,
     ctc_timestamp_config,
     release_captures_async,
+    start_search_worker,
 )
 from nemo.utils import logging
 from nemo.utils.nemo_logging import LogMode
@@ -86,13 +87,12 @@ async def ctc_timestamp_middleware(request: Any, call_next: Any) -> Any:
         Any: vLLM's response, with ``ctc_timestamps`` added for an opted-in request.
     """
     engine = getattr(request.app.state, "engine_client", None)
+    enabled = engine is not None and ctc_adapter_path(ctc_timestamp_config(engine.model_config))
+    if enabled:
+        # The server's first request, usually a readiness probe, starts the search worker ahead of timestamps.
+        start_search_worker()
     path = request.scope["path"].removeprefix(request.scope.get("root_path", ""))
-    if (
-        request.method != "POST"
-        or path != _CHAT_PATH
-        or engine is None
-        or not ctc_adapter_path(ctc_timestamp_config(engine.model_config))
-    ):
+    if request.method != "POST" or path != _CHAT_PATH or not enabled:
         return await call_next(request)
     # Reading the body here keeps it replayable for vLLM's route.
     payload = _opted_in(await request.body())

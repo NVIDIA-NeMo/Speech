@@ -279,6 +279,41 @@ def test_compiled_banded_forward_matches_the_numpy_loop(prior_dtype, frames, tok
 
 
 @pytest.mark.unit
+def test_compiling_the_banded_search_covers_the_arrays_alignment_passes(monkeypatch):
+    # The search worker compiles at start-up, so a request never waits for a compile.
+    from nemo.collections.speechlm2.parts import ctc_timestamp_utils as utils
+
+    if not utils.NUMBA_AVAILABLE:
+        pytest.skip("Numba is not installed")
+    import numba
+
+    compiled, calls = utils._ctc_banded_forward_compiled, []
+
+    def record(*args):
+        calls.append(tuple(numba.typeof(arg) for arg in args))
+        return compiled(*args)
+
+    monkeypatch.setattr(utils, "_ctc_banded_forward_compiled", record)
+    utils.compile_banded_ctc_search()
+    warmed = set(calls)
+    calls.clear()
+
+    class Tokenizer:
+        def text_to_ids(self, text):
+            return [{"a": 0, "b": 2}[word] for word in text.split()]
+
+    aligner = MultiSpeakerSOTWordTimestampAligner(tokenizer=Tokenizer(), blank_id=3)
+    torch.manual_seed(0)
+    log_probs = torch.log_softmax(torch.randn(2, 12, 4), dim=-1)
+    for speaker_probs in (torch.rand(2, 12, 2), None):
+        transcripts = ["<spk:0> a b <spk:1> b", "a"]
+        prepared = aligner.prepare_alignment(log_probs, speaker_probs, transcripts, audio_durations=[0.96, 0.96])
+        aligner.align_prepared(prepared)
+
+    assert calls and set(calls) <= warmed
+
+
+@pytest.mark.unit
 def test_deferred_columns_stay_float32_while_another_thread_changes_the_default_dtype():
     # A vLLM server prepares on a thread of its own while the speech encoder, on the engine thread, sets the
     # process-wide default dtype to bfloat16 around its streaming steps.
@@ -841,21 +876,16 @@ def test_diarization_timestamps_are_contiguous_10ms_activity_segments():
 
 @pytest.mark.unit
 def test_public_word_timestamps_only_expose_word_speaker_start_and_end():
+    # A row as alignment builds it: the parsed, tokenized word with its start and end.
     rows = [
         {
             "word": "hello",
             "speaker_tag": 2,
             "word_index": 7,
             "turn_index": 3,
+            "token_ids": [5, 9],
             "start": 0.16,
             "end": 0.32,
-            "start_frame": 2,
-            "end_frame": 3,
-            "ctc_confidence": 0.9,
-            "sortformer_column": 1,
-            "speaker_confidence": 0.8,
-            "speaker_activity_start": 0.16,
-            "speaker_activity_end": 0.32,
         }
     ]
 

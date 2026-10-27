@@ -1308,6 +1308,14 @@ def merge_prepared_batches(batches: Sequence[Dict[str, Any]]) -> Optional[Dict[s
     return {**batch_values[0], "records": [record for batch in batches for record in batch["records"]]}
 
 
+def compile_banded_ctc_search() -> None:
+    """Compile the banded CTC search for the arrays alignment passes it, ahead of the first alignment."""
+    logp = np.zeros((2, 2), np.float32)
+    # The log activity prior is float32 from speaker probabilities and float64 for streams without them.
+    for prior in (np.zeros(2, np.float32), np.zeros(2, np.float64)):
+        _banded_ctc_search(logp, np.array([0, 1, 0]), np.arange(2), prior)
+
+
 @dataclass(frozen=True)
 class CTCTimestampArtifact:
     """Loaded CTC decoder and matching tokenizer."""

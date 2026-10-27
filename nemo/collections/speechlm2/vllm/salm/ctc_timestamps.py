@@ -1043,6 +1043,8 @@ def _align_group(group: list[dict]) -> list[list[dict | None] | BaseException]:
     """Align queued prepared batches in one search; per batch after an error, so it reaches only its request."""
     from nemo.collections.speechlm2.parts.ctc_timestamp_utils import merge_prepared_batches
 
+    if not group:
+        return []  # The group start_search_worker sends, to start the search worker.
     merged = merge_prepared_batches(group)
     if merged is not None:
         try:
@@ -1076,19 +1078,33 @@ def _align_record(prepared: dict, record: dict) -> dict | None | Exception:
         return error
 
 
+def start_search_worker() -> None:
+    """Start the search worker process in the background, once per server process.
+
+    Its imports and compile then happen before the first request that asks for timestamps, which would wait for
+    them otherwise. Call it from the server's event loop.
+    """
+    with _lock:
+        if "search_start" in _registry:
+            return
+        _registry["search_start"] = task = asyncio.get_running_loop().create_task(_search([]))
+    task.add_done_callback(_report_search_start)
+
+
 async def _search(group: list[dict]) -> list[list[dict | None | Exception] | BaseException]:
     """:func:`_align_packed_group` in the search worker process, restarted if it died."""
     from concurrent.futures import ProcessPoolExecutor
     from concurrent.futures.process import BrokenProcessPool
     from multiprocessing import get_context
 
-    # The process is started on first use. On a thread of the server process, the search's Python would hold the GIL,
-    # and its torch ops would wake torch's thread pool, against the event loop that serves every request.
+    # The process starts on first use, if start_search_worker has not started it. On a thread of the server process,
+    # the search's Python would hold the GIL, and its torch ops would wake torch's thread pool, against the event
+    # loop that serves every request.
     with _lock:
         pool = _registry.get("search_pool")
         if pool is None:
             pool = _registry["search_pool"] = ProcessPoolExecutor(
-                1, mp_context=get_context("spawn"), initializer=torch.set_num_threads, initargs=(1,)
+                1, mp_context=get_context("spawn"), initializer=_init_search_worker
             )
     try:
         return await asyncio.get_running_loop().run_in_executor(pool, _align_packed_group, group)
@@ -1097,6 +1113,24 @@ async def _search(group: list[dict]) -> list[list[dict | None | Exception] | Bas
             if _registry.get("search_pool") is pool:
                 del _registry["search_pool"]
         raise
+
+
+def _init_search_worker() -> None:
+    """Set up the search worker process: one torch thread, and the search compiled before its first group."""
+    from nemo.collections.speechlm2.parts.ctc_timestamp_utils import compile_banded_ctc_search
+
+    torch.set_num_threads(1)
+    try:
+        compile_banded_ctc_search()
+    except Exception as error:  # noqa: BLE001
+        # The search compiles on first use instead; an initializer error would break the pool for every search.
+        logging.warning("[NeMoSpeechLM] Compiling the CTC timestamp search in advance failed: %s", error)
+
+
+def _report_search_start(task: asyncio.Task) -> None:
+    """Log why the search worker failed to start; the next search starts it again if it died."""
+    if not task.cancelled() and task.exception() is not None:
+        logging.warning("[NeMoSpeechLM] Starting the CTC timestamp search worker failed: %s", task.exception())
 
 
 def _align_packed_group(group: list[dict]) -> list[list[dict | None | Exception] | BaseException]:

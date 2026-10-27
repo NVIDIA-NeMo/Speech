@@ -419,12 +419,15 @@ def test_the_search_worker_process_returns_what_the_server_process_would(monkeyp
     )
     monkeypatch.setattr(ct, "_registry", {})
     try:
+        # The empty group start_search_worker sends only starts the process.
+        started = asyncio.run(_search_in_worker([]))
         in_worker = asyncio.run(_search_in_worker([ct._pack(prepared)]))
         # One torch thread: a pool of them would spin-wait between the search's small ops, taking the CPUs.
         worker_threads = ct._registry["search_pool"].submit(torch.get_num_threads).result()
     finally:
         ct._registry["search_pool"].shutdown()
 
+    assert started == []
     assert in_worker == ct._align_group([prepared])
     assert worker_threads == 1
 
@@ -1489,6 +1492,24 @@ def server(aligner):
         return client.post(path, json=body, headers=headers or {})
 
     return SimpleNamespace(post=post, script=script, rpcs=rpcs, hf_config=hf_config, app=app)
+
+
+def test_the_first_request_starts_the_search_worker_once(server, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    groups = []
+    monkeypatch.setattr(ct, "_search", lambda group: groups.append(group) or asyncio.sleep(0))
+    client = TestClient(server.app)
+    adapter = server.hf_config.ctc_timestamps
+
+    server.hf_config.ctc_timestamps = {"enabled": False}
+    client.get("/health")
+    assert groups == []  # without timestamps, no worker
+
+    server.hf_config.ctc_timestamps = adapter
+    client.get("/health")
+    client.get("/v1/models")
+    assert groups == [[]]
 
 
 def test_an_opted_in_chat_completion_gets_ctc_timestamps_and_releases_its_capture(server):

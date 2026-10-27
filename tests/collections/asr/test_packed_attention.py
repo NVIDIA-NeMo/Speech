@@ -17,6 +17,7 @@
 
 import pytest
 import torch
+import torch._dynamo
 from torch.nn.attention.flex_attention import create_block_mask
 
 from nemo.collections.asr.parts.packed_sequence import pack_encoder_output, packed_sequence_ids
@@ -87,6 +88,47 @@ class TestDocumentBlockMask:
         assert context.cu_seqlens.tolist() == [0, 3, 3, 5]
         assert context.position_ids.tolist() == [0, 1, 2, 0, 1]
         assert context.sequence_slices == ((0, 3), (3, 3), (3, 5))
+
+
+class TestPackedAttentionKernelShapes:
+    """The shapes the compiled kernels see: powers of two from the padding floors, few per run."""
+
+    @pytest.mark.unit
+    def test_padded_sizes_are_powers_of_two_from_the_floors(self):
+        contexts = [PackedAttentionContext.from_lengths(torch.tensor([n])) for n in (1, 4096, 4097, 70000)]
+        assert [context.padded_total_tokens for context in contexts] == [4096, 4096, 8192, 131072]
+        contexts = [PackedAttentionContext.from_lengths(torch.tensor([n])) for n in (1, 128, 129, 500)]
+        assert [context.padded_max_seqlen for context in contexts] == [128, 128, 256, 512]
+        context = PackedAttentionContext.from_lengths(torch.tensor([300, 7]))
+        assert context.bias_rows().tolist() == list(range(307)) + [306] * (4096 - 307)
+
+    @pytest.mark.unit
+    def test_kernel_shapes_of_a_run_stay_below_the_recompile_limit(self):
+        """Batches of any size up to 150,000 tokens with utterances up to 100,000 frames share few shapes."""
+        shapes = set()
+        for total in range(1, 150_000, 1_009):
+            longest = min(total, 100_000)
+            context = PackedAttentionContext.from_lengths(torch.tensor([longest, total - longest]))
+            shapes.add((context.padded_total_tokens, context.padded_max_seqlen))
+        assert len(shapes) < packed_attention_module.RECOMPILE_LIMIT // 2
+
+    @pytest.mark.unit
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA FlexAttention")
+    def test_recompile_limit_miss_raises_instead_of_running_eagerly(self, monkeypatch):
+        """Past its recompile limit Dynamo would run flex_attention eagerly over dense scores; the miss must fail."""
+        monkeypatch.setattr(packed_attention_module, "RECOMPILE_LIMIT", 1)
+        monkeypatch.setattr(torch._dynamo.config, "recompile_limit", 1)
+        torch._dynamo.reset()
+
+        def attend(lengths):
+            context = PackedAttentionContext.from_lengths(torch.tensor(lengths, device="cuda"))
+            q, k, v = (torch.randn(context.total_tokens, 2, 16, device="cuda") for _ in range(3))
+            bias = torch.randn(context.total_tokens, 2, 2 * context.padded_max_seqlen - 1, device="cuda")
+            return packed_attention(q, k, v, context, rel_pos_bias=bias)
+
+        attend([40, 30])
+        with pytest.raises(torch._dynamo.exc.FailOnRecompileLimitHit):
+            attend([5000, 30])
 
 
 class TestPackedRelPositionAttention:

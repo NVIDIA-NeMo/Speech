@@ -15,6 +15,7 @@
 
 """Self-attention over sequence-packed activations with explicit per-utterance boundaries."""
 
+import functools
 import math
 from collections.abc import Callable
 
@@ -36,25 +37,35 @@ __all__ = ["PackedAttentionContext", "packed_attention"]
 BLOCK_SIZE = 128
 # The FlexAttention kernels are compiled statically per shape,
 # because with dynamic shapes Dynamo cannot trace the gather of the relative-position bias.
-# The token axis and the relative-position width are padded to these multiples,
-# so a training run compiles a bounded number of kernels.
+# The token axis and the relative-position width the kernels see are rounded up to powers of two
+# from these floors, so the kernels of a run are bounded by the logarithms of the two ranges,
+# not by the number of distinct batches, and the recompile limit below leaves room for them.
+# Reaching the limit anyway is an error, not a fallback: past its limit Dynamo runs a function eagerly,
+# and eager flex_attention materializes the dense scores over the padded token axis.
 TOKEN_PADDING = 4096
 LENGTH_PADDING = 128
 RECOMPILE_LIMIT = 64
 
-_flex_attention_compiled = torch.compile(flex_attention, dynamic=False)
+
+def _padded_size(value: int, floor: int) -> int:
+    """Round ``value`` up to a power of two, at least ``floor`` (a power of two itself)."""
+    return max(floor, 1 << max(value - 1, 0).bit_length())
 
 
-def _round_up(value: int, multiple: int) -> int:
-    return -(-value // multiple) * multiple
+@functools.cache
+def _compiled_flex_attention() -> Callable:
+    """flex_attention compiled statically per shape, at the first call so that importing the encoders stays cheap."""
+    return torch.compile(flex_attention, dynamic=False)
 
 
 def _recompile_limit_patch():
-    """Raise Dynamo's per-function recompile limit for the per-shape FlexAttention kernels."""
+    """Dynamo settings for the per-shape FlexAttention kernels: room for RECOMPILE_LIMIT shapes, an error beyond."""
     # torch renamed `cache_size_limit` to `recompile_limit`; older versions have only the old name
     name = "recompile_limit" if hasattr(torch._dynamo.config, "recompile_limit") else "cache_size_limit"
-    current = getattr(torch._dynamo.config, name)
-    return torch._dynamo.config.patch(**{name: max(current, RECOMPILE_LIMIT)})
+    settings = {name: max(getattr(torch._dynamo.config, name), RECOMPILE_LIMIT)}
+    if hasattr(torch._dynamo.config, "fail_on_recompile_limit_hit"):
+        settings["fail_on_recompile_limit_hit"] = True
+    return torch._dynamo.config.patch(**settings)
 
 
 class PackedAttentionContext:
@@ -79,9 +90,10 @@ class PackedAttentionContext:
         self.sequence_ids = packed_sequence_ids(packed)
         self.position_ids = packed_encoder_position_ids(packed)
         # the shapes the compiled attention kernels see, see TOKEN_PADDING and LENGTH_PADDING
-        self.padded_total_tokens = _round_up(max(self.total_tokens, 1), TOKEN_PADDING)
-        self.padded_max_seqlen = _round_up(max(self.max_seqlen, 1), LENGTH_PADDING)
+        self.padded_total_tokens = _padded_size(self.total_tokens, TOKEN_PADDING)
+        self.padded_max_seqlen = _padded_size(self.max_seqlen, LENGTH_PADDING)
         self._block_mask = None
+        self._bias_rows = None
         self._sequence_slices = None
 
     @classmethod
@@ -108,6 +120,17 @@ class PackedAttentionContext:
                 self.sequence_ids, self.cu_seqlens, self.total_tokens, padded_total_tokens=self.padded_total_tokens
             )
         return self._block_mask
+
+    def bias_rows(self) -> Tensor:
+        """The relative-position bias row of every position of the padded token axis.
+
+        Tokens read their own row and the tail beyond the last token reads the last token's row,
+        so the kernels gather the bias in bounds without a padded copy of it; the tail is masked.
+        """
+        if self._bias_rows is None:
+            rows = torch.arange(self.padded_total_tokens, device=self.device)
+            self._bias_rows = rows.clamp(max=max(self.total_tokens - 1, 0))
+        return self._bias_rows
 
 
 def document_block_mask(
@@ -236,9 +259,10 @@ def packed_attention(
                 )
         if dropout_p > 0.0:
             raise NotImplementedError(
-                "FlexAttention has no dropout on the attention weights; "
-                "packed attention with a relative position bias needs dropout_att=0, "
-                "while abs_pos and rope attention keep their dropout through FlashAttention."
+                "FlexAttention has no dropout on the attention weights: "
+                "set dropout_att: 0 on the encoder for rel_pos attention over packed sequences; "
+                "abs_pos and rope attention keep their dropout through variable-length FlashAttention, "
+                "which runs in float16 or bfloat16 (autocast) only."
             )
         return _flex_packed_attention(q, k, v, context, rel_pos_bias=rel_pos_bias, scale=scale)
     return _reference_packed_attention(q, k, v, context, rel_pos_bias=rel_pos_bias, dropout_p=dropout_p, scale=scale)
@@ -265,18 +289,21 @@ def _flex_packed_attention(
 
     score_mod = None
     if rel_pos_bias is not None:
-        bias = pad_tokens(rel_pos_bias)
+        bias = rel_pos_bias
+        rows = context.bias_rows()
         # the bias covers the relative positions (W - 1) / 2 down to -(W - 1) / 2;
-        # indices outside an utterance are masked, so clamping only keeps the gather in bounds
+        # indices outside an utterance are masked, so clamping only keeps the gather in bounds,
+        # and the rows map the padded token axis onto the bias, which is not padded
         center = (bias.shape[-1] - 1) // 2
         last_index = bias.shape[-1] - 1
 
         def score_mod(score, b, h, q_idx, kv_idx):
             rel = (center - q_idx + kv_idx).clamp(0, last_index)
-            return score + bias[q_idx, h, rel] * scale
+            return score + bias[rows[q_idx], h, rel] * scale
 
+    compiled = _compiled_flex_attention()
     with _recompile_limit_patch():
-        out = _flex_attention_compiled(
+        out = compiled(
             pad_tokens(q).transpose(0, 1).unsqueeze(0),
             pad_tokens(k).transpose(0, 1).unsqueeze(0),
             pad_tokens(v).transpose(0, 1).unsqueeze(0),

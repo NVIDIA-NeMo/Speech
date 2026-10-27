@@ -26,6 +26,7 @@ from lightning.pytorch.utilities import rank_zero_only
 
 from nemo.core import config, optim
 from nemo.core.config.modelPT import ModelConfig, ModelConfigBuilder
+from nemo.core.config.schedulers import ReduceLROnPlateauParams
 from nemo.core.optim.lr_scheduler import AVAILABLE_SCHEDULERS, PiecewiseLinear
 from nemo.core.optim.optimizers import AVAILABLE_OPTIMIZERS
 from nemo.utils import logging
@@ -338,6 +339,16 @@ class TestOptimizersSchedulers:
         scheduler = optim.lr_scheduler.prepare_lr_scheduler(opt, cfg.optim.sched)['scheduler']
         assert isinstance(scheduler, optim.lr_scheduler.CosineAnnealing)
         assert scheduler.min_lr == 0.1
+
+        # a registered parameter config that does not derive from `SchedulerParams` converts as well
+        builder.set_optim(config.SGDParams(lr=self.INITIAL_LR), ReduceLROnPlateauParams(patience=2))
+        cfg = omegaconf.OmegaConf.structured(builder.model_cfg)
+        assert cfg.optim.sched.name == 'ReduceLROnPlateau'
+        assert cfg.optim.sched.patience == 2
+        assert 'last_epoch' not in cfg.optim.sched
+
+        builder.set_optim(config.SGDParams(lr=self.INITIAL_LR))
+        assert omegaconf.OmegaConf.structured(builder.model_cfg).optim.sched is None
 
     @pytest.mark.unit
     def test_sched_config_parse_reduce_on_plateau(self):

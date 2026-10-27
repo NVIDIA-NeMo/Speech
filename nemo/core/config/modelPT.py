@@ -156,11 +156,14 @@ class ModelConfigBuilder:
     def set_optim(self, cfg: config.OptimizerParams, sched_cfg: Optional[config.SchedulerParams] = None):
         """Set optimizer and scheduler configuration."""
 
+        # the scheduler config is the scheduler's parameter config with its name, not a `SchedConfig`,
+        # whose `min_lr` not every scheduler accepts; the field is typed with the supplied parameter class,
+        # since not every registered one derives from `SchedulerParams` (`ReduceLROnPlateauParams`)
+        sched_type = type(sched_cfg) if sched_cfg is not None else config.SchedulerParams
+
         @dataclass
         class WrappedOptimConfig(OptimConfig, cfg.__class__):
-            # the scheduler config is the scheduler's parameter config with its name, not a `SchedConfig`,
-            # whose `min_lr` not every scheduler accepts
-            sched: Optional[config.SchedulerParams] = None
+            sched: Optional[sched_type] = None
 
         # Setup optim
         optim_name = cfg.__class__.__name__.replace("Params", "").lower()

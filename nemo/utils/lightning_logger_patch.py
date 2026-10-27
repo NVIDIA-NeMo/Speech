@@ -52,8 +52,12 @@ def add_filehandlers_to_pl_logger(all_log_file, err_log_file):
     if HANDLERS.get("memory_all", None):
         HANDLERS["memory_all"].setTarget(HANDLERS["file"])
         HANDLERS["memory_all"].close()
+        # close() leaves the handler attached with no target, and a targetless
+        # MemoryHandler never empties its buffer, so it has to come off here.
+        pl._logger.removeHandler(HANDLERS["memory_all"])
         del HANDLERS["memory_all"]
     if HANDLERS.get("memory_err", None):
         HANDLERS["memory_err"].setTarget(HANDLERS["file_err"])
         HANDLERS["memory_err"].close()
+        pl._logger.removeHandler(HANDLERS["memory_err"])
         del HANDLERS["memory_err"]

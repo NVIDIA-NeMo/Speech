@@ -34,8 +34,9 @@ Public surface used by the rest of the package:
   registry binds to the registered model class.
 """
 
+import inspect
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -79,6 +80,11 @@ _DUMMY_AUDIO_TEXT_TOKEN_RESERVE = 64
 # perception module is loaded, so we use the same constant the helper
 # would derive.
 _MIN_CHUNK_SIZE_SAMPLES = 320
+# vLLM 0.32 tokenizes the prompt in its renderer and calls ``_call_hf_processor(hf_data, hf_kwargs)`` with the
+# multimodal data only; vLLM 0.28 calls ``_call_hf_processor(prompt, mm_data, mm_kwargs, tok_kwargs)``.
+_PROCESSOR_TAKES_PROMPT = "prompt" in inspect.signature(BaseMultiModalProcessor._call_hf_processor).parameters
+# vLLM 0.32 applies prompt updates on token ids only; vLLM 0.28 also takes text targets.
+_PROMPT_UPDATES_TAKE_TEXT = hasattr(PromptUpdateDetails, "select_text")
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
@@ -522,6 +528,21 @@ class NeMoSpeechLMMultiModalProcessor(
             capture_ctc_timestamps=MultiModalFieldConfig.batched("audio", keep_on_cpu=True),
         )
 
+    def get_dummy_inputs(
+        self,
+        seq_len: int,
+        mm_counts: Mapping[str, int],
+        mm_options: Mapping[str, BaseDummyOptions],
+    ) -> ProcessorInputs:
+        """Startup profiling inputs that opt into CTC timestamp capture.
+
+        vLLM 0.32 builds them here; vLLM 0.28 builds them in
+        ``NeMoSpeechLMDummyInputsBuilder.get_dummy_processor_inputs``, which explains why they opt in.
+        """
+        inputs = super().get_dummy_inputs(seq_len, mm_counts, mm_options)
+        inputs.hf_processor_mm_kwargs = {**inputs.hf_processor_mm_kwargs, "capture_ctc_timestamps": True}
+        return inputs
+
     def _hf_processor_applies_updates(
         self,
         prompt_text: str,
@@ -537,13 +558,19 @@ class NeMoSpeechLMMultiModalProcessor(
         hf_processor_mm_kwargs: Mapping[str, object],
         out_mm_kwargs: MultiModalKwargsItems,
     ) -> list[PromptUpdate]:
-        audios = mm_items.get_items("audio", AudioProcessorItems)
         chunk_size_seconds = self.info._get_encoder_chunk_size_seconds()
         estimator_config = self.info._get_audio_token_estimator_config()
 
+        def audio_samples(item_idx: int) -> int:
+            # Looked up per replacement: vLLM passes only the items missing from its processor cache, so when every
+            # audio item is cached there is no audio modality here, and no replacement is asked for.
+            return mm_items.get_items("audio", AudioProcessorItems).get(item_idx).shape[-1]
+
+        if not _PROMPT_UPDATES_TAKE_TEXT:
+            return self._get_token_prompt_updates(audio_samples, chunk_size_seconds, estimator_config)
+
         def get_replacement(item_idx: int):
-            audio = audios.get(item_idx)
-            n_tokens = self.info._estimate_audio_tokens(audio.shape[-1], chunk_size_seconds, estimator_config)
+            n_tokens = self.info._estimate_audio_tokens(audio_samples(item_idx), chunk_size_seconds, estimator_config)
             repl_full = _AUDIO_PLACEHOLDER * n_tokens
             return PromptUpdateDetails.select_text(repl_full, _AUDIO_PLACEHOLDER)
 
@@ -555,14 +582,39 @@ class NeMoSpeechLMMultiModalProcessor(
             )
         ]
 
-    def _call_hf_processor(
+    def _get_token_prompt_updates(
+        self,
+        audio_samples: Callable[[int], int],
+        chunk_size_seconds: float | None,
+        estimator_config: Mapping[str, object] | None,
+    ) -> list[PromptUpdate]:
+        """vLLM 0.32's prompt updates, on token ids: the placeholder's one token id, repeated per encoder token."""
+        tokenizer = self.info.get_tokenizer()
+        _ensure_special_tokens(tokenizer)
+        placeholder_ids = tokenizer.encode(_AUDIO_PLACEHOLDER, add_special_tokens=False)
+        if len(placeholder_ids) != 1:
+            raise ValueError(f"{_AUDIO_PLACEHOLDER!r} must encode to exactly one token, got {placeholder_ids}.")
+
+        def get_replacement(item_idx: int) -> list[int]:
+            n_tokens = self.info._estimate_audio_tokens(audio_samples(item_idx), chunk_size_seconds, estimator_config)
+            return placeholder_ids * n_tokens
+
+        return [PromptReplacement(modality="audio", target=placeholder_ids, replacement=get_replacement)]
+
+    def _call_hf_processor(self, *args, **kwargs) -> BatchFeature:
+        """Per-request preprocessing, under vLLM's hook name (this model has no Hugging Face processor)."""
+        if _PROCESSOR_TAKES_PROMPT:
+            return self._call_hf_processor_with_prompt(*args, **kwargs)
+        return self._call_hf_processor_audio_only(*args, **kwargs)
+
+    def _call_hf_processor_with_prompt(
         self,
         prompt: str,
         mm_data: Mapping[str, object],
         mm_kwargs: Mapping[str, object],
         tok_kwargs: Mapping[str, object],
     ) -> BatchFeature:
-        """Per-request preprocessing, under vLLM's hook name (this model has no Hugging Face processor).
+        """vLLM 0.28's contract.
 
         Expands each audio placeholder into its estimated encoder token count, tokenizes the
         prompt, and packages the audio with its CTC timestamp opt-in flag.
@@ -611,6 +663,33 @@ class NeMoSpeechLMMultiModalProcessor(
             result["audio_signal_length"] = torch.tensor(audio_lengths)
             # Opt-in: a capture nobody aligns would stay in host memory until the byte cap evicts it.
             capture = bool(mm_kwargs.get("capture_ctc_timestamps", False))
+            result["capture_ctc_timestamps"] = torch.full((len(audio_list),), capture)
+        return result
+
+    def _call_hf_processor_audio_only(
+        self,
+        hf_data: Mapping[str, object],
+        hf_kwargs: Mapping[str, object],
+    ) -> BatchFeature:
+        """vLLM 0.32's contract: the renderer has tokenized the prompt and ``_get_prompt_updates`` expands its
+        placeholders, so only package the audio with its CTC timestamp opt-in flag.
+        """
+        audios = hf_data.get("audio", [])
+        result = BatchFeature()
+
+        if audios:
+            audio_list: list[torch.Tensor] = []
+            for audio in audios:
+                audio_tensor = (
+                    audio if isinstance(audio, torch.Tensor) else torch.as_tensor(audio, dtype=torch.float32)
+                )
+                if audio_tensor.dim() > 1:
+                    audio_tensor = audio_tensor.squeeze()
+                audio_list.append(audio_tensor)
+            result["audio_signal"] = audio_list
+            result["audio_signal_length"] = torch.tensor([audio.shape[-1] for audio in audio_list])
+            # Opt-in: a capture nobody aligns would stay in host memory until the byte cap evicts it.
+            capture = bool(hf_kwargs.get("capture_ctc_timestamps", False))
             result["capture_ctc_timestamps"] = torch.full((len(audio_list),), capture)
         return result
 

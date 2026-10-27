@@ -275,8 +275,13 @@ flag directly:
         decoder_type=rnnt \
         strip_lang_tags=true
 
-Use ``target_lang=<lang-code>`` to pin every sample in the batch to one language, or
-``target_lang=auto`` to read the per-sample ``target_lang`` field from each manifest entry.
+``target_lang`` must be a key of the model's ``prompt_dictionary``. A bare language code such as
+``en`` is also accepted when it matches exactly one locale key (for example ``en-US``). An
+unsupported language raises an error. ``target_lang=auto`` (the default when ``target_lang`` is
+unset) selects the language-agnostic prompt; quality on languages the model was not trained on is
+not guaranteed. This script applies one prompt to every sample. For per-utterance languages, use
+``model.transcribe()``, which reads each manifest entry's ``lang`` field when ``target_lang`` is
+unset and uses ``auto`` for entries without one.
 Setting ``strip_lang_tags=true`` removes ``<xx-XX>`` language tags from the decoded text
 (pattern is customizable via ``lang_tag_pattern``).
 

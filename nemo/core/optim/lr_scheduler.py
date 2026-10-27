@@ -17,13 +17,14 @@
 # pylint: disable=C0301
 # flake8: noqa
 
+import bisect
 import copy
 import dataclasses
 import inspect
 import math
 import warnings
 from functools import partial
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 import torch.optim as optim
 import torch.optim.lr_scheduler as pt_scheduler
@@ -713,6 +714,97 @@ class PolynomialHoldDecayAnnealing(WarmupHoldPolicy):
         return new_lrs
 
 
+class PiecewiseLinear(_LRScheduler):
+    """Learning rate interpolated linearly between given values at given points of the training.
+
+    ``boundaries`` are increasing positions in the training
+    and ``values`` the learning-rate multipliers at those positions;
+    between two boundaries the multiplier is interpolated linearly,
+    before the first and after the last boundary it stays at the nearest value.
+    Positions are optimizer steps, or fractions of ``max_steps`` with ``relative=True``,
+    so that one configuration describes the schedule for any training length.
+    The multipliers scale the learning rate of each parameter group;
+    with ``lr: 1.0`` they are the learning rates.
+
+    Example, a warmup over the first 45% of the training and a decay to the end:
+
+    .. code-block:: yaml
+
+        sched:
+          name: PiecewiseLinear
+          relative: true
+          boundaries: [0.0, 0.45, 0.9, 1.0]
+          values: [1e-5, 4e-3, 1e-5, 1e-6]
+
+    Args:
+        optimizer: the wrapped optimizer
+        boundaries: increasing positions, in optimizer steps or (``relative``) in fractions of ``max_steps``
+        values: learning-rate multiplier at each boundary, one per boundary
+        relative: interpret ``boundaries`` as fractions of ``max_steps``
+        max_steps: the number of optimizer steps of the training, a positive integer;
+            required with ``relative`` and ignored otherwise;
+            :func:`prepare_lr_scheduler` fills it in from the trainer or from ``sched.max_steps``
+        last_epoch: the index of the last optimizer step, -1 for a fresh schedule
+    """
+
+    def __init__(
+        self,
+        optimizer: optim.Optimizer,
+        *,
+        boundaries: Optional[Sequence[float]] = None,
+        values: Optional[Sequence[float]] = None,
+        relative: bool = False,
+        max_steps: Optional[int] = None,
+        last_epoch: int = -1,
+    ) -> None:
+        if boundaries is None or values is None:
+            raise ValueError("PiecewiseLinear needs `boundaries` and `values`")
+        boundaries = [float(boundary) for boundary in boundaries]
+        values = [float(value) for value in values]
+        if not boundaries or len(boundaries) != len(values):
+            raise ValueError("`boundaries` and `values` must have the same length and at least one entry")
+        if not all(math.isfinite(value) for value in boundaries + values):
+            raise ValueError("`boundaries` and `values` must be finite")
+        if any(later <= earlier for earlier, later in zip(boundaries, boundaries[1:])):
+            raise ValueError("`boundaries` must be strictly increasing")
+        if relative and not (isinstance(max_steps, int) and max_steps > 0):
+            raise ValueError(f"Relative `boundaries` need a positive integer `max_steps`, got {max_steps!r}")
+        self.boundaries = boundaries
+        self.values = values
+        self.relative = relative
+        self.max_steps = max_steps
+        super().__init__(optimizer, last_epoch)
+
+    def multiplier(self, position: float) -> float:
+        """The interpolated multiplier at ``position``, a step or (``relative``) a fraction of ``max_steps``.
+
+        Args:
+            position: the position in the training
+
+        Returns:
+            the multiplier of the base learning rate
+        """
+        index = bisect.bisect_right(self.boundaries, position)
+        if index == 0:
+            return self.values[0]
+        if index == len(self.boundaries):
+            return self.values[-1]
+        x0, x1 = self.boundaries[index - 1], self.boundaries[index]
+        y0, y1 = self.values[index - 1], self.values[index]
+        return (y1 - y0) / (x1 - x0) * (position - x0) + y0
+
+    def get_lr(self) -> List[float]:
+        if not self._get_lr_called_within_step:
+            warnings.warn(
+                "To get the last learning rate computed by the scheduler, please use `get_last_lr()`.", UserWarning
+            )
+
+        step = self.last_epoch
+        position = step / self.max_steps if self.relative else float(step)
+        multiplier = self.multiplier(position)
+        return [initial_lr * multiplier for initial_lr in self.base_lrs]
+
+
 def register_scheduler(name: str, scheduler: _LRScheduler, scheduler_params: SchedulerParams):
     """
     Checks if the scheduler name exists in the registry, and if it doesnt, adds it.
@@ -1056,6 +1148,7 @@ AVAILABLE_SCHEDULERS = {
     'SquareRootAnnealing': SquareRootAnnealing,
     'PolynomialDecayAnnealing': PolynomialDecayAnnealing,
     'PolynomialHoldDecayAnnealing': PolynomialHoldDecayAnnealing,
+    'PiecewiseLinear': PiecewiseLinear,
     'StepLR': pt_scheduler.StepLR,
     'ExponentialLR': pt_scheduler.ExponentialLR,
     'ReduceLROnPlateau': pt_scheduler.ReduceLROnPlateau,

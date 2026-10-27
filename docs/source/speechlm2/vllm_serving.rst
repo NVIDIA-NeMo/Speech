@@ -6,7 +6,7 @@ their speech encoder and language backbone. It supports ordinary generation
 and checkpoint-backed speculative decoding.
 
 CTC word timestamp alignment
----------------------------
+----------------------------
 
 When CTC timestamps are requested, native SpeechLM and the vLLM timestamp
 worker use the same single-pass banded CTC word aligner. Speaker mapping
@@ -28,7 +28,8 @@ opt-in and requires a CTC adapter.
 Installation
 ------------
 
-Install the ASR runtime and vLLM 0.28.0, pinned by NeMo's ``vllm`` extra:
+Install the ASR runtime and vLLM 0.32.0, pinned by NeMo's ``vllm`` extra.
+vLLM 0.32 requires Python 3.11 or newer:
 
 .. code-block:: bash
 
@@ -59,8 +60,23 @@ Start ordinary BF16 serving with a vLLM-ready NeMo SpeechLM checkpoint:
 
 Hybrid checkpoints with exported MTP weights can also use vLLM's MTP draft.
 Set the number of speculative tokens according to the checkpoint's trained
-prediction depths, and use ``--mamba-cache-mode all`` with MTP. For a separate
-checkpoint-backed draft, see :doc:`vllm_dflash`.
+prediction depths, and verify the drafts with vLLM's ReplaySSM:
+
+.. code-block:: bash
+
+   vllm serve /path/to/vllm-ready-speechlm-checkpoint \
+     --trust-remote-code \
+     --dtype bfloat16 \
+     --use-replayssm --mamba-backend flashinfer --mamba-cache-mode none \
+     --no-enable-prefix-caching \
+     --speculative-config '{"method": "mtp", "num_speculative_tokens": 3}'
+
+For a separate checkpoint-backed draft, see :doc:`vllm_dflash`.
+
+vLLM rejects audio inputs larger than ``VLLM_MAX_AUDIO_CLIP_FILESIZE_MB``
+(default 25 MB) or longer than ``VLLM_MAX_AUDIO_DECODE_DURATION_S`` (default
+600 seconds). Raise both, as environment variables of the server, to transcribe
+longer recordings.
 
 .. _speechlm2-vllm-hybrid-precision:
 

@@ -17,6 +17,7 @@ from unittest.mock import Mock
 
 import pytest
 import torch
+from omegaconf import OmegaConf
 
 import nemo.collections.asr.modules.rnnt as rnnt_module
 from nemo.collections.asr.losses.rnnt import RNNTLoss
@@ -24,9 +25,14 @@ from nemo.collections.asr.models.rnnt_models import EncDecRNNTModel
 from nemo.collections.asr.modules.hybrid_autoregressive_transducer import HATJoint
 from nemo.collections.asr.modules.rnnt import RNNTJoint, SampledRNNTJoint
 from nemo.collections.asr.modules.rnnt_abstract import AbstractRNNTJoint
+from nemo.collections.asr.parts.turbo_transducer import rnnt_fused_joint as fused_module
+from nemo.collections.asr.parts.turbo_transducer import rnnt_joint_fused_vocab as fused_vocab_module
 from nemo.collections.asr.parts.turbo_transducer.rnnt_consistency import ConsistencyRNNTLoss
 from nemo.collections.asr.parts.turbo_transducer.types import TransducerLossInputs
 from nemo.core.utils.optional_libs import TRITON_AVAILABLE
+
+if TRITON_AVAILABLE:
+    from nemo.collections.asr.parts.turbo_transducer import rnnt_joint_fused_vocab_triton as fused_vocab_triton_module
 
 
 def _jointnet_config(dropout: float = 0.0, activation: str = "relu"):
@@ -137,7 +143,8 @@ def test_joint_passes_live_vocab_projection_parameters(monkeypatch, kernel_type)
 
 
 @pytest.mark.unit
-def test_model_routes_joint_output_to_loss_logprobs_path():
+@pytest.mark.parametrize('current_step', [None, 5])
+def test_model_routes_joint_output_to_loss_logprobs_path(current_step):
     target_logprobs = torch.randn(2, 4, 4)
     blank_logprobs = torch.randn(2, 4, 4)
     loss_value = torch.tensor(1.5)
@@ -162,6 +169,7 @@ def test_model_routes_joint_output_to_loss_logprobs_path():
         transcript=transcript,
         encoded_len=source_lengths,
         target_length=target_lengths,
+        current_step=current_step,
     )
 
     assert actual_loss is loss_value
@@ -174,6 +182,7 @@ def test_model_routes_joint_output_to_loss_logprobs_path():
         transcript_lengths=target_lengths,
         compute_consistency=False,
         consistency_symmetrical=True,
+        current_step=current_step,
     )
     loss.forward_from_logprobs.assert_called_once_with(
         target_logprobs=target_logprobs,
@@ -272,6 +281,119 @@ def test_turbo_joint_rejects_consistency_loss(kernel_type):
             transcript_lengths=torch.tensor([3, 3]),
             compute_consistency=True,
         )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('kernel_type', ['fused_vocab', 'fused'])
+@pytest.mark.parametrize(
+    'pruning_config,current_step,training,grad_enabled,expected_width',
+    [
+        ({}, None, True, True, None),
+        ({'backward_pruning_start_step': 5}, 6, True, True, None),
+        ({'backward_pruning_range_size': None}, None, True, True, None),
+        ({'backward_pruning_range_size': 0}, None, True, True, None),
+        ({'backward_pruning_range_size': -1}, None, True, True, None),
+        ({'backward_pruning_range_size': 2}, None, True, True, 2),
+        ({'backward_pruning_range_size': 2, 'backward_pruning_start_step': None}, None, True, True, 2),
+        ({'backward_pruning_range_size': 2, 'backward_pruning_start_step': -1}, None, True, True, 2),
+        ({'backward_pruning_range_size': 2, 'backward_pruning_start_step': 0}, None, True, True, 2),
+        ({'backward_pruning_range_size': 2, 'backward_pruning_start_step': 5}, None, True, True, None),
+        ({'backward_pruning_range_size': 2, 'backward_pruning_start_step': 5}, 4, True, True, None),
+        ({'backward_pruning_range_size': 2, 'backward_pruning_start_step': 5}, 5, True, True, 2),
+        ({'backward_pruning_range_size': 2, 'backward_pruning_start_step': 5}, 6, True, True, 2),
+        ({'backward_pruning_range_size': 2}, None, False, True, None),
+        ({'backward_pruning_range_size': 2}, None, True, False, None),
+    ],
+)
+def test_flat_pruning_config_and_schedule(
+    monkeypatch, kernel_type, pruning_config, current_step, training, grad_enabled, expected_width
+):
+    widths = []
+
+    def fake_joint(backward_pruning_range_size, **kwargs):
+        widths.append(backward_pruning_range_size)
+        return torch.zeros(2, 4, 4), torch.zeros(2, 4, 4)
+
+    monkeypatch.setattr(rnnt_module, 'rnnt_joint_fused_vocab', fake_joint)
+    monkeypatch.setattr(rnnt_module, 'rnnt_fused_joint', fake_joint)
+    config = OmegaConf.create({**_turbo_kernel_config(kernel_type), **pruning_config})
+    joint = RNNTJoint(jointnet=_jointnet_config(), num_classes=8, turbo_kernel=config)
+    restored = RNNTJoint(jointnet=_jointnet_config(), num_classes=8, turbo_kernel=config)
+    restored.load_state_dict(joint.state_dict())
+    # Restoring a checkpoint needs no additional warm-up counter.
+    for module in [joint, restored]:
+        module.train(training)
+        with torch.set_grad_enabled(grad_enabled):
+            module.forward_for_loss(
+                encoder_outputs=torch.randn(2, 5, 4),
+                decoder_outputs=torch.randn(2, 6, 4),
+                encoder_lengths=torch.tensor([4, 3]),
+                transcripts=torch.randint(0, 8, [2, 3]),
+                transcript_lengths=torch.tensor([3, 2]),
+                current_step=current_step,
+            )
+    assert widths == [expected_width, expected_width]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('kernel_type,backend', [('fused', 'triton'), ('fused', 'cutile'), ('fused_vocab', 'cutile')])
+def test_joint_api_rejects_unsupported_pruning(kernel_type, backend):
+    with pytest.raises(NotImplementedError, match='[Bb]ackward pruning'):
+        if kernel_type == 'fused':
+            fused_module.rnnt_fused_joint(
+                None, None, None, None, None, None, None, 0, backend=backend, backward_pruning_range_size=16
+            )
+        else:
+            fused_vocab_module.rnnt_joint_fused_vocab(
+                None, None, None, None, None, None, 0, backend=backend, backward_pruning_range_size=16
+            )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('width', [None, 0, -1])
+@pytest.mark.parametrize(
+    'kernel_type,backend', [('fused', 'triton'), ('fused_vocab', 'triton'), ('fused_vocab', 'cutile')]
+)
+def test_joint_api_accepts_disabled_pruning(monkeypatch, kernel_type, backend, width):
+    outputs = (torch.zeros(1), torch.zeros(1))
+    if kernel_type == 'fused':
+        monkeypatch.setattr(fused_module, 'TRITON_AVAILABLE', True)
+        backend_fn = Mock(return_value=outputs)
+        monkeypatch.setattr(fused_module, 'rnnt_fused_joint_triton', backend_fn, raising=False)
+        result = fused_module.rnnt_fused_joint(
+            None, None, None, None, None, None, None, 0, backend=backend, backward_pruning_range_size=width
+        )
+    else:
+        monkeypatch.setattr(fused_vocab_module, f'{backend.upper()}_AVAILABLE', True)
+        backend_fn = Mock(return_value=outputs)
+        monkeypatch.setattr(fused_vocab_module, f'rnnt_joint_fused_vocab_{backend}', backend_fn, raising=False)
+        result = fused_vocab_module.rnnt_joint_fused_vocab(
+            None, None, None, None, None, None, 0, backend=backend, backward_pruning_range_size=width
+        )
+        if backend == 'triton':
+            assert backend_fn.call_args.kwargs['backward_pruning_range_size'] is None
+    assert result[0] is outputs[0] and result[1] is outputs[1]
+    backend_fn.assert_called_once()
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not TRITON_AVAILABLE, reason='Triton is not installed')
+@pytest.mark.parametrize('width', [None, 0, -1, 4])
+def test_triton_api_normalizes_dense_pruning_width(monkeypatch, width):
+    apply = Mock(return_value=(torch.zeros(1), torch.zeros(1)))
+    monkeypatch.setattr(fused_vocab_triton_module._RnntJointFusedVocabTritonFunction, 'apply', apply)
+    fused_vocab_triton_module.rnnt_joint_fused_vocab_triton(
+        torch.zeros(1, 2, 4, 8),
+        None,
+        None,
+        None,
+        None,
+        None,
+        0,
+        backward_mode='chunked',
+        backward_pruning_range_size=width,
+    )
+    assert apply.call_args.args[-1] is None
 
 
 @pytest.mark.unit

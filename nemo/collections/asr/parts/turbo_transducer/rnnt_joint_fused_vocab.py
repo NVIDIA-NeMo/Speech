@@ -38,13 +38,22 @@ def rnnt_joint_fused_vocab(
     weight_grad_full_precision: bool = False,
     backend: str | TurboTransducerBackend | None = TurboTransducerBackend.TRITON,
     mm_full_precision: bool = False,
+    backward_pruning_range_size: int | None = None,
+    backward_mode: str | None = None,
 ):
     """Compute target/blank log-probabilities without materializing the vocabulary logits.
 
     BF16 activations use BF16 matmul operands even with FP32 master parameters. ``mm_full_precision=True``
     promotes operands to FP32; ``use_high_precision_mm=True`` also promotes operands and requests IEEE input
     precision in Triton. Gradient accumulation precision is controlled separately by the gradient flags.
+
+    ``backward_pruning_range_size`` enables approximate backward on that many contiguous target positions per frame
+    (Triton only). Windows maximize incoming target/blank gradient magnitude. Forward remains unchanged.
+    None or non-positive widths disable pruning. ``backward_mode`` optionally selects Triton's ``'atomic'``
+    or ``'chunked'`` algorithm independently of pruning.
     """
+    if backward_pruning_range_size is not None and backward_pruning_range_size <= 0:
+        backward_pruning_range_size = None
     backend = TurboTransducerBackend(backend) if backend is not None else None
 
     if backend is None:
@@ -71,8 +80,14 @@ def rnnt_joint_fused_vocab(
                 input_grad_full_precision=input_grad_full_precision,
                 weight_grad_full_precision=weight_grad_full_precision,
                 mm_full_precision=mm_full_precision,
+                backward_pruning_range_size=backward_pruning_range_size,
+                backward_mode=backward_mode,
             )
         case TurboTransducerBackend.CUTILE:
+            if backward_pruning_range_size is not None:
+                raise NotImplementedError("Backward pruning is supported only by the Triton fused_vocab backend")
+            if backward_mode is not None:
+                raise ValueError("Explicit backward_mode is supported only by the Triton fused_vocab backend")
             if not CUTILE_AVAILABLE:
                 raise ModuleNotFoundError("cuTile is unavailable")
             target_logprobs, blank_logprobs = rnnt_joint_fused_vocab_cutile(

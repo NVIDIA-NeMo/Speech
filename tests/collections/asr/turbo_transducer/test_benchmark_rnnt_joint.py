@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import csv
+
 import pytest
 import torch
 
@@ -26,9 +28,16 @@ def test_mixed_precision_dtype_aliases(name):
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 @pytest.mark.parametrize(
-    "joint,fused_batch_size", [("standard", 0), ("standard", 1), ("fused_vocab", 0), ("fused", 0)]
+    "joint,fused_batch_size,pruning_range_size",
+    [
+        ("standard", 0, None),
+        ("standard", 1, None),
+        ("fused_vocab", 0, None),
+        ("fused_vocab", 0, 2),
+        ("fused", 0, None),
+    ],
 )
-def test_mixed_precision_benchmark_preserves_master_weights(monkeypatch, joint, fused_batch_size):
+def test_mixed_precision_benchmark_preserves_master_weights(monkeypatch, joint, fused_batch_size, pruning_range_size):
     calls = []
 
     def check_backward(gradient):
@@ -49,6 +58,8 @@ def test_mixed_precision_benchmark_preserves_master_weights(monkeypatch, joint, 
         return original_linear(hidden, weight, bias)
 
     def fake_fused_vocab(joint_hidden, weight, bias, **kwargs):
+        if joint == 'fused_vocab':
+            assert kwargs['backward_pruning_range_size'] == pruning_range_size
         record_inputs(joint_hidden, weight, bias)
         anchor = joint_hidden.float().sum(-1) + weight.sum() + bias.sum()
         return anchor, anchor
@@ -72,16 +83,76 @@ def test_mixed_precision_benchmark_preserves_master_weights(monkeypatch, joint, 
         warmup_iters=1,
         bench_iters=1,
         fused_batch_size=fused_batch_size,
+        pruning_range_size=pruning_range_size,
     )
     assert calls
     assert result.dtype == "bfloat16-mixed"
+    assert result.pruning_range_size == pruning_range_size
+
+
+@pytest.mark.unit
+def test_csv_and_table_distinguish_pruned_runs(tmp_path, capsys):
+    result = benchmark_rnnt_joint.BenchmarkResults(
+        joint='fused_vocab',
+        joint_backend='triton',
+        loss='turbo_rnnt',
+        fused_batch_size=0,
+        dtype='bfloat16',
+        batch_size=2,
+        max_time=4,
+        max_target_plus_1=4,
+        hidden_dim=32,
+        vocab_size=17,
+        input_memory_gb=0.1,
+        forward_memory_gb=0.2,
+        backward_peak_memory_gb=0.3,
+        max_peak_memory_gb=0.4,
+        forward_time_ms=1.0,
+        backward_time_ms=2.0,
+        total_time_ms=3.0,
+        pruning_range_size=2,
+    )
+    benchmark_rnnt_joint.print_results_table([result])
+    assert 'Pruning Range' in capsys.readouterr().out
+    output = tmp_path / 'benchmark.csv'
+    benchmark_rnnt_joint.write_csv([result], output)
+    with output.open() as stream:
+        row = next(csv.DictReader(stream))
+    assert row['Pruning Range'] == '2'
+    assert row['Backward Mode'] == 'auto'
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    'joint,backend,width',
+    [('standard', '-', 2), ('fused', 'triton', 2), ('fused_vocab', 'cutile', 2), ('fused_vocab', 'triton', 0)],
+)
+def test_benchmark_rejects_invalid_pruning(joint, backend, width):
+    with pytest.raises(ValueError, match='pruning|pruning_range_size'):
+        benchmark_rnnt_joint.run_benchmark(
+            joint=joint, loss='turbo_rnnt', dtype=torch.float32, joint_backend=backend, pruning_range_size=width
+        )
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize("dtype", ["bf16-mixed", "bfloat16-mixed"])
 def test_multi_benchmark_passes_precision_options(monkeypatch, dtype):
     calls = []
-    monkeypatch.setattr("sys.argv", ["benchmark_rnnt_joint_multi.py", "--dtype", dtype, "--mm-full-precision"])
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "benchmark_rnnt_joint_multi.py",
+            "--dtype",
+            dtype,
+            "--mm-full-precision",
+            "--pruning-range-sizes",
+            "2",
+            "4",
+            "--backward-modes",
+            "atomic",
+            "chunked",
+        ],
+    )
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "get_device_name", lambda device: "test GPU")
     monkeypatch.setattr(benchmark_rnnt_joint_multi, "VOCAB_SIZES", [17])
@@ -93,8 +164,10 @@ def test_multi_benchmark_passes_precision_options(monkeypatch, dtype):
     monkeypatch.setattr(benchmark_rnnt_joint_multi, "run_benchmark", lambda **kwargs: calls.append(kwargs))
     monkeypatch.setattr(benchmark_rnnt_joint_multi, "print_results_table", lambda results: None)
     benchmark_rnnt_joint_multi.main()
-    assert [call["dtype"] for call in calls] == ["bfloat16-mixed"] * 2
-    assert [call["mm_full_precision"] for call in calls] == [False, True]
+    assert [call["dtype"] for call in calls] == ["bfloat16-mixed"] * 7
+    assert [call["mm_full_precision"] for call in calls] == [False] + [True] * 6
+    assert [call["pruning_range_size"] for call in calls] == [None, None, 2, 4, None, 2, 4]
+    assert [call['backward_mode'] for call in calls] == [None] + ['atomic'] * 3 + ['chunked'] * 3
 
 
 class _RecordingLoss(torch.nn.Module):

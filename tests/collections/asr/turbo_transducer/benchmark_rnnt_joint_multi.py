@@ -18,12 +18,15 @@ Multi-config RNN-T Joint benchmark.
 The experiment matrix is a module-level constant — edit the constants below
 to change what gets benchmarked. The script then sweeps `VOCAB_SIZES` x
 `EXPERIMENTS`, prints one aggregated table (ordered by vocab), and
-optionally writes a CSV.
+optionally writes a CSV. Triton fused_vocab entries also run each backward
+pruning width in `PRUNING_RANGE_SIZES`, keeping their dense baseline.
+Each configuration uses the same random seed for comparable inputs and dropout realizations.
 
 Usage:
     python benchmark_rnnt_joint_multi.py --csv-output _checks/benchmark.csv
     python benchmark_rnnt_joint_multi.py --dtype bf16-mixed
     python benchmark_rnnt_joint_multi.py --dtype bfloat16-mixed --mm-full-precision
+    python benchmark_rnnt_joint_multi.py --pruning-range-sizes 4 8 16
 
 Mixed precision keeps the projection parameters in FP32 and runs forward under BF16 autocast.
 Matmul precision overrides apply to optimized Joint implementations; standard Joint follows PyTorch settings.
@@ -35,6 +38,7 @@ import sys
 import torch
 
 from tests.collections.asr.turbo_transducer.benchmark_rnnt_joint import (
+    VALID_BACKWARD_MODES,
     VALID_DTYPES,
     BenchmarkResults,
     get_dtype,
@@ -51,7 +55,7 @@ VOCAB_SIZES: list[int] = [
     # 8192,
     8193,
     # 13088,
-    # 16385
+    # 16385,
 ]
 
 # Each entry is (joint, joint_backend, loss). Ordering preserved within each
@@ -71,6 +75,7 @@ MAX_TIME: int = 150
 MAX_TARGETS: int = 72
 HIDDEN_DIM: int = 640
 DROPOUT_P: float = 0.2
+PRUNING_RANGE_SIZES: list[int] = [8]
 
 
 def main() -> None:
@@ -83,6 +88,14 @@ def main() -> None:
     )
     parser.add_argument("--no-dropout", action="store_true", help="Disable dropout (enabled by default, p=0.2)")
     parser.add_argument("--dtype", type=str, default="bfloat16", choices=VALID_DTYPES)
+    parser.add_argument(
+        '--pruning-range-sizes',
+        type=int,
+        nargs='*',
+        default=PRUNING_RANGE_SIZES,
+        help='Add Triton fused_vocab runs for these backward window widths (default: 8); empty disables them',
+    )
+    parser.add_argument('--backward-modes', nargs='+', choices=VALID_BACKWARD_MODES, default=['auto'])
     parser.add_argument('--mm-full-precision', action='store_true', help='Use FP32 matmul operands in optimized Joint')
     parser.add_argument(
         '--use-high-precision-mm', action='store_true', help='Use FP32 operands and IEEE matmuls in Triton Joint'
@@ -94,6 +107,18 @@ def main() -> None:
         help="Sub-batch size for standard Joint+loss computation; 0 disables fused batching (default: 0)",
     )
     args = parser.parse_args()
+    if any(width <= 0 for width in args.pruning_range_sizes):
+        parser.error('--pruning-range-sizes must contain positive integers')
+    experiments = []
+    for joint, backend, loss in EXPERIMENTS:
+        if joint == 'fused_vocab' and backend == 'triton':
+            for backward_mode in args.backward_modes:
+                backward_mode = None if backward_mode == 'auto' else backward_mode
+                experiments.append((joint, backend, loss, None, backward_mode))
+                for width in args.pruning_range_sizes:
+                    experiments.append((joint, backend, loss, width, backward_mode))
+        else:
+            experiments.append((joint, backend, loss, None, None))
 
     if not torch.cuda.is_available():
         print("ERROR: CUDA is not available.")
@@ -105,8 +130,8 @@ def main() -> None:
 
     print(f"\nGPU: {gpu_name}")
     print(
-        f"Sweep: {len(VOCAB_SIZES)} vocab sizes x {len(EXPERIMENTS)} experiments "
-        f"= {len(VOCAB_SIZES) * len(EXPERIMENTS)} runs"
+        f"Sweep: {len(VOCAB_SIZES)} vocab sizes x {len(experiments)} experiments "
+        f"= {len(VOCAB_SIZES) * len(experiments)} runs"
     )
     print(
         f"Shape: enc=[{BATCH_SIZE}, {MAX_TIME}, {HIDDEN_DIM}], "
@@ -114,14 +139,14 @@ def main() -> None:
         f"standard_fused_batch_size={args.fused_batch_size}"
     )
 
-    torch.manual_seed(42)
-
     results: list[BenchmarkResults] = []
     for vocab_size in VOCAB_SIZES:
-        for joint, joint_backend, loss in EXPERIMENTS:
+        for joint, joint_backend, loss, pruning_range_size, backward_mode in experiments:
+            torch.manual_seed(42)
             print(
-                f"\n[{len(results) + 1}/{len(VOCAB_SIZES) * len(EXPERIMENTS)}] "
-                f"vocab={vocab_size}, joint={joint}, backend={joint_backend}, loss={loss}"
+                f"\n[{len(results) + 1}/{len(VOCAB_SIZES) * len(experiments)}] "
+                f"vocab={vocab_size}, joint={joint}, backend={joint_backend}, loss={loss}, "
+                f"pruning_range_size={pruning_range_size}, backward_mode={backward_mode}"
             )
             result = run_benchmark(
                 joint=joint,
@@ -140,6 +165,8 @@ def main() -> None:
                 fused_batch_size=args.fused_batch_size if joint == "standard" else 0,
                 mm_full_precision=args.mm_full_precision if joint != "standard" else False,
                 use_high_precision_mm=args.use_high_precision_mm if joint != "standard" else False,
+                pruning_range_size=pruning_range_size,
+                backward_mode=backward_mode,
             )
             results.append(result)
 

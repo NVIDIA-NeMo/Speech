@@ -20,6 +20,7 @@ Usage:
     python benchmark_rnnt_joint.py --joint fused --loss turbo_rnnt --dtype bfloat16
     python benchmark_rnnt_joint.py --joint fused_vocab --loss turbo_rnnt --dtype bfloat16
     python benchmark_rnnt_joint.py --joint fused_vocab --dtype bf16-mixed
+    python benchmark_rnnt_joint.py --joint fused_vocab --dtype bf16-mixed --pruning-range-size 8
     python benchmark_rnnt_joint.py --joint fused_vocab --dtype bf16-mixed --mm-full-precision
     python benchmark_rnnt_joint.py --joint standard --loss warprnnt_numba --dtype bfloat16
     python benchmark_rnnt_joint.py --joint fused --dtype bfloat16 -fo  # forward only
@@ -49,6 +50,7 @@ VALID_JOINTS = ("standard", "fused_vocab", "fused")
 VALID_JOINT_BACKENDS = ("triton", "cutile")
 VALID_LOSSES = ("warprnnt_numba", "turbo_rnnt")
 VALID_DTYPES = ("float32", "fp32", "bfloat16", "bf16", "bfloat16-mixed", "bf16-mixed")
+VALID_BACKWARD_MODES = ('auto', 'atomic', 'chunked')
 
 
 @dataclass
@@ -72,6 +74,8 @@ class BenchmarkResults:
     total_time_ms: float
     mm_full_precision: bool = False
     use_high_precision_mm: bool = False
+    pruning_range_size: int | None = None
+    backward_mode: str = 'auto'
 
 
 def get_dtype(dtype_str: str) -> torch.dtype | str:
@@ -149,12 +153,15 @@ def run_benchmark(
     fused_batch_size: int = 0,
     mm_full_precision: bool = False,
     use_high_precision_mm: bool = False,
+    pruning_range_size: int | None = None,
+    backward_mode: str | None = None,
 ) -> BenchmarkResults:
     """Benchmark Joint+loss. Mixed precision uses BF16 projected inputs, FP32 parameters and forward autocast.
 
     Backward runs outside autocast, as in training. ``mm_full_precision`` selects FP32 operands for optimized
     Joint matmuls; ``use_high_precision_mm`` additionally requests IEEE math in Triton. Standard Joint follows
     PyTorch's precision settings and does not accept these kernel-specific overrides.
+    ``pruning_range_size`` enables approximate backward for Triton ``fused_vocab`` only; forward stays dense.
     """
     dtype = get_dtype(dtype) if isinstance(dtype, str) else dtype
     mixed_precision = dtype == "bfloat16-mixed"
@@ -179,6 +186,15 @@ def run_benchmark(
         raise ValueError("Matmul precision overrides are supported only for optimized Joint implementations.")
 
     joint_backend = _normalize_joint_backend(joint, joint_backend)
+    if backward_mode not in (None, 'atomic', 'chunked'):
+        raise ValueError(f'Unknown backward_mode: {backward_mode}')
+    if backward_mode is not None and (joint != 'fused_vocab' or joint_backend != 'triton'):
+        raise ValueError('Backward mode requires Triton fused_vocab')
+    if pruning_range_size is not None:
+        if type(pruning_range_size) is not int or pruning_range_size <= 0:
+            raise ValueError("pruning_range_size must be a positive integer or None")
+        if joint != "fused_vocab" or joint_backend != "triton":
+            raise ValueError("Backward pruning requires joint='fused_vocab' and joint_backend='triton'")
 
     device = torch.device('cuda')
     blank_id = vocab_size - 1
@@ -255,6 +271,8 @@ def run_benchmark(
             bias=linear.bias,
             blank_id=blank_id,
             backend=joint_backend,
+            backward_pruning_range_size=pruning_range_size,
+            backward_mode=backward_mode,
             mm_full_precision=mm_full_precision,
             use_high_precision_mm=use_high_precision_mm,
         )
@@ -403,6 +421,8 @@ def run_benchmark(
         total_time_ms=avg_fwd + avg_bwd,
         mm_full_precision=mm_full_precision,
         use_high_precision_mm=use_high_precision_mm,
+        pruning_range_size=pruning_range_size,
+        backward_mode=(backward_mode or 'auto') if joint == 'fused_vocab' and joint_backend == 'triton' else '-',
     )
 
 
@@ -431,6 +451,8 @@ TABLE_COLUMNS: tuple[tuple[str, str, callable], ...] = (
     ("Joint", "joint", _fmt_str),
     ("Joint Backend", "joint_backend", _fmt_str),
     ("Loss", "loss", _fmt_str),
+    ("Pruning Range", "pruning_range_size", lambda value: "-" if value is None else str(value)),
+    ("Backward Mode", "backward_mode", _fmt_str),
     ("Fused Batch Size", "fused_batch_size", _fmt_int),
     ("Dtype", "dtype", _fmt_str),
     ("MM Full Precision", "mm_full_precision", str),
@@ -554,6 +576,13 @@ def main():
     )
     parser.add_argument('--no-dropout', action='store_true', help='Disable dropout (enabled by default, p=0.2)')
     parser.add_argument('--csv-output', type=str, default=None, help='Optional path to write CSV')
+    parser.add_argument(
+        '--pruning-range-size',
+        type=int,
+        default=None,
+        help='Target window width for approximate Triton fused_vocab backward; omitted means dense backward',
+    )
+    parser.add_argument('--backward-mode', choices=VALID_BACKWARD_MODES, default='auto')
     parser.add_argument('--mm-full-precision', action='store_true', help='Use FP32 matmul operands in optimized Joint')
     parser.add_argument(
         '--use-high-precision-mm', action='store_true', help='Use FP32 operands and IEEE matmuls in Triton Joint'
@@ -589,6 +618,8 @@ def main():
         fused_batch_size=args.fused_batch_size,
         mm_full_precision=args.mm_full_precision,
         use_high_precision_mm=args.use_high_precision_mm,
+        pruning_range_size=args.pruning_range_size,
+        backward_mode=None if args.backward_mode == 'auto' else args.backward_mode,
     )
 
     print(

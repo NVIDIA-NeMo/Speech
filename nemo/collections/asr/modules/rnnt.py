@@ -1318,6 +1318,10 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
             ``turbo_kernel.kwargs.mm_full_precision=true`` for FP32 operands, or
             ``turbo_kernel.kwargs.use_high_precision_mm=true`` for FP32 operands with IEEE math in Triton.
             Gradient accumulation precision is configured separately.
+            ``turbo_kernel.backward_pruning_range_size`` enables backward pruning for Triton ``fused_vocab``
+            when positive; absent, None, or non-positive values disable it. An optional positive
+            ``turbo_kernel.backward_pruning_start_step`` delays pruning until that optimizer step.
+            This keeps the full loss value but approximates its gradient.
 
         fuse_loss_wer: Optional bool, set to False by default.
 
@@ -1445,6 +1449,8 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         self._fuse_loss_wer = fuse_loss_wer
         self._fused_batch_size = fused_batch_size
         self._turbo_kernel_type, self._turbo_kernel_kwargs = self._parse_turbo_kernel_config(turbo_kernel)
+        self._backward_pruning_range_size = (turbo_kernel or {}).get('backward_pruning_range_size')
+        self._backward_pruning_start_step = (turbo_kernel or {}).get('backward_pruning_start_step') or 0
 
         if fuse_loss_wer and (fused_batch_size is None):
             raise ValueError("If `fuse_loss_wer` is set, then `fused_batch_size` cannot be None!")
@@ -1530,6 +1536,8 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
             'use_high_precision_mm',
             'weight_grad_full_precision',
         }
+        if kernel_type == 'fused_vocab':
+            supported_kwargs.add('backward_mode')
         unsupported_kwargs = set(kernel_kwargs) - supported_kwargs
         if unsupported_kwargs:
             raise ValueError(f"Unsupported `turbo_kernel.kwargs`: {sorted(unsupported_kwargs)}")
@@ -1558,6 +1566,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         transcript_lengths: torch.Tensor,
         compute_consistency: bool = False,
         consistency_symmetrical: bool = True,
+        current_step: Optional[int] = None,
     ) -> TransducerLossInputs:
         """
         Run a Joint forward that returns per-position quantities for the losses (target/blank
@@ -1575,6 +1584,9 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
             compute_consistency: whether to compute the consistency loss between the halves of the batch
                 (the batch is expected to be a double batch: teacher first half, student second half)
             consistency_symmetrical: if True, compute symmetric KL divergence for the consistency loss
+            current_step: optimizer step supplied by the model during training. Required only when
+                backward_pruning_start_step is positive; omitting it then disables pruning. The effective
+                pruning width is captured by this forward's autograd context.
 
         Returns:
             `TransducerLossInputs`
@@ -1604,6 +1616,20 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
 
         vocab_projection = self.joint_net[-1]
         kernel_kwargs = dict(self._turbo_kernel_kwargs)
+
+        backward_pruning_range_size = self._backward_pruning_range_size
+        if (
+            backward_pruning_range_size is None
+            or backward_pruning_range_size <= 0
+            or not self.training
+            or not torch.is_grad_enabled()
+            or (
+                self._backward_pruning_start_step > 0
+                and (current_step is None or current_step < self._backward_pruning_start_step)
+            )
+        ):
+            backward_pruning_range_size = None
+        kernel_kwargs['backward_pruning_range_size'] = backward_pruning_range_size
 
         if self._turbo_kernel_type == 'fused_vocab':
             joint_hidden = self._joint_hidden_after_projection(encoder_output_projected, predictor_output_projected)

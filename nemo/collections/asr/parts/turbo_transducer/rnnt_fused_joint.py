@@ -39,13 +39,18 @@ def rnnt_fused_joint(
     weight_grad_full_precision: bool = True,
     backend: str | TurboTransducerBackend | None = TurboTransducerBackend.TRITON,
     mm_full_precision: bool = False,
+    backward_pruning_range_size: int | None = None,
 ):
     """Fuse Joint hidden computation and vocabulary projection into target/blank log-probabilities.
 
     BF16 projected inputs use BF16 matmul operands even with FP32 master weights. ``mm_full_precision=True``
     selects FP32 operands; ``use_high_precision_mm=True`` selects FP32 operands and IEEE input precision.
     Gradient accumulation precision is controlled separately by the gradient flags.
+    ``backward_pruning_range_size`` accepts None or non-positive values to disable pruning; positive widths
+    are not implemented for the fully fused Joint.
     """
+    if backward_pruning_range_size is not None and backward_pruning_range_size > 0:
+        raise NotImplementedError("Backward pruning is not implemented for the fully fused Joint")
     backend = TurboTransducerBackend(backend) if backend is not None else None
 
     if backend is None:

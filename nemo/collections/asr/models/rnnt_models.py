@@ -785,7 +785,9 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         encoded, encoded_len = self.encoder(audio_signal=processed_signal, length=processed_signal_length)
         return encoded, encoded_len
 
-    def _compute_losses(self, encoded, decoder, transcript, encoded_len, target_length, compute_consistency=False):
+    def _compute_losses(
+        self, encoded, decoder, transcript, encoded_len, target_length, compute_consistency=False, current_step=None
+    ):
         """
         Compute the RNN-T loss and, optionally, the consistency loss.
 
@@ -805,6 +807,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
                 transcript_lengths=target_length,
                 compute_consistency=compute_consistency,
                 consistency_symmetrical=self.consistency_loss.symmetrical if compute_consistency else True,
+                current_step=current_step,
             )
             loss_value = self.loss.forward_from_logprobs(
                 target_logprobs=loss_inputs.target_logprobs,
@@ -879,6 +882,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
                 encoded_len=encoded_len,
                 target_length=target_length,
                 compute_consistency=compute_consistency,
+                current_step=self.global_step,
             )
 
             # Add auxiliary losses, if registered

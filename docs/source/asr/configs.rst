@@ -596,6 +596,71 @@ The Joint model config has several essential components which we discuss below :
       activation: "relu"
       dropout: 0.0
 
+Optimized Joint with backward pruning
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The Triton ``fused_vocab`` Joint can reduce vocabulary-projection backward computation by retaining a fixed
+number of contiguous target positions per encoder frame. Joint forward and RNN-T forward-backward still use
+the full lattice. The reported loss is unchanged, but its gradient is approximated: each frame retains the
+window maximizing the sum of absolute target and blank log-probability gradients, and contributions outside
+that window are discarded without renormalization. For ordinary RNN-T this importance is proportional to
+state occupancy; FastEmit weights target contributions more heavily. There is no auxiliary alignment head.
+
+For ``EncDecRNNTModel`` and its BPE variants, configure:
+
+.. code-block:: yaml
+
+  model:
+    loss:
+      loss_name: turbo_rnnt
+    joint:
+      fuse_loss_wer: false
+      turbo_kernel:
+        type: fused_vocab
+        kwargs:
+          backend: triton
+        backward_pruning_range_size: 16
+        backward_pruning_start_step: 5000
+
+``backward_pruning_range_size`` is the number of target positions retained per frame, including the
+position after the final target. An absent, ``None``, zero, or negative width disables pruning.
+``backward_pruning_start_step`` delays pruning until that optimizer step when positive. An absent,
+``None``, zero, or negative start step skips warm-up and enables pruning immediately when the width is
+positive. Gradient accumulation does not advance the optimizer step, and checkpoint resume uses the
+restored training step. Tune both values for your data and model, and validate convergence and recognition
+accuracy. A width covering the padded target dimension uses the exact dense backward.
+Evaluation does not enable pruning. Training retains dense hidden activations and their activation/dropout
+backward; only vocabulary-projection backward is pruned.
+
+Short utterances retain every real target position, with zero contributions from padded slots.
+
+Custom training loops must pass their optimizer step as ``current_step`` to ``RNNTJoint.forward_for_loss``
+when ``backward_pruning_start_step`` is positive; omitting it then disables pruning. Without a positive
+start step, ``current_step`` is optional. Direct calls to ``rnnt_joint_fused_vocab`` accept
+``backward_pruning_range_size`` without a warm-up schedule. Pruning supports both Triton backward modes
+(``atomic`` and ``chunked``), and requires a loss accepting target/blank log-probabilities. It does not support
+the consistency loss. A positive ``backward_pruning_range_size`` raises ``NotImplementedError`` for cuTile
+``fused_vocab`` and the fully fused Joint; disabled widths are accepted.
+
+Set ``turbo_kernel.kwargs.backward_mode`` to ``atomic`` or ``chunked`` to select the vocabulary backward
+algorithm explicitly; otherwise it is selected for the GPU as usual. This option is supported only by
+Triton ``fused_vocab`` and works with both dense and pruned backward.
+
+The benchmark sweep retains dense runs and adds pruned Triton ``fused_vocab`` runs. Its table and CSV
+include pruning width and backward mode. For example, compare widths 4, 8, and 16 for both backward
+algorithms with:
+
+.. code-block:: bash
+
+  python tests/collections/asr/turbo_transducer/benchmark_rnnt_joint_multi.py \
+      --pruning-range-sizes 4 8 16 \
+      --backward-modes atomic chunked --dtype bf16-mixed --csv-output benchmark.csv
+
+Pass ``--pruning-range-sizes`` with no values to run only the dense configurations. The single-configuration
+benchmark accepts ``--joint fused_vocab --joint-backend triton --pruning-range-size 8``
+and ``--backward-mode atomic`` or ``--backward-mode chunked``. Synthetic benchmark
+inputs measure performance; they do not establish that a pruning width preserves training quality.
+
 Sampled Softmax Joint Model
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
 

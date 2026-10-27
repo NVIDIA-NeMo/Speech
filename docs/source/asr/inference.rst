@@ -360,3 +360,35 @@ This is an accuracy example: it retains the native encoder, uses FP32 preprocess
 
 For integration into your own loop, see `TensorRTEncoder <https://github.com/NVIDIA-NeMo/Speech/blob/main/nemo/collections/asr/parts/submodules/tensorrt_encoder.py>`_ for tensor and stream requirements.
 Streaming encoder caches, training and CUDA graph capture are not supported.
+
+
+Waveform preprocessing engine
+-----------------------------
+
+Build a standalone log-mel preprocessor from the same checkpoint as the encoder:
+
+.. code-block:: bash
+
+    python examples/asr/export/build_trt_preprocessor.py \
+        --model model.nemo --onnx preprocessor.onnx --engine preprocessor.plan
+
+Building requires NeMo, PyTorch, TensorRT and Polygraphy.
+The engine uses the checkpoint's evaluation settings, FP32 with TF32 disabled, and no dithering or training augmentation.
+Dynamic export supports per-feature or no normalization with ``frame_splicing=1``.
+Defaults cover batches 1–16 and 800–640000 padded waveform samples; use ``--help`` to adjust them and ensure the resulting features fit the encoder.
+
+Prepare mono audio at the checkpoint's sample rate.
+Store zero-padded float32 ``input_signal`` arrays of shape ``[batch, samples]`` and int64 ``length`` arrays of shape ``[batch]`` in an NPZ file.
+
+Run preprocessing with NumPy, TensorRT and cuda-python, without PyTorch:
+
+.. code-block:: bash
+
+    python examples/asr/export/run_trt_preprocessor.py \
+        --engine preprocessor.plan --input waveforms.npz --output features.npz
+
+The outputs, ``processed_signal`` and ``processed_length``, contain features and lengths in feature frames for the encoder.
+The example reloads the engine and copies CPU/GPU buffers on each call; serving should retain them and pass GPU outputs directly to the encoder.
+
+Near-silent audio can amplify FP32 rounding during normalization, including between native CPU and CUDA execution.
+Validate recognition accuracy; identical features or transcripts are not guaranteed.

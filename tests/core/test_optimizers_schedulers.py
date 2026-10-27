@@ -340,6 +340,19 @@ class TestOptimizersSchedulers:
             assert isinstance(scheduler, optim.lr_scheduler.CosineAnnealing)
             assert scheduler.min_lr == 0.1
 
+        # `params` is normally flattened by the config version update before the overrides are read;
+        # it stays nested when that update skips the config, here because of a value OmegaConf cannot hold
+        sched_config = {
+            'name': 'CosineAnnealing',
+            'max_steps': self.MAX_STEPS,
+            'args': {'name': 'auto', 'warmup_ratio': 0.1, 'params': {'min_lr': 0.1}},
+            'unrelated_object': object(),
+        }
+        scheduler = optim.lr_scheduler.prepare_lr_scheduler(opt, sched_config)['scheduler']
+        assert isinstance(scheduler, optim.lr_scheduler.CosineAnnealing)
+        assert scheduler.warmup_steps == int(0.1 * self.MAX_STEPS)
+        assert scheduler.min_lr == 0.1
+
     @pytest.mark.unit
     def test_sched_config_parse_reduce_on_plateau(self):
         model = TempModel()

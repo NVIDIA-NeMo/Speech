@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import os
 import tempfile
 
@@ -27,7 +28,7 @@ from nemo.collections.asr.data.audio_to_text_lhotse_prompted import (
     PromptedAudioToTextLhotseDataset,
     PromptedAudioToTextMiniBatch,
 )
-from nemo.collections.asr.models.aed_multitask_models import EncDecMultiTaskModel
+from nemo.collections.asr.models.aed_multitask_models import EncDecMultiTaskModel, MultiTaskTranscriptionConfig
 from nemo.collections.asr.parts.submodules import multitask_beam_decoding as beam_decode
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.asr.parts.utils.streaming_utils import FrameBatchMultiTaskAED
@@ -146,6 +147,21 @@ def asr_model(test_data_dir):
     model_instance = EncDecMultiTaskModel(cfg=modelConfig)
     model_instance.configure_optimizers()
     return model_instance
+
+
+@pytest.fixture()
+def decoder_prompts(asr_model, monkeypatch):
+    """Collects the decoder prompt of every utterance transcribed by ``asr_model``."""
+    prompts = []
+    transcribe_forward = asr_model._transcribe_forward
+
+    def _transcribe_forward(batch, trcfg):
+        outputs = transcribe_forward(batch, trcfg)
+        prompts.extend(asr_model.tokenizer.ids_to_text(ids) for ids in outputs["decoder_input_ids"])
+        return outputs
+
+    monkeypatch.setattr(asr_model, "_transcribe_forward", _transcribe_forward)
+    return prompts
 
 
 class TestEncDecMultiTaskModel:
@@ -461,13 +477,59 @@ class TestEncDecMultiTaskModel:
         assert isinstance(outputs[0].text, str)
 
     @pytest.mark.unit
-    def test_transcribe_single_file_translation(self, asr_model, test_data_dir):
+    @pytest.mark.parametrize("task_slot", ["task", "taskname"])
+    def test_transcribe_single_file_translation(self, asr_model, decoder_prompts, test_data_dir, task_slot):
         audio_file = os.path.join(test_data_dir, "asr", "train", "an4", "wav", "an46-mmap-b.wav")
 
-        # Numpy array test
-        outputs = asr_model.transcribe(audio_file, batch_size=1, task="ast", source_lang='en', target_lang='de')
+        outputs = asr_model.transcribe(
+            audio_file, batch_size=1, source_lang='en', target_lang='de', **{task_slot: "ast"}
+        )
         assert len(outputs) == 1
         assert isinstance(outputs[0].text, str)
+        assert decoder_prompts == ['<|startoftranscript|><|en|><|translate|><|de|><|pnc|>']
+
+    @pytest.mark.unit
+    def test_transcribe_manifest_prompt_slots_take_precedence(
+        self, asr_model, decoder_prompts, test_data_dir, tmp_path
+    ):
+        import soundfile as sf
+
+        audio_file = os.path.join(test_data_dir, "asr", "train", "an4", "wav", "an46-mmap-b.wav")
+        manifest = tmp_path / "manifest.json"
+        with open(manifest, "w") as f:
+            for slots in ({}, {"taskname": "asr"}, {"source_lang": "de", "target_lang": "en"}):
+                entry = {"audio_filepath": audio_file, "duration": sf.info(audio_file).duration, **slots}
+                f.write(json.dumps(entry) + "\n")
+
+        asr_model.transcribe(str(manifest), batch_size=1, task="ast", source_lang='en', target_lang='de')
+        assert decoder_prompts == [
+            '<|startoftranscript|><|en|><|translate|><|de|><|pnc|>',
+            '<|startoftranscript|><|en|><|transcribe|><|de|><|pnc|>',
+            '<|startoftranscript|><|de|><|translate|><|en|><|pnc|>',
+        ]
+
+    @pytest.mark.unit
+    def test_transcribe_file_entries_keep_canary2_prompt_slots(self, asr_model):
+        asr_model.prompt_format = "canary2"
+        asr_model.prompt = Canary2PromptFormatter(asr_model.tokenizer)
+        canary2_slots = dict(itn="yes", diarize="yes", decodercontext="some context", emotion="<|emo:happy|>")
+        # 'sample_rate' is not a prompt slot, so it must not be written into the manifest entries.
+        trcfg = MultiTaskTranscriptionConfig(prompt=dict(target_lang="de", sample_rate=16000, **canary2_slots))
+
+        entries = asr_model._may_be_make_dict_and_fix_paths(["audio.wav"], None, trcfg)
+        assert entries == [
+            {
+                "audio_filepath": "audio.wav",
+                "duration": 100000,
+                "source_lang": "en",
+                "target_lang": "de",
+                "taskname": "asr",
+                "pnc": "yes",
+                "context": "",
+                "timestamp": "notimestamp",
+                **canary2_slots,
+            }
+        ]
 
     @pytest.mark.unit
     def test_transcribe_return_hypothesis(self, asr_model, test_data_dir):

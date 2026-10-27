@@ -925,11 +925,12 @@ class MultiSpeakerSOTWordTimestampAligner:
         self, timestamp_inputs: Any, *, trunk_only: bool = False
     ) -> Iterator[Tuple[int, int, torch.Tensor]]:
         """
-        Yield one normalized core at a time, bounding batches by context/vocabulary size.
+        Yield normalized cores, bounding each decoder call by context/vocabulary size.
         Each core of ``online_inference_length`` frames is decoded with its left and right
-        context, then trimmed back to the core. The records are split into sub-batches so a
-        decoder call stays within ``_CTC_WINDOW_MAX_ELEMENTS``, unless one context window is
-        already larger than that.
+        context, then trimmed back to the core. Windows of equal context length share decoder
+        calls, one row per record and window, so a long record takes a few calls rather than one
+        per window. A call stays within ``_CTC_WINDOW_MAX_ELEMENTS``, unless one context window
+        is already larger than that.
 
         Args:
             timestamp_inputs (Any): ``CTCTimestampInputs`` whose ``asr_encoded`` is shaped ``(B, D, T)``.
@@ -943,21 +944,40 @@ class MultiSpeakerSOTWordTimestampAligner:
         lengths = timestamp_inputs.asr_encoded_lengths
         parameter = next(self.ctc_decoder.parameters(), None)
         decoder_dtype = parameter.dtype if parameter is not None else states.dtype
+        num_frames = states.shape[-1]
         core_length = self.online_inference_length
-        core_length = core_length if core_length > 0 else states.shape[-1]
+        core_length = core_length if core_length > 0 else num_frames
         width = states.shape[1] if trunk_only else getattr(self.ctc_decoder, "num_classes_with_blank", 1)
         decode = self.ctc_decoder.trunk if trunk_only else self.ctc_decoder
         frame_axis = -1 if trunk_only else 1
-        for start in range(0, states.shape[-1], core_length):
-            end = min(start + core_length, states.shape[-1])
+        windows_by_length: Dict[int, List[Tuple[int, int, int]]] = {}
+        for start in range(0, num_frames, core_length):
+            end = min(start + core_length, num_frames)
             context_start = max(start - self.chunk_left_context, 0)
-            context_end = min(end + self.chunk_right_context, states.shape[-1])
-            context_frames = context_end - context_start
+            context_end = min(end + self.chunk_right_context, num_frames)
+            windows_by_length.setdefault(context_end - context_start, []).append((start, end, context_start))
+        for context_frames, windows in windows_by_length.items():
             batch_size = max(1, self._CTC_WINDOW_MAX_ELEMENTS // (self._ctc_frames(context_frames) * width))
-            for batch_start in range(0, states.shape[0], batch_size):
-                batch_end = min(batch_start + batch_size, states.shape[0])
-                context_lengths = (lengths[batch_start:batch_end] - context_start).clamp(min=0, max=context_frames)
-                context_states = states[batch_start:batch_end, :, context_start:context_end].to(dtype=decoder_dtype)
+            rows = [(window, record) for window in windows for record in range(states.shape[0])]
+            for call_start in range(0, len(rows), batch_size):
+                # Runs of consecutive records under one window: each is a slice of the states.
+                segments: List[List[Any]] = []
+                for window, record in rows[call_start : call_start + batch_size]:
+                    if segments and segments[-1][0] is window and segments[-1][1] + segments[-1][2] == record:
+                        segments[-1][2] += 1
+                    else:
+                        segments.append([window, record, 1])
+                parts = [
+                    states[first : first + count, :, window[2] : window[2] + context_frames]
+                    for window, first, count in segments
+                ]
+                context_states = (parts[0] if len(parts) == 1 else torch.cat(parts)).to(dtype=decoder_dtype)
+                context_lengths = torch.cat(
+                    [
+                        (lengths[first : first + count] - window[2]).clamp(min=0, max=context_frames)
+                        for window, first, count in segments
+                    ]
+                )
                 single = context_states.shape[0] == 1 and context_states.is_cuda
                 if single:
                     # Two copies of a lone record, so the decoder's compiled attention, which torch.compile
@@ -971,10 +991,14 @@ class MultiSpeakerSOTWordTimestampAligner:
                         f"The CTC head returned {context_output.shape[frame_axis]} frames for {context_frames} "
                         "input frames."
                     )
-                left_drop = self._ctc_frames(start - context_start)
-                core_frames = self._ctc_frames(end - start)
-                yield batch_start, self._ctc_frames(start), context_output.narrow(frame_axis, left_drop, core_frames)
-                del context_output
+                row = 0
+                for (start, end, context_start), first, count in segments:
+                    core = context_output[row : row + count].narrow(
+                        frame_axis, self._ctc_frames(start - context_start), self._ctc_frames(end - start)
+                    )
+                    yield first, self._ctc_frames(start), core
+                    row += count
+                del context_output, core
 
     def _ctc_frames(self, encoder_frames: Union[int, torch.Tensor]) -> Union[int, torch.Tensor]:
         """
@@ -1086,7 +1110,12 @@ class MultiSpeakerSOTWordTimestampAligner:
         token_ids = [int(token_id) for token_id in self.tokenizer.text_to_ids(text)]
         if not token_ids or min(token_ids) < 0 or max(token_ids) >= blank_id:
             raise ValueError("Tokenizer produced IDs outside the non-blank CTC vocabulary.")
-        ids_by_word = [[int(token_id) for token_id in self.tokenizer.text_to_ids(word["word"])] for word in words]
+        # Words repeat, and a word always tokenizes the same.
+        ids_of = {}
+        for word in words:
+            if word["word"] not in ids_of:
+                ids_of[word["word"]] = [int(token_id) for token_id in self.tokenizer.text_to_ids(word["word"])]
+        ids_by_word = [list(ids_of[word["word"]]) for word in words]
         if any(not token_ids for token_ids in ids_by_word):
             raise ValueError("SentencePiece produced an empty word tokenization.")
         if [token_id for word_ids in ids_by_word for token_id in word_ids] != token_ids:
@@ -2207,11 +2236,10 @@ def _timestamp_units(words, language):
             ``alignment_unit``.
     """
     if language == 'auto':
+        # The scripts present depend only on the distinct characters.
         names = [
             unicodedata.name(c, '')
-            for word in words
-            if not re.fullmatch(r'<[^<>]+>', word['word'])
-            for c in word['word']
+            for c in {c for word in words if not re.fullmatch(r'<[^<>]+>', word['word']) for c in word['word']}
         ]
         # Script heuristic matching the evaluated policy; an explicit language overrides it.
         language = next(

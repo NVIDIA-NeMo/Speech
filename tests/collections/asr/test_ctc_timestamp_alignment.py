@@ -446,6 +446,50 @@ def test_split_transformer_ctc_head_matches_its_whole_forward(use_transformer, u
 
 
 @pytest.mark.unit
+def test_windows_of_equal_context_share_decoder_calls():
+    # A long record's windows go through the decoder together, so its head takes a few calls rather than one each.
+    class Decoder(torch.nn.Module):
+        num_classes_with_blank = 4
+        upsampling_factor = 1
+
+        def __init__(self):
+            super().__init__()
+            self.shapes = []
+
+        def forward(self, states, encoded_lengths):
+            self.shapes.append(tuple(states.shape))
+            # Depends on the whole window, so a wrongly sliced window changes the output.
+            return (states.transpose(1, 2) + states.mean(dim=-1).unsqueeze(1)).log_softmax(dim=-1)
+
+    class Tokenizer:
+        def text_to_ids(self, text):
+            return []
+
+    decoder = Decoder()
+    aligner = MultiSpeakerSOTWordTimestampAligner(
+        ctc_decoder=decoder,
+        tokenizer=Tokenizer(),
+        blank_id=3,
+        online_inference_length=2,
+        chunk_left_context=1,
+        chunk_right_context=1,
+    )
+    torch.manual_seed(3)
+    inputs = SimpleNamespace(asr_encoded=torch.randn(2, 4, 10), asr_encoded_lengths=torch.tensor([10, 7]))
+
+    actual = aligner.ctc_log_probs_from_inputs(inputs)
+
+    # Cores start at 0, 2, 4, 6 and 8; the first and last have 3 frames of context, the others 4.
+    assert sorted(decoder.shapes) == [(4, 4, 3), (6, 4, 4)]
+    expected = torch.empty_like(actual)
+    for start in range(0, 10, 2):
+        left, right = max(start - 1, 0), min(start + 3, 10)
+        window = decoder(inputs.asr_encoded[:, :, left:right], None)
+        expected[:, start : start + 2] = window[:, start - left : start - left + 2]
+    assert torch.equal(actual, expected)
+
+
+@pytest.mark.unit
 def test_banded_ctc_cannot_start_inside_an_infeasible_long_target():
     labels = np.zeros(10001, dtype=np.int64)
     labels[1::2] = 1

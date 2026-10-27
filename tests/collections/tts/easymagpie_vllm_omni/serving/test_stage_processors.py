@@ -19,7 +19,11 @@ from types import SimpleNamespace
 
 import pytest
 import torch
-from easymagpie_vllm_omni.stage_processors import talker2code2wav_async_chunk
+from easymagpie_vllm_omni.config import NO_AUDIO_FRAME
+from easymagpie_vllm_omni.stage_processors import (
+    _filter_audio_codes,
+    talker2code2wav_async_chunk,
+)
 
 
 class _Request:
@@ -160,7 +164,7 @@ def test_async_codec_drops_only_warmup_not_moved_into_prefill():
     assert (
         talker2code2wav_async_chunk(
             manager,
-            {"audio_codes": torch.zeros(1, 2, dtype=torch.long)},
+            {"audio_codes": torch.full((1, 2), NO_AUDIO_FRAME, dtype=torch.long)},
             request,
         )
         is None
@@ -170,6 +174,19 @@ def test_async_codec_drops_only_warmup_not_moved_into_prefill():
     assert talker2code2wav_async_chunk(manager, _output(1), request) is None
     first_audio = talker2code2wav_async_chunk(manager, _output(2), request)
     torch.testing.assert_close(first_audio.codes.audio, torch.tensor([[2, 102]]))
+def test_async_codec_preserves_all_zero_acoustic_frame():
+    manager = _manager()
+    manager.config.hf_config = SimpleNamespace(streaming_speech_delay=0)
+    manager.connector.config["extra"]["codec_chunk_frames"] = 1
+    request = _Request()
+
+    output = talker2code2wav_async_chunk(
+        manager, {"audio_codes": torch.zeros(1, 2, dtype=torch.long)}, request
+    )
+
+    torch.testing.assert_close(output.codes.audio, torch.zeros(1, 2, dtype=torch.long))
+
+
 
 
 def test_async_codec_forwards_terminal_audio_eos_row():
@@ -283,3 +300,19 @@ def test_stateful_codec_emits_only_new_time_major_rows():
     assert second.codes.audio.shape == (2, 2)
     torch.testing.assert_close(second.codes.audio, torch.tensor([[3, 103], [4, 104]]))
     assert manager._emp_frame_buffer_base[request.external_req_id] == 4
+
+
+def test_filter_drops_only_no_audio_sentinel_rows():
+    frames = torch.tensor(
+        [[NO_AUDIO_FRAME, NO_AUDIO_FRAME], [0, 0], [2048, 3000], [4097, 1]],
+        dtype=torch.long,
+    )
+
+    filtered = _filter_audio_codes(frames)
+
+    torch.testing.assert_close(filtered, frames[1:])
+
+
+def test_filter_rejects_malformed_stage0_codes():
+    with pytest.raises(ValueError, match=r"\[frames, codebooks\]"):
+        _filter_audio_codes(torch.zeros(2, dtype=torch.long))

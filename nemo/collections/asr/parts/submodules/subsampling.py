@@ -76,11 +76,11 @@ class FeatureStacking(nn.Module):
             raise ValueError("lengths are required for padded FeatureStacking input.")
         x = x.transpose(1, 2)  # (B, C, T) -> (B, T, C)
         b, t, c = x.size()
-        pad_size = (self.subsampling_factor - (t % self.subsampling_factor)) % self.subsampling_factor
+        t_new = self.compute_num_out_frames(t)
+        pad_size = t_new * self.subsampling_factor - t
         # Keep padding in the exported graph even when the example length is divisible.
-        if torch.jit.is_tracing() or pad_size > 0:
+        if torch.jit.is_tracing() or torch.compiler.is_compiling() or pad_size > 0:
             x = nn.functional.pad(x, (0, 0, 0, pad_size))
-        t_new = (t + pad_size) // self.subsampling_factor
         x = x.reshape(b, t_new, c * self.subsampling_factor)
         x = self.proj(x)
         lengths = self.compute_num_out_frames(lengths)
@@ -151,12 +151,12 @@ class StackingSubsampling(torch.nn.Module):
 
     def forward(self, x, lengths):
         b, t, h = x.size()
-        pad_size = (self.subsampling_factor - (t % self.subsampling_factor)) % self.subsampling_factor
+        t_new = (t + self.subsampling_factor - 1) // self.subsampling_factor
+        pad_size = t_new * self.subsampling_factor - t
         x = torch.nn.functional.pad(x, (0, 0, 0, pad_size))
         if self.pre_norm is not None:
             x = self.pre_norm(x)
-        _, t, _ = x.size()
-        x = torch.reshape(x, (b, t // self.subsampling_factor, h * self.subsampling_factor))
+        x = torch.reshape(x, (b, t_new, h * self.subsampling_factor))
         x = self.proj_out(x)
         lengths = torch.div(lengths + pad_size, self.subsampling_factor, rounding_mode='floor')
         return x, lengths

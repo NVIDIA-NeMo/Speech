@@ -309,7 +309,7 @@ class MultiHeadAttention(nn.Module):
         """
         return RelPositionMultiHeadAttention.rel_shift(None, x)
 
-    def _build_rel_pos_score_mod(self, q, pos_emb):
+    def _build_rel_pos_score_mod(self, q, pos_emb, for_export: bool = False):
         """Build the FlexAttention inputs that realize Transformer-XL relative attention.
 
         Implements the (b), (c), (d) terms of Transformer-XL Section 3.3
@@ -331,6 +331,7 @@ class MultiHeadAttention(nn.Module):
             q: Query tensor with shape ``(B, H, T, D)``.
             pos_emb: Relative positional embedding ``(1, 2T - 1, d_model)`` produced by
                 ``RelPositionalEncoding``.
+            for_export: Use index-based relative shifting for dynamic export.
 
         Returns:
             score_mod: Callable to pass as ``flex_attention(..., score_mod=...)``.
@@ -339,7 +340,11 @@ class MultiHeadAttention(nn.Module):
         H, D = self.n_heads, self.head_dim
         T = q.size(-2)
         # pos_emb: (1, 2T - 1, d_model) -> p: (1, H, 2T - 1, D)
-        p = self.linear_pos(pos_emb).view(pos_emb.size(0), -1, H, D).transpose(1, 2)
+        if for_export:
+            # Positional embeddings have a singleton batch; avoid Linear's dynamic batch flattening.
+            p = self.linear_pos(pos_emb.squeeze(0)).unflatten(-1, (H, D)).transpose(0, 1).unsqueeze(0)
+        else:
+            p = self.linear_pos(pos_emb).view(pos_emb.size(0), -1, H, D).transpose(1, 2)
         # pos_bias_{u,v}: (H, D) -> (1, H, 1, D) so they broadcast over the (B, H, T, D)
         # Q tensor against the head/depth axes rather than (incorrectly) against time.
         bias_u = self.pos_bias_u.view(1, H, 1, D).to(q.dtype)
@@ -350,7 +355,14 @@ class MultiHeadAttention(nn.Module):
         matrix_bd = torch.matmul(q_with_bias_v, p.transpose(-2, -1))  # (B, H, T, 2T - 1)
         # rel_shift converts absolute-relative-position columns into (query, key) columns;
         # keep the first T to land in (B, H, T, T) bias space.
-        rel_pos_bias = self._rel_shift(matrix_bd)[..., :T] * (D**-0.5)
+        if for_export:
+            # Index the same relative positions without symbolic reshape stride inference.
+            positions = torch.arange(T, device=q.device)
+            indices = T - 1 - positions[:, None] + positions[None, :]
+            rel_pos_bias = matrix_bd.gather(-1, indices[None, None].expand(q.size(0), H, T, T))
+            rel_pos_bias.mul_(D**-0.5)
+        else:
+            rel_pos_bias = self._rel_shift(matrix_bd)[..., :T] * (D**-0.5)
 
         def score_mod(score, b, h, q_idx, kv_idx):
             return score + rel_pos_bias[b, h, q_idx, kv_idx]
@@ -380,7 +392,7 @@ class MultiHeadAttention(nn.Module):
 
         score_mod = None
         if self._uses_rel_pos:
-            score_mod, q = self._build_rel_pos_score_mod(q, pos_emb)
+            score_mod, q = self._build_rel_pos_score_mod(q, pos_emb, for_export=attn_mask is not None)
 
         if attn_mask is None:
             attn_fn = _transformer_utils._get_flex_attention(q)
@@ -388,13 +400,15 @@ class MultiHeadAttention(nn.Module):
         else:
             # Accumulate reduced-precision attention in fp32, as FlexAttention does.
             dtype = torch.float32 if q.dtype in (torch.float16, torch.bfloat16) else q.dtype
-            bias = torch.zeros_like(attn_mask, dtype=dtype)
             if score_mod is not None:
-                bias = bias + score_mod._relative_position_bias.to(dtype)
-            bias = bias.masked_fill(~attn_mask, float("-inf"))
+                bias = score_mod._relative_position_bias.to(dtype)
+            else:
+                bias = torch.zeros_like(attn_mask, dtype=dtype)
+            # Bias is local to this call; reuse it to avoid symbolic output-stride inference.
+            bias.masked_fill_(~attn_mask, float("-inf"))
             # Avoid all-masked softmax rows in exported runtimes and return zero, as FlexAttention does.
             valid_rows = attn_mask.any(dim=-1, keepdim=True)
-            bias = torch.where(valid_rows, bias, 0.0)
+            bias.masked_fill_(~valid_rows, 0.0)
             out = F.scaled_dot_product_attention(q.to(dtype), k.to(dtype), v.to(dtype), attn_mask=bias, dropout_p=0.0)
             out = torch.where(valid_rows, out, 0.0).to(v.dtype)
         out = out.transpose(1, 2).contiguous().view(B, T, self.d_model)

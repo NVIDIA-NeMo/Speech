@@ -15,6 +15,7 @@
 
 import math
 import random
+from dataclasses import dataclass
 
 import lightning.pytorch as pl
 import omegaconf
@@ -24,6 +25,7 @@ import torch.optim
 from lightning.pytorch.utilities import rank_zero_only
 
 from nemo.core import config, optim
+from nemo.core.config.modelPT import ModelConfig, ModelConfigBuilder
 from nemo.core.optim.lr_scheduler import AVAILABLE_SCHEDULERS
 from nemo.core.optim.optimizers import AVAILABLE_OPTIMIZERS
 from nemo.utils import logging
@@ -310,6 +312,32 @@ class TestOptimizersSchedulers:
         dict_config = omegaconf.OmegaConf.create(basic_sched_config)
         scheduler_setup = optim.lr_scheduler.prepare_lr_scheduler(opt, dict_config)
         assert isinstance(scheduler_setup['scheduler'], optim.lr_scheduler.CosineAnnealing)
+
+    @pytest.mark.unit
+    def test_sched_config_from_model_config_builder(self):
+        # the builder's scheduler config is the parameter config plus `name`, without `SchedConfig.min_lr`,
+        # which not every scheduler takes: here torch's StepLR through a parameter config of its own
+        @dataclass
+        class StepLRParams(config.SchedulerParams):
+            max_steps: int = 20
+            step_size: int = 2
+            gamma: float = 0.5
+
+        model = TempModel()
+        opt = torch.optim.SGD(model.parameters(), lr=self.INITIAL_LR)
+        builder = ModelConfigBuilder(ModelConfig())
+        builder.set_optim(config.SGDParams(lr=self.INITIAL_LR), StepLRParams())
+        cfg = omegaconf.OmegaConf.structured(builder.model_cfg)  # as ModelPT holds the config
+        scheduler = optim.lr_scheduler.prepare_lr_scheduler(opt, cfg.optim.sched)['scheduler']
+        assert isinstance(scheduler, torch.optim.lr_scheduler.StepLR)
+        assert scheduler.step_size == 2
+
+        # a scheduler that takes `min_lr` keeps the value of its parameter config
+        builder.set_optim(config.SGDParams(lr=self.INITIAL_LR), config.CosineAnnealingParams(max_steps=20, min_lr=0.1))
+        cfg = omegaconf.OmegaConf.structured(builder.model_cfg)
+        scheduler = optim.lr_scheduler.prepare_lr_scheduler(opt, cfg.optim.sched)['scheduler']
+        assert isinstance(scheduler, optim.lr_scheduler.CosineAnnealing)
+        assert scheduler.min_lr == 0.1
 
     @pytest.mark.unit
     def test_sched_config_parse_reduce_on_plateau(self):

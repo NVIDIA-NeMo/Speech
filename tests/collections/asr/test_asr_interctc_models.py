@@ -58,8 +58,13 @@ def conformer_encoder_config() -> Dict:
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("decoder_kind", ["transformer", "conv_only", "conv"])
-def test_interctc_decoder_receives_intermediate_lengths_and_backpropagates(monkeypatch, decoder_kind):
+@pytest.mark.parametrize(
+    "decoder_kind,upsampling_factor",
+    [("transformer", 1), ("transformer", 2), ("conv_only", 1), ("conv_only", 2), ("conv", 1)],
+)
+def test_interctc_decoder_receives_intermediate_lengths_and_backpropagates(
+    monkeypatch, decoder_kind, upsampling_factor
+):
     from torch.nn.attention.flex_attention import create_mask
 
     from nemo.collections.asr.modules import transformer_encoder_utils
@@ -86,6 +91,7 @@ def test_interctc_decoder_receives_intermediate_lengths_and_backpropagates(monke
             n_heads=2,
             n_layers=1,
             sync_max_audio_length=False,
+            upsampling_factor=upsampling_factor,
         )
     model = EncDecCTCModel(
         cfg=DictConfig(
@@ -121,26 +127,33 @@ def test_interctc_decoder_receives_intermediate_lengths_and_backpropagates(monke
             for module in AccessMixin.get_module_registry(model.encoder).values()
             for key, value in module.items()
         }
+        if upsampling_factor == 2:
+            # Three target tokens require the four output frames, not just the two encoder frames.
+            registry['interctc/layer_output_0'][0] = registry['interctc/layer_output_0'][0][:, :, :2]
+            registry['interctc/layer_length_0'][0] = torch.full_like(registry['interctc/layer_length_0'][0], 2)
         intermediate_lengths = registry['interctc/layer_length_0'][0]
         intermediate = model.get_captured_interctc_tensors()
         assert len(intermediate) == 1
-        assert intermediate[0][0].shape == log_probs.shape
-        if decoder_kind == "transformer":
-            torch.testing.assert_close(calls[0]['encoded_lengths'], lengths)
+        assert intermediate[0][0].shape[1] == (4 if upsampling_factor == 2 else log_probs.shape[1])
+        torch.testing.assert_close(intermediate[0][1], intermediate_lengths * upsampling_factor)
+        if decoder_kind == "transformer" or upsampling_factor > 1:
+            torch.testing.assert_close(calls[0]['encoded_lengths'] * upsampling_factor, lengths)
             assert calls[1]['encoded_lengths'] is intermediate_lengths
         else:
             assert all('encoded_lengths' not in call for call in calls)
         # Backpropagate the intermediate CTC loss alone, so the main loss cannot hide a broken gradient path.
         loss = model.loss(
             log_probs=intermediate[0][0],
-            targets=torch.tensor([[0, 1], [1, 2]]),
-            target_lengths=torch.tensor([2, 2]),
+            targets=torch.tensor([[0, 1, 0], [0, 1, 0]]) if upsampling_factor == 2 else torch.tensor([[0, 1], [1, 2]]),
+            target_lengths=torch.tensor([3, 3]) if upsampling_factor == 2 else torch.tensor([2, 2]),
             input_lengths=intermediate[0][1],
         )
         assert torch.isfinite(loss)
+        assert loss > 0
         loss.backward()
         gradients = [parameter.grad for parameter in model.decoder.parameters() if parameter.requires_grad]
         assert gradients and all(gradient is not None and torch.isfinite(gradient).all() for gradient in gradients)
+        assert any(torch.count_nonzero(gradient) > 0 for gradient in gradients)
     finally:
         AccessMixin.reset_registry(model)
         AccessMixin.set_access_enabled(access_enabled=False, guid=model.model_guid)

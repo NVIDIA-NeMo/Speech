@@ -286,8 +286,9 @@ def test_em_dash_separates_alignment_words(text):
 @pytest.mark.parametrize("speaker_weight", [0.0, 0.25])
 @pytest.mark.parametrize("window_budget", [16 * 1024 * 1024, 768])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+@pytest.mark.parametrize("upsampling_factor", [1, 2])
 def test_deferred_windows_release_full_vocabulary_and_preserve_alignment(
-    core_length, speaker_weight, window_budget, dtype
+    core_length, speaker_weight, window_budget, dtype, upsampling_factor
 ):
     class Decoder(torch.nn.Module):
         num_classes_with_blank = 128
@@ -297,6 +298,7 @@ def test_deferred_windows_release_full_vocabulary_and_preserve_alignment(
             self.outputs = []
             self.check_lifetime = False
             self.shapes = []
+            self.upsampling_factor = upsampling_factor
 
         def forward(self, states, encoded_lengths):
             if self.check_lifetime:
@@ -304,7 +306,7 @@ def test_deferred_windows_release_full_vocabulary_and_preserve_alignment(
             self.shapes.append(states.shape)
             # Depend on context as well as the frame, so incorrect window slicing changes the oracle.
             logits = states.transpose(1, 2) + states.mean(dim=-1).unsqueeze(1)
-            output = logits.log_softmax(dim=-1)
+            output = logits.repeat_interleave(upsampling_factor, dim=1).log_softmax(dim=-1)
             self.outputs.append(weakref.ref(output))
             return output
 
@@ -341,14 +343,14 @@ def test_deferred_windows_release_full_vocabulary_and_preserve_alignment(
         left, right = max(start - 1, 0), min(end + 2, 7)
         lengths = (inputs.asr_encoded_lengths - left).clamp(min=0, max=right - left)
         output = decoder(inputs.asr_encoded[:, :, left:right], lengths)
-        chunks.append(output[:, start - left : end - left])
+        chunks.append(output[:, (start - left) * upsampling_factor : (end - left) * upsampling_factor])
     dense = torch.cat(chunks, dim=1)
     del chunks, output
     expected = aligner.prepare_alignment(
         dense,
         inputs.sortformer_sigmoids,
         transcripts,
-        ctc_lengths=inputs.asr_encoded_lengths,
+        ctc_lengths=inputs.asr_encoded_lengths * upsampling_factor,
         sortformer_lengths=inputs.sortformer_lengths,
         audio_durations=durations,
     )
@@ -359,7 +361,11 @@ def test_deferred_windows_release_full_vocabulary_and_preserve_alignment(
     aligner._CTC_WINDOW_MAX_ELEMENTS = window_budget
     actual = aligner.prepare_from_inputs(inputs, transcripts, durations)
     assert all(ref() is None for ref in decoder.outputs)
-    assert all(batch * frames * classes <= window_budget or batch == 1 for batch, classes, frames in decoder.shapes)
+    assert all(
+        batch * frames * upsampling_factor * classes <= window_budget or batch == 1
+        for batch, classes, frames in decoder.shapes
+    )
+    assert actual["config"]["max_word_frames"] == 12 * upsampling_factor
     for record, reference in zip(actual["records"], expected["records"]):
         assert record.keys() == reference.keys()
         for key in record:

@@ -36,6 +36,10 @@ from vllm.model_executor.models.utils import _merge_multimodal_embeddings
 
 from nemo.collections.speechlm2.vllm.salm.audio import _pad_to_vocab_size
 
+# Checkpoint tensors the draft head loads (see _remap_nemo_mtp_weights): the MTP layers, the LM head, and the
+# token embeddings under either export name.
+_DRAFT_CHECKPOINT_PREFIXES = ("llm.mtp.", "llm.lm_head.", "llm.model.embed_tokens.", "llm.backbone.embeddings.")
+
 
 def _remap_nemo_mtp_weights(
     items: Iterable[tuple[str, torch.Tensor]],
@@ -117,6 +121,19 @@ class NeMoSpeechLMMTP(NemotronHMTP):
     # vLLM gates forwarding target-produced multimodal embeddings on this
     # capability flag; implementing ``embed_input_ids`` alone is not enough.
     supports_multimodal_embeddings = True
+
+    def is_unused_checkpoint_weight(self, name: str) -> bool:
+        """Whether vLLM can skip a checkpoint tensor without reading it.
+
+        vLLM 0.32 calls this on the raw checkpoint names before reading them, and NemotronHMTP.load_weights
+        calls it again on the names ``load_weights`` below has already remapped (``mtp.*``, ``lm_head.*``,
+        ``backbone.embeddings.*``). NemotronHMTP's own rule expects unprefixed names, so it would skip every
+        ``llm.``-prefixed draft tensor and leave the draft head uninitialized.
+        """
+        if name.startswith("llm."):
+            return not name.startswith(_DRAFT_CHECKPOINT_PREFIXES)
+        parent = getattr(super(), "is_unused_checkpoint_weight", None)
+        return parent(name) if parent is not None else False
 
     def embed_input_ids(
         self,

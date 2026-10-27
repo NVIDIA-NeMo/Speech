@@ -37,7 +37,7 @@ stuttering detection.
 
 - **Training:** runs in the NeMo environment.
 - **Evaluation:** `vllm_task_eval.py`, `vllm_label_scores.py` and the `sdg/` text-generation scripts need a separate
-  environment with vLLM 0.28.0 and this repository installed. vLLM pins its own PyTorch, so keep the two
+  environment with vLLM 0.32.0 (Python 3.11 or newer) and this repository installed. vLLM pins its own PyTorch, so keep the two
   environments apart.
 - **Outputs:** everything is written under `$SALM_FT_WORK`.
 - **LibriSpeech archives:** preparation uses NeMo's safe tar extraction helper and rejects absolute paths,

@@ -159,6 +159,9 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
 
         # UTMOSv2 naturalness scoring for validation (optional)
         self.use_utmos = cfg.get('use_utmos', False)
+        self.utmos_device = str(cfg.get('utmos_device', 'cpu')).lower()
+        if self.utmos_device not in {'cpu', 'cuda'}:
+            raise ValueError(f"utmos_device must be 'cpu' or 'cuda', got {self.utmos_device!r}.")
         if self.use_utmos:
             assert HAVE_UTMOSV2, (
                 "UTMOSv2 is required for UTMOS scoring but is not installed. "
@@ -1794,6 +1797,8 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
 
                     utmos_scores = None
                     if getattr(self, 'use_utmos', False) and hasattr(self, '_utmos_calculator'):
+                        target_device = self.device if self.utmos_device == 'cuda' else self.utmos_device
+                        self._utmos_calculator.to(target_device)
                         utmos_batch_size = max(int(self.cfg.get('utmos_batch_size', len(predicted_audio_paths))), 1)
                         utmos_num_workers = max(int(self.cfg.get('utmos_num_workers', 0)), 0)
                         try:
@@ -1882,6 +1887,10 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             self._generate_codec_silence_buffer()
 
     def on_validation_epoch_start(self) -> None:
+        # Workaround for a PyTorch/Lightning DDP issue when resuming training after autoregressive validation.
+        # Restored in on_validation_epoch_end()
+        # If editing this part, double check that all child classes update the corresponding part in
+        # on_validation_epoch_end(), notably EasyMagpieCFGDistillation overrides on_validation_epoch_end()
         if torch.distributed.is_initialized():
             self.trainer.strategy.model.require_backward_grad_sync = False
 

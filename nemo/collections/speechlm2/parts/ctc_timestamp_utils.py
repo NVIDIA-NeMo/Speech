@@ -69,6 +69,8 @@ class TransformerCTCDecoder(ConvASRDecoder):
 
     d_model is intentionally constrained to feat_in. This keeps the head strictly
     Transformer+Conv (or Conv-only), without a separate Linear projection layer.
+    ``upsampling_factor=2`` adds the checkpoint's learned ConvTranspose1d before
+    the bridge, producing native 40 ms CTC frames from 80 ms encoder states.
     """
 
     requires_encoded_lengths = False
@@ -101,6 +103,8 @@ class TransformerCTCDecoder(ConvASRDecoder):
         residual: bool = False,
         residual_scale: float = 1.0,
         learnable_residual_scale: bool = False,
+        upsampling_factor: int = 1,
+        upsampling_mode: str = "conv_transpose",
     ):
         """
         Initialize the optional Transformer bridge and CTC projection.
@@ -132,9 +136,15 @@ class TransformerCTCDecoder(ConvASRDecoder):
             residual (bool): Whether to add the bridge input to its output.
             residual_scale (float): Initial residual branch scale.
             learnable_residual_scale (bool): Whether the residual scale is trainable.
+            upsampling_factor (int): Output frames per encoder frame; 2 gives 40 ms CTC from 80 ms states.
+            upsampling_mode (str): Learned upsampling layer; only ``conv_transpose`` is supported.
         """
         if residual and not use_transformer:
             raise ValueError("TransformerCTCDecoder residual connections require use_transformer=True.")
+        if isinstance(upsampling_factor, bool) or not isinstance(upsampling_factor, int) or upsampling_factor < 1:
+            raise ValueError("upsampling_factor must be a positive integer.")
+        if upsampling_mode != "conv_transpose":
+            raise ValueError("Only conv_transpose upsampling is supported.")
 
         super().__init__(
             feat_in=feat_in,
@@ -145,9 +155,15 @@ class TransformerCTCDecoder(ConvASRDecoder):
         )
 
         self.use_transformer = use_transformer
-        self.requires_encoded_lengths = use_transformer
+        self.requires_encoded_lengths = use_transformer or upsampling_factor > 1
         self.transformer = None
         self.residual = residual
+        self.upsampling_factor = upsampling_factor
+        if upsampling_factor > 1:
+            self.register_buffer("upsample_factor", torch.tensor(upsampling_factor), persistent=True)
+            self.upsample = nn.ConvTranspose1d(
+                feat_in, feat_in, kernel_size=upsampling_factor, stride=upsampling_factor
+            )
 
         if self.use_transformer:
             transformer_d_model = feat_in if d_model is None else int(d_model)
@@ -201,10 +217,10 @@ class TransformerCTCDecoder(ConvASRDecoder):
         Args:
             encoder_output (torch.Tensor): Acoustic states shaped ``(B, D, T)``.
             encoded_lengths (Optional[torch.Tensor]): Valid frame counts shaped ``(B,)``. Required when
-                ``use_transformer=True`` so padded frames cannot affect the Transformer bridge.
+                ``use_transformer=True`` or ``upsampling_factor > 1``.
 
         Returns:
-            torch.Tensor: Log probabilities shaped ``(B, T, num_classes_with_blank)``.
+            torch.Tensor: Log probabilities shaped ``(B, T * upsampling_factor, num_classes_with_blank)``.
         """
         if encoder_output.ndim != 3:
             raise ValueError(
@@ -218,6 +234,11 @@ class TransformerCTCDecoder(ConvASRDecoder):
             )
 
         encoded = encoder_output
+        if self.upsampling_factor > 1:
+            if encoded_lengths is None:
+                raise ValueError("Upsampling requires encoded_lengths.")
+            encoded = self.upsample(encoded)
+            encoded_lengths = self.output_lengths(encoded_lengths)
         if self.use_transformer:
             if encoded_lengths is None:
                 raise ValueError("TransformerCTCDecoder requires encoded_lengths when use_transformer=True.")
@@ -233,6 +254,18 @@ class TransformerCTCDecoder(ConvASRDecoder):
                 encoded = residual_input + self.residual_scale.to(dtype=encoded.dtype) * encoded
 
         return super().forward(encoder_output=encoded)
+
+    def output_lengths(self, encoded_lengths: torch.Tensor) -> torch.Tensor:
+        """
+        Convert valid encoder lengths to valid CTC output lengths.
+
+        Args:
+            encoded_lengths (torch.Tensor): Valid encoder frame counts shaped ``(B,)``.
+
+        Returns:
+            torch.Tensor: Valid CTC frame counts shaped ``(B,)``.
+        """
+        return encoded_lengths * self.upsampling_factor
 
 
 class MultiSpeakerSOTWordTimestampAligner:
@@ -289,7 +322,7 @@ class MultiSpeakerSOTWordTimestampAligner:
             speaker_activity_threshold (float): Threshold for speaker activity metadata.
             speaker_logprob_weight (float): Weight of the Sortformer prior in CTC alignment; defaults to 1.0.
             maximum_token_len (float): Maximum emitted word duration in seconds.
-            max_word_frames (int): Banded CTC word duration and onset-snap cap in CTC frames.
+            max_word_frames (int): Word duration and onset-snap cap in encoder frames, scaled for upsampling.
             timestamp_language (Optional[str]): Explicit alignment-unit policy: zh/ja characters,
                 th newmm words, or unchanged whitespace words for other languages. None selects
                 per-transcript script detection.
@@ -388,13 +421,13 @@ class MultiSpeakerSOTWordTimestampAligner:
             timestamp_inputs (Any): ``CTCTimestampInputs`` whose ``asr_encoded`` is shaped ``(B, D, T)``.
 
         Returns:
-            torch.Tensor: CTC log probabilities shaped ``(B, T, classes)``.
+            torch.Tensor: CTC log probabilities shaped ``(B, T * upsampling_factor, classes)``.
         """
         output = None
         for batch_start, start, chunk in self._iter_ctc_windows(timestamp_inputs):
             if output is None:
                 states = timestamp_inputs.asr_encoded
-                output = chunk.new_empty((states.shape[0], states.shape[-1], chunk.shape[-1]))
+                output = chunk.new_empty((states.shape[0], self._ctc_frames(states.shape[-1]), chunk.shape[-1]))
             output[batch_start : batch_start + chunk.shape[0], start : start + chunk.shape[1]] = chunk
             del chunk
         return output
@@ -422,7 +455,7 @@ class MultiSpeakerSOTWordTimestampAligner:
             Dict[str, Any]: The prepared batch described in :meth:`prepare_alignment`.
         """
         states = timestamp_inputs.asr_encoded
-        num_frames = states.shape[-1]
+        num_frames = self._ctc_frames(states.shape[-1])
         num_classes = int(self.ctc_decoder.num_classes_with_blank)
 
         return self._prepare(
@@ -430,9 +463,9 @@ class MultiSpeakerSOTWordTimestampAligner:
             partial(_read_deferred_ctc_columns, self, timestamp_inputs, num_classes),
             timestamp_inputs.sortformer_sigmoids,
             sot_transcripts,
-            ctc_lengths=timestamp_inputs.asr_encoded_lengths.clamp(max=num_frames),
+            ctc_lengths=self._ctc_frames(timestamp_inputs.asr_encoded_lengths).clamp(max=num_frames),
             # Speaker frames past the CTC timeline are never aligned.
-            sortformer_lengths=timestamp_inputs.sortformer_lengths.clamp(max=num_frames),
+            sortformer_lengths=timestamp_inputs.sortformer_lengths.clamp(max=states.shape[-1]),
             audio_durations=audio_durations,
             diarization_labels=timestamp_inputs.diarization_labels,
             diarization_lengths=timestamp_inputs.diarization_lengths,
@@ -744,7 +777,7 @@ class MultiSpeakerSOTWordTimestampAligner:
                 "speaker_activity_threshold": self.speaker_activity_threshold,
                 "speaker_logprob_weight": speaker_logprob_weight,
                 "maximum_token_len": self.maximum_token_len,
-                "max_word_frames": self.max_word_frames,
+                "max_word_frames": self._ctc_frames(self.max_word_frames),
                 "timestamp_language": self.timestamp_language,
                 "epsilon": self.epsilon,
             },
@@ -904,7 +937,7 @@ class MultiSpeakerSOTWordTimestampAligner:
             context_start = max(start - self.chunk_left_context, 0)
             context_end = min(end + self.chunk_right_context, states.shape[-1])
             context_frames = context_end - context_start
-            batch_size = max(1, self._CTC_WINDOW_MAX_ELEMENTS // (context_frames * vocab_size))
+            batch_size = max(1, self._CTC_WINDOW_MAX_ELEMENTS // (self._ctc_frames(context_frames) * vocab_size))
             for batch_start in range(0, states.shape[0], batch_size):
                 batch_end = min(batch_start + batch_size, states.shape[0])
                 context_lengths = (lengths[batch_start:batch_end] - context_start).clamp(min=0, max=context_frames)
@@ -912,13 +945,26 @@ class MultiSpeakerSOTWordTimestampAligner:
                     states[batch_start:batch_end, :, context_start:context_end].to(dtype=decoder_dtype),
                     encoded_lengths=context_lengths,
                 )
-                if context_logits.shape[1] != context_frames:
+                if context_logits.shape[1] != self._ctc_frames(context_frames):
                     raise ValueError(
                         f"The CTC head returned {context_logits.shape[1]} frames for {context_frames} input frames."
                     )
-                left_drop = start - context_start
-                yield batch_start, start, context_logits[:, left_drop : left_drop + end - start]
+                left_drop = self._ctc_frames(start - context_start)
+                core_frames = self._ctc_frames(end - start)
+                yield batch_start, self._ctc_frames(start), context_logits[:, left_drop : left_drop + core_frames]
                 del context_logits
+
+    def _ctc_frames(self, encoder_frames: Union[int, torch.Tensor]) -> Union[int, torch.Tensor]:
+        """
+        Convert encoder frame counts to CTC frame counts.
+
+        Args:
+            encoder_frames (Union[int, torch.Tensor]): Encoder frame count(s).
+
+        Returns:
+            Union[int, torch.Tensor]: Counts scaled by the decoder's upsampling factor (1 by default).
+        """
+        return encoder_frames * int(getattr(self.ctc_decoder, "upsampling_factor", 1))
 
     @staticmethod
     def _group_words_by_speaker(
@@ -2093,7 +2139,7 @@ def _align_banded_ctc(aligner, prepared):
         result['alignment_diagnostics']['failed_streams'] = failures
         result['alignment_diagnostics']['one_pass'] = True
         result['alignment_diagnostics']['banded'] = diagnostics
-        results.append(_refine_word_timestamps(result, aligner.max_word_frames))
+        results.append(_refine_word_timestamps(result, prepared['config']['max_word_frames']))
     return results
 
 

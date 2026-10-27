@@ -24,7 +24,9 @@ import torch
 from omegaconf import OmegaConf, open_dict
 
 from nemo.collections.asr.models import ASRModel, EncDecRNNTModel
+from nemo.collections.asr.parts.mixins import PromptStreamingMixin
 from nemo.collections.asr.parts.submodules.tensorrt_encoder import TensorRTEncoder
+from nemo.utils import logging
 
 
 def main() -> None:
@@ -44,10 +46,23 @@ def main() -> None:
     model = ASRModel.restore_from(str(args.model), map_location=torch.device("cpu")).eval().float()
     if not isinstance(model, EncDecRNNTModel):
         raise TypeError("This example requires an RNNT or TDT model.")
+    if isinstance(model, PromptStreamingMixin):
+        raise TypeError(
+            f"{type(model).__name__} conditions the encoder output on a language prompt; this example passes "
+            "the encoder output to the decoder without the prompt projection and does not support prompt models."
+        )
+    if getattr(model.encoder, "att_context_style", "regular") != "regular":
+        logging.warning(
+            "The encoder is a cache-aware streaming encoder. The engine has no caches and runs it offline, "
+            "over whole utterances, so the predictions differ from streaming inference."
+        )
     model = model.cuda()
     decoding = OmegaConf.create(OmegaConf.to_container(model.cfg.decoding))
     with open_dict(decoding):
         decoding.strategy = "greedy_batch"
+        # Decoder CUDA graphs are a throughput feature.
+        # This accuracy example decodes eagerly, so that the TensorRT and native transcripts come from the same
+        # plain decoder run on every supported PyTorch version.
         decoding.greedy.use_cuda_graph_decoder = False
     model.change_decoding_strategy(decoding)
     model.preprocessor.featurizer.dither = 0.0

@@ -509,6 +509,43 @@ class TestSortformerEncLabelModelOffline:
         assert processed_lengths.dtype == torch.long
         torch.testing.assert_close(processed_lengths.cpu(), expected_lengths)
 
+    @pytest.mark.unit
+    @pytest.mark.parametrize("neighbor", ["loud_row", "loud_padding"])
+    def test_process_signal_peak_normalization_is_per_row(self, neighbor):
+        model = _create_sortformer_model().eval()
+        generator = torch.Generator().manual_seed(0)
+        quiet_length, width = 3200, 4000
+        quiet = torch.randn(1, quiet_length, generator=generator)
+        # The offset makes the most negative sample outweigh the largest one, so max and max(abs) differ.
+        quiet = quiet * (0.05 / quiet.max()) - 0.02
+        loud = torch.randn(1, width, generator=generator)
+        loud = loud * (0.9 / loud.max())
+        if neighbor == "loud_row":
+            audio = torch.cat([torch.nn.functional.pad(quiet, (0, width - quiet_length)), loud])
+            audio_lengths = torch.tensor([quiet_length, width])
+        else:
+            audio = loud.clone()
+            audio[:, :quiet_length] = quiet
+            audio_lengths = torch.tensor([quiet_length])
+
+        with patch.object(model.preprocessor, "forward", wraps=model.preprocessor.forward) as preprocessor_forward:
+            with torch.no_grad():
+                alone_features, alone_lengths = model.process_signal(quiet, torch.tensor([quiet_length]))
+                batch_features, batch_lengths = model.process_signal(audio, audio_lengths)
+        alone_input, batch_input = (call.kwargs["input_signal"] for call in preprocessor_forward.call_args_list)
+
+        # A row is scaled by the largest of its own valid samples, as a batch of one already is.
+        expected_input = (1 / (quiet.max() + model.eps)) * quiet
+        assert torch.equal(alone_input, expected_input)
+        assert torch.equal(batch_input[:1, :quiet_length], expected_input)
+        if neighbor == "loud_row":
+            assert torch.equal(batch_input[1:], (1 / (loud.max() + model.eps)) * loud)
+        feature_length = int(alone_lengths[0])
+        assert int(batch_lengths[0]) == feature_length
+        torch.testing.assert_close(
+            batch_features[0, :, :feature_length], alone_features[0, :, :feature_length], rtol=1e-5, atol=1e-5
+        )
+
 
 class TestSortformerEncLabelModelLossRepresentation:
     @pytest.mark.unit
